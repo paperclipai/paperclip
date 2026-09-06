@@ -474,9 +474,9 @@ interface DiscordChatInternals {
 
 function assertDiscordAdapterCompatibility(adapter: Adapter, chat: Chat): void {
   const discord = adapter as unknown as DiscordAdapterInternals;
-  if (discord.paperclipCompatibilityRevision !== "paperclip-discord-v2") {
+  if (discord.paperclipCompatibilityRevision !== "paperclip-discord-v3") {
     throw new DiscordAdapterCompatibilityError(
-      "Paperclip patch revision paperclip-discord-v2 is unavailable",
+      "Paperclip patch revision paperclip-discord-v3 is unavailable",
     );
   }
   if (typeof discord.startGatewayListener !== "function") {
@@ -1484,9 +1484,9 @@ export class ChatSdkEndpointRuntime {
   }
 
   /**
-   * Reuse the pinned Teams parser for verified messageUpdate activities. The
-   * adapter exposes a public parser but does not currently dispatch those
-   * activities through Chat's onMessageUpdated callback.
+   * Reuse the pinned Teams parser for verified messageUpdate/messageDelete
+   * activities. The adapter exposes a public parser but does not currently
+   * dispatch those activities through Chat's lifecycle callbacks.
    */
   parseMicrosoftTeamsMessage(raw: unknown): Message | null {
     if (this.provider !== "microsoft-teams" || !raw || typeof raw !== "object")

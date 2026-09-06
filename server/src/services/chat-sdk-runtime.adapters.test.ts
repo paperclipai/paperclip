@@ -608,7 +608,7 @@ describe("Chat SDK published adapter integration", () => {
     }
   });
 
-  it("parses a verified Teams messageUpdate through the public adapter contract", async () => {
+  it("parses verified Teams edit, delete, and restore envelopes through the public adapter contract", async () => {
     const runtime = createChatSdkEndpointRuntime({
       callbacks: { onMessage() {} },
       companyId: "company-teams-message-update",
@@ -651,6 +651,42 @@ describe("Chat SDK published adapter integration", () => {
       threadId: `teams:${Buffer.from(conversationId).toString("base64url")}:${Buffer.from(serviceUrl).toString("base64url")}`,
       author: { userId: "29:teams-user", fullName: "Teams User" },
     });
+    for (const lifecycle of [
+      {
+        type: "messageDelete",
+        eventType: "softDeleteMessage",
+        text: undefined,
+      },
+      {
+        type: "messageUpdate",
+        eventType: "undeleteMessage",
+        text: "Restored Teams request",
+      },
+    ] as const) {
+      const parsed = runtime.parseMicrosoftTeamsMessage({
+        id: "teams-message-1",
+        type: lifecycle.type,
+        text: lifecycle.text,
+        timestamp: "2026-09-06T14:02:00.000Z",
+        serviceUrl,
+        from: { id: "29:teams-user", name: "Teams User" },
+        conversation: {
+          id: conversationId,
+          conversationType: "channel",
+          tenantId: "00000000-0000-4000-8000-000000000522",
+        },
+        channelData: {
+          eventType: lifecycle.eventType,
+          tenant: { id: "00000000-0000-4000-8000-000000000522" },
+        },
+      });
+      expect(parsed).toMatchObject({
+        id: "teams-message-1",
+        text: lifecycle.text ?? "",
+        threadId: message?.threadId,
+        author: { userId: "29:teams-user", fullName: "Teams User" },
+      });
+    }
     await runtime.shutdown();
   });
 

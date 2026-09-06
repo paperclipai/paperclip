@@ -154,6 +154,18 @@ export const chatEndpoints = pgTable(
           and ${table.status} in ('verifying', 'active', 'paused', 'attention')
           and ${table.botExternalId} is not null`,
       ),
+    // GitHub App and Microsoft Bot application ids are provider-global bot
+    // identities. Their mutable owner/tenant coordinate is useful metadata,
+    // but it cannot be part of the exclusivity key: an App transfer or a
+    // multi-tenant service principal must never let one native bot represent
+    // two Paperclip agents through two different webhook URLs.
+    uniqueIndex("chat_endpoints_live_global_app_bot_external_uq")
+      .on(table.provider, table.botExternalId)
+      .where(
+        sql`${table.provider} in ('github', 'microsoft-teams')
+          and ${table.status} in ('verifying', 'active', 'paused', 'attention')
+          and ${table.botExternalId} is not null`,
+      ),
     // GitHub App verification does not expose the bot user's numeric id, so
     // retain an equivalent live-slot constraint on the provider-native name.
     uniqueIndex("chat_endpoints_live_bot_username_uq")

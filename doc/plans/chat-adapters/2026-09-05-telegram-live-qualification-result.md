@@ -6,6 +6,24 @@
 
 The live-tested merge commit is `da8f83d6c9befe7bf958f6d9cf12a95fc7e59e88`. After the account-less Cloudflare test tunnel expired, the bot webhook was rotated to the new verified URL with the already-vaulted token and webhook secret; neither credential was exposed. Telegram reported zero queued updates and no provider-side webhook error. A fresh `new` followed by a `task` command created one task and produced exact `TELEGRAM-MERGED-A-0906`. Its working placeholder and final share provider message ID `-1004415501660:69`, proving that the final edited the status in place. Both inbound command deliveries processed once and both publications completed with `attempts=1`, no error, and no pending, retry, failed, or ambiguous row. A plain unaddressed group follow-up was intentionally not delivered to the bot under Telegram privacy mode. Later implementation revision `83018c688` changes only Discord log redaction plus documentation and setup copy relative to that tested Telegram runtime.
 
+A later group/topic iteration repeated the privacy and exact-publication path. Telegram delivered `/new` once, intentionally withheld the following plain unaddressed text under privacy mode, and then delivered the explicit `/task` command. Paperclip created only `CHA-90`, completed it successfully, and published working plus exact final `TELEGRAM-ITERATION-0906` with `attempts=1`, no errors, and the same provider message id `-1004415501660:74`. This is additional live evidence for command admission, privacy enforcement, and working-to-final in-place editing; it does not exercise the reconnect backlog repair below.
+
+## 2026-09-06 reconnect backlog-preservation audit
+
+The successful tunnel-rotation retest above had zero queued provider updates, so it did not exercise recovery of a backlog. A later code audit found that the reconnect path asked Telegram for `drop_pending_updates=true` whenever the public webhook URL changed. During a real ingress outage or domain migration, that option could silently discard messages Telegram had queued while Paperclip was unreachable. The clean exact response above remains valid positive transport evidence, but it cannot be cited as proof that queued updates survived a reconnect.
+
+The working-tree repair now distinguishes first setup from recovery:
+
+1. Initial bot setup may drop updates that predate the Paperclip connection.
+2. Every reconnect preserves pending updates, including a reconnect that changes the public webhook URL.
+3. Endpoint removal continues to delete the webhook without requesting a pending-update drop.
+
+The focused fresh-database regression passed 1/1, the adjacent reconnect subset passed 5/5, server typecheck passed, and formatting/diff checks passed.
+
+The final working-tree retest then exercised the provider failure mode directly. Telegram updates `75` (`/new`) and `76` (`/task`) were sent while the prior quick-tunnel hostname was dead and therefore remained queued at Telegram. Paperclip restarted on the migrated current source, reconnected the bot to a fresh public origin, and preserved both pending updates. They arrived in provider sequence, processed once each with `attempts=1`, and created only `CHA-91`. The task reached `done`; its working state and exact final `TELEGRAM-FINAL-SOURCE-0906` each published once with no error and shared provider message id `-1004415501660:78`. Telegram Web visibly showed the exact final. This upgrades this specific backlog-preservation path from deterministic-only evidence to one live outage/rotation/replay pass; provider flood control, token revocation, and the rest of the failure matrix remain open.
+
+As with Slack, the account-less Cloudflare quick tunnel was useful for finding and live-verifying the defect but is not production ingress. Stable qualification still requires a durable HTTPS origin and the remaining TG recovery cases on the final release-candidate source.
+
 ## 2026-09-06 final answer/recovery audit
 
 The final transcript and durable-ledger review for `CHA-81` found one provider-visible exact final publication, `TELEGRAM-LATENCY7-Cobalt`, with `attempts=1`; Telegram also showed the native question card settled to **Answered: Cobalt**. No late duplicate or internal run summary reached the provider.

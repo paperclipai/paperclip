@@ -55,6 +55,7 @@ function harness(config: Record<string, unknown> = {}) {
     handleReactionEvent: vi.fn(),
     processMessageDeleted: vi.fn(),
     processMessageUpdated: vi.fn(),
+    processSlashCommand: vi.fn(),
   };
   return { adapter, chat, client, handlers, logger };
 }
@@ -240,6 +241,198 @@ describe("Paperclip Discord adapter patch", () => {
     expect(receiptLog?.[1]).not.toHaveProperty("content");
     expect(JSON.stringify(logger.info.mock.calls)).not.toContain(
       sensitiveContent,
+    );
+  });
+
+  it("keeps Discord content, tokens, and raw provider errors out of every log level", async () => {
+    vi.useFakeTimers();
+    const { adapter, chat, logger } = harness({
+      publicKey: "a".repeat(64),
+      webhookVerifier: undefined,
+    });
+    const sensitiveContent = "private roadmap and customer names";
+    const sensitiveToken = "discord-token";
+    const providerBody = JSON.stringify({
+      code: 50035,
+      message: `${sensitiveContent} ${sensitiveToken}`,
+      retry_after: 120,
+    });
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({ id: "message-1", name: sensitiveContent }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(providerBody, {
+          status: 429,
+          headers: {
+            "content-type": "application/json",
+            "retry-after": "120",
+          },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(providerBody, {
+          status: 403,
+          headers: { "content-type": "application/json" },
+        }),
+      )
+      .mockRejectedValueOnce(
+        new TypeError(
+          `Failed to fetch https://discord.com/api/v10/webhooks/app/${sensitiveToken}`,
+        ),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+    await adapter.initialize(chat as never);
+
+    await (
+      adapter as unknown as {
+        verifySignature(
+          body: Uint8Array,
+          signature: string,
+          timestamp: string,
+        ): Promise<boolean>;
+      }
+    ).verifySignature(
+      new TextEncoder().encode(sensitiveContent),
+      "0".repeat(128),
+      "1777777777",
+    );
+    await (
+      adapter as unknown as {
+        handleComponentInteraction(
+          interaction: Record<string, unknown>,
+        ): Promise<void>;
+      }
+    ).handleComponentInteraction({
+      application_id: "123456789012345678",
+      channel: { id: "thread-1", parent_id: "channel-1", type: 11 },
+      channel_id: "thread-1",
+      data: { custom_id: `answer\n${sensitiveContent}` },
+      guild_id: "1457808928258658549",
+      id: "interaction-1",
+      message: { id: "message-1" },
+      token: sensitiveToken,
+      type: 3,
+      user: { id: "user-1", username: "ada" },
+      version: 1,
+    });
+    (
+      adapter as unknown as {
+        handleApplicationCommandInteraction(
+          context: Record<string, unknown>,
+        ): void;
+      }
+    ).handleApplicationCommandInteraction({
+      channelId: "discord:1457808928258658549:channel-1:thread-1",
+      command: "task",
+      interaction: { token: sensitiveToken },
+      text: sensitiveContent,
+      user: { id: "user-1", username: "ada" },
+    });
+
+    await (
+      adapter as unknown as {
+        createDiscordThread(
+          channelId: string,
+          messageId: string,
+          requestedName: string,
+        ): Promise<unknown>;
+      }
+    ).createDiscordThread("channel-1", "message-1", sensitiveContent);
+    const error = await (
+      adapter as unknown as {
+        discordFetch(path: string, method: string): Promise<Response>;
+      }
+    )
+      .discordFetch("/channels/channel-1/messages", "POST")
+      .catch((caught: unknown) => caught);
+    expect(error).toMatchObject({
+      name: "NetworkError",
+      retryAfter: 120,
+      status: 429,
+      originalError: { code: 50035, status: 429 },
+    });
+    expect(String(error)).not.toContain(sensitiveContent);
+    expect(String(error)).not.toContain(sensitiveToken);
+    expect(
+      String((error as { originalError?: unknown }).originalError),
+    ).not.toContain(sensitiveContent);
+    const interactionError = await (
+      adapter as unknown as {
+        discordInteractionFetch(
+          path: string,
+          method: string,
+        ): Promise<Response>;
+      }
+    )
+      .discordInteractionFetch(
+        `/webhooks/123456789012345678/${sensitiveToken}`,
+        "POST",
+      )
+      .catch((caught: unknown) => caught);
+    expect(interactionError).toMatchObject({
+      name: "NetworkError",
+      status: 403,
+    });
+    const interactionNetworkError = await (
+      adapter as unknown as {
+        discordInteractionFetch(
+          path: string,
+          method: string,
+        ): Promise<Response>;
+      }
+    )
+      .discordInteractionFetch(
+        `/webhooks/123456789012345678/${sensitiveToken}`,
+        "POST",
+      )
+      .catch((caught: unknown) => caught);
+    expect(interactionNetworkError).toMatchObject({
+      name: "NetworkError",
+      originalError: undefined,
+    });
+    expect(String(interactionNetworkError)).not.toContain(sensitiveToken);
+
+    const processing = (
+      adapter as unknown as {
+        processGatewayWithRetry(
+          operation: () => Promise<void>,
+          context: Record<string, unknown>,
+        ): Promise<boolean>;
+      }
+    ).processGatewayWithRetry(
+      async () => {
+        throw Object.assign(
+          new Error(`${sensitiveContent} ${sensitiveToken}`),
+          {
+            code: sensitiveToken,
+            name: sensitiveContent,
+          },
+        );
+      },
+      { event: "privacy_test", messageId: "message-1" },
+    );
+    await vi.advanceTimersByTimeAsync(600);
+    await expect(processing).resolves.toBe(false);
+
+    const serializedLogs = JSON.stringify([
+      ...logger.debug.mock.calls,
+      ...logger.info.mock.calls,
+      ...logger.warn.mock.calls,
+      ...logger.error.mock.calls,
+    ]);
+    expect(serializedLogs).not.toContain(sensitiveContent);
+    expect(serializedLogs).not.toContain(sensitiveToken);
+    expect(serializedLogs).not.toContain(providerBody);
+    expect(logger.error).toHaveBeenCalledWith(
+      "Discord API error",
+      expect.objectContaining({
+        error: { code: 50035, retryAfter: 120, status: 429 },
+      }),
     );
   });
 
@@ -501,6 +694,54 @@ describe("Paperclip Discord adapter patch", () => {
     });
   });
 
+  it.each([50001, 50013])(
+    "preserves Discord destination code %s for resource-scoped failure handling",
+    async (providerCode) => {
+      const { adapter } = harness();
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockResolvedValue(
+          new Response(
+            JSON.stringify({
+              code: providerCode,
+              message:
+                providerCode === 50001
+                  ? "Missing Access"
+                  : "Missing Permissions",
+            }),
+            {
+              status: 403,
+              headers: { "content-type": "application/json" },
+            },
+          ),
+        ),
+      );
+
+      const error = await (
+        adapter as unknown as {
+          discordFetch(path: string, method: string): Promise<Response>;
+        }
+      )
+        .discordFetch("/channels/channel-1/messages", "POST")
+        .catch((caught: unknown) => caught);
+
+      expect(error).toMatchObject({
+        name: "NetworkError",
+        adapter: "discord",
+        status: 403,
+        response: { status: 403 },
+        originalError: {
+          name: "DiscordApiError",
+          code: providerCode,
+          status: 403,
+        },
+      });
+      expect(classifyChatPublicationError(error, 1)).toMatchObject({
+        kind: "resource_unavailable",
+      });
+    },
+  );
+
   it("idempotently recovers an already-created root thread", async () => {
     const { adapter } = harness();
     const fetchMock = vi.fn().mockResolvedValue(
@@ -599,6 +840,33 @@ describe("Paperclip Discord adapter patch", () => {
       "Retrying Discord Gateway event after processing error",
       expect.objectContaining({ retryAfterMs: 2_000 }),
     );
+  });
+
+  it("does not retry before a Discord retry-after longer than one minute", async () => {
+    vi.useFakeTimers();
+    const { adapter } = harness();
+    const operation = vi
+      .fn()
+      .mockRejectedValueOnce({ retryAfter: 120 })
+      .mockResolvedValueOnce(undefined);
+
+    const processing = (
+      adapter as unknown as {
+        processGatewayWithRetry(
+          operation: () => Promise<void>,
+          context: Record<string, unknown>,
+        ): Promise<boolean>;
+      }
+    ).processGatewayWithRetry(operation, {
+      event: "thread_create",
+      messageId: "message-1",
+    });
+
+    await vi.advanceTimersByTimeAsync(119_999);
+    expect(operation).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    await expect(processing).resolves.toBe(true);
+    expect(operation).toHaveBeenCalledTimes(2);
   });
 
   it("acknowledges a component once and retries its durable action callback", async () => {

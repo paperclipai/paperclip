@@ -20,6 +20,10 @@ The signed-in session is still the personal/free surface at `https://teams.live.
 
 The live attempt did not progress far enough to observe a provider-side implementation defect. The blocker is the absence of a usable Microsoft 365 organization/tenant and its required provider permissions, not a Paperclip credential or webhook failure. Teams-focused local verification at this checkpoint passed 28 focused server tests, 11 shared credential-validation tests, and 12 fresh-database integration tests; those results remain local evidence only.
 
+### Release decision at this checkpoint
+
+Teams remains a release blocker for the five-provider claim. The signed-in account reaches Teams personal/free, but that identity cannot complete the organization-backed Entra application, Azure Bot, Teams Developer Portal, and custom-app installation path. No Teams credential, authenticated Bot Framework activity, conversation, task, publication, card action, or reconnect has been observed live. Deterministic and fresh-database coverage is valuable implementation evidence but cannot substitute for a Microsoft 365 work/school tenant and, where required, tenant-administrator approval. The earlier quick-tunnel route probe is not production ingress qualification.
+
 ## Production-readiness audit — 2026-09-06
 
 The Teams connector is **not yet live-qualified or production-ready**. A code-level stress audit found and fixed additional defects:
@@ -33,6 +37,22 @@ The Teams connector is **not yet live-qualified or production-ready**. A code-le
 - The pinned Teams adapter exposes its public `parseMessage` contract but does not dispatch Bot Framework `messageUpdate` activities. Paperclip now supplements the authenticated webhook path for the documented `messageUpdate` plus `channelData.eventType=editMessage` envelope, preserving the adapter's canonical thread and principal mapping. Concurrent duplicate callbacks collapse to one lifecycle row, while distinct edits with the same provider timestamp remain distinct through a content-bound revision key.
 - Opening a Teams question modal previously rechecked authority before resolving the form but not at the final provider-effect boundary. Paperclip now locks and revalidates the endpoint, destination, principal link, and Paperclip membership before opening the modal. A deterministic race proves that demotion from operator to viewer during the callback prevents the modal from opening.
 - Telegram and Teams edit lifecycle rows now retain the normalized external actor and perform the same locked principal authorization check before creating a Paperclip system comment. If an identity link or membership is revoked after webhook receipt, the late edit is filtered and its text is redacted from the durable delivery row.
+- Authenticated Teams `messageDelete`/`softDeleteMessage` and
+  `messageUpdate`/`undeleteMessage` activities are now supplemented alongside
+  edits. Exact callback duplicates collapse durably, edits cannot resurrect a
+  deleted source message, and a later provider restoration reopens the
+  lifecycle before subsequent edits. The advertised delete capability now
+  matches this implementation.
+- GitHub App ids and Microsoft Bot application ids now have provider-global
+  live ownership constraints independent of mutable owner or tenant metadata.
+  Setup claims the identity before persisting newly supplied credentials, so
+  concurrent cross-company setup has one winner and leaves no credentials on
+  the loser without revealing the other company's endpoint or agent. If setup
+  crashes after that claim, a later `configure` recovery must still match the
+  claimed Bot application id; it cannot use the attention state to replace the
+  immutable bot identity.
+
+The final combined working tree passed 193/193 chat-channel integration tests on fresh migrated database `chat_adapters_test_final_20260906_1257`, 111/111 focused runtime/error/privacy tests, all package typechecks, token gates, and the deterministic five-provider browser suite. This remains local evidence only for Teams.
 
 The setup wizard also now provides an exact Entra, Azure Bot, Teams Developer Portal, and Teams custom-upload field map plus a copyable Paperclip-specific manifest block. It explicitly distinguishes that block from a complete app package, so operators are not left to infer where each value belongs. The block omits `webApplicationInfo`: Paperclip does not use Teams single sign-on, and the connector does not require an Entra Application ID URI or delegated Microsoft Graph permissions.
 
@@ -74,4 +94,4 @@ On merge revision `da8f83d6c9befe7bf958f6d9cf12a95fc7e59e88`, the full chat-chan
 
 ## Qualification gap
 
-All Teams live scenarios remain unexecuted: credential/setup verification, custom-app installation, team/channel discovery and enablement, channel root/reply boundaries, direct and group chats, identity linking and governance, Adaptive Cards/actions, native DM file handling and non-DM file fallback, post/edit publication behavior, duplicate delivery, permission or app revocation, reconnect/recovery, and cleanup. Deterministic local tests do not replace this missing real-provider evidence.
+All Teams live scenarios remain unexecuted: credential/setup verification, custom-app installation, team/channel discovery and enablement, channel root/reply boundaries, direct and group chats, identity linking and governance, Adaptive Cards/actions, native DM file handling and non-DM file fallback, post/edit publication behavior, edit/delete/restore receipt, duplicate delivery, permission or app revocation, reconnect/recovery, and cleanup. Deterministic local tests do not replace this missing real-provider evidence.

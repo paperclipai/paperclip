@@ -81,6 +81,10 @@ export function classifyChatPublicationError(
             status?: unknown;
             headers?: Headers | Record<string, unknown>;
           };
+          originalError?: {
+            code?: unknown;
+            status?: unknown;
+          };
           details?: {
             code?: unknown;
             providerStatus?: unknown;
@@ -98,6 +102,10 @@ export function classifyChatPublicationError(
     typeof value?.data?.error === "string" ? value.data.error : "";
   const detailsCode =
     typeof value?.details?.code === "string" ? value.details.code : "";
+  const discordProviderCode =
+    typeof value?.originalError?.code === "number"
+      ? value.originalError.code
+      : null;
   const status = [
     value?.status,
     value?.statusCode,
@@ -168,6 +176,19 @@ export function classifyChatPublicationError(
       ),
       reason,
     };
+  }
+
+  if (
+    // Discord distinguishes a destination the bot cannot access (50001) or
+    // cannot write to (50013) from invalid credentials and app-wide failures.
+    // The pinned adapter preserves the bounded numeric API code on its nested
+    // DiscordApiError. Quarantine only the affected channel/conversation;
+    // generic Discord 403s and every 401 remain endpoint-scoped below.
+    adapter === "discord" &&
+    status === 403 &&
+    (discordProviderCode === 50001 || discordProviderCode === 50013)
+  ) {
+    return { kind: "resource_unavailable", reason };
   }
 
   if (

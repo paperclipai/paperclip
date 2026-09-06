@@ -35,7 +35,7 @@ describe("chat run milestone projection", () => {
         publicBaseUrl: "https://paperclip.example/path",
       }),
     ).toBe(
-      "Maya couldn't safely start this turn because this external identity isn't linked to Paperclip and isolated guest execution isn't available. Link your identity to Paperclip, or ask a Paperclip admin to enable isolated guest execution. Open the task in Paperclip: https://paperclip.example/issues/issue-1",
+      "Maya couldn't safely start this turn because this task was started for an unlinked external guest and isolated guest execution isn't available. Link your identity to Paperclip, then start a new task; or ask a Paperclip admin to enable isolated guest execution. Open the task in Paperclip: https://paperclip.example/issues/issue-1",
     );
   });
 

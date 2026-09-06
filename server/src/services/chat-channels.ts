@@ -309,10 +309,10 @@ const CAPABILITIES: Record<ChatProvider, ChatAdapterCapabilities> = {
     // can actually provide. editMessage still lets one run coalesce its
     // queued, working, and final states in place.
     nativeStreaming: false,
-    // The pinned Teams adapter does not yet normalize inbound Bot Framework
-    // messageUpdate activities.
+    // Paperclip supplements the pinned adapter's missing inbound Bot Framework
+    // messageUpdate/messageDelete dispatch after provider authentication.
     messageEdits: true,
-    messageDeletes: false,
+    messageDeletes: true,
     reactions: true,
     files: true,
     cards: true,
@@ -588,6 +588,8 @@ export interface ChatChannelServiceOptions {
   setupSecretActivityLogger?: typeof logActivity;
   /** Testable barrier after fail-closed state and before secret-ref mutation. */
   setupSecretCredentialPersistBarrier?: () => Promise<void>;
+  /** Testable boundary after identity preflight and before its database claim. */
+  nativeBotIdentityClaimBarrier?: () => Promise<void>;
   /** Testable crash boundary after interaction commit and before chat settlement. */
   confirmationResolutionPersistBarrier?: () => Promise<void>;
   /** Testable boundary after a question callback claim and before resolution. */
@@ -1105,8 +1107,8 @@ type LifecycleActor = {
 };
 
 type MicrosoftTeamsLifecycleEvent = {
-  actor: LifecycleActor;
-  eventKind: "message_updated";
+  actor?: LifecycleActor;
+  eventKind: "message_updated" | "message_deleted" | "message_restored";
   messageId: string;
   providerSentAt: string | null;
   revision: string;
@@ -1168,11 +1170,14 @@ function microsoftTeamsLifecycleEventFromPayload(
     timestamp?: unknown;
     type?: unknown;
   };
-  if (
-    activity.type !== "messageUpdate" ||
-    activity.channelData?.eventType !== "editMessage"
-  )
-    return null;
+  const eventType = activity.channelData?.eventType;
+  const isEdit =
+    activity.type === "messageUpdate" && eventType === "editMessage";
+  const isRestore =
+    activity.type === "messageUpdate" && eventType === "undeleteMessage";
+  const isDelete =
+    activity.type === "messageDelete" && eventType === "softDeleteMessage";
+  if (!isEdit && !isRestore && !isDelete) return null;
   const message = endpointRuntime.parseMicrosoftTeamsMessage(payload);
   if (!message?.id || !message.threadId) return null;
   const body = message.text.slice(0, MAX_INBOUND_TEXT);
@@ -1184,16 +1189,28 @@ function microsoftTeamsLifecycleEventFromPayload(
   const bodyHash = createHash("sha256").update(body).digest("hex");
   const revision = providerSentAt ? `${providerSentAt}:${bodyHash}` : bodyHash;
   return {
-    actor: lifecycleActorFromAuthor(
-      "microsoft-teams",
-      message.author,
-      message.raw,
-    ),
-    eventKind: "message_updated",
+    ...(!isDelete
+      ? {
+          actor: lifecycleActorFromAuthor(
+            "microsoft-teams",
+            message.author,
+            message.raw,
+          ),
+        }
+      : {}),
+    eventKind: isDelete
+      ? "message_deleted"
+      : isRestore
+        ? "message_restored"
+        : "message_updated",
     messageId: message.id,
     providerSentAt,
     revision,
-    text: `An external message was edited:\n\n${body}`,
+    text: isDelete
+      ? "An external message in this conversation was deleted."
+      : isRestore
+        ? `An external message was restored:\n\n${body}`
+        : `An external message was edited:\n\n${body}`,
     threadId: message.threadId,
   };
 }
@@ -3200,6 +3217,16 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     return `${provider}:${account}:${bot}`;
   }
 
+  function providerUsesGlobalApplicationIdentity(
+    provider: ChatProvider,
+  ): boolean {
+    return (
+      provider === "github" ||
+      provider === "discord" ||
+      provider === "microsoft-teams"
+    );
+  }
+
   function nativeBotIdentityMatches(
     provider: ChatProvider,
     current: VerifiedProviderIdentity,
@@ -3239,6 +3266,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     const candidates = await db
       .select({
         id: chatEndpoints.id,
+        companyId: chatEndpoints.companyId,
         assignedAgentId: chatEndpoints.assignedAgentId,
         providerAccountId: chatEndpoints.providerAccountId,
         botExternalId: chatEndpoints.botExternalId,
@@ -3247,7 +3275,9 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       .from(chatEndpoints)
       .where(
         and(
-          eq(chatEndpoints.companyId, endpoint.companyId),
+          providerUsesGlobalApplicationIdentity(endpoint.provider)
+            ? undefined
+            : eq(chatEndpoints.companyId, endpoint.companyId),
           eq(chatEndpoints.provider, endpoint.provider),
           ne(chatEndpoints.id, endpoint.id),
           inArray(chatEndpoints.status, [
@@ -3259,7 +3289,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         ),
       );
     const conflictEndpoint = candidates.find((candidate) => {
-      if (endpoint.provider !== "github" && endpoint.provider !== "discord") {
+      if (!providerUsesGlobalApplicationIdentity(endpoint.provider)) {
         return nativeBotIdentityKey(endpoint.provider, candidate) === key;
       }
       const candidateAppId = candidate.botExternalId?.trim().toLowerCase();
@@ -3276,13 +3306,34 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     if (conflictEndpoint) {
       throw conflict(
         `This ${PROVIDER_LABELS[endpoint.provider]} bot already represents another Paperclip agent connection`,
-        {
-          code: "chat_bot_identity_in_use",
-          endpointId: conflictEndpoint.id,
-          assignedAgentId: conflictEndpoint.assignedAgentId,
-        },
+        conflictEndpoint.companyId === endpoint.companyId
+          ? {
+              code: "chat_bot_identity_in_use",
+              endpointId: conflictEndpoint.id,
+              assignedAgentId: conflictEndpoint.assignedAgentId,
+            }
+          : { code: "chat_bot_identity_in_use" },
       );
     }
+  }
+
+  function isNativeBotIdentityUniqueViolation(error: unknown): boolean {
+    return (
+      isUniqueViolation(error, "chat_endpoints_live_bot_external_uq") ||
+      isUniqueViolation(error, "chat_endpoints_live_discord_bot_external_uq") ||
+      isUniqueViolation(
+        error,
+        "chat_endpoints_live_global_app_bot_external_uq",
+      ) ||
+      isUniqueViolation(error, "chat_endpoints_live_bot_username_uq")
+    );
+  }
+
+  function nativeBotIdentityConflict(provider: ChatProvider) {
+    return conflict(
+      `This ${PROVIDER_LABELS[provider]} bot already represents another Paperclip agent connection`,
+      { code: "chat_bot_identity_in_use" },
+    );
   }
 
   async function persistCredentials(
@@ -4826,7 +4877,12 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
             );
           });
     const identity = await verifyCredentials(endpoint.provider, credentials);
-    if (input.action === "reconnect") {
+    // Once setup has claimed a provider bot identity, every credential repair
+    // must prove that same identity before secrets can be replaced. A process
+    // interruption can leave the endpoint in `attention` after the claim but
+    // before credential persistence; a repeated first-setup request must not
+    // turn that recovery state into an identity-swap escape hatch.
+    if (input.action === "reconnect" || Boolean(endpoint.botExternalId)) {
       if (
         !nativeBotIdentityMatches(
           endpoint.provider,
@@ -4846,6 +4902,51 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       endpoint.provider === "github" &&
       prepared.credentials.installationId !== credentials.installationId;
     credentials = prepared.credentials;
+    await options.nativeBotIdentityClaimBarrier?.();
+    // Claim a fresh provider identity before any newly supplied secrets are
+    // persisted. The provider-global unique indexes are the multi-process
+    // arbitration boundary when two setup requests both pass the optimistic
+    // preflight. A process that stops after this small claim leaves a
+    // fail-closed attention endpoint that the same operator can reconnect;
+    // it never leaves credentials bound to the losing endpoint.
+    if (!endpoint.botExternalId) {
+      try {
+        const claimed = await db
+          .update(chatEndpoints)
+          .set({
+            status: "attention",
+            providerAccountId: identity.providerAccountId ?? null,
+            providerAccountLabel: identity.providerAccountLabel ?? null,
+            botExternalId: identity.botExternalId ?? null,
+            botUsername: identity.botUsername ?? null,
+            botDisplayName:
+              identity.botLabel ??
+              endpoint.botDisplayName ??
+              record.assignedAgentName,
+            healthMessage: "Provider setup must be completed",
+            lastError: null,
+            updatedAt: new Date(),
+          })
+          .where(
+            and(
+              eq(chatEndpoints.id, endpoint.id),
+              eq(chatEndpoints.status, endpoint.status),
+              isNull(chatEndpoints.botExternalId),
+            ),
+          )
+          .returning({ id: chatEndpoints.id });
+        if (claimed.length !== 1) {
+          throw conflict("This chat connection changed during setup", {
+            code: "chat_endpoint_setup_changed",
+          });
+        }
+      } catch (error) {
+        if (isNativeBotIdentityUniqueViolation(error)) {
+          throw nativeBotIdentityConflict(endpoint.provider);
+        }
+        throw error;
+      }
+    }
     if (
       (input.credentials && Object.keys(input.credentials).length > 0) ||
       credentialsChangedByDiscovery
@@ -4914,18 +5015,8 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           .where(eq(toolApplications.id, record.applicationId));
       });
     } catch (error) {
-      if (
-        isUniqueViolation(error, "chat_endpoints_live_bot_external_uq") ||
-        isUniqueViolation(
-          error,
-          "chat_endpoints_live_discord_bot_external_uq",
-        ) ||
-        isUniqueViolation(error, "chat_endpoints_live_bot_username_uq")
-      ) {
-        throw conflict(
-          `This ${PROVIDER_LABELS[endpoint.provider]} bot already represents another Paperclip agent connection`,
-          { code: "chat_bot_identity_in_use" },
-        );
+      if (isNativeBotIdentityUniqueViolation(error)) {
+        throw nativeBotIdentityConflict(endpoint.provider);
       }
       throw error;
     }
@@ -4951,7 +5042,6 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
             `Telegram could not inspect the existing webhook: ${infoResult.description ?? infoResponse.status}`,
           );
         }
-        const existingWebhookUrl = infoResult.result?.url?.trim() ?? "";
         const response = await fetchImpl(
           `https://api.telegram.org/bot${encodeURIComponent(credentials.botToken)}/setWebhook`,
           {
@@ -4968,10 +5058,12 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
                 "message_reaction",
                 "my_chat_member",
               ],
-              drop_pending_updates:
-                input.action === "configure" ||
-                (existingWebhookUrl.length > 0 &&
-                  existingWebhookUrl !== webhookUrl),
+              // A first-time connection may inherit stale updates from a bot
+              // that was used before Paperclip owned it. Reconnect is
+              // different: Telegram may be holding legitimate updates while
+              // the old callback URL is unavailable. Preserve that backlog
+              // even when an operator is rotating the public origin.
+              drop_pending_updates: input.action === "configure",
             }),
           },
         );
@@ -5048,7 +5140,10 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       companyId: endpoint.companyId,
       actorType: "user",
       actorId: actorUserId ?? "board",
-      action: "chat_endpoint.credentials_verified",
+      action:
+        input.action === "reconnect"
+          ? "chat_endpoint.reconnected"
+          : "chat_endpoint.credentials_verified",
       entityType: "tool_connection",
       entityId: endpoint.connectionId,
       details: { endpointId: endpoint.id, provider: endpoint.provider },
@@ -7684,7 +7779,8 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
   ): string | null {
     if (
       delivery.eventKind !== "message_updated" &&
-      delivery.eventKind !== "message_deleted"
+      delivery.eventKind !== "message_deleted" &&
+      delivery.eventKind !== "message_restored"
     )
       return null;
     const normalized = delivery.normalizedEvent as {
@@ -7795,6 +7891,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         asc(sql`case ${chatDeliveries.eventKind}
           when 'message_updated' then 1
           when 'message_deleted' then 2
+          when 'message_restored' then 3
           else 0
         end`),
         asc(chatDeliveries.receivedAt),
@@ -8085,7 +8182,8 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         try {
           if (
             delivery.eventKind === "message_updated" ||
-            delivery.eventKind === "message_deleted"
+            delivery.eventKind === "message_deleted" ||
+            delivery.eventKind === "message_restored"
           ) {
             await processLifecycleDelivery(endpoint, delivery);
           } else if (live) {
@@ -8239,7 +8337,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       endpointId: string;
       threadId: string;
       messageId: string;
-      eventKind: "message_updated" | "message_deleted";
+      eventKind: "message_updated" | "message_deleted" | "message_restored";
       text: string;
       providerEventId?: string;
       providerMessageSequence?: number | null;
@@ -8353,13 +8451,15 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
   function lifecycleMessageFromDelivery(delivery: DeliveryRow): {
     actor: LifecycleActor | null;
     messageId: string;
+    providerSentAt: string | null;
     targetProviderEventId: string;
     text: string;
     threadId: string;
   } | null {
     if (
       delivery.eventKind !== "message_updated" &&
-      delivery.eventKind !== "message_deleted"
+      delivery.eventKind !== "message_deleted" &&
+      delivery.eventKind !== "message_restored"
     )
       return null;
     const normalized = delivery.normalizedEvent as {
@@ -8370,12 +8470,14 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       };
       message?: {
         providerMessageId?: unknown;
+        providerSentAt?: unknown;
         targetProviderEventId?: unknown;
         text?: unknown;
       };
     };
     const messageId = normalized.message?.providerMessageId;
     const targetProviderEventId = normalized.message?.targetProviderEventId;
+    const providerSentAt = normalized.message?.providerSentAt;
     const text = normalized.message?.text;
     const threadId = normalizedDeliveryThreadId(delivery);
     const externalId = normalized.principal?.externalId;
@@ -8397,7 +8499,15 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       typeof targetProviderEventId === "string" &&
       typeof text === "string" &&
       threadId !== null
-      ? { actor, messageId, targetProviderEventId, text, threadId }
+      ? {
+          actor,
+          messageId,
+          providerSentAt:
+            typeof providerSentAt === "string" ? providerSentAt : null,
+          targetProviderEventId,
+          text,
+          threadId,
+        }
       : null;
   }
 
@@ -8470,32 +8580,97 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
             );
           return;
         }
-        if (activeDelivery.eventKind === "message_updated") {
-          const terminalDelete = await tx
-            .select({ id: chatDeliveries.id })
+        if (
+          activeDelivery.eventKind === "message_updated" ||
+          activeDelivery.eventKind === "message_deleted" ||
+          activeDelivery.eventKind === "message_restored"
+        ) {
+          const latestDeleteTransition = await tx
+            .select({
+              eventKind: chatDeliveries.eventKind,
+              providerSentAt: sql<
+                string | null
+              >`nullif(${chatDeliveries.normalizedEvent}->'message'->>'providerSentAt', '')`,
+            })
             .from(chatDeliveries)
             .where(
               and(
                 eq(chatDeliveries.companyId, activeDelivery.companyId),
                 eq(chatDeliveries.endpointId, endpoint.id),
-                eq(chatDeliveries.eventKind, "message_deleted"),
+                inArray(chatDeliveries.eventKind, [
+                  "message_deleted",
+                  "message_restored",
+                ]),
                 eq(chatDeliveries.state, "processed"),
                 sql`${chatDeliveries.normalizedEvent}->'conversation'->>'externalThreadId' = ${lifecycle.threadId}`,
                 sql`${chatDeliveries.normalizedEvent}->'message'->>'targetProviderEventId' = ${lifecycle.targetProviderEventId}`,
               ),
             )
+            .orderBy(
+              desc(
+                sql`coalesce(nullif(${chatDeliveries.normalizedEvent}->'message'->>'providerSentAt', '')::timestamptz, ${chatDeliveries.processedAt})`,
+              ),
+              desc(sql`case ${chatDeliveries.eventKind}
+                when 'message_restored' then 2
+                when 'message_deleted' then 1
+                else 0
+              end`),
+              desc(chatDeliveries.processedAt),
+              desc(chatDeliveries.id),
+            )
             .limit(1)
             .then((rows) => rows[0] ?? null);
-          if (terminalDelete) {
+          const latestTransitionAt = latestDeleteTransition?.providerSentAt
+            ? Date.parse(latestDeleteTransition.providerSentAt)
+            : Number.NaN;
+          const incomingTransitionAt = lifecycle.providerSentAt
+            ? Date.parse(lifecycle.providerSentAt)
+            : Number.NaN;
+          const incomingTransitionIsStale =
+            latestDeleteTransition !== null &&
+            Number.isFinite(latestTransitionAt) &&
+            Number.isFinite(incomingTransitionAt) &&
+            (incomingTransitionAt < latestTransitionAt ||
+              (incomingTransitionAt === latestTransitionAt &&
+                activeDelivery.eventKind === "message_deleted" &&
+                latestDeleteTransition.eventKind === "message_restored"));
+          const editTargetsDeletedMessage =
+            activeDelivery.eventKind === "message_updated" &&
+            latestDeleteTransition?.eventKind === "message_deleted";
+          const editPredatesRestore =
+            activeDelivery.eventKind === "message_updated" &&
+            latestDeleteTransition?.eventKind === "message_restored" &&
+            Number.isFinite(latestTransitionAt) &&
+            Number.isFinite(incomingTransitionAt) &&
+            incomingTransitionAt < latestTransitionAt;
+          if (
+            incomingTransitionIsStale ||
+            editTargetsDeletedMessage ||
+            editPredatesRestore
+          ) {
             const filteredAt = new Date();
             await tx
               .update(chatDeliveries)
               .set({
                 state: "filtered",
+                normalizedEvent: {
+                  providerEventId:
+                    activeDelivery.normalizedEvent.providerEventId ??
+                    activeDelivery.providerEventId,
+                  kind: activeDelivery.eventKind,
+                  conversation: { externalThreadId: lifecycle.threadId },
+                  message: {
+                    providerMessageId: lifecycle.messageId,
+                    targetProviderEventId: lifecycle.targetProviderEventId,
+                  },
+                  filtering: { contentRetained: false },
+                },
+                principalId: null,
                 nextAttemptAt: null,
                 processedAt: filteredAt,
-                redactedError:
-                  "Message edit arrived after the provider message was deleted",
+                redactedError: editTargetsDeletedMessage
+                  ? "Message edit arrived after the provider message was deleted"
+                  : "Message lifecycle callback was older than the current provider state",
                 updatedAt: filteredAt,
               })
               .where(
@@ -8661,7 +8836,8 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
 
         let lifecyclePrincipalId: string | null = null;
         const requiresLifecycleActorAuthorization =
-          activeDelivery.eventKind === "message_updated" &&
+          (activeDelivery.eventKind === "message_updated" ||
+            activeDelivery.eventKind === "message_restored") &&
           (lifecycle.actor !== null ||
             currentEndpoint.provider === "github" ||
             currentEndpoint.provider === "telegram" ||

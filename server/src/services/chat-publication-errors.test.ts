@@ -238,6 +238,57 @@ describe("chat publication error classification", () => {
     ).toMatchObject({ kind: "endpoint_attention" });
   });
 
+  it.each([50001, 50013])(
+    "quarantines the Discord destination rejected with provider code %s",
+    (providerCode) => {
+      expect(
+        classifyChatPublicationError(
+          Object.assign(new Error("Discord API error: 403"), {
+            name: "NetworkError",
+            adapter: "discord",
+            code: "NETWORK_ERROR",
+            status: 403,
+            response: { status: 403, headers: {} },
+            originalError: {
+              name: "DiscordApiError",
+              code: providerCode,
+              status: 403,
+            },
+          }),
+          1,
+        ),
+      ).toEqual({
+        kind: "resource_unavailable",
+        reason: "Discord API error: 403",
+      });
+    },
+  );
+
+  it("keeps Discord token and generic app permission failures endpoint-scoped", () => {
+    for (const { status, providerCode } of [
+      { status: 401, providerCode: 0 },
+      { status: 403, providerCode: 20012 },
+    ]) {
+      expect(
+        classifyChatPublicationError(
+          Object.assign(new Error(`Discord API error: ${status}`), {
+            name: "NetworkError",
+            adapter: "discord",
+            code: "NETWORK_ERROR",
+            status,
+            response: { status, headers: {} },
+            originalError: {
+              name: "DiscordApiError",
+              code: providerCode,
+              status,
+            },
+          }),
+          1,
+        ),
+      ).toMatchObject({ kind: "endpoint_attention" });
+    }
+  });
+
   it("marks a missing provider destination unavailable", () => {
     expect(
       classifyChatPublicationError(

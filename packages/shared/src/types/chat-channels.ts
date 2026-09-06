@@ -37,6 +37,7 @@ export const CHAT_EVENT_KINDS = [
   "direct_message",
   "message_updated",
   "message_deleted",
+  "message_restored",
   "reaction_added",
   "reaction_removed",
   "action",

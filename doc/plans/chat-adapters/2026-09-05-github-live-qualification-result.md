@@ -12,6 +12,10 @@ The evidence boundary is unchanged but is now quantified more precisely:
 - The current draft endpoint whose id begins `a31` contains only a Paperclip-generated webhook secret. It has no verified GitHub App identity, private key, installation, repository, signed ping, conversation, or task.
 - Current setup is stopped at GitHub's **Confirm access** MFA challenge. That is an external account gate, not an implementation defect. Current-source live qualification cannot resume until the account owner completes that challenge and creates/installs the disposable App.
 
+### Release decision at this checkpoint
+
+GitHub remains a release blocker for the five-provider claim. The current browser session is still stopped at the six-digit sudo-mode MFA prompt, before App creation, key generation, installation, signed ping, or any issue/PR/review webhook. Deterministic browser, integration, signature, lifecycle, concurrency, and permission tests establish implementation coverage only; they do not convert the historical deleted-repository run into current-source provider evidence. A temporary tunnel response would prove only that Paperclip's route is reachable, not that a durable production callback, GitHub App identity, or real event round trip is qualified.
+
 ## Current-run evidence and blocker
 
 - Last pre-merge setup-attempt source revision: `77ad5383e3a8badf7b1b0933a7e9c66469186d55`
@@ -39,7 +43,7 @@ The signed setup-ping path also accepts a correctly signed GitHub `ping` before 
 
 The branch includes the following GitHub safety and concurrency behavior. These are code and local-test observations, not live GitHub qualification:
 
-1. **Immutable App identity:** Paperclip binds the endpoint to the numeric App registration identity returned by GitHub, separately from the operator-entered App ID used to sign the App JWT. A reconnect that authenticates as a different App registration is rejected with `chat_bot_identity_changed`; endpoint identity cannot drift during credential replacement.
+1. **Immutable App identity:** Paperclip binds the endpoint to the numeric App registration identity returned by GitHub, separately from the operator-entered App ID used to sign the App JWT. Reconnect and first-setup recovery from `attention` both revalidate an already claimed identity; credentials for a different App are rejected with `chat_bot_identity_changed`, including after a crash between identity claim and secret persistence.
 2. **Signed setup-ping state and UI gating:** only a `ping` whose `X-Hub-Signature-256` validates against the current Paperclip-generated webhook secret sets `webhookVerifiedAt`. Missing or invalid signatures return HTTP 401. The setup UI polls this safe timestamp, displays waiting/verified state, and keeps **Connect and verify** disabled until the signed ping has arrived.
 3. **Fail-closed secret rotation:** generating a replacement webhook secret clears the prior verification timestamp, removes the active runtime, degrades/disables the connection, and returns setup to the provider-update step. Reconnect remains blocked until GitHub sends a correctly signed ping using the new secret. Concurrent rotation/reconnect paths are serialized so stale credentials cannot overwrite the rotated secret.
 4. **Atomic first-resource admission:** the first addressed setup repository is admitted inside the endpoint's serialized transaction. Concurrent root mentions from two initially disabled repositories can enable only one repository and create only its one conversation/task; the other repository remains disabled rather than racing through the first-resource exception.
@@ -49,10 +53,18 @@ The branch includes the following GitHub safety and concurrency behavior. These 
 8. **Lifecycle revalidation:** installation creation or unsuspension re-authenticates the exact stored App identity and rechecks required permissions and events before recovery. App-ID, permission, or event drift fails closed: the endpoint moves to attention, the connection/runtime is disabled, resources and conversations remain unavailable, and the lifecycle delivery stays diagnosable/retryable rather than restoring access optimistically.
 9. **Stable repository identity:** repository rename or transfer is reconciled through GitHub's immutable numeric repository ID. Paperclip preserves the resource, conversation, task, allowlist choice, and follow-up route while updating mutable owner/name coordinates and provider URLs; a conflicting dual-coordinate binding fails closed.
 10. **Cold-start response budget:** the provider ingress deadline begins before runtime initialization. A signed webhook that cannot finish cold adapter startup inside the provider budget returns promptly and proceeds only through bounded durable retry instead of consuming GitHub's delivery timeout before Paperclip begins accounting for it.
+11. **Provider-global App ownership:** the immutable numeric App registration
+    id has one live Paperclip endpoint even if GitHub transfers the App to a
+    different owner. Setup claims that id through a database uniqueness fence
+    before persisting App credentials; concurrent cross-company attempts leave
+    credentials only on the winner and do not reveal the owning company,
+    endpoint, or agent.
 
 None of these local checks substitutes for exercising the same paths against GitHub's real App registration, installation, webhook redelivery, and suspension UI.
 
 On merge revision `da8f83d6c9befe7bf958f6d9cf12a95fc7e59e88`, the full chat-channel PostgreSQL integration suite passed 188/188 on fresh migrated database `chat_adapters_test_20260906_1140`; merge-conflict-focused server tests passed 355/355; and the deterministic browser suite `tests/e2e/chat-adapters-ui.spec.ts` passed 5/5 across Slack, GitHub, Teams, Discord, and Telegram. Implementation revision `83018c688` then passed the 42-test Discord adapter/runtime subset, the 34-test Discord/OpenAPI/UI contract subset, server/UI typechecks, token gates, a clean Discord patch application against the pristine package, and both working-tree checks. CI owns `pnpm-lock.yaml` and regenerates the PR lockfile artifact before its frozen install. Earlier provider-focused results remain valid regression evidence. These local results strengthen the setup path but do not change the live-provider blocker or qualification status.
+
+The final combined working tree passed 193/193 chat-channel integration tests on fresh migrated database `chat_adapters_test_final_20260906_1257`, 111/111 focused runtime/error/privacy tests, all package typechecks, token gates, and the deterministic five-provider browser suite. This remains local evidence only for GitHub.
 
 Actual GitHub App registration and current-build provider delivery remain unexecuted. The signed-in GitHub session is stopped at GitHub's six-digit sudo-mode verification prompt. Until that account challenge is completed, no current App credentials, installation, signed ping, issue/PR/review event, reaction, edit, file fallback, or outbound publication can be qualified live.
 
