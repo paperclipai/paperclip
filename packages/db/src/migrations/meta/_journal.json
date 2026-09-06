@@ -1667,6 +1667,13 @@
       "when": 1788557575279,
       "tag": "0239_sturdy_santa_claus",
       "breakpoints": true
+    },
+    {
+      "idx": 240,
+      "version": "7",
+      "when": 1788557600000,
+      "tag": "0240_company_max_concurrent_agent_runs",
+      "breakpoints": true
     }
   ]
 }

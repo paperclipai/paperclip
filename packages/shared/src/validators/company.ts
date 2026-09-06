@@ -2,8 +2,16 @@ import { z } from "zod";
 import {
   COMPANY_STATUSES,
   ISSUE_THREAD_INTERACTION_RESOLVER_POLICIES,
+  MAX_COMPANY_CONCURRENT_AGENT_RUNS,
 } from "../constants.js";
 import { objectWithoutDefaults } from "./partial.js";
+
+const maxConcurrentAgentRunsSchema = z
+  .number()
+  .int()
+  .min(1)
+  .max(MAX_COMPANY_CONCURRENT_AGENT_RUNS)
+  .nullable();
 
 const logoAssetIdSchema = z.string().guid().nullable().optional();
 const feedbackDataSharingTermsVersionSchema = z.string().min(1).nullable().optional();
@@ -37,6 +45,7 @@ export const updateCompanySchema = objectWithoutDefaults(
       status: z.enum(COMPANY_STATUSES).optional(),
       spentMonthlyCents: z.number().int().nonnegative().optional(),
       requireBoardApprovalForNewAgents: z.boolean().optional(),
+      maxConcurrentAgentRuns: maxConcurrentAgentRunsSchema.optional(),
       interactionResolverGovernance: interactionResolverGovernanceSchema.optional(),
       feedbackDataSharingEnabled: z.boolean().optional(),
       feedbackDataSharingConsentAt: z.coerce.date().nullable().optional(),

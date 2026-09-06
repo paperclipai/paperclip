@@ -376,7 +376,7 @@ import {
 import { productivityReviewService } from "./productivity-review.js";
 import { resolveRequiredSuccessfulRunHandoffOnValidPath } from "./successful-run-handoff-state.js";
 import { taskWatchdogService } from "./task-watchdogs.js";
-import { withAgentStartLock } from "./agent-start-lock.js";
+import { withAgentStartLock, withCompanyRunDispatchLock } from "./agent-start-lock.js";
 import {
   evaluateAgentInvokability,
   evaluateAgentInvokabilityFromDb,
@@ -15464,6 +15464,23 @@ export function heartbeatService(
     return Number(count ?? 0);
   }
 
+  async function countRunningRunsForCompany(companyId: string) {
+    const [{ count }] = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.status, "running")));
+    return Number(count ?? 0);
+  }
+
+  async function getCompanyMaxConcurrentRuns(companyId: string) {
+    const [row] = await db
+      .select({ maxConcurrentAgentRuns: companies.maxConcurrentAgentRuns })
+      .from(companies)
+      .where(eq(companies.id, companyId))
+      .limit(1);
+    return row?.maxConcurrentAgentRuns ?? null;
+  }
+
   async function claimQueuedRun(
     run: typeof heartbeatRuns.$inferSelect,
     companyAgents?: AgentOrgRow[],
@@ -17010,7 +17027,7 @@ export function heartbeatService(
     ).catch(() => undefined);
   }
 
-  async function reapOrphanedRuns(opts?: { staleThresholdMs?: number }) {
+  async function reapOrphanedRuns(opts?: { staleThresholdMs?: number; skipAgentId?: string }) {
     const staleThresholdMs = opts?.staleThresholdMs ?? 0;
     const now = new Date();
 
@@ -17473,7 +17490,9 @@ export function heartbeatService(
       await finalizeAgentStatus(run.agentId, "failed", baseMessage, {
         wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run),
       });
-      await startNextQueuedRunForAgent(run.agentId);
+      if (!opts?.skipAgentId || run.agentId !== opts.skipAgentId) {
+        await startNextQueuedRunForAgent(run.agentId);
+      }
       runningProcesses.delete(run.id);
       reaped.push(run.id);
     }
@@ -17709,7 +17728,7 @@ export function heartbeatService(
       }
       const policy = parseHeartbeatPolicy(agent);
       const runningCount = await countRunningRunsForAgent(agentId);
-      const availableSlots = Math.max(
+      let availableSlots = Math.max(
         0,
         policy.maxConcurrentRuns - runningCount,
       );
@@ -17801,12 +17820,58 @@ export function heartbeatService(
         return left.createdAt.getTime() - right.createdAt.getTime();
       });
 
-      const claimedRuns: Array<typeof heartbeatRuns.$inferSelect> = [];
-      for (const queuedRun of prioritizedRuns) {
-        if (claimedRuns.length >= availableSlots) break;
-        const claimed = await claimQueuedRun(queuedRun, companyAgents);
-        if (claimed) claimedRuns.push(claimed);
+      const claimNextRuns = async () => {
+        const claimedRuns: Array<typeof heartbeatRuns.$inferSelect> = [];
+        for (const queuedRun of prioritizedRuns) {
+          if (claimedRuns.length >= availableSlots) break;
+          const claimed = await claimQueuedRun(queuedRun, companyAgents);
+          if (claimed) claimedRuns.push(claimed);
+        }
+        return claimedRuns;
+      };
+
+      // GRO-60: per-agent maxConcurrentRuns has no cross-agent coordination, so
+      // N distinct agents in the same company could each legitimately run up to
+      // their own cap at once with no company-wide ceiling. When an operator has
+      // opted into companies.maxConcurrentAgentRuns, clamp this dispatch to
+      // whichever cap is tighter, and serialize the recheck-and-claim against
+      // every other agent's dispatch in the same company so two agents can't
+      // both read a stale company running-count and jointly overshoot it.
+      const companyMaxConcurrentRuns = await getCompanyMaxConcurrentRuns(agent.companyId);
+
+      if (companyMaxConcurrentRuns !== null) {
+        // GRO-93 stale-row starvation guard: if the ceiling appears full, reap
+        // orphaned 'running' rows BEFORE entering the company lock.
+        // Passing { skipAgentId: agentId } ensures self-reaped runs don't incur a
+        // 30s mutex timeout.
+        const prelimCount = await countRunningRunsForCompany(agent.companyId);
+        if (prelimCount >= companyMaxConcurrentRuns) {
+          await reapOrphanedRuns({ skipAgentId: agentId });
+        }
       }
+
+      const claimedRuns = companyMaxConcurrentRuns === null
+        ? await claimNextRuns()
+        : await withCompanyRunDispatchLock(agent.companyId, async () => {
+            const companyRunningCount = await countRunningRunsForCompany(agent.companyId);
+            const companyAvailableSlots = Math.max(0, companyMaxConcurrentRuns - companyRunningCount);
+            if (companyAvailableSlots < availableSlots) {
+              logger.info(
+                {
+                  agentId,
+                  companyId: agent.companyId,
+                  companyMaxConcurrentRuns,
+                  companyRunningCount,
+                  agentAvailableSlots: availableSlots,
+                  companyAvailableSlots,
+                },
+                "startNextQueuedRunForAgent: company-wide concurrency ceiling constrained dispatch",
+              );
+            }
+            availableSlots = Math.min(availableSlots, companyAvailableSlots);
+            if (availableSlots <= 0) return [];
+            return claimNextRuns();
+          });
       if (claimedRuns.length === 0) return [];
 
       for (const claimedRun of claimedRuns) {
@@ -17829,6 +17894,38 @@ export function heartbeatService(
       }
       return claimedRuns;
     });
+  }
+
+  // GRO-93: cross-agent slot handoff. When a run finishes and frees a company
+  // slot, only calling startNextQueuedRunForAgent for the completing agent
+  // leaves other agents' queued runs stranded until their own timer tick. This
+  // function offers the freed slot to every OTHER agent in the company that has
+  // queued work, ordered by the age of their oldest queued run (FIFO fairness
+  // across agents — whichever agent has been waiting longest dispatches first
+  // when slots are scarce). Each inner startNextQueuedRunForAgent call takes the
+  // per-agent lock then the company lock (the established order in this module).
+  // Only call from paths where NO agent or company lock is already held.
+  async function startNextQueuedRunsForCompany(companyId: string, completingAgentId: string) {
+    const ceiling = await getCompanyMaxConcurrentRuns(companyId);
+    if (ceiling === null) return;
+
+    const agentsWithQueue = await db
+      .select({
+        agentId: heartbeatRuns.agentId,
+        oldestQueuedAt: sql<Date>`min(${heartbeatRuns.createdAt})`,
+      })
+      .from(heartbeatRuns)
+      .where(and(
+        eq(heartbeatRuns.companyId, companyId),
+        eq(heartbeatRuns.status, "queued"),
+        ne(heartbeatRuns.agentId, completingAgentId),
+      ))
+      .groupBy(heartbeatRuns.agentId)
+      .orderBy(asc(sql`min(${heartbeatRuns.createdAt})`));
+
+    for (const { agentId } of agentsWithQueue) {
+      await startNextQueuedRunForAgent(agentId);
+    }
   }
 
   // Await every background heartbeat execution that is currently in flight. A
@@ -22897,6 +22994,7 @@ export function heartbeatService(
         !shutdownInProgress
       ) {
         await startNextQueuedRunForAgent(run.agentId);
+        await startNextQueuedRunsForCompany(run.companyId, run.agentId);
       }
     }
   }
@@ -25902,6 +26000,7 @@ export function heartbeatService(
       wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run),
     });
     await startNextQueuedRunForAgent(run.agentId);
+    await startNextQueuedRunsForCompany(run.companyId, run.agentId);
     return cancelled;
   }
 
