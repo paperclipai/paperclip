@@ -1244,3 +1244,28 @@ Networking behavior for this smoke script:
 - auto-detects and prints a Paperclip host URL reachable from inside OpenClaw Docker
 - default container-side host alias is `host.docker.internal` (override with `PAPERCLIP_HOST_FROM_CONTAINER` / `PAPERCLIP_HOST_PORT`)
 - if Paperclip rejects container hostnames in authenticated/private mode, allow `host.docker.internal` via `npx paperclipai allowed-hostname host.docker.internal` and restart Paperclip
+
+## Codex Run-Home Recovery
+
+Local Codex runs use a private home under
+`<company-dir>/acp-engine/agents/<agent-id>/codex-run-homes/<run-id>/home`.
+This preserves the restricted-run isolation boundary.
+Paperclip keeps sanitized session JSONL after the runtime closes. It then removes
+the raw run home. If retention or runtime close fails, Paperclip preserves the
+home and writes a sibling `<run-id>.quarantine` marker.
+
+The orphan sweeper is dry-run only unless `--delete` is present:
+
+```sh
+npx tsx packages/adapter-utils/src/acpx-engine/run-home-sweeper.ts \
+  --company-dir /path/to/companies/<company-id>
+```
+
+Set `PAPERCLIP_API_URL` and `PAPERCLIP_API_KEY` for both modes. The sweeper fails
+closed unless it can prove that the heartbeat run is terminal, the home has no
+open file handles, the home is older than the grace window, and a sanitized
+retention counterpart exists. A quarantine marker records an incident. It does
+not permit deletion of the only raw copy.
+
+Review the JSON manifest before you add `--delete`. Keep the default 24-hour
+grace period unless the operator has approved a different recovery window.
