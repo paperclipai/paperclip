@@ -6199,6 +6199,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       const inspection = request.clone();
       const body = await inspection.text();
       const signature = inspection.headers.get("x-hub-signature-256");
+      const eventType = inspection.headers.get("x-github-event");
       const credentials = await resolveCredentials(endpoint);
       const expected = `sha256=${createHmac("sha256", credentials.webhookSecret).update(body).digest("hex")}`;
       let signatureValid = false;
@@ -6208,6 +6209,17 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           timingSafeEqual(Buffer.from(signature), Buffer.from(expected));
       } catch {
         signatureValid = false;
+      }
+      // GitHub sends this signed connectivity check as soon as an App webhook
+      // is saved, before the operator can generate a private key and submit
+      // the App identity to Paperclip. Authenticating the ping needs only the
+      // Paperclip-generated webhook secret; initializing the full provider
+      // runtime here would incorrectly reject the valid setup check because
+      // App API credentials are not available yet.
+      if (eventType === "ping") {
+        return signatureValid
+          ? new Response("pong", { status: 200 })
+          : new Response("Invalid signature", { status: 401 });
       }
       if (signatureValid) {
         try {

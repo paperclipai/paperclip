@@ -2466,6 +2466,58 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     ).resolves.toHaveLength(0);
   });
 
+  it("accepts only signed GitHub setup pings before App credentials exist", async () => {
+    const fixture = await seedCompany();
+    const runtime = new FakeChatSdkRuntime();
+    const { service } = createService(runtime);
+    const endpoint = await service.create(
+      fixture.companyId,
+      {
+        provider: "github",
+        assignedAgentId: fixture.assignedAgentId,
+        name: "Maya GitHub setup ping",
+      },
+      "owner-user",
+    );
+    const { webhookSecret } = await service.generateSetupSecret(
+      endpoint.id,
+      "owner-user",
+    );
+    const body = JSON.stringify({ zen: "Keep it logically awesome." });
+    const signature = createHmac("sha256", webhookSecret)
+      .update(body)
+      .digest("hex");
+    const setupPing = (signatureHeader?: string) =>
+      service.handleWebhook(
+        endpoint.publicId,
+        "github",
+        new Request("https://paperclip.example/github", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-github-event": "ping",
+            ...(signatureHeader
+              ? { "x-hub-signature-256": signatureHeader }
+              : {}),
+          },
+          body,
+        }),
+      );
+
+    await expect(setupPing()).resolves.toMatchObject({ status: 401 });
+    await expect(setupPing("sha256=invalid")).resolves.toMatchObject({
+      status: 401,
+    });
+    const accepted = await setupPing(`sha256=${signature}`);
+    expect(accepted.status).toBe(200);
+    await expect(accepted.text()).resolves.toBe("pong");
+    expect(runtime.configurations.has(endpoint.id)).toBe(false);
+    await expect(service.get(endpoint.id)).resolves.toMatchObject({
+      status: "draft",
+      setup: { webhookSecretConfigured: true },
+    });
+  });
+
   it("configures a customer-owned Microsoft Teams bot with the entered credentials", async () => {
     const fixture = await seedCompany();
     const clientId = "00000000-0000-4000-8000-000000000001";
