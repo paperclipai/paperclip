@@ -2025,8 +2025,8 @@ describe("worktree helpers", () => {
     }
   });
 
-  it("uses streaming backup selection for full seeds and transformed backup selection for minimal seeds", () => {
-    expect(resolveWorktreeSeedBackupEngine(resolveWorktreeSeedPlan("full"))).toBe("auto");
+  it("uses JavaScript backup selection for worktree seed safety snapshots", () => {
+    expect(resolveWorktreeSeedBackupEngine(resolveWorktreeSeedPlan("full"))).toBe("javascript");
     expect(resolveWorktreeSeedBackupEngine(resolveWorktreeSeedPlan("minimal"))).toBe("javascript");
   });
 

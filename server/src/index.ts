@@ -5,9 +5,9 @@
 // HTTP server, so trace coverage does not depend on incidental timing.
 import { instrumentationReady, shutdownInstrumentation } from "./instrumentation.js";
 import { sentryReady, shutdownSentry, captureException } from "./sentry.js";
-import { existsSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
 import { pathToFileURL } from "node:url";
@@ -745,11 +745,13 @@ export async function startServer(): Promise<StartedServer> {
     Number(process.env.PAPERCLIP_DB_BACKUP_MAX_AGE_HOURS) ||
       Math.max(26, Math.ceil((config.databaseBackupIntervalMinutes / 60) * 2)),
   );
+  const databaseBackupFailureMarkerFile = resolve(config.databaseBackupDir, "..", "health", "database-backup.failure");
   const databaseBackupAlertFile =
     process.env.PAPERCLIP_DB_BACKUP_ALERT_FILE ||
-    resolve(config.databaseBackupDir, "..", "health", "db-backup-to-s3.failure");
+    databaseBackupFailureMarkerFile;
   const databaseBackupAlertFiles = [
     databaseBackupAlertFile,
+    databaseBackupFailureMarkerFile,
     resolve(config.databaseBackupDir, "db-backup-to-s3.failure"),
     resolve(config.databaseBackupDir, "..", "db-backup-to-s3.failure"),
   ];
@@ -804,9 +806,22 @@ export async function startServer(): Promise<StartedServer> {
         },
         `${label} database backup complete: ${formatDatabaseBackupResult(result)}`,
       );
+      if (existsSync(databaseBackupFailureMarkerFile)) {
+        rmSync(databaseBackupFailureMarkerFile, { force: true });
+      }
       return response;
     } catch (err) {
       logger.error({ err, backupDir: config.databaseBackupDir, trigger }, `${label} database backup failed`);
+      try {
+        mkdirSync(dirname(databaseBackupFailureMarkerFile), { recursive: true });
+        writeFileSync(
+          databaseBackupFailureMarkerFile,
+          `${new Date().toISOString()} ${label} database backup failed: ${err instanceof Error ? err.message : String(err)}\n`,
+          "utf8",
+        );
+      } catch (markerError) {
+        logger.warn({ err: markerError, markerFile: databaseBackupFailureMarkerFile }, "failed to write database backup failure marker");
+      }
       throw err;
     } finally {
       databaseBackupInFlight = false;

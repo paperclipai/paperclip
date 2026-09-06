@@ -282,6 +282,12 @@ plugin-owned database schemas. See `doc/DEVELOPING.md` for the current
 `paperclipai db:backup` / `pnpm db:backup` commands and backup retention
 configuration.
 
+Full database backups use `pg_dump` when no table filtering or redaction is
+requested. The `pg_dump` binary must be available and compatible with the
+running PostgreSQL server version. If it is missing or incompatible, Paperclip
+fails the backup and records the failure for health checks instead of silently
+switching to the raw JavaScript backup path.
+
 Database backups do not include non-database instance files such as local-disk
 uploads, workspace files, or the local encrypted secrets master key. Back those paths
 up separately when you need full instance disaster recovery.
