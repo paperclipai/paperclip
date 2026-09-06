@@ -148,7 +148,9 @@ describe("GitHub published adapter stress contract", () => {
       persistence: memoryPersistence(),
       providerConfig: {
         provider: "github",
-        userName: "maya-paperclip[bot]",
+        // GitHub App actors are reported as `<slug>[bot]`, but users invoke
+        // them with the human-facing `@<slug>` mention.
+        userName: "maya-paperclip",
         credentials: {
           botUserId: 9001,
           token: "github-token-never-logged",
@@ -162,7 +164,7 @@ describe("GitHub published adapter stress contract", () => {
       {
         event: "issue_comment" as const,
         payload: commentPayload({
-          body: "@maya-paperclip[bot] issue root",
+          body: "@maya-paperclip issue root",
           commentId: 4201,
           number: 42,
         }),
@@ -170,7 +172,7 @@ describe("GitHub published adapter stress contract", () => {
       {
         event: "issue_comment" as const,
         payload: commentPayload({
-          body: "@maya-paperclip[bot] PR root",
+          body: "@maya-paperclip PR root",
           commentId: 4301,
           number: 43,
           pullRequest: true,
@@ -179,7 +181,7 @@ describe("GitHub published adapter stress contract", () => {
       {
         event: "pull_request_review_comment" as const,
         payload: commentPayload({
-          body: "@maya-paperclip[bot] inline root",
+          body: "@maya-paperclip inline root",
           commentId: 4401,
           number: 43,
           pullRequest: true,
@@ -206,7 +208,7 @@ describe("GitHub published adapter stress contract", () => {
       ).status,
     ).toBe(200);
     const selfEvent = commentPayload({
-      body: "@maya-paperclip[bot] outbound self event",
+      body: "@maya-paperclip outbound self event",
       commentId: 4203,
       number: 42,
       senderId: 9001,
@@ -268,7 +270,7 @@ describe("GitHub published adapter stress contract", () => {
       persistence: memoryPersistence(),
       providerConfig: {
         provider: "github",
-        userName: "maya-paperclip[bot]",
+        userName: "maya-paperclip",
         credentials: {
           botUserId: 9001,
           token: "github-token-never-logged",
@@ -278,12 +280,12 @@ describe("GitHub published adapter stress contract", () => {
     });
     await runtime.initialize();
     const newer = commentPayload({
-      body: "@maya-paperclip[bot] newer comment delivered first",
+      body: "@maya-paperclip newer comment delivered first",
       commentId: 5102,
       number: 51,
     });
     const older = commentPayload({
-      body: "@maya-paperclip[bot] older root delivered late",
+      body: "@maya-paperclip older root delivered late",
       commentId: 5101,
       number: 51,
     });

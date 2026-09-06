@@ -519,6 +519,7 @@ describe("openapi routes", () => {
     expect(activity.properties.actionType.enum).toEqual([
       "slash_task_start",
       "provider_effect",
+      "github_webhook_ingress",
     ]);
 
     const replaceResources =

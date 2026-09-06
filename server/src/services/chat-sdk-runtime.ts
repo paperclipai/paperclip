@@ -797,10 +797,15 @@ function createProviderAdapter(
       return createSlackAdapter(adapterConfig);
     }
     case "github": {
+      // GitHub's API identifies an App actor as `<slug>[bot]`, while people
+      // invoke the App in issue and PR comments with `@<slug>`. The shared
+      // mention detector deliberately supports the bracketed actor form when
+      // configured with the bare slug, but the inverse is not true.
+      const mentionUserName = config.userName.replace(/\[bot\]$/i, "");
       const adapterConfig = {
         ...config.credentials,
         logger: resolvedLogger,
-        userName: config.userName,
+        userName: mentionUserName,
       } as GitHubAdapterConfig;
       const adapter = createGitHubAdapter(adapterConfig);
       // Octokit otherwise delegates to fetch without a deadline. A hung token

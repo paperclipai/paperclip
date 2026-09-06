@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
-import { listDiscordBotChannels, verifyDiscordBot } from "./chat-discord.js";
+import {
+  discordMarkdownRequiresAttachment,
+  listDiscordBotChannels,
+  verifyDiscordBot,
+} from "./chat-discord.js";
 
 const applicationId = "123456789012345678";
 const guildId = "1457808928258658549";
@@ -24,6 +28,18 @@ function fetchFixture(
 }
 
 describe("Discord bot validation and inventory", () => {
+  it("measures the final Discord Markdown instead of raw source length", () => {
+    expect(discordMarkdownRequiresAttachment("x".repeat(2_000))).toBe(false);
+    expect(discordMarkdownRequiresAttachment("🙂".repeat(1_001))).toBe(true);
+    // The Discord formatter expands each bare mention by two characters.
+    expect(discordMarkdownRequiresAttachment("@a ".repeat(500))).toBe(true);
+    expect(
+      discordMarkdownRequiresAttachment(
+        `\`\`\`ts\n${"const value = 1;\n".repeat(120)}\`\`\``,
+      ),
+    ).toBe(true);
+  });
+
   it("binds the token, application, privileged intent, and server", async () => {
     const fetch = fetchFixture({
       "/api/v10/users/@me": {

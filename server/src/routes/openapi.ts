@@ -887,7 +887,9 @@ const chatActivityResponseSchema = z
   .object({
     id: z.string().uuid(),
     kind: z.enum(["delivery", "publication", "action", "health", "repair"]),
-    actionType: z.enum(["slash_task_start", "provider_effect"]).optional(),
+    actionType: z
+      .enum(["slash_task_start", "provider_effect", "github_webhook_ingress"])
+      .optional(),
     status: z.union([
       chatDeliveryStateSchema,
       chatPublicationStateSchema,

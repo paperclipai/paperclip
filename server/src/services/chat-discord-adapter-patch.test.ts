@@ -832,6 +832,47 @@ describe("Paperclip Discord adapter patch", () => {
     });
   });
 
+  it("keeps an oversized Markdown attachment byte-for-byte intact", async () => {
+    const { adapter } = harness({
+      apiUrl: "https://discord.example.test/api/v10",
+    });
+    const source = [
+      "## Full response 🙂",
+      "[Evidence](https://example.test/evidence)",
+      `\`\`\`ts\n${"const value = 1;\n".repeat(150)}\`\`\``,
+    ].join("\n\n");
+    let capturedBody: FormData | null = null;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+        capturedBody = init?.body as FormData;
+        return Response.json({ id: "message-with-file" });
+      }),
+    );
+
+    await adapter.postMessage("discord:guild-1:channel-1:thread-1", {
+      markdown: "Complete response attached.",
+      files: [
+        {
+          data: Buffer.from(source, "utf8"),
+          filename: "paperclip-response.md",
+          mimeType: "text/markdown; charset=utf-8",
+        },
+      ],
+    });
+
+    expect(capturedBody).toBeInstanceOf(FormData);
+    expect(
+      JSON.parse(String(capturedBody!.get("payload_json"))) as {
+        content: string;
+      },
+    ).toEqual({ content: "Complete response attached." });
+    const file = capturedBody!.get("files[0]");
+    expect(file).toBeInstanceOf(File);
+    expect((file as File).name).toBe("paperclip-response.md");
+    expect(await (file as File).text()).toBe(source);
+  });
+
   it("honors Discord retry-after when replaying a Gateway operation", async () => {
     vi.useFakeTimers();
     const { adapter, logger } = harness();

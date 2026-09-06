@@ -56,7 +56,9 @@ const PROVIDERS: ProviderCase[] = [
     name: "GitHub",
     accountLabel: "paperclip-ai",
     botLabel: "Maya",
-    botUsername: "maya-paperclip",
+    // GitHub's API returns the actor login with this suffix, while people
+    // invoke the App with the bare slug.
+    botUsername: "maya-paperclip[bot]",
     resourceLabel: "paperclip-ai/paperclip",
     secondaryResourceLabel: "paperclip-ai/chat-e2e",
     resourceType: "repository",
@@ -1037,7 +1039,7 @@ test.describe.serial("native chat adapter UI", () => {
         page.getByText(PROVIDER_LIFECYCLE_COPY[provider.provider].reconnect, {
           exact: false,
         }),
-      ).toBeVisible();
+      ).toHaveCount(0);
       await expectSetupRail(page);
       await expectMinimumProviderSetup(page, provider);
       await fillProviderSetup(page, provider);

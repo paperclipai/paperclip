@@ -317,6 +317,8 @@ export interface SafeChatPublicationPayload {
     batchId: string;
     count: number;
     index: number;
+    /** Server-managed provider rendering for this transport part. */
+    mode?: "inline" | "discord_markdown_attachment";
     orderKey: string;
   };
   progressState?:
@@ -349,7 +351,8 @@ export interface ChatPublication {
 export interface ChatActivityItem {
   id: string;
   kind: "delivery" | "publication" | "action" | "health" | "repair";
-  actionType?: "slash_task_start" | "provider_effect";
+  actionType?:
+    "slash_task_start" | "provider_effect" | "github_webhook_ingress";
   status: string;
   summary: string;
   detail?: string | null;

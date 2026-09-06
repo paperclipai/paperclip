@@ -71,6 +71,7 @@ import type {
 } from "@paperclipai/shared";
 import {
   isAgentStatusInvokable,
+  isUuidLike,
   LOW_TRUST_REVIEW_PRESET,
   LOW_TRUST_REVIEW_PRESET_VERSION,
   LOW_TRUST_REVIEW_RAW_OUTPUT_DISPOSITION,
@@ -121,7 +122,11 @@ import {
   type ChatProviderInventoryResult,
   type ChatProviderResourceInventoryItem,
 } from "./chat-provider-inventory.js";
-import { listDiscordBotChannels, verifyDiscordBot } from "./chat-discord.js";
+import {
+  discordMarkdownRequiresAttachment,
+  listDiscordBotChannels,
+  verifyDiscordBot,
+} from "./chat-discord.js";
 import {
   parseChatProviderLifecycle,
   type ChatProviderLifecycleEffect,
@@ -510,6 +515,12 @@ const UNAVOIDABLE_GITHUB_EVENTS = [
   "installation_repositories",
 ] as const;
 
+const SUPPORTED_GITHUB_WEBHOOK_EVENTS = new Set<string>([
+  "ping",
+  ...REQUIRED_GITHUB_EVENTS,
+  ...UNAVOIDABLE_GITHUB_EVENTS,
+]);
+
 const SUPPLIED_CREDENTIAL_KEYS: Record<ChatProvider, readonly string[]> = {
   slack: ["botToken", "signingSecret"],
   github: ["appId", "privateKey"],
@@ -543,7 +554,6 @@ const DISCORD_GATEWAY_LEASE_WAIT_MS = 20_000;
 const DISCORD_GATEWAY_LEASE_POLL_MS = 100;
 const PROVIDER_CREDENTIAL_CHECK_TIMEOUT_MS = 25_000;
 const GITHUB_WEBHOOK_RESPONSE_BUDGET_MS = 8_000;
-const GITHUB_WEBHOOK_INTERNAL_RETRY_MAX = 3;
 const CONFIRMATION_WAKEUP_RETRY_BACKOFF_MS = 30_000;
 // Providers can deliver adjacent callbacks on separate HTTP requests out of
 // order. Hold the first callback briefly so a rapid burst can be sorted by the
@@ -626,7 +636,6 @@ type DeliveryRow = typeof chatDeliveries.$inferSelect;
 type LiveInboundMessage = {
   endpoint: EndpointRow;
   message: Message;
-  preauthorizedUserId?: string | null;
   receiptReactionSupported: boolean;
   runtimeContext?: InboundRuntimeContext;
   thread: Thread;
@@ -658,6 +667,24 @@ type ReceiptReactionPayload = {
   reaction: "eyes";
   runtimeGeneration: number;
   credentialFingerprint: string;
+};
+
+type GitHubWebhookIngressPayload = {
+  version: 1;
+  body: string;
+  bodySha256: string;
+  contentType: string;
+  deliveryId: string;
+  eventType: string;
+  runtimeGeneration: number;
+  credentialFingerprint: string;
+};
+
+type RedactedGitHubWebhookIngressPayload = Omit<
+  GitHubWebhookIngressPayload,
+  "body" | "contentType"
+> & {
+  redacted: true;
 };
 
 type TelegramMaintenancePayload = {
@@ -700,6 +727,48 @@ function receiptReactionPayload(
     return null;
   }
   return payload as ReceiptReactionPayload;
+}
+
+function githubWebhookIngressPayload(
+  payload: Record<string, unknown>,
+): GitHubWebhookIngressPayload | null {
+  if (
+    payload.version !== 1 ||
+    typeof payload.body !== "string" ||
+    typeof payload.bodySha256 !== "string" ||
+    !/^[a-f0-9]{64}$/.test(payload.bodySha256) ||
+    typeof payload.contentType !== "string" ||
+    typeof payload.deliveryId !== "string" ||
+    !payload.deliveryId ||
+    typeof payload.eventType !== "string" ||
+    !payload.eventType ||
+    typeof payload.runtimeGeneration !== "number" ||
+    !Number.isSafeInteger(payload.runtimeGeneration) ||
+    typeof payload.credentialFingerprint !== "string"
+  ) {
+    return null;
+  }
+  if (
+    createHash("sha256").update(payload.body).digest("hex") !==
+    payload.bodySha256
+  ) {
+    return null;
+  }
+  return payload as GitHubWebhookIngressPayload;
+}
+
+function redactedGitHubWebhookIngressPayload(
+  payload: GitHubWebhookIngressPayload,
+): RedactedGitHubWebhookIngressPayload {
+  return {
+    version: 1,
+    bodySha256: payload.bodySha256,
+    deliveryId: payload.deliveryId,
+    eventType: payload.eventType,
+    runtimeGeneration: payload.runtimeGeneration,
+    credentialFingerprint: payload.credentialFingerprint,
+    redacted: true,
+  };
 }
 
 function isSlackReceiptReactionAlreadyApplied(error: unknown): boolean {
@@ -796,6 +865,8 @@ export interface ChatChannelServiceOptions {
   githubWebhookResponseBudgetMs?: number;
   /** Testable boundary after reading a GitHub webhook and before authentication. */
   githubWebhookAuthenticationBarrier?: () => Promise<void>;
+  /** Testable boundary before a durable GitHub receipt re-enters provider handling. */
+  githubWebhookReplayBarrier?: () => Promise<void>;
   /** Test override for the credential-mutation lease renewal cadence. */
   credentialMutationLeaseRenewalIntervalMs?: number;
   /** Narrow fault-injection boundary for credential-lease ownership checks. */
@@ -834,6 +905,10 @@ export interface ChatChannelServiceOptions {
   reachAuthorizationBarrier?: () => Promise<void>;
   /** Testable boundary after receipt-reaction durability and before transport. */
   receiptReactionTransportBarrier?: () => Promise<void>;
+  /** Narrow fault-injection boundary before durable publication preparation. */
+  publicationTransportPreparationBarrier?: (input: {
+    publicationId: string;
+  }) => Promise<void>;
   /** Test override for the conversation-delivery lease renewal cadence. */
   conversationLeaseRenewalIntervalMs?: number;
   /** Narrow fault-injection boundary for renewing a conversation lease. */
@@ -865,6 +940,11 @@ export interface ChatChannelServiceOptions {
   ) => Promise<void>;
   /** Testable barrier before the credential-leased Discord root creation. */
   discordRootThreadTransportBarrier?: () => Promise<void>;
+  /** Testable boundary after a Slack task-admission worker claims its attempt. */
+  slackTaskAdmissionClaimBarrier?: (input: {
+    actionId: string;
+    claimId: string;
+  }) => Promise<void>;
   storage?: StorageService;
 }
 
@@ -919,7 +999,20 @@ function teamsConversationId(threadId: string): string | null {
   const match = /^teams:([^:]+)(?::|$)/.exec(threadId);
   if (!match) return null;
   try {
-    return Buffer.from(match[1], "base64url").toString("utf8");
+    const encoded = match[1];
+    const bytes = Buffer.from(encoded, "base64url");
+    const decoded = bytes.toString("utf8");
+    // Node's base64url decoder is deliberately permissive: an ordinary
+    // legacy id such as `teams:personal-chat` can decode to replacement
+    // characters instead of throwing. Require a canonical byte round trip so
+    // only SDK-encoded Teams conversation ids lose their mutable route suffix.
+    if (
+      bytes.toString("base64url") !== encoded ||
+      !Buffer.from(decoded, "utf8").equals(bytes)
+    ) {
+      return null;
+    }
+    return decoded;
   } catch {
     return null;
   }
@@ -2330,38 +2423,6 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     );
   }
 
-  function scheduleGitHubWebhookRetry(
-    publicId: string,
-    request: Request,
-  ): void {
-    const currentAttempt = Number.parseInt(
-      request.headers.get("x-paperclip-internal-webhook-retry") ?? "0",
-      10,
-    );
-    const attempt = Number.isSafeInteger(currentAttempt) ? currentAttempt : 0;
-    if (attempt >= GITHUB_WEBHOOK_INTERNAL_RETRY_MAX) {
-      logger.error(
-        { publicId, attempts: attempt },
-        "GitHub webhook exhausted Paperclip internal acceptance retries",
-      );
-      return;
-    }
-    const headers = new Headers(request.headers);
-    headers.set("x-paperclip-internal-webhook-retry", String(attempt + 1));
-    const retryRequest = new Request(request, { headers });
-    scheduleMessageProcessing(async () => {
-      await new Promise<void>((resolve) =>
-        setTimeout(resolve, Math.min(4_000, 250 * 2 ** attempt)),
-      );
-      const response = await handleWebhook(publicId, "github", retryRequest);
-      if (!response.ok) {
-        throw new Error(
-          `GitHub webhook internal retry returned HTTP ${response.status}`,
-        );
-      }
-    });
-  }
-
   async function addReceiptReaction(input: {
     deliveryId: string;
     endpoint: EndpointRow;
@@ -2683,6 +2744,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
               and(
                 eq(chatDeliveries.id, action.deliveryId),
                 eq(chatDeliveries.state, "processed"),
+                like(chatDeliveries.redactedError, "Receipt reaction %"),
               ),
             );
         }
@@ -2726,6 +2788,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
                 and(
                   eq(chatDeliveries.id, action.deliveryId),
                   eq(chatDeliveries.state, "processed"),
+                  like(chatDeliveries.redactedError, "Receipt reaction %"),
                 ),
               );
           }
@@ -2750,7 +2813,8 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         ? new Date(Date.now() + retryAfterMs).toISOString()
         : null;
       await db.transaction(async (tx) => {
-        await tx
+        await credentialLease.assertOwned(tx);
+        const [failed] = await tx
           .update(chatActions)
           .set({
             status: "failed",
@@ -2769,16 +2833,20 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
               eq(chatActions.status, "processing"),
               sql`(${chatActions.result}->>'attempts')::int = ${attempt}`,
             ),
-          );
-        await tx
-          .update(chatDeliveries)
-          .set({ redactedError: diagnostic, updatedAt: new Date() })
-          .where(
-            and(
-              eq(chatDeliveries.id, action.deliveryId!),
-              eq(chatDeliveries.state, "processed"),
-            ),
-          );
+          )
+          .returning({ id: chatActions.id });
+        if (failed && action.deliveryId) {
+          await tx
+            .update(chatDeliveries)
+            .set({ redactedError: diagnostic, updatedAt: new Date() })
+            .where(
+              and(
+                eq(chatDeliveries.id, action.deliveryId),
+                eq(chatDeliveries.state, "processed"),
+              ),
+            );
+        }
+        await credentialLease.assertOwned(tx);
       });
       logger.warn(
         {
@@ -2793,7 +2861,10 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     }
   }
 
-  async function processPendingReceiptReactions(limit = 25) {
+  async function processPendingReceiptReactions(
+    limit = 25,
+    onlyActionId?: string,
+  ) {
     const now = new Date();
     const staleBefore = new Date(now.getTime() - PROVIDER_EFFECT_STALE_MS);
     const actions = await db
@@ -2802,6 +2873,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       .where(
         and(
           eq(chatActions.kind, "receipt_reaction"),
+          ...(onlyActionId ? [eq(chatActions.id, onlyActionId)] : []),
           or(
             eq(chatActions.status, "received"),
             and(
@@ -4126,6 +4198,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       runtimeGeneration(record.endpoint.setup) === context.generation &&
       credentialFingerprint(record.credentialSecretRefs) ===
         context.credentialFingerprint &&
+      runtime.get(endpointId) === context.endpointRuntime &&
       (record.endpoint.provider !== "discord" ||
         discordGatewayRuntimeIsCurrent(endpointId, context))
       ? record
@@ -5196,22 +5269,12 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     }
   }
 
-  async function resolveCredentials(
+  async function resolveCredentialRefs(
     endpoint: EndpointRow,
+    refs: ToolCredentialSecretRef[],
   ): Promise<Record<string, string>> {
-    const connection = await db
-      .select({ refs: toolConnections.credentialSecretRefs })
-      .from(toolConnections)
-      .where(
-        and(
-          eq(toolConnections.companyId, endpoint.companyId),
-          eq(toolConnections.id, endpoint.connectionId),
-        ),
-      )
-      .then((rows) => rows[0] ?? null);
-    if (!connection) throw notFound("Chat connection not found");
     const values: Record<string, string> = {};
-    for (const ref of connection.refs) {
+    for (const ref of refs) {
       const key = ref.configPath.replace(/^credentials\./, "");
       values[key] = await secrets.resolveSecretValue(
         endpoint.companyId,
@@ -5227,6 +5290,23 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       );
     }
     return values;
+  }
+
+  async function resolveCredentials(
+    endpoint: EndpointRow,
+  ): Promise<Record<string, string>> {
+    const connection = await db
+      .select({ refs: toolConnections.credentialSecretRefs })
+      .from(toolConnections)
+      .where(
+        and(
+          eq(toolConnections.companyId, endpoint.companyId),
+          eq(toolConnections.id, endpoint.connectionId),
+        ),
+      )
+      .then((rows) => rows[0] ?? null);
+    if (!connection) throw notFound("Chat connection not found");
+    return resolveCredentialRefs(endpoint, connection.refs);
   }
 
   async function acquireCredentialMutationLease(endpoint: EndpointRow) {
@@ -8242,8 +8322,12 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     providerUpdateId?: number,
     admittedDeliveryId: string | null = null,
     receiptReactionSupported = true,
-    preauthorizedUserId?: string | null,
+    // Kept as a positional compatibility slot for already-normalized durable
+    // deliveries. Authorization snapshots are intentionally ignored: task
+    // mutation always rechecks current reach, identity link, and membership.
+    _preauthorizedUserId?: string | null,
     deferDrainUntilFollowup = false,
+    suppressSetupDestinationActivation = false,
   ) {
     // The Telegram adapter currently emits edited_message through the normal
     // message callback with the original message id. Paperclip records that
@@ -8312,19 +8396,18 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       providerEventId,
       kind: eventKind,
       trigger,
+      ...(suppressSetupDestinationActivation
+        ? // A slash-command root is provider-confirmed only after an enabled
+          // destination authorized its transport. Persist that closed origin so
+          // crash recovery can never reinterpret it as first-time setup traffic
+          // and undo a later operator reach revocation.
+          { admission: { origin: "provider_confirmed_action" } }
+        : {}),
       ...(runtimeContext
         ? {
             runtimeContext: {
               credentialFingerprint: runtimeContext.credentialFingerprint,
               generation: runtimeContext.generation,
-            },
-          }
-        : {}),
-      ...(preauthorizedUserId !== undefined
-        ? {
-            admissionAuthorization: {
-              version: 1,
-              authorizedUserId: preauthorizedUserId,
             },
           }
         : {}),
@@ -8823,7 +8906,6 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         thread,
         message,
         trigger,
-        ...(preauthorizedUserId !== undefined ? { preauthorizedUserId } : {}),
         receiptReactionSupported,
         runtimeContext,
       });
@@ -9004,6 +9086,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         !thread.isDM &&
         endpoint.status === "verifying" &&
         addressed &&
+        !suppressSetupDestinationActivation &&
         !(
           endpoint.provider === "microsoft-teams" &&
           surfaceKind === "linear_group"
@@ -9140,25 +9223,21 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       const destinationAllowed = thread.isDM
         ? endpoint.allowDirectMessages
         : nonDirectDestinationAllowed(endpoint, resource);
-      const preauthorized = preauthorizedUserId !== undefined;
       const guestSponsorAllowed =
-        !preauthorized &&
         principalResolution.userId === null &&
         !principalResolution.linkedDenied &&
         endpoint.allowUnlinkedPeople
           ? await sponsorAllowsGuest(endpoint)
           : false;
       const principalAllowed =
-        preauthorized ||
-        (!principalResolution.linkedDenied &&
-          (principalResolution.userId !== null || guestSponsorAllowed));
+        !principalResolution.linkedDenied &&
+        (principalResolution.userId !== null || guestSponsorAllowed);
       const activationAllowed = addressed || existingConversation !== null;
       const allowed =
-        preauthorized ||
-        (endpointAllowed &&
-          destinationAllowed &&
-          principalAllowed &&
-          activationAllowed);
+        endpointAllowed &&
+        destinationAllowed &&
+        principalAllowed &&
+        activationAllowed;
       const slackRootMessageId =
         endpoint.provider === "slack"
           ? /^slack:[^:]+:(.+)$/.exec(thread.id)?.[1]
@@ -9233,6 +9312,9 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           .update(chatDeliveries)
           .set({
             state: "filtered",
+            normalizedEvent: redactedDestinationNormalized,
+            principalId: null,
+            nextAttemptAt: null,
             redactedError: filteredReason,
             processedAt: new Date(),
             updatedAt: new Date(),
@@ -9760,26 +9842,18 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
               )
               .for("update")
               .then((rows) => rows[0] ?? null);
-        const currentPrincipalAuthorization = preauthorized
-          ? {
-              allowed: true,
-              linkedDenied: false,
-              userId: preauthorizedUserId ?? null,
-            }
-          : await lockCurrentPrincipalAuthorization(
-              tx,
-              currentEndpoint,
-              principalResolution.principal.id,
-            );
+        const currentPrincipalAuthorization =
+          await lockCurrentPrincipalAuthorization(
+            tx,
+            currentEndpoint,
+            principalResolution.principal.id,
+          );
         const endpointStillAllowed =
-          preauthorized ||
           currentEndpoint.status === "verifying" ||
           currentEndpoint.status === "active";
-        const destinationStillAllowed =
-          preauthorized ||
-          (thread.isDM
-            ? currentEndpoint.allowDirectMessages
-            : nonDirectDestinationAllowed(currentEndpoint, currentResource));
+        const destinationStillAllowed = thread.isDM
+          ? currentEndpoint.allowDirectMessages
+          : nonDirectDestinationAllowed(currentEndpoint, currentResource);
         if (
           !endpointStillAllowed ||
           !destinationStillAllowed ||
@@ -9987,6 +10061,25 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     );
   }
 
+  function setupDestinationActivationSuppressed(
+    normalizedEvent: unknown,
+  ): boolean {
+    if (
+      !normalizedEvent ||
+      typeof normalizedEvent !== "object" ||
+      Array.isArray(normalizedEvent)
+    )
+      return false;
+    const normalized = normalizedEvent as {
+      admission?: { origin?: unknown };
+      admissionAuthorization?: { version?: unknown };
+    };
+    return (
+      normalized.admission?.origin === "provider_confirmed_action" ||
+      normalized.admissionAuthorization?.version === 1
+    );
+  }
+
   function discordRootThreadPending(
     delivery: Pick<DeliveryRow, "normalizedEvent">,
   ): boolean {
@@ -10183,33 +10276,6 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     return typeof normalized.conversation?.externalThreadId === "string"
       ? normalized.conversation.externalThreadId
       : null;
-  }
-
-  function normalizedAdmissionAuthorization(
-    delivery: DeliveryRow,
-  ): { authorizedUserId: string | null } | null {
-    const normalized = delivery.normalizedEvent as {
-      admissionAuthorization?: {
-        version?: unknown;
-        authorizedUserId?: unknown;
-      };
-    };
-    const authorization = normalized.admissionAuthorization;
-    if (
-      authorization?.version !== 1 ||
-      !Object.prototype.hasOwnProperty.call(
-        authorization,
-        "authorizedUserId",
-      ) ||
-      (authorization.authorizedUserId !== null &&
-        (typeof authorization.authorizedUserId !== "string" ||
-          !authorization.authorizedUserId))
-    ) {
-      return null;
-    }
-    return {
-      authorizedUserId: authorization.authorizedUserId as string | null,
-    };
   }
 
   function normalizedLifecycleTargetEventId(
@@ -10419,6 +10485,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
   ): {
     message: Message;
     receiptReactionSupported: boolean;
+    suppressSetupDestinationActivation: boolean;
     trigger: ChatSdkMessageCallbackEvent["trigger"];
     providerUrl: string | null;
   } | null {
@@ -10496,6 +10563,9 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       // therefore retain the historical default.
       receiptReactionSupported:
         normalized.acknowledgement?.receiptReactionSupported !== false,
+      suppressSetupDestinationActivation: setupDestinationActivationSuppressed(
+        delivery.normalizedEvent,
+      ),
       trigger,
       providerUrl:
         typeof normalized.conversation?.providerUrl === "string"
@@ -10618,8 +10688,6 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         }
 
         const live = liveInboundMessages.get(delivery.id);
-        const admissionAuthorization =
-          normalizedAdmissionAuthorization(delivery);
         try {
           if (
             delivery.eventKind === "message_updated" ||
@@ -10639,8 +10707,9 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
               undefined,
               delivery.id,
               live.receiptReactionSupported,
-              live.preauthorizedUserId ??
-                admissionAuthorization?.authorizedUserId,
+              undefined,
+              false,
+              setupDestinationActivationSuppressed(delivery.normalizedEvent),
             );
           } else {
             if (deliveryContentWasRedacted(delivery.normalizedEvent)) {
@@ -10706,7 +10775,9 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
               undefined,
               delivery.id,
               reconstructed.receiptReactionSupported,
-              admissionAuthorization?.authorizedUserId,
+              undefined,
+              false,
+              reconstructed.suppressSetupDestinationActivation,
             );
           }
         } catch (error) {
@@ -14315,10 +14386,12 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     actionStatus: "received" | "validating" | "resolving";
     attempt?: number;
     connectionId: string;
+    credentialLease: CredentialMutationLeaseGuard;
     endpoint: EndpointRow;
     error: unknown;
     providerAttempted?: boolean;
     resource: ResourceRow | null;
+    runtimeFence: LifecycleRuntimeFence;
   }): Promise<boolean> {
     const attempt = input.attempt ?? 1;
     const classified = classifyChatPublicationError(input.error, attempt);
@@ -14326,7 +14399,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     // happen before the transport fence. Even a socket-shaped error in that
     // phase is known not to have sent a Slack message and remains safely
     // retryable instead of entering the ambiguous-delivery quarantine.
-    const disposition =
+    const classifiedDisposition =
       input.providerAttempted === false &&
       classified.kind === "delivery_unknown"
         ? {
@@ -14335,11 +14408,33 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
             reason: classified.reason,
           }
         : classified;
+    await input.credentialLease.assertOwned();
+    const currentRecord = await endpointRecord(input.endpoint.id);
+    const runtimeFenceCurrent =
+      currentRecord !== null &&
+      runtimeGeneration(currentRecord.endpoint.setup) ===
+        input.runtimeFence.generation &&
+      credentialFingerprint(currentRecord.credentialSecretRefs) ===
+        input.runtimeFence.credentialFingerprint;
+    // A provider rejection from credentials that were superseded while this
+    // worker lost its lease cannot quarantine the successor endpoint or its
+    // resources. Preserve genuinely ambiguous provider acceptance, but make a
+    // definite old-runtime rejection safely retryable so the normal worker can
+    // re-authorize it against the current endpoint before any new Slack call.
+    const disposition =
+      !runtimeFenceCurrent && classifiedDisposition.kind !== "delivery_unknown"
+        ? {
+            kind: "retry" as const,
+            retryAfterMs: 1_000,
+            reason: "Slack runtime changed before failure settlement",
+          }
+        : classifiedDisposition;
     const failure = redactSensitiveText(disposition.reason).slice(
       0,
       MAX_ERROR_TEXT,
     );
     const finalized = await db.transaction(async (tx) => {
+      await input.credentialLease.assertOwned(tx);
       const [ownedAction] = await tx
         .update(chatActions)
         .set({
@@ -14350,7 +14445,11 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
                 ? "queued"
                 : "failed",
           result: {
-            code: `slash_task_${disposition.kind}`,
+            code: runtimeFenceCurrent
+              ? `slash_task_${disposition.kind}`
+              : disposition.kind === "delivery_unknown"
+                ? "slash_task_delivery_unknown"
+                : "slash_task_runtime_superseded",
             redactedError: failure,
             retryable: disposition.kind === "retry",
             attemptCount: attempt,
@@ -14373,7 +14472,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         )
         .returning({ id: chatActions.id });
       if (!ownedAction) return false;
-      if (disposition.kind === "endpoint_attention") {
+      if (runtimeFenceCurrent && disposition.kind === "endpoint_attention") {
         await tx
           .update(chatEndpoints)
           .set({
@@ -14396,6 +14495,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           })
           .where(eq(toolConnections.id, input.connectionId));
       } else if (
+        runtimeFenceCurrent &&
         disposition.kind === "resource_unavailable" &&
         input.resource
       ) {
@@ -14404,9 +14504,19 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           .set({ availability: "unavailable", updatedAt: new Date() })
           .where(eq(chatEndpointResources.id, input.resource.id));
       }
+      await input.credentialLease.assertOwned(tx);
       return true;
     });
-    if (finalized && disposition.kind === "endpoint_attention") {
+    if (
+      finalized &&
+      runtimeFenceCurrent &&
+      disposition.kind === "endpoint_attention"
+    ) {
+      // Runtime removal mutates process-local provider state after the durable
+      // transaction. Prove this worker still owns the credential fence at the
+      // last await boundary so a reclaimer cannot have installed a successor
+      // runtime that this obsolete failure would then remove.
+      await input.credentialLease.assertOwned();
       await invalidateRuntime(input.endpoint.id).catch(() => undefined);
     }
     return finalized;
@@ -14416,12 +14526,18 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     actionId: string,
     ingressOnly = true,
   ): Promise<boolean> {
+    const admissionClaimId = randomUUID();
     const staleAdmission = new Date(
       Date.now() - SLACK_COMMAND_ADMISSION_STALE_MS,
     );
     const [action] = await db
       .update(chatActions)
-      .set({ status: "admitting", updatedAt: new Date() })
+      .set({
+        status: "admitting",
+        result: sql`coalesce(${chatActions.result}, '{}'::jsonb)
+          || jsonb_build_object('admissionClaimId', ${admissionClaimId}::text)`,
+        updatedAt: new Date(),
+      })
       .where(
         and(
           eq(chatActions.id, actionId),
@@ -14437,9 +14553,19 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       )
       .returning();
     if (!action) return false;
+    await options.slackTaskAdmissionClaimBarrier?.({
+      actionId: action.id,
+      claimId: admissionClaimId,
+    });
 
     const recovery = slackSlashTaskRecoveryPayload(action.payload);
     const confirmed = confirmedSlackTaskStartResult(action.result);
+    const ownsAdmission = () =>
+      and(
+        eq(chatActions.id, action.id),
+        eq(chatActions.status, "admitting"),
+        sql`${chatActions.result}->>'admissionClaimId' = ${admissionClaimId}`,
+      );
     const failAdmission = async (code: string, detail: string) => {
       await db
         .update(chatActions)
@@ -14452,12 +14578,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           },
           updatedAt: new Date(),
         })
-        .where(
-          and(
-            eq(chatActions.id, action.id),
-            eq(chatActions.status, "admitting"),
-          ),
-        );
+        .where(ownsAdmission());
     };
     if (!recovery || !confirmed || !action.principalId) {
       await failAdmission(
@@ -14487,13 +14608,12 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         // admission without sending another Slack message.
         await db
           .update(chatActions)
-          .set({ status: "provider_confirmed", updatedAt: new Date() })
-          .where(
-            and(
-              eq(chatActions.id, action.id),
-              eq(chatActions.status, "admitting"),
-            ),
-          );
+          .set({
+            status: "provider_confirmed",
+            result: confirmed,
+            updatedAt: new Date(),
+          })
+          .where(ownsAdmission());
       }
       return true;
     }
@@ -14554,17 +14674,14 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         undefined,
         null,
         false,
-        confirmed.authorizedUserId,
+        undefined,
+        false,
+        true,
       );
       await db
         .update(chatActions)
-        .set({ status: "processed", updatedAt: new Date() })
-        .where(
-          and(
-            eq(chatActions.id, action.id),
-            eq(chatActions.status, "admitting"),
-          ),
-        );
+        .set({ status: "processed", result: confirmed, updatedAt: new Date() })
+        .where(ownsAdmission());
       return true;
     } catch (error) {
       // The provider post is already confirmed, so this retry is strictly a
@@ -14581,12 +14698,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           },
           updatedAt: new Date(),
         })
-        .where(
-          and(
-            eq(chatActions.id, action.id),
-            eq(chatActions.status, "admitting"),
-          ),
-        );
+        .where(ownsAdmission());
       throw error;
     }
   }
@@ -14754,8 +14866,11 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     let providerPostStarted = false;
     let transportClaimed = false;
     let failureResource: ResourceRow | null = null;
+    let failureRuntimeFence = runtimeContextForRecord(initialRecord);
+    let failureSettledUnderLease = false;
+    let confirmedActionId: string | null = null;
     try {
-      return await withCredentialMutationLease(
+      const processed = await withCredentialMutationLease(
         initialRecord.endpoint,
         async (credentialLease) => {
           const record = await endpointRecord(action.endpointId);
@@ -14780,6 +14895,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
               );
             return true;
           }
+          failureRuntimeFence = runtimeContextForRecord(record);
           if (!["verifying", "active"].includes(record.endpoint.status)) {
             const terminallyArchived = record.endpoint.status === "archived";
             await db
@@ -14999,7 +15115,31 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           // quarantined as delivery_unknown and is never replayed implicitly.
           transportClaimed = true;
           providerPostStarted = true;
-          const starter = await baseThread.post("Starting a task…");
+          let starter: Awaited<ReturnType<typeof baseThread.post>>;
+          try {
+            starter = await baseThread.post("Starting a task…");
+          } catch (error) {
+            try {
+              await finalizeSlackTaskStartFailure({
+                actionId: action.id,
+                actionStatus: "resolving",
+                attempt,
+                connectionId: record.endpoint.connectionId,
+                credentialLease,
+                endpoint: record.endpoint,
+                error,
+                providerAttempted: true,
+                resource: failureResource,
+                runtimeFence: failureRuntimeFence,
+              });
+              failureSettledUnderLease = true;
+            } catch {
+              // If ownership was reclaimed while Slack was in flight, the
+              // outer recovery path reacquires the endpoint lease and settles
+              // the attempt without applying stale health state.
+            }
+            throw error;
+          }
           const threadId = slackTaskStarterThreadId(rawChannelId, starter.id);
           const [providerConfirmed] = await db.transaction(async (tx) => {
             await credentialLease.assertOwned(tx);
@@ -15029,21 +15169,39 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
               "Slack task-start ownership changed after provider acceptance",
             );
           }
-          await admitConfirmedSlackTaskStart(providerConfirmed.id, ingressOnly);
+          // Provider transport and its durable confirmation remain fenced by
+          // the credential lease. Paperclip-only task admission happens after
+          // this callback returns and releases that lease: normal admission
+          // stages a receipt reaction, whose independently fenced worker must
+          // acquire the same lease and would otherwise self-deadlock here.
+          confirmedActionId = providerConfirmed.id;
           return true;
         },
       );
+      if (typeof confirmedActionId === "string") {
+        await admitConfirmedSlackTaskStart(confirmedActionId, ingressOnly);
+      }
+      return processed;
     } catch (error) {
-      await finalizeSlackTaskStartFailure({
-        actionId: action.id,
-        actionStatus: transportClaimed ? "resolving" : "validating",
-        attempt,
-        connectionId: initialRecord.endpoint.connectionId,
-        endpoint: initialRecord.endpoint,
-        error,
-        providerAttempted: providerPostStarted,
-        resource: failureResource,
-      });
+      if (!failureSettledUnderLease) {
+        await withCredentialMutationLease(
+          initialRecord.endpoint,
+          async (credentialLease) => {
+            await finalizeSlackTaskStartFailure({
+              actionId: action.id,
+              actionStatus: transportClaimed ? "resolving" : "validating",
+              attempt,
+              connectionId: initialRecord.endpoint.connectionId,
+              credentialLease,
+              endpoint: initialRecord.endpoint,
+              error,
+              providerAttempted: providerPostStarted,
+              resource: failureResource,
+              runtimeFence: failureRuntimeFence,
+            });
+          },
+        );
+      }
       throw error;
     }
   }
@@ -15062,7 +15220,13 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     const actions = await db
       .select({ id: chatActions.id })
       .from(chatActions)
+      .leftJoin(chatEndpoints, eq(chatEndpoints.id, chatActions.endpointId))
       .where(
+        // Provider-confirmed rows need no provider retry and have no due
+        // timestamp. Park them while an endpoint is repairable but paused
+        // or in attention; otherwise an old page can starve active work
+        // forever. Archived and missing endpoints remain eligible so their
+        // actions can be terminalized.
         and(
           eq(chatActions.kind, "slash_task_start"),
           or(
@@ -15070,7 +15234,17 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
               eq(chatActions.status, "queued"),
               sql`(${chatActions.result}->>'retryAt' is null or ${chatActions.result}->>'retryAt' <= ${now.toISOString()})`,
             ),
-            eq(chatActions.status, "provider_confirmed"),
+            and(
+              eq(chatActions.status, "provider_confirmed"),
+              or(
+                isNull(chatEndpoints.id),
+                inArray(chatEndpoints.status, [
+                  "verifying",
+                  "active",
+                  "archived",
+                ]),
+              ),
+            ),
             and(
               eq(chatActions.status, "admitting"),
               lte(chatActions.updatedAt, staleAdmission),
@@ -16429,13 +16603,621 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     }
   }
 
+  type GitHubIngressStageResult =
+    | { kind: "invalid_signature" }
+    | { kind: "ignored" }
+    | { actionId: string; kind: "staged" };
+
+  function githubSignatureIsValid(
+    body: string,
+    signature: string | null,
+    webhookSecret: string | undefined,
+  ): boolean {
+    if (!signature || !webhookSecret) return false;
+    const expected = `sha256=${createHmac("sha256", webhookSecret).update(body).digest("hex")}`;
+    try {
+      return timingSafeEqual(Buffer.from(signature), Buffer.from(expected));
+    } catch {
+      return false;
+    }
+  }
+
+  function githubWebhookContainsUserContent(eventType: string): boolean {
+    return (
+      eventType === "issue_comment" ||
+      eventType === "pull_request_review_comment"
+    );
+  }
+
+  function githubWebhookAddressesBot(
+    payload: unknown,
+    botUsername: string | null,
+  ): boolean {
+    if (!botUsername || !payload || typeof payload !== "object") return false;
+    const comment = (payload as { comment?: unknown }).comment;
+    if (!comment || typeof comment !== "object") return false;
+    const body = (comment as { body?: unknown }).body;
+    if (typeof body !== "string") return false;
+    const identities = new Set([
+      botUsername,
+      botUsername.replace(/\[bot\]$/i, ""),
+    ]);
+    return [...identities].some((identity) => {
+      if (!identity) return false;
+      const escaped = identity.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      return new RegExp(`(?<!\\w)@${escaped}(?![\\w-])`, "i").test(body);
+    });
+  }
+
+  function githubIngressAllowedInEndpointState(
+    status: EndpointRow["status"],
+    eventType: string,
+  ): boolean {
+    if (status === "verifying" || status === "active") return true;
+    if (eventType === "ping" && (status === "draft" || status === "attention"))
+      return true;
+    if (
+      status === "attention" &&
+      [
+        "github_app_authorization",
+        "installation",
+        "installation_repositories",
+      ].includes(eventType)
+    )
+      return true;
+    return status === "revoked" && eventType === "installation";
+  }
+
+  async function stageGitHubWebhookIngress(
+    endpoint: EndpointRow,
+    request: Request,
+  ): Promise<GitHubIngressStageResult> {
+    const body = await request.text();
+    const signature = request.headers.get("x-hub-signature-256");
+    const eventType = request.headers.get("x-github-event")?.trim() ?? "";
+    const providerDeliveryId =
+      request.headers.get("x-github-delivery")?.trim() ||
+      `body:${createHash("sha256").update(body).digest("hex")}`;
+    if (!SUPPORTED_GITHUB_WEBHOOK_EVENTS.has(eventType))
+      return { kind: "ignored" };
+
+    let parsedPayload: unknown = null;
+    try {
+      parsedPayload = JSON.parse(body) as unknown;
+    } catch {
+      // A valid signature is still required before a malformed body may be
+      // retained. The native adapter will settle the authenticated envelope.
+    }
+
+    // Resolve from a captured ref set, then prove that exact ref set and
+    // generation are still authoritative in the insertion transaction. This
+    // keeps webhook authentication outside the potentially long credential
+    // mutation lease without letting an obsolete secret stage new work.
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const record = await endpointRecord(endpoint.id);
+      if (!record || record.endpoint.provider !== "github")
+        return { kind: "ignored" };
+      if (
+        !githubIngressAllowedInEndpointState(record.endpoint.status, eventType)
+      ) {
+        return { kind: "ignored" };
+      }
+      const context = runtimeContextForRecord(record);
+      let credentials: Record<string, string>;
+      try {
+        credentials = await resolveCredentialRefs(
+          record.endpoint,
+          record.credentialSecretRefs,
+        );
+      } catch (error) {
+        const latest = await endpointRecord(endpoint.id);
+        if (
+          latest &&
+          (runtimeGeneration(latest.endpoint.setup) !== context.generation ||
+            credentialFingerprint(latest.credentialSecretRefs) !==
+              context.credentialFingerprint)
+        ) {
+          continue;
+        }
+        throw error;
+      }
+      if (!githubSignatureIsValid(body, signature, credentials.webhookSecret)) {
+        const latest = await endpointRecord(endpoint.id);
+        if (
+          latest &&
+          (runtimeGeneration(latest.endpoint.setup) !== context.generation ||
+            credentialFingerprint(latest.credentialSecretRefs) !==
+              context.credentialFingerprint)
+        ) {
+          continue;
+        }
+        return { kind: "invalid_signature" };
+      }
+
+      const incomingInstallationId =
+        parsedPayload &&
+        typeof parsedPayload === "object" &&
+        !Array.isArray(parsedPayload)
+          ? (parsedPayload as { installation?: { id?: unknown } }).installation
+              ?.id
+          : undefined;
+      if (
+        incomingInstallationId !== undefined &&
+        String(incomingInstallationId) !== credentials.installationId &&
+        eventType !== "installation"
+      ) {
+        return { kind: "ignored" };
+      }
+
+      const bodySha256 = createHash("sha256").update(body).digest("hex");
+      const staged = await db.transaction(async (tx) => {
+        const currentEndpoint = await tx
+          .select()
+          .from(chatEndpoints)
+          .where(eq(chatEndpoints.id, endpoint.id))
+          .for("update")
+          .then((rows) => rows[0] ?? null);
+        const currentConnection = await tx
+          .select({ refs: toolConnections.credentialSecretRefs })
+          .from(toolConnections)
+          .where(
+            and(
+              eq(toolConnections.companyId, record.endpoint.companyId),
+              eq(toolConnections.id, record.endpoint.connectionId),
+            ),
+          )
+          .for("update")
+          .then((rows) => rows[0] ?? null);
+        if (!currentEndpoint || !currentConnection) return "retry" as const;
+        if (
+          runtimeGeneration(currentEndpoint.setup) !== context.generation ||
+          credentialFingerprint(currentConnection.refs) !==
+            context.credentialFingerprint
+        ) {
+          return "retry" as const;
+        }
+        if (
+          !githubIngressAllowedInEndpointState(
+            currentEndpoint.status,
+            eventType,
+          )
+        ) {
+          return "ignored" as const;
+        }
+
+        // Signed App webhooks can cover every installed repository. Do not
+        // retain comment bodies for destinations the operator did not enable.
+        if (githubWebhookContainsUserContent(eventType)) {
+          const item = githubRepositoryInventoryItemFromPayload(parsedPayload);
+          if (!item) return "ignored" as const;
+          const providerRepositoryId =
+            typeof item.metadata?.providerRepositoryId === "string"
+              ? item.metadata.providerRepositoryId
+              : null;
+          const matchingResource = await tx
+            .select({
+              enabled: chatEndpointResources.enabled,
+              id: chatEndpointResources.id,
+            })
+            .from(chatEndpointResources)
+            .where(
+              and(
+                eq(chatEndpointResources.companyId, currentEndpoint.companyId),
+                eq(chatEndpointResources.endpointId, currentEndpoint.id),
+                eq(chatEndpointResources.type, "repository"),
+                eq(chatEndpointResources.availability, "available"),
+                or(
+                  eq(
+                    chatEndpointResources.providerResourceId,
+                    item.providerResourceId,
+                  ),
+                  providerRepositoryId
+                    ? sql`${chatEndpointResources.metadata}->>'providerRepositoryId' = ${providerRepositoryId}`
+                    : undefined,
+                ),
+              ),
+            )
+            .limit(1)
+            .then((rows) => rows[0] ?? null);
+          if (!matchingResource) return "ignored" as const;
+          if (!matchingResource.enabled) {
+            const action =
+              parsedPayload &&
+              typeof parsedPayload === "object" &&
+              !Array.isArray(parsedPayload)
+                ? (parsedPayload as { action?: unknown }).action
+                : null;
+            if (
+              currentEndpoint.status !== "verifying" ||
+              action !== "created" ||
+              !githubWebhookAddressesBot(
+                parsedPayload,
+                currentEndpoint.botUsername,
+              )
+            ) {
+              return "ignored" as const;
+            }
+            const enabledResourceCount = await tx
+              .select({ count: sql<number>`count(*)::int` })
+              .from(chatEndpointResources)
+              .where(
+                and(
+                  eq(chatEndpointResources.endpointId, currentEndpoint.id),
+                  eq(chatEndpointResources.type, "repository"),
+                  eq(chatEndpointResources.enabled, true),
+                  eq(chatEndpointResources.availability, "available"),
+                ),
+              )
+              .then((rows) => rows[0]?.count ?? 0);
+            if (enabledResourceCount !== 0) return "ignored" as const;
+          }
+        }
+
+        const payload: GitHubWebhookIngressPayload = {
+          version: 1,
+          body,
+          bodySha256,
+          contentType:
+            request.headers.get("content-type") ?? "application/json",
+          deliveryId: providerDeliveryId,
+          eventType,
+          runtimeGeneration: context.generation,
+          credentialFingerprint: context.credentialFingerprint,
+        };
+        const inserted = await tx
+          .insert(chatActions)
+          .values({
+            companyId: currentEndpoint.companyId,
+            endpointId: currentEndpoint.id,
+            kind: "github_webhook_ingress",
+            providerActionId: `github_webhook_ingress:${providerDeliveryId}`,
+            payload,
+            status: "received",
+          })
+          .onConflictDoNothing()
+          .returning({ id: chatActions.id });
+        if (inserted[0]?.id) {
+          return { actionId: inserted[0].id, kind: "staged" } as const;
+        }
+
+        // GitHub preserves X-GitHub-Delivery when an operator uses Recent
+        // Deliveries to retry a failed callback. Re-arm only the exact same,
+        // currently authenticated body after a terminal processing failure.
+        // Successful, cancelled, retryable, and in-flight receipts remain
+        // immutable deduplication fences.
+        const [rearmed] = await tx
+          .update(chatActions)
+          .set({
+            payload,
+            // Keep the lifetime attempt counter monotonic. Besides bounding
+            // repeated manual redeliveries, this prevents a late settlement
+            // from an older processing claim from matching a fresh claim
+            // after re-arm (an attempts=1 ABA).
+            result: sql`jsonb_build_object(
+              'attempts',
+              coalesce((${chatActions.result}->>'attempts')::int, 0)
+            )`,
+            status: "received",
+            updatedAt: new Date(),
+          })
+          .where(
+            and(
+              eq(chatActions.endpointId, currentEndpoint.id),
+              eq(
+                chatActions.providerActionId,
+                `github_webhook_ingress:${providerDeliveryId}`,
+              ),
+              eq(chatActions.kind, "github_webhook_ingress"),
+              eq(chatActions.status, "failed"),
+              sql`coalesce(${chatActions.result}->>'retryable', 'false') = 'false'`,
+              sql`${chatActions.payload}->>'bodySha256' = ${bodySha256}`,
+              sql`${chatActions.payload}->>'eventType' = ${eventType}`,
+            ),
+          )
+          .returning({ id: chatActions.id });
+        const actionId =
+          rearmed?.id ??
+          (await tx
+            .select({ id: chatActions.id })
+            .from(chatActions)
+            .where(
+              and(
+                eq(chatActions.endpointId, currentEndpoint.id),
+                eq(
+                  chatActions.providerActionId,
+                  `github_webhook_ingress:${providerDeliveryId}`,
+                ),
+              ),
+            )
+            .then((rows) => rows[0]?.id ?? null));
+        return actionId
+          ? ({ actionId, kind: "staged" } as const)
+          : ("retry" as const);
+      });
+      if (staged === "retry") continue;
+      if (staged === "ignored") return { kind: "ignored" };
+      return staged;
+    }
+    throw conflict("GitHub credentials changed during webhook authentication", {
+      code: "chat_endpoint_credentials_changed",
+    });
+  }
+
+  function githubIngressAcceptedResponse() {
+    return new Response("accepted", { status: 202 });
+  }
+
+  async function settleGitHubWebhookIngress(
+    actionId: string,
+    input: {
+      attempts: number;
+      payload: GitHubWebhookIngressPayload;
+      response?: Response;
+      error?: unknown;
+      cancelledCode?: string;
+    },
+  ): Promise<void> {
+    const terminalResponse =
+      input.response !== undefined && input.response.status < 500;
+    const terminalFailure = input.attempts >= 5;
+    const cancelled = Boolean(input.cancelledCode);
+    const processed = Boolean(input.response?.ok);
+    const terminal =
+      processed || terminalResponse || terminalFailure || cancelled;
+    const retryAt = new Date(
+      Date.now() +
+        Math.min(60_000, 1_000 * 2 ** Math.max(0, input.attempts - 1)),
+    );
+    await db
+      .update(chatActions)
+      .set({
+        status: cancelled ? "cancelled" : processed ? "processed" : "failed",
+        payload: terminal
+          ? redactedGitHubWebhookIngressPayload(input.payload)
+          : input.payload,
+        result: {
+          attempts: input.attempts,
+          ...(input.cancelledCode ? { code: input.cancelledCode } : {}),
+          ...(input.response
+            ? { httpStatus: input.response.status }
+            : { error: redactError(input.error) }),
+          retryable: !terminal,
+          ...(!terminal ? { retryAt: retryAt.toISOString() } : {}),
+        },
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(chatActions.id, actionId),
+          eq(chatActions.kind, "github_webhook_ingress"),
+          eq(chatActions.status, "processing"),
+          sql`(${chatActions.result}->>'attempts')::int = ${input.attempts}`,
+        ),
+      );
+  }
+
+  async function processGitHubWebhookIngress(
+    actionId: string,
+    propagateProcessingFailure = false,
+  ): Promise<Response | null> {
+    let action = await db
+      .select()
+      .from(chatActions)
+      .where(
+        and(
+          eq(chatActions.id, actionId),
+          eq(chatActions.kind, "github_webhook_ingress"),
+        ),
+      )
+      .then((rows) => rows[0] ?? null);
+    if (!action) return null;
+    if (["processed", "cancelled"].includes(action.status))
+      return githubIngressAcceptedResponse();
+    if (action.status === "failed" && action.result?.retryable !== true)
+      return githubIngressAcceptedResponse();
+    const payload = githubWebhookIngressPayload(action.payload);
+    if (!payload) {
+      await db
+        .update(chatActions)
+        .set({
+          status: "failed",
+          payload: {},
+          result: {
+            code: "github_webhook_ingress_payload_invalid",
+            retryable: false,
+          },
+          updatedAt: new Date(),
+        })
+        .where(eq(chatActions.id, action.id));
+      return githubIngressAcceptedResponse();
+    }
+    const now = new Date();
+    const staleBefore = new Date(now.getTime() - PROVIDER_EFFECT_STALE_MS);
+    if (action.status === "processing" && action.updatedAt > staleBefore) {
+      return null;
+    }
+    if (action.status === "failed") {
+      const retryAt =
+        typeof action.result?.retryAt === "string"
+          ? new Date(action.result.retryAt)
+          : null;
+      if (retryAt && retryAt > now) return null;
+    } else if (action.status !== "received" && action.status !== "processing") {
+      return null;
+    }
+    const attempts =
+      (typeof action.result?.attempts === "number"
+        ? action.result.attempts
+        : 0) + 1;
+    const previousAttempts = attempts - 1;
+    const claimGuard =
+      action.status === "processing"
+        ? and(
+            eq(chatActions.status, "processing"),
+            lte(chatActions.updatedAt, staleBefore),
+            sql`coalesce((${chatActions.result}->>'attempts')::int, 0) = ${previousAttempts}`,
+          )
+        : action.status === "failed"
+          ? and(
+              eq(chatActions.status, "failed"),
+              sql`coalesce((${chatActions.result}->>'attempts')::int, 0) = ${previousAttempts}`,
+            )
+          : eq(chatActions.status, "received");
+    const [claimed] = await db
+      .update(chatActions)
+      .set({
+        status: "processing",
+        result: { attempts },
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(chatActions.id, action.id),
+          eq(chatActions.kind, "github_webhook_ingress"),
+          claimGuard,
+        ),
+      )
+      .returning();
+    if (!claimed) return null;
+    action = claimed;
+
+    const record = await endpointRecord(action.endpointId);
+    if (
+      !record ||
+      record.endpoint.provider !== "github" ||
+      !githubIngressAllowedInEndpointState(
+        record.endpoint.status,
+        payload.eventType,
+      ) ||
+      runtimeGeneration(record.endpoint.setup) !== payload.runtimeGeneration ||
+      credentialFingerprint(record.credentialSecretRefs) !==
+        payload.credentialFingerprint
+    ) {
+      await settleGitHubWebhookIngress(action.id, {
+        attempts,
+        payload,
+        cancelledCode: "github_webhook_ingress_runtime_superseded",
+      });
+      return githubIngressAcceptedResponse();
+    }
+
+    try {
+      const credentials = await resolveCredentialRefs(
+        record.endpoint,
+        record.credentialSecretRefs,
+      );
+      const signature = `sha256=${createHmac(
+        "sha256",
+        credentials.webhookSecret,
+      )
+        .update(payload.body)
+        .digest("hex")}`;
+      await options.githubWebhookReplayBarrier?.();
+      const response = await handleWebhook(
+        record.endpoint.publicId,
+        "github",
+        new Request(
+          `https://paperclip.internal/api/chat-webhooks/${record.endpoint.publicId}/github`,
+          {
+            method: "POST",
+            headers: {
+              "content-type": payload.contentType,
+              "x-github-delivery": payload.deliveryId,
+              "x-github-event": payload.eventType,
+              "x-hub-signature-256": signature,
+            },
+            body: payload.body,
+          },
+        ),
+        { githubIngressActionId: action.id },
+      );
+      if (response.status === 401) {
+        const latest = await endpointRecord(action.endpointId);
+        if (
+          !latest ||
+          runtimeGeneration(latest.endpoint.setup) !==
+            payload.runtimeGeneration ||
+          credentialFingerprint(latest.credentialSecretRefs) !==
+            payload.credentialFingerprint
+        ) {
+          await settleGitHubWebhookIngress(action.id, {
+            attempts,
+            payload,
+            cancelledCode: "github_webhook_ingress_runtime_superseded",
+          });
+          return githubIngressAcceptedResponse();
+        }
+      }
+      await settleGitHubWebhookIngress(action.id, {
+        attempts,
+        payload,
+        response,
+      });
+      return response.status >= 500 && !propagateProcessingFailure
+        ? githubIngressAcceptedResponse()
+        : response;
+    } catch (error) {
+      await settleGitHubWebhookIngress(action.id, {
+        attempts,
+        payload,
+        error,
+      });
+      logger.warn(
+        {
+          actionId: action.id,
+          endpointId: action.endpointId,
+          error: redactError(error),
+        },
+        "durable GitHub webhook processing deferred",
+      );
+      if (propagateProcessingFailure) throw error;
+      return githubIngressAcceptedResponse();
+    }
+  }
+
+  async function processPendingGitHubWebhookIngress(
+    limit = 25,
+    onlyActionId?: string,
+  ) {
+    const now = new Date();
+    const staleBefore = new Date(now.getTime() - PROVIDER_EFFECT_STALE_MS);
+    const actions = await db
+      .select({ id: chatActions.id })
+      .from(chatActions)
+      .where(
+        and(
+          eq(chatActions.kind, "github_webhook_ingress"),
+          ...(onlyActionId ? [eq(chatActions.id, onlyActionId)] : []),
+          or(
+            eq(chatActions.status, "received"),
+            and(
+              eq(chatActions.status, "processing"),
+              lte(chatActions.updatedAt, staleBefore),
+            ),
+            and(
+              eq(chatActions.status, "failed"),
+              sql`coalesce(${chatActions.result}->>'retryable', 'false') = 'true'`,
+              sql`(${chatActions.result}->>'retryAt' is null or (${chatActions.result}->>'retryAt')::timestamptz <= ${now.toISOString()}::timestamptz)`,
+            ),
+          ),
+        ),
+      )
+      .orderBy(asc(chatActions.createdAt))
+      .limit(limit);
+    for (const action of actions) await processGitHubWebhookIngress(action.id);
+    return actions.length;
+  }
+
   async function handleWebhook(
     publicId: string,
     provider: ChatSdkProvider,
     request: Request,
+    internalContext?: { githubIngressActionId: string },
   ) {
+    const replayingDurableGitHubIngress =
+      provider === "github" && Boolean(internalContext?.githubIngressActionId);
     const githubResponseDeadlineAt =
-      provider === "github"
+      provider === "github" && !replayingDurableGitHubIngress
         ? Date.now() +
           Math.max(
             1,
@@ -16446,7 +17228,31 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
             ),
           )
         : null;
-    const githubRetryRequest = provider === "github" ? request.clone() : null;
+    const completeGitHubPreflightBeforeDeadline = async <T>(
+      task: Promise<T>,
+    ): Promise<
+      { completed: true; value: T } | { completed: false; value?: never }
+    > => {
+      if (githubResponseDeadlineAt === null)
+        return { completed: true, value: await task };
+      const remaining = githubResponseDeadlineAt - Date.now();
+      if (remaining <= 0) return { completed: false };
+      let timeout: ReturnType<typeof setTimeout> | null = null;
+      try {
+        return await Promise.race([
+          task.then((value) => ({ completed: true as const, value })),
+          new Promise<{ completed: false; value?: never }>((resolve) => {
+            timeout = setTimeout(
+              () => resolve({ completed: false }),
+              remaining,
+            );
+            timeout.unref?.();
+          }),
+        ]);
+      } finally {
+        if (timeout) clearTimeout(timeout);
+      }
+    };
     const endpoint = await db
       .select()
       .from(chatEndpoints)
@@ -16472,6 +17278,42 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     // admitting any Paperclip mutation.
     if (endpoint.status === "paused") {
       return new Response("ignored", { status: 200 });
+    }
+    if (provider === "github" && !replayingDurableGitHubIngress) {
+      await options.githubWebhookAuthenticationBarrier?.();
+      let staged: GitHubIngressStageResult;
+      try {
+        staged = await stageGitHubWebhookIngress(endpoint, request.clone());
+      } catch (error) {
+        logger.warn(
+          { endpointId: endpoint.id, error: redactError(error) },
+          "GitHub webhook could not be durably authenticated",
+        );
+        return retryableGitHubWebhookResponse();
+      }
+      if (staged.kind === "invalid_signature")
+        return new Response("Invalid signature", { status: 401 });
+      if (staged.kind === "ignored")
+        return new Response("ignored", { status: 200 });
+
+      if (options.deferWebhookProcessing === true) {
+        scheduleMessageProcessing(async () => {
+          await processGitHubWebhookIngress(staged.actionId);
+        });
+        return githubIngressAcceptedResponse();
+      }
+
+      const processing = processGitHubWebhookIngress(staged.actionId, true);
+      const tracked = processing.then(
+        () => undefined,
+        () => undefined,
+      );
+      backgroundMessageTasks.add(tracked);
+      void tracked.finally(() => backgroundMessageTasks.delete(tracked));
+      const outcome = await completeGitHubPreflightBeforeDeadline(processing);
+      return outcome.completed
+        ? (outcome.value ?? githubIngressAcceptedResponse())
+        : githubIngressAcceptedResponse();
     }
     if (provider === "slack" && endpoint.providerAccountId) {
       const inspection = request.clone();
@@ -16505,7 +17347,8 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       const body = await inspection.text();
       const signature = inspection.headers.get("x-hub-signature-256");
       const eventType = inspection.headers.get("x-github-event");
-      await options.githubWebhookAuthenticationBarrier?.();
+      if (!replayingDurableGitHubIngress)
+        await options.githubWebhookAuthenticationBarrier?.();
       // GitHub sends this signed connectivity check as soon as an App webhook
       // is saved, before the operator can generate a private key and submit
       // the App identity to Paperclip. Authenticating the ping needs only the
@@ -16513,9 +17356,12 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       // runtime here would incorrectly reject the valid setup check because
       // App API credentials are not available yet.
       if (eventType === "ping") {
-        const verified = await withCredentialMutationLease(
+        let verifiedAttempt:
+          | { completed: true; value: boolean }
+          | { completed: false; value?: never };
+        const verification = withCredentialMutationLease(
           endpoint,
-          async (credentialLease) => {
+          async (credentialLease): Promise<boolean> => {
             const current = await endpointRecord(endpoint.id);
             if (
               !current ||
@@ -16572,11 +17418,33 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
             return true;
           },
         );
+        try {
+          verifiedAttempt =
+            await completeGitHubPreflightBeforeDeadline(verification);
+        } catch (error) {
+          logger.warn(
+            { endpointId: endpoint.id, error: redactError(error) },
+            "GitHub ping authentication failed before durable verification",
+          );
+          return retryableGitHubWebhookResponse();
+        }
+        if (!verifiedAttempt.completed) {
+          // This path is reachable only for the private durable worker. The
+          // public request has already committed its authenticated receipt.
+          void verification.catch((error) => {
+            logger.warn(
+              { endpointId: endpoint.id, error: redactError(error) },
+              "timed-out GitHub ping authentication later failed",
+            );
+          });
+          return retryableGitHubWebhookResponse();
+        }
+        const verified = verifiedAttempt.value;
         return verified
           ? new Response("pong", { status: 200 })
           : new Response("Invalid signature", { status: 401 });
       }
-      const preflight = await withCredentialMutationLease(
+      const preflightTask = withCredentialMutationLease(
         endpoint,
         async (
           credentialLease,
@@ -16648,6 +17516,32 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           return "accepted";
         },
       );
+      let preflightAttempt:
+        | {
+            completed: true;
+            value: "accepted" | "ignored" | "invalid_signature";
+          }
+        | { completed: false; value?: never };
+      try {
+        preflightAttempt =
+          await completeGitHubPreflightBeforeDeadline(preflightTask);
+      } catch (error) {
+        logger.warn(
+          { endpointId: endpoint.id, error: redactError(error) },
+          "GitHub webhook authentication failed before durable acceptance",
+        );
+        return retryableGitHubWebhookResponse();
+      }
+      if (!preflightAttempt.completed) {
+        void preflightTask.catch((error) => {
+          logger.warn(
+            { endpointId: endpoint.id, error: redactError(error) },
+            "timed-out GitHub webhook authentication later failed",
+          );
+        });
+        return retryableGitHubWebhookResponse();
+      }
+      const preflight = preflightAttempt.value;
       if (preflight === "ignored") {
         return new Response("ignored", { status: 200 });
       }
@@ -16675,14 +17569,10 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           }),
         ]);
         if (!outcome.completed) {
-          if (githubRetryRequest)
-            scheduleGitHubWebhookRetry(publicId, githubRetryRequest);
           return retryableGitHubWebhookResponse();
         }
         endpointRuntime = outcome.value;
       } catch (error) {
-        if (githubRetryRequest)
-          scheduleGitHubWebhookRetry(publicId, githubRetryRequest);
         logger.warn(
           { endpointId: endpoint.id, error: redactError(error) },
           "GitHub runtime initialization failed before durable webhook receipt",
@@ -16705,9 +17595,6 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       undefined,
       githubResponseDeadlineAt ?? undefined,
     );
-    if (provider === "github" && response.status >= 500 && githubRetryRequest) {
-      scheduleGitHubWebhookRetry(publicId, githubRetryRequest);
-    }
     let lifecyclePayload: unknown = null;
     if (response.ok) {
       try {
@@ -16836,6 +17723,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     const actionRecovery = onlyDeliveryId
       ? null
       : Promise.allSettled([
+          processPendingGitHubWebhookIngress(limit),
           processPendingProviderEffects(limit),
           processPendingReceiptReactions(limit),
           processPendingTelegramMaintenance(limit),
@@ -17430,44 +18318,62 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
   }
 
   async function listActivity(endpointId: string) {
-    const [deliveries, publications, slashActions, providerEffects] =
-      await Promise.all([
-        db
-          .select()
-          .from(chatDeliveries)
-          .where(eq(chatDeliveries.endpointId, endpointId))
-          .orderBy(desc(chatDeliveries.createdAt))
-          .limit(100),
-        db
-          .select()
-          .from(chatPublications)
-          .where(eq(chatPublications.endpointId, endpointId))
-          .orderBy(desc(chatPublications.createdAt))
-          .limit(100),
-        db
-          .select()
-          .from(chatActions)
-          .where(
-            and(
-              eq(chatActions.endpointId, endpointId),
-              eq(chatActions.kind, "slash_task_start"),
-            ),
-          )
-          .orderBy(desc(chatActions.createdAt))
-          .limit(100),
-        db
-          .select()
-          .from(chatActions)
-          .where(
-            and(
-              eq(chatActions.endpointId, endpointId),
-              eq(chatActions.kind, "provider_effect"),
-              eq(chatActions.status, "delivery_unknown"),
-            ),
-          )
-          .orderBy(desc(chatActions.createdAt))
-          .limit(100),
-      ]);
+    const [
+      deliveries,
+      publications,
+      slashActions,
+      providerEffects,
+      githubIngressFailures,
+    ] = await Promise.all([
+      db
+        .select()
+        .from(chatDeliveries)
+        .where(eq(chatDeliveries.endpointId, endpointId))
+        .orderBy(desc(chatDeliveries.createdAt))
+        .limit(100),
+      db
+        .select()
+        .from(chatPublications)
+        .where(eq(chatPublications.endpointId, endpointId))
+        .orderBy(desc(chatPublications.createdAt))
+        .limit(100),
+      db
+        .select()
+        .from(chatActions)
+        .where(
+          and(
+            eq(chatActions.endpointId, endpointId),
+            eq(chatActions.kind, "slash_task_start"),
+          ),
+        )
+        .orderBy(desc(chatActions.createdAt))
+        .limit(100),
+      db
+        .select()
+        .from(chatActions)
+        .where(
+          and(
+            eq(chatActions.endpointId, endpointId),
+            eq(chatActions.kind, "provider_effect"),
+            eq(chatActions.status, "delivery_unknown"),
+          ),
+        )
+        .orderBy(desc(chatActions.createdAt))
+        .limit(100),
+      db
+        .select()
+        .from(chatActions)
+        .where(
+          and(
+            eq(chatActions.endpointId, endpointId),
+            eq(chatActions.kind, "github_webhook_ingress"),
+            eq(chatActions.status, "failed"),
+            sql`coalesce(${chatActions.result}->>'retryable', 'false') = 'false'`,
+          ),
+        )
+        .orderBy(desc(chatActions.createdAt))
+        .limit(100),
+    ]);
     const ambiguousProviderEffectDeliveryIds = new Set(
       providerEffects.flatMap((action) =>
         action.deliveryId ? [action.deliveryId] : [],
@@ -17587,6 +18493,25 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
             "retry_anyway",
             "cancel",
           ] as const,
+        };
+      }),
+      ...githubIngressFailures.map((row) => {
+        const deliveryId =
+          typeof row.payload.deliveryId === "string"
+            ? row.payload.deliveryId
+            : null;
+        return {
+          id: row.id,
+          kind: "action" as const,
+          actionType: "github_webhook_ingress" as const,
+          status: row.status,
+          summary: "GitHub webhook could not be processed",
+          detail: deliveryId
+            ? `GitHub delivery ${deliveryId} was authenticated, but Paperclip could not finish processing it. Fix the connection or destination, then redeliver this delivery from the GitHub App's Recent Deliveries page.`
+            : "An authenticated GitHub webhook could not be processed. Fix the connection or destination, then redeliver it from the GitHub App's Recent Deliveries page.",
+          createdAt: row.createdAt.toISOString(),
+          replayable: false,
+          resolutionActions: [],
         };
       }),
     ]
@@ -18347,6 +19272,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       return;
     }
 
+    let confirmedActionId: string | null = null;
     await withCredentialMutationLease(
       initialRecord.endpoint,
       async (credentialLease) => {
@@ -18651,9 +19577,12 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
             actionStatus: "resolving",
             attempt: retryAttempt,
             connectionId: record.endpoint.connectionId,
+            credentialLease,
             endpoint: record.endpoint,
             error,
+            providerAttempted: true,
             resource,
+            runtimeFence: runtimeContextForRecord(record),
           });
           throw error;
         }
@@ -18687,12 +19616,15 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         // arrived only after the operator's stale-action window. Keep the Slack
         // starter as an orphan rather than creating work the operator cancelled.
         if (!completed) return;
-        await admitConfirmedSlackTaskStart(
-          action.id,
-          options.deferWebhookProcessing === true,
-        );
+        confirmedActionId = action.id;
       },
     );
+    if (typeof confirmedActionId === "string") {
+      await admitConfirmedSlackTaskStart(
+        confirmedActionId,
+        options.deferWebhookProcessing === true,
+      );
+    }
   }
 
   async function publishComment(
@@ -19041,6 +19973,14 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     };
   }
 
+  function discordMarkdownAttachment(text: string): FileUpload {
+    return {
+      data: Buffer.from(text, "utf8"),
+      filename: "paperclip-response.md",
+      mimeType: "text/markdown; charset=utf-8",
+    };
+  }
+
   async function postSafePublication(input: {
     endpoint: EndpointRow;
     conversation: ConversationRow;
@@ -19076,6 +20016,16 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
             : "Open the task in Paperclip to download the attachment."
         }`;
       }
+    }
+    if (
+      input.endpoint.provider === "discord" &&
+      input.payload.transportPart?.mode === "discord_markdown_attachment"
+    ) {
+      files.push(discordMarkdownAttachment(text));
+      text =
+        input.payload.transportPart.count > 1
+          ? "Complete response attached."
+          : "Paperclip attached the complete response because it exceeds Discord’s message limit.";
     }
     if (card && CAPABILITIES[input.endpoint.provider].cards) {
       return await attemptProviderPublication(async () =>
@@ -19214,7 +20164,11 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
                 eq(chatConversations.companyId, endpoint.companyId),
                 eq(chatConversations.endpointId, endpoint.id),
                 eq(chatConversations.id, input.publication.conversationId),
-                inArray(chatConversations.state, ["active", "waiting"]),
+                inArray(chatConversations.state, [
+                  "active",
+                  "waiting",
+                  "completed",
+                ]),
               ),
             )
             .for("update")
@@ -19237,6 +20191,10 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           : null;
       const isTaskControl =
         input.publication.idempotencyKey.startsWith("control:");
+      const providerVisibleCompletion =
+        conversation?.state === "completed" &&
+        !isExplicitOperatorPublication(input.publication) &&
+        (await hasCommittedTaskControlCompletion(conversation.id, tx));
       const authorizationAction =
         endpoint && isTaskControl
           ? await tx
@@ -19267,6 +20225,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       if (
         !endpoint ||
         !conversation ||
+        providerVisibleCompletion ||
         (isTaskControl && !authorizationAction?.principalId) ||
         !destinationAllowed
       ) {
@@ -19323,7 +20282,11 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     const match = /^run:([^:]+):(?:queued|working|completed|failed):/.exec(
       publication.idempotencyKey,
     );
-    return match?.[1] ?? null;
+    const runId = match?.[1] ?? null;
+    // This identifier is also compared against a UUID column below. Old or
+    // manually repaired rows must not be allowed to turn the global
+    // publication sweep into a PostgreSQL cast error.
+    return isUuidLike(runId) ? runId : null;
   }
 
   async function runPublicationToReplace(
@@ -19632,8 +20595,9 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
 
   async function hasCommittedTaskControlCompletion(
     conversationId: string,
+    database: DbOrTransaction = db,
   ): Promise<boolean> {
-    return db
+    return database
       .select({ id: chatPublications.id })
       .from(chatPublications)
       .where(
@@ -19715,6 +20679,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     error: unknown,
     providerAccepted = false,
     runtimeContext?: LifecycleRuntimeFence | null,
+    credentialLease?: CredentialMutationLeaseGuard,
   ): Promise<boolean> {
     const attempts = publication.attempts + 1;
     const disposition = providerAccepted
@@ -19738,6 +20703,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       attempts >= 5;
     let invalidateCurrentRuntime = false;
     const finalized = await db.transaction(async (tx) => {
+      await credentialLease?.assertOwned(tx);
       const state =
         disposition.kind === "retry" && !terminalRetry
           ? "retry"
@@ -19868,9 +20834,11 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         }
       }
 
+      await credentialLease?.assertOwned(tx);
       return true;
     });
     if (finalized && invalidateCurrentRuntime) {
+      await credentialLease?.assertOwned();
       await invalidateRuntime(publication.endpointId).catch(() => undefined);
     }
     if (finalized) {
@@ -19887,26 +20855,133 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     return finalized;
   }
 
-  async function ensureTelegramPublicationParts(
+  async function ensureDurablePublicationTransport(
     publication: typeof chatPublications.$inferSelect,
   ): Promise<typeof chatPublications.$inferSelect> {
     const persisted = publication.payload as SafeChatPublicationPayload;
     if (
-      persisted.transportPart ||
-      persisted.attachmentIds?.length ||
-      persisted.card ||
-      persisted.interactionId
+      !persisted ||
+      typeof persisted !== "object" ||
+      typeof persisted.text !== "string"
     ) {
-      return publication;
+      throw Object.assign(
+        new Error("Durable chat publication payload is malformed"),
+        { code: "VALIDATION_ERROR", name: "ValidationError" },
+      );
     }
-    const parts = splitTelegramPublicationText(persisted.text);
-    if (parts.length === 1) return publication;
+    await options.publicationTransportPreparationBarrier?.({
+      publicationId: publication.id,
+    });
     const provider = await db
       .select({ provider: chatEndpoints.provider })
       .from(chatEndpoints)
       .where(eq(chatEndpoints.id, publication.endpointId))
       .then((rows) => rows[0]?.provider ?? null);
+    if (provider === "discord") {
+      if (
+        persisted.transportPart ||
+        persisted.card ||
+        persisted.interactionId ||
+        !discordMarkdownRequiresAttachment(persisted.text)
+      ) {
+        return publication;
+      }
+
+      // A normal response can replace its run's working placeholder. Discord's
+      // adapter cannot add a file while editing, so first turn that placeholder
+      // into a durable hand-off and then publish the complete Markdown as its
+      // own ordered attachment row. Publications without a replacement lane
+      // remain one provider call: a short caption and the lossless file.
+      const replacesProgressMessage = Boolean(
+        await runPublicationToReplace(publication, persisted),
+      );
+      return db.transaction(async (tx) => {
+        const current = await tx
+          .select()
+          .from(chatPublications)
+          .where(eq(chatPublications.id, publication.id))
+          .for("update")
+          .then((rows) => rows[0] ?? null);
+        if (!current) return publication;
+        const currentPayload = current.payload as SafeChatPublicationPayload;
+        if (
+          currentPayload.transportPart ||
+          currentPayload.card ||
+          currentPayload.interactionId ||
+          !["pending", "retry"].includes(current.state) ||
+          !discordMarkdownRequiresAttachment(currentPayload.text)
+        ) {
+          return current;
+        }
+
+        const batchId = current.id;
+        const updatedAt = new Date();
+        const transportPart = (
+          index: number,
+          count: number,
+          mode: "inline" | "discord_markdown_attachment",
+        ) => ({
+          batchId,
+          count,
+          index,
+          mode,
+          orderKey: `${batchId}:${String(index).padStart(4, "0")}`,
+        });
+        if (!replacesProgressMessage) {
+          const attachmentPayload: SafeChatPublicationPayload = {
+            ...currentPayload,
+            transportPart: transportPart(0, 1, "discord_markdown_attachment"),
+          };
+          await tx
+            .update(chatPublications)
+            .set({ payload: attachmentPayload, updatedAt })
+            .where(eq(chatPublications.id, current.id));
+          return { ...current, payload: attachmentPayload, updatedAt };
+        }
+
+        const handoffPayload: SafeChatPublicationPayload = {
+          ...currentPayload,
+          text: "Paperclip’s complete response is attached in the next message.",
+          transportPart: transportPart(0, 2, "inline"),
+        };
+        delete handoffPayload.attachmentIds;
+        await tx
+          .update(chatPublications)
+          .set({ payload: handoffPayload, updatedAt })
+          .where(eq(chatPublications.id, current.id));
+
+        const attachmentPayload: SafeChatPublicationPayload = {
+          ...currentPayload,
+          transportPart: transportPart(1, 2, "discord_markdown_attachment"),
+        };
+        delete attachmentPayload.progressState;
+        await tx.insert(chatPublications).values({
+          companyId: current.companyId,
+          endpointId: current.endpointId,
+          conversationId: current.conversationId,
+          issueId: current.issueId,
+          commentId: current.commentId,
+          idempotencyKey: `discord-markdown-attachment:${current.id}`,
+          payload: attachmentPayload,
+          state: "pending",
+          createdAt: current.createdAt,
+          updatedAt,
+        });
+        return { ...current, payload: handoffPayload, updatedAt };
+      });
+    }
+
     if (provider !== "telegram") return publication;
+    if (
+      persisted.transportPart ||
+      persisted.card ||
+      persisted.interactionId ||
+      persisted.attachmentIds?.length
+    ) {
+      return publication;
+    }
+    const parts = splitTelegramPublicationText(persisted.text);
+    if (parts.length === 1) return publication;
 
     return db.transaction(async (tx) => {
       const current = await tx
@@ -19919,9 +20994,9 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       const currentPayload = current.payload as SafeChatPublicationPayload;
       if (
         currentPayload.transportPart ||
-        currentPayload.attachmentIds?.length ||
         currentPayload.card ||
         currentPayload.interactionId ||
+        currentPayload.attachmentIds?.length ||
         !["pending", "retry"].includes(current.state)
       ) {
         return current;
@@ -19972,6 +21047,80 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       );
       return { ...current, payload: rootPayload, updatedAt };
     });
+  }
+
+  async function settlePublicationPreparationFailure(
+    publication: typeof chatPublications.$inferSelect,
+    error: unknown,
+  ): Promise<boolean> {
+    const attempts = publication.attempts + 1;
+    const classified = classifyChatPublicationError(error, attempts);
+    // No provider I/O has started at this boundary. Unknown transport or
+    // database failures are therefore safe to retry; only a definite local
+    // validation rejection (or repeated exhaustion) is terminal.
+    const terminal = classified.kind === "failed" || attempts >= 5;
+    const retryAfterMs =
+      classified.kind === "retry"
+        ? classified.retryAfterMs
+        : Math.min(60_000, 2 ** Math.max(0, attempts) * 1_000);
+    const result = await db.transaction(async (tx) => {
+      const [settled] = await tx
+        .update(chatPublications)
+        .set({
+          state: terminal ? "failed" : "retry",
+          attempts,
+          nextAttemptAt: terminal ? null : new Date(Date.now() + retryAfterMs),
+          redactedError: terminal
+            ? "Publication payload could not be prepared for provider delivery"
+            : "Publication preparation failed before provider delivery",
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(chatPublications.id, publication.id),
+            eq(chatPublications.state, publication.state),
+            eq(chatPublications.attempts, publication.attempts),
+          ),
+        )
+        .returning({ id: chatPublications.id });
+      if (!settled) return false;
+      if (terminal && publication.idempotencyKey.startsWith("control:")) {
+        await tx
+          .update(chatActions)
+          .set({
+            status: "cancelled",
+            result: {
+              code: "task_control_publication_invalid",
+              attempts,
+              retryable: false,
+            },
+            updatedAt: new Date(),
+          })
+          .where(
+            and(
+              eq(chatActions.endpointId, publication.endpointId),
+              eq(
+                chatActions.providerActionId,
+                `task-control-authorization:${publication.id}`,
+              ),
+              eq(chatActions.status, "issued"),
+            ),
+          );
+      }
+      return true;
+    });
+    if (result) {
+      logger.warn(
+        {
+          endpointId: publication.endpointId,
+          publicationId: publication.id,
+          error: redactError(error),
+          terminal,
+        },
+        "chat publication preparation failed",
+      );
+    }
+    return result;
   }
 
   async function processPendingPublications(limit = 25) {
@@ -20073,8 +21222,29 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         .limit(limit - attemptedIds.length);
       if (rows.length === 0) break;
       for (const selectedPublication of rows) {
-        const publication =
-          await ensureTelegramPublicationParts(selectedPublication);
+        let publication: typeof chatPublications.$inferSelect;
+        try {
+          publication =
+            await ensureDurablePublicationTransport(selectedPublication);
+        } catch (error) {
+          attemptedIds.push(selectedPublication.id);
+          try {
+            await settlePublicationPreparationFailure(
+              selectedPublication,
+              error,
+            );
+          } catch (settlementError) {
+            logger.error(
+              {
+                endpointId: selectedPublication.endpointId,
+                publicationId: selectedPublication.id,
+                error: redactError(settlementError),
+              },
+              "could not durably settle chat publication preparation failure",
+            );
+          }
+          continue;
+        }
         attemptedIds.push(publication.id);
         const earlierOpenPublication = await db
           .select({ id: chatPublications.id })
@@ -20120,6 +21290,34 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         if (!claimed.length) continue;
         let providerAccepted = false;
         let publicationRuntimeContext: RuntimeContext | null = null;
+        let failureHandledWithinCredentialLease = false;
+        const settlePublicationFailure = async (
+          error: unknown,
+          credentialLease?: CredentialMutationLeaseGuard,
+        ) => {
+          try {
+            await finalizePublicationFailure(
+              publication,
+              error,
+              providerAccepted,
+              publicationRuntimeContext,
+              credentialLease,
+            );
+          } catch (finalizationError) {
+            // If the provider accepted the message, a failed receipt write
+            // must remain streaming until the stale scan quarantines it. A
+            // later lifecycle mutation must not turn this into an implicit
+            // replay or allow a stale failure to overwrite the new runtime.
+            logger.error(
+              {
+                endpointId: publication.endpointId,
+                publicationId: publication.id,
+                error: redactError(finalizationError),
+              },
+              "could not durably finalize chat publication failure",
+            );
+          }
+        };
         try {
           const recordForLease = await endpointRecord(publication.endpointId);
           if (!recordForLease)
@@ -20325,24 +21523,84 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           await withCredentialMutationLease(
             recordForLease.endpoint,
             async (credentialLease) => {
-              const authorizationClaim =
-                await claimPublicationTransportAuthorization({
-                  credentialLease,
-                  endpoint: recordForLease.endpoint,
+              try {
+                const authorizationClaim =
+                  await claimPublicationTransportAuthorization({
+                    credentialLease,
+                    endpoint: recordForLease.endpoint,
+                    publication,
+                    runtimeContext: currentPublicationRuntimeContext,
+                  });
+                if (!authorizationClaim) {
+                  await db.transaction(async (tx) => {
+                    await credentialLease.assertOwned(tx);
+                    await tx
+                      .update(chatPublications)
+                      .set({
+                        state: "cancelled",
+                        nextAttemptAt: null,
+                        redactedError:
+                          "Task control requester or destination is no longer authorized",
+                        updatedAt: new Date(),
+                      })
+                      .where(
+                        and(
+                          eq(chatPublications.id, publication.id),
+                          eq(chatPublications.state, "streaming"),
+                          eq(
+                            chatPublications.attempts,
+                            publication.attempts + 1,
+                          ),
+                        ),
+                      );
+                    await tx
+                      .update(chatActions)
+                      .set({
+                        status: "cancelled",
+                        result: {
+                          code: "task_control_authorization_changed",
+                        },
+                        updatedAt: new Date(),
+                      })
+                      .where(
+                        and(
+                          eq(chatActions.endpointId, publication.endpointId),
+                          eq(
+                            chatActions.providerActionId,
+                            `task-control-authorization:${publication.id}`,
+                          ),
+                          eq(chatActions.status, "issued"),
+                        ),
+                      );
+                    await credentialLease.assertOwned(tx);
+                  });
+                  return;
+                }
+                // The durable claim above is the authorization linearization
+                // point. Provider I/O runs without a database transaction or
+                // row lock. The renewable lease preserves credential/runtime
+                // identity until conditional settlement.
+                const sent = await postSafePublication({
+                  endpoint: authorizationClaim.endpoint,
+                  conversation: authorizationClaim.conversation,
                   publication,
-                  runtimeContext: currentPublicationRuntimeContext,
+                  payload,
+                  replaceProviderMessageId,
                 });
-              if (!authorizationClaim) {
+                providerAccepted = true;
+                const { authorizationActionId } = authorizationClaim;
                 await db.transaction(async (tx) => {
                   await credentialLease.assertOwned(tx);
-                  await tx
+                  const committedAt = new Date();
+                  const [completedPublication] = await tx
                     .update(chatPublications)
                     .set({
-                      state: "cancelled",
-                      nextAttemptAt: null,
-                      redactedError:
-                        "Task control requester or destination is no longer authorized",
-                      updatedAt: new Date(),
+                      state: "published",
+                      payload,
+                      providerMessageId: sent.id,
+                      publishedAt: committedAt,
+                      redactedError: null,
+                      updatedAt: committedAt,
                     })
                     .where(
                       and(
@@ -20350,159 +21608,95 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
                         eq(chatPublications.state, "streaming"),
                         eq(chatPublications.attempts, publication.attempts + 1),
                       ),
+                    )
+                    .returning({ id: chatPublications.id });
+                  if (!completedPublication) {
+                    throw new Error(
+                      "Chat publication ownership changed before commit",
                     );
-                  await tx
-                    .update(chatActions)
-                    .set({
-                      status: "cancelled",
-                      result: {
-                        code: "task_control_authorization_changed",
-                      },
-                      updatedAt: new Date(),
-                    })
-                    .where(
-                      and(
-                        eq(chatActions.endpointId, publication.endpointId),
-                        eq(
-                          chatActions.providerActionId,
-                          `task-control-authorization:${publication.id}`,
-                        ),
-                        eq(chatActions.status, "issued"),
-                      ),
-                    );
-                  await credentialLease.assertOwned(tx);
-                });
-                return;
-              }
-              // The durable claim above is the authorization linearization
-              // point. Provider I/O runs without a database transaction or
-              // row lock. The renewable lease preserves credential/runtime
-              // identity until conditional settlement.
-              const sent = await postSafePublication({
-                endpoint: authorizationClaim.endpoint,
-                conversation: authorizationClaim.conversation,
-                publication,
-                payload,
-                replaceProviderMessageId,
-              });
-              providerAccepted = true;
-              const { authorizationActionId } = authorizationClaim;
-              await db.transaction(async (tx) => {
-                await credentialLease.assertOwned(tx);
-                const committedAt = new Date();
-                const [completedPublication] = await tx
-                  .update(chatPublications)
-                  .set({
-                    state: "published",
-                    payload,
+                  }
+                  const messageLinkInsert = tx.insert(chatMessageLinks).values({
+                    companyId: publication.companyId,
+                    endpointId: publication.endpointId,
+                    conversationId: publication.conversationId,
+                    publicationId: publication.id,
+                    commentId: publication.commentId,
                     providerMessageId: sent.id,
-                    publishedAt: committedAt,
-                    redactedError: null,
-                    updatedAt: committedAt,
-                  })
-                  .where(
-                    and(
-                      eq(chatPublications.id, publication.id),
-                      eq(chatPublications.state, "streaming"),
-                      eq(chatPublications.attempts, publication.attempts + 1),
-                    ),
-                  )
-                  .returning({ id: chatPublications.id });
-                if (!completedPublication) {
-                  throw new Error(
-                    "Chat publication ownership changed before commit",
-                  );
-                }
-                const messageLinkInsert = tx.insert(chatMessageLinks).values({
-                  companyId: publication.companyId,
-                  endpointId: publication.endpointId,
-                  conversationId: publication.conversationId,
-                  publicationId: publication.id,
-                  commentId: publication.commentId,
-                  providerMessageId: sent.id,
-                  direction: "outbound",
-                });
-                if (replaceProviderMessageId) {
-                  await messageLinkInsert.onConflictDoUpdate({
-                    target: [
-                      chatMessageLinks.endpointId,
-                      chatMessageLinks.conversationId,
-                      chatMessageLinks.providerMessageId,
-                    ],
-                    set: {
-                      publicationId: publication.id,
-                      commentId: publication.commentId,
-                    },
+                    direction: "outbound",
                   });
-                } else {
-                  await messageLinkInsert.onConflictDoNothing();
-                }
-                await tx
-                  .update(chatEndpoints)
-                  .set({
-                    lastPublicationAt: committedAt,
-                    updatedAt: committedAt,
-                  })
-                  .where(
-                    and(
-                      eq(chatEndpoints.id, authorizationClaim.endpoint.id),
-                      inArray(chatEndpoints.status, ["verifying", "active"]),
-                      sql`coalesce((${chatEndpoints.setup}->>'runtimeGeneration')::integer, 0) = ${currentPublicationRuntimeContext.generation}`,
-                    ),
-                  );
-                if (authorizationActionId) {
-                  const processedAuthorization = await tx
-                    .update(chatActions)
+                  if (replaceProviderMessageId) {
+                    await messageLinkInsert.onConflictDoUpdate({
+                      target: [
+                        chatMessageLinks.endpointId,
+                        chatMessageLinks.conversationId,
+                        chatMessageLinks.providerMessageId,
+                      ],
+                      set: {
+                        publicationId: publication.id,
+                        commentId: publication.commentId,
+                      },
+                    });
+                  } else {
+                    await messageLinkInsert.onConflictDoNothing();
+                  }
+                  await tx
+                    .update(chatEndpoints)
                     .set({
-                      status: "processed",
-                      result: { code: "task_control_authorized_and_sent" },
+                      lastPublicationAt: committedAt,
                       updatedAt: committedAt,
                     })
                     .where(
                       and(
-                        eq(chatActions.id, authorizationActionId),
-                        eq(chatActions.status, "processing"),
-                        sql`(${chatActions.result}->>'attempts')::int = ${publication.attempts + 1}`,
+                        eq(chatEndpoints.id, authorizationClaim.endpoint.id),
+                        inArray(chatEndpoints.status, ["verifying", "active"]),
+                        sql`coalesce((${chatEndpoints.setup}->>'runtimeGeneration')::integer, 0) = ${currentPublicationRuntimeContext.generation}`,
                       ),
-                    )
-                    .returning({ id: chatActions.id });
-                  if (!processedAuthorization.length) {
-                    throw new Error(
-                      "Task-control authorization ownership changed before commit",
                     );
+                  if (authorizationActionId) {
+                    const processedAuthorization = await tx
+                      .update(chatActions)
+                      .set({
+                        status: "processed",
+                        result: { code: "task_control_authorized_and_sent" },
+                        updatedAt: committedAt,
+                      })
+                      .where(
+                        and(
+                          eq(chatActions.id, authorizationActionId),
+                          eq(chatActions.status, "processing"),
+                          sql`(${chatActions.result}->>'attempts')::int = ${publication.attempts + 1}`,
+                        ),
+                      )
+                      .returning({ id: chatActions.id });
+                    if (!processedAuthorization.length) {
+                      throw new Error(
+                        "Task-control authorization ownership changed before commit",
+                      );
+                    }
                   }
-                }
-                await commitTaskControlCompletion(
-                  tx as unknown as Db,
-                  publication,
-                  committedAt,
-                );
-                await credentialLease.assertOwned(tx);
-              });
+                  await commitTaskControlCompletion(
+                    tx as unknown as Db,
+                    publication,
+                    committedAt,
+                  );
+                  await credentialLease.assertOwned(tx);
+                });
+              } catch (error) {
+                // Authentication, membership, and destination failures mutate
+                // endpoint/runtime state. Settle them before releasing the
+                // credential lease so a concurrent reconnect or provider
+                // recovery cannot be overwritten by this stale attempt.
+                failureHandledWithinCredentialLease = true;
+                // If ownership was already lost, leave the publication in its
+                // conservative streaming state for quarantine. Mutating health
+                // from this obsolete runtime would overwrite the new owner.
+                await settlePublicationFailure(error, credentialLease);
+              }
             },
           );
         } catch (error) {
-          try {
-            await finalizePublicationFailure(
-              publication,
-              error,
-              providerAccepted,
-              publicationRuntimeContext,
-            );
-          } catch (finalizationError) {
-            // If the provider accepted the message, a failed receipt write
-            // must remain streaming until the stale scan quarantines it. A
-            // later lifecycle mutation must not turn this into an implicit
-            // replay or allow a stale failure to overwrite the new runtime.
-            logger.error(
-              {
-                endpointId: publication.endpointId,
-                publicationId: publication.id,
-                error: redactError(finalizationError),
-              },
-              "could not durably finalize chat publication failure",
-            );
-          }
+          if (!failureHandledWithinCredentialLease)
+            await settlePublicationFailure(error);
         }
       }
     }
@@ -20551,7 +21745,9 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     reconcileProviderRuntimes,
     processPendingPublications,
     processPendingDeliveries,
+    processPendingGitHubWebhookIngress,
     processPendingProviderEffects,
+    processPendingReceiptReactions,
     getIssueBinding,
     shutdown: async () => {
       shuttingDown = true;

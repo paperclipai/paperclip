@@ -1211,8 +1211,13 @@ function TryStep({
   pending: boolean;
   onTest: () => void;
 }) {
-  const botMention = botUsername
-    ? `@${botUsername.replace(/^@/, "")}`
+  const providerBotUsername = botUsername?.replace(/^@/, "");
+  const normalizedBotUsername =
+    provider === "github"
+      ? providerBotUsername?.replace(/\[bot\]$/i, "")
+      : providerBotUsername;
+  const botMention = normalizedBotUsername
+    ? `@${normalizedBotUsername}`
     : (botLabel ?? agentName);
   const instructions =
     provider === "discord"

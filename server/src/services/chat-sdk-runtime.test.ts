@@ -305,6 +305,25 @@ describe("Chat SDK endpoint runtime", () => {
     });
   });
 
+  it("configures GitHub mention matching with the human-facing App slug", () => {
+    createChatSdkEndpointRuntime(
+      baseOptions({
+        provider: "github",
+        userName: "paperclip-agent[bot]",
+        credentials: {
+          token: "github-token",
+          webhookSecret: "github-secret",
+        },
+      }),
+    );
+
+    expect(captures.githubConfigs[0]).toMatchObject({
+      token: "github-token",
+      webhookSecret: "github-secret",
+      userName: "paperclip-agent",
+    });
+  });
+
   it("leaves pre-callback SDK retry markers unclaimed so the delivery ledger remains authoritative", async () => {
     createChatSdkEndpointRuntime(
       baseOptions({
