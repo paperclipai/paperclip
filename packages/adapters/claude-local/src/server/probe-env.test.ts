@@ -50,6 +50,9 @@ describe("buildLocalAdapterTestProbeEnv", () => {
       callerEnv: {
         ANTHROPIC_API_KEY: "api-key-value",
         CLAUDE_CODE_OAUTH_TOKEN: "oauth-token-value",
+        CLAUDE_CODE_OAUTH_REFRESH_TOKEN: "oauth-refresh-value",
+        CLAUDE_CODE_OAUTH_SCOPES: "user:profile user:inference",
+        CLAUDE_CODE_OAUTH_CLIENT_ID: "oauth-client-id",
         CLAUDE_CODE_USE_BEDROCK: "1",
         ANTHROPIC_BEDROCK_BASE_URL: "https://bedrock.example",
         AWS_ACCESS_KEY_ID: "aws-key",
@@ -61,6 +64,9 @@ describe("buildLocalAdapterTestProbeEnv", () => {
     });
     expect(built.env.ANTHROPIC_API_KEY).toBe("api-key-value");
     expect(built.env.CLAUDE_CODE_OAUTH_TOKEN).toBe("oauth-token-value");
+    expect(built.env.CLAUDE_CODE_OAUTH_REFRESH_TOKEN).toBe("oauth-refresh-value");
+    expect(built.env.CLAUDE_CODE_OAUTH_SCOPES).toBe("user:profile user:inference");
+    expect(built.env.CLAUDE_CODE_OAUTH_CLIENT_ID).toBe("oauth-client-id");
     expect(built.env.CLAUDE_CODE_USE_BEDROCK).toBe("1");
     expect(built.env.ANTHROPIC_BEDROCK_BASE_URL).toBe("https://bedrock.example");
     expect(built.env.AWS_ACCESS_KEY_ID).toBe("aws-key");
