@@ -13,6 +13,14 @@ Chatuebergreifende Aufgabenliste. Was hier steht, ist noch offen.
       ihr fehlt. Ob die uebrigen sechs das auch brauchen, ist ungeprueft — der
       CFO schafft mit 8 durchaus 184 erfolgreiche Runs, es haengt am
       Arbeitsablauf. *(2026-09-05, Chat: Routinen, Fallback und Mail-Anhänge)*
+      **Ergänzung 06.09.:** Beim neuen Agenten R9 (Clara) war Limit 8 nachweislich
+      zu niedrig — die Runden gingen für Inbox, Checkout und Kontextlesen drauf,
+      *bevor* die erste Seite geladen war. Merksatz für die sechs übrigen:
+      `maxIterations` begrenzt **Tool-Runden**, `maxPromptTokens` den **Kontext**.
+      Beide zusammen zu senken ist ein Denkfehler — eine kontextsparende
+      Arbeitsweise (Einheit für Einheit, Ergebnis sofort wegschreiben) braucht per
+      Konstruktion *mehr* Runden. Wer viele Tool-Aufrufe je Aufgabe macht, braucht
+      ein hohes Limit; 60 hat sich bei R9 bewährt. *(2026-09-06, Chat: Kontaktrecherche-Agent Clara)*
 
 - [ ] **`Process lost -- server may have restarted`** — 9 Treffer in einer
       Stunde am Abend des 02.09., Muster war vorher nicht da. Ursache offen:
@@ -97,6 +105,50 @@ Chatuebergreifende Aufgabenliste. Was hier steht, ist noch offen.
       Agent-Config, Zustand unter `~/.paperclip-adapter-lmstudio/breaker-state.json`.
       *(2026-09-05, Chat: Routinen, Fallback und Mail-Anhänge)*
 
+## Kontaktrecherche-Agent (Clara Sound, R9)
+
+- [ ] **★Agent wartet auf den deterministischen Vorlauf** — „Kontaktrecherche
+      Booker (R9)" ist angelegt und einsatzbereit (Konto, Instruktionen,
+      verifizierter Booker-Zugang), Issue **CLAA-2568** steht auf `backlog`.
+      Nach sechs Laeufen die Diagnose: Die **Recherche** gelingt (bei einer
+      Angular-SPA korrekt `gefunden: false` statt einer erfundenen Adresse), die
+      **API-Choreografie** nicht — sechs Laeufe, sechs verschiedene
+      Prozedurfehler, drei nachgeschaerfte Instruktionen aenderten die Fehlerart,
+      nicht die Fehlerrate. Der Vorlauf entsteht im Booker-Projekt
+      (`Apps/WHITESTAG Booker/docs/vorlauf-kontaktrecherche.md`); **erst danach**
+      den Agenten wieder wecken. *(2026-09-06, Chat: Kontaktrecherche-Agent Clara)*
+
+- [ ] **Ergebnis-Pruefer bauen (zweistufig)** — sobald echte Funde vorliegen.
+      **Stufe 1 deterministisch:** Fundstelle abrufen, gemeldete Adresse als
+      Zeichenkette suchen — steht sie nicht drin, ist es ein Fehltreffer. Das
+      laeuft ueber *alle* Ergebnisse, kostet nichts und kann selbst nicht
+      halluzinieren. **Stufe 2 mit Opus**, nur fuer die Reste: JS-gerenderte
+      Seiten, Impressen in Bild/PDF und die Frage, ob von mehreren Adressen die
+      *richtige* gewaehlt wurde. Wichtig beim Zuschnitt: Die Frage an Opus muss
+      „steht diese Adresse in diesem Text?" lauten, nicht „ist das die richtige
+      Adresse fuer X?" — die zweite Form laedt zum Plausibilisieren ein, also
+      genau zu dem Fehler, den wir suchen. Nebennutzen: Opus einmal dieselben 50
+      Zeilen bearbeiten lassen zeigt Gemmas **Treffer**quote im Vergleich, nicht
+      nur seine Fehlerquote. *(2026-09-06, Chat: Kontaktrecherche-Agent Clara)*
+
+- [ ] **Routine fuer den Regelbetrieb anlegen** — bewusst noch nicht geschehen.
+      Erst muss eine Stichprobe von 50 Ergebnissen sauber sein (ueber null
+      Fehltreffer = Alarmzeichen). Wichtig: `heartbeat.enabled: false` heisst
+      **kein Zeitplan** — die anderen Clara-Agenten laufen nur, weil ihre
+      Routinen Issues anlegen und **das Anlegen** das weckende Ereignis ist. Fuer
+      Einzelanstoesse: `POST /api/agents/:id/heartbeat/invoke`.
+      *(2026-09-06, Chat: Kontaktrecherche-Agent Clara)*
+
+- [ ] **Vier blockierte R2-Issues bei Clara** — „Akquise & Booking" haengt seit
+      dem 03.09. mit `R2 Taegliche Akquise-Pflege`, `R2 Woechentliche
+      Akquise-Welle`, `R2 Monatlicher Akquise-Report` und einem Tour-Routing-
+      Subtask. Ursache ist **Kontextueberlauf** (`Context size has been
+      exceeded`, danach `max_iterations`), nicht Fachliches — der Monatsreport
+      zieht KPIs ueber die ganze Akquise-Datenbank in ein Fenster. Die
+      Bueroleitung hat dreimal erfolglos auf `todo` zurueckgesetzt; blosses
+      Zuruecksetzen hilft also nicht. Hebel waere, die KPI-Sammlung inkrementell
+      zu machen. *(2026-09-06, Chat: Kontaktrecherche-Agent Clara)*
+
 ## Aufraeum-Rezept (fuer die naechste Runde)
 
 - [ ] **Vor jeder Massenfreigabe pruefen** — `~/.lmstudio/bin/lms ps` (Modelle
@@ -109,6 +161,11 @@ Chatuebergreifende Aufgabenliste. Was hier steht, ist noch offen.
       trotz `status: cancelled` (436 Issues = 339 unnoetige Runs). Begruendung
       bei Bedarf vorher per `POST /issues/{id}/comments` setzen.
       *(2026-09-02, Chat: Paperclip Issue-Bereinigung)*
+      **Gilt fuer JEDEN Status, nicht nur `cancelled`** — am 06.09. wurde ein
+      Issue mit `status: backlog` **plus** `comment` geparkt; der Kommentar weckte
+      den Agenten, der daraufhin brav bestaetigte und den Status selbst auf
+      `blocked` setzte. Das Parken war damit sofort wieder aufgehoben. Ohne
+      `comment` haelt es. *(2026-09-06, Chat: Kontaktrecherche-Agent Clara)*
 
 ## Repo-Stand und Deploy
 
