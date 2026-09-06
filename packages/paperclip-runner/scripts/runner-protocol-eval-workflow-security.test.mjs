@@ -67,11 +67,19 @@ test("resolves both repositories immutably and bounds total matrix concurrency",
     ),
   ];
   assert.equal(privateCheckouts.length, 3);
-  assert.equal(
-    workflow.match(/GH_REPO: paperclipai\/paperclip-evals/gu)?.length,
-    4,
-    "every private-eval token must be minted from the eval repository installation",
-  );
+  const privateTokenSteps = [
+    ...workflow.matchAll(
+      /^      - name: Generate private eval-repository token\n(?<body>(?:^ {8,}.*\n?)*)/gmu,
+    ),
+  ];
+  assert.equal(privateTokenSteps.length, 4);
+  for (const tokenStep of privateTokenSteps) {
+    assert.match(
+      tokenStep.groups.body,
+      /^ {10}GH_REPO: paperclipai\/paperclip-evals$/mu,
+      "every private-eval token must be minted from the eval repository installation",
+    );
+  }
   for (const checkout of privateCheckouts) {
     assert.match(
       checkout[0],
