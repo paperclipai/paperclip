@@ -92,6 +92,23 @@ const mockObserveCrossIssueInfluence = vi.hoisted(() => vi.fn());
 const mockCrossIssueInfluenceLimitError = vi.hoisted(() => vi.fn());
 const mockCrossIssueInfluenceRunContextError = vi.hoisted(() => vi.fn());
 
+// Captures every logger call, so the write-denial test can assert the denial
+// code and actor context reach the logs (denyIssueWrite responds directly
+// rather than throwing, so this is the only place that context is observable).
+const mockLogger = vi.hoisted(() => {
+  const logger: Record<string, unknown> = {};
+  for (const level of ["info", "warn", "error", "debug", "trace", "fatal"]) {
+    logger[level] = vi.fn();
+  }
+  logger.child = vi.fn(() => logger);
+  return logger;
+});
+
+vi.mock("../middleware/logger.js", () => ({
+  logger: mockLogger,
+  httpLogger: (_req: unknown, _res: unknown, next: () => void) => next(),
+}));
+
 vi.mock("@paperclipai/shared/telemetry", () => ({
   trackAgentTaskCompleted: vi.fn(),
   trackErrorHandlerCrash: vi.fn(),
@@ -701,6 +718,40 @@ describe.sequential("issue comment reopen routes", () => {
       expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
     },
   );
+
+  it("logs the denial code and actor context when an issue write is denied", async () => {
+    // Without this log line, a write denial reaches the caller in the response
+    // body but leaves no trace server-side — this class of 403 is undiagnosable
+    // from operations. Assert the logger, not the response, so the test fails
+    // if the log line is ever removed even though the HTTP behavior is unchanged.
+    const mentionedAgentId = "33333333-3333-4333-8333-333333333333";
+    mockIssueService.getById.mockResolvedValue(makeIssue("done"));
+    mockAccessService.decide.mockImplementation(async (input: { action?: string }) => {
+      const allowed = input.action === "issue:comment";
+      return {
+        allowed,
+        action: input.action,
+        reason: allowed ? "allow_issue_mention_grant" : "deny_missing_grant",
+        explanation: allowed ? "Allowed by a mention-scoped issue comment grant." : "Missing permission.",
+      };
+    });
+
+    const res = await request(await installActor(createApp(), agentActor(mentionedAgentId)))
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "Please continue this closed issue.", reopen: true });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.details.code).toBe("issue_write_not_visible");
+    expect(mockLogger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        code: "issue_write_not_visible",
+        issueId: "11111111-1111-4111-8111-111111111111",
+        actorAgentId: mentionedAgentId,
+        runId: "run-1",
+      }),
+      "issue write denied",
+    );
+  });
 
   // POST self-comment from the assignee agent on a done issue with explicit
   // reopen=true is the same log-class signal — the guard must suppress reopen.
