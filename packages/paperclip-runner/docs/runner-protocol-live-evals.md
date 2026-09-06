@@ -90,6 +90,8 @@ terminal prompt-response usage without streaming it, so the sidecar forwards
 the single newly persisted receipt bound to that exact turn before its terminal
 event. It never substitutes a previous turn's receipt or context occupancy for
 billable usage. These receipt corrections also apply to non-eval ACPX sessions.
+The durable redactor preserves these known numeric token-counter fields;
+string/object values under the same names remain redacted as sensitive data.
 
 `all` means the maintained enabled campaign, not every matching file in the
 roster directory. A missing campaign file fails closed. Within an enabled
