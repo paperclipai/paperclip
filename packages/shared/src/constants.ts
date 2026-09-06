@@ -831,8 +831,34 @@ export const BILLING_TYPES = [
 ] as const;
 export type BillingType = (typeof BILLING_TYPES)[number];
 
-export const COST_STATUSES = ["reported", "unpriced"] as const;
+/**
+ * How a cost event's money figures were arrived at.
+ * - `reported`: the provider gave a credible cost, or there was no token usage.
+ * - `derived`: the provider gave no credible cost (null, or 0 alongside real
+ *   tokens), so `rate_card_cents` was computed from tokens at list price.
+ * - `unpriced`: real tokens, no credible provider cost, and no rate-card entry
+ *   for the model — the spend is real but unquantified. Never silently 0.
+ */
+export const COST_STATUSES = ["reported", "derived", "unpriced", "reported_pre_migration"] as const;
 export type CostStatus = (typeof COST_STATUSES)[number];
+
+/**
+ * How a `cost_events.rate_card_cents` (and `cache_write_tokens`) figure was
+ * arrived at. Independent of `cost_status` — `cost_status` describes the cash
+ * side (what the provider said), `pricing_methodology` describes the rate-card
+ * side (what we computed and how honest we are about it).
+ *
+ * - `measured`: row was computed from a full token breakdown including
+ *   separate `cache_write_tokens`. The rate-card figure is real.
+ * - `pre_cache_write_aware`: pre-migration row; cache-creation tokens were
+ *   folded into `input_tokens`, so the rate-card figure is a real lower
+ *   bound but does not include the cache-write premium. The figure is
+ *   not invented and not zeroed.
+ * - `unpriced`: we don't know the rate-card value, not even a lower bound
+ *   (subscription auth, unlisted model). `rate_card_cents` is NULL.
+ */
+export const PRICING_METHODOLOGIES = ["measured", "pre_cache_write_aware", "unpriced"] as const;
+export type PricingMethodology = (typeof PRICING_METHODOLOGIES)[number];
 
 export const FINANCE_EVENT_KINDS = [
   "inference_charge",
