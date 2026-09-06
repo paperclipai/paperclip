@@ -580,6 +580,34 @@ function hydrateInteraction(
   }
 }
 
+/**
+ * List/scan-context hydration. `hydrateInteraction` hard-parses `payload`,
+ * so one row whose stored payload no longer satisfies its schema (schema
+ * drift, or a server-written payload that never satisfied it — e.g. a
+ * connection-delegation `target.key` longer than the former 120-char cap)
+ * throws and fails the entire scan. On the web that 400s the issue's
+ * interactions list, and because comment posting runs
+ * `expireRequestConfirmationsSupersededByComment` after inserting the
+ * comment and before enqueuing wakeups, the comment lands but the assignee
+ * is never woken. In scan context, drop the row with a warning instead.
+ * Single-row paths (accept/reject/withdraw/cancel) keep the hard parse so a
+ * bad row still fails loudly where it is acted on.
+ */
+function hydrateInteractionOrNull(row: IssueThreadInteractionRow): IssueThreadInteraction | null {
+  try {
+    return hydrateInteraction(row);
+  } catch (err) {
+    if (err instanceof z.ZodError) {
+      console.warn(
+        `[paperclip] Dropping ${row.kind} interaction ${row.id} from scan: stored payload does not satisfy its schema`,
+        err.issues,
+      );
+      return null;
+    }
+    throw err;
+  }
+}
+
 async function touchIssue(db: IssueTouchDb, issueId: string) {
   await db
     .update(issues)
@@ -2337,7 +2365,7 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
           .then((issueRows) => issueRows[0]?.status ?? null),
       ]);
 
-      return rows.map((row) => hydrateInteraction(
+      return rows.flatMap((row) => hydrateInteractionOrNull(
         issueStatus && isTerminalIssueStatus(issueStatus) && row.status === "pending"
           ? {
               ...row,
@@ -2346,7 +2374,7 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
               resolvedAt: row.updatedAt,
             }
           : row,
-      ));
+      ) ?? []);
     },
 
     getById: async (interactionId: string) => {
@@ -3258,7 +3286,8 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
 
       const superseded = rows.filter((row) => {
         if (!isUserCommentSupersedableKind(row.kind)) return false;
-        const interaction = hydrateInteraction(row) as UserCommentSupersedableInteraction;
+        const interaction = hydrateInteractionOrNull(row) as UserCommentSupersedableInteraction | null;
+        if (!interaction) return false;
         return (
           shouldSupersedeInteractionOnUserComment(interaction)
           && isCommentAtOrAfterInteraction({
@@ -3342,7 +3371,8 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
       >();
       for (const row of rows) {
         if (!isUserCommentSupersedableKind(row.kind)) continue;
-        const interaction = hydrateInteraction(row) as UserCommentSupersedableInteraction;
+        const interaction = hydrateInteractionOrNull(row) as UserCommentSupersedableInteraction | null;
+        if (!interaction) continue;
         if (!shouldSupersedeInteractionOnUserComment(interaction)) continue;
 
         const supersedingComment = comments.find((comment) => isCommentAtOrAfterInteraction({
