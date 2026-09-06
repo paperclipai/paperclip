@@ -254,13 +254,19 @@ export function OnboardingLoginCodeRow({
     if (!autoCopy || autoCopiedRef.current || !code) return;
 
     let cancelled = false;
+    // The success latch is taken when the write resolves, so it cannot also
+    // stand in for "a write is already running" — a focus event landing while
+    // one was in flight started a second. Same text either way, but it doubles
+    // the reveal timers and there is no reason to ask twice.
+    let inFlight = false;
 
     const attempt = () => {
-      if (cancelled || autoCopiedRef.current) return;
+      if (cancelled || autoCopiedRef.current || inFlight) return;
       // A write from an unfocused document is refused, and worse, some engines
       // resolve it without writing. Wait for focus rather than spend the one
       // attempt on it.
       if (typeof document !== "undefined" && !document.hasFocus()) return;
+      inFlight = true;
       void copyTextToClipboard(code)
         .then(() => {
           if (cancelled) return;
@@ -278,6 +284,9 @@ export function OnboardingLoginCodeRow({
         .catch(() => {
           // Refused. The listener gives it another go when the document comes
           // back, and the button is there the whole time regardless.
+        })
+        .finally(() => {
+          inFlight = false;
         });
     };
 

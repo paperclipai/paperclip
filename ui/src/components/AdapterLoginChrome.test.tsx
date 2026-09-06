@@ -197,6 +197,40 @@ describe("the displayed code's auto-copy", () => {
     }
   });
 
+  it("asks once while a write is still in flight", async () => {
+    // The success latch is only taken when the write resolves, so it cannot
+    // also mean "already running" — without a separate guard a focus event
+    // arriving mid-write started a second attempt.
+    let settle: () => void = () => {};
+    const writeText = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          settle = resolve;
+        }),
+    );
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+    const restore = stubFocus(true);
+    try {
+      await render(<OnboardingLoginCodeRow code="WFK7-4GA3U" autoCopy />);
+      expect(writeText).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        window.dispatchEvent(new Event("focus"));
+        window.dispatchEvent(new Event("focus"));
+      });
+      expect(writeText).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        settle();
+      });
+    } finally {
+      restore();
+    }
+  });
+
   it("waits for the document rather than spending its one attempt unfocused", async () => {
     // A write from an unfocused document is refused, and the first attempt is
     // the most likely to be refused, since it fires while the card is still
