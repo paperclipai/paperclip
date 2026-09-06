@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  BLOCKED_EXIT_PATCH,
   deliverAgentUnblockNotification,
+  deriveBlockedEntryPatch,
   ROUTABLE_BLOCKED_ROLLOUT_AT,
 } from "../services/routable-blocked.js";
 
@@ -71,6 +73,30 @@ describe("routable blocked notifications", () => {
     expect(wakeup).toHaveBeenCalledTimes(1);
     expect(wakeup.mock.calls[0]?.[1]).toMatchObject({
       idempotencyKey: expect.stringContaining(secondTransition.toISOString()),
+    });
+  });
+});
+
+describe("deriveBlockedEntryPatch (single funnel helper)", () => {
+  const now = new Date("2026-09-01T00:00:00.000Z");
+
+  it("stamps a row with no existing stamp", () => {
+    expect(deriveBlockedEntryPatch(null, now)).toEqual({ blockedTransitionAt: now });
+    expect(deriveBlockedEntryPatch(undefined, now)).toEqual({ blockedTransitionAt: now });
+  });
+
+  it("is a no-op for a row that already carries a stamp — idempotent, safe to call unconditionally", () => {
+    const existing = new Date("2026-08-01T00:00:00.000Z");
+    expect(deriveBlockedEntryPatch(existing, now)).toEqual({});
+  });
+});
+
+describe("BLOCKED_EXIT_PATCH (checkout() stranded-descriptor fix)", () => {
+  it("clears all three blocked-bookkeeping fields together", () => {
+    expect(BLOCKED_EXIT_PATCH).toEqual({
+      unblockDescriptor: null,
+      blockedTransitionAt: null,
+      blockedOwnerNotifiedAt: null,
     });
   });
 });

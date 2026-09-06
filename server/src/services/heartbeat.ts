@@ -259,6 +259,7 @@ import {
   WORKTREE_INSTANCE_ROOT_METADATA_KEY,
 } from "./workspace-instance-cleanup.js";
 import { issueService } from "./issues.js";
+import { deriveBlockedEntryPatch } from "./routable-blocked.js";
 import { projectService } from "./projects.js";
 import {
   authorizationService,
@@ -374,6 +375,7 @@ import {
   reviewPathConsumedRefFromRun,
 } from "./recovery/review-path-recovery.js";
 import { productivityReviewService } from "./productivity-review.js";
+import { blockedOwnerNotificationReconcilerService } from "./blocked-owner-notification-reconciler.js";
 import { resolveRequiredSuccessfulRunHandoffOnValidPath } from "./successful-run-handoff-state.js";
 import { taskWatchdogService } from "./task-watchdogs.js";
 import { withAgentStartLock } from "./agent-start-lock.js";
@@ -8656,6 +8658,7 @@ export function heartbeatService(
 
   const productivityReviews = productivityReviewService(db, { enqueueWakeup });
   const taskWatchdogs = taskWatchdogService(db, { enqueueWakeup });
+  const blockedOwnerNotifications = blockedOwnerNotificationReconcilerService(db, { wakeup: enqueueWakeup });
   let unsafeTextProjectionPromise: Promise<boolean> | null = null;
 
   async function completeSkillTestRunForHeartbeatOutcome(input: {
@@ -17583,6 +17586,10 @@ export function heartbeatService(
     });
   }
 
+  async function reconcileBlockedOwnerNotifications(opts?: { companyId?: string }) {
+    return blockedOwnerNotifications.reconcileBlockedOwnerNotifications(opts);
+  }
+
   async function reconcileTaskWatchdogs(opts?: {
     companyId?: string | null;
     runId?: string | null;
@@ -24285,6 +24292,7 @@ export function heartbeatService(
             executionRunId: issues.executionRunId,
             executionAgentNameKey: issues.executionAgentNameKey,
             createdAt: issues.createdAt,
+            blockedTransitionAt: issues.blockedTransitionAt,
           })
           .from(issues)
           .where(
@@ -24752,6 +24760,39 @@ export function heartbeatService(
                 executionAgentNameKey: null,
                 executionLockedAt: null,
                 updatedAt: now,
+                // This pre-dispatch guard bypasses issuesSvc.update() entirely,
+                // so it is one of the write sites that never stamped
+                // blockedTransitionAt. Stamp here so isProspectiveBlockedTransition
+                // can ever be true for a row blocked this way, and clear
+                // blockedOwnerNotifiedAt the same way update()'s own entry
+                // branch does for a fresh block.
+                //
+                // This guard's own condition above (issue.status !== "done"
+                // && issue.status !== "cancelled") does not require the row
+                // to already be "blocked" -- the common case reaching this
+                // line is a fresh transition into blocked from todo/
+                // in_progress, exactly like update()'s entry branch in
+                // issues.ts. deriveBlockedEntryPatch is idempotent (no-op
+                // when a stamp already exists), which is correct for a true
+                // self-heal (a row that re-hits this guard on a later tick
+                // while it is still "blocked") but wrong for a fresh entry:
+                // blockedTransitionAt doubles as the issue_blockers_resolved
+                // dependency-wake cycle key (see
+                // wakeCoversIssueBlockersResolvedReadyState in
+                // issue-dependency-wakeups.ts), and a stale stamp left over
+                // from an earlier blocked cycle that exited without clearing
+                // it would let a completed wake from that old cycle match
+                // the new cycle's key and silently suppress the new wake
+                // this transition should produce. So: advance the stamp
+                // unconditionally on a fresh (non-"blocked") entry, and only
+                // fall back to the idempotent self-heal helper once the row
+                // is already "blocked" -- mirroring the same split
+                // issues.ts's update() makes between its entry branch and
+                // its self-heal branch.
+                ...(issue.status === "blocked"
+                  ? deriveBlockedEntryPatch(issue.blockedTransitionAt, now)
+                  : { blockedTransitionAt: now }),
+                blockedOwnerNotifiedAt: null,
               })
               .where(eq(issues.id, issue.id));
             await tx.insert(issueComments).values({
@@ -26419,6 +26460,8 @@ export function heartbeatService(
     scanSilentActiveRuns,
 
     reconcileProductivityReviews,
+
+    reconcileBlockedOwnerNotifications,
 
     reconcileTaskWatchdogs,
 
