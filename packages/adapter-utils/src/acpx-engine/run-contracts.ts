@@ -425,6 +425,16 @@ export interface McpServerIdentity {
   readonly connectionId: string;
 }
 
+/**
+ * One MCP server in the session fingerprint. The credential fingerprint is a
+ * one-way digest of the run-scoped bearer token; it invalidates an ACP session
+ * when Paperclip rotates that token without persisting credential material in
+ * the resumable session parameters.
+ */
+export interface McpServerFingerprintIdentity extends McpServerIdentity {
+  readonly credentialFingerprint: string;
+}
+
 /** The Paperclip Claude settings the fingerprint reads. */
 export interface PaperclipClaudeSettingsIdentity {
   readonly allow: readonly string[];
@@ -453,7 +463,7 @@ export interface SessionFingerprintIdentity {
   readonly skillsIdentity: Record<string, unknown>;
   readonly skillPromptInstructions: string;
   readonly paperclipClaudeSettings: PaperclipClaudeSettingsIdentity | null;
-  readonly mcpServers: readonly McpServerIdentity[];
+  readonly mcpServers: readonly McpServerFingerprintIdentity[];
   readonly secretManifestHash: string;
   readonly adapterEnvHash: string;
 }
