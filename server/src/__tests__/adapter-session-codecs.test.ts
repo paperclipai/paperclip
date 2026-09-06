@@ -37,6 +37,60 @@ describe("adapter session codecs", () => {
     expect(claudeSessionCodec.getDisplayId?.(serialized ?? null)).toBe("claude-session-1");
   });
 
+  it("round-trips the runtime MCP identity so claude sessions can resume", () => {
+    const identity =
+      '[{"name":"Paperclip connections","url":"http://127.0.0.1:3100/mcp/runtime-tools","connectionId":"paperclip-runtime-tools"}]';
+    const parsed = claudeSessionCodec.deserialize({
+      sessionId: "claude-session-2",
+      cwd: "/repo",
+      promptBundleKey: "bundle-2",
+      mcpServerIdentity: identity,
+    });
+    expect(parsed?.mcpServerIdentity).toBe(identity);
+    const serialized = claudeSessionCodec.serialize(parsed);
+    expect(serialized?.mcpServerIdentity).toBe(identity);
+
+    const withoutIdentity = claudeSessionCodec.deserialize({
+      sessionId: "claude-session-3",
+      cwd: "/repo",
+    });
+    expect(withoutIdentity).not.toHaveProperty("mcpServerIdentity");
+    expect(withoutIdentity).not.toHaveProperty("remoteExecution");
+  });
+
+  it("round-trips the remote execution identity so remote sessions can resume", () => {
+    const remoteExecution = {
+      transport: "ssh",
+      host: "127.0.0.1",
+      port: 2222,
+      username: "fixture",
+      remoteCwd: "/remote/workspace",
+    };
+    const parsed = claudeSessionCodec.deserialize({
+      sessionId: "claude-session-4",
+      cwd: "/remote/workspace",
+      remoteExecution,
+    });
+    expect(parsed?.remoteExecution).toEqual(remoteExecution);
+    const serialized = claudeSessionCodec.serialize(parsed);
+    expect(serialized?.remoteExecution).toEqual(remoteExecution);
+
+    const emptyRemote = claudeSessionCodec.deserialize({
+      sessionId: "claude-session-5",
+      cwd: "/repo",
+      remoteExecution: {},
+    });
+    expect(emptyRemote).not.toHaveProperty("remoteExecution");
+
+    const withCredentials = claudeSessionCodec.deserialize({
+      sessionId: "claude-session-6",
+      cwd: "/remote/workspace",
+      remoteExecution: { ...remoteExecution, privateKey: "PRIVATE KEY", knownHosts: "host key" },
+    });
+    expect(withCredentials?.remoteExecution).toEqual(remoteExecution);
+    expect(JSON.stringify(withCredentials)).not.toContain("PRIVATE KEY");
+  });
+
   it("preserves claude ACP session params for ACP lane resumes", () => {
     const parsed = claudeSessionCodec.deserialize({
       sessionKey: "paperclip:company:agent:task:fingerprint",

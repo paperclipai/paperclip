@@ -69,6 +69,32 @@ function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
 
+// Session params carry a nested remoteExecution identity for remote targets;
+// execute.ts compares it on the next heartbeat, so it must survive the codec.
+// Only the keys that identity comparison actually uses are kept: a same-named
+// object elsewhere in the runtime carries privateKey/knownHosts, and those must
+// never reach session_params_json.
+const REMOTE_EXECUTION_IDENTITY_KEYS = [
+  "transport",
+  "host",
+  "port",
+  "username",
+  "remoteCwd",
+  "providerKey",
+  "environmentId",
+  "leaseId",
+] as const;
+
+function readRemoteExecutionIdentity(value: unknown): Record<string, unknown> | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  const identity: Record<string, unknown> = {};
+  for (const key of REMOTE_EXECUTION_IDENTITY_KEYS) {
+    if (record[key] !== undefined && record[key] !== null) identity[key] = record[key];
+  }
+  return Object.keys(identity).length > 0 ? identity : null;
+}
+
 export const sessionCodec: AdapterSessionCodec = {
   deserialize(raw: unknown) {
     if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return null;
@@ -85,6 +111,12 @@ export const sessionCodec: AdapterSessionCodec = {
     const workspaceId = readNonEmptyString(record.workspaceId) ?? readNonEmptyString(record.workspace_id);
     const repoUrl = readNonEmptyString(record.repoUrl) ?? readNonEmptyString(record.repo_url);
     const repoRef = readNonEmptyString(record.repoRef) ?? readNonEmptyString(record.repo_ref);
+    // Preserve the runtime MCP identity written by execute.ts so a later
+    // heartbeat can prove the saved session used the same MCP server set.
+    const mcpServerIdentity =
+      readNonEmptyString(record.mcpServerIdentity) ?? readNonEmptyString(record.mcp_server_identity);
+    const remoteExecution =
+      readRemoteExecutionIdentity(record.remoteExecution) ?? readRemoteExecutionIdentity(record.remote_execution);
     return {
       sessionId,
       ...(cwd ? { cwd } : {}),
@@ -92,6 +124,8 @@ export const sessionCodec: AdapterSessionCodec = {
       ...(workspaceId ? { workspaceId } : {}),
       ...(repoUrl ? { repoUrl } : {}),
       ...(repoRef ? { repoRef } : {}),
+      ...(mcpServerIdentity ? { mcpServerIdentity } : {}),
+      ...(remoteExecution ? { remoteExecution } : {}),
     };
   },
   serialize(params: Record<string, unknown> | null) {
@@ -108,6 +142,10 @@ export const sessionCodec: AdapterSessionCodec = {
     const workspaceId = readNonEmptyString(params.workspaceId) ?? readNonEmptyString(params.workspace_id);
     const repoUrl = readNonEmptyString(params.repoUrl) ?? readNonEmptyString(params.repo_url);
     const repoRef = readNonEmptyString(params.repoRef) ?? readNonEmptyString(params.repo_ref);
+    const mcpServerIdentity =
+      readNonEmptyString(params.mcpServerIdentity) ?? readNonEmptyString(params.mcp_server_identity);
+    const remoteExecution =
+      readRemoteExecutionIdentity(params.remoteExecution) ?? readRemoteExecutionIdentity(params.remote_execution);
     return {
       sessionId,
       ...(cwd ? { cwd } : {}),
@@ -115,6 +153,8 @@ export const sessionCodec: AdapterSessionCodec = {
       ...(workspaceId ? { workspaceId } : {}),
       ...(repoUrl ? { repoUrl } : {}),
       ...(repoRef ? { repoRef } : {}),
+      ...(mcpServerIdentity ? { mcpServerIdentity } : {}),
+      ...(remoteExecution ? { remoteExecution } : {}),
     };
   },
   getDisplayId(params: Record<string, unknown> | null) {
