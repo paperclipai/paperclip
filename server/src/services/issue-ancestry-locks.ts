@@ -48,7 +48,12 @@ export const lockIssueAncestryForAuthorization = async (
     ancestorDepth?: number;
   },
 ): Promise<Map<string, LockedIssueAncestryRow>> => {
-  const directIds = [...new Set(directParentIds)];
+  // The uuid column matches ids case-insensitively but the global lock
+  // order is a raw string sort, so mixed-case spellings of the same id
+  // would sort — and therefore lock — differently across transactions.
+  // Canonicalize to the lowercase form Postgres returns before anything
+  // is sorted, deduped, or used as a map key.
+  const directIds = [...new Set(directParentIds.map((id) => id.toLowerCase()))];
   const locked = new Map<string, LockedIssueAncestryRow>();
   if (directIds.length === 0) return locked;
   const ancestorDepth = options.ancestorDepth ?? LOW_TRUST_ISSUE_ANCESTRY_MAX_DEPTH;

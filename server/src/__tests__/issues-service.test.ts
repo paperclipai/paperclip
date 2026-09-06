@@ -6706,6 +6706,54 @@ describeEmbeddedPostgres("accepted plan decomposition", () => {
     expect(acquisitionOrder).toEqual([rootIssueId, midIssueId, parentIssueId]);
   });
 
+  it("keeps the sorted lock order representation-independent for mixed-case caller ids", async () => {
+    // The uuid column matches any casing, so an uppercase caller id locks
+    // the same row — but uppercase hex sorts before lowercase in raw string
+    // order ('F' < 'a'), so two transactions spelling a shared id
+    // differently would compute opposite acquisition orders: the deadlock
+    // the sorted pass exists to prevent. Ids must be canonicalized before
+    // sorting, and the returned map keyed canonically either way.
+    const { companyId } = await seedAcceptedPlanIssue();
+    const rootIssueId = "abaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1";
+    const midIssueId = "bcbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb1";
+    const parentIssueId = "fdffffff-ffff-4fff-8fff-fffffffffff1";
+    await db.insert(issues).values({
+      id: rootIssueId,
+      companyId,
+      title: "Root with the lowest canonical id",
+      status: "in_progress",
+      priority: "medium",
+    });
+    await db.insert(issues).values({
+      id: midIssueId,
+      companyId,
+      parentId: rootIssueId,
+      title: "Ancestor with a mid canonical id",
+      status: "in_progress",
+      priority: "medium",
+    });
+    await db.insert(issues).values({
+      id: parentIssueId,
+      companyId,
+      parentId: midIssueId,
+      title: "Direct parent whose uppercase form sorts below the ancestors",
+      status: "in_progress",
+      priority: "medium",
+    });
+
+    const locked = await db.transaction(async (tx) => {
+      return lockIssueAncestryForAuthorization(
+        tx as unknown as Db,
+        companyId,
+        [parentIssueId.toUpperCase()],
+        { directParentLockMode: "update" },
+      );
+    });
+
+    expect([...locked.keys()]).toEqual([rootIssueId, midIssueId, parentIssueId]);
+    expect(locked.get(parentIssueId)?.parentId).toBe(midIssueId);
+  });
+
   it("aborts instead of chasing an escaped ancestor that would lock out of global order", async () => {
     // A reparent landing between the unlocked discovery walk and the sorted
     // lock pass leaves the new ancestor unlocked ("escaped"). Chasing it
