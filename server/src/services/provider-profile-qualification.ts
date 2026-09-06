@@ -11,7 +11,8 @@ export const CLAUDE_MANAGED_QUALIFICATION = {
 } as const;
 
 export const CLAUDE_MANAGED_QUALIFIED_MODEL = "claude-sonnet-5" as const;
-export const AGENTCORE_QUALIFICATION_SUITE = "aws-agentcore-harness-v1" as const;
+export const AGENTCORE_QUALIFICATION_SUITE =
+  "aws-agentcore-harness-context-v2" as const;
 export const AGENTCORE_QUALIFIED_MODEL = "global.anthropic.claude-sonnet-4-6" as const;
 
 const REVISION_PREFIX = "sha256:";

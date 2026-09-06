@@ -283,7 +283,7 @@ fn managed_prepare_payload(kind: &str) -> Value {
             "contextBucket": "context-bucket",
             "contextPrefix": "companies/company/profiles/profile",
             "contextKmsKeyArn": "arn:aws:kms:us-east-1:123456789012:key/test",
-            "qualificationRevision": "aws-agentcore-harness-v1",
+            "qualificationRevision": "aws-agentcore-harness-context-v2",
             "eventExpiryDays": 90,
             "maxEstimatedSessionCostUsd": 1.0,
             "maxIterations": 8,

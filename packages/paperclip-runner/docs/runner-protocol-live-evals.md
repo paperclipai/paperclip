@@ -43,6 +43,13 @@ the native daemon, provider dependencies, and the attempt viewer are built
 once and reused by every cell. Because the complete suite requires two matrix
 shards, this workflow accepts a shared concurrency ceiling from 2 through 100.
 
+The reused provider runtime is created with `pnpm deploy --prod` from the
+frozen workspace lock. That preserves the repository's qualified dependency
+versions and patched ACP server bytes. Do not replace this step with a fresh
+`npm install` of the packed Runner tarball: npm cannot apply the workspace's
+`patchedDependencies`, so the resulting ACPX executables no longer match their
+qualified digests.
+
 `all` is intentionally literal. A disabled driver, missing remote profile, or
 unavailable provider is retained as an infrastructure result; it is not
 silently omitted. In particular, the ACPX Pi roster remains visible while Pi
@@ -70,7 +77,9 @@ Claude Managed also requires the four nonsecret
 nonsecret `PAPERCLIP_AWS_AGENTCORE_*` profile variables, including
 `PAPERCLIP_AWS_AGENTCORE_EXECUTION_ROLE_ARN` and the immutable
 `PAPERCLIP_AWS_AGENTCORE_QUALIFICATION_REVISION`; the eval fails closed when
-that deployed revision differs from the pinned roster config. The workflow
+that deployed revision differs from the pinned roster config. The currently
+qualified context-aware harness revision is
+`aws-agentcore-harness-context-v2`. The workflow
 writes the GitHub OIDC token to a mode-`0600` file and never forwards long-lived
 AWS access keys.
 Provision the AgentCore stack with `--github-oidc-provider-arn` so that scoped

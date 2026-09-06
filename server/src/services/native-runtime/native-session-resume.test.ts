@@ -301,7 +301,7 @@ describe("buildNativeExecutionInput wake projection", () => {
         contextBucket: "paperclip-context",
         contextPrefix: "runner/",
         contextKmsKeyArn: "arn:aws:kms:us-east-1:123456789012:key/key-1",
-        qualificationRevision: "aws-agentcore-harness-v1",
+        qualificationRevision: "aws-agentcore-harness-context-v2",
         eventExpiryDays: 90,
       },
       maxEstimatedSessionCostUsd: 1.25,
