@@ -592,7 +592,41 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       return args;
     };
 
+    const resolveMinFreeMemMb = () => {
+      const raw = env.OPENCODE_MIN_FREE_MEM_MB ?? process.env.OPENCODE_MIN_FREE_MEM_MB;
+      if (raw == null || raw === "") return 1024;
+      const n = Number(raw);
+      return Number.isFinite(n) && n > 0 ? Math.floor(n) : 1024;
+    };
+
     const runAttempt = async (resumeSessionId: string | null) => {
+      const minFreeMemMb = resolveMinFreeMemMb();
+      const freeMemMb = Math.floor(os.freemem() / (1024 * 1024));
+      if (freeMemMb < minFreeMemMb) {
+        const adapterRss = process.memoryUsage().rss;
+        const msg = `[paperclip][WORA-1315] opencode_local preflight aborted: free_mem=${freeMemMb}MiB < threshold=${minFreeMemMb}MiB (adapter_rss=${adapterRss}B). Skipping spawn to avoid OOM-evict. Set OPENCODE_MIN_FREE_MEM_MB=0 to bypass.`;
+        if (onLog) await onLog("stdout", msg + "\n");
+        return {
+          proc: {
+            exitCode: null,
+            signal: null,
+            timedOut: false,
+            stdout: "",
+            stderr: msg,
+            pid: null,
+            startedAt: new Date().toISOString(),
+          },
+          rawStderr: msg,
+          parsed: {
+            sessionId: null,
+            errorMessage: msg,
+            summary: "",
+            usage: { inputTokens: 0, outputTokens: 0, cachedInputTokens: 0 },
+            costUsd: 0,
+            toolErrors: [],
+          },
+        };
+      }
       const args = buildArgs(resumeSessionId);
       if (onMeta) {
         await onMeta({
@@ -666,6 +700,17 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       const stderrLine = firstNonEmptyLine(attempt.proc.stderr);
       const rawExitCode = attempt.proc.exitCode;
       const synthesizedExitCode = parsedError && (rawExitCode ?? 0) === 0 ? 1 : rawExitCode;
+      // WORA-1315: quando o fallback `?? -1` foi exercido (rawExitCode == null
+      // E sem parsedError) E o processo tem signal, isso e' evict real (OOM ou
+      // SIGKILL), nao crash. Log struct para triagem distinguir das 47
+      // ocorrencias cegas de 08-27 ate' agora.
+      if ((synthesizedExitCode ?? 0) === -1 && attempt.proc.signal) {
+        const freeMemMb = Math.floor(os.freemem() / (1024 * 1024));
+        const adapterRss = process.memoryUsage().rss;
+        const totalMemMb = Math.floor(os.totalmem() / (1024 * 1024));
+        const ev = `[paperclip][WORA-1315] opencode_local signal-evict detected: signal=${attempt.proc.signal} exitCode=${rawExitCode} free_mem=${freeMemMb}MiB total_mem=${totalMemMb}MiB adapter_rss=${adapterRss}B. Treating as transient OOM.`;
+        if (onLog) onLog("stdout", ev + "\n").catch(() => undefined);
+      }
       const fallbackErrorMessage =
         parsedError ||
         stderrLine ||
