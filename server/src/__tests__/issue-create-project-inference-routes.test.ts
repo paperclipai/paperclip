@@ -6,7 +6,9 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
   agents,
+  authUsers,
   companies,
+  companyMemberships,
   createDb,
   executionWorkspaces,
   goals,
@@ -56,6 +58,8 @@ describeEmbeddedPostgres("issue create project inference", () => {
     await db.delete(projects);
     await db.delete(agents);
     await db.delete(goals);
+    await db.delete(companyMemberships);
+    await db.delete(authUsers);
     await db.delete(companies);
   });
 
@@ -810,6 +814,125 @@ describeEmbeddedPostgres("issue create project inference", () => {
     });
 
     expect(issue.projectId).toBe(projectId);
+    expect(issue.assigneeAgentId).toBe(assignee.id);
+  });
+
+  async function seedResponsibleUser(companyId: string, membershipRole: "operator" | "viewer") {
+    const userId = `resp-${randomUUID()}`;
+    const now = new Date();
+    await db.insert(authUsers).values({
+      id: userId,
+      name: "Responsible",
+      email: `${userId}@example.test`,
+      createdAt: now,
+      updatedAt: now,
+    });
+    await db.insert(companyMemberships).values({
+      companyId,
+      principalType: "user",
+      principalId: userId,
+      status: "active",
+      membershipRole,
+    });
+    return userId;
+  }
+
+  it("withdraws a service-layer inference when the run's responsible user cannot authorize the assignment", async () => {
+    // Route parity again, one layer deeper: an authenticated agent actor
+    // always carries the run's responsible user, and tasks:assign intersects
+    // with that user's own authorization — an unavailable responsible user
+    // denies the route create outright. The backstop's reconstructed actor
+    // has to carry the same context or that layer silently never runs.
+    const companyId = await seedCompany();
+    await seedProject(companyId, "shove", {
+      repoUrl: "https://github.com/zannis/shove",
+      cwd: "/repos/shove",
+    });
+    const creator = await seedAgent(companyId);
+    const assignee = await seedAgent(companyId);
+    const parent = await seedIssue(companyId, null, "Project-less root");
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId: creator.id,
+      status: "running",
+      responsibleUserId: `missing-${randomUUID()}`,
+    });
+
+    const { issue } = await issueService(db).createChild(parent.id, {
+      title: "Split out the repro",
+      description: "Reproduce it in https://github.com/zannis/shove first.",
+      status: "todo",
+      priority: "medium",
+      createdByAgentId: creator.id,
+      assigneeAgentId: assignee.id,
+      actorRunId: runId,
+    });
+
+    expect(issue.projectId).toBeNull();
+    expect(issue.assigneeAgentId).toBe(assignee.id);
+  });
+
+  it("withdraws a service-layer inference when the caller's explicit responsible user cannot authorize it", async () => {
+    // Same intersection through the other actor-level source: a caller that
+    // names the responsible user directly instead of leaving it on the run.
+    const companyId = await seedCompany();
+    await seedProject(companyId, "shove", {
+      repoUrl: "https://github.com/zannis/shove",
+      cwd: "/repos/shove",
+    });
+    const creator = await seedAgent(companyId);
+    const assignee = await seedAgent(companyId);
+    const parent = await seedIssue(companyId, null, "Project-less root");
+
+    const { issue } = await issueService(db).createChild(parent.id, {
+      title: "Split out the repro",
+      description: "Reproduce it in https://github.com/zannis/shove first.",
+      status: "todo",
+      priority: "medium",
+      createdByAgentId: creator.id,
+      assigneeAgentId: assignee.id,
+      actorResponsibleUserId: `missing-${randomUUID()}`,
+    });
+
+    expect(issue.projectId).toBeNull();
+    expect(issue.assigneeAgentId).toBe(assignee.id);
+  });
+
+  it("keeps the inferred project when the run's responsible user is authorized", async () => {
+    // The intersection must not over-withdraw: a responsible user with an
+    // active assignment-granting membership authorizes the same create the
+    // route would have allowed.
+    const companyId = await seedCompany();
+    const project = await seedProject(companyId, "shove", {
+      repoUrl: "https://github.com/zannis/shove",
+      cwd: "/repos/shove",
+    });
+    const creator = await seedAgent(companyId);
+    const assignee = await seedAgent(companyId);
+    const parent = await seedIssue(companyId, null, "Project-less root");
+    const responsibleUserId = await seedResponsibleUser(companyId, "operator");
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId: creator.id,
+      status: "running",
+      responsibleUserId,
+    });
+
+    const { issue } = await issueService(db).createChild(parent.id, {
+      title: "Split out the repro",
+      description: "Reproduce it in https://github.com/zannis/shove first.",
+      status: "todo",
+      priority: "medium",
+      createdByAgentId: creator.id,
+      assigneeAgentId: assignee.id,
+      actorRunId: runId,
+    });
+
+    expect(issue.projectId).toBe(project.id);
     expect(issue.assigneeAgentId).toBe(assignee.id);
   });
 

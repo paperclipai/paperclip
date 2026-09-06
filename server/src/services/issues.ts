@@ -7398,6 +7398,30 @@ export function issueService(db: Db) {
             const needsAssignmentCheck =
               trustDecision.kind !== "denied" &&
               Boolean(issueData.assigneeAgentId || issueData.assigneeUserId);
+            // An authenticated route actor always carries the responsible
+            // user it acts on behalf of (the auth middleware refuses agent
+            // keys without one), and the tasks:assign decision intersects
+            // with that user's own authorization. Reconstructing the actor
+            // without it would silently skip that layer, so resolve it from
+            // the same actor-level sources the middleware uses: the caller's
+            // explicit responsible user, else the creating agent's run. The
+            // issue-level fallbacks (parent, createdByUserId) stay out — they
+            // describe the issue, not who is acting.
+            let actorOnBehalfOfUserId: string | null = null;
+            if (needsAssignmentCheck) {
+              actorOnBehalfOfUserId = actorResponsibleUserId?.trim() || null;
+              if (!actorOnBehalfOfUserId && actorRunId) {
+                actorOnBehalfOfUserId = await tx
+                  .select({ responsibleUserId: heartbeatRuns.responsibleUserId })
+                  .from(heartbeatRuns)
+                  .where(and(
+                    eq(heartbeatRuns.id, actorRunId),
+                    eq(heartbeatRuns.companyId, companyId),
+                    eq(heartbeatRuns.agentId, issueData.createdByAgentId),
+                  ))
+                  .then((rows) => rows[0]?.responsibleUserId?.trim() || null);
+              }
+            }
             const assignmentAllowed =
               !needsAssignmentCheck ||
               (await authorizationService(tx).decide({
@@ -7406,6 +7430,7 @@ export function issueService(db: Db) {
                   agentId: issueData.createdByAgentId,
                   companyId,
                   runId: actorRunId ?? null,
+                  onBehalfOfUserId: actorOnBehalfOfUserId,
                 },
                 action: "tasks:assign",
                 resource: {
