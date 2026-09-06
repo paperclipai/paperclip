@@ -75,6 +75,7 @@ import {
 } from "./server-utils.js";
 import { sanitizeRemoteExecutionEnv } from "./remote-execution-env.js";
 import { preferredShellForSandbox, shellCommandArgs } from "./sandbox-shell.js";
+import { redactDiagnosticText } from "./command-redaction.js";
 import {
   runWithRuntimeParent,
   type RuntimeSpanRunner,
@@ -690,7 +691,7 @@ export async function ensureAdapterExecutionTargetCommandResolvable(
 async function probeSandboxCommandResolvable(
   command: string,
   target: AdapterSandboxExecutionTarget,
-): Promise<{ resolved: boolean; timedOut: boolean; stderr: string }> {
+): Promise<{ resolved: boolean; timedOut: boolean; stderr: string; metadata?: Record<string, unknown> }> {
   const runner = requireSandboxRunner(target);
   const probeScript = `command -v ${shellQuote(command)}`;
   const result = await runner.execute({
@@ -702,8 +703,22 @@ async function probeSandboxCommandResolvable(
   return {
     resolved: !result.timedOut && (result.exitCode ?? 1) === 0,
     timedOut: result.timedOut,
-    stderr: result.stderr.trim(),
+    stderr: redactDiagnosticText(result.stderr.trim()).slice(0, 800),
+    metadata: result.metadata,
   };
+}
+
+const SANDBOX_PROBE_METADATA_KEYS = ["provider", "backend", "execFailure", "statusCode"] as const;
+
+function formatSandboxProbeMetadata(metadata: Record<string, unknown> | undefined): string {
+  if (!metadata) return "";
+  const entries = SANDBOX_PROBE_METADATA_KEYS.flatMap((key) => {
+    const value = metadata[key];
+    return typeof value === "string" || typeof value === "number" || typeof value === "boolean"
+      ? [`${key}=${redactDiagnosticText(String(value)).slice(0, 120)}`]
+      : [];
+  });
+  return entries.length > 0 ? ` runner metadata: ${entries.join(", ")}` : "";
 }
 
 async function ensureSandboxCommandResolvable(
@@ -762,9 +777,10 @@ async function ensureSandboxCommandResolvable(
   }
 
   const probeStderr = probe.stderr.length > 0 ? ` probe stderr: ${probe.stderr}` : "";
+  const probeMetadata = formatSandboxProbeMetadata(probe.metadata);
   const installDetail = installFailureDetail ? `; ${installFailureDetail}` : "";
   throw new Error(
-    `Command "${command}" is not installed or not on PATH in the sandbox environment${installDetail}.${probeStderr}`,
+    `Command "${command}" is not installed or not on PATH in the sandbox environment${installDetail}.${probeStderr}${probeMetadata}`,
   );
 }
 
