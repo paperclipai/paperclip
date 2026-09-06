@@ -1066,8 +1066,16 @@ export function createToolGatewayService(
       };
       return {
         name: gatewayToolName,
-        displayName: catalogEntry.title ?? catalogEntry.toolName,
-        description: catalogEntry.description ?? `Connected MCP tool ${catalogEntry.toolName} from ${connection.name}.`,
+        // Always carry the connection name, not just as a fallback for a
+        // missing upstream title/description. Some MCP servers (e.g. a
+        // remote toolkit's own meta-tools like a "search available tools"
+        // entry) report the identical title/description for every
+        // connection they're proxied through, so without this an agent
+        // with several connections to the same server sees several
+        // identically-labeled tools with no way to tell which connection
+        // each one is scoped to.
+        displayName: `${catalogEntry.title ?? catalogEntry.toolName} (${connection.name})`,
+        description: `${catalogEntry.description ?? `Connected MCP tool ${catalogEntry.toolName}.`} (via connection: ${connection.name})`,
         parametersSchema: inputSchema,
         pluginId: `mcp:${applicationKey ?? application.id}`,
         providerType: connection.transport === "local_stdio" ? "mcp_local_stdio" : "mcp_remote_http",

@@ -1432,7 +1432,7 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
     const connectedTool = tools.find((tool) => tool.providerType === "mcp_remote_http");
     expect(connectedTool).toMatchObject({
       name: expect.stringMatching(/^mcp\.kv-demo-[0-9a-f]{8}:kv-set$/),
-      displayName: "Set KV value",
+      displayName: "Set KV value (KV Demo)",
       providerType: "mcp_remote_http",
       risk: "write",
       applicationId: remoteTool.application.id,
@@ -1639,7 +1639,7 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
     expect(tools).toEqual(expect.arrayContaining([
       expect.objectContaining({
         name: expectedName,
-        displayName: "Local echo",
+        displayName: "Local echo (Local Demo)",
         providerType: "mcp_local_stdio",
         risk: "read",
         applicationId: localTool.application.id,
@@ -2075,6 +2075,40 @@ rl.on("line", (line) => {
       expect.stringMatching(new RegExp(`^mcp\\.kv-demo-${first.connection.id.replace(/-/g, "").slice(0, 8)}:kv-set$`)),
       expect.stringMatching(new RegExp(`^mcp\\.kv-demo-${second.connection.id.replace(/-/g, "").slice(0, 8)}:kv-set$`)),
     ]));
+  });
+
+  it("labels connected remote MCP tools with their own connection when the same app is connected twice", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { run } = await createIssueAndRun(db, company.id, agent.id);
+    const first = await createRemoteMcpTool(db, company.id, {
+      applicationKey: "kv-demo",
+      connectionName: "KV Demo Primary",
+      toolName: "kv_set",
+      title: "Set KV value",
+    });
+    const second = await createRemoteMcpTool(db, company.id, {
+      applicationKey: "kv-demo",
+      connectionName: "KV Demo Secondary",
+      toolName: "kv_set",
+      title: "Set KV value",
+    });
+    await allowAllToolsForAgent(db, company.id, agent.id);
+    const gateway = createTestToolGatewayService(db);
+    const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+
+    const connectedTools = (await gateway.listToolsForSession(session.token))
+      .filter((tool) => tool.providerType === "mcp_remote_http");
+    expect(connectedTools).toHaveLength(2);
+
+    const firstTool = connectedTools.find((tool) => tool.connectionId === first.connection.id);
+    const secondTool = connectedTools.find((tool) => tool.connectionId === second.connection.id);
+    // Same upstream title on both connections ("Set KV value") - without the
+    // connection name, an agent with both connections would see two
+    // identically-labeled tools and have no way to tell them apart.
+    expect(firstTool?.displayName).toBe("Set KV value (KV Demo Primary)");
+    expect(secondTool?.displayName).toBe("Set KV value (KV Demo Secondary)");
+    expect(firstTool?.displayName).not.toBe(secondTool?.displayName);
   });
 
   it.each([
