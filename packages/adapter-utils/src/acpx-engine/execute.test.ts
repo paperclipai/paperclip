@@ -2380,6 +2380,58 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(logs.some((entry) => entry.text.includes("Retained 1 sanitized ACPX Codex session JSONL"))).toBe(true);
   });
 
+  it("removes a closed raw run home when Codex created no sessions directory", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const sourceCodexHome = path.join(root, "source-codex-home");
+    const runId = "run-without-sessions";
+
+    await fs.mkdir(sourceCodexHome, { recursive: true });
+    await fs.writeFile(path.join(sourceCodexHome, "config.toml"), "model_provider = \"openai\"\n", "utf8");
+
+    const execute = createAcpxEngineExecutor({
+      adapterType: "codex_local",
+      createRuntime: () => ({
+        ensureSession: async () => ({
+          backendSessionId: "backend-session",
+          agentSessionId: "agent-session",
+          runtimeSessionName: "runtime-session",
+        }),
+        startTurn: () => ({
+          events: (async function* () {
+            yield { type: "done", stopReason: "end_turn" };
+          })(),
+          result: Promise.resolve({ status: "completed", stopReason: "end_turn" }),
+          cancel: async () => {},
+        }),
+        close: async () => {},
+      }) as never,
+    });
+
+    const logs: Array<{ stream: string; text: string }> = [];
+    const result = await execute({
+      runId,
+      agent: { id: "agent-1", companyId: "company-1" },
+      runtime: {},
+      config: {
+        agent: "codex",
+        stateDir,
+        env: { CODEX_HOME: sourceCodexHome },
+      },
+      context: {},
+      onLog: async (stream: "stdout" | "stderr", text: string) => {
+        logs.push({ stream, text });
+      },
+      onMeta: async () => {},
+    } as never);
+
+    expect(result.exitCode).toBe(0);
+    await expect(fs.stat(path.join(stateDir, "codex-run-homes", runId, "home"))).rejects.toThrow();
+    await expect(fs.stat(path.join(stateDir, "codex-session-retention", runId, "sessions"))).resolves.toBeDefined();
+    expect(logs.some((entry) => entry.text.includes("Retained 0 sanitized ACPX Codex session JSONL"))).toBe(true);
+    expect(logs.every((entry) => !entry.text.includes("INCIDENT"))).toBe(true);
+  });
+
   it("quarantines the raw run home and emits INCIDENT log when session retention fails (KEWL-3852)", async () => {
     const root = await makeTempRoot();
     const stateDir = path.join(root, "state");

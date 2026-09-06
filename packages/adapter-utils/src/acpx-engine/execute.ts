@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import fsSync from "node:fs";
+import type { Dirent } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execFile } from "node:child_process";
@@ -1030,7 +1031,16 @@ async function listCodexSessionJsonlFiles(input: {
 }): Promise<string[]> {
   // Fail closed. A read failure must reach the retention caller so the raw home
   // is quarantined instead of being mistaken for a successful zero-file copy.
-  const entries = await fs.readdir(input.dir, { withFileTypes: true });
+  let entries: Dirent[];
+  try {
+    entries = await fs.readdir(input.dir, { withFileTypes: true });
+  } catch (err) {
+    // A provider can complete before it creates the top-level sessions directory.
+    // That is a successful empty retention. A missing nested directory or any
+    // other read failure remains an incident and must reach the quarantine path.
+    if (input.relativeDir === undefined && isErrnoException(err, "ENOENT")) return [];
+    throw err;
+  }
   const files: string[] = [];
   for (const entry of entries) {
     const relativePath = input.relativeDir ? path.join(input.relativeDir, entry.name) : entry.name;
