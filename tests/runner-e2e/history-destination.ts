@@ -8,11 +8,16 @@ export function validateHistoryPublicDestination(input: {
   publicBaseUrl: string;
 }): RunnerE2EHistoryPublicDestination {
   const prefix = input.prefix.replace(/^\/+|\/+$/g, "");
+  const segments = prefix.split("/");
   if (
     !prefix ||
-    prefix
-      .split("/")
-      .some((segment) => !segment || segment === "." || segment === "..")
+    segments.some(
+      (segment) =>
+        !segment ||
+        segment === "." ||
+        segment === ".." ||
+        !/^[A-Za-z0-9._~-]+$/.test(segment),
+    )
   ) {
     throw new Error(
       "RUNNER_E2E_HISTORY_PREFIX must be a safe non-empty key prefix",

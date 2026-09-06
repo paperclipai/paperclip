@@ -49,5 +49,13 @@ describe("runner E2E summary links", () => {
         historyPrefix: null,
       }),
     ).toEqual([]);
+    expect(
+      runnerE2ESummaryLinks({
+        campaignId: "gha-1-1",
+        workflowRunUrl: null,
+        historyPublicBaseUrl: "https://reports.example.test",
+        historyPrefix: "runner-e2e#other",
+      }),
+    ).toEqual([]);
   });
 });
