@@ -126,6 +126,7 @@ Core fields:
 Operational fields:
 - timeoutSec (number, optional): run timeout in seconds
 - graceSec (number, optional): SIGTERM grace period in seconds
+- outputInactivityTimeoutMs (number | null, optional): output inactivity monitor around the opencode child. Resets whenever the child emits stdout/stderr bytes, with JSONL lines counted as heartbeat events. Defaults to 30_000 ms (30s) when unset or non-positive. Set to \`null\` to disable the monitor entirely (only do this for known-slow tasks; the platform-level 1h silent-run safety net still applies). On fire, the adapter sends SIGTERM to the process group, waits 5s, then SIGKILL, and surfaces the run as failed with errorMessage "monitor: no opencode activity for {N}s" and errorCode "opencode_output_inactivity_monitor".
 
 Notes:
 - OpenCode supports multiple providers and models. Use \

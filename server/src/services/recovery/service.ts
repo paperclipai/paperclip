@@ -178,6 +178,7 @@ type StrandedRecoveryCause =
   | "process_lost"
   | "provider_quota"
   | "codex_output_inactivity_monitor"
+  | "opencode_output_inactivity_monitor"
   | "workspace_validation_failed"
   | "configuration_incomplete"
   | "execution_review_participant_recovery"
@@ -209,6 +210,7 @@ function recoveryCauseTitle(cause: StrandedRecoveryCause) {
     case "process_lost":
       return "retries exhausted";
     case "codex_output_inactivity_monitor":
+    case "opencode_output_inactivity_monitor":
       return "output-inactivity retry exhausted";
     case "workspace_validation_failed":
       return "workspace validation failed";
@@ -284,6 +286,9 @@ function resolveStrandedRecoveryCause(
   if (latestRun?.errorCode === "process_lost") return "process_lost";
   if (latestRun?.errorCode === "codex_output_inactivity_monitor") {
     return "codex_output_inactivity_monitor";
+  }
+  if (latestRun?.errorCode === "opencode_output_inactivity_monitor") {
+    return "opencode_output_inactivity_monitor";
   }
   return "stranded_assigned_issue";
 }

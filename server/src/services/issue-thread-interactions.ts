@@ -1384,7 +1384,11 @@ export type AssigneeAgentStalenessCheck = {
   currentTarget: RequestConfirmationTarget | null;
 };
 
-export async function checkAssigneeAgentStaleness(db: Db | any, row: IssueThreadInteractionRow): Promise<AssigneeAgentStalenessCheck> {
+export async function checkAssigneeAgentStaleness(
+  db: Db | any,
+  row: IssueThreadInteractionRow,
+  opts: { lockForUpdate?: boolean } = {},
+): Promise<AssigneeAgentStalenessCheck> {
   if (!isTargetBoundInteractionKind(row.kind) || row.status !== "pending") {
     return { stale: false, isUntargeted: false, staleTarget: null, currentTarget: null };
   }
@@ -1397,6 +1401,7 @@ export async function checkAssigneeAgentStaleness(db: Db | any, row: IssueThread
     companyId: row.companyId,
     issueId: row.issueId,
     target,
+    lockForUpdate: opts.lockForUpdate ?? false,
   });
   const isCurrent =
     snapshot
@@ -1411,21 +1416,25 @@ export async function checkAssigneeAgentStaleness(db: Db | any, row: IssueThread
   return { stale: true, isUntargeted: false, staleTarget: target, currentTarget };
 }
 
-function buildAssigneeAgentExpiredResult(row: IssueThreadInteractionRow, reason: string) {
+function buildAssigneeAgentExpiredResult(
+  row: IssueThreadInteractionRow,
+  reason: string,
+  staleTarget: RequestConfirmationTarget | null = null,
+) {
   switch (row.kind) {
     case "request_confirmation":
       return {
         version: 1,
         outcome: "stale_target",
         reason,
-        staleTarget: null,
+        staleTarget,
       } as const;
     case "request_checkbox_confirmation":
       return {
         version: 1,
         outcome: "stale_target",
         reason,
-        staleTarget: null,
+        staleTarget,
       } as const;
     case "request_item_verdicts": {
       const interaction = hydrateInteraction(row) as RequestItemVerdictsInteraction;
@@ -1435,7 +1444,7 @@ function buildAssigneeAgentExpiredResult(row: IssueThreadInteractionRow, reason:
         reason,
         complete: false,
         items: interaction.result?.items ?? [],
-        staleTarget: null,
+        staleTarget,
       } as const;
     }
     case "ask_user_questions":
@@ -1451,7 +1460,7 @@ function buildAssigneeAgentExpiredResult(row: IssueThreadInteractionRow, reason:
         version: 1,
         outcome: "stale_target",
         reason,
-        staleTarget: null,
+        staleTarget,
       } as const;
   }
 }
@@ -3395,46 +3404,78 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
       if (issue.assigneeAgentId !== actor.agentId) {
         throw forbidden("Only the current assignee agent of an issue can expire its pending interaction cards");
       }
-      const current = await getPendingInteractionForResolution({ issue, interactionId });
-      const row: IssueThreadInteractionRow = current;
-      if (row.kind === "suggest_tasks") {
-        throw unprocessable("suggest_tasks interactions cannot be expired by the assignee agent");
-      }
-      if (row.createdByAgentId === actor.agentId) {
-        throw unprocessable("Agents cannot expire their own interactions through this route; use the normal resolution flow");
-      }
-      const staleness = await checkAssigneeAgentStaleness(db, row);
-      if (!staleness.stale) {
-        throw conflict("Interaction is not provably stale (targeted at a current plan revision); only a board actor can resolve it");
-      }
-      const reason = staleness.isUntargeted
-        ? "Stale untargeted card expired by the issue assignee agent"
-        : "Card targets a superseded plan document revision; expired by the issue assignee agent";
 
-      const now = new Date();
-      const [updated] = await db
-        .update(issueThreadInteractions)
-        .set({
-          status: "expired",
-          result: buildAssigneeAgentExpiredResult(row, reason),
-          resolvedByAgentId: actor.agentId,
-          resolvedByUserId: null,
-          resolvedAt: now,
-          updatedAt: now,
-        })
-        .where(and(
-          eq(issueThreadInteractions.id, interactionId),
-          eq(issueThreadInteractions.issueId, issue.id),
-          eq(issueThreadInteractions.status, "pending"),
-        ))
-        .returning();
+      const updatedRow = await db.transaction(async (tx) => {
+        // FOR UPDATE on the issue row serializes this expiry against concurrent
+        // reassignment and terminal-status transitions so the assignee check and
+        // the stale-target decision below run against a stable issue state.
+        const [issueRow] = await tx
+          .select({ id: issues.id, status: issues.status, assigneeAgentId: issues.assigneeAgentId })
+          .from(issues)
+          .where(and(eq(issues.id, issue.id), eq(issues.companyId, issue.companyId)))
+          .for("update");
+        if (!issueRow) {
+          throw notFound("Issue not found");
+        }
+        if (isTerminalIssueStatus(issueRow.status)) {
+          throw interactionIssueClosedError();
+        }
+        if (issueRow.assigneeAgentId !== actor.agentId) {
+          throw forbidden("Only the current assignee agent of an issue can expire its pending interaction cards");
+        }
 
-      if (!updated) {
-        throw conflict("Interaction has already been resolved");
-      }
+        const row = await tx
+          .select()
+          .from(issueThreadInteractions)
+          .where(eq(issueThreadInteractions.id, interactionId))
+          .then((rows) => rows[0] ?? null);
+        if (!row || row.companyId !== issue.companyId || row.issueId !== issue.id) {
+          throw notFound("Interaction not found");
+        }
+        if (row.status !== "pending") {
+          throw conflict("Interaction has already been resolved");
+        }
+        if (row.kind === "suggest_tasks") {
+          throw unprocessable("suggest_tasks interactions cannot be expired by the assignee agent");
+        }
+        if (row.createdByAgentId === actor.agentId) {
+          throw unprocessable("Agents cannot expire their own interactions through this route; use the normal resolution flow");
+        }
+
+        const staleness = await checkAssigneeAgentStaleness(tx, row, { lockForUpdate: true });
+        if (!staleness.stale) {
+          throw conflict("Interaction is not provably stale (targeted at a current plan revision); only a board actor can resolve it");
+        }
+        const reason = staleness.isUntargeted
+          ? "Stale untargeted card expired by the issue assignee agent"
+          : "Card targets a superseded plan document revision; expired by the issue assignee agent";
+
+        const now = new Date();
+        const [updated] = await tx
+          .update(issueThreadInteractions)
+          .set({
+            status: "expired",
+            result: buildAssigneeAgentExpiredResult(row, reason, staleness.staleTarget),
+            resolvedByAgentId: actor.agentId,
+            resolvedByUserId: null,
+            resolvedAt: now,
+            updatedAt: now,
+          })
+          .where(and(
+            eq(issueThreadInteractions.id, interactionId),
+            eq(issueThreadInteractions.issueId, issue.id),
+            eq(issueThreadInteractions.status, "pending"),
+          ))
+          .returning();
+
+        if (!updated) {
+          throw conflict("Interaction has already been resolved");
+        }
+        return updated;
+      });
 
       await touchIssue(db, issue.id);
-      const expired = hydrateInteraction(updated);
+      const expired = hydrateInteraction(updatedRow);
       await emitInteractionResolvedTelemetry(db, expired);
       return expired;
     },

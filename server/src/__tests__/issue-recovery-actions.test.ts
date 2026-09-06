@@ -564,6 +564,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     ["process_lost", undefined],
     ["adapter_failed", "successful_run_missing_state"],
     ["codex_output_inactivity_monitor", undefined],
+    ["opencode_output_inactivity_monitor", undefined],
     ["workspace_validation_failed", "workspace_validation_failed"],
     ["adapter_failed", undefined],
   ] as const)(

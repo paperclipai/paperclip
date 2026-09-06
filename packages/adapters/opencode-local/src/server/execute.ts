@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { inferOpenAiCompatibleBiller, type AdapterExecutionContext, type AdapterExecutionResult } from "@paperclipai/adapter-utils";
+import { inferOpenAiCompatibleBiller, instructionsFailureMessage, readInstructionsFileSafe, type AdapterExecutionContext, type AdapterExecutionResult } from "@paperclipai/adapter-utils";
 import {
   adapterExecutionTargetIsRemote,
   adapterExecutionTargetRemoteCwd,
@@ -56,6 +56,13 @@ import {
 } from "./models.js";
 import { removeMaintainerOnlySkillSymlinks } from "@paperclipai/adapter-utils/server-utils";
 import { prepareOpenCodeRuntimeConfig } from "./runtime-config.js";
+import {
+  DEFAULT_OPENCODE_OUTPUT_INACTIVITY_TIMEOUT_MS,
+  OPENCODE_OUTPUT_INACTIVITY_MONITOR_SIGTERM_GRACE_MS,
+  createOpenCodeOutputInactivityMonitor,
+  formatOpenCodeInactivityMonitorErrorMessage,
+  resolveOpenCodeInactivityTimeout,
+} from "./output-inactivity-monitor.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
@@ -78,6 +85,29 @@ function parseModelProvider(model: string | null): string | null {
 
 function resolveOpenCodeBiller(env: Record<string, string>, provider: string | null): string {
   return inferOpenAiCompatibleBiller(env, null) ?? provider ?? "unknown";
+}
+
+function signalOpenCodeChild(
+  target: { pid: number | null; processGroupId: number | null },
+  signal: NodeJS.Signals,
+): boolean {
+  if (process.platform !== "win32" && target.processGroupId && target.processGroupId > 0) {
+    try {
+      process.kill(-target.processGroupId, signal);
+      return true;
+    } catch {
+      // fall through to direct child signal
+    }
+  }
+  if (target.pid && target.pid > 0) {
+    try {
+      process.kill(target.pid, signal);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  return false;
 }
 
 const REMOTE_OPENCODE_MODELS_PROBE_DEFAULT_TIMEOUT_SEC = 20;
@@ -511,17 +541,19 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const instructionsDir = resolvedInstructionsFilePath ? `${path.dirname(resolvedInstructionsFilePath)}/` : "";
     let instructionsPrefix = "";
     if (resolvedInstructionsFilePath) {
-      try {
-        const instructionsContents = await fs.readFile(resolvedInstructionsFilePath, "utf8");
+      const readResult = await readInstructionsFileSafe(resolvedInstructionsFilePath);
+      if (readResult.ok) {
         instructionsPrefix =
-          `${instructionsContents}\n\n` +
+          `${readResult.contents}\n\n` +
           `The above agent instructions were loaded from ${resolvedInstructionsFilePath}. ` +
           `Resolve any relative file references from ${instructionsDir}.\n\n`;
-      } catch (err) {
-        const reason = err instanceof Error ? err.message : String(err);
+      } else if (readResult.error === "EISDIR") {
+        throw new Error(instructionsFailureMessage(readResult.path));
+      } else {
+        const reason = readResult.error === "OTHER" ? readResult.reason : readResult.error;
         await onLog(
           "stdout",
-          `[paperclip] Warning: could not read agent instructions file "${resolvedInstructionsFilePath}": ${reason}\n`,
+          `[paperclip] Warning: could not read agent instructions file "${readResult.path}": ${reason}\n`,
         );
       }
     }
@@ -596,6 +628,19 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       return args;
     };
 
+    const monitorResolution = resolveOpenCodeInactivityTimeout(config.outputInactivityTimeoutMs);
+    if (monitorResolution.mode === "disabled") {
+      await onLog(
+        "stdout",
+        `[paperclip] OpenCode output inactivity monitor is DISABLED via adapterConfig.outputInactivityTimeoutMs=null. Hung opencode runs will only be detected by the platform-level silent-run safety net.\n`,
+      );
+    } else if (monitorResolution.mode === "default" && "reason" in monitorResolution) {
+      await onLog(
+        "stdout",
+        `[paperclip] Ignoring non-positive adapterConfig.outputInactivityTimeoutMs; falling back to default ${monitorResolution.timeoutMs}ms.\n`,
+      );
+    }
+
     const runAttempt = async (resumeSessionId: string | null) => {
       const args = buildArgs(resumeSessionId);
       if (onMeta) {
@@ -612,23 +657,98 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         });
       }
 
-      const proc = await runAdapterExecutionTargetProcess(runId, runtimeExecutionTarget, command, args, {
-        cwd,
-        env: preparedRuntimeConfig.env,
-        stdin: prompt,
-        timeoutSec,
-        graceSec,
-        onSpawn,
-        onRuntimeProgress: ctx.onRuntimeProgress,
-        onLog,
-        runLogTail: paperclipBridge?.runLogTail,
-        settleRunDisposition: paperclipBridge?.settleRunDisposition,
-      });
-      return {
-        proc,
-        rawStderr: proc.stderr,
-        parsed: parseOpenCodeJsonl(proc.stdout),
+      let monitorFired = false;
+      let monitorTerminationSignal: NodeJS.Signals | null = null;
+      let monitorElapsedMs = 0;
+      let killTarget: { pid: number | null; processGroupId: number | null } | null = null;
+      let sigkillTimer: ReturnType<typeof setTimeout> | null = null;
+      let monitorLogPromise: Promise<unknown> | null = null;
+
+      const monitor =
+        monitorResolution.mode === "disabled"
+          ? null
+          : createOpenCodeOutputInactivityMonitor({
+            timeoutMs: monitorResolution.timeoutMs,
+            onFire: (state) => {
+              monitorFired = true;
+              monitorElapsedMs = (state.firedAt ?? Date.now()) - state.lastEventAt;
+              const elapsedSec = Math.round(monitorElapsedMs / 1000);
+              const timeoutSecLabel = Math.round(monitorResolution.timeoutMs / 1000);
+              const message = formatOpenCodeInactivityMonitorErrorMessage(monitorElapsedMs);
+              const logLine =
+                `[paperclip] adapter.invoke ${message}; ` +
+                `timeoutMs=${monitorResolution.timeoutMs} elapsedSinceLastEventMs=${monitorElapsedMs} ` +
+                `outputChunkCount=${state.outputChunkCount} outputBytes=${state.outputBytes} ` +
+                `parsedEvents=${state.parsedEventCount} ` +
+                `(timeout=${timeoutSecLabel}s elapsed=${elapsedSec}s); ` +
+                `terminating opencode child via SIGTERM (5s grace, then SIGKILL).\n`;
+              monitorLogPromise = Promise.resolve(onLog("stderr", logLine)).catch(() => {});
+              const target = killTarget;
+              if (!target || (target.pid == null && target.processGroupId == null)) {
+                return;
+              }
+              const sentSig = signalOpenCodeChild(target, "SIGTERM");
+              if (sentSig) monitorTerminationSignal = "SIGTERM";
+              sigkillTimer = setTimeout(() => {
+                sigkillTimer = null;
+                const stillSent = signalOpenCodeChild(target, "SIGKILL");
+                if (stillSent) monitorTerminationSignal = "SIGKILL";
+              }, OPENCODE_OUTPUT_INACTIVITY_MONITOR_SIGTERM_GRACE_MS);
+              if (typeof (sigkillTimer as { unref?: () => void }).unref === "function") {
+                (sigkillTimer as { unref: () => void }).unref();
+              }
+            },
+          });
+
+      const wrappedOnSpawn = async (meta: { pid: number; processGroupId: number | null; startedAt: string }) => {
+        killTarget = { pid: meta.pid ?? null, processGroupId: meta.processGroupId };
+        if (onSpawn) {
+          await onSpawn(meta);
+        }
       };
+
+      const wrappedOnLog = async (stream: "stdout" | "stderr", chunk: string) => {
+        monitor?.noteOutputChunk(stream, chunk);
+        await onLog(stream, chunk);
+      };
+
+      try {
+        const proc = await runAdapterExecutionTargetProcess(runId, runtimeExecutionTarget, command, args, {
+          cwd,
+          env: preparedRuntimeConfig.env,
+          stdin: prompt,
+          timeoutSec,
+          graceSec,
+          onSpawn: wrappedOnSpawn,
+          onRuntimeProgress: ctx.onRuntimeProgress,
+          onLog: wrappedOnLog,
+          runLogTail: paperclipBridge?.runLogTail,
+          settleRunDisposition: paperclipBridge?.settleRunDisposition,
+        });
+        return {
+          proc,
+          rawStderr: proc.stderr,
+          parsed: parseOpenCodeJsonl(proc.stdout),
+          monitor: monitorFired
+            ? {
+              fired: true as const,
+              terminationSignal: monitorTerminationSignal,
+              elapsedMsSinceLastEvent: monitorElapsedMs,
+              timeoutMs: (monitorResolution.mode === "disabled" ? DEFAULT_OPENCODE_OUTPUT_INACTIVITY_TIMEOUT_MS : monitorResolution.timeoutMs ?? DEFAULT_OPENCODE_OUTPUT_INACTIVITY_TIMEOUT_MS),
+            }
+            : { fired: false as const },
+        };
+      } finally {
+        monitor?.stop();
+        if (sigkillTimer) {
+          clearTimeout(sigkillTimer);
+          sigkillTimer = null;
+        }
+        if (monitorLogPromise) {
+          await monitorLogPromise;
+          monitorLogPromise = null;
+        }
+      }
     };
 
     const toResult = (
@@ -636,9 +756,47 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         proc: { exitCode: number | null; signal: string | null; timedOut: boolean; stdout: string; stderr: string; errorCode?: string | null };
         rawStderr: string;
         parsed: ReturnType<typeof parseOpenCodeJsonl>;
+        monitor?:
+          | { fired: false }
+          | { fired: true; terminationSignal: NodeJS.Signals | null; elapsedMsSinceLastEvent: number; timeoutMs: number };
       },
       clearSessionOnMissingSession = false,
     ): AdapterExecutionResult => {
+      if (attempt.monitor?.fired) {
+        return {
+          exitCode: null,
+          signal: attempt.monitor.terminationSignal ?? attempt.proc.signal,
+          timedOut: false,
+          errorMessage: formatOpenCodeInactivityMonitorErrorMessage(attempt.monitor.elapsedMsSinceLastEvent),
+          errorCode: "opencode_output_inactivity_monitor",
+          errorFamily: null,
+          usage: {
+            inputTokens: attempt.parsed.usage.inputTokens,
+            outputTokens: attempt.parsed.usage.outputTokens,
+            cachedInputTokens: attempt.parsed.usage.cachedInputTokens,
+          },
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          provider: parseModelProvider(model || null),
+          biller: resolveOpenCodeBiller(runtimeEnv, parseModelProvider(model || null)),
+          model: model || null,
+          billingType: "unknown",
+          costUsd: null,
+          resultJson: {
+            stdout: attempt.proc.stdout,
+            stderr: attempt.proc.stderr,
+            outputInactivityMonitor: {
+              kind: "output_inactivity",
+              timeoutMs: attempt.monitor.timeoutMs,
+              elapsedMsSinceLastEvent: attempt.monitor.elapsedMsSinceLastEvent,
+              terminationSignal: attempt.monitor.terminationSignal,
+            },
+          },
+          summary: attempt.parsed.summary,
+          clearSession: false,
+        };
+      }
       if (attempt.proc.timedOut) {
         return {
           exitCode: attempt.proc.exitCode,
