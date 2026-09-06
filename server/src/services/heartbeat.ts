@@ -5381,6 +5381,15 @@ export function shouldDeferFollowupWakeForSameIssue(input: {
   return false;
 }
 
+export function shouldBypassActiveIssueExecutionForPeerMentionWake(input: {
+  contextSnapshot: Record<string, unknown> | null | undefined;
+  isSameExecutionAgent: boolean;
+}) {
+  const wakeReason = readNonEmptyString(input.contextSnapshot?.wakeReason);
+  const source = readNonEmptyString(input.contextSnapshot?.source);
+  return wakeReason === "issue_comment_mentioned" && source === "comment.mention" && !input.isSameExecutionAgent;
+}
+
 const SESSION_CONFIGURED_MODEL_KEY = "__paperclipConfiguredModel";
 const SESSION_CONFIG_FINGERPRINT_KEY = "__paperclipConfigFingerprint";
 const SESSION_CONFIG_FINGERPRINT_VERSION_KEY =
@@ -24258,9 +24267,9 @@ export function heartbeatService(
     }
 
     if (issueId) {
-      // Mention-triggered wakes can request input from another agent, but they must
-      // still respect the issue execution lock so a second agent cannot start on the
-      // same issue workspace while the assignee already has a live run.
+      // Mention-triggered peer wakes request bounded input from another agent.
+      // They do not take the issue execution lock unless the mentioned agent is
+      // also the assignee, so they can run during an active assignee handoff.
       const agentNameKey = normalizeAgentNameKey(agent.name);
 
       const cancelledRunsToEmit: (typeof heartbeatRuns.$inferSelect)[] = [];
@@ -24833,9 +24842,15 @@ export function heartbeatService(
             }) &&
             activeExecutionRun.status === "running" &&
             isSameExecutionAgent;
+          const isPeerMentionWake = shouldBypassActiveIssueExecutionForPeerMentionWake({
+            contextSnapshot: enrichedContextSnapshot,
+            isSameExecutionAgent,
+          });
           const availableActiveExecutionRun = isSameExecutionAgent
             ? filterZombieCoalesceTarget(activeExecutionRun, liveRunExecutions)
-            : activeExecutionRun;
+            : isPeerMentionWake
+              ? null
+              : activeExecutionRun;
 
           if (
             isSameExecutionAgent &&

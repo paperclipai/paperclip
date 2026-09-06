@@ -37,6 +37,7 @@ import {
   requiresPushCapabilityPreflight,
   resolveWorkspaceAfterLowTrustPreflight,
   resolveRuntimeSessionParamsForWorkspace,
+  shouldBypassActiveIssueExecutionForPeerMentionWake,
   shouldDeferFollowupWakeForSameIssue,
   stripHostWorkspaceProvisionForLowTrustSandbox,
   stripWorkspaceRuntimeFromExecutionRunConfig,
@@ -2059,6 +2060,44 @@ describe("shouldDeferFollowupWakeForSameIssue", () => {
         isSameExecutionAgent: true,
         wakeCommentId: null,
         forceFreshSession: false,
+      }),
+    ).toBe(false);
+  });
+});
+
+describe("shouldBypassActiveIssueExecutionForPeerMentionWake", () => {
+  it("allows a peer issue-comment mention to queue during an active issue execution", () => {
+    expect(
+      shouldBypassActiveIssueExecutionForPeerMentionWake({
+        contextSnapshot: { wakeReason: "issue_comment_mentioned", source: "comment.mention" },
+        isSameExecutionAgent: false,
+      }),
+    ).toBe(true);
+  });
+
+  it("keeps same-agent mention follow-ups behind the active issue execution", () => {
+    expect(
+      shouldBypassActiveIssueExecutionForPeerMentionWake({
+        contextSnapshot: { wakeReason: "issue_comment_mentioned", source: "comment.mention" },
+        isSameExecutionAgent: true,
+      }),
+    ).toBe(false);
+  });
+
+  it("does not bypass for ordinary issue comments", () => {
+    expect(
+      shouldBypassActiveIssueExecutionForPeerMentionWake({
+        contextSnapshot: { wakeReason: "issue_commented", source: "issue.comment" },
+        isSameExecutionAgent: false,
+      }),
+    ).toBe(false);
+  });
+
+  it("does not bypass without the structured mention source", () => {
+    expect(
+      shouldBypassActiveIssueExecutionForPeerMentionWake({
+        contextSnapshot: { wakeReason: "issue_comment_mentioned" },
+        isSameExecutionAgent: false,
       }),
     ).toBe(false);
   });
