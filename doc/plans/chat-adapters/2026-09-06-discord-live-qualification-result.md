@@ -43,12 +43,12 @@ No current code-audit blocker is recorded here. Discord is nevertheless not prod
 
 ## Local regression evidence
 
-- Final pushed merge revision: `da8f83d6c9befe7bf958f6d9cf12a95fc7e59e88`.
+- Final Discord implementation revision: `83018c688` (log-redaction hardening); parent merge revision: `da8f83d6c9befe7bf958f6d9cf12a95fc7e59e88`.
 - Before the final merge, Discord-focused adapter/runtime tests passed 41/41.
 - Before the final merge, fresh PostgreSQL Discord integration tests passed 2/2, including concurrent identity claims.
 - All migrations and migration-safety checks passed, including global Discord Application ID uniqueness.
-- The full chat-channel PostgreSQL integration suite passed 188/188 on a fresh migrated database, merge-conflict-focused server tests passed 355/355, and the deterministic five-provider browser suite passed 5/5.
-- Shared, database, server, and UI typechecks, token gates, and both working-tree checks passed.
+- On the parent merge, the full chat-channel PostgreSQL integration suite passed 188/188 on a fresh migrated database, merge-conflict-focused server tests passed 355/355, and the deterministic five-provider browser suite passed 5/5.
+- On the Discord implementation revision, the 42-test Discord adapter/runtime subset and 34-test Discord/OpenAPI/UI contract subset passed, along with server/UI typechecks, token gates, and both working-tree checks.
 - The Discord patch applied cleanly to a pristine `@chat-adapter/discord@4.39.0` package, and the patched distribution passed syntax and compatibility checks. CI will regenerate the PR lockfile artifact before its frozen install, as required by repository policy.
 
 This evidence supports implementation integrity but does not replace provider login, installation, Message Content intent, effective channel permission, Gateway, rate-limit, reconnect, native thread, file, action, identity-governance, negative-reach, token-rotation, and cleanup proof.

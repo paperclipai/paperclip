@@ -4,7 +4,7 @@
 
 ## 2026-09-06 merged-build ingress and FIFO retest
 
-The final pushed merge commit is `da8f83d6c9befe7bf958f6d9cf12a95fc7e59e88`. A first pair of direct messages sent against that build exposed the expected weakness of the temporary test ingress rather than an adapter failure: Cloudflare had retired the account-less quick-tunnel hostname, so Slack accepted the messages while Paperclip received no callbacks. After a new tunnel was created and Slack's Events API and Interactivity URLs were both re-verified, Slack's enabled delayed-event recovery delivered those two missed events. Paperclip processed each once and returned exact `SLACK-MERGED-A-0906` and `SLACK-MERGED-B-0906` responses in order.
+The live-tested merge commit is `da8f83d6c9befe7bf958f6d9cf12a95fc7e59e88`. A first pair of direct messages sent against that build exposed the expected weakness of the temporary test ingress rather than an adapter failure: Cloudflare had retired the account-less quick-tunnel hostname, so Slack accepted the messages while Paperclip received no callbacks. After a new tunnel was created and Slack's Events API and Interactivity URLs were both re-verified, Slack's enabled delayed-event recovery delivered those two missed events. Paperclip processed each once and returned exact `SLACK-MERGED-A-0906` and `SLACK-MERGED-B-0906` responses in order. Later implementation revision `83018c688` changes only Discord log redaction plus documentation and setup copy relative to that tested Slack runtime.
 
 A second pair sent 300 ms apart on the healthy ingress returned exact `SLACK-MERGED-C-0906` and `SLACK-MERGED-D-0906` responses in FIFO order. Because Slack DMs are a linear conversation, both messages intentionally used one active Paperclip task and serialized two agent turns. Each turn first published `Maya is working…` and then edited that same Slack message in place to the exact final. Across the four deliveries, the durable ledger contains four processed inbound rows and eight published rows (four working/final pairs), all with `attempts=1`, no error, and no pending, retry, failed, or ambiguous publication. This is positive recovery and queue evidence; the expired hostname confirms that a stable HTTPS origin is mandatory for production.
 
@@ -53,7 +53,8 @@ The outbound-file and tested rich-interaction gaps are now closed. Broader modal
 ## Current source and evidence boundary
 
 - Pre-merge source revision for the historical breadth checks below: `77ad5383e3a8badf7b1b0933a7e9c66469186d55`
-- Final pushed and most recently live-rerun source revision: `da8f83d6c9befe7bf958f6d9cf12a95fc7e59e88`
+- Most recently live-rerun Slack source revision: `da8f83d6c9befe7bf958f6d9cf12a95fc7e59e88`
+- Later implementation revision (Discord log redaction and documentation/setup-copy follow-up only): `83018c688`
 - The synthetic-command receipt, native thread binding, ordered task-control, coherent progress/status/final lane, explicit attachment binding, native-action lifecycle, final-presentation lineage, and top-level DM reaction-generation fixes are present in the final merge revision. The historical breadth checks exercised the pre-merge revision above; the merged-build section records the final live rerun.
 - Live checkpoint: 2026-09-05 through 2026-09-06
 - Current live endpoint: `2782e758-8e1e-47e3-a5aa-6a8359b1c23c`

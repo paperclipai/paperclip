@@ -4,7 +4,7 @@
 
 ## 2026-09-06 merged-build tunnel-rotation retest
 
-The final pushed merge commit is `da8f83d6c9befe7bf958f6d9cf12a95fc7e59e88`. After the account-less Cloudflare test tunnel expired, the bot webhook was rotated to the new verified URL with the already-vaulted token and webhook secret; neither credential was exposed. Telegram reported zero queued updates and no provider-side webhook error. A fresh `new` followed by a `task` command created one task and produced exact `TELEGRAM-MERGED-A-0906`. Its working placeholder and final share provider message ID `-1004415501660:69`, proving that the final edited the status in place. Both inbound command deliveries processed once and both publications completed with `attempts=1`, no error, and no pending, retry, failed, or ambiguous row. A plain unaddressed group follow-up was intentionally not delivered to the bot under Telegram privacy mode.
+The live-tested merge commit is `da8f83d6c9befe7bf958f6d9cf12a95fc7e59e88`. After the account-less Cloudflare test tunnel expired, the bot webhook was rotated to the new verified URL with the already-vaulted token and webhook secret; neither credential was exposed. Telegram reported zero queued updates and no provider-side webhook error. A fresh `new` followed by a `task` command created one task and produced exact `TELEGRAM-MERGED-A-0906`. Its working placeholder and final share provider message ID `-1004415501660:69`, proving that the final edited the status in place. Both inbound command deliveries processed once and both publications completed with `attempts=1`, no error, and no pending, retry, failed, or ambiguous row. A plain unaddressed group follow-up was intentionally not delivered to the bot under Telegram privacy mode. Later implementation revision `83018c688` changes only Discord log redaction plus documentation and setup copy relative to that tested Telegram runtime.
 
 ## 2026-09-06 final answer/recovery audit
 
@@ -41,7 +41,8 @@ The live bot was installed in group `pc-e2e-telegram-0906`; the endpoint remaine
 ## Scope
 
 - Pre-merge source revision for the historical breadth checks below: `77ad5383e3a8badf7b1b0933a7e9c66469186d55`
-- Final pushed and most recently live-rerun source revision: `da8f83d6c9befe7bf958f6d9cf12a95fc7e59e88`
+- Most recently live-rerun Telegram source revision: `da8f83d6c9befe7bf958f6d9cf12a95fc7e59e88`
+- Later implementation revision (Discord log redaction and documentation/setup-copy follow-up only): `83018c688`
 - Telegram provider-ordering, slash-command receipt, false internal-drain duplicate, stale-action denial, endpoint-generation fencing, command admission, provider-failure classification, coherent progress/status/final lane, native-confirmation lifecycle, and exact final-presentation lineage fixes are present in the final merge revision. The historical breadth checks exercised the pre-merge revision above; the merged-build section records the final live rerun.
 - Provider: Telegram, dedicated test bot in a private chat
 - Live checkpoint: 2026-09-05 through 2026-09-06

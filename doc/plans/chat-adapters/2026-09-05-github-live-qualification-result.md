@@ -15,7 +15,7 @@ The evidence boundary is unchanged but is now quantified more precisely:
 ## Current-run evidence and blocker
 
 - Last pre-merge setup-attempt source revision: `77ad5383e3a8badf7b1b0933a7e9c66469186d55`
-- Current locally verified merge revision: `da8f83d6c9befe7bf958f6d9cf12a95fc7e59e88`
+- Latest implementation revision covered by focused checks: `83018c688`
 - Signed setup-ping, one-time secret generation, App-identity, lifecycle, admission, and runtime hardening are committed in the current branch.
 
 The current endpoint is back in the honest pre-connect state: `draft`, at the provider-setup step, with no App identity, App ID, private key, installation, resource, conversation, delivery, publication, or signed setup ping recorded. This is expected because the GitHub App has not been created yet.
@@ -52,7 +52,7 @@ The branch includes the following GitHub safety and concurrency behavior. These 
 
 None of these local checks substitutes for exercising the same paths against GitHub's real App registration, installation, webhook redelivery, and suspension UI.
 
-On final pushed merge revision `da8f83d6c9befe7bf958f6d9cf12a95fc7e59e88`, the full chat-channel PostgreSQL integration suite passed 188/188 on fresh migrated database `chat_adapters_test_20260906_1140`; merge-conflict-focused server tests passed 355/355; and the deterministic browser suite `tests/e2e/chat-adapters-ui.spec.ts` passed 5/5 across Slack, GitHub, Teams, Discord, and Telegram. Shared, database, server, and UI typechecks, migration safety, token gates, a clean Discord patch application against the pristine package, and both working-tree checks passed. CI owns `pnpm-lock.yaml` and regenerates the PR lockfile artifact before its frozen install. Earlier provider-focused results remain valid regression evidence. These local results strengthen the setup path but do not change the live-provider blocker or qualification status.
+On merge revision `da8f83d6c9befe7bf958f6d9cf12a95fc7e59e88`, the full chat-channel PostgreSQL integration suite passed 188/188 on fresh migrated database `chat_adapters_test_20260906_1140`; merge-conflict-focused server tests passed 355/355; and the deterministic browser suite `tests/e2e/chat-adapters-ui.spec.ts` passed 5/5 across Slack, GitHub, Teams, Discord, and Telegram. Implementation revision `83018c688` then passed the 42-test Discord adapter/runtime subset, the 34-test Discord/OpenAPI/UI contract subset, server/UI typechecks, token gates, a clean Discord patch application against the pristine package, and both working-tree checks. CI owns `pnpm-lock.yaml` and regenerates the PR lockfile artifact before its frozen install. Earlier provider-focused results remain valid regression evidence. These local results strengthen the setup path but do not change the live-provider blocker or qualification status.
 
 Actual GitHub App registration and current-build provider delivery remain unexecuted. The signed-in GitHub session is stopped at GitHub's six-digit sudo-mode verification prompt. Until that account challenge is completed, no current App credentials, installation, signed ping, issue/PR/review event, reaction, edit, file fallback, or outbound publication can be qualified live.
 
