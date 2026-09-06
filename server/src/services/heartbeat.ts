@@ -18725,6 +18725,36 @@ export function heartbeatService(
             "Dispatching alongside a live shared-workspace holder",
           );
         }
+      } else if (
+        effectiveExecutionWorkspaceMode === "shared_workspace" &&
+        issueRef?.projectId &&
+        !issueRef?.projectWorkspaceId
+      ) {
+        // Same shared_workspace dispatch, but the holder check above never ran:
+        // `findSharedWorkspaceHolder` is only called when `issueRef.projectWorkspaceId`
+        // is set, so an issue that belongs to a project but was never bound to
+        // that project's workspace row gets no holder lookup, no
+        // `WorkspaceBusyDeferral`, and no collision detection at all — it is
+        // dispatched into the project's shared cwd exactly as if no other run
+        // could be there. This is the "silent" failure mode: nothing above
+        // this branch would otherwise say so. Log it loudly so an operator can
+        // find and fix the missing binding before two runs collide in the same
+        // working directory.
+        logger.warn(
+          {
+            event: "shared_workspace_dispatch_missing_project_workspace_binding",
+            runId: run.id,
+            issueId: issueRef.id,
+            issueIdentifier: issueRef.identifier,
+            projectId: issueRef.projectId,
+          },
+          "Dispatching a shared_workspace-mode run whose issue has a project but no " +
+            "projectWorkspaceId bound to it; the shared-workspace holder check is " +
+            "skipped entirely for this run and it can collide with any other run " +
+            "that IS bound to this project's shared workspace, with no deferral " +
+            "and no warning until this line. Bind the issue to its project's " +
+            "workspace before dispatch to get holder tracking back.",
+        );
       }
       const workspaceManagedConfig = buildExecutionWorkspaceAdapterConfig({
         agentConfig: config,
