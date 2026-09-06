@@ -410,6 +410,89 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
     expect(checkoutActivity).toHaveLength(0);
   });
 
+  it("attaches an unassigned heartbeat_timer run to its checkout mutation boundary", async () => {
+    const { companyId, agentId, currentRunId } = await seedCompanyAgentAndRuns();
+    const peerAgentId = randomUUID();
+    const issueId = randomUUID();
+    const peerIssueId = randomUUID();
+    await db.update(heartbeatRuns).set({
+      invocationSource: "timer",
+      contextSnapshot: { wakeReason: "heartbeat_timer" },
+    }).where(eq(heartbeatRuns.id, currentRunId));
+    await db.insert(agents).values({
+      id: peerAgentId,
+      companyId,
+      name: "PeerAgent",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(issues).values([
+      {
+        id: issueId,
+        companyId,
+        title: "Timer run checkout target",
+        status: "todo",
+        priority: "high",
+        assigneeAgentId: agentId,
+      },
+      {
+        id: peerIssueId,
+        companyId,
+        title: "Peer boundary",
+        status: "todo",
+        priority: "high",
+        assigneeAgentId: peerAgentId,
+      },
+    ]);
+
+    const app = createApp(agentActor(companyId, agentId, currentRunId));
+    const checkout = await request(app)
+      .post(`/api/issues/${issueId}/checkout`)
+      .send({ agentId, expectedStatuses: ["todo"] });
+    expect(checkout.status, JSON.stringify(checkout.body)).toBe(200);
+
+    const run = await db.select({ contextSnapshot: heartbeatRuns.contextSnapshot })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, currentRunId))
+      .then((rows) => rows[0]);
+    expect(run?.contextSnapshot).toMatchObject({
+      wakeReason: "heartbeat_timer",
+      issueId,
+      taskId: issueId,
+      checkoutContextSource: "issue.checkout",
+    });
+
+    const update = await request(app)
+      .patch(`/api/issues/${issueId}`)
+      .send({ title: "Timer-scoped update" });
+    expect(update.status, JSON.stringify(update.body)).toBe(200);
+
+    const comment = await request(app)
+      .post(`/api/issues/${issueId}/comments`)
+      .send({ body: "Timer-scoped comment" });
+    expect(comment.status, JSON.stringify(comment.body)).toBe(201);
+
+    const unassignedRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: unassignedRunId,
+      companyId,
+      agentId,
+      status: "running",
+      invocationSource: "timer",
+      contextSnapshot: { wakeReason: "heartbeat_timer" },
+      startedAt: new Date(),
+    });
+    const crossBoundary = await request(createApp(agentActor(companyId, agentId, unassignedRunId)))
+      .patch(`/api/issues/${peerIssueId}`)
+      .send({ title: "Must stay denied" });
+    expect(crossBoundary.status, JSON.stringify(crossBoundary.body)).toBe(403);
+    expect(crossBoundary.body?.details?.code).toBe("cross_issue_influence_run_context_required");
+  });
+
   it("restricts admin force-release to board users with company access and writes an audit event", async () => {
     const { companyId, agentId, failedRunId, currentRunId } = await seedCompanyAgentAndRuns();
     const issueId = randomUUID();
