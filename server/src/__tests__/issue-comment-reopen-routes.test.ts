@@ -1,6 +1,6 @@
 import express from "express";
 import request from "supertest";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { HttpError } from "../errors.js";
 
 const mockIssueService = vi.hoisted(() => ({
@@ -44,8 +44,10 @@ const mockTx = vi.hoisted(() => ({
   insert: mockTxInsert,
 }));
 const mockDbSelectOrderBy = vi.hoisted(() => vi.fn(async () => []));
+const mockDbSelectLimit = vi.hoisted(() => vi.fn(async () => []));
 const mockDbSelectWhere = vi.hoisted(() => vi.fn(() => ({
   orderBy: mockDbSelectOrderBy,
+  limit: mockDbSelectLimit,
   then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) =>
     Promise.resolve([]).then(onFulfilled, onRejected),
 })));
@@ -189,11 +191,25 @@ function createApp() {
   return app;
 }
 
-async function installActor(app: express.Express, actor?: Record<string, unknown>) {
-  const [{ issueRoutes }, { errorHandler }] = await Promise.all([
+let routeModulesPromise: Promise<[
+  typeof import("../routes/issues.js"),
+  typeof import("../middleware/index.js"),
+]> | null = null;
+
+function loadRouteModules() {
+  routeModulesPromise ??= Promise.all([
     import("../routes/issues.js"),
     import("../middleware/index.js"),
   ]);
+  return routeModulesPromise;
+}
+
+beforeAll(async () => {
+  await loadRouteModules();
+});
+
+async function installActor(app: express.Express, actor?: Record<string, unknown>) {
+  const [{ issueRoutes }, { errorHandler }] = await loadRouteModules();
   app.use((req, _res, next) => {
     (req as any).actor = actor ?? {
       type: "board",
@@ -225,6 +241,8 @@ function makeIssue(status: "backlog" | "todo" | "done" | "blocked" | "cancelled"
     id: "11111111-1111-4111-8111-111111111111",
     companyId: "company-1",
     status,
+    projectId: null,
+    parentId: null,
     assigneeAgentId: "22222222-2222-4222-8222-222222222222",
     assigneeUserId: null,
     createdByUserId: "local-board",
@@ -306,12 +324,15 @@ describe.sequential("issue comment reopen routes", () => {
     mockDbSelectFrom.mockReset();
     mockDbSelectWhere.mockReset();
     mockDbSelectOrderBy.mockReset();
+    mockDbSelectLimit.mockReset();
     mockDb.transaction.mockReset();
     mockTxInsertValues.mockResolvedValue(undefined);
     mockTxInsert.mockImplementation(() => ({ values: mockTxInsertValues }));
     mockDbSelectOrderBy.mockResolvedValue([]);
+    mockDbSelectLimit.mockResolvedValue([]);
     mockDbSelectWhere.mockImplementation(() => ({
       orderBy: mockDbSelectOrderBy,
+      limit: mockDbSelectLimit,
       then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) =>
         Promise.resolve([]).then(onFulfilled, onRejected),
     }));
@@ -1958,7 +1979,66 @@ describe.sequential("issue comment reopen routes", () => {
     );
   });
 
-  it("honors explicit agent resume intent from a default-open peer as an agent-class wake", async () => {
+  it("allows explicit resume intent from a parent issue assignee", async () => {
+    mockIssueService.getById.mockResolvedValue({
+      ...makeIssue("done"),
+      parentId: "33333333-3333-4333-8333-333333333333",
+    });
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...makeIssue("done"),
+      ...patch,
+    }));
+    mockAccessService.decide.mockImplementation(async (input: { action?: string }) => {
+      if (input.action === "tasks:manage_active_checkouts") {
+        return {
+          allowed: false,
+          action: input.action,
+          reason: "deny_missing_grant",
+          explanation: "Missing active checkout override.",
+        };
+      }
+      if (input.action === "issue:mutate") {
+        return {
+          allowed: true,
+          action: input.action,
+          reason: "allow_parent_assignee",
+          explanation: "Allowed because the actor owns the parent issue for this child issue.",
+        };
+      }
+      return {
+        allowed: true,
+        action: input.action,
+        reason: "allow_explicit_grant",
+        explanation: "Allowed by test grant.",
+      };
+    });
+
+    const res = await request(await installActor(createApp(), agentActor("44444444-4444-4444-8444-444444444444")))
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({ comment: "please revise this child", resume: true });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      expect.objectContaining({
+        status: "todo",
+        actorAgentId: "44444444-4444-4444-8444-444444444444",
+        actorUserId: null,
+      }),
+    );
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      "22222222-2222-4222-8222-222222222222",
+      expect.objectContaining({
+        reason: "issue_commented",
+        payload: expect.objectContaining({
+          resumeIntent: true,
+          followUpRequested: true,
+        }),
+      }),
+    );
+  });
+
+  it("rejects explicit agent resume intent from a default-open peer", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue("done"));
     mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
       ...makeIssue("done"),
@@ -1977,20 +2057,11 @@ describe.sequential("issue comment reopen routes", () => {
       .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
       .send({ body: "restart someone else's work", resume: true });
 
-    expect(res.status).toBe(201);
-    expect(mockIssueService.update).toHaveBeenCalledWith(
-      "11111111-1111-4111-8111-111111111111",
-      { status: "todo" },
-    );
-    expect(mockIssueService.addComment).toHaveBeenCalled();
-    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
-      "22222222-2222-4222-8222-222222222222",
-      expect.objectContaining({
-        requestedByActorType: "agent",
-        reason: "issue_reopened_via_comment",
-        payload: expect.objectContaining({ resumeIntent: true }),
-      }),
-    );
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toBe("Agent cannot request follow-up for another agent's issue");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 
   it("bounds a cross-agent reply loop: peer comments wake and assignee self-replies do not", async () => {
