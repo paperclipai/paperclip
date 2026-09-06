@@ -415,7 +415,13 @@ export function approvalRoutes(
 
     if (applied) {
       const linkedIssues = await issueApprovalsSvc.listIssuesForApproval(approval.id);
+      const linkedIssueIds = linkedIssues.map((issue) => issue.id);
+      const primaryIssueId = linkedIssueIds[0] ?? null;
       const lostReviewIssueIds = await lostReviewPathIssueIds(approval.companyId, linkedIssues);
+      const primaryReviewPathContext = primaryIssueId && lostReviewIssueIds.has(primaryIssueId)
+        ? approvalReviewPathContext(approval.id)
+        : null;
+
       await logActivity(db, {
         companyId: approval.companyId,
         actorType: "user",
@@ -423,14 +429,85 @@ export function approvalRoutes(
         action: "approval.rejected",
         entityType: "approval",
         entityId: approval.id,
-        details: { type: approval.type },
+        details: { type: approval.type, requestedByAgentId: approval.requestedByAgentId, linkedIssueIds },
       });
+
+      let primaryReviewPathWakeCovered = false;
+      if (approval.requestedByAgentId) {
+        try {
+          const wakeRun = await heartbeat.wakeup(approval.requestedByAgentId, {
+            source: "automation",
+            triggerDetail: "system",
+            reason: "approval_rejected",
+            payload: {
+              approvalId: approval.id,
+              approvalStatus: approval.status,
+              issueId: primaryIssueId,
+              issueIds: linkedIssueIds,
+              ...(primaryReviewPathContext ?? {}),
+            },
+            requestedByActorType: "user",
+            requestedByActorId: req.actor.userId ?? "board",
+            contextSnapshot: {
+              source: "approval.rejected",
+              approvalId: approval.id,
+              approvalStatus: approval.status,
+              issueId: primaryIssueId,
+              issueIds: linkedIssueIds,
+              taskId: primaryIssueId,
+              wakeReason: "approval_rejected",
+              ...(primaryReviewPathContext ?? {}),
+            },
+          });
+          primaryReviewPathWakeCovered = Boolean(wakeRun && primaryReviewPathContext);
+
+          await logActivity(db, {
+            companyId: approval.companyId,
+            actorType: "user",
+            actorId: req.actor.userId ?? "board",
+            action: "approval.requester_wakeup_queued",
+            entityType: "approval",
+            entityId: approval.id,
+            details: {
+              requesterAgentId: approval.requestedByAgentId,
+              wakeRunId: wakeRun?.id ?? null,
+              linkedIssueIds,
+            },
+          });
+        } catch (err) {
+          logger.warn(
+            {
+              err,
+              approvalId: approval.id,
+              requestedByAgentId: approval.requestedByAgentId,
+            },
+            "failed to queue requester wakeup after rejection",
+          );
+          await logActivity(db, {
+            companyId: approval.companyId,
+            actorType: "user",
+            actorId: req.actor.userId ?? "board",
+            action: "approval.requester_wakeup_failed",
+            entityType: "approval",
+            entityId: approval.id,
+            details: {
+              requesterAgentId: approval.requestedByAgentId,
+              linkedIssueIds,
+              error: err instanceof Error ? err.message : String(err),
+            },
+          });
+        }
+      }
+
       await queueAdditionalApprovalReviewPathWakes({
         approvalId: approval.id,
         approvalStatus: approval.status,
         companyId: approval.companyId,
         linkedIssues,
         lostIssueIds: lostReviewIssueIds,
+        alreadyWoken: primaryReviewPathWakeCovered && approval.requestedByAgentId && primaryIssueId
+          ? { agentId: approval.requestedByAgentId, issueId: primaryIssueId }
+          : null,
         requestedByUserId: req.actor.userId ?? "board",
       });
     }

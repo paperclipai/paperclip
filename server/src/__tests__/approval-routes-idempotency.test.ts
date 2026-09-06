@@ -306,6 +306,76 @@ describe("approval routes idempotent retries", () => {
     expect(mockApprovalService.reject).toHaveBeenCalledWith("approval-5", "user-1", "not now");
   });
 
+  it("wakes the requesting agent on rejection even when issueIds is null", async () => {
+    mockApprovalService.getById.mockResolvedValue({
+      id: "approval-30",
+      companyId: "company-1",
+      type: "request_board_approval",
+      status: "pending",
+      payload: {},
+      requestedByAgentId: "agent-requester",
+    });
+    mockApprovalService.reject.mockResolvedValue({
+      approval: {
+        id: "approval-30",
+        companyId: "company-1",
+        type: "request_board_approval",
+        status: "rejected",
+        payload: {},
+        requestedByAgentId: "agent-requester",
+      },
+      applied: true,
+    });
+    // Simulate null issueIds — no linked issues for this card
+    mockIssueApprovalService.listIssuesForApproval.mockResolvedValue([]);
+
+    const res = await request(await createApp())
+      .post("/api/approvals/approval-30/reject")
+      .send({ decisionNote: "not now" });
+
+    expect(res.status).toBe(200);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      "agent-requester",
+      expect.objectContaining({
+        reason: "approval_rejected",
+        payload: expect.objectContaining({
+          approvalId: "approval-30",
+          approvalStatus: "rejected",
+        }),
+      }),
+    );
+  });
+
+  it("does not wake any agent on rejection when requestedByAgentId is null and no linked issues", async () => {
+    mockApprovalService.getById.mockResolvedValue({
+      id: "approval-31",
+      companyId: "company-1",
+      type: "request_board_approval",
+      status: "pending",
+      payload: {},
+      requestedByAgentId: null,
+    });
+    mockApprovalService.reject.mockResolvedValue({
+      approval: {
+        id: "approval-31",
+        companyId: "company-1",
+        type: "request_board_approval",
+        status: "rejected",
+        payload: {},
+        requestedByAgentId: null,
+      },
+      applied: true,
+    });
+    mockIssueApprovalService.listIssuesForApproval.mockResolvedValue([]);
+
+    const res = await request(await createApp())
+      .post("/api/approvals/approval-31/reject")
+      .send({});
+
+    expect(res.status).toBe(200);
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
   it("derives approval attribution from the authenticated actor on request revision", async () => {
     mockApprovalService.getById.mockResolvedValue({
       id: "approval-6",
