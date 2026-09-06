@@ -32,6 +32,7 @@ export const buildPaperclipEnv = serverUtils.buildPaperclipEnv;
 export const buildRuntimeToolsEnv = serverUtils.buildRuntimeToolsEnv;
 export const isPaperclipRuntimeEnvKey = serverUtils.isPaperclipRuntimeEnvKey;
 export const isForbiddenConfigEnvKey = serverUtils.isForbiddenConfigEnvKey;
+export const describeProcessExitFailure = serverUtils.describeProcessExitFailure;
 export const defaultPathForPlatform = serverUtils.defaultPathForPlatform;
 export const ensurePathInEnv = serverUtils.ensurePathInEnv;
 export const ensureAbsoluteDirectory = serverUtils.ensureAbsoluteDirectory;

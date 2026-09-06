@@ -10,7 +10,7 @@ import {
   type LocalProcessSandboxOptions,
 } from "./local-process-sandbox.js";
 import { buildSshSpawnTarget, type SshRemoteExecutionSpec } from "./ssh.js";
-import { redactCommandText } from "./command-redaction.js";
+import { redactCommandText, redactDiagnosticText } from "./command-redaction.js";
 import {
   PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES,
   resolvePaperclipRunnerModel,
@@ -156,6 +156,13 @@ export function isPaperclipRuntimeEnvKey(key: string): boolean {
 export function isForbiddenConfigEnvKey(key: string): boolean {
   return key === "PAPERCLIP_API_KEY";
 }
+
+// Note on PAPERCLIP_API_URL specifically: it stays non-overridable from config
+// even though it is routing rather than a credential. An agent-authenticated
+// caller can PATCH its own adapterConfig, so honouring the key here would let an
+// agent redirect its harness-minted run token to an origin of its choosing. The
+// recovery path for a wrong runtime API URL is the startup probe in
+// server/src/runtime-api-probe.ts, which falls back to an origin that answers.
 const PAPERCLIP_SKILL_ROOT_RELATIVE_CANDIDATES = [
   "../../skills",
   "../../../../../skills",
@@ -2118,6 +2125,61 @@ export function redactEnvForLogs(env: Record<string, string>): Record<string, st
 
 export function redactCommandTextForLogs(command: string): string {
   return redactCommandText(command, REDACTED_LOG_VALUE);
+}
+
+// A stack frame carries no diagnosis on its own. Skip frames when picking the
+// tail of a child's output so the excerpt lands on the thrown message, and when
+// deciding which of its two streams to quote at all. The last alternative is a
+// Node require-stack entry (`- /app/index.js`), matched as a dash plus a single
+// bare token so a prose bullet is not mistaken for one.
+const STACK_FRAME_LINE_RE = /^\s*(?:at\s|\.{3}\s|Require stack:|-\s+\S+$)/;
+const PROCESS_EXIT_FAILURE_DETAIL_LINES = 2;
+const PROCESS_EXIT_FAILURE_DETAIL_CHARS = 320;
+
+/** Split one captured stream into its non-blank lines, and those that diagnose something. */
+function splitDiagnosticLines(source: string | null | undefined): { meaningful: string[]; all: string[] } {
+  const all = (source ?? "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  return { meaningful: all.filter((line) => !STACK_FRAME_LINE_RE.test(line)), all };
+}
+
+/**
+ * Describe a non-zero child-process exit with the cause, not just the code.
+ *
+ * "Process exited with code 1" is an anonymous failure: the reason is sitting
+ * in the run log, and an operator has to go find it. This lifts the tail of the
+ * child's own diagnostics into the message that reaches `agents.errorReason`,
+ * so the agent page names the fault at a glance.
+ *
+ * The excerpt is redacted and length-bounded: it is untrusted child output
+ * heading for a durable record.
+ */
+export function describeProcessExitFailure(input: {
+  exitCode: number | null;
+  stdout?: string | null;
+  stderr?: string | null;
+  maxDetailChars?: number;
+}): string {
+  const summary = `Process exited with code ${input.exitCode ?? -1}`;
+  const stderr = splitDiagnosticLines(input.stderr);
+  const stdout = splitDiagnosticLines(input.stdout);
+  // stderr is where a crashing child explains itself, so it wins whenever it
+  // carries a diagnosis. But a stream of nothing but stack frames diagnoses
+  // nothing, and a CLI that prints its fatal message on stdout while spilling
+  // frames on stderr is common enough that picking stderr on presence alone
+  // would bury the one line worth reporting. Prefer whichever stream actually
+  // says something; fall back to raw frames only when neither does.
+  const candidates = [stderr.meaningful, stdout.meaningful, stderr.all, stdout.all];
+  const selected = candidates.find((lines) => lines.length > 0);
+  if (!selected) return summary;
+  const tail = selected.slice(-PROCESS_EXIT_FAILURE_DETAIL_LINES);
+
+  const maxDetailChars = input.maxDetailChars ?? PROCESS_EXIT_FAILURE_DETAIL_CHARS;
+  const detail = redactDiagnosticText(tail.join(" | "), REDACTED_LOG_VALUE);
+  const bounded = detail.length > maxDetailChars ? `${detail.slice(0, maxDetailChars - 1)}…` : detail;
+  return bounded ? `${summary}: ${bounded}` : summary;
 }
 
 export function buildInvocationEnvForLogs(

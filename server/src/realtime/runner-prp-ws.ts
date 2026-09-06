@@ -52,11 +52,16 @@ function rejectUpgrade(
   }
 }
 
-export function setupRunnerPrpWebSocketServer(
-  server: Server,
-  options: { readonly apiUrl: string },
-): void {
-  const apiUrl = new URL(options.apiUrl);
+/**
+ * Point the runner PRP connect origin at `apiUrl`.
+ *
+ * Startup can only validate the runtime API URL once the listener is up, which
+ * is after the upgrade handler has to be registered. When that check moves the
+ * URL, this re-points the connect origin so runners are not sent to the origin
+ * that failed the probe.
+ */
+export function updateRunnerPrpApiUrl(rawApiUrl: string): void {
+  const apiUrl = new URL(rawApiUrl);
   if (!["http:", "https:"].includes(apiUrl.protocol)) {
     throw new Error("runner_prp_websocket_api_url_invalid");
   }
@@ -67,6 +72,13 @@ export function setupRunnerPrpWebSocketServer(
   apiUrl.search = "";
   apiUrl.hash = "";
   loopbackOrigin = apiUrl.toString().replace(/\/$/, "");
+}
+
+export function setupRunnerPrpWebSocketServer(
+  server: Server,
+  options: { readonly apiUrl: string },
+): void {
+  updateRunnerPrpApiUrl(options.apiUrl);
   server.on(
     "upgrade",
     (request: IncomingMessage, socket: Duplex, head: Buffer) => {

@@ -48,7 +48,7 @@ import {
 import { getOperatorSettingDefaults } from "./services/setting-defaults.js";
 import { setupEnvironmentCustomImageTerminalWebSocketServer } from "./realtime/environment-custom-image-terminal-ws.js";
 import { setupLiveEventsWebSocketServer } from "./realtime/live-events-ws.js";
-import { setupRunnerPrpWebSocketServer } from "./realtime/runner-prp-ws.js";
+import { setupRunnerPrpWebSocketServer, updateRunnerPrpApiUrl } from "./realtime/runner-prp-ws.js";
 import { cloudActorHeaderSourceFromHeaders, resolveCloudTenantActor } from "./middleware/auth.js";
 import {
   feedbackService,
@@ -93,6 +93,13 @@ import {
 } from "./services/adapter-registry-bootstrap.js";
 import { createFeedbackTraceShareClientFromConfig } from "./services/feedback-share-client.js";
 import { buildRuntimeApiCandidateUrls, choosePrimaryRuntimeApiUrl } from "./runtime-api.js";
+import {
+  loggableApiUrl,
+  probeRuntimeApiUrl,
+  resolveVerifiedRuntimeApiUrl,
+  RUNTIME_API_PROBE_PATH,
+  runtimeSelfOriginApiUrl,
+} from "./runtime-api-probe.js";
 import { isLoopbackHost, rewriteLoopbackUrlPort } from "./url-utils.js";
 import { createPluginWorkerManager } from "./services/plugin-worker-manager.js";
 import { createStorageServiceFromConfig } from "./storage/index.js";
@@ -1809,7 +1816,78 @@ export async function startServer(): Promise<StartedServer> {
       ].join("\n"),
     );
   }
-  
+
+  // Now that the listener is up, check that the URL every spawned run inherits
+  // as PAPERCLIP_API_URL actually answers this instance's API. An override
+  // pointing at a UI origin or an auth proxy answers HTML, which deterministic
+  // agents surface as an anonymous non-zero exit long after the fact. The
+  // healthy case costs one loopback request.
+  let resolvedApiUrl = configuredApiUrl;
+  // A guard against a misconfiguration must not itself become one: an
+  // unexpected throw here leaves the configured URL in place, exactly as before
+  // this check existed.
+  try {
+    const runtimeApiResolution = await resolveVerifiedRuntimeApiUrl({
+      configuredApiUrl,
+      // Spawned runs send their bearer run token to whichever origin wins, and
+      // no response body can prove the responder is this server — the health
+      // route's self-identifying values are readable off that same route by
+      // anything that can reach it. So the only origin eligible to replace the
+      // configured one is the address this process actually bound, which no
+      // other process can be holding. Other derived candidates stay in
+      // PAPERCLIP_RUNTIME_API_CANDIDATES_JSON for runtime clients to walk; they
+      // just cannot be promoted to the credential-bearing default here.
+      selfOriginApiUrl: runtimeSelfOriginApiUrl(server.address() ?? { address: runtimeListenHost, port: listenPort }),
+      probe: (apiUrl) => probeRuntimeApiUrl(apiUrl),
+    });
+    // The configured URL is operator env and can carry userinfo or a token
+    // query value; these log lines are durable, so name the origin, not the
+    // credential. `rejected` echoes the same candidate URLs back.
+    const loggableConfiguredApiUrl = loggableApiUrl(configuredApiUrl);
+    const loggableRejected = runtimeApiResolution.rejected.map((entry) => ({
+      apiUrl: loggableApiUrl(entry.apiUrl),
+      reason: entry.reason,
+    }));
+    if (runtimeApiResolution.unverified) {
+      // Keep booting rather than exit: external clients may well reach an origin
+      // this process cannot, and taking the API away is the worse failure.
+      logger.error(
+        {
+          configuredApiUrl: loggableConfiguredApiUrl,
+          probePath: RUNTIME_API_PROBE_PATH,
+          rejected: loggableRejected,
+        },
+        `Neither PAPERCLIP_API_URL=${loggableConfiguredApiUrl} nor this server's own bound origin served the Paperclip API; spawned agents keep that PAPERCLIP_API_URL and may be unable to reach their own board`,
+      );
+    } else if (runtimeApiResolution.changed) {
+      resolvedApiUrl = runtimeApiResolution.apiUrl;
+      logger.error(
+        {
+          configuredApiUrl: loggableConfiguredApiUrl,
+          fallbackApiUrl: resolvedApiUrl,
+          probePath: RUNTIME_API_PROBE_PATH,
+          rejected: loggableRejected,
+        },
+        `PAPERCLIP_API_URL=${loggableConfiguredApiUrl} does not serve the Paperclip API; spawned agents will use ${resolvedApiUrl} instead`,
+      );
+      process.env.PAPERCLIP_API_URL = resolvedApiUrl;
+      // Runtime clients walk the candidate list in order, so put the origin that
+      // answered first and drop the one that did not.
+      process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = JSON.stringify([
+        resolvedApiUrl,
+        ...runtimeApiCandidates.filter((candidate) => candidate !== resolvedApiUrl && candidate !== configuredApiUrl),
+      ]);
+      // The runner PRP websocket derives its connect origin from the same URL,
+      // so a stale origin here would send runners to the auth proxy too.
+      updateRunnerPrpApiUrl(resolvedApiUrl);
+    }
+  } catch (err) {
+    logger.error(
+      { err, configuredApiUrl: loggableApiUrl(configuredApiUrl) },
+      "runtime API URL startup validation failed; keeping the configured URL",
+    );
+  }
+
   const shutdown = async (
     signal: "SIGINT" | "SIGTERM",
     exitProcess: boolean,
@@ -1915,7 +1993,7 @@ export async function startServer(): Promise<StartedServer> {
     server,
     host: config.host,
     listenPort,
-    apiUrl: configuredApiUrl,
+    apiUrl: resolvedApiUrl,
     databaseUrl: activeDatabaseConnectionString,
     shutdown: (signal = "SIGTERM") => shutdown(signal, false),
   };
