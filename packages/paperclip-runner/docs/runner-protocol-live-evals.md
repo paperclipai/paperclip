@@ -33,6 +33,13 @@ Add `--screenshots /path/to/proof` for visual evidence. Public screenshots are
 retained in the aggregate Actions artifact, not added to the public report's
 closed file allowlist.
 
+These screenshots are generated acceptance-test evidence from the scrubbed
+completed campaign, not a separate report design:
+
+![Passing chat replay with expanded tool evidence](images/evalbook-chat/passed.png)
+![Failed chat replay with visible assertions](images/evalbook-chat/failed.png)
+![Missing recording shown in the same viewer](images/evalbook-chat/missing-recording.png)
+
 ### Refresh a completed report without calling models
 
 Download the aggregate Actions artifact, then:
