@@ -2862,9 +2862,21 @@ function SubmittedBrowserCodeLoginPanel({
   const handleSubmit = () => {
     if (!canSubmit) return;
     submitCode.mutate(trimmedCode);
-    // Clear the browser code right after submit, so the secret never lingers in
-    // the input.
-    setBrowserCode("");
+    // Onboarding keeps the code on screen; the panel still clears it.
+    //
+    // Clearing emptied the input in the same frame the paste landed, so on the
+    // connect step the only feedback for the seconds that followed was a field
+    // that had just gone blank — reported from staging as the paste looking
+    // dropped, or the step looking stuck. There the field is disabled from here
+    // on and the step's own button carries the status, so the code can stay:
+    // `resetLocalState` clears it whenever a session starts, resumes or is
+    // cleared, the value dies with the panel moments later, and the code is
+    // single-use and already spent.
+    //
+    // The panel is not that. It sits in a form that stays open long after the
+    // login, with its own status area doing the reporting — so there the code
+    // does have somewhere to linger, and clearing it remains right.
+    if (chrome !== "onboarding") setBrowserCode("");
   };
 
   // Start once, on mount, when the caller has already taken the press, and

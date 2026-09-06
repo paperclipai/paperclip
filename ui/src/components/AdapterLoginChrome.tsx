@@ -247,19 +247,46 @@ export function OnboardingLoginCodeRow({
   }, []);
 
   useEffect(() => {
-    if (!autoCopy || autoCopiedRef.current) return;
-    autoCopiedRef.current = true;
-    void copyTextToClipboard(code)
-      .then(() => {
-        // Written now, said later: the clipboard should be ready the instant
-        // the code is readable, but the claim waits for the rest of the card to
-        // stop moving — see COPIED_REVEAL_DELAY_MS.
-        if (timeoutRef.current) clearTimeout(timeoutRef.current);
-        timeoutRef.current = setTimeout(() => setCopied(true), COPIED_REVEAL_DELAY_MS);
-      })
-      .catch(() => {
-        // Refused, most likely for want of user activation. The button stays.
-      });
+    // An empty code is not a code. The row renders before the server's one-time
+    // prompt has a value on some paths, and the previous version latched on
+    // that first run — so the copy that mattered never ran, and the card said
+    // "Copied!" over an empty clipboard.
+    if (!autoCopy || autoCopiedRef.current || !code) return;
+
+    let cancelled = false;
+
+    const attempt = () => {
+      if (cancelled || autoCopiedRef.current) return;
+      // A write from an unfocused document is refused, and worse, some engines
+      // resolve it without writing. Wait for focus rather than spend the one
+      // attempt on it.
+      if (typeof document !== "undefined" && !document.hasFocus()) return;
+      void copyTextToClipboard(code)
+        .then(() => {
+          if (cancelled) return;
+          // Latched on success, not before it. Latching up front made the first
+          // refusal permanent — and the first attempt is the one most likely to
+          // be refused, since it fires while the card is still arriving.
+          autoCopiedRef.current = true;
+          window.removeEventListener("focus", attempt);
+          // Written now, said later: the clipboard should be ready the instant
+          // the code is readable, but the claim waits for the rest of the card
+          // to stop moving — see COPIED_REVEAL_DELAY_MS.
+          if (timeoutRef.current) clearTimeout(timeoutRef.current);
+          timeoutRef.current = setTimeout(() => setCopied(true), COPIED_REVEAL_DELAY_MS);
+        })
+        .catch(() => {
+          // Refused. The listener gives it another go when the document comes
+          // back, and the button is there the whole time regardless.
+        });
+    };
+
+    attempt();
+    window.addEventListener("focus", attempt);
+    return () => {
+      cancelled = true;
+      window.removeEventListener("focus", attempt);
+    };
   }, [autoCopy, code]);
 
   return (

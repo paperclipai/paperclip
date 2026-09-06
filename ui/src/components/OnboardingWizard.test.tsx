@@ -2228,6 +2228,11 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
         "claude-session-1",
         "Q2RJ-E1YIF-authorization-code",
       );
+      // And it stays on screen. Clearing the field on submit emptied it in the
+      // same frame the paste landed, so the only feedback for the seconds that
+      // followed was an input that had just gone blank — reported from staging
+      // as the paste looking dropped, or the step looking stuck.
+      expect(field!.value).toBe("Q2RJ-E1YIF-authorization-code");
 
       await act(async () => root.unmount());
     });

@@ -2332,6 +2332,14 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
   --text-nano: 10px;
   --text-micro: 11px;
   --text-compact: 13px;
+  /* The onboarding arc's question. A quarter larger than the 36px it was, so
+     the step's one question carries the screen it is alone on. Off Tailwind's
+     scale (text-4xl is 36, text-5xl 48), hence a token rather than a step. */
+  --text-onboarding-title: 45px;
+  /* Its own leading, because `text-(length:…)` sets only the size: the 36px
+     step carried 40px of line height with it, and inheriting the body's would
+     have loosened a question that wraps onto two lines. */
+  --leading-onboarding-title: 1.1;
   --tracking-label: 0.08em;
   --tracking-eyebrow: 0.14em;
   --tracking-caps: 0.2em;
