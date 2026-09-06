@@ -6419,6 +6419,106 @@ describeEmbeddedPostgres("accepted plan decomposition", () => {
     expect(result.newlyCreatedIssues[0]?.assigneeAgentId).toBe(assigneeAgentId);
   });
 
+  it("withdraws backstop inference for a task-bridge key's unassigned create", async () => {
+    // A task-bridge key's create boundary is enforced through tasks:assign
+    // for every task the key creates — the routes decide it for unassigned
+    // drafts too. The backstop only ran that decision when the draft had an
+    // assignee, so an unassigned bridge-created task could settle into an
+    // inferred project the key's scope never covered, with no decision ever
+    // seeing that project. The bridge key forces the decision, and a scope
+    // that does not cover the inferred project withdraws the guess.
+    const { companyId, sourceIssueId, acceptedPlanRevisionId, assigneeAgentId } = await seedAcceptedPlanIssue();
+    const projectId = randomUUID();
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "shove",
+      status: "in_progress",
+    });
+    await db.insert(projectWorkspaces).values({
+      id: randomUUID(),
+      companyId,
+      projectId,
+      name: "shove",
+      repoUrl: "https://github.com/zannis/shove",
+      cwd: "/repos/shove",
+    });
+
+    const result = await svc.decomposeAcceptedPlan(sourceIssueId, {
+      acceptedPlanRevisionId,
+      children: [
+        {
+          title: "Split out the repro",
+          description: "Reproduce it in https://github.com/zannis/shove first.",
+          status: "todo" as const,
+          workMode: "standard" as const,
+          priority: "medium" as const,
+          createdByAgentId: assigneeAgentId,
+        },
+      ],
+      actorAgentId: assigneeAgentId,
+      actorAuthorization: {
+        type: "agent",
+        agentId: assigneeAgentId,
+        companyId,
+        source: "agent_key",
+        keyId: randomUUID(),
+        keyScope: { kind: "task_bridge", projectIds: [randomUUID()] },
+      },
+    });
+
+    expect(result.newlyCreatedIssues).toHaveLength(1);
+    expect(result.newlyCreatedIssues[0]?.projectId).toBeNull();
+  });
+
+  it("keeps backstop inference for a task-bridge key whose scope covers the parent", async () => {
+    // The forced decision must not over-block: a key rooted at the parent
+    // subtree is allowed to create anywhere under it regardless of the
+    // landing project, so the inferred project stands.
+    const { companyId, sourceIssueId, acceptedPlanRevisionId, assigneeAgentId } = await seedAcceptedPlanIssue();
+    const projectId = randomUUID();
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "shove",
+      status: "in_progress",
+    });
+    await db.insert(projectWorkspaces).values({
+      id: randomUUID(),
+      companyId,
+      projectId,
+      name: "shove",
+      repoUrl: "https://github.com/zannis/shove",
+      cwd: "/repos/shove",
+    });
+
+    const result = await svc.decomposeAcceptedPlan(sourceIssueId, {
+      acceptedPlanRevisionId,
+      children: [
+        {
+          title: "Split out the repro",
+          description: "Reproduce it in https://github.com/zannis/shove first.",
+          status: "todo" as const,
+          workMode: "standard" as const,
+          priority: "medium" as const,
+          createdByAgentId: assigneeAgentId,
+        },
+      ],
+      actorAgentId: assigneeAgentId,
+      actorAuthorization: {
+        type: "agent",
+        agentId: assigneeAgentId,
+        companyId,
+        source: "agent_key",
+        keyId: randomUUID(),
+        keyScope: { kind: "task_bridge", parentIssueIds: [sourceIssueId] },
+      },
+    });
+
+    expect(result.newlyCreatedIssues).toHaveLength(1);
+    expect(result.newlyCreatedIssues[0]?.projectId).toBe(projectId);
+  });
+
   it("rejects a different child set for the same accepted plan fingerprint", async () => {
     const { sourceIssueId, acceptedPlanRevisionId, assigneeAgentId } = await seedAcceptedPlanIssue();
 

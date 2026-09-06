@@ -73,6 +73,7 @@ import {
 import { z } from "zod";
 import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { authorizationService, type AuthorizationActor } from "./authorization.js";
+import { LOW_TRUST_ISSUE_ANCESTRY_MAX_DEPTH } from "./trust-preset-resolver.js";
 import { resolveActorTrustDecisionForIssue } from "./source-trust.js";
 import { getTelemetryClient } from "../telemetry.js";
 import { logActivity, publishActivity, type ActivityPublication } from "./activity-log.js";
@@ -2990,6 +2991,7 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
               identifier: issues.identifier,
               companyId: issues.companyId,
               projectId: issues.projectId,
+              parentId: issues.parentId,
             })
             .from(issues)
             .where(and(eq(issues.companyId, issue.companyId), inArray(issues.id, explicitParentIds)))
@@ -3000,11 +3002,49 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
         }
         const parentById = new Map(parentRows.map((row) => [row.id, row] as const));
 
+        // Locking the direct parents pins the project the decisions read,
+        // but not the ancestry those decisions walk: a task-bridge key's
+        // parent boundary and a run's low-trust boundary both approve a
+        // chain of ancestor rows, and a concurrent transaction reparenting
+        // one of those ancestors touches only the ancestor's own row — no
+        // conflict with the direct-parent lock — so the approved chain
+        // could leave the authorized root between the decision and the
+        // commit. Walk each chain bottom-up, share-locking every ancestor
+        // and reading the next hop from the row just locked, so the chain
+        // the decisions walk is the chain the commit persists. Share locks
+        // let concurrent acceptances over the same chain proceed while
+        // blocking any reparent until this transaction ends.
+        if (actor.agentId) {
+          const lockedChainIds = new Set(parentRows.map((row) => row.id));
+          for (const row of parentRows) {
+            let cursor = row.parentId ?? null;
+            for (
+              let depth = 0;
+              cursor && !lockedChainIds.has(cursor) && depth < LOW_TRUST_ISSUE_ANCESTRY_MAX_DEPTH;
+              depth += 1
+            ) {
+              const ancestor = await tx
+                .select({ id: issues.id, parentId: issues.parentId })
+                .from(issues)
+                .where(and(eq(issues.companyId, issue.companyId), eq(issues.id, cursor)))
+                .for("share")
+                .then((rows) => rows[0] ?? null);
+              if (!ancestor) break;
+              lockedChainIds.add(ancestor.id);
+              cursor = ancestor.parentId ?? null;
+            }
+          }
+        }
+
         // A task-bridge key's create boundary is enforced through
         // tasks:assign for every task it creates — the route decides it for
         // unassigned drafts too. The per-task re-decision below must mirror
         // that: gate it on the assignee alone and a scoped key can land an
-        // unassigned child in a project no decision ever saw.
+        // unassigned child in a project no decision ever saw. Nor may it
+        // gate on the parent still carrying a project: a parent that moved
+        // project-less mid-acceptance leaves the child to createChild's
+        // inference backstop, so the key's boundary is re-decided against
+        // the locked parent state unconditionally.
         const actorIsTaskBridgeKey =
           actor.authorization?.type === "agent" &&
           actor.authorization.source === "agent_key" &&
@@ -3071,10 +3111,15 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
             }
           }
 
+          // The project the decision sees is the one the child actually
+          // lands with before any backstop inference: the explicit
+          // pre-create view when it resolved, else the locked parent's
+          // project. Under `inheritsParentProject` the two coincide.
+          const reDecisionProjectId = task.projectId ?? issue.projectId ?? parentProjectId;
           if (
             actor.agentId &&
-            (task.assigneeAgentId || task.assigneeUserId || actorIsTaskBridgeKey) &&
-            inheritsParentProject
+            (((task.assigneeAgentId || task.assigneeUserId) && inheritsParentProject) ||
+              actorIsTaskBridgeKey)
           ) {
             let assignmentActor: AuthorizationActor | null = actor.authorization ?? null;
             if (!assignmentActor) {
@@ -3103,13 +3148,13 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
               resource: {
                 type: "issue",
                 companyId: issue.companyId,
-                projectId: parentProjectId,
+                projectId: reDecisionProjectId,
                 parentIssueId,
                 assigneeAgentId: task.assigneeAgentId ?? null,
                 assigneeUserId: task.assigneeUserId ?? null,
               },
               scope: {
-                projectId: parentProjectId,
+                projectId: reDecisionProjectId,
                 parentIssueId,
                 assigneeAgentId: task.assigneeAgentId ?? null,
                 assigneeUserId: task.assigneeUserId ?? null,

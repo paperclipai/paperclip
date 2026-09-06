@@ -7412,9 +7412,18 @@ export function issueService(db: Db) {
             // denial, an assignment denial withdraws the guess rather than
             // failing the flow: the assignment itself is what the caller was
             // already doing project-less, only the project attachment is new.
+            // A task-bridge key forces the decision even for an unassigned
+            // draft: tasks:assign is that key's create boundary — the routes
+            // decide it for every task the key creates — so an inferred
+            // project its scope never covered must withdraw rather than
+            // settle in with no decision ever seeing it.
+            const actorIsTaskBridgeKey =
+              actorAuthorization?.type === "agent" &&
+              actorAuthorization.source === "agent_key" &&
+              actorAuthorization.keyScope?.kind === "task_bridge";
             const needsAssignmentCheck =
               trustDecision.kind !== "denied" &&
-              Boolean(issueData.assigneeAgentId || issueData.assigneeUserId);
+              Boolean(issueData.assigneeAgentId || issueData.assigneeUserId || actorIsTaskBridgeKey);
             let assignmentAllowed = !needsAssignmentCheck;
             if (needsAssignmentCheck) {
               // Authorize the caller, not a stand-in: when the caller passed
