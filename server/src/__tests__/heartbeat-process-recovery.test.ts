@@ -8462,24 +8462,23 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
     expect(issue?.status).toBe("blocked");
 
-    // No *continuation* retry may be enqueued. The escalation itself does spawn a
-    // status-only recovery run (it posts the blocked notice); that one is expected
-    // and carries allowDeliverableWork: false, so it cannot resume the work.
+    // No *continuation* retry may be enqueued. The escalation itself posts the
+    // blocked notice as a comment rather than spawning a recovery run (see the
+    // adjacent "blocks stranded in-progress work..." test for the same pattern
+    // against a different retryReason), so there is no second run to await here.
     const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
     const continuationRuns = runs.filter((row) =>
       (row.contextSnapshot as Record<string, unknown> | null)?.source === "issue.continuation_recovery",
     );
     expect(continuationRuns).toHaveLength(0);
+    expect(runs).toHaveLength(1);
+    expect(runs[0]?.id).toBe(runId);
 
-    const escalationRun = runs.find((row) => row.id !== runId) ?? null;
-    expect(escalationRun?.contextSnapshot as Record<string, unknown> | undefined).toMatchObject({
-      source: "issue_recovery_action",
-      recoveryIntent: "status_only",
-      allowDeliverableWork: false,
-    });
-    if (escalationRun) {
-      await waitForRunToSettle(heartbeat, escalationRun.id);
-    }
+    const comments = await db
+      .select()
+      .from(issueComments)
+      .where(eq(issueComments.issueId, issueId));
+    expect(comments.length).toBeGreaterThan(0);
   });
 
   it("detects recovery lineage from the retryOfRunId column with no retryReason in the snapshot", async () => {
