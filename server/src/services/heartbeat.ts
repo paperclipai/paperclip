@@ -948,6 +948,16 @@ function isSandboxProviderWorkerUnavailableFailureMessage(value: unknown) {
   );
 }
 
+// A permanent, non-retryable setup failure: the agent's adapter is not runnable in
+// this environment (e.g. a legacy "process" agent in a sandbox-only cloud company,
+// which fails to acquire the k8s lease with "Adapter ... is not in the configured
+// adapter registry"). Re-invoking such an agent every heartbeat produces a
+// setup_failed retry storm, so it must pause the agent instead of looping.
+export function isNonRetryableAdapterSetupFailure(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : typeof err === "string" ? err : "";
+  return /is not in the configured adapter registry/i.test(message);
+}
+
 function isRetryableInteractionContinuationInfrastructureFailure(
   run: Pick<
     typeof heartbeatRuns.$inferSelect,
@@ -22721,6 +22731,33 @@ export function heartbeatService(
             setupFailureAgent ??
             (await getAgent(run.agentId).catch(() => null));
           if (failedAgent) {
+            // Permanent setup failure (adapter not runnable in this environment):
+            // pause the agent so the heartbeat stops re-invoking it every interval
+            // (which otherwise produces a setup_failed retry storm), and surface the
+            // reason so it routes to a human to reconfigure the adapter.
+            if (
+              isNonRetryableAdapterSetupFailure(outerErr) &&
+              failedAgent.status !== "paused" &&
+              failedAgent.status !== "terminated"
+            ) {
+              await db
+                .update(agents)
+                .set({
+                  status: "paused",
+                  pauseReason: truncateAgentErrorReason(
+                    `Paused after a non-retryable setup failure: ${message} Reconfigure the agent's adapter/runtime, then resume.`,
+                  ),
+                  pausedAt: new Date(),
+                  updatedAt: new Date(),
+                })
+                .where(eq(agents.id, failedAgent.id))
+                .catch((pauseErr) => {
+                  logger.warn(
+                    { err: pauseErr, agentId: failedAgent.id, runId },
+                    "failed to pause agent after non-retryable setup failure",
+                  );
+                });
+            }
             await refreshContinuationSummaryForRun(
               livenessRun,
               failedAgent,
