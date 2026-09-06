@@ -26,6 +26,7 @@ import {
   getIssueContinuationSummaryDocument,
 } from "../../../services/issue-continuation-summary.js";
 import { parseIssueExecutionState } from "../../../services/issue-execution-policy.js";
+import { decideScheduledRetryGate } from "../domain/policy.js";
 import type {
   QueuedRunFacts,
   ReviewParticipantFacts,
@@ -195,106 +196,127 @@ export function createPostgresRunDispatchAdapter(
     const issueId = readNonEmptyString(input.contextSnapshot.issueId);
     const retryReasonKind = classifyRetryReasonKind(retryReason);
 
-    const budgetBlock = await budgets.getInvocationBlock(input.companyId, input.agentId, {
-      issueId,
-      projectId: readNonEmptyString(input.contextSnapshot.projectId),
-    });
-    const agentInvokability = await evaluateAgentInvokabilityFromDb(db, agent);
-    const heartbeatWakeOnDemandEnabled = isHeartbeatWakeOnDemandEnabled(agent);
-
-    const issue = issueId
-      ? await db
-          .select({
-            id: issues.id,
-            companyId: issues.companyId,
-            status: issues.status,
-            assigneeAgentId: issues.assigneeAgentId,
-            assigneeUserId: issues.assigneeUserId,
-            executionRunId: issues.executionRunId,
-            executionPolicy: issues.executionPolicy,
-            executionState: issues.executionState,
-            monitorNextCheckAt: issues.monitorNextCheckAt,
-          })
-          .from(issues)
-          .where(and(eq(issues.id, issueId), eq(issues.companyId, input.companyId)))
-          .then((rows) => rows[0] ?? null)
-      : null;
-
-    const dispositionRepair =
-      issue && retryReasonKind === "disposition_repair"
-        ? await (async () => {
-            const expectedFingerprint = readNonEmptyString(
-              input.contextSnapshot.dispositionRepairFingerprint,
-            );
-            const sourceState = await collectDispositionRepairSourceState(db, {
-              issue,
-              excludeRunId: input.runId,
-              excludeWakeupRequestId: input.wakeupRequestId,
-            });
-            return {
-              expectedFingerprintPresent: expectedFingerprint !== null,
-              fingerprintMatches: sourceState.fingerprint === expectedFingerprint,
-              hasActiveExecutionPath: sourceState.hasActiveExecutionPath,
-              hasDurableWaitingPath: sourceState.hasDurableWaitingPath,
-              expectedFingerprint,
-              currentFingerprint: sourceState.fingerprint,
-              durablePathReason: sourceState.durablePathReason,
-            };
-          })()
-        : null;
-
-    const activePauseHold =
-      issue && issueId ? await treeControlSvc.getActivePauseHoldGate(input.companyId, issueId) : null;
-
-    const dependenciesBlocked =
-      issue && issueId
-        ? await (async () => {
-            const dependencyReadiness = await issuesSvc.listDependencyReadiness(input.companyId, [issueId]);
-            const readiness = dependencyReadiness.get(issueId);
-            return readiness && !readiness.isDependencyReady
-              ? {
-                  unresolvedBlockerIssueIds: readiness.unresolvedBlockerIssueIds,
-                  unresolvedBlockerCount: readiness.unresolvedBlockerCount,
-                }
-              : null;
-          })()
-        : null;
-
+    // Facts fill in through the same rule order `decideScheduledRetryGate`
+    // evaluates. A field still awaiting its own read keeps a value that
+    // rule never blocks on, EXCEPT `issueFound`, which starts unresolved
+    // and gets an explicit early check once the issue read lands — a
+    // false default there would look exactly like "the issue is gone" the
+    // moment `issueId` is set, before the read that would prove it. Once a
+    // group of fields is real, this calls the gate on the facts gathered
+    // so far, so a rule an earlier read already decided stops the run
+    // before it pays for a later, unrelated read — a sweep of many due
+    // retries must not query pause holds or dependencies for a retry a
+    // budget block or a stale assignment already suppresses.
     const facts: ScheduledRetryFacts = {
       runId: input.runId,
       runAgentId: input.agentId,
       issueId,
       retryReasonKind,
       enforceIssueExecutionLock: retryReasonKind === "max_turn_continuation",
-      budgetBlock: budgetBlock
-        ? { reason: budgetBlock.reason, scopeType: budgetBlock.scopeType, scopeId: budgetBlock.scopeId }
-        : null,
-      agentInvokable: agentInvokability.invokable,
-      agentInvokabilityDetails: agentInvokability.invokable ? {} : agentInvokability.details,
-      agentInvokabilityInvalidOrgChain: agentInvokability.invokable
-        ? false
-        : agentInvokability.invalidOrgChain,
-      heartbeatWakeOnDemandEnabled,
-      issueFound: issue !== null,
-      issueStatus: issue?.status ?? null,
-      issueAssigneeAgentId: issue?.assigneeAgentId ?? null,
-      issueExecutionRunId: issue?.executionRunId ?? null,
-      isNonAssigneeWorkspaceBusyRetry: isNonAssigneeWorkspaceBusyRetry(
-        retryReason,
-        input.contextSnapshot,
-      ),
-      reviewParticipant: issue
-        ? buildReviewParticipantFacts({
-            isInReview: issue.status === "in_review",
-            executionState: parseIssueExecutionState(issue.executionState),
-          })
-        : NO_REVIEW_PARTICIPANT,
-      activePauseHold: activePauseHold
-        ? { holdId: activePauseHold.holdId, rootIssueId: activePauseHold.rootIssueId }
-        : null,
-      dependenciesBlocked,
-      dispositionRepair,
+      isNonAssigneeWorkspaceBusyRetry: isNonAssigneeWorkspaceBusyRetry(retryReason, input.contextSnapshot),
+      budgetBlock: null,
+      agentInvokable: true,
+      agentInvokabilityDetails: {},
+      agentInvokabilityInvalidOrgChain: false,
+      heartbeatWakeOnDemandEnabled: true,
+      issueFound: false,
+      issueStatus: null,
+      issueAssigneeAgentId: null,
+      issueExecutionRunId: null,
+      reviewParticipant: NO_REVIEW_PARTICIPANT,
+      activePauseHold: null,
+      dependenciesBlocked: null,
+      dispositionRepair: null,
     };
+    const isBlocked = () => !decideScheduledRetryGate(facts, now).allowed;
+
+    const budgetBlock = await budgets.getInvocationBlock(input.companyId, input.agentId, {
+      issueId,
+      projectId: readNonEmptyString(input.contextSnapshot.projectId),
+    });
+    facts.budgetBlock = budgetBlock
+      ? { reason: budgetBlock.reason, scopeType: budgetBlock.scopeType, scopeId: budgetBlock.scopeId }
+      : null;
+    if (facts.budgetBlock) return { agentFound: true, facts };
+
+    const agentInvokability = await evaluateAgentInvokabilityFromDb(db, agent);
+    facts.agentInvokable = agentInvokability.invokable;
+    facts.agentInvokabilityDetails = agentInvokability.invokable ? {} : agentInvokability.details;
+    facts.agentInvokabilityInvalidOrgChain = agentInvokability.invokable
+      ? false
+      : agentInvokability.invalidOrgChain;
+    if (!facts.agentInvokable) return { agentFound: true, facts };
+
+    facts.heartbeatWakeOnDemandEnabled = isHeartbeatWakeOnDemandEnabled(agent);
+    if (!facts.heartbeatWakeOnDemandEnabled) return { agentFound: true, facts };
+
+    if (!issueId) return { agentFound: true, facts };
+
+    const issue = await db
+      .select({
+        id: issues.id,
+        companyId: issues.companyId,
+        status: issues.status,
+        assigneeAgentId: issues.assigneeAgentId,
+        assigneeUserId: issues.assigneeUserId,
+        executionRunId: issues.executionRunId,
+        executionPolicy: issues.executionPolicy,
+        executionState: issues.executionState,
+        monitorNextCheckAt: issues.monitorNextCheckAt,
+      })
+      .from(issues)
+      .where(and(eq(issues.id, issueId), eq(issues.companyId, input.companyId)))
+      .then((rows) => rows[0] ?? null);
+
+    facts.issueFound = issue !== null;
+    if (!facts.issueFound) return { agentFound: true, facts };
+
+    facts.issueStatus = issue.status;
+    facts.issueAssigneeAgentId = issue.assigneeAgentId;
+    facts.issueExecutionRunId = issue.executionRunId;
+    facts.reviewParticipant = buildReviewParticipantFacts({
+      isInReview: issue.status === "in_review",
+      executionState: parseIssueExecutionState(issue.executionState),
+    });
+
+    // The gate checks a disposition repair's own supersession before it
+    // checks ownership or status, so this read must land before the next
+    // isBlocked() call — checking isBlocked() first would report the wrong
+    // suppression reason for a superseded repair.
+    if (retryReasonKind === "disposition_repair") {
+      const expectedFingerprint = readNonEmptyString(input.contextSnapshot.dispositionRepairFingerprint);
+      const sourceState = await collectDispositionRepairSourceState(db, {
+        issue,
+        excludeRunId: input.runId,
+        excludeWakeupRequestId: input.wakeupRequestId,
+      });
+      facts.dispositionRepair = {
+        expectedFingerprintPresent: expectedFingerprint !== null,
+        fingerprintMatches: sourceState.fingerprint === expectedFingerprint,
+        hasActiveExecutionPath: sourceState.hasActiveExecutionPath,
+        hasDurableWaitingPath: sourceState.hasDurableWaitingPath,
+        expectedFingerprint,
+        currentFingerprint: sourceState.fingerprint,
+        durablePathReason: sourceState.durablePathReason,
+      };
+    }
+    if (isBlocked()) return { agentFound: true, facts };
+
+    const activePauseHold = await treeControlSvc.getActivePauseHoldGate(input.companyId, issueId);
+    facts.activePauseHold = activePauseHold
+      ? { holdId: activePauseHold.holdId, rootIssueId: activePauseHold.rootIssueId }
+      : null;
+    if (isBlocked()) return { agentFound: true, facts };
+
+    const dependencyReadiness = await issuesSvc.listDependencyReadiness(input.companyId, [issueId]);
+    const readiness = dependencyReadiness.get(issueId);
+    facts.dependenciesBlocked =
+      readiness && !readiness.isDependencyReady
+        ? {
+            unresolvedBlockerIssueIds: readiness.unresolvedBlockerIssueIds,
+            unresolvedBlockerCount: readiness.unresolvedBlockerCount,
+          }
+        : null;
 
     return { agentFound: true, facts };
   }
@@ -496,7 +518,12 @@ export function createPostgresRunDispatchAdapter(
         await tx
           .update(agentWakeupRequests)
           .set({ status: "cancelled", finishedAt: input.now, error: input.reason, updatedAt: input.now })
-          .where(eq(agentWakeupRequests.id, row.wakeupRequestId));
+          .where(
+            and(
+              eq(agentWakeupRequests.id, row.wakeupRequestId),
+              eq(agentWakeupRequests.companyId, row.companyId),
+            ),
+          );
       }
 
       if (input.issueId) {
@@ -583,7 +610,12 @@ export function createPostgresRunDispatchAdapter(
         await tx
           .update(agentWakeupRequests)
           .set({ status: "skipped", finishedAt: now, error: input.reason, updatedAt: now })
-          .where(eq(agentWakeupRequests.id, input.wakeupRequestId));
+          .where(
+            and(
+              eq(agentWakeupRequests.id, input.wakeupRequestId),
+              eq(agentWakeupRequests.companyId, input.companyId),
+            ),
+          );
       }
 
       await tx

@@ -2070,6 +2070,128 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       expect((rightCompanyCancel.run as { status: string }).status).toBe("cancelled");
     });
 
+    it("never writes another company's wakeup request during suppressed-retry or stale-queued-run cancellation", async () => {
+      const adapter = createPostgresRunDispatchAdapter(db);
+      const companyId = randomUUID();
+      const otherCompanyId = randomUUID();
+      const agentId = randomUUID();
+      const otherAgentId = randomUUID();
+      const now = new Date("2026-05-05T00:00:00.000Z");
+
+      await seedRetryFixture({ runId: randomUUID(), companyId, agentId, now, errorCode: "adapter_failed" });
+      await db.insert(companies).values({
+        id: otherCompanyId,
+        name: "Other Co",
+        issuePrefix: `T${otherCompanyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+        defaultResponsibleUserId: "responsible-user",
+      });
+      await db.insert(agents).values({
+        id: otherAgentId,
+        companyId: otherCompanyId,
+        name: "OtherCoder",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
+        permissions: {},
+      });
+
+      // Each wakeup request belongs to `otherCompanyId`, standing in for a
+      // mismatched cross-company reference on the run — the scenario the
+      // company predicate on the wakeup write must guard against.
+      const suppressedWakeupId = randomUUID();
+      await db.insert(agentWakeupRequests).values({
+        id: suppressedWakeupId,
+        companyId: otherCompanyId,
+        agentId: otherAgentId,
+        source: "retry",
+        status: "queued",
+      });
+      const suppressedRunId = randomUUID();
+      await db.insert(heartbeatRuns).values({
+        id: suppressedRunId,
+        companyId,
+        agentId,
+        invocationSource: "retry",
+        status: "scheduled_retry",
+        scheduledRetryAt: now,
+        wakeupRequestId: suppressedWakeupId,
+        contextSnapshot: {},
+        updatedAt: now,
+        createdAt: now,
+      });
+
+      const suppressedCancel = await adapter.cancelSuppressedRetry({
+        runId: suppressedRunId,
+        companyId,
+        now,
+        reason: "test",
+        errorCode: "issue_not_found",
+        issueId: null,
+        details: {},
+      });
+      expect(suppressedCancel.applied).toBe(true);
+
+      const [suppressedWakeup] = await db
+        .select({ status: agentWakeupRequests.status })
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, suppressedWakeupId));
+      expect(suppressedWakeup?.status).toBe("queued");
+
+      const staleWakeupId = randomUUID();
+      await db.insert(agentWakeupRequests).values({
+        id: staleWakeupId,
+        companyId: otherCompanyId,
+        agentId: otherAgentId,
+        source: "assignment",
+        status: "queued",
+      });
+      const staleIssueId = randomUUID();
+      const staleIssuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+      await db.insert(issues).values({
+        id: staleIssueId,
+        companyId,
+        title: "Stale queued run target",
+        status: "cancelled",
+        priority: "medium",
+        responsibleUserId: "responsible-user",
+        issueNumber: 3,
+        identifier: `${staleIssuePrefix}-3`,
+      });
+      const staleRunId = randomUUID();
+      await db.insert(heartbeatRuns).values({
+        id: staleRunId,
+        companyId,
+        agentId,
+        invocationSource: "assignment",
+        status: "queued",
+        wakeupRequestId: staleWakeupId,
+        contextSnapshot: { issueId: staleIssueId },
+        updatedAt: now,
+        createdAt: now,
+      });
+
+      const staleCancel = await adapter.cancelStaleQueuedRun({
+        runId: staleRunId,
+        companyId,
+        issueId: staleIssueId,
+        wakeupRequestId: staleWakeupId,
+        reason: "test",
+        errorCode: "issue_terminal_status",
+        details: {},
+        resultJson: null,
+      });
+      expect((staleCancel.run as { status: string }).status).toBe("cancelled");
+
+      const [staleWakeup] = await db
+        .select({ status: agentWakeupRequests.status })
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, staleWakeupId));
+      expect(staleWakeup?.status).toBe("queued");
+    });
+
     it("orders due retries by due time, honors the cutoff, and caps a sweep at 50 runs", async () => {
       const adapter = createPostgresRunDispatchAdapter(db);
       const companyId = randomUUID();
