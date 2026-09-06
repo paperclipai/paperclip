@@ -9486,7 +9486,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         ),
       )
       .orderBy(desc(chatPublications.createdAt), desc(chatPublications.id))
-      .then(async (rows) => {
+      .then((rows) => {
         // Progress updates are one replaceable provider-message lane per run.
         // The first durable agent comment may turn that placeholder into the
         // terminal response, but later comments from the same run are distinct
@@ -9501,28 +9501,60 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           (row) => Boolean(row.providerMessageId) && row.payload.progressState !== undefined,
         );
         if (!replacement?.providerMessageId) return null;
-        const latestVisible = await db
-          .select({ id: chatPublications.id })
-          .from(chatPublications)
-          .where(
-            and(
-              eq(chatPublications.companyId, publication.companyId),
-              eq(chatPublications.endpointId, publication.endpointId),
-              eq(chatPublications.conversationId, publication.conversationId),
-              eq(chatPublications.state, "published"),
-              isNotNull(chatPublications.providerMessageId),
-            ),
-          )
-          .orderBy(desc(chatPublications.createdAt), desc(chatPublications.id))
-          .limit(1)
-          .then((visibleRows) => visibleRows[0] ?? null);
-        // Replacing an older placeholder after another provider-visible reply
-        // was posted changes history in place. Telegram and Slack then render
-        // the terminal answer above the intervening reply, which can make a
-        // correctly sampled status appear stale. Only the current tail may be
-        // coalesced; otherwise append the new result normally.
-        return latestVisible?.id === replacement.id ? replacement.providerMessageId : null;
+        // Replacement identity belongs to the run, not to the provider-visible
+        // tail. A status/control reply may legitimately interleave while the run
+        // is active; making the tail the edit candidate would strand this run's
+        // working placeholder forever. The query is bounded by endpoint,
+        // conversation (the task generation), and run id, so an interleaved
+        // control or another run can never donate its provider message here.
+        return replacement.providerMessageId;
       });
+  }
+
+  async function taskStatusPublicationToReplace(
+    publication: typeof chatPublications.$inferSelect,
+    payload: SafeChatPublicationPayload,
+  ): Promise<string | null> {
+    if (!publication.idempotencyKey.startsWith("control:status:") || payload.attachmentIds?.length) return null;
+    const rows = await db
+      .select({
+        commentId: chatPublications.commentId,
+        commentRunId: issueComments.createdByRunId,
+        idempotencyKey: chatPublications.idempotencyKey,
+        payload: chatPublications.payload,
+        providerMessageId: chatPublications.providerMessageId,
+      })
+      .from(chatPublications)
+      .leftJoin(issueComments, eq(issueComments.id, chatPublications.commentId))
+      .where(
+        and(
+          eq(chatPublications.companyId, publication.companyId),
+          eq(chatPublications.endpointId, publication.endpointId),
+          eq(chatPublications.conversationId, publication.conversationId),
+          eq(chatPublications.state, "published"),
+          isNotNull(chatPublications.providerMessageId),
+        ),
+      )
+      .orderBy(desc(chatPublications.createdAt), desc(chatPublications.id));
+    const rowRunId = (row: (typeof rows)[number]) => {
+      const milestoneMatch = /^run:([^:]+):(?:queued|working|failed):/.exec(row.idempotencyKey);
+      return milestoneMatch?.[1] ?? row.commentRunId ?? null;
+    };
+    for (const candidate of rows) {
+      if (!candidate.providerMessageId || !["queued", "working"].includes(candidate.payload.progressState ?? "")) {
+        continue;
+      }
+      const runId = rowRunId(candidate);
+      if (!runId) continue;
+      const laneClosed = rows.some((row) => {
+        if (rowRunId(row) !== runId) return false;
+        return (
+          row.payload.progressState === "failed" || (row.commentId !== null && row.payload.progressState === undefined)
+        );
+      });
+      if (!laneClosed) return candidate.providerMessageId;
+    }
+    return null;
   }
 
   async function currentTaskControlPayload(
@@ -9897,7 +9929,8 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
               // authoritative task state after that earlier send commits.
               const payload = await currentTaskControlPayload(publication);
               const replaceProviderMessageId = CAPABILITIES[endpoint.provider].messageEdits
-                ? await runPublicationToReplace(publication, payload)
+                ? ((await runPublicationToReplace(publication, payload)) ??
+                  (await taskStatusPublicationToReplace(publication, payload)))
                 : null;
               const sent = await postSafePublication({
                 endpoint,

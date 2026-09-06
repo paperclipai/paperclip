@@ -7325,7 +7325,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     expect(providerRuntime.edits).toHaveLength(2);
   });
 
-  it("keeps a Telegram status reply ordered before a later final answer and refreshes its task state", async () => {
+  it("coalesces Telegram status and final output into one run-scoped provider message", async () => {
     const fixture = await seedCompany();
     const { callbacks, endpoint, runtime, service } = await configuredTelegramEndpoint(fixture);
     if (!callbacks.onSlashCommand) {
@@ -7433,9 +7433,13 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       .set({ status: "done", completedAt: new Date(), updatedAt: new Date() })
       .where(eq(issues.id, conversation.issueId));
     await service.processPendingPublications();
-    expect(providerRuntime?.posts.map((post) => post.text)).toEqual([
-      "Maya is working…",
-      expect.stringMatching(/— done$/),
+    expect(providerRuntime?.posts.map((post) => post.text)).toEqual(["Maya is working…"]);
+    expect(providerRuntime?.edits).toEqual([
+      {
+        threadId: thread.thread.id,
+        messageId: "outbound-1",
+        text: expect.stringMatching(/— done$/),
+      },
     ]);
 
     await issueService(db).addComment(
@@ -7446,14 +7450,26 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     );
     await service.processPendingPublications();
 
-    // Once the status is visible, changing the older working placeholder in
-    // place would reorder history visually. Append the final answer instead.
-    expect(providerRuntime?.posts.map((post) => post.text)).toEqual([
-      "Maya is working…",
-      expect.stringMatching(/— done$/),
-      "telegram-status-race-final",
+    // Both updates own the run's existing provider message. Applying the edit
+    // log yields one terminal message with no stale working/status sibling.
+    expect(providerRuntime?.posts.map((post) => post.text)).toEqual(["Maya is working…"]);
+    expect(providerRuntime?.edits).toEqual([
+      {
+        threadId: thread.thread.id,
+        messageId: "outbound-1",
+        text: expect.stringMatching(/— done$/),
+      },
+      {
+        threadId: thread.thread.id,
+        messageId: "outbound-1",
+        text: "telegram-status-race-final",
+      },
     ]);
-    expect(providerRuntime?.edits).toEqual([]);
+    const renderedTelegramMessages = new Map(
+      providerRuntime!.posts.map((post, index) => [`outbound-${index + 1}`, post.text]),
+    );
+    for (const edit of providerRuntime!.edits) renderedTelegramMessages.set(edit.messageId, edit.text);
+    expect([...renderedTelegramMessages.values()]).toEqual(["telegram-status-race-final"]);
     const publishedStatus = await db
       .select()
       .from(chatPublications)
@@ -7462,7 +7478,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     expect(publishedStatus).toMatchObject({
       state: "published",
       payload: { text: expect.stringMatching(/— done$/) },
-      providerMessageId: "outbound-2",
+      providerMessageId: "outbound-1",
     });
     await service.shutdown();
   });
@@ -7854,7 +7870,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     },
   );
 
-  it("coalesces one Slack run's lifecycle and final response into one thread reply", async () => {
+  it("coalesces one Slack run's lifecycle and final response despite an interleaved task control", async () => {
     const fixture = await seedCompany();
     const { callbacks, endpoint, runtime, service } = await configuredSlackEndpoint(fixture);
     const thread = makeThread({
@@ -7905,6 +7921,20 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       });
       await service.processPendingPublications();
     }
+    await db.insert(chatPublications).values({
+      companyId: fixture.companyId,
+      endpointId: endpoint.id,
+      conversationId: conversation.id,
+      issueId: conversation.issueId,
+      idempotencyKey: `control:status:${randomUUID()}`,
+      payload: {
+        classification: "external",
+        source: "task_control",
+        text: "Status sampled while the run is active",
+      },
+      state: "pending",
+    });
+    await service.processPendingPublications();
     const finalText = `Final Slack result ${"with enough safe detail. ".repeat(20)}`.trim();
     const finalComment = await issueService(db).addComment(
       conversation.issueId,
@@ -7925,18 +7955,28 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       {
         threadId: thread.thread.id,
         messageId: "outbound-1",
+        text: expect.stringMatching(/ — /),
+      },
+      {
+        threadId: thread.thread.id,
+        messageId: "outbound-1",
         text: finalText,
       },
     ]);
+    const renderedSlackMessages = new Map(
+      providerRuntime!.posts.map((post, index) => [`outbound-${index + 1}`, post.text]),
+    );
+    for (const edit of providerRuntime!.edits) renderedSlackMessages.set(edit.messageId, edit.text);
+    expect([...renderedSlackMessages.values()]).toEqual([finalText]);
     const publications = await db
       .select()
       .from(chatPublications)
       .where(eq(chatPublications.conversationId, conversation.id));
-    expect(publications).toHaveLength(3);
+    expect(publications).toHaveLength(4);
     expect(
-      publications.every(
-        (publication) => publication.state === "published" && publication.providerMessageId === "outbound-1",
-      ),
+      publications
+        .filter((publication) => publication.idempotencyKey.startsWith(`run:${runId}:`))
+        .every((publication) => publication.state === "published" && publication.providerMessageId === "outbound-1"),
     ).toBe(true);
     expect(
       await db
@@ -7948,6 +7988,27 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         providerMessageId: "outbound-1",
         commentId: finalComment.id,
       }),
+    ]);
+
+    // Once the run lane is terminal, /status has no replaceable placeholder
+    // and falls back to a distinct provider post.
+    await db.insert(chatPublications).values({
+      companyId: fixture.companyId,
+      endpointId: endpoint.id,
+      conversationId: conversation.id,
+      issueId: conversation.issueId,
+      idempotencyKey: `control:status:${randomUUID()}`,
+      payload: {
+        classification: "external",
+        source: "task_control",
+        text: "Status sampled after the run finished",
+      },
+      state: "pending",
+    });
+    await service.processPendingPublications();
+    expect(providerRuntime?.posts).toEqual([
+      { threadId: thread.thread.id, text: "Maya is queued." },
+      { threadId: thread.thread.id, text: expect.stringMatching(/ — /) },
     ]);
   });
 
