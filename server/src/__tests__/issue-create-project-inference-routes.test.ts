@@ -362,7 +362,7 @@ describeEmbeddedPostgres("issue create project inference", () => {
     expect(created.body.projectId).toBe(actual.id);
   });
 
-  it("treats the run-inherited source issue as the one source signal, without falling through to the parent's project", async () => {
+  it("treats an explicit inheritance source as the one source signal, without falling through to the parent's project", async () => {
     const companyId = await seedCompany();
     const parentProject = await seedProject(companyId, "shove", {
       repoUrl: "https://github.com/zannis/shove",
@@ -372,10 +372,41 @@ describeEmbeddedPostgres("issue create project inference", () => {
       repoUrl: "https://github.com/zannis/actual",
       cwd: "/repos/actual",
     });
+    // The two issue-bearing fields form one signal: the inheritance source
+    // outranks the parent, and a project-less source resolves the signal to
+    // nothing — the parent's project must not leak back in through the gate,
+    // so inference runs instead.
+    const sourceIssue = await seedIssue(companyId, null, "Project-less source");
+    const parent = await seedIssue(companyId, parentProject.id, "Parent with a project");
+    const { token, runId } = await agentContext(companyId, null);
+
+    const created = await agentPost(createApp(), companyId, token, runId)
+      .send({
+        title: "Chase the regression",
+        parentId: parent.id,
+        inheritExecutionWorkspaceFromIssueId: sourceIssue.id,
+        description: "Bisect it inside https://github.com/zannis/actual.",
+      })
+      .expect(201);
+
+    expect(created.body.projectId).toBe(actual.id);
+  });
+
+  it("keeps the parent's project when the explicit parent suppresses the run-inheritance source", async () => {
+    const companyId = await seedCompany();
+    const parentProject = await seedProject(companyId, "shove", {
+      repoUrl: "https://github.com/zannis/shove",
+      cwd: "/repos/shove",
+    });
+    await seedProject(companyId, "actual", {
+      repoUrl: "https://github.com/zannis/actual",
+      cwd: "/repos/actual",
+    });
     const agent = await seedAgent(companyId);
-    // The run works a project-less issue from an execution workspace, so the
-    // route injects that issue as the inheritance source. The service consults
-    // only that source — the parent's project must not leak in through the gate.
+    // An explicit parentId is a workspace selection, so the route never injects
+    // the run's own issue as an inheritance source; the parent is the one
+    // source signal, it resolves, and inference is never consulted — even
+    // though the run works a project-less issue and the text names another repo.
     const sourceIssue = await seedIssue(companyId, null, "Project-less source");
     const runId = randomUUID();
     await db.insert(heartbeatRuns).values({
@@ -397,7 +428,7 @@ describeEmbeddedPostgres("issue create project inference", () => {
       })
       .expect(201);
 
-    expect(created.body.projectId).toBe(actual.id);
+    expect(created.body.projectId).toBe(parentProject.id);
   });
 
   it("never consults inference when a selected workspace resolves to a project", async () => {
@@ -584,6 +615,91 @@ describeEmbeddedPostgres("issue create project inference", () => {
     });
 
     expect(issue.projectId).toBe(actual.id);
+  });
+
+  it("quarantines a service-layer inference into a low-trust project", async () => {
+    // Direct callers never ran the route's source-trust decision, so when the
+    // backstop stamps a project that carries a low-trust policy, the same
+    // verdict has to ride along — otherwise the tool path launders a write the
+    // HTTP path would have quarantined.
+    const companyId = await seedCompany();
+    const projectId = randomUUID();
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "shove",
+      status: "in_progress",
+      executionWorkspacePolicy: {
+        authorizationPolicy: {
+          trustPreset: "low_trust_review",
+          trustBoundary: { mode: "low_trust_review", companyId, projectIds: [projectId] },
+        },
+      },
+    });
+    await db.insert(projectWorkspaces).values({
+      companyId,
+      projectId,
+      name: "shove",
+      sourceType: "git_repo",
+      repoUrl: "https://github.com/zannis/shove",
+      cwd: "/repos/shove",
+      isPrimary: true,
+    });
+    const agent = await seedAgent(companyId);
+    const parent = await seedIssue(companyId, null, "Project-less root");
+
+    const { issue } = await issueService(db).createChild(parent.id, {
+      title: "Split out the repro",
+      description: "Reproduce it in https://github.com/zannis/shove first.",
+      status: "todo",
+      priority: "medium",
+      createdByAgentId: agent.id,
+    });
+
+    expect(issue.projectId).toBe(projectId);
+    expect(issue.sourceTrust).toMatchObject({
+      preset: "low_trust_review",
+      disposition: "quarantined",
+    });
+  });
+
+  it("withdraws a service-layer inference when the trust policy fails closed", async () => {
+    // An invalid project policy resolves to a denial. The route fails such a
+    // create outright; the backstop's project was only a guess, so it
+    // withdraws the guess instead — the task lands project-less, never inside
+    // a project whose policy could not be evaluated.
+    const companyId = await seedCompany();
+    const projectId = randomUUID();
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "shove",
+      status: "in_progress",
+      executionWorkspacePolicy: {
+        authorizationPolicy: { trustPreset: "not-a-real-preset" },
+      },
+    });
+    await db.insert(projectWorkspaces).values({
+      companyId,
+      projectId,
+      name: "shove",
+      sourceType: "git_repo",
+      repoUrl: "https://github.com/zannis/shove",
+      cwd: "/repos/shove",
+      isPrimary: true,
+    });
+    const agent = await seedAgent(companyId);
+    const parent = await seedIssue(companyId, null, "Project-less root");
+
+    const { issue } = await issueService(db).createChild(parent.id, {
+      title: "Split out the repro",
+      description: "Reproduce it in https://github.com/zannis/shove first.",
+      status: "todo",
+      priority: "medium",
+      createdByAgentId: agent.id,
+    });
+
+    expect(issue.projectId).toBeNull();
   });
 
   it("does not infer a project for a task a human created", async () => {

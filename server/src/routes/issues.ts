@@ -9272,7 +9272,12 @@ export function issueRoutes(
     const createInput = {
       ...createBody,
       ...(taskBridgeOriginForActor(req) ?? {}),
-      ...(inferredProjectId ? { projectId: inferredProjectId } : {}),
+      // Pin the project the scope and trust decisions above were made against.
+      // Leaving a parent- or workspace-resolved project out of the input would
+      // let the service re-derive it inside its own transaction, and a
+      // concurrent move of the parent could persist a project that never had
+      // this request's authorization applied.
+      ...(effectiveProjectId != null ? { projectId: effectiveProjectId } : {}),
       id: issueId,
       originRunId: createBody.originRunId ?? actor.runId,
       executionPolicy,
@@ -9539,7 +9544,9 @@ export function issueRoutes(
     const { issue, parentBlockerAdded } = await svc.createChild(parent.id, {
       ...createBody,
       ...(taskBridgeOriginForActor(req) ?? {}),
-      ...(inferredChildProjectId ? { projectId: inferredChildProjectId } : {}),
+      // Same pinning as the create route: persist the project scope and trust
+      // were decided against, never a value the service re-derives later.
+      ...(childProjectId != null ? { projectId: childProjectId } : {}),
       id: issueId,
       executionPolicy,
       ...(currentSerializedChild

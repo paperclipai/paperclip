@@ -93,6 +93,7 @@ import { instanceSettingsService } from "./instance-settings.js";
 import { redactCurrentUserText } from "../log-redaction.js";
 import { redactSensitiveText } from "../redaction.js";
 import { resolveAgentIssueProjectId } from "./issue-project-inference.js";
+import { resolveActorTrustDecisionForIssue } from "./source-trust.js";
 import { resolveIssueGoalId, resolveNextIssueGoalId } from "./issue-goal-fallback.js";
 import { getRunLogStore } from "./run-log-store.js";
 import { getDefaultCompanyGoal } from "./goals.js";
@@ -7334,12 +7335,44 @@ export function issueService(db: Db) {
         // inert. Reading inside the insert transaction also means a parent
         // that just gained a project is seen, not a stale snapshot.
         if (issueData.projectId == null && issueData.createdByAgentId) {
-          issueData.projectId = await resolveAgentIssueProjectId(tx, companyId, {
+          const inferredProjectId = await resolveAgentIssueProjectId(tx, companyId, {
             createdByAgentId: issueData.createdByAgentId,
             actorRunId: actorRunId ?? null,
             title: issueData.title,
             description: issueData.description,
-          }) ?? issueData.projectId;
+          });
+          if (inferredProjectId != null) {
+            // No route decided source trust against this project — direct
+            // callers never ran that decision, and a route that did decided it
+            // against no project at all. Re-evaluate the creating agent
+            // against the inferred project before stamping it: a low-trust
+            // verdict rides along as quarantined source trust (never loosening
+            // one the caller already set), and a denial withdraws the guess —
+            // the task stays project-less rather than failing an internal
+            // flow, or worse, settling into a project whose policy rejected it.
+            issueData.id ??= randomUUID();
+            const trustDecision = await resolveActorTrustDecisionForIssue({
+              db: tx as unknown as Db,
+              issue: {
+                id: issueData.id,
+                companyId,
+                projectId: inferredProjectId,
+                executionPolicy: issueData.executionPolicy,
+              },
+              actor: {
+                actorType: "agent",
+                actorId: issueData.createdByAgentId,
+                agentId: issueData.createdByAgentId,
+                runId: actorRunId ?? null,
+              },
+            });
+            if (trustDecision.kind !== "denied") {
+              issueData.projectId = inferredProjectId;
+              if (trustDecision.kind === "low_trust_review" && !issueData.sourceTrust) {
+                issueData.sourceTrust = trustDecision.sourceTrust;
+              }
+            }
+          }
         }
         const projectGoalId = await getProjectDefaultGoalId(tx, companyId, issueData.projectId);
         // Cache the project policy lookup for this insert so the default
