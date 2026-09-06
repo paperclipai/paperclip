@@ -527,12 +527,22 @@ describe("approval routes idempotent retries", () => {
       expect(res.body.status).toBe("approved");
     });
 
-    it("blocks status-only recovery runs from cancelling approvals", async () => {
+    it("status-only recovery run can cancel its own pending card → 200", async () => {
+      // Cancel is exempt from the recovery guard: a recovery run withdrawing its own stale
+      // card is the intended use case (prevents stale cards from clogging the pending queue).
       mockApprovalService.getById.mockResolvedValue({
         id: "approval-24",
         companyId: "company-1",
         type: "request_board_approval",
         status: "pending",
+        payload: {},
+        requestedByAgentId: "agent-1",
+      });
+      mockApprovalService.cancel.mockResolvedValue({
+        id: "approval-24",
+        companyId: "company-1",
+        type: "request_board_approval",
+        status: "cancelled",
         payload: {},
         requestedByAgentId: "agent-1",
       });
@@ -551,9 +561,9 @@ describe("approval routes idempotent retries", () => {
         .post("/api/approvals/approval-24/cancel")
         .send({});
 
-      expect(res.status).toBe(403);
-      expect(res.body.error).toContain("Cheap status-only recovery runs cannot create or modify approvals");
-      expect(mockApprovalService.cancel).not.toHaveBeenCalled();
+      expect(res.status).toBe(200);
+      expect(res.body.status).toBe("cancelled");
+      expect(mockApprovalService.cancel).toHaveBeenCalled();
     });
 
     it("board member can cancel a card they did not request → 200", async () => {
