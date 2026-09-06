@@ -2437,6 +2437,131 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(logs.every((entry) => !entry.text.includes("INCIDENT"))).toBe(true);
   });
 
+  it("preserves sanitized retention and quarantines the raw home when raw cleanup fails", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const sourceCodexHome = path.join(root, "source-codex-home");
+    const runId = "run-cleanup-fail";
+    const runSessionFile = path.join(
+      stateDir,
+      "codex-run-homes",
+      runId,
+      "home",
+      "sessions",
+      "session.jsonl",
+    );
+
+    await fs.mkdir(sourceCodexHome, { recursive: true });
+    await fs.writeFile(path.join(sourceCodexHome, "config.toml"), "model_provider = \"openai\"\n", "utf8");
+
+    const execute = createAcpxEngineExecutor({
+      adapterType: "codex_local",
+      removeCodexRunHome: async () => {
+        throw new Error("simulated cleanup failure");
+      },
+      createRuntime: () => ({
+        ensureSession: async () => ({
+          backendSessionId: "backend-session",
+          agentSessionId: "agent-session",
+          runtimeSessionName: "runtime-session",
+        }),
+        startTurn: () => ({
+          events: (async function* () {
+            await fs.mkdir(path.dirname(runSessionFile), { recursive: true });
+            await fs.writeFile(runSessionFile, '{"type":"message"}\n', "utf8");
+            yield { type: "done", stopReason: "end_turn" };
+          })(),
+          result: Promise.resolve({ status: "completed", stopReason: "end_turn" }),
+          cancel: async () => {},
+        }),
+        close: async () => {},
+      }) as never,
+    });
+
+    const logs: Array<{ stream: string; text: string }> = [];
+    const result = await execute({
+      runId,
+      agent: { id: "agent-1", companyId: "company-1" },
+      runtime: {},
+      config: { agent: "codex", stateDir, env: { CODEX_HOME: sourceCodexHome } },
+      context: {},
+      onLog: async (stream: "stdout" | "stderr", text: string) => {
+        logs.push({ stream, text });
+      },
+      onMeta: async () => {},
+    } as never);
+
+    expect(result.exitCode).toBe(0);
+    await expect(fs.stat(path.dirname(path.dirname(runSessionFile)))).resolves.toBeDefined();
+    await expect(
+      fs.stat(path.join(stateDir, "codex-session-retention", runId, "sessions", "session.jsonl")),
+    ).resolves.toBeDefined();
+    await expect(
+      fs.readFile(path.join(stateDir, "codex-run-homes", `${runId}.quarantine`), "utf8"),
+    ).resolves.toContain("raw_run_home_cleanup_failed");
+    expect(logs.some((entry) => entry.text.includes("INCIDENT") && entry.text.includes("cleanup failed"))).toBe(true);
+  });
+
+  it("does not discard retained sessions when the post-delete log sink fails", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const sourceCodexHome = path.join(root, "source-codex-home");
+    const runId = "run-delete-log-fail";
+    const runSessionFile = path.join(
+      stateDir,
+      "codex-run-homes",
+      runId,
+      "home",
+      "sessions",
+      "session.jsonl",
+    );
+
+    await fs.mkdir(sourceCodexHome, { recursive: true });
+    await fs.writeFile(path.join(sourceCodexHome, "config.toml"), "model_provider = \"openai\"\n", "utf8");
+
+    const execute = createAcpxEngineExecutor({
+      adapterType: "codex_local",
+      createRuntime: () => ({
+        ensureSession: async () => ({
+          backendSessionId: "backend-session",
+          agentSessionId: "agent-session",
+          runtimeSessionName: "runtime-session",
+        }),
+        startTurn: () => ({
+          events: (async function* () {
+            await fs.mkdir(path.dirname(runSessionFile), { recursive: true });
+            await fs.writeFile(runSessionFile, '{"type":"message"}\n', "utf8");
+            yield { type: "done", stopReason: "end_turn" };
+          })(),
+          result: Promise.resolve({ status: "completed", stopReason: "end_turn" }),
+          cancel: async () => {},
+        }),
+        close: async () => {},
+      }) as never,
+    });
+
+    const result = await execute({
+      runId,
+      agent: { id: "agent-1", companyId: "company-1" },
+      runtime: {},
+      config: { agent: "codex", stateDir, env: { CODEX_HOME: sourceCodexHome } },
+      context: {},
+      onLog: async (_stream: "stdout" | "stderr", text: string) => {
+        if (text.includes("Deleted raw Codex run home")) throw new Error("log sink unavailable");
+      },
+      onMeta: async () => {},
+    } as never);
+
+    expect(result.exitCode).toBe(0);
+    await expect(fs.stat(path.dirname(path.dirname(runSessionFile)))).rejects.toThrow();
+    await expect(
+      fs.stat(path.join(stateDir, "codex-session-retention", runId, "sessions", "session.jsonl")),
+    ).resolves.toBeDefined();
+    await expect(
+      fs.stat(path.join(stateDir, "codex-run-homes", `${runId}.quarantine`)),
+    ).rejects.toThrow();
+  });
+
   it("quarantines the raw run home and emits INCIDENT log when session retention fails (KEWL-3852)", async () => {
     const root = await makeTempRoot();
     const stateDir = path.join(root, "state");

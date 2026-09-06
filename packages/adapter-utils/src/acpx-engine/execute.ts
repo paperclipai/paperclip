@@ -386,6 +386,8 @@ export interface AcpxEngineExecutorOptions {
    * engine never reads it back; a test injects this hook to assert the report.
    */
   onSettlementDisposition?: (report: SettlementDispositionReport) => void;
+  /** Test seam for the destructive half of Codex run-home finalization. */
+  removeCodexRunHome?: (runHome: string) => Promise<void>;
 }
 
 interface AcpxPreparedRuntime {
@@ -1114,6 +1116,7 @@ async function retainSanitizedCodexSessionJsonl(input: {
 async function retainSanitizedCodexSessionsAfterClose(input: {
   prepared: AcpxPreparedRuntime;
   onLog: AdapterExecutionContext["onLog"];
+  removeRunHome?: (runHome: string) => Promise<void>;
 }): Promise<void> {
   if (!input.prepared.codexSessionRetention) return;
   const { runHome, retainedSessionsDir } = input.prepared.codexSessionRetention;
@@ -1123,12 +1126,6 @@ async function retainSanitizedCodexSessionsAfterClose(input: {
       retention: input.prepared.codexSessionRetention,
       onLog: input.onLog,
     });
-    // Fix A (KEWL-3852): delete the raw run home now that sanitized retention succeeded.
-    await fs.rm(runHome, { recursive: true, force: true });
-    await input.onLog(
-      "stderr",
-      `[paperclip] Deleted raw Codex run home "${runHome}" after successful session retention.\n`,
-    );
   } catch (err) {
     // Retention failed — leave the run home in place as an explicit quarantine so it
     // can be inspected or swept later.  The INCIDENT prefix is the signal KEWL-3853
@@ -1155,7 +1152,44 @@ async function retainSanitizedCodexSessionsAfterClose(input: {
       "stderr",
       `[paperclip] INCIDENT: failed to retain sanitized ACPX Codex session JSONL; raw run home quarantined at "${runHome}"${quarantineMarkerError ? `, but marker creation at "${quarantineMarker}" also failed: ${quarantineMarkerError instanceof Error ? quarantineMarkerError.message : String(quarantineMarkerError)}` : ` with marker "${quarantineMarker}"`}: ${err instanceof Error ? err.message : String(err)}\n`,
     );
+    return;
   }
+
+  // Retention is now durable. Never remove it in response to a later cleanup or
+  // observability failure: it is the only safe counterpart once deletion starts.
+  try {
+    await (input.removeRunHome ?? ((target) => fs.rm(target, { recursive: true, force: true })))(runHome);
+  } catch (err) {
+    await chmodPrivateTree(runHome).catch(() => {});
+    const runHomeParent = path.dirname(runHome);
+    const quarantineMarker = path.join(
+      path.dirname(runHomeParent),
+      `${path.basename(runHomeParent)}.quarantine`,
+    );
+    let quarantineMarkerError: unknown;
+    await writeFileAtomically({
+      target: quarantineMarker,
+      contents: `${JSON.stringify({
+        createdAt: new Date().toISOString(),
+        reason: "raw_run_home_cleanup_failed",
+      })}\n`,
+      mode: 0o600,
+    }).catch((markerErr) => {
+      quarantineMarkerError = markerErr;
+    });
+    await input.onLog(
+      "stderr",
+      `[paperclip] INCIDENT: sanitized ACPX Codex session retention succeeded, but raw run-home cleanup failed at "${runHome}"${quarantineMarkerError ? ` and marker creation at "${quarantineMarker}" also failed: ${quarantineMarkerError instanceof Error ? quarantineMarkerError.message : String(quarantineMarkerError)}` : `; quarantined with marker "${quarantineMarker}"`}: ${err instanceof Error ? err.message : String(err)}\n`,
+    ).catch(() => {});
+    return;
+  }
+
+  // Logging is evidence, not part of the destructive transaction. A log sink
+  // failure after deletion must never roll back the retained counterpart.
+  await input.onLog(
+    "stderr",
+    `[paperclip] Deleted raw Codex run home "${runHome}" after successful session retention.\n`,
+  ).catch(() => {});
 }
 
 async function quarantineCodexRunHomeWithoutClose(input: {
@@ -5163,7 +5197,11 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           // handle that already arrived must never race this step.
           const lateHandle = handshakeFence.seal();
           if (!slots.has("acp_runtime")) {
-            await retainSanitizedCodexSessionsAfterClose({ prepared, onLog: ctx.onLog });
+            await retainSanitizedCodexSessionsAfterClose({
+              prepared,
+              onLog: ctx.onLog,
+              removeRunHome: deps.removeCodexRunHome,
+            });
             return;
           }
           if (decision.kind === "save" && decision.savedId === "acp_runtime") {
@@ -5259,7 +5297,11 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
               });
               throw closeErr;
             }
-            await retainSanitizedCodexSessionsAfterClose({ prepared, onLog: ctx.onLog });
+            await retainSanitizedCodexSessionsAfterClose({
+              prepared,
+              onLog: ctx.onLog,
+              removeRunHome: deps.removeCodexRunHome,
+            });
             return;
           }
           const onCloseError = settlement.recordCloseError
@@ -5281,7 +5323,11 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
             warmHandles.delete(prepared.sessionKey);
           }
           if (runtimeCloseConfirmed) {
-            await retainSanitizedCodexSessionsAfterClose({ prepared, onLog: ctx.onLog });
+            await retainSanitizedCodexSessionsAfterClose({
+              prepared,
+              onLog: ctx.onLog,
+              removeRunHome: deps.removeCodexRunHome,
+            });
           } else {
             await quarantineCodexRunHomeWithoutClose({
               prepared,

@@ -67,12 +67,18 @@ type OpenHandleCheck =
   | { ok: false; error: string };
 
 type RunStatusCheck =
-  | { ok: true; status: string }
+  | { ok: true; status: string; companyId: string; agentId: string }
   | { ok: false; error: string };
 
 interface SweeperDependencies {
   checkOpenHandles?: (dir: string) => Promise<OpenHandleCheck>;
-  getRunStatus?: (runId: string, apiBase: string, apiKey: string) => Promise<RunStatusCheck>;
+  getRunStatus?: (
+    runId: string,
+    apiBase: string,
+    apiKey: string,
+    expectedCompanyId: string,
+    expectedAgentId: string,
+  ) => Promise<RunStatusCheck>;
 }
 
 async function pathExists(p: string): Promise<boolean> {
@@ -245,11 +251,15 @@ async function getRunStatus(
       signal: AbortSignal.timeout(8_000),
     });
     if (!res.ok) return { ok: false, error: `run-status lookup returned HTTP ${res.status}` };
-    const body = await res.json() as { status?: string };
-    if (typeof body?.status !== "string" || body.status.length === 0) {
-      return { ok: false, error: "run-status lookup returned no status" };
+    const body = await res.json() as { status?: string; companyId?: string; agentId?: string };
+    if (
+      typeof body?.status !== "string" || body.status.length === 0 ||
+      typeof body.companyId !== "string" || body.companyId.length === 0 ||
+      typeof body.agentId !== "string" || body.agentId.length === 0
+    ) {
+      return { ok: false, error: "run-status lookup returned incomplete ownership or status data" };
     }
-    return { ok: true, status: body.status };
+    return { ok: true, status: body.status, companyId: body.companyId, agentId: body.agentId };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }
@@ -283,6 +293,7 @@ async function sweepAgentDir(
   if (!runHomesParentStat?.isDirectory() || runHomesParentStat.isSymbolicLink()) return [];
 
   const retentionParent = path.join(agentDir, "codex-session-retention");
+  const companyId = path.basename(path.resolve(opts.companyDir));
   const entries: RunHomeEntry[] = [];
   const now = Date.now();
   const graceMs = opts.graceHours * 60 * 60 * 1000;
@@ -342,6 +353,8 @@ async function sweepAgentDir(
       runId,
       opts.paperclipApiBase,
       opts.paperclipApiKey,
+      companyId,
+      agentId,
     );
     if (!statusCheck.ok) {
       entry.ineligibleReason = `terminal run status could not be verified: ${statusCheck.error}`;
@@ -350,6 +363,11 @@ async function sweepAgentDir(
     }
     if (!TERMINAL_STATUSES.has(statusCheck.status)) {
       entry.ineligibleReason = `run status is "${statusCheck.status}" (non-terminal)`;
+      entries.push(entry);
+      continue;
+    }
+    if (statusCheck.companyId !== companyId || statusCheck.agentId !== agentId) {
+      entry.ineligibleReason = "run ownership does not match the company and agent directory";
       entries.push(entry);
       continue;
     }

@@ -20,7 +20,18 @@ async function makeTempRoot(): Promise<string> {
 
 const terminalAndClosedDeps = {
   checkOpenHandles: async () => ({ ok: true as const, hasOpenHandles: false }),
-  getRunStatus: async () => ({ ok: true as const, status: "succeeded" }),
+  getRunStatus: async (
+    _runId: string,
+    _apiBase: string,
+    _apiKey: string,
+    expectedCompanyId: string,
+    expectedAgentId: string,
+  ) => ({
+    ok: true as const,
+    status: "succeeded",
+    companyId: expectedCompanyId,
+    agentId: expectedAgentId,
+  }),
 };
 
 async function sweep(
@@ -544,12 +555,50 @@ describe("run-home sweeper", () => {
         { companyDir, dryRun: false, graceHours: 24 },
         {
           ...terminalAndClosedDeps,
-          getRunStatus: async () => ({ ok: true as const, status: "running" }),
+          getRunStatus: async (
+            _runId,
+            _apiBase,
+            _apiKey,
+            expectedCompanyId,
+            expectedAgentId,
+          ) => ({
+            ok: true as const,
+            status: "running",
+            companyId: expectedCompanyId,
+            agentId: expectedAgentId,
+          }),
         },
       );
 
       expect(result.eligible).toBe(0);
       expect(result.entries[0]?.ineligibleReason).toMatch(/non-terminal/i);
+      await expect(fs.stat(runHomeDir)).resolves.toBeDefined();
+    });
+
+    it("rejects deletion when the terminal run belongs to a different filesystem scope", async () => {
+      const { runHomeDir } = await buildRunHome({
+        companyDir,
+        agentId: "agent-1",
+        runId: "run-wrong-owner",
+        ageHours: 30,
+        withRetained: true,
+      });
+
+      const result = await sweep(
+        { companyDir, dryRun: false, graceHours: 24 },
+        {
+          ...terminalAndClosedDeps,
+          getRunStatus: async () => ({
+            ok: true as const,
+            status: "succeeded",
+            companyId: "another-company",
+            agentId: "another-agent",
+          }),
+        },
+      );
+
+      expect(result.eligible).toBe(0);
+      expect(result.entries[0]?.ineligibleReason).toMatch(/ownership does not match/i);
       await expect(fs.stat(runHomeDir)).resolves.toBeDefined();
     });
 
