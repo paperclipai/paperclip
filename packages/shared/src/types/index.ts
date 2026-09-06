@@ -1044,6 +1044,8 @@ export type {
   PluginObjectReferenceProviderDeclaration,
   PaperclipPluginManifestV1,
   PluginRecord,
+  PluginManifestDrift,
+  PluginPackageCapabilityDrift,
   PluginDatabaseNamespaceRecord,
   PluginMigrationRecord,
   PluginStateRecord,

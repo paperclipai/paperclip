@@ -891,6 +891,58 @@ If a plugin upgrade adds capabilities:
 2. the operator must explicitly approve the new capability set
 3. the new version does not become `ready` until approval completes
 
+The stored manifest is the grant of record: the host gates every worker→host
+call on the capability list persisted for the plugin, so an upgrade that adds
+capabilities must not persist its manifest before approval.
+
+`POST /api/plugins/:pluginId/upgrade` implements the approval loop:
+
+1. Called without `approveCapabilities`, an upgrade that adds capabilities
+   fetches and validates the new package, leaves the stored manifest alone,
+   moves the plugin to `upgrade_pending`, and returns
+   `upgrade: { applied: false, requiresApproval: true, addedCapabilities: [...] }`.
+2. The operator re-issues the same call with those capabilities in
+   `approveCapabilities`. The manifest is then adopted and the plugin returns
+   to `ready`.
+
+Approving fewer capabilities than the upgrade adds holds it again — the grant
+of record never carries a capability nobody approved.
+
+That call is the only approval path. A held upgrade leaves the new package on
+disk while the stored manifest keeps the previously approved grant, and
+activation adopts whatever manifest it finds on disk, so
+`POST /api/plugins/:pluginId/enable` must refuse a plugin in `upgrade_pending`
+whose package declares capabilities the stored grant lacks — otherwise enabling
+would grant exactly what the operator declined. The refusal fails closed: a
+package that cannot be read cannot be shown to grant nothing. An operator who
+does not want the new capabilities rejects the upgrade by uninstalling
+(`upgrade_pending → uninstalled`).
+
+### 15.4 Manifest Drift
+
+A plugin package replaced on disk without a re-activation keeps running against
+the capability set captured earlier, so calls needing a newly declared
+capability are denied even though the code on disk declares them.
+
+The host must make that difference observable rather than silent:
+
+- `GET /api/plugins/:pluginId` returns `manifestDrift` with the stored version,
+  the version declared by the package's `package.json`, and whether the package
+  still exposes a manifest entrypoint.
+- `GET /api/plugins/:pluginId/health` fails the `manifest_drift` check (and
+  reports `healthy: false`) whenever the package on disk is not the version the
+  stored manifest was captured from, or cannot be read.
+- Activation adopts the on-disk manifest and logs a warning naming every
+  capability granted that the stored manifest did not carry.
+
+Neither read path may name the drifted capabilities, because a v1 manifest is
+an executable module: importing one to diff its capability list would run
+package top-level code on an ordinary metadata or health request. Read paths
+therefore compare inert `package.json` data only. The exact capability delta
+belongs to the operations that load the package anyway — `POST
+/api/plugins/:pluginId/upgrade` reports it in `upgrade.addedCapabilities` and
+holds it for approval (§15.3), and the `enable` gate reads it the same way.
+
 ## 16. Event System
 
 The host must emit typed domain events that plugins may subscribe to.
