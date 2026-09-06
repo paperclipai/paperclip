@@ -150,7 +150,7 @@ import {
   type StartupStepMeasureOptions,
   type StartupTraceContext,
 } from "./startup-timing.js";
-import { redactCommandText } from "../command-redaction.js";
+import { redactDiagnosticText } from "../command-redaction.js";
 
 const defaultModuleDir = path.dirname(fileURLToPath(import.meta.url));
 const PAPERCLIP_MANAGED_CODEX_SKILLS_MANIFEST = ".paperclip-managed-skills.json";
@@ -985,6 +985,42 @@ function resolveContainedRunPath(root: string, runKey: string, leaf: string): st
   return candidate;
 }
 
+async function requireRealDirectory(target: string, label: string): Promise<string> {
+  const stat = await fs.lstat(target).catch(() => null);
+  if (!stat?.isDirectory() || stat.isSymbolicLink()) {
+    throw new Error(`${label} must be a real directory`);
+  }
+  return fs.realpath(target);
+}
+
+async function ensureContainedRealDirectory(input: {
+  parent: string;
+  childName: string;
+  label: string;
+}): Promise<string> {
+  const parentReal = await requireRealDirectory(input.parent, `${input.label} parent`);
+  const child = path.join(input.parent, input.childName);
+  if (path.dirname(child) !== path.resolve(input.parent)) {
+    throw new Error(`${input.label} escaped its configured parent`);
+  }
+  const existing = await fs.lstat(child).catch((err) => {
+    if (isErrnoException(err, "ENOENT")) return null;
+    throw err;
+  });
+  if (!existing) {
+    await fs.mkdir(child, { mode: 0o700 });
+  }
+  const childStat = await fs.lstat(child);
+  if (!childStat.isDirectory() || childStat.isSymbolicLink()) {
+    throw new Error(`${input.label} must be a real directory`);
+  }
+  const childReal = await fs.realpath(child);
+  if (!childReal.startsWith(`${parentReal}${path.sep}`)) {
+    throw new Error(`${input.label} escaped its configured parent`);
+  }
+  return child;
+}
+
 async function chmodPrivateTree(root: string): Promise<void> {
   const stat = await fs.lstat(root).catch(() => null);
   if (!stat) return;
@@ -1088,7 +1124,7 @@ async function retainSanitizedCodexSessionJsonl(input: {
     const raw = await fs.readFile(source, "utf8");
     await writeFileAtomically({
       target,
-      contents: redactCommandText(raw),
+      contents: redactDiagnosticText(raw),
       mode: 0o600,
     });
   }
@@ -1494,19 +1530,35 @@ async function prepareCodexSkillRuntime(input: {
   let retention: CodexSessionRetentionContext | null = null;
   if (input.adapterType === "codex_local") {
     const runKey = safePathSegment(input.runId);
-    const runHome = resolveContainedRunPath(
-      path.join(input.stateDir, "codex-run-homes"),
-      runKey,
-      "home",
-    );
+    await requireRealDirectory(input.stateDir, "Codex state directory");
+    const runHomesRoot = await ensureContainedRealDirectory({
+      parent: input.stateDir,
+      childName: "codex-run-homes",
+      label: "Codex run-home root",
+    });
+    const retentionRoot = await ensureContainedRealDirectory({
+      parent: input.stateDir,
+      childName: "codex-session-retention",
+      label: "Codex retention root",
+    });
+    const runDir = await ensureContainedRealDirectory({
+      parent: runHomesRoot,
+      childName: runKey,
+      label: "Codex run directory",
+    });
+    const retainedRunDir = await ensureContainedRealDirectory({
+      parent: retentionRoot,
+      childName: runKey,
+      label: "Codex retained-run directory",
+    });
+    const runHome = resolveContainedRunPath(runHomesRoot, runKey, "home");
     retention = {
       runHome,
-      retainedSessionsDir: resolveContainedRunPath(
-        path.join(input.stateDir, "codex-session-retention"),
-        runKey,
-        "sessions",
-      ),
+      retainedSessionsDir: path.join(retainedRunDir, "sessions"),
     };
+    if (path.dirname(runHome) !== runDir) {
+      throw new Error("Codex run home escaped its verified run directory");
+    }
     await prepareRunIsolatedCodexHome({
       sourceHome: seededCodexHome,
       runHome,

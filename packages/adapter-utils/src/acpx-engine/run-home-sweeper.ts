@@ -91,25 +91,37 @@ function isPathBelow(root: string, candidate: string): boolean {
   return resolvedCandidate.startsWith(`${resolvedRoot}${path.sep}`);
 }
 
-async function findLegacyRetainedJsonl(root: string, dir = root): Promise<boolean> {
+async function listJsonlArtifacts(
+  root: string,
+  dir = root,
+  relativeDir = "",
+): Promise<Map<string, number>> {
   const entries = await fs.readdir(dir, { withFileTypes: true });
+  const artifacts = new Map<string, number>();
   for (const entry of entries) {
     const candidate = path.join(dir, entry.name);
-    if (!isPathBelow(root, candidate) || entry.isSymbolicLink()) continue;
+    const relativePath = relativeDir ? path.join(relativeDir, entry.name) : entry.name;
+    if (!isPathBelow(root, candidate)) throw new Error("JSONL artifact escaped its configured root");
+    if (entry.isSymbolicLink()) throw new Error("JSONL artifact tree contains a symlink");
     if (entry.isDirectory()) {
-      if (await findLegacyRetainedJsonl(root, candidate)) return true;
+      const nested = await listJsonlArtifacts(root, candidate, relativePath);
+      for (const [nestedPath, size] of nested) artifacts.set(nestedPath, size);
       continue;
     }
     if (!entry.isFile() || !entry.name.endsWith(".jsonl")) continue;
     const stat = await fs.lstat(candidate);
-    if (stat.isFile() && !stat.isSymbolicLink() && stat.size > 0) return true;
+    if (!stat.isFile() || stat.isSymbolicLink()) {
+      throw new Error("JSONL artifact is not a real file");
+    }
+    artifacts.set(relativePath, stat.size);
   }
-  return false;
+  return artifacts;
 }
 
 async function validateRetentionProof(
   retentionParent: string,
   runId: string,
+  runHomeDir: string,
 ): Promise<RetentionProofCheck> {
   let retentionParentStat: Awaited<ReturnType<typeof fs.lstat>>;
   try {
@@ -200,12 +212,32 @@ async function validateRetentionProof(
   }
 
   try {
-    if (await findLegacyRetainedJsonl(retainedDir)) {
+    const rawSessionsDir = path.join(runHomeDir, "sessions");
+    const rawSessionsStat = await fs.lstat(rawSessionsDir);
+    if (!rawSessionsStat.isDirectory() || rawSessionsStat.isSymbolicLink()) {
+      return { ok: false, error: "legacy raw sessions path is not a real directory" };
+    }
+    const rawArtifacts = await listJsonlArtifacts(rawSessionsDir);
+    if (rawArtifacts.size === 0) {
+      return { ok: false, error: "legacy raw home has no JSONL set that can prove complete retention" };
+    }
+    const retainedArtifacts = await listJsonlArtifacts(retainedDir);
+    const normalizedRetained = new Map<string, number>();
+    for (const [relativePath, size] of retainedArtifacts) {
+      const normalized = relativePath.startsWith(`sessions${path.sep}`)
+        ? relativePath.slice(`sessions${path.sep}`.length)
+        : relativePath;
+      normalizedRetained.set(normalized, size);
+    }
+    const complete = [...rawArtifacts].every(([relativePath]) =>
+      (normalizedRetained.get(relativePath) ?? 0) > 0
+    );
+    if (complete) {
       return { ok: true, proof: "legacy_nonempty_jsonl" };
     }
     return {
       ok: false,
-      error: "retained-session counterpart has no completion manifest or non-empty JSONL artifact",
+      error: "legacy retained-session counterpart does not cover every raw JSONL artifact",
     };
   } catch (err) {
     return {
@@ -389,7 +421,7 @@ async function sweepAgentDir(
     const quarantineMarker = path.join(runHomesParent, `${runId}.quarantine`);
     const hasQuarantine = await pathExists(quarantineMarker);
     entry.quarantined = hasQuarantine;
-    const retentionProof = await validateRetentionProof(retentionParent, runId);
+    const retentionProof = await validateRetentionProof(retentionParent, runId, runHomeDir);
 
     if (!retentionProof.ok) {
       entry.ineligibleReason = hasQuarantine

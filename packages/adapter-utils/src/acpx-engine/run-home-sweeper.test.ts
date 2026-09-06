@@ -68,7 +68,8 @@ async function buildRunHome(opts: {
   const runHomeDir = path.join(runHomeParent, "home");
 
   await fs.mkdir(runHomeDir, { recursive: true });
-  await fs.writeFile(path.join(runHomeDir, "sessions"), "dummy", "utf8");
+  await fs.mkdir(path.join(runHomeDir, "sessions"), { recursive: true });
+  await fs.writeFile(path.join(runHomeDir, "sessions", "sessions.jsonl"), '{"type":"session"}\n', "utf8");
 
   // Backdate mtime by ageHours
   const now = Date.now();
@@ -224,7 +225,7 @@ describe("run-home sweeper", () => {
       const result = await sweep({ companyDir, dryRun: false, graceHours: 24 });
 
       expect(result.entries[0]?.eligible).toBe(false);
-      expect(result.entries[0]?.ineligibleReason).toMatch(/no completion manifest or non-empty JSONL/i);
+      expect(result.entries[0]?.ineligibleReason).toMatch(/does not cover every raw JSONL artifact/i);
       await expect(fs.stat(runHomeDir)).resolves.toBeDefined();
     });
 
@@ -385,6 +386,35 @@ describe("run-home sweeper", () => {
       await expect(sweep({ companyDir, dryRun: true, graceHours: 23 })).rejects.toThrow(
         "graceHours must be at least 24",
       );
+    });
+
+    it("rejects a partial legacy retention set", async () => {
+      const runId = "run-partial-legacy";
+      const { runHomeDir, retentionDir } = await buildRunHome({
+        companyDir,
+        agentId: "agent-1",
+        runId,
+        ageHours: 30,
+      });
+      await fs.writeFile(
+        path.join(runHomeDir, "sessions", "second.jsonl"),
+        '{"type":"second"}\n',
+        "utf8",
+      );
+      await fs.mkdir(retentionDir, { recursive: true });
+      await fs.writeFile(
+        path.join(retentionDir, "sessions.jsonl"),
+        '{"type":"session"}\n',
+        "utf8",
+      );
+
+      const result = await sweep({ companyDir, dryRun: false, graceHours: 24 });
+
+      expect(result.entries[0]).toMatchObject({
+        eligible: false,
+        ineligibleReason: expect.stringMatching(/does not cover every raw JSONL artifact/i),
+      });
+      await expect(fs.stat(runHomeDir)).resolves.toBeDefined();
     });
   });
 

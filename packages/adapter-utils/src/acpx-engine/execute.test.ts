@@ -2282,12 +2282,52 @@ describe("shared ACPX engine runtime behavior", () => {
     await expect(fs.readFile(sentinel, "utf8")).resolves.toBe("keep");
   });
 
+  it("rejects symlinked Codex cleanup roots without touching external sentinels", async () => {
+    for (const rootName of ["codex-run-homes", "codex-session-retention"] as const) {
+      const root = await makeTempRoot();
+      const stateDir = path.join(root, "state");
+      const sourceCodexHome = path.join(root, "source-codex-home");
+      const externalDir = path.join(root, `external-${rootName}`);
+      const sentinel = path.join(externalDir, "sentinel.txt");
+      let runtimeCreated = false;
+
+      await fs.mkdir(stateDir, { recursive: true });
+      await fs.mkdir(sourceCodexHome, { recursive: true });
+      await fs.writeFile(path.join(sourceCodexHome, "config.toml"), "model_provider = \"openai\"\n", "utf8");
+      await fs.mkdir(externalDir, { recursive: true });
+      await fs.writeFile(sentinel, "keep", "utf8");
+      await fs.symlink(externalDir, path.join(stateDir, rootName), "dir");
+
+      const execute = createAcpxEngineExecutor({
+        adapterType: "codex_local",
+        createRuntime: () => {
+          runtimeCreated = true;
+          throw new Error("runtime must not start");
+        },
+      });
+
+      await expect(execute({
+        runId: `run-${rootName}`,
+        agent: { id: "agent-1", companyId: "company-1" },
+        runtime: {},
+        config: { agent: "codex", stateDir, env: { CODEX_HOME: sourceCodexHome } },
+        context: {},
+        onLog: async () => {},
+        onMeta: async () => {},
+      } as never)).rejects.toThrow(/must be a real directory/);
+
+      expect(runtimeCreated).toBe(false);
+      await expect(fs.readFile(sentinel, "utf8")).resolves.toBe("keep");
+    }
+  });
+
   it("retains only sanitized run-local Codex session JSONL after the runtime closes", async () => {
     const root = await makeTempRoot();
     const stateDir = path.join(root, "state");
     const sourceCodexHome = path.join(root, "source-codex-home");
     const runId = "run-sentinel";
     const fakeToken = `pcp_board_${"01234567".repeat(6)}`;
+    const opaqueJsonSecret = "opaque-json-credential";
     const runSessionFile = path.join(
       stateDir,
       "codex-run-homes",
@@ -2316,7 +2356,7 @@ describe("shared ACPX engine runtime behavior", () => {
             await fs.mkdir(path.dirname(runSessionFile), { recursive: true });
             await fs.writeFile(
               runSessionFile,
-              `${JSON.stringify({ type: "message", text: `token=${fakeToken}` })}\n`,
+              `${JSON.stringify({ type: "message", text: `token=${fakeToken}`, credential: opaqueJsonSecret })}\n`,
               "utf8",
             );
             yield { type: "done", stopReason: "end_turn" };
@@ -2367,6 +2407,7 @@ describe("shared ACPX engine runtime behavior", () => {
     );
     const retained = await fs.readFile(retainedFile, "utf8");
     expect(retained).not.toContain(fakeToken);
+    expect(retained).not.toContain(opaqueJsonSecret);
     expect(retained).toContain("***REDACTED***");
     expect(retained).toContain("\"type\":\"close\"");
     expect((await fs.stat(retainedFile)).mode & 0o777).toBe(0o600);

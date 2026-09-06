@@ -1272,8 +1272,9 @@ closed unless it can prove that the heartbeat run is terminal, the home has no
 open file handles, the home is older than the grace window, the API run ownership
 matches the company and agent directories, and a sanitized retention counterpart
 has proof of completion. New counterparts require a valid
-completion manifest. Legacy counterparts require a contained, non-empty JSONL
-artifact. Empty, unreadable, or symlinked counterparts fail closed. A quarantine
+completion manifest. Legacy counterparts must contain a non-empty retained
+artifact for every JSONL file still present in the raw home. Partial, empty,
+unreadable, or symlinked counterparts fail closed. A quarantine
 marker records an incident. It does not permit deletion of the only raw copy.
 
 Review the JSON manifest before you add `--delete`. Keep the default 24-hour
