@@ -1892,6 +1892,14 @@ impl Provider for AwsAgentCoreHarnessProvider {
             }
             NetworkEventKind::Failure(detail) => {
                 self.active_invocation_id = None;
+                self.pending_stop_reason = None;
+                // A transport failure is terminal for the current invocation.
+                // Results can race the failure across the control-plane and
+                // provider channels, so discard both sides of the pending
+                // batch. A late result must fail validation instead of
+                // starting a continuation after the failed invocation.
+                self.pending.clear();
+                self.delivered_results.clear();
                 Err(LocalRunnerError::invalid(format!(
                     "AgentCore transport failed: {detail}"
                 )))
@@ -2658,6 +2666,54 @@ mod tests {
         assert!(provider.active_invocation_id.is_some());
         assert!(provider.pending.is_empty());
         assert!(provider.delivered_results.is_empty());
+    }
+
+    #[test]
+    fn transport_failure_discards_pending_tool_state_and_rejects_late_result() {
+        let mut provider = provider_with_events(
+            vec![invocation_event(NetworkEventKind::Failure(
+                "connection reset".to_owned(),
+            ))],
+            restored_usage_snapshot(None).unwrap(),
+        );
+        provider.pending.insert(
+            "tool-use-1".to_owned(),
+            RemoteToolUse {
+                remote_name: "pc_get_task_context_abc123".to_owned(),
+                operation_id: "get_task_context".to_owned(),
+                input: json!({}),
+            },
+        );
+        provider.delivered_results.insert(
+            "tool-use-1".to_owned(),
+            ToolResult {
+                call_id: "tool-use-1".to_owned(),
+                operation_id: "get_task_context".to_owned(),
+                result: json!({"ok": true}),
+                is_error: false,
+            },
+        );
+        provider.pending_stop_reason = Some("tool_use".to_owned());
+
+        let error = provider.poll().unwrap_err();
+        assert!(error.to_string().contains("AgentCore transport failed"));
+        assert!(provider.active_invocation_id.is_none());
+        assert!(provider.pending_stop_reason.is_none());
+        assert!(provider.pending.is_empty());
+        assert!(provider.delivered_results.is_empty());
+
+        let late_result_error = provider
+            .deliver_tool_result(&ToolResult {
+                call_id: "tool-use-1".to_owned(),
+                operation_id: "get_task_context".to_owned(),
+                result: json!({"ok": true}),
+                is_error: false,
+            })
+            .unwrap_err();
+        assert!(late_result_error
+            .to_string()
+            .contains("does not match a pending tool use"));
+        assert_eq!(provider.invocation_counter, 1);
     }
 
     #[test]
