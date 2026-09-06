@@ -1568,17 +1568,20 @@ function acpxProviderPackageAuthority(
   }
   const sidecarPackageRoot = resolve(cliDirectory, "../..");
   // A local source build lives at <workspace>/packages/paperclip-runner and
-  // resolves dependencies from <workspace>/node_modules. A `pnpm deploy`
-  // package lives at <deploy>/node_modules/@paperclipai/paperclip-runner,
-  // beside <deploy>/node_modules/.pnpm. The provider verifier receives the
-  // directory that owns node_modules, so step out one more level only for the
-  // deployed shape.
+  // resolves dependencies from <workspace>/node_modules. `pnpm deploy` makes
+  // the package itself the deployment root and owns <deploy>/node_modules/.pnpm.
+  // The older npm-installed portable shape nests the scoped package at
+  // <deploy>/node_modules/@paperclipai/paperclip-runner. The verifier always
+  // receives the directory that owns node_modules, regardless of which
+  // portable shape launched the already-authenticated sidecar.
   const sourceDependencyRoot = resolve(ownerPackageRoot, "../..");
   const localDependencyRoot = existsSync(
-    resolve(sourceDependencyRoot, ".pnpm"),
-  )
-    ? resolve(sourceDependencyRoot, "..")
-    : sourceDependencyRoot;
+      resolve(ownerPackageRoot, "node_modules", ".pnpm"),
+    )
+    ? ownerPackageRoot
+    : basename(sourceDependencyRoot) === "node_modules"
+      ? resolve(sourceDependencyRoot, "..")
+      : sourceDependencyRoot;
   return sidecarPackageRoot === ownerPackageRoot
     ? {
         root: localDependencyRoot,
