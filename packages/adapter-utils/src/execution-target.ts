@@ -45,6 +45,8 @@ import {
 } from "./sandbox-callback-bridge.js";
 import {
   createHttp2BridgeServer,
+  BridgeProcessCapacityError,
+  type BridgeBodyReservation,
   type Http2BridgeForwardHandler,
 } from "./http2-bridge-server.js";
 import {
@@ -652,12 +654,19 @@ function preferredSandboxShell(target: AdapterSandboxExecutionTarget): "bash" | 
 
 type AdapterCommandCapableExecutionTarget = AdapterSshExecutionTarget | AdapterSandboxExecutionTarget;
 
+// The Secure Shell command runner's own output buffer. This value used to
+// derive from the bridge body limit (`DEFAULT_SANDBOX_CALLBACK_BRIDGE_MAX_BODY_BYTES
+// * 4`), so a bridge limit rise silently grew it too. It now stands on its
+// own local constant, independent of the bridge body limit, so a later
+// bridge limit change never resizes this buffer as a side effect.
+const SSH_COMMAND_MAX_BUFFER_BYTES = 1024 * 1024;
+
 function adapterExecutionTargetCommandRunner(target: AdapterCommandCapableExecutionTarget): CommandManagedRuntimeRunner {
   if (target.transport === "ssh") {
     return createSshCommandManagedRuntimeRunner({
       spec: target.spec,
       defaultCwd: target.remoteCwd,
-      maxBufferBytes: DEFAULT_SANDBOX_CALLBACK_BRIDGE_MAX_BODY_BYTES * 4,
+      maxBufferBytes: SSH_COMMAND_MAX_BUFFER_BYTES,
     });
   }
   return requireSandboxRunner(target);
@@ -1531,12 +1540,26 @@ function bridgeResponseBodyLimitError(maxBodyBytes: number): Error {
  * per-request `maxBodyBytes` limit rejects a body larger than the configured
  * per-request ceiling.
  *
- * This function reserves no process-wide byte budget: it enforces only the
- * one request's own ceiling. See the "Known behavior: aggregate retained
- * body bytes" section in `doc/observability.md` for the accepted aggregate
- * ceiling this leaves across every concurrent route.
+ * When the caller passes a `reservation`, this reserves each chunk's bytes
+ * against it immediately after `reader.read()` yields the chunk, and before
+ * `Buffer.from(value)` copies it — the allocation happens inside that
+ * expression, so reserving only before the later `chunks.push` would let the
+ * copy happen first. It also reserves the concatenated buffer's own byte
+ * count before `Buffer.concat` allocates it: the chunk array and the
+ * concatenated buffer are two separate live copies. A denied reservation
+ * cancels the reader and throws {@link BridgeProcessCapacityError}, copying
+ * no further chunk. This function never releases the reservation; the
+ * stream owner that created it does, once the whole forward call settles.
+ *
+ * With no `reservation`, this function enforces only the one request's own
+ * ceiling, exactly as it did before this parameter existed — the queue
+ * transport calls it with no reservation, and its behavior must not change.
  */
-async function readBridgeForwardResponseBody(response: Response, maxBodyBytes: number): Promise<Buffer> {
+async function readBridgeForwardResponseBody(
+  response: Response,
+  maxBodyBytes: number,
+  reservation?: BridgeBodyReservation,
+): Promise<Buffer> {
   const rawContentLength = response.headers.get("content-length");
   if (rawContentLength) {
     const contentLength = Number.parseInt(rawContentLength, 10);
@@ -1562,9 +1585,17 @@ async function readBridgeForwardResponseBody(response: Response, maxBodyBytes: n
       await reader.cancel().catch(() => undefined);
       throw bridgeResponseBodyLimitError(maxBodyBytes);
     }
+    if (reservation && !reservation.reserve(chunkBytes)) {
+      await reader.cancel().catch(() => undefined);
+      throw new BridgeProcessCapacityError();
+    }
     chunks.push(Buffer.from(value));
   }
-  return Buffer.concat(chunks, totalBytes);
+  const body = Buffer.concat(chunks, totalBytes);
+  if (reservation && !reservation.reserve(body.byteLength)) {
+    throw new BridgeProcessCapacityError();
+  }
+  return body;
 }
 
 const PROCESS_SESSION_PROXY_SCRIPT = "paperclip-process-session-proxy.mjs";
@@ -4017,6 +4048,15 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
     signal?: AbortSignal,
     options?: {
       suppressDebugLog?: boolean;
+      /**
+       * The caller's stream reservation owner, if it has one. The HTTP/2
+       * bridge passes the stream's own owner here, so the response body copy
+       * reserves against the same ceiling the request body copy already
+       * reserved against. The queue transport passes no owner, so its
+       * response-body read enforces only the per-request size ceiling, exactly
+       * as it did before this option existed.
+       */
+      reservation?: BridgeBodyReservation;
     },
   ): Promise<{ status: number; headers: Record<string, string>; body: Buffer }> => {
     const method = request.method.trim().toUpperCase() || "GET";
@@ -4078,7 +4118,7 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
     // to a non-retryable 409 for both the file bridge and the duplex broker.
     let responseBody: Buffer;
     try {
-      responseBody = await readBridgeForwardResponseBody(response, maxBodyBytes);
+      responseBody = await readBridgeForwardResponseBody(response, maxBodyBytes, options?.reservation);
     } catch (error) {
       if (isSafeBridgeMethod(method)) {
         // The method is safe, so a retry cannot double-apply a mutation. Return a
@@ -4313,7 +4353,7 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
                   body: request.body,
                 },
                 request.signal,
-                { suppressDebugLog: true },
+                { suppressDebugLog: true, reservation: request.reservation },
               );
               duplexObservability.recordRequest({ latencyMs: Date.now() - dispatchStartMs, outcome: "ok" });
               return { status: result.status, headers: result.headers, body: result.body };
@@ -4327,6 +4367,12 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
             bridgeToken,
             forwardRequest: http2ForwardRequest,
             routes: HTTP2_SANDBOX_CALLBACK_BRIDGE_ROUTE_ALLOWLIST,
+            // The same resolved limit the launch environment hands the
+            // sandbox-side gateway (`PAPERCLIP_BRIDGE_MAX_BODY_BYTES`,
+            // below), so the host check and the gateway check enforce one
+            // value instead of the host silently falling back to the
+            // package default.
+            maxBodyBytes,
             onGoaway: () => recordHttp2Loss("session_goaway"),
             onSessionError: () => recordHttp2Loss("session_error"),
           });

@@ -2,14 +2,18 @@ import { duplexPair } from "node:stream";
 import type { Duplex } from "node:stream";
 import http2 from "node:http2";
 
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 
 import {
   buildHttp2BridgeForwardUrl,
   classifyStreamAgainstGoaway,
+  createBridgeBodyReservation,
   createHttp2BridgeServer,
+  getBridgeBodyReservedBytesForTest,
   parseCanonicalBridgeRequestPath,
+  resetBridgeBodyReservationsForTest,
   wrapDuplexChannelAsNodeDuplex,
+  BridgeProcessCapacityError,
   DEFAULT_HTTP2_BRIDGE_MAX_BUFFERED_READ_BYTES,
   DEFAULT_HTTP2_BRIDGE_PING_INTERVAL_MS,
   DEFAULT_HTTP2_BRIDGE_PING_STALL_MS,
@@ -19,6 +23,7 @@ import {
   HTTP2_BRIDGE_MAX_DEFLATE_DYNAMIC_TABLE_SIZE,
   HTTP2_BRIDGE_MAX_HEADER_LIST_PAIRS,
   HTTP2_BRIDGE_MAX_HEADER_LIST_SIZE,
+  HTTP2_BRIDGE_MAX_PROCESS_BODY_BYTES,
   HTTP2_BRIDGE_MAX_SESSION_INVALID_FRAMES,
   HTTP2_BRIDGE_MAX_SESSION_MEMORY,
   HTTP2_BRIDGE_MAX_SESSION_REJECTED_STREAMS,
@@ -175,6 +180,13 @@ async function expectSessionStillServesARequest(
 }
 
 describe("createHttp2BridgeServer + createSandboxHttp2BridgeGateway", () => {
+  // Every test in this file shares the module-scope process reservation
+  // total. A reservation one test leaves unreleased would otherwise lower
+  // the ceiling every later test sees, so each test starts from zero.
+  beforeEach(() => {
+    resetBridgeBodyReservationsForTest();
+  });
+
   it("test_one_session_over_a_fake_channel_forwards_a_request", async () => {
     const { handle, gateway } = createTestPair();
     try {
@@ -854,7 +866,416 @@ describe("createHttp2BridgeServer + createSandboxHttp2BridgeGateway", () => {
     // so this multiplier bounds live forwards, not merely open streams.
     expect(
       HTTP2_BRIDGE_MAX_CONCURRENT_STREAMS * 4 * DEFAULT_SANDBOX_CALLBACK_BRIDGE_MAX_BODY_BYTES,
-    ).toBe(4_194_304);
+    ).toBe(167_772_160);
+  });
+
+  describe("createBridgeBodyReservation", () => {
+    it("test_a_reservation_denies_a_chunk_that_passes_the_process_ceiling", () => {
+      const owner = createBridgeBodyReservation();
+      try {
+        expect(owner.reserve(HTTP2_BRIDGE_MAX_PROCESS_BODY_BYTES)).toBe(true);
+        expect(owner.heldBytes).toBe(HTTP2_BRIDGE_MAX_PROCESS_BODY_BYTES);
+        expect(getBridgeBodyReservedBytesForTest()).toBe(HTTP2_BRIDGE_MAX_PROCESS_BODY_BYTES);
+
+        // One more byte passes the ceiling: denied, and it holds no bytes.
+        expect(owner.reserve(1)).toBe(false);
+        expect(owner.heldBytes).toBe(HTTP2_BRIDGE_MAX_PROCESS_BODY_BYTES);
+        expect(getBridgeBodyReservedBytesForTest()).toBe(HTTP2_BRIDGE_MAX_PROCESS_BODY_BYTES);
+      } finally {
+        owner.release();
+      }
+    });
+
+    it("test_a_reservation_denies_the_concatenated_copy_that_passes_the_process_ceiling", () => {
+      const owner = createBridgeBodyReservation();
+      try {
+        // The chunk-array reservation alone passes comfortably.
+        const chunkArrayBytes = Math.floor(HTTP2_BRIDGE_MAX_PROCESS_BODY_BYTES * 0.6);
+        expect(owner.reserve(chunkArrayBytes)).toBe(true);
+
+        // The concatenated `Buffer.concat` copy is a second, separate live
+        // copy of the same bytes: reserving it on top of the chunk array
+        // this owner already holds passes the ceiling, even though the
+        // chunk-array reservation alone did not.
+        expect(owner.reserve(chunkArrayBytes)).toBe(false);
+        expect(owner.heldBytes).toBe(chunkArrayBytes);
+        expect(getBridgeBodyReservedBytesForTest()).toBe(chunkArrayBytes);
+      } finally {
+        owner.release();
+      }
+    });
+
+    it("test_a_reservation_releases_every_held_byte_one_time_only", () => {
+      const owner = createBridgeBodyReservation();
+      expect(owner.reserve(1_000)).toBe(true);
+      expect(getBridgeBodyReservedBytesForTest()).toBe(1_000);
+
+      owner.release();
+      expect(owner.heldBytes).toBe(0);
+      expect(getBridgeBodyReservedBytesForTest()).toBe(0);
+
+      // A second release must not double-subtract: the total must not go
+      // below zero.
+      owner.release();
+      expect(owner.heldBytes).toBe(0);
+      expect(getBridgeBodyReservedBytesForTest()).toBe(0);
+    });
+  });
+
+  it("test_the_stream_handler_releases_its_reservation_on_completion_error_abort_timeout_and_close", async () => {
+    // Every stream, no matter how it ends, must leave the process-wide
+    // reservation total at zero: `handleStream`'s `finally` block releases
+    // exactly one owner exactly one time on every exit path.
+
+    async function runCompletionCase(): Promise<void> {
+      const { handle, bridgeToken, clientSide } = bindTestServer({
+        forwardRequest: async (request) => {
+          request.reservation.reserve(1_000);
+          return { status: 200, body: Buffer.from("{}", "utf8") };
+        },
+      });
+      const rawClient = connectRawClient(clientSide);
+      try {
+        const response = await expectSessionStillServesARequest(rawClient, {
+          method: "GET",
+          path: "/api/agents/me",
+          token: bridgeToken,
+        });
+        expect(response.status).toBe(200);
+        expect(getBridgeBodyReservedBytesForTest()).toBe(0);
+      } finally {
+        rawClient.close();
+        await handle.close();
+      }
+    }
+
+    async function runErrorCase(): Promise<void> {
+      const { handle, bridgeToken, clientSide } = bindTestServer({
+        forwardRequest: async (request) => {
+          request.reservation.reserve(1_000);
+          throw new Error("forward handler fault");
+        },
+      });
+      const rawClient = connectRawClient(clientSide);
+      try {
+        const response = await expectSessionStillServesARequest(rawClient, {
+          method: "GET",
+          path: "/api/agents/me",
+          token: bridgeToken,
+        });
+        expect(response.status).toBe(502);
+        expect(getBridgeBodyReservedBytesForTest()).toBe(0);
+      } finally {
+        rawClient.close();
+        await handle.close();
+      }
+    }
+
+    async function runAbortCase(): Promise<void> {
+      const { handle, bridgeToken, clientSide } = bindTestServer({
+        forwardRequest: async (request) => {
+          request.reservation.reserve(1_000);
+          await new Promise<void>((resolve) => {
+            if (request.signal.aborted) {
+              resolve();
+              return;
+            }
+            request.signal.addEventListener("abort", () => resolve(), { once: true });
+          });
+          return { status: 200 };
+        },
+      });
+      const rawClient = connectRawClient(clientSide);
+      try {
+        const stream = rawClient.request({
+          ":method": "GET",
+          ":path": "/api/agents/me",
+          authorization: `Bearer ${bridgeToken}`,
+        });
+        const streamClosed = new Promise<void>((resolve) => {
+          stream.on("error", () => resolve());
+          stream.on("close", () => resolve());
+        });
+        stream.end();
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        stream.close(http2.constants.NGHTTP2_CANCEL);
+        await streamClosed;
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        expect(getBridgeBodyReservedBytesForTest()).toBe(0);
+      } finally {
+        rawClient.close();
+        await handle.close();
+      }
+    }
+
+    async function runTimeoutCase(): Promise<void> {
+      const { handle, bridgeToken, clientSide } = bindTestServer({
+        requestBodyTimeoutMs: 30,
+        forwardRequest: async () => ({ status: 200 }),
+      });
+      const rawClient = connectRawClient(clientSide);
+      try {
+        await new Promise<void>((resolve) => {
+          const req = rawClient.request({
+            ":method": "POST",
+            ":path": "/api/issues/abc/comments",
+            authorization: `Bearer ${bridgeToken}`,
+          });
+          req.on("error", () => resolve());
+          req.on("close", () => resolve());
+          req.write("partial-body");
+        });
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        expect(getBridgeBodyReservedBytesForTest()).toBe(0);
+      } finally {
+        rawClient.close();
+        await handle.close();
+      }
+    }
+
+    async function runCloseCase(): Promise<void> {
+      const { handle, bridgeToken, clientSide } = bindTestServer({
+        requestBodyTimeoutMs: 60_000,
+        closeGraceMs: 30,
+      });
+      const rawClient = connectRawClient(clientSide);
+      try {
+        const req = rawClient.request({
+          ":method": "POST",
+          ":path": "/api/issues/abc/comments",
+          authorization: `Bearer ${bridgeToken}`,
+        });
+        req.write("partial-body");
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        await handle.close();
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        expect(getBridgeBodyReservedBytesForTest()).toBe(0);
+      } finally {
+        rawClient.close();
+      }
+    }
+
+    await runCompletionCase();
+    await runErrorCase();
+    await runAbortCase();
+    await runTimeoutCase();
+    await runCloseCase();
+  }, 10_000);
+
+  it("test_a_peer_reset_holds_the_reservation_until_the_active_forward_settles", async () => {
+    let capturedRequest: Http2BridgeForwardRequest | undefined;
+    let releaseForward: (() => void) | undefined;
+    const forwardHeld = new Promise<void>((resolve) => {
+      releaseForward = resolve;
+    });
+    let forwardSettled = false;
+    const { handle, bridgeToken, clientSide } = bindTestServer({
+      forwardRequest: async (request) => {
+        capturedRequest = request;
+        // Stand in for a live response-body copy `readBridgeForwardResponseBody`
+        // (`execution-target.ts`) would reserve against this same owner.
+        request.reservation.reserve(10_000);
+        // The forward stays active past the peer's own reset: it settles
+        // only when the test releases it below, not merely when the abort
+        // signal fires — the same shape a real outbound `fetch` bound to
+        // `request.signal` has, since an abort does not settle the fetch
+        // promise synchronously.
+        await new Promise<void>((resolve) => {
+          if (request.signal.aborted) {
+            resolve();
+            return;
+          }
+          request.signal.addEventListener("abort", () => resolve(), { once: true });
+        });
+        await forwardHeld;
+        forwardSettled = true;
+        return { status: 200, body: Buffer.from("{}", "utf8") };
+      },
+    });
+    const rawClient = connectRawClient(clientSide);
+    try {
+      const stream = rawClient.request({
+        ":method": "GET",
+        ":path": "/api/agents/me",
+        authorization: `Bearer ${bridgeToken}`,
+      });
+      const streamClosed = new Promise<void>((resolve) => {
+        stream.on("error", () => resolve());
+        stream.on("close", () => resolve());
+      });
+      stream.end();
+      // Give the request time to reach the server, enter `forwardRequest`,
+      // and land its reservation.
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(capturedRequest).toBeDefined();
+      expect(getBridgeBodyReservedBytesForTest()).toBe(10_000);
+
+      // The peer resets the stream. The forward call is still pending.
+      stream.close(http2.constants.NGHTTP2_CANCEL);
+      await streamClosed;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(capturedRequest!.signal.aborted).toBe(true);
+      // The owner still holds its bytes: the active forward has not
+      // settled yet, so `handleStream`'s `finally` has not released it.
+      expect(forwardSettled).toBe(false);
+      expect(getBridgeBodyReservedBytesForTest()).toBe(10_000);
+
+      // Let the forward settle. The `finally` block releases the owner
+      // exactly one time, and the process total returns to zero.
+      releaseForward!();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(forwardSettled).toBe(true);
+      expect(getBridgeBodyReservedBytesForTest()).toBe(0);
+    } finally {
+      rawClient.close();
+      await handle.close();
+    }
+  });
+
+  it("test_a_stalled_body_releases_its_reservation_while_other_streams_hold_theirs", async () => {
+    const releaseByPath = new Map<string, () => void>();
+    const { handle, bridgeToken, clientSide } = bindTestServer({
+      requestBodyTimeoutMs: 60,
+      forwardRequest: async (request) => {
+        // Stand in for a live response-body buffer: reserve, then hold the
+        // forward open until the test releases this exact path.
+        request.reservation.reserve(20_000);
+        await new Promise<void>((resolve) => {
+          releaseByPath.set(request.pathname, resolve);
+        });
+        return { status: 200, body: Buffer.from("{}", "utf8") };
+      },
+    });
+    const rawClient = connectRawClient(clientSide);
+    try {
+      const streamA = rawClient.request({
+        ":method": "GET",
+        ":path": "/api/agents/a",
+        authorization: `Bearer ${bridgeToken}`,
+      });
+      const streamB = rawClient.request({
+        ":method": "GET",
+        ":path": "/api/agents/b",
+        authorization: `Bearer ${bridgeToken}`,
+      });
+      // Drain each response as it arrives: `session.close()` later in this
+      // test's teardown waits for every stream to fully end on both sides,
+      // and an unread response can hold a stream open past that point.
+      streamA.resume();
+      streamB.resume();
+      streamA.end();
+      streamB.end();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(getBridgeBodyReservedBytesForTest()).toBe(40_000);
+
+      // The third stream's request body stalls past the idle bound. It
+      // never reaches `forwardRequest`, so it never reserves anything of
+      // its own; its owner still holds zero bytes at the moment it releases.
+      const streamC = rawClient.request({
+        ":method": "POST",
+        ":path": "/api/issues/abc/comments",
+        authorization: `Bearer ${bridgeToken}`,
+      });
+      const streamCClosed = new Promise<void>((resolve) => {
+        streamC.on("error", () => resolve());
+        streamC.on("close", () => resolve());
+      });
+      streamC.write("partial-body");
+      await streamCClosed;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+
+      // The stalled stream's release changed nothing: the other two streams
+      // keep their reservations.
+      expect(getBridgeBodyReservedBytesForTest()).toBe(40_000);
+
+      releaseByPath.get("/api/agents/a")?.();
+      releaseByPath.get("/api/agents/b")?.();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(getBridgeBodyReservedBytesForTest()).toBe(0);
+    } finally {
+      rawClient.close();
+      await handle.close();
+    }
+  });
+
+  it("test_a_denied_stream_drains_its_body_and_holds_no_bytes", async () => {
+    const { handle, clientSide } = bindTestServer({
+      forwardRequest: async () => ({ status: 200 }),
+    });
+    const rawClient = connectRawClient(clientSide);
+    try {
+      const response = await new Promise<{ status: number }>((resolve, reject) => {
+        // No `authorization` header: the token check denies this stream
+        // before its body is ever read.
+        const req = rawClient.request({ ":method": "POST", ":path": "/api/issues/abc/comments" });
+        let status = 0;
+        req.on("response", (headers) => {
+          status = Number(headers[":status"]) || 0;
+        });
+        req.on("data", () => undefined);
+        req.on("end", () => resolve({ status }));
+        req.on("error", reject);
+        req.write(Buffer.alloc(50_000, "a"));
+        req.end();
+      });
+      expect(response.status).toBe(401);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(getBridgeBodyReservedBytesForTest()).toBe(0);
+    } finally {
+      rawClient.close();
+      await handle.close();
+    }
+  });
+
+  it("test_a_request_body_reservation_denial_answers_503_on_the_wire", async () => {
+    // A denied request-body chunk must leave the stream alive long enough
+    // to answer 503 for real, on the wire — not merely destroy the stream
+    // and leave the caller with a bare reset.
+    const filler = createBridgeBodyReservation();
+    expect(filler.reserve(HTTP2_BRIDGE_MAX_PROCESS_BODY_BYTES - 100)).toBe(true);
+    const forwarderTracker = createForwarderCallTracker();
+    const { handle, bridgeToken, clientSide } = bindTestServer({
+      forwardRequest: async () => {
+        forwarderTracker.markCalled();
+        return { status: 200 };
+      },
+    });
+    const rawClient = connectRawClient(clientSide);
+    try {
+      const response = await new Promise<{ status: number; body: string }>((resolve, reject) => {
+        const req = rawClient.request({
+          ":method": "POST",
+          ":path": "/api/issues/abc/comments",
+          authorization: `Bearer ${bridgeToken}`,
+        });
+        let status = 0;
+        let body = "";
+        req.setEncoding("utf8");
+        req.on("response", (headers) => {
+          status = Number(headers[":status"]) || 0;
+        });
+        req.on("data", (chunk) => (body += chunk));
+        req.on("end", () => resolve({ status, body }));
+        req.on("error", reject);
+        // Ten times the 100 bytes of headroom the filler above left.
+        req.end(Buffer.alloc(1_000, "a"));
+      });
+      expect(response.status).toBe(503);
+      expect(forwarderTracker.called).toBe(false);
+
+      // The stream ended with a real response, not a raw reset: the session
+      // stays healthy, so a second, complete request still succeeds.
+      const survivingResponse = await expectSessionStillServesARequest(rawClient, {
+        method: "GET",
+        path: "/api/agents/me",
+        token: bridgeToken,
+      });
+      expect(survivingResponse.status).toBe(200);
+    } finally {
+      rawClient.close();
+      await handle.close();
+      filler.release();
+    }
   });
 
   describe("parseCanonicalBridgeRequestPath", () => {

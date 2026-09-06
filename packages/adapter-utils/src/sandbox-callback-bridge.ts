@@ -20,7 +20,13 @@ const DEFAULT_BRIDGE_POLL_INTERVAL_MS = 100;
 const DEFAULT_BRIDGE_RESPONSE_TIMEOUT_MS = 30_000;
 const DEFAULT_BRIDGE_STOP_TIMEOUT_MS = 2_000;
 const DEFAULT_BRIDGE_MAX_QUEUE_DEPTH = 64;
-const DEFAULT_BRIDGE_MAX_BODY_BYTES = 256 * 1024;
+// A `BridgeBodyReservation` owner (`http2-bridge-server.ts`) now bounds the
+// process-wide total of live request and response body bytes at
+// `HTTP2_BRIDGE_MAX_PROCESS_BODY_BYTES` (1 GiB), so this per-body limit can
+// rise to the same ceiling `MAX_ATTACHMENT_BYTES`
+// (`server/src/attachment-types.ts`) already accepts, with no unbounded
+// growth in process memory.
+const DEFAULT_BRIDGE_MAX_BODY_BYTES = 10 * 1024 * 1024;
 // Per-iteration timeout for one poll-loop client call. A healthy control-plane
 // round trip finishes in well under one second, so 10s is far above a normal
 // iteration and never false-fires on a slow-but-live call. It is also well

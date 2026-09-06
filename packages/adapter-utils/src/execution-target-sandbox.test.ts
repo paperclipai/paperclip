@@ -10,6 +10,13 @@ import { promisify } from "node:util";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { getSandboxDuplexGatewayCodecSource } from "./sandbox-callback-bridge.js";
+import {
+  createBridgeBodyReservation,
+  getBridgeBodyReservedBytesForTest,
+  resetBridgeBodyReservationsForTest,
+  HTTP2_BRIDGE_MAX_CONCURRENT_STREAMS,
+  HTTP2_BRIDGE_MAX_PROCESS_BODY_BYTES,
+} from "./http2-bridge-server.js";
 
 import {
   __duplexReadinessTesting,
@@ -5514,6 +5521,11 @@ describe("sandbox adapter execution targets", () => {
     // failed, so a retry could double-apply it. The host answers a
     // non-retryable 504 with the indeterminate marker instead — the same
     // rule `forwardBridgeRequest` already applies on every transport.
+    //
+    // `maxBodyBytes: 1` below now bounds the request body too, since the
+    // host and the gateway share one resolved ceiling: this request carries
+    // no body, so only the mock host's own response — comfortably over one
+    // byte — trips the size check this test exists to force.
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-http2-unsafe-indeterminate-"));
     cleanupDirs.push(rootDir);
     const remoteCwd = path.join(rootDir, "workspace");
@@ -5553,7 +5565,6 @@ describe("sandbox adapter execution targets", () => {
         method: "POST",
         path: "/api/issues/issue-1/comments",
         headers: { authorization: `Bearer ${bridgeToken}`, "content-type": "application/json" },
-        body: Buffer.from(JSON.stringify({ body: "hello" }), "utf8"),
       });
       expect(response.status).toBe(504);
       expect(response.headers["x-paperclip-bridge-outcome"]).toBe("indeterminate");
@@ -5644,6 +5655,311 @@ describe("sandbox adapter execution targets", () => {
       await new Promise<void>((resolve) => api.close(() => resolve()));
     }
   }, 20000);
+
+  it("test_a_denied_response_chunk_cancels_the_reader_before_it_copies_the_chunk", async () => {
+    // Fill the process ledger so only a sliver of headroom remains, then let
+    // the mock host answer with a response chunk far bigger than that
+    // sliver. `readBridgeForwardResponseBody` (`execution-target.ts`) must
+    // deny that chunk's reservation, cancel its reader (closing the
+    // outbound connection to the mock host), and retain no copy of it.
+    resetBridgeBodyReservationsForTest();
+    const filler = createBridgeBodyReservation();
+    expect(filler.reserve(HTTP2_BRIDGE_MAX_PROCESS_BODY_BYTES - 100)).toBe(true);
+
+    let resolveHostConnectionClosed: (() => void) | undefined;
+    const hostConnectionClosed = new Promise<void>((resolve) => {
+      resolveHostConnectionClosed = resolve;
+    });
+    const api = createServer((_req, res) => {
+      res.writeHead(200, { "content-type": "application/octet-stream" });
+      // Far bigger than the 100 bytes of headroom the filler above left:
+      // this one chunk alone must pass the process ceiling.
+      res.write(Buffer.alloc(1_000, "a"));
+      res.on("close", () => resolveHostConnectionClosed!());
+    });
+    await new Promise<void>((resolve, reject) => {
+      api.once("error", reject);
+      api.listen(0, "127.0.0.1", () => resolve());
+    });
+    const apiAddress = api.address();
+    if (!apiAddress || typeof apiAddress === "string") {
+      throw new Error("Expected the mock host server to listen on a TCP port.");
+    }
+    const apiOrigin = `http://127.0.0.1:${apiAddress.port}`;
+
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-http2-denied-response-chunk-"));
+    cleanupDirs.push(rootDir);
+    const remoteCwd = path.join(rootDir, "workspace");
+    await mkdir(remoteCwd, { recursive: true });
+    const sessionRef: { current: http2.ClientHttp2Session | null } = { current: null };
+    let bridgeToken = "";
+    const { runner } = makeHttp2SelectionRunner((ctx) => {
+      bridgeToken = ctx.bridgeToken;
+      ctx.emitReady();
+      sessionRef.current = ctx.connectHttp2();
+    });
+    const target: AdapterSandboxExecutionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      providerKey: "daytona",
+      remoteCwd,
+      timeoutMs: 30_000,
+      runner,
+      effectiveCapabilities: duplexCapabilities(true),
+    };
+
+    const bridge = await startAdapterExecutionTargetPaperclipBridge({
+      runId: "run-denied-response-chunk",
+      target,
+      runtimeRootDir: path.join(remoteCwd, ".paperclip-runtime", "codex"),
+      adapterKey: "codex",
+      hostApiToken: "real-run-jwt",
+      hostApiUrl: apiOrigin,
+      enableSandboxDuplexBridge: true,
+    });
+    try {
+      expect(bridge?.env.PAPERCLIP_API_BRIDGE_MODE).toBe("http2_v1");
+      await waitForCondition(() => sessionRef.current !== null, "the http2 client session to open", 4000);
+      // GET is a safe method: a response-body read fault answers a
+      // retryable 502, the same classification any other read fault gets.
+      const response = await http2TestRequest(sessionRef.current!, {
+        method: "GET",
+        path: "/api/agents/me",
+        headers: { authorization: `Bearer ${bridgeToken}` },
+      });
+      expect(response.status).toBe(502);
+      // The reader actually cancelled: the mock host observes its
+      // connection close, instead of staying open with the chunk
+      // unacknowledged.
+      await hostConnectionClosed;
+    } finally {
+      sessionRef.current?.close();
+      await bridge?.stop();
+      await new Promise<void>((resolve) => api.close(() => resolve()));
+      // The denied chunk was never retained: releasing the filler is the
+      // only release this test needs to reach zero. If the denied response
+      // copy had reserved anything despite being denied, this would be
+      // nonzero.
+      filler.release();
+      expect(getBridgeBodyReservedBytesForTest()).toBe(0);
+    }
+  }, 20000);
+
+  it("test_concurrent_request_and_response_bodies_never_pass_the_process_ceiling", async () => {
+    resetBridgeBodyReservationsForTest();
+    const bodyBytes = 2 * 1024 * 1024;
+    const requestBody = Buffer.alloc(bodyBytes, "a");
+    const samples: number[] = [];
+    const api = createServer((req, res) => {
+      const chunks: Buffer[] = [];
+      req.on("data", (chunk: Buffer) => chunks.push(chunk));
+      req.on("end", () => {
+        // Sampled while this stream's own request-body copies are still
+        // live and at least one sibling stream may also be mid-flight: the
+        // real, concurrent, multi-stream shape this test exists to prove.
+        samples.push(getBridgeBodyReservedBytesForTest());
+        res.writeHead(200, { "content-type": "application/octet-stream" });
+        res.end(Buffer.alloc(bodyBytes, "b"));
+      });
+    });
+    await new Promise<void>((resolve, reject) => {
+      api.once("error", reject);
+      api.listen(0, "127.0.0.1", () => resolve());
+    });
+    const apiAddress = api.address();
+    if (!apiAddress || typeof apiAddress === "string") {
+      throw new Error("Expected the mock host server to listen on a TCP port.");
+    }
+    const apiOrigin = `http://127.0.0.1:${apiAddress.port}`;
+
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-http2-ceiling-aggregate-"));
+    cleanupDirs.push(rootDir);
+    const remoteCwd = path.join(rootDir, "workspace");
+    await mkdir(remoteCwd, { recursive: true });
+    const sessionRef: { current: http2.ClientHttp2Session | null } = { current: null };
+    let bridgeToken = "";
+    const { runner } = makeHttp2SelectionRunner((ctx) => {
+      bridgeToken = ctx.bridgeToken;
+      ctx.emitReady();
+      sessionRef.current = ctx.connectHttp2();
+    });
+    const target: AdapterSandboxExecutionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      providerKey: "daytona",
+      remoteCwd,
+      timeoutMs: 30_000,
+      runner,
+      effectiveCapabilities: duplexCapabilities(true),
+    };
+    const bridge = await startAdapterExecutionTargetPaperclipBridge({
+      runId: "run-ceiling-aggregate",
+      target,
+      runtimeRootDir: path.join(remoteCwd, ".paperclip-runtime", "codex"),
+      adapterKey: "codex",
+      hostApiToken: "real-run-jwt",
+      hostApiUrl: apiOrigin,
+      enableSandboxDuplexBridge: true,
+    });
+    try {
+      expect(bridge?.env.PAPERCLIP_API_BRIDGE_MODE).toBe("http2_v1");
+      await waitForCondition(() => sessionRef.current !== null, "the http2 client session to open", 4000);
+
+      const responses = await Promise.all(
+        Array.from({ length: HTTP2_BRIDGE_MAX_CONCURRENT_STREAMS }, () =>
+          http2TestRequest(sessionRef.current!, {
+            method: "POST",
+            path: "/api/issues/abc/comments",
+            headers: { authorization: `Bearer ${bridgeToken}`, "content-type": "application/octet-stream" },
+            body: requestBody,
+          }),
+        ),
+      );
+      for (const response of responses) {
+        expect(response.status).toBe(200);
+        expect(response.body.byteLength).toBe(bodyBytes);
+      }
+      expect(samples).toHaveLength(HTTP2_BRIDGE_MAX_CONCURRENT_STREAMS);
+      for (const sample of samples) {
+        expect(sample).toBeGreaterThan(0);
+        expect(sample).toBeLessThanOrEqual(HTTP2_BRIDGE_MAX_PROCESS_BODY_BYTES);
+      }
+      // Every stream's owner released once its forward settled.
+      await waitForCondition(
+        () => getBridgeBodyReservedBytesForTest() === 0,
+        "the process reservation total to return to zero",
+        2_000,
+      );
+    } finally {
+      sessionRef.current?.close();
+      await bridge?.stop();
+      await new Promise<void>((resolve) => api.close(() => resolve()));
+    }
+  }, 20000);
+
+  it("test_the_host_denies_a_body_over_the_resolved_limit_not_only_the_gateway", async () => {
+    const api = await startRecordingApiServer();
+    const sessionRef: { current: http2.ClientHttp2Session | null } = { current: null };
+    let bridgeToken = "";
+    const { runner } = makeHttp2SelectionRunner((ctx) => {
+      bridgeToken = ctx.bridgeToken;
+      ctx.emitReady();
+      sessionRef.current = ctx.connectHttp2();
+    });
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-http2-host-body-limit-"));
+    cleanupDirs.push(rootDir);
+    const remoteCwd = path.join(rootDir, "workspace");
+    await mkdir(remoteCwd, { recursive: true });
+    const target: AdapterSandboxExecutionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      providerKey: "daytona",
+      remoteCwd,
+      timeoutMs: 30_000,
+      runner,
+      effectiveCapabilities: duplexCapabilities(true),
+    };
+
+    const bridge = await startAdapterExecutionTargetPaperclipBridge({
+      runId: "run-host-body-limit",
+      target,
+      runtimeRootDir: path.join(remoteCwd, ".paperclip-runtime", "codex"),
+      adapterKey: "codex",
+      hostApiToken: "real-run-jwt",
+      hostApiUrl: api.origin,
+      enableSandboxDuplexBridge: true,
+      // A ceiling far under the body this test sends, resolved for this
+      // run. `createHttp2BridgeServer()` must receive this same resolved
+      // value, so the host itself enforces it on the raw wire — this test
+      // talks to the host directly, with no sandbox-side gateway script in
+      // between to enforce anything on its own.
+      maxBodyBytes: 100,
+    });
+    try {
+      expect(bridge?.env.PAPERCLIP_API_BRIDGE_MODE).toBe("http2_v1");
+      await waitForCondition(() => sessionRef.current !== null, "the http2 client session to open", 4000);
+      const response = await http2TestRequest(sessionRef.current!, {
+        method: "POST",
+        path: "/api/issues/abc/comments",
+        headers: { authorization: `Bearer ${bridgeToken}`, "content-type": "application/json" },
+        body: Buffer.alloc(1_000, "a"),
+      });
+      // The oversized body never reaches the host API: the resolved ceiling
+      // rejects it before any forward call runs, so the mock host records
+      // no request. (The host's own size-violation path resets the stream
+      // before it can write a status line, so the client sees no ordinary
+      // response — this test asserts the one thing that channel does prove:
+      // the forward call itself never ran.)
+      expect(api.requests).toHaveLength(0);
+      expect(response.status).not.toBe(200);
+    } finally {
+      sessionRef.current?.close();
+      await bridge?.stop();
+      await api.close();
+    }
+  }, 20000);
+
+  it("test_the_queue_transport_still_forwards_with_no_reservation_owner", async () => {
+    // The queue transport's `handleRequest` callback
+    // (`execution-target.ts`'s queue callback) calls `forwardBridgeRequest`
+    // with no `reservation` option at all. `readBridgeForwardResponseBody`
+    // must behave exactly as it did before that option existed: it still
+    // forwards the request and still returns the host's body.
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-queue-no-reservation-"));
+    cleanupDirs.push(rootDir);
+    const remoteCwd = path.join(rootDir, "workspace");
+    const runtimeRootDir = path.join(remoteCwd, ".paperclip-runtime", "codex");
+    await mkdir(runtimeRootDir, { recursive: true });
+
+    const apiServer = createServer((req, res) => {
+      res.writeHead(201, { "content-type": "application/json" });
+      res.end(JSON.stringify({ ok: true, echoedMethod: req.method }));
+    });
+    await new Promise<void>((resolve, reject) => {
+      apiServer.once("error", reject);
+      apiServer.listen(0, "127.0.0.1", () => resolve());
+    });
+    const address = apiServer.address();
+    if (!address || typeof address === "string") {
+      throw new Error("Expected the queue-transport test API server to listen on a TCP port.");
+    }
+
+    const target: AdapterSandboxExecutionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      providerKey: "e2b",
+      environmentId: "env-1",
+      leaseId: "lease-1",
+      remoteCwd,
+      runner: createLocalSandboxRunner(),
+      timeoutMs: 30_000,
+    };
+
+    const bridge = await startAdapterExecutionTargetPaperclipBridge({
+      runId: "run-queue-no-reservation",
+      target,
+      runtimeRootDir,
+      adapterKey: "codex",
+      hostApiToken: "real-run-jwt",
+      hostApiUrl: `http://127.0.0.1:${address.port}`,
+    });
+    try {
+      expect(bridge?.env.PAPERCLIP_API_BRIDGE_MODE).toBe("queue_v1");
+      const response = await fetch(`${bridge!.env.PAPERCLIP_API_URL}/api/issues/abc/comments`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${bridge!.env.PAPERCLIP_API_KEY}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ body: "hello" }),
+      });
+      expect(response.status).toBe(201);
+      expect(await response.json()).toEqual({ ok: true, echoedMethod: "POST" });
+    } finally {
+      await bridge?.stop();
+      await new Promise<void>((resolve) => apiServer.close(() => resolve()));
+    }
+  });
 
   // ---------------------------------------------------------------------------
   // Real-PTY replay.

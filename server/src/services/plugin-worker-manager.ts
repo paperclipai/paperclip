@@ -3558,11 +3558,15 @@ export interface PluginWorkerManagerOptions {
  *
  * Known aggregate behavior: this ceiling bounds route count only, not
  * retained bytes. Each HTTP/2 bridge route bounds its own retained body
- * bytes to 4,194,304 bytes (see `HTTP2_BRIDGE_MAX_CONCURRENT_STREAMS` in
- * `http2-bridge-server.ts`), so this route ceiling caps the process's
- * aggregate retained body bytes at 128 * 4,194,304 = 536,870,912 bytes
- * (512 MiB). This is accepted, known behavior, not a defect: the process
- * tracks no aggregate byte ledger across routes.
+ * bytes to 167,772,160 bytes (see `HTTP2_BRIDGE_MAX_CONCURRENT_STREAMS` in
+ * `http2-bridge-server.ts`), so this route ceiling alone would let the
+ * process's aggregate retained body bytes reach 128 * 167,772,160 =
+ * 21,474,836,480 bytes (20 GiB) if nothing else bounded it. It does not
+ * reach that figure: every stream's `BridgeBodyReservation` owner
+ * (`http2-bridge-server.ts`) reserves against the shared
+ * `HTTP2_BRIDGE_MAX_PROCESS_BODY_BYTES` total (1,073,741,824 bytes, 1 GiB)
+ * across every route, so that reservation — not this route ceiling — is
+ * the process's real aggregate-byte bound.
  */
 export const DEFAULT_MAX_CONCURRENT_DUPLEX_ROUTES = 128;
 

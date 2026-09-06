@@ -753,16 +753,23 @@ To add a name or an enum value, extend the literal constant in
 
 ### Known behavior: aggregate retained body bytes
 
-The HTTP/2 bridge bounds retained body bytes for one route only. Each route
-holds up to 4,194,304 bytes (4 MiB) at its own peak (see
-`HTTP2_BRIDGE_MAX_CONCURRENT_STREAMS` in `http2-bridge-server.ts`). The host
-process admits up to 128 concurrent routes (see
-`DEFAULT_MAX_CONCURRENT_DUPLEX_ROUTES` in `plugin-worker-manager.ts`). The
-process can therefore retain up to 536,870,912 bytes (512 MiB) of body data
-across every route at the same time.
+Each HTTP/2 bridge route holds up to 167,772,160 bytes (160 MiB) at its own
+peak (see `HTTP2_BRIDGE_MAX_CONCURRENT_STREAMS` in `http2-bridge-server.ts`).
+The host process admits up to 128 concurrent routes (see
+`DEFAULT_MAX_CONCURRENT_DUPLEX_ROUTES` in `plugin-worker-manager.ts`). Those
+two figures alone would let the process retain up to 21,474,836,480 bytes
+(20 GiB) of body data across every route at the same time.
 
-This is accepted, known behavior. The process tracks no aggregate byte
-ledger across routes: a per-route bound stops one busy route from starving
-another route's own budget, but the host enforces no smaller ceiling on the
-sum across every route.
+The process does not reach that figure. `HTTP2_BRIDGE_MAX_PROCESS_BODY_BYTES`
+(`http2-bridge-server.ts`) enforces a real, live ledger: 1,073,741,824 bytes
+(1 GiB) across every route, not merely an accepted paper ceiling. Every HTTP/2
+stream creates one `BridgeBodyReservation` owner over its lifetime, and every
+source-level full-body buffer that stream retains — its request-body chunk
+array, the concatenated request body, the response-body chunk array, and the
+concatenated response body — reserves against that one owner before it
+allocates. A reservation that would pass the process total is denied before
+it copies anything, and the host answers 503 instead of accepting the body.
+This accounting covers source-level full-body buffers only: internal Node.js
+and Undici copies (socket buffers, HTTP/2 frame buffers, decompression
+buffers) stay outside it.
 Keep every dimension low-cardinality and free of user content.
