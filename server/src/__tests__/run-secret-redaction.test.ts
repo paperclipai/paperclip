@@ -75,4 +75,22 @@ describe("registered run secret redaction", () => {
     expect(result.createdAt).toBeInstanceOf(Date);
     expect(result.createdAt.toISOString()).toBe("2026-08-06T12:00:00.000Z");
   });
+
+  it("preserves non-plain objects instead of rebuilding them as records", () => {
+    const pattern = /secret/;
+    const metadata = new Map([["token", secret]]);
+    const result = redactRegisteredSecretValues({
+      nested: {
+        pattern,
+        metadata,
+      },
+      plain: {
+        body: secret,
+      },
+    }, [secret]);
+
+    expect(result.nested.pattern).toBe(pattern);
+    expect(result.nested.metadata).toBe(metadata);
+    expect(result.plain.body).toBe(REDACTED_EVENT_VALUE);
+  });
 });
