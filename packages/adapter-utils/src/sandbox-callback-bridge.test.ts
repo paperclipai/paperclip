@@ -3234,7 +3234,11 @@ describe("sandbox callback bridge", () => {
       bridgeToken,
       forwardRequest: async (request) => {
         seenBodies.push(request.body);
-        return { status: 200, headers: { "content-type": "application/json" }, body: JSON.stringify({ ok: true }) };
+        return {
+          status: 200,
+          headers: { "content-type": "application/json" },
+          body: Buffer.from(JSON.stringify({ ok: true }), "utf8"),
+        };
       },
     });
 
@@ -3260,19 +3264,22 @@ describe("sandbox callback bridge", () => {
   it("forwards malformed UTF-8 bytes to the HTTP/2 host handler unchanged", async () => {
     const bridgeToken = createSandboxCallbackBridgeToken();
     const seenBodies: Buffer[] = [];
+    // Byte 0xC3 opens a two-byte UTF-8 sequence; 0x28 is not a valid
+    // continuation byte, so this body is not valid UTF-8. The gateway does
+    // not decode or validate the body, so these exact bytes must still
+    // arrive at the host handler unchanged, and the same bytes must return
+    // to the caller unchanged. The host answers with a non-JSON content
+    // type, so the round trip proves the gateway applies no format-specific
+    // handling on the response leg either.
+    const malformedBytes = Buffer.from([0x7b, 0x22, 0x61, 0x22, 0x3a, 0xc3, 0x28, 0x7d]);
     const gateway = await startHttp2GatewayForTest({
       bridgeToken,
       forwardRequest: async (request) => {
         seenBodies.push(request.body);
-        return { status: 200, headers: {}, body: "" };
+        return { status: 200, headers: { "content-type": "application/octet-stream" }, body: malformedBytes };
       },
     });
 
-    // Byte 0xC3 opens a two-byte UTF-8 sequence; 0x28 is not a valid
-    // continuation byte, so this body is not valid UTF-8. The gateway does
-    // not decode or validate the body, so these exact bytes must still
-    // arrive at the host handler unchanged.
-    const malformedBytes = Buffer.from([0x7b, 0x22, 0x61, 0x22, 0x3a, 0xc3, 0x28, 0x7d]);
     const response = await fetch(`${gateway.baseUrl}/api/issues/issue-1/comments`, {
       method: "POST",
       headers: {
@@ -3284,6 +3291,8 @@ describe("sandbox callback bridge", () => {
     expect(response.status).toBe(200);
     expect(seenBodies).toHaveLength(1);
     expect(seenBodies[0]?.equals(malformedBytes)).toBe(true);
+    const responseBytes = Buffer.from(await response.arrayBuffer());
+    expect(responseBytes.equals(malformedBytes)).toBe(true);
   }, 15_000);
 
   it("rejects a request body over maxBodyBytes on the HTTP/2 path before it forwards a byte", async () => {
@@ -3295,7 +3304,7 @@ describe("sandbox callback bridge", () => {
       maxBodyBytes,
       forwardRequest: async () => {
         forwardCalls += 1;
-        return { status: 200, headers: {}, body: "" };
+        return { status: 200, headers: {}, body: Buffer.alloc(0) };
       },
     });
 

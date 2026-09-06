@@ -86,12 +86,18 @@ import type { RunnerIngressEndpoint } from "./runner-connectivity.js";
 
 export type { RuntimeProgressSink } from "./runtime-progress.js";
 
-export function postedIssueCommentLogMarker(method: string, requestPath: string, status: number, body: string) {
+export function postedIssueCommentLogMarker(
+  method: string,
+  requestPath: string,
+  status: number,
+  body: Buffer | string,
+) {
   if (method !== "POST" || !/^\/api\/issues\/[^/]+\/comments$/.test(requestPath) || status < 200 || status >= 300) {
     return null;
   }
+  const bodyText = typeof body === "string" ? body : body.toString("utf8");
   try {
-    const parsed = JSON.parse(body) as { id?: unknown };
+    const parsed = JSON.parse(bodyText) as { id?: unknown };
     return typeof parsed.id === "string" && parsed.id.length > 0 ? `comment id: ${parsed.id}\n` : null;
   } catch {
     return null;
@@ -1520,15 +1526,16 @@ function bridgeResponseBodyLimitError(maxBodyBytes: number): Error {
 }
 
 /**
- * Read the forward response body into a string. The per-request `maxBodyBytes`
- * limit rejects a body larger than the configured per-request ceiling.
+ * Read the forward response body into a `Buffer`, with no text decoding. The
+ * per-request `maxBodyBytes` limit rejects a body larger than the configured
+ * per-request ceiling.
  *
  * This function reserves no process-wide byte budget: it enforces only the
  * one request's own ceiling. See the "Known behavior: aggregate retained
  * body bytes" section in `doc/observability.md` for the accepted aggregate
  * ceiling this leaves across every concurrent route.
  */
-async function readBridgeForwardResponseBody(response: Response, maxBodyBytes: number): Promise<string> {
+async function readBridgeForwardResponseBody(response: Response, maxBodyBytes: number): Promise<Buffer> {
   const rawContentLength = response.headers.get("content-length");
   if (rawContentLength) {
     const contentLength = Number.parseInt(rawContentLength, 10);
@@ -1538,7 +1545,7 @@ async function readBridgeForwardResponseBody(response: Response, maxBodyBytes: n
   }
 
   if (!response.body) {
-    return "";
+    return Buffer.alloc(0);
   }
 
   const reader = response.body.getReader();
@@ -1556,7 +1563,7 @@ async function readBridgeForwardResponseBody(response: Response, maxBodyBytes: n
     }
     chunks.push(Buffer.from(value));
   }
-  return Buffer.concat(chunks, totalBytes).toString("utf8");
+  return Buffer.concat(chunks, totalBytes);
 }
 
 const PROCESS_SESSION_PROXY_SCRIPT = "paperclip-process-session-proxy.mjs";
@@ -4002,14 +4009,15 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
       path: string;
       query: string;
       headers: Record<string, string>;
-      /** The file bridge passes the whole request body here as one string. */
-      body?: string;
+      /** The file bridge passes the whole request body here as one string.
+       * The HTTP/2 bridge passes it as the raw `Buffer` it read off the wire. */
+      body?: string | Buffer;
     },
     signal?: AbortSignal,
     options?: {
       suppressDebugLog?: boolean;
     },
-  ): Promise<{ status: number; headers: Record<string, string>; body: string }> => {
+  ): Promise<{ status: number; headers: Record<string, string>; body: Buffer }> => {
     const method = request.method.trim().toUpperCase() || "GET";
     // The per-request debug log prints the method, the path, and the query. The
     // duplex path suppresses it, so no route or query rides a log line there. The
@@ -4034,14 +4042,19 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
     const timeoutSignal = AbortSignal.timeout(forwardTimeoutMs);
     const forwardSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
     // Build the request-body init. A GET or a HEAD carries no body. The file
-    // bridge passes the whole body as one string.
+    // bridge passes the whole body as one string; the HTTP/2 bridge passes it
+    // as a raw `Buffer`. Undici accepts a `Buffer` request body directly (a
+    // `Buffer` is an `ArrayBufferView`), so neither shape needs a conversion.
+    // The cast below only bridges a `BodyInit` typing gap: the DOM library
+    // type this project's ambient `RequestInit` resolves to excludes a
+    // `Buffer`, though Undici accepts one at runtime.
     const forwardInit: RequestInit = {
       method,
       headers,
       signal: forwardSignal,
     };
-    if (method !== "GET" && method !== "HEAD" && typeof request.body === "string") {
-      forwardInit.body = request.body;
+    if (method !== "GET" && method !== "HEAD" && request.body !== undefined) {
+      forwardInit.body = request.body as BodyInit;
     }
     const response = await fetch(buildBridgeForwardUrl(hostApiUrl, request), forwardInit);
     if (emitDebugLog) {
@@ -4062,7 +4075,7 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
     // non-retryable 504 and marks the outcome indeterminate, exactly like an
     // aborted in-flight forward. The in-sandbox server maps the indeterminate 504
     // to a non-retryable 409 for both the file bridge and the duplex broker.
-    let responseBody: string;
+    let responseBody: Buffer;
     try {
       responseBody = await readBridgeForwardResponseBody(response, maxBodyBytes);
     } catch (error) {
@@ -4073,9 +4086,12 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
         return {
           status: 502,
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            error: error instanceof Error ? error.message : String(error),
-          }),
+          body: Buffer.from(
+            JSON.stringify({
+              error: error instanceof Error ? error.message : String(error),
+            }),
+            "utf8",
+          ),
         };
       }
       return {
@@ -4084,11 +4100,14 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
           "content-type": "application/json",
           "x-paperclip-bridge-outcome": "indeterminate",
         },
-        body: JSON.stringify({
-          error: error instanceof Error ? error.message : String(error),
-          outcome: "indeterminate",
-          retryable: false,
-        }),
+        body: Buffer.from(
+          JSON.stringify({
+            error: error instanceof Error ? error.message : String(error),
+            outcome: "indeterminate",
+            retryable: false,
+          }),
+          "utf8",
+        ),
       };
     }
     const commentMarker = postedIssueCommentLogMarker(method, request.path, response.status, responseBody);
@@ -4290,7 +4309,7 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
                   path: request.pathname,
                   query: request.query,
                   headers: request.headers,
-                  body: request.body.toString("utf8"),
+                  body: request.body,
                 },
                 request.signal,
                 { suppressDebugLog: true },
@@ -4413,7 +4432,13 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
       maxBodyBytes,
       getRuntimeParentContext: input.getRuntimeParentContext,
       runtimeSpan: input.runtimeSpan,
-      handleRequest: async (request, options) => forwardBridgeRequest(request, options?.signal),
+      // The queue transport writes the response body to a text file, so this
+      // is the one place the forward path decodes the response `Buffer` to a
+      // UTF-8 string. The queue's own on-wire behavior does not change.
+      handleRequest: async (request, options) => {
+        const result = await forwardBridgeRequest(request, options?.signal);
+        return { status: result.status, headers: result.headers, body: result.body.toString("utf8") };
+      },
     });
     server = await startSandboxCallbackBridgeServer({
       runner,

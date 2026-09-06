@@ -52,20 +52,22 @@ export const HTTP2_BRIDGE_ENABLE_PUSH = false;
  * Open streams. The host keeps one forward, its request body, and its
  * response body alive for the life of a stream, and — before this file binds
  * each forward to its own stream's abort signal — a forward can outlive its
- * stream's own HTTP/2 slot until the forward's own timeout runs out. Counting
- * every retained `Buffer` and string copy of one stream's request and
- * response body against the {@link DEFAULT_SANDBOX_CALLBACK_BRIDGE_MAX_BODY_BYTES}
- * body limit (`sandbox-callback-bridge.ts`) gives an accounting peak of eight
- * times that limit for one live forward. This bound is the per-route
- * in-flight-body budget: `HTTP2_BRIDGE_MAX_CONCURRENT_STREAMS * 8 *
- * DEFAULT_SANDBOX_CALLBACK_BRIDGE_MAX_BODY_BYTES` bytes = 4 * 8 * 262,144
- * bytes = 8,388,608 bytes for one route.
+ * stream's own HTTP/2 slot until the forward's own timeout runs out. The
+ * forward path carries a request body and a response body as raw `Buffer`
+ * values with no string copy. Counting every retained `Buffer` copy of one
+ * stream's request and response body against the
+ * {@link DEFAULT_SANDBOX_CALLBACK_BRIDGE_MAX_BODY_BYTES} body limit
+ * (`sandbox-callback-bridge.ts`) gives an accounting peak of four times that
+ * limit for one live forward. This bound is the per-route in-flight-body
+ * budget: `HTTP2_BRIDGE_MAX_CONCURRENT_STREAMS * 4 *
+ * DEFAULT_SANDBOX_CALLBACK_BRIDGE_MAX_BODY_BYTES` bytes = 4 * 4 * 262,144
+ * bytes = 4,194,304 bytes for one route.
  *
  * Known aggregate behavior: this budget applies to one route only. The host
  * process admits up to `DEFAULT_MAX_CONCURRENT_DUPLEX_ROUTES` (128, in
  * `plugin-worker-manager.ts`) routes at the same time, and each route holds
- * its own 8,388,608-byte peak. The process can therefore retain up to
- * 1,073,741,824 bytes (1 GiB) of live body data across every route at once.
+ * its own 4,194,304-byte peak. The process can therefore retain up to
+ * 536,870,912 bytes (512 MiB) of live body data across every route at once.
  * This document accepts that ceiling: the host tracks no process-wide byte
  * total, so no single route can starve another route's own budget, but the
  * host also enforces no smaller sum across every route.
@@ -517,7 +519,7 @@ function startHttp2BridgePingWatchdog(
 export interface Http2BridgeForwardResult {
   status: number;
   headers?: Record<string, string>;
-  body?: Buffer | string;
+  body?: Buffer;
 }
 
 /**

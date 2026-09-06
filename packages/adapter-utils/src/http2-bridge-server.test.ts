@@ -97,7 +97,7 @@ function bindTestServer(options: TestPairOptions = {}) {
     (async (request: Http2BridgeForwardRequest) => ({
       status: 200,
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ echoedMethod: request.method, echoedPath: request.pathname }),
+      body: Buffer.from(JSON.stringify({ echoedMethod: request.method, echoedPath: request.pathname }), "utf8"),
     }));
   const handle = createHttp2BridgeServer({
     bridgeToken,
@@ -208,7 +208,7 @@ describe("createHttp2BridgeServer + createSandboxHttp2BridgeGateway", () => {
         return {
           status: 200,
           headers: {},
-          body: JSON.stringify({ echoedPath: request.pathname }),
+          body: Buffer.from(JSON.stringify({ echoedPath: request.pathname }), "utf8"),
         };
       },
     });
@@ -316,7 +316,7 @@ describe("createHttp2BridgeServer + createSandboxHttp2BridgeGateway", () => {
           // Hold this one open long enough for the test to RST it.
           await new Promise((resolve) => setTimeout(resolve, 200));
         }
-        return { status: 200, headers: {}, body: JSON.stringify({ path: request.pathname }) };
+        return { status: 200, headers: {}, body: Buffer.from(JSON.stringify({ path: request.pathname }), "utf8") };
       },
     });
     const rawClient = connectRawClient(clientSide);
@@ -362,7 +362,7 @@ describe("createHttp2BridgeServer + createSandboxHttp2BridgeGateway", () => {
         // Hold the handler open, so the test controls exactly when the
         // client-side stream close happens relative to the forward.
         await forwardHeld;
-        return { status: 200, body: "{}" };
+        return { status: 200, body: Buffer.from("{}", "utf8") };
       },
     });
     const rawClient = connectRawClient(clientSide);
@@ -414,7 +414,7 @@ describe("createHttp2BridgeServer + createSandboxHttp2BridgeGateway", () => {
         } else if (request.pathname === "/api/agents/survivor") {
           await survivorHeld;
         }
-        return { status: 200, body: JSON.stringify({ path: request.pathname }) };
+        return { status: 200, body: Buffer.from(JSON.stringify({ path: request.pathname }), "utf8") };
       },
     });
     const rawClient = connectRawClient(clientSide);
@@ -491,7 +491,7 @@ describe("createHttp2BridgeServer + createSandboxHttp2BridgeGateway", () => {
             }
             request.signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
           });
-          return { status: 200, body: JSON.stringify({ path: request.pathname }) };
+          return { status: 200, body: Buffer.from(JSON.stringify({ path: request.pathname }), "utf8") };
         } finally {
           liveForwards -= 1;
         }
@@ -579,7 +579,7 @@ describe("createHttp2BridgeServer + createSandboxHttp2BridgeGateway", () => {
       requestBodyTimeoutMs: 80,
       forwardRequest: async (request) => ({
         status: 200,
-        body: JSON.stringify({ bodyLength: request.body.byteLength }),
+        body: Buffer.from(JSON.stringify({ bodyLength: request.body.byteLength }), "utf8"),
       }),
     });
     const rawClient = connectRawClient(clientSide);
@@ -687,7 +687,7 @@ describe("createHttp2BridgeServer + createSandboxHttp2BridgeGateway", () => {
       requestBodyLifetimeCeilingMs: 5_000,
       forwardRequest: async (request) => ({
         status: 200,
-        body: JSON.stringify({ bodyLength: request.body.byteLength }),
+        body: Buffer.from(JSON.stringify({ bodyLength: request.body.byteLength }), "utf8"),
       }),
     });
     const rawClient = connectRawClient(clientSide);
@@ -728,7 +728,7 @@ describe("createHttp2BridgeServer + createSandboxHttp2BridgeGateway", () => {
       requestBodyLifetimeCeilingMs: 5_000,
       forwardRequest: async (request) => {
         forwarderTracker.markCalled();
-        return { status: 200, body: JSON.stringify({ bodyLength: request.body.byteLength }) };
+        return { status: 200, body: Buffer.from(JSON.stringify({ bodyLength: request.body.byteLength }), "utf8") };
       },
     });
     const rawClient = connectRawClient(clientSide);
@@ -845,17 +845,16 @@ describe("createHttp2BridgeServer + createSandboxHttp2BridgeGateway", () => {
   });
 
   it("test_the_host_body_budget_matches_the_stream_limit", () => {
-    // The multiplier counts every retained `Buffer` and string copy of one
-    // live forward's request and response body: four exact `Buffer` rows,
-    // plus two string rows. Each string row applies two bytes to each UTF-16
-    // code unit of the body limit (`sandbox-callback-bridge.ts`), for an
-    // accounting peak of eight times the body limit for one live forward.
+    // The multiplier counts every retained `Buffer` copy of one live
+    // forward's request and response body: four exact `Buffer` rows. The
+    // forward path decodes no body to a string, so no row applies the
+    // two-bytes-per-UTF-16-code-unit string overhead any more.
     // `test_live_forward_work_never_passes_the_stream_limit` proves the
     // count of live forwards never passes `HTTP2_BRIDGE_MAX_CONCURRENT_STREAMS`,
     // so this multiplier bounds live forwards, not merely open streams.
     expect(
-      HTTP2_BRIDGE_MAX_CONCURRENT_STREAMS * 8 * DEFAULT_SANDBOX_CALLBACK_BRIDGE_MAX_BODY_BYTES,
-    ).toBe(8_388_608);
+      HTTP2_BRIDGE_MAX_CONCURRENT_STREAMS * 4 * DEFAULT_SANDBOX_CALLBACK_BRIDGE_MAX_BODY_BYTES,
+    ).toBe(4_194_304);
   });
 
   describe("parseCanonicalBridgeRequestPath", () => {
@@ -940,7 +939,7 @@ describe("createHttp2BridgeServer + createSandboxHttp2BridgeGateway", () => {
     const { handle, clientSide } = bindTestServer({
       forwardRequest: async (request) => {
         forwarderTracker.markCalled();
-        return { status: 200, body: JSON.stringify({ path: request.pathname }) };
+        return { status: 200, body: Buffer.from(JSON.stringify({ path: request.pathname }), "utf8") };
       },
     });
     const rawClient = connectRawClient(clientSide);

@@ -3177,10 +3177,10 @@ describe("sandbox adapter execution targets", () => {
    */
   function http2TestRequest(
     session: http2.ClientHttp2Session,
-    request: { method: string; path: string; headers?: Record<string, string>; body?: string },
-  ): Promise<{ status: number; headers: Record<string, string>; body: string }> {
+    request: { method: string; path: string; headers?: Record<string, string>; body?: Buffer },
+  ): Promise<{ status: number; headers: Record<string, string>; body: Buffer }> {
     return new Promise((resolve, reject) => {
-      const body = Buffer.from(request.body ?? "", "utf8");
+      const body = request.body ?? Buffer.alloc(0);
       const stream = session.request(
         { ":method": request.method, ":path": request.path, ...request.headers },
         { endStream: body.length === 0 },
@@ -3197,7 +3197,7 @@ describe("sandbox adapter execution targets", () => {
         }
       });
       stream.on("data", (chunk: Buffer) => chunks.push(chunk));
-      stream.once("end", () => resolve({ status, headers, body: Buffer.concat(chunks).toString("utf8") }));
+      stream.once("end", () => resolve({ status, headers, body: Buffer.concat(chunks) }));
       stream.once("error", (error) => reject(error));
       if (body.length > 0) stream.end(body);
       else if (!stream.writableEnded) stream.end();
@@ -3215,6 +3215,7 @@ describe("sandbox adapter execution targets", () => {
       auth: string | null;
       runId: string | null;
       headers: Record<string, string>;
+      body: Buffer;
     }>;
     close: () => Promise<void>;
   }> {
@@ -3224,21 +3225,27 @@ describe("sandbox adapter execution targets", () => {
       auth: string | null;
       runId: string | null;
       headers: Record<string, string>;
+      body: Buffer;
     }> = [];
     const server = createServer((req, res) => {
       const headers: Record<string, string> = {};
       for (const [key, value] of Object.entries(req.headers)) {
         if (typeof value === "string") headers[key] = value;
       }
-      requests.push({
-        method: req.method ?? "GET",
-        url: req.url ?? "/",
-        auth: req.headers.authorization ?? null,
-        runId: typeof req.headers["x-paperclip-run-id"] === "string" ? req.headers["x-paperclip-run-id"] : null,
-        headers,
+      const chunks: Buffer[] = [];
+      req.on("data", (chunk: Buffer) => chunks.push(chunk));
+      req.on("end", () => {
+        requests.push({
+          method: req.method ?? "GET",
+          url: req.url ?? "/",
+          auth: req.headers.authorization ?? null,
+          runId: typeof req.headers["x-paperclip-run-id"] === "string" ? req.headers["x-paperclip-run-id"] : null,
+          headers,
+          body: Buffer.concat(chunks),
+        });
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ ok: true }));
       });
-      res.writeHead(200, { "content-type": "application/json" });
-      res.end(JSON.stringify({ ok: true }));
     });
     await new Promise<void>((resolve, reject) => {
       server.once("error", reject);
@@ -3762,7 +3769,7 @@ describe("sandbox adapter execution targets", () => {
         method: "POST",
         path: "/api/secret-admin-route",
         headers: { authorization: `Bearer ${bridgeToken}`, "content-type": "application/json" },
-        body: JSON.stringify({ escalate: true }),
+        body: Buffer.from(JSON.stringify({ escalate: true }), "utf8"),
       });
       expect(forbidden.status).toBe(403);
       expect(api.requests).toHaveLength(0);
@@ -3788,6 +3795,83 @@ describe("sandbox adapter execution targets", () => {
       sessionRef.current?.close();
       await bridge?.stop();
       await api.close();
+    }
+  }, 20000);
+
+  it("test_http2_forward_preserves_request_and_response_bytes", async () => {
+    // Byte 0xC3 opens a two-byte UTF-8 sequence; 0x28 is not a valid
+    // continuation byte, so this body is not valid UTF-8. The forward path
+    // must carry these exact bytes on the way in, and the host's own
+    // response bytes on the way out, with no re-encoding step on either leg.
+    const malformedBytes = Buffer.from([0x7b, 0x22, 0x61, 0x22, 0x3a, 0xc3, 0x28, 0x7d]);
+    const receivedRequestBodies: Buffer[] = [];
+    const echoServer = createServer((req, res) => {
+      const chunks: Buffer[] = [];
+      req.on("data", (chunk: Buffer) => chunks.push(chunk));
+      req.on("end", () => {
+        receivedRequestBodies.push(Buffer.concat(chunks));
+        res.writeHead(200, { "content-type": "application/octet-stream" });
+        res.end(malformedBytes);
+      });
+    });
+    await new Promise<void>((resolve, reject) => {
+      echoServer.once("error", reject);
+      echoServer.listen(0, "127.0.0.1", () => resolve());
+    });
+    const echoAddress = echoServer.address();
+    if (!echoAddress || typeof echoAddress === "string") {
+      throw new Error("Expected the echo server to listen on a TCP port.");
+    }
+
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-http2-raw-bytes-"));
+    cleanupDirs.push(rootDir);
+    const remoteCwd = path.join(rootDir, "workspace");
+    await mkdir(remoteCwd, { recursive: true });
+    const sessionRef: { current: http2.ClientHttp2Session | null } = { current: null };
+    let bridgeToken = "";
+    const { runner } = makeHttp2SelectionRunner((ctx) => {
+      bridgeToken = ctx.bridgeToken;
+      ctx.emitReady();
+      sessionRef.current = ctx.connectHttp2();
+    });
+    const target: AdapterSandboxExecutionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      providerKey: "daytona",
+      remoteCwd,
+      timeoutMs: 30_000,
+      runner,
+      effectiveCapabilities: duplexCapabilities(true),
+    };
+
+    const bridge = await startAdapterExecutionTargetPaperclipBridge({
+      runId: "run-raw-bytes",
+      target,
+      runtimeRootDir: path.join(remoteCwd, ".paperclip-runtime", "codex"),
+      adapterKey: "codex",
+      hostApiToken: "real-run-jwt",
+      hostApiUrl: `http://127.0.0.1:${echoAddress.port}`,
+      enableSandboxDuplexBridge: true,
+    });
+    try {
+      expect(bridge?.env.PAPERCLIP_API_BRIDGE_MODE).toBe("http2_v1");
+      await waitForCondition(() => sessionRef.current !== null, "the http2 client session to open", 4000);
+
+      const response = await http2TestRequest(sessionRef.current!, {
+        method: "POST",
+        path: "/api/issues/issue-1/comments",
+        headers: { authorization: `Bearer ${bridgeToken}`, "content-type": "application/octet-stream" },
+        body: malformedBytes,
+      });
+
+      expect(response.status).toBe(200);
+      expect(receivedRequestBodies).toHaveLength(1);
+      expect(receivedRequestBodies[0]?.equals(malformedBytes)).toBe(true);
+      expect(response.body.equals(malformedBytes)).toBe(true);
+    } finally {
+      sessionRef.current?.close();
+      await bridge?.stop();
+      await new Promise<void>((resolve) => echoServer.close(() => resolve()));
     }
   }, 20000);
 
@@ -4234,7 +4318,7 @@ describe("sandbox adapter execution targets", () => {
         method: "POST",
         path: `/api/issues/${ROUTE_SENTINEL}/comments?secret=${QUERY_SENTINEL}`,
         headers: { authorization: `Bearer ${bridgeToken}`, "content-type": "application/json" },
-        body: JSON.stringify({ body: BODY_SENTINEL }),
+        body: Buffer.from(JSON.stringify({ body: BODY_SENTINEL }), "utf8"),
       });
       expect(response.status).toBe(200);
       await waitForCondition(
@@ -5389,7 +5473,7 @@ describe("sandbox adapter execution targets", () => {
         method: "POST",
         path: "/api/issues/issue-1/comments",
         headers: { authorization: `Bearer ${bridgeToken}`, "content-type": "application/json" },
-        body: JSON.stringify({ body: "hello" }),
+        body: Buffer.from(JSON.stringify({ body: "hello" }), "utf8"),
       });
       expect(response.status).toBe(504);
       expect(response.headers["x-paperclip-bridge-outcome"]).toBe("indeterminate");
