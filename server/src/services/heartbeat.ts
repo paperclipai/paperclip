@@ -456,6 +456,11 @@ import {
   type EffectiveRunConfigSecretManifestEntry,
 } from "./effective-run-config-fingerprints.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
+import {
+  evaluatePreStartAdmission,
+  getPreStartAdmissionHook,
+  type PreStartAdmissionHook,
+} from "./pre-start-admission.js";
 import { serverVersion } from "../version.js";
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
@@ -8163,6 +8168,11 @@ export interface HeartbeatServiceOptions {
   environmentRuntime?: HeartbeatEnvironmentRuntime;
   runtimeEnv?: Record<string, string | undefined>;
   /**
+   * Supported host admission boundary. Absent or observe mode cannot veto;
+   * enforce mode fails closed before adapter, native-runner, or provider work.
+   */
+  preStartAdmission?: PreStartAdmissionHook;
+  /**
    * Provider-boundary seam for persisted native-run recovery tests. Keeping
    * the seam here exercises the production reaper, claim, execution, package
    * session loop, persistence port, and finalizer without spawning a provider.
@@ -8309,6 +8319,8 @@ export function heartbeatService(
   const getCurrentUserRedactionOptions = async () => ({
     enabled: (await instanceSettings.getGeneral()).censorUsernameInLogs,
   });
+  const preStartAdmission =
+    options.preStartAdmission ?? getPreStartAdmissionHook();
   const runtimeEnv = options.runtimeEnv ?? process.env;
   const inWorktreeRuntime = isTruthyRuntimeEnvValue(
     runtimeEnv.PAPERCLIP_IN_WORKTREE,
@@ -17951,6 +17963,90 @@ export function heartbeatService(
       }
       run = claimed;
     }
+    if (preStartAdmission) {
+      const admissionAgent = await getAgent(run.agentId);
+      const admissionContext = parseObject(run.contextSnapshot);
+      const admissionIssueId = readNonEmptyString(admissionContext.issueId);
+      const admissionIssue = admissionIssueId
+        ? await db
+            .select({
+              id: issues.id,
+              identifier: issues.identifier,
+              title: issues.title,
+            })
+            .from(issues)
+            .where(
+              and(
+                eq(issues.id, admissionIssueId),
+                eq(issues.companyId, run.companyId),
+              ),
+            )
+            .limit(1)
+            .then((rows) => rows[0] ?? null)
+        : null;
+      const adapterConfig = parseObject(admissionAgent?.adapterConfig);
+      const admission = await evaluatePreStartAdmission({
+        hook: preStartAdmission,
+        subject: {
+          companyId: run.companyId,
+          agentId: run.agentId,
+          issue: admissionIssue,
+          issueId: admissionIssueId,
+          runId: run.id,
+          wakeupRequestId: run.wakeupRequestId,
+          provider:
+            readNonEmptyString(adapterConfig.provider) ??
+            admissionAgent?.adapterType ??
+            "unknown",
+          model: readNonEmptyString(adapterConfig.model),
+        },
+      });
+      await logActivity(db, {
+        companyId: run.companyId,
+        actorType: "system",
+        actorId: "pre-start-admission",
+        agentId: run.agentId,
+        runId: run.id,
+        action: admission.allow
+          ? "heartbeat.pre_start_admission_observed"
+          : "heartbeat.pre_start_admission_vetoed",
+        entityType: "heartbeat_run",
+        entityId: run.id,
+        issueId: admissionIssueId,
+        details: {
+          mode: admission.mode,
+          enforced: admission.enforced,
+          reasonCode: admission.reasonCode,
+          reason: admission.reason,
+          provider: admission.capacitySnapshot?.provider ?? null,
+          observedAt:
+            admission.capacitySnapshot?.observedAt.toISOString() ?? null,
+          activeWindowKey: admission.activeWindow?.key ?? null,
+          activeWindowStartsAt:
+            admission.activeWindow?.startsAt.toISOString() ?? null,
+          activeWindowResetsAt:
+            admission.activeWindow?.resetsAt.toISOString() ?? null,
+          activeWindowRemaining: admission.activeWindow?.remaining ?? null,
+        },
+      });
+      if (!admission.allow) {
+        await cancelRunInternal(run.id, admission.reason, {
+          errorCode: `pre_start_admission_${admission.reasonCode}`,
+          eventMessage: "run vetoed before adapter invocation",
+          eventPayload: {
+            reasonCode: admission.reasonCode,
+            provider:
+              admission.capacitySnapshot?.provider ??
+              readNonEmptyString(adapterConfig.provider) ??
+              admissionAgent?.adapterType ??
+              "unknown",
+            activeWindowKey: admission.activeWindow?.key ?? null,
+            retryAt: admission.activeWindow?.resetsAt.toISOString() ?? null,
+          },
+        });
+        return;
+      }
+    }
 
     if (
       runOptions.nativeLeaseOwner &&
@@ -24269,6 +24365,34 @@ export function heartbeatService(
         await tx.execute(
           sql`select id from issues where id = ${issueId} and company_id = ${agent.companyId} for update`,
         );
+        if (opts.idempotencyKey) {
+          const existingWake = await tx
+            .select({ runId: agentWakeupRequests.runId })
+            .from(agentWakeupRequests)
+            .where(
+              and(
+                eq(agentWakeupRequests.companyId, agent.companyId),
+                eq(agentWakeupRequests.agentId, agentId),
+                eq(agentWakeupRequests.idempotencyKey, opts.idempotencyKey),
+              ),
+            )
+            .orderBy(asc(agentWakeupRequests.createdAt))
+            .limit(1)
+            .then((rows) => rows[0] ?? null);
+          if (existingWake) {
+            const existingRun = existingWake.runId
+              ? await tx
+                  .select()
+                  .from(heartbeatRuns)
+                  .where(eq(heartbeatRuns.id, existingWake.runId))
+                  .limit(1)
+                  .then((rows) => rows[0] ?? null)
+              : null;
+            return existingRun
+              ? { kind: "coalesced" as const, run: existingRun }
+              : { kind: "skipped" as const };
+          }
+        }
 
         const issue = await tx
           .select({
@@ -25199,6 +25323,32 @@ export function heartbeatService(
       return newRun;
     }
 
+    if (opts.idempotencyKey) {
+      const existingWake = await db
+        .select({ runId: agentWakeupRequests.runId })
+        .from(agentWakeupRequests)
+        .where(
+          and(
+            eq(agentWakeupRequests.companyId, agent.companyId),
+            eq(agentWakeupRequests.agentId, agentId),
+            eq(agentWakeupRequests.idempotencyKey, opts.idempotencyKey),
+          ),
+        )
+        .orderBy(asc(agentWakeupRequests.createdAt))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      if (existingWake) {
+        return existingWake.runId
+          ? await db
+              .select()
+              .from(heartbeatRuns)
+              .where(eq(heartbeatRuns.id, existingWake.runId))
+              .limit(1)
+              .then((rows) => rows[0] ?? null)
+          : null;
+      }
+    }
+
     const activeRuns = await db
       .select()
       .from(heartbeatRuns)
@@ -25288,6 +25438,34 @@ export function heartbeatService(
       await tx.execute(
         sql`select id from agents where id = ${agentId} and company_id = ${agent.companyId} for update`,
       );
+      if (opts.idempotencyKey) {
+        const existingWake = await tx
+          .select({ runId: agentWakeupRequests.runId })
+          .from(agentWakeupRequests)
+          .where(
+            and(
+              eq(agentWakeupRequests.companyId, agent.companyId),
+              eq(agentWakeupRequests.agentId, agentId),
+              eq(agentWakeupRequests.idempotencyKey, opts.idempotencyKey),
+            ),
+          )
+          .orderBy(asc(agentWakeupRequests.createdAt))
+          .limit(1)
+          .then((rows) => rows[0] ?? null);
+        if (existingWake) {
+          const existingRun = existingWake.runId
+            ? await tx
+                .select()
+                .from(heartbeatRuns)
+                .where(eq(heartbeatRuns.id, existingWake.runId))
+                .limit(1)
+                .then((rows) => rows[0] ?? null)
+            : null;
+          return existingRun
+            ? { kind: "coalesced" as const, run: existingRun }
+            : { kind: "skipped" as const };
+        }
+      }
 
       const dailyCapBlock = await getHeartbeatDailyCapBlock(
         agent,
