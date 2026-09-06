@@ -154,6 +154,7 @@ import { redactCommandText } from "../command-redaction.js";
 
 const defaultModuleDir = path.dirname(fileURLToPath(import.meta.url));
 const PAPERCLIP_MANAGED_CODEX_SKILLS_MANIFEST = ".paperclip-managed-skills.json";
+const CODEX_SESSION_RETENTION_MANIFEST = "retention-complete.json";
 const BENIGN_NES_CLOSE_STDERR = /method: ['"]nes\/close['"].*-32601/;
 
 function routeChildStderr(state: ChildStderrState, chunk: string) {
@@ -1068,14 +1069,16 @@ async function retainSanitizedCodexSessionJsonl(input: {
   onLog: AdapterExecutionContext["onLog"];
 }): Promise<void> {
   const sessionsDir = path.join(input.retention.runHome, "sessions");
+  const retainedRunDir = path.dirname(input.retention.retainedSessionsDir);
   await chmodPrivateTree(input.retention.runHome);
   const sessionFiles = await listCodexSessionJsonlFiles({
     root: sessionsDir,
     dir: sessionsDir,
   });
 
+  await fs.mkdir(retainedRunDir, { recursive: true, mode: 0o700 });
+  await removeDirectoryContents(retainedRunDir);
   await fs.mkdir(input.retention.retainedSessionsDir, { recursive: true, mode: 0o700 });
-  await removeDirectoryContents(input.retention.retainedSessionsDir);
 
   for (const relativePath of sessionFiles) {
     const source = path.join(sessionsDir, relativePath);
@@ -1089,6 +1092,19 @@ async function retainSanitizedCodexSessionJsonl(input: {
   }
 
   await chmodPrivateTree(input.retention.retainedSessionsDir);
+  await writeFileAtomically({
+    target: path.join(retainedRunDir, CODEX_SESSION_RETENTION_MANIFEST),
+    contents: `${JSON.stringify({
+      schemaVersion: 1,
+      status: "complete",
+      runId: path.basename(retainedRunDir),
+      completedAt: new Date().toISOString(),
+      sessionFileCount: sessionFiles.length,
+      sessionFiles,
+    })}\n`,
+    mode: 0o600,
+  });
+  await chmodPrivateTree(retainedRunDir);
   await input.onLog(
     "stdout",
     `[paperclip] Retained ${sessionFiles.length} sanitized ACPX Codex session JSONL file(s) in "${input.retention.retainedSessionsDir}".\n`,
@@ -1101,6 +1117,7 @@ async function retainSanitizedCodexSessionsAfterClose(input: {
 }): Promise<void> {
   if (!input.prepared.codexSessionRetention) return;
   const { runHome, retainedSessionsDir } = input.prepared.codexSessionRetention;
+  const retainedRunDir = path.dirname(retainedSessionsDir);
   try {
     await retainSanitizedCodexSessionJsonl({
       retention: input.prepared.codexSessionRetention,
@@ -1117,7 +1134,7 @@ async function retainSanitizedCodexSessionsAfterClose(input: {
     // can be inspected or swept later.  The INCIDENT prefix is the signal KEWL-3853
     // monitoring greps for unswept quarantines.
     await chmodPrivateTree(runHome).catch(() => {});
-    await fs.rm(retainedSessionsDir, { recursive: true, force: true }).catch(() => {});
+    await fs.rm(retainedRunDir, { recursive: true, force: true }).catch(() => {});
     const runHomeParent = path.dirname(runHome);
     const quarantineMarker = path.join(
       path.dirname(runHomeParent),
@@ -1149,7 +1166,7 @@ async function quarantineCodexRunHomeWithoutClose(input: {
   const retention = input.prepared.codexSessionRetention;
   if (!retention) return;
   await chmodPrivateTree(retention.runHome).catch(() => {});
-  await fs.rm(retention.retainedSessionsDir, { recursive: true, force: true }).catch(() => {});
+  await fs.rm(path.dirname(retention.retainedSessionsDir), { recursive: true, force: true }).catch(() => {});
   const runHomeParent = path.dirname(retention.runHome);
   const quarantineMarker = path.join(
     path.dirname(runHomeParent),

@@ -10,7 +10,8 @@
  *   1. The Paperclip heartbeat run is terminal
  *   2. Zero open file handles on the directory tree   (lsof check)
  *   3. mtime of the run-home dir is >=24h ago
- *   4. A sanitized session counterpart exists under codex-session-retention/<runId>/
+ *   4. A sanitized session counterpart has a valid completion manifest, or a
+ *      legacy counterpart contains a non-empty JSONL artifact
  *
  * Invariant 4 ensures we never silently discard a home whose session data was
  * never retained. A sibling <runId>.quarantine marker records retention failure,
@@ -47,10 +48,18 @@ interface RunHomeEntry {
   ageSecs: number;
   sizeBytes?: number;
   eligible: boolean;
+  retentionProof?: "completion_manifest" | "legacy_nonempty_jsonl";
+  quarantined?: boolean;
   ineligibleReason?: string;
   deleted?: boolean;
   error?: string;
 }
+
+const RETENTION_MANIFEST_NAME = "retention-complete.json";
+
+type RetentionProofCheck =
+  | { ok: true; proof: "completion_manifest" | "legacy_nonempty_jsonl" }
+  | { ok: false; error: string };
 
 type OpenHandleCheck =
   | { ok: true; hasOpenHandles: boolean }
@@ -67,6 +76,120 @@ interface SweeperDependencies {
 
 async function pathExists(p: string): Promise<boolean> {
   return fs.access(p).then(() => true, () => false);
+}
+
+function isPathBelow(root: string, candidate: string): boolean {
+  const resolvedRoot = path.resolve(root);
+  const resolvedCandidate = path.resolve(candidate);
+  return resolvedCandidate.startsWith(`${resolvedRoot}${path.sep}`);
+}
+
+async function findLegacyRetainedJsonl(root: string, dir = root): Promise<boolean> {
+  const entries = await fs.readdir(dir, { withFileTypes: true });
+  for (const entry of entries) {
+    const candidate = path.join(dir, entry.name);
+    if (!isPathBelow(root, candidate) || entry.isSymbolicLink()) continue;
+    if (entry.isDirectory()) {
+      if (await findLegacyRetainedJsonl(root, candidate)) return true;
+      continue;
+    }
+    if (!entry.isFile() || !entry.name.endsWith(".jsonl")) continue;
+    const stat = await fs.lstat(candidate);
+    if (stat.isFile() && !stat.isSymbolicLink() && stat.size > 0) return true;
+  }
+  return false;
+}
+
+async function validateRetentionProof(
+  retentionParent: string,
+  runId: string,
+): Promise<RetentionProofCheck> {
+  const retainedDir = path.resolve(retentionParent, runId);
+  if (!isPathBelow(retentionParent, retainedDir)) {
+    return { ok: false, error: "retained-session path escaped the retention root" };
+  }
+
+  let retainedStat: Awaited<ReturnType<typeof fs.lstat>>;
+  try {
+    retainedStat = await fs.lstat(retainedDir);
+  } catch (err) {
+    return {
+      ok: false,
+      error: isErrnoException(err, "ENOENT")
+        ? "no retained session counterpart"
+        : `retained-session counterpart could not be inspected: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+  if (!retainedStat.isDirectory() || retainedStat.isSymbolicLink()) {
+    return { ok: false, error: "retained-session counterpart is not a real directory" };
+  }
+
+  const manifestPath = path.join(retainedDir, RETENTION_MANIFEST_NAME);
+  try {
+    const manifestStat = await fs.lstat(manifestPath);
+    if (!manifestStat.isFile() || manifestStat.isSymbolicLink()) {
+      return { ok: false, error: "retention completion manifest is not a real file" };
+    }
+    const manifest = JSON.parse(await fs.readFile(manifestPath, "utf8")) as {
+      schemaVersion?: unknown;
+      status?: unknown;
+      runId?: unknown;
+      sessionFileCount?: unknown;
+      sessionFiles?: unknown;
+    };
+    if (
+      manifest.schemaVersion !== 1 ||
+      manifest.status !== "complete" ||
+      manifest.runId !== runId ||
+      !Number.isInteger(manifest.sessionFileCount) ||
+      (manifest.sessionFileCount as number) < 0 ||
+      !Array.isArray(manifest.sessionFiles) ||
+      manifest.sessionFiles.length !== manifest.sessionFileCount
+    ) {
+      return { ok: false, error: "retention completion manifest is invalid" };
+    }
+    const sessionsDir = path.join(retainedDir, "sessions");
+    for (const relativePath of manifest.sessionFiles) {
+      if (typeof relativePath !== "string" || relativePath.length === 0 || path.isAbsolute(relativePath)) {
+        return { ok: false, error: "retention completion manifest contains an unsafe session path" };
+      }
+      const artifact = path.resolve(sessionsDir, relativePath);
+      if (!isPathBelow(sessionsDir, artifact)) {
+        return { ok: false, error: "retention completion manifest contains an unsafe session path" };
+      }
+      const artifactStat = await fs.lstat(artifact);
+      if (!artifactStat.isFile() || artifactStat.isSymbolicLink()) {
+        return { ok: false, error: "retention completion manifest references a missing session artifact" };
+      }
+    }
+    return { ok: true, proof: "completion_manifest" };
+  } catch (err) {
+    if (!isErrnoException(err, "ENOENT")) {
+      return {
+        ok: false,
+        error: `retention completion manifest could not be validated: ${err instanceof Error ? err.message : String(err)}`,
+      };
+    }
+  }
+
+  try {
+    if (await findLegacyRetainedJsonl(retainedDir)) {
+      return { ok: true, proof: "legacy_nonempty_jsonl" };
+    }
+    return {
+      ok: false,
+      error: "retained-session counterpart has no completion manifest or non-empty JSONL artifact",
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      error: `legacy retained-session artifacts could not be inspected: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+}
+
+function isErrnoException(err: unknown, code: string): err is NodeJS.ErrnoException {
+  return err instanceof Error && "code" in err && err.code === code;
 }
 
 async function checkOpenHandles(dir: string): Promise<OpenHandleCheck> {
@@ -203,20 +326,21 @@ async function sweepAgentDir(
 
     // A retained session counterpart is mandatory. Quarantine is evidence that
     // retention failed, so it must never substitute for a sanitized copy.
-    const retainedDir = path.join(retentionParent, runId);
     const quarantineMarker = path.join(runHomesParent, `${runId}.quarantine`);
-    const hasRetained = await pathExists(retainedDir);
     const hasQuarantine = await pathExists(quarantineMarker);
+    entry.quarantined = hasQuarantine;
+    const retentionProof = await validateRetentionProof(retentionParent, runId);
 
-    if (!hasRetained) {
+    if (!retentionProof.ok) {
       entry.ineligibleReason = hasQuarantine
-        ? "run home is quarantined and has no retained session counterpart"
-        : "no retained session counterpart";
+        ? `run home is quarantined; ${retentionProof.error}`
+        : retentionProof.error;
       entries.push(entry);
       continue;
     }
 
     entry.eligible = true;
+    entry.retentionProof = retentionProof.proof;
     entry.sizeBytes = await dirSizeBytes(runDir);
 
     if (!opts.dryRun) {

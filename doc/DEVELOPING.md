@@ -1251,8 +1251,10 @@ Local Codex runs use a private home under
 `<company-dir>/acp-engine/agents/<agent-id>/codex-run-homes/<run-id>/home`.
 This preserves the restricted-run isolation boundary.
 Paperclip keeps sanitized session JSONL after the runtime closes. It then removes
-the raw run home. If retention or runtime close fails, Paperclip preserves the
-home and writes a sibling `<run-id>.quarantine` marker.
+the raw run home. Successful retention writes an atomic
+`retention-complete.json` manifest, including for valid zero-session runs. If
+retention or runtime close fails, Paperclip removes partial retained output,
+preserves the home, and writes a sibling `<run-id>.quarantine` marker.
 
 The orphan sweeper is dry-run only unless `--delete` is present:
 
@@ -1264,8 +1266,10 @@ npx tsx packages/adapter-utils/src/acpx-engine/run-home-sweeper.ts \
 Set `PAPERCLIP_API_URL` and `PAPERCLIP_API_KEY` for both modes. The sweeper fails
 closed unless it can prove that the heartbeat run is terminal, the home has no
 open file handles, the home is older than the grace window, and a sanitized
-retention counterpart exists. A quarantine marker records an incident. It does
-not permit deletion of the only raw copy.
+retention counterpart has proof of completion. New counterparts require a valid
+completion manifest. Legacy counterparts require a contained, non-empty JSONL
+artifact. Empty, unreadable, or symlinked counterparts fail closed. A quarantine
+marker records an incident. It does not permit deletion of the only raw copy.
 
 Review the JSON manifest before you add `--delete`. Keep the default 24-hour
 grace period unless the operator has approved a different recovery window.
