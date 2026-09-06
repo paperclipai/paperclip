@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { inferOpenAiCompatibleBiller, type AdapterExecutionContext, type AdapterExecutionResult } from "@paperclipai/adapter-utils";
+import { inferOpenAiCompatibleBiller, instructionsFailureMessage, readInstructionsFileSafe, type AdapterExecutionContext, type AdapterExecutionResult } from "@paperclipai/adapter-utils";
 import { buildCodexAuthInboundProvision } from "./codex-auth-merge-scripts.js";
 import { copyBackCodexAuth } from "./codex-auth-copyback.js";
 import {
@@ -1067,18 +1067,20 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     let instructionsPrefix = "";
     let instructionsChars = 0;
     if (instructionsFilePath) {
-      try {
-        const instructionsContents = await fs.readFile(instructionsFilePath, "utf8");
+      const readResult = await readInstructionsFileSafe(instructionsFilePath);
+      if (readResult.ok) {
         instructionsPrefix =
-          `${instructionsContents}\n\n` +
+          `${readResult.contents}\n\n` +
           `The above agent instructions were loaded from ${instructionsFilePath}. ` +
           `Resolve any relative file references from ${instructionsDir}.\n\n`;
         instructionsChars = instructionsPrefix.length;
-      } catch (err) {
-        const reason = err instanceof Error ? err.message : String(err);
+      } else if (readResult.error === "EISDIR") {
+        throw new Error(instructionsFailureMessage(readResult.path));
+      } else {
+        const reason = readResult.error === "OTHER" ? readResult.reason : readResult.error;
         await onLog(
           "stdout",
-          `[paperclip] Warning: could not read agent instructions file "${instructionsFilePath}": ${reason}\n`,
+          `[paperclip] Warning: could not read agent instructions file "${readResult.path}": ${reason}\n`,
         );
       }
     }

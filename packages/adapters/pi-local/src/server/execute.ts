@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { inferOpenAiCompatibleBiller, type AdapterExecutionContext, type AdapterExecutionResult } from "@paperclipai/adapter-utils";
+import { inferOpenAiCompatibleBiller, instructionsFailureMessage, readInstructionsFileSafe, type AdapterExecutionContext, type AdapterExecutionResult } from "@paperclipai/adapter-utils";
 import {
   adapterExecutionTargetIsRemote,
   adapterExecutionTargetRemoteCwd,
@@ -571,19 +571,21 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     let systemPromptExtension = "";
     let instructionsReadFailed = false;
     if (resolvedInstructionsFilePath) {
-      try {
-        const instructionsContents = await fs.readFile(resolvedInstructionsFilePath, "utf8");
+      const readResult = await readInstructionsFileSafe(resolvedInstructionsFilePath);
+      if (readResult.ok) {
         systemPromptExtension =
-          `${instructionsContents}\n\n` +
+          `${readResult.contents}\n\n` +
           `The above agent instructions were loaded from ${resolvedInstructionsFilePath}. ` +
           `Resolve any relative file references from ${instructionsFileDir}.\n\n` +
           DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE;
-      } catch (err) {
+      } else if (readResult.error === "EISDIR") {
+        throw new Error(instructionsFailureMessage(readResult.path));
+      } else {
         instructionsReadFailed = true;
-        const reason = err instanceof Error ? err.message : String(err);
+        const reason = readResult.error === "OTHER" ? readResult.reason : readResult.error;
         await onLog(
           "stdout",
-          `[paperclip] Warning: could not read agent instructions file "${resolvedInstructionsFilePath}": ${reason}\n`,
+          `[paperclip] Warning: could not read agent instructions file "${readResult.path}": ${reason}\n`,
         );
         // Fall back to base prompt template
         systemPromptExtension = promptTemplate;

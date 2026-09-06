@@ -409,4 +409,38 @@ describe("kimi_local execute", () => {
 
     expect(seenArgs).not.toContain("--skills-dir");
   });
+
+  it("throws when instructionsFilePath is a directory (EISDIR fail-fast)", async () => {
+    const root = await makeTempRoot();
+    const bundleDir = path.join(root, "bundle");
+    await fs.mkdir(bundleDir, { recursive: true });
+
+    await expect(
+      execute(makeContext(root, { config: { cwd: root, instructionsFilePath: bundleDir } })),
+    ).rejects.toThrow(/is a directory/);
+  });
+
+  it("warns and continues when instructionsFilePath does not exist (ENOENT)", async () => {
+    const root = await makeTempRoot();
+    const logs: string[] = [];
+    runProcessMock.mockImplementation(async () => ({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      stdout: KIMI_STDOUT,
+      stderr: "",
+    }));
+    const ctx = makeContext(root, {
+      config: { cwd: root, instructionsFilePath: path.join(root, "does-not-exist.md") },
+      onLog: async (stream: string, chunk: string) => {
+        logs.push(chunk);
+      },
+    });
+
+    const result = await execute(ctx);
+
+    expect(result.exitCode).toBe(0);
+    expect(logs.join("")).toMatch(/Warning: could not read agent instructions file/);
+    expect(logs.join("")).not.toMatch(/is a directory/);
+  });
 });

@@ -25,16 +25,17 @@ import {
   runAdapterExecutionTargetShellCommand,
   startAdapterExecutionTargetPaperclipBridge,
 } from "@paperclipai/adapter-utils/execution-target";
+import { instructionsFailureMessage, readInstructionsFileSafe } from "@paperclipai/adapter-utils";
 import {
-  asString,
   asNumber,
+  asString,
   asStringArray,
-  parseObject,
   buildPaperclipEnv,
   buildInvocationEnvForLogs,
   ensureAbsoluteDirectory,
   ensurePaperclipSkillSymlink,
   ensurePathInEnv,
+  parseObject,
   refreshPaperclipWorkspaceEnvForExecution,
   readPaperclipRuntimeSkillEntries,
   readPaperclipIssueWorkModeFromContext,
@@ -502,18 +503,20 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   let instructionsPrefix = "";
   let instructionsChars = 0;
   if (instructionsFilePath) {
-    try {
-      const instructionsContents = await fs.readFile(instructionsFilePath, "utf8");
+    const readResult = await readInstructionsFileSafe(instructionsFilePath);
+    if (readResult.ok) {
       instructionsPrefix =
-        `${instructionsContents}\n\n` +
+        `${readResult.contents}\n\n` +
         `The above agent instructions were loaded from ${instructionsFilePath}. ` +
         `Resolve any relative file references from ${instructionsDir}.\n\n`;
       instructionsChars = instructionsPrefix.length;
-    } catch (err) {
-      const reason = err instanceof Error ? err.message : String(err);
+    } else if (readResult.error === "EISDIR") {
+      throw new Error(instructionsFailureMessage(readResult.path));
+    } else {
+      const reason = readResult.error === "OTHER" ? readResult.reason : readResult.error;
       await onLog(
         "stdout",
-        `[paperclip] Warning: could not read agent instructions file "${instructionsFilePath}": ${reason}\n`,
+        `[paperclip] Warning: could not read agent instructions file "${readResult.path}": ${reason}\n`,
       );
     }
   }

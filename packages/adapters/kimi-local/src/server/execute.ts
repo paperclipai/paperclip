@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
+import { instructionsFailureMessage, readInstructionsFileSafe } from "@paperclipai/adapter-utils";
 import {
   adapterExecutionTargetIsRemote,
   adapterExecutionTargetRemoteCwd,
@@ -447,19 +448,21 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const instructionsDir = instructionsFilePath ? `${path.dirname(instructionsFilePath)}/` : "";
   let instructionsPrefix = "";
   if (instructionsFilePath) {
-    try {
-      const instructionsContents = await fs.readFile(instructionsFilePath, "utf8");
+    const readResult = await readInstructionsFileSafe(instructionsFilePath);
+    if (readResult.ok) {
       instructionsPrefix =
-        `${instructionsContents}\n\n` +
+        `${readResult.contents}\n\n` +
         `The above agent instructions were loaded from ${instructionsFilePath}. ` +
         `Resolve any relative file references from ${instructionsDir}. ` +
         `This base directory is authoritative for sibling instruction files such as ` +
         `./HEARTBEAT.md, ./SOUL.md, and ./TOOLS.md; do not resolve those from the parent agent directory.\n\n`;
-    } catch (err) {
-      const reason = err instanceof Error ? err.message : String(err);
+    } else if (readResult.error === "EISDIR") {
+      throw new Error(instructionsFailureMessage(readResult.path));
+    } else {
+      const reason = readResult.error === "OTHER" ? readResult.reason : readResult.error;
       await onLog(
         "stdout",
-        `[paperclip] Warning: could not read agent instructions file "${instructionsFilePath}": ${reason}\n`,
+        `[paperclip] Warning: could not read agent instructions file "${readResult.path}": ${reason}\n`,
       );
     }
   }

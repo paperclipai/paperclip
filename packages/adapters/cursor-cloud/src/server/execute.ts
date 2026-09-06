@@ -10,6 +10,7 @@ import {
   type SDKMessage,
 } from "@cursor/sdk";
 import type { AdapterExecutionContext, AdapterExecutionResult, AdapterInvocationMeta } from "@paperclipai/adapter-utils";
+import { instructionsFailureMessage, readInstructionsFileSafe } from "@paperclipai/adapter-utils";
 import {
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   asBoolean,
@@ -178,10 +179,10 @@ async function buildInstructionsPrefix(
     return { prefix: "", notes: [], chars: 0 };
   }
 
-  try {
-    const contents = await fs.readFile(instructionsFilePath, "utf8");
+  const readResult = await readInstructionsFileSafe(instructionsFilePath);
+  if (readResult.ok) {
     const instructionsDir = `${path.dirname(instructionsFilePath)}/`;
-    const prefix = `${contents.trim()}\n\nThe above agent instructions were loaded from ${instructionsFilePath}. Resolve any relative file references from ${instructionsDir}.\n`;
+    const prefix = `${readResult.contents.trim()}\n\nThe above agent instructions were loaded from ${instructionsFilePath}. Resolve any relative file references from ${instructionsDir}.\n`;
     return {
       prefix,
       chars: prefix.length,
@@ -190,17 +191,19 @@ async function buildInstructionsPrefix(
         `Prepended instructions + path directive to prompt (relative references from ${instructionsDir}).`,
       ],
     };
-  } catch (err) {
-    const reason = err instanceof Error ? err.message : String(err);
+  } else if (readResult.error === "EISDIR") {
+    throw new Error(instructionsFailureMessage(readResult.path));
+  } else {
+    const reason = readResult.error === "OTHER" ? readResult.reason : readResult.error;
     await onLog(
       "stderr",
-      `[paperclip] Warning: could not read agent instructions file "${instructionsFilePath}": ${reason}\n`,
+      `[paperclip] Warning: could not read agent instructions file "${readResult.path}": ${reason}\n`,
     );
     return {
       prefix: "",
       chars: 0,
       notes: [
-        `Configured instructionsFilePath ${instructionsFilePath}, but file could not be read; continuing without injected instructions.`,
+        `Configured instructionsFilePath ${readResult.path}, but file could not be read; continuing without injected instructions.`,
       ],
     };
   }

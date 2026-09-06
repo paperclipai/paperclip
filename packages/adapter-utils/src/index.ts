@@ -112,6 +112,8 @@ export type {
 } from "./login-runner-lifecycle.js";
 // Keep the root adapter-utils entry browser-safe because the UI imports it.
 // The sandbox callback bridge stays available via its dedicated subpath export.
+export { readInstructionsFileSafe, instructionsFailureMessage } from "./instructions-file.js";
+export type { InstructionsFileResult } from "./instructions-file.js";
 export type {
   SandboxCallbackBridgeRequest,
   SandboxCallbackBridgeResponse,

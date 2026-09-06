@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
+import { instructionsFailureMessage, readInstructionsFileSafe } from "@paperclipai/adapter-utils";
 import {
   adapterExecutionTargetIsRemote,
   adapterExecutionTargetRemoteCwd,
@@ -496,22 +497,24 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   const instructionsFilePath = asString(config.instructionsFilePath, "").trim();
   const instructionsDir = instructionsFilePath ? `${path.dirname(instructionsFilePath)}/` : "";
-  let instructionsPrefix = "";
-  if (instructionsFilePath) {
-    try {
-      const instructionsContents = await fs.readFile(instructionsFilePath, "utf8");
-      instructionsPrefix =
-        `${instructionsContents}\n\n` +
-        `The above agent instructions were loaded from ${instructionsFilePath}. ` +
-        `Resolve any relative file references from ${instructionsDir}.\n\n`;
-    } catch (err) {
-      const reason = err instanceof Error ? err.message : String(err);
-      await onLog(
-        "stdout",
-        `[paperclip] Warning: could not read agent instructions file "${instructionsFilePath}": ${reason}\n`,
-      );
+    let instructionsPrefix = "";
+    if (instructionsFilePath) {
+      const readResult = await readInstructionsFileSafe(instructionsFilePath);
+      if (readResult.ok) {
+        instructionsPrefix =
+          `${readResult.contents}\n\n` +
+          `The above agent instructions were loaded from ${instructionsFilePath}. ` +
+          `Resolve any relative file references from ${instructionsDir}.\n\n`;
+      } else if (readResult.error === "EISDIR") {
+        throw new Error(instructionsFailureMessage(readResult.path));
+      } else {
+        const reason = readResult.error === "OTHER" ? readResult.reason : readResult.error;
+        await onLog(
+          "stdout",
+          `[paperclip] Warning: could not read agent instructions file "${readResult.path}": ${reason}\n`,
+        );
+      }
     }
-  }
   const commandNotes = (() => {
     const notes: string[] = ["Prompt is passed to Gemini via --prompt for non-interactive execution."];
     notes.push("Added --approval-mode yolo for unattended execution.");

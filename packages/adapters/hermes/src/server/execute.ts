@@ -26,6 +26,7 @@ import type {
   AdapterExecutionResult,
   UsageSummary,
 } from "@paperclipai/adapter-utils";
+import { instructionsFailureMessage, readInstructionsFileSafe } from "@paperclipai/adapter-utils";
 
 import {
   runChildProcess,
@@ -387,8 +388,9 @@ export async function execute(
   const instructionsFilePath = cfgString(config.instructionsFilePath);
   let agentInstructions = "";
   if (instructionsFilePath) {
-    try {
-      agentInstructions = await fs.readFile(instructionsFilePath, "utf-8");
+    const readResult = await readInstructionsFileSafe(instructionsFilePath);
+    if (readResult.ok) {
+      agentInstructions = readResult.contents;
       const loadedInstructionsLength = agentInstructions.length;
       const instructionsFileDir = path.dirname(instructionsFilePath);
       agentInstructions += `\nThe above agent instructions were loaded from ${instructionsFilePath}. Resolve any relative file references from ${instructionsFileDir}/.`;
@@ -396,14 +398,16 @@ export async function execute(
         "stdout",
         `[hermes] Loaded agent instructions from ${instructionsFilePath} (${loadedInstructionsLength} chars)\n`,
       );
-    } catch (err) {
-      const reason = err instanceof Error ? err.message : String(err);
+    } else if (readResult.error === "EISDIR") {
+      throw new Error(instructionsFailureMessage(readResult.path));
+    } else {
+      const reason = readResult.error === "OTHER" ? readResult.reason : readResult.error;
       // Non-fatal: log to stdout with an explicit "Warning:" prefix so the
       // Paperclip UI doesn't render this as a red error (stderr output is
       // surfaced as an error signal even when execution continues).
       await ctx.onLog(
         "stdout",
-        `[hermes] Warning: could not read agent instructions file "${instructionsFilePath}": ${reason}\n`,
+        `[hermes] Warning: could not read agent instructions file "${readResult.path}": ${reason}\n`,
       );
     }
   }
