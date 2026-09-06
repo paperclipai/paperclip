@@ -503,6 +503,8 @@ settings:
       - message.mpim
       - member_joined_channel
       - member_left_channel
+      - channel_left
+      - group_left
       - reaction_added
       - reaction_removed
       - channel_archive
@@ -562,6 +564,13 @@ settings:
             Choose an available username ending in <code>bot</code>.
           </li>
         </ol>
+        <p className="rounded-md border border-border bg-muted/40 p-3 text-sm text-muted-foreground">
+          Paperclip works with Telegram&apos;s default bot privacy mode and
+          registers its command menu automatically. In a group, ordinary
+          mentions are not delivered to bots: start or continue work with{" "}
+          <code>/task@bot_username &lt;request&gt;</code>, or reply directly to
+          a message from the bot.
+        </p>
         <Button
           variant="outline"
           onClick={() => openProviderSetup("https://t.me/BotFather")}

@@ -578,11 +578,13 @@ For routine nightly smoke, reuse a dedicated pre-provisioned bot but create a fr
 ### TG2 — Group and topic reach
 
 1. Add Maya to both test groups through Telegram.
-2. Send one addressed discovery message in each if required by Telegram before Paperclip can learn the chat identifier.
+2. If a membership callback has not discovered a group yet, send `/task@MayaBot DISCOVER <run-id>` in it so Telegram delivers a provider-native command to Paperclip.
 3. Open Paperclip Settings. Verify both groups are available and Disabled remains off.
 4. Run C2 in the Disabled group.
 5. In Enabled, create/open forum topic `Run <run-id>` and enable that topic in Settings if topics are listed separately.
 6. Remove Maya from Disabled and verify unavailable state.
+
+If Telegram upgrades an enabled basic group to a supergroup while Topics are enabled, verify Paperclip marks the old chat unavailable and disabled, carries the explicit Paperclip enablement to the replacement supergroup, preserves its human title, and keeps any existing topic-to-task bindings on the same topic IDs.
 
 **Pass:** Telegram membership/discovery is the provider ceiling. Paperclip enables the narrower set of groups/topics.
 
@@ -590,10 +592,10 @@ For routine nightly smoke, reuse a dedicated pre-provisioned bot but create a fr
 
 1. In DM, send `ECHO <run-id>-DM1` and two follow-ups; verify one open task.
 2. Send `/new`, then `ECHO <run-id>-DM2`; verify a new task. Send `/close`, then another message; verify the next task generation.
-3. In Enabled ordinary group, mention `@MayaBot ECHO <run-id>-GROUP`.
-4. Continue once by replying directly to Maya and once with another mention.
+3. In Enabled ordinary group, send `/task@MayaBot ECHO <run-id>-GROUP`. Telegram privacy mode does not deliver ordinary `@MayaBot` mentions.
+4. Continue once by replying directly to Maya and once with another `/task@MayaBot <follow-up>` command.
 5. Send an unrelated group message; under privacy mode, verify it is not processed.
-6. In the forum topic, address Maya and add follow-ups; run C4.
+6. In the forum topic, start with `/task@MayaBot <request>`, add follow-ups by direct reply or another `/task` command, then run C4.
 
 **Pass:** DM/ordinary group uses an explicit active-task generation; forum `message_thread_id` has one stable topic task; privacy-mode unrelated traffic creates nothing.
 
@@ -604,7 +606,7 @@ Run C3, C5, and C6, then verify specifically:
 - Telegram shows typing/reaction acknowledgement where allowed;
 - long output uses throttled post/edit, and private draft preview only when explicitly supported by the adapter/account;
 - `FORM` uses inline keyboard buttons; fields that require a modal fall back to a Paperclip link or sequential prompts;
-- `/new`, `/status`, and `/close` are parsed as the documented small command vocabulary;
+- `/task <request>`, `/new`, `/status`, and `/close` are parsed as the documented small command vocabulary, and Paperclip registers that menu automatically;
 - image/document/media ingestion is bounded and type checked;
 - there is no claim of true ephemeral output; a private denial uses DM when possible or concise safe text;
 - callback data contains only an opaque short key and every click reauthorizes the Telegram principal;
@@ -652,21 +654,21 @@ Slack Socket Mode and Telegram polling receive separate instance-admin smoke tes
 
 “Automatic” means the richest safe native behavior is used without an endpoint toggle. “Fallback” means the provider visibly receives the documented safe alternative.
 
-| Capability               | Slack                         | GitHub                              | Teams                                            | Telegram                               |
-| ------------------------ | ----------------------------- | ----------------------------------- | ------------------------------------------------ | -------------------------------------- |
-| Root activation          | Native mention                | Mention in issue/PR/review          | Native mention                                   | DM message or group mention/reply      |
-| Durable boundary         | Slack thread or DM generation | Existing issue/PR/review thread     | Channel post thread or chat generation           | Chat generation or forum topic         |
-| Reaction acknowledgement | Automatic                     | Automatic                           | Automatic where supported                        | Automatic where allowed                |
-| Streaming/progress       | Native stream, else post/edit | Coarse comment edit                 | Bounded post/edit; no native streaming           | Throttled post/edit; optional DM draft |
-| Rich cards               | Block Kit                     | GFM + Paperclip link                | Adaptive Card                                    | Formatted text/inline keyboard         |
-| Buttons/selections       | Native                        | Fallback link                       | Native card action                               | Inline keyboard                        |
-| Modal/form               | Native modal                  | Fallback link                       | Task module                                      | Sequential prompt/link fallback        |
-| Commands                 | Registered slash command      | Text mention vocabulary only        | Card/message vocabulary                          | `/new`, `/status`, `/close`            |
-| Files                    | Native send/receive           | Inbound URL text + safe output link | Native in personal chat; link fallback elsewhere | Native media/document                  |
-| DM                       | Native                        | Unsupported                         | Personal scope                                   | Native                                 |
-| Ephemeral/private denial | Ephemeral, then DM/text       | Safe public text/link               | Targeted, then DM/text                           | DM, then safe text                     |
-| Edit/delete audit        | Correction/tombstone          | Correction/tombstone                | Correction/tombstone where delivered             | Correction/tombstone where delivered   |
-| Concurrent turns         | Queue by default              | Queue by default                    | Queue by default                                 | Queue by default                       |
+| Capability               | Slack                         | GitHub                              | Teams                                            | Telegram                                |
+| ------------------------ | ----------------------------- | ----------------------------------- | ------------------------------------------------ | --------------------------------------- |
+| Root activation          | Native mention                | Mention in issue/PR/review          | Native mention                                   | DM message or group `/task@bot` command |
+| Durable boundary         | Slack thread or DM generation | Existing issue/PR/review thread     | Channel post thread or chat generation           | Chat generation or forum topic          |
+| Reaction acknowledgement | Automatic                     | Automatic                           | Automatic where supported                        | Automatic where allowed                 |
+| Streaming/progress       | Native stream, else post/edit | Coarse comment edit                 | Bounded post/edit; no native streaming           | Throttled post/edit; optional DM draft  |
+| Rich cards               | Block Kit                     | GFM + Paperclip link                | Adaptive Card                                    | Formatted text/inline keyboard          |
+| Buttons/selections       | Native                        | Fallback link                       | Native card action                               | Inline keyboard                         |
+| Modal/form               | Native modal                  | Fallback link                       | Task module                                      | Sequential prompt/link fallback         |
+| Commands                 | Registered slash command      | Text mention vocabulary only        | Card/message vocabulary                          | `/new`, `/status`, `/close`             |
+| Files                    | Native send/receive           | Inbound URL text + safe output link | Native in personal chat; link fallback elsewhere | Native media/document                   |
+| DM                       | Native                        | Unsupported                         | Personal scope                                   | Native                                  |
+| Ephemeral/private denial | Ephemeral, then DM/text       | Safe public text/link               | Targeted, then DM/text                           | DM, then safe text                      |
+| Edit/delete audit        | Correction/tombstone          | Correction/tombstone                | Correction/tombstone where delivered             | Correction/tombstone where delivered    |
+| Concurrent turns         | Queue by default              | Queue by default                    | Queue by default                                 | Queue by default                        |
 
 A stable adapter fails qualification if it silently omits a supported maximal feature, exposes a feature toggle that should be automatic, claims an unsupported native behavior, or falls back without preserving task identity, authorization, and safe publication.
 

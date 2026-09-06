@@ -12,7 +12,9 @@ import {
 } from "@chat-adapter/teams";
 import {
   createTelegramAdapter,
+  type TelegramAdapter,
   type TelegramAdapterConfig,
+  type TelegramRawMessage,
 } from "@chat-adapter/telegram";
 import { AsyncLocalStorage } from "node:async_hooks";
 import {
@@ -1187,6 +1189,20 @@ export class ChatSdkEndpointRuntime {
 
   getProviderAdapter(): Adapter {
     return this.adapter;
+  }
+
+  /**
+   * Reuse the pinned provider parser when a Telegram slash command also
+   * carries media in its caption. The Chat SDK exposes slash-command fields
+   * separately from the parsed Message, so without this bridge Paperclip
+   * would silently discard a captioned document/photo/audio/video.
+   */
+  parseTelegramCommandMessage(raw: unknown): Message | null {
+    if (this.provider !== "telegram" || !raw || typeof raw !== "object")
+      return null;
+    return (this.adapter as TelegramAdapter).parseMessage(
+      raw as TelegramRawMessage,
+    );
   }
 
   /**

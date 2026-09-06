@@ -9,6 +9,8 @@ export type ChatProviderLifecycleEffect =
       provider: ChatProvider;
       providerEventId: string;
       providerResourceId: string;
+      /** Telegram basic-group id superseded by this supergroup id. */
+      previousProviderResourceId?: string;
       parentProviderResourceId?: string;
       resourceType: string;
       label: string;
@@ -135,6 +137,29 @@ function parseSlackLifecycle(
             ? { channelType: string(event.channel_type) }
             : {}),
         },
+      },
+    ];
+  }
+
+  // Slack emits these bot-self events when the installed app leaves a public
+  // or private channel. They are distinct from member_left_channel and do not
+  // include a user field because the authenticated bot is the member that
+  // left. Without them, `/remove @bot` can leave Paperclip's reach inventory
+  // incorrectly available until a later manual reconciliation.
+  if (type === "channel_left" || type === "group_left") {
+    const channel = identifier(event.channel);
+    if (!channel) return [];
+    return [
+      {
+        kind: "resource",
+        provider: "slack",
+        providerEventId: envelopeId,
+        providerResourceId: channel,
+        resourceType: "channel",
+        label: channel,
+        availability: "unavailable",
+        providerOrder,
+        metadata: { source: type },
       },
     ];
   }
@@ -376,6 +401,49 @@ function parseTelegramLifecycle(
   input: ParseChatProviderLifecycleInput,
 ): ChatProviderLifecycleEffect[] {
   const payload = record(input.payload);
+  const migrationMessage =
+    record(payload?.message) ?? record(payload?.channel_post);
+  const migrationChat = record(migrationMessage?.chat);
+  const migrationChatId = identifier(migrationChat?.id);
+  const migrateToChatId = identifier(migrationMessage?.migrate_to_chat_id);
+  const migrateFromChatId = identifier(migrationMessage?.migrate_from_chat_id);
+  const migrationFromId = migrateToChatId ? migrationChatId : migrateFromChatId;
+  const migrationToId =
+    migrateToChatId ?? (migrateFromChatId ? migrationChatId : null);
+  if (
+    payload &&
+    migrationMessage &&
+    migrationChat &&
+    migrationFromId &&
+    migrationToId
+  ) {
+    const title =
+      string(migrationChat.title) ??
+      [string(migrationChat.first_name), string(migrationChat.last_name)]
+        .filter(Boolean)
+        .join(" ") ??
+      string(migrationChat.username) ??
+      migrationToId;
+    const updateId = numericSequence(payload.update_id);
+    return [
+      {
+        kind: "resource",
+        provider: "telegram",
+        providerEventId: `telegram:${identifier(payload.update_id) ?? "migration"}`,
+        providerResourceId: migrationToId,
+        previousProviderResourceId: migrationFromId,
+        resourceType: "chat",
+        label: title || migrationToId,
+        availability: "available",
+        providerOrder: updateId ? { sequence: updateId } : undefined,
+        metadata: {
+          source: "chat_migration",
+          migratedFrom: migrationFromId,
+          migratedTo: migrationToId,
+        },
+      },
+    ];
+  }
   const membership = record(payload?.my_chat_member);
   const chat = record(membership?.chat);
   const member = record(membership?.new_chat_member);

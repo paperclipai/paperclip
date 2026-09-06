@@ -83,6 +83,11 @@ describe("chat connector UI contract", () => {
     );
     expect(setup).toContain("generatingSetupSecret ||\n            pending");
     expect(setup).not.toContain("/setprivacy");
+    expect(setup).toContain("/task@bot_username");
+    expect(setup).toContain("registers its command menu automatically");
+    expect(setup).toContain(
+      "ordinary\n          mentions are not delivered to bots",
+    );
     expect(setup).toContain("Create Azure Bot");
     expect(setup).toContain("Microsoft 365 work or school organization");
     expect(setup).toContain("teams.live.com");
@@ -106,6 +111,8 @@ describe("chat connector UI contract", () => {
     expect(setup).toContain("Start Slack message test");
     expect(setup).toContain("member_joined_channel");
     expect(setup).toContain("member_left_channel");
+    expect(setup).toContain("channel_left");
+    expect(setup).toContain("group_left");
     expect(setup).toContain("app_uninstalled");
     expect(setup).toContain("slackBotNameForAgent");
     expect(setup).not.toContain("- im:write");

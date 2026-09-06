@@ -262,6 +262,23 @@ function Settings({
           </div>
         </div>
       )}
+      {endpoint.provider === "telegram" && (
+        <div className="space-y-2">
+          <h2 className="text-lg font-semibold">Telegram group command</h2>
+          <div className="rounded-lg border border-border p-3 text-sm">
+            <code>
+              /task@
+              {endpoint.botUsername?.replace(/^@/, "") ?? "bot_username"}{" "}
+              &lt;request&gt;
+            </code>
+            <p className="mt-2 text-muted-foreground">
+              Telegram&apos;s default privacy mode does not deliver ordinary
+              mentions to bots. Use this command to start or continue group
+              work, or reply directly to a message from the bot.
+            </p>
+          </div>
+        </div>
+      )}
       <div>
         <h2 className="text-lg font-semibold">Where this agent can work</h2>
         <p className="mt-1 text-sm text-muted-foreground">

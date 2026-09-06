@@ -104,6 +104,7 @@ import { projectSafeChatPublication } from "./chat-publication-projection.js";
 import { getExternalChannelBindingSummary } from "./chat-channel-binding.js";
 import {
   discoverDedicatedGitHubAppInstallation,
+  getSlackBotChannel,
   listGitHubInstallationRepositories,
   listSlackBotChannels,
   type ChatProviderInventoryResult,
@@ -116,8 +117,14 @@ import {
 } from "./chat-interaction-publications.js";
 import { chatProviderConversationUrl } from "./chat-provider-links.js";
 import { classifyChatPublicationError } from "./chat-publication-errors.js";
-import { normalizeMicrosoftTeamsCredentialIds } from "./chat-teams-credentials.js";
-import { shouldStreamSafePublicationText, streamSafePublicationText } from "./chat-publication-stream.js";
+import {
+  normalizeMicrosoftTeamsCredentialIds,
+  normalizeMicrosoftTeamsExternalPrincipalId,
+} from "./chat-teams-credentials.js";
+import {
+  shouldStreamSafePublicationText,
+  streamSafePublicationText,
+} from "./chat-publication-stream.js";
 import { issueThreadInteractionService } from "./issue-thread-interactions.js";
 import { questionResponseDeliveryService } from "./question-response-delivery.js";
 import {
@@ -318,7 +325,18 @@ const REQUIRED_GITHUB_PERMISSIONS = {
   pull_requests: "write",
 } as const;
 
-const UNAVOIDABLE_GITHUB_EVENTS = ["github_app_authorization", "installation", "installation_repositories"] as const;
+const TELEGRAM_COMMANDS = [
+  { command: "task", description: "Start or continue a Paperclip task" },
+  { command: "status", description: "Show the active Paperclip task" },
+  { command: "new", description: "Start a new task after the current one" },
+  { command: "close", description: "Close the active Paperclip task" },
+] as const;
+
+const UNAVOIDABLE_GITHUB_EVENTS = [
+  "github_app_authorization",
+  "installation",
+  "installation_repositories",
+] as const;
 
 const SUPPLIED_CREDENTIAL_KEYS: Record<ChatProvider, readonly string[]> = {
   slack: ["botToken", "signingSecret"],
@@ -527,6 +545,46 @@ function canonicalProviderResourceId(provider: ChatProvider, thread: Pick<Thread
   return thread.channelId;
 }
 
+function slackResourceLabelIsFallback(
+  providerResourceId: string,
+  label: string,
+): boolean {
+  const candidate = label.trim();
+  return (
+    candidate === providerResourceId ||
+    candidate === `slack:${providerResourceId}`
+  );
+}
+
+function telegramResourceLabelIsFallback(
+  providerResourceId: string,
+  label: string,
+): boolean {
+  const candidate = label.trim();
+  return (
+    candidate === providerResourceId ||
+    candidate === `telegram:${providerResourceId}`
+  );
+}
+
+function providerResourceLabelFromThread(
+  provider: ChatProvider,
+  thread: Pick<Thread, "channelId" | "id" | "channel">,
+): { label: string; fallback: boolean } {
+  const providerResourceId = canonicalProviderResourceId(provider, thread);
+  const candidate = thread.channel.name?.trim();
+  if (!candidate) return { label: providerResourceId, fallback: true };
+  if (
+    (provider === "slack" &&
+      slackResourceLabelIsFallback(providerResourceId, candidate)) ||
+    (provider === "telegram" &&
+      telegramResourceLabelIsFallback(providerResourceId, candidate))
+  ) {
+    return { label: providerResourceId, fallback: true };
+  }
+  return { label: candidate, fallback: false };
+}
+
 /**
  * Native channel threads keep one issue forever. Linear surfaces instead
  * advance through Paperclip task generations because their provider id is
@@ -563,11 +621,21 @@ function linearControlCommand(text: string): "new" | "close" | "status" | null {
   return (match?.[1]?.toLowerCase() as "new" | "close" | "status" | undefined) ?? null;
 }
 
-function telegramGuidanceCommand(text: string): "start" | "unknown" | null {
+function telegramGuidanceCommand(
+  text: string,
+): "start" | "task" | "unknown" | null {
   const match = /^\/([a-z][\w-]*)(?:@[\w.-]+)?(?:\s|$)/i.exec(text.trim());
   const command = match?.[1]?.toLowerCase();
-  if (!command || command === "new" || command === "close" || command === "status") return null;
-  return command === "start" ? "start" : "unknown";
+  if (
+    !command ||
+    command === "new" ||
+    command === "close" ||
+    command === "status"
+  )
+    return null;
+  if (command === "start") return "start";
+  if (command === "task") return "task";
+  return "unknown";
 }
 
 function stableExternalPrincipalId(provider: ChatProvider, author: Author, raw?: unknown): string {
@@ -575,7 +643,7 @@ function stableExternalPrincipalId(provider: ChatProvider, author: Author, raw?:
   const from = (raw as { from?: unknown }).from;
   if (!from || typeof from !== "object") return author.userId;
   const aadObjectId = (from as { aadObjectId?: unknown }).aadObjectId;
-  return typeof aadObjectId === "string" && aadObjectId.trim() ? aadObjectId : author.userId;
+  return normalizeMicrosoftTeamsExternalPrincipalId(aadObjectId, author.userId);
 }
 
 function safeTitle(text: string, fallback: string): string {
@@ -852,6 +920,18 @@ function isTelegramEditedMessageRaw(raw: unknown): boolean {
     typeof raw === "object" &&
     !Array.isArray(raw) &&
     typeof (raw as { edit_date?: unknown }).edit_date === "number"
+  );
+}
+
+function isTelegramMigrationRaw(raw: unknown): boolean {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return false;
+  const value = raw as {
+    migrate_from_chat_id?: unknown;
+    migrate_to_chat_id?: unknown;
+  };
+  return (
+    value.migrate_from_chat_id !== undefined ||
+    value.migrate_to_chat_id !== undefined
   );
 }
 
@@ -2680,6 +2760,44 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     });
   }
 
+  async function hydrateSlackResourceLabel(
+    endpointId: string,
+    providerResourceId: string,
+  ): Promise<void> {
+    const record = await endpointRecord(endpointId);
+    if (
+      !record ||
+      record.endpoint.provider !== "slack" ||
+      record.endpoint.status === "archived" ||
+      record.endpoint.status === "revoked"
+    ) {
+      return;
+    }
+    const credentials = await resolveCredentials(record.endpoint);
+    const resource = await getSlackBotChannel({
+      botToken: credentials.botToken,
+      channelId: providerResourceId,
+      fetch: fetchImpl,
+    });
+    if (
+      !resource ||
+      slackResourceLabelIsFallback(providerResourceId, resource.label)
+    )
+      return;
+    await db
+      .update(chatEndpointResources)
+      .set({ label: resource.label, updatedAt: new Date() })
+      .where(
+        and(
+          eq(chatEndpointResources.companyId, record.endpoint.companyId),
+          eq(chatEndpointResources.endpointId, endpointId),
+          eq(chatEndpointResources.type, "channel"),
+          eq(chatEndpointResources.providerResourceId, providerResourceId),
+          eq(chatEndpointResources.availability, "available"),
+        ),
+      );
+  }
+
   async function prepareProviderInventory(
     endpoint: EndpointRow,
     credentials: Record<string, string>,
@@ -3448,7 +3566,41 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           description?: string;
         };
         if (!response.ok || !result.ok)
-          throw unprocessable(`Telegram could not register the webhook: ${result.description ?? response.status}`);
+          throw unprocessable(
+            `Telegram could not register the webhook: ${result.description ?? response.status}`,
+          );
+        try {
+          const commandsResponse = await fetchImpl(
+            `https://api.telegram.org/bot${encodeURIComponent(credentials.botToken)}/setMyCommands`,
+            {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({ commands: TELEGRAM_COMMANDS }),
+            },
+          );
+          const commandsResult = (await commandsResponse.json()) as {
+            ok?: boolean;
+            description?: string;
+          };
+          if (!commandsResponse.ok || !commandsResult.ok) {
+            logger.warn(
+              {
+                endpointId: endpoint.id,
+                error:
+                  commandsResult.description ?? String(commandsResponse.status),
+              },
+              "Telegram command menu registration was rejected",
+            );
+          }
+        } catch (error) {
+          // Command discovery improves group usability but is not an ingress
+          // credential or webhook requirement. Preserve a working connection
+          // when Telegram temporarily rejects this optional registration.
+          logger.warn(
+            { endpointId: endpoint.id, error: redactError(error) },
+            "Telegram command menu registration failed",
+          );
+        }
       }
     } catch (error) {
       const failure = redactError(error);
@@ -3691,8 +3843,18 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     enabledBySetupActivation: boolean,
     database: DbOrTransaction = db,
   ) {
-    const type = providerResourceType(endpoint.provider, chatSurfaceKind(endpoint.provider, thread));
-    const providerResourceId = canonicalProviderResourceId(endpoint.provider, thread);
+    const type = providerResourceType(
+      endpoint.provider,
+      chatSurfaceKind(endpoint.provider, thread),
+    );
+    const providerResourceId = canonicalProviderResourceId(
+      endpoint.provider,
+      thread,
+    );
+    const resourceLabel = providerResourceLabelFromThread(
+      endpoint.provider,
+      thread,
+    );
     const [resource] = await database
       .insert(chatEndpointResources)
       .values({
@@ -3700,7 +3862,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         endpointId: endpoint.id,
         type,
         providerResourceId,
-        label: thread.channel.name ?? thread.channelId,
+        label: resourceLabel.label,
         availability: "available",
         enabled: thread.isDM || enabledBySetupActivation,
       })
@@ -3714,7 +3876,17 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           // Provider inventory and membership lifecycle own availability.
           // A delayed message must not resurrect a destination after the bot
           // was removed or an installation lost access.
-          label: thread.channel.name ?? thread.channelId,
+          // Slack callbacks are not guaranteed to carry a channel name. Keep
+          // an inventory- or conversations.info-derived label instead of
+          // downgrading it to C… / slack:C… when a delayed message arrives.
+          ...(resourceLabel.fallback
+            ? {}
+            : {
+                label: sql<string>`case
+                  when ${chatEndpointResources.availability} = 'available' then ${resourceLabel.label}
+                  else ${chatEndpointResources.label}
+                end`,
+              }),
           updatedAt: new Date(),
         },
       })
@@ -3728,8 +3900,26 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     issueCommentId: string;
     attachments: Attachment[];
     actorUserId: string | null;
-  }) {
-    if (!options.storage) return [];
+  }): Promise<{
+    storedIds: string[];
+    omissionReasons: Record<string, number>;
+  }> {
+    const omissionReasons: Record<string, number> = {};
+    const omit = (reason: string, count = 1) => {
+      omissionReasons[reason] = (omissionReasons[reason] ?? 0) + count;
+    };
+    const boundedAttachments = input.attachments.slice(0, 20);
+    if (input.attachments.length > boundedAttachments.length) {
+      omit(
+        "attachment_limit",
+        input.attachments.length - boundedAttachments.length,
+      );
+    }
+    if (!options.storage) {
+      if (boundedAttachments.length)
+        omit("storage_unavailable", boundedAttachments.length);
+      return { storedIds: [], omissionReasons };
+    }
     const existingByFingerprint = new Map<string, string[]>();
     const existingAttachments = await db
       .select({
@@ -3760,10 +3950,19 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       existingByFingerprint.set(fingerprint, ids);
     }
     const storedIds: string[] = [];
-    for (const attachment of input.attachments.slice(0, 20)) {
+    for (const attachment of boundedAttachments) {
       try {
-        if (attachment.size !== undefined && attachment.size > MAX_ATTACHMENT_BYTES) continue;
-        if (!attachment.fetchData) continue;
+        if (
+          attachment.size !== undefined &&
+          attachment.size > MAX_ATTACHMENT_BYTES
+        ) {
+          omit("declared_too_large");
+          continue;
+        }
+        if (!attachment.fetchData) {
+          omit("download_unavailable");
+          continue;
+        }
         const originalFilename = sanitizeFilename(attachment.name);
         const contentType = normalizeUploadAttachmentContentType({
           contentType: normalizeContentType(attachment.mimeType ?? "application/octet-stream"),
@@ -3773,10 +3972,20 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         // Reject a provider-declared type before allocating the downloaded
         // payload. The actual byte length is checked again after the adapter's
         // bounded fetch contract resolves.
-        if (!isAllowedContentType(contentType)) continue;
+        if (!isAllowedContentType(contentType)) {
+          omit("unsupported_type");
+          continue;
+        }
         const fetched = await attachment.fetchData();
         const body = Buffer.isBuffer(fetched) ? fetched : Buffer.from(fetched);
-        if (body.length === 0 || body.length > MAX_ATTACHMENT_BYTES) continue;
+        if (body.length === 0) {
+          omit("empty_download");
+          continue;
+        }
+        if (body.length > MAX_ATTACHMENT_BYTES) {
+          omit("downloaded_too_large");
+          continue;
+        }
         const fingerprint = JSON.stringify([
           createHash("sha256").update(body).digest("hex"),
           body.length,
@@ -3809,6 +4018,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         });
         storedIds.push(row.id);
       } catch (error) {
+        omit("processing_failed");
         // A malformed or unavailable provider attachment must not strand the
         // durable text delivery. The rejected file is intentionally omitted;
         // the delivery remains auditable through its normalized attachment
@@ -3824,7 +4034,21 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         );
       }
     }
-    return storedIds;
+    return { storedIds, omissionReasons };
+  }
+
+  function attachmentOmissionDetail(result: {
+    omissionReasons: Record<string, number>;
+  }): string | null {
+    const entries = Object.entries(result.omissionReasons).filter(
+      ([, count]) => count > 0,
+    );
+    const omitted = entries.reduce((total, [, count]) => total + count, 0);
+    if (!omitted) return null;
+    const reasons = entries
+      .map(([reason, count]) => `${reason.replaceAll("_", " ")}: ${count}`)
+      .join(", ");
+    return `${omitted} external attachment${omitted === 1 ? " was" : "s were"} omitted (${reasons})`;
   }
 
   async function processMessage(
@@ -3844,8 +4068,18 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     // verified payload through its supplemental message_updated lifecycle
     // ledger instead; letting it reach normal dedupe would falsely report the
     // edit as a duplicate provider delivery.
-    if (endpoint.provider === "telegram" && isTelegramEditedMessageRaw(message.raw)) return;
-    if (message.author.isMe || message.author.isBot === true || message.author.isSystem) return;
+    if (
+      endpoint.provider === "telegram" &&
+      (isTelegramEditedMessageRaw(message.raw) ||
+        isTelegramMigrationRaw(message.raw))
+    )
+      return;
+    if (
+      message.author.isMe ||
+      message.author.isBot === true ||
+      message.author.isSystem
+    )
+      return;
     // One provider message can match both a mention handler and the catch-all
     // new-message handler. The trigger is policy metadata, not provider event
     // identity, so it must not defeat durable deduplication.
@@ -3925,11 +4159,13 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         })),
       },
     };
-    // Teams RSC can deliver messages from every installed channel. Until the
-    // Paperclip reach gate admits that destination, retain only identifiers
-    // required for deduplication and operator-visible filtering—not user text,
-    // attachment metadata, or an external principal profile.
-    const redactedTeamsNormalized = {
+    // Teams RSC can deliver messages from every installed channel, and a
+    // Telegram bot can receive addressed traffic from a provider-available
+    // group that the operator has not enabled in Paperclip. Until the reach
+    // gate admits that destination, retain only identifiers required for
+    // deduplication and operator-visible filtering—not user text, attachment
+    // metadata, or an external principal profile.
+    const redactedDestinationNormalized = {
       providerEventId,
       kind: eventKind,
       trigger,
@@ -4023,15 +4259,63 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           nonDirectDestinationAllowed({ ...endpoint, allowGroupChats: currentEndpoint.allowGroupChats }, resource) ||
           provisionalTeamsSetupReply;
       }
+      if (
+        endpointAccepting &&
+        endpoint.provider === "telegram" &&
+        !thread.isDM
+      ) {
+        let resource = await ensureResource(endpoint, thread, false, tx);
+        const enabledResourceCount = await tx
+          .select({ count: sql<number>`count(*)::int` })
+          .from(chatEndpointResources)
+          .where(
+            and(
+              eq(chatEndpointResources.endpointId, endpoint.id),
+              eq(chatEndpointResources.enabled, true),
+              eq(chatEndpointResources.availability, "available"),
+              ne(chatEndpointResources.type, "direct_message"),
+              ne(chatEndpointResources.type, "group_chat"),
+            ),
+          )
+          .then((rows) => rows[0]?.count ?? 0);
+        const canActivateFirstSetupGroup =
+          currentEndpoint.status === "verifying" &&
+          resource.availability === "available" &&
+          enabledResourceCount === 0 &&
+          addressed;
+        if (canActivateFirstSetupGroup && !resource.enabled) {
+          resource = await tx
+            .update(chatEndpointResources)
+            .set({ enabled: true, updatedAt: new Date() })
+            .where(eq(chatEndpointResources.id, resource.id))
+            .returning()
+            .then((rows) => rows[0] ?? resource);
+        }
+        // Telegram's privacy-mode contract is explicit: in a group or forum
+        // topic, every admitted turn must address the bot. A direct reply to a
+        // bot message is normalized as a mention by the pinned adapter, while
+        // unrelated subscribed traffic remains unaddressed and is filtered.
+        destinationAccepting =
+          addressed &&
+          nonDirectDestinationAllowed(
+            { ...endpoint, allowGroupChats: currentEndpoint.allowGroupChats },
+            resource,
+          );
+      }
       const accepting = endpointAccepting && destinationAccepting;
-      const redactTeamsDelivery =
-        endpoint.provider === "microsoft-teams" && !thread.isDM && (!accepting || provisionalTeamsSetupReply);
+      const redactDestinationDelivery =
+        !thread.isDM &&
+        (endpoint.provider === "microsoft-teams" ||
+          endpoint.provider === "telegram") &&
+        (!accepting || provisionalTeamsSetupReply);
       const ignoredAt = accepting ? null : new Date();
       const inactiveReason = !endpointAccepting
         ? staleActivation
           ? "Connection activation changed before admission"
           : "Connection is not active"
-        : "Destination is not enabled in Paperclip";
+        : endpoint.provider === "telegram" && !thread.isDM && !addressed
+          ? "Message did not address the agent"
+          : "Destination is not enabled in Paperclip";
       let candidate = admittedDeliveryId
         ? await tx
             .select()
@@ -4055,7 +4339,9 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
             providerEventId,
             deduplicationKey: createHash("sha256").update(providerEventId).digest("hex"),
             eventKind,
-            normalizedEvent: redactTeamsDelivery ? redactedTeamsNormalized : normalized,
+            normalizedEvent: redactDestinationDelivery
+              ? redactedDestinationNormalized
+              : normalized,
             state: accepting ? "received" : "filtered",
             nextAttemptAt: accepting && scheduledAt ? new Date(scheduledAt) : null,
             redactedError: accepting ? null : inactiveReason,
@@ -4084,8 +4370,8 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
             .set({
               // Increment under PostgreSQL's row lock so simultaneous handler
               // fanout and provider retries cannot lose duplicate telemetry.
-              normalizedEvent: redactTeamsDelivery
-                ? sql`${JSON.stringify(redactedTeamsNormalized)}::jsonb
+              normalizedEvent: redactDestinationDelivery
+                ? sql`${JSON.stringify(redactedDestinationNormalized)}::jsonb
                     || jsonb_build_object(
                       'deduplication',
                       jsonb_build_object(
@@ -4153,9 +4439,9 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           .update(chatDeliveries)
           .set({
             state: "filtered",
-            ...(redactTeamsDelivery
+            ...(redactDestinationDelivery
               ? {
-                  normalizedEvent: redactedTeamsNormalized,
+                  normalizedEvent: redactedDestinationNormalized,
                   principalId: null,
                 }
               : {}),
@@ -4239,7 +4525,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
                 }
               : {
                   state: "filtered",
-                  normalizedEvent: redactedTeamsNormalized,
+                  normalizedEvent: redactedDestinationNormalized,
                   principalId: null,
                   nextAttemptAt: null,
                   processedAt: resolutionAt,
@@ -4298,7 +4584,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         // If a later wakeup or provider subscription failed, retry from the
         // committed delivery link and fill in only files that are still
         // missing from this exact inbound comment.
-        await ingestAttachments({
+        const attachmentResult = await ingestAttachments({
           endpoint,
           issueId: rebound.issueId,
           issueCommentId: inboundCommentId,
@@ -4331,6 +4617,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
             conversationId: existingMessageLink.conversationId,
             state: "processed",
             processedAt: new Date(),
+            redactedError: attachmentOmissionDetail(attachmentResult),
             updatedAt: new Date(),
           })
           .where(eq(chatDeliveries.id, activeDelivery.id));
@@ -4575,8 +4862,10 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
             : null;
         const responseText =
           guidanceCommand === "start"
-            ? `Send a message to start work with ${assignedAgentName}. Use /status, /new, or /close to manage the active task in this chat.`
-            : "Available commands: /status, /new, and /close.";
+            ? `Send a direct message to start work with ${assignedAgentName}. In a group, use /task@${endpoint.botUsername ?? "your_bot"} followed by your request. Use /status, /new, or /close to manage the active task in this chat.`
+            : guidanceCommand === "task"
+              ? `Please include a request after /task@${endpoint.botUsername ?? "your_bot"}.`
+              : `Available commands: /task@${endpoint.botUsername ?? "your_bot"} followed by your request, /status, /new, and /close.`;
         const publicationBinding =
           existingConversation && existingIssue ? { conversation: existingConversation, issue: existingIssue } : null;
         let effect: typeof chatActions.$inferSelect | null = null;
@@ -4956,7 +5245,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           })
           .where(eq(toolConnections.id, endpoint.connectionId));
       });
-      await ingestAttachments({
+      const attachmentResult = await ingestAttachments({
         endpoint,
         issueId: conversation.issueId,
         issueCommentId: comment.id,
@@ -4988,7 +5277,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         .set({
           state: "processed",
           processedAt: new Date(),
-          redactedError: null,
+          redactedError: attachmentOmissionDetail(attachmentResult),
           updatedAt: new Date(),
         })
         .where(and(eq(chatDeliveries.id, activeDelivery.id), eq(chatDeliveries.state, "processing")));
@@ -5086,6 +5375,8 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         effect.availability === "unavailable" ||
         effect.availability === "removed") &&
       typeof effect.providerResourceId === "string" &&
+      (effect.previousProviderResourceId === undefined ||
+        typeof effect.previousProviderResourceId === "string") &&
       typeof effect.resourceType === "string" &&
       typeof effect.label === "string"
     )
@@ -6755,6 +7046,8 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     if (event.provider === "telegram") {
       const endpointRuntime = runtime.get(event.endpointId) ?? (await runtimeFor(record.endpoint));
       const thread = endpointRuntime.thread(event.event.channel.id);
+      const parsedCommandMessage =
+        endpointRuntime.parseTelegramCommandMessage?.(event.event.raw) ?? null;
       const synthetic = {
         id:
           telegramMessageId(event.event.raw) ??
@@ -6769,7 +7062,11 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
             )
             .digest("hex"),
         threadId: thread.id,
-        text: command,
+        // Telegram privacy mode does not deliver an ordinary @mention in a
+        // group. /task@bot <request> is therefore the provider-native root
+        // activation path; direct replies and later /task commands can
+        // continue the same active group/topic task.
+        text: command === "/task" && text ? text : command,
         formatted: { type: "root", children: [] },
         raw: event.event.raw,
         author: event.event.user,
@@ -6780,7 +7077,11 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           dateSent: telegramMessageSentAt(event.event.raw) ?? new Date(),
           edited: false,
         },
-        attachments: [],
+        // Telegram routes a captioned file command through onSlashCommand
+        // instead of the ordinary message callback. Preserve the provider's
+        // parsed attachment descriptors so the durable delivery worker can
+        // rehydrate and ingest them exactly like non-command media.
+        attachments: parsedCommandMessage?.attachments ?? [],
         links: [],
         isMention: true,
       } as unknown as Message;
@@ -7413,6 +7714,62 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
               currentEndpoint.provider === "microsoft-teams"
                 ? baseTeamsConversationId(effect.providerResourceId)
                 : effect.providerResourceId;
+            const previousProviderResourceId =
+              currentEndpoint.provider === "telegram"
+                ? effect.previousProviderResourceId
+                : undefined;
+            const previousResource = previousProviderResourceId
+              ? await tx
+                  .select()
+                  .from(chatEndpointResources)
+                  .where(
+                    and(
+                      eq(chatEndpointResources.endpointId, currentEndpoint.id),
+                      eq(chatEndpointResources.type, "chat"),
+                      eq(
+                        chatEndpointResources.providerResourceId,
+                        previousProviderResourceId,
+                      ),
+                    ),
+                  )
+                  .for("update")
+                  .then((rows) => rows[0] ?? null)
+              : null;
+            const migratedLabel =
+              previousResource &&
+              telegramResourceLabelIsFallback(providerResourceId, effect.label)
+                ? previousResource.label
+                : effect.label;
+            const migratedEnabled = previousResource?.enabled === true;
+            if (
+              previousResource &&
+              previousProviderResourceId !== providerResourceId
+            ) {
+              await tx
+                .update(chatEndpointResources)
+                .set({
+                  availability: "unavailable",
+                  enabled: false,
+                  metadata: {
+                    ...previousResource.metadata,
+                    source: "chat_migration",
+                    migratedTo: providerResourceId,
+                  },
+                  updatedAt: now,
+                })
+                .where(eq(chatEndpointResources.id, previousResource.id));
+            }
+            const preserveProviderLabel =
+              (currentEndpoint.provider === "slack" &&
+                slackResourceLabelIsFallback(
+                  providerResourceId,
+                  migratedLabel,
+                )) ||
+              (currentEndpoint.provider === "telegram" &&
+                telegramResourceLabelIsFallback(
+                  providerResourceId,
+                  migratedLabel,
+                ));
             const [resource] = await tx
               .insert(chatEndpointResources)
               .values({
@@ -7420,11 +7777,12 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
                 endpointId: currentEndpoint.id,
                 type: effect.resourceType,
                 providerResourceId,
-                parentProviderResourceId: effect.parentProviderResourceId ?? null,
-                label: effect.label,
+                parentProviderResourceId:
+                  effect.parentProviderResourceId ?? null,
+                label: migratedLabel,
                 providerUrl: effect.providerUrl ?? null,
                 availability: effect.availability,
-                enabled: false,
+                enabled: migratedEnabled,
                 metadata: effect.metadata ?? {},
               })
               .onConflictDoUpdate({
@@ -7434,15 +7792,58 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
                   chatEndpointResources.providerResourceId,
                 ],
                 set: {
-                  parentProviderResourceId: effect.parentProviderResourceId ?? null,
-                  label: effect.label,
+                  parentProviderResourceId:
+                    effect.parentProviderResourceId ?? null,
+                  ...(preserveProviderLabel ? {} : { label: migratedLabel }),
                   providerUrl: effect.providerUrl ?? null,
                   availability: effect.availability,
+                  ...(previousProviderResourceId
+                    ? {
+                        enabled: sql<boolean>`${chatEndpointResources.enabled} or ${migratedEnabled}`,
+                      }
+                    : {}),
                   metadata: effect.metadata ?? {},
                   updatedAt: now,
                 },
               })
               .returning({ id: chatEndpointResources.id });
+            if (
+              resource &&
+              previousResource &&
+              previousProviderResourceId !== providerResourceId
+            ) {
+              const previousThreadPrefix = `telegram:${previousProviderResourceId}`;
+              const migratedThreadPrefix = `telegram:${providerResourceId}`;
+              await tx
+                .update(chatConversations)
+                .set({
+                  resourceId: resource.id,
+                  // Telegram SDK threads use the namespaced channel id. Keep
+                  // the migrated row in that canonical shape so the first
+                  // reply from the replacement supergroup finds this same
+                  // task instead of creating a second conversation.
+                  externalConversationId: migratedThreadPrefix,
+                  externalThreadId: sql<string>`case
+                    when ${chatConversations.externalThreadId} = ${previousThreadPrefix} then ${migratedThreadPrefix}
+                    when ${chatConversations.externalThreadId} like ${`${previousThreadPrefix}:%`}
+                      then ${migratedThreadPrefix} || substring(
+                        ${chatConversations.externalThreadId}
+                        from char_length(${previousThreadPrefix}) + 1
+                      )
+                    else ${chatConversations.externalThreadId}
+                  end`,
+                  externalLabel: migratedLabel,
+                  state: "active",
+                  updatedAt: now,
+                })
+                .where(
+                  and(
+                    eq(chatConversations.companyId, currentEndpoint.companyId),
+                    eq(chatConversations.endpointId, currentEndpoint.id),
+                    eq(chatConversations.resourceId, previousResource.id),
+                  ),
+                );
+            }
             if (resource) {
               await tx
                 .update(chatConversations)
@@ -7679,7 +8080,52 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
   ) {
     for (const effect of effects) {
       if (effect.provider !== endpoint.provider) continue;
-      await applyProviderLifecycleEffect(endpoint, effect, runtimeContext);
+      const applied = await applyProviderLifecycleEffect(
+        endpoint,
+        effect,
+        runtimeContext,
+      );
+      if (
+        applied &&
+        endpoint.provider === "slack" &&
+        effect.kind === "resource" &&
+        effect.availability === "available" &&
+        slackResourceLabelIsFallback(effect.providerResourceId, effect.label)
+      ) {
+        const stillAvailable = await db
+          .select({ id: chatEndpointResources.id })
+          .from(chatEndpointResources)
+          .where(
+            and(
+              eq(chatEndpointResources.endpointId, endpoint.id),
+              eq(chatEndpointResources.type, "channel"),
+              eq(
+                chatEndpointResources.providerResourceId,
+                effect.providerResourceId,
+              ),
+              eq(chatEndpointResources.availability, "available"),
+            ),
+          )
+          .limit(1)
+          .then((rows) => rows.length > 0);
+        if (stillAvailable) {
+          scheduleMessageProcessing(async () => {
+            await hydrateSlackResourceLabel(
+              endpoint.id,
+              effect.providerResourceId,
+            ).catch((error) => {
+              logger.warn(
+                {
+                  endpointId: endpoint.id,
+                  providerResourceId: effect.providerResourceId,
+                  error: redactError(error),
+                },
+                "could not hydrate a newly available Slack channel label",
+              );
+            });
+          });
+        }
+      }
     }
   }
 
@@ -8271,6 +8717,8 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
   }
 
   async function listConversations(endpointId: string) {
+    const record = await endpointRecord(endpointId);
+    if (!record) throw notFound("Chat endpoint not found");
     const conversations = await db
       .select()
       .from(chatConversations)
@@ -8304,13 +8752,23 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         lastPublication.set(publication.conversationId, publication);
     return conversations.map((conversation) => {
       const issue = issueById.get(conversation.issueId);
+      const externalUrl =
+        conversation.providerUrl ??
+        (record.endpoint.provider === "slack"
+          ? chatProviderConversationUrl({
+              provider: "slack",
+              providerAccountId: record.endpoint.providerAccountId,
+              threadId: conversation.externalThreadId,
+              providerMessageId: "",
+            })
+          : null);
       return {
         id: conversation.id,
         companyId: conversation.companyId,
         endpointId: conversation.endpointId,
         resourceId: conversation.resourceId,
         externalLabel: conversation.externalLabel,
-        externalUrl: conversation.providerUrl,
+        externalUrl,
         externalConversationId: conversation.externalConversationId,
         externalThreadId: conversation.externalThreadId,
         sessionGeneration: conversation.sessionGeneration,
@@ -9444,7 +9902,9 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
 
   function runIdFromMilestonePublication(publication: typeof chatPublications.$inferSelect): string | null {
     if (!publication.payload.progressState) return null;
-    const match = /^run:([^:]+):(?:queued|working|failed):/.exec(publication.idempotencyKey);
+    const match = /^run:([^:]+):(?:queued|working|completed|failed):/.exec(
+      publication.idempotencyKey,
+    );
     return match?.[1] ?? null;
   }
 
@@ -9537,7 +9997,10 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       )
       .orderBy(desc(chatPublications.createdAt), desc(chatPublications.id));
     const rowRunId = (row: (typeof rows)[number]) => {
-      const milestoneMatch = /^run:([^:]+):(?:queued|working|failed):/.exec(row.idempotencyKey);
+      const milestoneMatch =
+        /^run:([^:]+):(?:queued|working|completed|failed):/.exec(
+          row.idempotencyKey,
+        );
       return milestoneMatch?.[1] ?? row.commentRunId ?? null;
     };
     for (const candidate of rows) {
@@ -9549,7 +10012,8 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       const laneClosed = rows.some((row) => {
         if (rowRunId(row) !== runId) return false;
         return (
-          row.payload.progressState === "failed" || (row.commentId !== null && row.payload.progressState === undefined)
+          ["completed", "failed"].includes(row.payload.progressState ?? "") ||
+          (row.commentId !== null && row.payload.progressState === undefined)
         );
       });
       if (!laneClosed) return candidate.providerMessageId;

@@ -117,6 +117,67 @@ describe("Chat SDK published adapter integration", () => {
     ).toBe(4);
   });
 
+  it("parses attachments carried by a Telegram slash-command caption", async () => {
+    const runtime = createChatSdkEndpointRuntime({
+      callbacks: { onMessage() {} },
+      companyId: "company-telegram-caption-file",
+      endpointId: "endpoint-telegram-caption-file",
+      logger: "silent",
+      persistence,
+      providerConfig: {
+        provider: "telegram",
+        userName: "paperclip_agent_bot",
+        credentials: {
+          botToken: "123:test",
+          secretToken: "telegram-webhook-secret",
+        },
+      },
+    });
+    try {
+      const message = runtime.parseTelegramCommandMessage({
+        message_id: 14,
+        date: 1_788_700_000,
+        chat: { id: -1004415501660, type: "supergroup", title: "Agent Lab" },
+        from: { id: 417200359, is_bot: false, first_name: "Dotta" },
+        caption: "/task@paperclip_agent_bot inspect this file",
+        caption_entities: [{ offset: 0, length: 30, type: "bot_command" }],
+        document: {
+          file_id: "telegram-file-id",
+          file_unique_id: "telegram-unique-id",
+          file_name: "proof.txt",
+          mime_type: "text/plain",
+          file_size: 41,
+        },
+      });
+      expect(message?.attachments).toEqual([
+        expect.objectContaining({
+          type: "file",
+          name: "proof.txt",
+          mimeType: "text/plain",
+          size: 41,
+          fetchMetadata: {
+            fileId: "telegram-file-id",
+            fileUniqueId: "telegram-unique-id",
+          },
+        }),
+      ]);
+      expect(
+        runtime.attachmentRecoveryDescriptor(message!.attachments[0]!),
+      ).toEqual(
+        expect.objectContaining({
+          provider: "telegram",
+          locator: {
+            kind: "telegram_file_id",
+            fileId: "telegram-file-id",
+            fileUniqueId: "telegram-unique-id",
+          },
+        }),
+      );
+    } finally {
+      await runtime.shutdown();
+    }
+  });
+
   it.each([
     {
       status: 403,

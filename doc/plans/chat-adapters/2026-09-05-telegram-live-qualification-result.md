@@ -1,6 +1,16 @@
 # Telegram live qualification result — 2026-09-05
 
-> **Status: broad private-chat live evidence, not full release qualification.** The latest live runs cover task controls, FIFO and burst handling, reactions, edits, a native document, task-generation races, and the repaired interleaved status/final lane. Telegram groups/topics, interactive actions, broader media, revocation/recovery, and other runbook cases remain open.
+> **Status: broad private-chat and group/topic live evidence, not full release qualification.** The latest live runs cover task controls, FIFO and burst handling, reactions, edits, native documents, task-generation races, the repaired interleaved status/final lane, group/topic isolation, removal/rejoin, and the silent-publication boundary. Interactive actions, broader media boundaries, global token revocation, and other runbook cases remain open.
+
+## 2026-09-06 group and boundary extension
+
+The live bot was installed in group `pc-e2e-telegram-0906`; the endpoint remained live through the following cases:
+
+- **Captioned media defect and fix:** a 41-byte `text/plain` document initially normalized with zero attachments because the slash-command callback did not invoke the pinned Telegram adapter's `parseMessage`. The implementation now uses that parser for Telegram command captions. The live retry stored the durable attachment, the agent fetched it with HTTP 200, and Telegram received exact response `paperclip-live-telegram-media-proof-0906`.
+- **Topic isolation:** custom topic id `2` mapped to task `CHA-65` and native thread `telegram:-1004415501660:2`; General mapped separately to `CHA-66` and `telegram:-1004415501660`. No cross-topic task reuse was observed.
+- **Queue ordering:** A and B were sent six seconds apart. B was admitted only after A succeeded, the placeholder/final lane coalesced, and the exact final marker `tg-queue-A-then-B-0906` was visible. This is live FIFO evidence for one group conversation, not a universal throughput benchmark.
+- **Removal, rejoin, and migration:** `my_chat_member` plus the basic-group-to-supergroup migration marked the old resource unavailable and the new resource available once, while restoring the human group label. One stale legacy basic-group inventory artifact created before the fix remains in this disposable database; future migration and membership events use the corrected behavior. The artifact is historical local state, not a current provider failure.
+- **Silent publication boundary:** after the `03:44` restart, a prompt explicitly forbidding a public comment produced only generic provider text `Maya completed this turn.` Internal presentation comments are no longer auto-published. Explicit `allow_*` and runner-authored comments remain eligible. The unwanted auto-publication was an implementation defect and the live rerun verifies the fix.
 
 ## Scope
 
@@ -77,13 +87,12 @@ On the older `e5f3917b7` checkpoint, rapid updates `88` and `89` each produced o
 
 ## Qualification gap
 
-This was not a full Telegram runbook PASS. Private-chat commands, one native document, reaction add/remove, and edits now have live evidence, but the following still do not:
+This was not a full Telegram runbook PASS. Private-chat commands, text documents, group privacy-mode operation, forum-topic boundaries, queue ordering, removal/rejoin, reaction add/remove, edits, and the silent-publication boundary now have live evidence, but the following still do not:
 
-- group reach, privacy-mode behavior, and forum-topic task boundaries;
 - disabled-resource enforcement and linked/unlinked identity governance;
 - native interactive questions/actions, including forged, expired, and repeated taps against the real provider;
 - photos, audio, video, oversize or malformed media, and download-failure handling;
-- flood-control retry, bot blocking or removal from one chat, global token revocation, recovery, and credential rotation; and
+- flood-control retry, global token revocation, recovery, and credential rotation; and
 - the complete cleanup and evidence checklist.
 
 Telegram remains unqualified for stable release until those live scenarios pass on the final release-candidate source.

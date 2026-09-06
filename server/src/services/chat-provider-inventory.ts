@@ -94,6 +94,56 @@ export async function listSlackBotChannels(input: {
   return { provider: "slack", resources };
 }
 
+/** Resolve one newly joined Slack channel to its provider-authoritative label. */
+export async function getSlackBotChannel(input: {
+  botToken: string;
+  channelId: string;
+  fetch: typeof globalThis.fetch;
+}): Promise<ChatProviderResourceInventoryItem | null> {
+  const url = new URL("https://slack.com/api/conversations.info");
+  url.searchParams.set("channel", input.channelId);
+  const response = await input.fetch(url, {
+    headers: { authorization: `Bearer ${input.botToken}` },
+    signal: AbortSignal.timeout(5_000),
+  });
+  const body = await jsonResponse<{
+    ok?: boolean;
+    error?: string;
+    channel?: {
+      id?: string;
+      name?: string;
+      is_member?: boolean;
+      is_private?: boolean;
+      is_archived?: boolean;
+      context_team_id?: string;
+    };
+  }>(response, "Slack");
+  if (!body.ok) {
+    throw new Error(`Slack inventory failed: ${body.error ?? "unknown error"}`);
+  }
+  const channel = body.channel;
+  if (
+    !channel?.id ||
+    channel.id !== input.channelId ||
+    channel.is_member === false ||
+    channel.is_archived
+  ) {
+    return null;
+  }
+  return {
+    providerResourceId: channel.id,
+    type: "channel",
+    label: channel.name ? `#${channel.name}` : channel.id,
+    metadata: {
+      private: channel.is_private === true,
+      ...(channel.context_team_id
+        ? { contextTeamId: channel.context_team_id }
+        : {}),
+      source: "provider_inventory",
+    },
+  };
+}
+
 /**
  * Exchange a GitHub App JWT for a short-lived installation token and list the
  * repositories selected for that installation. The token never leaves this

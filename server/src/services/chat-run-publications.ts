@@ -1,4 +1,15 @@
-import { and, asc, eq, gte, inArray, isNull, sql } from "drizzle-orm";
+import {
+  and,
+  asc,
+  eq,
+  gte,
+  inArray,
+  isNull,
+  ne,
+  notExists,
+  or,
+  sql,
+} from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -6,14 +17,16 @@ import {
   chatMessageLinks,
   chatPublications,
   heartbeatRuns,
+  issueComments,
 } from "@paperclipai/db";
 import { projectSafeChatPublication } from "./chat-publication-projection.js";
 
-type SafeRunMilestone = "queued" | "working" | "failed";
+type SafeRunMilestone = "queued" | "working" | "completed" | "failed";
 
 function milestoneForStatus(status: string): SafeRunMilestone | null {
   if (status === "queued") return "queued";
   if (status === "running") return "working";
+  if (status === "succeeded") return "completed";
   if (["failed", "timed_out", "cancelled"].includes(status)) return "failed";
   return null;
 }
@@ -27,6 +40,8 @@ export function safeMilestoneText(input: {
 }): string {
   if (input.milestone === "queued") return `${input.agentName} is queued.`;
   if (input.milestone === "working") return `${input.agentName} is working…`;
+  if (input.milestone === "completed")
+    return `${input.agentName} completed this turn.`;
   let taskUrl: string | null = null;
   if (input.publicBaseUrl) {
     try {
@@ -63,9 +78,14 @@ export async function enqueueChatRunMilestones(
   const since = input.since ?? new Date(Date.now() - 24 * 60 * 60_000);
   const limit = Math.max(1, Math.min(input.limit ?? 200, 1_000));
   const issueIdFromContext = sql<string>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`;
+  const explicitlyAuthoredCommentReason = sql<boolean>`(
+    ${issueComments.metadata} ->> 'authorizationReason' = 'paperclip_runner_protocol'
+    or left(coalesce(${issueComments.metadata} ->> 'authorizationReason', ''), 6) = 'allow_'
+  )`;
   const milestoneFromStatus = sql<string>`case
     when ${heartbeatRuns.status} = 'queued' then 'queued'
     when ${heartbeatRuns.status} = 'running' then 'working'
+    when ${heartbeatRuns.status} = 'succeeded' then 'completed'
     else 'failed'
   end`;
   const rows = await db
@@ -102,11 +122,47 @@ export async function enqueueChatRunMilestones(
         inArray(heartbeatRuns.status, [
           "queued",
           "running",
+          "succeeded",
           "failed",
           "timed_out",
           "cancelled",
         ]),
         sql`${heartbeatRuns.contextSnapshot} ->> 'source' like 'chat:%'`,
+        // Heartbeat marks a run succeeded before the presentation resolver
+        // finishes. Waiting for its durable decision prevents a generic
+        // completion from racing an explicitly authored final comment.
+        sql`(
+          ${heartbeatRuns.status} <> 'succeeded'
+          or ${heartbeatRuns.resultJson} -> 'presentationDecision' is not null
+        )`,
+        // Exclude successful runs that already produced an explicit external
+        // reply before applying the batch limit. Otherwise a page of settled
+        // runs could permanently starve later milestones.
+        or(
+          ne(heartbeatRuns.status, "succeeded"),
+          notExists(
+            db
+              .select({ id: chatPublications.id })
+              .from(chatPublications)
+              .innerJoin(
+                issueComments,
+                and(
+                  eq(issueComments.companyId, chatPublications.companyId),
+                  eq(issueComments.id, chatPublications.commentId),
+                ),
+              )
+              .where(
+                and(
+                  eq(chatPublications.companyId, heartbeatRuns.companyId),
+                  eq(chatPublications.endpointId, chatConversations.endpointId),
+                  eq(chatPublications.conversationId, chatConversations.id),
+                  eq(issueComments.authorType, "agent"),
+                  eq(issueComments.createdByRunId, heartbeatRuns.id),
+                  explicitlyAuthoredCommentReason,
+                ),
+              ),
+          ),
+        ),
         sql`exists (
           select 1
           from ${chatMessageLinks}
@@ -130,6 +186,30 @@ export async function enqueueChatRunMilestones(
   for (const row of rows) {
     const milestone = milestoneForStatus(row.runStatus);
     if (!milestone) continue;
+    if (milestone === "completed") {
+      const explicitlyAuthoredPublication = await db
+        .select({ id: chatPublications.id })
+        .from(chatPublications)
+        .innerJoin(
+          issueComments,
+          and(
+            eq(issueComments.companyId, chatPublications.companyId),
+            eq(issueComments.id, chatPublications.commentId),
+          ),
+        )
+        .where(
+          and(
+            eq(chatPublications.companyId, row.companyId),
+            eq(chatPublications.endpointId, row.endpointId),
+            eq(chatPublications.conversationId, row.conversationId),
+            eq(issueComments.authorType, "agent"),
+            eq(issueComments.createdByRunId, row.runId),
+            explicitlyAuthoredCommentReason,
+          ),
+        )
+        .limit(1);
+      if (explicitlyAuthoredPublication.length > 0) continue;
+    }
     const result = await db
       .insert(chatPublications)
       .values({

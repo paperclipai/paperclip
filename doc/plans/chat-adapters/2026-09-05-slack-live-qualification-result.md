@@ -2,6 +2,19 @@
 
 > **Status: broad current-branch live evidence plus historical core-smoke evidence, not full release qualification.** The current runs cover channel roots, DMs, FIFO follow-ups, reactions, edits, pause/resume, the registered Slack command, a command-created thread, native file ingestion, and an interleaved command/status/final race. The receipt, native-thread binding, and stale-progress defects found during the run have all been fixed and retested live. Slack is still not a full-provider PASS because the complete governance, failure-injection, reinstall, and cleanup matrix has not run.
 
+## 2026-09-06 final live extension
+
+The active endpoint `2782e758-8e1e-47e3-a5aa-6a8359b1c23c` added the following current-provider evidence:
+
+- Slack accepted the manifest with reaction and lifecycle subscriptions. At `08:36:54Z`, one-attempt `group_left` delivery for `C0BUT55N9RV` marked the resource unavailable. At `08:37:33Z`, one-attempt `member_joined_channel` restored it, hydrated the label to `#pc-chat-live-0905b`, and preserved the operator's enabled choice. The self-removal subscription and label-preservation defects found here were fixed; this was not an account or permission gate.
+- Edits on `CHA-29` and `CHA-47` each produced one `message_updated` delivery and one internal system edit comment. Deleting the source message for `CHA-64` at `08:39:16Z` produced one one-attempt delivery and one internal deletion comment; deleted content was not republished.
+- Repeated natural and slash-command DM generations worked. The latest natural DM, `CHA-67`, processed once at `08:42Z`, showed the receipt reaction, and returned exact final `slack-dm-live-final-0906` in about two seconds. An idle `status` returned `No task active` without creating a task.
+- Inbound attachment proof includes the earlier 67-byte `text/plain` file on `CHA-52` and the current 41-byte file on `CHA-64`; both were persisted and read successfully, and the latter returned exact marker `paperclip-live-telegram-media-proof-0906`. No live outbound Slack file upload was qualified.
+- `CHA-42` received two replies 144 ms apart. The second run began only after the first succeeded, and each run retained its own coalesced placeholder/final message. Four reaction-add and four reaction-remove callbacks also processed once each.
+- Forty-five provider duplicate callbacks folded into 38 existing delivery rows without duplicate tasks or comments. All 97 earlier publications were `published`; all 44 runs after the isolation configuration succeeded. For the post-`05:00Z` sample, 24 processed inbound events averaged `0.702s` (`p50 0.781s`, `p95 1.146s`, maximum `1.646s`) and 25 publications averaged `0.488s` (`p50 0.315s`, `p95 1.103s`, maximum `1.127s`), all published.
+
+The remaining external-provider gaps are a live outbound file upload and rich modal interaction. Earlier low-trust failures were governance isolation, and two old synthetic-command receipt warnings are preserved pre-fix evidence; neither is a current Slack account gate.
+
 ## Current source and evidence boundary
 
 - Final locally verified and live-rerun source revision: `6f13ec09e95717c4b3b248d1d8cb9ca4e55754ab`
@@ -129,4 +142,4 @@ The isolated test instance had no sandbox workspace provider. Its automatic low-
 - Deterministic browser suite `tests/e2e/chat-adapters-ui.spec.ts`: 4/4 passed.
 - Token gates and `git diff --check`: passed.
 
-This evidence is useful for regression comparison, but it is incomplete release evidence. Identity linking was sufficient for the exercised runs, but the full permission-revocation and unlinked-participant governance matrix was not executed. Disabled-resource behavior, rich actions/modals, provider delete behavior, file type/size rejection, rate limiting and ambiguous-send recovery, uninstall/reinstall, reconnect, and final cleanup assertions also remain incomplete. Slack remains unqualified for stable release until those cases and the complete release-candidate runbook pass.
+This evidence is useful for regression comparison, but it is incomplete release evidence. Identity linking was sufficient for the exercised runs, but the full permission-revocation and unlinked-participant governance matrix was not executed. Disabled-resource message enforcement, rich actions/modals, outbound files and file type/size rejection, rate limiting and ambiguous-send recovery, full App uninstall/reinstall, reconnect, and final cleanup assertions remain incomplete. Slack remains unqualified for stable release until those cases and the complete release-candidate runbook pass.

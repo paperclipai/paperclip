@@ -41,7 +41,61 @@ describe("chat provider lifecycle normalization", () => {
         },
       }),
     ).toEqual([]);
+
+    expect(
+      parseChatProviderLifecycle({
+        provider: "slack",
+        botExternalId: "U-BOT",
+        payload: {
+          event_id: "Ev3",
+          event: {
+            type: "member_left_channel",
+            event_ts: "1725551001.125000",
+            user: "U-BOT",
+            channel: "C123",
+          },
+        },
+      }),
+    ).toEqual([
+      expect.objectContaining({
+        kind: "resource",
+        providerEventId: "Ev3",
+        providerResourceId: "C123",
+        availability: "unavailable",
+      }),
+    ]);
   });
+
+  it.each([
+    ["channel_left", "C-PUBLIC"],
+    ["group_left", "G-PRIVATE"],
+  ])(
+    "tracks Slack bot-self %s events without a user field",
+    (type, channel) => {
+      expect(
+        parseChatProviderLifecycle({
+          provider: "slack",
+          botExternalId: "U-BOT",
+          payload: {
+            event_id: `Ev-${type}`,
+            event: {
+              type,
+              event_ts: "1725551002.125000",
+              channel,
+            },
+          },
+        }),
+      ).toEqual([
+        expect.objectContaining({
+          kind: "resource",
+          providerEventId: `Ev-${type}`,
+          providerResourceId: channel,
+          availability: "unavailable",
+          metadata: { source: type },
+        }),
+      ]);
+    },
+  );
 
   it("turns Slack uninstall and token revocation into endpoint effects", () => {
     for (const type of ["app_uninstalled", "tokens_revoked"]) {
@@ -262,5 +316,60 @@ describe("chat provider lifecycle normalization", () => {
         },
       }),
     ).toEqual([expect.objectContaining({ availability: "unavailable" })]);
+  });
+
+  it("normalizes both Telegram basic-group migration payload shapes", () => {
+    expect(
+      parseChatProviderLifecycle({
+        provider: "telegram",
+        payload: {
+          update_id: 46,
+          message: {
+            message_id: 10,
+            chat: { id: -5546433913, type: "group", title: "Agent Lab" },
+            migrate_to_chat_id: -1004415501660,
+          },
+        },
+      }),
+    ).toEqual([
+      expect.objectContaining({
+        providerEventId: "telegram:46",
+        previousProviderResourceId: "-5546433913",
+        providerResourceId: "-1004415501660",
+        resourceType: "chat",
+        label: "Agent Lab",
+        availability: "available",
+        providerOrder: { sequence: "46" },
+        metadata: {
+          source: "chat_migration",
+          migratedFrom: "-5546433913",
+          migratedTo: "-1004415501660",
+        },
+      }),
+    ]);
+
+    expect(
+      parseChatProviderLifecycle({
+        provider: "telegram",
+        payload: {
+          update_id: 47,
+          message: {
+            message_id: 11,
+            chat: {
+              id: -1004415501660,
+              type: "supergroup",
+              title: "Agent Lab",
+            },
+            migrate_from_chat_id: -5546433913,
+          },
+        },
+      }),
+    ).toEqual([
+      expect.objectContaining({
+        previousProviderResourceId: "-5546433913",
+        providerResourceId: "-1004415501660",
+        label: "Agent Lab",
+      }),
+    ]);
   });
 });

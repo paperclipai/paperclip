@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   discoverDedicatedGitHubAppInstallation,
+  getSlackBotChannel,
   listGitHubInstallationRepositories,
   listSlackBotChannels,
 } from "./chat-provider-inventory.js";
@@ -58,6 +59,66 @@ describe("chat provider inventory", () => {
       (fetch as unknown as ReturnType<typeof vi.fn>).mock.calls[1]?.[0],
     );
     expect(secondUrl).toContain("cursor=next");
+  });
+
+  it("resolves one newly joined Slack channel without exposing the bot token", async () => {
+    const fetch = vi.fn(async () =>
+      response({
+        ok: true,
+        channel: {
+          id: "C-NEW",
+          name: "new-agent-work",
+          is_member: true,
+          is_private: true,
+          context_team_id: "T-ENTERPRISE",
+        },
+      }),
+    ) as unknown as typeof globalThis.fetch;
+    const result = await getSlackBotChannel({
+      botToken: "xoxb-secret",
+      channelId: "C-NEW",
+      fetch,
+    });
+    expect(result).toEqual({
+      providerResourceId: "C-NEW",
+      type: "channel",
+      label: "#new-agent-work",
+      metadata: {
+        private: true,
+        contextTeamId: "T-ENTERPRISE",
+        source: "provider_inventory",
+      },
+    });
+    expect(JSON.stringify(result)).not.toContain("xoxb-secret");
+    expect(fetch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        pathname: "/api/conversations.info",
+        search: "?channel=C-NEW",
+      }),
+      expect.objectContaining({
+        headers: { authorization: "Bearer xoxb-secret" },
+      }),
+    );
+  });
+
+  it("does not hydrate a Slack resource after the bot has already left", async () => {
+    const fetch = vi.fn(async () =>
+      response({
+        ok: true,
+        channel: {
+          id: "C-LEFT",
+          name: "former-channel",
+          is_member: false,
+        },
+      }),
+    ) as unknown as typeof globalThis.fetch;
+    await expect(
+      getSlackBotChannel({
+        botToken: "xoxb-secret",
+        channelId: "C-LEFT",
+        fetch,
+      }),
+    ).resolves.toBeNull();
   });
 
   it("exchanges a GitHub App JWT and never exposes the installation token", async () => {

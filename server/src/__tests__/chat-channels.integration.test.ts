@@ -57,7 +57,11 @@ import {
   telegramChatSdkCallbackData,
 } from "../services/chat-interaction-publications.js";
 import { enqueueChatRunMilestones } from "../services/chat-run-publications.js";
-import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
+import { MAX_ATTACHMENT_BYTES } from "../attachment-types.js";
+import {
+  getEmbeddedPostgresTestSupport,
+  startEmbeddedPostgresTestDatabase,
+} from "./helpers/embedded-postgres.js";
 
 const externalTestDatabaseUrl = process.env.PAPERCLIP_TEST_DATABASE_URL;
 const embeddedPostgresSupport = externalTestDatabaseUrl ? { supported: true } : await getEmbeddedPostgresTestSupport();
@@ -221,6 +225,41 @@ class FakeEndpointRuntime {
     };
   }
 
+  parseTelegramCommandMessage(raw: unknown): Message | null {
+    if (
+      this.options.providerConfig.provider !== "telegram" ||
+      !raw ||
+      typeof raw !== "object"
+    )
+      return null;
+    const document = (raw as { document?: Record<string, unknown> }).document;
+    const recoveryKey =
+      typeof document?.file_id === "string" ? document.file_id : null;
+    if (!recoveryKey) return null;
+    return makeMessage({
+      id: `telegram-command:${recoveryKey}`,
+      text: "",
+      attachments: [
+        {
+          type: "file",
+          name:
+            typeof document.file_name === "string"
+              ? document.file_name
+              : undefined,
+          mimeType:
+            typeof document.mime_type === "string"
+              ? document.mime_type
+              : undefined,
+          size:
+            typeof document.file_size === "number"
+              ? document.file_size
+              : undefined,
+          fetchMetadata: { testRecoveryKey: recoveryKey },
+        } as Attachment,
+      ],
+    });
+  }
+
   rehydrateAttachment(descriptor: unknown): Attachment | null {
     this.rehydratedAttachmentDescriptors.push(descriptor);
     if (!descriptor || typeof descriptor !== "object") return null;
@@ -321,6 +360,23 @@ function fakeSlackFetch(botId = `U-BOT-${randomUUID()}`) {
         ),
       );
     }
+    if (url.startsWith("https://slack.com/api/conversations.info")) {
+      const channelId = new URL(url).searchParams.get("channel");
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            ok: true,
+            channel: {
+              id: channelId,
+              name: channelId?.toLowerCase(),
+              is_member: true,
+              is_archived: false,
+            },
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
+      );
+    }
     throw new Error(`Unexpected provider request: ${url}`);
   };
 }
@@ -347,7 +403,11 @@ function fakeTelegramFetch(botId = Number.parseInt(randomUUID().replaceAll("-", 
         headers: { "content-type": "application/json" },
       });
     }
-    if (url.endsWith("/setWebhook") || url.endsWith("/deleteWebhook")) {
+    if (
+      url.endsWith("/setWebhook") ||
+      url.endsWith("/setMyCommands") ||
+      url.endsWith("/deleteWebhook")
+    ) {
       return new Response(JSON.stringify({ ok: true, result: true }), {
         status: 200,
         headers: { "content-type": "application/json" },
@@ -718,7 +778,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       conversation.issueId,
       "Setup round trip complete",
       { agentId: endpoint.assignedAgentId, runId },
-      { authorType: "agent" },
+      { authorType: "agent", authorizationReason: "paperclip_runner_protocol" },
     );
     await service.processPendingPublications();
     const providerRuntime = fakeRuntime.endpoints.get(endpointId);
@@ -3191,7 +3251,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       conversation.issueId,
       "Final Teams result",
       { agentId: fixture.assignedAgentId, runId },
-      { authorType: "agent" },
+      { authorType: "agent", authorizationReason: "paperclip_runner_protocol" },
     );
     await context.service.processPendingPublications();
 
@@ -3228,6 +3288,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     const observedUrls: string[] = [];
     let existingWebhookUrl = "";
     let observedWebhook: Record<string, unknown> | null = null;
+    let observedCommands: Record<string, unknown> | null = null;
     let observedWebhookDelete: Record<string, unknown> | null = null;
     const providerFetch = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
       const url = String(input);
@@ -3257,6 +3318,14 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         expect(init?.method).toBe("POST");
         observedWebhook = JSON.parse(String(init?.body)) as Record<string, unknown>;
         existingWebhookUrl = String(observedWebhook.url ?? "");
+        return new Response(JSON.stringify({ ok: true, result: true }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (url.endsWith("/setMyCommands")) {
+        expect(init?.method).toBe("POST");
+        observedCommands = JSON.parse(String(init?.body)) as Record<string, unknown>;
         return new Response(JSON.stringify({ ok: true, result: true }), {
           status: 200,
           headers: { "content-type": "application/json" },
@@ -3295,6 +3364,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       `https://api.telegram.org/bot${encodeURIComponent(botToken)}/getMe`,
       `https://api.telegram.org/bot${encodeURIComponent(botToken)}/getWebhookInfo`,
       `https://api.telegram.org/bot${encodeURIComponent(botToken)}/setWebhook`,
+      `https://api.telegram.org/bot${encodeURIComponent(botToken)}/setMyCommands`,
     ]);
     expect(configured).toMatchObject({
       status: "verifying",
@@ -3316,6 +3386,17 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       allowed_updates: ["message", "edited_message", "callback_query", "message_reaction", "my_chat_member"],
       drop_pending_updates: true,
     });
+    expect(observedCommands).toEqual({
+      commands: [
+        { command: "task", description: "Start or continue a Paperclip task" },
+        { command: "status", description: "Show the active Paperclip task" },
+        {
+          command: "new",
+          description: "Start a new task after the current one",
+        },
+        { command: "close", description: "Close the active Paperclip task" },
+      ],
+    });
     const [connection] = await db
       .select({ refs: toolConnections.credentialSecretRefs })
       .from(toolConnections)
@@ -3332,6 +3413,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     existingWebhookUrl = "https://expired.example/api/chat-webhooks/old-public-id/telegram";
     observedUrls.length = 0;
     observedWebhook = null;
+    observedCommands = null;
 
     const reconnected = await service.configure(endpoint.id, { action: "reconnect" }, "owner-user");
 
@@ -3343,6 +3425,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       `https://api.telegram.org/bot${encodeURIComponent(botToken)}/getMe`,
       `https://api.telegram.org/bot${encodeURIComponent(botToken)}/getWebhookInfo`,
       `https://api.telegram.org/bot${encodeURIComponent(botToken)}/setWebhook`,
+      `https://api.telegram.org/bot${encodeURIComponent(botToken)}/setMyCommands`,
     ]);
     expect(observedWebhook).toMatchObject({
       url: `https://paperclip.example/api/chat-webhooks/${endpoint.publicId}/telegram`,
@@ -3541,7 +3624,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     });
   });
 
-  it("persists verified Slack membership and uninstall lifecycle before acknowledging", async () => {
+  it("persists Slack membership, uninstall, and same-bot reinstall lifecycle before acknowledging", async () => {
     const fixture = await seedCompany();
     const { callbacks, endpoint, runtime, service } = await configuredSlackEndpoint(fixture);
     const configuredEndpoint = await service.get(endpoint.id);
@@ -3575,12 +3658,19 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       availability: "available",
       enabled: false,
     });
-    await service.replaceResources(endpoint.id, [{ id: resource.id, enabled: true }]);
+    await vi.waitFor(async () => {
+      await expect(service.listResources(endpoint.id)).resolves.toEqual([
+        expect.objectContaining({ label: "#c-lifecycle" }),
+      ]);
+    });
+    await service.replaceResources(endpoint.id, [
+      { id: resource.id, enabled: true },
+    ]);
 
     const thread = makeThread({
       channelId: "C-LIFECYCLE",
       id: "slack:C-LIFECYCLE:123.45",
-      name: "lifecycle",
+      name: "slack:C-LIFECYCLE",
     });
     await deliverMessage({
       callbacks,
@@ -3598,13 +3688,15 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       .from(chatConversations)
       .where(eq(chatConversations.endpointId, endpoint.id));
     expect(conversation).toBeDefined();
+    await expect(service.listResources(endpoint.id)).resolves.toEqual([
+      expect.objectContaining({ label: "#c-lifecycle" }),
+    ]);
 
     const leftEvent = {
       event_id: "Ev-member-left",
       event: {
-        type: "member_left_channel",
+        type: "channel_left",
         event_ts: "200.000000",
-        user: configuredEndpoint.botExternalId,
         channel: "C-LIFECYCLE",
       },
     };
@@ -3614,6 +3706,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       expect.objectContaining({
         providerResourceId: "C-LIFECYCLE",
         availability: "unavailable",
+        label: "#c-lifecycle",
       }),
     ]);
     expect(
@@ -3675,6 +3768,39 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       enabled: false,
       healthStatus: "failed",
     });
+
+    const reconnecting = await service.configure(
+      endpoint.id,
+      {
+        action: "reconnect",
+        credentials: {
+          botToken: "xoxb-test-token",
+          signingSecret: "test-signing-secret",
+        },
+      },
+      "owner-user",
+    );
+    expect(reconnecting).toMatchObject({
+      status: "verifying",
+      botExternalId: configuredEndpoint.botExternalId,
+      setup: { step: "provider_setup", webhookVerifiedAt: null },
+    });
+    expect(runtime.endpoints.has(endpoint.id)).toBe(true);
+    await recordSlackUrlVerification(service, endpoint.publicId);
+    await expect(
+      service.configure(endpoint.id, { action: "verify" }, "owner-user"),
+    ).resolves.toMatchObject({
+      status: "verifying",
+      setup: { step: "test", webhookVerifiedAt: expect.any(String) },
+    });
+    await expect(service.listResources(endpoint.id)).resolves.toEqual([
+      expect.objectContaining({
+        providerResourceId: "C-LIFECYCLE",
+        availability: "unavailable",
+        enabled: true,
+        label: "#c-lifecycle",
+      }),
+    ]);
   });
 
   it("applies Teams installation and Telegram membership resource lifecycle", async () => {
@@ -3940,7 +4066,10 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       thread: makeThread({
         channelId: "-100123",
         id: "telegram:-100123:77",
-        name: "Engineering",
+        // The native adapter may expose this fallback when the message and
+        // my_chat_member callbacks are interleaved. It must not replace the
+        // human title already learned from the membership payload.
+        name: "telegram:-100123",
       }).thread,
       message: makeMessage({
         id: "telegram-root-77",
@@ -3952,6 +4081,15 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     await expect(
       db.select().from(chatConversations).where(eq(chatConversations.endpointId, telegramEndpoint.id)),
     ).resolves.toHaveLength(1);
+    await expect(
+      telegram.service.listResources(telegramEndpoint.id),
+    ).resolves.toEqual([
+      expect.objectContaining({
+        providerResourceId: "-100123",
+        label: "Engineering",
+        availability: "available",
+      }),
+    ]);
     await telegramMembership(2, "left");
     await expect(telegram.service.listResources(telegramEndpoint.id)).resolves.toEqual([
       expect.objectContaining({
@@ -5076,6 +5214,208 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           ),
         ),
     ).resolves.toHaveLength(1);
+  });
+
+  it("keeps case-variant Teams Entra object ids on one external principal", async () => {
+    const fixture = await seedCompany();
+    const { callbacks, endpoint } = await configuredTeamsEndpoint(fixture);
+    const aadObjectId = "76d0cb17-5ec4-4b3d-983b-da8a01dc02c4";
+    const thread = makeThread({
+      channelId: "teams-personal-identity",
+      id: "teams:personal-identity:root-1",
+      isDM: true,
+      name: "Alex External",
+    });
+
+    await deliverMessage({
+      callbacks,
+      endpointId: endpoint.id,
+      provider: "microsoft-teams",
+      thread: thread.thread,
+      message: makeMessage({
+        id: "teams-identity-root",
+        raw: { from: { aadObjectId: aadObjectId.toUpperCase() } },
+        text: "Start a Teams identity task",
+        userId: "29:adapter-session-one",
+      }),
+      trigger: "direct_message",
+    });
+    await deliverMessage({
+      callbacks,
+      endpointId: endpoint.id,
+      provider: "microsoft-teams",
+      thread: thread.thread,
+      message: makeMessage({
+        id: "teams-identity-follow-up",
+        raw: { from: { aadObjectId } },
+        text: "Continue from another adapter session",
+        userId: "29:adapter-session-two",
+      }),
+      trigger: "direct_message",
+    });
+
+    const principals = await db
+      .select({ externalId: chatExternalPrincipals.externalId })
+      .from(chatExternalPrincipals)
+      .where(
+        and(
+          eq(chatExternalPrincipals.companyId, fixture.companyId),
+          eq(chatExternalPrincipals.provider, "microsoft-teams"),
+        ),
+      );
+    expect(principals).toEqual([{ externalId: aadObjectId }]);
+    const [conversation] = await db
+      .select()
+      .from(chatConversations)
+      .where(eq(chatConversations.endpointId, endpoint.id));
+    await expect(
+      db
+        .select({ body: issueComments.body })
+        .from(issueComments)
+        .where(eq(issueComments.issueId, conversation!.issueId)),
+    ).resolves.toEqual(
+      expect.arrayContaining([
+        { body: "Start a Teams identity task" },
+        { body: "Continue from another adapter session" },
+      ]),
+    );
+  });
+
+  it("uploads outbound Teams files only in personal chats and links channel files", async () => {
+    const fixture = await seedCompany();
+    const storage = createStorageService();
+    const { callbacks, endpoint, runtime, service } =
+      await configuredTeamsEndpoint(fixture, {
+        storage: storage.storage,
+      });
+    const serviceUrl = "https://smba.trafficmanager.net/amer/";
+    const channelConversationId = "19:teams-outbound-files@thread.tacv2";
+    const channelMessageId = "1740000000291";
+    const channelThread = makeThread({
+      channelId: `teams:${Buffer.from(channelConversationId).toString("base64url")}:${Buffer.from(serviceUrl).toString("base64url")}`,
+      id: `teams:${Buffer.from(`${channelConversationId};messageid=${channelMessageId}`).toString("base64url")}:${Buffer.from(serviceUrl).toString("base64url")}`,
+      name: "Outbound files channel",
+    });
+    const personalMessageId = "teams-outbound-personal-root";
+    const personalThread = makeThread({
+      channelId: "teams-personal-outbound-files",
+      id: "teams:personal-outbound-files:root-1",
+      isDM: true,
+      name: "Alex External",
+    });
+    await deliverMessage({
+      callbacks,
+      endpointId: endpoint.id,
+      provider: "microsoft-teams",
+      thread: channelThread.thread,
+      message: makeMessage({
+        id: channelMessageId,
+        text: "@Maya create a channel report",
+        mentioned: true,
+      }),
+      trigger: "mention",
+    });
+    await deliverMessage({
+      callbacks,
+      endpointId: endpoint.id,
+      provider: "microsoft-teams",
+      thread: personalThread.thread,
+      message: makeMessage({
+        id: personalMessageId,
+        text: "Create a personal report",
+      }),
+      trigger: "direct_message",
+    });
+    const conversations = await db
+      .select()
+      .from(chatConversations)
+      .where(eq(chatConversations.endpointId, endpoint.id));
+    const channelConversation = conversations.find(
+      (conversation) => !conversation.isDirectMessage,
+    );
+    const personalConversation = conversations.find(
+      (conversation) => conversation.isDirectMessage,
+    );
+    if (!channelConversation || !personalConversation)
+      throw new Error("Expected Teams channel and personal tasks");
+
+    for (const item of [
+      {
+        conversation: channelConversation,
+        filename: "channel-report.txt",
+        providerMessageId: channelMessageId,
+        text: "Channel report ready.",
+      },
+      {
+        conversation: personalConversation,
+        filename: "personal-report.txt",
+        providerMessageId: personalMessageId,
+        text: "Personal report ready.",
+      },
+    ]) {
+      const runId = randomUUID();
+      await db.insert(heartbeatRuns).values({
+        id: runId,
+        companyId: fixture.companyId,
+        agentId: fixture.assignedAgentId,
+        status: "succeeded",
+        contextSnapshot: await chatWakeContext({
+          endpointId: endpoint.id,
+          issueId: item.conversation.issueId,
+          provider: "microsoft-teams",
+          providerMessageId: item.providerMessageId,
+        }),
+      });
+      const comment = await issueService(db).addComment(
+        item.conversation.issueId,
+        item.text,
+        { agentId: fixture.assignedAgentId, runId },
+        {
+          authorType: "agent",
+          authorizationReason: "paperclip_runner_protocol",
+        },
+      );
+      const stored = await storage.storage.putFile({
+        companyId: fixture.companyId,
+        namespace: `issues/${item.conversation.issueId}`,
+        originalFilename: item.filename,
+        contentType: "text/plain",
+        body: Buffer.from(`${item.filename} contents`, "utf8"),
+      });
+      await issueService(db).createAttachment({
+        issueId: item.conversation.issueId,
+        issueCommentId: comment.id,
+        provider: stored.provider,
+        objectKey: stored.objectKey,
+        contentType: stored.contentType,
+        byteSize: stored.byteSize,
+        sha256: stored.sha256,
+        originalFilename: stored.originalFilename,
+        createdByAgentId: fixture.assignedAgentId,
+        createdByRunId: runId,
+      });
+    }
+    await service.processPendingPublications();
+
+    const posts = runtime.endpoints.get(endpoint.id)?.posts ?? [];
+    const channelAttachmentPost = posts.find((post) =>
+      post.text.includes("Shared channel-report.txt."),
+    );
+    expect(channelAttachmentPost?.text).toContain(
+      `/issues/${channelConversation.issueId}`,
+    );
+    expect(channelAttachmentPost?.files).toBeUndefined();
+    const personalAttachmentPost = posts.find((post) =>
+      post.text.includes("Shared personal-report.txt."),
+    );
+    expect(personalAttachmentPost?.files).toEqual([
+      expect.objectContaining({
+        filename: "personal-report.txt",
+        mimeType: "text/plain",
+        data: expect.any(Buffer),
+      }),
+    ]);
+    expect(storage.storage.getObject).toHaveBeenCalledTimes(1);
   });
 
   it("ingests Teams files only from personal chats and keeps non-DM references link-only", async () => {
@@ -7166,7 +7506,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       conversation.issueId,
       "Final GitHub result",
       { agentId: fixture.assignedAgentId, runId },
-      { authorType: "agent" },
+      { authorType: "agent", authorizationReason: "paperclip_runner_protocol" },
     );
     await service.processPendingPublications();
 
@@ -7446,7 +7786,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       conversation.issueId,
       "telegram-status-race-final",
       { agentId: fixture.assignedAgentId, runId },
-      { authorType: "agent" },
+      { authorType: "agent", authorizationReason: "paperclip_runner_protocol" },
     );
     await service.processPendingPublications();
 
@@ -7529,7 +7869,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       oldConversation.issueId,
       "old-generation-final",
       { agentId: fixture.assignedAgentId, runId: oldRunId },
-      { authorType: "agent" },
+      { authorType: "agent", authorizationReason: "paperclip_runner_protocol" },
     );
 
     const newEvent = {
@@ -7582,7 +7922,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       oldConversation.issueId,
       "late-old-generation-final-stays-in-paperclip",
       { agentId: fixture.assignedAgentId, runId: oldRunId },
-      { authorType: "agent" },
+      { authorType: "agent", authorizationReason: "paperclip_runner_protocol" },
     );
     await expect(
       db
@@ -7625,7 +7965,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       newConversation.issueId,
       "new-generation-final",
       { agentId: fixture.assignedAgentId, runId: newRunId },
-      { authorType: "agent" },
+      { authorType: "agent", authorizationReason: "paperclip_runner_protocol" },
     );
     await service.processPendingPublications();
 
@@ -7810,7 +8150,10 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
             conversation.issueId,
             body,
             { agentId: fixture.assignedAgentId, runId },
-            { authorType: "agent" },
+            {
+              authorType: "agent",
+              authorizationReason: "paperclip_runner_protocol",
+            },
           ),
         );
       }
@@ -7940,7 +8283,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       conversation.issueId,
       finalText,
       { agentId: fixture.assignedAgentId, runId },
-      { authorType: "agent" },
+      { authorType: "agent", authorizationReason: "paperclip_runner_protocol" },
     );
     await service.processPendingPublications();
 
@@ -9618,6 +9961,12 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           headers: { "content-type": "application/json" },
         });
       }
+      if (method === "setMyCommands") {
+        return new Response(JSON.stringify({ ok: true, result: true }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
       if (method === "answerCallbackQuery") {
         return new Response(JSON.stringify({ ok: true, result: true }), {
           status: 200,
@@ -10036,6 +10385,56 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     });
     channel.post.mockClear();
 
+    const authorization = await publishQuestion(
+      "Choose a permission-sensitive priority",
+    );
+    const authorizationCallbackData = telegramChatSdkCallbackData(
+      authorization.action.actionId,
+    );
+    await db
+      .update(companyMemberships)
+      .set({ membershipRole: "viewer" })
+      .where(
+        and(
+          eq(companyMemberships.companyId, fixture.companyId),
+          eq(companyMemberships.principalId, linkedUserId),
+        ),
+      );
+    await callbacks.onAction(
+      actionEvent({
+        actionId: authorization.action.actionId,
+        callbackData: authorizationCallbackData,
+        messageId: authorization.publication.providerMessageId!,
+      }),
+    );
+    await vi.waitFor(() =>
+      expect(channel.post).toHaveBeenCalledWith(
+        "This Paperclip action is no longer available.",
+      ),
+    );
+    await expect(
+      db
+        .select({ status: chatActions.status })
+        .from(chatActions)
+        .where(eq(chatActions.id, authorization.token.id)),
+    ).resolves.toEqual([{ status: "issued" }]);
+    await expect(
+      db
+        .select({ status: issueThreadInteractions.status })
+        .from(issueThreadInteractions)
+        .where(eq(issueThreadInteractions.id, authorization.interaction.id)),
+    ).resolves.toEqual([{ status: "pending" }]);
+    await db
+      .update(companyMemberships)
+      .set({ membershipRole: "operator" })
+      .where(
+        and(
+          eq(companyMemberships.companyId, fixture.companyId),
+          eq(companyMemberships.principalId, linkedUserId),
+        ),
+      );
+    channel.post.mockClear();
+
     const expired = await publishQuestion("Choose an expired priority");
     await db
       .update(chatActions)
@@ -10148,11 +10547,196 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     expect(callbacks.onReaction).toBeTypeOf("function");
   });
 
+  it("publishes GitHub questions as link-only cards with no executable callback", async () => {
+    const fixture = await seedCompany();
+    const previousPublicUrl = process.env.PAPERCLIP_PUBLIC_URL;
+    process.env.PAPERCLIP_PUBLIC_URL = "https://paperclip.example";
+    try {
+      const { callbacks, endpoint, runtime, service } =
+        await configuredGitHubEndpoint(fixture);
+      const thread = makeThread({
+        channelId: "paperclipai/paperclip",
+        id: "github:paperclipai/paperclip:issue:451",
+        name: "paperclipai/paperclip",
+      });
+      await deliverMessage({
+        callbacks,
+        endpointId: endpoint.id,
+        provider: "github",
+        thread: thread.thread,
+        message: makeMessage({
+          id: "45101",
+          text: "@maya ask me for a release decision",
+          mentioned: true,
+        }),
+        trigger: "mention",
+      });
+      const [conversation] = await db
+        .select()
+        .from(chatConversations)
+        .where(eq(chatConversations.endpointId, endpoint.id));
+      const interaction = await issueThreadInteractionService(db).create(
+        { id: conversation!.issueId, companyId: fixture.companyId },
+        {
+          kind: "ask_user_questions",
+          payload: {
+            version: 1,
+            questions: [
+              {
+                id: "release",
+                prompt: "Ship this release?",
+                selectionMode: "single",
+                required: true,
+                allowOther: false,
+                options: [
+                  { id: "ship", label: "Ship" },
+                  { id: "hold", label: "Hold" },
+                ],
+              },
+            ],
+          },
+        },
+        { agentId: fixture.assignedAgentId },
+      );
+      await service.processPendingPublications();
+
+      const [publication] = await db
+        .select()
+        .from(chatPublications)
+        .where(
+          and(
+            eq(chatPublications.endpointId, endpoint.id),
+            eq(
+              chatPublications.idempotencyKey,
+              `interaction:${interaction.id}:${endpoint.id}`,
+            ),
+          ),
+        );
+      expect(publication).toMatchObject({
+        state: "published",
+        payload: {
+          interactionId: interaction.id,
+          card: {
+            actions: [
+              {
+                type: "link",
+                label: "Open in Paperclip",
+                url: `https://paperclip.example/issues/${conversation!.issueId}`,
+              },
+            ],
+          },
+        },
+      });
+      expect(callbacks.onAction).toBeUndefined();
+      expect(
+        await db
+          .select()
+          .from(chatActions)
+          .where(
+            and(
+              eq(chatActions.endpointId, endpoint.id),
+              eq(chatActions.kind, "question_answer"),
+            ),
+          ),
+      ).toHaveLength(0);
+      expect(
+        JSON.stringify(runtime.endpoints.get(endpoint.id)?.posts),
+      ).toContain(`https://paperclip.example/issues/${conversation!.issueId}`);
+    } finally {
+      if (previousPublicUrl === undefined)
+        delete process.env.PAPERCLIP_PUBLIC_URL;
+      else process.env.PAPERCLIP_PUBLIC_URL = previousPublicUrl;
+    }
+  });
+
+  it("publishes GitHub attachments as Paperclip task links without provider file bytes", async () => {
+    const fixture = await seedCompany();
+    const storage = createStorageService();
+    const { callbacks, endpoint, runtime, service } =
+      await configuredGitHubEndpoint(fixture, {
+        storage: storage.storage,
+      });
+    const thread = makeThread({
+      channelId: "paperclipai/paperclip",
+      id: "github:paperclipai/paperclip:issue:452",
+      name: "paperclipai/paperclip",
+    });
+    await deliverMessage({
+      callbacks,
+      endpointId: endpoint.id,
+      provider: "github",
+      thread: thread.thread,
+      message: makeMessage({
+        id: "45201",
+        text: "@maya create a downloadable report",
+        mentioned: true,
+      }),
+      trigger: "mention",
+    });
+    const [conversation] = await db
+      .select()
+      .from(chatConversations)
+      .where(eq(chatConversations.endpointId, endpoint.id));
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId: fixture.companyId,
+      agentId: fixture.assignedAgentId,
+      status: "succeeded",
+      contextSnapshot: await chatWakeContext({
+        endpointId: endpoint.id,
+        issueId: conversation!.issueId,
+        provider: "github",
+        providerMessageId: "45201",
+      }),
+    });
+    const comment = await issueService(db).addComment(
+      conversation!.issueId,
+      "The report is ready.",
+      { agentId: fixture.assignedAgentId, runId },
+      { authorType: "agent", authorizationReason: "paperclip_runner_protocol" },
+    );
+    const stored = await storage.storage.putFile({
+      companyId: fixture.companyId,
+      namespace: `issues/${conversation!.issueId}`,
+      originalFilename: "report.txt",
+      contentType: "text/plain",
+      body: Buffer.from("report contents", "utf8"),
+    });
+    await issueService(db).createAttachment({
+      issueId: conversation!.issueId,
+      issueCommentId: comment.id,
+      provider: stored.provider,
+      objectKey: stored.objectKey,
+      contentType: stored.contentType,
+      byteSize: stored.byteSize,
+      sha256: stored.sha256,
+      originalFilename: stored.originalFilename,
+      createdByAgentId: fixture.assignedAgentId,
+      createdByRunId: runId,
+    });
+    await service.processPendingPublications();
+
+    const posts = runtime.endpoints.get(endpoint.id)?.posts ?? [];
+    expect(posts.some((post) => post.text.includes("Shared report.txt."))).toBe(
+      true,
+    );
+    expect(
+      posts.some((post) =>
+        post.text.includes(`/issues/${conversation!.issueId}`),
+      ),
+    ).toBe(true);
+    expect(posts.every((post) => post.files === undefined)).toBe(true);
+    expect(storage.storage.getObject).not.toHaveBeenCalled();
+  });
+
   it("preserves the raw webhook request and returns the provider adapter response", async () => {
     const fixture = await seedCompany();
-    const { endpoint, runtime, service } = await configuredSlackEndpoint(fixture);
+    const { endpoint, runtime, service } =
+      await configuredSlackEndpoint(fixture);
     const providerRuntime = runtime.endpoints.get(endpoint.id);
-    if (!providerRuntime) throw new Error("Expected configured fake provider runtime");
+    if (!providerRuntime)
+      throw new Error("Expected configured fake provider runtime");
     const payload = JSON.stringify({
       type: "event_callback",
       event_id: "Ev-123",
@@ -10557,7 +11141,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       conversation.issueId,
       "First queued answer",
       { agentId: fixture.assignedAgentId, runId: firstRunId },
-      { authorType: "agent" },
+      { authorType: "agent", authorizationReason: "paperclip_runner_protocol" },
     );
     await service.processPendingPublications();
     const activeInternalComment = await issueService(db).addComment(
@@ -10588,7 +11172,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       conversation.issueId,
       "Second queued answer",
       { agentId: fixture.assignedAgentId, runId: secondRunId },
-      { authorType: "agent" },
+      { authorType: "agent", authorizationReason: "paperclip_runner_protocol" },
     );
     const lateInternalComment = await issueService(db).addComment(
       conversation.issueId,
@@ -11501,6 +12085,16 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     const issuesBeforeStatus = await db.select().from(issues).where(eq(issues.companyId, fixture.companyId));
     const firstIssue = issuesBeforeStatus.find((issue) => issue.title === "Start the first DM task");
     if (!firstIssue) throw new Error("First Slack DM task was not created");
+    await db
+      .update(chatConversations)
+      .set({ providerUrl: null })
+      .where(eq(chatConversations.endpointId, endpoint.id));
+    await expect(service.listConversations(endpoint.id)).resolves.toEqual([
+      expect.objectContaining({
+        externalUrl:
+          "https://slack.com/app_redirect?channel=D09CONTROLS&team=T-PAPERCLIP",
+      }),
+    ]);
     await invokeControl("status");
     expect(await db.select().from(issues).where(eq(issues.companyId, fixture.companyId))).toHaveLength(
       issuesBeforeStatus.length,
@@ -11720,9 +12314,15 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     await invoke("/start", "ignored payload", 501);
     await invoke("/danger", "create an administrator action", 502);
 
-    expect(runtime.endpoints.get(endpoint.id)?.posts.map((post) => post.text)).toEqual([
-      "Send a message to start work with Maya. Use /status, /new, or /close to manage the active task in this chat.",
-      "Available commands: /status, /new, and /close.",
+    expect(
+      runtime.endpoints.get(endpoint.id)?.posts.map((post) => post.text),
+    ).toEqual([
+      expect.stringMatching(
+        /^Send a direct message to start work with Maya\. In a group, use \/task@paperclip_\d+_bot followed by your request\./,
+      ),
+      expect.stringMatching(
+        /^Available commands: \/task@paperclip_\d+_bot followed by your request, \/status, \/new, and \/close\.$/,
+      ),
     ]);
     expect(wakeup).not.toHaveBeenCalled();
     expect(await service.listConversations(endpoint.id)).toEqual([]);
@@ -12382,15 +12982,21 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         state: "pending",
         idempotencyKey: expect.stringMatching(/^control:guidance:/),
         payload: expect.objectContaining({
-          text: "Send a message to start work with Maya. Use /status, /new, or /close to manage the active task in this chat.",
+          text: expect.stringMatching(
+            /^Send a direct message to start work with Maya\. In a group, use \/task@paperclip_\d+_bot followed by your request\./,
+          ),
         }),
       }),
     ]);
 
     await service.processPendingPublications();
     await service.processPendingPublications();
-    expect(runtime.endpoints.get(endpoint.id)?.posts.map((post) => post.text)).toEqual([
-      "Send a message to start work with Maya. Use /status, /new, or /close to manage the active task in this chat.",
+    expect(
+      runtime.endpoints.get(endpoint.id)?.posts.map((post) => post.text),
+    ).toEqual([
+      expect.stringMatching(
+        /^Send a direct message to start work with Maya\. In a group, use \/task@paperclip_\d+_bot followed by your request\./,
+      ),
     ]);
     expect(wakeup).toHaveBeenCalledTimes(1);
     expect(await db.select().from(issues).where(eq(issues.companyId, fixture.companyId))).toHaveLength(1);
@@ -12430,6 +13036,12 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       }
       if (method === "setWebhook") {
         webhookSecret = String((JSON.parse(body) as { secret_token?: unknown }).secret_token ?? "");
+        return new Response(JSON.stringify({ ok: true, result: true }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (method === "setMyCommands") {
         return new Response(JSON.stringify({ ok: true, result: true }), {
           status: 200,
           headers: { "content-type": "application/json" },
@@ -12537,8 +13149,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           .filter(({ method }) => method === "sendMessage")
           .map(({ body }) => (JSON.parse(body) as { text?: string }).text),
       ).toEqual([
-        "Send a message to start work with Maya. Use /status, /new, or /close to manage the active task in this chat.",
-        "Available commands: /status, /new, and /close.",
+        "Send a direct message to start work with Maya. In a group, use /task@paperclip_guidance_test_bot followed by your request. Use /status, /new, or /close to manage the active task in this chat.",
+        "Available commands: /task@paperclip_guidance_test_bot followed by your request, /status, /new, and /close.",
       ]);
 
       await service.update(endpoint.id, { allowDirectMessages: false }, "owner-user");
@@ -13602,9 +14214,255 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     expect(wakeup).toHaveBeenCalledTimes(2);
   });
 
+  it("keeps an internal Telegram run summary private and completes its progress message", async () => {
+    const fixture = await seedCompany();
+    const { callbacks, endpoint, runtime, service } =
+      await configuredTelegramEndpoint(fixture);
+    const chatId = "77112240";
+    const dm = makeThread({
+      channelId: `telegram:${chatId}`,
+      id: `telegram:${chatId}`,
+      isDM: true,
+      name: "Telegram direct message",
+    });
+    await deliverMessage({
+      callbacks,
+      endpointId: endpoint.id,
+      provider: "telegram",
+      thread: dm.thread,
+      message: makeMessage({
+        id: `${chatId}:101`,
+        text: "Finish without an externally authored reply",
+        userId: chatId,
+      }),
+      trigger: "direct_message",
+    });
+    await qualifySetupRoundTrip(service, endpoint.id, chatId);
+    await service.test(endpoint.id, "owner-user");
+    const [conversation] = await db
+      .select()
+      .from(chatConversations)
+      .where(eq(chatConversations.endpointId, endpoint.id));
+    if (!conversation) throw new Error("Expected Telegram conversation");
+
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId: fixture.companyId,
+      agentId: fixture.assignedAgentId,
+      status: "running",
+      contextSnapshot: await chatWakeContext({
+        endpointId: endpoint.id,
+        issueId: conversation.issueId,
+        provider: "telegram",
+        providerMessageId: `${chatId}:101`,
+      }),
+    });
+    await expect(enqueueChatRunMilestones(db)).resolves.toBe(1);
+    await service.processPendingPublications();
+
+    // Heartbeat persists success before its presentation resolver runs. A
+    // reconciliation sweep in this window must not race ahead with a generic
+    // completion that could hide a later explicit response.
+    await db
+      .update(heartbeatRuns)
+      .set({ status: "succeeded", updatedAt: new Date() })
+      .where(eq(heartbeatRuns.id, runId));
+    await expect(enqueueChatRunMilestones(db)).resolves.toBe(0);
+
+    const internalSummary = await issueService(db).addComment(
+      conversation.issueId,
+      "Internal presentation summary that must never reach Telegram",
+      { agentId: fixture.assignedAgentId, runId },
+      { authorType: "agent", authorizationReason: "internal_agent_write" },
+    );
+    await expect(
+      db
+        .select()
+        .from(chatPublications)
+        .where(eq(chatPublications.commentId, internalSummary.id)),
+    ).resolves.toHaveLength(0);
+    const internalAttachmentBody = Buffer.from("internal attachment");
+    await issueService(db).createAttachment({
+      issueId: conversation.issueId,
+      issueCommentId: internalSummary.id,
+      provider: "local_disk",
+      objectKey: `chat-tests/${randomUUID()}`,
+      contentType: "text/plain",
+      byteSize: internalAttachmentBody.byteLength,
+      sha256: createHash("sha256").update(internalAttachmentBody).digest("hex"),
+      originalFilename: "internal.txt",
+      createdByAgentId: fixture.assignedAgentId,
+      createdByRunId: runId,
+    });
+    await expect(
+      db
+        .select()
+        .from(chatPublications)
+        .where(eq(chatPublications.commentId, internalSummary.id)),
+    ).resolves.toHaveLength(0);
+
+    await db
+      .update(heartbeatRuns)
+      .set({
+        resultJson: {
+          presentationDecision: {
+            chosenSource: "final_agent_message",
+            commentAction: "create",
+          },
+        },
+        updatedAt: new Date(),
+      })
+      .where(eq(heartbeatRuns.id, runId));
+    await expect(enqueueChatRunMilestones(db)).resolves.toBe(1);
+    await service.processPendingPublications();
+
+    const providerRuntime = runtime.endpoints.get(endpoint.id);
+    expect(providerRuntime?.posts).toEqual([
+      { threadId: dm.thread.id, text: "Maya is working…" },
+    ]);
+    expect(providerRuntime?.edits).toEqual([
+      {
+        threadId: dm.thread.id,
+        messageId: "outbound-2",
+        text: "Maya completed this turn.",
+      },
+    ]);
+    expect(
+      JSON.stringify({
+        posts: providerRuntime?.posts,
+        edits: providerRuntime?.edits,
+      }),
+    ).not.toContain("Internal presentation summary");
+  });
+
+  it.each(["paperclip_runner_protocol", "allow_visible_issue_write"])(
+    "publishes an explicitly authored Telegram reply for %s without a redundant completion",
+    async (authorizationReason) => {
+      const fixture = await seedCompany();
+      const { callbacks, endpoint, runtime, service } =
+        await configuredTelegramEndpoint(fixture);
+      const chatId =
+        authorizationReason === "paperclip_runner_protocol"
+          ? "77112241"
+          : "77112242";
+      const dm = makeThread({
+        channelId: `telegram:${chatId}`,
+        id: `telegram:${chatId}`,
+        isDM: true,
+        name: "Telegram direct message",
+      });
+      await deliverMessage({
+        callbacks,
+        endpointId: endpoint.id,
+        provider: "telegram",
+        thread: dm.thread,
+        message: makeMessage({
+          id: `${chatId}:102`,
+          text: "Return an explicit reply",
+          userId: chatId,
+        }),
+        trigger: "direct_message",
+      });
+      await qualifySetupRoundTrip(service, endpoint.id, chatId);
+      await service.test(endpoint.id, "owner-user");
+      const [conversation] = await db
+        .select()
+        .from(chatConversations)
+        .where(eq(chatConversations.endpointId, endpoint.id));
+      if (!conversation) throw new Error("Expected Telegram conversation");
+
+      const runId = randomUUID();
+      await db.insert(heartbeatRuns).values({
+        id: runId,
+        companyId: fixture.companyId,
+        agentId: fixture.assignedAgentId,
+        status: "running",
+        contextSnapshot: await chatWakeContext({
+          endpointId: endpoint.id,
+          issueId: conversation.issueId,
+          provider: "telegram",
+          providerMessageId: `${chatId}:102`,
+        }),
+      });
+      await expect(enqueueChatRunMilestones(db)).resolves.toBe(1);
+      await service.processPendingPublications();
+      await issueService(db).addComment(
+        conversation.issueId,
+        `Explicit Telegram reply via ${authorizationReason}`,
+        { agentId: fixture.assignedAgentId, runId },
+        { authorType: "agent", authorizationReason },
+      );
+      await service.processPendingPublications();
+
+      await db
+        .update(heartbeatRuns)
+        .set({
+          status: "succeeded",
+          resultJson: {
+            presentationDecision: {
+              chosenSource: "existing_comment",
+              commentAction: "none",
+            },
+          },
+          updatedAt: new Date(),
+        })
+        .where(eq(heartbeatRuns.id, runId));
+      const laterQueuedRunId = randomUUID();
+      await db.insert(heartbeatRuns).values({
+        id: laterQueuedRunId,
+        companyId: fixture.companyId,
+        agentId: fixture.assignedAgentId,
+        status: "queued",
+        contextSnapshot: await chatWakeContext({
+          endpointId: endpoint.id,
+          issueId: conversation.issueId,
+          provider: "telegram",
+          providerMessageId: `${chatId}:102`,
+        }),
+        updatedAt: new Date(Date.now() + 1_000),
+      });
+      // The settled successful run must be filtered before LIMIT. Otherwise a
+      // page of explicit replies can starve later run milestones forever.
+      await expect(enqueueChatRunMilestones(db, { limit: 1 })).resolves.toBe(1);
+
+      const providerRuntime = runtime.endpoints.get(endpoint.id);
+      expect(providerRuntime?.posts).toEqual([
+        { threadId: dm.thread.id, text: "Maya is working…" },
+      ]);
+      expect(providerRuntime?.edits).toEqual([
+        {
+          threadId: dm.thread.id,
+          messageId: "outbound-2",
+          text: `Explicit Telegram reply via ${authorizationReason}`,
+        },
+      ]);
+      await expect(
+        db
+          .select()
+          .from(chatPublications)
+          .where(
+            like(chatPublications.idempotencyKey, `run:${runId}:completed:%`),
+          ),
+      ).resolves.toHaveLength(0);
+      await expect(
+        db
+          .select()
+          .from(chatPublications)
+          .where(
+            eq(
+              chatPublications.idempotencyKey,
+              `run:${laterQueuedRunId}:queued:${endpoint.id}`,
+            ),
+          ),
+      ).resolves.toHaveLength(1);
+    },
+  );
+
   it("coalesces one Telegram run into one provider message", async () => {
     const fixture = await seedCompany();
-    const { callbacks, endpoint, runtime, service } = await configuredTelegramEndpoint(fixture);
+    const { callbacks, endpoint, runtime, service } =
+      await configuredTelegramEndpoint(fixture);
     const chatId = "77112236";
     const dm = makeThread({
       channelId: `telegram:${chatId}`,
@@ -13652,7 +14510,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         issueId: conversation.issueId,
         idempotencyKey: `run:${runId}:${progressState}:${endpoint.id}`,
         payload: {
-          text: progressState === "queued" ? "Maya is queued." : "Maya is working…",
+          text:
+            progressState === "queued" ? "Maya is queued." : "Maya is working…",
           progressState,
         },
         state: "pending",
@@ -13663,12 +14522,14 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       conversation.issueId,
       "Final Telegram result",
       { agentId: fixture.assignedAgentId, runId },
-      { authorType: "agent" },
+      { authorType: "agent", authorizationReason: "paperclip_runner_protocol" },
     );
     await service.processPendingPublications();
 
     const providerRuntime = runtime.endpoints.get(endpoint.id);
-    expect(providerRuntime?.posts).toEqual([{ threadId: dm.thread.id, text: "Maya is queued." }]);
+    expect(providerRuntime?.posts).toEqual([
+      { threadId: dm.thread.id, text: "Maya is queued." },
+    ]);
     expect(providerRuntime?.edits).toEqual([
       {
         threadId: dm.thread.id,
@@ -13685,7 +14546,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
 
   it("audits Telegram reactions idempotently without comments or runs", async () => {
     const fixture = await seedCompany();
-    const { callbacks, endpoint, service, wakeup } = await configuredTelegramEndpoint(fixture);
+    const { callbacks, endpoint, service, wakeup } =
+      await configuredTelegramEndpoint(fixture);
     const chatId = "77112237";
     const dm = makeThread({
       channelId: `telegram:${chatId}`,
@@ -13708,7 +14570,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     });
     await qualifySetupRoundTrip(service, endpoint.id, chatId);
     await service.test(endpoint.id, "owner-user");
-    if (!callbacks.onReaction) throw new Error("Telegram reaction callback was not registered");
+    if (!callbacks.onReaction)
+      throw new Error("Telegram reaction callback was not registered");
     const [conversation] = await db
       .select()
       .from(chatConversations)
@@ -14182,5 +15045,909 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     });
     expect(wakeup).toHaveBeenCalledTimes(4);
     await service.shutdown();
+  });
+
+  it("migrates Telegram basic-group reach and topic tasks to the replacement supergroup", async () => {
+    const fixture = await seedCompany();
+    const { callbacks, endpoint, service, wakeup } =
+      await configuredTelegramEndpoint(fixture);
+    await db
+      .update(chatEndpoints)
+      .set({ status: "active" })
+      .where(eq(chatEndpoints.id, endpoint.id));
+    const previousChatId = "-5546433913";
+    const migratedChatId = "-1004415501660";
+    const topicId = 77;
+    const [previousResource] = await db
+      .insert(chatEndpointResources)
+      .values({
+        companyId: fixture.companyId,
+        endpointId: endpoint.id,
+        type: "chat",
+        providerResourceId: previousChatId,
+        label: "Telegram migration group",
+        availability: "available",
+        enabled: true,
+      })
+      .returning();
+    const previousTopic = makeThread({
+      channelId: `telegram:${previousChatId}`,
+      id: `telegram:${previousChatId}:${topicId}`,
+      name: "Telegram migration group",
+    });
+    await deliverMessage({
+      callbacks,
+      endpointId: endpoint.id,
+      provider: "telegram",
+      thread: previousTopic.thread,
+      message: makeMessage({
+        id: `${previousChatId}:40`,
+        raw: { message_id: 40, message_thread_id: topicId },
+        text: "Start before the group migration",
+        mentioned: true,
+        userId: "telegram-migration-user",
+      }),
+      trigger: "mention",
+    });
+    const [beforeMigration] = await service.listConversations(endpoint.id);
+    if (!beforeMigration)
+      throw new Error("Expected pre-migration Telegram topic task");
+
+    const response = await service.handleWebhook(
+      endpoint.publicId,
+      "telegram",
+      new Request("https://paperclip.example/telegram", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          update_id: 46,
+          message: {
+            message_id: 41,
+            date: 1_788_700_041,
+            chat: {
+              id: Number(previousChatId),
+              type: "group",
+              title: "Telegram migration group",
+            },
+            migrate_to_chat_id: Number(migratedChatId),
+          },
+        }),
+      }),
+    );
+    expect(response.status).toBe(202);
+
+    const resources = await service.listResources(endpoint.id);
+    expect(resources).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: previousResource!.id,
+          providerResourceId: previousChatId,
+          availability: "unavailable",
+          enabled: false,
+          metadata: expect.objectContaining({ migratedTo: migratedChatId }),
+        }),
+        expect.objectContaining({
+          providerResourceId: migratedChatId,
+          label: "Telegram migration group",
+          availability: "available",
+          enabled: true,
+          metadata: expect.objectContaining({ migratedFrom: previousChatId }),
+        }),
+      ]),
+    );
+    const [migratedConversation] = await service.listConversations(endpoint.id);
+    expect(migratedConversation).toMatchObject({
+      id: beforeMigration.id,
+      issueId: beforeMigration.issueId,
+      externalConversationId: `telegram:${migratedChatId}`,
+      externalThreadId: `telegram:${migratedChatId}:${topicId}`,
+      externalLabel: "Telegram migration group",
+      state: "active",
+    });
+
+    const migratedTopic = makeThread({
+      channelId: `telegram:${migratedChatId}`,
+      id: `telegram:${migratedChatId}:${topicId}`,
+      name: `telegram:${migratedChatId}`,
+    });
+    await deliverMessage({
+      callbacks,
+      endpointId: endpoint.id,
+      provider: "telegram",
+      thread: migratedTopic.thread,
+      message: makeMessage({
+        id: `${migratedChatId}:42`,
+        raw: { message_id: 42, message_thread_id: topicId },
+        text: "Continue by replying after the group migration",
+        mentioned: true,
+        userId: "telegram-migration-user",
+      }),
+      trigger: "subscribed_message",
+    });
+    await expect(service.listConversations(endpoint.id)).resolves.toEqual([
+      expect.objectContaining({
+        id: beforeMigration.id,
+        issueId: beforeMigration.issueId,
+        externalThreadId: `telegram:${migratedChatId}:${topicId}`,
+      }),
+    ]);
+    await expect(
+      db
+        .select({ body: issueComments.body })
+        .from(issueComments)
+        .where(eq(issueComments.issueId, beforeMigration.issueId))
+        .orderBy(asc(issueComments.createdAt), asc(issueComments.id)),
+    ).resolves.toEqual([
+      { body: "Start before the group migration" },
+      { body: "Continue by replying after the group migration" },
+    ]);
+    expect(wakeup).toHaveBeenCalledTimes(2);
+  });
+
+  it("enforces Telegram group reach and privacy-mode addressing before retaining message content", async () => {
+    const fixture = await seedCompany();
+    const { callbacks, endpoint, runtime, service, wakeup } =
+      await configuredTelegramEndpoint(fixture);
+    await db
+      .update(chatEndpoints)
+      .set({ status: "active" })
+      .where(eq(chatEndpoints.id, endpoint.id));
+
+    const chatId = "-10077114455";
+    const [resource] = await db
+      .insert(chatEndpointResources)
+      .values({
+        companyId: fixture.companyId,
+        endpointId: endpoint.id,
+        type: "chat",
+        providerResourceId: chatId,
+        label: "Telegram production group",
+        availability: "available",
+        enabled: false,
+      })
+      .returning();
+    const group = makeThread({
+      channelId: chatId,
+      id: `telegram:${chatId}`,
+      name: "Telegram production group",
+    });
+    if (!callbacks.onSlashCommand)
+      throw new Error("Expected Telegram slash-command callbacks");
+    const invokeTaskCommand = async (input: {
+      document?: {
+        fileId: string;
+        fileName: string;
+        fileSize: number;
+        mimeType: string;
+      };
+      messageId: number;
+      prompt: string;
+      threadId?: string;
+      topicId?: number;
+    }) => {
+      await callbacks.onSlashCommand!({
+        endpointId: endpoint.id,
+        provider: "telegram",
+        event: {
+          channel: {
+            id: input.threadId ?? group.thread.id,
+            name: "Telegram production group",
+            isDM: false,
+          } as never,
+          command: "/task@paperclip_test_bot",
+          text: input.prompt,
+          user: {
+            userId: "telegram-group-user",
+            userName: "telegram-group-user",
+            fullName: "Telegram Group User",
+            isBot: false,
+            isMe: false,
+            isSystem: false,
+          },
+          raw: {
+            message_id: input.messageId,
+            ...(input.topicId === undefined
+              ? {}
+              : { message_thread_id: input.topicId }),
+            date: 1_788_700_000 + input.messageId,
+            chat: {
+              id: Number(chatId),
+              type: "supergroup",
+              title: "Telegram production group",
+            },
+            from: { id: 77112233, is_bot: false },
+            text: `/task@paperclip_test_bot${input.prompt ? ` ${input.prompt}` : ""}`,
+            entities: [
+              {
+                offset: 0,
+                length: "/task@paperclip_test_bot".length,
+                type: "bot_command",
+              },
+            ],
+            ...(input.document
+              ? {
+                  document: {
+                    file_id: input.document.fileId,
+                    file_unique_id: `${input.document.fileId}-unique`,
+                    file_name: input.document.fileName,
+                    file_size: input.document.fileSize,
+                    mime_type: input.document.mimeType,
+                  },
+                }
+              : {}),
+          },
+          adapter: {} as never,
+          openModal: async () => undefined,
+        },
+      });
+    };
+
+    await deliverMessage({
+      callbacks,
+      endpointId: endpoint.id,
+      provider: "telegram",
+      thread: group.thread,
+      message: makeMessage({
+        id: `${chatId}:10`,
+        text: "@maya disabled-group-private-marker",
+        mentioned: true,
+        userId: "telegram-disabled-user",
+      }),
+      trigger: "mention",
+    });
+
+    const [disabledDelivery] = await db
+      .select()
+      .from(chatDeliveries)
+      .where(eq(chatDeliveries.endpointId, endpoint.id));
+    expect(disabledDelivery).toMatchObject({
+      state: "filtered",
+      attempts: 0,
+      principalId: null,
+      redactedError: "Destination is not enabled in Paperclip",
+      normalizedEvent: {
+        filtering: { contentRetained: false },
+        message: { providerMessageId: `${chatId}:10` },
+      },
+    });
+    expect(JSON.stringify(disabledDelivery.normalizedEvent)).not.toContain(
+      "disabled-group-private-marker",
+    );
+    expect(JSON.stringify(disabledDelivery.normalizedEvent)).not.toContain(
+      "telegram-disabled-user",
+    );
+    expect(await service.listConversations(endpoint.id)).toEqual([]);
+    expect(wakeup).not.toHaveBeenCalled();
+    await expect(
+      db
+        .select({ id: chatExternalPrincipals.id })
+        .from(chatExternalPrincipals)
+        .where(
+          and(
+            eq(chatExternalPrincipals.companyId, fixture.companyId),
+            eq(chatExternalPrincipals.provider, "telegram"),
+          ),
+        ),
+    ).resolves.toHaveLength(0);
+
+    await service.replaceResources(endpoint.id, [
+      { id: resource!.id, enabled: true },
+    ]);
+    await invokeTaskCommand({ messageId: 11, prompt: "" });
+    expect(await service.listConversations(endpoint.id)).toEqual([]);
+    expect(wakeup).not.toHaveBeenCalled();
+    expect(
+      runtime.endpoints.get(endpoint.id)?.posts.map((post) => post.text),
+    ).toEqual([
+      expect.stringMatching(
+        /^Please include a request after \/task@paperclip_\d+_bot\.$/,
+      ),
+    ]);
+    runtime.endpoints.get(endpoint.id)!.posts.length = 0;
+
+    await invokeTaskCommand({
+      messageId: 12,
+      prompt: "create the enabled group task",
+      document: {
+        fileId: "telegram-captioned-command-file",
+        fileName: "captioned-command.txt",
+        fileSize: 41,
+        mimeType: "text/plain",
+      },
+    });
+    // Exact provider redelivery of the same command remains one task turn.
+    await invokeTaskCommand({
+      messageId: 12,
+      prompt: "create the enabled group task",
+      document: {
+        fileId: "telegram-captioned-command-file",
+        fileName: "captioned-command.txt",
+        fileSize: 41,
+        mimeType: "text/plain",
+      },
+    });
+    const [groupConversation] = await service.listConversations(endpoint.id);
+    if (!groupConversation)
+      throw new Error("Expected enabled Telegram group conversation");
+    expect(wakeup).toHaveBeenCalledTimes(1);
+    const captionedDelivery = await db
+      .select()
+      .from(chatDeliveries)
+      .where(
+        eq(chatDeliveries.providerEventId, `${group.thread.id}:${chatId}:12`),
+      )
+      .then((rows) => rows[0]);
+    expect(captionedDelivery?.normalizedEvent).toMatchObject({
+      message: {
+        attachments: [
+          {
+            name: "captioned-command.txt",
+            mimeType: "text/plain",
+            size: 41,
+            recovery: {
+              locator: {
+                kind: "test_attachment",
+                recoveryKey: "telegram-captioned-command-file",
+              },
+            },
+          },
+        ],
+      },
+    });
+
+    await deliverMessage({
+      callbacks,
+      endpointId: endpoint.id,
+      provider: "telegram",
+      thread: group.thread,
+      message: makeMessage({
+        id: `${chatId}:13`,
+        text: "unrelated-subscribed-private-marker",
+        userId: "telegram-bystander",
+      }),
+      trigger: "subscribed_message",
+    });
+    const unaddressedDelivery = await db
+      .select()
+      .from(chatDeliveries)
+      .where(
+        eq(chatDeliveries.providerEventId, `${group.thread.id}:${chatId}:13`),
+      )
+      .then((rows) => rows[0]);
+    expect(unaddressedDelivery).toMatchObject({
+      state: "filtered",
+      attempts: 0,
+      principalId: null,
+      redactedError: "Message did not address the agent",
+      normalizedEvent: { filtering: { contentRetained: false } },
+    });
+    expect(JSON.stringify(unaddressedDelivery.normalizedEvent)).not.toContain(
+      "unrelated-subscribed-private-marker",
+    );
+    expect(JSON.stringify(unaddressedDelivery.normalizedEvent)).not.toContain(
+      "telegram-bystander",
+    );
+    expect(wakeup).toHaveBeenCalledTimes(1);
+
+    // The pinned Telegram adapter marks a direct reply to the bot as a
+    // mention. Simulate that normalized contract on the subscribed path.
+    await deliverMessage({
+      callbacks,
+      endpointId: endpoint.id,
+      provider: "telegram",
+      thread: group.thread,
+      message: makeMessage({
+        id: `${chatId}:14`,
+        text: "continue by replying directly to Maya",
+        mentioned: true,
+        userId: "telegram-group-user",
+      }),
+      trigger: "subscribed_message",
+    });
+    expect(wakeup).toHaveBeenCalledTimes(2);
+
+    const topicId = 91;
+    const topic = makeThread({
+      channelId: chatId,
+      id: `telegram:${chatId}:${topicId}`,
+      name: "Telegram production group",
+    });
+    await invokeTaskCommand({
+      messageId: 20,
+      prompt: "create a topic-bound task",
+      threadId: topic.thread.id,
+      topicId,
+    });
+    await deliverMessage({
+      callbacks,
+      endpointId: endpoint.id,
+      provider: "telegram",
+      thread: topic.thread,
+      message: makeMessage({
+        id: `${chatId}:21`,
+        raw: { message_id: 21, message_thread_id: topicId },
+        text: "unrelated-topic-private-marker",
+        userId: "telegram-topic-bystander",
+      }),
+      trigger: "subscribed_message",
+    });
+
+    const conversations = await service.listConversations(endpoint.id);
+    expect(conversations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: groupConversation.id,
+          issueId: groupConversation.issueId,
+        }),
+        expect.objectContaining({
+          externalThreadId: topic.thread.id,
+          sessionGeneration: 1,
+        }),
+      ]),
+    );
+    expect(conversations).toHaveLength(2);
+    expect(wakeup).toHaveBeenCalledTimes(3);
+    await expect(
+      db
+        .select({ body: issueComments.body })
+        .from(issueComments)
+        .where(eq(issueComments.issueId, groupConversation.issueId))
+        .orderBy(asc(issueComments.createdAt), asc(issueComments.id)),
+    ).resolves.toEqual([
+      { body: "create the enabled group task" },
+      { body: "continue by replying directly to Maya" },
+    ]);
+    const topicConversation = conversations.find(
+      (candidate) => candidate.externalThreadId === topic.thread.id,
+    )!;
+    await expect(
+      db
+        .select({ body: issueComments.body })
+        .from(issueComments)
+        .where(eq(issueComments.issueId, topicConversation.issueId)),
+    ).resolves.toEqual([{ body: "create a topic-bound task" }]);
+    await expect(
+      db
+        .select({ id: chatExternalPrincipals.id })
+        .from(chatExternalPrincipals)
+        .where(
+          and(
+            eq(chatExternalPrincipals.companyId, fixture.companyId),
+            eq(chatExternalPrincipals.provider, "telegram"),
+            inArray(chatExternalPrincipals.externalId, [
+              "telegram-bystander",
+              "telegram-topic-bystander",
+            ]),
+          ),
+        ),
+    ).resolves.toHaveLength(0);
+  });
+
+  it("ingests bounded Telegram photo, audio, video, and document attachments without stranding text", async () => {
+    const fixture = await seedCompany();
+    const storage = createStorageService();
+    const runtime = new FakeChatSdkRuntime();
+    const { service, wakeup } = createService(
+      runtime,
+      fakeTelegramFetch() as typeof globalThis.fetch,
+      {
+        storage: storage.storage,
+      },
+    );
+    const endpoint = await service.create(
+      fixture.companyId,
+      { provider: "telegram", assignedAgentId: fixture.assignedAgentId },
+      "owner-user",
+    );
+    await service.configure(
+      endpoint.id,
+      {
+        action: "configure",
+        credentials: { botToken: "123456:telegram-media-test" },
+      },
+      "owner-user",
+    );
+    const callbacks = runtime.configurations.get(endpoint.id)?.callbacks;
+    if (!callbacks) throw new Error("Expected Telegram media callbacks");
+
+    const accepted = [
+      {
+        type: "image",
+        name: "photo.jpg",
+        mimeType: "image/jpeg",
+        body: Buffer.from("photo"),
+      },
+      {
+        type: "audio",
+        name: "voice.ogg",
+        mimeType: "audio/ogg",
+        body: Buffer.from("voice"),
+      },
+      {
+        type: "video",
+        name: "clip.mp4",
+        mimeType: "video/mp4",
+        body: Buffer.from("video"),
+      },
+      {
+        type: "file",
+        name: "notes.txt",
+        mimeType: "text/plain",
+        body: Buffer.from("notes"),
+      },
+    ] as const;
+    const acceptedFetches = accepted.map(({ body }) => vi.fn(async () => body));
+    const oversizedDeclaredFetch = vi.fn(async () =>
+      Buffer.from("must-not-download"),
+    );
+    const rejectedTypeFetch = vi.fn(async () =>
+      Buffer.from("must-not-download"),
+    );
+    const oversizedDownloadedFetch = vi.fn(async () =>
+      Buffer.alloc(MAX_ATTACHMENT_BYTES + 1),
+    );
+    const emptyFetch = vi.fn(async () => Buffer.alloc(0));
+    const failedDownload = vi.fn(async () => {
+      throw new Error("injected Telegram download failure");
+    });
+    const attachments: Attachment[] = [
+      ...accepted.map(
+        (item, index) =>
+          ({
+            type: item.type,
+            name: item.name,
+            mimeType: item.mimeType,
+            size: item.body.length,
+            fetchData: acceptedFetches[index],
+            fetchMetadata: { testRecoveryKey: `telegram-media-${index}` },
+          }) as Attachment,
+      ),
+      {
+        type: "file",
+        name: "declared-too-large.txt",
+        mimeType: "text/plain",
+        size: MAX_ATTACHMENT_BYTES + 1,
+        fetchData: oversizedDeclaredFetch,
+      },
+      {
+        type: "file",
+        name: "payload.exe",
+        mimeType: "application/x-msdownload",
+        size: 4,
+        fetchData: rejectedTypeFetch,
+      },
+      {
+        type: "file",
+        name: "downloaded-too-large.txt",
+        mimeType: "text/plain",
+        fetchData: oversizedDownloadedFetch,
+      },
+      {
+        type: "file",
+        name: "empty.txt",
+        mimeType: "text/plain",
+        fetchData: emptyFetch,
+      },
+      {
+        type: "file",
+        name: "unavailable.txt",
+        mimeType: "text/plain",
+        fetchData: failedDownload,
+      },
+    ];
+    const dm = makeThread({
+      channelId: "77115566",
+      id: "telegram:77115566",
+      isDM: true,
+      name: "Telegram media DM",
+    });
+    await deliverMessage({
+      callbacks,
+      endpointId: endpoint.id,
+      provider: "telegram",
+      thread: dm.thread,
+      message: makeMessage({
+        attachments,
+        id: "77115566:40",
+        text: "",
+        userId: "77115566",
+      }),
+      trigger: "direct_message",
+    });
+
+    expect(
+      acceptedFetches.every((fetchData) => fetchData.mock.calls.length === 1),
+    ).toBe(true);
+    expect(oversizedDeclaredFetch).not.toHaveBeenCalled();
+    expect(rejectedTypeFetch).not.toHaveBeenCalled();
+    expect(oversizedDownloadedFetch).toHaveBeenCalledTimes(1);
+    expect(emptyFetch).toHaveBeenCalledTimes(1);
+    expect(failedDownload).toHaveBeenCalledTimes(1);
+    expect(storage.putFile).toHaveBeenCalledTimes(4);
+    const [delivery] = await db
+      .select()
+      .from(chatDeliveries)
+      .where(eq(chatDeliveries.endpointId, endpoint.id));
+    expect(delivery).toMatchObject({
+      state: "processed",
+      attempts: 1,
+      redactedError: expect.stringContaining(
+        "5 external attachments were omitted",
+      ),
+    });
+    expect(delivery.redactedError).toContain("declared too large: 1");
+    expect(delivery.redactedError).toContain("unsupported type: 1");
+    expect(delivery.redactedError).toContain("downloaded too large: 1");
+    expect(delivery.redactedError).toContain("empty download: 1");
+    expect(delivery.redactedError).toContain("processing failed: 1");
+    expect(delivery.redactedError).not.toContain("unavailable.txt");
+    await expect(service.listActivity(endpoint.id)).resolves.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: delivery.id,
+          status: "processed",
+          detail: expect.stringContaining(
+            "5 external attachments were omitted",
+          ),
+        }),
+      ]),
+    );
+    const [conversation] = await service.listConversations(endpoint.id);
+    if (!conversation) throw new Error("Expected Telegram media conversation");
+    await expect(
+      db
+        .select({
+          contentType: assets.contentType,
+          originalFilename: assets.originalFilename,
+        })
+        .from(issueAttachments)
+        .innerJoin(assets, eq(assets.id, issueAttachments.assetId))
+        .where(eq(issueAttachments.issueId, conversation.issueId)),
+    ).resolves.toEqual(
+      expect.arrayContaining(
+        accepted.map((item) => ({
+          contentType: item.mimeType,
+          originalFilename: item.name,
+        })),
+      ),
+    );
+    expect(wakeup).toHaveBeenCalledTimes(1);
+  });
+
+  it("honors Telegram flood-control timing and publishes one final message after retry", async () => {
+    const fixture = await seedCompany();
+    const { callbacks, endpoint, runtime, service } =
+      await configuredTelegramEndpoint(fixture);
+    const dm = makeThread({
+      channelId: "77116677",
+      id: "telegram:77116677",
+      isDM: true,
+      name: "Telegram flood-control DM",
+    });
+    await deliverMessage({
+      callbacks,
+      endpointId: endpoint.id,
+      provider: "telegram",
+      thread: dm.thread,
+      message: makeMessage({
+        id: "77116677:50",
+        text: "Exercise Telegram flood control",
+        userId: "77116677",
+      }),
+      trigger: "direct_message",
+    });
+    await qualifySetupRoundTrip(service, endpoint.id, "77116677");
+    await service.test(endpoint.id, "owner-user");
+    const [conversation] = await service.listConversations(endpoint.id);
+    if (!conversation)
+      throw new Error("Expected Telegram flood-control conversation");
+    const comment = await issueService(db).addComment(
+      conversation.issueId,
+      "Telegram flood-control final",
+      { userId: "owner-user" },
+      { authorType: "user" },
+    );
+    const providerRuntime = runtime.endpoints.get(endpoint.id);
+    if (!providerRuntime) throw new Error("Expected Telegram provider runtime");
+    providerRuntime.postError = Object.assign(
+      new Error("Telegram flood control"),
+      {
+        name: "AdapterRateLimitError",
+        adapter: "telegram",
+        code: "RATE_LIMITED",
+        retryAfter: 7,
+      },
+    );
+    const beforeAttempt = Date.now();
+    await service.publishComment(endpoint.id, conversation.id, comment.id);
+    const [retrying] = await db
+      .select()
+      .from(chatPublications)
+      .where(eq(chatPublications.commentId, comment.id));
+    expect(retrying).toMatchObject({ state: "retry", attempts: 1 });
+    expect(retrying.nextAttemptAt?.getTime()).toBeGreaterThanOrEqual(
+      beforeAttempt + 6_500,
+    );
+    expect(providerRuntime.posts).toEqual([]);
+
+    providerRuntime.postError = null;
+    await db
+      .update(chatPublications)
+      .set({ nextAttemptAt: new Date(0) })
+      .where(eq(chatPublications.id, retrying.id));
+    await service.processPendingPublications();
+    await expect(
+      db
+        .select({
+          attempts: chatPublications.attempts,
+          state: chatPublications.state,
+        })
+        .from(chatPublications)
+        .where(eq(chatPublications.id, retrying.id)),
+    ).resolves.toEqual([{ attempts: 2, state: "published" }]);
+    expect(providerRuntime.posts).toEqual([
+      { threadId: dm.thread.id, text: "Telegram flood-control final" },
+    ]);
+  });
+
+  it("recovers the same Telegram bot and historical task after token rotation", async () => {
+    const fixture = await seedCompany();
+    const firstToken = "445500:telegram-rotation-first";
+    const replacementToken = "445500:telegram-rotation-replacement";
+    const registeredTokens: string[] = [];
+    const providerFetch = vi.fn(async (input: string | URL | Request) => {
+      const url = String(input);
+      const token = url.includes(encodeURIComponent(replacementToken))
+        ? replacementToken
+        : firstToken;
+      if (url.endsWith("/getMe")) {
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            result: {
+              id: 445500,
+              username: "maya_rotation_bot",
+              first_name: "Maya",
+            },
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      if (url.endsWith("/getWebhookInfo")) {
+        return new Response(JSON.stringify({ ok: true, result: { url: "" } }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (url.endsWith("/setWebhook")) {
+        registeredTokens.push(token);
+        return new Response(JSON.stringify({ ok: true, result: true }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (url.endsWith("/setMyCommands")) {
+        return new Response(JSON.stringify({ ok: true, result: true }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      throw new Error("Unexpected Telegram rotation fixture request");
+    }) as typeof globalThis.fetch;
+    const runtime = new FakeChatSdkRuntime();
+    const { service } = createService(runtime, providerFetch);
+    const endpoint = await service.create(
+      fixture.companyId,
+      { provider: "telegram", assignedAgentId: fixture.assignedAgentId },
+      "owner-user",
+    );
+    await service.configure(
+      endpoint.id,
+      { action: "configure", credentials: { botToken: firstToken } },
+      "owner-user",
+    );
+    const firstCallbacks = runtime.configurations.get(endpoint.id)?.callbacks;
+    if (!firstCallbacks) throw new Error("Expected initial Telegram callbacks");
+    const dm = makeThread({
+      channelId: "77117788",
+      id: "telegram:77117788",
+      isDM: true,
+      name: "Telegram rotation DM",
+    });
+    await deliverMessage({
+      callbacks: firstCallbacks,
+      endpointId: endpoint.id,
+      provider: "telegram",
+      thread: dm.thread,
+      message: makeMessage({
+        id: "77117788:60",
+        text: "Create the durable task before rotation",
+        userId: "77117788",
+      }),
+      trigger: "direct_message",
+    });
+    await qualifySetupRoundTrip(service, endpoint.id, "77117788");
+    await service.test(endpoint.id, "owner-user");
+    const [beforeRotation] = await service.listConversations(endpoint.id);
+    if (!beforeRotation)
+      throw new Error("Expected pre-rotation Telegram conversation");
+
+    const failureComment = await issueService(db).addComment(
+      beforeRotation.issueId,
+      "Detect revoked Telegram credentials",
+      { userId: "owner-user" },
+      { authorType: "user" },
+    );
+    const activeRuntime = runtime.endpoints.get(endpoint.id);
+    if (!activeRuntime) throw new Error("Expected active Telegram runtime");
+    activeRuntime.postError = Object.assign(new Error("Unauthorized"), {
+      name: "AuthenticationError",
+      adapter: "telegram",
+      code: "AUTH_FAILED",
+    });
+    await service.publishComment(
+      endpoint.id,
+      beforeRotation.id,
+      failureComment.id,
+    );
+    await expect(service.get(endpoint.id)).resolves.toMatchObject({
+      status: "attention",
+      healthMessage: "Provider credentials or permissions need attention",
+    });
+    expect(runtime.endpoints.has(endpoint.id)).toBe(false);
+
+    const reconnected = await service.configure(
+      endpoint.id,
+      { action: "reconnect", credentials: { botToken: replacementToken } },
+      "owner-user",
+    );
+    expect(reconnected).toMatchObject({
+      status: "verifying",
+      botExternalId: "445500",
+      botUsername: "maya_rotation_bot",
+      setup: { step: "test" },
+    });
+    expect(registeredTokens).toEqual([firstToken, replacementToken]);
+    const replacementCallbacks = runtime.configurations.get(
+      endpoint.id,
+    )?.callbacks;
+    if (!replacementCallbacks)
+      throw new Error("Expected replacement Telegram callbacks");
+    await deliverMessage({
+      callbacks: replacementCallbacks,
+      endpointId: endpoint.id,
+      provider: "telegram",
+      thread: dm.thread,
+      message: makeMessage({
+        id: "77117788:61",
+        text: "Continue the same task after rotation",
+        userId: "77117788",
+      }),
+      trigger: "direct_message",
+    });
+    await qualifySetupRoundTrip(service, endpoint.id, "77117788");
+    await service.test(endpoint.id, "owner-user");
+
+    const [afterRotation] = await service.listConversations(endpoint.id);
+    expect(afterRotation).toMatchObject({
+      id: beforeRotation.id,
+      issueId: beforeRotation.issueId,
+      state: "active",
+    });
+    await expect(
+      db
+        .select({ body: issueComments.body })
+        .from(issueComments)
+        .where(eq(issueComments.issueId, beforeRotation.issueId)),
+    ).resolves.toEqual(
+      expect.arrayContaining([
+        { body: "Create the durable task before rotation" },
+        { body: "Continue the same task after rotation" },
+      ]),
+    );
+    const safeEndpoint = await service.get(endpoint.id);
+    expect(safeEndpoint.status).toBe("active");
+    expect(JSON.stringify(safeEndpoint)).not.toContain(firstToken);
+    expect(JSON.stringify(safeEndpoint)).not.toContain(replacementToken);
   });
 });

@@ -114,6 +114,20 @@ describe("matchesContentType", () => {
       expect(matchesContentType(contentType, [...DEFAULT_ALLOWED_TYPES])).toBe(true);
     }
   });
+
+  it("allows common chat audio types by default", () => {
+    for (const contentType of [
+      "audio/mpeg",
+      "audio/mp4",
+      "audio/ogg",
+      "audio/wav",
+      "audio/webm",
+    ]) {
+      expect(matchesContentType(contentType, [...DEFAULT_ALLOWED_TYPES])).toBe(
+        true,
+      );
+    }
+  });
 });
 
 describe("normalizeContentType", () => {

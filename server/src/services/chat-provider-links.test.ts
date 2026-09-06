@@ -15,6 +15,14 @@ describe("chat provider conversation links", () => {
     );
     expect(
       chatProviderConversationUrl({
+        provider: "slack",
+        providerAccountId: "T123",
+        threadId: "slack:D456:",
+        providerMessageId: "1712345678.000100",
+      }),
+    ).toBe("https://slack.com/app_redirect?channel=D456&team=T123");
+    expect(
+      chatProviderConversationUrl({
         provider: "github",
         threadId: "github:paperclipai/paperclip:issue:42",
         providerMessageId: "99",

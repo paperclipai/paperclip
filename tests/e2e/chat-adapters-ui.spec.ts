@@ -678,6 +678,8 @@ settings:
       - message.mpim
       - member_joined_channel
       - member_left_channel
+      - channel_left
+      - group_left
       - reaction_added
       - reaction_removed
       - channel_archive
@@ -788,6 +790,10 @@ async function expectMinimumProviderSetup(page: Page, provider: ProviderCase) {
 
   await expect(page.getByText("/newbot", { exact: true })).toBeVisible();
   await expect(page.getByText(/username ending in/)).toBeVisible();
+  await expect(page.getByText(/\/task@bot_username/)).toBeVisible();
+  await expect(
+    page.getByText(/ordinary mentions are not delivered/),
+  ).toBeVisible();
   await expect(page.getByLabel("Bot token")).toHaveAttribute(
     "type",
     "password",

@@ -148,8 +148,15 @@ export function chatProviderConversationUrl(
     return null;
   }
   if (input.provider === "slack" && input.providerAccountId) {
-    const match = /^slack:([^:]+):(.+)$/.exec(input.threadId);
+    const match = /^slack:([^:]+):(.*)$/.exec(input.threadId);
     if (!match) return null;
+    if (!match[2]) {
+      const params = new URLSearchParams({
+        channel: match[1],
+        team: input.providerAccountId,
+      });
+      return `https://slack.com/app_redirect?${params.toString()}`;
+    }
     return `https://app.slack.com/client/${encodeURIComponent(input.providerAccountId)}/${encodeURIComponent(match[1])}/thread/${encodeURIComponent(`${match[1]}-${match[2].replace(".", "")}`)}`;
   }
   if (input.provider === "microsoft-teams") return teamsConversationLink(input);

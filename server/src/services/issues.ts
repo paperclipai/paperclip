@@ -592,6 +592,18 @@ function withAgentCommentAuthorizationMetadata(
 }
 
 /**
+ * Chat-origin runs may create internal presentation and bookkeeping comments.
+ * Only comments produced through an explicit agent write surface are authored
+ * for the external conversation and therefore eligible for auto-publication.
+ */
+export function isExplicitExternalAgentComment(
+  metadata: IssueCommentMetadata | null | undefined,
+): boolean {
+  const reason = metadata?.authorizationReason?.trim() ?? "";
+  return reason === "paperclip_runner_protocol" || reason.startsWith("allow_");
+}
+
+/**
  * Best-effort agent attribution for comments whose stored author is a non-human
  * sentinel (e.g. `local-board`). Callers MUST pre-filter `comments` to drop any
  * comment whose `authorUserId` maps to a genuine user profile so a real board /
@@ -9230,11 +9242,11 @@ export function issueService(db: Db) {
         .set({ updatedAt: new Date() })
         .where(eq(issues.id, issueId));
 
-      // Only a comment from the run causally woken by an inbound chat message
-      // is automatically publishable. Recovery, automation, and ordinary
-      // internal agent comments stay in Paperclip even while a bound
-      // conversation is active.
-      if (authorType === "agent") {
+      // Only an explicitly authored comment from the run causally woken by an
+      // inbound chat message is automatically publishable. Presentation,
+      // recovery, automation, and ordinary internal agent comments stay in
+      // Paperclip even while a bound conversation is active.
+      if (authorType === "agent" && isExplicitExternalAgentComment(metadata)) {
         const bindings = await resolveChatOriginPublicationBindings(
           dbOrTx,
           issue.companyId,
@@ -9326,6 +9338,7 @@ export function issueService(db: Db) {
         authorType: string | null;
         authorAgentId: string | null;
         createdByRunId: string | null;
+        metadata: IssueCommentMetadata | null;
       } | null = null;
       if (input.issueCommentId) {
         parentComment = await db
@@ -9336,6 +9349,7 @@ export function issueService(db: Db) {
             authorType: issueComments.authorType,
             authorAgentId: issueComments.authorAgentId,
             createdByRunId: issueComments.createdByRunId,
+            metadata: issueComments.metadata,
           })
           .from(issueComments)
           .where(eq(issueComments.id, input.issueCommentId))
@@ -9417,7 +9431,8 @@ export function issueService(db: Db) {
           registeredRunId &&
           parentComment?.authorType === "agent" &&
           parentComment.authorAgentId === input.createdByAgentId &&
-          parentComment.createdByRunId === registeredRunId
+          parentComment.createdByRunId === registeredRunId &&
+          isExplicitExternalAgentComment(parentComment.metadata)
         ) {
           const bindings = await resolveChatOriginPublicationBindings(
             tx,

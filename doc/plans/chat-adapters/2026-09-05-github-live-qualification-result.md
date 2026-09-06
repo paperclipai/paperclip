@@ -2,6 +2,15 @@
 
 > **Status: current setup-path hardening plus historical core-smoke evidence, not current live release qualification.** No current-branch GitHub webhook/task round trip has run. The setup flow is still blocked at GitHub's six-digit sudo verification prompt, and the older provider round trip below must not be treated as a rerun of the current source.
 
+## 2026-09-06 evidence checkpoint
+
+The evidence boundary is unchanged but is now quantified more precisely:
+
+- The archived endpoint `4e87c64e-7d0b-497d-85d2-6eb8820340fc` is genuine historical transport proof. One GitHub issue mapped to one Paperclip task; two inbound issue comments were recorded; an exact webhook redelivery folded into the existing delivery; and six outbound publications reached GitHub in one attempt each.
+- Four agent runs in that historical task failed closed because the principal was unlinked and the instance had no low-trust isolation environment. That is a Paperclip governance boundary, not a GitHub transport failure, and it must not be presented as successful agent execution.
+- The current draft endpoint whose id begins `a31` contains only a Paperclip-generated webhook secret. It has no verified GitHub App identity, private key, installation, repository, signed ping, conversation, or task.
+- Current setup is stopped at GitHub's **Confirm access** MFA challenge. That is an external account gate, not an implementation defect. Current-source live qualification cannot resume until the account owner completes that challenge and creates/installs the disposable App.
+
 ## Current-run evidence and blocker
 
 - Final locally verified source revision: `6f13ec09e95717c4b3b248d1d8cb9ca4e55754ab`

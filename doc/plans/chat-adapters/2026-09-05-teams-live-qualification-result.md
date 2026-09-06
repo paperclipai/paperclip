@@ -2,6 +2,22 @@
 
 > **Status: blocked before provider setup; no live Teams scenario executed.** The branch contains substantial Teams hardening and local regression coverage, but none of it is real-provider evidence. This document is a blocker record, not a PASS.
 
+## 2026-09-06 live-attempt checkpoint
+
+Paperclip endpoint `00758007-1c59-45e9-bbef-3dc92c0fb20c` remains `draft` at `provider_setup`. Its connection has zero credential secret references, zero deliveries, zero conversations, and only the endpoint-creation audit row. The public messaging endpoint is reachable at:
+
+`https://richard-expansion-females-bedford.trycloudflare.com/api/chat-webhooks/2KMDqYFTcPXmEQVewVqmwMhBOnJyX7jJnzkjWOBNaqw/microsoft-teams`
+
+An unauthenticated probe returned the expected `409 chat_endpoint_runtime_unavailable` while the endpoint is draft. This proves public routing and fail-closed state handling, not Microsoft webhook authentication or a Teams round trip.
+
+The signed-in session is still the personal/free surface at `https://teams.live.com/v2/`. The exact external gates are:
+
+- `https://entra.microsoft.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade` — a Microsoft 365 work/school tenant identity allowed to register applications;
+- `https://portal.azure.com/#create/Microsoft.AzureBot` — Azure subscription/resource-group permission to create the single-tenant Azure Bot used by the documented manual path; and
+- `https://dev.teams.microsoft.com/apps` — custom-app upload permission, or tenant-admin publication/approval.
+
+No implementation defect was observed in this blocked attempt. The blocker is the absence of a usable Microsoft 365 organization/tenant and its required provider permissions, not a Paperclip credential or webhook failure. Teams-focused local verification at this checkpoint passed 28 focused server tests, 11 shared credential-validation tests, and 12 fresh-database integration tests; those results remain local evidence only.
+
 ## Attempted environment
 
 - Final locally verified source revision: `6f13ec09e95717c4b3b248d1d8cb9ca4e55754ab`

@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { normalizeMicrosoftTeamsCredentialIds } from "./chat-teams-credentials.js";
+import {
+  normalizeMicrosoftTeamsCredentialIds,
+  normalizeMicrosoftTeamsExternalPrincipalId,
+} from "./chat-teams-credentials.js";
 
 describe("Microsoft Teams service credential normalization", () => {
   it("canonicalizes IDs without changing or mutating the client secret", () => {
@@ -40,5 +43,23 @@ describe("Microsoft Teams service credential normalization", () => {
         }),
       }),
     );
+  });
+
+  it("canonicalizes an Entra user object id and otherwise preserves the adapter identity", () => {
+    expect(
+      normalizeMicrosoftTeamsExternalPrincipalId(
+        " 76D0CB17-5EC4-4B3D-983B-DA8A01DC02C4 ",
+        "29:adapter-user",
+      ),
+    ).toBe("76d0cb17-5ec4-4b3d-983b-da8a01dc02c4");
+    expect(
+      normalizeMicrosoftTeamsExternalPrincipalId(undefined, "29:adapter-user"),
+    ).toBe("29:adapter-user");
+    expect(
+      normalizeMicrosoftTeamsExternalPrincipalId(
+        "not-an-entra-id",
+        "29:adapter-user",
+      ),
+    ).toBe("29:adapter-user");
   });
 });
