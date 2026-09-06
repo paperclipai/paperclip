@@ -621,7 +621,7 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     },
   );
 
-  it("releases the final continuation gate at non-process adapter dispatch", async () => {
+  it("releases the final continuation gate at adapter handoff before adapter DB callbacks", async () => {
     const { companyId, agentId } = await seedCompanyAndAgent();
     const issueId = randomUUID();
     await db.insert(issues).values({
@@ -677,18 +677,20 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
       expect(ordering).toEqual(["validated"]);
     };
     mockAdapterExecute.mockImplementation(async (context) => {
+      ordering.push("handed-off");
       // Real adapters record invocation metadata before process/remote
-      // dispatch. Its heartbeat_run_events FK takes a KEY SHARE lock on the
-      // run, which must remain compatible with the final gate's run lock.
+      // dispatch. Event sequencing updates the run row, so adapter-owned DB
+      // callbacks must execute after the atomic gate releases its locks.
       await context.onMeta?.({ adapterType: "test", command: "test" });
+      ordering.push("metadata-recorded");
       ordering.push("preparing");
       // Model asynchronous adapter setup before the child process exists.
       await new Promise((resolve) => setTimeout(resolve, 25));
-      expect(ordering).toEqual(["validated", "preparing"]);
+      await waitForCondition(async () => ordering.includes("parked"));
+      expect(ordering.slice(0, 2)).toEqual(["validated", "handed-off"]);
+      expect(ordering).toEqual(expect.arrayContaining(["metadata-recorded", "preparing", "parked"]));
       ordering.push("dispatched");
       context.onDispatch?.();
-      await waitForCondition(async () => ordering.includes("parked"));
-      expect(ordering).toEqual(["validated", "preparing", "dispatched", "parked"]);
       ordering.push("settled");
       return {
         exitCode: 0,
@@ -718,7 +720,9 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
       .where(eq(issues.id, issueId))
       .then((rows) => rows[0] ?? null);
     expect(issue?.status).toBe("backlog");
-    expect(ordering).toEqual(["validated", "preparing", "dispatched", "parked", "settled"]);
+    expect(ordering.slice(0, 2)).toEqual(["validated", "handed-off"]);
+    expect(ordering.slice(-2)).toEqual(["dispatched", "settled"]);
+    expect(ordering).toEqual(expect.arrayContaining(["metadata-recorded", "preparing", "parked"]));
     expect(countExecuteCallsForRun(runId)).toBe(1);
   });
 

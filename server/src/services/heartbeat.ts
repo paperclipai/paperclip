@@ -18866,6 +18866,11 @@ export function heartbeatService(
               runId: run.id,
               issueId,
             });
+            // The adapter owns everything after this handoff, including run-log
+            // writes which allocate an event sequence by updating the run row.
+            // Release the validation locks before invoking adapter code so those
+            // callbacks cannot self-deadlock against this transaction.
+            markDispatchStarted();
             return dispatch(markDispatchStarted);
           },
         });

@@ -198,11 +198,10 @@ export function createPostgresRunDispatchAdapter(
             .where(
               and(eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.companyId, input.companyId)),
             )
-            // Status writers still conflict with NO KEY UPDATE, while event
-            // inserts may take the FK's KEY SHARE lock before dispatch. A full
-            // UPDATE lock self-blocks adapters that record invocation metadata
-            // before reporting process/remote dispatch.
-            .for("no key update")
+            // Keep the run status stable through the semantic decision and any
+            // resulting mutation. Adapter-owned work starts only after this
+            // transaction releases the lock at the handoff boundary.
+            .for("update")
             .then((rows) => rows[0] ?? null);
           if (!run) return { kind: "missing" as const };
 
