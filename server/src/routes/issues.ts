@@ -3096,6 +3096,12 @@ export function issueRoutes(
         return workspace && workspace.companyId === companyId ? workspace.projectId ?? null : null;
       },
       getExecutionWorkspaceProjectId: async (executionWorkspaceId) => {
+        // With isolated workspaces off, `issueService.create` deletes
+        // `executionWorkspaceId` before deriving anything from it, so the
+        // signal yields no project no matter what the workspace row says.
+        // Answering it here anyway would suppress inference for a field the
+        // service is about to discard.
+        if (!(await instanceSettings.getExperimental()).enableIsolatedWorkspaces) return null;
         const workspace = await db
           .select({ companyId: executionWorkspaces.companyId, projectId: executionWorkspaces.projectId })
           .from(executionWorkspaces)
@@ -9184,10 +9190,19 @@ export function issueRoutes(
         title: createBody.title,
         description: createBody.description,
       });
+    // What the issue's project will actually be, as far as the request can
+    // know it: the resolved explicit signal (which starts with the body's own
+    // `projectId`) or the inferred fallback. The assignment-scope and
+    // source-trust decisions below read this, never the raw body field — a
+    // project resolved through a parent or a workspace carries the same
+    // authorization policy as one named directly, and deciding trust against
+    // `null` while the service persists that project would let the task
+    // settle into a policy-bearing project on a policy-free verdict.
+    const effectiveProjectId = explicitProjectId ?? inferredProjectId ?? null;
     const createAssignmentScope = {
       projectId: await resolveAssignmentProjectId({
         companyId,
-        projectId: createBody.projectId ?? inferredProjectId ?? undefined,
+        projectId: effectiveProjectId ?? undefined,
         parentIssueId: createBody.parentId,
       }),
       parentIssueId: createBody.parentId ?? null,
@@ -9209,7 +9224,7 @@ export function issueRoutes(
     const sourceTrust = await sourceTrustForActorWrite({
       id: issueId,
       companyId,
-      projectId: createBody.projectId ?? inferredProjectId ?? null,
+      projectId: effectiveProjectId,
       executionPolicy,
     }, actor);
     let deduplicationReason: "idempotency_key" | "recent_open_title" | null = null;
@@ -9446,7 +9461,12 @@ export function issueRoutes(
         title: createBody.title,
         description: createBody.description,
       });
-    const childProjectId = createBody.projectId ?? inferredChildProjectId ?? parent.projectId ?? null;
+    // The resolved explicit signal already walks the body's `projectId`, the
+    // parent and the selected workspaces in the service's own application
+    // order, so it — plus the inferred fallback — is the project the child
+    // will actually land in. Scope and trust below must read that, not just
+    // the body field and the parent.
+    const childProjectId = explicitChildProjectId ?? inferredChildProjectId ?? null;
     const childAssignmentScope = {
       projectId: childProjectId,
       parentIssueId: parent.id,
