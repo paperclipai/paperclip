@@ -737,11 +737,9 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   async function seedStrandedIssueFixture(input: {
     status: "todo" | "in_progress";
     runStatus: "failed" | "timed_out" | "cancelled" | "succeeded";
-    retryReason?:
-      | "assignment_recovery"
-      | "issue_continuation_needed"
-      | "execution_review_participant_recovery"
-      | null;
+    // "process_lost" is the retryReason the process-loss retry path writes
+    // (heartbeat.ts:10187); real chains alternate it with "issue_continuation_needed".
+    retryReason?: "assignment_recovery" | "issue_continuation_needed" | "execution_review_participant_recovery" | "process_lost" | null;
     runSource?: string | null;
     assignToUser?: boolean;
     activePauseHold?: boolean;
@@ -8432,6 +8430,228 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
           row.value === "Board decision required",
       ),
     ).toBe(true);
+  });
+
+  // ---------------------------------------------------------------------------
+  // MAS-93: the continuation cap existed but never engaged, so retry chains ran
+  // unbounded (observed depth 11). Root cause was that the cap was gated on the
+  // latest run's retryReason being exactly "issue_continuation_needed", while real
+  // chains alternate that with "process_lost". These tests pin the reason-agnostic
+  // lineage behaviour that replaced it.
+  // ---------------------------------------------------------------------------
+
+  it("caps a continuation chain whose latest retry carries a non-continuation reason", async () => {
+    // The exact hop the old guard missed: this run IS an automatic-recovery retry,
+    // but its reason is "process_lost", so the reason-pinned guard read it as a
+    // first failure and requeued without counting it against any cap.
+    const { agentId, issueId, runId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+      retryReason: "process_lost",
+      runErrorCode: "process_lost",
+      runError: "run process exited before completion",
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+
+    expect(result.continuationRequeued).toBe(0);
+    expect(result.escalated).toBe(1);
+    expect(result.issueIds).toEqual([issueId]);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("blocked");
+
+    // No *continuation* retry may be enqueued. The escalation itself posts the
+    // blocked notice as a comment rather than spawning a recovery run (see the
+    // adjacent "blocks stranded in-progress work..." test for the same pattern
+    // against a different retryReason), so there is no second run to await here.
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+    const continuationRuns = runs.filter((row) =>
+      (row.contextSnapshot as Record<string, unknown> | null)?.source === "issue.continuation_recovery",
+    );
+    expect(continuationRuns).toHaveLength(0);
+    expect(runs).toHaveLength(1);
+    expect(runs[0]?.id).toBe(runId);
+
+    const comments = await db
+      .select()
+      .from(issueComments)
+      .where(eq(issueComments.issueId, issueId));
+    expect(comments.length).toBeGreaterThan(0);
+  });
+
+  it("detects recovery lineage from the retryOfRunId column with no retryReason in the snapshot", async () => {
+    // Lineage is read column-first so the cap does not depend on retryReason
+    // surviving in the JSON context snapshot. Seed with no retryReason at all and
+    // establish lineage purely via the column.
+    const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+      runErrorCode: "process_lost",
+      runError: "run process exited before completion",
+    });
+
+    const priorRunId = randomUUID();
+    const priorAt = new Date("2026-03-18T23:55:00.000Z");
+    await db.insert(heartbeatRuns).values({
+      id: priorRunId,
+      companyId,
+      agentId,
+      invocationSource: "automation",
+      triggerDetail: "system",
+      status: "failed",
+      contextSnapshot: { issueId, taskId: issueId, wakeReason: "issue_assigned" },
+      errorCode: "process_lost",
+      error: "run process exited before completion",
+      startedAt: priorAt,
+      finishedAt: priorAt,
+      createdAt: priorAt,
+      updatedAt: priorAt,
+    });
+    // Latest run is a retry of the prior one — lineage via the column only.
+    await db
+      .update(heartbeatRuns)
+      .set({ retryOfRunId: priorRunId })
+      .where(eq(heartbeatRuns.id, runId));
+
+    const latest = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)).then((r) => r[0]);
+    expect(latest?.retryOfRunId).toBe(priorRunId);
+    expect((latest?.contextSnapshot as Record<string, unknown>).retryReason).toBeUndefined();
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+
+    expect(result.continuationRequeued).toBe(0);
+    expect(result.escalated).toBe(1);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("blocked");
+  });
+
+  it("counts a mixed-reason retry streak toward the transient cap", async () => {
+    // Defect 2: the streak walk used to break on any reason change, so an
+    // alternating chain never counted past 1 and the cap of 3 was unreachable.
+    // Same error code throughout (adapter_failed -> transient_infra, cap 3), only
+    // the reason alternates.
+    const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+      retryReason: "issue_continuation_needed",
+      runErrorCode: "adapter_failed",
+      runError: "ssh: connection reset",
+    });
+
+    // Two earlier lineage retries with the *other* reason. Under the old walk these
+    // were invisible; under lineage matching they complete the streak of 3.
+    // Chained via retryOfRunId (the column has a self-FK, so each must point at a
+    // row that exists) to mirror a real alternating chain.
+    const backfill = [
+      { at: new Date("2026-03-18T23:50:00.000Z"), reason: "process_lost" },
+      { at: new Date("2026-03-18T23:55:00.000Z"), reason: "process_lost" },
+    ];
+    let previousRunId: string | null = null;
+    for (const { at, reason } of backfill) {
+      const id = randomUUID();
+      await db.insert(heartbeatRuns).values({
+        id,
+        companyId,
+        agentId,
+        invocationSource: "automation",
+        triggerDetail: "system",
+        status: "failed",
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          wakeReason: "process_lost_retry",
+          retryReason: reason,
+          source: "issue.continuation_recovery",
+        },
+        retryOfRunId: previousRunId,
+        errorCode: "adapter_failed",
+        error: "ssh: connection reset",
+        startedAt: at,
+        finishedAt: at,
+        createdAt: at,
+        updatedAt: at,
+      });
+      previousRunId = id;
+    }
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+
+    expect(result.continuationRequeued).toBe(0);
+    expect(result.escalated).toBe(1);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("blocked");
+  });
+
+  it("resets the retry streak after a successful run so long chains keep working", async () => {
+    // The one break condition that must survive: a successful run in between means
+    // the agent is making progress, and the chain must not be capped. Without this
+    // the fix would strand healthy long-running continuation work.
+    const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+      retryReason: "issue_continuation_needed",
+      runErrorCode: "adapter_failed",
+      runError: "ssh: connection reset",
+    });
+
+    const history: Array<{ at: Date; status: "failed" | "succeeded" }> = [
+      { at: new Date("2026-03-18T23:40:00.000Z"), status: "failed" },
+      { at: new Date("2026-03-18T23:45:00.000Z"), status: "failed" },
+      // Progress happened here — everything older is out of the streak.
+      { at: new Date("2026-03-18T23:55:00.000Z"), status: "succeeded" },
+    ];
+    let previousRunId: string | null = null;
+    for (const { at, status } of history) {
+      const id = randomUUID();
+      await db.insert(heartbeatRuns).values({
+        id,
+        companyId,
+        agentId,
+        invocationSource: "automation",
+        triggerDetail: "system",
+        status,
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          wakeReason: "issue_continuation_needed",
+          retryReason: "issue_continuation_needed",
+          source: "issue.continuation_recovery",
+        },
+        retryOfRunId: previousRunId,
+        errorCode: status === "succeeded" ? null : "adapter_failed",
+        error: status === "succeeded" ? null : "ssh: connection reset",
+        startedAt: at,
+        finishedAt: at,
+        createdAt: at,
+        updatedAt: at,
+      });
+      previousRunId = id;
+    }
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+
+    // Streak is 1 (the latest run only), below the transient cap of 3.
+    expect(result.continuationRequeued).toBe(1);
+    expect(result.escalated).toBe(0);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("in_progress");
+
+    const retryRun = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId))
+      .then((rows) => rows.find((row) => row.status === "queued") ?? null);
+    if (retryRun) {
+      await waitForRunToSettle(heartbeat, retryRun.id);
+    }
   });
 
   it("redacts error-code-only stranded recovery failures in issue copy", async () => {

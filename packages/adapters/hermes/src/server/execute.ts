@@ -228,6 +228,48 @@ const TOKEN_USAGE_REGEX =
 /** Regex to extract cost from Hermes output. */
 const COST_REGEX = /(?:cost|spent)[:\s]*\$?([\d.]+)/i;
 
+/**
+ * Terminal API-failure markers that Hermes writes to **stdout**, not stderr.
+ *
+ * Hermes exits 0 on these paths, so a run that did zero work otherwise reaches
+ * Paperclip with no exit code and no error text and records as `succeeded`.
+ *
+ * Only the terminal emissions are listed. The retry-attempt line
+ * ("API call failed (attempt 1/3)") and the "— trying fallback..." status lines
+ * are deliberately excluded: a run that recovers on a later attempt or on a
+ * fallback provider is a success, and matching those would fail it. Each
+ * descriptive variant below is matched by its trailing colon, which the
+ * "— trying fallback..." counterpart of the same message does not have.
+ *
+ * Ordered by informativeness only incidentally — the first matching *line* in
+ * stdout wins, and Hermes emits the descriptive line just before the bare
+ * "Aborting." line.
+ */
+const STDOUT_ABORT_REGEXES: RegExp[] = [
+  // Terminal non-retryable client error, with the summarized cause.
+  /Non-retryable error \(HTTP [^)]*\):/i,
+  // Same path, content-policy and TLS variants.
+  /Provider safety filter blocked this request:/i,
+  /TLS certificate verification failed:/i,
+  // Always emitted on the non-retryable terminal path, whatever the variant.
+  /Non-retryable client error \(HTTP [^)]*\)\.\s*Aborting\./i,
+  // Retry budget exhausted with no fallback left.
+  /API call failed after \d+ retries?:/i,
+  // Billing variant of the same terminal path.
+  /Billing or credits exhausted:/i,
+];
+
+/** Find the first stdout line that marks a terminal Hermes API abort. */
+function findStdoutAbortLine(stdout: string): string | undefined {
+  if (!stdout) return undefined;
+  for (const rawLine of stdout.split("\n")) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    if (STDOUT_ABORT_REGEXES.some((re) => re.test(line))) return line;
+  }
+  return undefined;
+}
+
 interface ParsedOutput {
   sessionId?: string;
   response?: string;
@@ -322,6 +364,16 @@ function parseHermesOutput(stdout: string, stderr: string): ParsedOutput {
       .filter((line) => !/INFO|DEBUG|warn/i.test(line)); // skip log-level noise
     if (errorLines.length > 0) {
       result.errorMessage = errorLines.slice(0, 5).join("\n");
+    }
+  }
+
+  // Hermes writes non-retryable API aborts to stdout and still exits 0, so
+  // neither the stderr scan above nor the nonzero-exit fallback in execute()
+  // sees them. Checked second so stderr stays the higher-priority source.
+  if (!result.errorMessage) {
+    const abortLine = findStdoutAbortLine(stdout);
+    if (abortLine) {
+      result.errorMessage = abortLine;
     }
   }
 
