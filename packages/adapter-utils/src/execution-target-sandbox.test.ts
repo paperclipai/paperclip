@@ -5750,7 +5750,9 @@ describe("sandbox adapter execution targets", () => {
     // concatenated copy `readBridgeForwardResponseBody` (`execution-target.ts`)
     // builds from it: a correct reader checks the reservation before
     // `Buffer.concat` allocates the copy, so the denied concatenated copy
-    // must never call `Buffer.concat` at all.
+    // must never call `Buffer.concat` at all. The same denial must also
+    // cancel the upstream response reader, instead of leaving it open after
+    // the throw.
     resetBridgeBodyReservationsForTest();
     const chunkBytes = 200_000;
     const filler = createBridgeBodyReservation();
@@ -5801,6 +5803,7 @@ describe("sandbox adapter execution targets", () => {
       enableSandboxDuplexBridge: true,
     });
     const concatSpy = vi.spyOn(Buffer, "concat");
+    const readerCancelSpy = vi.spyOn(ReadableStreamDefaultReader.prototype, "cancel");
     try {
       expect(bridge?.env.PAPERCLIP_API_BRIDGE_MODE).toBe("http2_v1");
       await waitForCondition(() => sessionRef.current !== null, "the http2 client session to open", 4000);
@@ -5835,7 +5838,11 @@ describe("sandbox adapter execution targets", () => {
       for (const [chunks] of concatSpy.mock.calls) {
         expect((chunks as Buffer[]).reduce((sum, chunk) => sum + chunk.length, 0)).toBe(0);
       }
+      // The denied concatenated-body reservation must cancel the upstream
+      // response reader before it throws, instead of leaving it open.
+      expect(readerCancelSpy).toHaveBeenCalled();
     } finally {
+      readerCancelSpy.mockRestore();
       concatSpy.mockRestore();
       sessionRef.current?.close();
       await bridge?.stop();

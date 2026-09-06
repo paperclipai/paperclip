@@ -1592,6 +1592,7 @@ async function readBridgeForwardResponseBody(
     chunks.push(Buffer.from(value));
   }
   if (reservation && !reservation.reserve(totalBytes)) {
+    await reader.cancel().catch(() => undefined);
     throw new BridgeProcessCapacityError();
   }
   return Buffer.concat(chunks, totalBytes);
