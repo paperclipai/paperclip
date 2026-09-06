@@ -82,6 +82,12 @@ state changes from native `paperclip_finish`/`paperclip_block` run-result
 reporting. This layer has no production server to apply a reported run result
 to a task. Its completion cases still require the actual semantic operation
 and durable mock-state change; reporting success alone does not pass them.
+The current turn request defines the requested work. Shared seed descriptions,
+old eval notes, or past accepted interactions are background state, not a
+replacement objective or proof that a newly requested action is already done.
+Finishing the provider turn does not authorize an unrequested mock task-state
+change or completion comment. These harness instructions keep single-operation
+cases bounded while leaving their operation and state-effect assertions intact.
 
 ACPX accounting uses the qualified server's billable token semantics: Claude
 and Codex already include reasoning in output, and Codex has no cache-write
