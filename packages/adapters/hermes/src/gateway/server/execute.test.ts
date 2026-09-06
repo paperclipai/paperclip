@@ -1,6 +1,7 @@
 import { describe, expect, it, vi, afterEach } from "vitest";
 import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
 import { execute, mapFinalResultForTest, parseSseFramesForTest, resolveSessionKey } from "./execute.js";
+import { STOP_GRACE_MS } from "../shared/constants.js";
 import { testEnvironment } from "./test.js";
 
 function makeCtx(config: Record<string, unknown>): AdapterExecutionContext {
@@ -42,6 +43,7 @@ function sseStream(text: string): ReadableStream<Uint8Array> {
 }
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.restoreAllMocks();
 });
 
@@ -544,6 +546,119 @@ describe("execute", () => {
     expect(result.timedOut).toBe(true);
     expect(result.errorCode).toBe("hermes_gateway_timeout");
     expect(fetchMock.mock.calls.some(([input]) => String(input).endsWith("/stop"))).toBe(true);
+  });
+
+  it("keeps the Paperclip run active when observability fails before Hermes is terminal", async () => {
+    vi.useFakeTimers();
+    let terminal = false;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) {
+        return new Response(JSON.stringify({ run_id: "run-late", status: "started" }), { status: 200 });
+      }
+      if (url.endsWith("/events")) {
+        return new Promise<Response>(() => {});
+      }
+      if (url.endsWith("/stop")) {
+        return new Response(JSON.stringify({ status: "stopping" }), { status: 200 });
+      }
+      return new Response(JSON.stringify(terminal
+        ? { status: "completed", output: "late result" }
+        : { status: "stopping" }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const ctx = makeCtx({
+      apiBaseUrl: "http://127.0.0.1:8642",
+      apiKey: "secret-key",
+      timeoutSec: 0.001,
+    });
+    ctx.onLog = vi.fn(async (_stream, chunk) => {
+      if (chunk.includes("stop")) throw new Error("log persistence unavailable");
+    });
+    ctx.onEvent = vi.fn(async () => {
+      throw new Error("event persistence unavailable");
+    });
+
+    const execution = execute(ctx);
+    const settled = vi.fn();
+    void execution.then(settled, settled);
+
+    // Mirrors the measured incident: Hermes finished 44 seconds after Paperclip timed out.
+    await vi.advanceTimersByTimeAsync(44_000);
+
+    expect(settled).not.toHaveBeenCalled();
+    expect(ctx.onEvent).toHaveBeenCalledWith(expect.objectContaining({
+      eventType: "hermes.stop_unconfirmed",
+      level: "warn",
+      payload: expect.objectContaining({ hermesRunId: "run-late" }),
+    }));
+
+    terminal = true;
+    await vi.advanceTimersByTimeAsync(500);
+    const result = await execution;
+
+    expect(result.timedOut).toBe(true);
+    expect(result.errorCode).toBe("hermes_gateway_timeout");
+    expect(ctx.onEvent).toHaveBeenCalledTimes(2);
+    expect(ctx.onEvent).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      eventType: "hermes.stop_reconciled",
+      payload: expect.objectContaining({ hermesRunId: "run-late", status: "completed" }),
+    }));
+
+    expect(result.resultJson).toMatchObject({
+      run_id: "run-late",
+      status: "completed",
+      final_status: { status: "completed", output: "late result" },
+    });
+  });
+
+  it("reconciles a late terminal status exactly once", async () => {
+    vi.useFakeTimers();
+    let terminal = false;
+    let terminalReads = 0;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) {
+        return new Response(JSON.stringify({ run_id: "run-idempotent", status: "started" }), { status: 200 });
+      }
+      if (url.endsWith("/events")) {
+        return new Promise<Response>(() => {});
+      }
+      if (url.endsWith("/stop")) {
+        return new Response(JSON.stringify({ status: "stopping" }), { status: 200 });
+      }
+      if (terminal) terminalReads += 1;
+      return new Response(JSON.stringify(terminal
+        ? { status: "cancelled", output: "late cancellation" }
+        : { status: "stopping" }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const ctx = makeCtx({
+      apiBaseUrl: "http://127.0.0.1:8642",
+      apiKey: "secret-key",
+      timeoutSec: 0.001,
+    });
+    ctx.onEvent = vi.fn(async () => undefined);
+
+    const execution = execute(ctx);
+    await vi.advanceTimersByTimeAsync(STOP_GRACE_MS + 1_000);
+    terminal = true;
+    await vi.advanceTimersByTimeAsync(500);
+    await execution;
+    const readsAtSettlement = terminalReads;
+
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    expect(terminalReads).toBe(readsAtSettlement);
+    expect(terminalReads).toBe(1);
+    expect(ctx.onEvent).toHaveBeenCalledTimes(2);
+    expect(ctx.onEvent).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      eventType: "hermes.stop_reconciled",
+      payload: expect.objectContaining({
+        hermesRunId: "run-idempotent",
+        status: "cancelled",
+      }),
+    }));
   });
 });
 

@@ -142,7 +142,10 @@ runs with `/api/v1/runs` after mapping them to the API base.
 
 This mode does not start Hermes. It creates runs with `POST /v1/runs`, streams
 Hermes events with SSE, polls run status as a fallback, and stops timed-out runs
-with `POST /v1/runs/{run_id}/stop`.
+with `POST /v1/runs/{run_id}/stop`. When Hermes does not reach a terminal state
+during the stop grace period, Paperclip records `hermes.stop_unconfirmed` and
+keeps the heartbeat active until a terminal status arrives. It then records
+`hermes.stop_reconciled` and settles the timed-out heartbeat.
 
 ### Compatibility with the old gateway package
 

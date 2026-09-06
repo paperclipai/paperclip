@@ -1,6 +1,7 @@
 import type {
   AdapterExecutionContext,
   AdapterExecutionResult,
+  AdapterRuntimeEvent,
   UsageSummary,
 } from "@paperclipai/adapter-utils";
 import {
@@ -450,6 +451,26 @@ function markTerminal(state: ExecutionState, terminal: TerminalState): void {
   state.resolveTerminal(terminal);
 }
 
+async function emitRunLog(
+  ctx: AdapterExecutionContext,
+  stream: "stdout" | "stderr",
+  chunk: string,
+): Promise<void> {
+  try {
+    await ctx.onLog(stream, chunk);
+  } catch {
+    // Observability failures cannot decide whether a remote Hermes run is terminal.
+  }
+}
+
+async function emitRunEvent(ctx: AdapterExecutionContext, event: AdapterRuntimeEvent): Promise<void> {
+  try {
+    await ctx.onEvent?.(event);
+  } catch {
+    // Keep the remote lifecycle authoritative even if event persistence fails.
+  }
+}
+
 function extractStatus(value: unknown): string | null {
   const record = asRecord(value);
   return nonEmpty(record?.status)?.toLowerCase() ?? null;
@@ -479,7 +500,8 @@ async function handleEvent(
   const record = asRecord(parsed);
   const eventName = eventNameFromData(parsed, frame.event);
   state.lastEventName = eventName;
-  await ctx.onLog(
+  await emitRunLog(
+    ctx,
     "stdout",
     `[hermes-gateway:event] run=${state.runId} event=${eventName ?? "message"} data=${stringifyForLog(redactForLog(parsed, [], 0, redactText), 8_000)}\n`,
   );
@@ -488,7 +510,7 @@ async function handleEvent(
   if (eventName === "message.delta" && delta) {
     const sanitizedDelta = redactText(delta);
     state.outputChunks.push(sanitizedDelta);
-    await ctx.onLog("stdout", sanitizedDelta);
+    await emitRunLog(ctx, "stdout", sanitizedDelta);
   }
 
   const status = extractStatus(parsed) ?? (eventName?.startsWith("run.") ? eventName.slice(4) : null);
@@ -547,7 +569,7 @@ async function pollStatus(input: {
       }
     } catch (err) {
       if (input.signal.aborted) return;
-      await input.ctx.onLog("stderr", `[hermes-gateway] status poll failed: ${redactErrorMessage(err, input.redactText)}\n`);
+      await emitRunLog(input.ctx, "stderr", `[hermes-gateway] status poll failed: ${redactErrorMessage(err, input.redactText)}\n`);
     }
   }
 }
@@ -569,12 +591,12 @@ async function consumeEvents(input: {
         signal: input.signal,
       });
       if (!response.ok) {
-        await input.ctx.onLog("stderr", `[hermes-gateway] event stream HTTP ${response.status}; falling back to polling\n`);
+        await emitRunLog(input.ctx, "stderr", `[hermes-gateway] event stream HTTP ${response.status}; falling back to polling\n`);
         await delay(input.reconnectMs, input.signal);
         continue;
       }
       if (!response.body) {
-        await input.ctx.onLog("stderr", "[hermes-gateway] event stream response had no body; falling back to polling\n");
+        await emitRunLog(input.ctx, "stderr", "[hermes-gateway] event stream response had no body; falling back to polling\n");
         await delay(input.reconnectMs, input.signal);
         continue;
       }
@@ -604,7 +626,7 @@ async function consumeEvents(input: {
       }
     } catch (err) {
       if (input.signal.aborted || input.state.terminal) return;
-      await input.ctx.onLog("stderr", `[hermes-gateway] event stream disconnected: ${redactErrorMessage(err, input.redactText)}\n`);
+      await emitRunLog(input.ctx, "stderr", `[hermes-gateway] event stream disconnected: ${redactErrorMessage(err, input.redactText)}\n`);
     }
     if (!input.state.terminal) await delay(input.reconnectMs, input.signal);
   }
@@ -716,10 +738,10 @@ async function stopRun(input: {
       method: "POST",
       headers: input.headers,
     });
-    await input.ctx.onLog("stdout", `[hermes-gateway] stop requested for run ${input.runId}\n`);
+    await emitRunLog(input.ctx, "stdout", `[hermes-gateway] stop requested for run ${input.runId}\n`);
     return asRecord(stopped);
   } catch (err) {
-    await input.ctx.onLog("stderr", `[hermes-gateway] stop request failed: ${redactErrorMessage(err, input.redactText)}\n`);
+    await emitRunLog(input.ctx, "stderr", `[hermes-gateway] stop request failed: ${redactErrorMessage(err, input.redactText)}\n`);
     return null;
   }
 }
@@ -746,6 +768,28 @@ async function fetchFinalStatus(input: {
     await new Promise((resolve) => setTimeout(resolve, 500));
   }
   return null;
+}
+
+async function waitForFinalStatus(input: {
+  baseUrl: URL;
+  headers: Record<string, string>;
+  runId: string;
+}): Promise<Record<string, unknown>> {
+  while (true) {
+    try {
+      const status = await fetchJson(apiUrl(input.baseUrl, `/v1/runs/${encodeURIComponent(input.runId)}`), {
+        method: "GET",
+        headers: input.headers,
+      });
+      const record = asRecord(status);
+      const normalized = extractStatus(status);
+      if (record && normalized && TERMINAL_STATUSES.has(normalized)) return record;
+    } catch {
+      // A transient read failure cannot prove that the remote run stopped.
+      // Keep the local run lease until Hermes reports an actual terminal state.
+    }
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
 }
 
 function redactErrorMessage(err: unknown, redactText: TextRedactor = sanitizeSensitiveText): string {
@@ -896,7 +940,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     return errorResult(err, redactText);
   }
 
-  await ctx.onLog("stdout", `[hermes-gateway] run created: ${runId}\n`);
+  await emitRunLog(ctx, "stdout", `[hermes-gateway] run created: ${runId}\n`);
 
   const state = createExecutionState(runId);
   const controller = new AbortController();
@@ -930,8 +974,39 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   controller.abort();
 
   if (outcome === "timeout") {
-    await stopRun({ ctx, baseUrl, headers: eventHeaders, runId, redactText });
-    const finalStatus = await fetchFinalStatus({ baseUrl, headers: eventHeaders, runId, deadlineMs: STOP_GRACE_MS });
+    const stopStatus = await stopRun({ ctx, baseUrl, headers: eventHeaders, runId, redactText });
+    let finalStatus = await fetchFinalStatus({ baseUrl, headers: eventHeaders, runId, deadlineMs: STOP_GRACE_MS });
+    if (!finalStatus) {
+      const observedStatus = extractStatus(stopStatus) ?? "unknown";
+      await emitRunLog(
+        ctx,
+        "stderr",
+        `[hermes-gateway] stop is still unconfirmed after ${STOP_GRACE_MS}ms for run ${runId}; holding the Paperclip run until Hermes reports a terminal state\n`,
+      );
+      await emitRunEvent(ctx, {
+        eventType: "hermes.stop_unconfirmed",
+        stream: "system",
+        level: "warn",
+        message: "Hermes stop remains unconfirmed; Paperclip run lease is still held",
+        payload: {
+          hermesRunId: runId,
+          status: observedStatus,
+          graceMs: STOP_GRACE_MS,
+        },
+      });
+      finalStatus = await waitForFinalStatus({ baseUrl, headers: eventHeaders, runId });
+      const reconciledStatus = extractStatus(finalStatus) ?? "unknown";
+      await emitRunEvent(ctx, {
+        eventType: "hermes.stop_reconciled",
+        stream: "system",
+        level: "info",
+        message: "Hermes run reached a terminal state after stop was unconfirmed",
+        payload: {
+          hermesRunId: runId,
+          status: reconciledStatus,
+        },
+      });
+    }
     return {
       exitCode: 1,
       signal: null,
