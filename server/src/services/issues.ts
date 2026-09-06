@@ -430,6 +430,44 @@ type DerivedIssueCommentAttribution = {
  * Resolve a `created_by_run_id` safe for the heartbeat_runs FK; returns null for
  * missing/invalid ids so an unknown run id never 500s a comment insert.
  */
+
+async function bindHeartbeatRunToCheckedOutIssue(
+  db: Db,
+  input: { companyId: string; runId: string | null; agentId: string; issueId: string },
+) {
+  if (!input.runId) return;
+  const run = await db
+    .select({
+      id: heartbeatRuns.id,
+      contextSnapshot: heartbeatRuns.contextSnapshot,
+    })
+    .from(heartbeatRuns)
+    .where(and(
+      eq(heartbeatRuns.id, input.runId),
+      eq(heartbeatRuns.companyId, input.companyId),
+      eq(heartbeatRuns.agentId, input.agentId),
+    ))
+    .then((rows) => rows[0] ?? null);
+  if (!run) return;
+  const context = run.contextSnapshot && typeof run.contextSnapshot === "object" && !Array.isArray(run.contextSnapshot)
+    ? { ...(run.contextSnapshot as Record<string, unknown>) }
+    : {};
+  const currentIssueId = typeof context.issueId === "string" ? context.issueId.trim() : "";
+  const currentTaskId = typeof context.taskId === "string" ? context.taskId.trim() : "";
+  if (currentIssueId === input.issueId && (currentTaskId === input.issueId || currentTaskId === "")) return;
+  await db
+    .update(heartbeatRuns)
+    .set({
+      contextSnapshot: {
+        ...context,
+        issueId: input.issueId,
+        ...(currentTaskId ? {} : { taskId: input.issueId }),
+      },
+      updatedAt: new Date(),
+    })
+    .where(eq(heartbeatRuns.id, run.id));
+}
+
 async function resolveCommentCreatedByRunId(
   dbOrTx: any,
   companyId: string,
@@ -8309,6 +8347,15 @@ export function issueService(db: Db) {
       if (!issueCompany) throw notFound("Issue not found");
       await assertAssignableAgent(db, issueCompany.companyId, agentId, { kind: "work" });
 
+      const bindCheckoutRun = async () => {
+        await bindHeartbeatRunToCheckedOutIssue(db, {
+          companyId: issueCompany.companyId,
+          runId: checkoutRunId,
+          agentId,
+          issueId: id,
+        });
+      };
+
       const now = new Date();
       const activePauseHold = await treeControlSvc.getActivePauseHoldGate(issueCompany.companyId, id);
       if (
@@ -8375,6 +8422,7 @@ export function issueService(db: Db) {
         .then((rows) => rows[0] ?? null);
 
       if (updated) {
+        await bindCheckoutRun();
         const [enriched] = await withIssueLabels(db, [updated]);
         return enriched;
       }
@@ -8418,7 +8466,10 @@ export function issueService(db: Db) {
           )
           .returning()
           .then((rows) => rows[0] ?? null);
-        if (adopted) return adopted;
+        if (adopted) {
+          await bindCheckoutRun();
+          return adopted;
+        }
       }
 
       if (
@@ -8435,6 +8486,7 @@ export function issueService(db: Db) {
           expectedCheckoutRunId: current.checkoutRunId,
         });
         if (staleAdoption.adopted) {
+          await bindCheckoutRun();
           const row = await db.select().from(issues).where(eq(issues.id, id)).then((rows) => rows[0] ?? null);
           if (!row) throw notFound("Issue not found");
           const [enriched] = await withIssueLabels(db, [row]);
@@ -8480,6 +8532,7 @@ export function issueService(db: Db) {
             .returning()
             .then((rows) => rows[0] ?? null);
           if (adopted) {
+            await bindCheckoutRun();
             const [enriched] = await withIssueLabels(db, [adopted]);
             return enriched;
           }
@@ -8495,6 +8548,7 @@ export function issueService(db: Db) {
         const row = await db.select().from(issues).where(eq(issues.id, id)).then((rows) => rows[0] ?? null);
         if (!row) throw notFound("Issue not found");
         const [enriched] = await withIssueLabels(db, [row]);
+        await bindCheckoutRun();
         return enriched;
       }
 
