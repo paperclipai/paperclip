@@ -73,6 +73,62 @@ describe("computeWorkspaceBusyRetryDelayMs", () => {
       WORKSPACE_BUSY_RETRY_BASE_DELAY_MS + WORKSPACE_BUSY_RETRY_JITTER_MS,
     );
   });
+
+  // Whichever issue's retry became due first when the shared workspace
+  // mutex freed used to win it regardless of priority or how long it had
+  // been waiting. These cases pin the fix: priority-based bands that never
+  // overlap, plus an aging discount so a same-priority issue that has
+  // waited (been deferred) longer checks sooner than one on an earlier
+  // attempt.
+  describe("priority- and age-aware retry bands", () => {
+    it("defaults to the pre-existing medium window when no priority is given", () => {
+      expect(computeWorkspaceBusyRetryDelayMs(() => 0, undefined, 0)).toBe(
+        WORKSPACE_BUSY_RETRY_BASE_DELAY_MS,
+      );
+      expect(computeWorkspaceBusyRetryDelayMs(() => 1, undefined, 0)).toBe(
+        WORKSPACE_BUSY_RETRY_BASE_DELAY_MS + WORKSPACE_BUSY_RETRY_JITTER_MS,
+      );
+    });
+
+    it("treats an unrecognized priority the same as medium (fail-safe default)", () => {
+      expect(computeWorkspaceBusyRetryDelayMs(() => 1, "not-a-real-priority", 0)).toBe(
+        WORKSPACE_BUSY_RETRY_BASE_DELAY_MS + WORKSPACE_BUSY_RETRY_JITTER_MS,
+      );
+    });
+
+    it("keeps every priority band's worst case no later than the next lower priority's best case", () => {
+      // This is the actual guarantee this fix is for: order the next grant
+      // by priority first. It only holds if the bands never overlap (a tie at
+      // an exact band boundary is fine -- it falls through to the existing
+      // scheduledRetryAt/createdAt/id tiebreak in promoteDueScheduledRetries'
+      // query, which is a strict, not probabilistic, ordering).
+      const worstCase = (priority: string) => computeWorkspaceBusyRetryDelayMs(() => 1, priority, 0);
+      const bestCase = (priority: string) => computeWorkspaceBusyRetryDelayMs(() => 0, priority, 0);
+
+      expect(worstCase("critical")).toBeLessThanOrEqual(bestCase("high"));
+      expect(worstCase("high")).toBeLessThanOrEqual(bestCase("medium"));
+      expect(worstCase("medium")).toBeLessThanOrEqual(bestCase("low"));
+    });
+
+    it("shrinks the jitter window as deferralAttempt grows, without crossing the band floor", () => {
+      const attempt0 = computeWorkspaceBusyRetryDelayMs(() => 1, "medium", 0);
+      const attempt3 = computeWorkspaceBusyRetryDelayMs(() => 1, "medium", 3);
+      const attempt100 = computeWorkspaceBusyRetryDelayMs(() => 1, "medium", 100);
+
+      expect(attempt3).toBeLessThan(attempt0);
+      // Aging never discounts past the band's own base delay.
+      expect(attempt100).toBe(WORKSPACE_BUSY_RETRY_BASE_DELAY_MS);
+    });
+
+    it("never lets aging on a lower-priority issue beat a fresh higher-priority issue", () => {
+      // A `low` priority issue on its 100th deferral attempt is still
+      // strictly behind a `critical` issue on its very first attempt.
+      const staleLowPriority = computeWorkspaceBusyRetryDelayMs(() => 0, "low", 100);
+      const freshCritical = computeWorkspaceBusyRetryDelayMs(() => 1, "critical", 0);
+
+      expect(freshCritical).toBeLessThan(staleLowPriority);
+    });
+  });
 });
 
 describeEmbeddedPostgres("shared-workspace run serialization", () => {
@@ -689,6 +745,102 @@ describeEmbeddedPostgres("shared-workspace run serialization", () => {
     const cancelledRetry = await heartbeat.getRun(retryRun!.id);
     expect(cancelledRetry?.status).toBe("cancelled");
     expect(cancelledRetry?.errorCode).toBe("issue_reassigned");
+  });
+
+  // Reproduces the reported starvation shape end to end. Two
+  // issues on the same shared-workspace project (one "critical" -- the QA
+  // sign-off stand-in -- one "medium" -- the routine drafting-work stand-in)
+  // both get bounced by the same live holder. Before this fix both retries
+  // drew from the same fixed window, so which one's scheduledRetryAt sorted
+  // first (and therefore which one promoteDueScheduledRetries would try to
+  // dispatch first once the mutex freed) was pure luck. This pins that the
+  // critical issue's retry is now always due first.
+  it("gives a higher-priority deferred issue's retry an earlier due time than a medium-priority one deferred at the same moment", async () => {
+    const fixture = await seedWorkspaceFixture();
+
+    const criticalAgentId = randomUUID();
+    const criticalIssueId = randomUUID();
+    await db.insert(agents).values({
+      id: criticalAgentId,
+      companyId: fixture.companyId,
+      name: "QASignoffCoder",
+      role: "engineer",
+      status: "idle",
+      adapterType: WORKSPACE_BUSY_TEST_ADAPTER,
+      adapterConfig: {},
+      runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: criticalIssueId,
+      companyId: fixture.companyId,
+      title: "QA sign-off issue",
+      status: "in_progress",
+      priority: "critical",
+      responsibleUserId: "responsible-user",
+      assigneeAgentId: criticalAgentId,
+      projectId: fixture.projectId,
+      projectWorkspaceId: fixture.projectWorkspaceId,
+      issueNumber: 3,
+      identifier: "QASIGNOFF-1",
+      executionWorkspaceSettings: { sharedWorkspaceConcurrency: "serialize" },
+    });
+
+    // Both the medium-priority (fixture.issueId) and critical-priority
+    // (criticalIssueId) runs are dispatched back to back, at effectively the
+    // same instant, against the one live holder -- the exact "rotating cast
+    // of issues pile up on the one contended workspace" starvation shape.
+    const mediumRun = await heartbeat.invoke(
+      fixture.agentId,
+      "assignment",
+      { issueId: fixture.issueId, wakeReason: "issue_assigned" },
+      "system",
+    );
+    const criticalRun = await heartbeat.invoke(
+      criticalAgentId,
+      "assignment",
+      { issueId: criticalIssueId, wakeReason: "issue_assigned" },
+      "system",
+    );
+    expect(mediumRun).not.toBeNull();
+    expect(criticalRun).not.toBeNull();
+
+    await waitForRunToLeaveActiveStates(mediumRun!.id);
+    await waitForRunToLeaveActiveStates(criticalRun!.id);
+
+    const mediumRetry = await waitForRetryRun(mediumRun!.id);
+    const criticalRetry = await waitForRetryRun(criticalRun!.id);
+    expect(mediumRetry?.status).toBe("scheduled_retry");
+    expect(criticalRetry?.status).toBe("scheduled_retry");
+
+    // The core assertion: the higher-priority issue's retry is due
+    // strictly earlier, so it is promoted (and gets first crack at the
+    // mutex) before the medium-priority one, regardless of which run
+    // happened to get deferred first or land in the DB first.
+    expect(new Date(criticalRetry!.scheduledRetryAt!).getTime()).toBeLessThan(
+      new Date(mediumRetry!.scheduledRetryAt!).getTime(),
+    );
+
+    // And promoteDueScheduledRetries' existing scheduledRetryAt ordering
+    // reflects that: once both are due, the critical issue's retry sorts
+    // before the medium issue's retry in the batch that gets promoted.
+    const bothDue = new Date(
+      Math.max(
+        new Date(mediumRetry!.scheduledRetryAt!).getTime(),
+        new Date(criticalRetry!.scheduledRetryAt!).getTime(),
+      ) + 1_000,
+    );
+    // The holder is still live, so promotion alone (without the holder
+    // finishing) only proves ordering, not dispatch -- finish the holder too
+    // so both retries can actually resolve and the fixture drains cleanly.
+    await db
+      .update(heartbeatRuns)
+      .set({ status: "succeeded", finishedAt: new Date() })
+      .where(eq(heartbeatRuns.id, fixture.holderRunId));
+    const promotion = await heartbeat.promoteDueScheduledRetries(bothDue);
+    expect(promotion.runIds.indexOf(criticalRetry!.id)).toBeLessThan(
+      promotion.runIds.indexOf(mediumRetry!.id),
+    );
   });
 
   it("does not defer when the holder issue explicitly uses an isolated workspace", async () => {
