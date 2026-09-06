@@ -1,9 +1,11 @@
 import {
+  chmod,
+  copyFile,
   mkdtemp,
   mkdir,
   readFile,
+  readdir,
   rm,
-  symlink,
   writeFile,
 } from "node:fs/promises";
 import os from "node:os";
@@ -16,9 +18,6 @@ import {
   buildHistoryPointers,
   createBundleManifest,
   isHistoricalBundlePathAllowed,
-  prunePrivateHistoryEvidence,
-  publicScreenshotPaths,
-  stageTrustedHistoryAssets,
   validateHistoryDestination,
 } from "./history-publish.js";
 import {
@@ -29,11 +28,70 @@ import {
   mergeRunnerHistory,
 } from "./history.js";
 import { renderRunnerHistoryIndex } from "./history-index.js";
-import { renderPublicCampaignSummary } from "./public-summary-image.js";
-import { isPublicRunnerScreenshotRoute } from "./screenshot-policy.js";
+import {
+  createPublicLayoutPreview,
+  preparePublicHistoryBundle,
+} from "./history-public-bundle.js";
 import type { MatrixExecution, RunnerE2EResult } from "./types.js";
 
 const temporaryDirectories: string[] = [];
+const safePng = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAQAAAADCAIAAAA7ljmRAAAAFElEQVQI12M0TpvJAANMDEgAhQMALHABOEZNdkwAAAAASUVORK5CYII=",
+  "base64",
+);
+
+async function installPreviewToolchain(root: string, ocrOutput: string) {
+  const imageMagick = path.join(root, "fake-image-magick.mjs");
+  const tesseract = path.join(root, "fake-tesseract.mjs");
+  await writeFile(
+    imageMagick,
+    `#!/usr/bin/env node
+import { copyFile } from "node:fs/promises";
+const args = process.argv.slice(2);
+const expected = [
+  "-limit", "memory", "128MiB",
+  "-limit", "map", "256MiB",
+  "-limit", "disk", "256MiB",
+  "-limit", "thread", "1",
+  "-limit", "time", "30",
+  null,
+  "-background", "#f3f4f6",
+  "-alpha", "remove", "-alpha", "off",
+  "-resize", "96x96>",
+  "-blur", "0x3.5",
+  "-colors", "16",
+  "-strip",
+  "-define", "png:exclude-chunks=all",
+  null,
+];
+if (args.length !== expected.length || expected.some((value, index) => value !== null && args[index] !== value)) {
+  throw new Error("unexpected ImageMagick sanitization contract");
+}
+if (!args.at(-1)?.startsWith("PNG8:")) {
+  throw new Error("sanitized preview must be emitted as PNG8");
+}
+await copyFile(args[15], args.at(-1).slice("PNG8:".length));
+`,
+    "utf8",
+  );
+  await writeFile(
+    tesseract,
+    `#!/usr/bin/env node
+const args = process.argv.slice(2);
+if (args.length !== 6 || args[1] !== "stdout" || args[2] !== "--psm" || args[3] !== "11" || args[4] !== "-l" || args[5] !== "eng") {
+  throw new Error("unexpected Tesseract sanitization contract");
+}
+if (process.env.OMP_THREAD_LIMIT !== "1") {
+  throw new Error("OCR must run with a bounded thread count");
+}
+process.stdout.write(${JSON.stringify(ocrOutput)});
+`,
+    "utf8",
+  );
+  await Promise.all([chmod(imageMagick, 0o755), chmod(tesseract, 0o755)]);
+  return { imageMagick, tesseract };
+}
+
 afterEach(async () => {
   vi.unstubAllEnvs();
   await Promise.all(
@@ -188,80 +246,64 @@ describe("runner E2E campaign history", () => {
     expect(dashboard).toContain("Suite pass rate");
     expect(dashboard).toContain("lines break at definition changes");
     expect(dashboard).toContain("cleanup passed");
-    const index = renderRunnerHistoryIndex(history, {
-      latestSummaryImageHref:
-        "campaigns/complete-red/public-images/campaign-summary.png",
-    });
+    const index = renderRunnerHistoryIndex(history);
     expect(index).toContain("Runner E2E campaigns");
     expect(index).toContain("complete-green");
     expect(index).toContain("complete-red");
-    expect(index).toContain("68/68 passed");
-    expect(index).toContain("67/68 passed");
+    expect(index).toContain(`${runnerMatrix.length}/${runnerMatrix.length} passed`);
+    expect(index).toContain(`${runnerMatrix.length - 1}/${runnerMatrix.length} passed`);
     expect(index).toContain("Open report&nbsp;→");
     expect(index).toContain(
-      "campaigns/complete-red/public-images/campaign-summary.png",
+      "Full-resolution visual evidence remains in access-controlled workflow artifacts",
     );
-    expect(index).toContain(
-      "declared screenshots, and sanitized structured evidence",
-    );
-    expect(index).toContain(
-      "Declared screenshots and inert structured evidence",
-    );
+    expect(index).toContain("Inert structured public evidence");
     expect(index).not.toContain("data-gallery-dialog");
     expect(index).not.toContain("Configuration matrix");
   });
 });
 
 describe("historical publication security", () => {
-  it("allows public capture only on an issue task route", () => {
-    const target = {
-      issuePrefix: "PAP",
-      issueId: "issue-id",
-      issueIdentifier: "PAP-123",
-    };
-    expect(
-      isPublicRunnerScreenshotRoute(
-        "http://127.0.0.1:3100/PAP/issues/PAP-123",
-        target,
-      ),
-    ).toBe(true);
-    expect(
-      isPublicRunnerScreenshotRoute(
-        "http://127.0.0.1:3100/PAP/issues/PAP-999",
-        target,
-      ),
-    ).toBe(false);
-    expect(
-      isPublicRunnerScreenshotRoute(
-        "http://127.0.0.1:3100/PAP/settings",
-        target,
-      ),
-    ).toBe(false);
-    expect(
-      isPublicRunnerScreenshotRoute(
-        "http://127.0.0.1:3100/setup/secrets",
-        target,
-      ),
-    ).toBe(false);
-    expect(
-      isPublicRunnerScreenshotRoute(
-        "https://example.test/PAP/issues/PAP-123",
-        target,
-      ),
-    ).toBe(false);
-    expect(isPublicRunnerScreenshotRoute("not a URL", target)).toBe(false);
-    expect(
-      isPublicRunnerScreenshotRoute(
-        "http://127.0.0.1:3100/PAP/issues/PAP-123",
-        { ...target, issueId: null },
-      ),
-    ).toBe(false);
+  it("exercises the production layout preview sanitizer contract", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "runner-preview-test-"));
+    temporaryDirectories.push(root);
+    const source = path.join(root, "source.png");
+    const destination = path.join(root, "public", "preview.png");
+    const tools = await installPreviewToolchain(root, ".,!\n");
+    await writeFile(source, safePng);
+    vi.stubEnv("RUNNER_E2E_IMAGE_MAGICK_BINARY", tools.imageMagick);
+    vi.stubEnv("RUNNER_E2E_TESSERACT_BINARY", tools.tesseract);
+
+    await createPublicLayoutPreview(source, destination);
+
+    await expect(readFile(destination)).resolves.toEqual(safePng);
+    expect((await readdir(path.dirname(destination))).sort()).toEqual([
+      "preview.png",
+    ]);
   });
 
-  it("publishes declared screenshots while keeping active evidence private", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "runner-landing-test-"));
-    const output = path.join(root, "landing");
+  it("rejects and removes a production preview with OCR-readable text", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "runner-preview-test-"));
     temporaryDirectories.push(root);
+    const source = path.join(root, "source.png");
+    const destination = path.join(root, "public", "preview.png");
+    const tools = await installPreviewToolchain(root, "Readable42\n");
+    await writeFile(source, safePng);
+    vi.stubEnv("RUNNER_E2E_IMAGE_MAGICK_BINARY", tools.imageMagick);
+    vi.stubEnv("RUNNER_E2E_TESSERACT_BINARY", tools.tesseract);
+
+    await expect(
+      createPublicLayoutPreview(source, destination),
+    ).rejects.toThrow("Public layout preview still contains OCR-readable text");
+    await expect(readFile(destination)).rejects.toThrow();
+    expect((await readdir(path.dirname(destination))).sort()).toEqual([]);
+  });
+
+  it("publishes blurred layout previews while keeping raw visuals private", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "runner-landing-test-"));
+    const source = path.join(root, "private");
+    const output = path.join(root, "public");
+    temporaryDirectories.push(root);
+    await mkdir(source);
     const execution = runnerMatrix[0]!;
     const campaignResult = {
       ...result(execution, "passed"),
@@ -270,9 +312,9 @@ describe("historical publication security", () => {
           id: "final-state",
           label: "Final state",
           file: "final-state.png",
-          publication: "public-runner-fixture",
+          unexpectedSecretMetadata: "sk-private-screenshot-metadata",
         },
-      ],
+      ] as RunnerE2EResult["screenshots"],
     } satisfies RunnerE2EResult;
     const campaign = buildRunnerCampaign({
       campaignId: "campaign-1",
@@ -281,21 +323,23 @@ describe("historical publication security", () => {
       results: [campaignResult],
     });
     const evidenceDirectory = path.join(
-      root,
+      source,
+      "evidence",
+      execution.id,
+      "attempt-1",
+    );
+    const publicEvidenceDirectory = path.join(
+      output,
       "evidence",
       execution.id,
       "attempt-1",
     );
     await mkdir(evidenceDirectory, { recursive: true });
     await writeFile(
-      path.join(root, "normalized-results.json"),
+      path.join(source, "normalized-results.json"),
       JSON.stringify(campaign),
     );
-    const png = Buffer.from(
-      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
-      "base64",
-    );
-    await writeFile(path.join(evidenceDirectory, "final-state.png"), png);
+    await writeFile(path.join(evidenceDirectory, "final-state.png"), safePng);
     await writeFile(path.join(evidenceDirectory, "failure.webm"), "webm");
     await writeFile(path.join(evidenceDirectory, "unsafe.svg"), "<svg />");
     await writeFile(
@@ -303,6 +347,15 @@ describe("historical publication security", () => {
       "<?xml-stylesheet href='https://example.test/private.xsl'?>",
     );
     await writeFile(path.join(evidenceDirectory, "result.json"), "{}\n");
+    await mkdir(path.join(evidenceDirectory, "public-visuals"));
+    await writeFile(
+      path.join(
+        evidenceDirectory,
+        "public-visuals",
+        "plan-target-injected.png",
+      ),
+      safePng,
+    );
     await mkdir(path.join(evidenceDirectory, "snapshots"));
     await writeFile(
       path.join(evidenceDirectory, "snapshots", "api-state.json"),
@@ -319,301 +372,78 @@ describe("historical publication security", () => {
       "private archive",
     );
 
-    const publicScreenshots = publicScreenshotPaths(campaign);
-    await prunePrivateHistoryEvidence(root, publicScreenshots);
-    await regenerateRunnerDashboard({
-      bundle: root,
-      outputDirectory: output,
-      evidenceHrefPrefix: "campaigns/campaign-1",
+    await preparePublicHistoryBundle({
+      source,
+      destination: output,
+      transform: async (privateScreenshot, publicPreview) => {
+        await copyFile(privateScreenshot, publicPreview);
+      },
     });
     const dashboard = await readFile(path.join(output, "index.html"), "utf8");
     expect(dashboard).toContain(
-      `campaigns/campaign-1/evidence/${execution.id}/attempt-1/final-state.png`,
-    );
-    expect(dashboard).toContain("View gallery · 1");
-    expect(dashboard).toContain(
-      "Declared PNG screenshots and sanitized structured evidence are retained with every published campaign",
-    );
-    expect(dashboard).toContain(
-      "Declared screenshots and sanitized structured evidence published",
+      `evidence/${execution.id}/attempt-1/public-visuals/final-state.png`,
     );
     await expect(
-      readFile(path.join(evidenceDirectory, "final-state.png")),
-    ).resolves.toEqual(png);
-    await expect(
-      readFile(path.join(evidenceDirectory, "failure.webm")),
+      readFile(path.join(publicEvidenceDirectory, "final-state.png")),
     ).rejects.toThrow();
-    await expect(
-      readFile(path.join(evidenceDirectory, "unsafe.svg")),
-    ).rejects.toThrow();
-    await expect(
-      readFile(path.join(evidenceDirectory, "junit.xml")),
-    ).rejects.toThrow();
-    await expect(
-      readFile(path.join(evidenceDirectory, "html-report", "index.html")),
-    ).rejects.toThrow();
-    await expect(
-      readFile(path.join(evidenceDirectory, "blob-report", "report.zip")),
-    ).rejects.toThrow();
-    await expect(
-      readFile(path.join(evidenceDirectory, "result.json"), "utf8"),
-    ).resolves.toBe("{}\n");
     await expect(
       readFile(
-        path.join(evidenceDirectory, "snapshots", "api-state.json"),
-        "utf8",
+        path.join(publicEvidenceDirectory, "public-visuals", "final-state.png"),
       ),
-    ).resolves.toBe("{}\n");
-    expect(
-      JSON.parse(
-        await readFile(path.join(output, "normalized-results.json"), "utf8"),
-      ).schema,
-    ).toBe("paperclip.runner-e2e.campaign/v2");
+    ).resolves.toEqual(safePng);
     await expect(
-      regenerateRunnerDashboard({
-        bundle: root,
-        outputDirectory: output,
-        evidenceHrefPrefix: "../unsafe",
-      }),
-    ).rejects.toThrow("safe relative URL path");
-  });
-
-  it("admits declared PNG screenshots and the trusted summary only", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "runner-s3-test-"));
-    temporaryDirectories.push(root);
-    const execution = runnerMatrix[0]!;
-    const campaign = buildRunnerCampaign({
-      campaignId: "campaign-summary",
-      generatedAt: "2026-08-28T00:01:00.000Z",
-      expected: [execution.id],
-      results: [
-        {
-          ...result(execution, "passed"),
-          error: "PROVIDER_TEXT_MUST_NOT_RENDER",
-          screenshots: [
-            {
-              id: "final-state",
-              label: "PROVIDER_LABEL_MUST_NOT_RENDER",
-              file: "final-state.png",
-              publication: "public-runner-fixture",
-            },
-          ],
-        },
-      ],
-    });
-    const evidenceDirectory = path.join(
-      root,
-      "evidence",
-      execution.id,
-      "attempt-1",
-    );
-    await mkdir(evidenceDirectory, { recursive: true });
-    const png = Buffer.from(
-      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
-      "base64",
-    );
-    await Promise.all([
-      writeFile(
-        path.join(root, "normalized-results.json"),
-        JSON.stringify(campaign),
+      readFile(
+        path.join(
+          publicEvidenceDirectory,
+          "public-visuals",
+          "plan-target-injected.png",
+        ),
       ),
-      writeFile(path.join(evidenceDirectory, "final-state.png"), png),
-      writeFile(path.join(evidenceDirectory, "undeclared.png"), png),
-      writeFile(path.join(evidenceDirectory, "server.log"), "sanitized\n"),
-      writeFile(path.join(evidenceDirectory, "failure.webm"), "webm"),
-      writeFile(path.join(evidenceDirectory, "unsafe.svg"), "<svg />"),
-      writeFile(path.join(evidenceDirectory, "result.json"), "{}\n"),
-    ]);
-
-    const publicScreenshots = publicScreenshotPaths(campaign);
-    await prunePrivateHistoryEvidence(root, publicScreenshots);
+    ).rejects.toThrow();
     await expect(
       readFile(path.join(evidenceDirectory, "final-state.png")),
-    ).resolves.toEqual(png);
-    for (const removed of ["undeclared.png", "failure.webm", "unsafe.svg"]) {
+    ).resolves.toEqual(safePng);
+    for (const relative of [
+      "failure.webm",
+      "unsafe.svg",
+      "junit.xml",
+      "html-report/index.html",
+      "blob-report/report.zip",
+    ]) {
       await expect(
-        readFile(path.join(evidenceDirectory, removed)),
+        readFile(path.join(publicEvidenceDirectory, ...relative.split("/"))),
       ).rejects.toThrow();
     }
     await expect(
-      readFile(path.join(evidenceDirectory, "server.log"), "utf8"),
-    ).resolves.toBe("sanitized\n");
-    const summaryHtml = renderPublicCampaignSummary(campaign);
-    expect(summaryHtml).toContain(execution.suite.label);
-    expect(summaryHtml).not.toContain("PROVIDER_TEXT_MUST_NOT_RENDER");
-    expect(summaryHtml).not.toContain("PROVIDER_LABEL_MUST_NOT_RENDER");
-    const incompleteSummaryHtml = renderPublicCampaignSummary({
-      ...campaign,
-      expected: [execution.id, runnerMatrix[1]!.id],
-      results: [
-        {
-          ...campaign.results[0]!,
-          cleanup: "failed",
-          durationMs: Number.MAX_VALUE,
-        },
-        result(runnerMatrix[2]!, "passed"),
-      ],
-    });
-    expect(incompleteSummaryHtml).toContain("0/2");
-    expect(incompleteSummaryHtml).toContain(">2<");
-    expect(incompleteSummaryHtml).toContain("24h 0m");
-    expect(incompleteSummaryHtml).not.toContain(String(Number.MAX_VALUE));
-
-    const summaryPath = path.join(
-      root,
-      "public-images",
-      "campaign-summary.png",
-    );
-    await mkdir(path.dirname(summaryPath), { recursive: true });
-    await writeFile(summaryPath, png);
-    expect(
-      isHistoricalBundlePathAllowed("public-images/campaign-summary.png", true),
-    ).toBe(true);
-    expect(
-      isHistoricalBundlePathAllowed(
-        `evidence/${execution.id}/attempt-1/final-state.png`,
-        false,
-        publicScreenshots,
+      readFile(path.join(publicEvidenceDirectory, "result.json"), "utf8"),
+    ).resolves.toBe("{}\n");
+    await expect(
+      readFile(
+        path.join(publicEvidenceDirectory, "snapshots", "api-state.json"),
+        "utf8",
       ),
-    ).toBe(true);
-    await regenerateRunnerDashboard({
-      bundle: root,
-      publicSummaryImageHref: "public-images/campaign-summary.png",
-    });
-    expect(await readFile(path.join(root, "index.html"), "utf8")).toContain(
-      'src="public-images/campaign-summary.png"',
+    ).resolves.toBe("{}\n");
+    const publicCampaign = JSON.parse(
+      await readFile(path.join(output, "normalized-results.json"), "utf8"),
     );
-    const manifest = await createBundleManifest(
-      root,
-      campaign.campaignId,
-      true,
-      publicScreenshots,
-    );
-    expect(manifest.files.map((file) => file.path)).toContain(
-      "public-images/campaign-summary.png",
-    );
-    expect(manifest.files.map((file) => file.path)).toContain(
-      `evidence/${execution.id}/attempt-1/final-state.png`,
-    );
-    await writeFile(summaryPath, "not a png");
-    await expect(
-      createBundleManifest(root, campaign.campaignId, true, publicScreenshots),
-    ).rejects.toThrow("does not match its raster file type");
-  });
-
-  it("requires trusted-fixture opt-in and rejects unsafe screenshot paths", () => {
-    const execution = runnerMatrix[0]!;
-    const campaign = buildRunnerCampaign({
-      campaignId: "unsafe-screenshot",
-      generatedAt: "2026-08-28T00:01:00.000Z",
-      expected: [execution.id],
-      results: [
-        {
-          ...result(execution, "passed"),
-          screenshots: [
-            {
-              id: "unsafe",
-              label: "Unsafe",
-              file: "../secret.png",
-              publication: "public-runner-fixture",
-            },
-          ],
-        },
-      ],
-    });
-    expect(() => publicScreenshotPaths(campaign)).toThrow(
-      "Cannot publish unsafe screenshot path",
-    );
-
-    const failedCampaign = buildRunnerCampaign({
-      campaignId: "failed-screenshot",
-      generatedAt: "2026-08-28T00:01:00.000Z",
-      expected: [execution.id],
-      results: [
-        {
-          ...result(execution, "failed"),
-          screenshots: [
-            {
-              id: "failure",
-              label: "Task state at failure",
-              file: "failure.png",
-              publication: "public-runner-fixture",
-            },
-            {
-              id: "private-diagnostic",
-              label: "Private diagnostic",
-              file: "private-diagnostic.png",
-            },
-          ],
-        },
-      ],
-    });
-    expect([...publicScreenshotPaths(failedCampaign)]).toEqual([
-      `evidence/${execution.id}/attempt-1/failure.png`,
+    expect(publicCampaign.schema).toBe("paperclip.runner-e2e.campaign/v2");
+    expect(publicCampaign.results[0].screenshots).toEqual([
+      {
+        id: "final-state",
+        label: "Final state (redacted layout preview)",
+        file: "public-visuals/final-state.png",
+      },
     ]);
-
-    const missingArtifactCampaign = buildRunnerCampaign({
-      campaignId: "missing-artifact",
-      generatedAt: "2026-08-28T00:01:00.000Z",
-      expected: [execution.id],
-      results: [
-        {
-          ...result(execution, "failed"),
-          attempt: 0,
-          error: "Missing matrix artifact",
-          screenshots: [],
-        },
-      ],
-    });
-    expect([...publicScreenshotPaths(missingArtifactCampaign)]).toEqual([]);
-  });
-
-  it("replaces target-supplied public assets with trusted publisher assets", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "runner-assets-test-"));
-    const trustedRoot = await mkdtemp(
-      path.join(os.tmpdir(), "runner-trusted-assets-test-"),
+    expect(JSON.stringify(publicCampaign)).not.toContain(
+      "sk-private-screenshot-metadata",
     );
-    temporaryDirectories.push(root, trustedRoot);
-    await Promise.all([
-      mkdir(path.join(root, "assets"), { recursive: true }),
-      mkdir(path.join(trustedRoot, "ui/public/fonts"), { recursive: true }),
-    ]);
-    await Promise.all([
-      writeFile(path.join(root, "assets", "favicon-32x32.png"), "target"),
-      writeFile(path.join(root, "assets", "InterVariable.woff2"), "target"),
-      writeFile(path.join(root, "assets", "unexpected.svg"), "target"),
-      writeFile(
-        path.join(trustedRoot, "ui/public/favicon-32x32.png"),
-        "trusted-png",
-      ),
-      writeFile(
-        path.join(trustedRoot, "ui/public/fonts/InterVariable.woff2"),
-        "trusted-font",
-      ),
-    ]);
-
-    await stageTrustedHistoryAssets(root, trustedRoot);
-
     await expect(
-      readFile(path.join(root, "assets", "favicon-32x32.png"), "utf8"),
-    ).resolves.toBe("trusted-png");
-    await expect(
-      readFile(path.join(root, "assets", "InterVariable.woff2"), "utf8"),
-    ).resolves.toBe("trusted-font");
-    await expect(
-      readFile(path.join(root, "assets", "unexpected.svg"), "utf8"),
-    ).rejects.toThrow();
-
-    const outside = path.join(trustedRoot, "outside-secret");
-    const trustedFavicon = path.join(
-      trustedRoot,
-      "ui/public/favicon-32x32.png",
-    );
-    await Promise.all([writeFile(outside, "secret"), rm(trustedFavicon)]);
-    await symlink(outside, trustedFavicon);
-    await expect(stageTrustedHistoryAssets(root, trustedRoot)).rejects.toThrow(
-      "Refusing symbolic link in trusted publisher asset path",
-    );
+      regenerateRunnerDashboard({
+        bundle: source,
+        outputDirectory: path.join(root, "invalid"),
+        evidenceHrefPrefix: "../unsafe",
+      }),
+    ).rejects.toThrow("safe relative URL path");
   });
 
   it("requires a private-origin-compatible destination shape", () => {
@@ -637,13 +467,6 @@ describe("historical publication security", () => {
     expect(() =>
       validateHistoryDestination({
         bucket: "paperclip-runner-e2e-history",
-        prefix: "runner-e2e?other",
-        publicBaseUrl: "https://history.paperclip.ai/",
-      }),
-    ).toThrow("safe non-empty key prefix");
-    expect(() =>
-      validateHistoryDestination({
-        bucket: "paperclip-runner-e2e-history",
         prefix: "runner-e2e",
         publicBaseUrl: "http://history.paperclip.ai/",
       }),
@@ -656,6 +479,16 @@ describe("historical publication security", () => {
     expect(
       isHistoricalBundlePathAllowed(
         "evidence/core-compatibility.profile.local.case/attempt-1/final-state.png",
+      ),
+    ).toBe(false);
+    expect(
+      isHistoricalBundlePathAllowed(
+        "evidence/core-compatibility.profile.local.case/attempt-1/public-visuals/final-state.png",
+      ),
+    ).toBe(true);
+    expect(
+      isHistoricalBundlePathAllowed(
+        "evidence/core-compatibility.profile.local.case/attempt-1/public-visuals/failure.png",
       ),
     ).toBe(false);
     expect(
