@@ -3000,6 +3000,16 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
         }
         const parentById = new Map(parentRows.map((row) => [row.id, row] as const));
 
+        // A task-bridge key's create boundary is enforced through
+        // tasks:assign for every task it creates — the route decides it for
+        // unassigned drafts too. The per-task re-decision below must mirror
+        // that: gate it on the assignee alone and a scoped key can land an
+        // unassigned child in a project no decision ever saw.
+        const actorIsTaskBridgeKey =
+          actor.authorization?.type === "agent" &&
+          actor.authorization.source === "agent_key" &&
+          actor.authorization.keyScope?.kind === "task_bridge";
+
         for (const task of orderedTasks) {
           const parentIssueId = task.parentClientKey
             ? createdByClientKey.get(task.parentClientKey)?.issueId ?? null
@@ -3063,7 +3073,7 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
 
           if (
             actor.agentId &&
-            (task.assigneeAgentId || task.assigneeUserId) &&
+            (task.assigneeAgentId || task.assigneeUserId || actorIsTaskBridgeKey) &&
             inheritsParentProject
           ) {
             let assignmentActor: AuthorizationActor | null = actor.authorization ?? null;
