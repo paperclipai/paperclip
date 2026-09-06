@@ -1168,10 +1168,15 @@ export function createHttp2BridgeServer(options: CreateHttp2BridgeServerOptions)
       } catch (error) {
         if (error instanceof BridgeProcessCapacityError) {
           // The reader above left this stream open (undestroyed) exactly so
-          // this response could reach the wire; destroy it now, once that
-          // response is sent, to free its concurrent-stream slot.
+          // this response could reach the wire. `respondJson` only queues
+          // the 503 write; destroying the stream right after queues a
+          // RST_STREAM before a backpressured peer drains it, so the client
+          // can see a reset instead of the 503. Wait for the write to
+          // settle first, then destroy to free this stream's
+          // concurrent-stream slot.
           respondJson(stream, 503, { error: error.message });
-          stream.destroy();
+          await waitForHttp2StreamWriteToSettle(stream);
+          if (!stream.destroyed) stream.destroy();
           return;
         }
         respondJson(stream, 413, { error: error instanceof Error ? error.message : String(error) });

@@ -1411,7 +1411,10 @@ describe("createHttp2BridgeServer + createSandboxHttp2BridgeGateway", () => {
   it("test_a_request_body_reservation_denial_answers_503_on_the_wire", async () => {
     // A denied request-body chunk must leave the stream alive long enough
     // to answer 503 for real, on the wire — not merely destroy the stream
-    // and leave the caller with a bare reset.
+    // and leave the caller with a bare reset. `respondJson` only queues the
+    // 503 write; the handler must wait for that write to settle before it
+    // destroys the stream, or the client can see a reset instead of the
+    // full response body asserted below.
     const filler = createBridgeBodyReservation();
     expect(filler.reserve(HTTP2_BRIDGE_MAX_PROCESS_BODY_BYTES - 100)).toBe(true);
     const forwarderTracker = createForwarderCallTracker();
@@ -1443,6 +1446,12 @@ describe("createHttp2BridgeServer + createSandboxHttp2BridgeGateway", () => {
       });
       expect(response.status).toBe(503);
       expect(forwarderTracker.called).toBe(false);
+      // A raw reset delivers no body at all: parsing it here proves the
+      // full JSON response actually reached the client, not merely the
+      // status line.
+      expect(JSON.parse(response.body)).toEqual({
+        error: "The bridge host reached its reserved process body byte ceiling. Retry later.",
+      });
 
       // The stream ended with a real response, not a raw reset: the session
       // stays healthy, so a second, complete request still succeeds.
