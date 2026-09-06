@@ -105,7 +105,7 @@ jobs:
         id: evals_token
         env:
           COMMITPERCLIP_KEY: ${{ secrets.COMMITPERCLIP_KEY }}
-          GH_REPO: ${{ github.repository }}
+          GH_REPO: paperclipai/paperclip-evals
         run: |
           set -euo pipefail
           token="$(node .github/scripts/get-bot-token.mjs)"
@@ -177,7 +177,7 @@ jobs:
         id: evals_token
         env:
           COMMITPERCLIP_KEY: ${{ secrets.COMMITPERCLIP_KEY }}
-          GH_REPO: ${{ github.repository }}
+          GH_REPO: paperclipai/paperclip-evals
         run: |
           set -euo pipefail
           token="$(node .github/scripts/get-bot-token.mjs)"
@@ -330,7 +330,7 @@ jobs:
         id: evals_token
         env:
           COMMITPERCLIP_KEY: ${{ secrets.COMMITPERCLIP_KEY }}
-          GH_REPO: ${{ github.repository }}
+          GH_REPO: paperclipai/paperclip-evals
         run: |
           set -euo pipefail
           token="$(node .github/scripts/get-bot-token.mjs)"
@@ -500,7 +500,7 @@ jobs:
         id: evals_token
         env:
           COMMITPERCLIP_KEY: ${{ secrets.COMMITPERCLIP_KEY }}
-          GH_REPO: ${{ github.repository }}
+          GH_REPO: paperclipai/paperclip-evals
         run: |
           set -euo pipefail
           token="$(node .github/scripts/get-bot-token.mjs)"

@@ -45,6 +45,7 @@ test("resolves both repositories immutably and bounds total matrix concurrency",
     /repos\/paperclipai\/paperclip-evals\/commits\/\$EVALS_SHA/u,
   );
   assert.match(authorize, /COMMITPERCLIP_KEY/u);
+  assert.match(authorize, /GH_REPO: paperclipai\/paperclip-evals/u);
   assert.match(
     authorize,
     /GH_TOKEN: \$\{\{ steps\.evals_token\.outputs\.value \}\}/u,
@@ -66,6 +67,11 @@ test("resolves both repositories immutably and bounds total matrix concurrency",
     ),
   ];
   assert.equal(privateCheckouts.length, 3);
+  assert.equal(
+    workflow.match(/GH_REPO: paperclipai\/paperclip-evals/gu)?.length,
+    4,
+    "every private-eval token must be minted from the eval repository installation",
+  );
   for (const checkout of privateCheckouts) {
     assert.match(
       checkout[0],
