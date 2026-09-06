@@ -7,7 +7,7 @@ only in its existing encrypted secret system.
 
 ## Self-hosted setup
 
-The Access step uses **Continue** to open the local connection-method screen.
+The Access step uses **Continue** to open the local setup screen.
 **Continue to GitHub** on that screen starts the provider handoff. The first
 button does not imply that the browser is leaving Paperclip yet.
 
