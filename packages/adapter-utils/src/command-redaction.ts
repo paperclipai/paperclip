@@ -366,9 +366,16 @@ function scanCommandQuotedBody(
 
 /**
  * Continue a shell word after its first segment. Segments concatenate, so a
- * quoted part joins the same argument; whitespace, a metacharacter, a line
+ * quoted part joins the same argument; whitespace, a metacharacter, a bare line
  * break, or the serializer's own delimiter ends it. A quoted part with no
  * closer on the line is a truncated log line and ends the word at the line end.
+ *
+ * A backslash-newline is a line continuation, not a boundary: the shell removes
+ * it and joins the next physical line to the same word, so the scan follows it.
+ * A serializer writes that continuation either as a run of backslashes and a
+ * two-byte `\n` escape, which the token reader already carries as an ordinary
+ * escaped character, or as a run and a raw line break, which arrives here as a
+ * continuation token at that layer.
  */
 function scanCommandWordTail(text: string, index: number, run: number): number {
   let cursor = index;
@@ -379,8 +386,7 @@ function scanCommandWordTail(text: string, index: number, run: number): number {
       token.kind === "newline" ||
       token.kind === "space" ||
       token.kind === "metacharacter" ||
-      token.kind === "serializerEnd" ||
-      token.kind === "lineContinuation"
+      token.kind === "serializerEnd"
     ) {
       return token.start;
     }
@@ -643,12 +649,30 @@ function redactCommandSecretHeaders(
         bounded.kind,
       );
       if (body.closed) closerStart = body.end - (bounded.run + 1);
-      readings.push({
-        end: body.closed
-          ? scanCommandWordTail(command, body.end, bounded.run)
-          : body.end,
-        closer: body.closed ? commandDelimiterCloser(bounded) : "",
-      });
+      const closer = body.closed ? commandDelimiterCloser(bounded) : "";
+      if (!body.closed) {
+        readings.push({ end: body.end, closer });
+      } else {
+        // A bare double quote cannot appear inside serialized text and an
+        // escaped one carries its layer in its backslash run, so either one
+        // fixes the reading for the word that follows. A single quote and an
+        // ANSI-C `$'` are what a serializer leaves alone, so they fix nothing:
+        // the text after such an argument is shell text or any depth, and every
+        // one of those readings is scanned. Only the tail is seeded this way.
+        // The body is read at depth 0 because these quotes delimit the same
+        // bytes at every layer, and reading the body deeper would take an
+        // ANSI-C escape for a plain backslash and close the value early.
+        const tailRuns =
+          bounded.kind === "single" || bounded.kind === "ansi"
+            ? COMMAND_SECRET_HEADER_READING_RUNS
+            : [bounded.run];
+        for (const run of tailRuns) {
+          readings.push({
+            end: scanCommandWordTail(command, body.end, run),
+            closer,
+          });
+        }
+      }
     }
     // The unquoted readings. With no delimiter to name a layer, every layer
     // from depth 0 to depth 4 is plausible and each is scanned. With an escaped
