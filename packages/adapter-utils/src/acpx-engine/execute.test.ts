@@ -2241,6 +2241,47 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(await pathExists(path.join(cwd, ".claude", "settings.local.json"))).toBe(false);
   });
 
+  it("rejects a traversal run ID before any run-home cleanup can escape its root", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const sourceCodexHome = path.join(root, "source-codex-home");
+    const adjacentHome = path.join(stateDir, "home");
+    const sentinel = path.join(adjacentHome, "sentinel.txt");
+    let runtimeCreated = false;
+
+    await fs.mkdir(sourceCodexHome, { recursive: true });
+    await fs.writeFile(path.join(sourceCodexHome, "config.toml"), "model_provider = \"openai\"\n", "utf8");
+    await fs.mkdir(adjacentHome, { recursive: true });
+    await fs.writeFile(sentinel, "keep", "utf8");
+
+    const execute = createAcpxEngineExecutor({
+      adapterType: "codex_local",
+      createRuntime: () => {
+        runtimeCreated = true;
+        throw new Error("runtime must not start");
+      },
+    });
+
+    await expect(
+      execute({
+        runId: "..",
+        agent: { id: "agent-1", companyId: "company-1" },
+        runtime: {},
+        config: {
+          agent: "codex",
+          stateDir,
+          env: { CODEX_HOME: sourceCodexHome },
+        },
+        context: {},
+        onLog: async () => {},
+        onMeta: async () => {},
+      } as never),
+    ).rejects.toThrow("Run identifier is not a safe path segment");
+
+    expect(runtimeCreated).toBe(false);
+    await expect(fs.readFile(sentinel, "utf8")).resolves.toBe("keep");
+  });
+
   it("retains only sanitized run-local Codex session JSONL after the runtime closes", async () => {
     const root = await makeTempRoot();
     const stateDir = path.join(root, "state");
