@@ -1,7 +1,11 @@
 import { describe, expect, it, vi, afterEach } from "vitest";
 import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
 import { execute, mapFinalResultForTest, parseSseFramesForTest, resolveSessionKey } from "./execute.js";
-import { STOP_GRACE_MS } from "../shared/constants.js";
+import {
+  BEST_EFFORT_CALLBACK_TIMEOUT_MS,
+  STATUS_REQUEST_TIMEOUT_MS,
+  STOP_GRACE_MS,
+} from "../shared/constants.js";
 import { testEnvironment } from "./test.js";
 
 function makeCtx(config: Record<string, unknown>): AdapterExecutionContext {
@@ -609,6 +613,193 @@ describe("execute", () => {
       run_id: "run-late",
       status: "completed",
       final_status: { status: "completed", output: "late result" },
+    });
+  });
+
+  it("continues reconciliation after consecutive individual status requests hang", async () => {
+    vi.useFakeTimers();
+    let statusReads = 0;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) {
+        return new Response(JSON.stringify({ run_id: "run-status-hang", status: "started" }), { status: 200 });
+      }
+      if (url.endsWith("/events")) {
+        return new Promise<Response>(() => {});
+      }
+      if (url.endsWith("/stop")) {
+        return new Response(JSON.stringify({ status: "stopping" }), { status: 200 });
+      }
+      statusReads += 1;
+      if (statusReads <= 2) return new Promise<Response>(() => {});
+      return new Response(JSON.stringify({ status: "completed", output: "reconciled" }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const execution = execute(makeCtx({
+      apiBaseUrl: "http://127.0.0.1:8642",
+      apiKey: "secret-key",
+      timeoutSec: 0.001,
+    }));
+    const settled = vi.fn();
+    void execution.then(settled, settled);
+
+    await vi.advanceTimersByTimeAsync(STATUS_REQUEST_TIMEOUT_MS * 2 + 1_000);
+
+    expect(statusReads).toBeGreaterThanOrEqual(3);
+    expect(settled).toHaveBeenCalledTimes(1);
+    await expect(execution).resolves.toMatchObject({
+      timedOut: true,
+      resultJson: {
+        run_id: "run-status-hang",
+        status: "completed",
+      },
+    });
+  });
+
+  it("aborts a timed-out status request before starting the next reconciliation read", async () => {
+    vi.useFakeTimers();
+    let stopRequested = false;
+    const statusSignals: AbortSignal[] = [];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) {
+        return new Response(JSON.stringify({ run_id: "run-status-abort", status: "started" }), { status: 200 });
+      }
+      if (url.endsWith("/events")) {
+        return new Promise<Response>(() => {});
+      }
+      if (url.endsWith("/stop")) {
+        stopRequested = true;
+        return new Response(JSON.stringify({ status: "stopping" }), { status: 200 });
+      }
+      if (!stopRequested) {
+        return new Response(JSON.stringify({ status: "running" }), { status: 200 });
+      }
+
+      const signal = init?.signal;
+      if (!(signal instanceof AbortSignal)) throw new Error("status request omitted its AbortSignal");
+      statusSignals.push(signal);
+      if (statusSignals.length === 1) return new Promise<Response>(() => {});
+      return new Response(JSON.stringify({ status: "completed", output: "reconciled" }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const execution = execute(makeCtx({
+      apiBaseUrl: "http://127.0.0.1:8642",
+      apiKey: "secret-key",
+      timeoutSec: 0.001,
+    }));
+
+    await vi.advanceTimersByTimeAsync(STATUS_REQUEST_TIMEOUT_MS + 1_000);
+    await expect(execution).resolves.toMatchObject({
+      timedOut: true,
+      resultJson: {
+        run_id: "run-status-abort",
+        status: "completed",
+      },
+    });
+
+    expect(statusSignals).toHaveLength(2);
+    expect(statusSignals[0]?.aborted).toBe(true);
+    expect(statusSignals[1]?.aborted).toBe(false);
+  });
+
+  it("does not abort a status request that completes before its deadline", async () => {
+    vi.useFakeTimers();
+    let stopRequested = false;
+    const completedStatusSignals: AbortSignal[] = [];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) {
+        return new Response(JSON.stringify({ run_id: "run-status-fast", status: "started" }), { status: 200 });
+      }
+      if (url.endsWith("/events")) {
+        return new Promise<Response>(() => {});
+      }
+      if (url.endsWith("/stop")) {
+        stopRequested = true;
+        return new Response(JSON.stringify({ status: "stopping" }), { status: 200 });
+      }
+      if (!stopRequested) {
+        return new Response(JSON.stringify({ status: "running" }), { status: 200 });
+      }
+
+      const signal = init?.signal;
+      if (!(signal instanceof AbortSignal)) throw new Error("status request omitted its AbortSignal");
+      completedStatusSignals.push(signal);
+      return new Response(JSON.stringify({ status: "completed", output: "fast" }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const execution = execute(makeCtx({
+      apiBaseUrl: "http://127.0.0.1:8642",
+      apiKey: "secret-key",
+      timeoutSec: 0.001,
+    }));
+
+    await vi.advanceTimersByTimeAsync(1);
+    await expect(execution).resolves.toMatchObject({
+      timedOut: true,
+      resultJson: {
+        run_id: "run-status-fast",
+        status: "completed",
+      },
+    });
+    await vi.advanceTimersByTimeAsync(STATUS_REQUEST_TIMEOUT_MS);
+
+    expect(completedStatusSignals).toHaveLength(1);
+    expect(completedStatusSignals[0]?.aborted).toBe(false);
+  });
+
+  it("continues reconciliation when best-effort callbacks hang", async () => {
+    vi.useFakeTimers();
+    let terminal = false;
+    let statusReads = 0;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) {
+        return new Response(JSON.stringify({ run_id: "run-callback-hang", status: "started" }), { status: 200 });
+      }
+      if (url.endsWith("/events")) {
+        return new Promise<Response>(() => {});
+      }
+      if (url.endsWith("/stop")) {
+        return new Response(JSON.stringify({ status: "stopping" }), { status: 200 });
+      }
+      statusReads += 1;
+      return new Response(JSON.stringify(terminal
+        ? { status: "cancelled", output: "late cancellation" }
+        : { status: "stopping" }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const ctx = makeCtx({
+      apiBaseUrl: "http://127.0.0.1:8642",
+      apiKey: "secret-key",
+      timeoutSec: 0.001,
+    });
+    ctx.onLog = vi.fn(async (_stream, chunk) => {
+      if (chunk.includes("stop is still unconfirmed")) return new Promise<void>(() => {});
+    });
+    ctx.onEvent = vi.fn(async () => new Promise<void>(() => {}));
+
+    const execution = execute(ctx);
+    const settled = vi.fn();
+    void execution.then(settled, settled);
+
+    await vi.advanceTimersByTimeAsync(STOP_GRACE_MS + BEST_EFFORT_CALLBACK_TIMEOUT_MS * 2 + 500);
+    terminal = true;
+    await vi.advanceTimersByTimeAsync(BEST_EFFORT_CALLBACK_TIMEOUT_MS + 500);
+
+    expect(statusReads).toBeGreaterThanOrEqual(2);
+    expect(settled).toHaveBeenCalledTimes(1);
+    expect(ctx.onEvent).toHaveBeenCalledTimes(2);
+    await expect(execution).resolves.toMatchObject({
+      timedOut: true,
+      resultJson: {
+        run_id: "run-callback-hang",
+        status: "cancelled",
+      },
     });
   });
 

@@ -51,6 +51,8 @@ Runtime mapping:
 - Calls POST /v1/runs/{run_id}/stop on timeout. If Hermes is not terminal after the stop grace period,
   Paperclip records hermes.stop_unconfirmed and keeps the heartbeat active until Hermes reports a terminal state;
   a later terminal status records hermes.stop_reconciled before the heartbeat settles.
+- Individual status reads and best-effort log/event callbacks are time-bounded, while the heartbeat lease remains
+  held until Hermes itself reports a terminal status.
 
 Security guidance:
 - Prefer HTTPS or a private overlay network for non-loopback hosts.

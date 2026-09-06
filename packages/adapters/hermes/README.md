@@ -147,6 +147,10 @@ during the stop grace period, Paperclip records `hermes.stop_unconfirmed` and
 keeps the heartbeat active until a terminal status arrives. It then records
 `hermes.stop_reconciled` and settles the timed-out heartbeat.
 
+Each status request and best-effort log/event callback has its own bounded wait,
+so a stuck request or persistence sink cannot strand reconciliation. Paperclip
+still holds the heartbeat until Hermes itself reports a terminal status.
+
 ### Compatibility with the old gateway package
 
 `@paperclipai/adapter-hermes-gateway` remains as a deprecated compatibility shim
