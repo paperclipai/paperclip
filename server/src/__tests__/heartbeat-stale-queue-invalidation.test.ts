@@ -677,6 +677,10 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
       expect(ordering).toEqual(["validated"]);
     };
     mockAdapterExecute.mockImplementation(async (context) => {
+      // Real adapters record invocation metadata before process/remote
+      // dispatch. Its heartbeat_run_events FK takes a KEY SHARE lock on the
+      // run, which must remain compatible with the final gate's run lock.
+      await context.onMeta?.({ adapterType: "test", command: "test" });
       ordering.push("preparing");
       // Model asynchronous adapter setup before the child process exists.
       await new Promise((resolve) => setTimeout(resolve, 25));

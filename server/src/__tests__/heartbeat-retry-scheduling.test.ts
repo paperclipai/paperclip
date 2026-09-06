@@ -2060,15 +2060,10 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       const lostRaceCancel = await adapter.cancelStaleQueuedRun({
         runId: queuedRunId,
         companyId,
-        issueId,
-        wakeupRequestId: null,
-        reason: "test",
-        errorCode: "issue_terminal_status",
-        details: {},
-        resultJson: null,
         expectedStatus: "running",
+        now,
       });
-      expect(lostRaceCancel).toEqual({ applied: false });
+      expect(lostRaceCancel).toEqual({ outcome: "lost_race" });
       const [afterLostRaceCancel] = await db
         .select({ status: heartbeatRuns.status })
         .from(heartbeatRuns)
