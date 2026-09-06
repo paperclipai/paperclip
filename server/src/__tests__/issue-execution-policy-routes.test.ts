@@ -221,14 +221,23 @@ describe("issue execution policy routes", () => {
           permissions: null,
         }]).then(onFulfilled, onRejected),
     }));
-    mockIssueService.createChild.mockResolvedValue({
-      issue: {
+    mockIssueService.createChild.mockImplementation(async (_parentId: string, data: Record<string, unknown>) => {
+      const issue = {
         id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
         companyId: "company-1",
         identifier: "PAP-1002",
         title: "Child issue",
-      },
-      parentBlockerAdded: false,
+      };
+      const activityInputFactory = data.activityInputFactory as
+        | ((createdIssue: typeof issue, dbOrTx: unknown) => unknown[] | Promise<unknown[]>)
+        | undefined;
+      for (const input of await activityInputFactory?.(issue, mockDb) ?? []) {
+        await mockLogActivity(mockDb, input);
+      }
+      return {
+        issue,
+        parentBlockerAdded: false,
+      };
     });
     mockAccessService.canUser.mockResolvedValue(false);
     mockAccessService.decide.mockImplementation(async (input: { actor?: { type?: string; source?: string }; action?: string }) => {
