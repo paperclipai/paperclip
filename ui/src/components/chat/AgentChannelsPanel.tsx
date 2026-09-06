@@ -51,7 +51,8 @@ export function AgentChannelsPanel({
         <div className="rounded-lg border border-dashed border-border p-5">
           <p className="text-sm font-medium">No chat channels connected</p>
           <p className="mt-1 text-sm text-muted-foreground">
-            Connect Slack, GitHub, Microsoft Teams, or Telegram from Connectors.
+            Connect Slack, GitHub, Discord, Microsoft Teams, or Telegram from
+            Connectors.
           </p>
           <Button asChild className="mt-3" variant="outline" size="sm">
             <Link to="/apps">Open Connectors</Link>

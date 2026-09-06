@@ -175,11 +175,11 @@ Paperclip verifies that the token belongs to the declared Application ID, the pr
 
 There are no endpoint toggles for reactions, post/edit behavior, embeds, buttons, files, lifecycle edits/deletes, reconnect, or retry timing.
 
-### Runtime interaction model and current caveat
+### Runtime interaction model and qualification boundary
 
 Discord messages, reactions, interactions, edits, deletes, and partial reaction hydration enter through the Gateway and the same durable delivery/outbox boundary as webhook providers. Safe output uses bounded post/edit behavior; embeds and supported buttons are automatic; file downloads are bounded to reviewed Discord CDN hosts; numeric user IDs are the identity key; callbacks reauthorize against current Paperclip state. Gateway reconnect and provider `retry_after` timing are automatic.
 
-The pinned SDK currently creates a provider thread before Paperclip's resource/principal admission completes. A denied user or disabled channel can therefore leave an inert empty Discord thread even though Paperclip creates no task, acknowledgement, reply, or run. This remains a production-quality qualification gap and must be resolved or explicitly accepted with provider-visible evidence before Discord can be called stable. Multipart upload calls and unused Discord interaction REST helpers also sit outside the common REST deadline/status wrapper; they require live/fault-injection evidence before being relied on.
+Paperclip completes endpoint, resource, principal, and root-message preflight before any provider-thread side effect. A denied root creates no Discord thread, task, acknowledgement, reply, or run. For an allowed root, Paperclip durably persists a provisional receipt before asking Discord to create the thread; recovery then creates or reuses that thread idempotently and treats Discord error `160004` as existing-thread reconciliation rather than failure. Bounded provider calls and fail-fast compatibility checks keep SDK drift and stalled REST operations visible. These guarantees have deterministic and fresh-database evidence, but files, interactions, Gateway recovery, rate limits, and the root-activation fault paths still require real-provider qualification before Discord can be called stable.
 
 ## 6. Telegram
 
@@ -216,7 +216,7 @@ Allowed-user lists belong to Access. Task boundaries, BotFather privacy, deliver
 
 ## 7. Wireframe annotations
 
-The numbered red dashed marks are review annotations only, not proposed UI. The current viewer contains 14 minimum setup phases plus four provider management tabs; it contains no interaction-walkthrough pages. Every annotation and button consequence has an exact matching explanation beside the desktop/mobile pair in `index.html` and in `2026-09-04-chat-adapters-ui-surfaces-v8.md`; setup source data lives in `setup-wireframe-data-v6.mjs` and current management source data in `management-wireframe-data-v8.mjs`.
+The numbered red dashed marks are review annotations only, not proposed UI. The historical v8 viewer contains 14 minimum setup phases plus four provider management tabs; it contains no interaction-walkthrough pages. Every annotation and button consequence has an exact matching explanation beside the desktop/mobile pair in `index.html` and in `2026-09-04-chat-adapters-ui-surfaces-v8.md`; its historical setup source data lives in `setup-wireframe-data-v6.mjs` and its historical management source data in `management-wireframe-data-v8.mjs`. The five-provider implementation addenda and live browser runbook are the current product and acceptance sources.
 
 ## 8. Implementation acceptance points exposed by the wires
 

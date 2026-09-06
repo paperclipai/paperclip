@@ -452,7 +452,12 @@ index a42b61d58aa05c553cad8544090284070973cf0a..9d5e3a47dd986e78f0a6cebc01e63979
      } catch (error) {
        this.logger.error("Discord Gateway listener error", {
          error: String(error)
-@@ -2503,6 +2585,32 @@ var DiscordAdapter = class _DiscordAdapter {
+@@ -2499,10 +2581,35 @@ var DiscordAdapter = class _DiscordAdapter {
+         isRoleMentioned,
+         isEveryoneMentioned,
+-        isChannelAllowlisted,
+-        content: message.content.slice(0, 100)
++        isChannelAllowlisted
        });
        await this.handleGatewayMessage(message, isMentioned);
      });

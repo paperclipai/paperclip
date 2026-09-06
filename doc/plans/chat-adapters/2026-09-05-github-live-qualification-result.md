@@ -14,7 +14,8 @@ The evidence boundary is unchanged but is now quantified more precisely:
 
 ## Current-run evidence and blocker
 
-- Final locally verified source revision: `77ad5383e3a8badf7b1b0933a7e9c66469186d55`
+- Last pre-merge setup-attempt source revision: `77ad5383e3a8badf7b1b0933a7e9c66469186d55`
+- Current locally verified merge revision: `da8f83d6c9befe7bf958f6d9cf12a95fc7e59e88`
 - Signed setup-ping, one-time secret generation, App-identity, lifecycle, admission, and runtime hardening are committed in the current branch.
 
 The current endpoint is back in the honest pre-connect state: `draft`, at the provider-setup step, with no App identity, App ID, private key, installation, resource, conversation, delivery, publication, or signed setup ping recorded. This is expected because the GitHub App has not been created yet.
@@ -36,7 +37,7 @@ The signed setup-ping path also accepts a correctly signed GitHub `ping` before 
 
 ## Current hardening
 
-The current working tree adds the following GitHub safety and concurrency behavior. These are code and local-test observations, not live GitHub qualification:
+The branch includes the following GitHub safety and concurrency behavior. These are code and local-test observations, not live GitHub qualification:
 
 1. **Immutable App identity:** Paperclip binds the endpoint to the numeric App registration identity returned by GitHub, separately from the operator-entered App ID used to sign the App JWT. A reconnect that authenticates as a different App registration is rejected with `chat_bot_identity_changed`; endpoint identity cannot drift during credential replacement.
 2. **Signed setup-ping state and UI gating:** only a `ping` whose `X-Hub-Signature-256` validates against the current Paperclip-generated webhook secret sets `webhookVerifiedAt`. Missing or invalid signatures return HTTP 401. The setup UI polls this safe timestamp, displays waiting/verified state, and keeps **Connect and verify** disabled until the signed ping has arrived.
@@ -51,7 +52,7 @@ The current working tree adds the following GitHub safety and concurrency behavi
 
 None of these local checks substitutes for exercising the same paths against GitHub's real App registration, installation, webhook redelivery, and suspension UI.
 
-On the current verified working tree based on revision `77ad5383e`, the full chat-channel PostgreSQL integration suite passed 183/183 on fresh migrated database `chat_adapters_test_final_20260906_0833`; focused shared tests passed 11/11, focused UI tests passed 41/41, webhook/body-limit tests passed 11/11, all 39 GitHub-focused integration tests passed, and the deterministic browser suite `tests/e2e/chat-adapters-ui.spec.ts` passed 4/4. Shared, database, server, and UI typechecks all passed. These results strengthen the setup-path regression evidence but do not change the live-provider blocker or qualification status.
+On final pushed merge revision `da8f83d6c9befe7bf958f6d9cf12a95fc7e59e88`, the full chat-channel PostgreSQL integration suite passed 188/188 on fresh migrated database `chat_adapters_test_20260906_1140`; merge-conflict-focused server tests passed 355/355; and the deterministic browser suite `tests/e2e/chat-adapters-ui.spec.ts` passed 5/5 across Slack, GitHub, Teams, Discord, and Telegram. Shared, database, server, and UI typechecks, migration safety, token gates, a clean Discord patch application against the pristine package, and both working-tree checks passed. CI owns `pnpm-lock.yaml` and regenerates the PR lockfile artifact before its frozen install. Earlier provider-focused results remain valid regression evidence. These local results strengthen the setup path but do not change the live-provider blocker or qualification status.
 
 Actual GitHub App registration and current-build provider delivery remain unexecuted. The signed-in GitHub session is stopped at GitHub's six-digit sudo-mode verification prompt. Until that account challenge is completed, no current App credentials, installation, signed ping, issue/PR/review event, reaction, edit, file fallback, or outbound publication can be qualified live.
 

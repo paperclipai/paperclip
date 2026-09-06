@@ -2,6 +2,10 @@
 
 > **Status: broad private-chat and group/topic live evidence, not full release qualification.** The latest live runs cover task controls, FIFO and burst handling, reactions, edits, native documents, task-generation races, the repaired interleaved status/final lane, group/topic isolation, removal/rejoin, the silent-publication boundary, and a complete native confirmation-to-continuation round trip. Broader media boundaries, global token revocation, and other runbook cases remain open.
 
+## 2026-09-06 merged-build tunnel-rotation retest
+
+The final pushed merge commit is `da8f83d6c9befe7bf958f6d9cf12a95fc7e59e88`. After the account-less Cloudflare test tunnel expired, the bot webhook was rotated to the new verified URL with the already-vaulted token and webhook secret; neither credential was exposed. Telegram reported zero queued updates and no provider-side webhook error. A fresh `new` followed by a `task` command created one task and produced exact `TELEGRAM-MERGED-A-0906`. Its working placeholder and final share provider message ID `-1004415501660:69`, proving that the final edited the status in place. Both inbound command deliveries processed once and both publications completed with `attempts=1`, no error, and no pending, retry, failed, or ambiguous row. A plain unaddressed group follow-up was intentionally not delivered to the bot under Telegram privacy mode.
+
 ## 2026-09-06 final answer/recovery audit
 
 The final transcript and durable-ledger review for `CHA-81` found one provider-visible exact final publication, `TELEGRAM-LATENCY7-Cobalt`, with `attempts=1`; Telegram also showed the native question card settled to **Answered: Cobalt**. No late duplicate or internal run summary reached the provider.
@@ -18,7 +22,7 @@ Transcript review then found that the originating run's own meta-summary still a
 
 ## 2026-09-06 native confirmation follow-up
 
-The latest current-provider checks on revision `77ad5383e3a8badf7b1b0933a7e9c66469186d55` distinguish the native control from its downstream continuation:
+Earlier provider checks on pre-merge revision `77ad5383e3a8badf7b1b0933a7e9c66469186d55` distinguished the native control from its downstream continuation:
 
 - The older confirmation attempt exposed a link-only fallback gap and is not evidence for native Telegram actions.
 - A fresh confirmation on provider message `521…` displayed native **Yes** and **No** controls in Telegram. Selecting **Yes** was accepted exactly once, the sibling choice expired, and the same provider message was edited to **Accepted** with no buttons left active. Paperclip scheduled exactly one continuation.
@@ -36,8 +40,9 @@ The live bot was installed in group `pc-e2e-telegram-0906`; the endpoint remaine
 
 ## Scope
 
-- Final locally verified and most recently live-rerun source revision: `77ad5383e3a8badf7b1b0933a7e9c66469186d55`
-- Telegram provider-ordering, slash-command receipt, false internal-drain duplicate, stale-action denial, endpoint-generation fencing, command admission, provider-failure classification, coherent progress/status/final lane, native-confirmation lifecycle, and exact final-presentation lineage fixes are present in the tested working tree based on this revision and were rerun live.
+- Pre-merge source revision for the historical breadth checks below: `77ad5383e3a8badf7b1b0933a7e9c66469186d55`
+- Final pushed and most recently live-rerun source revision: `da8f83d6c9befe7bf958f6d9cf12a95fc7e59e88`
+- Telegram provider-ordering, slash-command receipt, false internal-drain duplicate, stale-action denial, endpoint-generation fencing, command admission, provider-failure classification, coherent progress/status/final lane, native-confirmation lifecycle, and exact final-presentation lineage fixes are present in the final merge revision. The historical breadth checks exercised the pre-merge revision above; the merged-build section records the final live rerun.
 - Provider: Telegram, dedicated test bot in a private chat
 - Live checkpoint: 2026-09-05 through 2026-09-06
 
@@ -97,10 +102,10 @@ The following private-chat behavior was observed on the recorded working tree:
 
 This proof supersedes the previously observed same-second race. It does not by itself prove general burst handling across different tasks, multiple chats, or multiple workers.
 
-## Current local regression evidence
+## Pre-merge local regression evidence
 
 - Telegram edit lifecycle rows now retain the normalized external actor and revalidate the current identity link and Paperclip membership under lock immediately before creating the lifecycle system comment. A deterministic race revokes the actor's link after the original message is admitted; the later edit is filtered, its text is removed from the durable row, and no task comment is created.
-- On the current verified working tree based on revision `77ad5383e`, the full chat-channel PostgreSQL integration suite passed 183/183 on fresh migrated database `chat_adapters_test_final_20260906_0833`.
+- On that pre-merge working tree based on revision `77ad5383e`, the full chat-channel PostgreSQL integration suite passed 183/183 on fresh migrated database `chat_adapters_test_final_20260906_0833`.
 - Focused shared tests passed 11/11, focused server tests passed 194/194, and focused UI tests passed 41/41.
 - The deterministic browser suite `tests/e2e/chat-adapters-ui.spec.ts` passed 4/4, and shared, database, server, and UI typechecks all passed.
 - These deterministic checks support the live continuation fix but do not replace the remaining provider cases.

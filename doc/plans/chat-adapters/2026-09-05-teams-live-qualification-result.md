@@ -4,13 +4,13 @@
 
 ## 2026-09-06 live-attempt checkpoint
 
-Paperclip endpoint `00758007-1c59-45e9-bbef-3dc92c0fb20c` remains `draft` at `provider_setup`. Its connection has zero credential secret references, zero deliveries, zero conversations, and only the endpoint-creation audit row. The public messaging endpoint is reachable at:
+Paperclip endpoint `00758007-1c59-45e9-bbef-3dc92c0fb20c` remains `draft` at `provider_setup`. Its connection has zero credential secret references, zero deliveries, zero conversations, and only the endpoint-creation audit row. At that historical checkpoint, the public messaging endpoint was reachable at:
 
 `https://andy-constitutes-hockey-congressional.trycloudflare.com/api/chat-webhooks/2KMDqYFTcPXmEQVewVqmwMhBOnJyX7jJnzkjWOBNaqw/microsoft-teams`
 
-An unauthenticated probe returned the expected `409 chat_endpoint_runtime_unavailable` while the endpoint is draft. This proves public routing and fail-closed state handling, not Microsoft webhook authentication or a Teams round trip.
+An unauthenticated probe at that time returned the expected `409 chat_endpoint_runtime_unavailable` while the endpoint was draft. This proved public routing and fail-closed state handling for that temporary ingress, not Microsoft webhook authentication or a Teams round trip.
 
-The hostname is an ephemeral development tunnel and is not production ingress evidence. A later attempt must use the then-current callback and reconfigure Azure Bot if the tunnel has changed; stable release qualification requires a durable public origin.
+That hostname was an ephemeral development tunnel and is not a current callback or production ingress evidence. A later attempt must use the then-current callback and reconfigure Azure Bot if the tunnel has changed; stable release qualification requires a durable public origin.
 
 The signed-in session is still the personal/free surface at `https://teams.live.com/v2/`. The exact external gates are:
 
@@ -42,7 +42,8 @@ The remaining live matrix is unchanged: installation, real webhook authenticatio
 
 ## Attempted environment
 
-- Final locally verified source revision: `77ad5383e3a8badf7b1b0933a7e9c66469186d55`
+- Last pre-merge live-attempt source revision: `77ad5383e3a8badf7b1b0933a7e9c66469186d55`
+- Current locally verified merge revision: `da8f83d6c9befe7bf958f6d9cf12a95fc7e59e88`
 - Teams FIFO, endpoint-generation fencing, per-thread and per-user service-URL egress, adapter compatibility, reach defaults, and pre-transport safety fixes are committed in the branch.
 - Provider session: Microsoft Teams personal/free at `teams.live.com`
 
@@ -69,7 +70,7 @@ Additional hardening from this cycle is also local-only:
 
 The pinned adapter contract now fails initialization if the internal API client or any wrapped outbound method drifts. Published-adapter tests directly exercise post, edit, reaction add/remove, delete, and concurrent cross-region `openDM`; a fresh-database integration test covers the terminal pre-transport failure and the Teams delivery reorder window. Focused runtime/classifier tests passed 54/54, the published-adapter/classifier subset passed 27/27, the fresh PostgreSQL Teams subset passed 9/9, and server typecheck passed. These results address ordering, regional isolation, SSRF exposure, and error classification in code, but remain local evidence until exercised through a real Microsoft 365 tenant.
 
-On the current verified working tree based on revision `77ad5383e`, the full chat-channel PostgreSQL integration suite passed 183/183 on fresh migrated database `chat_adapters_test_final_20260906_0833`; focused shared tests passed 11/11, focused UI tests passed 41/41, webhook/body-limit tests passed 11/11, and the deterministic browser suite `tests/e2e/chat-adapters-ui.spec.ts` passed 4/4. Shared, database, server, and UI typechecks all passed. This does not change the Microsoft 365 organization/tenant blocker or provide live Teams evidence.
+On final pushed merge revision `da8f83d6c9befe7bf958f6d9cf12a95fc7e59e88`, the full chat-channel PostgreSQL integration suite passed 188/188 on fresh migrated database `chat_adapters_test_20260906_1140`; merge-conflict-focused server tests passed 355/355; and the deterministic browser suite `tests/e2e/chat-adapters-ui.spec.ts` passed 5/5 across Slack, GitHub, Teams, Discord, and Telegram. Shared, database, server, and UI typechecks, migration safety, token gates, a clean Discord patch application against the pristine package, and both working-tree checks passed. CI owns `pnpm-lock.yaml` and regenerates the PR lockfile artifact before its frozen install. This does not change the Microsoft 365 organization/tenant blocker or provide live Teams evidence.
 
 ## Qualification gap
 

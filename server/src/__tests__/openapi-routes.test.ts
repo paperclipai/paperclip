@@ -429,13 +429,7 @@ describe("openapi routes", () => {
         properties: {
           provider: {
             type: "string",
-            enum: [
-              "slack",
-              "github",
-              "discord",
-              "microsoft-teams",
-              "telegram",
-            ],
+            enum: ["slack", "github", "discord", "microsoft-teams", "telegram"],
           },
           assignedAgentId: { type: "string", format: "uuid" },
         },
@@ -483,6 +477,9 @@ describe("openapi routes", () => {
       "reconnect",
       "remove",
     ]);
+    expect(setup.description).toContain(
+      "Discord: `applicationId`, `guildId`, `botToken`",
+    );
     expect(setup.responses["409"]).toBeDefined();
     expect(setup.responses["422"]).toBeDefined();
 

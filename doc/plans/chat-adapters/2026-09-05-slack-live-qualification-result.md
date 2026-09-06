@@ -2,6 +2,12 @@
 
 > **Status: broad current-branch live evidence plus historical core-smoke evidence, not full release qualification.** The current runs cover channel roots, DMs, FIFO follow-ups, reactions, edits, pause/resume, the registered Slack command, a command-created thread, native inbound and outbound files, disabled-resource enforcement and recovery, an interleaved command/status/final race, and a complete native question-to-continuation round trip. Slack is still missing the complete governance, failure-injection, reinstall, and cleanup matrix.
 
+## 2026-09-06 merged-build ingress and FIFO retest
+
+The final pushed merge commit is `da8f83d6c9befe7bf958f6d9cf12a95fc7e59e88`. A first pair of direct messages sent against that build exposed the expected weakness of the temporary test ingress rather than an adapter failure: Cloudflare had retired the account-less quick-tunnel hostname, so Slack accepted the messages while Paperclip received no callbacks. After a new tunnel was created and Slack's Events API and Interactivity URLs were both re-verified, Slack's enabled delayed-event recovery delivered those two missed events. Paperclip processed each once and returned exact `SLACK-MERGED-A-0906` and `SLACK-MERGED-B-0906` responses in order.
+
+A second pair sent 300 ms apart on the healthy ingress returned exact `SLACK-MERGED-C-0906` and `SLACK-MERGED-D-0906` responses in FIFO order. Because Slack DMs are a linear conversation, both messages intentionally used one active Paperclip task and serialized two agent turns. Each turn first published `Maya is working…` and then edited that same Slack message in place to the exact final. Across the four deliveries, the durable ledger contains four processed inbound rows and eight published rows (four working/final pairs), all with `attempts=1`, no error, and no pending, retry, failed, or ambiguous publication. This is positive recovery and queue evidence; the expired hostname confirms that a stable HTTPS origin is mandatory for production.
+
 ## 2026-09-06 answer-handoff and channel-root retest
 
 The later release-candidate working tree retained endpoint `2782e758-8e1e-47e3-a5aa-6a8359b1c23c` and repaired all three Slack callback surfaces after the development tunnel changed. Slack accepted the current Events API, Interactivity, and slash-command URLs, and delayed-event recovery remained enabled. This is useful current-provider evidence, but the temporary Cloudflare hostname is not a production ingress qualification; a stable deployment must keep a durable HTTPS origin across restarts.
@@ -14,7 +20,7 @@ A separate enabled-channel root (`CHA-83`) produced one native Slack thread and 
 
 ## 2026-09-06 current-build interactive and reaction closure
 
-The final live retest ran the uncommitted release-candidate working tree based on `77ad5383e` after restarting the server with the same instance home and the current public webhook URL:
+An earlier pre-merge live retest ran the uncommitted release-candidate working tree based on `77ad5383e` after restarting the server with the same instance home and its then-current public webhook URL:
 
 - Paperclip updated and Slack verified all three ingress surfaces: Events API, Interactivity, and `/maya-fdhjew`. A fresh direct message returned exact provider-visible response `SLACK-CURRENT-BUILD-0906`, and the registered `/maya-fdhjew status` command returned the current task without creating a task solely for the control.
 - A live question whose optional `allowOther` field was omitted initially degraded to a link-only card. The shared schema defines that field as optional, so omission must mean a closed question unless it is explicitly `true`. After the fix, the same natural request rendered native **Red** and **Blue** controls. Selecting **Red** changed the card to **Answered: Red**, scheduled one continuation, and produced exact provider-visible `SLACK-RETEST-Red`; the generic completion did not race or follow it.
@@ -24,7 +30,7 @@ The final live retest ran the uncommitted release-candidate working tree based o
 
 ## 2026-09-06 native file and action follow-up
 
-The latest current-provider checks on revision `77ad5383e3a8badf7b1b0933a7e9c66469186d55` refine the evidence boundary:
+Earlier provider checks on pre-merge revision `77ad5383e3a8badf7b1b0933a7e9c66469186d55` refined the evidence boundary:
 
 - The disabled-resource negative and recovery path passed live. While the Slack resource was disabled in Paperclip, the provider message did not create a task or produce bot work. Restoring the permitted resource allowed a later request through without replacing the endpoint or losing its existing resource identity.
 - The older `CHA-68` attempt is **not** outbound-file proof. Its explicit publication delivered text, but the separately created attachment was not bound to that comment's publication lineage, so Slack never received the intended native file. This exposed an implementation defect in the Paperclip comment/attachment handoff rather than a Slack transport rejection.
@@ -46,8 +52,9 @@ The outbound-file and tested rich-interaction gaps are now closed. Broader modal
 
 ## Current source and evidence boundary
 
-- Final locally verified and most recently live-rerun source revision: `77ad5383e3a8badf7b1b0933a7e9c66469186d55`
-- The synthetic-command receipt, native thread binding, ordered task-control, coherent progress/status/final lane, explicit attachment binding, native-action lifecycle, final-presentation lineage, and top-level DM reaction-generation fixes are present in the tested working tree based on this revision and were rerun live.
+- Pre-merge source revision for the historical breadth checks below: `77ad5383e3a8badf7b1b0933a7e9c66469186d55`
+- Final pushed and most recently live-rerun source revision: `da8f83d6c9befe7bf958f6d9cf12a95fc7e59e88`
+- The synthetic-command receipt, native thread binding, ordered task-control, coherent progress/status/final lane, explicit attachment binding, native-action lifecycle, final-presentation lineage, and top-level DM reaction-generation fixes are present in the final merge revision. The historical breadth checks exercised the pre-merge revision above; the merged-build section records the final live rerun.
 - Live checkpoint: 2026-09-05 through 2026-09-06
 - Current live endpoint: `2782e758-8e1e-47e3-a5aa-6a8359b1c23c`
 - Paperclip issue: `d7f718da-a8da-468e-99a7-79dc337d5cbc`
@@ -109,7 +116,7 @@ The current public tunnel also passed a reaction round trip after the FIFO run. 
 
 ### Latest false-duplicate and pause/resume retest
 
-A later live retest on the current working tree produced the following evidence in UTC:
+A subsequent pre-merge live retest produced the following evidence in UTC:
 
 1. A root sent at `04:28:42` completed normally. Its durable delivery recorded one legitimate ignored duplicate caused by Slack exposing the same root through overlapping subscribed event shapes. This expected provider overlap remained deduplicated after removal of the separate false internal-drain duplicate counter.
 2. Follow-up one and follow-up two were sent at `04:29:27.713` and `04:29:27.857`. Each processed exactly once with `attempts=1`, no error, and `duplicateCount=0`.
@@ -121,9 +128,9 @@ The later run also exposed a redundant automation follow-up wake inside Papercli
 
 A post-fix live retest at `04:58:32` sent `slack-no-empty-wake`. Paperclip admitted one message delivery, processed it once (`attempts=1`, no error), published working and final states once each by editing the same Slack provider message, and produced exactly one assignment wake for the incoming message. No automation follow-up wake was inserted by the agent's own final comment. Slack displayed one final `slack-no-empty-wake` reply.
 
-## Current local regression evidence
+## Pre-merge local regression evidence
 
-- On the current verified working tree based on revision `77ad5383e`, the full chat-channel PostgreSQL integration suite passed 183/183 on fresh migrated database `chat_adapters_test_final_20260906_0833`.
+- On that pre-merge working tree based on revision `77ad5383e`, the full chat-channel PostgreSQL integration suite passed 183/183 on fresh migrated database `chat_adapters_test_final_20260906_0833`.
 - Focused shared tests passed 11/11, focused server tests passed 194/194, and focused UI tests passed 41/41.
 - The deterministic browser suite `tests/e2e/chat-adapters-ui.spec.ts` passed 4/4, and shared, database, server, and UI typechecks all passed.
 - These deterministic checks support the live continuation and reaction fixes but do not replace the remaining provider cases.

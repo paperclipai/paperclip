@@ -10695,7 +10695,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       });
       // The interaction, provider token, and response-delivery receipt are
       // already durable. A provider callback must not wait for agent startup;
-      // drain the outbox after acknowledging Slack/Teams/Telegram.
+      // drain the outbox after acknowledging the provider callback.
       scheduleMessageProcessing(async () => {
         await questionResponses.deliver(answered.id);
       });

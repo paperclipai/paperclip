@@ -204,6 +204,45 @@ describe("Paperclip Discord adapter patch", () => {
     expect(threadId).toBe("discord:@me:dm-1");
   });
 
+  it("never logs inbound message content before Paperclip admission", async () => {
+    const { adapter, chat, client, handlers, logger } = harness();
+    await adapter.initialize(chat as never);
+    (
+      adapter as unknown as {
+        setupLegacyGatewayHandlers(
+          client: unknown,
+          shuttingDown: () => boolean,
+        ): void;
+      }
+    ).setupLegacyGatewayHandlers(client, () => false);
+
+    const sensitiveContent = "private content from a disabled destination";
+    await handlers.get("messageCreate")?.(
+      gatewayMessage({
+        channelId: "disabled-channel",
+        channel: { isThread: () => false, parentId: null },
+        content: sensitiveContent,
+        mentions: { has: () => false, roles: [], everyone: false },
+      }),
+    );
+
+    const receiptLog = logger.info.mock.calls.find(
+      ([message]) => message === "Discord Gateway message received",
+    );
+    expect(receiptLog?.[1]).toEqual(
+      expect.objectContaining({
+        channelId: "disabled-channel",
+        guildId: "1457808928258658549",
+        authorId: "user-1",
+        isMentioned: false,
+      }),
+    );
+    expect(receiptLog?.[1]).not.toHaveProperty("content");
+    expect(JSON.stringify(logger.info.mock.calls)).not.toContain(
+      sensitiveContent,
+    );
+  });
+
   it("delivers partial Gateway deletes without inventing deleted content", async () => {
     const { adapter, chat, client, handlers } = harness();
     await adapter.initialize(chat as never);

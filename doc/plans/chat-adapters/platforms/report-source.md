@@ -61,7 +61,7 @@ What provider-specific setup, configuration, and interaction behavior must Paper
 - **Transport:** a long-lived outbound Gateway client receives messages, reactions, interactions, edits, and deletes. Discord therefore needs no public Paperclip callback, interactions public key, or endpoint delivery selector. Reconnect, resume, and provider `retry_after` timing are runtime behavior.
 - **Default behavior:** a root `@bot` mention creates a Discord public thread and exactly one Paperclip task; replies in that thread continue it without another mention. Direct messages use separate linear task generations. A globally unique Discord Application ID prevents one provider bot identity from representing multiple Paperclip agents.
 - **Rendering:** bounded post/edit output, embeds, supported buttons, reactions, and native files are automatic when permitted. The current connector does not advertise slash commands, modals, true ephemeral responses, or proactive DMs.
-- **Qualification caveat:** the pinned SDK creates the provider thread before Paperclip resource/principal admission completes, so a denied root can leave an inert empty Discord thread while creating no Paperclip task or output. That provider-visible side effect remains a stable-release gap.
+- **Qualification boundary:** Paperclip preflights endpoint, resource, principal, and root-message admission before provider-thread creation, so a denied root creates no Discord thread or Paperclip work. An allowed root persists a provisional receipt before the provider effect, and recovery idempotently creates or reuses the thread, including existing-thread error `160004`. Those guarantees have deterministic and fresh-database evidence but still require real-provider fault-path proof.
 
 ### Telegram
 
@@ -77,7 +77,7 @@ What provider-specific setup, configuration, and interaction behavior must Paper
 2. Each setup surface follows one vertical sequence while clearly labeling what Paperclip provides and what must be completed at the provider. Paperclip can generate manifests, URLs, secrets, and copyable commands, but it cannot pretend that tenant/workspace/repository installation policy is under Paperclip control.
 3. Capability status is rendered from the adapter registry on Overview. Response features are not endpoint controls: the runtime uses the maximum safe supported behavior and explains the exact fallback when provider support, installation permissions, conversation type, or Paperclip authorization prevent it.
 4. Provider permission escalation is incremental. Basic mention/reply operation uses the smallest viable permission set; history, all-message visibility, user-directory lookup, and code/tool access are separate grants.
-5. Conversation boundaries are provider-native and explicit: Slack thread, GitHub object/review thread, Teams post thread or conversation, Telegram DM/group active binding or forum topic.
+5. Conversation boundaries are provider-native and explicit: Slack thread, GitHub object/review thread, Teams post thread or conversation, Discord public thread or DM generation, Telegram DM/group active binding or forum topic.
 6. Every provider-specific interaction still enters the same durable delivery → principal/permission → issue binding → Paperclip wakeup → safe publication flow.
 
 ## Residual validation before implementation

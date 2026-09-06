@@ -37,17 +37,19 @@ These are code-level claims until the real provider run demonstrates them.
 
 ## Current production-quality status
 
-The final hardening removed the two code-level release blockers found in the root-activation audit: denied roots no longer create an inert provider thread, and a crash between Discord thread creation and Paperclip binding now resumes through the persisted provisional receipt and idempotent reconciliation. The compatibility marker, required patched-method checks, frozen dependency install, and 25-second REST boundary make SDK drift and stalled provider calls fail visibly rather than weakening those guarantees.
+The final hardening removed the two code-level release blockers found in the root-activation audit: denied roots no longer create an inert provider thread, and a crash between Discord thread creation and Paperclip binding now resumes through the persisted provisional receipt and idempotent reconciliation. The compatibility marker, required patched-method checks, clean patch application against the pristine package, and 25-second REST boundary make SDK drift and stalled provider calls fail visibly rather than weakening those guarantees. Per repository policy, CI owns `pnpm-lock.yaml`; its PR workflow regenerates a lockfile artifact from the manifests before running the frozen install.
 
 No current code-audit blocker is recorded here. Discord is nevertheless not production-ready because none of the behavior has been observed against the real provider account/server. In particular, live proof must cover denied-root silence, provisional recovery, existing-thread reconciliation, files/interactions, Gateway reconnect, rate limits, token rotation, and the visible management surfaces. The adapter patch remains version-sensitive; any dependency update requires the compatibility and provider contracts to rerun.
 
 ## Local regression evidence
 
-- Discord adapter/runtime tests passed 41/41.
-- Fresh PostgreSQL Discord integration tests passed 2/2, including concurrent identity claims.
+- Final pushed merge revision: `da8f83d6c9befe7bf958f6d9cf12a95fc7e59e88`.
+- Before the final merge, Discord-focused adapter/runtime tests passed 41/41.
+- Before the final merge, fresh PostgreSQL Discord integration tests passed 2/2, including concurrent identity claims.
 - All migrations and migration-safety checks passed, including global Discord Application ID uniqueness.
-- Shared, database, server, and UI typechecks passed.
-- The frozen/patched dependency install and compatibility contract passed.
+- The full chat-channel PostgreSQL integration suite passed 188/188 on a fresh migrated database, merge-conflict-focused server tests passed 355/355, and the deterministic five-provider browser suite passed 5/5.
+- Shared, database, server, and UI typechecks, token gates, and both working-tree checks passed.
+- The Discord patch applied cleanly to a pristine `@chat-adapter/discord@4.39.0` package, and the patched distribution passed syntax and compatibility checks. CI will regenerate the PR lockfile artifact before its frozen install, as required by repository policy.
 
 This evidence supports implementation integrity but does not replace provider login, installation, Message Content intent, effective channel permission, Gateway, rate-limit, reconnect, native thread, file, action, identity-governance, negative-reach, token-rotation, and cleanup proof.
 
