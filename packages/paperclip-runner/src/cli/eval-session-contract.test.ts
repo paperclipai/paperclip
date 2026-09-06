@@ -12,6 +12,7 @@ import {
 } from "./eval-session-contract.js";
 import {
   boundedEvalSessionUsage,
+  evalRuntimeSystemInstructions,
   evalSessionProviderVersion,
   prepareEvalRuntimeContext,
 } from "./eval-session.js";
@@ -75,6 +76,11 @@ describe("eval-session request contract", () => {
         join(context.instructions.bundle.rootPath, "AGENTS.md"),
         "utf8",
       )).toContain("Paperclip direct live evaluation");
+      const systemInstructions = evalRuntimeSystemInstructions(context);
+      expect(systemInstructions).toContain("Paperclip direct live evaluation");
+      expect(systemInstructions).toContain(
+        `Read-only instruction sibling root: ${context.instructions.bundle.rootPath}`,
+      );
       expect((await stat(context.instructions.bundle.rootPath)).mode & 0o777)
         .toBe(0o555);
     } finally {

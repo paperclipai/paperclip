@@ -2382,7 +2382,8 @@ export class CapabilityLiveSession {
         config: createSkilllessCodexThreadConfig(this.#config.workingDirectory),
         permissions: CODEX_PERMISSION_PROFILE,
         runtimeWorkspaceRoots: [this.#config.workingDirectory],
-        baseInstructions: LIVE_BASE_INSTRUCTIONS,
+        baseInstructions:
+          this.#transportOptions.baseInstructions ?? LIVE_BASE_INSTRUCTIONS,
         persistExtendedHistory: true,
       });
       const resumedThread = record(resumed.thread);
@@ -2407,7 +2408,8 @@ export class CapabilityLiveSession {
         permissions: CODEX_PERMISSION_PROFILE,
         runtimeWorkspaceRoots: [this.#config.workingDirectory],
         approvalPolicy: "never",
-        baseInstructions: LIVE_BASE_INSTRUCTIONS,
+        baseInstructions:
+          this.#transportOptions.baseInstructions ?? LIVE_BASE_INSTRUCTIONS,
         completionContract: LIVE_COMPLETION_CONTRACT,
         dynamicTools: [
           ...tools.map(dynamicToolSpec),
