@@ -3966,6 +3966,38 @@ describeEmbeddedPostgres("tool access service", () => {
     await expect(service.getConnection(child.id)).resolves.toMatchObject({ status: "archived", enabled: false });
   });
 
+  it("activates the Composio broker connection and application on a healthy connect, with the mcp_http type its mcp_remote children need", async () => {
+    const company = await createCompany(db);
+    const client = fakeComposioClient(() => "ACTIVE");
+    const service = createTestToolAccessService(db, { composioClientFactory: () => client });
+
+    const connected = await service.connectGalleryApp(company.id, {
+      galleryKey: "composio",
+      connectionMethodKey: "api-key",
+      name: "Composio",
+      credentialValues: { "credentials.apiKey": "composio-test-key" },
+    }, { actorType: "user", actorId: "board" });
+
+    // Regression guard for #12633/#12634: connectGalleryApp's Composio branch
+    // used to return right after a successful health check without ever
+    // promoting either row out of "draft", and the application's `type` was
+    // derived from the broker's own ("rest_api") transport rather than the
+    // "mcp_remote" transport its children actually use -- both of which made
+    // every Composio child connection's tools permanently invisible to
+    // connectedMcpToolsForCompany() (it requires an active application whose
+    // type is (mcp_http, mcp_remote) or (mcp_stdio, local_stdio)).
+    expect(client.validateApiKey).toHaveBeenCalled();
+    expect(connected.connection).toMatchObject({ status: "active", enabled: true });
+    expect(connected.application).toMatchObject({ status: "active", type: "mcp_http" });
+
+    const [persistedConnection] = await db.select().from(toolConnections)
+      .where(eq(toolConnections.id, connected.connectionId));
+    const [persistedApplication] = await db.select().from(toolApplications)
+      .where(eq(toolApplications.id, connected.application.id));
+    expect(persistedConnection).toMatchObject({ status: "active", enabled: true });
+    expect(persistedApplication).toMatchObject({ status: "active", type: "mcp_http" });
+  });
+
   it("returns server-derived create capabilities for a non-manager member", async () => {
     const company = await createCompany(db);
     const app = createRouteApp(db, boardSessionActor(company.id, "member"));
