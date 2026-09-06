@@ -40,7 +40,7 @@ import type { Db } from "@paperclipai/db";
 import type {
   PluginStatus,
   PluginRecord,
-  PluginManifestDrift,
+  PluginPackageCapabilityDrift,
   PaperclipPluginManifestV1,
 } from "@paperclipai/shared";
 import { pluginRegistryService } from "./plugin-registry.js";
@@ -460,18 +460,23 @@ export function pluginLifecycleManager(
    * to be awaiting an operator decision. It fails closed: a package that cannot
    * be read cannot be shown to grant nothing, and activation would fail on it
    * anyway.
+   *
+   * Reading the capability delta loads the package's manifest module. That is
+   * acceptable here — enabling activates the plugin, which loads the package
+   * regardless — but not on the diagnostic read paths, which use the
+   * non-executing `inspectManifestDrift` instead.
    */
   async function assertPendingUpgradeGrantsNothing(plugin: PluginRecord): Promise<void> {
-    if (typeof pluginLoaderInstance.inspectManifestDrift !== "function") {
+    if (typeof pluginLoaderInstance.inspectPackageCapabilityDrift !== "function") {
       throw badRequest(
         `Cannot enable plugin '${plugin.pluginKey}': its pending upgrade cannot be checked for `
           + `capability escalation on this host. Re-run the upgrade with an explicit approval.`,
       );
     }
 
-    let drift: PluginManifestDrift;
+    let drift: PluginPackageCapabilityDrift;
     try {
-      drift = await pluginLoaderInstance.inspectManifestDrift(plugin);
+      drift = await pluginLoaderInstance.inspectPackageCapabilityDrift(plugin);
     } catch (err) {
       throw badRequest(
         `Cannot enable plugin '${plugin.pluginKey}': the pending upgrade package on disk could not `

@@ -15,8 +15,11 @@
  *
  * `upgradePlugin` now reports the escalation instead of throwing and applies it
  * only against an explicit approval, and `inspectManifestDrift` makes the
- * stored-vs-disk difference observable.
+ * stored-vs-disk difference observable without executing the package: read
+ * routes report version drift from `package.json`, while the capability delta
+ * stays on the lifecycle paths that load the manifest module anyway.
  */
+import { existsSync } from "node:fs";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -47,7 +50,17 @@ import { pluginLifecycleManager } from "../services/plugin-lifecycle.js";
 const BASE_CAPABILITIES: PluginCapability[] = ["issues.read", "issue.comments.read"];
 const ADDED_CAPABILITY: PluginCapability = "access.members.read";
 
-function manifestSource(version: string, capabilities: PluginCapability[]): string {
+/**
+ * Path the fixture manifest writes to when it is imported. Set per test in
+ * `beforeEach`; a read path that leaves it absent never executed package code.
+ */
+let manifestLoadMarker = "";
+
+function manifestSource(
+  version: string,
+  capabilities: PluginCapability[],
+  loadMarkerPath: string,
+): string {
   const manifest = {
     id: "example.drift-plugin",
     apiVersion: 1,
@@ -59,7 +72,14 @@ function manifestSource(version: string, capabilities: PluginCapability[]): stri
     capabilities,
     entrypoints: { worker: "worker.js" },
   };
-  return `export default ${JSON.stringify(manifest, null, 2)};\n`;
+  // Top-level side effect: the marker exists exactly when something imported
+  // this manifest, which is what the read paths must never do.
+  return [
+    `import { writeFileSync } from "node:fs";`,
+    `writeFileSync(${JSON.stringify(loadMarkerPath)}, "loaded");`,
+    `export default ${JSON.stringify(manifest, null, 2)};`,
+    "",
+  ].join("\n");
 }
 
 /** Write a minimal on-disk plugin package the loader can read a manifest from. */
@@ -67,6 +87,7 @@ async function writePackage(
   root: string,
   version: string,
   capabilities: PluginCapability[],
+  loadMarkerPath: string = manifestLoadMarker,
 ): Promise<void> {
   await mkdir(root, { recursive: true });
   await writeFile(
@@ -79,7 +100,10 @@ async function writePackage(
     }),
   );
   // Cache-busted by mtime on import, so rewrites are picked up in-process.
-  await writeFile(path.join(root, "manifest.js"), manifestSource(version, capabilities));
+  await writeFile(
+    path.join(root, "manifest.js"),
+    manifestSource(version, capabilities, loadMarkerPath),
+  );
   await writeFile(path.join(root, "worker.js"), "export default {};\n");
 }
 
@@ -127,6 +151,7 @@ describe("plugin capability drift", () => {
     mockRegistry.listInstalled.mockResolvedValue([]);
     tmpRoot = await mkdtemp(path.join(tmpdir(), "plugin-drift-"));
     packageRoot = path.join(tmpRoot, "drift-plugin");
+    manifestLoadMarker = path.join(tmpRoot, "manifest-loaded");
   });
 
   afterEach(async () => {
@@ -208,26 +233,93 @@ describe("plugin capability drift", () => {
     });
   });
 
+  /**
+   * The read-path inspector backs `GET /api/plugins/:pluginId` and the health
+   * check, so it must answer from inert `package.json` data only. Importing a
+   * manifest module to diff its capabilities would run package top-level code
+   * on an ordinary metadata request.
+   */
   describe("inspectManifestDrift", () => {
-    it("reports capabilities the package declares but the stored grant lacks", async () => {
+    it("reports a package version the stored grant was not captured from", async () => {
       await writePackage(packageRoot, "1.1.0", [...BASE_CAPABILITIES, ADDED_CAPABILITY]);
       const plugin = createPluginRecord({ packagePath: packageRoot });
 
       const drift = await createLoader(tmpRoot).inspectManifestDrift(plugin as never);
 
       expect(drift.packageReadable).toBe(true);
+      expect(drift.manifestPresent).toBe(true);
       expect(drift.drifted).toBe(true);
       expect(drift.storedVersion).toBe("1.0.0");
       expect(drift.packageVersion).toBe("1.1.0");
+    });
+
+    it("never executes the package manifest module", async () => {
+      await writePackage(packageRoot, "1.1.0", [...BASE_CAPABILITIES, ADDED_CAPABILITY]);
+      const plugin = createPluginRecord({ packagePath: packageRoot });
+
+      await createLoader(tmpRoot).inspectManifestDrift(plugin as never);
+
+      expect(existsSync(manifestLoadMarker)).toBe(false);
+    });
+
+    it("reports no drift when the package is the version that was granted", async () => {
+      await writePackage(packageRoot, "1.0.0", BASE_CAPABILITIES);
+      const plugin = createPluginRecord({ packagePath: packageRoot });
+
+      const drift = await createLoader(tmpRoot).inspectManifestDrift(plugin as never);
+
+      expect(drift.drifted).toBe(false);
+      expect(drift.packageVersion).toBe("1.0.0");
+    });
+
+    it("reports a package that no longer exposes a manifest as drifted", async () => {
+      await writePackage(packageRoot, "1.0.0", BASE_CAPABILITIES);
+      await rm(path.join(packageRoot, "manifest.js"));
+      const plugin = createPluginRecord({ packagePath: packageRoot });
+
+      const drift = await createLoader(tmpRoot).inspectManifestDrift(plugin as never);
+
+      expect(drift.packageReadable).toBe(true);
+      expect(drift.manifestPresent).toBe(false);
+      expect(drift.drifted).toBe(true);
+      expect(drift.error).toBeTruthy();
+    });
+
+    it("reports an unreadable package instead of throwing", async () => {
+      const plugin = createPluginRecord({ packagePath: path.join(tmpRoot, "missing") });
+
+      const drift = await createLoader(tmpRoot).inspectManifestDrift(plugin as never);
+
+      expect(drift.packageReadable).toBe(false);
+      expect(drift.error).toBeTruthy();
+    });
+  });
+
+  /**
+   * The capability delta needs the manifest module, so it stays on the
+   * lifecycle paths that load the package anyway — the `enable` gate below.
+   */
+  describe("inspectPackageCapabilityDrift", () => {
+    it("reports capabilities the package declares but the stored grant lacks", async () => {
+      await writePackage(packageRoot, "1.1.0", [...BASE_CAPABILITIES, ADDED_CAPABILITY]);
+      const plugin = createPluginRecord({ packagePath: packageRoot });
+
+      const drift = await createLoader(tmpRoot).inspectPackageCapabilityDrift(plugin as never);
+
+      expect(drift.packageReadable).toBe(true);
+      expect(drift.drifted).toBe(true);
+      expect(drift.packageVersion).toBe("1.1.0");
       expect(drift.addedCapabilities).toEqual([ADDED_CAPABILITY]);
       expect(drift.removedCapabilities).toEqual([]);
+      // This path does load the manifest — that is the difference.
+      expect(existsSync(manifestLoadMarker)).toBe(true);
     });
 
     it("reports capabilities still granted that the package dropped", async () => {
       await writePackage(packageRoot, "2.0.0", ["issues.read"]);
       const plugin = createPluginRecord({ packagePath: packageRoot });
 
-      const drift = await createLoader(tmpRoot).inspectManifestDrift(plugin as never);
+      const drift = await createLoader(tmpRoot).inspectPackageCapabilityDrift(plugin as never);
 
       expect(drift.addedCapabilities).toEqual([]);
       expect(drift.removedCapabilities).toEqual(["issue.comments.read"]);
@@ -237,7 +329,7 @@ describe("plugin capability drift", () => {
       await writePackage(packageRoot, "1.0.0", BASE_CAPABILITIES);
       const plugin = createPluginRecord({ packagePath: packageRoot });
 
-      const drift = await createLoader(tmpRoot).inspectManifestDrift(plugin as never);
+      const drift = await createLoader(tmpRoot).inspectPackageCapabilityDrift(plugin as never);
 
       expect(drift.drifted).toBe(false);
       expect(drift.addedCapabilities).toEqual([]);
@@ -247,7 +339,7 @@ describe("plugin capability drift", () => {
     it("reports an unreadable package instead of throwing", async () => {
       const plugin = createPluginRecord({ packagePath: path.join(tmpRoot, "missing") });
 
-      const drift = await createLoader(tmpRoot).inspectManifestDrift(plugin as never);
+      const drift = await createLoader(tmpRoot).inspectPackageCapabilityDrift(plugin as never);
 
       expect(drift.packageReadable).toBe(false);
       expect(drift.error).toBeTruthy();

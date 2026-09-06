@@ -66,8 +66,7 @@ async function createApp(
       drifted: false,
       storedVersion: "1.0.0",
       packageVersion: "1.0.0",
-      addedCapabilities: [],
-      removedCapabilities: [],
+      manifestPresent: true,
     })),
     ...loaderOverrides,
   };

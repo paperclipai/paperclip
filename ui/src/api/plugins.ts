@@ -29,7 +29,10 @@ export type { PluginManifestDrift };
  *
  * `manifestDrift` compares the stored manifest (the capability grant the host
  * enforces) against the package currently on disk, so a package swapped in
- * place is visible here instead of only in the database.
+ * place is visible here instead of only in the database. It reports versions,
+ * not capabilities: naming the drifted capabilities would mean executing the
+ * package's manifest module on a read request, so the delta comes from the
+ * upgrade call instead.
  */
 export type PluginDetail = PluginRecord & {
   /** True when the running worker advertises `validateConfig`. */

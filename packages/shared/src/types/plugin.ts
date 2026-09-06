@@ -761,25 +761,41 @@ export interface PluginRecord {
 
 /**
  * Difference between the manifest stored for a plugin — the capability grant
- * the host enforces — and the manifest in the package currently on disk.
+ * the host enforces — and the package currently on disk.
  *
  * A package swapped in place leaves the stored grant untouched until the next
  * activation, so the running code and the granted capability set can diverge.
- * See PLUGIN_SPEC.md §15.4.
+ * This shape is read from `package.json` alone and never executes plugin code,
+ * so it is safe on diagnostic read routes. See PLUGIN_SPEC.md §15.4.
  */
 export interface PluginManifestDrift {
   /** False when the package on disk could not be read (see `error`). */
   packageReadable: boolean;
-  /** True when the stored manifest differs from the package manifest. */
+  /** True when the package on disk no longer matches the stored grant. */
   drifted: boolean;
   storedVersion: string;
+  /** Version declared by the package's `package.json`. */
   packageVersion: string | null;
+  /** False when the package no longer exposes a manifest entrypoint at all. */
+  manifestPresent: boolean;
+  /** Why the package could not be read, when `packageReadable` is false. */
+  error?: string;
+}
+
+/**
+ * Manifest drift including the capability delta.
+ *
+ * A v1 manifest is an executable module, so reading the capabilities a package
+ * declares means importing it and running its top-level code. That is only
+ * acceptable on lifecycle operations that already load the package (install,
+ * upgrade, activation); diagnostic read routes get the non-executing
+ * `PluginManifestDrift` instead. See PLUGIN_SPEC.md §15.4.
+ */
+export interface PluginPackageCapabilityDrift extends PluginManifestDrift {
   /** Capabilities the package declares that were never granted to the plugin. */
   addedCapabilities: string[];
   /** Capabilities still granted that the package no longer declares. */
   removedCapabilities: string[];
-  /** Why the package manifest could not be read, when `packageReadable` is false. */
-  error?: string;
 }
 
 export interface PluginDatabaseNamespaceRecord {

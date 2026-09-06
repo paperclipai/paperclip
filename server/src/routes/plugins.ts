@@ -564,9 +564,13 @@ export function pluginRoutes(
   }
 
   /**
-   * Compare the stored manifest against the package on disk without letting a
+   * Compare the stored grant against the package on disk without letting a
    * filesystem problem take down a read route: drift is diagnostic detail on
    * responses that must still return the plugin record.
+   *
+   * Reads `package.json` only. Read routes never load a plugin's manifest
+   * module, because that would execute package code on an ordinary metadata or
+   * health request; the capability delta comes from the upgrade path instead.
    */
   async function inspectManifestDriftSafely(plugin: PluginRecord): Promise<PluginManifestDrift> {
     try {
@@ -577,8 +581,7 @@ export function pluginRoutes(
         drifted: false,
         storedVersion: plugin.version,
         packageVersion: null,
-        addedCapabilities: [],
-        removedCapabilities: [],
+        manifestPresent: false,
         error: err instanceof Error ? err.message : String(err),
       };
     }
@@ -1973,8 +1976,10 @@ export function pluginRoutes(
    * - Plugin key (e.g., "acme.linear")
    *
    * Response: PluginRecord, enriched with `supportsConfigTest` and
-   * `manifestDrift` — the diff between the stored manifest (the capability
-   * grant the host enforces) and the package currently on disk.
+   * `manifestDrift` — whether the package currently on disk is still the one
+   * the stored manifest (the capability grant the host enforces) was captured
+   * from. Version level only: naming the drifted capabilities would mean
+   * executing the package's manifest module on a read request.
    * Errors: 404 if plugin not found
    */
   router.get("/plugins/:pluginId", async (req, res) => {
@@ -2177,40 +2182,38 @@ export function pluginRoutes(
     // A package replaced in place without a re-activation keeps running against
     // the capability set captured earlier, so every host call needing a newly
     // declared capability is denied with nothing on the host reporting why.
+    // The check stays at the version level: naming the exact capabilities would
+    // mean loading the package's manifest module on a health request.
     const drift = await inspectManifestDriftSafely(plugin);
-    const capabilitiesDrifted =
-      drift.addedCapabilities.length > 0 || drift.removedCapabilities.length > 0;
-    if (!drift.packageReadable) {
+    if (!drift.packageReadable || !drift.manifestPresent) {
       checks.push({
         name: "manifest_drift",
         passed: false,
         message: `Could not read the plugin package on disk: ${drift.error ?? "unknown error"}`,
       });
-    } else if (capabilitiesDrifted) {
+    } else if (drift.drifted) {
       checks.push({
         name: "manifest_drift",
         passed: false,
         message:
-          `Package on disk (v${drift.packageVersion}) declares a different capability set than the `
-          + `stored manifest (v${drift.storedVersion}). `
-          + `Not granted: [${drift.addedCapabilities.join(", ") || "none"}]. `
-          + `Granted but no longer declared: [${drift.removedCapabilities.join(", ") || "none"}]. `
-          + `Run POST /api/plugins/${plugin.id}/upgrade with approveCapabilities to resolve.`,
+          `Package on disk (v${drift.packageVersion}) is not the version the stored manifest was `
+          + `captured from (v${drift.storedVersion}), so the plugin is running against a stale `
+          + `capability grant. `
+          + `Run POST /api/plugins/${plugin.id}/upgrade to see the capabilities it adds and approve them.`,
       });
     } else {
       checks.push({
         name: "manifest_drift",
         passed: true,
-        message: drift.drifted
-          ? `Package on disk (v${drift.packageVersion}) differs from the stored manifest (v${drift.storedVersion}), but the capability set matches`
-          : "Stored manifest matches the package on disk",
+        message: "Stored manifest matches the package on disk",
       });
     }
 
     const result: PluginHealthCheckResult = {
       pluginId: plugin.id,
       status: plugin.status,
-      healthy: isHealthy && hasValidManifest && hasNoError && drift.packageReadable && !capabilitiesDrifted,
+      healthy:
+        isHealthy && hasValidManifest && hasNoError && drift.packageReadable && !drift.drifted,
       checks,
       lastError: plugin.lastError ?? undefined,
     };

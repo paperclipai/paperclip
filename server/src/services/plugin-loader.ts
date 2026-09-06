@@ -37,6 +37,7 @@ import type {
   PaperclipPluginManifestV1,
   PluginLauncherDeclaration,
   PluginManifestDrift,
+  PluginPackageCapabilityDrift,
   PluginRecord,
   PluginUiSlotDeclaration,
 } from "@paperclipai/shared";
@@ -347,7 +348,7 @@ export interface PluginInstallOptions {
  * and the UI client all read the same shape; re-exported here for the existing
  * server-side importers.
  */
-export type { PluginManifestDrift } from "@paperclipai/shared";
+export type { PluginManifestDrift, PluginPackageCapabilityDrift } from "@paperclipai/shared";
 
 // ---------------------------------------------------------------------------
 // Runtime options — services needed for initializing loaded plugins
@@ -579,14 +580,24 @@ export interface PluginLoader {
   }>;
 
   /**
-   * Compare the manifest stored for an installed plugin against the manifest
-   * exposed by the package currently on disk.
+   * Compare the grant stored for an installed plugin against the package
+   * currently on disk, reading `package.json` only.
    *
-   * Never throws: an unreadable or missing package comes back as
-   * `packageReadable: false` with the reason in `error`, so health checks and
-   * detail routes can report drift without failing.
+   * Safe on read routes: a v1 manifest is an executable module, so this never
+   * touches it. Never throws either — an unreadable or missing package comes
+   * back as `packageReadable: false` with the reason in `error`, so health
+   * checks and detail routes can report drift without failing.
    */
   inspectManifestDrift(plugin: PluginRecord): Promise<PluginManifestDrift>;
+
+  /**
+   * Same comparison, plus the capability delta.
+   *
+   * Loads the package's manifest module, which runs its top-level code. Only
+   * call it from lifecycle operations that already load the package; read
+   * routes must use `inspectManifestDrift`.
+   */
+  inspectPackageCapabilityDrift(plugin: PluginRecord): Promise<PluginPackageCapabilityDrift>;
 
   /**
    * Check whether a plugin API version is supported by this host.
@@ -1412,6 +1423,62 @@ export function pluginLoader(
     return loadManifestFromPath(manifestPath);
   }
 
+  /**
+   * Compare the stored grant against the package on disk without executing any
+   * plugin code: a v1 manifest is a module, and importing one from a read route
+   * would run its top-level code on an ordinary metadata or health request.
+   *
+   * `package.json` is inert JSON, and the version it declares is enough to tell
+   * a stored grant apart from the package actually running. The exact
+   * capability delta needs the manifest module, so it belongs to the upgrade
+   * path, which loads it under approval.
+   */
+  async function inspectManifestDriftFromPackageJson(
+    plugin: PluginRecord,
+  ): Promise<PluginManifestDrift> {
+    const base: PluginManifestDrift = {
+      packageReadable: false,
+      drifted: false,
+      storedVersion: plugin.version,
+      packageVersion: null,
+      manifestPresent: false,
+    };
+
+    let pkgJson: Record<string, unknown> | null;
+    let manifestPath: string | null;
+    try {
+      const packageRoot = resolvePluginPackageRoot(plugin, localPluginDir);
+      pkgJson = await readPackageJson(packageRoot);
+      if (!pkgJson) {
+        return { ...base, error: "Package on disk has no readable package.json" };
+      }
+      manifestPath = resolveManifestPath(packageRoot, pkgJson);
+    } catch (err) {
+      return { ...base, error: err instanceof Error ? err.message : String(err) };
+    }
+
+    const rawVersion = pkgJson["version"];
+    const packageVersion = typeof rawVersion === "string" ? rawVersion : null;
+
+    if (!manifestPath || !existsSync(manifestPath)) {
+      return {
+        ...base,
+        packageReadable: true,
+        drifted: true,
+        packageVersion,
+        error: "Package on disk does not expose a Paperclip manifest",
+      };
+    }
+
+    return {
+      packageReadable: true,
+      drifted: packageVersion !== plugin.version,
+      storedVersion: plugin.version,
+      packageVersion,
+      manifestPresent: true,
+    };
+  }
+
   async function refreshPluginManifestFromPackage(
     plugin: PluginRecord,
     packageRoot: string,
@@ -1949,26 +2016,47 @@ export function pluginLoader(
     // -----------------------------------------------------------------------
 
     async inspectManifestDrift(plugin: PluginRecord): Promise<PluginManifestDrift> {
+      return inspectManifestDriftFromPackageJson(plugin);
+    },
+
+    // -----------------------------------------------------------------------
+    // inspectPackageCapabilityDrift
+    // -----------------------------------------------------------------------
+
+    async inspectPackageCapabilityDrift(
+      plugin: PluginRecord,
+    ): Promise<PluginPackageCapabilityDrift> {
       const storedManifest = plugin.manifestJson;
       const storedCaps = storedManifest?.capabilities ?? [];
-      const base: PluginManifestDrift = {
-        packageReadable: false,
-        drifted: false,
-        storedVersion: plugin.version,
-        packageVersion: null,
+      const drift = await inspectManifestDriftFromPackageJson(plugin);
+      const base: PluginPackageCapabilityDrift = {
+        ...drift,
         addedCapabilities: [],
         removedCapabilities: [],
       };
+      if (!drift.packageReadable || !drift.manifestPresent) return base;
 
+      // Loading the manifest runs the package's top-level code. Callers are
+      // lifecycle operations that load the package anyway.
       let packageManifest: PaperclipPluginManifestV1 | null = null;
       try {
         const packageRoot = resolvePluginPackageRoot(plugin, localPluginDir);
         packageManifest = await loadManifestFromPackageRoot(packageRoot);
         if (!packageManifest) {
-          return { ...base, error: "Package on disk does not expose a Paperclip manifest" };
+          return {
+            ...base,
+            packageReadable: false,
+            drifted: false,
+            error: "Package on disk does not expose a Paperclip manifest",
+          };
         }
       } catch (err) {
-        return { ...base, error: err instanceof Error ? err.message : String(err) };
+        return {
+          ...base,
+          packageReadable: false,
+          drifted: false,
+          error: err instanceof Error ? err.message : String(err),
+        };
       }
 
       const packageCaps = packageManifest.capabilities ?? [];
@@ -1980,6 +2068,7 @@ export function pluginLoader(
         drifted: JSON.stringify(packageManifest) !== JSON.stringify(storedManifest),
         storedVersion: plugin.version,
         packageVersion: packageManifest.version,
+        manifestPresent: true,
         addedCapabilities: packageCaps.filter((c) => !storedCapSet.has(c)),
         removedCapabilities: storedCaps.filter((c) => !packageCapSet.has(c)),
       };

@@ -927,11 +927,21 @@ capability are denied even though the code on disk declares them.
 The host must make that difference observable rather than silent:
 
 - `GET /api/plugins/:pluginId` returns `manifestDrift` with the stored version,
-  the package version, and the added/removed capabilities.
+  the version declared by the package's `package.json`, and whether the package
+  still exposes a manifest entrypoint.
 - `GET /api/plugins/:pluginId/health` fails the `manifest_drift` check (and
-  reports `healthy: false`) whenever the capability sets differ.
+  reports `healthy: false`) whenever the package on disk is not the version the
+  stored manifest was captured from, or cannot be read.
 - Activation adopts the on-disk manifest and logs a warning naming every
   capability granted that the stored manifest did not carry.
+
+Neither read path may name the drifted capabilities, because a v1 manifest is
+an executable module: importing one to diff its capability list would run
+package top-level code on an ordinary metadata or health request. Read paths
+therefore compare inert `package.json` data only. The exact capability delta
+belongs to the operations that load the package anyway — `POST
+/api/plugins/:pluginId/upgrade` reports it in `upgrade.addedCapabilities` and
+holds it for approval (§15.3), and the `enable` gate reads it the same way.
 
 ## 16. Event System
 
