@@ -4044,7 +4044,8 @@ async function listIssueBlockedInboxAttentionMap(
       (handoff?.state === "required" || handoff?.state === "escalated")
       && (liveHandoffRunIssueIds.has(row.id) || liveHandoffWakeIssueIds.has(row.id))
     );
-    if (handoff && !hasLiveHandoffContinuation && (handoff.required || handoff.state === "escalated")) {
+    const hasPendingInteraction = interactionByIssueId.has(row.id);
+    if (handoff && !hasLiveHandoffContinuation && !hasPendingInteraction && (handoff.required || handoff.state === "escalated")) {
       result.set(row.id, attentionBase({
         state: "missing_disposition",
         reason: "missing_successful_run_disposition",
