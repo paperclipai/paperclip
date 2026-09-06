@@ -9762,6 +9762,10 @@ export function issueRoutes(
       actorAgentId: actor.agentId,
       actorUserId: actor.actorType === "user" ? actor.actorId : null,
       actorRunId: actor.runId ?? null,
+      // Children here are not project-pinned, so the service-layer inference
+      // backstop may run for them — hand it the authenticated actor so that
+      // decision is made against this caller, key scope and all.
+      actorAuthorization: req.actor,
     });
 
     await logActivity(db, {
@@ -12427,6 +12431,10 @@ export function issueRoutes(
         agentId: actor.agentId,
         runId: actor.runId,
         userId: actor.actorType === "user" ? actor.actorId : null,
+        // Accepted suggested tasks are created without a project pin, so the
+        // inference backstop may authorize a project attachment — hand it the
+        // authenticated actor so that decision is made against this caller.
+        authorization: req.actor,
         resolverPolicyRestriction: resolutionAuthorization.resolverPolicyRestriction,
         suggestedTaskEffectsAuthorized,
       });

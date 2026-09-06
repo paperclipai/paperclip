@@ -70,6 +70,7 @@ import {
 } from "@paperclipai/shared";
 import { z } from "zod";
 import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
+import type { AuthorizationActor } from "./authorization.js";
 import { getTelemetryClient } from "../telemetry.js";
 import { logActivity, publishActivity, type ActivityPublication } from "./activity-log.js";
 import { evaluateAgentInvokabilityFromDb } from "./agent-invokability.js";
@@ -105,6 +106,12 @@ type InteractionActor = {
   runId?: string | null;
   userId?: string | null;
   systemId?: string | null;
+  /**
+   * The resolving caller's authenticated authorization actor, verbatim, for
+   * downstream decisions that must authorize the caller rather than a
+   * reconstructed principal (issue creation's project-inference backstop).
+   */
+  authorization?: AuthorizationActor | null;
   resolverPolicyRestriction?:
     | IssueThreadInteractionCanonicalResolverPolicy
     | IssueThreadInteractionResolverRestriction
@@ -3003,6 +3010,7 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
             createdByUserId: actor.userId ?? null,
             actorAgentId: actor.agentId ?? null,
             actorUserId: actor.userId ?? null,
+            actorAuthorization: actor.authorization ?? null,
           } as Parameters<ReturnType<typeof issueService>["createChild"]>[1]);
 
           const parentIdentifier = createdByClientKey.get(task.parentClientKey ?? "")?.identifier

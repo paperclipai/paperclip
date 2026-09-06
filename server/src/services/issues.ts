@@ -94,7 +94,7 @@ import { redactCurrentUserText } from "../log-redaction.js";
 import { redactSensitiveText } from "../redaction.js";
 import { resolveAgentIssueProjectId } from "./issue-project-inference.js";
 import { resolveActorTrustDecisionForIssue } from "./source-trust.js";
-import { authorizationService } from "./authorization.js";
+import { authorizationService, type AuthorizationActor } from "./authorization.js";
 import { resolveIssueGoalId, resolveNextIssueGoalId } from "./issue-goal-fallback.js";
 import { getRunLogStore } from "./run-log-store.js";
 import { getDefaultCompanyGoal } from "./goals.js";
@@ -721,6 +721,17 @@ type IssueCreateInput = Omit<typeof issues.$inferInsert, "companyId"> & {
   pinProjectId?: boolean;
   actorRunId?: string | null;
   actorResponsibleUserId?: string | null;
+  /**
+   * The caller's authenticated authorization actor, verbatim. When present,
+   * the inference backstop's tasks:assign decision authorizes THIS principal
+   * — key scope, key id, source, acting agent and responsible user included —
+   * rather than reconstructing an actor from `createdByAgentId`. Callers that
+   * hold real authentication context (HTTP routes, and services acting on a
+   * route actor's behalf) must pass it; the reconstruction fallback exists
+   * only for in-process callers with no authentication context at all, where
+   * the creating agent's own run IS the acting principal.
+   */
+  actorAuthorization?: AuthorizationActor | null;
   trustExplicitResponsibleUserId?: boolean;
   idempotencyKey?: string | null;
   allowDuplicate?: boolean;
@@ -739,6 +750,10 @@ type AcceptedPlanDecompositionInput = {
   actorAgentId?: string | null;
   actorUserId?: string | null;
   actorRunId?: string | null;
+  // Kept top-level (never on the children) so it stays out of the persisted
+  // `requestedChildren` payload and the request fingerprint: the principal
+  // belongs to the call, not to the requested child set.
+  actorAuthorization?: AuthorizationActor | null;
 };
 type AcceptedPlanDocumentInteraction = {
   id: string;
@@ -7053,6 +7068,7 @@ export function issueService(db: Db) {
 
           const createdChild = await issueService(tx as unknown as Db).createChild(sourceIssue.id, {
             ...nextChildInput,
+            actorAuthorization: data.actorAuthorization ?? null,
             executionWorkspaceInheritanceMode: "strategy_only",
           });
           const nextIds = [...existingChildIssueIds, createdChild.issue.id];
@@ -7185,6 +7201,7 @@ export function issueService(db: Db) {
         pinProjectId,
         actorRunId,
         actorResponsibleUserId,
+        actorAuthorization,
         trustExplicitResponsibleUserId,
         idempotencyKey: rawIdempotencyKey,
         allowDuplicate,
@@ -7398,40 +7415,48 @@ export function issueService(db: Db) {
             const needsAssignmentCheck =
               trustDecision.kind !== "denied" &&
               Boolean(issueData.assigneeAgentId || issueData.assigneeUserId);
-            // An authenticated route actor always carries the responsible
-            // user it acts on behalf of (the auth middleware refuses agent
-            // keys without one), and the tasks:assign decision intersects
-            // with that user's own authorization. Reconstructing the actor
-            // without it would silently skip that layer, so resolve it from
-            // the same actor-level sources the middleware uses: the caller's
-            // explicit responsible user, else the creating agent's run. The
-            // issue-level fallbacks (parent, createdByUserId) stay out — they
-            // describe the issue, not who is acting.
-            let actorOnBehalfOfUserId: string | null = null;
+            let assignmentAllowed = !needsAssignmentCheck;
             if (needsAssignmentCheck) {
-              actorOnBehalfOfUserId = actorResponsibleUserId?.trim() || null;
-              if (!actorOnBehalfOfUserId && actorRunId) {
-                actorOnBehalfOfUserId = await tx
-                  .select({ responsibleUserId: heartbeatRuns.responsibleUserId })
-                  .from(heartbeatRuns)
-                  .where(and(
-                    eq(heartbeatRuns.id, actorRunId),
-                    eq(heartbeatRuns.companyId, companyId),
-                    eq(heartbeatRuns.agentId, issueData.createdByAgentId),
-                  ))
-                  .then((rows) => rows[0]?.responsibleUserId?.trim() || null);
-              }
-            }
-            const assignmentAllowed =
-              !needsAssignmentCheck ||
-              (await authorizationService(tx).decide({
-                actor: {
+              // Authorize the caller, not a stand-in: when the caller passed
+              // its authenticated actor, decide against it verbatim so key
+              // scope, key id, source, the acting agent and the responsible
+              // user all constrain this decision exactly as they constrained
+              // the route's own decisions. Reconstruction below is reserved
+              // for in-process callers with no authentication context, where
+              // the creating agent's run is the acting principal by
+              // definition. An authenticated route actor always carries the
+              // responsible user it acts on behalf of (the auth middleware
+              // refuses agent keys without one), and the tasks:assign
+              // decision intersects with that user's own authorization —
+              // so the reconstruction resolves it from the same actor-level
+              // sources the middleware uses: the caller's explicit
+              // responsible user, else the creating agent's run. The
+              // issue-level fallbacks (parent, createdByUserId) stay out —
+              // they describe the issue, not who is acting.
+              let assignmentActor: AuthorizationActor | null = actorAuthorization ?? null;
+              if (!assignmentActor) {
+                let actorOnBehalfOfUserId: string | null = actorResponsibleUserId?.trim() || null;
+                if (!actorOnBehalfOfUserId && actorRunId) {
+                  actorOnBehalfOfUserId = await tx
+                    .select({ responsibleUserId: heartbeatRuns.responsibleUserId })
+                    .from(heartbeatRuns)
+                    .where(and(
+                      eq(heartbeatRuns.id, actorRunId),
+                      eq(heartbeatRuns.companyId, companyId),
+                      eq(heartbeatRuns.agentId, issueData.createdByAgentId),
+                    ))
+                    .then((rows) => rows[0]?.responsibleUserId?.trim() || null);
+                }
+                assignmentActor = {
                   type: "agent",
                   agentId: issueData.createdByAgentId,
                   companyId,
                   runId: actorRunId ?? null,
                   onBehalfOfUserId: actorOnBehalfOfUserId,
-                },
+                };
+              }
+              assignmentAllowed = (await authorizationService(tx).decide({
+                actor: assignmentActor,
                 action: "tasks:assign",
                 resource: {
                   type: "issue",
@@ -7448,6 +7473,7 @@ export function issueService(db: Db) {
                   assigneeUserId: issueData.assigneeUserId ?? null,
                 },
               })).allowed;
+            }
             if (trustDecision.kind !== "denied" && assignmentAllowed) {
               issueData.projectId = inferredProjectId;
               if (trustDecision.kind === "low_trust_review" && !issueData.sourceTrust) {

@@ -6368,6 +6368,57 @@ describeEmbeddedPostgres("accepted plan decomposition", () => {
     expect(companyIssues).toHaveLength(2);
   });
 
+  it("decides backstop project inference against the decompose caller's actor", async () => {
+    // Decomposition children are not project-pinned, so the service-layer
+    // inference backstop can attach a project to them. That tasks:assign
+    // decision must be made against the route caller's authenticated actor —
+    // a key scope that cannot assign withdraws the inferred project instead
+    // of being dropped on the way into the service.
+    const { companyId, sourceIssueId, acceptedPlanRevisionId, assigneeAgentId } = await seedAcceptedPlanIssue();
+    const projectId = randomUUID();
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "shove",
+      status: "in_progress",
+    });
+    await db.insert(projectWorkspaces).values({
+      id: randomUUID(),
+      companyId,
+      projectId,
+      name: "shove",
+      repoUrl: "https://github.com/zannis/shove",
+      cwd: "/repos/shove",
+    });
+
+    const result = await svc.decomposeAcceptedPlan(sourceIssueId, {
+      acceptedPlanRevisionId,
+      children: [
+        {
+          title: "Split out the repro",
+          description: "Reproduce it in https://github.com/zannis/shove first.",
+          status: "todo" as const,
+          workMode: "standard" as const,
+          priority: "medium" as const,
+          createdByAgentId: assigneeAgentId,
+          assigneeAgentId,
+        },
+      ],
+      actorAgentId: assigneeAgentId,
+      actorAuthorization: {
+        type: "agent",
+        agentId: assigneeAgentId,
+        companyId,
+        source: "agent_key",
+        keyScope: { kind: "skill_test", issueId: randomUUID() },
+      },
+    });
+
+    expect(result.newlyCreatedIssues).toHaveLength(1);
+    expect(result.newlyCreatedIssues[0]?.projectId).toBeNull();
+    expect(result.newlyCreatedIssues[0]?.assigneeAgentId).toBe(assigneeAgentId);
+  });
+
   it("rejects a different child set for the same accepted plan fingerprint", async () => {
     const { sourceIssueId, acceptedPlanRevisionId, assigneeAgentId } = await seedAcceptedPlanIssue();
 

@@ -936,6 +936,108 @@ describeEmbeddedPostgres("issue create project inference", () => {
     expect(issue.assigneeAgentId).toBe(assignee.id);
   });
 
+  it("withdraws a service-layer inference when the caller's key scope cannot assign", async () => {
+    // The backstop must authorize the caller, not a reconstruction of it: a
+    // skill-test-scoped key is flatly denied tasks:assign at the routes, and
+    // handing the backstop an actor without that key scope would attach a
+    // project the caller's own key could never have assigned into.
+    const companyId = await seedCompany();
+    await seedProject(companyId, "shove", {
+      repoUrl: "https://github.com/zannis/shove",
+      cwd: "/repos/shove",
+    });
+    const creator = await seedAgent(companyId);
+    const assignee = await seedAgent(companyId);
+    const parent = await seedIssue(companyId, null, "Project-less root");
+    const responsibleUserId = await seedResponsibleUser(companyId, "operator");
+
+    const { issue } = await issueService(db).createChild(parent.id, {
+      title: "Split out the repro",
+      description: "Reproduce it in https://github.com/zannis/shove first.",
+      status: "todo",
+      priority: "medium",
+      createdByAgentId: creator.id,
+      assigneeAgentId: assignee.id,
+      actorAuthorization: {
+        type: "agent",
+        agentId: creator.id,
+        companyId,
+        source: "agent_key",
+        keyScope: { kind: "skill_test", issueId: randomUUID() },
+        onBehalfOfUserId: responsibleUserId,
+      },
+    });
+
+    expect(issue.projectId).toBeNull();
+    expect(issue.assigneeAgentId).toBe(assignee.id);
+  });
+
+  it("authorizes the caller's acting agent, not the created-by agent", async () => {
+    // When the caller's actor names a different acting agent than the one the
+    // issue is attributed to, the decision belongs to the actor — an acting
+    // agent outside the company withdraws the inference even though the
+    // created-by agent alone would have been allowed.
+    const companyId = await seedCompany();
+    await seedProject(companyId, "shove", {
+      repoUrl: "https://github.com/zannis/shove",
+      cwd: "/repos/shove",
+    });
+    const creator = await seedAgent(companyId);
+    const assignee = await seedAgent(companyId);
+    const parent = await seedIssue(companyId, null, "Project-less root");
+
+    const { issue } = await issueService(db).createChild(parent.id, {
+      title: "Split out the repro",
+      description: "Reproduce it in https://github.com/zannis/shove first.",
+      status: "todo",
+      priority: "medium",
+      createdByAgentId: creator.id,
+      assigneeAgentId: assignee.id,
+      actorAuthorization: {
+        type: "agent",
+        agentId: randomUUID(),
+        companyId,
+        source: "agent_key",
+      },
+    });
+
+    expect(issue.projectId).toBeNull();
+    expect(issue.assigneeAgentId).toBe(assignee.id);
+  });
+
+  it("keeps the inferred project for an unscoped caller actor", async () => {
+    // The caller-actor path must not over-withdraw: a full-scope agent-key
+    // actor authorizes the same attachment the route would have allowed.
+    const companyId = await seedCompany();
+    const project = await seedProject(companyId, "shove", {
+      repoUrl: "https://github.com/zannis/shove",
+      cwd: "/repos/shove",
+    });
+    const creator = await seedAgent(companyId);
+    const assignee = await seedAgent(companyId);
+    const parent = await seedIssue(companyId, null, "Project-less root");
+    const responsibleUserId = await seedResponsibleUser(companyId, "operator");
+
+    const { issue } = await issueService(db).createChild(parent.id, {
+      title: "Split out the repro",
+      description: "Reproduce it in https://github.com/zannis/shove first.",
+      status: "todo",
+      priority: "medium",
+      createdByAgentId: creator.id,
+      assigneeAgentId: assignee.id,
+      actorAuthorization: {
+        type: "agent",
+        agentId: creator.id,
+        companyId,
+        source: "agent_key",
+        onBehalfOfUserId: responsibleUserId,
+      },
+    });
+
+    expect(issue.projectId).toBe(project.id);
+    expect(issue.assigneeAgentId).toBe(assignee.id);
+  });
+
   it("still infers into an assignment-protected project when the create is unassigned", async () => {
     // Route parity: tasks:assign only gates creates that carry an assignee.
     // An unassigned create lands in the protected project the same way the
