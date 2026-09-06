@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   agents,
@@ -7,6 +7,8 @@ import {
   createDb,
   documentRevisions,
   documents,
+  heartbeatRunEvents,
+  heartbeatRuns,
   issueDocuments,
   issueRelations,
   issueTreeHolds,
@@ -52,6 +54,8 @@ describeEmbeddedPostgres("run-dispatch postgres adapter", () => {
     await db.delete(issueTreeHolds);
     await db.delete(issueRelations);
     await db.delete(issues);
+    await db.delete(heartbeatRunEvents);
+    await db.delete(heartbeatRuns);
     await db.delete(agents);
     await db.delete(companies);
   });
@@ -400,5 +404,182 @@ describeEmbeddedPostgres("run-dispatch postgres adapter", () => {
         errorCode: "issue_continuation_waiting_on_review",
       });
     });
+  });
+
+  describe("promoteOrCancelDueRetry", () => {
+    async function seedScheduledRetryRun(input: {
+      runId: string;
+      companyId: string;
+      agentId: string;
+      issueId: string;
+      now: Date;
+    }) {
+      await db.insert(heartbeatRuns).values({
+        id: input.runId,
+        companyId: input.companyId,
+        agentId: input.agentId,
+        invocationSource: "retry",
+        status: "scheduled_retry",
+        scheduledRetryAttempt: 1,
+        scheduledRetryAt: input.now,
+        scheduledRetryReason: "max_turns_continuation",
+        contextSnapshot: { issueId: input.issueId },
+        updatedAt: input.now,
+        createdAt: input.now,
+      });
+    }
+
+    async function waitForBlockedForUpdate(tableName: string) {
+      for (let attempt = 0; attempt < 80; attempt += 1) {
+        const [waiting] = await db.execute<{ waiting: boolean }>(sql`
+          SELECT EXISTS (
+            SELECT 1
+            FROM pg_stat_activity
+            WHERE state = 'active'
+              AND wait_event_type = 'Lock'
+              AND query ILIKE ${`%${tableName}%`}
+              AND query ILIKE '%for update%'
+          ) AS waiting
+        `);
+        if (waiting?.waiting) return true;
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      return false;
+    }
+
+    /**
+     * Locks the issue row, waits until it observes a second `for update`
+     * waiter on the same table, then reassigns the issue and commits. The
+     * returned promise resolves only once that reassignment is committed
+     * and the lock is released.
+     */
+    async function reassignIssueOnceAConcurrentWaiterBlocks(
+      issueId: string,
+      newAssigneeAgentId: string,
+    ) {
+      let signalLocked!: () => void;
+      const locked = new Promise<void>((resolve) => {
+        signalLocked = resolve;
+      });
+      const transaction = db.transaction(async (tx) => {
+        await tx.select({ id: issues.id }).from(issues).where(eq(issues.id, issueId)).for("update");
+        signalLocked();
+        const blocked = await waitForBlockedForUpdate("issues");
+        if (!blocked) {
+          throw new Error("expected a concurrent `for update` waiter on issues");
+        }
+        await tx
+          .update(issues)
+          .set({ assigneeAgentId: newAssigneeAgentId })
+          .where(eq(issues.id, issueId));
+      });
+      await locked;
+      return transaction;
+    }
+
+    it("promotes an allowed due retry", async () => {
+      const { companyId, agentId } = await seedCompanyAndAgent();
+      const issueId = randomUUID();
+      const runId = randomUUID();
+      const now = new Date();
+      await seedIssue({ companyId, issueId, status: "in_progress", assigneeAgentId: agentId });
+      await seedScheduledRetryRun({ runId, companyId, agentId, issueId, now });
+      await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, issueId));
+
+      const adapter = createPostgresRunDispatchAdapter(db);
+      const outcome = await adapter.promoteOrCancelDueRetry({
+        runId,
+        companyId,
+        agentId,
+        contextSnapshot: { issueId },
+        scheduledRetryReason: "max_turns_continuation",
+        wakeupRequestId: null,
+        now,
+      });
+
+      expect(outcome.outcome).toBe("promoted");
+      const [row] = await db.select({ status: heartbeatRuns.status }).from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+      expect(row?.status).toBe("queued");
+    });
+
+    it("cancels a due retry a pause hold blocks", async () => {
+      const { companyId, agentId } = await seedCompanyAndAgent();
+      const issueId = randomUUID();
+      const runId = randomUUID();
+      const now = new Date();
+      await seedIssue({ companyId, issueId, status: "in_progress", assigneeAgentId: agentId });
+      await db.insert(issueTreeHolds).values({
+        companyId,
+        rootIssueId: issueId,
+        mode: "pause",
+        status: "active",
+        reason: "manual pause for review",
+        releasePolicy: { strategy: "manual" },
+      });
+      await seedScheduledRetryRun({ runId, companyId, agentId, issueId, now });
+      await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, issueId));
+
+      const adapter = createPostgresRunDispatchAdapter(db);
+      const outcome = await adapter.promoteOrCancelDueRetry({
+        runId,
+        companyId,
+        agentId,
+        contextSnapshot: { issueId },
+        scheduledRetryReason: "max_turns_continuation",
+        wakeupRequestId: null,
+        now,
+      });
+
+      expect(outcome.outcome).toBe("gate_suppressed");
+      if (outcome.outcome === "gate_suppressed") {
+        expect(outcome.errorCode).toBe("issue_paused");
+      }
+      const [row] = await db.select({ status: heartbeatRuns.status }).from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+      expect(row?.status).toBe("cancelled");
+    });
+
+    it(
+      "locks the issue row for the whole decision, so a reassignment committed while it waits is not missed",
+      async () => {
+        const { companyId, agentId: originalAgentId } = await seedCompanyAndAgent();
+        const newAgentId = randomUUID();
+        await seedAgent({ id: newAgentId, companyId, name: "ReplacementCoder" });
+        const issueId = randomUUID();
+        const runId = randomUUID();
+        const now = new Date();
+        await seedIssue({ companyId, issueId, status: "in_progress", assigneeAgentId: originalAgentId });
+        await seedScheduledRetryRun({ runId, companyId, agentId: originalAgentId, issueId, now });
+        await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, issueId));
+
+        // Acquire the issue row lock first and hold it until it observes a
+        // concurrent `for update` waiter — the promote call below — proving
+        // this is a real block, not a race the assertion got lucky on.
+        const holderDone = reassignIssueOnceAConcurrentWaiterBlocks(issueId, newAgentId);
+
+        const adapter = createPostgresRunDispatchAdapter(db);
+        const outcome = await adapter.promoteOrCancelDueRetry({
+          runId,
+          companyId,
+          agentId: originalAgentId,
+          contextSnapshot: { issueId },
+          scheduledRetryReason: "max_turns_continuation",
+          wakeupRequestId: null,
+          now,
+        });
+        await holderDone;
+
+        // Without the lock, this call would have read the ORIGINAL assignee
+        // (captured before the concurrent reassignment committed) and
+        // promoted the run. With the lock, it waits for the reassignment to
+        // commit, then reads the NEW assignee and cancels instead.
+        expect(outcome.outcome).toBe("gate_suppressed");
+        if (outcome.outcome === "gate_suppressed") {
+          expect(outcome.errorCode).toBe("issue_reassigned");
+        }
+        const [row] = await db.select({ status: heartbeatRuns.status }).from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+        expect(row?.status).toBe("cancelled");
+      },
+      15_000,
+    );
   });
 });

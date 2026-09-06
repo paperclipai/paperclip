@@ -39,6 +39,8 @@ export type PromoteScheduledRetryOutcome =
 
 export type CancelStaleQueuedRunOutcome =
   | { outcome: "not_stale" }
+  /** The run's status no longer matched the phase the caller expected; a concurrent writer already won. */
+  | { outcome: "lost_race" }
   | {
       outcome: "cancelled";
       run: HeartbeatRunRecord;

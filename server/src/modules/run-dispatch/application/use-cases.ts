@@ -1,4 +1,4 @@
-import { decideQueuedRunStaleness, decideScheduledRetryGate } from "../domain/policy.js";
+import { decideQueuedRunStaleness } from "../domain/policy.js";
 import type { StalenessDecision } from "../domain/policy.js";
 import type {
   QueuedRunReader,
@@ -12,7 +12,6 @@ import type {
 } from "./types.js";
 
 export type PromoteScheduledRetryDeps = {
-  reader: ScheduledRetryReader;
   writer: RunDispatchWriter;
 };
 
@@ -28,90 +27,28 @@ export type PromoteScheduledRetryInput = {
 
 /**
  * Promotes one due scheduled retry, or cancels it when the gate rejects it.
- * The gate decision and the write happen against facts read in the same
- * call, but the write itself is a compare-and-set on the run's status, so a
- * concurrent promoter or canceller can still win the race; that outcome
- * comes back as `not_promoted`, distinct from a rejected gate
- * (`gate_suppressed`).
+ * The writer reads the gate facts, decides the gate, and applies the
+ * promotion or the cancellation in one transaction with the issue row
+ * locked for its duration, so a concurrent reassignment, pause, dependency,
+ * or status change on the same issue cannot land between the decision and
+ * the write. The write still compares and sets on the run's own status, so
+ * a concurrent promoter or canceller on the SAME run can still win the
+ * race; that outcome comes back as `not_promoted`, distinct from a rejected
+ * gate (`gate_suppressed`).
  */
 export function createPromoteScheduledRetry(deps: PromoteScheduledRetryDeps) {
   return async function promoteScheduledRetry(
     input: PromoteScheduledRetryInput,
   ): Promise<PromoteScheduledRetryOutcome> {
-    const now = input.now ?? new Date();
-
-    const factsResult = await deps.reader.loadGateFacts(
-      {
-        runId: input.runId,
-        companyId: input.companyId,
-        agentId: input.agentId,
-        contextSnapshot: input.contextSnapshot,
-        scheduledRetryReason: input.scheduledRetryReason,
-        retryReasonOverride: input.scheduledRetryReason,
-        wakeupRequestId: input.wakeupRequestId,
-      },
-      now,
-    );
-
-    if (!factsResult.agentFound) {
-      const cancelled = await deps.writer.cancelSuppressedRetry({
-        runId: input.runId,
-        companyId: input.companyId,
-        now,
-        reason: "Scheduled retry suppressed because the agent no longer exists",
-        errorCode: "agent_not_invokable",
-        issueId: factsResult.issueId,
-        details: { agentId: input.agentId },
-      });
-      return cancelled.applied
-        ? {
-            outcome: "gate_suppressed",
-            run: cancelled.run,
-            reason: "Scheduled retry suppressed because the agent no longer exists",
-            errorCode: "agent_not_invokable",
-          }
-        : { outcome: "not_promoted", run: null };
-    }
-
-    const gate = decideScheduledRetryGate(factsResult.facts, now);
-
-    // Preserve legacy transient retry behavior for runs that only carry a
-    // loose task context rather than a persisted issue row: a missing issue
-    // suppresses a max-turn continuation, but every other retry reason
-    // proceeds to promotion anyway.
-    const isLegacyMissingIssueException =
-      !gate.allowed &&
-      gate.errorCode === "issue_not_found" &&
-      factsResult.facts.retryReasonKind !== "max_turn_continuation";
-
-    if (!gate.allowed && !isLegacyMissingIssueException) {
-      const cancelled = await deps.writer.cancelSuppressedRetry({
-        runId: input.runId,
-        companyId: input.companyId,
-        now,
-        reason: gate.reason,
-        errorCode: gate.errorCode,
-        issueId: gate.issueId,
-        details: gate.details,
-      });
-      return cancelled.applied
-        ? {
-            outcome: "gate_suppressed",
-            run: cancelled.run,
-            reason: gate.reason,
-            errorCode: gate.errorCode,
-          }
-        : { outcome: "not_promoted", run: null };
-    }
-
-    const promoted = await deps.writer.promoteDueRetry({
+    return deps.writer.promoteOrCancelDueRetry({
       runId: input.runId,
       companyId: input.companyId,
-      now,
+      agentId: input.agentId,
+      contextSnapshot: input.contextSnapshot,
+      scheduledRetryReason: input.scheduledRetryReason,
+      wakeupRequestId: input.wakeupRequestId,
+      now: input.now ?? new Date(),
     });
-    return promoted.applied
-      ? { outcome: "promoted", run: promoted.run, postCommitEffects: promoted.postCommitEffects }
-      : { outcome: "not_promoted", run: null };
   };
 }
 
@@ -189,6 +126,8 @@ export type CancelStaleQueuedRunInput = {
   now?: Date;
   /** An opaque handle to a transaction the caller already opened; passed through to the fact read only. */
   tx?: unknown;
+  /** The run's status right before this check; see `CancelDecidedStaleQueuedRunInput.expectedStatus`. */
+  expectedStatus: "queued" | "running";
 };
 
 /**
@@ -225,6 +164,7 @@ export function createCancelStaleQueuedRun(deps: CancelStaleQueuedRunDeps) {
       issueId: input.issueId,
       wakeupRequestId: input.wakeupRequestId,
       resultJson: input.resultJson,
+      expectedStatus: input.expectedStatus,
       decision,
     });
   };
@@ -241,6 +181,13 @@ export type CancelDecidedStaleQueuedRunInput = {
   wakeupRequestId: string | null;
   resultJson: unknown;
   decision: Extract<StalenessDecision, { stale: true }>;
+  /**
+   * The run's status right before this cancellation. The write compares and
+   * sets on this value, so a concurrent status change (a claim, a manual
+   * cancel, a process-recovery terminal write) wins the race instead of
+   * being silently overwritten back to `cancelled`.
+   */
+  expectedStatus: "queued" | "running";
 };
 
 /**
@@ -248,12 +195,14 @@ export type CancelDecidedStaleQueuedRunInput = {
  * The final dispatch gate decides staleness inside its own row-locked
  * transaction, together with a lock check the staleness decision itself does
  * not cover; this use case only performs the write, after that transaction
- * commits.
+ * commits. The write itself still compares and sets on `expectedStatus`, so
+ * a status change in the gap between that transaction and this write is
+ * never lost.
  */
 export function createCancelDecidedStaleQueuedRun(deps: CancelDecidedStaleQueuedRunDeps) {
   return async function cancelDecidedStaleQueuedRun(
     input: CancelDecidedStaleQueuedRunInput,
-  ): Promise<Extract<CancelStaleQueuedRunOutcome, { outcome: "cancelled" }>> {
+  ): Promise<Extract<CancelStaleQueuedRunOutcome, { outcome: "cancelled" | "lost_race" }>> {
     const cancelled = await deps.writer.cancelStaleQueuedRun({
       runId: input.runId,
       companyId: input.companyId,
@@ -263,7 +212,10 @@ export function createCancelDecidedStaleQueuedRun(deps: CancelDecidedStaleQueued
       errorCode: input.decision.errorCode,
       details: input.decision.details,
       resultJson: input.resultJson,
+      expectedStatus: input.expectedStatus,
     });
+
+    if (!cancelled.applied) return { outcome: "lost_race" };
 
     return {
       outcome: "cancelled",

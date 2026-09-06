@@ -1,5 +1,5 @@
 import type { QueuedRunFacts, ScheduledRetryFacts } from "../domain/policy.js";
-import type { HeartbeatRunRecord, PostCommitEffect } from "./types.js";
+import type { HeartbeatRunRecord, PostCommitEffect, PromoteScheduledRetryOutcome } from "./types.js";
 
 export type LoadGateFactsInput = {
   runId: string;
@@ -34,7 +34,14 @@ export type ListDueRetriesInput = {
 
 /** Reads the facts a scheduled-retry promotion gate decides on. */
 export interface ScheduledRetryReader {
-  loadGateFacts(input: LoadGateFactsInput, now: Date): Promise<LoadGateFactsResult>;
+  /**
+   * `tx` is an opaque handle to a transaction a caller already opened. Pass
+   * it through unchanged when the caller supplies one, so every read this
+   * function makes — including the issue row, which the caller locks with
+   * `for update` before calling — joins that same transaction; omit it to
+   * read against the plain database handle.
+   */
+  loadGateFacts(input: LoadGateFactsInput, now: Date, tx?: unknown): Promise<LoadGateFactsResult>;
   listDueRetries(input: ListDueRetriesInput): Promise<DueRetryRun[]>;
 }
 
@@ -96,24 +103,48 @@ export type CancelStaleQueuedRunInput = {
   details: Record<string, unknown>;
   /** The run's own `resultJson` column, as the caller last read it; the write merges the stop-reason fields into it. */
   resultJson: unknown;
+  /**
+   * The run's status right before this cancellation, matched with a
+   * compare-and-set. The pre-claim staleness check expects `"queued"`; the
+   * final pre-dispatch staleness check, which runs after the run has already
+   * claimed, expects `"running"`. A caller must name the phase it is in so a
+   * concurrent status change wins the race instead of being overwritten.
+   */
+  expectedStatus: "queued" | "running";
 };
 
-export type CancelStaleQueuedRunWriteResult = {
-  run: HeartbeatRunRecord;
-  postCommitEffects: PostCommitEffect[];
+export type CancelStaleQueuedRunWriteResult =
+  | { applied: true; run: HeartbeatRunRecord; postCommitEffects: PostCommitEffect[] }
+  | { applied: false };
+
+export type PromoteOrCancelDueRetryInput = {
+  runId: string;
+  companyId: string;
+  agentId: string;
+  contextSnapshot: Record<string, unknown>;
+  scheduledRetryReason: string | null;
+  wakeupRequestId: string | null;
+  now: Date;
 };
 
 /**
  * Writes run-dispatch state. Every method is one semantic operation: it owns
- * every row the operation touches inside one transaction. `promoteDueRetry`
- * and `cancelSuppressedRetry` each hold a compare-and-set on the run's
- * current status, so a caller can tell a rejected gate apart from a lost
- * race against a concurrent writer. `cancelStaleQueuedRun` has no such race
- * in its caller today, so it writes unconditionally, matching current
- * behavior.
+ * every row the operation touches inside one transaction, and every method
+ * holds a compare-and-set on the run's current status, so a caller can tell
+ * a rejected gate or a stale decision apart from a lost race against a
+ * concurrent writer.
  */
 export interface RunDispatchWriter {
   promoteDueRetry(input: PromoteDueRetryInput): Promise<PromoteDueRetryResult>;
   cancelSuppressedRetry(input: CancelSuppressedRetryInput): Promise<CancelSuppressedRetryResult>;
   cancelStaleQueuedRun(input: CancelStaleQueuedRunInput): Promise<CancelStaleQueuedRunWriteResult>;
+  /**
+   * Reads the scheduled-retry gate facts, decides the gate, and applies the
+   * promotion or the cancellation it decides on — all inside one
+   * transaction, with the issue row locked for its duration. This is what
+   * keeps the decision correct: a concurrent reassignment, pause, or status
+   * change on the same issue blocks on the lock instead of landing in the
+   * gap between a separate fact read and a separate compare-and-set write.
+   */
+  promoteOrCancelDueRetry(input: PromoteOrCancelDueRetryInput): Promise<PromoteScheduledRetryOutcome>;
 }

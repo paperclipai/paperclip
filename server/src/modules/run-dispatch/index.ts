@@ -9,6 +9,19 @@ import {
 import type { QueuedRunReader, RunDispatchWriter, ScheduledRetryReader } from "./application/ports.js";
 
 export { decideScheduledRetryGate, decideQueuedRunStaleness } from "./domain/policy.js";
+export {
+  MAX_TURN_CONTINUATION_RETRY_REASON,
+  WORKSPACE_BUSY_RETRY_REASON,
+  INTERACTION_CONTINUATION_INFRA_RETRY_REASON,
+  INTERACTION_CONTINUATION_INFRA_WAKE_REASON,
+  WAKE_COMMENT_IDS_KEY,
+  RESOLVED_INTERACTION_CONTINUATION_STATUSES,
+  isNonAssigneeWorkspaceBusyRetry,
+  extractWakeCommentIds,
+  deriveCommentId,
+  allowsIssueInteractionWake,
+  isResolvedInteractionContinuationWakeContext,
+} from "./domain/wake-context.js";
 export type {
   RetryReasonKind,
   BudgetBlockFacts,
@@ -50,7 +63,6 @@ export function createRunDispatch(db: Db, deps: RunDispatchDeps = {}) {
   const adapter = deps.adapter ?? createPostgresRunDispatchAdapter(db);
 
   const promoteScheduledRetry = createPromoteScheduledRetry({
-    reader: adapter,
     writer: adapter,
   });
 

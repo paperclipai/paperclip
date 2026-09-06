@@ -368,6 +368,16 @@ import {
   decideQueuedRunStaleness,
   decideScheduledRetryGate,
   type PostCommitEffect,
+  MAX_TURN_CONTINUATION_RETRY_REASON,
+  WORKSPACE_BUSY_RETRY_REASON,
+  INTERACTION_CONTINUATION_INFRA_RETRY_REASON,
+  INTERACTION_CONTINUATION_INFRA_WAKE_REASON,
+  WAKE_COMMENT_IDS_KEY,
+  isNonAssigneeWorkspaceBusyRetry,
+  extractWakeCommentIds,
+  deriveCommentId,
+  allowsIssueInteractionWake,
+  isResolvedInteractionContinuationWakeContext,
 } from "../modules/run-dispatch/index.js";
 import {
   buildIssueReviewPathLostIdempotencyKey,
@@ -498,7 +508,6 @@ const LIVENESS_BOOKKEEPING_ACTIVITY_ACTIONS = [
   "environment.lease_released",
 ];
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
-const WAKE_COMMENT_IDS_KEY = "wakeCommentIds";
 const PAPERCLIP_WAKE_PAYLOAD_KEY = "paperclipWake";
 const ACCEPTED_PLAN_CONVERSION_SKILL_KEY =
   "paperclipai/paperclip/paperclip-converting-plans-to-tasks";
@@ -620,16 +629,8 @@ const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON = "transient_failure";
 const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_WAKE_REASON = "transient_failure_retry";
 const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS =
   BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS.length;
-export const INTERACTION_CONTINUATION_INFRA_RETRY_REASON =
-  "interaction_continuation_infra_retry";
-export const INTERACTION_CONTINUATION_INFRA_WAKE_REASON =
-  "interaction_continuation_infra_retry";
+export { INTERACTION_CONTINUATION_INFRA_RETRY_REASON, INTERACTION_CONTINUATION_INFRA_WAKE_REASON };
 const INTERACTION_CONTINUATION_INFRA_MAX_ATTEMPTS = 3;
-const RESOLVED_INTERACTION_CONTINUATION_STATUSES = new Set([
-  "accepted",
-  "answered",
-  "rejected",
-]);
 const WORKSPACE_VALIDATION_FAILURE_CODE = "workspace_validation_failed";
 const WORKSPACE_VALIDATION_RECOVERY_CAUSE = "workspace_validation_failed";
 const CONFIGURATION_INCOMPLETE_FAILURE_CODE = "configuration_incomplete";
@@ -664,7 +665,7 @@ const GIT_SENSITIVE_LOCAL_ADAPTER_TYPES = new Set([
   "opencode_local",
   "pi_local",
 ]);
-export const MAX_TURN_CONTINUATION_RETRY_REASON = "max_turns_continuation";
+export { MAX_TURN_CONTINUATION_RETRY_REASON };
 export const MAX_TURN_CONTINUATION_WAKE_REASON = "max_turns_continuation_retry";
 const MAX_TURN_CONTINUATION_DEFAULT_MAX_ATTEMPTS = 2;
 const MAX_TURN_CONTINUATION_MAX_ATTEMPTS_CAP = 10;
@@ -675,7 +676,7 @@ const MAX_TURN_CONTINUATION_LIVE_RUN_STATUSES = [
   "queued",
   "running",
 ] as const;
-export const WORKSPACE_BUSY_RETRY_REASON = "workspace_busy";
+export { WORKSPACE_BUSY_RETRY_REASON };
 export const WORKSPACE_BUSY_RETRY_WAKE_REASON = "workspace_busy_retry";
 export const WORKSPACE_BUSY_ERROR_CODE = "workspace_busy";
 export const WORKSPACE_BUSY_RETRY_BASE_DELAY_MS = 60 * 1000;
@@ -820,21 +821,7 @@ export function computeWorkspaceBusyRetryDelayMs(
   );
 }
 
-// True for the retry of a workspace-busy deferral whose original run did NOT
-// execute under assignee-ship (a comment or review-participant wake). For such
-// a retry an assignee mismatch is the expected state, so the reassignment
-// protections in the promotion gate and the claim-time staleness check must
-// not cancel it — cancelling would silently drop the wake the deferral
-// promised to replay.
-export function isNonAssigneeWorkspaceBusyRetry(
-  retryReason: string | null | undefined,
-  contextSnapshot: Record<string, unknown>,
-) {
-  return (
-    retryReason === WORKSPACE_BUSY_RETRY_REASON &&
-    contextSnapshot.workspaceBusyDeferredWhileAssignee === false
-  );
-}
+export { isNonAssigneeWorkspaceBusyRetry };
 
 function resolveCodexTransientFallbackMode(
   attempt: number,
@@ -904,25 +891,6 @@ function readTransientRecoveryContractFromRun(
     : null;
 }
 
-function isResolvedInteractionContinuationWakeContext(
-  contextSnapshot: unknown,
-) {
-  const context = parseObject(contextSnapshot);
-  const interactionId = readNonEmptyString(context.interactionId);
-  const interactionStatus = readNonEmptyString(context.interactionStatus);
-  if (!interactionId || !interactionStatus) return false;
-  if (!RESOLVED_INTERACTION_CONTINUATION_STATUSES.has(interactionStatus))
-    return false;
-
-  const mutation = readNonEmptyString(context.mutation);
-  const wakeReason = readNonEmptyString(context.wakeReason);
-  const retryReason = readNonEmptyString(context.retryReason);
-  return (
-    (mutation === "interaction" && wakeReason === "issue_commented") ||
-    wakeReason === INTERACTION_CONTINUATION_INFRA_WAKE_REASON ||
-    retryReason === INTERACTION_CONTINUATION_INFRA_RETRY_REASON
-  );
-}
 
 function isSpawnLikeFailureMessage(value: unknown) {
   if (typeof value !== "string") return false;
@@ -5235,18 +5203,6 @@ function shouldRequireIssueCommentForWake(
   );
 }
 
-function allowsIssueInteractionWake(
-  contextSnapshot: Record<string, unknown> | null | undefined,
-) {
-  const wakeReason = readNonEmptyString(contextSnapshot?.wakeReason);
-  if (
-    !wakeReason ||
-    !ISSUE_TREE_CONTROL_INTERACTION_WAKE_REASONS.has(wakeReason)
-  )
-    return false;
-  return Boolean(deriveCommentId(contextSnapshot, null));
-}
-
 async function listUnresolvedBlockerSummaries(
   dbOrTx: Pick<Db, "select">,
   companyId: string,
@@ -6560,33 +6516,7 @@ function isCheckoutConflictError(error: unknown): boolean {
   );
 }
 
-function deriveCommentId(
-  contextSnapshot: Record<string, unknown> | null | undefined,
-  payload: Record<string, unknown> | null | undefined,
-) {
-  const batchedCommentId = extractWakeCommentIds(contextSnapshot).at(-1);
-  return (
-    batchedCommentId ??
-    readNonEmptyString(contextSnapshot?.wakeCommentId) ??
-    readNonEmptyString(contextSnapshot?.commentId) ??
-    readNonEmptyString(payload?.commentId) ??
-    null
-  );
-}
-
-export function extractWakeCommentIds(
-  contextSnapshot: Record<string, unknown> | null | undefined,
-): string[] {
-  const raw = contextSnapshot?.[WAKE_COMMENT_IDS_KEY];
-  if (!Array.isArray(raw)) return [];
-  const out: string[] = [];
-  for (const entry of raw) {
-    const value = readNonEmptyString(entry);
-    if (!value || out.includes(value)) continue;
-    out.push(value);
-  }
-  return out;
-}
+export { extractWakeCommentIds };
 
 function mergeWakeCommentIds(...values: Array<unknown>): string[] {
   const merged: string[] = [];
@@ -15055,7 +14985,10 @@ export function heartbeatService(
       );
       const readiness = dependencyReadiness.get(issueId);
       const unresolvedBlockerCount = readiness?.unresolvedBlockerCount ?? 0;
-      if (unresolvedBlockerCount > 0 && !allowsIssueInteractionWake(context)) {
+      if (
+        unresolvedBlockerCount > 0 &&
+        !allowsIssueInteractionWake(context, ISSUE_TREE_CONTROL_INTERACTION_WAKE_REASONS)
+      ) {
         await cancelQueuedRunForBlockedDependencies(
           run,
           issueId,
@@ -15077,6 +15010,7 @@ export function heartbeatService(
         scheduledRetryReason: run.scheduledRetryReason,
         wakeupRequestId: run.wakeupRequestId,
         resultJson: run.resultJson,
+        expectedStatus: "queued",
       });
       if (staleness.outcome === "cancelled") {
         applyRunDispatchPostCommitEffects(staleness.postCommitEffects);
@@ -17354,6 +17288,7 @@ export function heartbeatService(
             scheduledRetryReason: run.scheduledRetryReason,
             wakeupRequestId: run.wakeupRequestId,
             resultJson: run.resultJson,
+            expectedStatus: "running",
           });
           if (staleness.outcome === "cancelled") {
             applyRunDispatchPostCommitEffects(staleness.postCommitEffects);
@@ -18989,8 +18924,11 @@ export function heartbeatService(
           wakeupRequestId: run.wakeupRequestId,
           resultJson: run.resultJson,
           decision: gate.staleness,
+          expectedStatus: "running",
         });
-        applyRunDispatchPostCommitEffects(cancelled.postCommitEffects);
+        if (cancelled.outcome === "cancelled") {
+          applyRunDispatchPostCommitEffects(cancelled.postCommitEffects);
+        }
         return { dispatched: false };
       };
       if (!executionTarget || executionTarget.kind === "local") {
@@ -23793,7 +23731,10 @@ export function heartbeatService(
         const blockedInteractionWake =
           dependencyReadiness &&
           !dependencyReadiness.isDependencyReady &&
-          allowsIssueInteractionWake(enrichedContextSnapshot);
+          allowsIssueInteractionWake(
+            enrichedContextSnapshot,
+            ISSUE_TREE_CONTROL_INTERACTION_WAKE_REASONS,
+          );
 
         if (blockedInteractionWake) {
           enrichedContextSnapshot.dependencyBlockedInteraction = true;

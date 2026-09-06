@@ -2049,6 +2049,7 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
           errorCode: "issue_terminal_status",
           details: {},
           resultJson: null,
+          expectedStatus: "queued",
         }),
       ).rejects.toThrow();
       const [afterWrongCompanyCancel] = await db
@@ -2056,6 +2057,24 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
         .from(heartbeatRuns)
         .where(eq(heartbeatRuns.id, queuedRunId));
       expect(afterWrongCompanyCancel?.status).toBe("queued");
+
+      const lostRaceCancel = await adapter.cancelStaleQueuedRun({
+        runId: queuedRunId,
+        companyId,
+        issueId,
+        wakeupRequestId: null,
+        reason: "test",
+        errorCode: "issue_terminal_status",
+        details: {},
+        resultJson: null,
+        expectedStatus: "running",
+      });
+      expect(lostRaceCancel).toEqual({ applied: false });
+      const [afterLostRaceCancel] = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, queuedRunId));
+      expect(afterLostRaceCancel?.status).toBe("queued");
 
       const rightCompanyCancel = await adapter.cancelStaleQueuedRun({
         runId: queuedRunId,
@@ -2066,8 +2085,12 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
         errorCode: "issue_terminal_status",
         details: {},
         resultJson: null,
+        expectedStatus: "queued",
       });
-      expect((rightCompanyCancel.run as { status: string }).status).toBe("cancelled");
+      expect(rightCompanyCancel.applied).toBe(true);
+      if (rightCompanyCancel.applied) {
+        expect((rightCompanyCancel.run as { status: string }).status).toBe("cancelled");
+      }
     });
 
     it("never writes another company's wakeup request during suppressed-retry or stale-queued-run cancellation", async () => {
@@ -2182,8 +2205,12 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
         errorCode: "issue_terminal_status",
         details: {},
         resultJson: null,
+        expectedStatus: "queued",
       });
-      expect((staleCancel.run as { status: string }).status).toBe("cancelled");
+      expect(staleCancel.applied).toBe(true);
+      if (staleCancel.applied) {
+        expect((staleCancel.run as { status: string }).status).toBe("cancelled");
+      }
 
       const [staleWakeup] = await db
         .select({ status: agentWakeupRequests.status })

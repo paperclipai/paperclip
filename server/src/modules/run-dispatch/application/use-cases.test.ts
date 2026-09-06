@@ -97,14 +97,17 @@ function fakeWriter(overrides: Partial<RunDispatchWriter> = {}): RunDispatchWrit
   promoteCalls: unknown[];
   cancelSuppressedCalls: unknown[];
   cancelStaleCalls: unknown[];
+  promoteOrCancelCalls: unknown[];
 } {
   const promoteCalls: unknown[] = [];
   const cancelSuppressedCalls: unknown[] = [];
   const cancelStaleCalls: unknown[] = [];
+  const promoteOrCancelCalls: unknown[] = [];
   return {
     promoteCalls,
     cancelSuppressedCalls,
     cancelStaleCalls,
+    promoteOrCancelCalls,
     async promoteDueRetry(input) {
       promoteCalls.push(input);
       return { applied: true, run: { id: input.runId, status: "queued" }, postCommitEffects: [] };
@@ -115,7 +118,11 @@ function fakeWriter(overrides: Partial<RunDispatchWriter> = {}): RunDispatchWrit
     },
     async cancelStaleQueuedRun(input) {
       cancelStaleCalls.push(input);
-      return { run: { id: input.runId, status: "cancelled" }, postCommitEffects: [] };
+      return { applied: true, run: { id: input.runId, status: "cancelled" }, postCommitEffects: [] };
+    },
+    async promoteOrCancelDueRetry(input) {
+      promoteOrCancelCalls.push(input);
+      return { outcome: "promoted", run: { id: input.runId, status: "queued" }, postCommitEffects: [] };
     },
     ...overrides,
   };
@@ -142,99 +149,77 @@ const baseInput = {
 };
 
 describe("createPromoteScheduledRetry", () => {
-  it("calls the writer's promote operation exactly once for an allowed gate", async () => {
-    const reader = fakeScheduledRetryReader({ agentFound: true, facts: scheduledRetryFacts({ issueId: null }) });
+  // The gate decision and the promote-or-cancel write both live inside the
+  // writer's `promoteOrCancelDueRetry` now (one transaction with the issue
+  // row locked for its duration — see `postgres.ts`); `domain/policy.test.ts`
+  // covers the gate branches and `postgres.test.ts` covers the DB wiring.
+  // This use case is a thin adapter call, so its own tests only prove the
+  // input mapping and that the writer's outcome passes through unchanged.
+  it("maps its input onto the writer's atomic operation and returns its outcome verbatim", async () => {
     const writer = fakeWriter();
-    const promote = createPromoteScheduledRetry({ reader, writer });
 
-    const result = await promote(baseInput);
+    const result = await createPromoteScheduledRetry({ writer })(baseInput);
 
     expect(result.outcome).toBe("promoted");
-    expect(writer.promoteCalls).toHaveLength(1);
-    expect(writer.cancelSuppressedCalls).toHaveLength(0);
-  });
-
-  it("calls the cancel operation for a blocked gate", async () => {
-    const reader = fakeScheduledRetryReader({
-      agentFound: true,
-      facts: scheduledRetryFacts({
-        issueId: null,
-        budgetBlock: { reason: "over budget", scopeType: "company", scopeId: "company-1" },
-      }),
+    expect(writer.promoteOrCancelCalls).toHaveLength(1);
+    expect(writer.promoteOrCancelCalls[0]).toMatchObject({
+      runId: baseInput.runId,
+      companyId: baseInput.companyId,
+      agentId: baseInput.agentId,
+      contextSnapshot: baseInput.contextSnapshot,
+      scheduledRetryReason: baseInput.scheduledRetryReason,
+      wakeupRequestId: baseInput.wakeupRequestId,
     });
-    const writer = fakeWriter();
-    const promote = createPromoteScheduledRetry({ reader, writer });
-
-    const result = await promote(baseInput);
-
-    expect(result.outcome).toBe("gate_suppressed");
-    expect(writer.cancelSuppressedCalls).toHaveLength(1);
-    expect(writer.promoteCalls).toHaveLength(0);
+    expect((writer.promoteOrCancelCalls[0] as { now: Date }).now).toBeInstanceOf(Date);
   });
 
-  it("keeps the legacy missing-issue exception: a non-max-turn retry promotes anyway", async () => {
-    const reader = fakeScheduledRetryReader({
-      agentFound: true,
-      facts: scheduledRetryFacts({
-        issueId: "issue-missing",
-        issueFound: false,
-        retryReasonKind: "other",
-      }),
-    });
+  it("defaults now to the current time when the caller omits it", async () => {
+    const before = Date.now();
     const writer = fakeWriter();
-    const promote = createPromoteScheduledRetry({ reader, writer });
 
-    const result = await promote(baseInput);
+    await createPromoteScheduledRetry({ writer })(baseInput);
+    const after = Date.now();
 
-    expect(result.outcome).toBe("promoted");
-    expect(writer.promoteCalls).toHaveLength(1);
-    expect(writer.cancelSuppressedCalls).toHaveLength(0);
+    const passedNow = (writer.promoteOrCancelCalls[0] as { now: Date }).now.getTime();
+    expect(passedNow).toBeGreaterThanOrEqual(before);
+    expect(passedNow).toBeLessThanOrEqual(after);
   });
 
-  it("does not apply the legacy missing-issue exception to a max-turn continuation", async () => {
-    const reader = fakeScheduledRetryReader({
-      agentFound: true,
-      facts: scheduledRetryFacts({
-        issueId: "issue-missing",
-        issueFound: false,
-        retryReasonKind: "max_turn_continuation",
-      }),
-    });
+  it("passes an explicit now through instead of overriding it", async () => {
+    const explicitNow = new Date("2026-01-01T00:00:00.000Z");
     const writer = fakeWriter();
-    const promote = createPromoteScheduledRetry({ reader, writer });
 
-    const result = await promote(baseInput);
+    await createPromoteScheduledRetry({ writer })({ ...baseInput, now: explicitNow });
 
-    expect(result.outcome).toBe("gate_suppressed");
-    expect(writer.cancelSuppressedCalls).toHaveLength(1);
+    expect((writer.promoteOrCancelCalls[0] as { now: Date }).now).toBe(explicitNow);
   });
 
-  it("returns a lost-compare-and-set outcome when the writer reports no row", async () => {
-    const reader = fakeScheduledRetryReader({ agentFound: true, facts: scheduledRetryFacts({ issueId: null }) });
+  it("returns a cancellation outcome from the writer unchanged", async () => {
     const writer = fakeWriter({
-      promoteDueRetry: vi.fn(async () => ({ applied: false as const })),
+      promoteOrCancelDueRetry: vi.fn(async () => ({
+        outcome: "gate_suppressed" as const,
+        run: { id: "run-1", status: "cancelled" },
+        reason: "Scheduled retry suppressed because the agent is not invokable",
+        errorCode: "agent_not_invokable" as const,
+      })),
     });
-    const promote = createPromoteScheduledRetry({ reader, writer });
 
-    const result = await promote(baseInput);
+    const result = await createPromoteScheduledRetry({ writer })(baseInput);
 
-    expect(result).toEqual({ outcome: "not_promoted", run: null });
+    expect(result).toEqual({
+      outcome: "gate_suppressed",
+      run: { id: "run-1", status: "cancelled" },
+      reason: "Scheduled retry suppressed because the agent is not invokable",
+      errorCode: "agent_not_invokable",
+    });
   });
 
-  it("returns a lost-compare-and-set outcome when a suppressed-retry cancel loses its race", async () => {
-    const reader = fakeScheduledRetryReader({
-      agentFound: true,
-      facts: scheduledRetryFacts({
-        issueId: null,
-        budgetBlock: { reason: "over budget", scopeType: "company", scopeId: "company-1" },
-      }),
-    });
+  it("returns a lost-race outcome from the writer unchanged", async () => {
     const writer = fakeWriter({
-      cancelSuppressedRetry: vi.fn(async () => ({ applied: false as const })),
+      promoteOrCancelDueRetry: vi.fn(async () => ({ outcome: "not_promoted" as const, run: null })),
     });
-    const promote = createPromoteScheduledRetry({ reader, writer });
 
-    const result = await promote(baseInput);
+    const result = await createPromoteScheduledRetry({ writer })(baseInput);
 
     expect(result).toEqual({ outcome: "not_promoted", run: null });
   });
@@ -254,12 +239,9 @@ describe("createPromoteDueScheduledRetries", () => {
 
   it("keeps the due order and stops at 50 runs", async () => {
     const dueRuns = Array.from({ length: 75 }, (_, i) => dueRun(`run-${i}`));
-    const reader = fakeScheduledRetryReader(
-      { agentFound: true, facts: scheduledRetryFacts({ issueId: null }) },
-      dueRuns,
-    );
+    const reader = fakeScheduledRetryReader({ agentFound: true, facts: scheduledRetryFacts() }, dueRuns);
     const writer = fakeWriter();
-    const promoteScheduledRetry = createPromoteScheduledRetry({ reader, writer });
+    const promoteScheduledRetry = createPromoteScheduledRetry({ writer });
     const promoteDueScheduledRetries = createPromoteDueScheduledRetries({ reader, promoteScheduledRetry });
 
     const result = await promoteDueScheduledRetries({ cutoff: null });
@@ -284,6 +266,7 @@ describe("createCancelStaleQueuedRun", () => {
       scheduledRetryReason: null,
       wakeupRequestId: null,
       resultJson: null,
+      expectedStatus: "queued",
     });
 
     expect(result.outcome).toBe("not_stale");
@@ -304,6 +287,7 @@ describe("createCancelStaleQueuedRun", () => {
       scheduledRetryReason: null,
       wakeupRequestId: null,
       resultJson: null,
+      expectedStatus: "queued",
     });
 
     expect(result.outcome).toBe("cancelled");
@@ -311,6 +295,28 @@ describe("createCancelStaleQueuedRun", () => {
     if (result.outcome === "cancelled") {
       expect(result.errorCode).toBe("issue_not_found");
     }
+  });
+
+  it("reports a lost race instead of overwriting a status the caller did not expect", async () => {
+    const reader = fakeQueuedRunReader(queuedRunFacts({ issueFound: false }));
+    const writer = fakeWriter({
+      cancelStaleQueuedRun: vi.fn(async () => ({ applied: false as const })),
+    });
+    const cancelStaleQueuedRun = createCancelStaleQueuedRun({ reader, writer });
+
+    const result = await cancelStaleQueuedRun({
+      runId: "run-1",
+      companyId: "company-1",
+      agentId: "agent-1",
+      issueId: "issue-1",
+      contextSnapshot: {},
+      scheduledRetryReason: null,
+      wakeupRequestId: null,
+      resultJson: null,
+      expectedStatus: "queued",
+    });
+
+    expect(result).toEqual({ outcome: "lost_race" });
   });
 });
 
@@ -331,10 +337,37 @@ describe("createCancelDecidedStaleQueuedRun", () => {
         reason: "lock changed",
         details: {},
       },
+      expectedStatus: "running",
     });
 
     expect(result.outcome).toBe("cancelled");
-    expect(result.errorCode).toBe("issue_execution_lock_changed");
+    if (result.outcome === "cancelled") {
+      expect(result.errorCode).toBe("issue_execution_lock_changed");
+    }
     expect(writer.cancelStaleCalls).toHaveLength(1);
+  });
+
+  it("reports a lost race instead of overwriting a status the caller did not expect", async () => {
+    const writer = fakeWriter({
+      cancelStaleQueuedRun: vi.fn(async () => ({ applied: false as const })),
+    });
+    const cancelDecidedStaleQueuedRun = createCancelDecidedStaleQueuedRun({ writer });
+
+    const result = await cancelDecidedStaleQueuedRun({
+      runId: "run-1",
+      companyId: "company-1",
+      issueId: "issue-1",
+      wakeupRequestId: null,
+      resultJson: null,
+      decision: {
+        stale: true,
+        errorCode: "issue_execution_lock_changed",
+        reason: "lock changed",
+        details: {},
+      },
+      expectedStatus: "running",
+    });
+
+    expect(result).toEqual({ outcome: "lost_race" });
   });
 });
