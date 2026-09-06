@@ -38,6 +38,56 @@ function defaultConfig(): PaperclipConfig {
 }
 
 describe("config store", () => {
+  it("fsyncs backup and replacement files on the normal write path", () => {
+    const configPath = createConfigPath();
+    fs.writeFileSync(configPath, `${JSON.stringify(defaultConfig(), null, 2)}\n`);
+    const update = defaultConfig();
+    update.server.port = 3200;
+
+    const sync = vi.spyOn(fs, "fsyncSync");
+    expect(writeConfig(update, configPath)).toBe(true);
+
+    expect(sync.mock.calls.length).toBeGreaterThanOrEqual(4);
+    expect(fs.existsSync(`${configPath}.backup`)).toBe(true);
+    expect(readConfig(configPath)?.server.port).toBe(3200);
+  });
+
+  it("continues an atomic config write when Windows file fsync returns EPERM", () => {
+    const configPath = createConfigPath();
+    const original = defaultConfig();
+    fs.writeFileSync(configPath, `${JSON.stringify(original, null, 2)}\n`);
+    const update = defaultConfig();
+    update.server.allowedHostnames = ["dashboard.huidots.com"];
+
+    vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+    const sync = vi.spyOn(fs, "fsyncSync").mockImplementation(() => {
+      throw Object.assign(new Error("operation not permitted, fsync"), { code: "EPERM" });
+    });
+
+    expect(writeConfig(update, configPath)).toBe(true);
+    expect(sync).toHaveBeenCalled();
+    expect(fs.readFileSync(`${configPath}.backup`, "utf8")).toBe(
+      `${JSON.stringify(original, null, 2)}\n`,
+    );
+    expect(readConfig(configPath)?.server.allowedHostnames).toEqual(["dashboard.huidots.com"]);
+    expect(fs.readdirSync(path.dirname(configPath)).some((entry) => entry.includes(".tmp-"))).toBe(false);
+  });
+
+  it("propagates unexpected Windows file fsync errors", () => {
+    const configPath = createConfigPath();
+    fs.writeFileSync(configPath, `${JSON.stringify(defaultConfig(), null, 2)}\n`);
+    const update = defaultConfig();
+    update.server.port = 3200;
+
+    vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+    vi.spyOn(fs, "fsyncSync").mockImplementation(() => {
+      throw Object.assign(new Error("I/O failure"), { code: "EIO" });
+    });
+
+    expect(() => writeConfig(update, configPath)).toThrow(/I\/O failure/);
+    expect(readConfig(configPath)?.server.port).not.toBe(3200);
+  });
+
   it("preserves top-level and nested extension keys during a known-field update", () => {
     const configPath = createConfigPath();
     fs.writeFileSync(configPath, JSON.stringify({

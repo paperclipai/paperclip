@@ -12,6 +12,26 @@ import {
 } from "./home.js";
 
 const DEFAULT_CONFIG_BASENAME = "config.json";
+const WINDOWS_UNSUPPORTED_FSYNC_ERROR_CODES = new Set([
+  "EACCES",
+  "EINVAL",
+  "EISDIR",
+  "ENOTSUP",
+  "EPERM",
+]);
+
+function isWindowsUnsupportedFsyncError(error: unknown): boolean {
+  const code = error instanceof Error && "code" in error ? error.code : null;
+  return process.platform === "win32" && WINDOWS_UNSUPPORTED_FSYNC_ERROR_CODES.has(String(code));
+}
+
+function syncFileDescriptor(fileDescriptor: number): void {
+  try {
+    fs.fsyncSync(fileDescriptor);
+  } catch (error) {
+    if (!isWindowsUnsupportedFsyncError(error)) throw error;
+  }
+}
 
 function findConfigFileFromAncestors(startDir: string): string | null {
   const absoluteStartDir = path.resolve(startDir);
@@ -116,10 +136,7 @@ function syncDirectory(directoryPath: string): void {
     directoryDescriptor = fs.openSync(directoryPath, "r");
     fs.fsyncSync(directoryDescriptor);
   } catch (error) {
-    const code = error instanceof Error && "code" in error ? error.code : null;
-    if (process.platform !== "win32" || !["EACCES", "EINVAL", "EISDIR", "ENOTSUP", "EPERM"].includes(String(code))) {
-      throw error;
-    }
+    if (!isWindowsUnsupportedFsyncError(error)) throw error;
   } finally {
     if (directoryDescriptor !== null) fs.closeSync(directoryDescriptor);
   }
@@ -131,7 +148,7 @@ function durableCopyFile(sourcePath: string, destinationPath: string, flags = 0)
 
   const backupDescriptor = fs.openSync(destinationPath, "r");
   try {
-    fs.fsyncSync(backupDescriptor);
+    syncFileDescriptor(backupDescriptor);
   } finally {
     fs.closeSync(backupDescriptor);
   }
@@ -148,7 +165,7 @@ function atomicWriteFile(filePath: string, contents: string): void {
     try {
       fileDescriptor = fs.openSync(temporaryPath, "wx", 0o600);
       fs.writeFileSync(fileDescriptor, contents, "utf8");
-      fs.fsyncSync(fileDescriptor);
+      syncFileDescriptor(fileDescriptor);
       fs.closeSync(fileDescriptor);
       fileDescriptor = null;
       fs.renameSync(temporaryPath, filePath);
