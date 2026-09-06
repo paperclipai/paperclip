@@ -3,7 +3,9 @@
   "slug": "telegram",
   "name": "Telegram",
   "description": "Let people start and continue Paperclip work with an agent from Telegram.",
-  "categories": ["communication"],
+  "categories": [
+    "communication"
+  ],
   "featured": false,
   "branding": {
     "logoUrl": "/brands/apps/telegram.svg"
@@ -21,7 +23,9 @@
       "provider": "telegram",
       "transport": "chat_sdk",
       "auth": "api_key",
-      "ownershipModes": ["customer"],
+      "ownershipModes": [
+        "customer"
+      ],
       "whenToUse": "Let people in Telegram start and continue work with one Paperclip agent.",
       "credentialFields": [
         {
@@ -39,7 +43,11 @@
         "docs": "https://core.telegram.org/bots/tutorial"
       },
       "riskTier": "S3",
-      "requiredResourceFilters": ["chat", "group", "topic"]
+      "requiredResourceFilters": [
+        "chat",
+        "group",
+        "topic"
+      ]
     }
   ]
 }

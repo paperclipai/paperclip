@@ -402,6 +402,12 @@ export function Browse() {
           "Chat with agents from issues, pull requests, and review threads.",
       },
       {
+        provider: "discord",
+        name: "Discord",
+        description:
+          "Chat with agents from Discord channels, threads, and direct messages.",
+      },
+      {
         provider: "microsoft-teams",
         name: "Microsoft Teams",
         description: "Chat with agents from Teams channels and conversations.",
@@ -500,6 +506,7 @@ export function Browse() {
         const names = {
           slack: "Slack",
           github: "GitHub",
+          discord: "Discord",
           "microsoft-teams": "Microsoft Teams",
           telegram: "Telegram",
         } as const;

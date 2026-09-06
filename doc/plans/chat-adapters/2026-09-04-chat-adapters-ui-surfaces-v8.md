@@ -22,6 +22,18 @@ Each provider has one plain list. Every row contains the external conversation, 
 
 The former "How conversations work" screens are removed. Provider-native activation and reply behavior remains implementation documentation, not a standalone product page.
 
+## Five-provider implementation addendum — 2026-09-06
+
+Discord now uses the same product shell even though the v8 generated wireframe inventory below predates that implementation. Its current UI contract is:
+
+- **Setup:** enter a customer-owned Application ID, Server ID, and write-only bot token; inspect the server-pinned `bot`-scope install URL; connect; then enable and test one channel. No webhook URL, interactions key, slash command, managed provisioning, or delivery-mode choice appears.
+- **Settings:** show provider identity and only the plausible direct-message reach switch. Provider capabilities are automatic.
+- **Access:** list Discord text channels available to the installed bot, with Paperclip enablement as an independent narrower allowlist, plus linked numeric Discord-user identities and the unlinked-participation policy.
+- **Conversations:** show the Discord thread or DM generation, Paperclip task, current state, **Open Discord**, and **Open task**. There are no detach or rebinding controls.
+- **Activity:** show Gateway/runtime health, durable deliveries/publications, redacted provider failures, and contextual reconnect/rotation actions.
+
+The linked v8 SVGs remain a four-provider visual-design artifact; they are not evidence that Discord is absent from the product or that Discord has passed live qualification. The live browser runbook and dated qualification result are the current five-provider acceptance sources.
+
 ## Screen inventory
 
 | ID | Group | Surface | Title | Desktop | Mobile |
@@ -99,14 +111,14 @@ Purpose: Bring your own Slack app using Paperclip's prepared manifest.
 
 1. The prepared manifest and exact provider locations make the customer-owned App the complete required path.
 2. Only the Bot User OAuth Token and Signing Secret are entered, and both remain write-only.
-3. Managed Add to Slack is an optional later convenience and cannot gate this path or release.
+3. Managed Add to Slack is not shipped; a later convenience cannot gate this path or release.
 
 Actions:
 
 - **Connect Slack app:** Stores the two write-only credentials and verifies the Slack bot identity and required scopes.
 - **Open Slack app settings:** Opens Slack's app-management page where the operator creates and installs the customer-owned App.
 
-Rationale: Bring-your-own credentials are sufficient to ship; managed installation remains optional.
+Rationale: Bring-your-own credentials are the complete shipped path; no managed installation is required or currently shown.
 
 ### 41 · Try Maya in Slack
 
@@ -242,7 +254,7 @@ Purpose: Register a customer-owned Entra App and Azure Bot.
 
 1. Paperclip provides the exact public messaging endpoint.
 2. The operator creates the single-tenant Entra App, Azure Bot, and Teams app in Microsoft.
-3. A future helper is optional and cannot gate the customer-owned path or release.
+3. No provisioning helper is shipped or required for the customer-owned path.
 
 Actions:
 
@@ -295,7 +307,7 @@ Actions:
 - **Connect and verify:** Stores the client secret write-only and verifies Microsoft bot authentication.
 - **Back:** Returns to the primary customer-owned credential setup.
 
-Rationale: This is reference detail for the required customer-owned path; a future helper remains optional.
+Rationale: This is reference detail for the complete required customer-owned path.
 
 ### 20 · Microsoft Teams settings
 

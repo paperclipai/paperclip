@@ -159,6 +159,7 @@ import {
 } from "./http/body-limits.js";
 import { COMPANY_IMPORT_API_PATH } from "./routes/company-import-paths.js";
 import { apiCompression } from "./middleware/api-compression.js";
+import { chatWebhookBodyParser } from "./middleware/chat-webhook-body.js";
 
 type UiMode = "none" | "static" | "vite-dev";
 const FEEDBACK_EXPORT_FLUSH_INTERVAL_MS = 5_000;
@@ -414,13 +415,7 @@ export async function createApp(
   // Chat providers sign the exact request bytes. Capture every webhook media
   // type before the global JSON parser so JSON events and form-encoded action
   // callbacks are verified against the provider's original body.
-  app.use(
-    "/api/chat-webhooks",
-    express.raw({
-      limit: DEFAULT_JSON_BODY_LIMIT,
-      type: "*/*",
-    }),
-  );
+  app.use("/api/chat-webhooks", chatWebhookBodyParser);
   app.use(
     express.json({
       limit: DEFAULT_JSON_BODY_LIMIT,

@@ -159,6 +159,12 @@ export function chatProviderConversationUrl(
     }
     return `https://app.slack.com/client/${encodeURIComponent(input.providerAccountId)}/${encodeURIComponent(match[1])}/thread/${encodeURIComponent(`${match[1]}-${match[2].replace(".", "")}`)}`;
   }
+  if (input.provider === "discord") {
+    const match = /^discord:(\d+):(\d+)(?::(\d+))?$/.exec(input.threadId);
+    if (!match) return null;
+    const destination = match[3] ?? match[2];
+    return `https://discord.com/channels/${encodeURIComponent(match[1])}/${encodeURIComponent(destination)}/${encodeURIComponent(input.providerMessageId)}`;
+  }
   if (input.provider === "microsoft-teams") return teamsConversationLink(input);
   if (input.provider === "telegram") return telegramConversationLink(input);
   return null;

@@ -1359,11 +1359,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
               rootIssueId: issueId,
               issueIds: [issueId],
               allowedAgentIds: [agentId],
-              allowedToolClasses: [
-                "git.read",
-                "github.pr.read",
-                "tests.local",
-              ],
+              allowedToolClasses: ["git.read", "github.pr.read", "tests.local"],
             },
           },
         },
@@ -1381,8 +1377,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
     expect(
       mockAdapterExecute.mock.calls.some(
-        ([input]) =>
-          (input as { runId?: string } | undefined)?.runId === runId,
+        ([input]) => (input as { runId?: string } | undefined)?.runId === runId,
       ),
     ).toBe(false);
     expect(
@@ -5994,6 +5989,75 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     } finally {
       updateSpy.mockRestore();
     }
+  });
+
+  it("uses a bounded per-cancel process grace for an external-chat successor", async () => {
+    const { runId } = await seedRunFixture({
+      agentStatus: "running",
+      includeIssue: false,
+    });
+    const heartbeat = heartbeatService(db);
+    runningProcesses.set(runId, {
+      child: { pid: 12_346 } as ChildProcess,
+      graceSec: 30,
+      processGroupId: null,
+    });
+    mockTerminateLocalService.mockResolvedValueOnce(undefined);
+
+    await heartbeat.cancelRun(
+      runId,
+      "Superseded by external-chat continuation",
+      {
+        errorCode: "external_chat_continuation",
+        terminationGraceMs: 2_000,
+        suppressImmediateRecovery: true,
+      },
+    );
+
+    expect(mockTerminateLocalService).toHaveBeenCalledWith(
+      expect.objectContaining({ pid: 12_346, processGroupId: null }),
+      { forceAfterMs: 2_000 },
+    );
+    expect(runningProcesses.has(runId)).toBe(false);
+  });
+
+  it("does not overwrite a run that finishes while cancellation is stopping its process", async () => {
+    const { runId } = await seedRunFixture({
+      agentStatus: "running",
+      includeIssue: false,
+    });
+    const heartbeat = heartbeatService(db);
+    runningProcesses.set(runId, {
+      child: { pid: 12_347 } as ChildProcess,
+      graceSec: 30,
+      processGroupId: null,
+    });
+    mockTerminateLocalService.mockImplementationOnce(async () => {
+      await db
+        .update(heartbeatRuns)
+        .set({ status: "succeeded", finishedAt: new Date() })
+        .where(eq(heartbeatRuns.id, runId));
+    });
+
+    const outcome = await heartbeat.cancelRun(
+      runId,
+      "Superseded by external-chat continuation",
+      {
+        errorCode: "external_chat_continuation",
+        terminationGraceMs: 2_000,
+        suppressImmediateRecovery: true,
+      },
+    );
+
+    expect(outcome).toMatchObject({ status: "succeeded", errorCode: null });
+    expect(mockTerminateLocalService).toHaveBeenCalledWith(
+      expect.objectContaining({ pid: 12_347, processGroupId: null }),
+      { forceAfterMs: 2_000 },
+    );
+    await expect(heartbeat.getRun(runId)).resolves.toMatchObject({
+      status: "succeeded",
+      errorCode: null,
+    });
   });
 
   it("does not signal an unowned persisted process during manual cancellation", async () => {

@@ -20,53 +20,15 @@ import {
   chatPublications,
   heartbeatRuns,
   issueComments,
-  issueThreadInteractions,
 } from "@paperclipai/db";
 import { projectSafeChatPublication } from "./chat-publication-projection.js";
+import { hasChatRunOwnedProviderInteraction } from "./chat-interaction-arbitration.js";
+import { CHAT_RUN_PRESENTATION_AUTHORIZATION_REASON } from "./heartbeat-run-summary.js";
 import { resolveChatOriginPublicationBindings } from "./issues.js";
 
 type SafeRunMilestone = "queued" | "working" | "completed" | "failed";
 
-export const CHAT_RUN_PRESENTATION_AUTHORIZATION_REASON =
-  "allow_chat_run_presentation";
-
-async function hasExternalInteractionForRun(
-  db: Db,
-  input: { companyId: string; issueId: string; runId: string },
-): Promise<boolean> {
-  const rows = await db
-    .select({ id: issueThreadInteractions.id })
-    .from(issueThreadInteractions)
-    .innerJoin(
-      chatPublications,
-      and(
-        eq(chatPublications.companyId, issueThreadInteractions.companyId),
-        eq(chatPublications.issueId, issueThreadInteractions.issueId),
-        sql`${chatPublications.payload} ->> 'interactionId' = ${issueThreadInteractions.id}::text`,
-        sql`${chatPublications.idempotencyKey} = 'interaction:' || ${issueThreadInteractions.id}::text || ':' || ${chatPublications.endpointId}::text`,
-      ),
-    )
-    .where(
-      and(
-        eq(issueThreadInteractions.companyId, input.companyId),
-        eq(issueThreadInteractions.issueId, input.issueId),
-        eq(issueThreadInteractions.sourceRunId, input.runId),
-        inArray(issueThreadInteractions.kind, [
-          "ask_user_questions",
-          "request_confirmation",
-        ]),
-        inArray(chatPublications.state, [
-          "pending",
-          "streaming",
-          "published",
-          "retry",
-          "delivery_unknown",
-        ]),
-      ),
-    )
-    .limit(1);
-  return rows.length > 0;
-}
+export { CHAT_RUN_PRESENTATION_AUTHORIZATION_REASON };
 
 /**
  * Heartbeat's presentation resolver may externalize its selected final prose
@@ -92,7 +54,7 @@ export async function resolveChatRunPresentationAuthorizationReason(
   // Paperclip comment even if a fast provider answer resolves the interaction
   // before this check; otherwise model metadata can appear as a noisy sibling
   // beside the card or its continuation response.
-  if (await hasExternalInteractionForRun(db, input)) {
+  if (await hasChatRunOwnedProviderInteraction(db, input)) {
     return "internal_agent_write";
   }
   return CHAT_RUN_PRESENTATION_AUTHORIZATION_REASON;
@@ -240,7 +202,7 @@ export async function enqueueChatRunMilestones(
     string,
     Awaited<ReturnType<typeof resolveChatOriginPublicationBindings>>
   >();
-  const externalInteractionCache = new Map<string, boolean>();
+  const providerInteractionCache = new Map<string, boolean>();
   while (inserted < limit) {
     const pageSize = Math.max(25, Math.min(200, limit - inserted));
     const pageCursor: typeof cursor = cursor;
@@ -446,18 +408,23 @@ export async function enqueueChatRunMilestones(
       ) {
         continue;
       }
-      if (milestone === "completed") {
-        let hasExternalInteraction =
-          externalInteractionCache.get(bindingCacheKey);
-        if (hasExternalInteraction === undefined) {
-          hasExternalInteraction = await hasExternalInteractionForRun(db, {
-            companyId: row.companyId,
-            issueId: row.issueId,
-            runId: row.runId,
-          });
-          externalInteractionCache.set(bindingCacheKey, hasExternalInteraction);
+      if (milestone === "completed" || milestone === "failed") {
+        let hasProviderInteraction =
+          providerInteractionCache.get(bindingCacheKey);
+        if (hasProviderInteraction === undefined) {
+          hasProviderInteraction = await hasChatRunOwnedProviderInteraction(
+            db,
+            {
+              companyId: row.companyId,
+              issueId: row.issueId,
+              runId: row.runId,
+            },
+          );
+          providerInteractionCache.set(bindingCacheKey, hasProviderInteraction);
         }
-        if (hasExternalInteraction) continue;
+        if (hasProviderInteraction) continue;
+      }
+      if (milestone === "completed") {
         const explicitlyAuthoredPublication = await db
           .select({ id: chatPublications.id })
           .from(chatPublications)

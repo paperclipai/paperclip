@@ -96,31 +96,42 @@ describe("legacy adapter skill selection", () => {
   };
 
   it("keeps the operational skill selected without a stored preference", () => {
-    expect(resolveLegacyPaperclipDesiredSkillNames({}, [operationalEntry, optionalEntry])).toEqual([
-      PAPERCLIP_OPERATIONAL_SKILL_KEY,
-    ]);
+    expect(
+      resolveLegacyPaperclipDesiredSkillNames({}, [
+        operationalEntry,
+        optionalEntry,
+      ]),
+    ).toEqual([PAPERCLIP_OPERATIONAL_SKILL_KEY]);
   });
 
   it("keeps the operational skill selected after an explicit empty replacement", () => {
-    expect(resolveLegacyPaperclipDesiredSkillNames(
-      { paperclipSkillSync: { desiredSkills: [] } },
-      [operationalEntry, optionalEntry],
-    )).toEqual([PAPERCLIP_OPERATIONAL_SKILL_KEY]);
+    expect(
+      resolveLegacyPaperclipDesiredSkillNames(
+        { paperclipSkillSync: { desiredSkills: [] } },
+        [operationalEntry, optionalEntry],
+      ),
+    ).toEqual([PAPERCLIP_OPERATIONAL_SKILL_KEY]);
   });
 
   it("does not force optional skills or synthesize a missing operational entry", () => {
-    const config = { paperclipSkillSync: { desiredSkills: [optionalEntry.key] } };
-    expect(resolveLegacyPaperclipDesiredSkillNames(config, [operationalEntry, optionalEntry])).toEqual([
-      PAPERCLIP_OPERATIONAL_SKILL_KEY,
-      optionalEntry.key,
-    ]);
-    expect(resolveLegacyPaperclipDesiredSkillNames(config, [optionalEntry])).toEqual([
-      optionalEntry.key,
-    ]);
+    const config = {
+      paperclipSkillSync: { desiredSkills: [optionalEntry.key] },
+    };
+    expect(
+      resolveLegacyPaperclipDesiredSkillNames(config, [
+        operationalEntry,
+        optionalEntry,
+      ]),
+    ).toEqual([PAPERCLIP_OPERATIONAL_SKILL_KEY, optionalEntry.key]);
+    expect(
+      resolveLegacyPaperclipDesiredSkillNames(config, [optionalEntry]),
+    ).toEqual([optionalEntry.key]);
   });
 
   it("leaves the configurable resolver available for native runners", () => {
-    expect(resolvePaperclipDesiredSkillNames({}, [operationalEntry])).toEqual([]);
+    expect(resolvePaperclipDesiredSkillNames({}, [operationalEntry])).toEqual(
+      [],
+    );
   });
 });
 
@@ -1228,6 +1239,62 @@ describe("renderPaperclipWakePrompt", () => {
     }
   });
 
+  it.each(["answered", "accepted"])(
+    "preserves exact-output constraints for an external %s interaction continuation",
+    (interactionStatus) => {
+      const prompt = renderPaperclipWakePrompt({
+        reason: "issue_commented",
+        issue: {
+          id: "issue-1",
+          identifier: "PAP-CHAT",
+          title: "Continue provider request",
+          status: "in_progress",
+        },
+        interactionKind:
+          interactionStatus === "answered"
+            ? "ask_user_questions"
+            : "request_confirmation",
+        interactionStatus,
+        externalInteractionContinuation: true,
+        commentWindow: {
+          requestedCount: 1,
+          includedCount: 1,
+          missingCount: 0,
+        },
+        commentIds: ["comment-1"],
+        latestCommentId: "comment-1",
+        comments: [
+          {
+            id: "comment-1",
+            issueId: "issue-1",
+            body: "Reply with exactly RELEASE-Saffron and nothing else.",
+          },
+        ],
+        fallbackFetchNeeded: false,
+      });
+
+      expect(prompt).toContain("## External interaction continuation");
+      expect(prompt).toContain(
+        "Preserve and obey the original source comment's formatting and exact-output constraints literally.",
+      );
+      expect(prompt).toContain(
+        "the externally visible response must contain exactly that and nothing else",
+      );
+      expect(prompt).toContain(
+        "Use internal Paperclip tools to satisfy the task lifecycle, including marking the task done when its requested work is complete.",
+      );
+      expect(prompt).toContain(
+        "Exact-output constraints apply to provider-visible prose, not necessary internal tool calls",
+      );
+      expect(prompt).toContain(
+        "Do not narrate answer receipt, interaction IDs, Paperclip workflow, delegation, task status, or closure",
+      );
+      expect(prompt).toContain(
+        "Reply with exactly RELEASE-Saffron and nothing else.",
+      );
+    },
+  );
+
   it.each([
     [
       "process_lost",
@@ -1446,17 +1513,21 @@ describe("renderPaperclipWakePrompt", () => {
         ].join("\n"),
       },
       commentWindow: { requestedCount: 1, includedCount: 1, missingCount: 0 },
-      comments: [{
-        id: "stale-comment",
-        body: "The questions are still pending.",
-        authorType: "user",
-      }],
+      comments: [
+        {
+          id: "stale-comment",
+          body: "The questions are still pending.",
+          authorType: "user",
+        },
+      ],
       fallbackFetchNeeded: false,
     });
 
     expect(prompt).toContain("## Answered questions");
     expect(prompt).toContain("- What should the demo prove?: Minimal JSON API");
-    expect(prompt).toContain("Continue from these answers now; do not wait for another response.");
+    expect(prompt).toContain(
+      "Continue from these answers now; do not wait for another response.",
+    );
     expect(prompt.indexOf("The questions are still pending.")).toBeLessThan(
       prompt.indexOf("## Answered questions"),
     );
@@ -1895,7 +1966,9 @@ describe("renderPaperclipWakePrompt", () => {
     });
 
     expect(prompt).toContain("accepted-plan continuation");
-    expect(prompt).toContain("do not create a child merely because a plan was accepted");
+    expect(prompt).toContain(
+      "do not create a child merely because a plan was accepted",
+    );
     expect(prompt).not.toContain("Update the plan only");
   });
 

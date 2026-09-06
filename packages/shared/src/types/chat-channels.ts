@@ -2,6 +2,7 @@
 export const CHAT_PROVIDERS = [
   "slack",
   "github",
+  "discord",
   "microsoft-teams",
   "telegram",
 ] as const;

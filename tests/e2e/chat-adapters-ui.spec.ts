@@ -16,7 +16,7 @@ import {
  * because those checks require real accounts and publicly reachable ingress.
  */
 
-type Provider = "slack" | "github" | "microsoft-teams" | "telegram";
+type Provider = "slack" | "github" | "discord" | "microsoft-teams" | "telegram";
 
 type ProviderCase = {
   provider: Provider;
@@ -78,6 +78,22 @@ const PROVIDERS: ProviderCase[] = [
     externalUrl: "https://teams.microsoft.com/l/message/19:e2e@thread.tacv2/1",
     setupHeading: /Connect Maya to Microsoft Teams/i,
     setupButton: "Verify Microsoft credentials",
+    chatAndTool: false,
+  },
+  {
+    provider: "discord",
+    slug: "discord",
+    name: "Discord",
+    accountLabel: "Clawd",
+    botLabel: "Maya",
+    botUsername: "maya-paperclip",
+    resourceLabel: "#general",
+    secondaryResourceLabel: "#support",
+    resourceType: "channel",
+    externalUrl:
+      "https://discord.com/channels/1457808928258658549/1457808933082108089",
+    setupHeading: /Connect Maya to Discord/i,
+    setupButton: "Connect Discord bot",
     chatAndTool: false,
   },
   {
@@ -203,7 +219,9 @@ function endpointFixture(provider: ProviderCase, seed: Seed) {
         provider.provider === "slack" || provider.provider === "telegram",
       messageEdits: true,
       messageDeletes:
-        provider.provider === "slack" || provider.provider === "github",
+        provider.provider === "slack" ||
+        provider.provider === "github" ||
+        provider.provider === "discord",
       reactions: true,
       files: true,
       cards:
@@ -211,7 +229,8 @@ function endpointFixture(provider: ProviderCase, seed: Seed) {
         provider.provider === "microsoft-teams",
       actions: true,
       modals: false,
-      slashCommands: provider.provider !== "github",
+      slashCommands:
+        provider.provider !== "github" && provider.provider !== "discord",
       ephemeralMessages:
         provider.provider === "slack" ||
         provider.provider === "microsoft-teams",
@@ -226,7 +245,9 @@ function endpointFixture(provider: ProviderCase, seed: Seed) {
             ? "https://dev.teams.microsoft.com/apps"
             : provider.provider === "github"
               ? "https://github.com/settings/apps"
-              : "https://api.slack.com/apps",
+              : provider.provider === "discord"
+                ? "https://discord.com/developers/applications"
+                : "https://api.slack.com/apps",
       providerUrl: provider.externalUrl,
       webhookUrl: `https://paperclip.example.test/api/chat-webhooks/public-${provider.provider}/${provider.provider}`,
       messagingEndpoint: `https://paperclip.example.test/api/chat-webhooks/public-${provider.provider}/microsoft-teams`,
@@ -606,6 +627,10 @@ async function fillProviderSetup(page: Page, provider: ProviderCase) {
       .getByLabel("Directory / Tenant ID")
       .fill("00000000-0000-4000-8000-000000000002");
     await page.getByLabel("Client secret").fill("teams-client-secret");
+  } else if (provider.provider === "discord") {
+    await page.getByLabel("Application ID").fill("1457808928258658549");
+    await page.getByLabel("Server ID").fill("1457808928258658549");
+    await page.getByLabel("Bot token").fill("discord-e2e-redacted");
   } else {
     await page.getByLabel("Bot token").fill("123456:e2e-redacted");
   }
@@ -617,6 +642,7 @@ function expectedCredentialKeys(provider: Provider): string[] {
   if (provider === "github") return ["appId", "privateKey"];
   if (provider === "microsoft-teams")
     return ["clientId", "clientSecret", "tenantId"];
+  if (provider === "discord") return ["applicationId", "botToken", "guildId"];
   return ["botToken"];
 }
 
@@ -808,6 +834,33 @@ async function expectMinimumProviderSetup(page: Page, provider: ProviderCase) {
     return;
   }
 
+  if (provider.provider === "discord") {
+    await expect(page.getByText(/enable Message Content Intent/)).toBeVisible();
+    await expect(page.getByText(/copy its Server ID/)).toBeVisible();
+    await expect(page.getByLabel("Application ID")).toHaveAttribute(
+      "type",
+      "text",
+    );
+    await expect(page.getByLabel("Server ID")).toHaveAttribute("type", "text");
+    await expect(page.getByLabel("Bot token")).toHaveAttribute(
+      "type",
+      "password",
+    );
+    await expect(
+      page.getByRole("button", { name: "Open Discord Developer Portal" }),
+    ).toBeVisible();
+    await page.getByLabel("Application ID").fill("1457808928258658549");
+    await page.getByLabel("Server ID").fill("1457808928258658549");
+    await expect(
+      page.getByRole("link", { name: "Install bot in this server" }),
+    ).toHaveAttribute(
+      "href",
+      /client_id=1457808928258658549&permissions=309237763136&scope=bot&guild_id=1457808928258658549&disable_guild_select=true/,
+    );
+    await expect(page.getByText(/Create Public Threads/)).toBeVisible();
+    return;
+  }
+
   await expect(page.getByText("/newbot", { exact: true })).toBeVisible();
   await expect(page.getByText(/username ending in/)).toBeVisible();
   await expect(page.getByText(/\/task@bot_username/)).toBeVisible();
@@ -846,11 +899,17 @@ async function expectProviderTryInstructions(
               "Mention @maya-paperclip in the post.",
               "Reply once beneath the post.",
             ]
-          : [
-              "Open the bot's private chat.",
-              "Tap Start.",
-              "Send “Help me test this”.",
-            ];
+          : provider.provider === "discord"
+            ? [
+                "Open a text channel where the bot is installed.",
+                "Mention @maya-paperclip in a new root message.",
+                "Reply once inside Maya's new Discord thread.",
+              ]
+            : [
+                "Open the bot's private chat.",
+                "Tap Start.",
+                "Send “Help me test this”.",
+              ];
   for (const instruction of expected) {
     await expect(page.getByText(instruction, { exact: true })).toBeVisible();
   }

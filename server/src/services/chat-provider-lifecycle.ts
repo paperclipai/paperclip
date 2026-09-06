@@ -494,6 +494,11 @@ export function parseChatProviderLifecycle(
       return parseSlackLifecycle(input);
     case "github":
       return parseGitHubLifecycle(input);
+    case "discord":
+      // Discord server/channel reach is reconciled from the Bot REST API on
+      // connect, resume, and reconnect. Gateway membership events are not yet
+      // treated as an authorization source.
+      return [];
     case "microsoft-teams":
       return parseTeamsLifecycle(input);
     case "telegram":

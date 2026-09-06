@@ -245,6 +245,7 @@ describe("AppDefinition catalog", () => {
       expect.arrayContaining([
         "zapier",
         "github",
+        "discord",
         "slack",
         "microsoft-teams",
         "telegram",
@@ -292,7 +293,7 @@ describe("AppDefinition catalog", () => {
     for (const entry of BLOCKED_MCP_PROVIDERS)
       expect(connectableSlugs.has(entry.slug)).toBe(false);
   });
-  it("registers the four native chat providers with only required setup credentials", () => {
+  it("registers the five native chat providers with only required setup credentials", () => {
     const expected = {
       slack: {
         credentials: ["botToken", "signingSecret"],
@@ -305,6 +306,12 @@ describe("AppDefinition catalog", () => {
         publicFields: ["appId"],
         resources: ["organization", "repository"],
         tool: true,
+      },
+      discord: {
+        credentials: ["botToken", "applicationId", "guildId"],
+        publicFields: ["applicationId", "guildId"],
+        resources: ["channel"],
+        tool: false,
       },
       "microsoft-teams": {
         credentials: ["clientId", "tenantId", "clientSecret"],
@@ -377,6 +384,8 @@ describe("AppDefinition catalog", () => {
         (method) => method.purpose === "channel",
       );
     expect(channel("github")?.guidanceMd).toContain("issue_comment");
+    expect(channel("discord")?.guidanceMd).toContain("Message Content intent");
+    expect(channel("discord")?.guidanceMd).toContain("Discord thread");
     expect(channel("github")?.guidanceMd).toContain("pull_request");
     expect(channel("github")?.guidanceMd).toContain(
       "pull_request_review_comment",
@@ -663,7 +672,7 @@ describe("AppDefinition catalog", () => {
       "ticktick",
       "xero",
     ]);
-    expect(APP_STORE_DEFINITIONS).toHaveLength(39);
+    expect(APP_STORE_DEFINITIONS).toHaveLength(40);
     const connectableSlugs = new Set(
       CONNECTABLE_APP_DEFINITIONS.map((entry) => entry.slug),
     );
@@ -675,7 +684,7 @@ describe("AppDefinition catalog", () => {
       expect(storeSlugs.has(slug), slug).toBe(false);
     }
   });
-  it("ships complete local branding provenance for all 39 store-visible providers", () => {
+  it("ships complete local branding provenance for all 40 store-visible providers", () => {
     const uiPublic = path.resolve(
       path.dirname(fileURLToPath(import.meta.url)),
       "../../../ui/public",
@@ -695,14 +704,14 @@ describe("AppDefinition catalog", () => {
       }>;
     };
     const visible = manifest.providers.filter((entry) => entry.catalogVisible);
-    expect(visible).toHaveLength(39);
+    expect(visible).toHaveLength(40);
     expect(new Set(visible.map((entry) => entry.slug))).toHaveProperty(
       "size",
-      39,
+      40,
     );
     expect(new Set(visible.map((entry) => entry.localAsset))).toHaveProperty(
       "size",
-      39,
+      40,
     );
     expect(new Set(APP_STORE_DEFINITIONS.map((entry) => entry.slug))).toEqual(
       new Set(visible.map((entry) => entry.slug)),

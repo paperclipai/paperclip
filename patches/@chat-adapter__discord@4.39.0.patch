@@ -1,0 +1,800 @@
+diff --git a/dist/index.d.ts b/dist/index.d.ts
+index 8cd0ed50d2c4971cffe75dd86c12764d837ab8cc..bcf0ccf35118f2ab7612532035f7f540500cacc7 100644
+--- a/dist/index.d.ts
++++ b/dist/index.d.ts
+@@ -63,6 +63,20 @@ declare enum DiscordContentFormat {
+  * to accept the request; throw or return a falsy value to reject it.
+  */
+ type DiscordWebhookVerifier = (request: Request, body: string) => Promise<unknown> | unknown;
++interface DiscordThreadAdmissionContext {
++    /** Parent text-channel id containing the root mention. */
++    channelId: string;
++    /** Guild containing the parent channel. */
++    guildId: string;
++    /** Root mention message id, which is also the created thread id. */
++    messageId: string;
++    /** Normalized root message when direct Gateway mode can stage it durably. */
++    message?: Message<unknown>;
++    /** Canonical thread id that the root message will own. */
++    threadId: string;
++    /** Discord user id that authored the root mention. */
++    userId: string;
++}
+ interface DiscordAdapterConfig {
+     /** Override the Discord API base URL. Defaults to DISCORD_API_URL env var or "https://discord.com/api/v10". */
+     apiUrl?: string;
+@@ -84,6 +98,8 @@ interface DiscordAdapterConfig {
+     respondToChannelIds?: string[];
+     /** Treat @everyone/@here pings as mentions of the bot. Defaults to false. */
+     respondToGlobalMentions?: boolean;
++    /** Fail-closed authorization hook invoked before a root mention creates a provider thread. */
++    shouldCreateThread?: (context: DiscordThreadAdmissionContext) => boolean | Promise<boolean>;
+     /** Override bot username (optional) */
+     userName?: string;
+     /** Custom webhook verifier used instead of Discord's Ed25519 public key. */
+@@ -534,6 +550,7 @@ interface DiscordFileUpload {
+ }
+ declare class DiscordAdapter implements Adapter<DiscordThreadId, unknown> {
+     readonly name = "discord";
++    readonly paperclipCompatibilityRevision = "paperclip-discord-v2";
+     readonly userName: string;
+     protected readonly apiBaseUrl: string;
+     protected readonly botTokenProvider: () => Promise<string>;
+@@ -547,6 +564,7 @@ declare class DiscordAdapter implements Adapter<DiscordThreadId, unknown> {
+     protected readonly respondToChannelIds: string[];
+     protected readonly respondToGlobalMentions: boolean;
+     protected readonly interactionFlags?: DiscordAdapterConfig["interactionFlags"];
++    protected readonly shouldCreateThread?: DiscordAdapterConfig["shouldCreateThread"];
+     protected chat: ChatInstance | null;
+     protected readonly logger: Logger;
+     protected readonly formatConverter: DiscordFormatConverter;
+@@ -575,7 +593,7 @@ declare class DiscordAdapter implements Adapter<DiscordThreadId, unknown> {
+     /**
+      * Handle MESSAGE_COMPONENT interactions (button clicks).
+      */
+-    protected handleComponentInteraction(interaction: DiscordInteraction, options?: WebhookOptions): void;
++    protected handleComponentInteraction(interaction: DiscordInteraction, options?: WebhookOptions): Promise<void>;
+     /**
+      * Handle APPLICATION_COMMAND interactions (slash commands).
+      */
+@@ -634,7 +652,12 @@ declare class DiscordAdapter implements Adapter<DiscordThreadId, unknown> {
+     /**
+      * Create a Discord thread from a message.
+      */
+-    protected createDiscordThread(channelId: string, messageId: string): Promise<{
++    protected createDiscordThread(channelId: string, messageId: string, requestedName?: string): Promise<{
++        id: string;
++        name: string;
++    }>;
++    /** Idempotently create or recover the public thread rooted at a guild message. */
++    ensureRootThread(channelId: string, messageId: string, content: string): Promise<{
+         id: string;
+         name: string;
+     }>;
+@@ -809,4 +832,4 @@ declare class DiscordAdapter implements Adapter<DiscordThreadId, unknown> {
+  */
+ declare function createDiscordAdapter(config?: DiscordAdapterConfig): DiscordAdapter;
+-
++
+-export { DiscordAdapter, type DiscordAdapterConfig, DiscordComponentType, type DiscordComponentTypeValue, DiscordContentFormat, DiscordFormatConverter, type DiscordInteractionFlagsContext, DiscordInteractionResponseFlag, type DiscordInteractionResponseFlags, DiscordFormatConverter as DiscordMarkdownConverter, DiscordMessageFlag, type DiscordMessageFlagValue, type DiscordMessageFlags, type DiscordThreadId, type DiscordWebhookVerifier, cardToDiscordPayload, cardToFallbackText, createDiscordAdapter, decodeDiscordCustomId, encodeDiscordCustomId };
++export { DiscordAdapter, type DiscordAdapterConfig, DiscordComponentType, type DiscordComponentTypeValue, DiscordContentFormat, DiscordFormatConverter, type DiscordInteractionFlagsContext, DiscordInteractionResponseFlag, type DiscordInteractionResponseFlags, DiscordFormatConverter as DiscordMarkdownConverter, DiscordMessageFlag, type DiscordMessageFlagValue, type DiscordMessageFlags, type DiscordThreadAdmissionContext, type DiscordThreadId, type DiscordWebhookVerifier, cardToDiscordPayload, cardToFallbackText, createDiscordAdapter, decodeDiscordCustomId, encodeDiscordCustomId };
+diff --git a/dist/index.js b/dist/index.js
+index a42b61d58aa05c553cad8544090284070973cf0a..9d5e3a47dd986e78f0a6cebc01e639792f65db7d 100644
+--- a/dist/index.js
++++ b/dist/index.js
+@@ -783,6 +783,7 @@ ${tableToAscii(node)}
+ // src/index.ts
+ var DISCORD_API_BASE = "https://discord.com/api/v10";
+ var DISCORD_MAX_CONTENT_LENGTH = 2e3;
++var DISCORD_REQUEST_TIMEOUT_MS = 25e3;
+ var DISCORD_UNKNOWN_MESSAGE = 10008;
+ var DISCORD_THREAD_ALREADY_CREATED = 160004;
+ var HEX_64_PATTERN = /^[0-9a-f]{64}$/;
+@@ -808,6 +809,34 @@ function parseDiscordErrorCode(body) {
+   }
+   return void 0;
+ }
++function parseDiscordRetryAfter(body) {
++  try {
++    const data = JSON.parse(body);
++    if (typeof data === "object" && data !== null && "retry_after" in data && typeof data.retry_after === "number" && Number.isFinite(data.retry_after) && data.retry_after > 0) {
++      return data.retry_after;
++    }
++  } catch {
++    return void 0;
++  }
++  return void 0;
++}
++function discordNetworkError(message, response, body, originalError) {
++  const error = new NetworkError(
++    "discord",
++    `${message}: ${response.status} ${body}`,
++    originalError
++  );
++  error.status = response.status;
++  error.response = {
++    status: response.status,
++    headers: response.headers
++  };
++  const retryAfter = parseDiscordRetryAfter(body);
++  if (retryAfter !== void 0) {
++    error.retryAfter = retryAfter;
++  }
++  return error;
++}
+ function flatten(text, files, snapshots) {
+   const items = [...snapshots];
+   return {
+@@ -826,6 +855,7 @@ function normalizeCredentialProvider(value) {
+ }
+ var DiscordAdapter = class _DiscordAdapter {
+   name = "discord";
++  paperclipCompatibilityRevision = "paperclip-discord-v2";
+   userName;
+   apiBaseUrl;
+   botTokenProvider;
+@@ -839,6 +869,7 @@ var DiscordAdapter = class _DiscordAdapter {
+   respondToChannelIds;
+   respondToGlobalMentions;
+   interactionFlags;
++  shouldCreateThread;
+   chat = null;
+   logger;
+   formatConverter = new DiscordFormatConverter();
+@@ -900,6 +931,7 @@ var DiscordAdapter = class _DiscordAdapter {
+     this.respondToGlobalMentions = config.respondToGlobalMentions ?? false;
+     this.contentFormat = contentFormat;
+     this.interactionFlags = config.interactionFlags;
++    this.shouldCreateThread = config.shouldCreateThread;
+     this.logger = config.logger ?? new ConsoleLogger("info").child("discord");
+     this.userName = config.userName ?? "bot";
+     if (this.publicKey && !HEX_64_PATTERN.test(this.publicKey)) {
+@@ -1047,7 +1079,7 @@ var DiscordAdapter = class _DiscordAdapter {
+       });
+     }
+     if (interaction.type === InteractionType.MessageComponent) {
+-      this.handleComponentInteraction(interaction, options);
++      await this.handleComponentInteraction(interaction, options);
+       return this.respondToInteraction({
+         type: InteractionResponseType.DeferredUpdateMessage
+       });
+@@ -1128,7 +1160,7 @@ var DiscordAdapter = class _DiscordAdapter {
+   /**
+    * Handle MESSAGE_COMPONENT interactions (button clicks).
+    */
+-  handleComponentInteraction(interaction, options) {
++  async handleComponentInteraction(interaction, options) {
+     if (!this.chat) {
+       this.logger.warn("Chat instance not initialized, ignoring interaction");
+       return;
+@@ -1183,7 +1215,7 @@ var DiscordAdapter = class _DiscordAdapter {
+       messageId,
+       threadId
+     });
+-    this.chat.processAction(actionEvent, options);
++    await this.chat.handleActionEvent(actionEvent, options);
+   }
+   /**
+    * Handle APPLICATION_COMMAND interactions (slash commands).
+@@ -1325,8 +1357,11 @@ var DiscordAdapter = class _DiscordAdapter {
+     }
+     if (interaction.isMessageComponent()) {
+       await interaction.deferUpdate();
+-      this.handleComponentInteraction(
+-        this.normalizeGatewayComponentInteraction(interaction)
++      await this.processGatewayWithRetry(
++        () => this.handleComponentInteraction(
++          this.normalizeGatewayComponentInteraction(interaction)
++        ),
++        { event: "interaction", messageId: interaction.message.id }
+       );
+     }
+   }
+@@ -1340,7 +1375,7 @@ var DiscordAdapter = class _DiscordAdapter {
+         options: this.normalizeGatewayCommandOptions(interaction.options.data),
+         type: interaction.commandType
+       },
+-      guild_id: interaction.guildId ?? void 0,
++      guild_id: interaction.guildId ?? "@me",
+       id: interaction.id,
+       token: interaction.token,
+       type: interaction.type,
+@@ -1359,7 +1394,7 @@ var DiscordAdapter = class _DiscordAdapter {
+         custom_id: interaction.customId,
+         values
+       },
+-      guild_id: interaction.guildId ?? void 0,
++      guild_id: interaction.guildId ?? "@me",
+       id: interaction.id,
+       message: { id: interaction.message.id },
+       token: interaction.token,
+@@ -1478,21 +1513,47 @@ var DiscordAdapter = class _DiscordAdapter {
+     );
+     const isEveryoneMentioned = this.respondToGlobalMentions && data.mention_everyone === true;
+     const isMentioned = isUserMentioned || isRoleMentioned || isEveryoneMentioned || !data.author.bot && this.respondToChannelIds.includes(parentChannelId);
+-    if (!discordThreadId && isMentioned) {
+-      try {
+-        const newThread = await this.createDiscordThread(channelId, data.id);
+-        discordThreadId = newThread.id;
+-        this.logger.debug("Created Discord thread for forwarded mention", {
+-          channelId,
+-          messageId: data.id,
+-          threadId: newThread.id
+-        });
+-      } catch (error) {
+-        this.logger.error("Failed to create Discord thread for mention", {
+-          error: String(error),
+-          messageId: data.id
+-        });
++    if (!discordThreadId && isMentioned && guildId !== "@me") {
++      if (this.shouldCreateThread) {
++        let admitted = false;
++        const checked = await this.processGatewayWithRetry(
++          async () => {
++            admitted = await this.shouldCreateThread({
++              guildId,
++              channelId,
++              messageId: data.id,
++              userId: data.author.id,
++              threadId: this.encodeThreadId({
++                guildId,
++                channelId,
++                threadId: data.id
++              })
++            });
++          },
++          { event: "thread_admission", messageId: data.id }
++        );
++        if (!checked || !admitted) return;
++      }
++      let newThread;
++      const created = await this.processGatewayWithRetry(
++        async () => {
++          newThread = await this.ensureRootThread(
++            channelId,
++            data.id,
++            data.content
++          );
++        },
++        { event: "thread_create", messageId: data.id }
++      );
++      if (!created || !newThread) {
++        return;
+       }
++      discordThreadId = newThread.id;
++      this.logger.debug("Created Discord thread for forwarded mention", {
++        channelId,
++        messageId: data.id,
++        threadId: newThread.id
++      });
+     }
+     const threadId = this.encodeThreadId({
+       guildId,
+@@ -1794,8 +1855,8 @@ var DiscordAdapter = class _DiscordAdapter {
+   /**
+    * Create a Discord thread from a message.
+    */
+-  async createDiscordThread(channelId, messageId) {
+-    const threadName = `Thread ${(/* @__PURE__ */ new Date()).toLocaleString()}`;
++  async createDiscordThread(channelId, messageId, requestedName) {
++    const threadName = requestedName ?? `Thread ${(/* @__PURE__ */ new Date()).toLocaleString()}`;
+     this.logger.debug("Discord API: POST thread", {
+       channelId,
+       messageId,
+@@ -1828,6 +1889,18 @@ var DiscordAdapter = class _DiscordAdapter {
+       throw error;
+     }
+   }
++  /**
++   * Idempotently create or recover the public thread rooted at a guild
++   * message. Paperclip uses this after a process interruption between its
++   * durable admission receipt and Discord's thread-creation response.
++   */
++  async ensureRootThread(channelId, messageId, content) {
++    return await this.createDiscordThread(
++      channelId,
++      messageId,
++      this.gatewayThreadName(content)
++    );
++  }
+   /**
+    * Truncate content to Discord's maximum length.
+    */
+@@ -1861,20 +1934,23 @@ var DiscordAdapter = class _DiscordAdapter {
+       formData.append(`files[${i}]`, blob, file.filename);
+     }
+     const response = await fetch(
+-      `${DISCORD_API_BASE}/channels/${channelId}/messages`,
++      `${this.apiBaseUrl}/channels/${channelId}/messages`,
+       {
+         method: "POST",
+         headers: {
+           Authorization: `Bot ${botToken}`
+         },
+-        body: formData
++        body: formData,
++        signal: AbortSignal.timeout(DISCORD_REQUEST_TIMEOUT_MS)
+       }
+     );
+     if (!response.ok) {
+-      const error = await response.text();
+-      throw new NetworkError(
+-        "discord",
+-        `Failed to post message: ${response.status} ${error}`
++      const errorText = await response.text();
++      throw discordNetworkError(
++        "Failed to post message",
++        response,
++        errorText,
++        new DiscordApiError(response.status, errorText)
+       );
+     }
+     const result = await response.json();
+@@ -1885,10 +1961,11 @@ var DiscordAdapter = class _DiscordAdapter {
+     };
+   }
+   async discordInteractionFetch(path, method, body) {
+-    const response = await fetch(`${DISCORD_API_BASE}${path}`, {
++    const response = await fetch(`${this.apiBaseUrl}${path}`, {
+       method,
+       headers: body ? { "Content-Type": "application/json" } : void 0,
+-      body: body ? JSON.stringify(body) : void 0
++      body: body ? JSON.stringify(body) : void 0,
++      signal: AbortSignal.timeout(DISCORD_REQUEST_TIMEOUT_MS)
+     });
+     if (!response.ok) {
+       const errorText = await response.text();
+@@ -1898,9 +1975,11 @@ var DiscordAdapter = class _DiscordAdapter {
+         status: response.status,
+         error: errorText
+       });
+-      throw new NetworkError(
+-        "discord",
+-        `Discord interaction API error: ${response.status} ${errorText}`
++      throw discordNetworkError(
++        "Discord interaction API error",
++        response,
++        errorText,
++        new DiscordApiError(response.status, errorText)
+       );
+     }
+     return response;
+@@ -1924,9 +2003,10 @@ var DiscordAdapter = class _DiscordAdapter {
+       });
+       formData.append(`files[${i}]`, blob, file.filename);
+     }
+-    const response = await fetch(`${DISCORD_API_BASE}${path}`, {
++    const response = await fetch(`${this.apiBaseUrl}${path}`, {
+       method,
+-      body: formData
++      body: formData,
++      signal: AbortSignal.timeout(DISCORD_REQUEST_TIMEOUT_MS)
+     });
+     if (!response.ok) {
+       const errorText = await response.text();
+@@ -1936,9 +2016,11 @@ var DiscordAdapter = class _DiscordAdapter {
+         status: response.status,
+         error: errorText
+       });
+-      throw new NetworkError(
+-        "discord",
+-        `Discord interaction API error: ${response.status} ${errorText}`
++      throw discordNetworkError(
++        "Discord interaction API error",
++        response,
++        errorText,
++        new DiscordApiError(response.status, errorText)
+       );
+     }
+     return response;
+@@ -2299,7 +2381,8 @@ var DiscordAdapter = class _DiscordAdapter {
+     const response = await fetch(url, {
+       method,
+       headers,
+-      body: body ? JSON.stringify(body) : void 0
++      body: body ? JSON.stringify(body) : void 0,
++      signal: AbortSignal.timeout(DISCORD_REQUEST_TIMEOUT_MS)
+     });
+     if (!response.ok) {
+       const errorText = await response.text();
+@@ -2309,9 +2392,10 @@ var DiscordAdapter = class _DiscordAdapter {
+         status: response.status,
+         error: errorText
+       });
+-      throw new NetworkError(
+-        "discord",
+-        `Discord API error: ${response.status} ${errorText}`,
++      throw discordNetworkError(
++        "Discord API error",
++        response,
++        errorText,
+         new DiscordApiError(response.status, errorText)
+       );
+     }
+@@ -2372,7 +2456,7 @@ var DiscordAdapter = class _DiscordAdapter {
+         GatewayIntentBits.GuildMessageReactions,
+         GatewayIntentBits.DirectMessageReactions
+       ],
+-      partials: [Partials.Channel]
++      partials: [Partials.Channel, Partials.Message, Partials.Reaction, Partials.User]
+     });
+     let isShuttingDown = false;
+     if (webhookUrl) {
+@@ -2429,10 +2513,10 @@ var DiscordAdapter = class _DiscordAdapter {
+     try {
+       await client.login(await this.resolveBotToken());
+       await new Promise((resolve) => {
+-        const timeout = setTimeout(resolve, durationMs);
++        const timeout = abortSignal ? void 0 : setTimeout(resolve, durationMs);
+         if (abortSignal) {
+           if (abortSignal.aborted) {
+-            clearTimeout(timeout);
++            if (timeout) clearTimeout(timeout);
+             resolve();
+             return;
+           }
+@@ -2442,16 +2526,14 @@ var DiscordAdapter = class _DiscordAdapter {
+               this.logger.info(
+                 "Discord Gateway listener received abort signal (new listener started)"
+               );
+-              clearTimeout(timeout);
++              if (timeout) clearTimeout(timeout);
+               resolve();
+             },
+             { once: true }
+           );
+         }
+       });
+-      this.logger.info(
+-        "Discord Gateway listener duration elapsed, disconnecting"
+-      );
++      this.logger.info("Discord Gateway listener stopping");
+     } catch (error) {
+       this.logger.error("Discord Gateway listener error", {
+         error: String(error)
+@@ -2503,6 +2585,32 @@ var DiscordAdapter = class _DiscordAdapter {
+       });
+       await this.handleGatewayMessage(message, isMentioned);
+     });
++    client.on(Events.MessageUpdate, async (previousMessage, nextMessage) => {
++      if (isShuttingDown()) {
++        this.logger.debug("Ignoring message update - Gateway is shutting down");
++        return;
++      }
++      try {
++        const message = nextMessage.partial ? await nextMessage.fetch() : nextMessage;
++        if (message.author.bot) return;
++        await this.handleGatewayMessageUpdated(
++          message,
++          previousMessage.partial ? void 0 : previousMessage
++        );
++      } catch (error) {
++        this.logger.error("Error handling Gateway message update", {
++          error: String(error),
++          messageId: nextMessage.id
++        });
++      }
++    });
++    client.on(Events.MessageDelete, async (message) => {
++      if (isShuttingDown()) {
++        this.logger.debug("Ignoring message delete - Gateway is shutting down");
++        return;
++      }
++      await this.handleGatewayMessageDeleted(message);
++    });
+     client.on(Events.InteractionCreate, async (interaction) => {
+       if (isShuttingDown()) {
+         this.logger.debug("Ignoring interaction - Gateway is shutting down");
+@@ -2526,26 +2634,24 @@ var DiscordAdapter = class _DiscordAdapter {
+         this.logger.debug("Ignoring reaction - Gateway is shutting down");
+         return;
+       }
+-      if (user.bot) {
+-        this.logger.debug("Ignoring reaction from bot", {
+-          userId: user.id,
+-          isMe: user.id === client.user?.id
++      await this.processGatewayWithRetry(async () => {
++        const resolvedReaction = reaction.partial ? await reaction.fetch() : reaction;
++        const resolvedUser = user.partial ? await user.fetch() : user;
++        if (resolvedUser.bot) {
++          this.logger.debug("Ignoring reaction from bot", {
++            userId: resolvedUser.id,
++            isMe: resolvedUser.id === client.user?.id
++          });
++          return;
++        }
++        this.logger.info("Discord Gateway reaction added", {
++          emoji: resolvedReaction.emoji.name,
++          messageId: resolvedReaction.message.id,
++          channelId: resolvedReaction.message.channelId,
++          userId: resolvedUser.id
+         });
+-        return;
+-      }
+-      this.logger.info("Discord Gateway reaction added", {
+-        emoji: reaction.emoji.name,
+-        messageId: reaction.message.id,
+-        channelId: reaction.message.channelId,
+-        userId: user.id
+-      });
+-      if (user.username) {
+-        await this.handleGatewayReaction(
+-          reaction,
+-          user,
+-          true
+-        );
+-      }
++        await this.handleGatewayReaction(resolvedReaction, resolvedUser, true);
++      }, { event: "reaction_add", messageId: reaction.message.id });
+     });
+     client.on(Events.MessageReactionRemove, async (reaction, user) => {
+       if (isShuttingDown()) {
+@@ -2554,26 +2660,24 @@ var DiscordAdapter = class _DiscordAdapter {
+         );
+         return;
+       }
+-      if (user.bot) {
+-        this.logger.debug("Ignoring reaction removal from bot", {
+-          userId: user.id,
+-          isMe: user.id === client.user?.id
++      await this.processGatewayWithRetry(async () => {
++        const resolvedReaction = reaction.partial ? await reaction.fetch() : reaction;
++        const resolvedUser = user.partial ? await user.fetch() : user;
++        if (resolvedUser.bot) {
++          this.logger.debug("Ignoring reaction removal from bot", {
++            userId: resolvedUser.id,
++            isMe: resolvedUser.id === client.user?.id
++          });
++          return;
++        }
++        this.logger.info("Discord Gateway reaction removed", {
++          emoji: resolvedReaction.emoji.name,
++          messageId: resolvedReaction.message.id,
++          channelId: resolvedReaction.message.channelId,
++          userId: resolvedUser.id
+         });
+-        return;
+-      }
+-      this.logger.info("Discord Gateway reaction removed", {
+-        emoji: reaction.emoji.name,
+-        messageId: reaction.message.id,
+-        channelId: reaction.message.channelId,
+-        userId: user.id
+-      });
+-      if (user.username) {
+-        await this.handleGatewayReaction(
+-          reaction,
+-          user,
+-          false
+-        );
+-      }
++        await this.handleGatewayReaction(resolvedReaction, resolvedUser, false);
++      }, { event: "reaction_remove", messageId: reaction.message.id });
+     });
+   }
+   /**
+@@ -2629,33 +2733,96 @@ var DiscordAdapter = class _DiscordAdapter {
+       discordThreadId = channelId;
+       parentChannelId = message.channel.parentId;
+     }
+-    if (!discordThreadId && isMentioned) {
+-      try {
+-        const newThread = await this.createDiscordThread(channelId, message.id);
+-        discordThreadId = newThread.id;
+-        this.logger.debug("Created Discord thread for incoming mention", {
+-          channelId,
+-          messageId: message.id,
+-          threadId: newThread.id
+-        });
+-      } catch (error) {
+-        this.logger.error("Failed to create Discord thread for mention", {
+-          error: String(error),
+-          messageId: message.id
+-        });
++    if (!discordThreadId && isMentioned && guildId !== "@me") {
++      if (this.shouldCreateThread) {
++        let admitted = false;
++        const checked = await this.processGatewayWithRetry(
++          async () => {
++            admitted = await this.shouldCreateThread({
++              guildId,
++              channelId,
++              messageId: message.id,
++              userId: message.author.id,
++              threadId: this.encodeThreadId({
++                guildId,
++                channelId,
++                threadId: message.id
++              }),
++              message: this.gatewayChatMessage(
++                message,
++                this.encodeThreadId({
++                  guildId,
++                  channelId,
++                  threadId: message.id
++                }),
++                true
++              )
++            });
++          },
++          { event: "thread_admission", messageId: message.id }
++        );
++        if (!checked || !admitted) return;
++      }
++      let newThread;
++      const created = await this.processGatewayWithRetry(
++        async () => {
++          newThread = await this.ensureRootThread(
++            channelId,
++            message.id,
++            message.content
++          );
++        },
++        { event: "thread_create", messageId: message.id }
++      );
++      if (!created || !newThread) {
++        return;
+       }
++      discordThreadId = newThread.id;
++      this.logger.debug("Created Discord thread for incoming mention", {
++        channelId,
++        messageId: message.id,
++        threadId: newThread.id
++      });
+     }
+     const threadId = this.encodeThreadId({
+       guildId,
+       channelId: parentChannelId,
+       threadId: discordThreadId
+     });
++    const chatMessage = this.gatewayChatMessage(message, threadId, isMentioned);
++    await this.processGatewayWithRetry(
++      () => this.chat.handleIncomingMessage(this, threadId, chatMessage),
++      { event: "message", messageId: message.id }
++    );
++  }
++  gatewayThreadId(message) {
++    const guildId = message.guildId || "@me";
++    const channelId = message.channelId;
++    const isInThread = message.channel?.isThread?.() === true;
++    // A public thread created from a guild message has the same snowflake as
++    // its root message, while that root remains physically in the parent
++    // channel. Reconstruct the canonical thread for later root edits/deletes.
++    // Direct messages stay linear and therefore omit a synthetic thread id.
++    const discordThreadId = isInThread ? channelId : message.guildId ? message.id : void 0;
++    const parentChannelId = isInThread && message.channel?.parentId ? message.channel.parentId : channelId;
++    return this.encodeThreadId({
++      guildId,
++      channelId: parentChannelId,
++      threadId: discordThreadId
++    });
++  }
++  gatewayThreadName(content) {
++    const withoutMentions = String(content ?? "").replace(/<@!?\d+>/g, " ");
++    const normalized = withoutMentions.replace(/\s+/g, " ").trim();
++    return Array.from(normalized || `Task with ${this.userName}`).slice(0, 100).join("");
++  }
++  gatewayChatMessage(message, threadId, isMentioned = false) {
+     const content = flatten(
+       message.content,
+       message.attachments.values(),
+       message.messageSnapshots?.values() ?? []
+     );
+-    const chatMessage = new Message({
++    return new Message({
+       id: message.id,
+       threadId,
+       text: content.text,
+@@ -2684,8 +2851,8 @@ var DiscordAdapter = class _DiscordAdapter {
+       ),
+       raw: {
+         id: message.id,
+-        channel_id: channelId,
+-        guild_id: guildId,
++        channel_id: message.channelId,
++        guild_id: message.guildId || "@me",
+         content: message.content,
+         author: {
+           id: message.author.id,
+@@ -2696,14 +2863,76 @@ var DiscordAdapter = class _DiscordAdapter {
+       // Add isMention flag for the chat handlers
+       isMention: isMentioned
+     });
+-    try {
+-      await this.chat.handleIncomingMessage(this, threadId, chatMessage);
+-    } catch (error) {
+-      this.logger.error("Error handling Gateway message", {
+-        error: String(error),
+-        messageId: message.id
+-      });
++  }
++  async handleGatewayMessageUpdated(message, previousMessage) {
++    if (!this.chat) return;
++    const threadId = this.gatewayThreadId(message);
++    const next = this.gatewayChatMessage(message, threadId);
++    const previous = previousMessage?.author ? this.gatewayChatMessage(previousMessage, threadId) : void 0;
++    await this.processGatewayWithRetry(
++      () => this.chat.processMessageUpdated({
++        adapter: this,
++        threadId,
++        message: next,
++        previousMessage: previous
++      }),
++      { event: "message_update", messageId: message.id }
++    );
++  }
++  async handleGatewayMessageDeleted(message) {
++    if (!this.chat) return;
++    const threadId = this.gatewayThreadId(message);
++    const previousMessage = !message.partial && message.author ? this.gatewayChatMessage(message, threadId) : void 0;
++    await this.processGatewayWithRetry(
++      () => this.chat.processMessageDeleted({
++        adapter: this,
++        platform: "discord",
++        channelId: this.channelIdFromThreadId(threadId),
++        threadId,
++        messageId: message.id,
++        deletedAt: /* @__PURE__ */ new Date(),
++        previousMessage,
++        raw: {
++          id: message.id,
++          channel_id: message.channelId,
++          guild_id: message.guildId || "@me"
++        }
++      }),
++      { event: "message_delete", messageId: message.id }
++    );
++  }
++  async processGatewayWithRetry(operation, context) {
++    const attempts = 3;
++    let nextDelayMs = 0;
++    for (let attempt = 0; attempt < attempts; attempt += 1) {
++      if (nextDelayMs) {
++        await new Promise((resolve) => setTimeout(resolve, nextDelayMs));
++      }
++      try {
++        await operation();
++        return true;
++      } catch (error) {
++        if (attempt + 1 < attempts) {
++          const retryAfter = error && typeof error === "object" && "retryAfter" in error && typeof error.retryAfter === "number" && Number.isFinite(error.retryAfter) && error.retryAfter > 0 ? error.retryAfter : void 0;
++          const retryAfterHeader = error && typeof error === "object" && "response" in error && error.response && typeof error.response === "object" && "headers" in error.response && error.response.headers instanceof Headers ? Number(error.response.headers.get("retry-after")) : NaN;
++          const retryAfterSeconds = retryAfter ?? (Number.isFinite(retryAfterHeader) && retryAfterHeader > 0 ? retryAfterHeader : void 0);
++          nextDelayMs = retryAfterSeconds !== void 0 ? Math.min(6e4, Math.ceil(retryAfterSeconds * 1e3)) : attempt === 0 ? 100 : 500;
++          this.logger.warn("Retrying Discord Gateway event after processing error", {
++            ...context,
++            attempt: attempt + 1,
++            retryAfterMs: nextDelayMs,
++            error: String(error)
++          });
++          continue;
++        }
++        this.logger.error("Discord Gateway event processing failed", {
++          ...context,
++          attempts,
++          error: String(error)
++        });
++      }
+     }
++    return false;
+   }
+   /**
+    * Handle a reaction received via the Gateway WebSocket.
+@@ -2716,7 +2945,7 @@ var DiscordAdapter = class _DiscordAdapter {
+     const channelId = reaction.message.channelId;
+     const isInThread = reaction.message.channel?.isThread?.();
+     let parentChannelId = channelId;
+-    let discordThreadId;
++    let discordThreadId = !isInThread && reaction.message.guildId ? reaction.message.id : void 0;
+     if (isInThread && reaction.message.channel?.parentId) {
+       discordThreadId = channelId;
+       parentChannelId = reaction.message.channel.parentId;
+@@ -2751,7 +2980,7 @@ var DiscordAdapter = class _DiscordAdapter {
+         user_id: user.id
+       }
+     };
+-    this.chat.processReaction(reactionEvent);
++    await this.chat.handleReactionEvent(reactionEvent);
+   }
+   /**
+    * Derive channel ID from a Discord thread ID.

@@ -60,6 +60,7 @@ const method = (
 });
 const chatProviderName = (provider) =>
   ({
+    discord: "Discord",
     github: "GitHub",
     "microsoft-teams": "Microsoft Teams",
     slack: "Slack",
@@ -350,7 +351,7 @@ const apps = [
         field("clientSecret", "Client secret", "Paste the client-secret value"),
       ],
       ["team", "channel", "chat"],
-      "Register one single-tenant Azure Bot, then create a Teams app whose manifest enables personal, team, and groupchat bot scopes and the ChannelMessage.Read.Group and ChatMessage.Read.Chat resource-specific permissions. Install it in each standard channel or chat where it may work.",
+      "Use a Microsoft 365 work or school organization where you can register an Entra app, create a single-tenant Azure Bot, and upload or install a Teams app. Personal or free Teams accounts at teams.live.com cannot complete this setup. Enable personal, team, and groupchat bot scopes and the ChannelMessage.Read.Group and ChatMessage.Read.Chat resource-specific permissions. Install the app in each standard channel or chat where it may work.",
       {
         register: "https://dev.teams.microsoft.com/apps",
         docs: "https://learn.microsoft.com/en-us/microsoftteams/platform/bots/how-to/create-a-bot-for-teams",
@@ -372,6 +373,36 @@ const apps = [
       {
         register: "https://t.me/BotFather",
         docs: "https://core.telegram.org/bots/tutorial",
+      },
+    ),
+  ],
+  [
+    "discord",
+    "Discord",
+    "Let people start and continue Paperclip work with an agent from Discord.",
+    "communication",
+    "discord.com",
+    ["https://discord.com/*"],
+    channelMethod(
+      "discord",
+      [
+        field("botToken", "Bot token", "Paste the Discord bot token"),
+        {
+          ...field("applicationId", "Application ID", "123456789012345678"),
+          type: "text",
+          secret: false,
+        },
+        {
+          ...field("guildId", "Server ID", "123456789012345678"),
+          type: "text",
+          secret: false,
+        },
+      ],
+      ["channel"],
+      "Create one dedicated Discord application and bot, enable the Message Content intent, install it in one server with the documented bot permissions, then connect its bot token, Application ID, and server ID. Paperclip starts one Discord thread per root bot mention and keeps the linked Paperclip task authoritative.",
+      {
+        register: "https://discord.com/developers/applications",
+        docs: "https://discord.com/developers/docs/quick-start/getting-started",
       },
     ),
   ],

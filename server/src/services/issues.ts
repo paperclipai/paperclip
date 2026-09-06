@@ -112,6 +112,7 @@ import {
   type ParsedExecutionWorkspaceMode,
 } from "./execution-workspace-policy.js";
 import { mergeExecutionWorkspaceConfig } from "./execution-workspaces.js";
+import { hasChatRunOwnedProviderInteraction } from "./chat-interaction-arbitration.js";
 import {
   buildInitialIssueMonitorFields,
   normalizeIssueExecutionPolicy,
@@ -127,6 +128,8 @@ import { getRunLogStore } from "./run-log-store.js";
 import { getDefaultCompanyGoal } from "./goals.js";
 import { assertAssignableAgent } from "./agent-assignability.js";
 import {
+  CHAT_RUN_PRESENTATION_AUTHORIZATION_REASON,
+  isExternalChatContinuationPresentationContext,
   LEGACY_WITHHELD_RUN_COMMENT,
   projectHistoricalHeartbeatRunComment,
 } from "./heartbeat-run-summary.js";
@@ -530,15 +533,18 @@ type DerivedIssueCommentAttribution = {
  * Resolve a `created_by_run_id` safe for the heartbeat_runs FK; returns null for
  * missing/invalid ids so an unknown run id never 500s a comment insert.
  */
-async function resolveCommentCreatedByRunId(
+async function resolveCommentCreatedByRun(
   dbOrTx: any,
   companyId: string,
   runId: string | null | undefined,
-): Promise<string | null> {
+): Promise<{ id: string; contextSnapshot: unknown } | null> {
   const normalized = typeof runId === "string" ? runId.trim() : "";
   if (!normalized || !isUuidLike(normalized)) return null;
   const existing = await dbOrTx
-    .select({ id: heartbeatRuns.id })
+    .select({
+      id: heartbeatRuns.id,
+      contextSnapshot: heartbeatRuns.contextSnapshot,
+    })
     .from(heartbeatRuns)
     .where(
       and(
@@ -546,8 +552,11 @@ async function resolveCommentCreatedByRunId(
         eq(heartbeatRuns.companyId, companyId),
       ),
     )
-    .then((rows: Array<{ id: string }>) => rows[0] ?? null);
-  return existing?.id ?? null;
+    .then(
+      (rows: Array<{ id: string; contextSnapshot: unknown }>) =>
+        rows[0] ?? null,
+    );
+  return existing;
 }
 
 export type ChatPublicationBinding = {
@@ -11632,11 +11641,12 @@ export function issueService(db: Db) {
         .parse(options?.presentation ?? null);
       const createdAt = options?.createdAt ? new Date(options.createdAt) : null;
       // Invalid/stale run ids must not 500 the insert — null out unknowns.
-      const createdByRunId = await resolveCommentCreatedByRunId(
+      const createdByRun = await resolveCommentCreatedByRun(
         dbOrTx,
         issue.companyId,
         actor.runId,
       );
+      const createdByRunId = createdByRun?.id ?? null;
       if (actor.runId && !createdByRunId) {
         logger.warn(
           { issueId, companyId: issue.companyId, runId: actor.runId },
@@ -11833,12 +11843,33 @@ export function issueService(db: Db) {
       // recovery, automation, and ordinary internal agent comments stay in
       // Paperclip even while a bound conversation is active.
       if (authorType === "agent" && isExplicitExternalAgentComment(metadata)) {
-        const bindings = await resolveChatOriginPublicationBindings(
-          dbOrTx,
-          issue.companyId,
-          issueId,
-          createdByRunId,
-        );
+        // A dedicated external-interaction continuation may perform ordinary
+        // Paperclip lifecycle writes before its adapter result is finalized.
+        // Those writes remain internal: only heartbeat's selected final
+        // presentation may consume this provider response slot.
+        const continuationFinalOwnsProviderReply =
+          createdByRun !== null &&
+          isExternalChatContinuationPresentationContext(
+            createdByRun.contextSnapshot,
+          ) &&
+          metadata?.authorizationReason !==
+            CHAT_RUN_PRESENTATION_AUTHORIZATION_REASON;
+        const interactionOwnsProviderReply = createdByRunId
+          ? await hasChatRunOwnedProviderInteraction(dbOrTx, {
+              companyId: issue.companyId,
+              issueId,
+              runId: createdByRunId,
+            })
+          : false;
+        const bindings =
+          interactionOwnsProviderReply || continuationFinalOwnsProviderReply
+            ? []
+            : await resolveChatOriginPublicationBindings(
+                dbOrTx,
+                issue.companyId,
+                issueId,
+                createdByRunId,
+              );
         const publicationCreatedAt = new Date();
         for (const binding of bindings) {
           await dbOrTx

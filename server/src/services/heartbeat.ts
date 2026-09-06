@@ -206,6 +206,7 @@ import {
   HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS,
   HEARTBEAT_RUN_SAFE_RESULT_JSON_MAX_BYTES,
   hasAcceptedSemanticResult,
+  isExternalChatContinuationPresentationContext,
   mergeHeartbeatRunResultJson,
   readCompletedAssistantMessageCandidate,
   resolveHeartbeatRunResponse,
@@ -6950,6 +6951,7 @@ export async function buildPaperclipWakePayload(input: {
           .where(
             and(
               eq(issueComments.companyId, input.companyId),
+              issueId ? eq(issueComments.issueId, issueId) : undefined,
               inArray(issueComments.id, commentIds),
             ),
           );
@@ -7107,6 +7109,13 @@ export async function buildPaperclipWakePayload(input: {
   const interactionStatus = readNonEmptyString(
     input.contextSnapshot.interactionStatus,
   );
+  const interactionContinuationSource = readNonEmptyString(
+    input.contextSnapshot.source,
+  );
+  const externalInteractionContinuation =
+    (interactionStatus === "answered" || interactionStatus === "accepted") &&
+    (input.contextSnapshot.externalChatContinuation === true ||
+      interactionContinuationSource === "external_chat.interaction.resolve");
   const checkboxSelection = parseObject(
     input.contextSnapshot.checkboxSelection,
   );
@@ -7244,6 +7253,7 @@ export async function buildPaperclipWakePayload(input: {
         : null,
     interactionKind,
     interactionStatus,
+    externalInteractionContinuation,
     checkboxSelection:
       Object.keys(checkboxSelection).length > 0 ? checkboxSelection : null,
     checkedOutByHarness:
@@ -22153,6 +22163,10 @@ export function heartbeatService(
               resultJson: persistedResultJson,
               existingComment: existingRunComment,
               finalAgentMessage,
+              preferFinalResponseOverExistingComment:
+                isExternalChatContinuationPresentationContext(
+                  livenessRun.contextSnapshot,
+                ),
             });
             let presentationDecision: RunPresentationDecision =
               resolved.decision;
@@ -25874,7 +25888,22 @@ export function heartbeatService(
     resultJson?: Record<string, unknown>;
     eventMessage?: string;
     eventPayload?: Record<string, unknown>;
+    /** Per-call graceful process shutdown window, bounded to a safe range. */
+    terminationGraceMs?: number;
+    /** Caller is immediately scheduling an explicit successor path. */
+    suppressImmediateRecovery?: boolean;
   };
+
+  function cancellationTerminationGraceMs(
+    configuredGraceSec: number,
+    requestedGraceMs: number | undefined,
+  ) {
+    const configuredGraceMs = Math.max(1, configuredGraceSec) * 1000;
+    if (requestedGraceMs === undefined || !Number.isFinite(requestedGraceMs)) {
+      return configuredGraceMs;
+    }
+    return Math.max(100, Math.min(30_000, Math.trunc(requestedGraceMs)));
+  }
 
   async function cancelRunInternal(
     runId: string,
@@ -25914,7 +25943,10 @@ export function heartbeatService(
         await terminateHeartbeatRunProcess({
           pid: running.child.pid,
           processGroupId: running.processGroupId,
-          graceMs: Math.max(1, running.graceSec) * 1000,
+          graceMs: cancellationTerminationGraceMs(
+            running.graceSec,
+            options.terminationGraceMs,
+          ),
         });
       }
     } finally {
@@ -25928,39 +25960,44 @@ export function heartbeatService(
             parseObject(current?.resultJson),
           )
         : {};
-    const cancelled = await setRunStatus(run.id, "cancelled", {
-      finishedAt,
-      error: reason,
-      errorCode,
-      ...(resultJson || Object.keys(persistedCancellationResult).length > 0
-        ? {
-            resultJson: {
-              ...persistedCancellationResult,
-              ...(resultJson ?? {}),
-              // The native cancellation helper may have advanced a durable
-              // pending intent to its acknowledged state after `run` was
-              // first read. Never let that stale snapshot overwrite the
-              // authoritative post-dispatch acknowledgement.
-              ...(Object.hasOwn(
-                persistedCancellationResult,
-                "nativeCancellation",
-              )
-                ? {
-                    nativeCancellation:
-                      persistedCancellationResult.nativeCancellation,
-                  }
-                : {}),
-            },
-          }
-        : {}),
-    });
+    const cancellation = await setRunStatusFromLive(
+      run.id,
+      "cancelled",
+      [...CANCELLABLE_HEARTBEAT_RUN_STATUSES],
+      {
+        finishedAt,
+        error: reason,
+        errorCode,
+        ...(resultJson || Object.keys(persistedCancellationResult).length > 0
+          ? {
+              resultJson: {
+                ...persistedCancellationResult,
+                ...(resultJson ?? {}),
+                // The native cancellation helper may have advanced a durable
+                // pending intent to its acknowledged state after `run` was
+                // first read. Never let that stale snapshot overwrite the
+                // authoritative post-dispatch acknowledgement.
+                ...(Object.hasOwn(
+                  persistedCancellationResult,
+                  "nativeCancellation",
+                )
+                  ? {
+                      nativeCancellation:
+                        persistedCancellationResult.nativeCancellation,
+                    }
+                  : {}),
+              },
+            }
+          : {}),
+      },
+    );
+    const cancelled = cancellation.run;
 
-    await setWakeupStatus(run.wakeupRequestId, "cancelled", {
-      finishedAt,
-      error: reason,
-    });
-
-    if (cancelled) {
+    if (cancellation.updated && cancelled) {
+      await setWakeupStatus(run.wakeupRequestId, "cancelled", {
+        finishedAt,
+        error: reason,
+      });
       await appendRunEvent(cancelled, {
         eventType: "lifecycle",
         stream: "system",
@@ -25968,13 +26005,14 @@ export function heartbeatService(
         message: options.eventMessage ?? "run cancelled",
         ...(options.eventPayload ? { payload: options.eventPayload } : {}),
       });
-      await releaseIssueExecutionAndPromote(cancelled);
+      await releaseIssueExecutionAndPromote(cancelled, {
+        suppressImmediateRecovery: options.suppressImmediateRecovery,
+      });
+      await finalizeAgentStatus(run.agentId, "cancelled", undefined, {
+        wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run),
+      });
+      await startNextQueuedRunForAgent(run.agentId);
     }
-
-    await finalizeAgentStatus(run.agentId, "cancelled", undefined, {
-      wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run),
-    });
-    await startNextQueuedRunForAgent(run.agentId);
     return cancelled;
   }
 

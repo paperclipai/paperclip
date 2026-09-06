@@ -58,6 +58,8 @@ describe("chat connector UI contract", () => {
       "botToken",
       "signingSecret",
       "appId",
+      "applicationId",
+      "guildId",
       "clientId",
       "tenantId",
       "clientSecret",
@@ -69,6 +71,11 @@ describe("chat connector UI contract", () => {
     expect(setup).toContain("Create or connect a GitHub App");
     expect(setup).toContain("create a single-tenant app registration");
     expect(setup).toContain("Create a bot with BotFather");
+    expect(setup).toContain("Create one dedicated Discord application");
+    expect(setup).toContain("enable Message Content Intent");
+    expect(setup).toMatch(/Create\s+Public Threads/);
+    expect(setup).toContain("permissions=309237763136&scope=bot");
+    expect(setup).not.toContain("applications.commands");
     expect(setup).toContain("Generate webhook secret");
     expect(setup).toContain("will not show it again");
     expect(setup).toContain('params.get("reconnect") === "1"');

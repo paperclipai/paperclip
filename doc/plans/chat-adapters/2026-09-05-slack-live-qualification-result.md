@@ -2,6 +2,16 @@
 
 > **Status: broad current-branch live evidence plus historical core-smoke evidence, not full release qualification.** The current runs cover channel roots, DMs, FIFO follow-ups, reactions, edits, pause/resume, the registered Slack command, a command-created thread, native inbound and outbound files, disabled-resource enforcement and recovery, an interleaved command/status/final race, and a complete native question-to-continuation round trip. Slack is still missing the complete governance, failure-injection, reinstall, and cleanup matrix.
 
+## 2026-09-06 answer-handoff and channel-root retest
+
+The later release-candidate working tree retained endpoint `2782e758-8e1e-47e3-a5aa-6a8359b1c23c` and repaired all three Slack callback surfaces after the development tunnel changed. Slack accepted the current Events API, Interactivity, and slash-command URLs, and delayed-event recovery remained enabled. This is useful current-provider evidence, but the temporary Cloudflare hostname is not a production ingress qualification; a stable deployment must keep a durable HTTPS origin across restarts.
+
+The first DM answer retest (`CHA-82`) exposed a real handoff delay: an external answer stopped only native-mode source runs, so the legacy source continued until cancellation fallback and the continuation did not begin for about 23.5 seconds. The fix now cancels both native and legacy question-source runs and uses a compare-and-set terminal write so cancellation cannot overwrite a genuinely completed run.
+
+The post-fix DM retest (`CHA-84`) showed the source run cancelled about 61 ms after the answer publication was created and the dedicated continuation queued about 93 ms after cancellation. Slack rendered exact `SLACK-HANDOFF8-Violet` about 20.8 seconds after the click; all five publications completed in one attempt, the task finished, and no generic or late duplicate followed. That elapsed time includes agent execution and publication, while the measured control-plane handoff itself remained sub-100 ms.
+
+A separate enabled-channel root (`CHA-83`) produced one native Slack thread and one Paperclip task, then returned exact `SLACK-CHANNEL-FINAL-0906` in that thread with no cross-publication. The provider reply appeared about three seconds after the root. A live `+1` add and remove each produced one processed reaction delivery in roughly 3–4 ms of server handling, with `attempts=1` and no error.
+
 ## 2026-09-06 current-build interactive and reaction closure
 
 The final live retest ran the uncommitted release-candidate working tree based on `77ad5383e` after restarting the server with the same instance home and the current public webhook URL:
@@ -10,6 +20,7 @@ The final live retest ran the uncommitted release-candidate working tree based o
 - A live question whose optional `allowOther` field was omitted initially degraded to a link-only card. The shared schema defines that field as optional, so omission must mean a closed question unless it is explicitly `true`. After the fix, the same natural request rendered native **Red** and **Blue** controls. Selecting **Red** changed the card to **Answered: Red**, scheduled one continuation, and produced exact provider-visible `SLACK-RETEST-Red`; the generic completion did not race or follow it.
 - A top-level DM reaction initially reached the Slack webhook but was discarded because the SDK supplied `slack:<DM>:<message-ts>` while Paperclip's linear DM binding is `slack:<DM>:`. The first fallback still chose the newest task generation and missed reactions on older linked messages. The final implementation resolves the exact owning generation through the durable message link, keeps the endpoint/reach/principal checks, and permits completed DM generations only for this audit-only event. A final live `+1` add and remove each produced one processed delivery; neither created a comment, task, run, wake, approval, or governed action.
 - Heartbeat's resolved final-assistant presentation is now externalized only when the run has an exact causal chat binding. Ordinary internal runs keep `internal_agent_write`; chat-origin and native-interaction continuation runs receive the narrow `allow_chat_run_presentation` reason. This closes the earlier continuation gap without exposing reasoning, tool traces, or logs.
+- When a chat-origin run creates a provider-visible native question or confirmation, that original prompt now consumes the run's external presentation slot. The run's meta-summary remains an internal Paperclip comment, the generic completion is suppressed, and only the distinct post-answer continuation may publish its final response. The rule keys on the exact source run and survives a fast-answer race.
 
 ## 2026-09-06 native file and action follow-up
 
@@ -27,7 +38,7 @@ The active endpoint `2782e758-8e1e-47e3-a5aa-6a8359b1c23c` added the following c
 - Slack accepted the manifest with reaction and lifecycle subscriptions. At `08:36:54Z`, one-attempt `group_left` delivery for `C0BUT55N9RV` marked the resource unavailable. At `08:37:33Z`, one-attempt `member_joined_channel` restored it, hydrated the label to `#pc-chat-live-0905b`, and preserved the operator's enabled choice. The self-removal subscription and label-preservation defects found here were fixed; this was not an account or permission gate.
 - Edits on `CHA-29` and `CHA-47` each produced one `message_updated` delivery and one internal system edit comment. Deleting the source message for `CHA-64` at `08:39:16Z` produced one one-attempt delivery and one internal deletion comment; deleted content was not republished.
 - Repeated natural and slash-command DM generations worked. The latest natural DM, `CHA-67`, processed once at `08:42Z`, showed the receipt reaction, and returned exact final `slack-dm-live-final-0906` in about two seconds. An idle `status` returned `No task active` without creating a task.
-- Inbound attachment proof includes the earlier 67-byte `text/plain` file on `CHA-52` and the current 41-byte file on `CHA-64`; both were persisted and read successfully, and the latter returned exact marker `paperclip-live-telegram-media-proof-0906`. No live outbound Slack file upload was qualified.
+- Inbound attachment proof includes the earlier 67-byte `text/plain` file on `CHA-52` and the current 41-byte file on `CHA-64`; both were persisted and read successfully, and the latter returned exact marker `paperclip-live-telegram-media-proof-0906`. The separate outbound proof remains `CHA-71`, where the explicitly bound Paperclip attachment reached Slack as a native file.
 - `CHA-42` received two replies 144 ms apart. The second run began only after the first succeeded, and each run retained its own coalesced placeholder/final message. Four reaction-add and four reaction-remove callbacks also processed once each.
 - Forty-five provider duplicate callbacks folded into 38 existing delivery rows without duplicate tasks or comments. All 97 earlier publications were `published`; all 44 runs after the isolation configuration succeeded. For the post-`05:00Z` sample, 24 processed inbound events averaged `0.702s` (`p50 0.781s`, `p95 1.146s`, maximum `1.646s`) and 25 publications averaged `0.488s` (`p50 0.315s`, `p95 1.103s`, maximum `1.127s`), all published.
 
@@ -112,7 +123,7 @@ A post-fix live retest at `04:58:32` sent `slack-no-empty-wake`. Paperclip admit
 
 ## Current local regression evidence
 
-- On the current verified working tree based on revision `77ad5383e`, the full chat-channel PostgreSQL integration suite passed 177/177 on a fresh migrated database.
+- On the current verified working tree based on revision `77ad5383e`, the full chat-channel PostgreSQL integration suite passed 183/183 on fresh migrated database `chat_adapters_test_final_20260906_0833`.
 - Focused shared tests passed 11/11, focused server tests passed 194/194, and focused UI tests passed 41/41.
 - The deterministic browser suite `tests/e2e/chat-adapters-ui.spec.ts` passed 4/4, and shared, database, server, and UI typechecks all passed.
 - These deterministic checks support the live continuation and reaction fixes but do not replace the remaining provider cases.

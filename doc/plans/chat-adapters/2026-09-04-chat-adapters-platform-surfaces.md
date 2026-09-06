@@ -5,7 +5,7 @@
 **Paperclip base:** `origin/master` at `8430bd897f01dd4b91e0970efffb71b97e5a2685`
 **Chat SDK snapshot:** `51322dde8f4aafd8a7fc7a20cbfd7ae45cafaa5c`
 **Viewer:** `index.html` in this directory
-**Generated wires:** 35 surfaces in `wireframes-v8/`
+**Generated wires:** 35 four-provider surfaces in `wireframes-v8/`; Discord is the current implementation addendum below
 **Current UI companion:** `2026-09-04-chat-adapters-ui-surfaces-v8.md`
 **Minimum setup specification:** `2026-09-04-chat-adapters-minimum-setup-v6.md`
 **Live browser acceptance:** `2026-09-04-chat-adapters-browser-e2e-runbook.md`
@@ -16,7 +16,7 @@ The shared product flow remains deliberately small:
 
 `/apps` → purpose only for a dual-purpose registry entry → choose one immutable agent → provider step-rail wizard → connected.
 
-The provider handoff may have several resumable phases because Slack, GitHub, Microsoft, and Telegram require different external actions. Each setup page shows only things the operator must click, choose, copy, paste, upload, run, or perform at the provider. The page body never repeats the selected agent and never describes Paperclip's automatic work or successful checks. Errors and missing prerequisites appear only when they occur.
+The provider handoff may have several resumable phases because Slack, GitHub, Microsoft Teams, Discord, and Telegram require different external actions. Each setup page shows only things the operator must click, choose, copy, paste, upload, run, or perform at the provider. The page body never repeats the selected agent and never describes Paperclip's automatic work or successful checks. Errors and missing prerequisites appear only when they occur.
 
 After connection, the existing connector detail shell provides provider-specific **Settings**, **Access**, **Conversations**, and **Activity** tabs. The read-only Overview tab is removed. Settings contains only destination reach that an operator can plausibly change. Task boundaries, provider identities, delivery, credentials, installation drift, and response capabilities are product behavior or contextual Activity repairs—not settings.
 
@@ -41,6 +41,7 @@ Conversations is only a cross-link list. Every row shows the external conversati
 | Slack           | Slack app installed to workspace/Grid org                               | Root message's Slack thread; stable DM conversation        | Root `@bot`; replies continue in bound thread | Native stream or post/edit, Block Kit, files, actions, modals, ephemeral |
 | GitHub          | GitHub App installation on selected repositories                        | Existing issue, PR conversation, or inline review thread   | `@bot` comment in allowed object              | GFM comment/reaction/edit; links for files and governed actions          |
 | Microsoft Teams | Entra/bot registration plus customer-owned Teams app installed to scope | Channel post/replies; stable DM or group-chat conversation | Direct mention by default                     | Post/edit output; Adaptive Cards/task modules; authenticated file links  |
+| Discord         | Discord application bot installed in one server                         | Created public thread; stable DM conversation              | Root `@bot`; replies continue in bound thread | Post/edit, embeds, buttons, reactions, native files                      |
 | Telegram        | BotFather bot token plus chat membership                                | Active DM/group binding or forum topic                     | DM message; group `@bot` or reply to bot      | Throttled post/edit, optional DM drafts, inline buttons, media           |
 
 ## 2. Slack
@@ -126,7 +127,7 @@ The required path is customer-owned and has two Paperclip screens around provide
 1. **Connect Teams app:** copy Paperclip's messaging endpoint; create the single-tenant Entra App, client secret, Azure Bot, and customer-owned Teams app in Microsoft's portals; apply the displayed bot scopes and resource-specific consent entries; then enter Application/Client ID, Directory/Tenant ID, and client secret in Paperclip.
 2. **Try Maya:** publish or upload the customer-owned Teams app according to tenant policy, install it in the intended scope, start a new channel post, mention Maya, and reply once beneath the post.
 
-Paperclip does not generate a Teams package or claim to create an install link. It provides an exact Entra, Azure Bot, Teams Developer Portal, and Teams upload field map plus a copyable block of the Paperclip-specific manifest fields. Teams Developer Portal or equivalent Microsoft tooling still owns the complete app metadata, icons, package, publication, approval, and installation. A future attended helper may automate some provider-owned registration steps, but it is optional and cannot gate the customer-owned path or release.
+Paperclip does not generate a Teams package or claim to create an install link. It provides an exact Entra, Azure Bot, Teams Developer Portal, and Teams upload field map plus a copyable block of the Paperclip-specific manifest fields. Teams Developer Portal or equivalent Microsoft tooling still owns the complete app metadata, icons, package, publication, approval, and installation. No provisioning helper is shipped or required.
 
 The basic setup does not request organization-wide Graph directory or chat history access. Public versus sovereign cloud and advanced identity are deployment/tenant concerns surfaced only when a real incompatibility occurs. Installation policy and Microsoft admin consent stay inside Microsoft's install experience.
 
@@ -151,7 +152,36 @@ RSC, Graph history/directory access, task boundaries, delivery, identity strateg
 
 The exact delivery of unmentioned replies in a bound Teams channel thread must be proven against the implementation SDK/manifest. If the bot cannot receive them without RSC, the UI must say **Mention Maya on each reply** or request resource-specific consent; it must not imply a subscription it does not have.
 
-## 5. Telegram
+## 5. Discord
+
+Discord uses the pinned Chat SDK Discord adapter through a long-lived Gateway client. It does not receive a public webhook and does not require an interactions public key because the current product has no Discord slash-command or modal surface.
+
+### Setup and external handoff
+
+The complete first-release path is a customer-owned bot:
+
+1. **Connect Discord bot:** create a dedicated application in Discord Developer Portal, copy its Application ID, enable Message Content Intent, enter the authorized Server ID, and paste the bot token write-only into Paperclip.
+2. **Install in Discord:** inspect and open Paperclip's server-pinned OAuth URL. It requests only the `bot` scope and permission integer `309237763136`; Administrator, Manage Server, and `applications.commands` are absent.
+3. **Try Maya:** enable one discovered text channel, post a root `@Maya` message, and reply once inside the public Discord thread Paperclip creates.
+
+Paperclip verifies that the token belongs to the declared Application ID, the privileged intent is enabled, the bot is installed in the declared server, and usable text channels have the required effective permissions. Application ID is globally unique across active endpoints, including endpoints that name different servers, because one native bot identity cannot represent multiple immutable Paperclip agents.
+
+### Post-connect settings
+
+- **Channels:** list text channels visible to the installed bot and let a Paperclip administrator enable a narrower subset. Newly visible channels remain disabled.
+- **Allow direct messages:** one on/off toggle, off by default. Guild threads and DM task generations never share a binding.
+- **Fixed behavior:** a root mention creates one public Discord thread and one Paperclip task; eligible replies continue inside it without another mention. A fresh unmentioned root is ignored.
+- **Activity repairs:** token rotation, lost server membership, missing Message Content Intent, missing effective channel permissions, Gateway retries, and rate-limit failures appear as contextual diagnostics rather than settings.
+
+There are no endpoint toggles for reactions, post/edit behavior, embeds, buttons, files, lifecycle edits/deletes, reconnect, or retry timing.
+
+### Runtime interaction model and current caveat
+
+Discord messages, reactions, interactions, edits, deletes, and partial reaction hydration enter through the Gateway and the same durable delivery/outbox boundary as webhook providers. Safe output uses bounded post/edit behavior; embeds and supported buttons are automatic; file downloads are bounded to reviewed Discord CDN hosts; numeric user IDs are the identity key; callbacks reauthorize against current Paperclip state. Gateway reconnect and provider `retry_after` timing are automatic.
+
+The pinned SDK currently creates a provider thread before Paperclip's resource/principal admission completes. A denied user or disabled channel can therefore leave an inert empty Discord thread even though Paperclip creates no task, acknowledgement, reply, or run. This remains a production-quality qualification gap and must be resolved or explicitly accepted with provider-visible evidence before Discord can be called stable. Multipart upload calls and unused Discord interaction REST helpers also sit outside the common REST deadline/status wrapper; they require live/fault-injection evidence before being relied on.
+
+## 6. Telegram
 
 The [pinned Chat SDK Telegram adapter](https://github.com/vercel/chat/blob/51322dde8f4aafd8a7fc7a20cbfd7ae45cafaa5c/packages/adapter-telegram/README.md) supports verified webhooks or polling, files/media, inline buttons, reactions, DMs, throttled post/edit streaming, and opt-in private-chat draft previews. Telegram documents the mutually exclusive [`setWebhook` and `getUpdates`](https://core.telegram.org/bots/api) delivery modes and how [privacy mode](https://core.telegram.org/bots/faq) limits group updates.
 
@@ -184,11 +214,11 @@ Allowed-user lists belong to Access. Task boundaries, BotFather privacy, deliver
 4. Paperclip validates the secret header or polling claim, deduplicates `update_id`, checks chat/user scope and authority, persists the turn, then sends typing/reaction and throttled progress.
 5. Inline callbacks contain a short opaque lookup key, not authority. Paperclip reauthorizes the principal; unsupported or governed actions receive normal text or DM plus an authenticated Paperclip link.
 
-## 6. Wireframe annotations
+## 7. Wireframe annotations
 
 The numbered red dashed marks are review annotations only, not proposed UI. The current viewer contains 14 minimum setup phases plus four provider management tabs; it contains no interaction-walkthrough pages. Every annotation and button consequence has an exact matching explanation beside the desktop/mobile pair in `index.html` and in `2026-09-04-chat-adapters-ui-surfaces-v8.md`; setup source data lives in `setup-wireframe-data-v6.mjs` and current management source data in `management-wireframe-data-v8.mjs`.
 
-## 7. Implementation acceptance points exposed by the wires
+## 8. Implementation acceptance points exposed by the wires
 
 - Provider setup has a persistent step rail and can be paused when external admin action is required, then resumed without creating a second endpoint.
 - The selected agent cannot change. Connecting another agent always creates another endpoint.

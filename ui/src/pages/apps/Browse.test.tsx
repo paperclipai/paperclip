@@ -210,6 +210,7 @@ describe("Connectors landing page", () => {
         ),
       ).map((row) => row.dataset.appSlug),
     ).toEqual([
+      "discord",
       "github",
       "gmail",
       "jira",

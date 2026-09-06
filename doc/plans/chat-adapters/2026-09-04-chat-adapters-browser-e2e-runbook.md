@@ -6,7 +6,7 @@
 
 **Paperclip source:** `codex/chat-adapters`; every execution records the exact tested SHA and contemporaneous `origin/master` revision in its qualification result. The runbook itself is revision-independent and must not be read as proof for whichever commit happens to be current.
 
-**Applies to:** Slack, GitHub, Microsoft Teams, and Telegram chat connections
+**Applies to:** Slack, GitHub, Discord, Microsoft Teams, and Telegram chat connections
 
 **Companion plans:** [architecture](./2026-09-03-chat-adapters-architecture.md), [minimum setup](./2026-09-04-chat-adapters-minimum-setup-v6.md), [platform behavior](./2026-09-04-chat-adapters-platform-surfaces.md), and [UI surfaces v8](./2026-09-04-chat-adapters-ui-surfaces-v8.md)
 
@@ -18,14 +18,29 @@ This document is the browser acceptance contract during implementation and the s
 
 The required setup path in this runbook is deliberately the path the current branch can execute. Optional provisioning paths become blocking only after they ship:
 
-| Provider        | Required executable setup                                                                                                | Conditional setup, test only after it ships     |
-| --------------- | ------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------- |
-| Slack           | Customer-owned Slack app created from Paperclip's manifest; Bot User OAuth Token and Signing Secret entered once         | Managed **Add to Slack** OAuth installation     |
-| GitHub          | Customer-owned GitHub App; Paperclip-generated webhook secret copied to GitHub, then App ID and private key entered once | GitHub App Manifest create-and-return exchange  |
-| Microsoft Teams | Customer-owned single-tenant Entra app, Azure Bot, and Teams app; client ID, tenant ID, and client secret entered once   | Optional future Teams Developer CLI/helper flow |
-| Telegram        | BotFather bot token entered once                                                                                         | Managed bot provisioning                        |
+| Provider        | Required executable setup                                                                                                | Non-shipped convenience                        |
+| --------------- | ------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------- |
+| Slack           | Customer-owned Slack app created from Paperclip's manifest; Bot User OAuth Token and Signing Secret entered once         | Managed **Add to Slack** OAuth installation    |
+| GitHub          | Customer-owned GitHub App; Paperclip-generated webhook secret copied to GitHub, then App ID and private key entered once | GitHub App Manifest create-and-return exchange |
+| Discord         | Customer-owned Discord bot; bot token, Application ID, and Server ID entered once; direct Gateway transport              | None                                           |
+| Microsoft Teams | Customer-owned single-tenant Entra app, Azure Bot, and Teams app; client ID, tenant ID, and client secret entered once   | None                                           |
+| Telegram        | BotFather bot token entered once                                                                                         | None                                           |
 
-Direct public HTTPS webhooks are the required transport. A private-instance relay, Slack Socket Mode, and Telegram polling are separate conditional deployment tests; none is a choice in the endpoint wizard.
+Customer-owned credentials are the complete first-release path for every provider. The two named managed exchanges are future conveniences, not shipped setup controls, release dependencies, or instructions the operator should search for in the current UI.
+
+Direct verified webhooks are the required transport for Slack, GitHub, Teams, and Telegram. Discord uses a direct outbound Gateway connection and therefore does not require a public Paperclip URL. A private-instance relay, Slack Socket Mode, and Telegram polling are separate conditional deployment tests; none is a choice in the endpoint wizard.
+
+A webhook provider is not deployment-qualified merely because it passed through a temporary tunnel. Live development may use an ephemeral HTTPS tunnel to find product defects, but stable release evidence requires a durable public ingress origin whose callback URLs survive process restarts and whose Paperclip secrets master key is preserved with the instance.
+
+### Current qualification snapshot — 2026-09-06
+
+- **Slack:** broad current-working-tree live evidence covers one-root/one-thread/one-task behavior, DM answer continuation, ordered follow-ups, exact final presentation, reaction add/remove, lifecycle edits/deletes, files, pause/resume, and disabled-resource recovery. It is not a complete S1–S7 pass; governance, injected ambiguous delivery, reinstall, and cleanup remain incomplete.
+- **Telegram:** broad current-working-tree live evidence covers private chat, group/topic isolation, FIFO/bursts, commands, edits/reactions, documents, native confirmation continuation, and exact once-only final presentation. It is not a complete TG1–TG6 pass; identity governance, media boundaries, rate-limit recovery, token rotation, and cleanup remain incomplete.
+- **GitHub:** current-source live setup is blocked at GitHub account reauthentication. Historical provider evidence is retained separately and is not current-source qualification.
+- **Microsoft Teams:** live setup is blocked before credentials by the need for a Microsoft 365 work/school tenant with Entra, Azure Bot, custom-app, and possibly tenant-admin authority. A personal Teams login is insufficient.
+- **Discord:** the native Gateway implementation and deterministic/fresh-database tests exist, but the latest provider attempt is blocked at Discord login/QR before application creation, installation in the authorized test server, credential entry, or any DC1–DC7 event. See the [Discord result](./2026-09-06-discord-live-qualification-result.md).
+
+The dated provider result documents are the evidence ledger. This snapshot is navigation, not proof and not a substitute for rerunning every blocking case on one final SHA.
 
 The four blocking outcomes are:
 
@@ -41,7 +56,7 @@ The four blocking outcomes are:
 I use Codex's in-app browser with real signed-in sessions for:
 
 - the Paperclip Connectors catalog, setup wizard, Settings, Access, Conversations, Activity, agent, and task screens;
-- Slack, GitHub, Microsoft Teams, Telegram Web, and each provider's app-management or installation UI;
+- Slack, GitHub, Discord, Microsoft Teams, Telegram Web, and each provider's app-management or installation UI;
 - every provider message, mention, reply, edit, action, file, command, and permission change in the run;
 - identity-link confirmation as the mapped Paperclip user;
 - screenshots and visible-state assertions at each evidence checkpoint.
@@ -76,7 +91,7 @@ pnpm exec playwright test \
   --grep '^Slack:'
 ```
 
-Replace `Slack` with `GitHub`, `Microsoft Teams`, or `Telegram` for the other cases. A provider run begins only after its deterministic case passes. The real-provider steps themselves run in the signed-in in-app browser; Playwright fixtures never stand in for provider installation or webhook proof.
+Replace `Slack` with `GitHub`, `Discord`, `Microsoft Teams`, or `Telegram` for the other cases. A provider run begins only after its deterministic case passes. The real-provider steps themselves run in the signed-in in-app browser; Playwright fixtures never stand in for provider installation, webhook proof, or Gateway proof.
 
 ### 2.4 How I execute and record one browser case
 
@@ -147,6 +162,7 @@ All resources must be disposable or explicitly designated for Paperclip testing:
 | -------- | ---------------------------------------- | ----------------------------------- |
 | Slack    | `#pc-e2e-enabled`                        | `#pc-e2e-disabled`                  |
 | GitHub   | `paperclip-chat-e2e-enabled`             | `paperclip-chat-e2e-disabled`       |
+| Discord  | `#pc-e2e-enabled`                        | `#pc-e2e-disabled`                  |
 | Teams    | `Paperclip Chat E2E / Enabled`           | `Paperclip Chat E2E / Disabled`     |
 | Telegram | `Paperclip Chat E2E Enabled` group/forum | `Paperclip Chat E2E Disabled` group |
 
@@ -180,7 +196,7 @@ Before starting a provider run:
 2. Confirm `Maya E2E` is active and that its deterministic fixture contract passes from an ordinary Paperclip task.
 3. Confirm the provider installer, Ari, and Jules browser sessions are signed into the intended sandbox accounts.
 4. Confirm the provider test resources contain no production data and that prior run messages/issues can be distinguished by run ID.
-5. Confirm the Paperclip instance is publicly reachable for direct verified webhooks. Relay qualification is a separate deployment run described in section 9.
+5. Confirm the Paperclip instance is publicly reachable for direct verified webhooks when qualifying Slack, GitHub, Teams, or Telegram. For Discord, confirm outbound HTTPS/WebSocket access to Discord instead. Relay qualification is a separate deployment run described in section 10.
 6. Confirm the connection does not already exist. If it does, remove the stale test connection through the UI and verify its historical tasks remain readable before creating the new connection.
 7. Start browser recording/screenshots before `/apps`; record the Paperclip SHA and current time.
 
@@ -192,6 +208,7 @@ I drive every unblocked browser step myself. I pause and ask the user only at th
 | --------------- | -------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
 | Slack           | Sign in to the sandbox workspace, approve installation, or paste the customer-owned bot token/signing secret into Paperclip's masked fields. | Resume at the Slack consent result, verify the requested scopes, invite the bot, and execute S1–S7. |
 | GitHub          | Sign in to the sandbox organization, approve App creation/installation, or upload a newly generated private key for the manual path.         | Verify the repository grant and permissions, then execute G1–G7.                                    |
+| Discord         | Sign in to the developer portal, complete CAPTCHA, approve the server install, or paste the bot token into Paperclip's masked field.         | Verify the bot identity, Message Content intent, exact install permissions, and execute DC1–DC7.    |
 | Microsoft Teams | Sign in to the test tenant, satisfy tenant-admin consent, or enter the client secret in Paperclip's masked field.                            | Verify the created bot/app identity and install target, then execute T1–T7.                         |
 | Telegram        | Sign in to Telegram Web or copy the BotFather token into Paperclip's masked field.                                                           | Verify the bot identity with the provider, then execute TG1–TG6.                                    |
 
@@ -199,7 +216,7 @@ CAPTCHA, passkey, MFA, organization approval, tenant approval, and secret entry 
 
 ### 3.7 Execution order and result rule
 
-Run the providers in this order unless a provider outage makes another order more efficient: Slack, GitHub, Microsoft Teams, then Telegram. For each provider:
+Run the providers in this order unless a provider outage makes another order more efficient: Slack, GitHub, Discord, Microsoft Teams, then Telegram. For each provider:
 
 1. complete Shared Preflight;
 2. perform the normal first-time setup path;
@@ -254,7 +271,7 @@ Run these assertions within each platform-specific procedure.
 1. Start a new provider-native conversation with `ECHO <run-id>-A`.
 2. Open connector **Conversations** and record its task identifier.
 3. Send two follow-ups, the second without another mention where the provider contract permits.
-4. Open the provider-specific link (**Open Slack**, **Open GitHub**, **Open Microsoft Teams**, or **Open Telegram**) and **Open task** from the same row.
+4. Open the provider-specific link (**Open Slack**, **Open GitHub**, **Open Discord**, **Open Microsoft Teams**, or **Open Telegram**) and **Open task** from the same row.
 5. Confirm all turns appear in the same external conversation and same task, in order.
 6. Start a genuinely new provider-native conversation with marker `ECHO <run-id>-B`.
 
@@ -472,7 +489,7 @@ Capture the App permission screen, selected repositories, issue/PR/review conver
 - The shipped setup is qualified only for Microsoft 365 commercial cloud tenants. GCC, GCC High, DoD, and Microsoft 365 operated by 21Vianet are not supported yet; do not infer sovereign-cloud support from Microsoft-owned service URLs accepted during signed activity handling.
 - Dedicated Microsoft 365 developer tenant with Dana as permitted app installer and Ari/Jules as members.
 - Team `Paperclip Chat E2E` with the Enabled and Disabled channels.
-- Permission to create an Entra application and Azure Bot. A future guided helper is optional and does not gate the required customer-owned setup path.
+- Permission to create an Entra application and Azure Bot. No provisioning helper is shipped or required.
 - Tenant policy that permits custom-app upload/install, or a test administrator available to approve it.
 
 ### T1 — Required customer-owned Microsoft setup
@@ -494,15 +511,9 @@ Run before stable release and after identity, Teams manifest, or permission chan
 
 **Pass:** only the three portable identity values are requested; the messaging endpoint and Teams app are correctly wired; the real post/reply conversation completes setup; commercial-cloud-only scope is explicit and no delivery-mode or cloud-strategy choice appears.
 
-### T2 — Conditional guided Microsoft setup
+### T2 — Reserved future setup slot
 
-Run only after Paperclip ships a one-time Teams Developer CLI/helper flow:
-
-1. Start a separate disposable endpoint and use the one guided setup control shown by Paperclip.
-2. Complete Microsoft sign-in in the browser, restricting creation and consent to the sandbox tenant.
-3. Install the customer-owned app created by the helper into the test team and complete the T1 post/reply setup test.
-
-**Pass:** the helper creates only the documented Entra/Azure Bot/Teams app resources and Paperclip does not expose a credential form. Until a helper exists, record T2 as **NOT SHIPPED — NON-BLOCKING**, not failed.
+No Microsoft provisioning helper is shipped or required. Record T2 as **NOT SHIPPED — NON-BLOCKING** and execute the complete customer-owned path in T1. If a guided flow is implemented later, this section must be replaced with its actual reviewed resource, consent, credential, and cleanup contract before the flow can enter release qualification.
 
 ### T3 — Team/channel reach
 
@@ -627,13 +638,95 @@ Run only against a disposable bot or scheduled credential-rotation fixture:
 
 Capture the masked token step, DM setup proof, group disabled/enabled states, forum topic, inline keyboard, file/media behavior, active-task transitions, Conversations rows, flood-control/recovery evidence, and Activity state. Remove the bot from disposable groups, delete the disposable BotFather bot when authorized, revoke identity links, and remove the Paperclip connection. Never include the token in screenshots or results.
 
-## 9. Cross-platform deployment qualification
+## 9. Discord live browser runbook
+
+### Discord prerequisites
+
+- A dedicated Discord application owned by the test account and a disposable bot token.
+- Permission to install the bot in the sandbox server and manage its channel-specific permissions.
+- Two ordinary text channels: `#pc-e2e-enabled` and `#pc-e2e-disabled`.
+- Developer Mode enabled long enough to copy the sandbox Server ID. Do not use a production community server.
+
+### DC1 — Required customer-owned Discord bot setup
+
+1. In Paperclip, perform C1 and select Discord.
+2. Open Discord Developer Portal and create one application dedicated to `Maya E2E`. Copy its Application ID.
+3. On the Bot page, enable the **Message Content Intent**, reset the token if necessary, and paste the token only into Paperclip's masked field.
+4. Enter the sandbox Server ID in Paperclip. Once the Application ID and Server ID are present, inspect Paperclip's generated **Install bot in this server** link before opening it.
+5. Confirm the authorization URL requests only the `bot` OAuth scope and permission integer `309237763136`: View Channels, Send Messages, Create Public Threads, Send Messages in Threads, Read Message History, Add Reactions, Embed Links, and Attach Files. Do not add Administrator or Manage Server.
+6. Install the bot only in the sandbox server. If Discord requests a CAPTCHA, passkey, MFA, or server-owner approval, pause on that exact page for the user.
+7. Click **Connect Discord bot**. Paperclip must verify that the token belongs to the Application ID, Message Content is enabled, the bot is installed in the stated server, and at least one text channel grants the complete feature set.
+8. Enable only `#pc-e2e-enabled` in Access. In that channel, send a new root message containing `@Maya E2E ECHO <run-id>-SETUP`, then reply once inside the thread Paperclip creates.
+9. Return to Paperclip, complete the message test, and verify Settings opens for the same immutable agent and Discord server.
+
+**Pass:** setup asks for only bot token, Application ID, and Server ID; no public webhook URL, interactions public key, slash-command configuration, delivery-mode choice, or provider-capability toggle appears; one real mention/reply completes setup.
+
+### DC2 — Channel reach and provider ceiling
+
+1. Confirm the bot can see both sandbox text channels, but only Enabled is on in Paperclip.
+2. Run C2 in Disabled and verify no task, reaction acknowledgement, or agent output.
+3. Deny **Create Public Threads** or **Send Messages in Threads** for the bot in Disabled, refresh Access, and verify the channel is unavailable rather than silently degraded.
+4. Restore the exact permission, refresh, and verify the channel returns available but disabled.
+5. Remove the bot from the server only during the disposable recovery case; verify Paperclip cannot treat its own allowlist as a substitute for provider membership.
+
+**Pass:** Discord membership and effective channel permissions are the provider ceiling. Paperclip's per-channel allowlist is an independent, narrower gate.
+
+### DC3 — Thread boundary, ordering, and duplicate safety
+
+1. In Enabled, send one root mention with `ECHO <run-id>-ROOT`.
+2. Verify Paperclip creates exactly one Discord public thread named from the request text with the bot mention removed and creates exactly one Paperclip task.
+3. Immediately send two ordered replies inside that thread while the first agent turn is still running. Verify the queue preserves arrival order and every reply maps to the original task.
+4. Send an unrelated root message without a bot mention. Verify it creates no thread, task, or acknowledgement.
+5. Mention Maya in a second root message. Verify a second Discord thread and second Paperclip task are created, with no cross-publication.
+6. Inject a duplicate `MESSAGE_CREATE` event and a crash after provisional receipt persistence. Verify recovery idempotently creates or reuses the provider thread, treats Discord error `160004` (a thread already exists for the root message) as reconciliation rather than failure, deduplicates the delivery, and creates only one task.
+7. Hold the Gateway callback during endpoint reconnect/shutdown. Verify the old runtime is fenced and the replacement runtime does not produce a second task or response.
+
+Current implementation note: Paperclip now completes endpoint, channel, principal, and root-message preflight before any provider-thread side effect. A denied root must create one payload-redacted filtered audit row and no Discord thread, task, reaction, reply, or run. An allowed root must durably persist its provisional receipt before the provider POST. Missing root messages filter explicitly; ambiguous transport/authentication failures remain retryable instead of being mistaken for a completed binding. These paths have deterministic and fresh-database evidence but still require DC2/DC3 provider proof.
+
+**Pass:** one root mention equals one Discord thread and one Paperclip task; replies queue within that task; retries, reconnects, and duplicate events do not fork the binding.
+
+### DC4 — Discord capabilities
+
+Run C3, C5, and C6, then verify specifically:
+
+- acknowledgement reactions add and remove without producing a second turn;
+- safe progress/final output uses bounded post/edit behavior; Discord is not labeled as native streaming;
+- cards render as Discord embeds and supported buttons execute through Gateway interactions with server-side reauthorization;
+- file receive/send is bounded and type checked; persisted attachment recovery accepts only Discord CDN hosts and never stores authorization headers or the bot token;
+- user message edits produce one correction audit event, and deletes produce a tombstone even when Discord supplies only a partial cached message;
+- long output, provider rate limits, and an ambiguous outbound failure follow the shared publication/outbox rules;
+- Paperclip does not advertise or require a Discord slash command, modal, ephemeral response, or proactive DM that it has not implemented.
+
+### DC5 — DMs and identity
+
+1. With **Allow direct messages** off, DM Maya and verify no task. Turn it on and start a fresh DM message.
+2. Verify the DM uses its own Paperclip task generation and cannot reuse a guild-channel thread.
+3. Run C3 for a linked Discord user and a separate unlinked user. Confirm Discord numeric user ID, not display name, is the identity key.
+4. Revoke the Paperclip identity link during a queued follow-up and verify authorization is rechecked before the agent wakes or publishes.
+
+**Pass:** the DM toggle is enforced, guild and DM scopes cannot cross, and mutable Discord names never confer Paperclip identity.
+
+### DC6 — Gateway lifecycle and recovery
+
+1. Keep the connection active through a controlled network interruption and verify discord.js resumes/reconnects without a manual endpoint setting.
+2. Verify the direct Gateway client remains long-lived; routine renewal must not create a visible 15-minute disconnect window.
+3. Rotate the disposable bot token. Verify Activity shows a redacted reconnect action and no secret.
+4. Enter the replacement token through reconnect and confirm the same endpoint, channel allowlist, historical Conversations rows, and task links remain.
+5. Disable Message Content Intent and verify reconnect fails closed with the provider-permissions error. Re-enable it before continuing.
+6. Exercise one bounded REST failure and verify Paperclip stops the request at 25 seconds, preserves Discord's structured status/`retry_after`, and schedules only the allowed durable retry.
+7. In the deterministic compatibility test, verify the pinned adapter marker and every required patched method fail fast on SDK drift. Dependency updates must rerun this contract before provider qualification.
+
+### DC7 — Discord evidence and cleanup
+
+Capture the Developer Portal intent screen, exact OAuth permission request, server install, enabled/disabled channel states, two root threads, queued replies, reaction/edit/delete behavior, DM result, Conversations rows, and Activity recovery state. Remove only the disposable bot/application or test messages authorized for cleanup, revoke identity links, and remove the Paperclip connection. Never capture or record the bot token.
+
+## 10. Cross-platform deployment qualification
 
 Run once per release candidate in addition to the provider runbooks.
 
-### D1 — Direct webhook
+### D1 — Direct provider transport
 
-Use the public staging instance for each provider. Verify provider callback verification, first delivery, duplicate delivery, and Activity health. No endpoint-level delivery choice may appear.
+Use the public staging instance for each webhook provider and the direct Gateway runtime for Discord. Verify provider verification/connection, first delivery, duplicate delivery, reconnect, and Activity health. No endpoint-level delivery choice may appear.
 
 ### D2 — Private self-hosted relay
 
@@ -649,31 +742,31 @@ Run only after the relay is shipped. Until then, record D2 as **NOT SHIPPED — 
 
 ### D3 — Provider developer escape hatches
 
-Slack Socket Mode and Telegram polling receive separate instance-admin smoke tests only when shipped. The endpoint setup and Settings pages must remain unchanged. These modes do not count as substitutes for direct-webhook or relay qualification.
+Slack Socket Mode and Telegram polling receive separate instance-admin smoke tests only when shipped. Discord Gateway is the normal direct transport, not a developer escape hatch. The endpoint setup and Settings pages must remain unchanged. These modes do not count as substitutes for the required direct transport or relay qualification.
 
-## 10. Provider capability acceptance matrix
+## 11. Provider capability acceptance matrix
 
 “Automatic” means the richest safe native behavior is used without an endpoint toggle. “Fallback” means the provider visibly receives the documented safe alternative.
 
-| Capability               | Slack                         | GitHub                              | Teams                                         | Telegram                                |
-| ------------------------ | ----------------------------- | ----------------------------------- | --------------------------------------------- | --------------------------------------- |
-| Root activation          | Native mention                | Mention in issue/PR/review          | Native mention                                | DM message or group `/task@bot` command |
-| Durable boundary         | Slack thread or DM generation | Existing issue/PR/review thread     | Channel post thread or chat generation        | Chat generation or forum topic          |
-| Reaction acknowledgement | Automatic                     | Automatic                           | Automatic where supported                     | Automatic where allowed                 |
-| Streaming/progress       | Native stream, else post/edit | Coarse comment edit                 | Bounded post/edit; no native streaming        | Throttled post/edit; optional DM draft  |
-| Rich cards               | Block Kit                     | GFM + Paperclip link                | Adaptive Card                                 | Formatted text/inline keyboard          |
-| Buttons/selections       | Native                        | Fallback link                       | Native card action                            | Inline keyboard                         |
-| Modal/form               | Native modal                  | Fallback link                       | Task module                                   | Sequential prompt/link fallback         |
-| Commands                 | Registered slash command      | Text mention vocabulary only        | Card/message vocabulary                       | `/new`, `/status`, `/close`             |
-| Files                    | Native send/receive           | Inbound URL text + safe output link | Authenticated Paperclip link on every surface | Native media/document                   |
-| DM                       | Native                        | Unsupported                         | Personal scope                                | Native                                  |
-| Ephemeral/private denial | Ephemeral, then DM/text       | Safe public text/link               | Targeted, then DM/text                        | DM, then safe text                      |
-| Edit/delete audit        | Correction/tombstone          | Correction/tombstone                | Correction/tombstone where delivered          | Correction/tombstone where delivered    |
-| Concurrent turns         | Queue by default              | Queue by default                    | Queue by default                              | Queue by default                        |
+| Capability               | Slack                         | GitHub                              | Discord                                 | Teams                                         | Telegram                                |
+| ------------------------ | ----------------------------- | ----------------------------------- | --------------------------------------- | --------------------------------------------- | --------------------------------------- |
+| Root activation          | Native mention                | Mention in issue/PR/review          | Root bot mention                        | Native mention                                | DM message or group `/task@bot` command |
+| Durable boundary         | Slack thread or DM generation | Existing issue/PR/review thread     | Created Discord thread or DM generation | Channel post thread or chat generation        | Chat generation or forum topic          |
+| Reaction acknowledgement | Automatic                     | Automatic                           | Automatic                               | Automatic where supported                     | Automatic where allowed                 |
+| Streaming/progress       | Native stream, else post/edit | Coarse comment edit                 | Bounded post/edit; no native streaming  | Bounded post/edit; no native streaming        | Throttled post/edit; optional DM draft  |
+| Rich cards               | Block Kit                     | GFM + Paperclip link                | Discord embed                           | Adaptive Card                                 | Formatted text/inline keyboard          |
+| Buttons/selections       | Native                        | Fallback link                       | Native Gateway interaction              | Native card action                            | Inline keyboard                         |
+| Modal/form               | Native modal                  | Fallback link                       | Sequential prompt/link fallback         | Task module                                   | Sequential prompt/link fallback         |
+| Commands                 | Registered slash command      | Text mention vocabulary only        | Mention/message vocabulary              | Card/message vocabulary                       | `/new`, `/status`, `/close`             |
+| Files                    | Native send/receive           | Inbound URL text + safe output link | Native send/receive                     | Authenticated Paperclip link on every surface | Native media/document                   |
+| DM                       | Native                        | Unsupported                         | Native                                  | Personal scope                                | Native                                  |
+| Ephemeral/private denial | Ephemeral, then DM/text       | Safe public text/link               | DM, then safe text                      | Targeted, then DM/text                        | DM, then safe text                      |
+| Edit/delete audit        | Correction/tombstone          | Correction/tombstone                | Correction/tombstone                    | Correction/tombstone where delivered          | Correction/tombstone where delivered    |
+| Concurrent turns         | Queue by default              | Queue by default                    | Queue by default                        | Queue by default                              | Queue by default                        |
 
 A stable adapter fails qualification if it silently omits a supported maximal feature, exposes a feature toggle that should be automatic, claims an unsupported native behavior, or falls back without preserving task identity, authorization, and safe publication.
 
-## 11. Failure triage
+## 12. Failure triage
 
 When any step fails, stop advancing that scenario and capture:
 
@@ -697,7 +790,7 @@ Classify the failure before retrying:
 
 Never “fix” a failing run by manually editing a task, changing the assigned agent, enabling a broader provider permission, deleting the duplicate evidence, or bypassing Paperclip's Settings/Access enforcement.
 
-## 12. Final sign-off checklist
+## 13. Final sign-off checklist
 
 A provider is release-ready only when all are true:
 
@@ -719,11 +812,12 @@ A provider is release-ready only when all are true:
 
 The final result is **PASS** only when all blocking checks pass on the same Paperclip SHA and adapter version. A conditional provider fallback is acceptable only when the UI advertised that exact fallback before the user depended on the unavailable native behavior.
 
-## 13. Provider operator references
+## 14. Provider operator references
 
 These official references are the browser runner's drift checks when a provider renames or moves a setup control. The permissions and events displayed by the versioned Paperclip setup remain the test's exact least-privilege contract; a changed provider UI is not permission to grant more access.
 
 - Slack: [app manifests](https://api.slack.com/reference/manifests), [Events API](https://api.slack.com/apis/connections/events-api), and [slash commands](https://api.slack.com/tutorials/your-first-slash-command).
 - GitHub: [modifying a GitHub App registration](https://docs.github.com/en/apps/maintaining-github-apps/modifying-a-github-app-registration), [managing private keys](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/managing-private-keys-for-github-apps), [installing and scoping GitHub Apps](https://docs.github.com/en/apps/using-github-apps/about-using-github-apps), and the conditional [App Manifest flow](https://docs.github.com/en/apps/sharing-github-apps/registering-a-github-app-from-a-manifest).
+- Discord: [building a bot](https://docs.discord.com/developers/quick-start/getting-started), [Gateway intents](https://docs.discord.com/developers/events/gateway), [application flags](https://docs.discord.com/developers/resources/application), and [OAuth installation](https://docs.discord.com/developers/topics/oauth2).
 - Microsoft Teams: [Azure bot configuration](https://learn.microsoft.com/en-us/microsoftteams/platform/teams-sdk/teams/azure-configuration), [bot surfaces](https://learn.microsoft.com/en-us/microsoftteams/platform/bots/design/bots), and [RSC channel/chat delivery](https://learn.microsoft.com/en-us/microsoftteams/platform/bots/how-to/conversations/channel-messages-for-bots-and-agents).
 - Telegram: [bot creation and privacy behavior](https://core.telegram.org/bots) and [Bot API webhook behavior](https://core.telegram.org/bots/api#setwebhook).

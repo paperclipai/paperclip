@@ -46,6 +46,7 @@
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1122.0",
     "@chat-adapter/github": "4.39.0",
+    "@chat-adapter/discord": "4.39.0",
     "@chat-adapter/slack": "4.39.0",
     "@chat-adapter/teams": "4.39.0",
     "@chat-adapter/telegram": "4.39.0",

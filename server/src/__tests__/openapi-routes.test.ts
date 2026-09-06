@@ -429,7 +429,13 @@ describe("openapi routes", () => {
         properties: {
           provider: {
             type: "string",
-            enum: ["slack", "github", "microsoft-teams", "telegram"],
+            enum: [
+              "slack",
+              "github",
+              "discord",
+              "microsoft-teams",
+              "telegram",
+            ],
           },
           assignedAgentId: { type: "string", format: "uuid" },
         },

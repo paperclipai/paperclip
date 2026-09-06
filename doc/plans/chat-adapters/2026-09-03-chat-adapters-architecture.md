@@ -351,7 +351,7 @@ Paperclip exposes `/api/chat/webhooks/:publicEndpointId` at a stable HTTPS origi
 
 A private instance opens an outbound authenticated WebSocket to a lightweight relay. Providers send to the relay; the relay verifies its outer endpoint binding and forwards an encrypted, bounded envelope. Paperclip still performs provider signature verification before processing. The relay retains only retry metadata and encrypted payloads for a short configured TTL, has no Paperclip user credential, and cannot invoke arbitrary APIs. Fenced endpoint ownership prevents two connected instances from consuming one delivery. Instance administration selects/configures relay once; individual endpoint wizards inherit it automatically.
 
-### Managed installation
+### Non-shipped managed installation
 
 Bring-your-own provider credentials are the required first-release default. Managed Slack or GitHub provisioning may later reduce credential handling, but these are optional conveniences rather than separate runtime or permission models and cannot block activation or release.
 

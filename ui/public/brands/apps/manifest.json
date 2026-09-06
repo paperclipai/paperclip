@@ -149,6 +149,16 @@
       "darkVariantRequired": true
     },
     {
+      "slug": "discord",
+      "provider": "Discord",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/discord.svg",
+      "officialSourceUrl": "https://discord.com/branding",
+      "upstreamAssetUrl": "https://github.com/simple-icons/simple-icons/blob/16.28.0/icons/discord.svg",
+      "assetType": "svg",
+      "darkVariantRequired": false
+    },
+    {
       "slug": "egnyte",
       "provider": "Egnyte",
       "catalogVisible": false,

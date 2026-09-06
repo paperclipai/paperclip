@@ -3,6 +3,11 @@ import {
   type GitHubAdapterConfig,
 } from "@chat-adapter/github";
 import {
+  createDiscordAdapter,
+  type DiscordAdapter,
+  type DiscordAdapterConfig,
+} from "@chat-adapter/discord";
+import {
   createSlackAdapter,
   type SlackAdapterConfig,
 } from "@chat-adapter/slack";
@@ -53,11 +58,17 @@ export const CHAT_SDK_SOURCE_REVISION =
   "51322dde8f4aafd8a7fc7a20cbfd7ae45cafaa5c";
 const SLACK_WEB_API_TIMEOUT_MS = 45_000;
 const GITHUB_API_TIMEOUT_MS = 25_000;
+// discord.js owns resume and reconnect while a Client remains alive. Keep the
+// client up for a day instead of deliberately creating a disconnect window
+// every few minutes; the outer loop still recovers if the adapter exits.
+const DISCORD_GATEWAY_SESSION_MS = 24 * 60 * 60_000;
+const DISCORD_GATEWAY_RESTART_MAX_DELAY_MS = 60_000;
+const DISCORD_GATEWAY_HEALTHY_SESSION_MS = 60_000;
 
 /** Public Paperclip provider ids. The Teams SDK name remains an internal detail. */
 export type ChatSdkProvider =
-  "slack" | "github" | "microsoft-teams" | "telegram";
-type ChatSdkAdapterKey = "slack" | "github" | "teams" | "telegram";
+  "slack" | "github" | "discord" | "microsoft-teams" | "telegram";
+type ChatSdkAdapterKey = "slack" | "github" | "discord" | "teams" | "telegram";
 
 interface ProviderConfigBase {
   /** Agent-derived native bot display/mention name. */
@@ -95,6 +106,16 @@ export interface ResolvedGitHubChatConfig extends ProviderConfigBase {
   credentials: ResolvedGitHubCredentials;
 }
 
+export interface ResolvedDiscordChatConfig extends ProviderConfigBase {
+  provider: "discord";
+  credentials: {
+    apiUrl?: string;
+    applicationId: string;
+    botToken: string;
+    guildId: string;
+  };
+}
+
 export interface ResolvedMicrosoftTeamsChatConfig extends ProviderConfigBase {
   provider: "microsoft-teams";
   credentials: {
@@ -118,6 +139,7 @@ export interface ResolvedTelegramChatConfig extends ProviderConfigBase {
 export type ResolvedChatSdkProviderConfig =
   | ResolvedSlackChatConfig
   | ResolvedGitHubChatConfig
+  | ResolvedDiscordChatConfig
   | ResolvedMicrosoftTeamsChatConfig
   | ResolvedTelegramChatConfig;
 
@@ -146,6 +168,10 @@ type ChatSdkAttachmentLocator =
   | {
       connectorOrigin: string;
       kind: "teams_bot_url";
+      url: string;
+    }
+  | {
+      kind: "discord_cdn_url";
       url: string;
     }
   | {
@@ -296,6 +322,16 @@ export interface ChatSdkCallbackEvent<T> {
   provider: ChatSdkProvider;
 }
 
+export interface DiscordRootMentionAdmissionEvent {
+  channelId: string;
+  endpointId: string;
+  guildId: string;
+  message?: Message;
+  messageId: string;
+  threadId: string;
+  userId: string;
+}
+
 /**
  * Provider-neutral callbacks consumed by the Paperclip control-plane service.
  * All provider events have already passed the installed adapter's verifier and
@@ -304,6 +340,9 @@ export interface ChatSdkCallbackEvent<T> {
  */
 export interface ChatSdkRuntimeCallbacks {
   onMessage(event: ChatSdkMessageCallbackEvent): Promise<void> | void;
+  onDiscordRootMentionAdmission?(
+    event: DiscordRootMentionAdmissionEvent,
+  ): Promise<boolean> | boolean;
   onAction?(event: ChatSdkCallbackEvent<ActionEvent>): Promise<void> | void;
   onMessageDeleted?(
     event: ChatSdkCallbackEvent<MessageDeletedEvent>,
@@ -407,6 +446,62 @@ export class TeamsAdapterCompatibilityError extends Error {
   constructor(detail: string) {
     super(`The pinned Microsoft Teams adapter is incompatible: ${detail}`);
     this.name = "TeamsAdapterCompatibilityError";
+  }
+}
+
+export class DiscordAdapterCompatibilityError extends Error {
+  readonly code = "CHAT_ADAPTER_COMPATIBILITY_ERROR";
+
+  constructor(detail: string) {
+    super(`The pinned Discord adapter is incompatible: ${detail}`);
+    this.name = "DiscordAdapterCompatibilityError";
+  }
+}
+
+interface DiscordAdapterInternals {
+  ensureRootThread?: unknown;
+  paperclipCompatibilityRevision?: unknown;
+  startGatewayListener?: unknown;
+}
+
+interface DiscordChatInternals {
+  handleActionEvent?: unknown;
+  handleIncomingMessage?: unknown;
+  handleReactionEvent?: unknown;
+  processMessageDeleted?: unknown;
+  processMessageUpdated?: unknown;
+}
+
+function assertDiscordAdapterCompatibility(adapter: Adapter, chat: Chat): void {
+  const discord = adapter as unknown as DiscordAdapterInternals;
+  if (discord.paperclipCompatibilityRevision !== "paperclip-discord-v2") {
+    throw new DiscordAdapterCompatibilityError(
+      "Paperclip patch revision paperclip-discord-v2 is unavailable",
+    );
+  }
+  if (typeof discord.startGatewayListener !== "function") {
+    throw new DiscordAdapterCompatibilityError(
+      "startGatewayListener is unavailable",
+    );
+  }
+  if (typeof discord.ensureRootThread !== "function") {
+    throw new DiscordAdapterCompatibilityError(
+      "ensureRootThread is unavailable",
+    );
+  }
+  const internals = chat as unknown as DiscordChatInternals;
+  for (const method of [
+    "handleActionEvent",
+    "handleIncomingMessage",
+    "handleReactionEvent",
+    "processMessageDeleted",
+    "processMessageUpdated",
+  ] as const) {
+    if (typeof internals[method] !== "function") {
+      throw new DiscordAdapterCompatibilityError(
+        `Chat.${method} is unavailable`,
+      );
+    }
   }
 }
 
@@ -587,6 +682,8 @@ export function scopeMicrosoftTeamsEgress(
 function createProviderAdapter(
   config: ResolvedChatSdkProviderConfig,
   logger: CreateChatSdkEndpointRuntimeOptions["logger"],
+  callbacks: ChatSdkRuntimeCallbacks,
+  endpointId: string,
 ): Adapter {
   const resolvedLogger = adapterLogger(logger);
   switch (config.provider) {
@@ -644,6 +741,30 @@ function createProviderAdapter(
         }
       });
       return adapter;
+    }
+    case "discord": {
+      const adapterConfig: DiscordAdapterConfig = {
+        apiUrl: config.credentials.apiUrl,
+        applicationId: config.credentials.applicationId,
+        botToken: config.credentials.botToken,
+        // Paperclip receives Discord messages and interactions over its
+        // authenticated Gateway session. Keep the unused public HTTP
+        // interaction surface closed instead of making setup collect a key it
+        // does not need.
+        webhookVerifier: async () => false,
+        logger: resolvedLogger,
+        shouldCreateThread: async (input) => {
+          if (input.guildId !== config.credentials.guildId) return false;
+          return (
+            (await callbacks.onDiscordRootMentionAdmission?.({
+              ...input,
+              endpointId,
+            })) ?? false
+          );
+        },
+        userName: config.userName,
+      };
+      return createDiscordAdapter(adapterConfig);
     }
     case "microsoft-teams": {
       const adapterConfig: TeamsAdapterConfig = {
@@ -729,6 +850,26 @@ function createAttachmentRecoveryDescriptor(
     };
   }
 
+  if (provider === "discord") {
+    const url = sanitizedRecoveryUrl(
+      attachment.fetchMetadata?.url ?? attachment.url,
+      { allowQuery: true },
+    );
+    if (!url) return null;
+    const hostname = new URL(url).hostname.toLowerCase();
+    if (
+      hostname !== "cdn.discordapp.com" &&
+      hostname !== "media.discordapp.net"
+    )
+      return null;
+    return {
+      version: 1,
+      provider,
+      attachment: metadata,
+      locator: { kind: "discord_cdn_url", url },
+    };
+  }
+
   if (provider === "telegram") {
     const fileId = boundedAttachmentText(fetchMetadata.fileId, 2048);
     if (!fileId) return null;
@@ -785,6 +926,12 @@ function validatedAttachmentRecoveryDescriptor(
         url: value.locator.url as string,
         connectorOrigin: value.locator.connectorOrigin as string,
       },
+    });
+  }
+  if (provider === "discord" && kind === "discord_cdn_url") {
+    return createAttachmentRecoveryDescriptor(provider, {
+      ...metadata,
+      fetchMetadata: { url: value.locator.url as string },
     });
   }
   if (provider === "microsoft-teams" && kind === "teams_anonymous_url") {
@@ -1036,6 +1183,9 @@ export class ChatSdkEndpointRuntime {
     new AsyncLocalStorage<WebhookIngressAttempt>();
   private readonly webhookIngressTimeoutMs: number;
   private readonly microsoftTeamsTenantId: string | null;
+  private readonly discordGuildId: string | null;
+  private discordGatewayAbort: AbortController | null = null;
+  private discordGatewayTask: Promise<void> | null = null;
 
   constructor(options: CreateChatSdkEndpointRuntimeOptions) {
     this.companyId = options.companyId;
@@ -1048,6 +1198,10 @@ export class ChatSdkEndpointRuntime {
             ?.trim()
             .toLowerCase() || null
         : null;
+    this.discordGuildId =
+      options.providerConfig.provider === "discord"
+        ? options.providerConfig.credentials.guildId
+        : null;
     this.webhookIngressTimeoutMs = Math.max(
       1,
       Math.min(options.webhookIngressTimeoutMs ?? 2_500, 10_000),
@@ -1055,6 +1209,8 @@ export class ChatSdkEndpointRuntime {
     this.adapter = createProviderAdapter(
       options.providerConfig,
       options.logger,
+      options.callbacks,
+      options.endpointId,
     );
     const durableState = createPaperclipChatSdkState({
       companyId: options.companyId,
@@ -1079,6 +1235,9 @@ export class ChatSdkEndpointRuntime {
       state,
       userName: options.providerConfig.userName,
     });
+    if (this.provider === "discord") {
+      assertDiscordAdapterCompatibility(this.adapter, this.chat);
+    }
     registerCallbacks(
       this.chat,
       this.endpointId,
@@ -1106,6 +1265,61 @@ export class ChatSdkEndpointRuntime {
 
   async initialize(): Promise<void> {
     await this.chat.initialize();
+    if (this.provider === "discord") this.startDiscordGateway();
+  }
+
+  private startDiscordGateway(): void {
+    if (this.discordGatewayTask) return;
+    const adapter = this.adapter as DiscordAdapter;
+    if (typeof adapter.startGatewayListener !== "function") return;
+    const abort = new AbortController();
+    this.discordGatewayAbort = abort;
+    this.discordGatewayTask = (async () => {
+      let rapidRestartCount = 0;
+      while (!abort.signal.aborted) {
+        const sessionStartedAt = Date.now();
+        let listener: Promise<unknown> | null = null;
+        try {
+          await adapter.startGatewayListener(
+            {
+              waitUntil: (task) => {
+                listener = Promise.resolve(task);
+              },
+            },
+            DISCORD_GATEWAY_SESSION_MS,
+            abort.signal,
+          );
+          if (listener) await listener;
+        } catch {
+          // The adapter logs provider-specific failures. Keep the supervisor
+          // alive so a transient start failure cannot become an unhandled
+          // rejection that tears down the server.
+        }
+        if (abort.signal.aborted) break;
+        rapidRestartCount =
+          Date.now() - sessionStartedAt >= DISCORD_GATEWAY_HEALTHY_SESSION_MS
+            ? 0
+            : Math.min(rapidRestartCount + 1, 16);
+        const restartDelayMs = Math.min(
+          1_000 * 2 ** Math.max(0, rapidRestartCount - 1),
+          DISCORD_GATEWAY_RESTART_MAX_DELAY_MS,
+        );
+        await new Promise<void>((resolve) => {
+          const timer = setTimeout(resolve, restartDelayMs);
+          timer.unref?.();
+          abort.signal.addEventListener(
+            "abort",
+            () => {
+              clearTimeout(timer);
+              resolve();
+            },
+            { once: true },
+          );
+        });
+      }
+    })().finally(() => {
+      this.discordGatewayTask = null;
+    });
   }
 
   async handleWebhook(
@@ -1225,6 +1439,36 @@ export class ChatSdkEndpointRuntime {
     return this.adapter;
   }
 
+  async ensureDiscordRootThread(input: {
+    channelId: string;
+    content: string;
+    messageId: string;
+  }): Promise<void> {
+    if (this.provider !== "discord") {
+      throw new DiscordAdapterCompatibilityError(
+        "ensureDiscordRootThread was called for a non-Discord endpoint",
+      );
+    }
+    const discord = this.adapter as unknown as DiscordAdapterInternals & {
+      ensureRootThread?: (
+        channelId: string,
+        messageId: string,
+        content: string,
+      ) => Promise<unknown>;
+    };
+    if (typeof discord.ensureRootThread !== "function") {
+      throw new DiscordAdapterCompatibilityError(
+        "ensureRootThread is unavailable",
+      );
+    }
+    await discord.ensureRootThread.call(
+      this.adapter,
+      input.channelId,
+      input.messageId,
+      input.content,
+    );
+  }
+
   /**
    * Reuse the pinned provider parser when a Telegram slash command also
    * carries media in its caption. The Chat SDK exposes slash-command fields
@@ -1257,6 +1501,13 @@ export class ChatSdkEndpointRuntime {
    * verified activity body therefore remains the authoritative tenant claim.
    */
   acceptsProviderScope(raw: unknown): boolean {
+    if (this.provider === "discord" && this.discordGuildId) {
+      if (!isRecord(raw)) return false;
+      const guildId = raw.guild_id;
+      return (
+        guildId === this.discordGuildId || guildId === null || guildId === "@me"
+      );
+    }
     if (this.provider !== "microsoft-teams" || !this.microsoftTeamsTenantId)
       return true;
     const tenantIds = microsoftTeamsTenantIds(raw);
@@ -1309,6 +1560,9 @@ export class ChatSdkEndpointRuntime {
       case "teams_anonymous_url":
         fetchMetadata = { url: validated.locator.url };
         break;
+      case "discord_cdn_url":
+        fetchMetadata = { url: validated.locator.url };
+        break;
       case "telegram_file_id":
         fetchMetadata = {
           fileId: validated.locator.fileId,
@@ -1325,6 +1579,9 @@ export class ChatSdkEndpointRuntime {
   }
 
   async shutdown(): Promise<void> {
+    this.discordGatewayAbort?.abort();
+    await this.discordGatewayTask?.catch(() => undefined);
+    this.discordGatewayAbort = null;
     await this.chat.shutdown();
   }
 }

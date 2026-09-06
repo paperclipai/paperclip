@@ -4,10 +4,49 @@ import type { ChatSdkStatePersistence } from "./chat-sdk-state.js";
 const captures = vi.hoisted(() => ({
   chatConfigs: [] as Array<Record<string, unknown>>,
   chats: [] as Array<Record<string, unknown>>,
+  discordConfigs: [] as Array<Record<string, unknown>>,
+  discordGatewayDurations: [] as number[],
+  discordRootThreads: [] as Array<{
+    channelId: string;
+    content: string;
+    messageId: string;
+  }>,
   githubConfigs: [] as Array<Record<string, unknown>>,
   slackConfigs: [] as Array<Record<string, unknown>>,
   teamsConfigs: [] as Array<Record<string, unknown>>,
   telegramConfigs: [] as Array<Record<string, unknown>>,
+}));
+
+vi.mock("@chat-adapter/discord", () => ({
+  createDiscordAdapter: (config: Record<string, unknown>) => {
+    captures.discordConfigs.push(config);
+    return {
+      name: "discord",
+      paperclipCompatibilityRevision:
+        config.botToken === "unpatched-discord"
+          ? undefined
+          : "paperclip-discord-v2",
+      async ensureRootThread(
+        channelId: string,
+        messageId: string,
+        content: string,
+      ) {
+        captures.discordRootThreads.push({ channelId, content, messageId });
+        return { id: messageId, name: content };
+      },
+      async startGatewayListener(
+        options: { waitUntil?: (task: Promise<unknown>) => void },
+        durationMs: number,
+      ) {
+        captures.discordGatewayDurations.push(durationMs);
+        if (config.botToken === "gateway-start-failure") {
+          throw new Error("Gateway failed to start");
+        }
+        options.waitUntil?.(Promise.resolve());
+        return new Response("listening");
+      },
+    };
+  },
 }));
 
 vi.mock("@chat-adapter/slack", () => ({
@@ -152,12 +191,19 @@ vi.mock("chat", () => ({
       return { user };
     }
     async abortTurn() {}
+    async handleActionEvent() {}
+
+    async handleIncomingMessage() {}
+    async handleReactionEvent() {}
+    async processMessageDeleted() {}
+    async processMessageUpdated() {}
   },
 }));
 
 import {
   CHAT_SDK_SOURCE_REVISION,
   CHAT_SDK_VERSION,
+  DiscordAdapterCompatibilityError,
   ChatSdkEndpointNotRegisteredError,
   createChatSdkEndpointRuntime,
   createChatSdkRuntime,
@@ -291,6 +337,18 @@ describe("Chat SDK endpoint runtime", () => {
 
   it.each([
     {
+      expectedKey: "discord",
+      providerConfig: {
+        provider: "discord" as const,
+        userName: "paperclip-agent",
+        credentials: {
+          applicationId: "123456789012345678",
+          botToken: "discord-token",
+          guildId: "1457808928258658549",
+        },
+      },
+    },
+    {
       expectedKey: "github",
       providerConfig: {
         provider: "github" as const,
@@ -332,6 +390,113 @@ describe("Chat SDK endpoint runtime", () => {
       ).toEqual([expectedKey]);
     },
   );
+
+  it("passes only the Discord application credentials to the adapter and fences guild callbacks", async () => {
+    const runtime = createChatSdkEndpointRuntime(
+      baseOptions({
+        provider: "discord",
+        userName: "paperclip-agent",
+        credentials: {
+          apiUrl: "https://discord.example.test/api/v10",
+          applicationId: "123456789012345678",
+          botToken: "discord-token",
+          guildId: "1457808928258658549",
+        },
+      }),
+    );
+
+    expect(captures.discordConfigs[0]).toMatchObject({
+      apiUrl: "https://discord.example.test/api/v10",
+      applicationId: "123456789012345678",
+      botToken: "discord-token",
+      userName: "paperclip-agent",
+    });
+    expect(captures.discordConfigs[0]).not.toHaveProperty("guildId");
+    expect(captures.discordConfigs[0]).not.toHaveProperty("publicKey");
+    expect(captures.discordConfigs[0]?.webhookVerifier).toEqual(
+      expect.any(Function),
+    );
+    expect(captures.discordConfigs[0]?.shouldCreateThread).toEqual(
+      expect.any(Function),
+    );
+    expect(
+      runtime.acceptsProviderScope({ guild_id: "1457808928258658549" }),
+    ).toBe(true);
+    expect(
+      runtime.acceptsProviderScope({ guild_id: "999999999999999999" }),
+    ).toBe(false);
+    expect(runtime.acceptsProviderScope({ guild_id: "@me" })).toBe(true);
+    await runtime.ensureDiscordRootThread({
+      channelId: "333333333333333333",
+      messageId: "555555555555555555",
+      content: "Investigate the queue",
+    });
+    expect(captures.discordRootThreads).toEqual([
+      {
+        channelId: "333333333333333333",
+        messageId: "555555555555555555",
+        content: "Investigate the queue",
+      },
+    ]);
+  });
+
+  it("fails loudly when the pinned Discord patch revision is unavailable", () => {
+    expect(() =>
+      createChatSdkEndpointRuntime(
+        baseOptions({
+          provider: "discord",
+          userName: "paperclip-agent",
+          credentials: {
+            applicationId: "123456789012345678",
+            botToken: "unpatched-discord",
+            guildId: "1457808928258658549",
+          },
+        }),
+      ),
+    ).toThrow(DiscordAdapterCompatibilityError);
+  });
+
+  it("keeps one long-lived Discord Gateway session and shuts it down cleanly", async () => {
+    const runtime = createChatSdkEndpointRuntime(
+      baseOptions({
+        provider: "discord",
+        userName: "paperclip-agent",
+        credentials: {
+          applicationId: "123456789012345678",
+          botToken: "discord-token",
+          guildId: "1457808928258658549",
+        },
+      }),
+    );
+
+    await runtime.initialize();
+    await vi.waitFor(() =>
+      expect(captures.discordGatewayDurations).toEqual([24 * 60 * 60_000]),
+    );
+    await runtime.shutdown();
+    expect(captures.discordGatewayDurations).toHaveLength(1);
+  });
+
+  it("supervises a failed Discord Gateway start without leaking a rejected task", async () => {
+    const runtime = createChatSdkEndpointRuntime(
+      baseOptions({
+        provider: "discord",
+        userName: "paperclip-agent",
+        credentials: {
+          applicationId: "123456789012345678",
+          botToken: "gateway-start-failure",
+          guildId: "1457808928258658549",
+        },
+      }),
+    );
+
+    await runtime.initialize();
+    await vi.waitFor(() =>
+      expect(captures.discordGatewayDurations).toEqual([24 * 60 * 60_000]),
+    );
+    await expect(runtime.shutdown()).resolves.toBeUndefined();
+    expect(captures.discordGatewayDurations).toHaveLength(1);
+  });
 
   it("wraps each normalized message route with endpoint and public provider identity", async () => {
     const onMessage = vi.fn();

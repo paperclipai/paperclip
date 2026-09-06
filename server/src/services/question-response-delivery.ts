@@ -5,6 +5,7 @@ import {
   agents,
   chatPublications,
   heartbeatRuns,
+  issueComments,
   issueQuestionResponseDeliveries,
   issues,
   issueThreadInteractions,
@@ -48,7 +49,10 @@ const DURABLE_WAKE_REQUEST_STATUSES = [
 
 type QuestionInteractionRow = typeof issueThreadInteractions.$inferSelect;
 type DeliveryRow = typeof issueQuestionResponseDeliveries.$inferSelect;
-type Heartbeat = Pick<ReturnType<typeof heartbeatService>, "wakeup">;
+type Heartbeat = Pick<
+  ReturnType<typeof heartbeatService>,
+  "wakeup" | "cancelRun"
+>;
 type QuestionResponseSteer = (input: {
   runId: string;
   message: string;
@@ -295,6 +299,22 @@ function issueIdFromRun(
 ) {
   const context = record(run.contextSnapshot);
   return compactLine(context.issueId) ?? compactLine(context.taskId);
+}
+
+function sourceCommentIdFromRun(
+  run: Pick<typeof heartbeatRuns.$inferSelect, "contextSnapshot"> | null,
+) {
+  const context = record(run?.contextSnapshot);
+  const batched = Array.isArray(context.wakeCommentIds)
+    ? context.wakeCommentIds
+        .map((value) => compactLine(value))
+        .filter((value): value is string => Boolean(value))
+    : [];
+  return (
+    batched.at(-1) ??
+    compactLine(context.wakeCommentId) ??
+    compactLine(context.commentId)
+  );
 }
 
 function hasExternalChatOrigin(
@@ -763,6 +783,26 @@ export function questionResponseDeliveryService(
       });
     }
     const assigneeAgentId = issue.assigneeAgentId;
+    const inferredSourceCommentId =
+      sourceRun && issueIdFromRun(sourceRun) === interaction.issueId
+        ? sourceCommentIdFromRun(sourceRun)
+        : null;
+    const sourceCommentCandidate =
+      interaction.sourceCommentId ?? inferredSourceCommentId;
+    const continuationSourceCommentId = sourceCommentCandidate
+      ? await db
+          .select({ id: issueComments.id })
+          .from(issueComments)
+          .where(
+            and(
+              eq(issueComments.id, sourceCommentCandidate),
+              eq(issueComments.companyId, interaction.companyId),
+              eq(issueComments.issueId, interaction.issueId),
+            ),
+          )
+          .limit(1)
+          .then((rows) => rows[0]?.id ?? null)
+      : null;
 
     const liveRuns = await db
       .select()
@@ -909,7 +949,71 @@ export function questionResponseDeliveryService(
       });
     }
 
-    if (resolveNativeQuestion) {
+    // A provider input request can keep its source process alive while it waits
+    // for an answer in either runtime mode. External chat answers intentionally
+    // continue in a fresh run so output from overlapping provider turns cannot
+    // be mixed. The old process must therefore release both the per-agent
+    // runner slot and the issue execution lock before the isolated continuation
+    // is enqueued. In particular, ACPX-backed local adapters may still persist
+    // as `legacy` runs even though their interaction is provider-native.
+    if (
+      externalChatBoundary &&
+      sourceRun?.id === interaction.sourceRunId &&
+      (sourceRun.status === "queued" || sourceRun.status === "running")
+    ) {
+      try {
+        await withClaimLease(claimed, () =>
+          options.heartbeat.cancelRun(
+            sourceRun.id,
+            "Superseded by a dedicated external-chat answer continuation",
+            {
+              errorCode: "external_chat_continuation",
+              resultJson: {
+                interactionId: interaction.id,
+                externalChatContinuation: true,
+              },
+              eventMessage:
+                "source run cancelled for isolated external-chat answer continuation",
+              eventPayload: { interactionId: interaction.id },
+              terminationGraceMs: 2_000,
+              suppressImmediateRecovery: true,
+            },
+          ),
+        );
+      } catch (error) {
+        if (error instanceof DeliveryClaimUnavailableError)
+          return terminalOutcome(interactionId);
+        const errorCode =
+          error instanceof Error && compactLine(error.message)
+            ? compactLine(error.message)!.slice(0, 160)
+            : "external_chat_source_run_cancellation_failed";
+        const exhausted = await releaseForRetry(claimed, errorCode);
+        logger.warn(
+          {
+            err: error,
+            deliveryId: claimed.id,
+            interactionId,
+            sourceRunId: sourceRun.id,
+            attemptCount: claimed.attemptCount,
+            errorCount: claimed.errorCount + 1,
+            exhausted,
+          },
+          "external-chat answer continuation will retry after source run cancellation failure",
+        );
+        if (!exhausted) return null;
+        return recordTerminal({
+          delivery: claimed,
+          interaction,
+          status: "failed",
+          mode: null,
+          targetRunId: sourceRun.id,
+          adapter,
+          errorCode,
+        });
+      }
+    }
+
+    if (resolveNativeQuestion && !externalChatBoundary) {
       try {
         const nativeDisposition = await withClaimLease(claimed, () =>
           resolveNativeQuestion(hydratedInteraction),
@@ -1022,8 +1126,15 @@ export function questionResponseDeliveryService(
                   interactionId: interaction.id,
                   interactionKind: interaction.kind,
                   interactionStatus: interaction.status,
-                  sourceCommentId: interaction.sourceCommentId,
+                  sourceCommentId: continuationSourceCommentId,
                   sourceRunId: interaction.sourceRunId,
+                  externalChatContinuation: externalChatBoundary,
+                  ...(continuationSourceCommentId
+                    ? {
+                        wakeCommentId: continuationSourceCommentId,
+                        wakeCommentIds: [continuationSourceCommentId],
+                      }
+                    : {}),
                   mutation: "interaction",
                 },
                 idempotencyKey: wakeIdempotencyKey,
@@ -1036,8 +1147,15 @@ export function questionResponseDeliveryService(
                   interactionId: interaction.id,
                   interactionKind: interaction.kind,
                   interactionStatus: interaction.status,
-                  sourceCommentId: interaction.sourceCommentId,
+                  sourceCommentId: continuationSourceCommentId,
                   sourceRunId: interaction.sourceRunId,
+                  externalChatContinuation: externalChatBoundary,
+                  ...(continuationSourceCommentId
+                    ? {
+                        wakeCommentId: continuationSourceCommentId,
+                        wakeCommentIds: [continuationSourceCommentId],
+                      }
+                    : {}),
                   wakeReason: "issue_commented",
                   source: "issue.interaction.respond",
                 },

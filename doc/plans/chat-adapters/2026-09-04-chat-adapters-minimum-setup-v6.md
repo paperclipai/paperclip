@@ -31,9 +31,9 @@ The tested Slack channel is enabled when the test succeeds. Inviting Maya to ano
 
 The prepared manifest contains Maya's app identity, callback URLs, least-privilege bot scopes, event subscriptions, interactivity, commands, and file behavior. The operator does not configure those individually. Slack documents [shared manifest URLs](https://docs.slack.dev/app-manifests/configuring-apps-with-app-manifests/) and the [install/token/signing-secret locations](https://api.slack.com/tutorials/tracks/app-home-and-modals).
 
-### Optional managed install
+### Non-shipped future convenience
 
-An **Add to Slack** flow may be added when Paperclip participates in Slack's managed agent-deployment program. It is an optional convenience and cannot gate the first release or replace the customer-owned App path.
+An **Add to Slack** flow may be added later. It is not shipped, is not shown as a current setup option, and cannot gate the first release or replace the customer-owned App path.
 
 ## GitHub
 
@@ -69,11 +69,24 @@ The webhook secret is generated and already stored by Paperclip; it is copied ou
 
 The tested Teams channel is enabled when the test succeeds. Installing Maya into another team or channel later makes that destination available but does not enable Paperclip work there.
 
-A future helper around Microsoft's Teams Developer CLI may automate these provider-owned steps, but it is optional and cannot gate release. See the [Teams registration quickstart](https://learn.microsoft.com/en-us/microsoftteams/platform/teams-sdk/get-started/quickstart-register).
+No provisioning helper is part of the shipped path. See the [Teams registration quickstart](https://learn.microsoft.com/en-us/microsoftteams/platform/teams-sdk/get-started/quickstart-register).
 
 If tenant policy requires administrator approval, Microsoft owns that state inside the same install step. Paperclip preserves the draft; it does not add another configuration page.
 
 Those three identity values are the minimum portable credentials for the manual customer-owned registration. Paperclip does not show authentication-strategy, cloud, webhook, relay, package, scope, or capability choices on the normal path. For tenants that require package submission rather than direct sideloading, Microsoft's publication or installation flow may return an administrator-approval state; Microsoft documents the [custom-app upload and approval paths](https://learn.microsoft.com/en-us/microsoftteams/platform/concepts/deploy-and-publish/apps-upload).
+
+## Discord
+
+### Required customer-owned bot path
+
+1. **Create bot:** open Discord Developer Portal and create one application dedicated to the selected immutable Paperclip agent. Copy its Application ID, add a bot, enable **Message Content Intent**, and paste the bot token only into Paperclip's masked field.
+2. **Choose server:** enter the Server ID for the authorized test server. Inspect Paperclip's generated install URL, which must request only the `bot` scope and permission integer `309237763136`; install it in that server without Administrator or `applications.commands`.
+3. **Connect:** Paperclip verifies that the token belongs to the Application ID, Message Content is enabled, the bot is installed in the stated server, and at least one text channel has the required effective permissions.
+4. **Try Maya:** enable one discovered channel in Access, post `@Maya help me test this` as a new channel message, and reply once in the public thread Maya creates.
+
+Discord uses a direct outbound Gateway connection, so setup does not ask for a public webhook URL, interactions public key, slash-command registration, or delivery choice. Other visible channels remain disabled until explicitly enabled in Paperclip; the direct-message reach switch remains off until an operator enables it.
+
+This customer-owned bot path is the complete first-release setup. There is no managed Discord provisioning path in the current product.
 
 ## Telegram
 
@@ -88,11 +101,12 @@ Group and forum installation is deliberately post-connect configuration. The min
 
 ## Resulting screen inventory
 
-| Provider        |                                                                        Normal setup screens | Advanced fallback                          |
+| Provider        |                                                                        Normal setup screens | Alternate shipped path                     |
 | --------------- | ------------------------------------------------------------------------------------------: | ------------------------------------------ |
-| Slack           |                                       Create/install custom App; copy two secrets; Try Maya | Optional managed install                   |
+| Slack           |                                       Create/install custom App; copy two secrets; Try Maya | None                                       |
 | GitHub          |           Generate secret; configure App; App ID/private key; choose repositories; Try Maya | Existing App uses the same credential path |
-| Microsoft Teams | Manual Entra/Azure Bot and Teams app registration; three identity values; install; Try Maya | Optional future CLI helper                 |
-| Telegram        |                                                                   BotFather token; Try Maya | None in first release                      |
+| Microsoft Teams | Manual Entra/Azure Bot and Teams app registration; three identity values; install; Try Maya | None                                       |
+| Discord         |                      Create bot; Application ID/token/Server ID; install; connect; Try Maya | None                                       |
+| Telegram        |                                                                   BotFather token; Try Maya | None                                       |
 
-The current viewer contains 14 setup phases and every provider-specific Settings, Access, Conversations, and Activity tab. The read-only Overview and non-product interaction-walkthrough pages are absent in v8.
+The linked v6 viewer predates the Discord implementation and remains a four-provider design artifact. The current product and acceptance contract cover all five providers; Discord uses the same Settings, Access, Conversations, and Activity tabs, with the setup path above. The read-only Overview and non-product interaction-walkthrough pages remain absent.

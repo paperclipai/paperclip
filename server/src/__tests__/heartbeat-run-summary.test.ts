@@ -5,6 +5,7 @@ import {
   LEGACY_WITHHELD_RUN_COMMENT,
   projectHistoricalHeartbeatRunComment,
   findHeartbeatRunCompletionComment,
+  isExternalChatContinuationPresentationContext,
   mergeHeartbeatRunResultJson,
   readCompletedAssistantMessageCandidate,
   resolveHeartbeatRunResponse,
@@ -487,6 +488,109 @@ describe("resolveHeartbeatRunResponse", () => {
         },
       }).text,
     ).toBe(text);
+  });
+
+  it("prefers the exact completed final over a lifecycle comment only for an external-chat continuation", () => {
+    const resolved = resolveHeartbeatRunResponse({
+      resultJson,
+      existingComment: {
+        id: "lifecycle-comment",
+        body: "Answer received. Closing issue.",
+      },
+      finalAgentMessage: {
+        text: "TELEGRAM-LIFECYCLE5-Onyx",
+        sourceEventId: "event-continuation-final",
+        channel: "final",
+      },
+      preferFinalResponseOverExistingComment: true,
+    });
+
+    expect(resolved).toMatchObject({
+      text: "TELEGRAM-LIFECYCLE5-Onyx",
+      decision: {
+        chosenSource: "final_agent_message",
+        sourceEventId: "event-continuation-final",
+        commentAction: "create",
+        commentId: null,
+        reasonCodes: expect.arrayContaining([
+          "external_chat_continuation_final_precedence",
+        ]),
+      },
+    });
+  });
+
+  it("prefers an accepted adapter result over a lifecycle comment for an external-chat continuation", () => {
+    expect(
+      resolveHeartbeatRunResponse({
+        resultJson: {
+          acceptedResult: {
+            schema: "paperclip.run_result.v1",
+            reportedWorkDisposition: "done",
+            summary: "TELEGRAM-ACCEPTED-Onyx",
+          },
+        },
+        existingComment: {
+          id: "lifecycle-comment",
+          body: "Answer received. Closing issue.",
+        },
+        preferFinalResponseOverExistingComment: true,
+      }),
+    ).toMatchObject({
+      text: "TELEGRAM-ACCEPTED-Onyx",
+      decision: {
+        chosenSource: "semantic_result_summary",
+        commentAction: "create",
+        commentId: null,
+        reasonCodes: expect.arrayContaining([
+          "external_chat_continuation_final_precedence",
+        ]),
+      },
+    });
+  });
+
+  it("keeps ordinary comment precedence unchanged", () => {
+    expect(
+      resolveHeartbeatRunResponse({
+        resultJson,
+        existingComment: {
+          id: "ordinary-comment",
+          body: "Ordinary explicit comment",
+        },
+        finalAgentMessage: {
+          text: "Ordinary adapter final",
+          sourceEventId: "event-ordinary-final",
+          channel: "final",
+        },
+      }),
+    ).toMatchObject({
+      text: "Ordinary explicit comment",
+      decision: {
+        chosenSource: "existing_issue_comment",
+        commentAction: "reuse",
+        commentId: "ordinary-comment",
+        reasonCodes: ["explicit_non_progress_comment_precedence"],
+      },
+    });
+  });
+
+  it("recognizes only explicit external-chat continuation presentation markers", () => {
+    expect(
+      isExternalChatContinuationPresentationContext({
+        externalChatContinuation: true,
+      }),
+    ).toBe(true);
+    expect(
+      isExternalChatContinuationPresentationContext({
+        paperclipWake: { externalInteractionContinuation: true },
+      }),
+    ).toBe(true);
+    expect(
+      isExternalChatContinuationPresentationContext({
+        externalChatContinuation: false,
+        paperclipWake: { externalInteractionContinuation: false },
+      }),
+    ).toBe(false);
+    expect(isExternalChatContinuationPresentationContext(null)).toBe(false);
   });
 });
 

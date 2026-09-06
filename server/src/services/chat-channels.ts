@@ -85,12 +85,14 @@ import { redactSensitiveText } from "../redaction.js";
 import type { StorageService } from "../storage/types.js";
 import {
   createChatSdkRuntime,
+  DiscordAdapterCompatibilityError,
   type ChatSdkCallbackEvent,
   type ChatSdkEndpointRuntime,
   type ChatSdkMessageCallbackEvent,
   type ChatSdkMessageUpdatedCallbackEvent,
   type ChatSdkProvider,
   type ChatSdkRuntime,
+  type DiscordRootMentionAdmissionEvent,
   type ResolvedChatSdkProviderConfig,
 } from "./chat-sdk-runtime.js";
 import type {
@@ -115,6 +117,7 @@ import {
   type ChatProviderInventoryResult,
   type ChatProviderResourceInventoryItem,
 } from "./chat-provider-inventory.js";
+import { listDiscordBotChannels, verifyDiscordBot } from "./chat-discord.js";
 import {
   parseChatProviderLifecycle,
   type ChatProviderLifecycleEffect,
@@ -169,6 +172,7 @@ import { Actions, Button, Card, CardText, LinkButton } from "chat";
 const PROVIDER_LABELS: Record<ChatProvider, string> = {
   slack: "Slack",
   github: "GitHub",
+  discord: "Discord",
   "microsoft-teams": "Microsoft Teams",
   telegram: "Telegram",
 };
@@ -279,6 +283,23 @@ const CAPABILITIES: Record<ChatProvider, ChatAdapterCapabilities> = {
     ephemeralMessages: false,
     proactiveDirectMessages: false,
   },
+  discord: {
+    threads: true,
+    directMessages: true,
+    nativeStreaming: false,
+    messageEdits: true,
+    messageDeletes: true,
+    reactions: true,
+    files: true,
+    cards: true,
+    actions: true,
+    modals: false,
+    // The root mention/thread path is automatic. Paperclip does not register a
+    // Discord application command yet, so do not advertise an unusable command.
+    slashCommands: false,
+    ephemeralMessages: false,
+    proactiveDirectMessages: false,
+  },
   "microsoft-teams": {
     threads: true,
     directMessages: true,
@@ -325,6 +346,7 @@ const REQUIRED_CREDENTIALS: Record<
   readonly string[]
 > = {
   slack: ["botToken", "signingSecret"],
+  discord: ["botToken", "applicationId", "guildId"],
   "microsoft-teams": ["clientId", "tenantId", "clientSecret"],
   telegram: ["botToken"],
 };
@@ -375,6 +397,7 @@ const UNAVOIDABLE_GITHUB_EVENTS = [
 const SUPPLIED_CREDENTIAL_KEYS: Record<ChatProvider, readonly string[]> = {
   slack: ["botToken", "signingSecret"],
   github: ["appId", "privateKey"],
+  discord: ["botToken", "applicationId", "guildId"],
   "microsoft-teams": ["clientId", "tenantId", "clientSecret"],
   telegram: ["botToken"],
 };
@@ -382,6 +405,11 @@ const SUPPLIED_CREDENTIAL_KEYS: Record<ChatProvider, readonly string[]> = {
 const MAX_INBOUND_TEXT = 100_000;
 const MAX_ERROR_TEXT = 2_000;
 const DELIVERY_PROCESSING_STALE_MS = 60_000;
+// A Discord root mention is durably staged before the adapter creates its
+// provider thread. Give the bounded provider retry loop ample time to finish;
+// if the process disappears, the delivery worker verifies that thread over
+// Discord's read-only API before it permits any Paperclip task mutation.
+const DISCORD_ROOT_THREAD_CONFIRMATION_DELAY_MS = 5 * 60_000;
 const DELIVERY_LEASE_TTL_MS = 90_000;
 const DELIVERY_DRAIN_LIMIT = 100;
 const SLACK_COMMAND_POST_STALE_MS = 60_000;
@@ -408,6 +436,7 @@ const INGRESS_REORDER_WINDOW_MS: Partial<Record<ChatProvider, number>> = {
   // the durable drain sort a short burst before the first agent wake starts.
   slack: 750,
   github: 750,
+  discord: 750,
   // Bot Framework can dispatch adjacent activities over independent requests.
   // Keep Teams bursts inside the same provider-timestamp ordering boundary as
   // Slack and GitHub so a faster later reply cannot wake the agent first.
@@ -567,6 +596,15 @@ export interface ChatChannelServiceOptions {
   questionFormOpenAuthorizationBarrier?: () => Promise<void>;
   /** Testable boundary immediately before the final inbound reach row lock. */
   reachAuthorizationBarrier?: () => Promise<void>;
+  /** Test override for the conversation-delivery lease renewal cadence. */
+  conversationLeaseRenewalIntervalMs?: number;
+  /** Narrow fault-injection boundary for renewing a conversation lease. */
+  renewConversationDeliveryLease?: (input: {
+    endpointId: string;
+    leaseKey: string;
+    token: string;
+    expiresAt: Date;
+  }) => Promise<boolean>;
   storage?: StorageService;
 }
 
@@ -580,6 +618,7 @@ function providerResourceType(
 ): string {
   if (surfaceKind === "direct_message") return "direct_message";
   if (provider === "github") return "repository";
+  if (provider === "discord") return "channel";
   if (provider === "microsoft-teams")
     return surfaceKind === "linear_group" ? "group_chat" : "channel";
   // Telegram topics are task/thread boundaries inside one group resource. The
@@ -618,6 +657,10 @@ function canonicalProviderResourceId(
   if (provider === "slack") return thread.channelId.replace(/^slack:/, "");
   if (provider === "github")
     return thread.channelId.replace(/^github:/, "").toLowerCase();
+  if (provider === "discord") {
+    const parts = thread.channelId.split(":");
+    return parts[2] ?? thread.channelId;
+  }
   if (provider === "microsoft-teams") {
     const conversationId =
       teamsConversationId(thread.channelId) ?? teamsConversationId(thread.id);
@@ -1031,6 +1074,7 @@ function absoluteBaseUrl(value: string | null | undefined): string | null {
 }
 
 type GitHubLifecycleEvent = {
+  actor?: LifecycleActor;
   eventKind: "message_updated" | "message_deleted";
   messageId: string;
   providerEventId?: string;
@@ -1311,6 +1355,7 @@ async function githubLifecycleEventFromRequest(
     issue?: { number?: unknown; pull_request?: unknown };
     pull_request?: { number?: unknown };
     repository?: { name?: unknown; owner?: { login?: unknown } };
+    sender?: { id?: unknown; login?: unknown };
   };
   if (payload.action !== "edited" && payload.action !== "deleted") return null;
   const owner = payload.repository?.owner?.login;
@@ -1366,7 +1411,20 @@ async function githubLifecycleEventFromRequest(
     numericMessageId >= 0
       ? numericMessageId
       : null;
+  const senderId = payload.sender?.id;
+  const senderLogin = payload.sender?.login;
+  const actor =
+    (typeof senderId === "string" || typeof senderId === "number") &&
+    typeof senderLogin === "string" &&
+    senderLogin.length > 0
+      ? {
+          externalId: String(senderId),
+          displayName: senderLogin,
+          handle: senderLogin,
+        }
+      : undefined;
   return {
+    ...(actor ? { actor } : {}),
     eventKind,
     messageId: String(messageId),
     ...(deliveryId ? { providerEventId: `github:delivery:${deliveryId}` } : {}),
@@ -1450,7 +1508,10 @@ function githubRepositoryInventoryItemFromPayload(
 }
 
 function providerSetupState(
-  endpoint: Pick<EndpointRow, "provider" | "publicId" | "status" | "setup">,
+  endpoint: Pick<
+    EndpointRow,
+    "provider" | "providerAccountId" | "publicId" | "status" | "setup"
+  >,
   publicBaseUrl: string | null,
   assignedAgentName?: string | null,
 ) {
@@ -1482,6 +1543,15 @@ function providerSetupState(
         providerUrl: "https://github.com/settings/installations",
         webhookUrl,
         webhookVerifiedAt: endpoint.setup.webhookVerifiedAt ?? null,
+      } as const;
+    case "discord":
+      return {
+        step,
+        authorizationUrl: "https://discord.com/developers/applications",
+        providerUrl: endpoint.providerAccountId
+          ? `https://discord.com/channels/${encodeURIComponent(endpoint.providerAccountId)}`
+          : "https://discord.com/channels/@me",
+        webhookUrl,
       } as const;
     case "microsoft-teams":
       return {
@@ -2125,6 +2195,9 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     }
     if (provider === "github") {
       return /^github:([^:]+)/.exec(threadId)?.[1]?.toLowerCase() ?? null;
+    }
+    if (provider === "discord") {
+      return /^discord:[^:]+:([^:]+)/.exec(threadId)?.[1] ?? null;
     }
     const conversationId = teamsConversationId(threadId);
     return conversationId ? baseTeamsConversationId(conversationId) : null;
@@ -2958,6 +3031,20 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         botLabel: result.user,
       };
     }
+    if (provider === "discord") {
+      const identity = await verifyDiscordBot({
+        applicationId: credentials.applicationId,
+        botToken: credentials.botToken,
+        fetch: fetchImpl,
+        guildId: credentials.guildId,
+      }).catch((error) => {
+        throw unprocessable(redactError(error), {
+          code: "chat_provider_permissions_missing",
+          provider: "discord",
+        });
+      });
+      return identity;
+    }
     if (provider === "telegram") {
       const response = await fetchImpl(
         `https://api.telegram.org/bot${encodeURIComponent(credentials.botToken)}/getMe`,
@@ -3105,7 +3192,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
   ): string | null {
     const account = identity.providerAccountId?.trim().toLowerCase();
     const bot = identity.botExternalId?.trim().toLowerCase();
-    if (provider === "github") {
+    if (provider === "github" || provider === "discord") {
       if (bot) return `${provider}:app:${bot}`;
       return null;
     }
@@ -3172,7 +3259,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         ),
       );
     const conflictEndpoint = candidates.find((candidate) => {
-      if (endpoint.provider !== "github") {
+      if (endpoint.provider !== "github" && endpoint.provider !== "discord") {
         return nativeBotIdentityKey(endpoint.provider, candidate) === key;
       }
       const candidateAppId = candidate.botExternalId?.trim().toLowerCase();
@@ -4024,6 +4111,16 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           },
         };
       }
+      if (endpoint.provider === "discord") {
+        return {
+          credentials,
+          inventory: await listDiscordBotChannels({
+            botToken: credentials.botToken,
+            fetch: fetchImpl,
+            guildId: credentials.guildId,
+          }),
+        };
+      }
       return { credentials, inventory: null };
     } catch (error) {
       throw unprocessable(redactError(error), {
@@ -4054,6 +4151,16 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         credentials: {
           botToken: credentials.botToken,
           secretToken: credentials.webhookSecret,
+        },
+      };
+    if (endpoint.provider === "discord")
+      return {
+        provider: "discord",
+        userName,
+        credentials: {
+          applicationId: credentials.applicationId,
+          botToken: credentials.botToken,
+          guildId: credentials.guildId,
         },
       };
     if (endpoint.provider === "microsoft-teams")
@@ -4131,6 +4238,11 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           concurrency: record.endpoint.concurrencyPolicy,
           callbacks: {
             onMessage: (event) => handleSdkMessage(event, context),
+            onDiscordRootMentionAdmission:
+              record.endpoint.provider === "discord"
+                ? (event) =>
+                    admitDiscordRootMention(record.endpoint, event, context)
+                : undefined,
             onAction:
               record.endpoint.capabilities.actions === true
                 ? (event) => handleAction(event, context)
@@ -4615,7 +4727,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     ) {
       throw unprocessable("Unsupported chat endpoint setup action");
     }
-    if (!publicBaseUrl) {
+    if (!publicBaseUrl && endpoint.provider !== "discord") {
       throw unprocessable(
         `A public HTTPS Paperclip URL is required before connecting ${PROVIDER_LABELS[endpoint.provider]}`,
       );
@@ -4804,6 +4916,10 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     } catch (error) {
       if (
         isUniqueViolation(error, "chat_endpoints_live_bot_external_uq") ||
+        isUniqueViolation(
+          error,
+          "chat_endpoints_live_discord_bot_external_uq",
+        ) ||
         isUniqueViolation(error, "chat_endpoints_live_bot_username_uq")
       ) {
         throw conflict(
@@ -5575,6 +5691,217 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     return `${omitted} external attachment${omitted === 1 ? " was" : "s were"} omitted (${reasons})`;
   }
 
+  async function admitDiscordRootMention(
+    configuredEndpoint: EndpointRow,
+    event: DiscordRootMentionAdmissionEvent,
+    context: RuntimeContext,
+  ): Promise<boolean> {
+    const threadId = `discord:${event.guildId}:${event.channelId}:${event.messageId}`;
+    const providerEventId = `${threadId}:${event.messageId}`;
+    const allowed = await db.transaction(async (tx) => {
+      const endpoint = await runtimeCallbackEndpoint(
+        tx,
+        configuredEndpoint.id,
+        context,
+        ["verifying", "active"],
+      );
+      const existing = await tx
+        .select({ state: chatDeliveries.state })
+        .from(chatDeliveries)
+        .where(
+          and(
+            eq(chatDeliveries.endpointId, configuredEndpoint.id),
+            eq(chatDeliveries.providerEventId, providerEventId),
+          ),
+        )
+        .then((rows) => rows[0] ?? null);
+      if (
+        existing &&
+        ["processed", "filtered", "failed"].includes(existing.state)
+      )
+        return false;
+
+      let reason: string | null = null;
+      if (!endpoint || endpoint.providerAccountId !== event.guildId) {
+        reason = "Connection is not active";
+      }
+      const resource = endpoint
+        ? await tx
+            .select()
+            .from(chatEndpointResources)
+            .where(
+              and(
+                eq(chatEndpointResources.endpointId, endpoint.id),
+                eq(chatEndpointResources.type, "channel"),
+                eq(chatEndpointResources.providerResourceId, event.channelId),
+              ),
+            )
+            .for("update")
+            .then((rows) => rows[0] ?? null)
+        : null;
+      const enabledCount =
+        endpoint?.status === "verifying"
+          ? await tx
+              .select({ count: sql<number>`count(*)::int` })
+              .from(chatEndpointResources)
+              .where(
+                and(
+                  eq(chatEndpointResources.endpointId, endpoint.id),
+                  eq(chatEndpointResources.type, "channel"),
+                  eq(chatEndpointResources.enabled, true),
+                  eq(chatEndpointResources.availability, "available"),
+                ),
+              )
+              .then((rows) => rows[0]?.count ?? 0)
+          : 0;
+      const setupDestination =
+        endpoint?.status === "verifying" &&
+        enabledCount === 0 &&
+        resource?.availability === "available";
+      if (
+        !reason &&
+        !(
+          endpoint?.allowGroupChats &&
+          resource?.availability === "available" &&
+          (resource.enabled || setupDestination)
+        )
+      ) {
+        reason = "Destination is not enabled in Paperclip";
+      }
+
+      if (!reason && endpoint) {
+        const principal = await tx
+          .select({ id: chatExternalPrincipals.id })
+          .from(chatExternalPrincipals)
+          .where(
+            and(
+              eq(chatExternalPrincipals.companyId, endpoint.companyId),
+              eq(chatExternalPrincipals.provider, "discord"),
+              eq(chatExternalPrincipals.providerAccountId, event.guildId),
+              eq(chatExternalPrincipals.externalId, event.userId),
+            ),
+          )
+          .then((rows) => rows[0] ?? null);
+        let allowed: boolean;
+        let linkedDenied = false;
+        if (principal) {
+          const authorization = await lockCurrentPrincipalAuthorization(
+            tx,
+            endpoint,
+            principal.id,
+          );
+          allowed = authorization.allowed;
+          linkedDenied = authorization.linkedDenied;
+        } else if (!endpoint.allowUnlinkedPeople) {
+          allowed = false;
+        } else if (!endpoint.sponsorUserId) {
+          allowed = true;
+        } else {
+          const sponsor = await tx
+            .select({
+              status: companyMemberships.status,
+              membershipRole: companyMemberships.membershipRole,
+            })
+            .from(companyMemberships)
+            .where(
+              and(
+                eq(companyMemberships.companyId, endpoint.companyId),
+                eq(companyMemberships.principalType, "user"),
+                eq(companyMemberships.principalId, endpoint.sponsorUserId),
+              ),
+            )
+            .for("update")
+            .then((rows) => rows[0] ?? null);
+          allowed =
+            sponsor?.status === "active" && sponsor.membershipRole !== "viewer";
+        }
+        if (!allowed) {
+          reason = linkedDenied
+            ? "Linked Paperclip account is not currently permitted"
+            : endpoint.allowUnlinkedPeople
+              ? "Endpoint sponsor can no longer authorize external guests"
+              : "External identity must be linked to a Paperclip account";
+        }
+      }
+      if (!reason) return true;
+
+      const filteredAt = new Date();
+      const normalizedEvent = {
+        providerEventId,
+        kind: "mention",
+        trigger: "mention",
+        resource: {
+          type: "channel",
+          providerResourceId: event.channelId,
+        },
+        conversation: { externalThreadId: threadId },
+        message: { providerMessageId: event.messageId },
+        filtering: { contentRetained: false, providerThreadCreated: false },
+      };
+      await tx
+        .insert(chatDeliveries)
+        .values({
+          companyId: configuredEndpoint.companyId,
+          endpointId: configuredEndpoint.id,
+          providerEventId,
+          deduplicationKey: createHash("sha256")
+            .update(providerEventId)
+            .digest("hex"),
+          eventKind: "mention",
+          normalizedEvent,
+          state: "filtered",
+          redactedError: reason,
+          processedAt: filteredAt,
+        })
+        .onConflictDoUpdate({
+          target: [chatDeliveries.endpointId, chatDeliveries.providerEventId],
+          set: {
+            normalizedEvent,
+            principalId: null,
+            state: "filtered",
+            nextAttemptAt: null,
+            redactedError: reason,
+            processedAt: filteredAt,
+            updatedAt: filteredAt,
+          },
+        });
+      await tx
+        .update(chatEndpoints)
+        .set({ lastEventAt: filteredAt, updatedAt: filteredAt })
+        .where(eq(chatEndpoints.id, configuredEndpoint.id));
+      return false;
+    });
+    if (!allowed || !event.message || !context.endpointRuntime) return false;
+    const thread = context.endpointRuntime.thread(event.threadId);
+    await processMessage(
+      configuredEndpoint,
+      thread,
+      event.message,
+      "mention",
+      true,
+      null,
+      context,
+      undefined,
+      null,
+      true,
+      undefined,
+      true,
+    );
+    const staged = await db
+      .select({ state: chatDeliveries.state })
+      .from(chatDeliveries)
+      .where(
+        and(
+          eq(chatDeliveries.endpointId, configuredEndpoint.id),
+          eq(chatDeliveries.providerEventId, providerEventId),
+        ),
+      )
+      .then((rows) => rows[0] ?? null);
+    return Boolean(
+      staged && ["received", "retry", "processing"].includes(staged.state),
+    );
+  }
+
   async function processMessage(
     endpoint: EndpointRow,
     thread: Thread,
@@ -5587,6 +5914,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     admittedDeliveryId: string | null = null,
     receiptReactionSupported = true,
     preauthorizedUserId?: string | null,
+    deferDrainUntilFollowup = false,
   ) {
     // The Telegram adapter currently emits edited_message through the normal
     // message callback with the original message id. Paperclip records that
@@ -5913,11 +6241,28 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
             eventKind,
             normalizedEvent: redactDestinationDelivery
               ? redactedDestinationNormalized
-              : normalized,
-            state: accepting ? "received" : "filtered",
+              : deferDrainUntilFollowup && accepting
+                ? { ...normalized, providerThreadPending: true }
+                : normalized,
+            state: accepting
+              ? deferDrainUntilFollowup
+                ? "retry"
+                : "received"
+              : "filtered",
             nextAttemptAt:
-              accepting && scheduledAt ? new Date(scheduledAt) : null,
-            redactedError: accepting ? null : inactiveReason,
+              accepting && deferDrainUntilFollowup
+                ? new Date(
+                    Date.now() + DISCORD_ROOT_THREAD_CONFIRMATION_DELAY_MS,
+                  )
+                : accepting && scheduledAt
+                  ? new Date(scheduledAt)
+                  : null,
+            redactedError:
+              accepting && deferDrainUntilFollowup
+                ? "Waiting for Discord thread creation confirmation"
+                : accepting
+                  ? null
+                  : inactiveReason,
             processedAt: ignoredAt,
           })
           .onConflictDoNothing()
@@ -6051,15 +6396,43 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         provisionalTeamsSetupReply,
       };
     });
-    const candidate = admission?.candidate ?? null;
+    let candidate = admission?.candidate ?? null;
     if (!admission || !candidate) return;
     if (!admission.accepting) {
       liveInboundMessages.delete(candidate.id);
       return;
     }
     if (["processed", "filtered", "failed"].includes(candidate.state)) return;
+    if (
+      !deferDrainUntilFollowup &&
+      endpoint.provider === "discord" &&
+      discordRootThreadPending(candidate)
+    ) {
+      // The adapter invokes the ordinary message callback only after Discord
+      // has returned the created thread. Promote the pre-admission receipt
+      // atomically so the normal ordered drain can begin immediately.
+      const [promoted] = await db
+        .update(chatDeliveries)
+        .set({
+          state: "received",
+          normalizedEvent: sql`${chatDeliveries.normalizedEvent} - 'providerThreadPending'`,
+          nextAttemptAt: scheduledAt ? new Date(scheduledAt) : null,
+          redactedError: null,
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(chatDeliveries.id, candidate.id),
+            eq(chatDeliveries.state, "retry"),
+            sql`${chatDeliveries.normalizedEvent}->>'providerThreadPending' = 'true'`,
+          ),
+        )
+        .returning();
+      if (promoted) candidate = promoted;
+    }
     const now = new Date();
     if (
+      !deferDrainUntilFollowup &&
       candidate.state === "retry" &&
       candidate.nextAttemptAt &&
       candidate.nextAttemptAt > now
@@ -6082,11 +6455,13 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         trigger,
         receiptReactionSupported,
       });
-      scheduleConversationDrain(
-        endpoint.id,
-        thread.id,
-        scheduledAt ?? Date.now(),
-      );
+      if (!deferDrainUntilFollowup) {
+        scheduleConversationDrain(
+          endpoint.id,
+          thread.id,
+          scheduledAt ?? Date.now(),
+        );
+      }
       return;
     }
     const claimConditions = [
@@ -6399,6 +6774,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           : null;
       const isPlausibleOrphanFollowUp =
         endpoint.provider === "github" ||
+        endpoint.provider === "discord" ||
         (endpoint.provider === "slack" &&
           Boolean(slackRootMessageId) &&
           slackRootMessageId !== message.id) ||
@@ -6407,6 +6783,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           teamsRootMessageId !== message.id);
       const setupDestinationCanBeEnabledByEarlierMention =
         (endpoint.provider === "github" ||
+          endpoint.provider === "discord" ||
           (endpoint.provider === "microsoft-teams" &&
             resource?.type === "channel")) &&
         !thread.isDM &&
@@ -7195,6 +7572,104 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     );
   }
 
+  function discordRootThreadPending(
+    delivery: Pick<DeliveryRow, "normalizedEvent">,
+  ): boolean {
+    return (
+      Boolean(delivery.normalizedEvent) &&
+      typeof delivery.normalizedEvent === "object" &&
+      !Array.isArray(delivery.normalizedEvent) &&
+      (delivery.normalizedEvent as { providerThreadPending?: unknown })
+        .providerThreadPending === true
+    );
+  }
+
+  async function reconcileDiscordRootThread(
+    endpoint: EndpointRow,
+    delivery: DeliveryRow,
+    threadId: string,
+  ): Promise<boolean> {
+    try {
+      const endpointRuntime = await runtimeFor(endpoint);
+      const normalized = delivery.normalizedEvent as {
+        message?: { providerMessageId?: unknown; text?: unknown };
+        resource?: { providerResourceId?: unknown };
+      };
+      const discordThreadParts = threadId.split(":");
+      const channelId =
+        discordThreadParts[0] === "discord" && discordThreadParts.length >= 4
+          ? discordThreadParts[2]
+          : normalized.resource?.providerResourceId;
+      const messageId = normalized.message?.providerMessageId;
+      if (typeof channelId !== "string" || typeof messageId !== "string") {
+        throw new DiscordAdapterCompatibilityError(
+          "the provisional root receipt is missing its channel or message id",
+        );
+      }
+      await endpointRuntime.ensureDiscordRootThread({
+        channelId,
+        messageId,
+        content:
+          typeof normalized.message?.text === "string"
+            ? normalized.message.text
+            : "Paperclip task",
+      });
+      const [promoted] = await db
+        .update(chatDeliveries)
+        .set({
+          state: "received",
+          normalizedEvent: sql`${chatDeliveries.normalizedEvent} - 'providerThreadPending'`,
+          nextAttemptAt: null,
+          redactedError: null,
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(chatDeliveries.id, delivery.id),
+            eq(chatDeliveries.state, "retry"),
+            sql`${chatDeliveries.normalizedEvent}->>'providerThreadPending' = 'true'`,
+          ),
+        )
+        .returning({ id: chatDeliveries.id });
+      return Boolean(promoted);
+    } catch (error) {
+      const disposition = classifyChatPublicationError(
+        error,
+        delivery.attempts + 1,
+      );
+      const terminal =
+        disposition.kind === "resource_unavailable" ||
+        disposition.kind === "failed";
+      const retryAfterMs =
+        disposition.kind === "retry"
+          ? disposition.retryAfterMs
+          : DISCORD_ROOT_THREAD_CONFIRMATION_DELAY_MS;
+      const now = new Date();
+      await db
+        .update(chatDeliveries)
+        .set({
+          state: terminal ? "filtered" : "retry",
+          attempts: delivery.attempts + 1,
+          nextAttemptAt: terminal
+            ? null
+            : new Date(now.getTime() + retryAfterMs),
+          processedAt: terminal ? now : null,
+          redactedError: terminal
+            ? "Discord thread creation was not confirmed"
+            : redactError(error),
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(chatDeliveries.id, delivery.id),
+            eq(chatDeliveries.state, "retry"),
+            sql`${chatDeliveries.normalizedEvent}->>'providerThreadPending' = 'true'`,
+          ),
+        );
+      return false;
+    }
+  }
+
   function normalizedDeliveryThreadId(delivery: DeliveryRow): string | null {
     const normalized = delivery.normalizedEvent as {
       conversation?: { externalThreadId?: unknown };
@@ -7231,6 +7706,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     if (
       (effect.provider !== "slack" &&
         effect.provider !== "github" &&
+        effect.provider !== "discord" &&
         effect.provider !== "microsoft-teams" &&
         effect.provider !== "telegram") ||
       typeof effect.providerEventId !== "string"
@@ -7520,35 +7996,49 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
 
     let leaseOwned = true;
     let renewal: Promise<void> | null = null;
-    const renewTimer = setInterval(() => {
-      if (renewal) return;
-      renewal = db
-        .update(chatEndpointLeases)
-        .set({
-          expiresAt: new Date(Date.now() + DELIVERY_LEASE_TTL_MS),
-          updatedAt: new Date(),
-        })
-        .where(
-          and(
-            eq(chatEndpointLeases.endpointId, endpointId),
-            eq(chatEndpointLeases.leaseKey, lease.leaseKey),
-            eq(chatEndpointLeases.token, lease.token),
-          ),
-        )
-        .returning({ id: chatEndpointLeases.id })
-        .then((rows) => {
-          if (rows.length === 0) leaseOwned = false;
-        })
-        .catch((error) => {
-          logger.warn(
-            { endpointId, error: redactError(error) },
-            "could not renew external chat conversation lease",
-          );
-        })
-        .finally(() => {
-          renewal = null;
-        });
-    }, DELIVERY_LEASE_TTL_MS / 3);
+    const renewTimer = setInterval(
+      () => {
+        if (!leaseOwned || renewal) return;
+        const expiresAt = new Date(Date.now() + DELIVERY_LEASE_TTL_MS);
+        renewal = Promise.resolve()
+          .then(async () => {
+            const renewed = options.renewConversationDeliveryLease
+              ? await options.renewConversationDeliveryLease({
+                  endpointId,
+                  leaseKey: lease.leaseKey,
+                  token: lease.token,
+                  expiresAt,
+                })
+              : await db
+                  .update(chatEndpointLeases)
+                  .set({ expiresAt, updatedAt: new Date() })
+                  .where(
+                    and(
+                      eq(chatEndpointLeases.endpointId, endpointId),
+                      eq(chatEndpointLeases.leaseKey, lease.leaseKey),
+                      eq(chatEndpointLeases.token, lease.token),
+                    ),
+                  )
+                  .returning({ id: chatEndpointLeases.id })
+                  .then((rows) => rows.length > 0);
+            if (!renewed) leaseOwned = false;
+          })
+          .catch((error) => {
+            // A failed renewal has unknown durability. Stop this local drain at
+            // the next delivery boundary so another worker can never overlap
+            // later turns after the original lease expires or is reclaimed.
+            leaseOwned = false;
+            logger.warn(
+              { endpointId, error: redactError(error) },
+              "could not renew external chat conversation lease",
+            );
+          })
+          .finally(() => {
+            renewal = null;
+          });
+      },
+      options.conversationLeaseRenewalIntervalMs ?? DELIVERY_LEASE_TTL_MS / 3,
+    );
     renewTimer.unref?.();
 
     try {
@@ -7575,6 +8065,20 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
             .where(eq(chatDeliveries.id, delivery.id));
           liveInboundMessages.delete(delivery.id);
           continue;
+        }
+
+        if (
+          endpoint.provider === "discord" &&
+          discordRootThreadPending(delivery)
+        ) {
+          // This is the only recovery path for the narrow crash window after
+          // pre-admission but before Chat's ordinary callback. A successful
+          // read proves the root thread exists; an explicit 404/410 proves it
+          // does not. Ambiguous transport and auth failures remain retryable.
+          if (await reconcileDiscordRootThread(endpoint, delivery, threadId)) {
+            continue;
+          }
+          break;
         }
 
         const live = liveInboundMessages.get(delivery.id);
@@ -8159,6 +8663,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         const requiresLifecycleActorAuthorization =
           activeDelivery.eventKind === "message_updated" &&
           (lifecycle.actor !== null ||
+            currentEndpoint.provider === "github" ||
             currentEndpoint.provider === "telegram" ||
             currentEndpoint.provider === "microsoft-teams");
         if (requiresLifecycleActorAuthorization) {
@@ -9165,6 +9670,8 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       }
       const idempotencyKey = `interaction:${payload.interactionId}:${payload.interactionStatus}`;
       try {
+        const sourceCommentId = currentInteraction.sourceCommentId ?? null;
+        const sourceRunId = currentInteraction.sourceRunId ?? null;
         // A resolved interaction is still part of the originating external
         // turn. Preserve one verified inbound comment edge on the continuation
         // run so queued/working/failure milestones return to this exact
@@ -9200,7 +9707,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
               .limit(1)
               .then((rows) => rows[0] ?? null)
           : null;
-        const wakeCommentId = chatOrigin?.commentId ?? null;
+        const wakeCommentId = sourceCommentId ?? chatOrigin?.commentId ?? null;
         const existing = await db
           .select({
             agentId: agentWakeupRequests.agentId,
@@ -9230,8 +9737,8 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
                 interactionId: payload.interactionId,
                 interactionKind: payload.interactionKind,
                 interactionStatus: payload.interactionStatus,
-                sourceCommentId: payload.sourceCommentId ?? null,
-                sourceRunId: payload.sourceRunId ?? null,
+                sourceCommentId,
+                sourceRunId,
                 ...(wakeCommentId
                   ? {
                       wakeCommentId,
@@ -9254,8 +9761,8 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
                 interactionId: payload.interactionId,
                 interactionKind: payload.interactionKind,
                 interactionStatus: payload.interactionStatus,
-                sourceCommentId: payload.sourceCommentId ?? null,
-                sourceRunId: payload.sourceRunId ?? null,
+                sourceCommentId,
+                sourceRunId,
                 ...(payload.planReviewInteraction &&
                 typeof payload.planReviewInteraction === "object"
                   ? { planReviewInteraction: payload.planReviewInteraction }
@@ -15255,6 +15762,115 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       .then((rows) => rows[0]?.providerMessageId ?? null);
   }
 
+  async function interactionPromptPublicationToReplace(
+    publication: typeof chatPublications.$inferSelect,
+    payload: SafeChatPublicationPayload,
+  ): Promise<string | null> {
+    if (
+      !payload.interactionId ||
+      publication.idempotencyKey !==
+        `interaction:${payload.interactionId}:${publication.endpointId}`
+    ) {
+      return null;
+    }
+    const interaction = await db
+      .select({
+        kind: issueThreadInteractions.kind,
+        sourceRunId: issueThreadInteractions.sourceRunId,
+      })
+      .from(issueThreadInteractions)
+      .where(
+        and(
+          eq(issueThreadInteractions.id, payload.interactionId),
+          eq(issueThreadInteractions.companyId, publication.companyId),
+          eq(issueThreadInteractions.issueId, publication.issueId),
+          inArray(issueThreadInteractions.kind, [
+            "ask_user_questions",
+            "request_confirmation",
+          ]),
+        ),
+      )
+      .then((rows) => rows[0] ?? null);
+    if (!interaction?.sourceRunId) return null;
+
+    // A provider-visible interaction is this run's response, not an additional
+    // message beside its progress indicator. Move the durable interaction
+    // publication onto the exact source run's provider-message lane. This
+    // retires both the normal working placeholder and the queued placeholder
+    // when a very fast run asks before the working update is published.
+    for (const progressState of ["working", "queued"] as const) {
+      const providerMessageId = await db
+        .select({ providerMessageId: chatPublications.providerMessageId })
+        .from(chatPublications)
+        .where(
+          and(
+            eq(chatPublications.companyId, publication.companyId),
+            eq(chatPublications.endpointId, publication.endpointId),
+            eq(chatPublications.conversationId, publication.conversationId),
+            eq(chatPublications.issueId, publication.issueId),
+            eq(
+              chatPublications.idempotencyKey,
+              `run:${interaction.sourceRunId}:${progressState}:${publication.endpointId}`,
+            ),
+            eq(chatPublications.state, "published"),
+            isNotNull(chatPublications.providerMessageId),
+          ),
+        )
+        .then((rows) => rows[0]?.providerMessageId ?? null);
+      if (providerMessageId) return providerMessageId;
+    }
+    return null;
+  }
+
+  async function runProgressSupersededByPublishedInteraction(
+    publication: typeof chatPublications.$inferSelect,
+  ): Promise<boolean> {
+    if (
+      !["queued", "working"].includes(publication.payload.progressState ?? "")
+    ) {
+      return false;
+    }
+    const sourceRunId = runIdFromMilestonePublication(publication);
+    if (!sourceRunId) return false;
+    const interactionIds = await db
+      .select({ id: issueThreadInteractions.id })
+      .from(issueThreadInteractions)
+      .where(
+        and(
+          eq(issueThreadInteractions.companyId, publication.companyId),
+          eq(issueThreadInteractions.issueId, publication.issueId),
+          eq(issueThreadInteractions.sourceRunId, sourceRunId),
+          inArray(issueThreadInteractions.kind, [
+            "ask_user_questions",
+            "request_confirmation",
+          ]),
+        ),
+      )
+      .then((rows) => rows.map((row) => row.id));
+    if (interactionIds.length === 0) return false;
+    return db
+      .select({ id: chatPublications.id })
+      .from(chatPublications)
+      .where(
+        and(
+          eq(chatPublications.companyId, publication.companyId),
+          eq(chatPublications.endpointId, publication.endpointId),
+          eq(chatPublications.conversationId, publication.conversationId),
+          eq(chatPublications.issueId, publication.issueId),
+          eq(chatPublications.state, "published"),
+          inArray(
+            chatPublications.idempotencyKey,
+            interactionIds.map(
+              (interactionId) =>
+                `interaction:${interactionId}:${publication.endpointId}`,
+            ),
+          ),
+        ),
+      )
+      .limit(1)
+      .then((rows) => rows.length > 0);
+  }
+
   async function taskStatusPublicationToReplace(
     publication: typeof chatPublications.$inferSelect,
     payload: SafeChatPublicationPayload,
@@ -15847,6 +16463,28 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
                   return;
                 }
               }
+              if (
+                await runProgressSupersededByPublishedInteraction(publication)
+              ) {
+                await db
+                  .update(chatPublications)
+                  .set({
+                    state: "cancelled",
+                    attempts: publication.attempts,
+                    nextAttemptAt: null,
+                    redactedError:
+                      "Run progress was superseded by its provider interaction",
+                    updatedAt: new Date(),
+                  })
+                  .where(
+                    and(
+                      eq(chatPublications.id, publication.id),
+                      eq(chatPublications.state, "streaming"),
+                      eq(chatPublications.attempts, publication.attempts + 1),
+                    ),
+                  );
+                return;
+              }
               // Status is sampled when it reaches the head of the provider lane,
               // not when the command was admitted. If an already-streaming final
               // publication won the race, this reply reflects Paperclip's latest
@@ -15855,6 +16493,10 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
               const replaceProviderMessageId = CAPABILITIES[endpoint.provider]
                 .messageEdits
                 ? ((await interactionResolutionPublicationToReplace(
+                    publication,
+                    payload,
+                  )) ??
+                  (await interactionPromptPublicationToReplace(
                     publication,
                     payload,
                   )) ??

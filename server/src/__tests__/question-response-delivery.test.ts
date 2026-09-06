@@ -17,6 +17,7 @@ import {
   createDb,
   goals,
   heartbeatRuns,
+  issueComments,
   issueQuestionResponseDeliveries,
   issueThreadInteractions,
   issues,
@@ -72,6 +73,7 @@ describeEmbeddedPostgres("question response delivery", () => {
   afterEach(async () => {
     await db.delete(issueQuestionResponseDeliveries);
     await db.delete(issueThreadInteractions);
+    await db.delete(issueComments);
     await db.delete(activityLog);
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
@@ -91,6 +93,8 @@ describeEmbeddedPostgres("question response delivery", () => {
       runtimeMode?: "legacy" | "native";
       sourceStatus?: string;
       successorStatus?: "queued" | "running";
+      sourceCommentBody?: string;
+      attachSourceCommentToInteraction?: boolean;
     } = {},
   ) {
     const companyId = randomUUID();
@@ -161,12 +165,27 @@ describeEmbeddedPostgres("question response delivery", () => {
       });
     }
 
+    const sourceCommentId = args.sourceCommentBody ? randomUUID() : null;
+    if (sourceCommentId) {
+      await db.insert(issueComments).values({
+        id: sourceCommentId,
+        companyId,
+        issueId,
+        authorUserId: "external-user",
+        body: args.sourceCommentBody!,
+      });
+    }
+
     const interactionSvc = issueThreadInteractionService(db);
     const interaction = await interactionSvc.create(
       { id: issueId, companyId },
       {
         kind: "ask_user_questions",
         continuationPolicy: "wake_assignee",
+        sourceCommentId:
+          args.attachSourceCommentToInteraction === false
+            ? null
+            : sourceCommentId,
         sourceRunId,
         payload: {
           version: 1,
@@ -262,6 +281,7 @@ describeEmbeddedPostgres("question response delivery", () => {
       agentId,
       issueId,
       sourceRunId,
+      sourceCommentId,
       successorRunId,
       interaction: answered,
     };
@@ -347,77 +367,210 @@ describeEmbeddedPostgres("question response delivery", () => {
     expect(JSON.stringify(deliveryEvents[0]?.details)).not.toContain("Node.js");
   });
 
-  it("never mixes an external-chat question response into another live chat run", async () => {
-    const seeded = await seed({ successorStatus: "running" });
+  it.each(["native", "legacy"] as const)(
+    "never mixes an external-chat question response into another live chat run in %s mode",
+    async (runtimeMode) => {
+      const seeded = await seed({
+        runtimeMode,
+        sourceStatus: "running",
+        successorStatus: "running",
+        sourceCommentBody:
+          "External request whose complete trailing instructions must survive the response continuation.",
+        attachSourceCommentToInteraction: false,
+      });
+      if (!seeded.sourceCommentId) {
+        throw new Error("Expected a source comment for the external-chat run");
+      }
+      expect(seeded.interaction.sourceCommentId).toBeNull();
+      await db
+        .update(heartbeatRuns)
+        .set({
+          contextSnapshot: {
+            issueId: seeded.issueId,
+            source: "chat:slack",
+            commentId: seeded.sourceCommentId,
+            wakeCommentId: seeded.sourceCommentId,
+            wakeCommentIds: [seeded.sourceCommentId],
+          },
+        })
+        .where(eq(heartbeatRuns.id, seeded.sourceRunId));
+      await db
+        .update(heartbeatRuns)
+        .set({
+          contextSnapshot: {
+            issueId: seeded.issueId,
+            source: "chat:telegram",
+            wakeCommentId: randomUUID(),
+          },
+        })
+        .where(eq(heartbeatRuns.id, seeded.successorRunId!));
+      await db
+        .update(issues)
+        .set({ executionRunId: seeded.successorRunId })
+        .where(eq(issues.id, seeded.issueId));
+
+      const [dedicatedRun] = await db
+        .insert(heartbeatRuns)
+        .values({
+          id: randomUUID(),
+          companyId: seeded.companyId,
+          agentId: seeded.agentId,
+          invocationSource: "automation",
+          status: "queued",
+          runtimeMode: "native",
+          driverKind: "codex",
+          contextSnapshot: {
+            issueId: seeded.issueId,
+            interactionId: seeded.interaction.id,
+            sourceRunId: seeded.sourceRunId,
+            source: "issue.interaction.respond",
+          },
+        })
+        .returning();
+      if (!dedicatedRun) throw new Error("Expected dedicated continuation run");
+      const wakeup = vi.fn().mockResolvedValue(dedicatedRun);
+      const cancelRun = vi.fn().mockResolvedValue({
+        id: seeded.sourceRunId,
+        status: "cancelled",
+      });
+      const steer = vi.fn();
+      const resolveNativeQuestion = vi
+        .fn()
+        .mockResolvedValue("queued" as const);
+      const outcome = await questionResponseDeliveryService(db, {
+        heartbeat: { wakeup, cancelRun } as never,
+        steer,
+        resolveNativeQuestion,
+      }).deliver(seeded.interaction.id);
+
+      expect(resolveNativeQuestion).not.toHaveBeenCalled();
+      expect(steer).not.toHaveBeenCalled();
+      expect(cancelRun).toHaveBeenCalledWith(
+        seeded.sourceRunId,
+        "Superseded by a dedicated external-chat answer continuation",
+        expect.objectContaining({
+          errorCode: "external_chat_continuation",
+          resultJson: expect.objectContaining({
+            interactionId: seeded.interaction.id,
+            externalChatContinuation: true,
+          }),
+          terminationGraceMs: 2_000,
+        }),
+      );
+      expect(cancelRun.mock.invocationCallOrder[0]).toBeLessThan(
+        wakeup.mock.invocationCallOrder[0]!,
+      );
+      expect(wakeup).toHaveBeenCalledWith(
+        seeded.agentId,
+        expect.objectContaining({
+          allowRunCoalescing: false,
+          idempotencyKey: `question-response:${seeded.interaction.id}`,
+          payload: expect.objectContaining({
+            externalChatContinuation: true,
+            sourceCommentId: seeded.sourceCommentId,
+            wakeCommentId: seeded.sourceCommentId,
+            wakeCommentIds: [seeded.sourceCommentId],
+          }),
+          contextSnapshot: expect.objectContaining({
+            externalChatContinuation: true,
+            sourceCommentId: seeded.sourceCommentId,
+            wakeCommentId: seeded.sourceCommentId,
+            wakeCommentIds: [seeded.sourceCommentId],
+          }),
+        }),
+      );
+      expect(outcome).toMatchObject({
+        status: "fallback_queued",
+        mode: "wake_fallback",
+        targetRunId: dedicatedRun.id,
+      });
+      expect(dedicatedRun.id).not.toBe(seeded.sourceRunId);
+      const [delivery] = await db
+        .select()
+        .from(issueQuestionResponseDeliveries);
+      expect(delivery).toMatchObject({
+        lastErrorCode: "steering_external_chat_context_incompatible",
+        targetRunId: dedicatedRun.id,
+      });
+    },
+  );
+
+  it("does not promote a source-run wake comment from another issue", async () => {
+    const seeded = await seed();
+    const goalId = await db
+      .select({ goalId: issues.goalId })
+      .from(issues)
+      .where(eq(issues.id, seeded.issueId))
+      .then((rows) => rows[0]?.goalId);
+    if (!goalId) throw new Error("Expected source issue goal");
+    const otherIssueId = randomUUID();
+    const otherCommentId = randomUUID();
+    await db.insert(issues).values({
+      id: otherIssueId,
+      companyId: seeded.companyId,
+      goalId,
+      title: "Unrelated issue",
+      status: "todo",
+      priority: "medium",
+    });
+    await db.insert(issueComments).values({
+      id: otherCommentId,
+      companyId: seeded.companyId,
+      issueId: otherIssueId,
+      authorUserId: "external-user",
+      body: "This other issue must remain outside the continuation.",
+    });
     await db
       .update(heartbeatRuns)
       .set({
         contextSnapshot: {
           issueId: seeded.issueId,
           source: "chat:slack",
-          wakeCommentId: randomUUID(),
+          wakeCommentId: otherCommentId,
+          wakeCommentIds: [otherCommentId],
         },
       })
       .where(eq(heartbeatRuns.id, seeded.sourceRunId));
-    await db
-      .update(heartbeatRuns)
-      .set({
-        contextSnapshot: {
-          issueId: seeded.issueId,
-          source: "chat:telegram",
-          wakeCommentId: randomUUID(),
-        },
-      })
-      .where(eq(heartbeatRuns.id, seeded.successorRunId!));
-    await db
-      .update(issues)
-      .set({ executionRunId: seeded.successorRunId })
-      .where(eq(issues.id, seeded.issueId));
 
-    const [dedicatedRun] = await db
-      .insert(heartbeatRuns)
-      .values({
-        id: randomUUID(),
-        companyId: seeded.companyId,
-        agentId: seeded.agentId,
-        invocationSource: "automation",
-        status: "queued",
-        runtimeMode: "native",
-        driverKind: "codex",
-        contextSnapshot: {
-          issueId: seeded.issueId,
-          interactionId: seeded.interaction.id,
-          sourceRunId: seeded.sourceRunId,
-          source: "issue.interaction.respond",
-        },
-      })
-      .returning();
-    if (!dedicatedRun) throw new Error("Expected dedicated continuation run");
-    const wakeup = vi.fn().mockResolvedValue(dedicatedRun);
-    const steer = vi.fn();
+    const fallbackRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: fallbackRunId,
+      companyId: seeded.companyId,
+      agentId: seeded.agentId,
+      invocationSource: "automation",
+      status: "queued",
+      runtimeMode: "native",
+      driverKind: "codex",
+      contextSnapshot: {
+        issueId: seeded.issueId,
+        interactionId: seeded.interaction.id,
+        source: "issue.interaction.respond",
+      },
+    });
+    const wakeup = vi.fn().mockResolvedValue({
+      id: fallbackRunId,
+      driverKind: "codex",
+    });
+    const resolveNativeQuestion = vi.fn().mockResolvedValue("queued" as const);
     const outcome = await questionResponseDeliveryService(db, {
       heartbeat: { wakeup } as never,
-      steer,
+      resolveNativeQuestion,
     }).deliver(seeded.interaction.id);
 
-    expect(steer).not.toHaveBeenCalled();
-    expect(wakeup).toHaveBeenCalledWith(
-      seeded.agentId,
-      expect.objectContaining({
-        allowRunCoalescing: false,
-        idempotencyKey: `question-response:${seeded.interaction.id}`,
-      }),
-    );
+    expect(resolveNativeQuestion).not.toHaveBeenCalled();
     expect(outcome).toMatchObject({
-      status: "fallback_queued",
       mode: "wake_fallback",
-      targetRunId: dedicatedRun.id,
+      targetRunId: fallbackRunId,
     });
-    const [delivery] = await db.select().from(issueQuestionResponseDeliveries);
-    expect(delivery).toMatchObject({
-      lastErrorCode: "steering_external_chat_context_incompatible",
-      targetRunId: dedicatedRun.id,
+    const wakeOptions = wakeup.mock.calls[0]?.[1];
+    expect(wakeOptions?.payload).toMatchObject({ sourceCommentId: null });
+    expect(wakeOptions?.payload).not.toHaveProperty("wakeCommentId");
+    expect(wakeOptions?.payload).not.toHaveProperty("wakeCommentIds");
+    expect(wakeOptions?.contextSnapshot).toMatchObject({
+      sourceCommentId: null,
     });
+    expect(wakeOptions?.contextSnapshot).not.toHaveProperty("wakeCommentId");
+    expect(wakeOptions?.contextSnapshot).not.toHaveProperty("wakeCommentIds");
   });
 
   it("resolves an in-flight native input request before creating a continuation", async () => {

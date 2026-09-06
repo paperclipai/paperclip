@@ -10,6 +10,7 @@ import { Link, useSearchParams } from "@/lib/router";
 const providerNames: Record<ChatProvider, string> = {
   slack: "Slack",
   github: "GitHub",
+  discord: "Discord",
   "microsoft-teams": "Microsoft Teams",
   telegram: "Telegram",
 };

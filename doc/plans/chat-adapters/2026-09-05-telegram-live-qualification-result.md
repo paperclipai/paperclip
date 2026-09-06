@@ -2,11 +2,19 @@
 
 > **Status: broad private-chat and group/topic live evidence, not full release qualification.** The latest live runs cover task controls, FIFO and burst handling, reactions, edits, native documents, task-generation races, the repaired interleaved status/final lane, group/topic isolation, removal/rejoin, the silent-publication boundary, and a complete native confirmation-to-continuation round trip. Broader media boundaries, global token revocation, and other runbook cases remain open.
 
+## 2026-09-06 final answer/recovery audit
+
+The final transcript and durable-ledger review for `CHA-81` found one provider-visible exact final publication, `TELEGRAM-LATENCY7-Cobalt`, with `attempts=1`; Telegram also showed the native question card settled to **Answered: Cobalt**. No late duplicate or internal run summary reached the provider.
+
+A third recovery run did execute after the answer continuation. Its comment stayed internal and the task then reached `done`, so the externally visible safety boundary held. The extra recovery incurred about $0.21 of model cost and is retained as efficiency evidence: it is the intentional productive-terminal fallback that prevents an `in_progress` task from being stranded, not a second answer publication. This observation does not upgrade Telegram to a complete runbook pass, and future tuning should preserve that liveness guarantee while avoiding unnecessary work when the continuation has already terminalized the task.
+
 ## 2026-09-06 current-build continuation closure
 
 After the public test tunnel changed, Paperclip rotated the bot webhook to the current verified URL using the already-vaulted credential; no token was exposed. The first current-build request then exposed a real shared presentation defect: the exact final comment existed in Paperclip, but Telegram received only `Maya completed this turn.` because heartbeat materialized the final response as an internal comment.
 
 The repaired path now authorizes only the selected final-assistant presentation of an exactly chat-bound run. A fresh request produced exact provider-visible `TG-CURRENT-BUILD-0906-C` instead of a generic completion. A fresh ordinary confirmation then rendered native **Approve** and **Reject** controls; selecting **Approve** edited the card to **Accepted**, scheduled one continuation, and produced exact provider-visible `TG-CONFIRM-CONTINUED-0906`. The final response appeared once, and no generic completion followed it. Raw reasoning, tool events, and internal logs remain in Paperclip.
+
+Transcript review then found that the originating run's own meta-summary still appeared beside the native control and exposed internal interaction terminology. The final implementation keeps that source-run summary internal whenever its exact provider-visible interaction prompt exists, including when the user answers before presentation resolves. The native prompt and the later continuation remain external.
 
 ## 2026-09-06 native confirmation follow-up
 
@@ -92,7 +100,7 @@ This proof supersedes the previously observed same-second race. It does not by i
 ## Current local regression evidence
 
 - Telegram edit lifecycle rows now retain the normalized external actor and revalidate the current identity link and Paperclip membership under lock immediately before creating the lifecycle system comment. A deterministic race revokes the actor's link after the original message is admitted; the later edit is filtered, its text is removed from the durable row, and no task comment is created.
-- On the current verified working tree based on revision `77ad5383e`, the full chat-channel PostgreSQL integration suite passed 177/177 on a fresh migrated database.
+- On the current verified working tree based on revision `77ad5383e`, the full chat-channel PostgreSQL integration suite passed 183/183 on fresh migrated database `chat_adapters_test_final_20260906_0833`.
 - Focused shared tests passed 11/11, focused server tests passed 194/194, and focused UI tests passed 41/41.
 - The deterministic browser suite `tests/e2e/chat-adapters-ui.spec.ts` passed 4/4, and shared, database, server, and UI typechecks all passed.
 - These deterministic checks support the live continuation fix but do not replace the remaining provider cases.

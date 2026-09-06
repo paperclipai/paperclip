@@ -1,7 +1,12 @@
 import { api } from "./client";
 import type { ChatPublicationState } from "@paperclipai/shared";
 
-export type ChatProvider = "slack" | "github" | "microsoft-teams" | "telegram";
+export type ChatProvider =
+  | "slack"
+  | "github"
+  | "discord"
+  | "microsoft-teams"
+  | "telegram";
 export type ChatEndpointStatus =
   | "draft"
   | "verifying"

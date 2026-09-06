@@ -21,6 +21,7 @@ import { isAgentStatusInvokable } from "@paperclipai/shared";
 const providerNames: Record<ChatProvider, string> = {
   slack: "Slack",
   github: "GitHub",
+  discord: "Discord",
   "microsoft-teams": "Microsoft Teams",
   telegram: "Telegram",
 };
@@ -540,6 +541,82 @@ settings:
     null,
     2,
   );
+  if (provider === "discord") {
+    const applicationId = credentials.applicationId?.trim() ?? "";
+    const guildId = credentials.guildId?.trim() ?? "";
+    const installUrl = applicationId
+      ? `https://discord.com/oauth2/authorize?client_id=${encodeURIComponent(applicationId)}&permissions=309237763136&scope=bot${guildId ? `&guild_id=${encodeURIComponent(guildId)}&disable_guild_select=true` : ""}`
+      : null;
+    return (
+      <div className="space-y-5">
+        <div>
+          <h1 className="text-xl font-bold">Connect {agentName} to Discord</h1>
+          <p className="mt-1 text-sm text-muted-foreground">
+            {repairing
+              ? "Reconnect the same Discord bot. Leave fields blank to reuse saved credentials."
+              : "Create one dedicated Discord application and bot for this Paperclip agent."}
+          </p>
+        </div>
+        <ol className="list-decimal space-y-2 pl-5 text-sm">
+          <li>
+            In Discord Developer Portal, create an application. Copy its
+            Application ID from General Information.
+          </li>
+          <li>
+            Open Bot, create the bot, enable Message Content Intent, then reset
+            and copy its token.
+          </li>
+          <li>
+            Enable Developer Mode in Discord, right-click the target server, and
+            copy its Server ID.
+          </li>
+          <li>
+            Enter those values below, then use the generated install link to add
+            the bot to that server.
+          </li>
+        </ol>
+        <Button
+          variant="outline"
+          onClick={() =>
+            openProviderSetup("https://discord.com/developers/applications")
+          }
+        >
+          Open Discord Developer Portal <ExternalLink />
+        </Button>
+        {field("applicationId", "Application ID", "text")}
+        {field("guildId", "Server ID", "text")}
+        {field("botToken", "Bot token")}
+        {installUrl && (
+          <Button asChild variant="outline">
+            <a href={installUrl} target="_blank" rel="noreferrer">
+              Install bot in this server <ExternalLink />
+            </a>
+          </Button>
+        )}
+        <p className="text-sm text-muted-foreground">
+          The install link grants only View Channels, Send Messages, Create
+          Public Threads, Send Messages in Threads, Read Message History, Add
+          Reactions, Embed Links, and Attach Files. Paperclip still requires
+          each discovered channel to be enabled in Access.
+        </p>
+        <Button
+          disabled={
+            (!repairing &&
+              (!credentials.applicationId ||
+                !credentials.guildId ||
+                !credentials.botToken)) ||
+            pending
+          }
+          onClick={() =>
+            onAction(repairing ? "reconnect" : "configure", credentials)
+          }
+        >
+          {pending && <Loader2 className="h-4 w-4 animate-spin" />}
+          {repairing ? "Reconnect Discord bot" : "Connect Discord bot"}
+        </Button>
+      </div>
+    );
+  }
   if (provider === "telegram")
     return (
       <div className="space-y-5">
@@ -1134,29 +1211,35 @@ function TryStep({
     ? `@${botUsername.replace(/^@/, "")}`
     : (botLabel ?? agentName);
   const instructions =
-    provider === "telegram"
+    provider === "discord"
       ? [
-          "Open the bot's private chat.",
-          "Tap Start.",
-          "Send “Help me test this”.",
+          "Open a text channel where the bot is installed.",
+          `Mention ${botMention} in a new root message.`,
+          `Reply once inside ${agentName}'s new Discord thread.`,
         ]
-      : provider === "github"
+      : provider === "telegram"
         ? [
-            "Open an installed issue or pull request.",
-            `Mention ${botMention} in a comment.`,
-            "Add another comment to continue the same task.",
+            "Open the bot's private chat.",
+            "Tap Start.",
+            "Send “Help me test this”.",
           ]
-        : provider === "microsoft-teams"
+        : provider === "github"
           ? [
-              "Open an installed channel and start a new post.",
-              `Mention ${botMention} in the post.`,
-              "Reply once beneath the post.",
+              "Open an installed issue or pull request.",
+              `Mention ${botMention} in a comment.`,
+              "Add another comment to continue the same task.",
             ]
-          : [
-              "Open a channel and invite the bot if needed.",
-              `Mention ${botMention} in a new channel message.`,
-              `Reply once in ${agentName}'s thread.`,
-            ];
+          : provider === "microsoft-teams"
+            ? [
+                "Open an installed channel and start a new post.",
+                `Mention ${botMention} in the post.`,
+                "Reply once beneath the post.",
+              ]
+            : [
+                "Open a channel and invite the bot if needed.",
+                `Mention ${botMention} in a new channel message.`,
+                `Reply once in ${agentName}'s thread.`,
+              ];
   return (
     <div className="space-y-5">
       <div>
