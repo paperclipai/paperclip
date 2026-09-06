@@ -264,6 +264,8 @@ jobs:
           pnpm --filter @paperclipai/paperclip-runner build:typescript
           pnpm --filter @paperclipai/paperclip-runner build:runner-binaries
           pnpm --filter @paperclipai/paperclip-runner build:issue-thread
+          # Older target refs must fail before paid cells, not publish an empty viewer.
+          grep -q 'paperclip-eval-report' packages/paperclip-runner/dist-issue-thread/assets/*.js
 
       - name: Package a portable provider runtime
         run: |
