@@ -1,11 +1,11 @@
 # Telegram live qualification result — 2026-09-05
 
-> **Status: current working-tree core-smoke evidence only, not full release qualification.** The latest live runs proved a clean no-false-duplicate private-chat round trip, deterministic ordering for a same-second `/new` race, and a valid provider receipt reaction for the slash command. The fixes were still uncommitted on top of the source checkpoint below, and the runs did not execute every Telegram case in the browser E2E runbook.
+> **Status: current-branch core-smoke evidence only, not full release qualification.** The latest live runs proved a clean no-false-duplicate private-chat round trip, deterministic ordering for a same-second `/new` race, and a valid provider receipt reaction for the slash command. The fixes are committed in the current branch, but the runs did not execute every Telegram case in the browser E2E runbook.
 
 ## Scope
 
-- Paperclip committed base reported by the live process: `4b868d3cbb7b16f784bded5da3183534881a9c32`
-- Additional tested state: uncommitted Telegram provider-ordering, slash-command receipt, and false internal-drain duplicate fixes on top of that base
+- Paperclip source reported by the restarted live process after rebase: `1d952088ce20b18e236a256095a0a6513f6363be`
+- Telegram provider-ordering, slash-command receipt, and false internal-drain duplicate fixes are committed in this source.
 - Provider: Telegram, dedicated test bot in a private chat
 - Current active Paperclip task: `b2867d3e…` (redacted suffix in this record)
 - Live checkpoint: 2026-09-05 at approximately 21:53 local time

@@ -1,11 +1,11 @@
 # Microsoft Teams live qualification result — 2026-09-05
 
-> **Status: blocked before provider setup; no live Teams scenario executed.** FIFO, region-safe egress, and pre-transport safety fixes exist in the current working tree, but they are not real-provider evidence. This is a blocker record, not qualification evidence and not a PASS.
+> **Status: blocked before provider setup; no live Teams scenario executed.** FIFO, region-safe egress, and pre-transport safety fixes are committed in the current branch, but they are not real-provider evidence. This is a blocker record, not qualification evidence and not a PASS.
 
 ## Attempted environment
 
-- Paperclip committed base reported by the live process: `4b868d3cbb7b16f784bded5da3183534881a9c32`
-- Additional local state: uncommitted Teams FIFO, per-thread and per-user service-URL egress, adapter-compatibility, and pre-transport safety fixes on top of that base
+- Paperclip source reported by the restarted live process after rebase: `1d952088ce20b18e236a256095a0a6513f6363be`
+- Teams FIFO, per-thread and per-user service-URL egress, adapter-compatibility, and pre-transport safety fixes are committed in this source.
 - Provider session: Microsoft Teams personal/free at `teams.live.com`
 
 No Microsoft client secret, access token, cookie, password, or one-time identity-link URL is recorded here.

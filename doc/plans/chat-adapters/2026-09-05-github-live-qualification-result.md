@@ -4,13 +4,13 @@
 
 ## Current-run evidence and blocker
 
-- Current source checkpoint: `4b868d3cbb7b16f784bded5da3183534881a9c32`
+- Current source checkpoint after rebase and final verification: `1d952088ce20b18e236a256095a0a6513f6363be`
 - Setup-ping fix: `4b868d3cb` (`fix: accept signed GitHub setup pings`)
-- Additional local state: uncommitted GitHub control-plane and runtime hardening on top of that checkpoint
+- GitHub control-plane and runtime hardening is committed in the current branch.
 
 The current regression path accepts a correctly signed GitHub setup ping while an unsigned setup ping receives HTTP 401. This closes the setup-probe signature bug without weakening webhook authentication.
 
-## Current uncommitted hardening
+## Current hardening
 
 The current working tree adds the following GitHub safety and concurrency behavior. These are code and local-test observations, not live GitHub qualification:
 

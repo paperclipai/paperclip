@@ -1,13 +1,13 @@
 # Slack live qualification result — 2026-09-05
 
-> **Status: current-working-tree partial live evidence plus historical core-smoke evidence, not full release qualification.** The current runs proved successful Slack root interactions, rapid two-message FIFO serialization, reaction delivery, pause/resume behavior, and suppression of a redundant same-run follow-up wake on an uncommitted hardening tree above `4b868d3cb`. The older run below remains useful regression evidence. These runs did not execute every Slack case in the browser E2E runbook and are not a full-provider PASS.
+> **Status: current-branch partial live evidence plus historical core-smoke evidence, not full release qualification.** The current runs proved successful Slack root interactions, rapid two-message FIFO serialization, reaction delivery, pause/resume behavior, and suppression of a redundant same-run follow-up wake. The older run below remains useful regression evidence. These runs did not execute every Slack case in the browser E2E runbook and are not a full-provider PASS.
 
 ## Current-run evidence
 
-- Paperclip source reported by the live process: `4b868d3cbb7b16f784bded5da3183534881a9c32`
-- Additional tested state: uncommitted false internal-drain duplicate fix and subsequent chat hardening on top of that source
+- Paperclip source reported by the restarted live process after rebase: `1d952088ce20b18e236a256095a0a6513f6363be`
+- The false internal-drain duplicate fix and subsequent chat hardening are committed in this source.
 - Relevant guest-failure UX fix included in that source: `037e57e0d`
-- Live checkpoint: 2026-09-05 from 21:05:49 through 21:56:27 local-provider time
+- Live checkpoint: 2026-09-05 from 21:05:49 through 23:58:45 local-provider time
 - Paperclip issue: `d7f718da-a8da-468e-99a7-79dc337d5cbc`
 
 A signed Slack root message reached the current public tunnel and completed the provider-visible lifecycle: the bot added its receipt reaction, showed a working response, and replaced or completed it with the successful final response in the originating thread.
