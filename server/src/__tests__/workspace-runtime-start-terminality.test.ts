@@ -99,6 +99,44 @@ describe("managed runtime start terminality", () => {
     expect(probes).toBeLessThan(12);
   });
 
+  it("preserves the last HTTP failure when the deadline-clamped probe aborts", async () => {
+    // The readiness budget (1s) is smaller than the per-probe timeout, so every probe is bounded
+    // by the deadline. The first probe observes the real failure (503); the second is admitted
+    // with 1ms left and aborts immediately. That abort says the budget ran out, not that the
+    // service misbehaved, so it must not overwrite the 503 in the thrown message.
+    let nowMs = 0;
+    let probes = 0;
+    const fetchImpl = (async (_url: string | URL | Request, init?: RequestInit) => {
+      probes += 1;
+      if (probes === 1) {
+        nowMs = 999;
+        return new Response(null, { status: 503 });
+      }
+      return await new Promise<Response>((_resolve, reject) => {
+        const rejectOnAbort = () => {
+          nowMs = 1_000;
+          reject(new Error("The operation was aborted"));
+        };
+        if (init?.signal?.aborted) {
+          rejectOnAbort();
+          return;
+        }
+        init?.signal?.addEventListener("abort", rejectOnAbort, { once: true });
+      });
+    }) as unknown as typeof fetch;
+
+    await expect(
+      waitForRuntimeServiceReadiness({
+        service: { readiness: { type: "http", timeoutSec: 1, intervalMs: 100 } },
+        url: "http://127.0.0.1:45439/",
+        readinessUrl: null,
+        fetchImpl,
+        now: () => nowMs,
+      }),
+    ).rejects.toThrow("Readiness check failed for http://127.0.0.1:45439/: received HTTP 503");
+    expect(probes).toBe(2);
+  });
+
   it("hands two concurrent starts distinct ports even when the kernel repeats a candidate", async () => {
     // The kernel really does hand the same ephemeral port to two `listen(0)` probes once the
     // first probe socket has closed, which is exactly the reallocation collision in the report.
