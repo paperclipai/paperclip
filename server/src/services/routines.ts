@@ -305,9 +305,9 @@ function isSubHourlyCronExpression(expression: string, timeZone: string, after: 
 
 function nextResultText(status: string, issueId?: string | null) {
   if (status === "issue_created" && issueId) return `Created execution issue ${issueId}`;
-  if (status === "coalesced") return "Coalesced into an existing live execution issue";
+  if (status === "coalesced") return "Coalesced into an existing active execution issue";
   if (status === "skipped_paused") return "Skipped because the project is paused";
-  if (status === "skipped") return "Skipped because a live execution issue already exists";
+  if (status === "skipped") return "Skipped because an active execution issue already exists";
   if (status === "completed") return "Execution issue completed";
   if (status === "failed") return "Execution failed";
   return status;
