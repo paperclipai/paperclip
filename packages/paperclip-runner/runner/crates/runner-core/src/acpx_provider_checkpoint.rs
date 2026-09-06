@@ -18,7 +18,7 @@ use crate::durable::{
 use crate::local_runner::LocalRunnerError;
 use crate::stable_identity::{is_stable_id, SHORT_STABLE_ID_CHARS};
 
-const CHECKPOINT_SCHEMA: &str = "paperclip.runner.acpx-suspension-checkpoint.v1";
+const CHECKPOINT_SCHEMA: &str = "paperclip.runner.acpx-suspension-checkpoint.v2";
 const CHECKPOINT_DIRECTORY: &str = "acpx-provider";
 const CHECKPOINT_FILE: &str = "suspension-checkpoint.json";
 const MAX_CHECKPOINT_BYTES: u64 = 1024 * 1024;
@@ -48,6 +48,7 @@ struct PersistedAcpxProviderSessionIdentity {
     requested_model: String,
     effective_model: String,
     permission_mode: AcpxPermissionMode,
+    provider_lifetime_fence_candidates: [u16; 3],
 }
 
 impl PersistedAcpxProviderSessionIdentity {
@@ -69,6 +70,7 @@ impl PersistedAcpxProviderSessionIdentity {
             requested_model: identity.requested_model,
             effective_model: identity.effective_model,
             permission_mode,
+            provider_lifetime_fence_candidates: identity.provider_lifetime_fence_candidates,
         })
     }
 
@@ -84,6 +86,7 @@ impl PersistedAcpxProviderSessionIdentity {
             requested_model: self.requested_model.clone(),
             effective_model: self.effective_model.clone(),
             permission_mode: Some(self.permission_mode),
+            provider_lifetime_fence_candidates: self.provider_lifetime_fence_candidates,
         }
     }
 

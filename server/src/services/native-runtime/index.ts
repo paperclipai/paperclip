@@ -8,4 +8,6 @@ export * from "./native-interaction-bridge.js";
 export * from "./paperclip-control-plane-port.js";
 export * from "./native-run-finalizer.js";
 export * from "./native-finalization-reconciler.js";
+export * from "./native-restart-recovery.js";
+export * from "./native-workspace-sync.js";
 export * from "./status-arbiter.js";

@@ -11,6 +11,10 @@ import {
 } from "./local-process-sandbox.js";
 import { buildSshSpawnTarget, type SshRemoteExecutionSpec } from "./ssh.js";
 import { redactCommandText } from "./command-redaction.js";
+import {
+  PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES,
+  resolvePaperclipRunnerModel,
+} from "./paperclip-runner-permissions.js";
 import type {
   AdapterRuntimeToolAccess,
   AdapterSkillEntry,
@@ -3059,6 +3063,45 @@ export function resolvePaperclipDesiredSkillNames(
  * resolver above.
  */
 export const PAPERCLIP_OPERATIONAL_SKILL_KEY = "paperclipai/paperclip/paperclip";
+
+/**
+ * Native Paperclip Runner sessions receive the control-plane contract through
+ * PRP, so carrying the legacy operational skill into their stored preference
+ * is redundant and invalid. Normalize it away at persistence boundaries.
+ * Legacy adapters remain unchanged because their runtime resolver mounts the
+ * operational skill automatically, including after switching back.
+ */
+export function normalizePaperclipOperationalSkillPreference(
+  adapterType: string,
+  config: Record<string, unknown>,
+): Record<string, unknown> {
+  if (adapterType !== "paperclip_runner") return config;
+  const preference = readPaperclipSkillSyncPreference(config);
+  const desiredSkillEntries = preference.desiredSkillEntries.filter(
+    (entry) => entry.key.trim().toLowerCase() !== PAPERCLIP_OPERATIONAL_SKILL_KEY,
+  );
+  return desiredSkillEntries.length === preference.desiredSkillEntries.length
+    ? config
+    : writePaperclipSkillSyncPreference(config, desiredSkillEntries);
+}
+
+/** Apply the persisted defaults and skill contract for the native runner. */
+export function normalizePaperclipRunnerAdapterConfig(
+  adapterType: string,
+  config: Record<string, unknown>,
+): Record<string, unknown> {
+  if (adapterType !== "paperclip_runner") return config;
+  const next: Record<string, unknown> = {
+    provider: "codex",
+    codexPermissionMode: PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES.codex.defaultMode,
+    lifecycleMode: "per_turn",
+    ...config,
+  };
+  if (next.provider === "codex") {
+    next.model = resolvePaperclipRunnerModel("codex", config.model);
+  }
+  return normalizePaperclipOperationalSkillPreference(adapterType, next);
+}
 
 export function resolveLegacyPaperclipDesiredSkillNames(
   config: Record<string, unknown>,

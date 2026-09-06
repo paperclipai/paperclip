@@ -187,6 +187,12 @@
       "compatibilityCase": "canonical"
     },
     {
+      "path": "fixtures/provider-boundary/local-integrity.json",
+      "sha256": "ca3d3eaddd80320b273f48e68f7562f63b1f03152901154ace5ef26232c24f4f",
+      "expectation": "accept",
+      "compatibilityCase": "canonical"
+    },
+    {
       "path": "fixtures/questions/acpx.json",
       "sha256": "6f1b65d5168b39f4bc821e778901bf077b1df10495f4bc1217b515eca4a339e4",
       "expectation": "accept",
@@ -212,7 +218,7 @@
     },
     {
       "path": "fixtures/replay/duplicate-event.json",
-      "sha256": "779c146966d2825ffcde88bfff8b1fb238c162d40c578980ad3bd1a7def405d7",
+      "sha256": "ea94f163048111118ed2c81d9940196e5560455a047266cdc092f6f64e3cfaff",
       "expectation": "accept",
       "compatibilityCase": "canonical"
     },

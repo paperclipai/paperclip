@@ -96,6 +96,8 @@ export const queryKeys = {
       ] as const,
   },
   audit: {
+    runs: (companyId: string, agentId?: string | null) =>
+      ["audit", companyId, "runs", agentId ?? "__all"] as const,
     agentActions: (
       companyId: string,
       filters: {
@@ -104,6 +106,7 @@ export const queryKeys = {
         responsibleUserId?: string | null;
         runId?: string | null;
         entityType?: string | null;
+        entityId?: string | null;
         action?: string | null;
         from?: string | null;
         to?: string | null;
@@ -119,6 +122,7 @@ export const queryKeys = {
         filters.responsibleUserId ?? "__all",
         filters.runId ?? "__all",
         filters.entityType ?? "__all",
+        filters.entityId ?? "__all",
         filters.action ?? "__all",
         filters.actorType ?? "__all",
         filters.from ?? "",
@@ -220,6 +224,8 @@ export const queryKeys = {
       ["agents", companyId, "detect-model", adapterType] as const,
     authSignal: (companyId: string, adapterType: string, environmentId?: string | null) =>
       ["agents", companyId, "auth-signal", adapterType, environmentId ?? null] as const,
+    activeLoginSession: (companyId: string, adapterType: string) =>
+      ["agents", companyId, "active-login-session", adapterType] as const,
   },
   builtInAgents: {
     list: (companyId: string) => ["built-in-agents", companyId] as const,

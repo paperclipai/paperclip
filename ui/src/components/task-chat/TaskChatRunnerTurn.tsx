@@ -30,6 +30,7 @@ import {
 import {
   buildTurnTimelineRows,
   isTerminalRunStatus,
+  omitProgressRepeatedByResponse,
   paperclipRunnerFinalResponse,
   paperclipRunnerTimelineItems,
 } from "./transcript-adapter";
@@ -85,19 +86,27 @@ type FoldedNarration =
       order: number;
     };
 
-function latestFoldedNarration(items: readonly TaskChatItem[]): FoldedNarration | null {
+function latestFoldedNarration(
+  items: readonly TaskChatItem[],
+): FoldedNarration | null {
   let latest: FoldedNarration | null = null;
   for (const [index, item] of items.entries()) {
-    const order = item.kind === "message" || item.kind === "thinking"
-      ? item.transcriptIndex ?? index
-      : -1;
+    const order =
+      item.kind === "message" || item.kind === "thinking"
+        ? (item.transcriptIndex ?? index)
+        : -1;
     if (item.kind === "message" && item.interstitial && item.text.trim()) {
-      if (!latest || order >= latest.order) latest = { kind: "commentary", item, order };
+      if (!latest || order >= latest.order)
+        latest = { kind: "commentary", item, order };
       continue;
     }
     if (item.kind !== "thinking") continue;
     let lineIndex = -1;
-    for (let candidate = item.lines.length - 1; candidate >= 0; candidate -= 1) {
+    for (
+      let candidate = item.lines.length - 1;
+      candidate >= 0;
+      candidate -= 1
+    ) {
       if (item.lines[candidate]?.trim()) {
         lineIndex = candidate;
         break;
@@ -116,7 +125,13 @@ function latestFoldedNarration(items: readonly TaskChatItem[]): FoldedNarration 
   return latest;
 }
 
-function FoldedReasoningTicker({ logicalKey, text }: { logicalKey: string; text: string }) {
+function FoldedReasoningTicker({
+  logicalKey,
+  text,
+}: {
+  logicalKey: string;
+  text: string;
+}) {
   const [ticker, setTicker] = useState({
     logicalKey,
     motionKey: 0,
@@ -137,7 +152,10 @@ function FoldedReasoningTicker({ logicalKey, text }: { logicalKey: string; text:
   }
 
   return (
-    <div className="flex min-w-0 gap-2 px-1 py-1.5" data-testid="task-chat-reasoning-ticker">
+    <div
+      className="flex min-w-0 gap-2 px-1 py-1.5"
+      data-testid="task-chat-reasoning-ticker"
+    >
       <div className="flex shrink-0 items-center">
         <Brain className="h-3.5 w-3.5 text-muted-foreground/50" aria-hidden />
       </div>
@@ -146,7 +164,9 @@ function FoldedReasoningTicker({ logicalKey, text }: { logicalKey: string; text:
           <span
             key={`out-${ticker.motionKey}`}
             className="cot-line-exit absolute inset-x-0 truncate text-(length:--text-compact) italic leading-5 text-muted-foreground"
-            onAnimationEnd={() => setTicker((current) => ({ ...current, exiting: null }))}
+            onAnimationEnd={() =>
+              setTicker((current) => ({ ...current, exiting: null }))
+            }
           >
             {ticker.exiting}
           </span>
@@ -167,23 +187,17 @@ function FoldedReasoningTicker({ logicalKey, text }: { logicalKey: string; text:
   );
 }
 
-function FoldedLiveNarration({ narration }: { narration: FoldedNarration }) {
-  if (narration.kind === "reasoning") {
-    if (!narration.line) return null;
-    return (
-      <FoldedReasoningTicker
-        logicalKey={`${narration.item.id}:${narration.lineIndex}`}
-        text={narration.line}
-      />
-    );
-  }
+function FoldedLiveNarration({
+  narration,
+}: {
+  narration: Extract<FoldedNarration, { kind: "reasoning" }>;
+}) {
+  if (!narration.line) return null;
   return (
-    <div
-      className="tc-enter-cot-line min-w-0 px-1 py-1.5 text-sm text-foreground/90"
-      data-testid="task-chat-progress-update"
-    >
-      <MarkdownBody softBreaks linkIssueReferences>{narration.item.text}</MarkdownBody>
-    </div>
+    <FoldedReasoningTicker
+      logicalKey={`${narration.item.id}:${narration.lineIndex}`}
+      text={narration.line}
+    />
   );
 }
 
@@ -277,10 +291,12 @@ function RunnerTurnStatus({
   status,
   startedAtMs,
   finishedAtMs,
+  continuedAfterSteering = false,
 }: {
   status: string;
   startedAtMs: number | null;
   finishedAtMs?: number | null;
+  continuedAfterSteering?: boolean;
 }) {
   const terminal = isTerminalRunStatus(status);
   useSecondTick(!terminal && startedAtMs != null);
@@ -300,6 +316,9 @@ function RunnerTurnStatus({
       ? `${label} ${failed ? "after" : "for"} ${elapsed}`
       : label
     : `${label} for ${elapsed ?? "0s"}`;
+  const visibleLabel = continuedAfterSteering
+    ? `Continued after steering · ${semanticLabel}`
+    : semanticLabel;
 
   return (
     <span
@@ -309,7 +328,7 @@ function RunnerTurnStatus({
       aria-live="polite"
       aria-atomic="true"
     >
-      {semanticLabel}
+      {visibleLabel}
     </span>
   );
 }
@@ -409,6 +428,8 @@ export function TaskChatRunnerTurn({
   startedAtMs,
   finishedAtMs,
   activityUnavailable = false,
+  suppressFinal = false,
+  continuedAfterSteering = false,
   onRuntimeRequestDecision,
 }: {
   /** Stable identity used to clear replay-latched final text for the next turn. */
@@ -420,6 +441,10 @@ export function TaskChatRunnerTurn({
   startedAtMs: number | null;
   finishedAtMs?: number | null;
   activityUnavailable?: boolean;
+  /** Accepted wait/interaction authority overrides an early provider final. */
+  suppressFinal?: boolean;
+  /** The visible tail resumes the same native run after an accepted steer. */
+  continuedAfterSteering?: boolean;
   onRuntimeRequestDecision?: (
     item: TaskChatRuntimeRequestItem,
     decision: TaskChatRuntimeRequestDecision,
@@ -427,22 +452,26 @@ export function TaskChatRunnerTurn({
 }) {
   const terminal = isTerminalRunStatus(status);
   const narration = latestFoldedNarration(items);
-  const timelineRows = buildTurnTimelineRows(
-    paperclipRunnerTimelineItems(items),
-    !terminal,
-  );
   const currentActivityItems = currentActivityStatusItems(items);
-  const observedFinal = paperclipRunnerFinalResponse(items, {
-    allowFallback: terminal,
-  });
+  const yielded = items.some(
+    (item) =>
+      item.kind === "protocol" &&
+      item.surface === "run_result" &&
+      item.disposition === "yielded",
+  );
+  const observedFinal = suppressFinal
+    ? undefined
+    : paperclipRunnerFinalResponse(items, {
+        allowFallback: terminal,
+      });
   const observedProviderText = Boolean(
     observedFinal &&
-      items.some(
-        (item) =>
-          item.kind === "message" &&
-          item.id === observedFinal.id &&
-          item.channel !== "progress",
-      ),
+    items.some(
+      (item) =>
+        item.kind === "message" &&
+        item.id === observedFinal.id &&
+        item.channel !== "progress",
+    ),
   );
   // A reconnect/replay can briefly rebuild the transcript without the final
   // item (or with an earlier, shorter prefix). Provider-authored final text
@@ -454,6 +483,10 @@ export function TaskChatRunnerTurn({
     providerText?: boolean;
   }>({ runId });
   if (finalRef.current.runId !== runId) finalRef.current = { runId };
+  // A provider final can arrive before the accepted yielded result. Clear any
+  // replay latch once the control plane establishes that this turn is waiting
+  // for continuation rather than presenting a durable assistant reply.
+  if (yielded || suppressFinal) finalRef.current = { runId };
   if (
     observedFinal &&
     (!finalRef.current.item ||
@@ -465,6 +498,11 @@ export function TaskChatRunnerTurn({
     finalRef.current.providerText = observedProviderText;
   }
   const final = finalRef.current.item;
+  const timelineItems = paperclipRunnerTimelineItems(items);
+  const timelineRows = buildTurnTimelineRows(
+    omitProgressRepeatedByResponse(timelineItems, final?.text),
+    !terminal,
+  );
 
   return (
     <div
@@ -486,10 +524,14 @@ export function TaskChatRunnerTurn({
           status={status}
           startedAtMs={startedAtMs}
           finishedAtMs={finishedAtMs}
+          continuedAfterSteering={continuedAfterSteering}
         />
       </div>
-      {!terminal && narration && !final ? (
-        <div className="flex min-w-0 flex-col py-1" data-testid="task-chat-live-narration">
+      {!terminal && narration?.kind === "reasoning" && !final ? (
+        <div
+          className="flex min-w-0 flex-col py-1"
+          data-testid="task-chat-live-narration"
+        >
           <FoldedLiveNarration narration={narration} />
         </div>
       ) : null}
@@ -528,6 +570,11 @@ export function TaskChatRunnerTurn({
               ) : row.kind === "plan_document" ? (
                 <TaskChatPlanPreviewCard
                   source={{ kind: "saved", document: row.document }}
+                  testId={
+                    row.placement === "fallback"
+                      ? "task-chat-plan-preview-fallback"
+                      : "task-chat-plan-preview"
+                  }
                 />
               ) : row.kind === "protocol" ? (
                 <TaskChatProtocolCard

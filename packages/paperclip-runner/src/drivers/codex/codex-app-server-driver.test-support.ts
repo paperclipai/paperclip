@@ -110,6 +110,7 @@ export class FakeCodexTransport implements CodexAppServerTransport {
   constructor(
     readonly threadId = "thread-1",
     readonly providerSessionId = "provider-session-1",
+    readonly providerIdentity?: Record<string, unknown>,
   ) {}
 
   async request(
@@ -148,6 +149,9 @@ export class FakeCodexTransport implements CodexAppServerTransport {
         thread: {
           id: this.threadId,
           sessionId: this.providerSessionId,
+          ...(this.providerIdentity === undefined
+            ? {}
+            : { providerIdentity: structuredClone(this.providerIdentity) }),
           modelProvider: "openai",
           cwd: WORKSPACE,
           turns: [],

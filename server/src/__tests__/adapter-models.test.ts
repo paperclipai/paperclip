@@ -66,6 +66,7 @@ describe("adapter model listing", () => {
     // Newer flagship models are offered, but Opus 4.8 stays the default (first) option.
     expect(models[0]?.id).toBe("claude-opus-4-8");
     expect(models.some((model) => model.id === "claude-sonnet-5")).toBe(true);
+    expect(models.some((model) => model.id === "claude-fable-5-1")).toBe(true);
     expect(models.some((model) => model.id === "claude-fable-5")).toBe(true);
     expect(models.some((model) => model.id === "claude-mythos-5")).toBe(true);
     // Opus 5 is a current GA flagship and must be offered even when live discovery is unavailable.
@@ -128,6 +129,36 @@ describe("adapter model listing", () => {
 
     const models = await listAdapterModels("claude_local");
     expect(models).toEqual(claudeFallbackModels);
+  });
+
+  it("does not duplicate claude-fable-5-1 when discovery returns the identical ID", async () => {
+    process.env.ANTHROPIC_API_KEY = "sk-ant-test";
+    vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        data: [{ id: "claude-fable-5-1", display_name: "Claude Fable 5.1" }],
+      }),
+    } as Response);
+
+    const models = await listAdapterModels("claude_local");
+
+    expect(models.filter((model) => model.id === "claude-fable-5-1")).toHaveLength(1);
+    // Curated fallbacks discovery did not return are still merged in.
+    expect(models.some((model) => model.id === "claude-fable-5")).toBe(true);
+    expect(models.some((model) => model.id === "claude-opus-4-8")).toBe(true);
+  });
+
+  it("exposes the Bedrock-native Fable 5.1 ID (never the direct ID) in Bedrock mode", async () => {
+    process.env.CLAUDE_CODE_USE_BEDROCK = "1";
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+
+    const models = await listAdapterModels("claude_local");
+
+    // The Bedrock default (first entry) is unchanged.
+    expect(models[0]?.id).toBe("us.anthropic.claude-opus-4-8-v1");
+    expect(models.some((model) => model.id === "us.anthropic.claude-fable-5-1")).toBe(true);
+    expect(models.some((model) => model.id === "claude-fable-5-1")).toBe(false);
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 
   it("loads codex models dynamically and merges fallback options", async () => {

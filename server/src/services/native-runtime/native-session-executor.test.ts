@@ -1,8 +1,9 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   access,
   mkdir,
   mkdtemp,
+  readdir,
   rm,
   symlink,
   writeFile,
@@ -16,20 +17,29 @@ import {
   nativeRunFinalizations,
   type Db,
 } from "@paperclipai/db";
-import type {
-  NativeExecutionInputV1,
-  PrpEvent,
+import {
+  acpxRuntimeSessionDirectoryName,
+  type NativeExecutionInputV1,
+  type PrpEvent,
 } from "@paperclipai/paperclip-runner";
 import { createHash } from "node:crypto";
 import {
   createNativeHarnessBackupStamp,
   verifyNativeHarnessBackupStamp,
 } from "./native-harness-backup-stamp.js";
+import { nativeRuntimeContextFixture } from "./runtime-context.test-fixture.js";
 
 type BackendFactoryOptions = {
   runnerInstanceId?: string;
   acpxRuntimeDirectory?: string;
-  codexTransportFactory?: () => unknown;
+  workingDirectoryAuthority?: "local_filesystem" | "remote_runner";
+  codexTransportFactory?: (recoveryContext?: {
+    persistedSession?: {
+      driverSessionId: string;
+      providerSessionId?: string | null;
+      activeTurnId?: string | null;
+    };
+  }) => unknown;
   dynamicToolHandler?: (call: unknown) => Promise<unknown>;
   onSpawn?: (meta: {
     pid: number;
@@ -41,11 +51,46 @@ type BackendFactoryOptions = {
 type RunnerTransportOptions = {
   stateDirectory?: string;
   runnerBinary?: string;
+  prpIdentity?: {
+    runnerInstanceId: string;
+    environmentLeaseId: string;
+    runId: string;
+  };
   provider?: "codex" | "opencode" | "acpx";
   opencodePermissionMode?: "allow" | "ask" | "deny";
   acpxAgent?: "claude" | "codex";
   acpxPermissionMode?: "approve-all" | "approve-reads" | "deny-all";
+  resumeActiveTurnId?: string | null;
+  resumeProviderSession?: {
+    driverSessionId: string;
+    providerSessionId?: string | null;
+    activeTurnId?: string | null;
+  };
+  archiveExternalRunnerState?: (input: {
+    archiveKey: string;
+    priorIdentity: {
+      runnerInstanceId: string;
+      environmentLeaseId: string;
+      runId: string;
+      normalizedSessionId: string;
+      turnId: string;
+      itemId: string;
+    };
+  }) => Promise<Record<string, unknown>>;
 };
+
+const durableControlPlaneState = (identity: Record<string, unknown>) => ({
+  schema: "paperclip.runner.durable.control-plane-state.v1",
+  identity,
+});
+const durableRunnerState = (
+  identity: Record<string, unknown>,
+  lifecycle: string,
+) => ({
+  schema: "paperclip.runner.durable.state.v1",
+  ...identity,
+  lifecycle,
+});
 
 const state = vi.hoisted(() => ({
   execute: vi.fn(),
@@ -58,6 +103,9 @@ const state = vi.hoisted(() => ({
     }),
   ),
   cancel: vi.fn(),
+  toolAuthorityDefinitions: vi.fn(
+    async (_binding: Record<string, unknown>) => [],
+  ),
   toolAuthorityExecute: vi.fn(),
   persistActivity: vi.fn(async (_db: unknown, input: { action: string }) => ({
     activity: {
@@ -96,7 +144,7 @@ vi.mock("./paperclip-runner-tool-authority.js", () => ({
     }
 
     async definitions() {
-      return [];
+      return state.toolAuthorityDefinitions(this.binding);
     }
 
     async execute(call: unknown) {
@@ -134,14 +182,17 @@ import {
   nativeUsageCostUsd,
   normalizeNativeUsage,
   readRemoteProviderPackManifest,
+  providerSessionIdentityFromDurableProviderState,
   providerSessionIdentityTransitionIsAllowed,
   providerPlanMarkdown,
+  remoteCheckpointIncompleteFailure,
   resolveRemoteRunnerTransportMode,
   renewNativeSessionExecutionLease,
   runtimeInputLifecycleMetric,
   runtimeQuestionFallbackFromEvent,
   resolveNativeRuntimeRequest,
   resolveNativeHarnessPersistenceProfile,
+  runnerdStateProvesIncompleteBootstrap,
   semanticProviderPlanMarkdown,
   sha256DirectoryTree,
   stageRemoteRunnerDirectory,
@@ -150,6 +201,46 @@ import {
   verifyNativeHarnessBackup,
   shouldRestoreNativeHarnessBackupIntoSandbox,
 } from "./native-session-executor.js";
+
+describe("native incomplete-bootstrap evidence", () => {
+  it("requires zero connections, zero events, and only untouched bootstrap commands", async () => {
+    const root = await mkdtemp(join(tmpdir(), "native-bootstrap-evidence-"));
+    const controlPlaneRoot = join(root, "control-plane");
+    await mkdir(controlPlaneRoot, { recursive: true });
+    const statePath = join(controlPlaneRoot, "control-plane-state.json");
+    const base = {
+      schema: "paperclip.runner.durable.control-plane-state.v1",
+      connectionCount: 0,
+      committedEvents: [],
+      commands: [
+        { type: "run.prepare", status: "pending" },
+        { type: "session.open", status: "pending" },
+      ],
+    };
+    try {
+      await writeFile(statePath, JSON.stringify(base));
+      expect(runnerdStateProvesIncompleteBootstrap(root)).toBe(true);
+
+      for (const ambiguous of [
+        { ...base, connectionCount: 1 },
+        { ...base, committedEvents: [{ eventType: "harness.ready" }] },
+        {
+          ...base,
+          commands: [{ type: "session.open", status: "completed" }],
+        },
+        {
+          ...base,
+          commands: [{ type: "turn.start", status: "pending" }],
+        },
+      ]) {
+        await writeFile(statePath, JSON.stringify(ambiguous));
+        expect(runnerdStateProvesIncompleteBootstrap(root)).toBe(false);
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});
 
 describe("native provider usage normalization", () => {
   it("reads remote runner run-delta tokens and provider cost", () => {
@@ -227,11 +318,11 @@ describe("remote provider pack manifest", () => {
     const opencodeCommand = "#!/bin/sh\n";
     const opencodeExecutable = "opencode-binary\n";
     await writeFile(
-      join(root, "dist", "cli", "opencode-app-server-proxy.js"),
+      join(root, "dist", "cli", "opencode-app-server-proxy.cjs"),
       proxy,
     );
     await writeFile(
-      join(root, "dist", "cli", "acpx-runtime-sidecar.js"),
+      join(root, "dist", "cli", "acpx-runtime-sidecar.cjs"),
       sidecar,
     );
     await writeFile(join(root, "node_modules", "node", "bin", "node"), node);
@@ -265,7 +356,7 @@ describe("remote provider pack manifest", () => {
         claude:
           "sha256:9d73d1f0f121fb96cc8badb28c22d5bff02d8582eb2e40360a81c189e1b9422a",
         codex:
-          "sha256:94049b3e3c3aee87de62703786e4fa81d031d7bd979f99bdf516d84f28791a79",
+          "sha256:7a923b3829884d3cabcc9659d22cace3f86813e7bfffc90974b10140a45bc400",
       },
       artifacts: {
         nodeCommand: {
@@ -282,11 +373,11 @@ describe("remote provider pack manifest", () => {
           sha256: digest(opencodeExecutable),
         },
         opencodeProxy: {
-          path: "dist/cli/opencode-app-server-proxy.js",
+          path: "dist/cli/opencode-app-server-proxy.cjs",
           sha256: proxySha,
         },
         acpxSidecar: {
-          path: "dist/cli/acpx-runtime-sidecar.js",
+          path: "dist/cli/acpx-runtime-sidecar.cjs",
           sha256: sidecarSha,
         },
       },
@@ -302,9 +393,9 @@ describe("remote provider pack manifest", () => {
       writeFile(
         join(root, "provider-pack.json"),
         JSON.stringify({
-        schema: "paperclip-runner/remote-provider-pack/v1",
-        digest: `sha256:${createHash("sha256").update(canonical(payload)).digest("hex")}`,
-        payload,
+          schema: "paperclip-runner/remote-provider-pack/v1",
+          digest: `sha256:${createHash("sha256").update(canonical(payload)).digest("hex")}`,
+          payload,
         }),
       );
     await writeManifest();
@@ -329,14 +420,14 @@ describe("remote provider pack manifest", () => {
     }
     await writeManifest();
     await writeFile(
-      join(root, "dist", "cli", "opencode-app-server-proxy.js"),
+      join(root, "dist", "cli", "opencode-app-server-proxy.cjs"),
       "tampered\n",
     );
     expect(() => readRemoteProviderPackManifest(root)).toThrow(
       "OpenCode proxy digest mismatch",
     );
     await writeFile(
-      join(root, "dist", "cli", "opencode-app-server-proxy.js"),
+      join(root, "dist", "cli", "opencode-app-server-proxy.cjs"),
       proxy,
     );
     await writeFile(
@@ -405,8 +496,29 @@ describe("native harness persistence profiles", () => {
     expect(
       codex.directories.find((directory) => directory.name === "codex-home"),
     ).toMatchObject({
-      excludeTopLevelEntries: ["tmp", ".tmp", "auth.json", "config.toml"],
+      excludeEntries: ["tmp", ".tmp", "auth.json", "config.toml"],
     });
+  });
+
+  it("excludes only nested Codex launch state from ACPX recovery", () => {
+    const acpx = profile({ kind: "acpx", agent: "codex" }, "acpx_runtime");
+    const sessionDirectory = acpxRuntimeSessionDirectoryName("session");
+    expect(
+      acpx.directories.find((directory) => directory.name === "acpx"),
+    ).toMatchObject({
+      excludeEntries: [
+        `acpx/${sessionDirectory}/codex-home/tmp`,
+        `acpx/${sessionDirectory}/codex-home/.tmp`,
+        `acpx/${sessionDirectory}/codex-home/auth.json`,
+        `acpx/${sessionDirectory}/codex-home/config.toml`,
+      ],
+    });
+    expect(
+      profile(
+        { kind: "acpx", agent: "claude" },
+        "acpx_runtime",
+      ).directories.find((directory) => directory.name === "acpx"),
+    ).toMatchObject({ excludeEntries: [] });
   });
 });
 
@@ -646,9 +758,10 @@ describe("verified native harness backups", () => {
     const previousStateDirectory = process.env.PAPERCLIP_RUNNER_STATE_DIR;
     process.env.PAPERCLIP_RUNNER_STATE_DIR = stateBase;
     try {
+      const sessionScopeId = "native-session-scope-v2";
       const sessionRoot = join(
         stateBase,
-        createHash("sha256").update("native-session").digest("hex"),
+        createHash("sha256").update(sessionScopeId).digest("hex"),
       );
       const current = join(sessionRoot, "failover-backups", "current");
       await mkdir(join(current, "runner"), { recursive: true });
@@ -676,6 +789,8 @@ describe("verified native harness backups", () => {
       await writeFile(manifestPath, JSON.stringify(manifest));
       const stamp = createNativeHarnessBackupStamp({
         manifestPath,
+        sessionScopeId,
+        authorizedProviderLeaseId: "sandbox-1",
         normalizedSessionId: "native-session",
         runnerInstanceId: "runner-1",
         completedAt: manifest.completedAt,
@@ -683,6 +798,17 @@ describe("verified native harness backups", () => {
 
       expect(verifyNativeHarnessBackupStamp(stamp, "sandbox-1")).toBe(true);
       expect(verifyNativeHarnessBackupStamp(stamp, "sandbox-2")).toBe(false);
+      const reboundStamp = createNativeHarnessBackupStamp({
+        manifestPath,
+        sessionScopeId,
+        authorizedProviderLeaseId: "sandbox-2",
+        normalizedSessionId: "native-session",
+        runnerInstanceId: "runner-1",
+        completedAt: manifest.completedAt,
+      });
+      expect(verifyNativeHarnessBackupStamp(reboundStamp, "sandbox-2")).toBe(
+        true,
+      );
       await writeFile(join(current, "runner", "runner-state.json"), "corrupt");
       expect(verifyNativeHarnessBackupStamp(stamp, "sandbox-1")).toBe(false);
     } finally {
@@ -694,6 +820,270 @@ describe("verified native harness backups", () => {
       await rm(stateBase, { recursive: true, force: true });
     }
   });
+
+  it("rejects a digest-valid legacy stamp for remote lease authorization", async () => {
+    const stateBase = await mkdtemp(
+      join(tmpdir(), "paperclip-legacy-harness-stamp-"),
+    );
+    const previousStateDirectory = process.env.PAPERCLIP_RUNNER_STATE_DIR;
+    process.env.PAPERCLIP_RUNNER_STATE_DIR = stateBase;
+    try {
+      const legacyRoot = join(
+        stateBase,
+        createHash("sha256").update("native-session").digest("hex"),
+        "failover-backups",
+        "current",
+      );
+      await mkdir(join(legacyRoot, "runner"), { recursive: true });
+      await mkdir(join(legacyRoot, "codex-home", "sessions"), {
+        recursive: true,
+      });
+      await writeFile(
+        join(legacyRoot, "runner", "runner-state.json"),
+        "runner-state",
+      );
+      await writeFile(
+        join(legacyRoot, "codex-home", "sessions", "thread.jsonl"),
+        "thread-state",
+      );
+      const manifest = buildNativeHarnessBackupManifest({
+        backupRoot: legacyRoot,
+        execution: backupExecution,
+        runnerInstanceId: "runner-1",
+        providerSessionIdentity: {
+          providerSessionId: "thread-1",
+          providerBackendSessionId: "session-1",
+          providerSessionIdentity: null,
+        },
+        sourceProviderLeaseId: "sandbox-1",
+      });
+      const manifestBytes = JSON.stringify(manifest);
+      await writeFile(join(legacyRoot, "manifest.json"), manifestBytes);
+
+      expect(
+        verifyNativeHarnessBackupStamp(
+          {
+            schema: "paperclip.native-harness-backup-stamp.v1",
+            normalizedSessionId: "native-session",
+            runnerInstanceId: "runner-1",
+            manifestSha256: `sha256:${createHash("sha256").update(manifestBytes).digest("hex")}`,
+            completedAt: manifest.completedAt,
+          },
+          "sandbox-1",
+        ),
+      ).toBe(false);
+    } finally {
+      if (previousStateDirectory === undefined) {
+        delete process.env.PAPERCLIP_RUNNER_STATE_DIR;
+      } else {
+        process.env.PAPERCLIP_RUNNER_STATE_DIR = previousStateDirectory;
+      }
+      await rm(stateBase, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("split durable provider checkpoint identity", () => {
+  const execution = (provider: Record<string, unknown>, driverKind: string) =>
+    ({
+      provider,
+      binding: {
+        companyId: "company",
+        runId: "run",
+        issueId: "issue",
+        agentId: "agent",
+        executionWorkspaceId: "workspace",
+      },
+      workspace: { cwd: "/workspace" },
+      session: {
+        normalizedSessionId: "native-session",
+        driverKind,
+        protocolVersion: 1,
+        lifecyclePolicy: { mode: "per_turn", idleTimeoutMs: null },
+      },
+    }) as unknown as NativeExecutionInputV1;
+
+  it("reads ACPX identity from its provider-owned state after suspension", () => {
+    const profileDigest = `sha256:${"a".repeat(64)}`;
+    const identity = {
+      kind: "acpx",
+      normalizedSessionId: "native-session",
+      acpxRecordId: "record-1",
+      backendSessionId: "backend-1",
+      agentSessionId: "agent-session-1",
+      profileDigest,
+      workspaceDigest: `sha256:${"b".repeat(64)}`,
+      requestedModel: "claude-sonnet-5",
+      effectiveModel: "claude-sonnet-5",
+      permissionMode: "approve-all",
+      providerLifetimeFenceCandidates: [53001, 53002, 53003],
+    };
+    expect(
+      providerSessionIdentityFromDurableProviderState({
+        execution: execution(
+          {
+            kind: "acpx",
+            agent: "claude",
+            model: "claude-sonnet-5",
+            permissionMode: "approve-all",
+          },
+          "acpx_runtime",
+        ),
+        providerState: {
+          schema: "paperclip.runner.acpx-provider-state.v3",
+          lifecycle: "suspended",
+          activeTurnId: null,
+          providerExitUnconfirmed: false,
+          descriptor: {
+            kind: "acpx",
+            provider: "acpx",
+            driver: "acpx_runtime",
+            agent: "claude",
+            model: "claude-sonnet-5",
+            commandDigest: profileDigest,
+            normalizedSessionId: "native-session",
+          },
+          identity,
+        },
+      }),
+    ).toEqual({
+      providerSessionId: "record-1",
+      providerBackendSessionId: "backend-1",
+      providerSessionIdentity: identity,
+    });
+  });
+
+  it.each([
+    ["codex", "codex_app_server"],
+    ["opencode", "opencode_server"],
+  ] as const)(
+    "reads %s identity from the split Codex-provider state",
+    (provider, driverKind) => {
+      expect(
+        providerSessionIdentityFromDurableProviderState({
+          execution: execution({ kind: provider }, driverKind),
+          providerState: {
+            schema: "paperclip.runner.codex-provider-state.v1",
+            lifecycle: "prepared",
+            config: { provider, driver: driverKind },
+            threadId: "driver-session-1",
+            providerSessionId: "provider-session-1",
+            activeProviderTurnId: null,
+            ambiguousTurnStartPending: false,
+          },
+        }),
+      ).toEqual({
+        providerSessionId: "driver-session-1",
+        providerBackendSessionId: "provider-session-1",
+        providerSessionIdentity: null,
+      });
+    },
+  );
+
+  it("rejects active or scope-conflicting provider state", () => {
+    const profileDigest = `sha256:${"a".repeat(64)}`;
+    const acpxExecution = execution(
+      {
+        kind: "acpx",
+        agent: "claude",
+        model: "claude-sonnet-5",
+        permissionMode: "approve-all",
+      },
+      "acpx_runtime",
+    );
+    for (const providerState of [
+      {
+        schema: "paperclip.runner.acpx-provider-state.v3",
+        lifecycle: "turn_active",
+        activeTurnId: "turn-1",
+        providerExitUnconfirmed: false,
+        descriptor: {
+          kind: "acpx",
+          provider: "acpx",
+          driver: "acpx_runtime",
+          agent: "claude",
+          model: "claude-sonnet-5",
+          commandDigest: profileDigest,
+          normalizedSessionId: "native-session",
+        },
+        identity: {
+          kind: "acpx",
+          normalizedSessionId: "native-session",
+          acpxRecordId: "record-1",
+          backendSessionId: "backend-1",
+          agentSessionId: "agent-session-1",
+          profileDigest,
+          workspaceDigest: `sha256:${"b".repeat(64)}`,
+          requestedModel: "claude-sonnet-5",
+          effectiveModel: "claude-sonnet-5",
+          permissionMode: "approve-all",
+          providerLifetimeFenceCandidates: [53001, 53002, 53003],
+        },
+      },
+      {
+        schema: "paperclip.runner.acpx-provider-state.v3",
+        lifecycle: "suspended",
+        activeTurnId: null,
+        providerExitUnconfirmed: false,
+        descriptor: {
+          kind: "acpx",
+          provider: "acpx",
+          driver: "acpx_runtime",
+          agent: "claude",
+          model: "claude-sonnet-5",
+          commandDigest: profileDigest,
+          normalizedSessionId: "other-session",
+        },
+        identity: {
+          kind: "acpx",
+          normalizedSessionId: "other-session",
+          acpxRecordId: "record-1",
+          backendSessionId: "backend-1",
+          agentSessionId: "agent-session-1",
+          profileDigest,
+          workspaceDigest: `sha256:${"b".repeat(64)}`,
+          requestedModel: "claude-sonnet-5",
+          effectiveModel: "claude-sonnet-5",
+          permissionMode: "approve-all",
+          providerLifetimeFenceCandidates: [53001, 53002, 53003],
+        },
+      },
+    ]) {
+      expect(
+        providerSessionIdentityFromDurableProviderState({
+          execution: acpxExecution,
+          providerState,
+        }),
+      ).toEqual({
+        providerSessionId: null,
+        providerBackendSessionId: null,
+        providerSessionIdentity: null,
+      });
+    }
+  });
+
+  it.each(["claude_managed", "aws_agentcore"] as const)(
+    "reads %s identity from managed provider state",
+    (provider) => {
+      expect(
+        providerSessionIdentityFromDurableProviderState({
+          execution: execution({ kind: provider }, `${provider}_driver`),
+          providerState: {
+            schema: "paperclip.runner.managed-provider-state.v1",
+            lifecycle: "suspended",
+            normalizedSessionId: "native-session",
+            descriptor: { kind: provider, config: {} },
+            providerSessionId: "managed-session-1",
+            activeTurnId: null,
+          },
+        }),
+      ).toEqual({
+        providerSessionId: "managed-session-1",
+        providerBackendSessionId: "managed-session-1",
+        providerSessionIdentity: null,
+      });
+    },
+  );
 });
 
 describe("remote provider checkpoint snapshots", () => {
@@ -736,7 +1126,7 @@ describe("remote provider checkpoint snapshots", () => {
       sourcePath: "/remote/session/filesystem/codex-home",
       targetPath: "/tmp/paperclip-checkpoint-test-codex-home",
       mode: 0o700,
-      excludeTopLevelEntries: ["tmp", ".tmp", "auth.json", "config.toml"],
+      excludeEntries: ["tmp", ".tmp", "auth.json", "config.toml"],
     });
 
     expect(execute).toHaveBeenNthCalledWith(
@@ -771,7 +1161,40 @@ describe("remote provider checkpoint snapshots", () => {
     );
   });
 
-  it("rejects non-top-level checkpoint exclusions", async () => {
+  it("omits nested ACPX-Codex scratch aliases without widening the exclusion", async () => {
+    const execute = vi.fn().mockResolvedValue({
+      exitCode: 0,
+      timedOut: false,
+      stdout: "",
+      stderr: "",
+    });
+    const syncOut = vi.fn(async () => undefined);
+    const sessionDirectory = acpxRuntimeSessionDirectoryName("session");
+    const excluded = [
+      `acpx/${sessionDirectory}/codex-home/tmp`,
+      `acpx/${sessionDirectory}/codex-home/.tmp`,
+      `acpx/${sessionDirectory}/codex-home/auth.json`,
+      `acpx/${sessionDirectory}/codex-home/config.toml`,
+    ];
+
+    await syncRemoteRunnerDirectoryOut({
+      runner: { execute, syncOut } as never,
+      sourcePath: "/remote/session/filesystem/acpx",
+      targetPath: "/tmp/paperclip-checkpoint-test-acpx",
+      mode: 0o700,
+      excludeEntries: excluded,
+    });
+
+    const snapshotCommand = String(execute.mock.calls[1]?.[0]?.args?.[1]);
+    for (const entry of excluded) {
+      expect(snapshotCommand).toContain(`'--exclude=./${entry}'`);
+    }
+    expect(snapshotCommand).not.toContain("--exclude=./acpx-state");
+    expect(snapshotCommand).not.toContain("--exclude=./codex-home");
+    expect(syncOut).toHaveBeenCalledOnce();
+  });
+
+  it("rejects unsafe relative checkpoint exclusions", async () => {
     const execute = vi.fn().mockResolvedValue({
       exitCode: 0,
       timedOut: false,
@@ -784,7 +1207,7 @@ describe("remote provider checkpoint snapshots", () => {
         sourcePath: "/remote/codex-home",
         targetPath: "/tmp/paperclip-checkpoint-invalid-codex-home",
         mode: 0o700,
-        excludeTopLevelEntries: ["../outside"],
+        excludeEntries: ["../outside"],
       }),
     ).rejects.toThrow("runner_remote_checkpoint_exclusion_invalid");
   });
@@ -885,7 +1308,7 @@ describe("remote provider checkpoint restores", () => {
         sourcePath,
         targetPath: "/remote/codex-home",
         mode: 0o700,
-        excludeTopLevelEntries: ["tmp", ".tmp", "auth.json", "config.toml"],
+        excludeEntries: ["tmp", ".tmp", "auth.json", "config.toml"],
       });
 
       expect(syncIn).toHaveBeenCalledOnce();
@@ -988,6 +1411,25 @@ describe("remote runner transport authorization", () => {
         runnerIngressAuthorized: true,
       }),
     ).toBe("listen_ws");
+  });
+});
+
+describe("required remote checkpoint completion", () => {
+  it.each(["unavailable", "not_suspended"] as const)(
+    "fails a settled runner when its checkpoint is %s",
+    (incompleteReason) => {
+      expect(
+        remoteCheckpointIncompleteFailure("settled", incompleteReason),
+      ).toMatchObject({
+        message: `runner_remote_checkpoint_incomplete: exact suspended harness state unavailable (${incompleteReason})`,
+      });
+    },
+  );
+
+  it("preserves the original startup error for a runner that never settled", () => {
+    expect(
+      remoteCheckpointIncompleteFailure("unsettled", "unavailable"),
+    ).toBeNull();
   });
 });
 
@@ -1190,6 +1632,22 @@ describe("native provider bootstrap environment", () => {
       PATH: "/agent/bin",
       HOME: "/Users/runner",
       OPENAI_API_KEY: "configured-provider-key",
+    });
+  });
+
+  it("pins the server-assigned workspace over configured environment input", () => {
+    expect(
+      buildNativeProviderEnvironment(
+        {
+          PAPERCLIP_WORKSPACE_CWD: "/untrusted/configured-workspace",
+        },
+        { HOME: "/Users/runner" },
+        "/Users/runner/.paperclip/instances/default/workspaces/agent-1",
+      ),
+    ).toEqual({
+      HOME: "/Users/runner",
+      PAPERCLIP_WORKSPACE_CWD:
+        "/Users/runner/.paperclip/instances/default/workspaces/agent-1",
     });
   });
 });
@@ -2258,6 +2716,100 @@ describe("native session same-turn steering", () => {
 });
 
 describe("native warm session supervision", () => {
+  it("preserves the active turn when a warm checkpoint resumes the same run", async () => {
+    const stateBase = await mkdtemp(
+      join(tmpdir(), "paperclip-warm-same-run-recovery-"),
+    );
+    const previousPaperclipHome = process.env.PAPERCLIP_HOME;
+    process.env.PAPERCLIP_HOME = stateBase;
+    const activeRun = {
+      ...execution,
+      binding: {
+        ...execution.binding,
+        runId: "run-warm-same-run-recovery",
+        executionWorkspaceId: "workspace-warm-same-run-recovery",
+      },
+      session: {
+        ...execution.session,
+        normalizedSessionId: "session-warm-same-run-recovery",
+        lifecyclePolicy: { mode: "warm" as const, idleTimeoutMs: 20 },
+      },
+    } as NativeExecutionInputV1;
+    const checkpoint = {
+      identity: {
+        runId: activeRun.binding.runId,
+        sessionId: activeRun.session.normalizedSessionId,
+        companyId: activeRun.binding.companyId,
+        issueId: activeRun.binding.issueId,
+        agentId: activeRun.binding.agentId,
+      },
+      sessionId: activeRun.session.normalizedSessionId,
+      driverSessionId: "driver-warm-same-run-recovery",
+      providerSessionId: "provider-warm-same-run-recovery",
+      activeTurnId: "provider-turn-warm-same-run-recovery",
+      semanticResult: null,
+      terminal: null,
+      terminalTurns: [],
+      pendingRuntimeRequests: [],
+    };
+    const result = {
+      result: { summary: "completed" },
+      terminal: { runTerminalState: "succeeded" },
+      turnId: checkpoint.activeTurnId,
+      normalizedSessionId: activeRun.session.normalizedSessionId,
+      providerSessionId: checkpoint.providerSessionId,
+      driverKind: "test",
+      driverVersion: "1",
+      nativeEventCount: 1,
+      highestContiguousSourceSeq: 1,
+      usage: null,
+    };
+    const firstClose = vi.fn(async () => undefined);
+    state.execute
+      .mockReset()
+      .mockImplementationOnce(async (options) => {
+        await options.onCheckpoint?.(checkpoint);
+        options.onSession?.({ close: firstClose });
+        return result;
+      })
+      .mockImplementationOnce(async (options) => {
+        expect(options.persistedSession).toEqual(
+          expect.objectContaining({
+            identity: checkpoint.identity,
+            driverSessionId: checkpoint.driverSessionId,
+            providerSessionId: checkpoint.providerSessionId,
+            activeTurnId: checkpoint.activeTurnId,
+          }),
+        );
+        return result;
+      });
+
+    try {
+      await executePaperclipNativeSession({
+        db: leaseDb(activeRun),
+        execution: activeRun,
+        runnerInstanceId: "runner-warm-same-run-recovery",
+      });
+      await vi.waitFor(() => expect(firstClose).toHaveBeenCalled(), {
+        timeout: 500,
+      });
+      await expect(
+        executePaperclipNativeSession({
+          db: leaseDb(activeRun),
+          execution: activeRun,
+          runnerInstanceId: "runner-warm-same-run-recovery",
+        }),
+      ).resolves.toBeDefined();
+    } finally {
+      if (previousPaperclipHome === undefined) {
+        delete process.env.PAPERCLIP_HOME;
+      } else {
+        process.env.PAPERCLIP_HOME = previousPaperclipHome;
+      }
+      await rm(stateBase, { recursive: true, force: true });
+    }
+  });
+
   it("reuses one session across distinct governed runs and closes it after idle expiry", async () => {
     const close = vi.fn(async () => undefined);
     const sharedSession = { close };
@@ -2326,6 +2878,149 @@ describe("native warm session supervision", () => {
         }),
       { timeout: 500 },
     );
+  });
+
+  it("reattaches a live runnerd warm session under a fresh run authority", async () => {
+    const stateBase = await mkdtemp(
+      join(tmpdir(), "paperclip-runnerd-warm-authority-"),
+    );
+    const previousStateDirectory = process.env.PAPERCLIP_RUNNER_STATE_DIR;
+    const previousPaperclipHome = process.env.PAPERCLIP_HOME;
+    process.env.PAPERCLIP_RUNNER_STATE_DIR = stateBase;
+    process.env.PAPERCLIP_HOME = stateBase;
+    const firstClose = vi.fn(async () => undefined);
+    const firstSession = { close: firstClose };
+    const first = {
+      ...execution,
+      binding: {
+        ...execution.binding,
+        runId: "run-runnerd-warm-first",
+        executionWorkspaceId: "workspace-runnerd-warm",
+      },
+      workspace: {
+        cwd: "/tmp/runnerd-warm-authority",
+        repoUrl: null,
+        repoRef: null,
+        branchName: null,
+      },
+      session: {
+        normalizedSessionId: "session-runnerd-warm-authority",
+        driverKind: "codex_app_server" as const,
+        protocolVersion: 1 as const,
+        lifecyclePolicy: { mode: "warm" as const, idleTimeoutMs: 20 },
+      },
+    } as NativeExecutionInputV1;
+    const second = {
+      ...first,
+      binding: { ...first.binding, runId: "run-runnerd-warm-second" },
+    } as NativeExecutionInputV1;
+    const result = {
+      result: { summary: "completed" },
+      terminal: { runTerminalState: "succeeded" },
+      turnId: "turn",
+      normalizedSessionId: first.session.normalizedSessionId,
+      providerSessionId: "provider-runnerd-warm",
+      driverKind: "test",
+      driverVersion: "1",
+      nativeEventCount: 1,
+      highestContiguousSourceSeq: 1,
+      usage: null,
+    };
+    state.execute
+      .mockReset()
+      .mockImplementationOnce(async (options) => {
+        expect(options.existingSession).toBeUndefined();
+        await options.onCheckpoint?.({
+          identity: {
+            runId: first.binding.runId,
+            sessionId: first.session.normalizedSessionId,
+            companyId: first.binding.companyId,
+            issueId: first.binding.issueId,
+            agentId: first.binding.agentId,
+          },
+          providerSessionId: "provider-runnerd-warm",
+          activeTurnId: "provider-turn-runnerd-warm-first",
+        });
+        options.onSession?.(firstSession);
+        return result;
+      })
+      .mockImplementationOnce(async (options) => {
+        expect(options.existingSession).toBe(firstSession);
+        expect(options.persistedSession).toBeUndefined();
+        return result;
+      });
+
+    try {
+      await executePaperclipNativeSession({
+        db: leaseDb(first),
+        execution: first,
+        runnerInstanceId: "runner-runnerd-warm",
+        useRunnerd: true,
+      });
+      const scopedRoots = (await readdir(stateBase, { withFileTypes: true }))
+        .filter(
+          (entry) => entry.isDirectory() && /^[a-f0-9]{64}$/.test(entry.name),
+        )
+        .map((entry) => join(stateBase, entry.name));
+      expect(scopedRoots).toHaveLength(1);
+      const durableRoot = scopedRoots[0]!;
+      const durableIdentity = {
+        runId: first.binding.runId,
+        normalizedSessionId: first.session.normalizedSessionId,
+        runnerInstanceId: "runner-runnerd-warm",
+        environmentLeaseId: first.binding.executionWorkspaceId,
+      };
+      await mkdir(join(durableRoot, "control-plane"), { recursive: true });
+      await mkdir(join(durableRoot, "runner"), { recursive: true });
+      await writeFile(
+        join(durableRoot, "control-plane", "control-plane-state.json"),
+        JSON.stringify(durableControlPlaneState(durableIdentity)),
+      );
+      await writeFile(
+        join(durableRoot, "runner", "runner-state.json"),
+        JSON.stringify(durableRunnerState(durableIdentity, "suspended")),
+      );
+      const continuationDb = {
+        ...leaseDb(second),
+        select: () => ({
+          from: () => ({
+            where: () => ({
+              limit: () =>
+                Promise.resolve([
+                  {
+                    status: "succeeded",
+                    runnerProfileJson: { nativeExecutionInput: first },
+                  },
+                ]),
+            }),
+          }),
+        }),
+      } as unknown as Db;
+      await executePaperclipNativeSession({
+        db: continuationDb,
+        execution: second,
+        runnerInstanceId: "runner-runnerd-warm",
+        useRunnerd: true,
+      });
+      expect(firstClose).not.toHaveBeenCalled();
+      await vi.waitFor(() => expect(firstClose).toHaveBeenCalledWith({
+        reason: "warm native session idle timeout",
+      }), {
+        timeout: 500,
+      });
+    } finally {
+      if (previousStateDirectory === undefined) {
+        delete process.env.PAPERCLIP_RUNNER_STATE_DIR;
+      } else {
+        process.env.PAPERCLIP_RUNNER_STATE_DIR = previousStateDirectory;
+      }
+      if (previousPaperclipHome === undefined) {
+        delete process.env.PAPERCLIP_HOME;
+      } else {
+        process.env.PAPERCLIP_HOME = previousPaperclipHome;
+      }
+      await rm(stateBase, { recursive: true, force: true });
+    }
   });
 
   it("does not replace a different company's warm session with the same normalized id", async () => {
@@ -2777,7 +3472,380 @@ describe("native process ownership", () => {
 });
 
 describe("runnerd provider runtime wiring", () => {
-  it("reuses legacy unscoped state only for its exact durable run identity", async () => {
+  let isolatedStateDirectory: string;
+  let previousStateDirectory: string | undefined;
+
+  beforeEach(async () => {
+    previousStateDirectory = process.env.PAPERCLIP_RUNNER_STATE_DIR;
+    isolatedStateDirectory = await mkdtemp(
+      join(tmpdir(), "paperclip-runnerd-wiring-"),
+    );
+    process.env.PAPERCLIP_RUNNER_STATE_DIR = isolatedStateDirectory;
+  });
+
+  afterEach(async () => {
+    if (previousStateDirectory === undefined) {
+      delete process.env.PAPERCLIP_RUNNER_STATE_DIR;
+    } else {
+      process.env.PAPERCLIP_RUNNER_STATE_DIR = previousStateDirectory;
+    }
+    await rm(isolatedStateDirectory, { recursive: true, force: true });
+  });
+
+  it("passes the run checkpoint active turn into restart recovery", async () => {
+    state.createBackend.mockClear();
+    state.createTransport.mockClear();
+    await createRunnerdBackend({
+      db: leaseDb(execution),
+      execution,
+      runnerInstanceId: "runner-active-turn-recovery",
+    });
+
+    state.createTransport.mockClear();
+    state.createBackend.mock.calls[0]![1].codexTransportFactory!({
+      persistedSession: {
+        driverSessionId: "driver-session-active-turn",
+        providerSessionId: "provider-session-active-turn",
+        activeTurnId: "provider-turn-active",
+      },
+    });
+
+    expect(state.createTransport).toHaveBeenCalledWith(
+      expect.objectContaining({
+        resumeActiveTurnId: "provider-turn-active",
+        resumeProviderSession: expect.objectContaining({
+          driverSessionId: "driver-session-active-turn",
+          providerSessionId: "provider-session-active-turn",
+          activeTurnId: "provider-turn-active",
+        }),
+      }),
+    );
+  });
+
+  it("rejects overlapping runs for the same runnerd provider session scope", async () => {
+    const first = {
+      ...execution,
+      binding: {
+        ...execution.binding,
+        runId: "run-runnerd-overlap-first",
+        executionWorkspaceId: "workspace-runnerd-overlap",
+      },
+      session: {
+        ...execution.session,
+        normalizedSessionId: "session-runnerd-overlap",
+      },
+    } as NativeExecutionInputV1;
+    const second = {
+      ...first,
+      binding: { ...first.binding, runId: "run-runnerd-overlap-second" },
+    } as NativeExecutionInputV1;
+    let release!: () => void;
+    state.execute.mockReset().mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          release = () =>
+            resolve({
+              result: { summary: "completed" },
+              terminal: { runTerminalState: "succeeded" },
+              turnId: "turn",
+              normalizedSessionId: first.session.normalizedSessionId,
+              providerSessionId: "provider-runnerd-overlap",
+              driverKind: "test",
+              driverVersion: "1",
+              nativeEventCount: 1,
+              highestContiguousSourceSeq: 1,
+              usage: null,
+            });
+        }),
+    );
+
+    const active = executePaperclipNativeSession({
+      db: leaseDb(first),
+      execution: first,
+      runnerInstanceId: "runner-runnerd-overlap",
+      useRunnerd: true,
+    });
+    await vi.waitFor(() => expect(release).toBeTypeOf("function"));
+    await expect(
+      executePaperclipNativeSession({
+        db: leaseDb(second),
+        execution: second,
+        runnerInstanceId: "runner-runnerd-overlap",
+        useRunnerd: true,
+      }),
+    ).rejects.toThrow("native_session_supervisor_busy");
+    release();
+    await expect(active).resolves.toBeDefined();
+  });
+
+  it("carries the verified runner and lease binding into a projectless continuation", async () => {
+    const stateBase = await mkdtemp(
+      join(tmpdir(), "paperclip-runner-binding-"),
+    );
+    const previousStateDirectory = process.env.PAPERCLIP_RUNNER_STATE_DIR;
+    process.env.PAPERCLIP_RUNNER_STATE_DIR = stateBase;
+    const prior = {
+      ...execution,
+      binding: {
+        ...execution.binding,
+        companyId: "company-projectless-continuation",
+        runId: "run-projectless-prior",
+        executionWorkspaceId: "run-projectless-prior",
+      },
+      session: {
+        ...execution.session,
+        normalizedSessionId: "session-projectless-continuation",
+      },
+    } as NativeExecutionInputV1;
+    const continuation = {
+      ...prior,
+      binding: {
+        ...prior.binding,
+        runId: "run-projectless-next",
+        executionWorkspaceId: "run-projectless-next",
+      },
+    } as NativeExecutionInputV1;
+    const remoteCwd = "/home/daytona/paperclip-workspace";
+    try {
+      state.createBackend.mockClear();
+      state.createTransport.mockClear();
+      await createRunnerdBackend({
+        db: leaseDb(prior),
+        execution: prior,
+        runnerInstanceId: "runner-projectless-stable",
+      });
+      state.createBackend.mock.calls[0]![1].codexTransportFactory!();
+      const scopedRoot =
+        state.createTransport.mock.calls[0]![0].stateDirectory!;
+      await mkdir(join(scopedRoot, "control-plane"), { recursive: true });
+      await mkdir(join(scopedRoot, "runner"), { recursive: true });
+      const priorIdentity = {
+        runId: "run-projectless-prior",
+        normalizedSessionId: continuation.session.normalizedSessionId,
+        runnerInstanceId: "runner-projectless-stable",
+        environmentLeaseId: "lease-projectless-stable",
+      };
+      await writeFile(
+        join(scopedRoot, "control-plane", "control-plane-state.json"),
+        JSON.stringify(durableControlPlaneState(priorIdentity)),
+      );
+      await writeFile(
+        join(scopedRoot, "runner", "runner-state.json"),
+        JSON.stringify(durableRunnerState(priorIdentity, "suspended")),
+      );
+      state.createBackend.mockClear();
+      state.createTransport.mockClear();
+      state.execute.mockReset().mockResolvedValue({
+        result: { summary: "completed" },
+        terminal: { runTerminalState: "succeeded" },
+        turnId: "turn",
+        normalizedSessionId: continuation.session.normalizedSessionId,
+        providerSessionId: null,
+        driverKind: "test",
+        driverVersion: "1",
+        nativeEventCount: 1,
+        highestContiguousSourceSeq: 1,
+      });
+      const continuationDb = {
+        ...leaseDb(continuation),
+        select: () => ({
+          from: () => ({
+            where: () => ({
+              limit: () =>
+                Promise.resolve([
+                  {
+                    status: "succeeded",
+                    runnerProfileJson: { nativeExecutionInput: prior },
+                  },
+                ]),
+            }),
+          }),
+        }),
+      } as unknown as Db;
+
+      await executePaperclipNativeSession({
+        db: continuationDb,
+        execution: continuation,
+        runnerInstanceId: "runner-new-heartbeat",
+        useRunnerd: true,
+        runnerExecutionTarget: {
+          kind: "remote",
+          transport: "ssh",
+          remoteCwd,
+          spec: {
+            host: "runner.internal",
+            port: 22,
+            username: "runner",
+            remoteWorkspacePath: remoteCwd,
+            remoteCwd,
+            privateKey: null,
+            knownHosts: null,
+            strictHostKeyChecking: true,
+          },
+        },
+      });
+      expect(state.createBackend).toHaveBeenCalledWith(
+        expect.objectContaining({
+          workspace: expect.objectContaining({ cwd: remoteCwd }),
+        }),
+        expect.objectContaining({
+          workingDirectoryAuthority: "remote_runner",
+        }),
+      );
+      expect(state.execute).toHaveBeenCalledWith(
+        expect.objectContaining({
+          input: expect.objectContaining({
+            workspace: expect.objectContaining({ cwd: remoteCwd }),
+          }),
+          requireSessionCloseBeforeReturn: true,
+        }),
+      );
+      const backendOptions = state.createBackend.mock.calls[0]![1];
+      backendOptions.codexTransportFactory!();
+      expect(state.createTransport).toHaveBeenCalledWith(
+        expect.objectContaining({
+          stateDirectory: scopedRoot,
+          prpIdentity: expect.objectContaining({
+            runnerInstanceId: "runner-projectless-stable",
+            environmentLeaseId: "lease-projectless-stable",
+            runId: "run-projectless-next",
+          }),
+        }),
+      );
+    } finally {
+      if (previousStateDirectory === undefined) {
+        delete process.env.PAPERCLIP_RUNNER_STATE_DIR;
+      } else {
+        process.env.PAPERCLIP_RUNNER_STATE_DIR = previousStateDirectory;
+      }
+      await rm(stateBase, { recursive: true, force: true });
+    }
+  });
+
+  it("makes remote authority archival idempotent and returns the archived state", async () => {
+    const remoteExecute = vi.fn();
+    const remoteTarget = {
+      kind: "remote" as const,
+      transport: "sandbox" as const,
+      providerKey: "daytona",
+      leaseId: "lease-authority-archive",
+      remoteCwd: "/home/daytona/paperclip-workspace",
+      runner: { execute: remoteExecute },
+    } as never;
+    const normalizedSessionId = execution.session.normalizedSessionId;
+    if (!normalizedSessionId) {
+      throw new Error("fixture requires a normalized native session id");
+    }
+    const archiveIdentity = {
+      runnerInstanceId: "runner-authority-archive",
+      environmentLeaseId: "lease-authority-archive",
+      runId: execution.binding.runId,
+      normalizedSessionId,
+      turnId: "turn-authority-archive",
+      itemId: "item-authority-archive",
+    };
+    const archivedState = {
+      schema: "paperclip.runner.durable.state.v1",
+      ...archiveIdentity,
+      lifecycle: "suspended",
+    };
+    state.createBackend.mockClear();
+    state.createTransport.mockClear();
+    await createRunnerdBackend({
+      db: leaseDb(execution),
+      execution,
+      runnerInstanceId: archiveIdentity.runnerInstanceId,
+      runnerExecutionTarget: remoteTarget,
+    });
+    state.createBackend.mock.calls[0]![1].codexTransportFactory!();
+    expect(state.createTransport).toHaveBeenCalledWith(
+      expect.objectContaining({
+        environment: expect.objectContaining({
+          PAPERCLIP_RUNNER_EXTERNAL_SANDBOX: "1",
+        }),
+      }),
+    );
+    const archiveExternalRunnerState =
+      state.createTransport.mock.calls[0]![0].archiveExternalRunnerState;
+    expect(archiveExternalRunnerState).toBeTypeOf("function");
+    remoteExecute.mockClear();
+    remoteExecute.mockResolvedValue({
+      exitCode: 0,
+      timedOut: false,
+      stdout: Buffer.from(JSON.stringify(archivedState)).toString("base64"),
+      stderr: "",
+    });
+
+    await expect(
+      archiveExternalRunnerState!({
+        archiveKey: "a".repeat(24),
+        priorIdentity: archiveIdentity,
+      }),
+    ).resolves.toEqual(archivedState);
+    await expect(
+      archiveExternalRunnerState!({
+        archiveKey: "a".repeat(24),
+        priorIdentity: archiveIdentity,
+      }),
+    ).resolves.toEqual(archivedState);
+    expect(remoteExecute).toHaveBeenCalledTimes(2);
+    expect(remoteExecute.mock.calls[0]![0]).toEqual(
+      expect.objectContaining({
+        command: "sh",
+        args: expect.arrayContaining([
+          expect.stringContaining(
+            'test ! -e "$1" && test ! -L "$1" && test -f "$3" && test ! -L "$3"',
+          ),
+        ]),
+      }),
+    );
+
+    remoteExecute.mockResolvedValueOnce({
+      exitCode: 1,
+      timedOut: false,
+      stdout: "",
+      stderr: "source and archive both exist",
+    });
+    await expect(
+      archiveExternalRunnerState!({
+        archiveKey: "a".repeat(24),
+        priorIdentity: archiveIdentity,
+      }),
+    ).rejects.toThrow("runner_remote_authority_archive_failed");
+  });
+
+  it("uses the native execution workspace as the local provider containment root", async () => {
+    state.createBackend.mockClear();
+    await createRunnerdBackend({
+      db: leaseDb(execution),
+      execution,
+      runnerInstanceId: "runner-local-workspace",
+      runnerEnvironment: {
+        HOME: "/home/runner",
+        PAPERCLIP_WORKSPACE_CWD: "/untrusted/configured-workspace",
+        PAPERCLIP_RUNNER_EXTERNAL_SANDBOX: "1",
+      },
+    });
+
+    const backendOptions = state.createBackend.mock.calls[0]![1];
+    state.createTransport.mockClear();
+    backendOptions.codexTransportFactory!();
+    expect(state.createTransport).toHaveBeenCalledWith(
+      expect.objectContaining({
+        environment: expect.objectContaining({
+          PAPERCLIP_WORKSPACE_CWD: execution.workspace.cwd,
+        }),
+      }),
+    );
+    const localTransportOptions = state.createTransport.mock.calls[0]![0] as {
+      environment: NodeJS.ProcessEnv;
+    };
+    expect(
+      localTransportOptions.environment.PAPERCLIP_RUNNER_EXTERNAL_SANDBOX,
+    ).toBeUndefined();
+  });
+
+  it("atomically migrates legacy unscoped state only for its exact durable run identity", async () => {
     const stateBase = await mkdtemp(
       join(tmpdir(), "paperclip-legacy-runner-state-"),
     );
@@ -2801,16 +3869,20 @@ describe("runnerd provider runtime wiring", () => {
     );
     try {
       await mkdir(join(legacyRoot, "control-plane"), { recursive: true });
+      await mkdir(join(legacyRoot, "runner"), { recursive: true });
+      const legacyIdentity = {
+        runId: "run-legacy-state",
+        normalizedSessionId: "session-legacy-state",
+        runnerInstanceId: "runner-legacy-state",
+        environmentLeaseId: "lease-legacy-state",
+      };
       await writeFile(
-        join(legacyRoot, "control-plane", "mock-core-state.json"),
-        JSON.stringify({
-          identity: {
-            runId: "run-legacy-state",
-            normalizedSessionId: "session-legacy-state",
-            runnerInstanceId: "runner-legacy-state",
-            environmentLeaseId: "lease-legacy-state",
-          },
-        }),
+        join(legacyRoot, "control-plane", "control-plane-state.json"),
+        JSON.stringify(durableControlPlaneState(legacyIdentity)),
+      );
+      await writeFile(
+        join(legacyRoot, "runner", "runner-state.json"),
+        JSON.stringify(durableRunnerState(legacyIdentity, "ready")),
       );
       state.createBackend.mockClear();
       await createRunnerdBackend({
@@ -2820,8 +3892,19 @@ describe("runnerd provider runtime wiring", () => {
       });
       state.createTransport.mockClear();
       state.createBackend.mock.calls[0]![1].codexTransportFactory!();
-      expect(state.createTransport.mock.calls[0]![0].stateDirectory).toBe(
-        legacyRoot,
+      const migratedRoot =
+        state.createTransport.mock.calls[0]![0].stateDirectory!;
+      expect(migratedRoot).not.toBe(legacyRoot);
+      await expect(access(legacyRoot)).rejects.toThrow();
+      await expect(
+        access(join(migratedRoot, "control-plane", "control-plane-state.json")),
+      ).resolves.toBeUndefined();
+      expect(state.createTransport.mock.calls[0]![0].prpIdentity).toEqual(
+        expect.objectContaining({
+          runnerInstanceId: "runner-legacy-state",
+          environmentLeaseId: "lease-legacy-state",
+          runId: "run-legacy-state",
+        }),
       );
       expect(state.createTransport.mock.calls[0]![0].runnerBinary).toBe(
         "/tmp/paperclip-runnerd",
@@ -2845,6 +3928,1235 @@ describe("runnerd provider runtime wiring", () => {
       expect(state.createTransport.mock.calls[1]![0].stateDirectory).not.toBe(
         legacyRoot,
       );
+    } finally {
+      if (previousStateDirectory === undefined) {
+        delete process.env.PAPERCLIP_RUNNER_STATE_DIR;
+      } else {
+        process.env.PAPERCLIP_RUNNER_STATE_DIR = previousStateDirectory;
+      }
+      await rm(stateBase, { recursive: true, force: true });
+    }
+  });
+
+  it("migrates the former company/session scope into the full native session scope", async () => {
+    const stateBase = await mkdtemp(
+      join(tmpdir(), "paperclip-company-session-state-"),
+    );
+    const previousStateDirectory = process.env.PAPERCLIP_RUNNER_STATE_DIR;
+    process.env.PAPERCLIP_RUNNER_STATE_DIR = stateBase;
+    const legacyExecution = {
+      ...execution,
+      binding: {
+        ...execution.binding,
+        companyId: "company-former-scope",
+        runId: "run-former-scope",
+        agentId: "agent-former-scope",
+        executionWorkspaceId: "workspace-former-scope",
+      },
+      session: {
+        ...execution.session,
+        normalizedSessionId: "session-former-scope",
+      },
+    } as NativeExecutionInputV1;
+    const legacyRoot = join(
+      stateBase,
+      createHash("sha256")
+        .update(
+          JSON.stringify([
+            legacyExecution.binding.companyId,
+            legacyExecution.session.normalizedSessionId,
+          ]),
+        )
+        .digest("hex"),
+    );
+    try {
+      await mkdir(join(legacyRoot, "control-plane"), { recursive: true });
+      await mkdir(join(legacyRoot, "runner"), { recursive: true });
+      const legacyIdentity = {
+        runId: legacyExecution.binding.runId,
+        normalizedSessionId: legacyExecution.session.normalizedSessionId,
+        runnerInstanceId: "runner-former-scope",
+        environmentLeaseId: "lease-former-scope",
+      };
+      await writeFile(
+        join(legacyRoot, "control-plane", "control-plane-state.json"),
+        JSON.stringify(durableControlPlaneState(legacyIdentity)),
+      );
+      await writeFile(
+        join(legacyRoot, "runner", "runner-state.json"),
+        JSON.stringify(durableRunnerState(legacyIdentity, "ready")),
+      );
+      state.createBackend.mockClear();
+      state.createTransport.mockClear();
+
+      await createRunnerdBackend({
+        db: leaseDb(legacyExecution),
+        execution: legacyExecution,
+        runnerInstanceId: "runner-former-scope",
+      });
+      state.createBackend.mock.calls[0]![1].codexTransportFactory!();
+      const migratedRoot =
+        state.createTransport.mock.calls[0]![0].stateDirectory!;
+      expect(migratedRoot).not.toBe(legacyRoot);
+      await expect(access(legacyRoot)).rejects.toThrow();
+      await expect(
+        access(join(migratedRoot, "control-plane", "control-plane-state.json")),
+      ).resolves.toBeUndefined();
+    } finally {
+      if (previousStateDirectory === undefined) {
+        delete process.env.PAPERCLIP_RUNNER_STATE_DIR;
+      } else {
+        process.env.PAPERCLIP_RUNNER_STATE_DIR = previousStateDirectory;
+      }
+      await rm(stateBase, { recursive: true, force: true });
+    }
+  });
+
+  it("migrates a suspended prior-run authority only when its persisted execution has the same full session scope", async () => {
+    const stateBase = await mkdtemp(
+      join(tmpdir(), "paperclip-prior-run-session-state-"),
+    );
+    const previousStateDirectory = process.env.PAPERCLIP_RUNNER_STATE_DIR;
+    process.env.PAPERCLIP_RUNNER_STATE_DIR = stateBase;
+    const priorExecution = {
+      ...execution,
+      binding: {
+        ...execution.binding,
+        companyId: "company-prior-run-scope",
+        runId: "run-prior-run-scope",
+        agentId: "agent-prior-run-scope",
+        executionWorkspaceId: "workspace-prior-run-scope",
+      },
+      session: {
+        ...execution.session,
+        normalizedSessionId: "session-prior-run-scope",
+      },
+    } as NativeExecutionInputV1;
+    const currentExecution = {
+      ...priorExecution,
+      binding: {
+        ...priorExecution.binding,
+        runId: "run-current-run-scope",
+      },
+    } as NativeExecutionInputV1;
+    const legacyRoot = join(
+      stateBase,
+      createHash("sha256")
+        .update(
+          JSON.stringify([
+            currentExecution.binding.companyId,
+            currentExecution.session.normalizedSessionId,
+          ]),
+        )
+        .digest("hex"),
+    );
+    const priorRunDb = {
+      select: () => ({
+        from: () => ({
+          where: () => ({
+            limit: () =>
+              Promise.resolve([
+                {
+                  status: "succeeded",
+                  runnerProfileJson: {
+                    nativeExecutionInput: priorExecution,
+                  },
+                },
+              ]),
+          }),
+        }),
+      }),
+    } as unknown as Db;
+    try {
+      await mkdir(join(legacyRoot, "control-plane"), { recursive: true });
+      await mkdir(join(legacyRoot, "runner"), { recursive: true });
+      await writeFile(
+        join(legacyRoot, "control-plane", "control-plane-state.json"),
+        JSON.stringify(
+          durableControlPlaneState({
+            runId: priorExecution.binding.runId,
+            normalizedSessionId: priorExecution.session.normalizedSessionId,
+            runnerInstanceId: "runner-prior-run-scope",
+            environmentLeaseId: "lease-prior-run-scope",
+          }),
+        ),
+      );
+      await writeFile(
+        join(legacyRoot, "runner", "runner-state.json"),
+        JSON.stringify(
+          durableRunnerState(
+            {
+              runId: priorExecution.binding.runId,
+              normalizedSessionId: priorExecution.session.normalizedSessionId,
+              runnerInstanceId: "runner-prior-run-scope",
+              environmentLeaseId: "lease-prior-run-scope",
+            },
+            "suspended",
+          ),
+        ),
+      );
+
+      state.createBackend.mockClear();
+      state.createTransport.mockClear();
+      await createRunnerdBackend({
+        db: priorRunDb,
+        execution: currentExecution,
+        runnerInstanceId: "runner-current-run-scope",
+      });
+      state.createBackend.mock.calls[0]![1].codexTransportFactory!();
+      const migratedRoot =
+        state.createTransport.mock.calls[0]![0].stateDirectory!;
+      expect(migratedRoot).not.toBe(legacyRoot);
+      await expect(access(legacyRoot)).rejects.toThrow();
+      expect(state.createTransport.mock.calls[0]![0].prpIdentity).toEqual(
+        expect.objectContaining({
+          runId: currentExecution.binding.runId,
+          runnerInstanceId: "runner-prior-run-scope",
+          environmentLeaseId: "lease-prior-run-scope",
+        }),
+      );
+    } finally {
+      if (previousStateDirectory === undefined) {
+        delete process.env.PAPERCLIP_RUNNER_STATE_DIR;
+      } else {
+        process.env.PAPERCLIP_RUNNER_STATE_DIR = previousStateDirectory;
+      }
+      await rm(stateBase, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    {
+      directLifecycle: null,
+      backupLifecycle: "suspended",
+      corrupt: false,
+      accepted: true,
+    },
+    {
+      directLifecycle: "empty",
+      backupLifecycle: "suspended",
+      corrupt: false,
+      accepted: true,
+    },
+    {
+      directLifecycle: "ready",
+      backupLifecycle: "suspended",
+      corrupt: false,
+      accepted: false,
+    },
+    {
+      directLifecycle: "malformed",
+      backupLifecycle: "suspended",
+      corrupt: false,
+      accepted: false,
+    },
+    {
+      directLifecycle: "nonempty",
+      backupLifecycle: "suspended",
+      corrupt: false,
+      accepted: false,
+    },
+    {
+      directLifecycle: null,
+      backupLifecycle: "ready",
+      corrupt: false,
+      accepted: false,
+    },
+    {
+      directLifecycle: null,
+      backupLifecycle: "suspended",
+      corrupt: true,
+      accepted: false,
+    },
+  ] as const)(
+    "uses remote prior-run backup when acceptance=$accepted direct=$directLifecycle backup=$backupLifecycle corrupt=$corrupt",
+    async ({ directLifecycle, backupLifecycle, corrupt, accepted }) => {
+      const stateBase = await mkdtemp(
+        join(tmpdir(), "paperclip-remote-prior-run-state-"),
+      );
+      const previousStateDirectory = process.env.PAPERCLIP_RUNNER_STATE_DIR;
+      process.env.PAPERCLIP_RUNNER_STATE_DIR = stateBase;
+      const priorExecution = {
+        ...execution,
+        binding: {
+          ...execution.binding,
+          companyId: "company-remote-prior-scope",
+          runId: "run-remote-prior-scope",
+          agentId: "agent-remote-prior-scope",
+          executionWorkspaceId: "workspace-remote-prior-scope",
+        },
+        session: {
+          ...execution.session,
+          normalizedSessionId: "session-remote-prior-scope",
+        },
+      } as NativeExecutionInputV1;
+      const currentExecution = {
+        ...priorExecution,
+        binding: {
+          ...priorExecution.binding,
+          runId: "run-current-remote-scope",
+        },
+      } as NativeExecutionInputV1;
+      const priorRunDb = {
+        select: () => ({
+          from: () => ({
+            where: () => ({
+              limit: () =>
+                Promise.resolve([
+                  {
+                    status: "succeeded",
+                    runnerProfileJson: {
+                      nativeExecutionInput: priorExecution,
+                    },
+                  },
+                ]),
+            }),
+          }),
+        }),
+      } as unknown as Db;
+      const remoteTarget = {
+        kind: "remote" as const,
+        transport: "sandbox" as const,
+        providerKey: "daytona",
+        leaseId: "environment-lease-remote-prior-scope",
+        remoteCwd: "/home/daytona/paperclip-workspace",
+        runner: {
+          execute: vi.fn(),
+        },
+      } as never;
+      const identity = {
+        runId: priorExecution.binding.runId,
+        normalizedSessionId: priorExecution.session.normalizedSessionId,
+        runnerInstanceId: "runner-remote-prior-scope",
+        environmentLeaseId: "lease-remote-prior-scope",
+      };
+      try {
+        state.createBackend.mockClear();
+        state.createTransport.mockClear();
+        await createRunnerdBackend({
+          db: leaseDb(priorExecution),
+          execution: priorExecution,
+          runnerInstanceId: identity.runnerInstanceId,
+          runnerExecutionTarget: remoteTarget,
+        });
+        state.createBackend.mock.calls[0]![1].codexTransportFactory!();
+        const scopedRoot =
+          state.createTransport.mock.calls[0]![0].stateDirectory!;
+        await mkdir(join(scopedRoot, "control-plane"), { recursive: true });
+        await writeFile(
+          join(scopedRoot, "control-plane", "control-plane-state.json"),
+          JSON.stringify(durableControlPlaneState(identity)),
+        );
+        if (directLifecycle === "empty") {
+          // Remote transports before the externally-owned-state fix left an
+          // empty local placeholder beside the controller state. It is not an
+          // authority record and must not mask a verified remote backup.
+          await mkdir(join(scopedRoot, "runner"), { recursive: true });
+        } else if (directLifecycle === "nonempty") {
+          await mkdir(join(scopedRoot, "runner"), { recursive: true });
+          await writeFile(
+            join(scopedRoot, "runner", "unexpected-state.json"),
+            "{}",
+          );
+        } else if (directLifecycle !== null) {
+          await mkdir(join(scopedRoot, "runner"), { recursive: true });
+          await writeFile(
+            join(scopedRoot, "runner", "runner-state.json"),
+            JSON.stringify(
+              directLifecycle === "malformed"
+                ? {
+                    ...durableRunnerState(identity, "suspended"),
+                    runId: "conflicting-direct-run",
+                  }
+                : durableRunnerState(identity, directLifecycle),
+            ),
+          );
+        }
+        const backupRoot = join(scopedRoot, "failover-backups", "current");
+        await mkdir(join(backupRoot, "runner"), { recursive: true });
+        await mkdir(join(backupRoot, "codex-home"), { recursive: true });
+        await writeFile(
+          join(backupRoot, "runner", "runner-state.json"),
+          JSON.stringify(durableRunnerState(identity, backupLifecycle)),
+        );
+        const manifest = buildNativeHarnessBackupManifest({
+          backupRoot,
+          execution: priorExecution,
+          runnerInstanceId: identity.runnerInstanceId,
+          providerSessionIdentity: {
+            providerSessionId: "provider-remote-prior-scope",
+            providerBackendSessionId: null,
+            providerSessionIdentity: null,
+          },
+          sourceProviderLeaseId: "sandbox-remote-prior-scope",
+        });
+        await writeFile(
+          join(backupRoot, "manifest.json"),
+          JSON.stringify(manifest),
+        );
+        if (corrupt) {
+          await writeFile(
+            join(backupRoot, "runner", "runner-state.json"),
+            JSON.stringify({
+              ...durableRunnerState(identity, backupLifecycle),
+              x: 1,
+            }),
+          );
+        }
+        state.createBackend.mockClear();
+        state.createTransport.mockClear();
+
+        const continuation = createRunnerdBackend({
+          db: priorRunDb,
+          execution: currentExecution,
+          runnerInstanceId: "runner-current-remote-scope",
+          runnerExecutionTarget: remoteTarget,
+        });
+        if (!accepted) {
+          await expect(continuation).rejects.toThrow(
+            "runner_state_identity_mismatch",
+          );
+          expect(state.createBackend).not.toHaveBeenCalled();
+          return;
+        }
+        await expect(continuation).resolves.toBeDefined();
+        state.createBackend.mock.calls[0]![1].codexTransportFactory!();
+        expect(state.createTransport.mock.calls[0]![0].prpIdentity).toEqual(
+          expect.objectContaining({
+            runId: currentExecution.binding.runId,
+            runnerInstanceId: identity.runnerInstanceId,
+            environmentLeaseId: identity.environmentLeaseId,
+          }),
+        );
+      } finally {
+        if (previousStateDirectory === undefined) {
+          delete process.env.PAPERCLIP_RUNNER_STATE_DIR;
+        } else {
+          process.env.PAPERCLIP_RUNNER_STATE_DIR = previousStateDirectory;
+        }
+        await rm(stateBase, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it("quarantines legacy prior-run state only after the database proves a terminal owner in the same full scope", async () => {
+    const stateBase = await mkdtemp(
+      join(tmpdir(), "paperclip-legacy-terminal-unsuspended-state-"),
+    );
+    const previousStateDirectory = process.env.PAPERCLIP_RUNNER_STATE_DIR;
+    process.env.PAPERCLIP_RUNNER_STATE_DIR = stateBase;
+    const priorExecution = {
+      ...execution,
+      binding: {
+        ...execution.binding,
+        companyId: "company-legacy-terminal-unsuspended",
+        runId: "run-legacy-terminal-unsuspended",
+        agentId: "agent-legacy-terminal-unsuspended",
+        executionWorkspaceId: "workspace-legacy-terminal-unsuspended",
+      },
+      session: {
+        ...execution.session,
+        normalizedSessionId: "session-legacy-terminal-unsuspended",
+      },
+    } as NativeExecutionInputV1;
+    const currentExecution = {
+      ...priorExecution,
+      binding: {
+        ...priorExecution.binding,
+        runId: "run-after-legacy-terminal-unsuspended",
+      },
+    } as NativeExecutionInputV1;
+    const legacyRoot = join(
+      stateBase,
+      createHash("sha256")
+        .update(
+          JSON.stringify([
+            currentExecution.binding.companyId,
+            currentExecution.session.normalizedSessionId,
+          ]),
+        )
+        .digest("hex"),
+    );
+    const terminalPriorRunDb = {
+      select: () => ({
+        from: () => ({
+          where: () => ({
+            limit: () =>
+              Promise.resolve([
+                {
+                  status: "succeeded",
+                  runnerProfileJson: {
+                    nativeExecutionInput: priorExecution,
+                  },
+                },
+              ]),
+          }),
+        }),
+      }),
+    } as unknown as Db;
+    const identity = {
+      runId: priorExecution.binding.runId,
+      normalizedSessionId: priorExecution.session.normalizedSessionId,
+      runnerInstanceId: "runner-legacy-terminal-unsuspended",
+      environmentLeaseId: "lease-legacy-terminal-unsuspended",
+    };
+    try {
+      await mkdir(join(legacyRoot, "control-plane"), { recursive: true });
+      await mkdir(join(legacyRoot, "runner"), { recursive: true });
+      await writeFile(
+        join(legacyRoot, "control-plane", "control-plane-state.json"),
+        JSON.stringify(durableControlPlaneState(identity)),
+      );
+      await writeFile(
+        join(legacyRoot, "runner", "runner-state.json"),
+        JSON.stringify(durableRunnerState(identity, "ready")),
+      );
+      state.createBackend.mockClear();
+      state.createTransport.mockClear();
+
+      await expect(
+        createRunnerdBackend({
+          db: terminalPriorRunDb,
+          execution: currentExecution,
+          runnerInstanceId: "runner-after-legacy-terminal-unsuspended",
+        }),
+      ).rejects.toThrow("runner_state_identity_mismatch");
+      await expect(access(legacyRoot)).rejects.toThrow();
+      const quarantineEntries = await readdir(join(stateBase, "quarantine"));
+      expect(quarantineEntries).toHaveLength(1);
+      expect(quarantineEntries[0]).toContain(".identity_indeterminate.");
+      expect(state.createBackend).not.toHaveBeenCalled();
+      expect(state.createTransport).not.toHaveBeenCalled();
+    } finally {
+      if (previousStateDirectory === undefined) {
+        delete process.env.PAPERCLIP_RUNNER_STATE_DIR;
+      } else {
+        process.env.PAPERCLIP_RUNNER_STATE_DIR = previousStateDirectory;
+      }
+      await rm(stateBase, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects scoped prior-run state after restart while its heartbeat is still running", async () => {
+    const stateBase = await mkdtemp(
+      join(tmpdir(), "paperclip-running-prior-run-state-"),
+    );
+    const previousStateDirectory = process.env.PAPERCLIP_RUNNER_STATE_DIR;
+    process.env.PAPERCLIP_RUNNER_STATE_DIR = stateBase;
+    const priorExecution = {
+      ...execution,
+      binding: {
+        ...execution.binding,
+        companyId: "company-running-prior-scope",
+        runId: "run-running-prior-scope",
+        agentId: "agent-running-prior-scope",
+        executionWorkspaceId: "workspace-running-prior-scope",
+      },
+      session: {
+        ...execution.session,
+        normalizedSessionId: "session-running-prior-scope",
+      },
+    } as NativeExecutionInputV1;
+    const currentExecution = {
+      ...priorExecution,
+      binding: {
+        ...priorExecution.binding,
+        runId: "run-after-running-prior-scope",
+      },
+    } as NativeExecutionInputV1;
+    const runningPriorRunDb = {
+      select: () => ({
+        from: () => ({
+          where: () => ({
+            limit: () =>
+              Promise.resolve([
+                {
+                  status: "running",
+                  runnerProfileJson: {
+                    nativeExecutionInput: priorExecution,
+                  },
+                },
+              ]),
+          }),
+        }),
+      }),
+    } as unknown as Db;
+    const identity = {
+      runId: priorExecution.binding.runId,
+      normalizedSessionId: priorExecution.session.normalizedSessionId,
+      runnerInstanceId: "runner-running-prior-scope",
+      environmentLeaseId: "lease-running-prior-scope",
+    };
+    try {
+      state.createBackend.mockClear();
+      state.createTransport.mockClear();
+      await createRunnerdBackend({
+        db: leaseDb(priorExecution),
+        execution: priorExecution,
+        runnerInstanceId: identity.runnerInstanceId,
+      });
+      state.createBackend.mock.calls[0]![1].codexTransportFactory!();
+      const scopedRoot =
+        state.createTransport.mock.calls[0]![0].stateDirectory!;
+      await mkdir(join(scopedRoot, "control-plane"), { recursive: true });
+      await mkdir(join(scopedRoot, "runner"), { recursive: true });
+      await writeFile(
+        join(scopedRoot, "control-plane", "control-plane-state.json"),
+        JSON.stringify(durableControlPlaneState(identity)),
+      );
+      await writeFile(
+        join(scopedRoot, "runner", "runner-state.json"),
+        JSON.stringify(durableRunnerState(identity, "suspended")),
+      );
+      state.createBackend.mockClear();
+      state.createTransport.mockClear();
+
+      await expect(
+        createRunnerdBackend({
+          db: runningPriorRunDb,
+          execution: currentExecution,
+          runnerInstanceId: "runner-after-running-prior-scope",
+        }),
+      ).rejects.toThrow("runner_state_identity_mismatch");
+      await expect(access(scopedRoot)).resolves.toBeUndefined();
+      await expect(access(join(stateBase, "quarantine"))).rejects.toThrow();
+      expect(state.createBackend).not.toHaveBeenCalled();
+      expect(state.createTransport).not.toHaveBeenCalled();
+    } finally {
+      if (previousStateDirectory === undefined) {
+        delete process.env.PAPERCLIP_RUNNER_STATE_DIR;
+      } else {
+        process.env.PAPERCLIP_RUNNER_STATE_DIR = previousStateDirectory;
+      }
+      await rm(stateBase, { recursive: true, force: true });
+    }
+  });
+
+  it("quarantines scoped prior-run state when the heartbeat is terminal but runnerd is not suspended", async () => {
+    const stateBase = await mkdtemp(
+      join(tmpdir(), "paperclip-terminal-unsuspended-state-"),
+    );
+    const previousStateDirectory = process.env.PAPERCLIP_RUNNER_STATE_DIR;
+    process.env.PAPERCLIP_RUNNER_STATE_DIR = stateBase;
+    const priorExecution = {
+      ...execution,
+      binding: {
+        ...execution.binding,
+        companyId: "company-terminal-unsuspended",
+        runId: "run-terminal-unsuspended",
+        agentId: "agent-terminal-unsuspended",
+        executionWorkspaceId: "workspace-terminal-unsuspended",
+      },
+      session: {
+        ...execution.session,
+        normalizedSessionId: "session-terminal-unsuspended",
+      },
+    } as NativeExecutionInputV1;
+    const currentExecution = {
+      ...priorExecution,
+      binding: {
+        ...priorExecution.binding,
+        runId: "run-after-terminal-unsuspended",
+      },
+    } as NativeExecutionInputV1;
+    const terminalPriorRunDb = {
+      select: () => ({
+        from: () => ({
+          where: () => ({
+            limit: () =>
+              Promise.resolve([
+                {
+                  status: "succeeded",
+                  runnerProfileJson: {
+                    nativeExecutionInput: priorExecution,
+                  },
+                },
+              ]),
+          }),
+        }),
+      }),
+    } as unknown as Db;
+    const identity = {
+      runId: priorExecution.binding.runId,
+      normalizedSessionId: priorExecution.session.normalizedSessionId,
+      runnerInstanceId: "runner-terminal-unsuspended",
+      environmentLeaseId: "lease-terminal-unsuspended",
+    };
+    try {
+      state.createBackend.mockClear();
+      state.createTransport.mockClear();
+      await createRunnerdBackend({
+        db: leaseDb(priorExecution),
+        execution: priorExecution,
+        runnerInstanceId: identity.runnerInstanceId,
+      });
+      state.createBackend.mock.calls[0]![1].codexTransportFactory!();
+      const scopedRoot =
+        state.createTransport.mock.calls[0]![0].stateDirectory!;
+      await mkdir(join(scopedRoot, "control-plane"), { recursive: true });
+      await mkdir(join(scopedRoot, "runner"), { recursive: true });
+      await writeFile(
+        join(scopedRoot, "control-plane", "control-plane-state.json"),
+        JSON.stringify(durableControlPlaneState(identity)),
+      );
+      await writeFile(
+        join(scopedRoot, "runner", "runner-state.json"),
+        JSON.stringify(durableRunnerState(identity, "ready")),
+      );
+      await mkdir(join(scopedRoot, "codex-home", "sessions"), {
+        recursive: true,
+      });
+      await mkdir(join(scopedRoot, "codex-home", "tmp"), { recursive: true });
+      await mkdir(join(scopedRoot, "codex-home", ".tmp"), {
+        recursive: true,
+      });
+      await writeFile(
+        join(scopedRoot, "codex-home", "auth.json"),
+        '{"OPENAI_API_KEY":"fixture-secret"}',
+      );
+      await writeFile(
+        join(scopedRoot, "codex-home", "config.toml"),
+        'bearer_token = "fixture-secret"',
+      );
+      await writeFile(
+        join(scopedRoot, "codex-home", "tmp", "transient"),
+        "transient",
+      );
+      await writeFile(
+        join(scopedRoot, "codex-home", ".tmp", "transient"),
+        "transient",
+      );
+      await writeFile(
+        join(scopedRoot, "codex-home", "sessions", "rollout.jsonl"),
+        "durable session history",
+      );
+      state.createBackend.mockClear();
+      state.createTransport.mockClear();
+
+      await expect(
+        createRunnerdBackend({
+          db: terminalPriorRunDb,
+          execution: currentExecution,
+          runnerInstanceId: "runner-after-terminal-unsuspended",
+        }),
+      ).rejects.toThrow("runner_state_identity_mismatch");
+      await expect(access(scopedRoot)).rejects.toThrow();
+      const quarantineEntries = await readdir(join(stateBase, "quarantine"));
+      expect(quarantineEntries).toHaveLength(1);
+      expect(quarantineEntries[0]).toContain(".identity_indeterminate.");
+      const quarantinedRoot = join(
+        stateBase,
+        "quarantine",
+        quarantineEntries[0]!,
+      );
+      for (const entry of ["tmp", ".tmp", "auth.json", "config.toml"]) {
+        await expect(
+          access(join(quarantinedRoot, "codex-home", entry)),
+        ).rejects.toThrow();
+      }
+      await expect(
+        access(
+          join(quarantinedRoot, "codex-home", "sessions", "rollout.jsonl"),
+        ),
+      ).resolves.toBeUndefined();
+      await expect(
+        access(
+          join(quarantinedRoot, "control-plane", "control-plane-state.json"),
+        ),
+      ).resolves.toBeUndefined();
+      expect(state.createBackend).not.toHaveBeenCalled();
+      expect(state.createTransport).not.toHaveBeenCalled();
+    } finally {
+      if (previousStateDirectory === undefined) {
+        delete process.env.PAPERCLIP_RUNNER_STATE_DIR;
+      } else {
+        process.env.PAPERCLIP_RUNNER_STATE_DIR = previousStateDirectory;
+      }
+      await rm(stateBase, { recursive: true, force: true });
+    }
+  });
+
+  it("resumes an existing scoped authority only for the exact current run", async () => {
+    const stateBase = await mkdtemp(
+      join(tmpdir(), "paperclip-current-scoped-state-"),
+    );
+    const previousStateDirectory = process.env.PAPERCLIP_RUNNER_STATE_DIR;
+    process.env.PAPERCLIP_RUNNER_STATE_DIR = stateBase;
+    const currentExecution = {
+      ...execution,
+      binding: {
+        ...execution.binding,
+        companyId: "company-current-scoped-state",
+        runId: "run-current-scoped-state",
+        agentId: "agent-current-scoped-state",
+        executionWorkspaceId: "workspace-current-scoped-state",
+      },
+      session: {
+        ...execution.session,
+        normalizedSessionId: "session-current-scoped-state",
+      },
+    } as NativeExecutionInputV1;
+    const identity = {
+      runId: currentExecution.binding.runId,
+      normalizedSessionId: currentExecution.session.normalizedSessionId,
+      runnerInstanceId: "runner-current-scoped-state",
+      environmentLeaseId: "lease-current-scoped-state",
+    };
+    try {
+      state.createBackend.mockClear();
+      state.createTransport.mockClear();
+      await createRunnerdBackend({
+        db: leaseDb(currentExecution),
+        execution: currentExecution,
+        runnerInstanceId: identity.runnerInstanceId,
+      });
+      state.createBackend.mock.calls[0]![1].codexTransportFactory!();
+      const scopedRoot =
+        state.createTransport.mock.calls[0]![0].stateDirectory!;
+      await mkdir(join(scopedRoot, "control-plane"), { recursive: true });
+      await mkdir(join(scopedRoot, "runner"), { recursive: true });
+      await writeFile(
+        join(scopedRoot, "control-plane", "control-plane-state.json"),
+        JSON.stringify(durableControlPlaneState(identity)),
+      );
+      await writeFile(
+        join(scopedRoot, "runner", "runner-state.json"),
+        JSON.stringify(durableRunnerState(identity, "ready")),
+      );
+      state.createBackend.mockClear();
+      state.createTransport.mockClear();
+
+      await expect(
+        createRunnerdBackend({
+          db: leaseDb(currentExecution),
+          execution: currentExecution,
+          runnerInstanceId: "runner-restart-placeholder",
+        }),
+      ).resolves.toBeDefined();
+      state.createBackend.mock.calls[0]![1].codexTransportFactory!();
+      expect(state.createTransport).toHaveBeenCalledWith(
+        expect.objectContaining({
+          stateDirectory: scopedRoot,
+          prpIdentity: expect.objectContaining(identity),
+        }),
+      );
+    } finally {
+      if (previousStateDirectory === undefined) {
+        delete process.env.PAPERCLIP_RUNNER_STATE_DIR;
+      } else {
+        process.env.PAPERCLIP_RUNNER_STATE_DIR = previousStateDirectory;
+      }
+      await rm(stateBase, { recursive: true, force: true });
+    }
+  });
+
+  it.each(["unknown_schema", "unknown_lifecycle"] as const)(
+    "quarantines an exact-run runner state with %s",
+    async (caseName) => {
+      const stateBase = await mkdtemp(
+        join(tmpdir(), `paperclip-${caseName}-runner-state-`),
+      );
+      const previousStateDirectory = process.env.PAPERCLIP_RUNNER_STATE_DIR;
+      process.env.PAPERCLIP_RUNNER_STATE_DIR = stateBase;
+      const currentExecution = {
+        ...execution,
+        binding: {
+          ...execution.binding,
+          companyId: `company-${caseName}-runner-state`,
+          runId: `run-${caseName}-runner-state`,
+          agentId: `agent-${caseName}-runner-state`,
+          executionWorkspaceId: `workspace-${caseName}-runner-state`,
+        },
+        session: {
+          ...execution.session,
+          normalizedSessionId: `session-${caseName}-runner-state`,
+        },
+      } as NativeExecutionInputV1;
+      const identity = {
+        runId: currentExecution.binding.runId,
+        normalizedSessionId: currentExecution.session.normalizedSessionId,
+        runnerInstanceId: `runner-${caseName}-runner-state`,
+        environmentLeaseId: currentExecution.binding.executionWorkspaceId,
+      };
+      try {
+        state.createBackend.mockClear();
+        state.createTransport.mockClear();
+        await createRunnerdBackend({
+          db: leaseDb(currentExecution),
+          execution: currentExecution,
+          runnerInstanceId: identity.runnerInstanceId,
+        });
+        state.createBackend.mock.calls[0]![1].codexTransportFactory!();
+        const scopedRoot =
+          state.createTransport.mock.calls[0]![0].stateDirectory!;
+        await mkdir(join(scopedRoot, "control-plane"), { recursive: true });
+        await mkdir(join(scopedRoot, "runner"), { recursive: true });
+        await writeFile(
+          join(scopedRoot, "control-plane", "control-plane-state.json"),
+          JSON.stringify(durableControlPlaneState(identity)),
+        );
+        const runnerState = durableRunnerState(
+          identity,
+          caseName === "unknown_lifecycle" ? "future_lifecycle" : "ready",
+        );
+        await writeFile(
+          join(scopedRoot, "runner", "runner-state.json"),
+          JSON.stringify(
+            caseName === "unknown_schema"
+              ? {
+                  ...runnerState,
+                  schema: "paperclip.runner.durable.state.v999",
+                }
+              : runnerState,
+          ),
+        );
+        state.createBackend.mockClear();
+        state.createTransport.mockClear();
+
+        await expect(
+          createRunnerdBackend({
+            db: leaseDb(currentExecution),
+            execution: currentExecution,
+            runnerInstanceId: `runner-${caseName}-retry`,
+          }),
+        ).rejects.toThrow("runner_state_identity_mismatch");
+        await expect(access(scopedRoot)).rejects.toThrow();
+        const quarantineEntries = await readdir(join(stateBase, "quarantine"));
+        expect(quarantineEntries).toHaveLength(1);
+        expect(quarantineEntries[0]).toContain(".identity_indeterminate.");
+        expect(state.createBackend).not.toHaveBeenCalled();
+        expect(state.createTransport).not.toHaveBeenCalled();
+      } finally {
+        if (previousStateDirectory === undefined) {
+          delete process.env.PAPERCLIP_RUNNER_STATE_DIR;
+        } else {
+          process.env.PAPERCLIP_RUNNER_STATE_DIR = previousStateDirectory;
+        }
+        await rm(stateBase, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.each(["missing", "malformed", "unknown_schema", "mismatched"] as const)(
+    "fails closed on %s durable identity in an existing scoped root",
+    async (caseName) => {
+      const stateBase = await mkdtemp(
+        join(tmpdir(), `paperclip-${caseName}-scoped-state-`),
+      );
+      const previousStateDirectory = process.env.PAPERCLIP_RUNNER_STATE_DIR;
+      process.env.PAPERCLIP_RUNNER_STATE_DIR = stateBase;
+      const scopedExecution = {
+        ...execution,
+        binding: {
+          ...execution.binding,
+          companyId: `company-${caseName}-scoped-state`,
+          runId: `run-${caseName}-scoped-state`,
+          agentId: `agent-${caseName}-scoped-state`,
+          executionWorkspaceId: `workspace-${caseName}-scoped-state`,
+        },
+        session: {
+          ...execution.session,
+          normalizedSessionId: `session-${caseName}-scoped-state`,
+        },
+      } as NativeExecutionInputV1;
+      try {
+        state.createBackend.mockClear();
+        state.createTransport.mockClear();
+        await createRunnerdBackend({
+          db: leaseDb(scopedExecution),
+          execution: scopedExecution,
+          runnerInstanceId: `runner-${caseName}-scoped-state`,
+        });
+        state.createBackend.mock.calls[0]![1].codexTransportFactory!();
+        const scopedRoot =
+          state.createTransport.mock.calls[0]![0].stateDirectory!;
+        await mkdir(join(scopedRoot, "control-plane"), { recursive: true });
+        if (caseName !== "missing") {
+          await writeFile(
+            join(scopedRoot, "control-plane", "control-plane-state.json"),
+            caseName === "malformed"
+              ? "{"
+              : caseName === "unknown_schema"
+                ? JSON.stringify({
+                    ...durableControlPlaneState({
+                      runId: scopedExecution.binding.runId,
+                      normalizedSessionId:
+                        scopedExecution.session.normalizedSessionId,
+                      runnerInstanceId: `runner-${caseName}-scoped-state`,
+                      environmentLeaseId:
+                        scopedExecution.binding.executionWorkspaceId,
+                    }),
+                    schema: "paperclip.runner.durable.control-plane-state.v999",
+                  })
+                : JSON.stringify(
+                    durableControlPlaneState({
+                      runId: scopedExecution.binding.runId,
+                      normalizedSessionId: "session-owned-by-another-scope",
+                      runnerInstanceId: "runner-owned-by-another-scope",
+                      environmentLeaseId: "lease-owned-by-another-scope",
+                    }),
+                  ),
+          );
+        }
+        state.createBackend.mockClear();
+        state.createTransport.mockClear();
+
+        await expect(
+          createRunnerdBackend({
+            db: leaseDb(scopedExecution),
+            execution: scopedExecution,
+            runnerInstanceId: `runner-${caseName}-retry`,
+          }),
+        ).rejects.toThrow("runner_state_identity_mismatch");
+        await expect(access(scopedRoot)).rejects.toThrow();
+        const quarantineRoot = join(stateBase, "quarantine");
+        const quarantineEntries = await readdir(quarantineRoot, {
+          withFileTypes: true,
+        });
+        expect(quarantineEntries).toHaveLength(1);
+        expect(quarantineEntries[0]!.isDirectory()).toBe(true);
+        expect(quarantineEntries[0]!.name).toContain(
+          caseName === "mismatched"
+            ? ".identity_mismatch."
+            : ".identity_indeterminate.",
+        );
+        const quarantinedControlPlaneRoot = join(
+          quarantineRoot,
+          quarantineEntries[0]!.name,
+          "control-plane",
+        );
+        await expect(
+          access(quarantinedControlPlaneRoot),
+        ).resolves.toBeUndefined();
+        if (caseName !== "missing") {
+          await expect(
+            access(
+              join(quarantinedControlPlaneRoot, "control-plane-state.json"),
+            ),
+          ).resolves.toBeUndefined();
+        }
+        expect(state.createBackend).not.toHaveBeenCalled();
+        expect(state.createTransport).not.toHaveBeenCalled();
+      } finally {
+        if (previousStateDirectory === undefined) {
+          delete process.env.PAPERCLIP_RUNNER_STATE_DIR;
+        } else {
+          process.env.PAPERCLIP_RUNNER_STATE_DIR = previousStateDirectory;
+        }
+        await rm(stateBase, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it("does not quarantine an unsafe scoped-root symlink", async () => {
+    const stateBase = await mkdtemp(
+      join(tmpdir(), "paperclip-symlink-scoped-state-"),
+    );
+    const previousStateDirectory = process.env.PAPERCLIP_RUNNER_STATE_DIR;
+    process.env.PAPERCLIP_RUNNER_STATE_DIR = stateBase;
+    const scopedExecution = {
+      ...execution,
+      binding: {
+        ...execution.binding,
+        companyId: "company-symlink-scoped-state",
+        runId: "run-symlink-scoped-state",
+        agentId: "agent-symlink-scoped-state",
+        executionWorkspaceId: "workspace-symlink-scoped-state",
+      },
+      session: {
+        ...execution.session,
+        normalizedSessionId: "session-symlink-scoped-state",
+      },
+    } as NativeExecutionInputV1;
+    try {
+      state.createBackend.mockClear();
+      state.createTransport.mockClear();
+      await createRunnerdBackend({
+        db: leaseDb(scopedExecution),
+        execution: scopedExecution,
+        runnerInstanceId: "runner-symlink-scoped-state",
+      });
+      state.createBackend.mock.calls[0]![1].codexTransportFactory!();
+      const scopedRoot =
+        state.createTransport.mock.calls[0]![0].stateDirectory!;
+      const symlinkTarget = join(stateBase, "symlink-target");
+      await rm(scopedRoot, { recursive: true, force: true });
+      await mkdir(symlinkTarget, { recursive: true });
+      await writeFile(join(symlinkTarget, "must-remain"), "retained");
+      await symlink(symlinkTarget, scopedRoot);
+      state.createBackend.mockClear();
+      state.createTransport.mockClear();
+
+      await expect(
+        createRunnerdBackend({
+          db: leaseDb(scopedExecution),
+          execution: scopedExecution,
+          runnerInstanceId: "runner-symlink-retry",
+        }),
+      ).rejects.toThrow("runner_state_directory_unsafe");
+      await expect(access(scopedRoot)).resolves.toBeUndefined();
+      await expect(
+        access(join(symlinkTarget, "must-remain")),
+      ).resolves.toBeUndefined();
+      await expect(access(join(stateBase, "quarantine"))).rejects.toThrow();
+      expect(state.createBackend).not.toHaveBeenCalled();
+      expect(state.createTransport).not.toHaveBeenCalled();
+    } finally {
+      if (previousStateDirectory === undefined) {
+        delete process.env.PAPERCLIP_RUNNER_STATE_DIR;
+      } else {
+        process.env.PAPERCLIP_RUNNER_STATE_DIR = previousStateDirectory;
+      }
+      await rm(stateBase, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects a suspended prior-run authority whose persisted execution belongs to another full session scope", async () => {
+    const stateBase = await mkdtemp(
+      join(tmpdir(), "paperclip-prior-run-mismatched-state-"),
+    );
+    const previousStateDirectory = process.env.PAPERCLIP_RUNNER_STATE_DIR;
+    process.env.PAPERCLIP_RUNNER_STATE_DIR = stateBase;
+    const currentExecution = {
+      ...execution,
+      binding: {
+        ...execution.binding,
+        companyId: "company-prior-run-mismatch",
+        runId: "run-current-prior-mismatch",
+        agentId: "agent-current-prior-mismatch",
+        executionWorkspaceId: "workspace-prior-mismatch",
+      },
+      session: {
+        ...execution.session,
+        normalizedSessionId: "session-prior-run-mismatch",
+      },
+    } as NativeExecutionInputV1;
+    const priorExecution = {
+      ...currentExecution,
+      binding: {
+        ...currentExecution.binding,
+        runId: "run-prior-mismatched-scope",
+        agentId: "agent-other-prior-mismatch",
+      },
+    } as NativeExecutionInputV1;
+    const legacyRoot = join(
+      stateBase,
+      createHash("sha256")
+        .update(
+          JSON.stringify([
+            currentExecution.binding.companyId,
+            currentExecution.session.normalizedSessionId,
+          ]),
+        )
+        .digest("hex"),
+    );
+    const priorRunDb = {
+      select: () => ({
+        from: () => ({
+          where: () => ({
+            limit: () =>
+              Promise.resolve([
+                {
+                  status: "succeeded",
+                  runnerProfileJson: {
+                    nativeExecutionInput: priorExecution,
+                  },
+                },
+              ]),
+          }),
+        }),
+      }),
+    } as unknown as Db;
+    try {
+      await mkdir(join(legacyRoot, "control-plane"), { recursive: true });
+      await mkdir(join(legacyRoot, "runner"), { recursive: true });
+      const identity = {
+        runId: priorExecution.binding.runId,
+        normalizedSessionId: currentExecution.session.normalizedSessionId,
+        runnerInstanceId: "runner-prior-run-mismatch",
+        environmentLeaseId: "lease-prior-run-mismatch",
+      };
+      await writeFile(
+        join(legacyRoot, "control-plane", "control-plane-state.json"),
+        JSON.stringify(durableControlPlaneState(identity)),
+      );
+      await writeFile(
+        join(legacyRoot, "runner", "runner-state.json"),
+        JSON.stringify(durableRunnerState(identity, "suspended")),
+      );
+
+      await expect(
+        createRunnerdBackend({
+          db: priorRunDb,
+          execution: currentExecution,
+          runnerInstanceId: "runner-current-prior-mismatch",
+        }),
+      ).rejects.toThrow("runner_state_identity_mismatch");
+      await expect(access(legacyRoot)).resolves.toBeUndefined();
+      await expect(access(join(stateBase, "quarantine"))).rejects.toThrow();
+    } finally {
+      if (previousStateDirectory === undefined) {
+        delete process.env.PAPERCLIP_RUNNER_STATE_DIR;
+      } else {
+        process.env.PAPERCLIP_RUNNER_STATE_DIR = previousStateDirectory;
+      }
+      await rm(stateBase, { recursive: true, force: true });
+    }
+  });
+
+  it("fails closed instead of claiming a mismatched former session scope", async () => {
+    const stateBase = await mkdtemp(
+      join(tmpdir(), "paperclip-mismatched-session-state-"),
+    );
+    const previousStateDirectory = process.env.PAPERCLIP_RUNNER_STATE_DIR;
+    process.env.PAPERCLIP_RUNNER_STATE_DIR = stateBase;
+    const currentExecution = {
+      ...execution,
+      binding: {
+        ...execution.binding,
+        companyId: "company-mismatched-scope",
+        runId: "run-current-scope",
+        agentId: "agent-current-scope",
+        executionWorkspaceId: "workspace-current-scope",
+      },
+      session: {
+        ...execution.session,
+        normalizedSessionId: "session-mismatched-scope",
+      },
+    } as NativeExecutionInputV1;
+    const legacyRoot = join(
+      stateBase,
+      createHash("sha256")
+        .update(
+          JSON.stringify([
+            currentExecution.binding.companyId,
+            currentExecution.session.normalizedSessionId,
+          ]),
+        )
+        .digest("hex"),
+    );
+    try {
+      await mkdir(join(legacyRoot, "control-plane"), { recursive: true });
+      await writeFile(
+        join(legacyRoot, "control-plane", "control-plane-state.json"),
+        JSON.stringify(
+          durableControlPlaneState({
+            runId: "run-unrelated-scope",
+            normalizedSessionId: currentExecution.session.normalizedSessionId,
+            runnerInstanceId: "runner-unrelated-scope",
+            environmentLeaseId: "lease-unrelated-scope",
+          }),
+        ),
+      );
+
+      await expect(
+        createRunnerdBackend({
+          db: leaseDb(currentExecution),
+          execution: currentExecution,
+          runnerInstanceId: "runner-current-scope",
+        }),
+      ).rejects.toThrow("runner_state_identity_mismatch");
+      await expect(access(legacyRoot)).resolves.toBeUndefined();
     } finally {
       if (previousStateDirectory === undefined) {
         delete process.env.PAPERCLIP_RUNNER_STATE_DIR;
@@ -2890,7 +5202,7 @@ describe("runnerd provider runtime wiring", () => {
         planningContext: null,
         interactionResponses: [],
         credentialBindings: [],
-        runtimeContext: {},
+        runtimeContext: nativeRuntimeContextFixture(),
       }) as unknown as NativeExecutionInputV1;
     const firstExecution = scopedExecution("company-first", "run-first");
     const secondExecution = scopedExecution("company-second", "run-second");
@@ -2926,6 +5238,222 @@ describe("runnerd provider runtime wiring", () => {
     await expect(secondOptions.dynamicToolHandler!({})).resolves.toEqual({
       runId: "run-second",
     });
+  });
+
+  it("scopes local durable sessions by agent, workspace, and provider profile while reusing them across runs", async () => {
+    const stateBase = await mkdtemp(join(tmpdir(), "paperclip-session-scope-"));
+    const previousStateDirectory = process.env.PAPERCLIP_RUNNER_STATE_DIR;
+    process.env.PAPERCLIP_RUNNER_STATE_DIR = stateBase;
+    const scopedExecution = (input: {
+      runId: string;
+      agentId?: string;
+      workspaceId?: string;
+      providerKind?: "codex" | "opencode";
+    }) =>
+      ({
+        ...execution,
+        schema: "paperclip.native-execution-input.v4",
+        binding: {
+          ...execution.binding,
+          companyId: "company-session-scope",
+          runId: input.runId,
+          issueId: "issue-session-scope",
+          agentId: input.agentId ?? "agent-session-scope",
+          executionWorkspaceId: input.workspaceId ?? "workspace-session-scope",
+        },
+        workspace: {
+          cwd: "/tmp/native-session-scope",
+          repoUrl: "https://example.test/paperclip.git",
+          repoRef: "refs/heads/main",
+          branchName: "main",
+        },
+        session: {
+          normalizedSessionId: "shared-scoped-session",
+          driverKind:
+            input.providerKind === "opencode"
+              ? "opencode_server"
+              : "codex_app_server",
+          protocolVersion: 1,
+          lifecyclePolicy: { mode: "per_turn", idleTimeoutMs: null },
+        },
+        provider:
+          input.providerKind === "opencode"
+            ? {
+                kind: "opencode",
+                model: "openrouter/deepseek/deepseek-v4-flash-0731",
+                permissionMode: "ask",
+              }
+            : {
+                kind: "codex",
+                model: null,
+                approvalPolicy: "never",
+              },
+        executionMode: "default",
+        planningContext: null,
+        interactionResponses: [],
+        credentialBindings: [],
+        runtimeContext: nativeRuntimeContextFixture(),
+      }) as unknown as NativeExecutionInputV1;
+    const first = scopedExecution({ runId: "run-session-scope-first" });
+    const continuation = scopedExecution({
+      runId: "run-session-scope-continuation",
+    });
+    const differentAgent = scopedExecution({
+      runId: "run-session-scope-agent",
+      agentId: "agent-session-scope-other",
+    });
+    const differentWorkspace = scopedExecution({
+      runId: "run-session-scope-workspace",
+      workspaceId: "workspace-session-scope-other",
+    });
+    const differentProviderProfile = scopedExecution({
+      runId: "run-session-scope-provider",
+      providerKind: "opencode",
+    });
+
+    try {
+      state.createBackend.mockClear();
+      state.createTransport.mockClear();
+      state.toolAuthorityExecute
+        .mockReset()
+        .mockImplementation((binding: Record<string, unknown>) =>
+          Promise.resolve({ runId: binding.runId }),
+        );
+      let firstScopedRoot: string | undefined;
+      for (const candidate of [
+        first,
+        continuation,
+        differentAgent,
+        differentWorkspace,
+        differentProviderProfile,
+      ]) {
+        const candidateDb =
+          candidate === continuation
+            ? ({
+                ...leaseDb(candidate),
+                select: () => ({
+                  from: () => ({
+                    where: () => ({
+                      limit: () =>
+                        Promise.resolve([
+                          {
+                            status: "succeeded",
+                            runnerProfileJson: {
+                              nativeExecutionInput: first,
+                            },
+                          },
+                        ]),
+                    }),
+                  }),
+                }),
+              } as unknown as Db)
+            : leaseDb(candidate);
+        await createRunnerdBackend({
+          db: candidateDb,
+          execution: candidate,
+          runnerInstanceId: `runner-${candidate.binding.runId}`,
+        });
+        state.createBackend.mock.calls.at(-1)![1].codexTransportFactory!();
+        if (candidate === first) {
+          firstScopedRoot =
+            state.createTransport.mock.calls.at(-1)![0].stateDirectory!;
+          const identity = {
+            runId: first.binding.runId,
+            normalizedSessionId: first.session.normalizedSessionId,
+            runnerInstanceId: `runner-${first.binding.runId}`,
+            environmentLeaseId: first.binding.executionWorkspaceId,
+          };
+          await mkdir(join(firstScopedRoot, "control-plane"), {
+            recursive: true,
+          });
+          await mkdir(join(firstScopedRoot, "runner"), { recursive: true });
+          await writeFile(
+            join(firstScopedRoot, "control-plane", "control-plane-state.json"),
+            JSON.stringify(durableControlPlaneState(identity)),
+          );
+          await writeFile(
+            join(firstScopedRoot, "runner", "runner-state.json"),
+            JSON.stringify(durableRunnerState(identity, "suspended")),
+          );
+        }
+      }
+
+      const stateDirectories = state.createTransport.mock.calls.map(
+        ([options]) => options.stateDirectory,
+      );
+      expect(stateDirectories[1]).toBe(stateDirectories[0]);
+      expect(stateDirectories[0]).toBe(firstScopedRoot);
+      expect(
+        new Set([
+          stateDirectories[0],
+          stateDirectories[2],
+          stateDirectories[3],
+          stateDirectories[4],
+        ]).size,
+      ).toBe(4);
+
+      const firstOptions = state.createBackend.mock.calls[0]![1];
+      const continuationOptions = state.createBackend.mock.calls[1]![1];
+      // The retained runner backend owns one stable callback. After run.attach,
+      // that callback routes through the session-scope authority registry to
+      // the new run; stale provider calls are rejected earlier by runnerd's
+      // turn identity boundary.
+      await expect(firstOptions.dynamicToolHandler!({})).resolves.toEqual({
+        runId: continuation.binding.runId,
+      });
+      await expect(
+        continuationOptions.dynamicToolHandler!({}),
+      ).resolves.toEqual({ runId: continuation.binding.runId });
+    } finally {
+      if (previousStateDirectory === undefined) {
+        delete process.env.PAPERCLIP_RUNNER_STATE_DIR;
+      } else {
+        process.env.PAPERCLIP_RUNNER_STATE_DIR = previousStateDirectory;
+      }
+      await rm(stateBase, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects a concurrent first-use backend for the same provider session scope", async () => {
+    const first = {
+      ...execution,
+      binding: {
+        ...execution.binding,
+        runId: "run-session-concurrent-first",
+        executionWorkspaceId: "workspace-session-concurrent",
+      },
+      session: {
+        ...execution.session,
+        normalizedSessionId: "session-concurrent-first-use",
+      },
+    } as NativeExecutionInputV1;
+    const second = {
+      ...first,
+      binding: { ...first.binding, runId: "run-session-concurrent-second" },
+    } as NativeExecutionInputV1;
+    let concurrentAttempt: Promise<unknown> | null = null;
+    state.createBackend.mockImplementationOnce(() => {
+      // Re-enter only after definitions have resolved, at the actual backend
+      // construction boundary. The session claim must still be held here.
+      concurrentAttempt = createRunnerdBackend({
+        db: leaseDb(second),
+        execution: second,
+        runnerInstanceId: "runner-session-concurrent-second",
+      });
+      return { kind: "test" };
+    });
+
+    await expect(
+      createRunnerdBackend({
+        db: leaseDb(first),
+        execution: first,
+        runnerInstanceId: "runner-session-concurrent-first",
+      }),
+    ).resolves.toBeDefined();
+    expect(concurrentAttempt).not.toBeNull();
+    await expect(concurrentAttempt!).rejects.toThrow(
+      "native_session_supervisor_busy",
+    );
   });
 
   it("uses the remote workspace for both the runner backend and native session", async () => {
@@ -3002,7 +5530,9 @@ describe("runnerd provider runtime wiring", () => {
       expect.objectContaining({
         workspace: expect.objectContaining({ cwd: remoteCwd }),
       }),
-      expect.any(Object),
+      expect.objectContaining({
+        workingDirectoryAuthority: "remote_runner",
+      }),
     );
     expect(state.execute).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -3010,6 +5540,64 @@ describe("runnerd provider runtime wiring", () => {
           workspace: expect.objectContaining({ cwd: remoteCwd }),
         }),
       }),
+    );
+    const backendOptions = state.createBackend.mock.calls[0]![1];
+    state.createTransport.mockClear();
+    backendOptions.codexTransportFactory!();
+    expect(state.createTransport).toHaveBeenCalledWith(
+      expect.objectContaining({
+        runnerBinary: "/tmp/paperclip-runnerd",
+        environment: expect.objectContaining({
+          PAPERCLIP_WORKSPACE_CWD: remoteCwd,
+        }),
+      }),
+    );
+    const sshTransportOptions = state.createTransport.mock.calls[0]![0] as {
+      environment: NodeJS.ProcessEnv;
+    };
+    expect(
+      sshTransportOptions.environment.PAPERCLIP_RUNNER_EXTERNAL_SANDBOX,
+    ).toBeUndefined();
+    expect(state.createTransport.mock.calls[0]![0].runnerBinary).not.toBe(
+      `${remoteCwd}/.paperclip-runtime/paperclip-runner/bin/paperclip-runnerd`,
+    );
+  });
+
+  it("binds a remote launch to the configured controller-owned runner artifact", async () => {
+    const remoteCwd = "/home/daytona/paperclip-workspace";
+    const controllerArtifact = "/controller/artifacts/paperclip-runnerd";
+    const remoteExecution = {
+      ...execution,
+      binding: { ...execution.binding, runId: "run-remote-runner-artifact" },
+      workspace: { ...execution.workspace, cwd: "/host/paperclip-workspace" },
+    } as NativeExecutionInputV1;
+
+    await createRunnerdBackend({
+      db: leaseDb(remoteExecution),
+      execution: remoteExecution,
+      runnerInstanceId: "runner",
+      runnerExecutionTarget: {
+        kind: "remote",
+        transport: "ssh",
+        remoteCwd,
+        spec: {
+          host: "runner.internal",
+          port: 22,
+          username: "runner",
+          remoteWorkspacePath: remoteCwd,
+          remoteCwd,
+          privateKey: null,
+          knownHosts: null,
+          strictHostKeyChecking: true,
+        },
+      },
+      runnerRemoteBinaryPath: controllerArtifact,
+    });
+
+    state.createTransport.mockClear();
+    state.createBackend.mock.calls.at(-1)![1].codexTransportFactory!();
+    expect(state.createTransport).toHaveBeenCalledWith(
+      expect.objectContaining({ runnerBinary: controllerArtifact }),
     );
   });
 
@@ -3108,7 +5696,7 @@ describe("runnerd provider runtime wiring", () => {
       planningContext: null,
       interactionResponses: [],
       credentialBindings: [],
-      runtimeContext: {},
+      runtimeContext: nativeRuntimeContextFixture(),
     } as unknown as NativeExecutionInputV1;
     state.createBackend.mockClear();
     await createRunnerdBackend({

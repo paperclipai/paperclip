@@ -42,6 +42,7 @@ export {
   type IssueFilters,
 } from "./issues.js";
 export { issueThreadInteractionService } from "./issue-thread-interactions.js";
+export { githubConnectionEventService, type GitHubConnectionEventPollResult } from "./github-connection-events.js";
 export {
   assertIssueReviewVerdictActorAllowed,
   type IssueReviewVerdictActor,
@@ -183,7 +184,10 @@ export {
   workspaceGitOperationScheduler,
   type WorkspaceGitSchedulerSnapshot,
 } from "./workspace-git-operation-scheduler.js";
-export { workProductService } from "./work-products.js";
+export {
+  enrichWorkProductMetadataWithDiff,
+  workProductService,
+} from "./work-products.js";
 export {
   logActivity,
   persistActivity,

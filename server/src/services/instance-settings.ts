@@ -224,7 +224,10 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
       enableManagedSandboxOnly: parsed.data.enableManagedSandboxOnly ?? false,
       enableIsolatedWorkspaces: parsed.data.enableIsolatedWorkspaces ?? false,
       enableStreamlinedLeftNavigation: parsed.data.enableStreamlinedLeftNavigation ?? true,
-      enableApps: parsed.data.enableApps ?? false,
+      enableStreamlinedUi: parsed.data.enableStreamlinedUi ?? true,
+      // Apps graduated from Experimental. Ignore historical off values while
+      // continuing to accept the compatibility key in stored settings.
+      enableApps: true,
       enablePipelines: parsed.data.enablePipelines ?? false,
       enableCases: parsed.data.enableCases ?? false,
       enableConferenceRoomChat: parsed.data.enableConferenceRoomChat ?? false,
@@ -260,7 +263,8 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
     enableManagedSandboxOnly: false,
     enableIsolatedWorkspaces: false,
     enableStreamlinedLeftNavigation: true,
-    enableApps: false,
+    enableStreamlinedUi: true,
+    enableApps: true,
     enablePipelines: false,
     enableCases: false,
     enableConferenceRoomChat: false,
@@ -314,6 +318,9 @@ export function applyManagedExperimentalOverlay(
   for (const [key, value] of Object.entries(managedConfig.features) as Array<
     [ManagedExperimentalFeatureKey, boolean]
   >) {
+    // Existing Cloud stack configs may still carry enableApps. Accept the
+    // document during rollout, but never let the retired flag disable Apps.
+    if (key === "enableApps") continue;
     next[key] = value;
     managedKeys[key] = { managed: true, managedBy: PAPERCLIP_CLOUD_MANAGED_BY };
   }

@@ -288,7 +288,7 @@ describe("TestPanel", () => {
     await act(async () => renderPanel([]));
     await flushReact();
     expect(container.textContent).toContain("Nothing to test yet");
-    expect(container.textContent).toContain("Go to Setup");
+    expect(container.textContent).toContain("Go to Permissions");
   });
 
   it("renders an allowed result panel with a row-count headline after a successful run", async () => {

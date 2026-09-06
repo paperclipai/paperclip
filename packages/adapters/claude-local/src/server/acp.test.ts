@@ -514,6 +514,30 @@ describe("claude_local ACP lane", () => {
     expect(settings.permissions.allow).toEqual(expect.arrayContaining(["Bash(curl:*)", "Bash(env)"]));
   });
 
+  it("passes the exact configured Fable 5.1 ID through ANTHROPIC_MODEL on the ACP lane", async () => {
+    const root = await makeTempRoot("paperclip-claude-acp-fable51-");
+    const meta: AdapterInvocationMeta[] = [];
+    const execute = createClaudeAcpExecutor({
+      createRuntime: (options: FakeRuntimeOptions) => new FakeRuntime(options) as never,
+    });
+
+    const result = await execute(buildContext(root, {
+      config: {
+        engine: "acp",
+        cwd: root,
+        stateDir: path.join(root, "state"),
+        model: "claude-fable-5-1",
+        promptTemplate: "Do the assigned work.",
+      },
+      onMeta: async (payload: AdapterInvocationMeta) => {
+        meta.push(payload);
+      },
+    }));
+
+    expect(result.exitCode).toBe(0);
+    expect(meta[0]?.env?.ANTHROPIC_MODEL).toBe("claude-fable-5-1");
+  });
+
   it("creates the ACP session on the in-sandbox workspace cwd for runner-backed remote runs", async () => {
     const root = await makeTempRoot("paperclip-claude-acp-remote-cwd-");
     const localCwd = path.join(root, "worktree");

@@ -60,6 +60,19 @@ fn rejects_suspension_during_an_active_turn_without_closing_the_session() {
 }
 
 #[test]
+fn reaps_an_active_provider_generation_at_the_suspension_boundary() {
+    let mut session = AcpxProviderSession::start(&config("suspend")).unwrap();
+    session
+        .start_turn("turn-1", "Please help", &std::env::temp_dir())
+        .unwrap();
+
+    session
+        .terminate_active_turn_for_suspension("turn-1")
+        .unwrap();
+    assert!(session.shutdown("already terminated").is_ok());
+}
+
+#[test]
 fn fails_closed_when_the_suspension_acknowledgement_does_not_match() {
     for mode in ["suspend-wrong-ack", "suspend-wrong-identity"] {
         let mut session = AcpxProviderSession::start(&config(mode)).unwrap();

@@ -53,6 +53,7 @@ import {
   InboxIssueTrailingColumns,
   IssueColumnPicker,
   issueActivityText,
+  issueActivityTimestamp,
   issueTrailingColumns,
 } from "./IssueColumns";
 import { StatusIcon } from "./StatusIcon";
@@ -60,7 +61,10 @@ import { EmptyState } from "./EmptyState";
 import { Identity } from "./Identity";
 import { IssueGroupHeader } from "./IssueGroupHeader";
 import { IssueFiltersPopover } from "./IssueFiltersPopover";
-import { IssueRow } from "./IssueRow";
+import { IssueRow, type IssueRowPresentation } from "./IssueRow";
+import { CollectionToolbar, type CollectionToolbarProps } from "./CollectionToolbar";
+import { IssuesList as LegacyIssuesList } from "./LegacyIssuesList";
+import { useStreamlinedUiEnabled } from "../hooks/useStreamlinedUiEnabled";
 import { PageSkeleton } from "./PageSkeleton";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -85,6 +89,12 @@ import { buildSubIssueDefaultsForViewer } from "../lib/subIssueDefaults";
 import { statusBadge } from "../lib/status-colors";
 import { workflowSort } from "../lib/workflow-sort";
 import { isSuccessfulRunHandoffRequired } from "../lib/successful-run-handoff";
+import {
+  loadTaskCollectionPreferences,
+  saveTaskCollectionPreferences,
+  type TaskCollectionPreferenceLocation,
+} from "../lib/task-collection-preferences";
+import { taskDateGroup, taskDateGroupSeparator, type TaskDateGroup } from "../lib/task-date-groups";
 import { deriveOriginatingActor, ISSUE_STATUSES, type Issue, type IssueStatus, type Project } from "@paperclipai/shared";
 import { Badge } from "@/components/ui/badge";
 const ISSUE_SEARCH_DEBOUNCE_MS = 250;
@@ -154,6 +164,7 @@ export type IssueViewState = IssueFilterState & {
   groupBy: "status" | "priority" | "assignee" | "project" | "workspace" | "parent" | "none";
   viewMode: "list" | "board";
   nestingEnabled: boolean;
+  showDateGroupSeparators: boolean;
   collapsedGroups: string[];
   collapsedParents: string[];
   boardCardDensity: BoardCardDensity;
@@ -168,6 +179,7 @@ const defaultViewState: IssueViewState = {
   groupBy: "none",
   viewMode: "list",
   nestingEnabled: true,
+  showDateGroupSeparators: true,
   collapsedGroups: [],
   collapsedParents: [],
   boardCardDensity: "auto",
@@ -189,38 +201,42 @@ function normalizeBoardColumnPageSize(value: unknown): BoardColumnPageSize {
     : KANBAN_COLUMN_DEFAULT_PAGE_SIZE;
 }
 
-function getViewState(key: string): IssueViewState {
-  try {
-    const raw = localStorage.getItem(key);
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      return {
-        ...defaultViewState,
-        ...parsed,
-        ...normalizeIssueFilterState(parsed),
-        boardCardDensity: normalizeBoardCardDensity(parsed.boardCardDensity),
-        boardColdLaneMode: normalizeBoardColdLaneMode(parsed.boardColdLaneMode),
-        boardColumnPageSize: normalizeBoardColumnPageSize(parsed.boardColumnPageSize),
-      };
-    }
-  } catch { /* ignore */ }
-  return { ...defaultViewState };
-}
-
-function saveViewState(key: string, state: IssueViewState) {
-  localStorage.setItem(key, JSON.stringify(state));
+function normalizeIssueViewState(value: unknown): IssueViewState {
+  const parsed = value && typeof value === "object" ? value as Partial<IssueViewState> : {};
+  return {
+    ...defaultViewState,
+    ...parsed,
+    ...normalizeIssueFilterState(parsed),
+    sortField: ["status", "priority", "title", "created", "updated", "workflow"].includes(parsed.sortField ?? "")
+      ? parsed.sortField as IssueSortField
+      : defaultViewState.sortField,
+    sortDir: parsed.sortDir === "asc" ? "asc" : "desc",
+    groupBy: ["status", "priority", "assignee", "project", "workspace", "parent", "none"].includes(parsed.groupBy ?? "")
+      ? parsed.groupBy as IssueViewState["groupBy"]
+      : defaultViewState.groupBy,
+    viewMode: parsed.viewMode === "board" ? "board" : "list",
+    nestingEnabled: parsed.nestingEnabled !== false,
+    showDateGroupSeparators: parsed.showDateGroupSeparators !== false,
+    collapsedGroups: Array.isArray(parsed.collapsedGroups)
+      ? parsed.collapsedGroups.filter((entry): entry is string => typeof entry === "string")
+      : [],
+    collapsedParents: Array.isArray(parsed.collapsedParents)
+      ? parsed.collapsedParents.filter((entry): entry is string => typeof entry === "string")
+      : [],
+    boardCardDensity: normalizeBoardCardDensity(parsed.boardCardDensity),
+    boardColdLaneMode: normalizeBoardColdLaneMode(parsed.boardColdLaneMode),
+    boardColumnPageSize: normalizeBoardColumnPageSize(parsed.boardColumnPageSize),
+  };
 }
 
 function getInitialViewState(
-  key: string,
+  stored: { viewState: IssueViewState; source: "current" | "legacy" | "default" },
   initialAssignees?: string[],
   defaultSortField?: IssueSortField,
 ): IssueViewState {
-  const hasStored = hasStoredViewState(key);
-  const stored = getViewState(key);
-  const base = !hasStored && defaultSortField
-    ? { ...stored, sortField: defaultSortField, sortDir: "asc" as const }
-    : stored;
+  const base = stored.source === "default" && defaultSortField
+    ? { ...stored.viewState, sortField: defaultSortField, sortDir: "asc" as const }
+    : stored.viewState;
   if (!initialAssignees) return base;
   return {
     ...base,
@@ -230,53 +246,34 @@ function getInitialViewState(
 }
 
 function getInitialWorkspaceViewState(
-  key: string,
+  stored: { viewState: IssueViewState; source: "current" | "legacy" | "default" },
   initialAssignees?: string[],
   initialWorkspaces?: string[],
   defaultSortField?: IssueSortField,
 ): IssueViewState {
-  const stored = getInitialViewState(key, initialAssignees, defaultSortField);
-  if (!initialWorkspaces) return stored;
+  const initial = getInitialViewState(stored, initialAssignees, defaultSortField);
+  if (!initialWorkspaces) return initial;
   return {
-    ...stored,
+    ...initial,
     workspaces: initialWorkspaces,
     statuses: [],
   };
-}
-
-function hasStoredViewState(key: string): boolean {
-  try {
-    return localStorage.getItem(key) !== null;
-  } catch {
-    return false;
-  }
 }
 
 function getIssueColumnsStorageKey(key: string): string {
   return `${key}:issue-columns`;
 }
 
-function loadIssueColumns(key: string): InboxIssueColumn[] {
-  try {
-    const raw = localStorage.getItem(getIssueColumnsStorageKey(key));
-    if (raw === null) return DEFAULT_INBOX_ISSUE_COLUMNS;
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return DEFAULT_INBOX_ISSUE_COLUMNS;
-    return normalizeInboxIssueColumns(parsed);
-  } catch {
-    return DEFAULT_INBOX_ISSUE_COLUMNS;
-  }
-}
-
-function saveIssueColumns(key: string, columns: InboxIssueColumn[]) {
-  try {
-    localStorage.setItem(
-      getIssueColumnsStorageKey(key),
-      JSON.stringify(normalizeInboxIssueColumns(columns)),
-    );
-  } catch {
-    // Ignore localStorage failures.
-  }
+function loadIssueCollectionPreferences(
+  location: TaskCollectionPreferenceLocation,
+) {
+  return loadTaskCollectionPreferences<IssueViewState, InboxIssueColumn>({
+    ...location,
+    defaultViewState: defaultViewState,
+    defaultColumns: DEFAULT_INBOX_ISSUE_COLUMNS,
+    normalizeViewState: normalizeIssueViewState,
+    normalizeColumns: (value) => normalizeInboxIssueColumns(Array.isArray(value) ? value : []),
+  });
 }
 
 function sortIssues(issues: Issue[], state: IssueViewState): Issue[] {
@@ -305,13 +302,18 @@ function sortIssues(issues: Issue[], state: IssueViewState): Issue[] {
   return sorted;
 }
 
+// Only recency sorts (newest first) get date separators — for any other
+// sort/direction the boundaries would be meaningless.
+function issueDateSeparatorField(state: IssueViewState): "createdAt" | "updatedAt" | null {
+  if (state.sortDir !== "desc") return null;
+  if (state.sortField === "created") return "createdAt";
+  if (state.sortField === "updated") return "updatedAt";
+  return null;
+}
+
 const AGE_BUCKET_DAY_MS = 24 * 60 * 60 * 1000;
 const AGE_BUCKET_WEEK_MS = 7 * AGE_BUCKET_DAY_MS;
 
-// Recency buckets for the date separators shown in date-sorted lists:
-//   0 = within the last day, 1 = within the last week, 2 = older than a week.
-// A separator is drawn between rows whenever the bucket increases, so the
-// "1 day" and "1 week" boundaries appear as the list ages downward.
 export function issueAgeBucket(date: Date | string, now: number = Date.now()): 0 | 1 | 2 {
   const age = now - new Date(date).getTime();
   if (age < AGE_BUCKET_DAY_MS) return 0;
@@ -333,28 +335,22 @@ export function issueAgeBucketsCrossed(
   return crossedBuckets;
 }
 
-// Only recency sorts (newest first) get date separators — for any other
-// sort/direction the boundaries would be meaningless.
-function issueDateSeparatorField(state: IssueViewState): "createdAt" | "updatedAt" | null {
-  if (state.sortDir !== "desc") return null;
-  if (state.sortField === "created") return "createdAt";
-  if (state.sortField === "updated") return "updatedAt";
-  return null;
-}
-
 function IssueDateSeparator({ label }: { label: string }) {
   return (
     <div
-      className="flex items-center gap-2 px-3 py-1.5 sm:pl-0 sm:pr-4"
+      className="flex items-center gap-3 px-3 py-1.5 sm:pl-0 sm:pr-4"
       role="separator"
       aria-label={label}
       data-issues-date-separator=""
     >
-      <div className="h-px flex-1 bg-border" />
-      <span className="text-(length:--text-nano) font-medium uppercase tracking-wider text-muted-foreground">
+      <span className="h-px min-w-0 flex-1 bg-border/80" aria-hidden="true" data-date-group-rule="" />
+      <span
+        className="shrink-0 text-(length:--text-nano) font-medium uppercase tracking-wider text-muted-foreground/70"
+        data-date-group-label=""
+      >
         {label}
       </span>
-      <div className="h-px flex-1 bg-border" />
+      <span className="h-px min-w-0 flex-1 bg-border/80" aria-hidden="true" data-date-group-rule="" />
     </div>
   );
 }
@@ -495,7 +491,25 @@ interface IssuesListProps {
   issueBadgeById?: Map<string, string>;
   onLoadMoreIssues?: () => void;
   onSearchChange?: (search: string) => void;
+  /** Opt in per surface while the canonical task row rolls out across collections. */
+  rowPresentation?: IssueRowPresentation;
+  /** Opt in per surface while the shared collection toolbar rolls out. */
+  toolbarPresentation?: "legacy" | "collection";
   onUpdateIssue: (id: string, data: Record<string, unknown>) => void;
+}
+
+function LegacyIssuesToolbar({ context, search, controls }: CollectionToolbarProps) {
+  return (
+    <div className="flex items-center justify-between gap-2 sm:gap-3">
+      <div className="flex min-w-0 items-center gap-2 sm:gap-3">
+        {context}
+        {search}
+      </div>
+      <div className="flex shrink-0 items-center gap-0.5 sm:gap-1">
+        {controls}
+      </div>
+    </div>
+  );
 }
 
 function IssueSearchInput({
@@ -679,7 +693,12 @@ function SubIssueProgressSummaryStrip({
 // Mobile-only indent for nested task rows (desktop uses IssueRow treeGuides).
 const MOBILE_TREE_INDENT = ["", "pl-4 sm:pl-0", "pl-8 sm:pl-0", "pl-12 sm:pl-0", "pl-16 sm:pl-0"];
 
-export function IssuesList({
+export function IssuesList(props: IssuesListProps) {
+  const { enabled: streamlinedUiEnabled } = useStreamlinedUiEnabled();
+  return streamlinedUiEnabled ? <StreamlinedIssuesList {...props} /> : <LegacyIssuesList {...props} />;
+}
+
+function StreamlinedIssuesList({
   issues,
   isLoading,
   error,
@@ -706,6 +725,8 @@ export function IssuesList({
   issueBadgeById,
   onLoadMoreIssues,
   onSearchChange,
+  rowPresentation = "legacy",
+  toolbarPresentation = "legacy",
   onUpdateIssue,
 }: IssuesListProps) {
   const rootRef = useRef<HTMLDivElement | null>(null);
@@ -760,17 +781,28 @@ export function IssuesList({
 
   // Scope the storage key per company so folding/view state is independent across companies.
   const scopedKey = selectedCompanyId ? `${viewStateKey}:${selectedCompanyId}` : viewStateKey;
+  const preferenceLocation: TaskCollectionPreferenceLocation = {
+    companyId: selectedCompanyId ?? "__unscoped__",
+    collectionKey: viewStateKey,
+    legacyViewStorageKey: scopedKey,
+    legacyColumnsStorageKey: getIssueColumnsStorageKey(scopedKey),
+  };
   const initialAssigneesKey = initialAssignees?.join("|") ?? "";
   const initialWorkspacesKey = initialWorkspaces?.join("|") ?? "";
+  const initialPreferencesRef = useRef<ReturnType<typeof loadIssueCollectionPreferences> | null>(null);
+  if (initialPreferencesRef.current === null) {
+    initialPreferencesRef.current = loadIssueCollectionPreferences(preferenceLocation);
+  }
+  const initialPreferences = initialPreferencesRef.current;
 
   const [viewState, setViewState] = useState<IssueViewState>(() =>
-    getInitialWorkspaceViewState(scopedKey, initialAssignees, initialWorkspaces, defaultSortField),
+    getInitialWorkspaceViewState(initialPreferences, initialAssignees, initialWorkspaces, defaultSortField),
   );
   const [assigneePickerIssueId, setAssigneePickerIssueId] = useState<string | null>(null);
   const [assigneeSearch, setAssigneeSearch] = useState("");
   const [issueSearch, setIssueSearch] = useState(initialSearch ?? "");
   const [renderedIssueRowLimit, setRenderedIssueRowLimit] = useState(INITIAL_ISSUE_ROW_RENDER_LIMIT);
-  const [visibleIssueColumns, setVisibleIssueColumns] = useState<InboxIssueColumn[]>(() => loadIssueColumns(scopedKey));
+  const [visibleIssueColumns, setVisibleIssueColumns] = useState<InboxIssueColumn[]>(initialPreferences.columns);
   const renderedIssueIdsRef = useRef("");
   const initialServerFillRequestedRef = useRef(false);
   const deferredIssueSearch = useDeferredValue(issueSearch);
@@ -786,25 +818,39 @@ export function IssuesList({
     const nextContextKey = `${scopedKey}::${initialAssigneesKey}::${initialWorkspacesKey}`;
     if (prevViewStateContextKey.current !== nextContextKey) {
       prevViewStateContextKey.current = nextContextKey;
-      setViewState(getInitialWorkspaceViewState(scopedKey, initialAssignees, initialWorkspaces, defaultSortField));
+      const preferences = loadIssueCollectionPreferences(preferenceLocation);
+      setViewState(getInitialWorkspaceViewState(preferences, initialAssignees, initialWorkspaces, defaultSortField));
+      setVisibleIssueColumns(preferences.columns);
     }
-  }, [scopedKey, initialAssignees, initialAssigneesKey, initialWorkspaces, initialWorkspacesKey, defaultSortField]);
-
-  const prevColumnsScopedKey = useRef(scopedKey);
-  useEffect(() => {
-    if (prevColumnsScopedKey.current !== scopedKey) {
-      prevColumnsScopedKey.current = scopedKey;
-      setVisibleIssueColumns(loadIssueColumns(scopedKey));
-    }
-  }, [scopedKey]);
+  }, [
+    scopedKey,
+    initialAssignees,
+    initialAssigneesKey,
+    initialWorkspaces,
+    initialWorkspacesKey,
+    defaultSortField,
+    preferenceLocation.companyId,
+    preferenceLocation.collectionKey,
+    preferenceLocation.legacyViewStorageKey,
+    preferenceLocation.legacyColumnsStorageKey,
+  ]);
 
   const updateView = useCallback((patch: Partial<IssueViewState>) => {
     setViewState((prev) => {
       const next = { ...prev, ...patch };
-      saveViewState(scopedKey, next);
+      saveTaskCollectionPreferences(preferenceLocation, {
+        viewState: next,
+        columns: visibleIssueColumns,
+      });
       return next;
     });
-  }, [scopedKey]);
+  }, [
+    preferenceLocation.companyId,
+    preferenceLocation.collectionKey,
+    preferenceLocation.legacyColumnsStorageKey,
+    preferenceLocation.legacyViewStorageKey,
+    visibleIssueColumns,
+  ]);
 
   useEffect(() => {
     if (!experimentalSettingsLoaded || externalObjectsEnabled || viewState.externalObjectStatuses.length === 0) return;
@@ -1047,8 +1093,12 @@ export function IssuesList({
     [issues, liveIssueIds],
   );
   const visibleTrailingIssueColumns = useMemo(
-    () => issueTrailingColumns.filter((column) => visibleIssueColumnSet.has(column) && availableIssueColumnSet.has(column)),
-    [availableIssueColumnSet, visibleIssueColumnSet],
+    () => issueTrailingColumns.filter((column) =>
+      visibleIssueColumnSet.has(column)
+      && availableIssueColumnSet.has(column)
+      && (rowPresentation === "legacy" || column !== "updated"),
+    ),
+    [availableIssueColumnSet, rowPresentation, visibleIssueColumnSet],
   );
 
   const issueById = useMemo(() => {
@@ -1635,8 +1685,17 @@ export function IssuesList({
   const setIssueColumns = useCallback((next: InboxIssueColumn[]) => {
     const normalized = normalizeInboxIssueColumns(next);
     setVisibleIssueColumns(normalized);
-    saveIssueColumns(scopedKey, normalized);
-  }, [scopedKey]);
+    saveTaskCollectionPreferences(preferenceLocation, {
+      viewState,
+      columns: normalized,
+    });
+  }, [
+    preferenceLocation.companyId,
+    preferenceLocation.collectionKey,
+    preferenceLocation.legacyColumnsStorageKey,
+    preferenceLocation.legacyViewStorageKey,
+    viewState,
+  ]);
 
   const toggleIssueColumn = useCallback((column: InboxIssueColumn, enabled: boolean) => {
     if (enabled) {
@@ -1653,6 +1712,7 @@ export function IssuesList({
   }, [onUpdateIssue]);
 
   let remainingRowsToRender = viewState.viewMode === "list" ? renderedIssueRowLimit : Number.POSITIVE_INFINITY;
+  const IssuesToolbar = toolbarPresentation === "collection" ? CollectionToolbar : LegacyIssuesToolbar;
 
   return (
     <div ref={rootRef} className="space-y-4">
@@ -1665,12 +1725,15 @@ export function IssuesList({
       ) : null}
 
       {/* Toolbar */}
-      <div className="flex items-center justify-between gap-2 sm:gap-3">
-        <div className="flex min-w-0 items-center gap-2 sm:gap-3">
+      <IssuesToolbar
+        ariaLabel={toolbarPresentation === "collection" ? "Task controls" : undefined}
+        context={(
           <Button size="sm" variant="outline" onClick={() => openCreateIssueDialog()}>
             <Plus className="h-4 w-4 sm:mr-1" />
             <span className="hidden sm:inline">{createButtonLabel}</span>
           </Button>
+        )}
+        search={(
           <IssueSearchInput
             value={issueSearch}
             onDebouncedChange={(nextSearch) => {
@@ -1678,9 +1741,9 @@ export function IssuesList({
               onSearchChange?.(nextSearch);
             }}
           />
-        </div>
-
-        <div className="flex items-center gap-0.5 sm:gap-1 shrink-0">
+        )}
+        controls={(
+          <>
           {/* View mode toggle */}
           <div className="flex items-center border border-border rounded-md overflow-hidden mr-1" role="group" aria-label="View mode">
             <button
@@ -1797,9 +1860,12 @@ export function IssuesList({
             availableColumns={availableIssueColumns}
             visibleColumnSet={visibleIssueColumnSet}
             onToggleColumn={toggleIssueColumn}
+            showDateGroupSeparators={viewState.showDateGroupSeparators}
+            onToggleDateGroupSeparators={(enabled) => updateView({ showDateGroupSeparators: enabled })}
             onResetColumns={() => setIssueColumns(DEFAULT_INBOX_ISSUE_COLUMNS)}
             title="Choose which task columns stay visible"
             iconOnly
+            rowPresentation={rowPresentation}
           />
 
           <IssueFiltersPopover
@@ -1816,6 +1882,7 @@ export function IssuesList({
             enableRoutineVisibilityFilter={enableRoutineVisibilityFilter}
             iconOnly
             workspaces={isolatedWorkspacesEnabled ? workspaceOptions : undefined}
+            presentation={rowPresentation === "task" ? "streamlined" : "legacy"}
           />
 
           {/* Sort (list view only) */}
@@ -1902,8 +1969,9 @@ export function IssuesList({
               </PopoverContent>
             </Popover>
           )}
-        </div>
-      </div>
+          </>
+        )}
+      />
 
       {(isLoading || externalObjectFilterLoading) && <PageSkeleton variant="issues-list" />}
       {error && <p className="text-sm text-destructive">{error.message}</p>}
@@ -2099,6 +2167,7 @@ export function IssuesList({
                     >
                       <IssueRow
                         issue={issue}
+                        presentation={rowPresentation}
                         issueLinkState={issueLinkState}
                         selected={selectedNavKey === `issue:${issue.id}`}
                         onMouseEnter={() => setNavSelectionFromPointer(`issue:${issue.id}`)}
@@ -2146,6 +2215,37 @@ export function IssuesList({
                           </>
                         )}
                         className={cn(isMutedIssue && "opacity-70", selectedNavKey === `issue:${issue.id}` && "bg-accent/50 hover:bg-accent/50")}
+                        leadingControl={rowPresentation === "task" ? (
+                          hasChildren ? (
+                            <button
+                              type="button"
+                              data-slot="icon-button"
+                              className="inline-flex h-4 w-4 shrink-0 items-center justify-center"
+                              aria-label={isExpanded ? "Collapse sub-tasks" : "Expand sub-tasks"}
+                              onClick={toggleCollapse}
+                            >
+                              <ChevronRight className={cn("h-3.5 w-3.5 transition-transform", isExpanded && "rotate-90")} />
+                            </button>
+                          ) : (
+                            <span data-slot="task-row-disclosure-spacer" className="h-4 w-4 shrink-0" aria-hidden="true" />
+                          )
+                        ) : undefined}
+                        statusSlot={rowPresentation === "task" ? (
+                          <span className="inline-flex items-center" onClick={(e) => { e.preventDefault(); e.stopPropagation(); }}>
+                            <StatusIcon status={issue.status} size="md" blockerAttention={issue.blockerAttention} onChange={(s) => onUpdateIssue(issue.id, { status: s })} />
+                          </span>
+                        ) : undefined}
+                        metadata={rowPresentation === "task" ? (
+                          <InboxIssueMetaLeading
+                            issue={issue}
+                            isLive={liveIssueIds?.has(issue.id) === true}
+                            subtreeLiveCount={subtreeLiveCounts.get(issue.id) ?? 0}
+                            showStatus={false}
+                            showIdentifier={false}
+                            checklistStepNumber={checklistStepNumber}
+                          />
+                        ) : undefined}
+                        showIdentifier={visibleIssueColumnSet.has("id") && availableIssueColumnSet.has("id")}
                         mobileLeading={
                           hasChildren ? (
                             <button type="button" data-slot="icon-button" onClick={toggleCollapse}>
@@ -2157,7 +2257,7 @@ export function IssuesList({
                             </span>
                           )
                         }
-                        desktopMetaLeading={(
+                        desktopMetaLeading={rowPresentation === "legacy" ? (
                           <>
                             {hasChildren ? (
                               <button
@@ -2185,8 +2285,13 @@ export function IssuesList({
                               )}
                             />
                           </>
-                        )}
+                        ) : undefined}
                         mobileMeta={issueActivityText(issue).toLowerCase()}
+                        trailingMeta={rowPresentation === "task"
+                          && visibleIssueColumnSet.has("updated")
+                          && availableIssueColumnSet.has("updated")
+                          ? issueActivityTimestamp(issue)
+                          : undefined}
                         desktopTrailing={(
                           visibleTrailingIssueColumns.length > 0 ? (
                             <InboxIssueTrailingColumns
@@ -2319,28 +2424,43 @@ export function IssuesList({
                   );
                 };
 
-                const separatorField = issueDateSeparatorField(viewState);
-                const separatorNow = Date.now();
+                const separatorField = viewState.showDateGroupSeparators
+                  ? issueDateSeparatorField(viewState)
+                  : null;
+                const separatorNow = new Date();
                 const nodes: ReactNode[] = [];
-                let prevBucket: 0 | 1 | 2 | null = null;
+                let previousDateGroup: TaskDateGroup | null = null;
+                let previousAgeBucket: 0 | 1 | 2 | null = null;
                 const appendIssueRow = (issue: Issue, depth: number) => {
                   const node = renderIssueRow(issue, depth);
                   // Skip rows the render budget dropped so separators never
                   // dangle above an unrendered (or absent) row.
                   if (node === null) return;
-                  if (separatorField) {
-                    const bucket = issueAgeBucket(issue[separatorField], separatorNow);
-                    for (const crossedBucket of prevBucket === null
-                      ? []
-                      : issueAgeBucketsCrossed(prevBucket, bucket)) {
+                  if (separatorField && rowPresentation === "task") {
+                    const currentDateGroup = taskDateGroup(issue[separatorField], separatorNow);
+                    const separatorLabel = taskDateGroupSeparator(previousDateGroup, currentDateGroup);
+                    if (separatorLabel) {
                       nodes.push(
                         <IssueDateSeparator
-                          key={`age-sep-${issue.id}-${crossedBucket}`}
+                          key={`date-sep-${issue.id}-${currentDateGroup}`}
+                          label={separatorLabel}
+                        />,
+                      );
+                    }
+                    previousDateGroup = currentDateGroup;
+                  } else if (separatorField) {
+                    const currentAgeBucket = issueAgeBucket(issue[separatorField], separatorNow.getTime());
+                    for (const crossedBucket of previousAgeBucket === null
+                      ? []
+                      : issueAgeBucketsCrossed(previousAgeBucket, currentAgeBucket)) {
+                      nodes.push(
+                        <IssueDateSeparator
+                          key={`date-sep-${issue.id}-${crossedBucket}`}
                           label={issueAgeSeparatorLabel(crossedBucket)}
                         />,
                       );
                     }
-                    prevBucket = bucket;
+                    previousAgeBucket = currentAgeBucket;
                   }
                   nodes.push(node);
                   if (!viewState.collapsedParents.includes(issue.id)) {

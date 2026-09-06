@@ -10,12 +10,12 @@ use paperclip_runner_core::durable::{
     QualifiedLaunchArtifact,
 };
 use paperclip_runner_core::native_provider_backend::NativeProviderCommandExecutor;
-use paperclip_runner_core::provider_bridge::authorized_tool_catalog_digest;
+use paperclip_runner_core::provider_bridge::{authorized_tool_catalog_digest, AuthorizedTool};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 const CODEX_ACPX_DIGEST: &str =
-    "sha256:94049b3e3c3aee87de62703786e4fa81d031d7bd979f99bdf516d84f28791a79";
+    "sha256:7a923b3829884d3cabcc9659d22cace3f86813e7bfffc90974b10140a45bc400";
 
 fn temporary_directory(label: &str) -> PathBuf {
     let nonce = SystemTime::now()
@@ -95,7 +95,7 @@ fn opencode_config(state_dir: &Path) -> DurableRunnerConfig {
     fs::write(
         &proxy_script,
         format!(
-            "#!/bin/sh\nexec '{}' --state-file '{}' --call-log '{}'\n",
+            "#!/bin/sh\nexec '{}' --state-file '{}' --call-log '{}' --require-completion-contract\n",
             env!("CARGO_BIN_EXE_fake-codex-app-server"),
             state_dir.join("fake-opencode-state.json").display(),
             state_dir.join("fake-opencode-calls.log").display(),
@@ -114,6 +114,14 @@ fn opencode_config(state_dir: &Path) -> DurableRunnerConfig {
         executable: qualified_artifact(executable),
     });
     config
+}
+
+fn opencode_call_count(state_dir: &Path, method: &str) -> usize {
+    fs::read_to_string(state_dir.join("fake-opencode-calls.log"))
+        .unwrap_or_default()
+        .lines()
+        .filter(|line| *line == method)
+        .count()
 }
 
 fn command(sequence: u64, command_type: &str, payload: Value) -> Command {
@@ -135,6 +143,11 @@ fn prepare_payload(directory: &Path, agent: &str) -> Value {
 
 fn prepare_payload_with_mode(directory: &Path, agent: &str, mode: &str) -> Value {
     let operations = Vec::new();
+    let (runtime_package, runtime_version) = if agent == "codex" {
+        (json!("@openai/codex"), json!("0.148.0"))
+    } else {
+        (Value::Null, Value::Null)
+    };
     json!({
         "authorizedTools": {
             "schema": "paperclip.runner.authorized-tools.v1",
@@ -152,8 +165,8 @@ fn prepare_payload_with_mode(directory: &Path, agent: &str, mode: &str) -> Value
             "acpxVersion": "0.13.1",
             "agentServerPackage": "@agentclientprotocol/codex-acp",
             "agentServerVersion": "1.6.2",
-            "agentRuntimePackage": null,
-            "agentRuntimeVersion": null,
+            "agentRuntimePackage": runtime_package,
+            "agentRuntimeVersion": runtime_version,
             "commandDigest": CODEX_ACPX_DIGEST,
             "sidecarCommand": env!("CARGO_BIN_EXE_fake-acpx-sidecar"),
             "sidecarArgs": [
@@ -191,7 +204,11 @@ fn preserves_acpx_semantic_disposition_in_the_run_terminal() {
         .execute(&command(2, "session.open", json!({})))
         .unwrap();
     executor
-        .execute(&command(3, "turn.start", json!({"text": "Wait."})))
+        .execute(&command(
+            3,
+            "turn.start",
+            json!({"text": "Wait.", "turnId": "provider-turn-blocked"}),
+        ))
         .unwrap();
 
     let events = executor.poll_events().unwrap();
@@ -328,7 +345,7 @@ fn executes_a_qualified_acpx_profile_through_the_native_selector() {
         .execute(&command(
             3,
             "turn.start",
-            json!({"text": "Finish the task."}),
+            json!({"text": "Finish the task.", "turnId": "provider-turn-first"}),
         ))
         .unwrap();
     assert_eq!(started.events[0].0, "turn.started");
@@ -347,6 +364,111 @@ fn executes_a_qualified_acpx_profile_through_the_native_selector() {
     executor
         .execute(&command(4, "session.close", json!({})))
         .unwrap();
+    executor.shutdown().unwrap();
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn keeps_native_acpx_semantic_events_on_the_durable_controller_turn() {
+    let directory = temporary_directory("acpx-durable-turn-correlation");
+    let config = acpx_config(&directory, "turns-tool");
+    let mut executor = NativeProviderCommandExecutor::with_runner_config(&directory, &config);
+    let operations = vec![AuthorizedTool {
+        operation_id: "issues.read".to_owned(),
+        version: 1,
+        description: "Read an issue.".to_owned(),
+        input_schema: json!({"type":"object"}),
+        response_schema: json!({"type":"object"}),
+    }];
+    let mut prepare = prepare_payload_with_mode(&directory, "codex", "turns-tool");
+    prepare["authorizedTools"] = json!({
+        "schema": "paperclip.runner.authorized-tools.v1",
+        "schemaVersion": 1,
+        "catalogDigest": authorized_tool_catalog_digest(&operations).unwrap(),
+        "operations": operations,
+    });
+
+    executor
+        .execute(&command(1, "run.prepare", prepare))
+        .unwrap();
+    executor
+        .execute(&command(2, "session.open", json!({})))
+        .unwrap();
+    let started = executor
+        .execute(&command(
+            3,
+            "turn.start",
+            json!({"text": "Read the issue.", "turnId": "provider-turn-fresh"}),
+        ))
+        .unwrap();
+    assert_eq!(started.result["providerTurnId"], "provider-turn-fresh");
+
+    let events = executor.poll_events().unwrap();
+    let semantic = events
+        .iter()
+        .find(|event| event.event_type == "semantic_tool.input")
+        .expect("ACPX tool call must cross the native provider boundary");
+    assert_eq!(
+        semantic.payload["semantic_tool"]["correlation"]["turnId"],
+        "turn-1"
+    );
+
+    executor.shutdown().unwrap();
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn starts_a_distinct_acpx_provider_turn_for_same_run_recovery() {
+    let directory = temporary_directory("acpx-same-run-recovery");
+    let config = acpx_config(&directory, "turns-reserved-result-terminal");
+    let mut executor = NativeProviderCommandExecutor::with_runner_config(&directory, &config);
+
+    executor
+        .execute(&command(
+            1,
+            "run.prepare",
+            prepare_payload(&directory, "codex"),
+        ))
+        .unwrap();
+    executor
+        .execute(&command(2, "session.open", json!({})))
+        .unwrap();
+    let first = executor
+        .execute(&command(
+            3,
+            "turn.start",
+            json!({"text": "First attempt.", "turnId": "provider-turn-first"}),
+        ))
+        .unwrap();
+    assert_eq!(first.result["providerTurnId"], "provider-turn-first");
+
+    let first_events = executor.poll_events().unwrap();
+    assert!(first_events
+        .iter()
+        .any(|event| event.event_type == "turn.completed"));
+    executor.acknowledge_events(first_events.len()).unwrap();
+
+    let recovered = executor
+        .execute(&command(
+            4,
+            "turn.start",
+            json!({
+                "text": "Recover the missing disposition.",
+                "turnId": "provider-turn-recovery",
+            }),
+        ))
+        .unwrap();
+    assert_eq!(recovered.result["providerTurnId"], "provider-turn-recovery");
+    assert!(recovered.events.iter().any(|(event_type, _, payload)| {
+        event_type == "turn.started" && payload["providerTurnId"] == "provider-turn-recovery"
+    }));
+    let recovered_events = executor.poll_events().unwrap();
+    assert!(recovered_events.iter().any(|event| {
+        event.event_type == "turn.completed"
+            && event.payload["providerTurnId"] == "provider-turn-recovery"
+    }));
+    executor.acknowledge_events(recovered_events.len()).unwrap();
+
     executor.shutdown().unwrap();
     fs::remove_dir_all(directory).unwrap();
 }
@@ -420,6 +542,37 @@ fn executes_opencode_through_the_local_facade_without_codex_event_labels() {
 }
 
 #[test]
+fn replacement_shutdown_restores_the_persisted_provider_before_cleanup() {
+    let directory = temporary_directory("opencode-replacement-shutdown");
+    let config = opencode_config(&directory);
+    let mut first = NativeProviderCommandExecutor::with_runner_config(&directory, &config);
+
+    first
+        .execute(&command(
+            1,
+            "run.prepare",
+            opencode_prepare_payload(&directory),
+        ))
+        .unwrap();
+    first
+        .execute(&command(2, "session.open", json!({})))
+        .unwrap();
+    first.shutdown().unwrap();
+    drop(first);
+
+    let resumes_before_cleanup = opencode_call_count(&directory, "thread/resume");
+    let mut replacement = NativeProviderCommandExecutor::with_runner_config(&directory, &config);
+    replacement.shutdown().unwrap();
+
+    assert_eq!(
+        opencode_call_count(&directory, "thread/resume"),
+        resumes_before_cleanup + 1,
+        "a replacement executor must restore the persisted provider before terminal cleanup",
+    );
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
 fn rejects_a_mutable_opencode_command_outside_the_runner_launch_profile() {
     let directory = temporary_directory("opencode-command-override");
     let config = opencode_config(&directory);
@@ -485,7 +638,12 @@ fn rejects_opencode_launch_profile_drift_across_fresh_recovery() {
         .contains("launch profile changed across durable recovery"));
     assert_eq!(fs::read(&state_path).unwrap(), state_before_recovery);
 
-    recovered.shutdown().unwrap();
+    let shutdown_error = recovered
+        .shutdown()
+        .expect_err("invalid recovered launch authority also blocks cleanup");
+    assert!(shutdown_error
+        .to_string()
+        .contains("launch profile changed across durable recovery"));
     fs::remove_dir_all(directory).unwrap();
 }
 

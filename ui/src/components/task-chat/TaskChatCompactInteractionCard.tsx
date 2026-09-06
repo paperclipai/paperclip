@@ -968,7 +968,7 @@ function ConfirmationCard({
               }}
               ariaLabelledBy={`${interaction.id}-reject-reason-label`}
               testId="plan-revision-composer"
-              attachAriaLabel="Attach image to revision"
+              showImageAttachControls={false}
             />
           ) : (
             <Textarea

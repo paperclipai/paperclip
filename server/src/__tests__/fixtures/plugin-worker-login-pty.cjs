@@ -9,11 +9,20 @@
 //   - `mode`: "normal" | "malformed-open" | "no-open-reply" | "duplicate-open-reply" |
 //     "exit-before-open-reply"
 //   - `workerSessionId`: the worker session id the open reply returns (default "ws-1")
-//   - `outputs`: an array of `{ chunk, sid? }`. The fixture emits each as an output
-//     notification after the open reply. `sid` defaults to the real worker session
-//     id; a test sets a wrong `sid` to prove the host drops a mismatched
-//     notification.
+//   - `outputs`: an array of `{ chunk, sid?, crossRoute?, omitHostRouteId? }`. The
+//     fixture emits each as an output notification after the open reply. `sid`
+//     defaults to the real worker session id; a test sets a wrong `sid` to prove
+//     the host drops a mismatched notification. `crossRoute: true` sends this
+//     route's own worker session id under a DIFFERENT, already-open route's host
+//     route identifier (any other entry currently registered), so a test proves
+//     the host drops a swapped `(hostRouteId, workerSessionId)` pair instead of
+//     misdelivering it. `omitHostRouteId: true` sends the notification with no
+//     `hostRouteId` field at all, so a test proves the host warns about a plugin
+//     build old enough to omit the field, instead of silently dropping it.
 //   - `exitCode`: when set, the fixture emits an exit notification after the outputs.
+//   - `omitHostRouteIdOnExit`: when true, the main `exitCode` exit notification
+//     carries no `hostRouteId` field, so a test proves the host still resolves
+//     a legacy worker's exit by the worker session id.
 //   - `extraExits`: an array of `{ exitCode, sid? }`. The fixture emits each as a
 //     further exit notification, after the main `exitCode` exit. `sid` defaults
 //     to the real worker session id; a test sets a wrong `sid` to script a worker
@@ -43,30 +52,55 @@ function send(message) {
   process.stdout.write(`${JSON.stringify(message)}\n`);
 }
 
-// Serialize one array of `{ chunk, sid? }` entries as newline-delimited output
-// notification lines. A test sets a wrong `sid` on one entry to force a
-// mismatch.
-function outputLines(entries, workerSessionId) {
+// Find some other host route identifier the fixture already registered, for
+// a `crossRoute` output entry. Returns null when no other route is open,
+// which a well-formed test never triggers.
+function pickOtherHostRouteId(ownHostRouteId) {
+  for (const key of routes.keys()) {
+    if (key !== ownHostRouteId) return key;
+  }
+  return null;
+}
+
+// Serialize one array of `{ chunk, sid?, crossRoute?, omitHostRouteId? }`
+// entries as newline-delimited output notification lines. A test sets a
+// wrong `sid` on one entry to force a mismatch. `crossRoute: true` stamps
+// some OTHER already-open route's host route identifier on this route's own
+// worker session id, so a test proves the host drops a swapped pair. Every
+// other line echoes this route's own host route identifier, so the host can
+// route each chunk to its own route when the worker holds more than one.
+// `omitHostRouteId: true` sends the notification with no `hostRouteId` field
+// at all, so a test proves the host warns instead of silently dropping it.
+function outputLines(entries, hostRouteId, workerSessionId) {
   let lines = "";
   for (const entry of entries) {
+    const effectiveHostRouteId = entry.crossRoute
+      ? pickOtherHostRouteId(hostRouteId) ?? hostRouteId
+      : entry.hostRouteId ?? hostRouteId;
+    const params = {
+      workerSessionId: entry.sid ?? workerSessionId,
+      chunk: entry.chunk,
+    };
+    if (!entry.omitHostRouteId) params.hostRouteId = effectiveHostRouteId;
     lines += `${JSON.stringify({
       jsonrpc: "2.0",
       method: "loginPty.output",
-      params: {
-        workerSessionId: entry.sid ?? workerSessionId,
-        chunk: entry.chunk,
-      },
+      params,
     })}\n`;
   }
   return lines;
 }
 
-// Serialize one exit notification line for the given worker session id.
-function exitLine(workerSessionId, exitCode) {
+// Serialize one exit notification line for the given host route and worker
+// session id. `omit: true` sends the notification with no `hostRouteId`
+// field at all, matching a plugin build old enough to predate it.
+function exitLine(hostRouteId, workerSessionId, exitCode, omit) {
+  const params = { workerSessionId, exitCode };
+  if (!omit) params.hostRouteId = hostRouteId;
   return `${JSON.stringify({
     jsonrpc: "2.0",
     method: "loginPty.exit",
-    params: { workerSessionId, exitCode },
+    params,
   })}\n`;
 }
 
@@ -75,14 +109,18 @@ function exitLine(workerSessionId, exitCode) {
 // fixed composition otherwise emits, in order: the pre-exit outputs, then
 // the main exit, then every extra exit, then the post-exit outputs. The
 // batch mode writes these together with the open reply in one stdout write.
-function scriptedOutputLines(directive, workerSessionId) {
+function scriptedOutputLines(directive, hostRouteId, workerSessionId) {
   if (Array.isArray(directive.sequence)) {
     let lines = "";
     for (const entry of directive.sequence) {
       if (entry.type === "output") {
-        lines += outputLines([{ chunk: entry.chunk, sid: entry.sid }], workerSessionId);
+        lines += outputLines(
+          [{ chunk: entry.chunk, sid: entry.sid, hostRouteId: entry.hostRouteId, crossRoute: entry.crossRoute }],
+          hostRouteId,
+          workerSessionId,
+        );
       } else if (entry.type === "exit") {
-        lines += exitLine(entry.sid ?? workerSessionId, entry.exitCode);
+        lines += exitLine(entry.hostRouteId ?? hostRouteId, entry.sid ?? workerSessionId, entry.exitCode);
       }
     }
     return lines;
@@ -92,14 +130,14 @@ function scriptedOutputLines(directive, workerSessionId) {
     ? directive.outputsAfterExit
     : [];
   const extraExits = Array.isArray(directive.extraExits) ? directive.extraExits : [];
-  let lines = outputLines(outputs, workerSessionId);
+  let lines = outputLines(outputs, hostRouteId, workerSessionId);
   if (typeof directive.exitCode === "number") {
-    lines += exitLine(workerSessionId, directive.exitCode);
+    lines += exitLine(hostRouteId, workerSessionId, directive.exitCode, directive.omitHostRouteIdOnExit);
   }
   for (const exit of extraExits) {
-    lines += exitLine(exit.sid ?? workerSessionId, exit.exitCode);
+    lines += exitLine(exit.hostRouteId ?? hostRouteId, exit.sid ?? workerSessionId, exit.exitCode);
   }
-  lines += outputLines(outputsAfterExit, workerSessionId);
+  lines += outputLines(outputsAfterExit, hostRouteId, workerSessionId);
   return lines;
 }
 
@@ -156,7 +194,7 @@ rl.on("line", (line) => {
       // Emit the scripted pre-bind outputs, then exit with no open reply. The
       // route never binds, so a test proves the worker-exit path clears the
       // pre-bind queue.
-      process.stdout.write(scriptedOutputLines(directive, workerSessionId));
+      process.stdout.write(scriptedOutputLines(directive, params.hostRouteId, workerSessionId));
       process.exit(1);
       return;
     }
@@ -176,7 +214,9 @@ rl.on("line", (line) => {
       // notification arrives before the route binds — even a malformed reply
       // that never binds. The host must queue and, on a bind, replay it; on a
       // malformed reply, it must clear the queue instead.
-      process.stdout.write(openReplyLine + scriptedOutputLines(directive, workerSessionId));
+      process.stdout.write(
+        openReplyLine + scriptedOutputLines(directive, params.hostRouteId, workerSessionId),
+      );
       return;
     }
 
@@ -193,7 +233,7 @@ rl.on("line", (line) => {
     // Emit the scripted output and the exit after the open reply, so the host
     // binds the route first.
     setImmediate(() => {
-      process.stdout.write(scriptedOutputLines(directive, workerSessionId));
+      process.stdout.write(scriptedOutputLines(directive, params.hostRouteId, workerSessionId));
     });
     return;
   }
@@ -201,12 +241,16 @@ rl.on("line", (line) => {
   if (method === "loginPtyInput") {
     // Echo the input back as one output notification for the bound session, so a
     // test proves the input reaches the worker and the output routes back.
-    for (const entry of routes.values()) {
+    for (const [hostRouteId, entry] of routes.entries()) {
       if (entry.workerSessionId === params.workerSessionId) {
         send({
           jsonrpc: "2.0",
           method: "loginPty.output",
-          params: { workerSessionId: entry.workerSessionId, chunk: `echo:${params.data}` },
+          params: {
+            hostRouteId,
+            workerSessionId: entry.workerSessionId,
+            chunk: `echo:${params.data}`,
+          },
         });
       }
     }

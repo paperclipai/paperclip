@@ -1297,6 +1297,95 @@ describeEmbeddedPostgres("tool gateway service", () => {
     expect(vi.mocked(oauthGrantRefresher).mock.calls[1]?.[0]).toMatchObject({ forceRefresh: true });
   });
 
+  it("marks a managed OAuth grant reconnect-required after one rejected refresh retry", async () => {
+    const { company, agent, run } = await createRunFixture(db);
+    const { connection } = await createRemoteMcpToolFixture(db, company.id);
+    const accessSecret = await secretService(db).create(company.id, {
+      provider: "local_encrypted",
+      name: "Managed OAuth access token",
+      key: `gateway.managed-oauth.${randomUUID()}`,
+      value: "stale-managed-token",
+    });
+    await db.insert(companySecretBindings).values({
+      companyId: company.id,
+      secretId: accessSecret.id,
+      targetType: "tool_connection",
+      targetId: connection.id,
+      configPath: "oauth.access_token",
+    });
+    await db.update(toolConnections).set({
+      authKind: "oauth",
+      credentialSource: "paperclip_vault",
+      config: {
+        url: "https://example.invalid/mcp",
+        oauth: {
+          strategy: "paperclip_cloud_connector",
+          connectorProfile: "github.code",
+          connectorSubjectUserId: "responsible-user",
+        },
+      },
+    }).where(eq(toolConnections.id, connection.id));
+    const [grant] = await db.select().from(connectionGrants).where(eq(
+      connectionGrants.connectionId,
+      connection.id,
+    ));
+    await db.update(connectionGrants).set({
+      credentialSecretRefs: [{
+        secretId: accessSecret.id,
+        versionSelector: "latest",
+        configPath: "oauth.access_token",
+        required: true,
+        label: "OAuth access token",
+      }],
+      providerTenant: {
+        oauth: {
+          strategy: "paperclip_cloud_connector",
+          accessTokenExpiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+        },
+      },
+    }).where(eq(connectionGrants.id, grant.id));
+    await db.insert(toolPolicies).values({
+      companyId: company.id,
+      name: "Allow managed OAuth reads",
+      policyType: "allow",
+      selectors: { riskLevel: "read" },
+    });
+
+    const oauthGrantRefresher: NonNullable<ToolGatewayServiceOptions["oauthGrantRefresher"]> = vi.fn(async (input) => {
+      if (input.forceRefresh) {
+        await secretService(db).rotate(accessSecret.id, { value: "fresh-managed-token" });
+      }
+      return db.select().from(connectionGrants).where(eq(connectionGrants.id, input.grantId))
+        .then((rows) => rows[0]!);
+    });
+    const authorizationHeaders: string[] = [];
+    const gateway = createTestToolGatewayService(db, {
+      oauthGrantRefresher,
+      remoteHttpRequest: async (_url, init) => {
+        authorizationHeaders.push(new Headers(init.headers).get("authorization") ?? "");
+        return new Response(null, { status: 401 });
+      },
+    });
+    const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+    const tool = (await gateway.listToolsForSession(session.token))
+      .find((candidate) => candidate.providerType === "mcp_remote_http");
+
+    await expect(gateway.executeTool({
+      sessionToken: session.token,
+      tool: tool!.name,
+      parameters: {},
+    })).rejects.toMatchObject({ reasonCode: "mcp_remote_status" });
+
+    expect(authorizationHeaders).toEqual([
+      "Bearer stale-managed-token",
+      "Bearer fresh-managed-token",
+    ]);
+    expect(oauthGrantRefresher).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(oauthGrantRefresher).mock.calls[1]?.[0]).toMatchObject({ forceRefresh: true });
+    const [storedGrant] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, grant.id));
+    expect(storedGrant?.status).toBe("needs_reauthorization");
+  });
+
   it("fails clearly when remote MCP elicitation has no issue interaction path", async () => {
     const company = await db.insert(companies).values({
       name: `Gateway ${randomUUID()}`,

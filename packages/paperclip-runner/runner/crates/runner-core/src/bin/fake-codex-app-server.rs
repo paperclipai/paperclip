@@ -31,6 +31,48 @@ fn send(value: Value) -> io::Result<()> {
     stdout.flush()
 }
 
+fn send_split_event_burst(state: &FakeState) -> io::Result<()> {
+    let turn_id = state.active_turn_id.as_deref().unwrap_or("provider-turn-1");
+    for index in 0..96 {
+        send(json!({
+            "method": "item/agentMessage/delta",
+            "params": {
+                "threadId": state.thread_id,
+                "turnId": turn_id,
+                "itemId": "split-burst-message",
+                "delta": format!("first-{index} "),
+            }
+        }))?;
+    }
+    send(json!({
+        "id": "split-burst-tool",
+        "method": "item/tool/call",
+        "params": {
+            "threadId": state.thread_id,
+            "turnId": turn_id,
+            "callId": "split-burst-semantic-call",
+            "tool": "get_task_context",
+            "arguments": {}
+        }
+    }))
+}
+
+fn finish_split_event_burst(state: &FakeState) -> io::Result<()> {
+    let turn_id = state.active_turn_id.as_deref().unwrap_or("provider-turn-1");
+    for index in 0..48 {
+        send(json!({
+            "method": "item/agentMessage/delta",
+            "params": {
+                "threadId": state.thread_id,
+                "turnId": turn_id,
+                "itemId": "split-burst-message",
+                "delta": format!("second-{index} "),
+            }
+        }))?;
+    }
+    Ok(())
+}
+
 fn load_state(path: &Path) -> FakeState {
     fs::read(path)
         .ok()
@@ -332,6 +374,44 @@ fn send_runtime_question(state: &FakeState) -> io::Result<()> {
     }))
 }
 
+fn send_opencode_proxy_runtime_question(state: &FakeState) -> io::Result<()> {
+    let turn_id = state.active_turn_id.as_deref().unwrap_or("provider-turn-1");
+    send(json!({
+        "id": "opencode-runtime-request-1",
+        "method": "paperclip/runtimeRequest",
+        "params": {
+            "request": {
+                "schema": "paperclip.runtime_request.v2",
+                "requestKind": "runtime",
+                "requestId": "opencode-question-1",
+                "type": "input",
+                "status": "pending",
+                "prompt": "OpenCode requests user input.",
+                "input": {
+                    "schema": "paperclip.question_set.v1",
+                    "questions": [{
+                        "id": "environment",
+                        "prompt": "Where should we deploy?",
+                        "required": true,
+                        "answerMode": "single_select",
+                        "options": [
+                            {"id": "staging", "label": "Staging"},
+                            {"id": "production", "label": "Production"}
+                        ]
+                    }]
+                },
+                "origin": {
+                    "adapter": "opencode-server",
+                    "provider": "opencode",
+                    "method": "question.asked"
+                },
+                "turnId": turn_id,
+                "itemId": "opencode-question-1"
+            }
+        }
+    }))
+}
+
 fn send_runtime_elicitation(state: &FakeState) -> io::Result<()> {
     let turn_id = state.active_turn_id.as_deref().unwrap_or("provider-turn-1");
     send(json!({
@@ -440,11 +520,18 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let call_log = argument(&args, "--call-log").map(PathBuf::from);
     let emit_question = args.iter().any(|value| value == "--emit-question");
     let emit_runtime_question = args.iter().any(|value| value == "--runtime-question");
+    let emit_opencode_proxy_runtime_question = args
+        .iter()
+        .any(|value| value == "--opencode-proxy-runtime-question");
     let emit_runtime_elicitation = args.iter().any(|value| value == "--runtime-elicitation");
     let emit_structured_activity = args.iter().any(|value| value == "--structured-activity");
+    let emit_split_event_burst = args.iter().any(|value| value == "--split-event-burst");
     let require_skill_instructions = args
         .iter()
         .any(|value| value == "--include-skill-instructions");
+    let require_codex_home_auth = args
+        .iter()
+        .any(|value| value == "--require-codex-home-auth");
     let durable_turn_ids = args.iter().any(|value| value == "--durable-turn-ids");
     let emit_tool_call = args.iter().any(|value| value == "--emit-tool-call");
     let replay_completed_tool_call = args
@@ -470,6 +557,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .iter()
         .any(|value| value == "--finish-turn-with-pending-tool");
     let require_dynamic_tool = args.iter().any(|value| value == "--require-dynamic-tool");
+    let require_completion_contract = args
+        .iter()
+        .any(|value| value == "--require-completion-contract");
     let expected_canonical_task_context = argument(&args, "--expected-canonical-task-context")
         .map(|value| serde_json::from_str::<Value>(&value))
         .transpose()?;
@@ -575,6 +665,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let question_before_failed_turn = args
         .iter()
         .any(|value| value == "--question-before-failed-turn");
+    let fail_turn_immediately = args.iter().any(|value| value == "--fail-turn-immediately");
     let reuse_question_id = args.iter().any(|value| value == "--reuse-question-id");
     let pre_response_notification = args
         .iter()
@@ -590,6 +681,17 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 skill_path.display()
             )
             .into());
+        }
+    }
+    if require_codex_home_auth {
+        let auth_path = std::env::var_os("CODEX_HOME")
+            .map(PathBuf::from)
+            .map(|home| home.join("auth.json"))
+            .ok_or("CODEX_HOME is required for the selected auth fixture")?;
+        if !auth_path.is_file() {
+            return Err(
+                format!("Codex auth was not materialized at {}", auth_path.display()).into(),
+            );
         }
     }
     let mut state = load_state(&state_path);
@@ -621,6 +723,19 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             finish_turn(&state_path, &mut state, "completed")?;
             continue;
         }
+        if message.get("method").is_none()
+            && message.get("id") == Some(&json!("opencode-runtime-request-1"))
+        {
+            if message.pointer("/result/resolution/action") != Some(&json!("submit"))
+                || message.pointer("/result/resolution/response/schema")
+                    != Some(&json!("paperclip.question_response.v1"))
+            {
+                return Err("OpenCode proxy runtime response changed shape".into());
+            }
+            log_call(call_log.as_deref(), "opencode-runtime-response:submitted")?;
+            finish_turn(&state_path, &mut state, "completed")?;
+            continue;
+        }
         if message.get("method").is_none() && message.get("id") == Some(&json!("runtime-request-1"))
         {
             if reuse_question_id && answered_questions == 0 {
@@ -628,6 +743,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 send_question(&state)?;
                 continue;
             }
+            finish_turn(&state_path, &mut state, "completed")?;
+            continue;
+        }
+        if message.get("method").is_none() && message.get("id") == Some(&json!("split-burst-tool"))
+        {
+            if message.pointer("/result/success") != Some(&json!(true)) {
+                return Err("split event burst semantic tool failed".into());
+            }
+            finish_split_event_burst(&state)?;
             finish_turn(&state_path, &mut state, "completed")?;
             continue;
         }
@@ -697,6 +821,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 if require_dynamic_tool && !has_task_context_tool(&message) {
                     return Err("thread/start omitted the authorized dynamic tool".into());
                 }
+                if require_completion_contract
+                    && message.pointer("/params/completionContract")
+                        != Some(&json!({
+                            "revision": "revision-1",
+                            "criterionIds": ["criterion-1"],
+                        }))
+                {
+                    return Err("thread/start omitted the durable completion contract".into());
+                }
                 state.thread_id = "codex-thread-1".to_owned();
                 state.active_turn_id = None;
                 save_state(&state_path, &state)?;
@@ -714,6 +847,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             "thread/resume" => {
                 if require_dynamic_tool && !has_task_context_tool(&message) {
                     return Err("thread/resume omitted the authorized dynamic tool".into());
+                }
+                if require_completion_contract
+                    && message.pointer("/params/completionContract")
+                        != Some(&json!({
+                            "revision": "revision-1",
+                            "criterionIds": ["criterion-1"],
+                        }))
+                {
+                    return Err("thread/resume omitted the durable completion contract".into());
                 }
                 let unowned_turn_marker = state_path.with_file_name("resume-unowned-turn");
                 if resume_unowned_turn_when_marked && unowned_turn_marker.exists() {
@@ -897,6 +1039,20 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 }))?;
                 if fail_after_second_turn_start && turn_start_count == 2 {
                     return Err("configured failure after second turn start".into());
+                } else if fail_turn_immediately {
+                    send(json!({
+                        "method": "turn/completed",
+                        "params": {
+                            "threadId": state.thread_id,
+                            "turn": {
+                                "id": provider_turn_id,
+                                "status": "failed",
+                                "error": {"message": "immediate provider failure"}
+                            }
+                        }
+                    }))?;
+                    state.active_turn_id = None;
+                    save_state(&state_path, &state)?;
                 } else if question_before_failed_turn {
                     send_question(&state)?;
                     send(json!({
@@ -999,11 +1155,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 } else if emit_runtime_question {
                     send_runtime_question(&state)?;
+                } else if emit_opencode_proxy_runtime_question {
+                    send_opencode_proxy_runtime_question(&state)?;
                 } else if emit_runtime_elicitation {
                     send_runtime_elicitation(&state)?;
                 } else if emit_structured_activity {
                     send_structured_activity(&state)?;
                     finish_turn(&state_path, &mut state, "completed")?;
+                } else if emit_split_event_burst {
+                    send_split_event_burst(&state)?;
                 } else if emit_question {
                     send_question(&state)?;
                 } else if !hold_turn {

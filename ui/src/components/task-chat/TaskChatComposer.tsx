@@ -8,6 +8,7 @@ import {
   type ReactNode,
 } from "react";
 import { cn } from "@/lib/utils";
+import { useStreamlinedTaskChatPresentation } from "./presentation-mode";
 import {
   DRAFT_DEBOUNCE_MS,
   clearDraft,
@@ -269,10 +270,10 @@ function escapeMarkdownLabel(name: string): string {
  * Composer for the redesigned thread (v7 spec): the shared MarkdownEditor
  * (rich lists, @-mentions, /-commands, inline pasted images) over a 32px
  * comp-bar of [attach] [mode chip] … [assignee] [send]. The mode chip is a
- * status-chip rectangle carrying the pending mode's hue; the composer chrome
- * itself stays neutral. Shift+Tab cycles modes (captured before Lexical);
- * Cmd/Ctrl+Enter posts via the editor's native onSubmit; plain Enter stays a
- * newline / next list item. Pasted or dropped images upload through
+ * borderless filled control carrying the pending mode's hue; the composer chrome
+ * itself stays neutral. Cmd/Ctrl+. and Shift+Tab cycle modes (captured before
+ * Lexical); Cmd/Ctrl+Enter posts via the editor's native onSubmit; plain Enter
+ * stays a newline / next list item. Pasted or dropped images upload through
  * `onAttachImage` (or the `onImageUpload` fallback) and land inline at the
  * caret via the editor's image plugin; non-image files render as shadcn
  * base/attachment chips (kind icon · name · size, remove ×, uploading/error
@@ -302,6 +303,7 @@ export function TaskChatComposer({
   takeover = null,
   pendingTakeover = null,
 }: TaskChatComposerProps) {
+  const streamlined = useStreamlinedTaskChatPresentation();
   const [body, setBody] = useState(() => (draftKey ? loadDraft(draftKey) : ""));
   const [submitting, setSubmitting] = useState(false);
   const [takeoverBusy, setTakeoverBusy] = useState(false);
@@ -677,13 +679,21 @@ export function TaskChatComposer({
   return (
     <div
       className={cn(
-        "paperclip-task-chat-composer rounded-xl bg-card p-(--sz-18px)",
+        streamlined
+          ? "paperclip-task-chat-composer rounded-(--radius-task-composer) border border-border bg-card p-(--sz-18px) shadow-(--shadow-task-composer) dark:border-0 dark:bg-muted dark:shadow-none"
+          : "paperclip-task-chat-composer rounded-xl bg-card p-(--sz-18px)",
       )}
       onKeyDownCapture={(e) => {
-        // Shift+Tab cycles the pending mode; captured on the wrapper so it
-        // wins over Lexical's list-outdent binding inside the editor.
+        // Capture mode shortcuts on the wrapper so they work while the rich
+        // editor is focused and win over Lexical/browser bindings. Match the
+        // period by key and code because hardware keyboards on iOS can omit
+        // `code` for Cmd+Period.
         if (disabled || queuedEdit || takeoverVisible) return;
-        if (e.key === "Tab" && e.shiftKey) {
+        const isPeriod = e.key === "." || e.code === "Period";
+        const isModeShortcut =
+          (isPeriod && (e.metaKey || e.ctrlKey)) ||
+          (e.key === "Tab" && e.shiftKey);
+        if (isModeShortcut) {
           e.preventDefault();
           e.stopPropagation();
           setPendingMode((mode) => nextWorkMode(mode));
@@ -876,7 +886,10 @@ export function TaskChatComposer({
             </AttachmentGroup>
           ) : null}
 
-          <div className="mt-1 flex items-center gap-2">
+          <div
+            className="mt-2 flex items-center gap-2"
+            data-testid="task-chat-composer-actions"
+          >
             {canAcceptFiles ? (
               <>
                 <input
@@ -911,7 +924,13 @@ export function TaskChatComposer({
                   <button
                     type="button"
                     disabled={disabled || !onWorkModeChange}
-                    className="status-chip flex h-8 shrink-0 items-center gap-1.5 rounded-md px-2.5 text-xs font-medium transition hover:brightness-110 focus-visible:brightness-110 focus-visible:outline-none disabled:opacity-50"
+                    aria-keyshortcuts="Meta+Period Control+Period Shift+Tab"
+                    className={cn(
+                      "flex h-8 shrink-0 items-center gap-1.5 rounded-md px-2.5 text-xs font-medium disabled:opacity-50",
+                      streamlined
+                        ? "status-chip border-0 transition hover:brightness-110 focus-visible:brightness-110 focus-visible:outline-none"
+                        : "status-chip transition hover:brightness-110 focus-visible:brightness-110 focus-visible:outline-none",
+                    )}
                     style={{ "--sc": modeHue(pendingMode) } as CSSProperties}
                     data-testid="task-chat-composer-mode"
                     data-pending-work-mode={pendingMode}
@@ -920,7 +939,11 @@ export function TaskChatComposer({
                     <ChevronDown className="h-3 w-3" aria-hidden />
                   </button>
                 </DropdownMenuTrigger>
-                <DropdownMenuContent align="start" className="w-60">
+                <DropdownMenuContent
+                  align="start"
+                  className="flex w-(--sz-300px) flex-col gap-0.5"
+                  data-testid="task-chat-composer-mode-menu"
+                >
                   {workModeMetaList().map((m) => {
                     const Icon = m.icon;
                     const selected = m.value === pendingMode;
@@ -943,7 +966,7 @@ export function TaskChatComposer({
                         />
                         <span className="flex min-w-0 flex-1 flex-col">
                           <span className="font-medium">{m.label}</span>
-                          <span className="text-xs text-muted-foreground">
+                          <span className="whitespace-nowrap text-xs text-muted-foreground">
                             {MODE_DESCRIPTION[m.value] ?? ""}
                           </span>
                         </span>
@@ -1045,7 +1068,12 @@ export function TaskChatComposer({
                     : "Save queued message"
                   : "Send"
               }
-              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-primary text-primary-foreground transition-transform hover:scale-105 disabled:scale-100 disabled:bg-muted disabled:text-muted-foreground"
+              className={cn(
+                "flex h-8 w-8 shrink-0 items-center justify-center transition-transform hover:scale-105 disabled:scale-100",
+                streamlined
+                  ? "rounded-full bg-foreground text-background disabled:bg-foreground disabled:text-background disabled:opacity-100"
+                  : "rounded-md bg-primary text-primary-foreground disabled:bg-muted disabled:text-muted-foreground",
+              )}
               data-testid="task-chat-composer-send"
             >
               {submitting ? (

@@ -114,7 +114,7 @@ describe("AppDefinition catalog",()=>{
  });
  it("preserves required Linear OAuth scopes",()=>expect(APP_DEFINITIONS.find((app)=>app.slug==="linear")?.methods[0]?.defaults?.scopesHint).toEqual(["read","write"]));
  it("requests only Hugging Face's MCP read scope",()=>expect(APP_DEFINITIONS.find((app)=>app.slug==="hugging-face")?.methods[0]?.defaults?.scopesHint).toEqual(["read-mcp"]));
- it("defaults S2-S4 write and destructive actions to ask-first",()=>{for(const app of APP_DEFINITIONS)for(const method of app.methods)expect(recommendedDefaultsForApp(app,method.key)).toEqual({access:"all_agents",askFirstRiskLevels:method.riskTier==="S1"?[]:["write","destructive"]})});
+ it("defaults every new connection action to allowed",()=>{for(const app of APP_DEFINITIONS)for(const method of app.methods)expect(recommendedDefaultsForApp(app,method.key)).toEqual({access:"all_agents",askFirstRiskLevels:[]})});
  it("defaults explicit read/write capability groups to their write-capable method",()=>{
   const drive=APP_DEFINITIONS.find((app)=>app.slug==="google-drive")!;
   const gmail=APP_DEFINITIONS.find((app)=>app.slug==="gmail")!;
@@ -140,9 +140,9 @@ describe("AppDefinition catalog",()=>{
  });
  it("withholds unverified and reserved providers from the app store without deleting their definitions",()=>{
   expect([...APP_STORE_HIDDEN_SLUGS].sort()).toEqual([
-   "beehiiv","bitly","brex","candid","coda","composio","context7","egnyte","embat","github","kernel","local-falcon","make","manufact","oreilly","planetscale","razorpay","sanity","similarweb","slack","ticket-tailor","ticktick","xero",
+   "beehiiv","bitly","brex","candid","coda","composio","context7","egnyte","embat","kernel","local-falcon","make","manufact","oreilly","planetscale","razorpay","sanity","similarweb","slack","ticket-tailor","ticktick","xero",
   ]);
-  expect(APP_STORE_DEFINITIONS).toHaveLength(35);
+  expect(APP_STORE_DEFINITIONS).toHaveLength(36);
   const connectableSlugs=new Set(CONNECTABLE_APP_DEFINITIONS.map((entry)=>entry.slug));
   const storeSlugs=new Set(APP_STORE_DEFINITIONS.map((entry)=>entry.slug));
   for(const slug of APP_STORE_HIDDEN_SLUGS){
@@ -150,13 +150,13 @@ describe("AppDefinition catalog",()=>{
    expect(storeSlugs.has(slug),slug).toBe(false);
   }
  });
- it("ships complete local branding provenance for all 35 store-visible providers",()=>{
+ it("ships complete local branding provenance for all 36 store-visible providers",()=>{
   const uiPublic=path.resolve(path.dirname(fileURLToPath(import.meta.url)),"../../../ui/public");
   const manifest=JSON.parse(fs.readFileSync(path.join(uiPublic,"brands/apps/manifest.json"),"utf8")) as {providers:Array<{slug:string;catalogVisible:boolean;localAsset:string;darkAsset?:string;officialSourceUrl:string;upstreamAssetUrl:string;assetType:"svg"|"png";darkVariantRequired:boolean}>};
   const visible=manifest.providers.filter((entry)=>entry.catalogVisible);
-  expect(visible).toHaveLength(35);
-  expect(new Set(visible.map((entry)=>entry.slug))).toHaveProperty("size",35);
-  expect(new Set(visible.map((entry)=>entry.localAsset))).toHaveProperty("size",35);
+  expect(visible).toHaveLength(36);
+  expect(new Set(visible.map((entry)=>entry.slug))).toHaveProperty("size",36);
+  expect(new Set(visible.map((entry)=>entry.localAsset))).toHaveProperty("size",36);
   expect(new Set(APP_STORE_DEFINITIONS.map((entry)=>entry.slug))).toEqual(new Set(visible.map((entry)=>entry.slug)));
   for(const app of APP_STORE_DEFINITIONS){
    const provenance=visible.find((entry)=>entry.slug===app.slug)!;
@@ -203,7 +203,7 @@ describe("AppDefinition catalog",()=>{
     oauthStrategy:"paperclip_cloud_connector",
     connectorProfile:expected.profile,
     capabilityProfile:{key:expected.capability},
-    grantKinds:["user"],
+    grantKinds:["user","organization"],
     ownershipModes:["platform_shared"],
     defaults:{serverUrl:expected.serverUrl,scopesHint:expected.scopes},
     riskTier:expected.riskTier,
@@ -215,7 +215,7 @@ describe("AppDefinition catalog",()=>{
     &&method.capabilityProfile?.key===expected.capability
    );
    expect(customer,`${expected.profile}:customer-fallback`).toMatchObject({
-    grantKinds:["user"],
+    grantKinds:["user","organization"],
     ownershipModes:["customer"],
     defaults:{serverUrl:expected.serverUrl,scopesHint:expected.scopes},
     riskTier:expected.riskTier,

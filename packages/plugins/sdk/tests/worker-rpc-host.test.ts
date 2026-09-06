@@ -778,8 +778,8 @@ describe("worker setup-token pseudo-terminal dispatch", () => {
     // worker session id. The test drives them through the captured emitters.
     const controllablePlugin = definePlugin({
       async setup(ctx) {
-        emitOutput = (chunk: string) => ctx.loginPty.output("ws-1", chunk);
-        resolveWait = (value) => ctx.loginPty.exit("ws-1", value.exitCode);
+        emitOutput = (chunk: string) => ctx.loginPty.output("route-1", "ws-1", chunk);
+        resolveWait = (value) => ctx.loginPty.exit("route-1", "ws-1", value.exitCode);
       },
       async onLoginPtyOpen(params) {
         // The open carries the host route id, the closed command key, and the
@@ -896,13 +896,13 @@ describe("worker setup-token pseudo-terminal dispatch", () => {
         (note) => note.method === "loginPty.output",
       );
       expect(outputNotes.map((note) => note.params)).toEqual([
-        { workerSessionId: "ws-1", chunk: "prompt output" },
+        { hostRouteId: "route-1", workerSessionId: "ws-1", chunk: "prompt output" },
       ]);
       const exitNotes = notifications.filter(
         (note) => note.method === "loginPty.exit",
       );
       expect(exitNotes.map((note) => note.params)).toEqual([
-        { workerSessionId: "ws-1", exitCode: 0 },
+        { hostRouteId: "route-1", workerSessionId: "ws-1", exitCode: 0 },
       ]);
     } finally {
       worker.stop();

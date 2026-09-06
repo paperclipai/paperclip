@@ -1,6 +1,7 @@
 import {
   buildAdapterEnvConfig,
   isPaperclipRunnerProvider,
+  resolvePaperclipRunnerModel,
   resolvePaperclipRunnerIdleTimeoutMs,
   resolvePaperclipRunnerPermissionMode,
   type CreateConfigValues,
@@ -157,6 +158,17 @@ export function buildPaperclipRunnerConfig(v: CreateConfigValues): Record<string
   const idleTimeoutMs = resolvePaperclipRunnerIdleTimeoutMs(
     configuredIdleTimeoutMs,
   );
+  const configuredCodexPermissionMode =
+    v.adapterSchemaValues?.codexPermissionMode ?? v.codexPermissionMode;
+  if (
+    provider === "codex"
+    && configuredCodexPermissionMode !== undefined
+    && configuredCodexPermissionMode !== "never"
+  ) {
+    throw new Error(
+      "Paperclip Runner currently supports Codex only with codexPermissionMode set to never. Select Full auto (never ask) before saving.",
+    );
+  }
   for (const normalizedKey of [
     "provider",
     "model",
@@ -200,10 +212,10 @@ export function buildPaperclipRunnerConfig(v: CreateConfigValues): Record<string
     ...config,
     ...schemaValues,
     provider,
-    codexPermissionMode: resolvePaperclipRunnerPermissionMode(
-      "codex",
-      v.adapterSchemaValues?.codexPermissionMode ?? v.codexPermissionMode,
-    ),
+    ...(provider === "codex"
+      ? { model: resolvePaperclipRunnerModel("codex", config.model) }
+      : {}),
+    codexPermissionMode: "never",
     opencodePermissionMode: resolvePaperclipRunnerPermissionMode(
       "opencode",
       v.adapterSchemaValues?.opencodePermissionMode,

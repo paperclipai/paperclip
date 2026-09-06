@@ -62,6 +62,7 @@ fn expected_identity() -> AcpxProviderSessionIdentity {
         requested_model: "gpt-5.6-sol".to_owned(),
         effective_model: "gpt-5.6-sol".to_owned(),
         permission_mode: Some(AcpxPermissionMode::ApproveReads),
+        provider_lifetime_fence_candidates: [60_001, 60_002, 60_003],
     }
 }
 
@@ -100,6 +101,12 @@ fn validates_qualified_policy_and_tool_catalog_before_spawning() {
     let mut invalid_tools = config("bootstrap");
     invalid_tools.tool_set.catalog_digest = "invalid".to_owned();
     assert!(start_error(&invalid_tools).contains("authorized tools"));
+
+    let mut invalid_lifetime_fence = config("bootstrap");
+    let mut invalid_identity = expected_identity();
+    invalid_identity.provider_lifetime_fence_candidates = [60_001, 60_001, 60_003];
+    invalid_lifetime_fence.expected_identity = Some(invalid_identity);
+    assert!(start_error(&invalid_lifetime_fence).contains("lifetime fence candidates"));
 }
 
 #[test]

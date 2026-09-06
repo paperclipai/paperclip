@@ -122,6 +122,7 @@ import {
   companyService,
   companySearchService,
   executionWorkspaceService,
+  enrichWorkProductMetadataWithDiff,
   goalService,
   heartbeatService,
   issueApprovalService,
@@ -144,6 +145,7 @@ import {
   workProductService,
 } from "../services/index.js";
 import { questionResponseDeliveryService } from "../services/question-response-delivery.js";
+import { emitAgentTaskRun } from "../services/agent-task-run-telemetry.js";
 import { artifactReviewDocumentService } from "../services/artifact-review-documents.js";
 import { assertCanResolveProposal } from "../services/secret-proposal-authorization.js";
 import { buildDocumentReviewContext, buildPlanReviewContext } from "../services/plan-review-context.js";
@@ -5778,7 +5780,8 @@ export function issueRoutes(
     queueId: string;
     revision?: string;
   }) {
-    return db.transaction(async (tx) => {
+    let cancelledRunToEmit: typeof heartbeatRuns.$inferSelect | null = null;
+    const result = await db.transaction(async (tx) => {
       const locked = await lockQueuedCommentState({
         tx,
         issue: input.issue,
@@ -5854,13 +5857,14 @@ export function issueRoutes(
               eq(heartbeatRuns.id, locked.queueRun.id),
               eq(heartbeatRuns.status, "queued"),
             ))
-            .returning({ id: heartbeatRuns.id })
+            .returning()
             .then((rows) => rows[0] ?? null);
           if (!cancelledRun) {
             throw conflict("The queued message is already being dispatched", {
               code: "queued_comment_already_dispatching",
             });
           }
+          cancelledRunToEmit = cancelledRun;
         }
       } else {
         const updatedWake = await tx
@@ -5915,6 +5919,12 @@ export function issueRoutes(
         }),
       };
     });
+    // Telemetry is best-effort background work; it must not delay the
+    // response with a slow lookup, so fire it and do not await it.
+    if (cancelledRunToEmit) {
+      void emitAgentTaskRun(db, cancelledRunToEmit);
+    }
+    return result;
   }
 
   function operatorInterruptCancelOptions(input: { issueId: string; actor: ReturnType<typeof getActorInfo> }) {
@@ -7690,7 +7700,9 @@ export function issueRoutes(
     const issue = await getAccessibleResource(req, res, getIssueById(req, id), "Issue not found");
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
-    const workProducts = await workProductsSvc.listForIssue(issue.id);
+    const workProducts = await workProductsSvc.listForIssue(issue.id, {
+      refreshPullRequests: req.query.refreshPullRequests === "true",
+    });
     res.json(workProducts);
   });
 
@@ -8442,13 +8454,42 @@ export function issueRoutes(
     const createdByRunId = await resolveWorkProductCreatedByRunId(req, res, issue.companyId, req.body, "create");
     if (createdByRunId === undefined) return;
     createInput.createdByRunId = createdByRunId;
+    if (createdByRunId && (createInput.type === "pull_request" || createInput.type === "commit")) {
+      const runDiffSummary = await workProductsSvc.latestRunDiffSummary(createdByRunId);
+      createInput.metadata = enrichWorkProductMetadataWithDiff(
+        createInput.metadata,
+        runDiffSummary ?? (createInput.type === "commit"
+          ? await workProductsSvc.resolveCommitDiffSummary(issue.companyId, createInput)
+          : null),
+      );
+    }
     if (requiresPaperclipAttachmentMetadata(createInput)) {
       createInput.metadata = await canonicalizePaperclipArtifactMetadata({
         issue,
         metadata: req.body.metadata ?? null,
       });
     }
-    const product = await workProductsSvc.createForIssue(issue.id, issue.companyId, createInput);
+    const attachmentId = createInput.type === "artifact" && createInput.provider === "paperclip"
+      ? (createInput.metadata as Record<string, unknown> | null)?.attachmentId
+      : null;
+    const existingRunAttachmentProduct = typeof attachmentId === "string" && createdByRunId
+      ? await db
+        .select({ id: issueWorkProducts.id })
+        .from(issueWorkProducts)
+        .where(and(
+          eq(issueWorkProducts.companyId, issue.companyId),
+          eq(issueWorkProducts.issueId, issue.id),
+          eq(issueWorkProducts.type, "artifact"),
+          eq(issueWorkProducts.provider, "paperclip"),
+          eq(issueWorkProducts.externalId, attachmentId),
+          eq(issueWorkProducts.createdByRunId, createdByRunId),
+        ))
+        .limit(1)
+        .then((rows) => rows[0] ?? null)
+      : null;
+    const product = existingRunAttachmentProduct
+      ? await workProductsSvc.update(existingRunAttachmentProduct.id, createInput)
+      : await workProductsSvc.createForIssue(issue.id, issue.companyId, createInput);
     if (!product) {
       res.status(422).json({ error: "Invalid work product payload" });
       return;
@@ -11011,6 +11052,7 @@ export function issueRoutes(
             agentId: actorAgent.id,
             adapterType: actorAgent.adapterType,
             model,
+            taskId: issue.id,
           });
         }
       }
@@ -14244,6 +14286,7 @@ export function issueRoutes(
       originalFilename: stored.originalFilename,
       createdByAgentId: actor.agentId,
       createdByUserId: actor.actorType === "user" ? actor.actorId : null,
+      createdByRunId: actor.runId,
     });
 
     await logActivity(db, {
@@ -14264,7 +14307,28 @@ export function issueRoutes(
       },
     });
 
-    res.status(201).json(withContentPath(attachment));
+    if (attachment.artifactWorkProductId) {
+      await logActivity(db, {
+        companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
+        action: "issue.work_product_created",
+        entityType: "issue",
+        entityId: issueId,
+        details: {
+          workProductId: attachment.artifactWorkProductId,
+          type: "artifact",
+          provider: "paperclip",
+          source: "run_attachment_upload",
+        },
+      });
+    }
+
+    const { artifactWorkProductId: _artifactWorkProductId, ...attachmentResponse } = attachment;
+    res.status(201).json(withContentPath(attachmentResponse));
   });
 
   router.get("/attachments/:attachmentId/content", async (req, res, next) => {

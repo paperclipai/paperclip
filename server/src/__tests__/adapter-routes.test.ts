@@ -352,7 +352,7 @@ describe("adapter routes", () => {
       }),
       expect.objectContaining({
         key: "codexPermissionMode",
-        default: "untrusted",
+        default: "never",
         meta: { visibleWhen: { key: "provider", value: "codex" } },
       }),
       expect.objectContaining({

@@ -128,14 +128,38 @@ const STEP_TIMEOUT_MS = 15_000;
  * from the wait above. The wizard re-renders as those queries land, and a node
  * captured a moment earlier can be detached by the time it is clicked — a click
  * that raises no error and does nothing.
+ *
+ * The arrival is waited on by *heading*, not by the next button's label. The arc
+ * labels its forward button "Next" on every step it has one, so a story that
+ * waited for a button name would be satisfied by the button it just clicked and
+ * report arriving somewhere it never left. This is not hypothetical: these
+ * stories waited for a button named "Connect" until the label changed, at which
+ * point Review sat on the connect step looking like a story written to open
+ * there — the exact failure `STEP_TIMEOUT_MS` is commented against.
  */
-async function advance(from: string, to: string) {
+async function advance(to: string) {
   await waitFor(
-    () => expect(screen.getByRole("button", { name: from })).toBeEnabled(),
+    () => expect(screen.getByRole("button", { name: PRIMARY })).toBeEnabled(),
     { timeout: STEP_TIMEOUT_MS },
   );
-  await userEvent.click(screen.getByRole("button", { name: from }));
-  await screen.findByRole("button", { name: to }, { timeout: STEP_TIMEOUT_MS });
+  await userEvent.click(screen.getByRole("button", { name: PRIMARY }));
+  await screen.findByText(to, { selector: "h2, h1" }, { timeout: STEP_TIMEOUT_MS });
+}
+
+/** The arc's forward button, which reads the same on every step but the last. */
+const PRIMARY = "Next";
+
+/**
+ * Pick a model source, which the connect step needs before it will go forward.
+ *
+ * Nothing is selected on arrival — deliberately, so the row reads as a question
+ * rather than a confirmation — and the CTA stays disabled until one is pressed.
+ * Found by role rather than by label so the choice does not depend on which
+ * adapters the fixture registry happens to offer.
+ */
+async function pickFirstSource() {
+  const tiles = await screen.findAllByRole("radio", {}, { timeout: STEP_TIMEOUT_MS });
+  await userEvent.click(tiles[0]!);
 }
 
 /**
@@ -191,7 +215,7 @@ export const ConnectAModel: StoryObj = {
     return resetOnboardingFixtureState;
   },
   render: () => <WizardArc />,
-  play: () => advance("Next", "Connect"),
+  play: () => advance("Connect a model"),
 };
 
 /**
@@ -208,7 +232,7 @@ export const ConnectAModelAlreadySignedIn: StoryObj = {
     return resetOnboardingFixtureState;
   },
   render: () => <WizardArc />,
-  play: () => advance("Next", "Connect"),
+  play: () => advance("Connect a model"),
 };
 
 /**
@@ -224,7 +248,7 @@ export const ConnectAModelNoSandbox: StoryObj = {
     return resetOnboardingFixtureState;
   },
   render: () => <WizardArc />,
-  play: () => advance("Next", "Connect"),
+  play: () => advance("Connect a model"),
 };
 
 /**
@@ -245,8 +269,9 @@ export const Review: StoryObj = {
   },
   render: () => <WizardArc />,
   play: async () => {
-    await advance("Next", "Connect");
-    await advance("Connect", "Get started");
+    await advance("Connect a model");
+    await pickFirstSource();
+    await advance("Let's get started...");
   },
 };
 

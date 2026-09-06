@@ -13,6 +13,7 @@ import {
   companyMemberships,
   companySecretBindings,
   companySecrets,
+  principalPermissionGrants,
   userSecretDefinitions,
   heartbeatRuns,
   issues,
@@ -123,7 +124,7 @@ import type {
   VercelConnectCredentialReference,
   VercelConnectGrantReference,
 } from "@paperclipai/shared";
-import { CLASS3_STATIC_LEASE_ALLOWLIST, GOOGLE_WORKSPACE_CONNECTOR_PROFILES, connectionIntentPayloadSchema, credentialConfigPath, getAppDefinitionForUrl, getAvailableConnectionMethod, getAvailableConnectionMethods, getConnectableAppDefinition, isGoogleWorkspaceConnectorProfileId, isToolConnectionAttentionHealth, recommendedDefaultsForApp, resolveConnectionMethodServerUrl, type GoogleWorkspaceConnectorProfileId } from "@paperclipai/shared";
+import { CLASS3_STATIC_LEASE_ALLOWLIST, GITHUB_CONNECTOR_PROFILES, GOOGLE_WORKSPACE_CONNECTOR_PROFILES, connectionIntentPayloadSchema, credentialConfigPath, getAppDefinitionForUrl, getAvailableConnectionMethod, getAvailableConnectionMethods, getConnectableAppDefinition, isGitHubConnectorProfileId, isGoogleWorkspaceConnectorProfileId, isToolConnectionAttentionHealth, recommendedDefaultsForApp, resolveConnectionMethodServerUrl, type GitHubConnectorProfileId, type GoogleWorkspaceConnectorProfileId } from "@paperclipai/shared";
 import {
   checkMcpRemoteHeaderName,
   checkMcpRemoteHeaderValue,
@@ -137,6 +138,7 @@ import {
   type OAuthEndpointUrlRejection,
 } from "@paperclipai/shared";
 import { badRequest, conflict, forbidden, HttpError, notFound, unprocessable } from "../errors.js";
+import { isUniqueViolation } from "../db-errors.js";
 import { logger } from "../middleware/logger.js";
 import { logActivity } from "./activity-log.js";
 import {
@@ -172,6 +174,7 @@ import {
   createPaperclipCloudConnector,
   isPaperclipCloudConnectorStrategy,
   paperclipCloudConnectorConfigFromEnv,
+  PaperclipCloudConnectorError,
   type PaperclipCloudConnector,
 } from "./paperclip-cloud-connector.js";
 import {
@@ -189,6 +192,7 @@ type ActorInfo = {
   actorType?: "agent" | "user" | "system" | "plugin";
   actorId?: string | null;
   sessionId?: string | null;
+  actorSource?: "local_implicit" | "session" | "board_key" | "agent_key" | "agent_jwt" | "cloud_tenant";
 };
 
 const ACTIVE_BROKER_RUN_STATUSES = new Set(["running"]);
@@ -1765,6 +1769,22 @@ function stableHash(value: unknown): string {
   return createHash("sha256").update(JSON.stringify(value, Object.keys(flattenKeys(value)).sort())).digest("hex");
 }
 
+function connectionSetupMutationFingerprint(row: typeof toolConnections.$inferSelect): string {
+  return stableHash({
+    name: row.name,
+    transport: row.transport,
+    status: row.status,
+    enabled: row.enabled,
+    config: row.config,
+    transportConfig: row.transportConfig,
+    credentialRefs: row.credentialRefs,
+    credentialSecretRefs: row.credentialSecretRefs,
+    credentialSource: row.credentialSource,
+    externalCredential: row.externalCredential,
+    credentialPolicy: row.credentialPolicy,
+  });
+}
+
 function flattenKeys(value: unknown, keys: Record<string, true> = {}): Record<string, true> {
   if (value && typeof value === "object") {
     for (const [key, nested] of Object.entries(value as Record<string, unknown>)) {
@@ -1891,6 +1911,142 @@ export function isGoogleWorkspaceToolAllowed(
   const readTools = GOOGLE_WORKSPACE_READ_TOOLS[profile.appSlug] ?? new Set<string>();
   return readTools.has(toolName)
     || profile.writeTools.some((writeTool) => googleWorkspaceToolLeafName(writeTool) === toolName);
+}
+
+type ManagedConnectorProfileId = GoogleWorkspaceConnectorProfileId | GitHubConnectorProfileId;
+
+function managedConnectorProfile(value: string | undefined): {
+  id: ManagedConnectorProfileId;
+  provider: "google" | "github";
+  scopes: readonly string[];
+} | null {
+  if (value && isGoogleWorkspaceConnectorProfileId(value)) {
+    return { id: value, provider: "google", scopes: GOOGLE_WORKSPACE_CONNECTOR_PROFILES[value].scopes };
+  }
+  if (value && isGitHubConnectorProfileId(value)) {
+    return { id: value, provider: "github", scopes: GITHUB_CONNECTOR_PROFILES[value].scopes };
+  }
+  return null;
+}
+
+export async function loadGitHubGrantMetadata(
+  accessToken: string,
+  request: typeof fetch = fetch,
+  appSlug?: string,
+): Promise<{
+  userId: string;
+  login: string;
+  avatarUrl?: string;
+  installationCount: number;
+  repositoryCount: number;
+  repositorySelection: "all" | "selected" | "mixed" | "none";
+  installationIds: string[];
+  installationOwnerLogins: string[];
+  installationUrl: string;
+  managementUrl: string;
+  appSlug?: string;
+  lastAccessRefreshAt: string;
+  webhookHealth: "pending";
+}> {
+  const github = async (path: string): Promise<Record<string, unknown>> => {
+    const response = await request(`https://api.github.com${path}`, {
+      headers: {
+        accept: "application/vnd.github+json",
+        authorization: `Bearer ${accessToken}`,
+        "user-agent": "Paperclip",
+        "x-github-api-version": "2022-11-28",
+      },
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!response.ok) {
+      throw unprocessable("GitHub could not verify this account's installation access", {
+        code: response.status === 401 ? "oauth_reauthorization_required" : "github_access_check_failed",
+      });
+    }
+    const value = await response.json() as unknown;
+    if (!recordValue(value)) throw unprocessable("GitHub returned invalid account metadata", { code: "github_bad_response" });
+    return value;
+  };
+  const user = await github("/user");
+  const userId = githubId(user.id);
+  const login = typeof user.login === "string" ? user.login : null;
+  if (!userId || !login) throw unprocessable("GitHub returned invalid account metadata", { code: "github_bad_response" });
+  const installationsResponse = await github("/user/installations?per_page=100");
+  const installations = Array.isArray(installationsResponse.installations)
+    ? installationsResponse.installations.filter(recordValue).slice(0, 100)
+    : [];
+  const installationIds: string[] = [];
+  const owners = new Set<string>();
+  const selections = new Set<"all" | "selected">();
+  const managementUrls = new Set<string>();
+  let repositoryCount = 0;
+  for (const installation of installations) {
+    const installationId = githubId(installation.id);
+    if (!installationId) continue;
+    installationIds.push(installationId);
+    if (installation.repository_selection === "all" || installation.repository_selection === "selected") {
+      selections.add(installation.repository_selection);
+    }
+    const account = recordValue(installation.account) ? installation.account : null;
+    if (typeof account?.login === "string") owners.add(account.login);
+    const managementUrl = githubInstallationManagementUrl(installation.html_url);
+    if (managementUrl) managementUrls.add(managementUrl);
+    const repositories = await github(`/user/installations/${installationId}/repositories?per_page=1`);
+    if (typeof repositories.total_count === "number" && Number.isSafeInteger(repositories.total_count) && repositories.total_count >= 0) {
+      repositoryCount += repositories.total_count;
+    }
+  }
+  if (installationIds.length === 0 || repositoryCount === 0) {
+    const installationUrl = appSlug
+      ? `https://github.com/apps/${appSlug}/installations/new`
+      : "https://github.com/settings/installations";
+    throw unprocessable("GitHub access is required. Install Paperclip and grant at least one repository before refreshing access.", {
+      code: "github_installation_required",
+      installationUrl,
+      managementUrl: "https://github.com/settings/installations",
+    });
+  }
+  const installationUrl = appSlug
+    ? `https://github.com/apps/${appSlug}/installations/new`
+    : "https://github.com/settings/installations";
+  return {
+    userId,
+    login,
+    ...(typeof user.avatar_url === "string" ? { avatarUrl: user.avatar_url } : {}),
+    installationCount: installationIds.length,
+    repositoryCount,
+    repositorySelection: selections.size > 1 ? "mixed" : selections.values().next().value ?? "none",
+    installationIds,
+    installationOwnerLogins: [...owners],
+    installationUrl,
+    managementUrl: managementUrls.size === 1
+      ? managementUrls.values().next().value!
+      : "https://github.com/settings/installations",
+    ...(appSlug ? { appSlug } : {}),
+    lastAccessRefreshAt: new Date().toISOString(),
+    webhookHealth: "pending",
+  };
+}
+
+function githubInstallationManagementUrl(value: unknown): string | null {
+  if (typeof value !== "string" || value.length > 2_000) return null;
+  try {
+    const url = new URL(value);
+    if (url.protocol !== "https:" || url.hostname.toLowerCase() !== "github.com") return null;
+    return url.pathname.includes("/settings/installations/") ? url.toString() : null;
+  } catch {
+    return null;
+  }
+}
+
+function githubId(value: unknown): string | null {
+  if (typeof value === "number" && Number.isSafeInteger(value) && value > 0) return String(value);
+  if (typeof value === "string" && /^[1-9][0-9]{0,30}$/.test(value)) return value;
+  return null;
+}
+
+function recordValue(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function descriptorHash(tool: McpToolDescriptor, riskLevel: ToolRiskLevel): string {
@@ -2092,6 +2248,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       : null;
     return cachedCloudConnector;
   };
+  let nextGitHubContinuitySweepAt = 0;
   const vercelConnect = options.vercelConnectClient === undefined
     ? createVercelConnectClient()
     : options.vercelConnectClient;
@@ -2792,72 +2949,6 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       entityType: "tool_connection",
       entityId: input.connectionId,
       details: { path: input.path, outcome: input.outcome, reasonCode: input.reasonCode ?? null, ...(input.details ?? {}) },
-    });
-  }
-
-  async function createStandingDelegationAsk(input: {
-    connection: typeof toolConnections.$inferSelect;
-    issueId: string | null;
-    runId: string;
-    agentId: string;
-    ownerUserId: string;
-  }) {
-    if (!input.issueId) return;
-    const [company] = await db.select({ issuePrefix: companies.issuePrefix }).from(companies)
-      .where(eq(companies.id, input.connection.companyId)).limit(1);
-    const idempotencyKey = `connection-delegation:${input.connection.id}:${input.ownerUserId}:${input.agentId}`;
-    const payload = {
-      version: 1 as const,
-      prompt: `Allow this agent to use your ${input.connection.name} account for autonomous runs`,
-      acceptLabel: "Review delegation",
-      rejectLabel: "Not now",
-      detailsMarkdown: "This autonomous run is paused. Paperclip will not use your personal identity until you explicitly delegate it to this named agent.",
-      target: {
-        type: "custom" as const,
-        key: `connection:${input.connection.uid}:delegation:${input.ownerUserId}:${input.agentId}`,
-        revisionId: input.connection.updatedAt.toISOString(),
-        label: `Delegate ${input.connection.name}`,
-        href: `/${company?.issuePrefix ?? ""}/apps/${input.connection.id}/setup#personal-identity`,
-      },
-    };
-    const [existing] = await db.select({ id: issueThreadInteractions.id }).from(issueThreadInteractions).where(and(
-      eq(issueThreadInteractions.companyId, input.connection.companyId),
-      eq(issueThreadInteractions.issueId, input.issueId),
-      eq(issueThreadInteractions.idempotencyKey, idempotencyKey),
-    )).limit(1);
-    if (existing) {
-      await db.update(issueThreadInteractions).set({
-        status: "pending",
-        continuationPolicy: "wake_assignee",
-        requestedResolverPolicy: "human_only",
-        effectiveResolverPolicy: "human_only",
-        resolverPolicyProvenance: "explicit",
-        effectiveResolverPolicySource: "requested",
-        addresseeUserId: input.ownerUserId,
-        payload,
-        result: null,
-        resolvedAt: null,
-        updatedAt: new Date(),
-      }).where(eq(issueThreadInteractions.id, existing.id));
-      return;
-    }
-    await db.insert(issueThreadInteractions).values({
-      companyId: input.connection.companyId,
-      issueId: input.issueId,
-      kind: "request_confirmation",
-      status: "pending",
-      continuationPolicy: "wake_assignee",
-      requestedResolverPolicy: "human_only",
-      effectiveResolverPolicy: "human_only",
-      resolverPolicyProvenance: "explicit",
-      effectiveResolverPolicySource: "requested",
-      idempotencyKey,
-      sourceRunId: input.runId,
-      title: `Delegate your ${input.connection.name}`,
-      summary: "An explicit standing delegation is required for this autonomous run.",
-      createdByAgentId: input.agentId,
-      addresseeUserId: input.ownerUserId,
-      payload,
     });
   }
 
@@ -3822,6 +3913,10 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
   async function ensureDefaultOrganizationGrant(
     connection: typeof toolConnections.$inferSelect,
     dbClient: ToolAccessMutationDb = db,
+    onMutation?: (mutation: {
+      previous: typeof connectionGrants.$inferSelect | null;
+      current: typeof connectionGrants.$inferSelect;
+    }) => void,
   ) {
     const [existing] = await dbClient
       .select()
@@ -3854,6 +3949,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         .where(eq(connectionGrants.id, existing.id))
         .returning();
       if (!updated) throw new Error("Failed to update default connection grant");
+      onMutation?.({ previous: existing, current: updated });
       return updated;
     }
     const [created] = await dbClient
@@ -3868,6 +3964,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       })
       .returning();
     if (!created) throw new Error("Failed to create default connection grant");
+    onMutation?.({ previous: null, current: created });
     return created;
   }
 
@@ -4903,13 +5000,22 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       response.status === 401
       && connection.authKind === "oauth"
       && connection.credentialSource === "paperclip_vault"
-      && !isPaperclipCloudConnectorStrategy(oauthConfig(connection).strategy)
     ) {
       headers = {
         ...projectedConnectionHeaders(connection),
         ...await resolveCredentialHeaders(connection, actor, { forceRefresh: true }),
       };
       response = await sendToolsList(headers);
+      if (response.status === 401 && isPaperclipCloudConnectorStrategy(oauthConfig(connection).strategy)) {
+        const grant = await vaultGrantForConnection(connection, actor);
+        if (grant) {
+          await db.update(connectionGrants).set({ status: "needs_reauthorization", updatedAt: now() })
+            .where(and(
+              eq(connectionGrants.id, grant.id),
+              eq(connectionGrants.companyId, connection.companyId),
+            ));
+        }
+      }
     }
     if (!response.ok) {
       const authenticate = response.headers.get("www-authenticate") ?? "";
@@ -5298,7 +5404,25 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
   async function checkConnectionHealth(connectionId: string, actor?: ActorInfo): Promise<ToolConnectionHealthCheckResult> {
     const connection = await getConnectionRow(connectionId);
     try {
-      if (connection.transport === "mcp_remote") {
+      const config = asRecord(connection.config);
+      const oauth = asRecord(config.oauth);
+      if (config.sourceTemplateKey === "github" && oauth.connectorProfile === "github.code") {
+        const activeGrants = await db.select().from(connectionGrants).where(and(
+          eq(connectionGrants.companyId, connection.companyId),
+          eq(connectionGrants.connectionId, connection.id),
+          eq(connectionGrants.status, "active"),
+        ));
+        const actorGrant = actor?.actorType === "user"
+          ? activeGrants.find((grant) => grant.kind === "user" && grant.subjectUserId === actor.actorId)
+          : null;
+        const grantsToCheck = connection.credentialPolicy === "per_user" && actor?.actorType === "user"
+          ? actorGrant ? [actorGrant] : []
+          : actorGrant ? [actorGrant] : activeGrants;
+        if (grantsToCheck.length === 0) throw unprocessable("GitHub authorization must be connected", {
+          code: "oauth_reauthorization_required",
+        });
+        for (const grant of grantsToCheck) await refreshManagedGitHubGrantAccess(connection, grant, actor);
+      } else if (connection.transport === "mcp_remote") {
         await assertComposioConnectedAccountActive(connection);
         const credentialHeaders = connection.credentialSource === "vercel_connect"
           ? await resolveCredentialHeaders(connection, actor, { forceRefresh: true })
@@ -5313,7 +5437,9 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       const updated = await updateConnectionHealth(
         connection,
         "ok",
-        isComposioConnection(connection)
+        config.sourceTemplateKey === "github" && oauth.connectorProfile === "github.code"
+          ? "GitHub account, installation, and repository access are available."
+          : isComposioConnection(connection)
           ? "Composio accepted the API key and returned its toolkits."
           : connection.transport === "local_stdio"
             ? "Approved stdio template is ready."
@@ -6272,11 +6398,11 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
   }
 
   function connectionSetupUrl(connection: typeof toolConnections.$inferSelect) {
-    return `/apps/${connection.id}/setup`;
+    return `/apps/${connection.id}/permissions`;
   }
 
   function connectionReconnectUrl(connection: typeof toolConnections.$inferSelect) {
-    return `/apps/${connection.id}/advanced`;
+    return `/apps/${connection.id}/permissions`;
   }
 
   function credentialScope(connection: typeof toolConnections.$inferSelect, actor?: ActorInfo) {
@@ -8030,9 +8156,118 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     const oauthProvider = typeof oauth.provider === "string" ? oauth.provider : null;
     const oauthTokenUrl = typeof oauth.tokenUrl === "string" ? oauth.tokenUrl : null;
     if (
+      connection.authKind === "oauth"
+      && connection.credentialSource === "paperclip_vault"
+      && isPaperclipCloudConnectorStrategy(oauth.strategy)
+    ) {
+      const grantOauth = oauthGrantConfig(initialGrant);
+      const expiresAt = typeof grantOauth.accessTokenExpiresAt === "string"
+        ? Date.parse(grantOauth.accessTokenExpiresAt)
+        : Number.NaN;
+      const refreshedAt = typeof grantOauth.refreshedAt === "string"
+        ? Date.parse(grantOauth.refreshedAt)
+        : Number.NaN;
+      const rotationDue = Number.isFinite(expiresAt)
+        && (!Number.isFinite(refreshedAt) || refreshedAt <= Date.now() - 30 * 24 * 60 * 60_000);
+      const refreshDue = Number.isFinite(expiresAt) && expiresAt <= Date.now() + 60 * 60_000;
+      // A GitHub App can deliberately issue a non-expiring ghu_ token. Its
+      // continuity is checked against /user below; only an expiring token pair
+      // enters this rotation path.
+      if (!input.forceRefresh && !refreshDue && !rotationDue) return initialGrant;
+      if (!Number.isFinite(expiresAt)) return initialGrant;
+
+      return singleFlight(oauthGrantRefreshFlights, initialGrant.id, async () => {
+        const lease = await acquireOAuthGrantRefreshLease(connection, initialGrant, true);
+        if (!lease.leaseId) return lease.grant;
+        try {
+          const grant = lease.grant;
+          const profile = managedConnectorProfile(
+            typeof oauth.connectorProfile === "string" ? oauth.connectorProfile : undefined,
+          );
+          const cloudConnector = currentCloudConnector();
+          const connectorSubject = grant.kind === "agent" && grant.subjectAgentId
+            ? `agent:${grant.subjectAgentId}`
+            : grant.kind === "user" && grant.subjectUserId
+              ? grant.subjectUserId
+              : typeof oauth.connectorSubjectUserId === "string" ? oauth.connectorSubjectUserId : null;
+          const accessRef = grant.credentialSecretRefs.find((ref) => ref.configPath === "oauth.access_token");
+          const refreshRef = grant.credentialSecretRefs.find((ref) => ref.configPath === "oauth.refresh_token");
+          if (!profile || !cloudConnector || !connectorSubject || !accessRef || !refreshRef) {
+            throw unprocessable("Managed authorization must be reconnected", {
+              code: "oauth_reauthorization_required",
+              setupUrl: connectionSetupUrl(connection),
+              reconnectUrl: connectionReconnectUrl(connection),
+            });
+          }
+          const refreshSecret = await resolveOAuthGrantSecret(connection, grant, refreshRef, input.actor, input);
+          let credentials;
+          try {
+            credentials = await cloudConnector.refresh({
+              subject: connectorSubject,
+              companyId: connection.companyId,
+              profile: profile.id,
+              refreshToken: refreshSecret.value,
+            });
+          } catch (error) {
+            if (error instanceof PaperclipCloudConnectorError && error.code === "REAUTHORIZATION_REQUIRED") {
+              await db.update(connectionGrants).set({ status: "needs_reauthorization", updatedAt: now() })
+                .where(and(eq(connectionGrants.id, grant.id), eq(connectionGrants.companyId, grant.companyId)));
+              throw unprocessable("Managed authorization must be reconnected", {
+                code: "oauth_reauthorization_required",
+                setupUrl: connectionSetupUrl(connection),
+                reconnectUrl: connectionReconnectUrl(connection),
+              });
+            }
+            throw error;
+          }
+          const credentialActor: ActorInfo | undefined = grant.kind === "user" && grant.subjectUserId
+            ? { actorType: "user", actorId: grant.subjectUserId }
+            : input.actor;
+          const providerTenant = {
+            ...(grant.providerTenant ?? {}),
+            oauth: {
+              ...withoutOAuthGrantRefreshLease(oauthGrantConfig(grant)),
+              strategy: "paperclip_cloud_connector",
+              accessTokenExpiresAt: credentials.accessTokenExpiresAt,
+              scopes: credentials.scopes,
+              tokenType: credentials.tokenType,
+              refreshedAt: now().toISOString(),
+              ...(credentials.refreshTokenExpiresAt
+                ? { refreshTokenExpiresAt: credentials.refreshTokenExpiresAt }
+                : {}),
+            },
+          };
+          const updated = await db.transaction(async (tx) => {
+            const txSecrets = secretService(tx);
+            await txSecrets.rotate(accessRef.secretId, { value: credentials.accessToken }, actorForSecret(credentialActor));
+            if (credentials.refreshToken) {
+              await txSecrets.rotate(refreshRef.secretId, { value: credentials.refreshToken }, actorForSecret(credentialActor));
+            }
+            const [committed] = await tx.update(connectionGrants).set({
+              providerTenant,
+              status: "active",
+              updatedAt: now(),
+            }).where(and(
+              eq(connectionGrants.id, grant.id),
+              eq(connectionGrants.companyId, grant.companyId),
+              eq(connectionGrants.status, "active"),
+              sql`${connectionGrants.providerTenant} -> 'oauth' -> 'refreshLease' ->> 'id' = ${lease.leaseId}`,
+            )).returning();
+            return committed;
+          });
+          if (!updated) throw conflict("OAuth credentials changed while refresh was in progress", {
+            code: "oauth_refresh_superseded",
+            retryable: true,
+          });
+          return updated;
+        } finally {
+          await clearOAuthGrantRefreshLease(lease.grant, lease.leaseId).catch(() => undefined);
+        }
+      });
+    }
+    if (
       connection.authKind !== "oauth"
       || connection.credentialSource !== "paperclip_vault"
-      || isPaperclipCloudConnectorStrategy(oauth.strategy)
       || !oauthTokenUrl
       || !oauthProvider
     ) {
@@ -8294,9 +8529,178 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     });
   }
 
+  async function refreshManagedGitHubGrantAccess(
+    connection: typeof toolConnections.$inferSelect,
+    initialGrant: typeof connectionGrants.$inferSelect,
+    actor?: ActorInfo,
+  ) {
+    let grant = await refreshOAuthGrantCredentials({
+      companyId: connection.companyId,
+      connectionId: connection.id,
+      grantId: initialGrant.id,
+      actor,
+    });
+    const resolveAccessToken = async () => {
+      const accessRef = grant.credentialSecretRefs.find((ref) => ref.configPath === "oauth.access_token");
+      if (!accessRef) throw unprocessable("GitHub authorization must be reconnected", {
+        code: "oauth_reauthorization_required",
+      });
+      return (await resolveOAuthGrantSecret(connection, grant, accessRef, actor, undefined)).value;
+    };
+    let metadata;
+    let accessToken = await resolveAccessToken();
+    try {
+      metadata = await loadGitHubGrantMetadata(
+        accessToken,
+        fetch,
+        grant.providerTenant?.github?.appSlug,
+      );
+    } catch (error) {
+      const providerCode = error instanceof HttpError ? asRecord(error.details).code : null;
+      if (providerCode !== "oauth_reauthorization_required") throw error;
+      // GitHub may invalidate an access token before its recorded expiry. If an
+      // expiring token pair exists, rotate it once under the same durable lease
+      // and CAS path, then repeat /user before surfacing reconnect-required.
+      grant = await refreshOAuthGrantCredentials({
+        companyId: connection.companyId,
+        connectionId: connection.id,
+        grantId: initialGrant.id,
+        forceRefresh: true,
+        actor,
+      });
+      accessToken = await resolveAccessToken();
+      try {
+        metadata = await loadGitHubGrantMetadata(
+          accessToken,
+          fetch,
+          grant.providerTenant?.github?.appSlug,
+        );
+      } catch (retryError) {
+        const retryCode = retryError instanceof HttpError ? asRecord(retryError.details).code : null;
+        if (retryCode === "oauth_reauthorization_required") {
+          await db.update(connectionGrants).set({ status: "needs_reauthorization", updatedAt: now() })
+            .where(and(eq(connectionGrants.id, grant.id), eq(connectionGrants.companyId, grant.companyId)));
+        }
+        throw retryError;
+      }
+    }
+    const previousGitHub = grant.providerTenant?.github;
+    const providerTenant = {
+      ...(grant.providerTenant ?? {}),
+      github: {
+        ...metadata,
+        ...(previousGitHub?.lastWebhookAt ? { lastWebhookAt: previousGitHub.lastWebhookAt } : {}),
+        webhookHealth: previousGitHub?.webhookHealth ?? metadata.webhookHealth,
+      },
+    };
+    const [updated] = await db.update(connectionGrants).set({
+      providerTenant,
+      status: "active",
+      updatedAt: now(),
+    }).where(and(eq(connectionGrants.id, grant.id), eq(connectionGrants.companyId, grant.companyId))).returning();
+    if (!updated) throw notFound("GitHub authorization not found");
+
+    const cloudConnector = currentCloudConnector();
+    const subject = updated.kind === "agent" && updated.subjectAgentId
+      ? `agent:${updated.subjectAgentId}`
+      : updated.kind === "user" && updated.subjectUserId ? updated.subjectUserId : null;
+    if (cloudConnector && subject) {
+      const previous = new Set(previousGitHub?.installationIds ?? []);
+      const current = new Set(metadata.installationIds);
+      await Promise.all([
+        ...metadata.installationIds.map((installationId) => cloudConnector.setWebhookBinding({
+          subject,
+          companyId: connection.companyId,
+          id: `${updated.id}_${installationId}`,
+          installationId,
+          connectionId: connection.id,
+          grantId: updated.id,
+          active: true,
+          accessToken,
+        })),
+        ...[...previous].filter((installationId) => !current.has(installationId)).map((installationId) =>
+          cloudConnector.setWebhookBinding({
+            subject,
+            companyId: connection.companyId,
+            id: `${updated.id}_${installationId}`,
+            installationId,
+            connectionId: connection.id,
+            grantId: updated.id,
+            active: false,
+          })
+        ),
+      ]);
+    }
+    return updated;
+  }
+
+  async function sweepGitHubConnectionContinuity() {
+    if (now().getTime() < nextGitHubContinuitySweepAt) {
+      return { checked: 0, due: 0, refreshed: 0, failed: 0 };
+    }
+    nextGitHubContinuitySweepAt = now().getTime() + 60 * 60_000;
+    const cutoff = now().getTime() - 30 * 24 * 60 * 60_000;
+    const rows = await db.select({ grant: connectionGrants, connection: toolConnections })
+      .from(connectionGrants)
+      .innerJoin(toolConnections, and(
+        eq(toolConnections.id, connectionGrants.connectionId),
+        eq(toolConnections.companyId, connectionGrants.companyId),
+      ))
+      .where(and(
+        eq(connectionGrants.status, "active"),
+        eq(toolConnections.status, "active"),
+        eq(toolConnections.enabled, true),
+      ));
+    const due = rows.filter(({ grant, connection }) => {
+      const config = asRecord(connection.config);
+      const oauth = asRecord(config.oauth);
+      if (config.sourceTemplateKey !== "github" || oauth.connectorProfile !== "github.code" || !grant.providerTenant?.github) return false;
+      const expiresAt = grant.providerTenant.oauth?.accessTokenExpiresAt;
+      const refreshedAt = grant.providerTenant.oauth?.refreshedAt
+        ? Date.parse(grant.providerTenant.oauth.refreshedAt)
+        : Number.NaN;
+      const accessCheckedAt = grant.providerTenant.github.lastAccessRefreshAt
+        ? Date.parse(grant.providerTenant.github.lastAccessRefreshAt)
+        : Number.NaN;
+      if (typeof expiresAt === "string") {
+        const expiry = Date.parse(expiresAt);
+        return !Number.isFinite(expiry) || expiry <= now().getTime() + 60 * 60_000
+          || !Number.isFinite(refreshedAt) || refreshedAt <= cutoff;
+      }
+      return !Number.isFinite(accessCheckedAt) || accessCheckedAt <= cutoff;
+    });
+    let refreshed = 0;
+    let failed = 0;
+    for (const row of due) {
+      try {
+        await refreshManagedGitHubGrantAccess(row.connection, row.grant, {
+          actorType: "system",
+          actorId: "github-connection-continuity",
+        });
+        refreshed += 1;
+      } catch {
+        failed += 1;
+      }
+    }
+    return { checked: rows.length, due: due.length, refreshed, failed };
+  }
+
   function policyNameForApp(connection: typeof toolConnections.$inferSelect, entry: typeof toolCatalogEntries.$inferSelect) {
     const base = `Ask first ${connection.id.slice(0, 8)} ${entry.toolName}`;
     return base.length <= 160 ? base : base.slice(0, 160);
+  }
+
+  function nextAvailableConnectionName(requestedName: string, existingNames: readonly string[]): string {
+    const base = requestedName.trim() || "Custom app";
+    const used = new Set(existingNames.map((candidate) => candidate.trim().toLocaleLowerCase()));
+    const unsuffixed = base.slice(0, 160);
+    if (!used.has(unsuffixed.toLocaleLowerCase())) return unsuffixed;
+    for (let index = 2; index < 10_000; index += 1) {
+      const suffix = ` (${index})`;
+      const candidate = `${base.slice(0, 160 - suffix.length).trimEnd()}${suffix}`;
+      if (!used.has(candidate.toLocaleLowerCase())) return candidate;
+    }
+    return `${base.slice(0, 151).trimEnd()} (${randomUUID().slice(0, 6)})`;
   }
 
   async function connectGalleryApp(
@@ -8369,7 +8773,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       }
     }
 
-    const name = input.name ?? existingApplication?.name ?? galleryEntry?.name ?? defaultLinkName(input.link ?? "");
+    const requestedName = input.name ?? existingApplication?.name ?? galleryEntry?.name ?? defaultLinkName(input.link ?? "");
     // Compatibility for the original Sheets robot flow, whose clients predate
     // method selection and identify the method by its spreadsheet allowlist.
     const inferredMethodKey = !input.connectionMethodKey
@@ -8429,14 +8833,94 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
           .limit(1)
       : [undefined];
     const retainedConnection = requestedResumeConnection ?? recoveredConnection;
-    const retainedGrantKind: ConnectionGrantKind | null = retainedConnection
+    let applicationName = existingApplication?.name ?? requestedName;
+    let name = retainedConnection?.name ?? requestedName;
+    if (!existingApplication) {
+      const applicationNames = await db
+        .select({ name: toolApplications.name })
+        .from(toolApplications)
+        .where(eq(toolApplications.companyId, companyId));
+      applicationName = nextAvailableConnectionName(requestedName, applicationNames.map((row) => row.name));
+      name = applicationName;
+    } else if (!retainedConnection) {
+      const connectionNames = await db
+        .select({ name: toolConnections.name })
+        .from(toolConnections)
+        .where(and(
+          eq(toolConnections.companyId, companyId),
+          eq(toolConnections.applicationId, existingApplication.id),
+        ));
+      name = nextAvailableConnectionName(requestedName, connectionNames.map((row) => row.name));
+    }
+    const previousGrantKind: ConnectionGrantKind | null = retainedConnection
       ? retainedConnection.credentialPolicy === "per_user"
         ? "user"
+        : retainedConnection.credentialPolicy === "per_agent"
+          ? "agent"
         : "organization"
       : null;
+    // An explicit resume/application reconnect continues the retained identity.
+    // A fresh gallery connect may still reuse an archived row for stable history
+    // and company-unique naming, but an explicit Access choice is a new identity
+    // decision and must replace the archived policy. Without this distinction,
+    // removing a dedicated-agent connection and reconnecting the default personal
+    // account leaves `per_agent` behind and the OAuth callback cannot persist its
+    // user grant.
+    const retainsIdentity = Boolean(
+      retainedConnection
+      && (
+        retainedConnection.status === "draft"
+        || requestedResumeConnection
+        || input.applicationId
+      )
+    );
+    const retainedGrantKind = retainsIdentity ? previousGrantKind : null;
+    // The route can authorize an explicit resume before entering the service,
+    // but name/source recovery happens here. Do not let a caller submit a
+    // personal grant choice to pass the route and then inherit an implicitly
+    // recovered organization identity. Local implicit mode is already the
+    // unrestricted instance operator; every authenticated user must still hold
+    // current connection-manager authority before this retained row is touched.
+    if (
+      previousGrantKind
+      && input.grantKind
+      && previousGrantKind !== input.grantKind
+      && actor?.actorType === "user"
+      && actor.actorSource !== "local_implicit"
+    ) {
+      const actorUserId = actor.actorId;
+      const [membership] = actorUserId ? await db.select({
+        membershipRole: companyMemberships.membershipRole,
+      }).from(companyMemberships).where(and(
+        eq(companyMemberships.companyId, companyId),
+        eq(companyMemberships.principalType, "user"),
+        eq(companyMemberships.principalId, actorUserId),
+        eq(companyMemberships.status, "active"),
+      )).limit(1) : [];
+      const roleCanManage = membership?.membershipRole === "owner" || membership?.membershipRole === "admin";
+      const [explicitManagerGrant] = roleCanManage || !actorUserId ? [] : await db.select({
+        id: principalPermissionGrants.id,
+      }).from(principalPermissionGrants).where(and(
+        eq(principalPermissionGrants.companyId, companyId),
+        eq(principalPermissionGrants.principalType, "user"),
+        eq(principalPermissionGrants.principalId, actorUserId),
+        eq(principalPermissionGrants.permissionKey, "tools:manage_connections"),
+      )).limit(1);
+      if (!roleCanManage && !explicitManagerGrant) {
+        throw forbidden("Only a company owner, admin, or member with connection-manager permission can change this connection's credential identity.");
+      }
+    }
     const requestedGrantKind = retainedGrantKind ?? input.grantKind ?? "organization";
     if (method?.grantKinds && !method.grantKinds.includes(requestedGrantKind)) {
       throw badRequest(`${galleryEntry?.name ?? "This app"} supports only ${method.grantKinds.join(" or ")} credentials`);
+    }
+    const dedicatedAgentId = requestedGrantKind === "agent" ? input.subjectAgentId ?? null : null;
+    if (dedicatedAgentId) {
+      const [subjectAgent] = await db.select({ id: agents.id }).from(agents).where(and(
+        eq(agents.id, dedicatedAgentId),
+        eq(agents.companyId, companyId),
+      )).limit(1);
+      if (!subjectAgent) throw badRequest("Dedicated GitHub identity requires an agent in this company");
     }
     const transport = method?.transport ?? "mcp_remote";
     const credentialSource: ToolConnectionCredentialSource = input.credentialSource ?? "paperclip_vault";
@@ -8525,7 +9009,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
           connectionMethodKey: method?.key,
           methodConfig: normalizedMethodConfig?.values ?? {},
           // Grant-backed setup keeps the full discovered catalog selectable;
-          // the wizard projects the app's ask-first defaults into policies at
+          // the wizard projects the app's action defaults into policies at
           // finish time instead of using catalog quarantine as access state.
           quarantineNewEntries: false,
           ...(galleryEntry.slug === "posthog" ? { safeDefault: true } : {}),
@@ -8533,14 +9017,12 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       : { ...baseConfig, quarantineNewEntries: false, unverifiedServer: true };
     if (method && isPaperclipCloudConnectorStrategy(method.oauthStrategy)) {
       const connectorProfile = method.connectorProfile;
-      if (!connectorProfile || !isGoogleWorkspaceConnectorProfileId(connectorProfile)) {
-        throw badRequest("This app has an invalid Google connector profile");
-      }
-      const profile = GOOGLE_WORKSPACE_CONNECTOR_PROFILES[connectorProfile];
+      const profile = managedConnectorProfile(connectorProfile);
+      if (!profile) throw badRequest("This app has an invalid managed connector profile");
       config.oauth = {
         strategy: method.oauthStrategy,
-        provider: galleryEntry?.slug,
-        connectorProfile,
+        provider: profile.provider,
+        connectorProfile: profile.id,
         resource: method.defaults?.serverUrl,
         scopes: [...profile.scopes],
       };
@@ -8626,6 +9108,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     // or API key, without carrying credentials across a method/provider change.
     const canRetainCredentialMaterial = Boolean(
       retainedConnection
+      && previousGrantKind === requestedGrantKind
       && galleryEntry
       && retainedSource === galleryEntry.slug
       && retainedMethodKey === method?.key,
@@ -8633,15 +9116,19 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     const retainedCredentialSecretRefs = canRetainCredentialMaterial
       ? (retainedPersonalIdentity?.grant?.credentialSecretRefs ?? retainedConnection?.credentialSecretRefs ?? [])
       : [];
-    // Only the personal path changes the policy; every existing gallery app keeps
-    // the shared default it has today.
-      const credentialPolicy: ToolConnectionCredentialPolicy | undefined = personalIdentityUserId
+    const credentialPolicy: ToolConnectionCredentialPolicy = requestedGrantKind === "user"
       ? "per_user"
-        : undefined;
+      : requestedGrantKind === "agent"
+        ? "per_agent"
+        : "shared";
     const connectionOwnership = isPaperclipCloudConnectorStrategy(method?.oauthStrategy) ? "platform_shared" : "customer";
     let applicationRow: typeof toolApplications.$inferSelect | null = null;
     let connectionRow: typeof toolConnections.$inferSelect | null = null;
     let revivedConnectionPrevious: typeof toolConnections.$inferSelect | null = retainedConnection ?? null;
+    let revivedGrantMutation: {
+      previous: typeof connectionGrants.$inferSelect | null;
+      current: typeof connectionGrants.$inferSelect;
+    } | null = null;
 
     try {
       const credentialFields = credentialSource === "vercel_connect"
@@ -8770,15 +9257,40 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
           applicationRow = existingApplication;
         }
       } else {
-        [applicationRow] = await db.insert(toolApplications).values({
-          companyId,
-          applicationKey: `app-gallery:${galleryEntry?.slug ?? "link"}:${randomUUID()}`,
-          name,
-          description: safeApplicationDescription,
-          type: transport === "mcp_remote" ? "mcp_http" : "mcp_stdio",
-          status: "draft",
-          metadata: galleryEntry ? { sourceTemplateKey: galleryEntry.slug, galleryKey: galleryEntry.slug } : { source: "link" },
-        }).returning();
+        // Name selection is optimistic because multiple setup requests can
+        // legitimately begin at the same time. The company/name unique index
+        // is the authority: if another request wins after our read, refresh the
+        // names and retry with the next suffix instead of surfacing a conflict
+        // the user never asked to resolve.
+        for (let attempt = 0; attempt < 10 && !applicationRow; attempt += 1) {
+          try {
+            [applicationRow] = await db.insert(toolApplications).values({
+              companyId,
+              applicationKey: `app-gallery:${galleryEntry?.slug ?? "link"}:${randomUUID()}`,
+              name: applicationName,
+              description: safeApplicationDescription,
+              type: transport === "mcp_remote" ? "mcp_http" : "mcp_stdio",
+              status: "draft",
+              metadata: galleryEntry ? { sourceTemplateKey: galleryEntry.slug, galleryKey: galleryEntry.slug } : { source: "link" },
+            }).returning();
+          } catch (error) {
+            if (!isUniqueViolation(error, "tool_applications_company_name_uq")) throw error;
+            const applicationNames = await db
+              .select({ name: toolApplications.name })
+              .from(toolApplications)
+              .where(eq(toolApplications.companyId, companyId));
+            applicationName = nextAvailableConnectionName(
+              requestedName,
+              applicationNames.map((row) => row.name),
+            );
+            name = applicationName;
+          }
+        }
+        if (!applicationRow) {
+          throw conflict("Paperclip could not allocate a unique connection name", {
+            code: "tool_access_name_allocation_exhausted",
+          });
+        }
       }
 
       await assertSecretRefs(companyId, [...credentialRefs, ...credentialSecretRefs]);
@@ -8789,7 +9301,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       // row carries the header shape only, and the secret refs go to the user
       // grant below. `ensureDefaultOrganizationGrant` copies this list, so
       // leaving it empty is what keeps the secret off an organization grant.
-      const connectionCredentialSecretRefs = personalIdentityUserId ? [] : credentialSecretRefs;
+      const connectionCredentialSecretRefs = personalIdentityUserId || dedicatedAgentId ? [] : credentialSecretRefs;
       if (revivedConnectionPrevious) {
         [connectionRow] = await db.update(toolConnections).set({
           name,
@@ -8803,9 +9315,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
           credentialSecretRefs: connectionCredentialSecretRefs,
           credentialSource,
           externalCredential,
-          // Identity is immutable for a retained connection. A fresh
-          // connection still derives it from the explicit Access choice.
-          credentialPolicy: revivedConnectionPrevious.credentialPolicy,
+          credentialPolicy,
           updatedAt: new Date(),
         }).where(eq(toolConnections.id, revivedConnectionPrevious.id)).returning();
       } else {
@@ -8828,7 +9338,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
           transportConfig: config,
           credentialRefs,
           credentialSecretRefs: connectionCredentialSecretRefs,
-          ...(credentialPolicy ? { credentialPolicy } : {}),
+          credentialPolicy,
           createdByAgentId: actor?.actorType === "agent" ? actor.actorId ?? null : null,
           createdByUserId: actor?.actorType === "user" ? actor.actorId ?? null : null,
         }).returning();
@@ -8853,17 +9363,29 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         // "Connected" with nothing behind it, so the grant is left to the
         // callback and only the organization grant is suppressed.
         if (credentialSecretRefs.length > 0) {
+          let changedGrant: typeof connectionGrants.$inferSelect;
+          let previousGrant: typeof connectionGrants.$inferSelect | null = null;
           if (retainedPersonalIdentity?.grant) {
-            await db.update(connectionGrants).set({
+            const [currentGrant] = await db.select().from(connectionGrants).where(eq(
+              connectionGrants.id,
+              retainedPersonalIdentity.grant.id,
+            )).limit(1);
+            if (!currentGrant) throw conflict("The personal credential changed during setup. Please try again.");
+            previousGrant = currentGrant;
+            [changedGrant] = await db.update(connectionGrants).set({
               credentialSecretRefs,
               status: "active",
               revokedAt: null,
               revokedByAgentId: null,
               revokedByUserId: null,
               updatedAt: new Date(),
-            }).where(eq(connectionGrants.id, retainedPersonalIdentity.grant.id));
+            }).where(and(
+              eq(connectionGrants.id, currentGrant.id),
+              eq(connectionGrants.updatedAt, currentGrant.updatedAt),
+            )).returning();
+            if (!changedGrant) throw conflict("The personal credential changed during setup. Please try again.");
           } else {
-            await db.insert(connectionGrants).values({
+            [changedGrant] = await db.insert(connectionGrants).values({
               companyId,
               connectionId: connectionRow.id,
               kind: "user",
@@ -8872,7 +9394,11 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
               status: "active",
               isDefault: false,
               createdByUserId: personalIdentityUserId,
-            });
+            }).returning();
+            if (!changedGrant) throw new Error("Failed to create personal connection grant");
+          }
+          if (revivedConnectionPrevious) {
+            revivedGrantMutation = { previous: previousGrant, current: changedGrant };
           }
           await db.insert(toolAccessAuditEvents).values({
             companyId,
@@ -8887,8 +9413,19 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
             details: { kind: "user", credentialSecretRefCount: credentialSecretRefs.length },
           });
         }
+      } else if (dedicatedAgentId) {
+        // Managed OAuth creates the credential-bearing grant in the callback.
+        // Keep the connection free of organization secrets from the outset.
       } else {
-        await ensureDefaultOrganizationGrant(connectionRow);
+        const organizationGrant = await ensureDefaultOrganizationGrant(
+          connectionRow,
+          db,
+          revivedConnectionPrevious
+            ? (mutation) => {
+                revivedGrantMutation = mutation;
+              }
+            : undefined,
+        );
         if (credentialSource === "vercel_connect") {
           const derived = deriveVercelConnectSubject({
             credential: externalCredential!,
@@ -8896,33 +9433,53 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
             companyId,
             grantKind: "organization",
           });
-          await db.update(connectionGrants).set({
-            externalCredential: {
-              provider: "vercel_connect",
-              subjectType: externalCredential!.principalMode,
-              ...(derived.subjectId ? { subjectId: derived.subjectId } : {}),
-            },
-            credentialSecretRefs: [],
-            updatedAt: now(),
-          }).where(and(
-            eq(connectionGrants.companyId, companyId),
-            eq(connectionGrants.connectionId, connectionRow.id),
-            eq(connectionGrants.kind, "organization"),
-            eq(connectionGrants.isDefault, true),
-          ));
+          const updatedOrganizationGrant = await db.transaction(async (tx) => {
+            const [lockedGrant] = await tx.select().from(connectionGrants).where(eq(
+              connectionGrants.id,
+              organizationGrant.id,
+            )).limit(1).for("update");
+            if (
+              !lockedGrant
+              || lockedGrant.updatedAt.getTime() !== organizationGrant.updatedAt.getTime()
+            ) {
+              throw conflict("The organization credential changed during setup. Please try again.");
+            }
+            const [updated] = await tx.update(connectionGrants).set({
+              externalCredential: {
+                provider: "vercel_connect",
+                subjectType: externalCredential!.principalMode,
+                ...(derived.subjectId ? { subjectId: derived.subjectId } : {}),
+              },
+              credentialSecretRefs: [],
+              updatedAt: now(),
+            }).where(eq(connectionGrants.id, organizationGrant.id)).returning();
+            return updated;
+          });
+          if (!updatedOrganizationGrant) {
+            throw conflict("The organization credential changed during setup. Please try again.");
+          }
+          if (revivedGrantMutation) {
+            revivedGrantMutation = {
+              previous: revivedGrantMutation.previous,
+              current: updatedOrganizationGrant,
+            };
+          }
         }
       }
-      await syncCredentialBindings(connectionRow, personalIdentityUserId ? credentialSecretRefs : []);
+      await syncCredentialBindings(connectionRow, personalIdentityUserId || dedicatedAgentId ? credentialSecretRefs : []);
       await ensureRuntimeSlot(connectionRow);
 
       if (galleryEntry && method?.auth === "oauth") {
+        const suggestedDefaults = recommendedDefaultsForApp(galleryEntry, method.key);
         return {
           connectionId: connectionRow.id,
           application: toApplication(applicationRow),
           connection: toConnection(connectionRow),
           catalog: [],
           actions: { readOnly: [], canMakeChanges: [] },
-          suggestedDefaults: recommendedDefaultsForApp(galleryEntry, method.key),
+          suggestedDefaults: dedicatedAgentId
+            ? { ...suggestedDefaults, access: { agentIds: [dedicatedAgentId] } }
+            : suggestedDefaults,
           auth: { kind: "oauth", startUrl: null },
         };
       }
@@ -8996,33 +9553,131 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         },
       };
     } catch (error) {
+      let identityRollbackError: unknown = null;
+      let preserveConcurrentRevival = false;
       if (connectionRow && revivedConnectionPrevious) {
-        await db.update(toolConnections).set({
-          name: revivedConnectionPrevious.name,
-          transport: revivedConnectionPrevious.transport,
-          status: revivedConnectionPrevious.status,
-          enabled: revivedConnectionPrevious.enabled,
-          config: revivedConnectionPrevious.config,
-          transportConfig: revivedConnectionPrevious.transportConfig,
-          credentialRefs: revivedConnectionPrevious.credentialRefs,
-          credentialSecretRefs: revivedConnectionPrevious.credentialSecretRefs,
-          credentialSource: revivedConnectionPrevious.credentialSource,
-          externalCredential: revivedConnectionPrevious.externalCredential,
-          updatedAt: new Date(),
-        }).where(eq(toolConnections.id, revivedConnectionPrevious.id)).catch(() => undefined);
+        const attemptedConnection = connectionRow;
+        try {
+          await db.transaction(async (tx) => {
+            const [latestConnection] = await tx.select().from(toolConnections).where(and(
+              eq(toolConnections.id, revivedConnectionPrevious.id),
+              eq(toolConnections.companyId, companyId),
+            )).limit(1).for("update");
+            // Health/catalog failures from this setup may update only health
+            // fields and `updatedAt`, so compare the identity/configuration
+            // fields this attempt owned. If another request changed any of
+            // those fields, its newer connection state is authoritative.
+            const connectionMutationIsStillCurrent = Boolean(
+              latestConnection
+              && connectionSetupMutationFingerprint(latestConnection)
+                === connectionSetupMutationFingerprint(attemptedConnection),
+            );
+            if (connectionMutationIsStillCurrent) {
+              await tx.update(toolConnections).set({
+                name: revivedConnectionPrevious.name,
+                transport: revivedConnectionPrevious.transport,
+                status: revivedConnectionPrevious.status,
+                enabled: revivedConnectionPrevious.enabled,
+                config: revivedConnectionPrevious.config,
+                transportConfig: revivedConnectionPrevious.transportConfig,
+                credentialRefs: revivedConnectionPrevious.credentialRefs,
+                credentialSecretRefs: revivedConnectionPrevious.credentialSecretRefs,
+                credentialSource: revivedConnectionPrevious.credentialSource,
+                externalCredential: revivedConnectionPrevious.externalCredential,
+                credentialPolicy: revivedConnectionPrevious.credentialPolicy,
+                updatedAt: new Date(),
+              }).where(eq(toolConnections.id, revivedConnectionPrevious.id));
+            } else {
+              preserveConcurrentRevival = true;
+            }
+
+            if (connectionMutationIsStillCurrent && revivedGrantMutation) {
+              const { previous, current } = revivedGrantMutation;
+              const [latestGrant] = await tx.select().from(connectionGrants).where(eq(
+                connectionGrants.id,
+                current.id,
+              )).limit(1).for("update");
+              const mutationIsStillCurrent = Boolean(
+                latestGrant
+                && latestGrant.updatedAt.getTime() === current.updatedAt.getTime(),
+              );
+              // A grant manager may have changed this grant while provider
+              // setup was in flight. Restore/delete only the exact version this
+              // attempt wrote; a newer version is authoritative and remains
+              // untouched.
+              if (previous && mutationIsStillCurrent) {
+                await tx.update(connectionGrants).set({
+                  kind: previous.kind,
+                  subjectUserId: previous.subjectUserId,
+                  subjectAgentId: previous.subjectAgentId,
+                  providerTenant: previous.providerTenant,
+                  credentialSecretRefs: previous.credentialSecretRefs,
+                  externalCredential: previous.externalCredential,
+                  status: previous.status,
+                  isDefault: previous.isDefault,
+                  createdByAgentId: previous.createdByAgentId,
+                  createdByUserId: previous.createdByUserId,
+                  revokedAt: previous.revokedAt,
+                  revokedByAgentId: previous.revokedByAgentId,
+                  revokedByUserId: previous.revokedByUserId,
+                  lastUsedAt: previous.lastUsedAt,
+                  updatedAt: previous.updatedAt,
+                }).where(eq(connectionGrants.id, current.id));
+              } else if (!previous && mutationIsStillCurrent) {
+                await tx.delete(connectionGrants).where(eq(connectionGrants.id, current.id));
+              }
+            }
+          });
+        } catch (rollbackError) {
+          identityRollbackError = rollbackError;
+          // The attempted identity and its grants may no longer agree. Keep the
+          // connection unusable until a manager explicitly reconnects it, and
+          // surface the restoration failure instead of returning only the
+          // original provider error.
+          try {
+            await db.update(toolConnections).set({
+              status: "draft",
+              enabled: false,
+              healthStatus: "error",
+              healthMessage: "Connection identity restoration failed. Reconnect this app to continue.",
+              lastError: "connection_identity_rollback_failed",
+              updatedAt: new Date(),
+            }).where(and(
+              eq(toolConnections.id, revivedConnectionPrevious.id),
+              eq(toolConnections.companyId, companyId),
+            ));
+          } catch (quarantineError) {
+            identityRollbackError = new AggregateError(
+              [rollbackError, quarantineError],
+              "Connection identity rollback and quarantine both failed",
+            );
+          }
+        }
       } else if (connectionRow) {
         await db.delete(toolConnections).where(eq(toolConnections.id, connectionRow.id)).catch(() => undefined);
       }
-      if (applicationRow && !existingApplication) {
+      if (!preserveConcurrentRevival && applicationRow && !existingApplication) {
         await db.delete(toolApplications).where(eq(toolApplications.id, applicationRow.id)).catch(() => undefined);
-      } else if (existingApplication && applicationRow && applicationRow.status !== existingApplication.status) {
+      } else if (
+        !preserveConcurrentRevival
+        && existingApplication
+        && applicationRow
+        && applicationRow.status !== existingApplication.status
+      ) {
         await db.update(toolApplications)
           .set({ status: existingApplication.status, archivedAt: existingApplication.archivedAt, updatedAt: new Date() })
           .where(eq(toolApplications.id, existingApplication.id))
           .catch(() => undefined);
       }
-      for (const secretId of createdSecretIds) {
-        await secrets.remove(secretId).catch(() => undefined);
+      if (!preserveConcurrentRevival) {
+        for (const secretId of createdSecretIds) {
+          await secrets.remove(secretId).catch(() => undefined);
+        }
+      }
+      if (identityRollbackError) {
+        throw new HttpError(500, "Connection setup failed and its prior identity could not be restored.", {
+          code: "connection_identity_rollback_failed",
+        });
       }
       throw error;
     }
@@ -9549,6 +10204,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       redirectUri: string;
       actor: ActorInfo;
       subjectUserId?: string;
+      subjectAgentId?: string;
       scopes?: string[];
       returnTo?: string;
       issueId?: string;
@@ -9582,6 +10238,17 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       input.actor,
     );
     const authorizationSubjectUserId = fixedPersonalIdentity?.subjectUserId ?? input.subjectUserId;
+    const authorizationSubjectAgentId = input.subjectAgentId;
+    if (authorizationSubjectAgentId) {
+      const [subjectAgent] = await db.select({ id: agents.id }).from(agents).where(and(
+        eq(agents.id, authorizationSubjectAgentId),
+        eq(agents.companyId, companyId),
+      )).limit(1);
+      if (!subjectAgent) throw badRequest("Dedicated identity requires an agent in this company");
+      if (connection.credentialPolicy !== "per_agent") {
+        throw badRequest("This connection is not configured for a dedicated agent identity");
+      }
+    }
     const intentLink = input.interactionId
       ? await db
           .select({
@@ -9672,10 +10339,8 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     }
     if (galleryMethod && isPaperclipCloudConnectorStrategy(galleryMethod.oauthStrategy)) {
       const connectorProfile = galleryMethod.connectorProfile;
-      if (!connectorProfile || !isGoogleWorkspaceConnectorProfileId(connectorProfile)) {
-        throw badRequest("This app has an invalid Google connector profile");
-      }
-      const googleProfile = GOOGLE_WORKSPACE_CONNECTOR_PROFILES[connectorProfile];
+      const managedProfile = managedConnectorProfile(connectorProfile);
+      if (!managedProfile) throw badRequest("This app has an invalid managed connector profile");
       const providerName = galleryEntry?.name ?? "Google Workspace";
       const cloudConnector = currentCloudConnector();
       if (!cloudConnector) {
@@ -9687,11 +10352,13 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       if (!binding.actorType || !binding.actorId) {
         throw forbidden(`${providerName} sign-in requires an authenticated actor`);
       }
-      const subjectUserId = authorizationSubjectUserId ?? (binding.actorType === "user" ? binding.actorId : null);
-      if (!subjectUserId) {
-        throw forbidden(`Agent-started ${providerName} sign-in requires an authorized user subject`);
+      const subjectUserId = authorizationSubjectAgentId
+        ? null
+        : authorizationSubjectUserId ?? (binding.actorType === "user" ? binding.actorId : null);
+      if (!subjectUserId && !authorizationSubjectAgentId) {
+        throw forbidden(`Agent-started ${providerName} sign-in requires an authorized identity`);
       }
-      if (binding.actorType === "user" && subjectUserId !== binding.actorId) {
+      if (!authorizationSubjectAgentId && binding.actorType === "user" && subjectUserId !== binding.actorId) {
         throw forbidden(`Board users may only authorize their own ${providerName} identity`);
       }
       await db.delete(toolOauthStates).where(lt(toolOauthStates.expiresAt, now()));
@@ -9701,9 +10368,9 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       returnUri.search = "";
       returnUri.hash = "";
       const session = await cloudConnector.startAuthorization({
-        subject: subjectUserId,
+        subject: authorizationSubjectAgentId ? `agent:${authorizationSubjectAgentId}` : subjectUserId!,
         companyId,
-        profile: connectorProfile,
+        profile: managedProfile.id,
         returnUri: returnUri.toString(),
         returnState: state,
       });
@@ -9722,7 +10389,8 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         createdByActorId: binding.actorId,
         createdBySessionId: binding.sessionId,
         subjectUserId,
-        requestedScopes: [...googleProfile.scopes],
+        subjectAgentId: authorizationSubjectAgentId,
+        requestedScopes: [...managedProfile.scopes],
         returnTo: input.returnTo,
         issueId: intentLink?.issueId ?? input.issueId,
         interactionId: intentLink?.id,
@@ -9730,10 +10398,11 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       });
       return {
         connectionId: connection.id,
-        provider: "google",
+        provider: managedProfile.provider,
         authorizationUrl: session.authorizationUrl,
         expiresAt: expiresAt.toISOString(),
-        issuer: "https://accounts.google.com",
+        ...(session.handoff ? { handoff: session.handoff } : {}),
+        issuer: managedProfile.provider === "github" ? "https://github.com" : "https://accounts.google.com",
         resource: galleryMethod.defaults?.serverUrl ?? null,
         registrationSource: null,
       };
@@ -9947,6 +10616,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         companyId: toolOauthStates.companyId,
         connectionId: toolOauthStates.connectionId,
         subjectUserId: toolOauthStates.subjectUserId,
+        subjectAgentId: toolOauthStates.subjectAgentId,
         returnTo: toolOauthStates.returnTo,
         issueId: toolOauthStates.issueId,
         interactionId: toolOauthStates.interactionId,
@@ -10064,9 +10734,21 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     const agentIds = installs
       .filter((install) => install.targetType === "agent")
       .map((install) => install.targetId);
-    const access: FinishToolApp["access"] = companyInstall || agentIds.length === 0
+    const suggestedAccess = input.suggestedDefaults.access;
+    const suggestedAccessRecord = asRecord(suggestedAccess);
+    const suggestedAgentIds = Array.isArray(suggestedAccessRecord.agentIds)
+      ? suggestedAccessRecord.agentIds.filter((agentId): agentId is string => typeof agentId === "string")
+      : [];
+    const normalizedSuggestedAccess: FinishToolApp["access"] = suggestedAccess === "all_agents"
       ? "all_agents"
-      : { agentIds };
+      : suggestedAgentIds.length > 0
+        ? { agentIds: suggestedAgentIds }
+        : "all_agents";
+    const access: FinishToolApp["access"] = installs.length === 0
+      ? normalizedSuggestedAccess
+      : companyInstall
+        ? "all_agents"
+        : { agentIds };
     const askFirstRiskLevels = new Set(
       Array.isArray(input.suggestedDefaults.askFirstRiskLevels)
         ? input.suggestedDefaults.askFirstRiskLevels.filter(
@@ -10088,14 +10770,18 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       access,
     }, input.actor);
     if (installs.length === 0) {
-      await db.insert(toolConnectionInstalls).values({
-        companyId: input.connection.companyId,
-        connectionId: input.connection.id,
-        targetType: "company",
-        targetId: input.connection.companyId,
-        createdByAgentId: input.actor?.actorType === "agent" ? input.actor.actorId ?? null : null,
-        createdByUserId: input.actor?.actorType === "user" ? input.actor.actorId ?? null : null,
-      }).onConflictDoNothing();
+      const installTargets = access === "all_agents"
+        ? [{ targetType: "company" as const, targetId: input.connection.companyId }]
+        : [...new Set(access.agentIds)].map((agentId) => ({ targetType: "agent" as const, targetId: agentId }));
+      if (installTargets.length > 0) {
+        await db.insert(toolConnectionInstalls).values(installTargets.map((target) => ({
+          companyId: input.connection.companyId,
+          connectionId: input.connection.id,
+          ...target,
+          createdByAgentId: input.actor?.actorType === "agent" ? input.actor.actorId ?? null : null,
+          createdByUserId: input.actor?.actorType === "user" ? input.actor.actorId ?? null : null,
+        }))).onConflictDoNothing();
+      }
     }
     return finished;
   }
@@ -10125,7 +10811,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     if (input.error) {
       const consumedState = await consumeOAuthState(input.state, input.actor);
       await rejectPendingOAuthInteraction(consumedState, input.actor);
-      throw new HttpError(400, `Google authorization did not complete. Start a new ${providerName} connection to try again.`, {
+      throw new HttpError(400, `${providerName} authorization did not complete. Start a new ${providerName} connection to try again.`, {
         code: input.error === "access_denied" ? "oauth_authorization_denied" : "paperclip_cloud_connector_failed",
       });
     }
@@ -10137,39 +10823,64 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       });
     }
     const subjectUserId = stateRow.subjectUserId;
-    if (!method || !isPaperclipCloudConnectorStrategy(method.oauthStrategy) || !subjectUserId) {
-      throw badRequest("OAuth state does not belong to a Google connector flow");
+    const subjectAgentId = stateRow.subjectAgentId;
+    if (!method || !isPaperclipCloudConnectorStrategy(method.oauthStrategy) || (!subjectUserId && !subjectAgentId)) {
+      throw badRequest("OAuth state does not belong to a managed connector flow");
     }
     const connectorProfile = method.connectorProfile;
-    if (!connectorProfile || !isGoogleWorkspaceConnectorProfileId(connectorProfile)) throw badRequest("Google connector profile is invalid");
-    const profile = GOOGLE_WORKSPACE_CONNECTOR_PROFILES[connectorProfile];
+    const profile = managedConnectorProfile(connectorProfile);
+    if (!profile) throw badRequest("Managed connector profile is invalid");
+    const connectorSubject = subjectAgentId ? `agent:${subjectAgentId}` : subjectUserId!;
     const credentials = await cloudConnector.claim({
-      subject: subjectUserId,
+      subject: connectorSubject,
       companyId: stateRow.companyId,
-      profile: connectorProfile,
+      profile: profile.id,
       claimId: input.claimId,
       redemptionId: input.state,
     });
     const refreshToken = credentials.refreshToken;
-    if (!refreshToken) {
+    if (profile.provider === "google" && !refreshToken) {
       throw unprocessable(`Google did not return offline access. Reconnect ${providerName} and grant the requested scopes.`, {
         code: "oauth_refresh_missing",
       });
     }
+    const githubMetadata = profile.provider === "github"
+      ? await loadGitHubGrantMetadata(credentials.accessToken, fetch, credentials.appSlug)
+      : null;
+    const authorizingUserId = subjectUserId
+      ?? (stateRow.createdByActorType === "user" ? stateRow.createdByActorId : null);
+    if (!authorizingUserId) throw forbidden(`A signed-in connection manager must authorize ${providerName}`);
 
     await db.transaction(async (tx) => {
       // Keep connector credential persistence serialized with membership
       // suspension, downgrade, and removal. A successful claim is only durable
       // while the initiating user still holds connection-management authority.
-      const [membership] = await tx.select({ id: companyMemberships.id }).from(companyMemberships).where(and(
+      const [membership] = await tx.select({
+        id: companyMemberships.id,
+        membershipRole: companyMemberships.membershipRole,
+      }).from(companyMemberships).where(and(
         eq(companyMemberships.companyId, connection.companyId),
         eq(companyMemberships.principalType, "user"),
-        eq(companyMemberships.principalId, subjectUserId),
+        eq(companyMemberships.principalId, authorizingUserId),
         eq(companyMemberships.status, "active"),
         ne(companyMemberships.membershipRole, "viewer"),
       )).limit(1).for("update");
       if (!membership) {
         throw forbidden(`Your company membership no longer permits connection changes. Restore non-viewer access before you connect ${providerName} again.`);
+      }
+      if (subjectAgentId) {
+        const roleCanManage = membership.membershipRole === "owner" || membership.membershipRole === "admin";
+        const [explicitManagerGrant] = roleCanManage ? [] : await tx.select({
+          id: principalPermissionGrants.id,
+        }).from(principalPermissionGrants).where(and(
+          eq(principalPermissionGrants.companyId, connection.companyId),
+          eq(principalPermissionGrants.principalType, "user"),
+          eq(principalPermissionGrants.principalId, authorizingUserId),
+          eq(principalPermissionGrants.permissionKey, "tools:manage_connections"),
+        )).limit(1).for("update");
+        if (!roleCanManage && !explicitManagerGrant) {
+          throw forbidden("Only a connection manager can authorize a dedicated agent identity.");
+        }
       }
       const [consumedState] = await tx
         .delete(toolOauthStates)
@@ -10181,13 +10892,21 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       if (!consumedState) throw badRequest("OAuth state was not found, expired, or has already been used");
       const txSecrets = secretService(tx);
       const txSecretContext = { dbClient: tx, secretClient: txSecrets };
-      const [existingUserGrant] = await tx.select().from(connectionGrants).where(and(
+      const personalCredential = connection.credentialPolicy === "per_user";
+      const agentCredential = connection.credentialPolicy === "per_agent";
+      const grantKind: ConnectionGrantKind = agentCredential ? "agent" : personalCredential ? "user" : "organization";
+      const [existingCredentialGrant] = await tx.select().from(connectionGrants).where(and(
         eq(connectionGrants.companyId, connection.companyId),
         eq(connectionGrants.connectionId, connection.id),
-        eq(connectionGrants.kind, "user"),
-        eq(connectionGrants.subjectUserId, subjectUserId),
+        eq(connectionGrants.kind, grantKind),
+        agentCredential
+          ? eq(connectionGrants.subjectAgentId, subjectAgentId!)
+          : personalCredential
+          ? eq(connectionGrants.subjectUserId, subjectUserId!)
+          : eq(connectionGrants.isDefault, true),
       )).limit(1);
-      const existingRefs = existingUserGrant?.credentialSecretRefs ?? [];
+      const existingRefs = existingCredentialGrant?.credentialSecretRefs
+        ?? (personalCredential || agentCredential ? [] : connection.credentialSecretRefs);
       const accessRef = await createOrRotateOAuthSecret({
         companyId: connection.companyId,
         connection,
@@ -10196,33 +10915,36 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         value: credentials.accessToken,
         actor: input.actor,
         existingRefs,
-        ownerUserId: subjectUserId,
+        ownerUserId: personalCredential ? subjectUserId! : undefined,
       }, txSecretContext);
-      const refreshRef = await createOrRotateOAuthSecret({
-        companyId: connection.companyId,
-        connection,
-        configPath: "oauth.refresh_token",
-        label: `${providerName} refresh token`,
-        value: refreshToken,
-        actor: input.actor,
-        existingRefs,
-        ownerUserId: subjectUserId,
-      }, txSecretContext);
+      const refreshRef = refreshToken ? await createOrRotateOAuthSecret({
+          companyId: connection.companyId,
+          connection,
+          configPath: "oauth.refresh_token",
+          label: `${providerName} refresh token`,
+          value: refreshToken,
+          actor: input.actor,
+          existingRefs,
+          ownerUserId: personalCredential ? subjectUserId! : undefined,
+        }, txSecretContext) : null;
       const credentialSecretRefs = [
         ...existingRefs.filter((ref) => ref.configPath !== "oauth.access_token" && ref.configPath !== "oauth.refresh_token"),
         accessRef,
-        refreshRef,
+        ...(refreshRef ? [refreshRef] : []),
       ];
       const grantValues = {
         providerTenant: {
-          name: providerName,
+          name: githubMetadata?.login ?? providerName,
           externalId: credentials.subject,
           oauth: {
             strategy: "paperclip_cloud_connector",
             accessTokenExpiresAt: credentials.accessTokenExpiresAt,
             scopes: credentials.scopes,
             tokenType: credentials.tokenType,
+            ...(credentials.refreshTokenExpiresAt ? { refreshTokenExpiresAt: credentials.refreshTokenExpiresAt } : {}),
+            ...(credentials.accessTokenExpiresAt ? { refreshedAt: now().toISOString() } : {}),
           },
+          ...(githubMetadata ? { github: githubMetadata } : {}),
         },
         credentialSecretRefs,
         status: "active" as const,
@@ -10231,17 +10953,18 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         revokedByUserId: null,
         updatedAt: now(),
       };
-      if (existingUserGrant) {
-        await tx.update(connectionGrants).set(grantValues).where(eq(connectionGrants.id, existingUserGrant.id));
+      if (existingCredentialGrant) {
+        await tx.update(connectionGrants).set(grantValues).where(eq(connectionGrants.id, existingCredentialGrant.id));
       } else {
         await tx.insert(connectionGrants).values({
           companyId: connection.companyId,
           connectionId: connection.id,
-          kind: "user",
-          subjectUserId,
+          kind: grantKind,
+          subjectUserId: personalCredential ? subjectUserId : null,
+          subjectAgentId: agentCredential ? subjectAgentId : null,
           ...grantValues,
-          isDefault: false,
-          createdByUserId: subjectUserId,
+          isDefault: grantKind === "organization",
+          createdByUserId: authorizingUserId,
         });
       }
       const nextConfig = {
@@ -10252,6 +10975,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
           provider: galleryEntry?.slug,
           connectorProfile,
           connectorSubjectUserId: subjectUserId,
+          connectorSubjectAgentId: subjectAgentId,
           resource: method.defaults?.serverUrl,
           scopes: [...profile.scopes],
         },
@@ -10262,13 +10986,31 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         authKind: "oauth",
         config: nextConfig,
         transportConfig: nextConfig,
+        credentialRefs: personalCredential || agentCredential
+          ? connection.credentialRefs.filter((ref) => ref.name !== "oauth.access_token")
+          : [
+              ...connection.credentialRefs.filter((ref) => ref.name !== "oauth.access_token"),
+              {
+                name: "oauth.access_token",
+                secretId: accessRef.secretId,
+                version: "latest" as const,
+                placement: "header" as const,
+                key: "Authorization",
+                prefix: "Bearer ",
+              },
+            ],
+        credentialSecretRefs: personalCredential || agentCredential
+          ? connection.credentialSecretRefs.filter(
+              (ref) => ref.configPath !== "oauth.access_token" && ref.configPath !== "oauth.refresh_token",
+            )
+          : credentialSecretRefs,
         updatedAt: now(),
       }).where(eq(toolConnections.id, connection.id)).returning();
       await tx.update(toolApplications).set({
         status: shouldFinalizeManagedDefaults ? "draft" : "active",
         updatedAt: now(),
       }).where(eq(toolApplications.id, connection.applicationId));
-      await syncCredentialBindings(connection, credentialSecretRefs, tx);
+      await syncCredentialBindings(connection, personalCredential || agentCredential ? credentialSecretRefs : [], tx);
       const linkedInteractionKind = stateRow.interactionId
         ? await tx
             .select({ kind: issueThreadInteractions.kind })
@@ -10281,19 +11023,42 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         await tx.update(issueThreadInteractions).set({
           status: "accepted",
           result: { version: 1, outcome: "accepted" },
-          resolvedByUserId: subjectUserId,
+          resolvedByUserId: authorizingUserId,
           resolvedAt: now(),
           updatedAt: now(),
         }).where(eq(issueThreadInteractions.id, stateRow.interactionId));
       }
     });
+    if (githubMetadata) {
+      const [githubGrant] = await db.select({ id: connectionGrants.id }).from(connectionGrants).where(and(
+        eq(connectionGrants.companyId, connection.companyId),
+        eq(connectionGrants.connectionId, connection.id),
+        subjectAgentId
+          ? and(eq(connectionGrants.kind, "agent"), eq(connectionGrants.subjectAgentId, subjectAgentId))
+          : and(eq(connectionGrants.kind, "user"), eq(connectionGrants.subjectUserId, subjectUserId!)),
+      )).limit(1);
+      if (!githubGrant) throw new Error("GitHub grant was not persisted");
+      await Promise.all(githubMetadata.installationIds.map((installationId) => cloudConnector.setWebhookBinding({
+        subject: connectorSubject,
+        companyId: connection.companyId,
+        id: `${githubGrant.id}_${installationId}`,
+        installationId,
+        connectionId: connection.id,
+        grantId: githubGrant.id,
+        active: true,
+        accessToken: credentials.accessToken,
+      })));
+    }
     const refresh = await refreshCatalog(connection.id, input.actor, {
       enableAllByDefault: false,
       quarantineManagedOAuthDraft: shouldFinalizeManagedDefaults,
       skipDefaultProfileSync: true,
       credentialHeaders: { Authorization: `Bearer ${credentials.accessToken}` },
     });
-    const suggestedDefaults = recommendedDefaultsForApp(galleryEntry!, method.key);
+    const recommended = recommendedDefaultsForApp(galleryEntry!, method.key);
+    const suggestedDefaults = subjectAgentId
+      ? { ...recommended, access: { agentIds: [subjectAgentId] } as const }
+      : recommended;
     const finished = shouldFinalizeManagedDefaults
       ? await finishOAuthCatalogWithRecommendedDefaults({
           connection,
@@ -10737,7 +11502,10 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       // Keep callback persistence serialized with membership suspension, role
       // downgrade, and removal. Once this row is locked, authority cannot be
       // revoked between the live check and the shared credential/grant writes.
-      const [membership] = await tx.select({ id: companyMemberships.id }).from(companyMemberships).where(and(
+      const [membership] = await tx.select({
+        id: companyMemberships.id,
+        membershipRole: companyMemberships.membershipRole,
+      }).from(companyMemberships).where(and(
         eq(companyMemberships.companyId, connection.companyId),
         eq(companyMemberships.principalType, "user"),
         eq(companyMemberships.principalId, organizationActorUserId),
@@ -10746,6 +11514,18 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       )).limit(1).for("update");
       if (!membership) {
         throw forbidden("Your company membership no longer permits connection changes. Ask a company owner to restore non-viewer access before you authorize this connection again.");
+      }
+      const roleCanManage = membership.membershipRole === "owner" || membership.membershipRole === "admin";
+      const [explicitManagerGrant] = roleCanManage ? [] : await tx.select({
+        id: principalPermissionGrants.id,
+      }).from(principalPermissionGrants).where(and(
+        eq(principalPermissionGrants.companyId, connection.companyId),
+        eq(principalPermissionGrants.principalType, "user"),
+        eq(principalPermissionGrants.principalId, organizationActorUserId),
+        eq(principalPermissionGrants.permissionKey, "tools:manage_connections"),
+      )).limit(1).for("update");
+      if (!roleCanManage && !explicitManagerGrant) {
+        throw forbidden("Only a company owner, admin, or member with connection-manager permission can share credentials with the organization.");
       }
       const txSecrets = secretService(tx);
       const txSecretContext = { dbClient: tx, secretClient: txSecrets };
@@ -12266,6 +13046,8 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
 
     sweepConnectionHealth,
 
+    sweepGitHubConnectionContinuity,
+
     listCatalog: async (connectionId: string, companyId?: string): Promise<ToolCatalogEntry[]> => {
       const connection = await getConnectionRow(connectionId, companyId);
       let rows = await db
@@ -13064,11 +13846,29 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
 
       const actingUserId = runContext.responsibleUserId;
       const autonomous = runContext.run.invocationSource === "automation" || runContext.run.invocationSource === "timer";
-      const subject = connection.credentialPolicy === "shared" || !actingUserId
+      let subject: { type: "app" } | { type: "user"; userId: string } = connection.credentialPolicy === "shared" || connection.credentialPolicy === "per_agent" || !actingUserId
         ? { type: "app" as const }
         : { type: "user" as const, userId: actingUserId };
       let grant: typeof connectionGrants.$inferSelect | undefined;
-      if (connection.credentialPolicy !== "shared" && actingUserId) {
+      if (connection.credentialPolicy === "per_agent") {
+        [grant] = await db.select().from(connectionGrants).where(and(
+          eq(connectionGrants.companyId, connection.companyId),
+          eq(connectionGrants.connectionId, connection.id),
+          eq(connectionGrants.kind, "agent"),
+          eq(connectionGrants.subjectAgentId, input.agentId),
+        )).limit(1);
+        if (!grant) {
+          await fail(409, "This agent's dedicated authorization is required", "denied", "agent_authorization_required", {
+            connection: { uid: connection.uid },
+            agentId: input.agentId,
+            remediation: { action: "start_agent_authorization", agentId: input.agentId },
+          });
+        }
+      } else if (connection.credentialPolicy !== "shared" && actingUserId) {
+        // Installation targets express the grant owner's consent to agent use;
+        // the control-plane-resolved responsible user selects whose grant is in
+        // force. A separate standing delegation is required only when no such
+        // responsible user exists for unattended work.
         const [membership] = await db.select({ id: companyMemberships.id }).from(companyMemberships).where(and(
           eq(companyMemberships.companyId, connection.companyId),
           eq(companyMemberships.principalType, "user"),
@@ -13088,6 +13888,27 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
           eq(connectionGrants.kind, "user"),
           eq(connectionGrants.subjectUserId, actingUserId),
         )).limit(1);
+      } else if (connection.credentialPolicy === "per_user" && autonomous) {
+        const delegated = await db.select({ grant: connectionGrants }).from(connectionGrantDelegations).innerJoin(
+          connectionGrants,
+          and(
+            eq(connectionGrants.id, connectionGrantDelegations.grantId),
+            eq(connectionGrants.companyId, connectionGrantDelegations.companyId),
+          ),
+        ).where(and(
+          eq(connectionGrantDelegations.companyId, connection.companyId),
+          eq(connectionGrantDelegations.agentId, input.agentId),
+          eq(connectionGrants.connectionId, connection.id),
+          eq(connectionGrants.kind, "user"),
+        )).limit(2);
+        if (delegated.length > 1) {
+          await fail(409, "More than one delegated personal authorization matches this run", "denied", "subject_not_permitted", {
+            connection: { uid: connection.uid },
+            agentId: input.agentId,
+          });
+        }
+        grant = delegated[0]?.grant;
+        if (grant?.subjectUserId) subject = { type: "user", userId: grant.subjectUserId };
       }
       if (!grant && connection.credentialPolicy === "per_user") {
         await fail(409, "User authorization is required", "denied", "user_authorization_required", {
@@ -13100,28 +13921,18 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         grant = await ensureDefaultOrganizationGrant(connection);
       }
 
-      if (grant.kind === "user" && autonomous) {
-        const [delegation] = await db.select({ id: connectionGrantDelegations.id }).from(connectionGrantDelegations).where(and(
-          eq(connectionGrantDelegations.companyId, connection.companyId),
-          eq(connectionGrantDelegations.grantId, grant.id),
-          eq(connectionGrantDelegations.agentId, input.agentId),
+      if (grant.kind === "user" && grant.subjectUserId && grant.subjectUserId !== actingUserId) {
+        const [membership] = await db.select({ id: companyMemberships.id }).from(companyMemberships).where(and(
+          eq(companyMemberships.companyId, connection.companyId),
+          eq(companyMemberships.principalType, "user"),
+          eq(companyMemberships.principalId, grant.subjectUserId),
+          eq(companyMemberships.status, "active"),
         )).limit(1);
-        if (!delegation) {
-          if (actingUserId) {
-            await createStandingDelegationAsk({
-              connection,
-              issueId: runContext.issueId,
-              runId: input.runId,
-              agentId: input.agentId,
-              ownerUserId: actingUserId,
-            });
-          }
-          await fail(409, "Standing delegation is required for this autonomous run", "denied", "standing_delegation_required", {
+        if (!membership) {
+          await fail(403, "The delegated personal grant owner is not an active company member", "denied", "grant_owner_membership_inactive", {
             connection: { id: connection.id, uid: connection.uid, name: connection.name },
-            grantId: grant.id,
-            subject: actingUserId ? { type: "user", userId: actingUserId } : { type: "app" },
-            agentId: input.agentId,
-            remediation: { action: "delegate_personal_grant", grantId: grant.id, agentId: input.agentId },
+            subject,
+            remediation: { action: "restore_membership_or_reconnect" },
           });
         }
       }

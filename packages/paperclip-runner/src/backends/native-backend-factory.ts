@@ -1,4 +1,5 @@
 import type { NativeExecutionInput } from "../contracts/native-execution.js";
+import type { PersistedHarnessSession } from "../contracts/harness-driver.js";
 import type {
   NativeSessionBackend,
   PersistedNativeSession,
@@ -21,6 +22,13 @@ export interface NativeBackendFactoryOptions extends Omit<
 > {
   codexTransportFactory?: (context?: {
     providerRecoveryPolicy?: PersistedNativeSession["providerRecoveryPolicy"];
+    persistedSession?: Pick<
+      PersistedHarnessSession,
+      | "driverSessionId"
+      | "providerSessionId"
+      | "providerIdentity"
+      | "activeTurnId"
+    >;
   }) => CodexAppServerTransport;
   acpxRuntimeDirectory?: string;
   acpxEnvironment?: NodeJS.ProcessEnv;
@@ -46,6 +54,8 @@ export function createNativeSessionBackend(
       onSpawn: options.onSpawn,
       dynamicTools: options.dynamicTools,
       dynamicToolHandler: options.dynamicToolHandler,
+      environment: options.environment,
+      workingDirectoryAuthority: options.workingDirectoryAuthority,
       transportFactory: options.codexTransportFactory,
     });
   }
@@ -98,6 +108,8 @@ export function createNativeSessionBackend(
     onSpawn: options.onSpawn,
     dynamicTools: options.dynamicTools,
     dynamicToolHandler: options.dynamicToolHandler,
+    environment: options.environment,
+    workingDirectoryAuthority: options.workingDirectoryAuthority,
     transportFactory: options.codexTransportFactory,
   });
 }

@@ -74,6 +74,7 @@ fn identity() -> AcpxProviderSessionIdentity {
         requested_model: "gpt-5.6-sol".to_owned(),
         effective_model: "gpt-5.6-sol".to_owned(),
         permission_mode: Some(AcpxPermissionMode::ApproveReads),
+        provider_lifetime_fence_candidates: [60_001, 60_002, 60_003],
     }
 }
 
@@ -193,6 +194,11 @@ fn fails_closed_on_unknown_or_oversized_checkpoint_files() {
         .as_object_mut()
         .unwrap()
         .remove("permissionMode");
+    let mut missing_lifetime_fence = valid.clone();
+    missing_lifetime_fence["identity"]
+        .as_object_mut()
+        .unwrap()
+        .remove("providerLifetimeFenceCandidates");
     let mut invalid_run = valid.clone();
     invalid_run["runId"] = json!("run 1");
     let mut invalid_session = valid;
@@ -202,6 +208,7 @@ fn fails_closed_on_unknown_or_oversized_checkpoint_files() {
         top_level_unknown,
         nested_unknown,
         missing_permission,
+        missing_lifetime_fence,
         invalid_run,
         invalid_session,
     ] {

@@ -1,5 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import type { HarnessRuntimeRequestResolution } from "../../contracts/harness-driver.js";
+import { githubCredentialEnvironment } from "../../github-credential-environment.js";
 
 export interface CodexRpcNotification {
   method: string;
@@ -46,6 +47,8 @@ export interface CodexAppServerTransport {
     resolution: HarnessRuntimeRequestResolution;
   }): Promise<void>;
   close(): Promise<void>;
+  /** Relinquish controller authority while leaving durable runner work alive. */
+  detachControllerForRestart?(): Promise<void>;
   processInfo?(): CodexTransportProcessInfo;
   attachRun?(input: {
     runId: string;
@@ -196,6 +199,7 @@ const SAFE_ENVIRONMENT_KEYS = [
   "LC_ALL",
   "NO_PROXY",
   "NODE_EXTRA_CA_CERTS",
+  "PAPERCLIP_RUNNER_EXTERNAL_SANDBOX",
   "PATH",
   "PATHEXT",
   "SSL_CERT_FILE",
@@ -221,6 +225,7 @@ export function createSanitizedCodexEnvironment(
     if (key.includes("PROXY") && proxyContainsCredentials(value)) continue;
     environment[key] = value;
   }
+  Object.assign(environment, githubCredentialEnvironment(source));
   return environment;
 }
 
@@ -445,7 +450,9 @@ export class ProcessCodexAppServerTransport implements CodexAppServerTransport {
     );
     this.#process.stdout.on("end", () => {
       this.#stdoutDecoder.end();
-      this.#fatal(new Error("codex app-server stdout ended before transport closure"));
+      this.#fatal(
+        new Error("codex app-server stdout ended before transport closure"),
+      );
     });
     this.#process.stdout.on("error", (error) => this.#fatal(error));
     this.#process.stdout.on("close", () => {

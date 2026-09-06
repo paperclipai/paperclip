@@ -11,6 +11,7 @@ import type {
   VerifiedAcpxInstallation,
 } from "./installation-integrity.js";
 import { resolveQualifiedAcpxProfile } from "./qualified-profiles.js";
+import { prepareAcpxRuntimeSandbox } from "./runtime-sandbox.js";
 import {
   AcpxRuntimeHost,
   type AcpxRuntimeHostDependencies,
@@ -20,8 +21,143 @@ import {
 } from "./runtime-host.js";
 
 const temporaryDirectories: string[] = [];
+const admissionControllers: AbortController[] = [];
+const pendingAdmissionOpenings = new Set<Promise<void>>();
+const pendingAdmissionCleanups = new Set<Promise<void>>();
+
+// A credential or sandbox poll in this file can run behind a real retry
+// envelope, not a mocked one. `stageManagedCodexCredential` first joins any
+// in-flight quarantine recovery (codex-credentials.ts:183, :610-625). That
+// recovery makes up to `MAX_AUTONOMOUS_CREDENTIAL_CLEANUP_ATTEMPTS` (8)
+// attempts (codex-credentials.ts:19). The backoff between attempts is 10,
+// 20, 40, 80, 160, 320, and 640 ms — 1,270 ms in total
+// (codex-credentials.ts:558, :578-582). Each attempt can also run one real
+// directory fsync. `DIRECTORY_SYNC_OPERATION_TIMEOUT_MS` (1,000 ms,
+// codex-credentials.ts:18, :569, :1304) bounds that fsync. So one full
+// recovery pass can cost up to 1,270 ms of backoff plus 8,000 ms of bounded
+// fsync waits.
+//
+// When a pass does not clear the quarantine,
+// `recoverQuarantinedCredentialCleanup` joins one more bounded attempt (up
+// to 1,000 ms) before it gives up (codex-credentials.ts:616-619). So the
+// full documented recovery path costs at least 8,000 + 1,270 + 1,000 =
+// 10,270 ms. The vitest default `vi.waitFor` deadline is 1,000 ms, smaller
+// than a single one of those inner bounds. So a poll can time out even
+// though the call is still in progress.
+//
+// The helper deadline below adds margin on top of the 10,270 ms documented
+// floor for the real filesystem work each attempt also does (two file
+// removals and an intent-file delete, none of them bounded by
+// `DIRECTORY_SYNC_OPERATION_TIMEOUT_MS`) and for this helper's own 50 ms
+// poll granularity and Node event-loop scheduling jitter. A 30-second
+// per-test budget keeps this wait reachable under the vitest per-test
+// timeout, even for a test that runs the helper more than once.
+const ACPX_OPERATION_WAIT_DEADLINE_MS = 15_000;
+const ACPX_LONG_WAIT_TEST_TIMEOUT_MS = 30_000;
+
+/**
+ * Poll a credential or sandbox operation. Use a deadline derived from the
+ * real retry envelope described above. Unlike a bare `vi.waitFor`, report
+ * the last observed error when the deadline expires. Each attempt of
+ * `callback` is itself bounded by the remaining deadline, so a callback
+ * that stays pending cannot outlast the helper deadline and reach the
+ * enclosing vitest per-test timeout instead.
+ */
+async function waitForAcpxOperation<T>(
+  callback: () => T | Promise<T>,
+): Promise<T> {
+  const deadline = Date.now() + ACPX_OPERATION_WAIT_DEADLINE_MS;
+  let lastError: unknown = new Error(
+    "no attempt of this ACPX operation settled before the deadline",
+  );
+  for (;;) {
+    try {
+      return await runAcpxOperationAttempt(callback, deadline);
+    } catch (error) {
+      lastError = error;
+    }
+    if (Date.now() >= deadline) {
+      const detail =
+        lastError instanceof Error
+          ? (lastError.stack ?? lastError.message)
+          : String(lastError);
+      throw new Error(
+        `ACPX operation did not settle within ${ACPX_OPERATION_WAIT_DEADLINE_MS}ms. Last observed error: ${detail}`,
+        { cause: lastError },
+      );
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+}
+
+/**
+ * Run one attempt of `callback`, bounded by the time remaining until
+ * `deadline`. A callback that is still pending when the remaining time
+ * runs out rejects with a timeout error instead of blocking the retry
+ * loop past the helper deadline.
+ *
+ * A rejected attempt does not cancel `callback`. If `callback` later
+ * resolves to a `ManagedCodexCredentialLease`, close that lease so its
+ * kernel lock and active lease generation do not stay allocated for the
+ * rest of the test run.
+ */
+async function runAcpxOperationAttempt<T>(
+  callback: () => T | Promise<T>,
+  deadline: number,
+): Promise<T> {
+  const remainingMs = Math.max(0, deadline - Date.now());
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let timedOut = false;
+  const callbackResult = Promise.resolve().then(callback);
+  void callbackResult.then(
+    (value) => {
+      if (timedOut) void closeLateCredentialLease(value);
+    },
+    () => undefined,
+  );
+  try {
+    return await Promise.race([
+      callbackResult,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => {
+          timedOut = true;
+          reject(
+            new Error(
+              `ACPX operation attempt did not settle within the remaining ${remainingMs}ms of the helper deadline`,
+            ),
+          );
+        }, remainingMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+/**
+ * Close `value` if it is a `ManagedCodexCredentialLease` (or another lease
+ * with the same `close()` shape). Swallow a close failure so cleanup of one
+ * late lease cannot mask the original test failure.
+ */
+async function closeLateCredentialLease(value: unknown): Promise<void> {
+  if (
+    typeof value === "object" &&
+    value !== null &&
+    "close" in value &&
+    typeof (value as { close: unknown }).close === "function"
+  ) {
+    await (value as { close(): Promise<void> }).close().catch(() => undefined);
+  }
+}
 
 afterEach(async () => {
+  for (const controller of admissionControllers.splice(0)) {
+    if (!controller.signal.aborted) {
+      controller.abort(new Error("ACPX runtime host test cleanup"));
+    }
+  }
+  await Promise.all([...pendingAdmissionOpenings]);
+  await Promise.all([...pendingAdmissionCleanups]);
   await Promise.all(
     temporaryDirectories
       .splice(0)
@@ -32,7 +168,7 @@ afterEach(async () => {
 describe("ACPX runtime host", () => {
   it("rejects a pre-aborted admission before acquiring provider resources", async () => {
     const fixture = await hostFixture();
-    const controller = new AbortController();
+    const controller = trackedAdmissionController();
     const cancellation = new Error("admission cancelled before start");
     controller.abort(cancellation);
     const openRuntime = vi.fn(async () => runtimePort());
@@ -61,9 +197,115 @@ describe("ACPX runtime host", () => {
     expect(fixture.commandClose).not.toHaveBeenCalled();
   });
 
+  it("retains aborted sandbox preparation until its filesystem work settles", async () => {
+    const fixture = await hostFixture();
+    const controller = trackedAdmissionController();
+    const cancellation = new Error("sandbox admission cancelled");
+    const sandboxStarted = deferred<void>();
+    const finishSandbox = deferred<void>();
+    const retainedCleanups: Promise<void>[] = [];
+    const stageCredential = vi.fn(async () => {
+      throw new Error("credential staging must not start");
+    });
+    const openRuntime = vi.fn(async () => runtimePort());
+    const dependencies = fixture.dependencies({ openRuntime });
+    dependencies.stageCredential = stageCredential;
+    dependencies.prepareSandbox = async (input) => {
+      sandboxStarted.resolve(undefined);
+      await finishSandbox.promise;
+      return await prepareAcpxRuntimeSandbox(input);
+    };
+    dependencies.retainAdmissionCleanup = (cleanup) => {
+      retainedCleanups.push(cleanup);
+      trackAdmissionCleanup(cleanup);
+    };
+    const opening = trackAdmissionOpening(
+      AcpxRuntimeHost.open(
+        {
+          ...fixture.options,
+          agent: "codex",
+          model: "gpt-5.6-sol",
+          permissionMode: "deny-all",
+          signal: controller.signal,
+        },
+        dependencies,
+      ),
+    );
+    await sandboxStarted.promise;
+
+    controller.abort(cancellation);
+    await expect(opening).rejects.toBe(cancellation);
+    expect(retainedCleanups).toHaveLength(2);
+    let sandboxCleanupSettled = false;
+    void retainedCleanups[0]!.then(
+      () => {
+        sandboxCleanupSettled = true;
+      },
+      () => {
+        sandboxCleanupSettled = true;
+      },
+    );
+    await Promise.resolve();
+    expect(sandboxCleanupSettled).toBe(false);
+
+    finishSandbox.resolve(undefined);
+    await expect(retainedCleanups[0]).resolves.toBeUndefined();
+    expect(sandboxCleanupSettled).toBe(true);
+    expect(stageCredential).not.toHaveBeenCalled();
+    expect(openRuntime).not.toHaveBeenCalled();
+    expect(fixture.commandClose).not.toHaveBeenCalled();
+  });
+
+  it("settles retained admission work when aborted sandbox preparation rejects", async () => {
+    const fixture = await hostFixture();
+    const controller = trackedAdmissionController();
+    const cancellation = new Error("sandbox admission cancelled");
+    const sandboxStarted = deferred<void>();
+    const finishSandbox = deferred<void>();
+    const retainedCleanups: Promise<void>[] = [];
+    const stageCredential = vi.fn(async () => {
+      throw new Error("credential staging must not start");
+    });
+    const openRuntime = vi.fn(async () => runtimePort());
+    const dependencies = fixture.dependencies({ openRuntime });
+    dependencies.stageCredential = stageCredential;
+    dependencies.prepareSandbox = async (input) => {
+      sandboxStarted.resolve(undefined);
+      await finishSandbox.promise;
+      return await prepareAcpxRuntimeSandbox(input);
+    };
+    dependencies.retainAdmissionCleanup = (cleanup) => {
+      retainedCleanups.push(cleanup);
+      trackAdmissionCleanup(cleanup);
+    };
+    const opening = trackAdmissionOpening(
+      AcpxRuntimeHost.open(
+        {
+          ...fixture.options,
+          agent: "codex",
+          model: "gpt-5.6-sol",
+          permissionMode: "deny-all",
+          signal: controller.signal,
+        },
+        dependencies,
+      ),
+    );
+    await sandboxStarted.promise;
+
+    controller.abort(cancellation);
+    await expect(opening).rejects.toBe(cancellation);
+    expect(retainedCleanups).toHaveLength(2);
+
+    finishSandbox.reject(new Error("sandbox preparation failed after abort"));
+    await expect(retainedCleanups[0]).resolves.toBeUndefined();
+    expect(stageCredential).not.toHaveBeenCalled();
+    expect(openRuntime).not.toHaveBeenCalled();
+    expect(fixture.commandClose).not.toHaveBeenCalled();
+  });
+
   it("scrubs credentials when abort wins before the adapter body starts", async () => {
     const fixture = await hostFixture();
-    const controller = new AbortController();
+    const controller = trackedAdmissionController();
     const cancellation = new Error("runtime admission cancelled before entry");
     const createRuntime = vi.fn();
     let credentialHome = "";
@@ -94,7 +336,7 @@ describe("ACPX runtime host", () => {
     expect(createRuntime).not.toHaveBeenCalled();
     expect(fixture.commandClose).toHaveBeenCalledOnce();
     const authPath = join(credentialHome, "auth.json");
-    const contender = await vi.waitFor(() =>
+    const contender = await waitForAcpxOperation(() =>
       stageManagedCodexCredential({
         agentHomeDirectory: credentialHome,
         environment: {
@@ -118,7 +360,7 @@ describe("ACPX runtime host", () => {
     );
     await retryHost.close({ reason: "retry admission complete" });
     expect(retryRuntime.close).toHaveBeenCalledOnce();
-  });
+  }, ACPX_LONG_WAIT_TEST_TIMEOUT_MS);
 
   it("composes admission, isolation, model verification, and cleanup", async () => {
     const fixture = await hostFixture();
@@ -153,11 +395,18 @@ describe("ACPX runtime host", () => {
       dependencies,
     );
     expect(host.identity()).toMatchObject({
-      schema: "paperclip.runner.acpx-identity.v1",
+      schema: "paperclip.runner.acpx-identity.v2",
       acpxRecordId: "record-1",
       requestedModel: "gpt-5.6-sol",
       permissionMode: "approve-reads",
     });
+    const lifetimeFenceCandidates =
+      host.identity().providerLifetimeFenceCandidates;
+    expect(lifetimeFenceCandidates).toHaveLength(3);
+    expect(new Set(lifetimeFenceCandidates).size).toBe(3);
+    expect(
+      lifetimeFenceCandidates.every((port) => port >= 49_152 && port <= 65_535),
+    ).toBe(true);
     expect(capturedEnvironment.OPENAI_API_KEY).toBe("launch-secret");
     expect(host.persistedEnvironment().OPENAI_API_KEY).toBeUndefined();
     expect(host.persistedEnvironment().HTTPS_PROXY).toBeUndefined();
@@ -302,7 +551,7 @@ describe("ACPX runtime host", () => {
     const fixture = await hostFixture();
     let selected = false;
     const setModel = vi.fn(async (model: string) => {
-      expect(model).toBe("claude-sonnet-5");
+      expect(model).toBe("sonnet");
       selected = true;
     });
     const runtime = runtimePort({
@@ -354,6 +603,7 @@ describe("ACPX runtime host", () => {
             requestedModel: "claude-sonnet-5",
             effectiveModel: "claude-sonnet-5",
             permissionMode: "approve-reads",
+            providerLifetimeFenceCandidates: [60_001, 60_002, 60_003],
           },
         },
         fixture.dependencies({ openRuntime }),
@@ -458,7 +708,7 @@ describe("ACPX runtime host", () => {
       ),
     ).rejects.toThrow(/initialization and cleanup failed/);
 
-    await vi.waitFor(() => expect(runtime.close).toHaveBeenCalledTimes(2));
+    await waitForAcpxOperation(() => expect(runtime.close).toHaveBeenCalledTimes(2));
     await expect(readFile(authPath, "utf8")).resolves.toContain(
       "failed-admission",
     );
@@ -472,19 +722,23 @@ describe("ACPX runtime host", () => {
     ).rejects.toThrow("already has an active lease");
 
     resolveRetryClose();
-    await vi.waitFor(async () => {
+    await waitForAcpxOperation(async () => {
       await expect(readFile(authPath)).rejects.toMatchObject({
         code: "ENOENT",
       });
     });
-    const contender = await stageManagedCodexCredential({
-      agentHomeDirectory: credentialHome,
-      environment: {
-        PAPERCLIP_ACPX_CODEX_AUTH_JSON_SECRET: '{"owner":"contender"}',
-      },
-    });
+    // File removal precedes kernel lease release. Wait for the lease itself so
+    // this assertion cannot race between those two ordered cleanup steps.
+    const contender = await waitForAcpxOperation(() =>
+      stageManagedCodexCredential({
+        agentHomeDirectory: credentialHome,
+        environment: {
+          PAPERCLIP_ACPX_CODEX_AUTH_JSON_SECRET: '{"owner":"contender"}',
+        },
+      }),
+    );
     await contender.close();
-  });
+  }, ACPX_LONG_WAIT_TEST_TIMEOUT_MS);
 
   it("bounds post-handshake model verification and cleans the runtime", async () => {
     const fixture = await hostFixture();
@@ -599,14 +853,16 @@ describe("ACPX runtime host", () => {
       host.close({ reason: "retry close" }),
     ).resolves.toBeUndefined();
     await expect(readFile(authPath)).rejects.toMatchObject({ code: "ENOENT" });
-    const contender = await stageManagedCodexCredential({
-      agentHomeDirectory: join(host.runtimeRoot(), "codex-home"),
-      environment: {
-        PAPERCLIP_ACPX_CODEX_AUTH_JSON_SECRET: '{"owner":"contender"}',
-      },
-    });
+    const contender = await waitForAcpxOperation(() =>
+      stageManagedCodexCredential({
+        agentHomeDirectory: join(host.runtimeRoot(), "codex-home"),
+        environment: {
+          PAPERCLIP_ACPX_CODEX_AUTH_JSON_SECRET: '{"owner":"contender"}',
+        },
+      }),
+    );
     await contender.close();
-  });
+  }, ACPX_LONG_WAIT_TEST_TIMEOUT_MS);
 
   it("scrubs credentials only after the exact pending runtime close resolves", async () => {
     const fixture = await hostFixture();
@@ -631,8 +887,8 @@ describe("ACPX runtime host", () => {
     const authPath = join(credentialHome, "auth.json");
 
     const first = host.close({ reason: "runtime close pending" });
-    await vi.waitFor(() => expect(runtime.close).toHaveBeenCalledOnce());
-    await vi.waitFor(() => expect(fixture.commandClose).toHaveBeenCalledOnce());
+    await waitForAcpxOperation(() => expect(runtime.close).toHaveBeenCalledOnce());
+    await waitForAcpxOperation(() => expect(fixture.commandClose).toHaveBeenCalledOnce());
     const second = host.close({ reason: "same exact close" });
     await expect(readFile(authPath, "utf8")).resolves.toBe("{}");
     await expect(
@@ -651,14 +907,16 @@ describe("ACPX runtime host", () => {
       undefined,
     ]);
     await expect(readFile(authPath)).rejects.toMatchObject({ code: "ENOENT" });
-    const contender = await stageManagedCodexCredential({
-      agentHomeDirectory: credentialHome,
-      environment: {
-        PAPERCLIP_ACPX_CODEX_AUTH_JSON_SECRET: '{"owner":"contender"}',
-      },
-    });
+    const contender = await waitForAcpxOperation(() =>
+      stageManagedCodexCredential({
+        agentHomeDirectory: credentialHome,
+        environment: {
+          PAPERCLIP_ACPX_CODEX_AUTH_JSON_SECRET: '{"owner":"contender"}',
+        },
+      }),
+    );
     await contender.close();
-  });
+  }, ACPX_LONG_WAIT_TEST_TIMEOUT_MS);
 
   it("retains the exact pending cleanup while independent resources close", async () => {
     const fixture = await hostFixture();
@@ -681,7 +939,7 @@ describe("ACPX runtime host", () => {
     );
 
     const first = host.close({ reason: "first close stalls" });
-    await vi.waitFor(() => expect(runtime.close).toHaveBeenCalledOnce());
+    await waitForAcpxOperation(() => expect(runtime.close).toHaveBeenCalledOnce());
     const second = host.close({ reason: "same pending owner" });
     let settled = false;
     void Promise.all([first, second]).finally(() => {
@@ -691,7 +949,7 @@ describe("ACPX runtime host", () => {
     expect(settled).toBe(false);
     expect(runtime.close).toHaveBeenCalledOnce();
     expect(fixture.commandClose).toHaveBeenCalledOnce();
-  });
+  }, ACPX_LONG_WAIT_TEST_TIMEOUT_MS);
 
   it("retries only after the exact close outcome settles with failure", async () => {
     const fixture = await hostFixture();
@@ -919,32 +1177,39 @@ describe("ACPX runtime host", () => {
   it("closes a command lease that resolves after admission is aborted", async () => {
     const fixture = await hostFixture();
     const commandAdmission = deferred<VerifiedAcpxCommandLease>();
+    const commandAdmissionStarted = deferred<void>();
     const lateCommandClose = vi.fn(async () => undefined);
-    const openCommand = vi.fn(() => commandAdmission.promise);
+    const openCommand = vi.fn(() => {
+      commandAdmissionStarted.resolve(undefined);
+      return commandAdmission.promise;
+    });
     const openRuntime = vi.fn(async () => runtimePort());
-    const controller = new AbortController();
+    const controller = trackedAdmissionController();
     const cancellation = new Error("command admission cancelled");
     const profile = resolveQualifiedAcpxProfile("claude", "claude-sonnet-5");
-    const opening = AcpxRuntimeHost.open(
-      {
-        ...fixture.options,
-        agent: "claude",
-        model: "claude-sonnet-5",
-        permissionMode: "deny-all",
-        signal: controller.signal,
-      },
-      {
-        verifyInstallation: async () => ({
-          commandDigest: profile.commandDigest,
-          agentServerPackageJsonPath: join(fixture.root, "package.json"),
-          agentRuntimePackageJsonPath: null,
-          openCommand,
-        }),
-        openRuntime,
-        reportRetainedCleanupFailure: vi.fn(),
-      },
+    const opening = trackAdmissionOpening(
+      AcpxRuntimeHost.open(
+        {
+          ...fixture.options,
+          agent: "claude",
+          model: "claude-sonnet-5",
+          permissionMode: "deny-all",
+          signal: controller.signal,
+        },
+        {
+          verifyInstallation: async () => ({
+            commandDigest: profile.commandDigest,
+            agentServerPackageJsonPath: join(fixture.root, "package.json"),
+            agentRuntimePackageJsonPath: null,
+            openCommand,
+          }),
+          openRuntime,
+          retainAdmissionCleanup: trackAdmissionCleanup,
+          reportRetainedCleanupFailure: vi.fn(),
+        },
+      ),
     );
-    await vi.waitFor(() => expect(openCommand).toHaveBeenCalledOnce());
+    await commandAdmissionStarted.promise;
 
     controller.abort(cancellation);
     await expect(opening).rejects.toBe(cancellation);
@@ -955,9 +1220,9 @@ describe("ACPX runtime host", () => {
       close: lateCommandClose,
     });
 
-    await vi.waitFor(() => expect(lateCommandClose).toHaveBeenCalledOnce());
+    await waitForAcpxOperation(() => expect(lateCommandClose).toHaveBeenCalledOnce());
     expect(openRuntime).not.toHaveBeenCalled();
-  });
+  }, ACPX_LONG_WAIT_TEST_TIMEOUT_MS);
 
   it("closes a credential lease that resolves after admission is aborted", async () => {
     const fixture = await hostFixture();
@@ -967,6 +1232,7 @@ describe("ACPX runtime host", () => {
       path: string;
       mode: "inline_json";
       lifetimeFenceFds: readonly [number, number];
+      lifetimeFenceCandidates: readonly [number, number, number];
       activateLifetimeOwner(pid: number): Promise<void>;
       close(): Promise<void>;
     }>();
@@ -978,27 +1244,33 @@ describe("ACPX runtime host", () => {
       await rm(lateCredentialPath);
     });
     const reportRetainedCleanupFailure = vi.fn();
-    const stageCredential = vi.fn(() => credentialAdmission.promise);
+    const credentialAdmissionStarted = deferred<void>();
+    const stageCredential = vi.fn(() => {
+      credentialAdmissionStarted.resolve(undefined);
+      return credentialAdmission.promise;
+    });
     const openRuntime = vi.fn(async () => runtimePort());
-    const controller = new AbortController();
+    const controller = trackedAdmissionController();
     const cancellation = new Error("credential admission cancelled");
-    const opening = AcpxRuntimeHost.open(
-      {
-        ...fixture.options,
-        agent: "codex",
-        model: "gpt-5.6-sol",
-        permissionMode: "deny-all",
-        signal: controller.signal,
-      },
-      {
-        ...fixture.dependencies({
-          openRuntime,
-          reportRetainedCleanupFailure,
-        }),
-        stageCredential,
-      },
+    const opening = trackAdmissionOpening(
+      AcpxRuntimeHost.open(
+        {
+          ...fixture.options,
+          agent: "codex",
+          model: "gpt-5.6-sol",
+          permissionMode: "deny-all",
+          signal: controller.signal,
+        },
+        {
+          ...fixture.dependencies({
+            openRuntime,
+            reportRetainedCleanupFailure,
+          }),
+          stageCredential,
+        },
+      ),
     );
-    await vi.waitFor(() => expect(stageCredential).toHaveBeenCalledOnce());
+    await credentialAdmissionStarted.promise;
 
     controller.abort(cancellation);
     await expect(opening).rejects.toBe(cancellation);
@@ -1006,14 +1278,15 @@ describe("ACPX runtime host", () => {
       path: lateCredentialPath,
       mode: "inline_json",
       lifetimeFenceFds: [42, 43],
+      lifetimeFenceCandidates: [60_001, 60_002, 60_003],
       activateLifetimeOwner: async () => undefined,
       close: lateCredentialClose,
     });
 
-    await vi.waitFor(() =>
+    await waitForAcpxOperation(() =>
       expect(lateCredentialClose).toHaveBeenCalledTimes(2),
     );
-    await vi.waitFor(async () =>
+    await waitForAcpxOperation(async () =>
       expect(readFile(lateCredentialPath)).rejects.toMatchObject({
         code: "ENOENT",
       }),
@@ -1026,11 +1299,12 @@ describe("ACPX runtime host", () => {
     });
     expect(openRuntime).not.toHaveBeenCalled();
     expect(fixture.commandClose).not.toHaveBeenCalled();
-  });
+  }, ACPX_LONG_WAIT_TEST_TIMEOUT_MS);
 
   it("retains managed credentials until an aborted late runtime is closed", async () => {
     const fixture = await hostFixture();
     const runtimeAdmission = deferred<AcpxRuntimePort>();
+    const runtimeAdmissionStarted = deferred<void>();
     const retryClose = deferred<void>();
     const lateRuntime = runtimePort({
       onClose: vi
@@ -1045,28 +1319,31 @@ describe("ACPX runtime host", () => {
       receivedSignal = options.signal;
       credentialHome = options.launchEnvironment.CODEX_HOME!;
       bridgeUrl = options.mcpServers[0]!.url;
+      runtimeAdmissionStarted.resolve(undefined);
       return runtimeAdmission.promise;
     });
-    const controller = new AbortController();
+    const controller = trackedAdmissionController();
     const cancellation = new Error("runtime admission cancelled");
-    const opening = AcpxRuntimeHost.open(
-      {
-        ...fixture.options,
-        agent: "codex",
-        model: "gpt-5.6-sol",
-        permissionMode: "deny-all",
-        environment: {
-          PAPERCLIP_ACPX_CODEX_AUTH_JSON_SECRET: "{}",
+    const opening = trackAdmissionOpening(
+      AcpxRuntimeHost.open(
+        {
+          ...fixture.options,
+          agent: "codex",
+          model: "gpt-5.6-sol",
+          permissionMode: "deny-all",
+          environment: {
+            PAPERCLIP_ACPX_CODEX_AUTH_JSON_SECRET: "{}",
+          },
+          signal: controller.signal,
+          semanticTools: {
+            tools: [],
+            handler: async () => ({ ok: true }),
+          },
         },
-        signal: controller.signal,
-        semanticTools: {
-          tools: [],
-          handler: async () => ({ ok: true }),
-        },
-      },
-      fixture.dependencies({ openRuntime }),
+        fixture.dependencies({ openRuntime }),
+      ),
     );
-    await vi.waitFor(() => expect(openRuntime).toHaveBeenCalledOnce());
+    await runtimeAdmissionStarted.promise;
     expect(receivedSignal).toBe(controller.signal);
 
     controller.abort(cancellation);
@@ -1085,7 +1362,7 @@ describe("ACPX runtime host", () => {
     ).rejects.toThrow("already has an active lease");
 
     runtimeAdmission.resolve(lateRuntime);
-    await vi.waitFor(() => expect(lateRuntime.close).toHaveBeenCalledTimes(2));
+    await waitForAcpxOperation(() => expect(lateRuntime.close).toHaveBeenCalledTimes(2));
     expect(lateRuntime.close).toHaveBeenNthCalledWith(1, {
       reason: "ACPX runtime admission aborted",
     });
@@ -1100,14 +1377,14 @@ describe("ACPX runtime host", () => {
     ).rejects.toThrow("already has an active lease");
 
     retryClose.resolve(undefined);
-    await vi.waitFor(async () => {
+    await waitForAcpxOperation(async () => {
       await expect(readFile(authPath)).rejects.toMatchObject({
         code: "ENOENT",
       });
     });
     // File removal precedes kernel lease release. Wait for the lease itself so
     // this assertion cannot race between those two ordered cleanup steps.
-    const contender = await vi.waitFor(() =>
+    const contender = await waitForAcpxOperation(() =>
       stageManagedCodexCredential({
         agentHomeDirectory: credentialHome,
         environment: {
@@ -1116,39 +1393,44 @@ describe("ACPX runtime host", () => {
       }),
     );
     await contender.close();
-  });
+  }, ACPX_LONG_WAIT_TEST_TIMEOUT_MS);
 
   it("scrubs credentials after rejected runtime cleanup is proven", async () => {
     const fixture = await hostFixture();
     const runtimeAdmission = deferred<AcpxRuntimePort>();
+    const runtimeAdmissionStarted = deferred<void>();
     const providerCleanup = deferred<void>();
     const credentialClose = vi.fn(async () => undefined);
-    const controller = new AbortController();
+    const controller = trackedAdmissionController();
     const cancellation = new Error("runtime admission cancelled");
     const openRuntime = vi.fn((options: AcpxRuntimePortOpenOptions) => {
       options.retainFailedAdmissionCleanup(providerCleanup.promise);
+      runtimeAdmissionStarted.resolve(undefined);
       return runtimeAdmission.promise;
     });
-    const opening = AcpxRuntimeHost.open(
-      {
-        ...fixture.options,
-        agent: "codex",
-        model: "gpt-5.6-sol",
-        permissionMode: "deny-all",
-        signal: controller.signal,
-      },
-      {
-        ...fixture.dependencies({ openRuntime }),
-        stageCredential: async () => ({
-          path: join(fixture.root, "auth.json"),
-          mode: "inline_json",
-          lifetimeFenceFds: [42, 43],
-          activateLifetimeOwner: async () => undefined,
-          close: credentialClose,
-        }),
-      },
+    const opening = trackAdmissionOpening(
+      AcpxRuntimeHost.open(
+        {
+          ...fixture.options,
+          agent: "codex",
+          model: "gpt-5.6-sol",
+          permissionMode: "deny-all",
+          signal: controller.signal,
+        },
+        {
+          ...fixture.dependencies({ openRuntime }),
+          stageCredential: async () => ({
+            path: join(fixture.root, "auth.json"),
+            mode: "inline_json",
+            lifetimeFenceFds: [42, 43],
+            lifetimeFenceCandidates: [60_001, 60_002, 60_003],
+            activateLifetimeOwner: async () => undefined,
+            close: credentialClose,
+          }),
+        },
+      ),
     );
-    await vi.waitFor(() => expect(openRuntime).toHaveBeenCalledOnce());
+    await runtimeAdmissionStarted.promise;
 
     controller.abort(cancellation);
     await expect(opening).rejects.toBe(cancellation);
@@ -1160,8 +1442,8 @@ describe("ACPX runtime host", () => {
     expect(fixture.commandClose).toHaveBeenCalledOnce();
 
     providerCleanup.resolve(undefined);
-    await vi.waitFor(() => expect(credentialClose).toHaveBeenCalledOnce());
-  });
+    await waitForAcpxOperation(() => expect(credentialClose).toHaveBeenCalledOnce());
+  }, ACPX_LONG_WAIT_TEST_TIMEOUT_MS);
 });
 
 function runtimePort(
@@ -1245,11 +1527,39 @@ async function hostFixture() {
             openCommand: async () => command,
           }) satisfies VerifiedAcpxInstallation,
         openRuntime: input.openRuntime,
+        retainAdmissionCleanup: trackAdmissionCleanup,
         reportRetainedCleanupFailure:
           input.reportRetainedCleanupFailure ?? vi.fn(),
       };
     },
   };
+}
+
+function trackedAdmissionController(): AbortController {
+  const controller = new AbortController();
+  admissionControllers.push(controller);
+  return controller;
+}
+
+function trackAdmissionOpening<T>(opening: Promise<T>): Promise<T> {
+  trackSettledPromise(pendingAdmissionOpenings, opening);
+  return opening;
+}
+
+function trackAdmissionCleanup(cleanup: Promise<void>): void {
+  trackSettledPromise(pendingAdmissionCleanups, cleanup);
+}
+
+function trackSettledPromise<T>(
+  pending: Set<Promise<void>>,
+  promise: Promise<T>,
+): void {
+  const observed = promise.then(
+    () => undefined,
+    () => undefined,
+  );
+  pending.add(observed);
+  void observed.finally(() => pending.delete(observed));
 }
 
 function deferred<T>(): {

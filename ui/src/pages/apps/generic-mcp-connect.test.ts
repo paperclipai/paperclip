@@ -90,9 +90,10 @@ describe("genericConnectGuidance", () => {
     expect(genericConnectGuidance("oauth_redirect_origin_unsupported", null).focus).toBe("deployment");
   });
 
-  it("points at the name field when the connection name is already used", () => {
+  it("does not ask the operator to resolve an internal name conflict", () => {
     const guidance = genericConnectGuidance("tool_access_name_conflict", null);
-    expect(guidance).toMatchObject({ title: "That name is taken", focus: "name" });
+    expect(guidance).toMatchObject({ title: "Paperclip couldn’t name this connection", focus: "none" });
+    expect(guidance.body).not.toContain("different name");
   });
 
   it("passes a rejected header's own message through", () => {

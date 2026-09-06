@@ -381,6 +381,54 @@ describe("Agents", () => {
     expect(heartbeatCell?.textContent).not.toContain("\n");
   });
 
+  it("switches between the preserved list and the interactive org chart with icon buttons", async () => {
+    root = createRoot(container);
+    await act(async () => {
+      root!.render(
+        <QueryClientProvider client={queryClient}>
+          <ToastProvider>
+            <Agents />
+          </ToastProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    const listToggle = container.querySelector<HTMLButtonElement>('button[aria-label="List view"]');
+    const orgToggle = container.querySelector<HTMLButtonElement>('button[aria-label="Org chart view"]');
+    expect(listToggle?.getAttribute("aria-pressed")).toBe("true");
+    expect(orgToggle?.getAttribute("aria-pressed")).toBe("false");
+    expect(orgToggle?.querySelector(".lucide-network")).not.toBeNull();
+    expect(orgToggle?.querySelector(".lucide-git-branch")).toBeNull();
+    expect(container.querySelector('[data-testid="org-chart-viewport"]')).toBeNull();
+
+    await act(async () => {
+      orgToggle?.click();
+    });
+    await flushReact();
+    await flushReact();
+
+    expect(mockAgentsApi.org).toHaveBeenCalledWith("company-1");
+    expect(orgToggle?.getAttribute("aria-pressed")).toBe("true");
+    const orgViewport = container.querySelector('[data-testid="org-chart-viewport"]');
+    expect(orgViewport).not.toBeNull();
+    expect(orgViewport?.parentElement?.classList.contains("flex-1")).toBe(true);
+    expect(orgViewport?.parentElement?.classList.contains("md:min-h-0")).toBe(true);
+    expect(orgViewport?.parentElement?.classList.contains("h-(--sz-calc-38)")).toBe(false);
+    expect(orgViewport?.parentElement?.parentElement?.classList.contains("h-full")).toBe(true);
+    expect(orgViewport?.parentElement?.parentElement?.classList.contains("min-h-0")).toBe(true);
+    expect(container.querySelector('[aria-label="Zoom in"]')).not.toBeNull();
+    expect(container.querySelector('[aria-label="Zoom out"]')).not.toBeNull();
+    expect(container.querySelector('[aria-label="Fit chart to screen"]')).not.toBeNull();
+
+    await act(async () => {
+      listToggle?.click();
+    });
+    await flushReact();
+    expect(container.querySelector('[data-testid="org-chart-viewport"]')).toBeNull();
+    expect(container.textContent).toContain("gpt-5.4");
+  });
+
   it("gives mobile agent names the full row width after the leading status indicator", async () => {
     mockSidebarState.isMobile = true;
     mockResourceMembershipsApi.listMine.mockResolvedValue({
@@ -901,7 +949,7 @@ describe("Agents", () => {
     await flushReact();
     await flushReact();
 
-    // Switch from the default org view to the list view.
+    // Keep the list view selected before checking its aligned metadata columns.
     const listToggle = Array.from(container.querySelectorAll("button")).find(
       (btn) => btn.querySelector("svg.lucide-list"),
     );
@@ -938,7 +986,7 @@ describe("Agents", () => {
     await flushReact();
     await flushReact();
 
-    // Org view (default).
+    // List view (default).
     const orgAction = container.querySelector('[aria-label="Leave Alpha"]');
     const orgStar = container.querySelector('[aria-label="Star Alpha"]');
     expect(orgAction).not.toBeNull();
@@ -946,7 +994,7 @@ describe("Agents", () => {
     expect(orgAction?.closest(".hidden")).toBeNull();
     expect(orgStar?.closest(".hidden")).not.toBeNull();
 
-    // List view.
+    // List view remains stable after explicitly selecting it.
     const listToggle = Array.from(container.querySelectorAll("button")).find(
       (btn) => btn.querySelector("svg.lucide-list"),
     );

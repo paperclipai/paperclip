@@ -24,7 +24,7 @@ describe("ACPX qualified model verification", () => {
     expect(setModel).not.toHaveBeenCalled();
   });
 
-  it("selects Claude's canonical model and normalizes its ACP selector", async () => {
+  it("accepts and normalizes Claude's qualified ACP selector", async () => {
     const setModel = vi.fn(async () => undefined);
     const getStatus = vi.fn(async () => ({
       models: {
@@ -44,8 +44,36 @@ describe("ACPX qualified model verification", () => {
         availableModelIds: ["default", "claude-sonnet-5", "opus"],
       },
     });
+    expect(setModel).not.toHaveBeenCalled();
+    expect(getStatus).toHaveBeenCalledTimes(1);
+  });
+
+  it("selects Claude's profile-pinned ACP selector from a stale default", async () => {
+    let selected = false;
+    const setModel = vi.fn(async (model: string) => {
+      expect(model).toBe("sonnet");
+      selected = true;
+    });
+    const getStatus = vi.fn(async () => ({
+      models: {
+        currentModelId: selected ? "sonnet" : "default",
+        availableModelIds: ["default", "sonnet", "opus"],
+      },
+    }));
+
+    await expect(
+      requireVerifiedAcpxModel(
+        { getStatus, setModel },
+        resolveQualifiedAcpxProfile("claude", "claude-sonnet-5"),
+      ),
+    ).resolves.toMatchObject({
+      models: {
+        currentModelId: "claude-sonnet-5",
+        availableModelIds: ["default", "claude-sonnet-5", "opus"],
+      },
+    });
     expect(setModel).toHaveBeenCalledTimes(1);
-    expect(setModel).toHaveBeenCalledWith("claude-sonnet-5");
+    expect(setModel).toHaveBeenCalledWith("sonnet");
     expect(getStatus).toHaveBeenCalledTimes(2);
   });
 

@@ -20,19 +20,21 @@ import {
 } from "./codex-boundaries.js";
 
 describe("Codex value and workspace boundaries", () => {
-  it("accepts only an assigned non-root workspace that does not contain host state", () => {
+  it("accepts assigned workspaces below HOME while rejecting host-state and containment escapes", () => {
     const fixture = mkdtempSync(join(tmpdir(), "paperclip-codex-boundaries-"));
     try {
-      const workspaceRoot = join(fixture, "workspaces");
-      const workspace = join(workspaceRoot, "run-1");
-      const outside = join(fixture, "outside");
       const hostRoot = join(fixture, "host");
       const hostHome = join(hostRoot, "home");
+      const workspaceRoot = join(hostHome, ".paperclip", "workspaces");
+      const workspace = join(workspaceRoot, "run-1");
+      const ordinaryHomeWorkspace = join(hostHome, "projects", "app");
+      const outside = join(fixture, "outside");
       const protectedHomeDirectory = join(hostHome, ".ssh");
       const codexHome = join(fixture, "codex-home");
       const codexWorkspace = join(codexHome, "run");
       for (const directory of [
         workspace,
+        ordinaryHomeWorkspace,
         outside,
         protectedHomeDirectory,
         codexWorkspace,
@@ -48,6 +50,25 @@ describe("Codex value and workspace boundaries", () => {
         }),
       ).toBe(realpathSync.native(workspace));
       expect(() =>
+        validateCodexWorkingDirectory(ordinaryHomeWorkspace, {
+          HOME: hostHome,
+          CODEX_HOME: codexHome,
+        }),
+      ).toThrow("inside the host HOME requires an assigned workspace");
+      expect(
+        validateCodexWorkingDirectory(ordinaryHomeWorkspace, {
+          HOME: hostHome,
+          CODEX_HOME: codexHome,
+          PAPERCLIP_WORKSPACE_CWD: join(hostHome, "projects"),
+        }),
+      ).toBe(realpathSync.native(ordinaryHomeWorkspace));
+      expect(() =>
+        validateCodexWorkingDirectory(protectedHomeDirectory, {
+          HOME: hostHome,
+          CODEX_HOME: codexHome,
+        }),
+      ).toThrow("cannot overlap sensitive host HOME state");
+      expect(() =>
         validateCodexWorkingDirectory(join(workspaceRoot, "future-run"), {
           PAPERCLIP_WORKSPACE_CWD: workspaceRoot,
         }),
@@ -60,8 +81,14 @@ describe("Codex value and workspace boundaries", () => {
         validateCodexWorkingDirectory(hostRoot, { HOME: hostHome }),
       ).toThrow("cannot contain the host HOME");
       expect(() =>
-        validateCodexWorkingDirectory(protectedHomeDirectory, { HOME: hostHome }),
-      ).toThrow("cannot overlap the host HOME");
+        validateCodexWorkingDirectory(hostHome, { HOME: hostHome }),
+      ).toThrow("cannot contain the host HOME");
+      expect(() =>
+        validateCodexWorkingDirectory(protectedHomeDirectory, {
+          HOME: hostHome,
+          PAPERCLIP_WORKSPACE_CWD: workspaceRoot,
+        }),
+      ).toThrow("cannot overlap sensitive host HOME state");
       expect(() =>
         validateCodexWorkingDirectory(outside, {
           PAPERCLIP_WORKSPACE_CWD: workspaceRoot,
@@ -91,6 +118,47 @@ describe("Codex value and workspace boundaries", () => {
     } finally {
       rmSync(fixture, { recursive: true, force: true });
     }
+  });
+
+  it("defers provider-owned workspace existence without weakening its assignment", () => {
+    const remoteWorkspace = "/home/daytona/paperclip-workspace";
+    const remoteEnvironment = {
+      HOME: remoteWorkspace,
+      CODEX_HOME: `${remoteWorkspace}/.codex`,
+      PAPERCLIP_WORKSPACE_CWD: remoteWorkspace,
+    };
+
+    expect(
+      validateCodexWorkingDirectory(
+        remoteWorkspace,
+        remoteEnvironment,
+        "remote_runner",
+      ),
+    ).toBe(remoteWorkspace);
+    expect(() =>
+      validateCodexWorkingDirectory(remoteWorkspace, remoteEnvironment),
+    ).toThrow("must exist before provider admission");
+    expect(() =>
+      validateCodexWorkingDirectory(
+        `${remoteWorkspace}/nested`,
+        remoteEnvironment,
+        "remote_runner",
+      ),
+    ).toThrow("does not match the assigned workspace");
+    expect(() =>
+      validateCodexWorkingDirectory(
+        `${remoteWorkspace}/../escape`,
+        remoteEnvironment,
+        "remote_runner",
+      ),
+    ).toThrow("must be a normalized absolute path");
+    expect(() =>
+      validateCodexWorkingDirectory(
+        "/",
+        { PAPERCLIP_WORKSPACE_CWD: "/" },
+        "remote_runner",
+      ),
+    ).toThrow("filesystem root");
   });
 
   it("bounds retained values and redacts protected diagnostics", () => {

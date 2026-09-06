@@ -42,7 +42,8 @@
         "description": "Search conversations and read messages."
       },
       "grantKinds": [
-        "user"
+        "user",
+        "organization"
       ],
       "ownershipModes": [
         "platform_shared"
@@ -74,7 +75,8 @@
         "description": "Search conversations and read messages."
       },
       "grantKinds": [
-        "user"
+        "user",
+        "organization"
       ],
       "ownershipModes": [
         "customer"
@@ -120,7 +122,8 @@
         "description": "Read Chat and send messages."
       },
       "grantKinds": [
-        "user"
+        "user",
+        "organization"
       ],
       "ownershipModes": [
         "platform_shared"
@@ -154,7 +157,8 @@
         "description": "Read Chat and send messages."
       },
       "grantKinds": [
-        "user"
+        "user",
+        "organization"
       ],
       "ownershipModes": [
         "customer"

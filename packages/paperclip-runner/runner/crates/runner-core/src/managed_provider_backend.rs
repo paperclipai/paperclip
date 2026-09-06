@@ -140,7 +140,7 @@ impl ManagedProviderDescriptor {
 
     fn version(&self) -> &str {
         match self {
-            Self::ClaudeManaged(config) => &config.beta_version,
+            Self::ClaudeManaged(config) => &config.agent_version,
             Self::AwsAgentcore(config) => &config.qualification_revision,
         }
     }
@@ -1305,7 +1305,10 @@ impl ManagedProviderCommandExecutor {
             "status": state.lifecycle,
             "provider": state.descriptor.provider_label(),
             "driver": state.descriptor.driver(),
+            "driverSessionId": state.provider_session_id,
             "providerSessionId": state.provider_session_id,
+            "sessionId": state.provider_session_id,
+            "providerAccountSessionId": state.provider_session_id,
             "activeProviderTurnId": state.active_turn_id,
             "durableEventCursor": state.durable_event_cursor,
         })))
@@ -1667,6 +1670,10 @@ impl CommandExecutor for ManagedProviderCommandExecutor {
         }
     }
 
+    fn rotate_authority(&mut self, config: &DurableRunnerConfig) {
+        self.config = config.clone();
+    }
+
     fn poll_events(&mut self) -> Result<Vec<PolledEvent>, DurableRunnerError> {
         self.poll_provider()?;
         Ok(self
@@ -1696,6 +1703,10 @@ impl CommandExecutor for ManagedProviderCommandExecutor {
     }
 
     fn shutdown(&mut self) -> Result<(), DurableRunnerError> {
+        // A replacement runner has no live provider object until durable state
+        // is restored. Require that restoration before accepting terminal
+        // cleanup so a persisted remote session cannot be abandoned silently.
+        self.restore()?;
         if let Some(provider) = self.provider.as_mut() {
             provider.shutdown().map_err(|error| {
                 DurableRunnerError::invalid(format!(
@@ -2463,6 +2474,35 @@ mod tests {
         assert_eq!(
             event.payload.pointer("/cumulative/cacheWriteTokens"),
             Some(&json!(89))
+        );
+    }
+
+    #[test]
+    fn claude_runtime_identity_uses_the_pinned_agent_version() {
+        let descriptor = ManagedProviderDescriptor::ClaudeManaged(ClaudeManagedProviderConfig {
+            model: QUALIFIED_CLAUDE_MODEL.to_owned(),
+            profile_id: "profile-1".to_owned(),
+            anthropic_agent_id: "agent-1".to_owned(),
+            agent_version: "17".to_owned(),
+            environment_id: "environment-1".to_owned(),
+            beta_version: QUALIFIED_CLAUDE_BETA.to_owned(),
+            max_session_list_cost_usd: 1.0,
+            instructions: "Complete the supplied task.".to_owned(),
+            runtime_context: None,
+        });
+
+        assert_eq!(descriptor.version(), "17");
+        assert_eq!(
+            session_event_payload(
+                &descriptor,
+                &ProviderRuntimeIdentity::RemoteService {
+                    service: "anthropic_managed_agents".to_owned(),
+                    provider_session_id: "session-17".to_owned(),
+                    process_id: None,
+                },
+            )
+            .pointer("/providerDescriptor/providerVersion"),
+            Some(&json!("17"))
         );
     }
 

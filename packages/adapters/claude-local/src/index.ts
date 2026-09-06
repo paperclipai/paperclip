@@ -6,6 +6,7 @@ export const SANDBOX_INSTALL_COMMAND = "npm install -g @anthropic-ai/claude-code
 export const models = [
   { id: "claude-opus-4-8", label: "Claude Opus 4.8" },
   { id: "claude-sonnet-5", label: "Claude Sonnet 5" },
+  { id: "claude-fable-5-1", label: "Claude Fable 5.1" },
   { id: "claude-fable-5", label: "Claude Fable 5" },
   { id: "claude-mythos-5", label: "Claude Mythos 5" },
   { id: "claude-opus-5", label: "Claude Opus 5" },

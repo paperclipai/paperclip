@@ -45,12 +45,15 @@ describe("storybook onboarding draft", () => {
     expect(readOnboardingDraft()?.createdAgentId).toBe("");
   });
 
-  // The label, not the type, was seeded here once. Nothing failed loudly: the
-  // connect step fell back to a real adapter, and the mismatch would only have
-  // surfaced as a hire posting a type the server does not know.
-  it("names the adapter by its type", () => {
+  // A run standing on step 3 has not reached the connect step, so it cannot
+  // have chosen a source there. Seeding one is not a harmless head start: the
+  // step reads a saved `adapterType` as "already picked", and every arc story
+  // opened with Claude Code selected and its sign-in panel already showing —
+  // the preselection the step was changed to stop doing, restored by the
+  // fixture. Stories that need a source click one, the way a customer does.
+  it("does not claim a model source was chosen before the connect step", () => {
     seedOnboardingDraft();
-    expect(readOnboardingDraft()?.adapterType).toBe("claude_local");
+    expect(readOnboardingDraft()).not.toHaveProperty("adapterType");
   });
 
   // `restoreOnboardingState` treats restoring as an authorization decision and

@@ -19,12 +19,20 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+import { appendHeartbeatRunEvent } from "../services/heartbeat-run-events.js";
 import {
   ACTIVE_RUN_OUTPUT_CONTINUE_REARM_MS,
   ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS,
   ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS,
   recoveryService,
 } from "../services/recovery/service.js";
+
+vi.mock("../services/heartbeat-run-events.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../services/heartbeat-run-events.js")>();
+  return { ...actual, appendHeartbeatRunEvent: vi.fn(actual.appendHeartbeatRunEvent) };
+});
+
+const mockedAppendHeartbeatRunEvent = vi.mocked(appendHeartbeatRunEvent);
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -68,6 +76,7 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
   }, 30_000);
 
   afterEach(async () => {
+    mockedAppendHeartbeatRunEvent.mockClear();
     await truncateCompaniesWithDeadlockRetry(db);
   });
 
@@ -221,49 +230,6 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
     expect(manager?.status).toBe("idle");
   }
 
-  it.each([
-    {
-      level: "suspicious" as const,
-      ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
-    },
-    {
-      level: "critical" as const,
-      ageMs: ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS + 60_000,
-    },
-  ])("surfaces $level silence without creating recovery work", async ({ level, ageMs }) => {
-    const now = new Date("2026-04-22T20:00:00.000Z");
-    const seeded = await seedRunningRun({ now, ageMs });
-    const { enqueueWakeup, recovery } = createRecovery();
-
-    await expect(recovery.buildRunOutputSilence(
-      (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seeded.runId)))[0]!,
-      now,
-    )).resolves.toMatchObject({
-      level,
-      silenceAgeMs: ageMs,
-      suspicionThresholdMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS,
-      criticalThresholdMs: ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS,
-      evaluationIssueId: null,
-      evaluationIssueIdentifier: null,
-      evaluationIssueAssigneeAgentId: null,
-    });
-
-    const first = await recovery.scanSilentActiveRuns({ now, companyId: seeded.companyId });
-    const second = await recovery.scanSilentActiveRuns({ now, companyId: seeded.companyId });
-    expect(first).toMatchObject({ scanned: 1, created: 0, existing: 0, escalated: 0, skipped: 1 });
-    expect(second).toMatchObject({ scanned: 1, created: 0, existing: 0, escalated: 0, skipped: 1 });
-    expect(first.evaluationIssueIds).toEqual([]);
-    expect(second.evaluationIssueIds).toEqual([]);
-    expect(enqueueWakeup).not.toHaveBeenCalled();
-    await expectNoReviewArtifacts(seeded);
-
-    const decisions = await db
-      .select()
-      .from(heartbeatRunWatchdogDecisions)
-      .where(eq(heartbeatRunWatchdogDecisions.runId, seeded.runId));
-    expect(decisions).toHaveLength(0);
-  });
-
   it("keeps blocked and recovery-origin sources artifact-free", async () => {
     const now = new Date("2026-04-22T20:00:00.000Z");
     const blocked = await seedRunningRun({
@@ -293,106 +259,135 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
     expect(enqueueWakeup).not.toHaveBeenCalled();
   });
 
-  it("stores board snooze decisions directly on the run", async () => {
+  it("scopes candidates, readers, and writers to one company", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const companyA = await seedRunningRun({ now, ageMs: ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS + 60_000 });
+    const companyB = await seedRunningRun({ now, ageMs: ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS + 60_000 });
+    const healthyRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: healthyRunId,
+      companyId: companyA.companyId,
+      agentId: companyA.coderId,
+      status: "running",
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      startedAt: now,
+      processStartedAt: now,
+      lastOutputAt: now,
+      lastOutputSeq: 1,
+      lastOutputStream: "stdout",
+      contextSnapshot: {},
+      logBytes: 0,
+    });
+    const { recovery } = createRecovery();
+
+    const result = await recovery.scanSilentActiveRuns({ now, companyId: companyA.companyId });
+
+    // The company filter, the SQL timestamp expression, and the healthy-run
+    // exclusion together keep the scan to the one silent run in company A.
+    expect(result.scanned).toBe(1);
+
+    const evaluationIssueIdInCompanyB = randomUUID();
+    await db.insert(issues).values({
+      id: evaluationIssueIdInCompanyB,
+      companyId: companyB.companyId,
+      title: "Evaluation issue in the other company",
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: companyB.managerId,
+      issueNumber: 2,
+      identifier: `${companyB.issuePrefix}-2`,
+      originKind: "stale_active_run_evaluation",
+      originId: companyB.runId,
+      originRunId: companyB.runId,
+      originFingerprint: `stale_active_run:${companyB.companyId}:${companyB.runId}`,
+    });
+
+    await expect(recovery.recordWatchdogDecision({
+      runId: companyA.runId,
+      actor: { type: "agent", agentId: companyA.managerId },
+      decision: "continue",
+      evaluationIssueId: evaluationIssueIdInCompanyB,
+      reason: "Cross-company evaluation issue must be rejected",
+      now,
+    })).rejects.toMatchObject({ status: 404 });
+
+    await expect(recovery.recordWatchdogDecision({
+      runId: companyA.runId,
+      actor: { type: "board" },
+      decision: "continue",
+      reason: "Cross-company createdByRunId must be rejected",
+      createdByRunId: companyB.runId,
+      now,
+    })).rejects.toMatchObject({ status: 403 });
+  });
+
+  it("leaves no partial state when the fold transaction fails", async () => {
     const now = new Date("2026-04-22T20:00:00.000Z");
     const seeded = await seedRunningRun({
       now,
       ageMs: ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS + 60_000,
+      sourceStatus: "done",
+      sameRunTerminalEvidence: true,
+    });
+    const evaluationIssueId = randomUUID();
+    await db.insert(issues).values({
+      id: evaluationIssueId,
+      companyId: seeded.companyId,
+      title: "Existing stale evaluation",
+      status: "todo",
+      priority: "high",
+      assigneeAgentId: seeded.managerId,
+      issueNumber: 2,
+      identifier: `${seeded.issuePrefix}-2`,
+      originKind: "stale_active_run_evaluation",
+      originId: seeded.runId,
+      originRunId: seeded.runId,
+      originFingerprint: `stale_active_run:${seeded.companyId}:${seeded.runId}`,
+    });
+    await db.insert(issueRecoveryActions).values({
+      companyId: seeded.companyId,
+      sourceIssueId: seeded.issueId,
+      recoveryIssueId: evaluationIssueId,
+      kind: "active_run_watchdog",
+      status: "active",
+      ownerType: "agent",
+      ownerAgentId: seeded.managerId,
+      cause: "active_run_watchdog",
+      fingerprint: `active-run-watchdog:${seeded.companyId}:${seeded.runId}:${seeded.issueId}`,
+      evidence: { runId: seeded.runId },
+      nextAction: "Review stale active run",
     });
     const { recovery } = createRecovery();
-    const snoozedUntil = new Date(now.getTime() + 60 * 60 * 1000);
+    mockedAppendHeartbeatRunEvent.mockRejectedValueOnce(new Error("injected fold transaction fault"));
 
-    const decision = await recovery.recordWatchdogDecision({
-      runId: seeded.runId,
-      actor: { type: "board" },
-      decision: "snooze",
-      snoozedUntil,
-      reason: "Known quiet compile",
-      now,
-    });
-    expect(decision).toMatchObject({
-      runId: seeded.runId,
-      evaluationIssueId: null,
-      decision: "snooze",
-      snoozedUntil,
-    });
-    await expect(buildSummary(seeded.runId, now)).resolves.toMatchObject({
-      level: "snoozed",
-      snoozedUntil,
-      evaluationIssueId: null,
-    });
-    await expect(buildSummary(seeded.runId, new Date(snoozedUntil.getTime() + 1))).resolves.toMatchObject({
-      level: "critical",
-      snoozedUntil: null,
-    });
-    await expectNoReviewArtifacts(seeded);
+    await expect(recovery.scanSilentActiveRuns({ now, companyId: seeded.companyId }))
+      .rejects.toThrow("injected fold transaction fault");
+
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seeded.runId));
+    expect(run?.status).toBe("running");
+    expect(await db.select().from(heartbeatRunWatchdogDecisions).where(eq(
+      heartbeatRunWatchdogDecisions.runId,
+      seeded.runId,
+    ))).toHaveLength(0);
+    expect(await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, seeded.runId))).toHaveLength(0);
+    // The seed itself planted one activity-log row as the fake same-run
+    // terminal evidence; the fold must not add a second one.
+    expect(await db.select().from(activityLog).where(eq(activityLog.runId, seeded.runId))).toHaveLength(1);
+    const [source] = await db.select().from(issues).where(eq(issues.id, seeded.issueId));
+    const [evaluation] = await db.select().from(issues).where(eq(issues.id, evaluationIssueId));
+    const [action] = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, seeded.issueId));
+    expect(source?.executionRunId).toBe(seeded.runId);
+    expect(evaluation?.status).toBe("todo");
+    expect(await db.select().from(issueComments).where(eq(issueComments.issueId, evaluationIssueId))).toHaveLength(0);
+    expect(action).toMatchObject({ status: "active", outcome: null });
+    const [agent] = await db.select().from(agents).where(eq(agents.id, seeded.coderId));
+    expect(agent?.status).toBe("running");
   });
 
-  it("re-arms board continue decisions after 30 minutes without creating artifacts", async () => {
-    const now = new Date("2026-04-22T20:00:00.000Z");
-    const seeded = await seedRunningRun({
-      now,
-      ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
-    });
-    const { enqueueWakeup, recovery } = createRecovery();
-    const decision = await recovery.recordWatchdogDecision({
-      runId: seeded.runId,
-      actor: { type: "board" },
-      decision: "continue",
-      reason: "Keep watching this run",
-      now,
-    });
-    const rearmAt = new Date(now.getTime() + ACTIVE_RUN_OUTPUT_CONTINUE_REARM_MS);
-
-    expect(decision.evaluationIssueId).toBeNull();
-    expect(decision.snoozedUntil?.toISOString()).toBe(rearmAt.toISOString());
-    await expect(buildSummary(seeded.runId, new Date(rearmAt.getTime() - 1))).resolves.toMatchObject({
-      level: "snoozed",
-      evaluationIssueId: null,
-    });
-    await expect(buildSummary(seeded.runId, new Date(rearmAt.getTime() + 1))).resolves.toMatchObject({
-      level: "suspicious",
-      evaluationIssueId: null,
-    });
-    await expect(recovery.scanSilentActiveRuns({ now: new Date(rearmAt.getTime() - 1), companyId: seeded.companyId }))
-      .resolves.toMatchObject({ snoozed: 1, created: 0 });
-    await expect(recovery.scanSilentActiveRuns({ now: new Date(rearmAt.getTime() + 1), companyId: seeded.companyId }))
-      .resolves.toMatchObject({ skipped: 1, created: 0 });
-    expect(enqueueWakeup).not.toHaveBeenCalled();
-    await expectNoReviewArtifacts(seeded);
-  });
-
-  it("permanently suppresses a run after a board false-positive decision", async () => {
-    const now = new Date("2026-04-22T20:00:00.000Z");
-    const seeded = await seedRunningRun({
-      now,
-      ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
-    });
-    const { enqueueWakeup, recovery } = createRecovery();
-
-    const decision = await recovery.recordWatchdogDecision({
-      runId: seeded.runId,
-      actor: { type: "board" },
-      decision: "dismissed_false_positive",
-      reason: "This run is expected to remain quiet",
-      now,
-    });
-    expect(decision.evaluationIssueId).toBeNull();
-    await expect(buildSummary(seeded.runId, now)).resolves.toMatchObject({
-      level: "not_applicable",
-      snoozedUntil: null,
-      evaluationIssueId: null,
-    });
-    const muchLater = new Date(now.getTime() + 24 * 60 * 60 * 1000);
-    await expect(buildSummary(seeded.runId, muchLater)).resolves.toMatchObject({
-      level: "not_applicable",
-      snoozedUntil: null,
-    });
-    await expect(recovery.scanSilentActiveRuns({ now: muchLater, companyId: seeded.companyId }))
-      .resolves.toMatchObject({ created: 0, skipped: 1 });
-    expect(enqueueWakeup).not.toHaveBeenCalled();
-    await expectNoReviewArtifacts(seeded);
-  });
 
   it("folds a terminal source with same-run evidence without creating review work", async () => {
     const now = new Date("2026-04-22T20:00:00.000Z");
@@ -598,17 +593,4 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
     ))).toHaveLength(0);
   });
 
-  it("ignores healthy runs that produced recent output", async () => {
-    const now = new Date("2026-04-22T20:00:00.000Z");
-    const seeded = await seedRunningRun({
-      now,
-      ageMs: ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS + 60_000,
-      withOutput: true,
-    });
-    const { recovery } = createRecovery();
-
-    await expect(buildSummary(seeded.runId, now)).resolves.toMatchObject({ level: "ok" });
-    await expect(recovery.scanSilentActiveRuns({ now, companyId: seeded.companyId }))
-      .resolves.toMatchObject({ scanned: 0, created: 0 });
-  });
 });

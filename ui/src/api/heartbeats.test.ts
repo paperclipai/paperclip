@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockApi = vi.hoisted(() => ({
   get: vi.fn(),
@@ -9,6 +9,15 @@ vi.mock("./client", () => ({
 }));
 
 import { heartbeatsApi } from "./heartbeats";
+import {
+  createTenantSessionRecoveryCoordinator,
+  tenantSessionRecovery,
+} from "@/lib/tenant-session-recovery";
+
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+});
 
 describe("heartbeatsApi.list", () => {
   beforeEach(() => {
@@ -45,5 +54,30 @@ describe("heartbeatsApi.liveRunsForCompany", () => {
     await heartbeatsApi.liveRunsForCompany("company-1", { minCount: 50, limit: 50 });
 
     expect(mockApi.get).toHaveBeenCalledWith("/companies/company-1/live-runs?minCount=50&limit=50");
+  });
+});
+
+describe("heartbeatsApi.downloadProviderTrace", () => {
+  it("initiates tenant-session recovery for a direct trace download", async () => {
+    const reload = vi.fn();
+    const recovery = createTenantSessionRecoveryCoordinator(reload);
+    vi.spyOn(tenantSessionRecovery, "recoverIfNeeded").mockImplementation(recovery.recoverIfNeeded);
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ error: "tenant_session_required" }), {
+        status: 401,
+        headers: { "Content-Type": "application/json" },
+      }),
+    ));
+
+    const request = heartbeatsApi.downloadProviderTrace("run-1");
+    await vi.waitFor(() => expect(reload).toHaveBeenCalledTimes(1));
+
+    let settled = false;
+    void request.then(
+      () => { settled = true; },
+      () => { settled = true; },
+    );
+    await Promise.resolve();
+    expect(settled).toBe(false);
   });
 });

@@ -30,8 +30,33 @@ const claudePatch = await readFile(
   ),
   "utf8",
 );
+const qualifiedProfiles = await readFile(
+  new URL("../src/drivers/acpx/qualified-profiles.ts", import.meta.url),
+  "utf8",
+);
+const runnerdAcpxBackend = await readFile(
+  new URL(
+    "../runner/crates/runner-core/src/acpx_provider_backend.rs",
+    import.meta.url,
+  ),
+  "utf8",
+);
+const providerPackBuilder = await readFile(
+  new URL("../scripts/build-provider-pack.mjs", import.meta.url),
+  "utf8",
+);
+const nativeSessionExecutor = await readFile(
+  new URL(
+    "../../../server/src/services/native-runtime/native-session-executor.ts",
+    import.meta.url,
+  ),
+  "utf8",
+);
 
 test("the runner pins every qualified ACPX production dependency", () => {
+  assert.equal(runnerPackage.dependencies["@openai/codex"], undefined);
+  assert.equal(runnerPackage.optionalDependencies, undefined);
+  assert.equal(runnerPackage.dependencies.node, undefined);
   assert.equal(runnerPackage.dependencies.acpx, "0.13.1");
   assert.equal(
     runnerPackage.dependencies["@agentclientprotocol/codex-acp"],
@@ -43,10 +68,31 @@ test("the runner pins every qualified ACPX production dependency", () => {
   );
 });
 
-test("the package exposes only the reviewed provider transport binaries", () => {
+test("the patched Codex ACP command digest stays aligned across launch boundaries", () => {
+  const profileMatch =
+    /agent: "codex"[\s\S]*?commandDigest:\s*"(sha256:[a-f0-9]{64})"/.exec(
+      qualifiedProfiles,
+    );
+  assert.ok(profileMatch, "qualified Codex ACPX profile digest");
+  const digest = profileMatch[1];
+
+  assert.match(runnerdAcpxBackend, new RegExp(`"codex"[\\s\\S]*?${digest}`));
+  assert.match(
+    providerPackBuilder,
+    new RegExp(`acpxProfileDigests:[\\s\\S]*?codex:[\\s\\S]*?${digest}`),
+  );
+  assert.match(
+    nativeSessionExecutor,
+    new RegExp(
+      `REMOTE_PROVIDER_PACK_PROFILE_DIGESTS[\\s\\S]*?codex:[\\s\\S]*?${digest}`,
+    ),
+  );
+});
+
+test("the package exposes only the reviewed runner CLI binaries", () => {
   assert.deepEqual(runnerPackage.bin, {
-    "paperclip-runner-codex-proxy":
-      "./dist/cli/codex-app-server-unix-proxy.js",
+    "paperclip-runner-eval-session": "./dist/cli/eval-session.js",
+    "paperclip-runner-codex-proxy": "./dist/cli/codex-app-server-unix-proxy.js",
     "paperclip-runner-acpx-sidecar": "./dist/cli/acpx-runtime-sidecar.js",
     "paperclip-runner-opencode-proxy":
       "./dist/cli/opencode-app-server-proxy.js",
@@ -73,12 +119,19 @@ test("old and new pnpm configuration both apply the exact runtime patches", () =
   assert.match(workspace, /acpx@0\.13\.1: patches\/acpx@0\.13\.1\.patch/);
   assert.match(
     workspace,
-    /codex-acp@1\.6\.2': patches\/@agentclientprotocol__codex-acp@1\.6\.2\.patch/,
+    /codex-acp@1\.6\.2["']: patches\/@agentclientprotocol__codex-acp@1\.6\.2\.patch/,
   );
   assert.match(
     workspace,
-    /claude-agent-acp@0\.70\.0': patches\/@agentclientprotocol__claude-agent-acp@0\.70\.0\.patch/,
+    /claude-agent-acp@0\.70\.0["']: patches\/@agentclientprotocol__claude-agent-acp@0\.70\.0\.patch/,
   );
+  assert.equal(rootPackage.pnpm.patchedDependencies["node@24.11.0"], undefined);
+  assert.doesNotMatch(workspace, /node@24\.11\.0:/);
+  assert.match(
+    providerPackBuilder,
+    /copyFileSync\(process\.execPath, stableNodeCommand\)/,
+  );
+  assert.match(codexPatch, /\+    "@openai\/codex": "0\.148\.0"/);
 });
 
 test("the ACPX patch preserves launch-only state and verified spawning", () => {
@@ -127,6 +180,13 @@ test("the Codex patch enforces isolated instructions, tools, and skills", () => 
       new RegExp(token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
     );
   }
+});
+
+test("the Codex patch keeps MCP tool approvals on the governed permission channel", () => {
+  assert.match(
+    codexPatch,
+    /!context\.isToolApproval && this\.shouldUseAcpElicitation\(params\)/,
+  );
 });
 
 test("the Claude patch removes ambient project and local configuration", () => {

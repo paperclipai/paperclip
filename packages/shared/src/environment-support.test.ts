@@ -7,6 +7,15 @@ import {
 } from "./environment-support.js";
 
 describe("isSandboxProviderSupportedForAdapter", () => {
+  it("treats Paperclip Runner as a remote-managed adapter", () => {
+    expect(adapterSupportsRemoteManagedEnvironments("paperclip_runner")).toBe(true);
+    expect(supportedEnvironmentDriversForAdapter("paperclip_runner")).toEqual([
+      "local",
+      "ssh",
+      "sandbox",
+    ]);
+  });
+
   it("accepts additional sandbox providers for remote-managed adapters", () => {
     expect(
       isSandboxProviderSupportedForAdapter("codex_local", "fake-plugin", ["fake-plugin"]),

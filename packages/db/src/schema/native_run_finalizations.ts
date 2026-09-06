@@ -26,6 +26,18 @@ export const nativeRunFinalizations = pgTable(
     attempt: integer("attempt").notNull().default(0),
     leaseOwner: text("lease_owner"),
     leaseExpiresAt: timestamp("lease_expires_at", { withTimezone: true }),
+    controllerBootId: text("controller_boot_id"),
+    controllerPid: integer("controller_pid"),
+    controllerProcessStartedAt: timestamp("controller_process_started_at", {
+      withTimezone: true,
+    }),
+    controllerGeneration: integer("controller_generation").notNull().default(0),
+    recoveryState: text("recovery_state"),
+    recoveryRequestId: text("recovery_request_id"),
+    recoveryHistory: jsonb("recovery_history")
+      .$type<Array<Record<string, unknown>>>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
     resultId: uuid("result_id"),
     assessmentId: uuid("assessment_id"),
     decisionId: uuid("decision_id"),
