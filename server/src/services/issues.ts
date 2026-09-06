@@ -126,6 +126,7 @@ import {
   type IssueLivenessFinding,
 } from "./recovery/issue-graph-liveness.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
+import { ROUTABLE_BLOCKED_ROLLOUT_AT } from "./routable-blocked.js";
 import { finalizeStatusCardsForStalledGeneration } from "./status-card-finalization.js";
 import { finalizeSummarySlotsForTerminalIssue } from "./summary-slot-finalization.js";
 import {
@@ -7813,6 +7814,29 @@ export function issueService(db: Db) {
       } else if (existing.status === "blocked" && issueData.status && issueData.status !== "blocked") {
         patch.unblockDescriptor = null;
         patch.blockedTransitionAt = null;
+        patch.blockedOwnerNotifiedAt = null;
+      } else if (
+        existing.status === "blocked"
+        && issueData.unblockDescriptor
+        && existing.blockedTransitionAt
+        && existing.blockedTransitionAt < ROUTABLE_BLOCKED_ROLLOUT_AT
+      ) {
+        // The row is already blocked and carries a stamp from before routable
+        // blocking existed -- an import of historical data, or a restore. That
+        // stamp fails isProspectiveBlockedTransition's cutoff, so attaching an
+        // unblockDescriptor to the row achieves nothing: the owner is never
+        // routed, never notified, and no later write repairs it, because the
+        // row is stamped and so looks healthy to every self-heal path.
+        //
+        // Attaching the descriptor is the moment the routable request is
+        // actually made, whatever the underlying block has been sitting there
+        // since, so the stamp advances to now and eligibility follows the
+        // request rather than the history. This fires at most once per row:
+        // afterwards the stamp is past the cutoff and this branch cannot match
+        // again. Advancing the stamp also starts a fresh dependency-wake cycle
+        // key, which is correct here -- any cycle belonging to a pre-cutoff
+        // stamp predates the feature that reads it.
+        patch.blockedTransitionAt = patch.updatedAt;
         patch.blockedOwnerNotifiedAt = null;
       }
       if (issueData.requestDepth !== undefined) {
