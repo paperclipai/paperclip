@@ -733,6 +733,47 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     );
   });
 
+  it.each(["2020-01-01T00:00:00.000Z", "2099-01-01T00:00:00.000Z"])(
+    "revalidates a cached pending enrollment before continuing (expiry %s)",
+    async (expiresAt) => {
+      mockSearch.value = "source=github&stage=setup";
+      listGalleryMock.mockResolvedValue({
+        apps: [{
+          ...GITHUB,
+          methods: GITHUB.methods.filter((method) => !method.oauthStrategy),
+          ownershipAvailability: { platform_shared: false, customer: true, dcr: true },
+        }],
+      });
+      getCloudConnectorEnrollmentMock.mockResolvedValue({
+        configured: false,
+        status: "pending",
+        brokerBaseUrl: "https://my-staging.paperclip.app",
+        instanceId: "inst-test",
+        environment: "staging",
+        origins: [],
+        verificationUrl: "https://my-staging.paperclip.app/connections/enroll?id=cached",
+        expiresAt,
+      });
+
+      await render();
+      expect(container.textContent).toContain("Step 2 of 2");
+      await act(async () => {
+        buttonByText("Continue")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      await flushReact();
+
+      expect(startCloudConnectorEnrollmentMock).toHaveBeenCalledWith(
+        "company-1", "Paperclip", "/apps/connect?source=github&stage=setup",
+      );
+      expect(navigateTopLevelMock).toHaveBeenCalledWith(
+        "https://my-staging.paperclip.app/connections/enroll?id=enroll-test",
+      );
+      expect(navigateTopLevelMock).not.toHaveBeenCalledWith(
+        "https://my-staging.paperclip.app/connections/enroll?id=cached",
+      );
+    },
+  );
+
   it("keeps GitHub's personal identity defaults while its managed method awaits enrollment", async () => {
     mockParams.appKey = "github";
     listGalleryMock.mockResolvedValue({

@@ -1973,9 +1973,9 @@ export function ConnectionSetupFlow({
                 onClick={() => {
                   setConnectorEnrollmentError(null);
                   preserveEnrollmentAccess();
-                  const verificationUrl = connectorEnrollmentQuery.data?.verificationUrl;
-                  if (verificationUrl) openConnectorEnrollment(verificationUrl);
-                  else startConnectorEnrollment.mutate();
+                  // Let the server reuse a live enrollment or replace an expired
+                  // one. A cached verification URL may expire while this page is open.
+                  startConnectorEnrollment.mutate();
                 }}
               >
                 {startConnectorEnrollment.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
