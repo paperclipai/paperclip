@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
@@ -720,6 +720,230 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
 
     const childrenAfterDuplicateAccept = await issuesSvc.list(companyId, { parentId: issueId });
     expect(childrenAfterDuplicateAccept).toHaveLength(1);
+  });
+
+  it("decides backstop trust for an accepted suggestion against the resolving run's context", async () => {
+    // The inference backstop re-evaluates trust against the project it is
+    // about to attach. That decision reads the run from `actorRunId` — if the
+    // acceptance drops the resolving run, a low-trust run's suggestion lands
+    // unquarantined even though the route path would have tagged it.
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    const resolverAgentId = randomUUID();
+    const projectId = randomUUID();
+    const runId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: false });
+    await db.insert(agents).values({
+      id: resolverAgentId,
+      companyId,
+      name: "Resolver",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "shove",
+      status: "in_progress",
+    });
+    await db.insert(projectWorkspaces).values({
+      companyId,
+      projectId,
+      name: "shove",
+      sourceType: "git_repo",
+      repoUrl: "https://github.com/zannis/shove",
+      cwd: "/repos/shove",
+      isPrimary: true,
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Project-less host issue",
+      status: "in_progress",
+      priority: "medium",
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId: resolverAgentId,
+      status: "running",
+      contextSnapshot: {
+        executionPolicy: {
+          authorizationPolicy: {
+            trustPreset: "low_trust_review",
+            trustBoundary: { mode: "low_trust_review", companyId, projectIds: [projectId] },
+          },
+        },
+      },
+    });
+
+    const created = await interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "suggest_tasks",
+      payload: {
+        version: 1,
+        tasks: [
+          {
+            clientKey: "root",
+            title: "Split out the repro",
+            description: "Reproduce it in https://github.com/zannis/shove first.",
+          },
+        ],
+      },
+    }, {
+      userId: "local-board",
+    });
+
+    await interactionsSvc.acceptSuggestedTasks({
+      id: issueId,
+      companyId,
+      goalId: null,
+      projectId: null,
+    }, created.id, {}, {
+      agentId: resolverAgentId,
+      runId,
+      suggestedTaskEffectsAuthorized: true,
+    });
+
+    const [createdTask] = await db
+      .select({ projectId: issues.projectId, sourceTrust: issues.sourceTrust })
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.title, "Split out the repro")));
+    expect(createdTask?.projectId).toBe(projectId);
+    expect(createdTask?.sourceTrust).toMatchObject({
+      preset: "low_trust_review",
+      disposition: "quarantined",
+    });
+  });
+
+  it("refuses a nested assigned suggestion landing in a batch parent's protected project", async () => {
+    // Within one accepted batch an unassigned root can pick up a protected
+    // project through the inference backstop (no assignee → no tasks:assign
+    // gate, route parity). A nested child then resolves its parentClientKey
+    // to the real just-created parent and inherits that project through
+    // ordinary parent inheritance — a path neither the route's pre-creation
+    // effects check (which saw a project-less scope) nor the backstop (the
+    // project arrives explicit) ever authorized. The acceptance has to run
+    // tasks:assign against the batch parent's actual project itself.
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    const resolverAgentId = randomUUID();
+    const assigneeAgentId = randomUUID();
+    const projectId = randomUUID();
+    const runId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: false });
+    for (const [agentId, name] of [[resolverAgentId, "Resolver"], [assigneeAgentId, "Assignee"]] as const) {
+      await db.insert(agents).values({
+        id: agentId,
+        companyId,
+        name,
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      });
+    }
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "shove",
+      status: "in_progress",
+      executionWorkspacePolicy: {
+        authorizationPolicy: {
+          assignmentPolicy: { mode: "protected" },
+        },
+      },
+    });
+    await db.insert(projectWorkspaces).values({
+      companyId,
+      projectId,
+      name: "shove",
+      sourceType: "git_repo",
+      repoUrl: "https://github.com/zannis/shove",
+      cwd: "/repos/shove",
+      isPrimary: true,
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Project-less host issue",
+      status: "in_progress",
+      priority: "medium",
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId: resolverAgentId,
+      status: "running",
+    });
+
+    const created = await interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "suggest_tasks",
+      payload: {
+        version: 1,
+        tasks: [
+          {
+            clientKey: "root",
+            title: "Split out the repro",
+            description: "Reproduce it in https://github.com/zannis/shove first.",
+          },
+          {
+            clientKey: "child",
+            parentClientKey: "root",
+            title: "Land the fix",
+            assigneeAgentId,
+          },
+        ],
+      },
+    }, {
+      userId: "local-board",
+    });
+
+    await expect(interactionsSvc.acceptSuggestedTasks({
+      id: issueId,
+      companyId,
+      goalId: null,
+      projectId: null,
+    }, created.id, {}, {
+      agentId: resolverAgentId,
+      runId,
+      suggestedTaskEffectsAuthorized: true,
+    })).rejects.toMatchObject({
+      status: 403,
+      details: expect.objectContaining({ code: "interaction_governed_action_denied" }),
+    });
+
+    // The denial rolls the whole acceptance back: no partial tree, and the
+    // interaction stays pending.
+    const rows = await db.select({ id: issues.id }).from(issues).where(eq(issues.companyId, companyId));
+    expect(rows).toHaveLength(1);
+    const listed = await interactionsSvc.listForIssue(issueId);
+    expect(listed[0]?.status).toBe("pending");
   });
 
   it("accepts a selected subset of suggested tasks and records the skipped drafts", async () => {

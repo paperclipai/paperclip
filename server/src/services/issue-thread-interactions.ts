@@ -70,7 +70,7 @@ import {
 } from "@paperclipai/shared";
 import { z } from "zod";
 import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
-import type { AuthorizationActor } from "./authorization.js";
+import { authorizationService, type AuthorizationActor } from "./authorization.js";
 import { getTelemetryClient } from "../telemetry.js";
 import { logActivity, publishActivity, type ActivityPublication } from "./activity-log.js";
 import { evaluateAgentInvokabilityFromDb } from "./agent-invokability.js";
@@ -2963,6 +2963,7 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
 
       const parentById = new Map(parentRows.map((row) => [row.id, row] as const));
       const createdByClientKey = new Map<string, SuggestTasksResultCreatedTask>();
+      const createdProjectByClientKey = new Map<string, string | null>();
       const createdWakeTargets: IssueWakeTarget[] = [];
 
       await db.transaction(async (tx) => {
@@ -2995,6 +2996,72 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
             throw unprocessable(`Unable to resolve parent for suggested task ${task.clientKey}`);
           }
 
+          // The route's effects check authorized each assigned task against
+          // `task.projectId ?? issue.projectId` before anything existed, so a
+          // parent created earlier in this same batch was invisible to it.
+          // When that batch parent carries a project (typically attached by
+          // the inference backstop) and this task would inherit it through
+          // ordinary parent inheritance, an assigned task still needs the
+          // tasks:assign decision the route would have made had it seen the
+          // real landing project — otherwise a two-step batch reaches a
+          // protected project no check ever authorized.
+          const batchParentProjectId = task.parentClientKey
+            ? createdProjectByClientKey.get(task.parentClientKey) ?? null
+            : null;
+          if (
+            actor.agentId &&
+            (task.assigneeAgentId || task.assigneeUserId) &&
+            (task.projectId ?? issue.projectId) == null &&
+            batchParentProjectId != null
+          ) {
+            let assignmentActor: AuthorizationActor | null = actor.authorization ?? null;
+            if (!assignmentActor) {
+              const actorOnBehalfOfUserId = actor.runId
+                ? await tx
+                  .select({ responsibleUserId: heartbeatRuns.responsibleUserId })
+                  .from(heartbeatRuns)
+                  .where(and(
+                    eq(heartbeatRuns.id, actor.runId),
+                    eq(heartbeatRuns.companyId, issue.companyId),
+                    eq(heartbeatRuns.agentId, actor.agentId),
+                  ))
+                  .then((rows) => rows[0]?.responsibleUserId?.trim() || null)
+                : null;
+              assignmentActor = {
+                type: "agent",
+                agentId: actor.agentId,
+                companyId: issue.companyId,
+                runId: actor.runId ?? null,
+                onBehalfOfUserId: actorOnBehalfOfUserId,
+              };
+            }
+            const assignmentDecision = await authorizationService(tx as unknown as Db).decide({
+              actor: assignmentActor,
+              action: "tasks:assign",
+              resource: {
+                type: "issue",
+                companyId: issue.companyId,
+                projectId: batchParentProjectId,
+                parentIssueId,
+                assigneeAgentId: task.assigneeAgentId ?? null,
+                assigneeUserId: task.assigneeUserId ?? null,
+              },
+              scope: {
+                projectId: batchParentProjectId,
+                parentIssueId,
+                assigneeAgentId: task.assigneeAgentId ?? null,
+                assigneeUserId: task.assigneeUserId ?? null,
+              },
+            });
+            if (!assignmentDecision.allowed) {
+              throw issueThreadInteractionResolutionError(
+                403,
+                "interaction_governed_action_denied",
+                "Suggested-task creation requires independent authorization for every selected task",
+              );
+            }
+          }
+
           const { issue: createdIssue } = await issueService(tx as unknown as Db).createChild(parentIssueId, {
             title: task.title,
             description: task.description ?? null,
@@ -3010,12 +3077,17 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
             createdByUserId: actor.userId ?? null,
             actorAgentId: actor.agentId ?? null,
             actorUserId: actor.userId ?? null,
+            // The inference backstop's trust decision reads the run from
+            // actorRunId, not from actorAuthorization — forward the resolving
+            // run so a restricted run's acceptance stays quarantined.
+            actorRunId: actor.runId ?? null,
             actorAuthorization: actor.authorization ?? null,
           } as Parameters<ReturnType<typeof issueService>["createChild"]>[1]);
 
           const parentIdentifier = createdByClientKey.get(task.parentClientKey ?? "")?.identifier
             ?? parentById.get(parentIssueId)?.identifier
             ?? null;
+          createdProjectByClientKey.set(task.clientKey, createdIssue.projectId ?? null);
           createdByClientKey.set(task.clientKey, {
             clientKey: task.clientKey,
             issueId: createdIssue.id,

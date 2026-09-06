@@ -2301,6 +2301,12 @@ describe.sequential("issue thread interaction routes", () => {
         agentId: ASSIGNEE_AGENT_ID,
         runId: RUN_2,
         userId: null,
+        authorization: {
+          type: "agent",
+          agentId: ASSIGNEE_AGENT_ID,
+          companyId: "company-1",
+          runId: RUN_2,
+        },
         resolverPolicyRestriction: "anyone",
         suggestedTaskEffectsAuthorized: true,
       },
