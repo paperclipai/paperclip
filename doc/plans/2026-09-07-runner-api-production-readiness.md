@@ -50,15 +50,28 @@ repository-pinned OpenCode 1.18.29; the larger cohort used 1.18.17. Paid testing
 stopped at $9.875960 and 88.16 active minutes. No missing accounting remains.
 The remaining campaign time cannot fit another 120-second reservation.
 
-The rebased branch passed the full Linux build and typecheck. The full test suite
-is running. Focused Linux verification also passed the real runnerd/PRP/HTTP
-integration, resumed-session binding, platform file checks and runtime exposure.
+The rebased branch passed the full Linux build and typecheck. Repository tests
+were run by project and serialized shard. All 143 serialized server suites passed.
+The runner TypeScript suite passed 1,599 tests with two platform skips. Rust
+release tests, conformance and replay checks passed. The required API authority
+check passed 814 tests, including the real runnerd/PRP/HTTP integration.
+
+Retained verification logs record the initial environment failures and targeted
+reruns: missing `jq`, an overlay-filesystem identity test that passed on tmpfs,
+and parallel Rust linking that passed with one build worker. The macOS full
+runner suite has platform-specific failures; Linux is the qualified full-check
+platform. Latest-head CI remains the final release gate.
+
+Review fixes also block issue reopen/resume/interrupt intents, require explicit
+controller credential injection, and add recoverable ledger stop/reconciliation
+transitions. These changes have provider-free evidence. They do not have new
+paid-model results after the campaign time limit.
 
 ## Release gates
 
 1. Preserve the completed paired comparison and its investigated threshold flags.
 2. Record final costs, latency, source revisions, failures and unrun operations.
-3. Finish the full Linux test run and the PR review/check loops on current master.
+3. Require green current-head CI and completed security/code review before merging.
 4. Keep API tools disabled until an operator selects the first rollout companies.
 5. Inspect task correctness, fallback frequency, cost, latency, denials and unknown
    mutation outcomes before expanding access.
