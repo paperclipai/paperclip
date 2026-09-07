@@ -20,6 +20,7 @@ describe("codex local adapter metadata", () => {
       "gpt-5.6-terra",
       "gpt-5.6-luna",
     ]);
+    expect(modelIds).toContain("gpt-5.5");
     expect(modelIds).not.toContain("gpt-5.6");
     expect(isCodexLocalFastModeSupported(DEFAULT_CODEX_LOCAL_MODEL)).toBe(true);
     expect(isCodexLocalFastModeSupported("gpt-6-astra")).toBe(true);
