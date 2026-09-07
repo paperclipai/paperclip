@@ -68,7 +68,9 @@ describe("finalizeServerShutdown", () => {
     // The cleanup is in flight. The database stop, the instrumentation flush,
     // and the process exit continuation must all wait for it to settle.
     await vi.waitFor(() => expect(shutdownAppServices).toHaveBeenCalledOnce());
-    expect(closeHttpListener).not.toHaveBeenCalled();
+    // The listener already closed: requests are drained while every service
+    // is still available, and nothing after this point can be reached.
+    expect(closeHttpListener).toHaveBeenCalledOnce();
     expect(closeDatabase).not.toHaveBeenCalled();
     expect(stopEmbeddedPostgres).not.toHaveBeenCalled();
     expect(shutdownInstrumentation).not.toHaveBeenCalled();
@@ -79,9 +81,9 @@ describe("finalizeServerShutdown", () => {
 
     expect(exited).toBe(true);
     expect(order).toEqual([
+      "listener:close",
       "appServices:start",
       "appServices:settled",
-      "listener:close",
       "database:close",
       "postgres:stop",
       "instrumentation:flush",

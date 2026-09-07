@@ -106,16 +106,16 @@ export async function finalizeServerShutdown(input: {
   shutdownAppServices: (() => Promise<void>) | undefined;
   /**
    * Stops the HTTP listener and drains its connections (see
-   * `closeHttpListenerForShutdown`). Runs after the application services and
-   * before the database pool ends, so no request reaches a route once the
-   * pool is gone.
+   * `closeHttpListenerForShutdown`). Runs first, while every application
+   * service is still available to the requests being drained, so no request
+   * runs against a half-dismantled service or an ended pool.
    */
   closeHttpListener?: (() => Promise<unknown>) | null;
   /**
    * Ends the server's PostgreSQL client pools. Runs after the application
-   * services (which still need the database) and the listener close, and
-   * before the embedded provider stops, so the backends close in order and
-   * none outlive the process.
+   * services (which still need the database) and before the embedded
+   * provider stops, so the backends close in order and none outlive the
+   * process.
    */
   closeDatabase?: (() => Promise<void>) | null;
   stopEmbeddedPostgres: (() => Promise<void>) | null;
@@ -125,6 +125,16 @@ export async function finalizeServerShutdown(input: {
 }): Promise<void> {
   const { signal } = input;
 
+  // Stop accepting requests and drain the open ones before any service goes
+  // away, so a request that is still in flight sees a fully working server.
+  if (input.closeHttpListener) {
+    try {
+      await input.closeHttpListener();
+    } catch (err) {
+      input.log.error({ err, signal }, "HTTP listener shutdown failed");
+    }
+  }
+
   // Await the application service cleanup, so a live setup-token login session
   // releases its sandbox lease before the database and the provider stop. A
   // rejected cleanup stays durable for the reaper; it does not block the exit.
@@ -132,14 +142,6 @@ export async function finalizeServerShutdown(input: {
     await input.shutdownAppServices?.();
   } catch (err) {
     input.log.error({ err, signal }, "Application service shutdown failed");
-  }
-
-  if (input.closeHttpListener) {
-    try {
-      await input.closeHttpListener();
-    } catch (err) {
-      input.log.error({ err, signal }, "HTTP listener shutdown failed");
-    }
   }
 
   // End the client pools once nothing needs them any more. Without this the
