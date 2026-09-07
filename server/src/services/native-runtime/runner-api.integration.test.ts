@@ -102,9 +102,9 @@ else if(m.id!==undefined) send({id:m.id,result:{}});
     expect((await fixture.snapshot()).issues.find(row => row.id === fixture.blockerId)?.status).toBe("todo");
   });
 
-  it("rejects scheduled execution controls before dispatch or durable receipt", async () => {
+  it("rejects every restricted REST mutation before dispatch or durable receipt", async () => {
     const fixture = await server.fixture();
-    const operations = runnerApiCatalog().filter(operation => !["GET", "HEAD", "OPTIONS"].includes(operation.method) && /\/(routines|routine-triggers)(\/|$)/.test(operation.path));
+    const operations = runnerApiCatalog().filter(operation => operation.transport === "rest" && !["GET", "HEAD", "OPTIONS"].includes(operation.method) && operation.callPolicy === "restricted");
     expect(operations.length).toBeGreaterThan(5);
     for (const operation of operations) {
       await expect(fixture.authority.execute({ tool: "call_api", callId: operation.operationId, arguments: { operationId: operation.operationId } })).rejects.toThrow(/cannot bypass|credential broker/);

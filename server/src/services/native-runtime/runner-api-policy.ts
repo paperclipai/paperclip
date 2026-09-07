@@ -4,8 +4,9 @@ export function runnerApiRestriction(method: string, path: string): string | nul
     "/api/agents/me/secrets",
     "/api/companies/{companyId}/secrets/catalog",
   ].includes(path);
-  if (!metadataRead && (/\/(secrets|secret-proposals|secret-provider-configs|user-secrets|user-secret-definitions|keys|board-api-keys|credentials|setup-token-login-sessions|board-claim|invites|join-requests|gateway-tokens|tokens|token|rotate-secret|terminal-session-token|claim-api-key)(\/|$)/.test(path)
-    || /^\/api\/companies\/\{companyId\}\/exports?(\/|$)/.test(path))) {
+  if ((/^\/api\/tool-gateway\/sessions(\/|$)/.test(path) && method !== "GET")
+    || (!metadataRead && (/\/(secrets|secret-proposals|secret-provider-configs|user-secrets|user-secret-definitions|keys|board-api-keys|credentials|setup-token-login-sessions|board-claim|invites|join-requests|gateway-tokens|tokens|token|rotate-secret|terminal-session-token|claim-api-key)(\/|$)/.test(path)
+    || /^\/api\/companies\/\{companyId\}\/exports?(\/|$)/.test(path)))) {
     return "Use the existing credential broker or secure management client: call_api cannot return secret values, manage credentials, or export company credential configuration.";
   }
   return ["GET", "HEAD", "OPTIONS"].includes(method) ? null : runnerApiMutationRestriction(path);
@@ -15,6 +16,10 @@ export function runnerApiRestriction(method: string, path: string): string | nul
 export function runnerApiMutationRestriction(path: string): string | null {
   const issueRoute = /^\/api\/issues\/\{[^}]+\}/.test(path);
   if (/\/(routines|routine-triggers)(\/|$)/.test(path)
+    || /\/(runtime-commands|runtime-services)\/\{action\}$/.test(path)
+    || /\/(?:tool-gateway|tools)\/runtime-slots\/\{[^}]+\}\/(restart|stop)$/.test(path)
+    || /^\/api\/cases\/\{[^}]+\}\/(automation|automations)\//.test(path)
+    || /\/skills\/\{[^}]+\}\/test-runs(\/|$)/.test(path)
     || /^\/api\/heartbeat-runs\//.test(path)
     || /^\/api\/agents\/\{[^}]+\}\/(heartbeat|wakeup|pause|resume|terminate|approve|clear-error|runtime-state)(\/|$)/.test(path)
     || /^\/api\/(approvals|decisions)\/\{[^}]+\}\/(approve|reject|decide|cancel|dismiss|request-revision|resubmit)$/.test(path)

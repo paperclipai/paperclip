@@ -41,6 +41,28 @@ describe("runner API catalog", () => {
 });
 
 describe("runner API request boundary", () => {
+  it.each([
+    "POST /api/execution-workspaces/{id}/runtime-commands/{action}",
+    "POST /api/projects/{id}/workspaces/{workspaceId}/runtime-services/{action}",
+    "POST /api/tool-gateway/runtime-slots/{slotId}/restart",
+    "POST /api/cases/{caseId}/automation/current-stage/rerun",
+    "POST /api/companies/{companyId}/skills/{skillId}/test-runs",
+    "POST /api/tool-gateway/sessions",
+  ])("keeps execution and gateway control %s out of generic dispatch", async operationId => {
+    const request = vi.fn<typeof fetch>();
+    await expect(executeRunnerApi({ operationId }, context, io(request))).rejects.toThrow(/cannot bypass|credential broker/);
+    expect(request).not.toHaveBeenCalled();
+  });
+  it.each([
+    "POST /api/agents/{id}/claude-login",
+    "POST /api/companies/{companyId}/adapters/{type}/login-sessions",
+    "POST /api/agents/me/connections/{connectionId}/start-authorization",
+  ])("directs authentication handshake %s to its existing client", async operationId => {
+    const request = vi.fn<typeof fetch>();
+    expect(runnerApiOperation(operationId).transport).toBe("protocol");
+    await expect(executeRunnerApi({ operationId }, context, io(request))).rejects.toThrow("existing protocol client");
+    expect(request).not.toHaveBeenCalled();
+  });
   it.each(runnerApiCatalog().filter(operation => !["GET", "HEAD", "OPTIONS"].includes(operation.method) && /\/(routines|routine-triggers)(\/|$)/.test(operation.path)))("keeps scheduled execution $operationId behind its existing client", async operation => {
     const request = vi.fn<typeof fetch>();
     await expect(executeRunnerApi({ operationId: operation.operationId }, context, io(request))).rejects.toThrow(/cannot bypass|credential broker/);

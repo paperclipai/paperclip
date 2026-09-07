@@ -75,6 +75,7 @@ export function buildRunnerApiCatalog(document: Json = buildOpenApiDocument()): 
       const restriction = runnerApiRestriction(method, path);
       const skillReference = runnerApiReference[`${method} ${path.replace(/\{[^}]+\}/g, "{}")}`];
       const protocol = !path.startsWith("/api/") || /\/(oauth|auth|runtime-tools|mcp|ws)(\/|$)/.test(path)
+        || /\/(claude-login|login-sessions|start-authorization|finalize-oauth-access)(\/|$)/.test(path)
         || /event-stream|websocket/i.test(JSON.stringify(operation.responses));
       result.push({
         operationId: `${method} ${path}`, method, path,

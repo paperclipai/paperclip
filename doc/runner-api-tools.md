@@ -74,7 +74,10 @@ dedicated-tool exceptions are unchanged. Runner-owned checkout, completion,
 status/assignment transitions, approval decisions and execution-control actions
 cannot be bypassed through generic calls. Routine creation, schedule/trigger
 changes and manual/public routine execution require the existing scheduling
-clients. Routine metadata remains readable. API-only ordinary fields, such as a
+clients. Direct workspace runtime commands, runtime-slot stop/restart, case
+automation retries and skill test-run controls also require their existing
+execution clients. Gateway session credentials cannot enter generic results.
+Routine metadata remains readable. API-only ordinary fields, such as a
 task's `billingCode`, remain accessible even when a dedicated tool covers other
 fields on that endpoint.
 
