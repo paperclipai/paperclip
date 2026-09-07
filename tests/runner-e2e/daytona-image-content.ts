@@ -15,6 +15,7 @@ export const DAYTONA_IMAGE_DOCKERFILE_PATH = "docker/daytona-runner/Dockerfile";
 // the contract test so development-only files cannot silently enter the image
 // without first changing this content-identity contract.
 export const DAYTONA_IMAGE_INPUT_PATHS = [
+  ".cargo",
   ".dockerignore",
   ".npmrc",
   "docker/daytona-runner/Dockerfile",
