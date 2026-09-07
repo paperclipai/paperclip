@@ -26,6 +26,8 @@ export const heartbeatRuns = pgTable(
     triggerDetail: text("trigger_detail"),
     status: text("status").notNull().default("queued"),
     responsibleUserId: text("responsible_user_id"),
+    // The service validates the company/run boundary; avoid a cyclic schema import.
+    activeIdentityContextId: uuid("active_identity_context_id"),
     startedAt: timestamp("started_at", { withTimezone: true }),
     finishedAt: timestamp("finished_at", { withTimezone: true }),
     error: text("error"),

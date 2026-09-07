@@ -46,7 +46,11 @@ export interface CodexAppServerTransport {
     turnId: string;
     resolution: HarnessRuntimeRequestResolution;
   }): Promise<void>;
-  close(): Promise<void>;
+  /**
+   * Close the provider transport. The optional reason is controller-owned
+   * diagnostic context; transports must not forward it to the provider.
+   */
+  close(reason?: string): Promise<void>;
   /** Relinquish controller authority while leaving durable runner work alive. */
   detachControllerForRestart?(): Promise<void>;
   processInfo?(): CodexTransportProcessInfo;

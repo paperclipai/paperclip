@@ -266,6 +266,11 @@ same metrics per campaign/suite/execution, source SHA/ref, definition
 fingerprints, completeness, retries, and cleanup. Trend charts compare only
 complete campaigns by default; partial/manual selections remain browsable.
 `summary.md` carries the current totals into the GitHub Actions job summary.
+In CI, its **View results** section links to the exact immutable public campaign
+report, the workflow and per-cell logs, and the access-controlled report
+artifacts. Each cell name links to its exact section in the campaign report.
+The public campaign links become available after the history publisher
+finishes. The artifact links remain available for 30 days.
 
 ### Iterate on a published dashboard without rerunning paid tests
 

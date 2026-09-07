@@ -1393,12 +1393,16 @@ function OnboardingWizardInner({
   /**
    * Back, on the connect step, unwinds the sign-in before it leaves the step.
    *
-   * This hides the card; it does not cancel the login. Unmounting the panel no
-   * longer releases the server session — the session stays reachable for a
+   * This hides the card; it does not cancel the login. Unmounting the panel
+   * does not release the server session — the session stays reachable for a
    * later resume, the same read that restores it after a reload — so backing
-   * out and returning shows the sign-in still running, not a fresh one. The
-   * card's own Cancel button is the only explicit release; `onCancel` below
-   * puts the step back here when it fires.
+   * out and returning shows the sign-in still running, not a fresh one.
+   *
+   * Nothing releases it explicitly any more. The card carried a Cancel that
+   * did, sitting beside an instruction and directly above this step's own
+   * Back, and two ways out of one screen is one too many — the button went and
+   * the release went with it. What is left is the server deadline, which is
+   * the same thing that collects a session abandoned by closing the tab.
    */
   function unwindConnectStep() {
     setConnectAuthUrl(null);
@@ -3171,11 +3175,10 @@ function OnboardingWizardInner({
                          in the connect step's chrome. It owns the session; the
                          step owns the sequence around it.
 
-                         Unmounting it is no longer the cancel: the session
-                         stays reachable for a later resume, so Back and a
-                         source switch only hide the card. `onCancel` fires
-                         from the card's own Cancel button, the one explicit
-                         release, and puts the step back where Back would.
+                         Unmounting it is not the cancel: the session stays
+                         reachable for a later resume, so Back and a source
+                         switch only hide the card, and nothing here releases
+                         the session early — see `unwindConnectStep`.
 
                          No "Use saved login" control: the hire step already
                          applies a stored login on its own. */
@@ -3186,7 +3189,6 @@ function OnboardingWizardInner({
                         environmentId={resolvedLoginEnvironmentId}
                         chrome="onboarding"
                         autoStart
-                        onCancel={unwindConnectStep}
                         onPromptReady={(url) => {
                           setConnectAuthUrl(url);
                           // The prompt arriving is what ends the waiting beat.

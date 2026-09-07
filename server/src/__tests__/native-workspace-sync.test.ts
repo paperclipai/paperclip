@@ -77,6 +77,14 @@ describe("native workspace sync durable metadata", () => {
         sameProviderLease: false,
       }),
     ).toBe("durable_seed");
+    expect(
+      classifyNativeWorkspaceInbound({
+        kind: "existing_run",
+        restartRecovery: false,
+        sameRunRecovery: true,
+        sameProviderLease: true,
+      }),
+    ).toBe("adopt_remote");
     expect(() =>
       classifyNativeWorkspaceInbound({
         kind: "existing_run",

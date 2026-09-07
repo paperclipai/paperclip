@@ -29,6 +29,12 @@ export const DEFAULT_NATIVE_RUNTIME_INPUT_LIVE_WINDOW_MS = 120_000;
 export const DEFAULT_NATIVE_SEMANTIC_RESULT_TERMINAL_GRACE_MS = 5_000;
 const OPTIONAL_SESSION_CANCELLATION_GRACE_MS = 100;
 const FAILED_OPERATION_SETTLEMENT_GRACE_MS = 100;
+// Retaining a remote provider requires its semantic-result interruption to be
+// acknowledged before the session is handed to another run. Daytona command
+// round trips routinely exceed the generic failed-operation grace, but remain
+// bounded by the transport. Other iterator and handoff cleanup keeps the short
+// fail-closed quarantine boundary below.
+const REUSABLE_SESSION_CANCELLATION_SETTLEMENT_GRACE_MS = 10_000;
 const DEFAULT_NATIVE_CHECKPOINT_TIMEOUT_MS = 30_000;
 type NativeSessionCleanupDomain = string;
 
@@ -83,6 +89,8 @@ export interface ExecuteNativeSessionOptions {
   /** Internal test seam; production gives the provider five seconds to end after a result. */
   semanticResultTerminalGraceMs?: number;
   onSession?: (session: NativeSession | null) => void;
+  /** Observes why a retained session was removed from warm reuse. */
+  onSessionQuarantined?: (reason: string) => Promise<void> | void;
   existingSession?: NativeSession;
   persistedSession?: PersistedNativeSession | null;
   keepSessionOpen?: boolean;
@@ -96,6 +104,15 @@ export interface ExecuteNativeSessionOptions {
     snapshot: PersistedNativeSession,
     options?: CheckpointControlPlaneSessionOptions,
   ) => Promise<void> | void;
+  /**
+   * Observes a post-result failure after completeRun has committed. Checkpoint
+   * failures quarantine the retained session; usage failures only omit
+   * optional accounting enrichment.
+   */
+  onPostCompletionEnrichmentFailure?: (input: {
+    stage: "checkpoint" | "usage";
+    error: unknown;
+  }) => Promise<void> | void;
   /** Called when exact provider recovery failed and policy opened a new provider session. */
   onContinuityBreak?: (input: {
     reason: string;
@@ -686,8 +703,9 @@ async function consumeTurn(
   timeoutMs: number,
   runtimeInputLiveWindowMs: number,
   semanticResultTerminalGraceMs: number,
+  reusableSessionCancellationGraceMs: number,
   closeFailedSession: () => Promise<void>,
-  quarantineSession: () => void,
+  quarantineSession: (reason: string) => void,
   resolveGovernedWait?: ExecuteNativeSessionOptions["resolveGovernedWait"],
   externalSignal?: AbortSignal,
 ) {
@@ -697,6 +715,8 @@ async function consumeTurn(
   const appendAbort = new AbortController();
   const governedCleanupOperations = new Set<Promise<unknown>>();
   let governedCancellationCommitted = false;
+  let semanticCancellationCommitted = false;
+  let semanticResultObserved = false;
   let deferredGovernedCleanupSettlement: Promise<unknown> | null = null;
   let deferredSessionCancellationSettlement: Promise<unknown> | null = null;
   const inputTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -755,10 +775,11 @@ async function consumeTurn(
         signal: appendAbort.signal,
       });
       governedCancellationCommitted = true;
+      semanticCancellationCommitted = event.eventType === "run.result.proposed";
       const cleanup = cancellation.cleanup;
       governedCleanupOperations.add(cleanup);
       void cleanup
-        .catch(() => quarantineSession())
+        .catch(() => quarantineSession("governed_cleanup_failed"))
         .finally(() => governedCleanupOperations.delete(cleanup));
       return {
         event,
@@ -904,6 +925,7 @@ async function consumeTurn(
         governedResult = validation.result;
         resultSource = "semantic_result";
         semanticResultEvent = event;
+        semanticResultObserved = true;
         if (session.cancel !== undefined) {
           semanticResultDeadline = new Promise((resolve) => {
             semanticResultTimer = setTimeout(
@@ -1059,14 +1081,21 @@ async function consumeTurn(
       );
     } else {
       // Iterator and provider cleanup own no control-plane mutation authority.
-      // A slow subscription or cleanup remains observed and is released by the
-      // normal session close, but it cannot erase an already committed
-      // terminal fact or prevent result retrieval and durable finalization.
+      // A reusable session with a semantic result needs a longer bounded
+      // window for the remote event subscription to release. This applies
+      // both when Paperclip forced an interrupt and when the provider emitted
+      // its own terminal immediately afterward: the latter still crosses the
+      // remote PRP acknowledgement boundary and routinely takes longer than
+      // the generic local cleanup grace. Governed waits and unrelated stalled
+      // cleanup retain the short fail-closed boundary.
       const teardownSettled = await settlesWithin(
         passiveTeardownSettlement,
-        FAILED_OPERATION_SETTLEMENT_GRACE_MS,
+        semanticCancellationCommitted || semanticResultObserved
+          ? reusableSessionCancellationGraceMs
+          : FAILED_OPERATION_SETTLEMENT_GRACE_MS,
       );
-      if (!teardownSettled) quarantineSession();
+      if (!teardownSettled)
+        quarantineSession("provider_event_teardown_timed_out");
     }
     if (timer !== undefined) clearTimeout(timer);
     if (semanticResultTimer !== undefined) clearTimeout(semanticResultTimer);
@@ -1630,9 +1659,14 @@ export async function executeNativeSession(
   }
   let sessionClosePromise: Promise<void> | null = null;
   let sessionQuarantined = false;
-  const quarantineSession = () => {
+  const quarantineSession = (reason: string) => {
     if (sessionQuarantined) return;
     sessionQuarantined = true;
+    try {
+      void options.onSessionQuarantined?.(reason);
+    } catch {
+      // Diagnostics cannot prevent provider cleanup.
+    }
     try {
       options.onSession?.(null);
     } catch {
@@ -1643,7 +1677,7 @@ export async function executeNativeSession(
   let sessionCloseRecoveryPromise: Promise<void> | null = null;
   const retainFailedCleanup = (cleanup: Promise<void>) => {
     failedCleanupDeferred = true;
-    quarantineSession();
+    quarantineSession("session_close_recovery_retained");
     retainFailedSessionCleanupOwner(cleanup, cleanupDomain);
   };
   const startSessionClose = (reason: string) => {
@@ -1651,9 +1685,9 @@ export async function executeNativeSession(
     sessionClosePromise = attempt;
     return attempt;
   };
-  const closeSession = () => {
+  const closeSession = (quarantineReason = "session_close_started") => {
     if (sessionClosePromise === null) {
-      quarantineSession();
+      quarantineSession(quarantineReason);
       const firstAttempt = startSessionClose(
         "native session execution complete",
       );
@@ -1851,6 +1885,9 @@ export async function executeNativeSession(
                 DEFAULT_NATIVE_RUNTIME_INPUT_LIVE_WINDOW_MS,
               options.semanticResultTerminalGraceMs ??
                 DEFAULT_NATIVE_SEMANTIC_RESULT_TERMINAL_GRACE_MS,
+              options.keepSessionOpen
+                ? REUSABLE_SESSION_CANCELLATION_SETTLEMENT_GRACE_MS
+                : FAILED_OPERATION_SETTLEMENT_GRACE_MS,
               closeSession,
               quarantineSession,
               options.resolveGovernedWait,
@@ -2121,13 +2158,19 @@ export async function executeNativeSession(
         };
       },
     });
-    let enrichment: {
-      providerSessionId: string | null;
-      driverVersion: string;
-      usage: Record<string, unknown> | null;
+    const observeEnrichmentFailure = async (
+      stage: "checkpoint" | "usage",
+      error: unknown,
+    ) => {
+      try {
+        await options.onPostCompletionEnrichmentFailure?.({ stage, error });
+      } catch {
+        // Diagnostics cannot revoke or delay a durably committed result.
+      }
     };
+    let completedSnapshot: PersistedNativeSession;
     try {
-      enrichment = await finalizeWithin({
+      completedSnapshot = await finalizeWithin({
         timeoutMs: options.timeoutMs ?? 900_000,
         operation: async (signal) => {
           const snapshot = await session.snapshot({ signal });
@@ -2139,36 +2182,61 @@ export async function executeNativeSession(
           };
           await persistCheckpoint(completedSnapshot, signal);
           signal.throwIfAborted();
-          const usage = (await session.usage?.()) ?? null;
-          signal.throwIfAborted();
-          return {
-            providerSessionId: snapshot.providerSessionId ?? null,
-            driverVersion:
-              typeof usage?.driverVersion === "string"
-                ? usage.driverVersion
-                : descriptor.version,
-            usage,
-          };
+          return completedSnapshot;
         },
       });
-    } catch {
-      // completeRun is the durable commit boundary. Snapshot/checkpoint/usage
-      // enrichment cannot revoke that success, but a session whose final
-      // checkpoint is unknown must not remain available for reuse.
-      void closeSession().catch(() => undefined);
-      enrichment = {
+    } catch (error) {
+      await observeEnrichmentFailure("checkpoint", error);
+      // completeRun is the durable commit boundary. A final snapshot or
+      // checkpoint failure cannot revoke that success, but a session whose
+      // exact checkpoint is unknown must not remain available for reuse.
+      void closeSession("post_completion_checkpoint_failed").catch(
+        () => undefined,
+      );
+      executionSucceeded = true;
+      return {
+        ...durableExecutionResult,
         providerSessionId: recoveredSnapshot.providerSessionId ?? null,
         driverVersion: descriptor.version,
         usage: null,
       };
     }
+
+    let usage: Record<string, unknown> | null = null;
+    try {
+      usage = await finalizeWithin({
+        timeoutMs: options.timeoutMs ?? 900_000,
+        operation: async (signal) => {
+          const current = (await session.usage?.()) ?? null;
+          signal.throwIfAborted();
+          return current;
+        },
+      });
+    } catch (error) {
+      // Usage is optional accounting enrichment. Once the exact completed
+      // checkpoint is durable, an unavailable usage capability must not tear
+      // down an otherwise reusable warm provider session.
+      await observeEnrichmentFailure("usage", error);
+    }
+    const enrichment = {
+      providerSessionId: completedSnapshot.providerSessionId ?? null,
+      driverVersion:
+        typeof usage?.driverVersion === "string"
+          ? usage.driverVersion
+          : descriptor.version,
+      usage,
+    };
     executionSucceeded = true;
     return { ...durableExecutionResult, ...enrichment };
   } finally {
     const shouldClose =
       !options.keepSessionOpen || !executionSucceeded || sessionQuarantined;
     if (shouldClose && options.requireSessionCloseBeforeReturn) {
-      if (!failedCleanupDeferred) closeSession();
+      if (!failedCleanupDeferred) {
+        closeSession(
+          `execution_finally_close:keep=${options.keepSessionOpen === true}:succeeded=${executionSucceeded}:quarantined=${sessionQuarantined}`,
+        );
+      }
       // A remote runner close owns its suspension and verified checkpoint.
       // Its implementation is finite, and the host must not release the
       // environment until the complete close/retry owner has settled.

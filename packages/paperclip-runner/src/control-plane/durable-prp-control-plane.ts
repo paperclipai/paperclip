@@ -120,6 +120,13 @@ interface ConnectionLeaseRecord {
 interface StoredCoreState {
   schema: typeof coreStateSchema;
   identity: DurableRecoveryIdentity;
+  /**
+   * Connection-free provider attachment payload retained across authority
+   * epochs. Commands are intentionally reset when a reusable runner changes
+   * run identity, so the next controller cannot rely on command history to
+   * reconstruct another warm attachment.
+   */
+  runAttachTemplate?: Record<string, unknown> | null;
   tickets: Record<string, BootstrapTicketRecord>;
   leases: Record<string, ConnectionLeaseRecord>;
   commands: DurableRecoveryCoreCommand[];
@@ -386,6 +393,13 @@ function isStoredCoreState(
     return false;
   }
   if (
+    value.runAttachTemplate !== undefined &&
+    value.runAttachTemplate !== null &&
+    !isRecord(value.runAttachTemplate)
+  ) {
+    return false;
+  }
+  if (
     !commands.every(
       (command, index) =>
         isRecord(command) &&
@@ -563,6 +577,7 @@ function initialCoreState(identity: DurableRecoveryIdentity): StoredCoreState {
   return {
     schema: coreStateSchema,
     identity,
+    runAttachTemplate: null,
     tickets: {},
     leases: {},
     commands: [],
@@ -1050,7 +1065,10 @@ export class DurablePrpControlPlane {
    * retaining its existing connection lease secret. The runner performs the
    * matching state transition only after acknowledging `run.attach`.
    */
-  rotateRunIdentity(identity: DurableRecoveryIdentity): void {
+  rotateRunIdentity(
+    identity: DurableRecoveryIdentity,
+    runAttachTemplate?: Record<string, unknown>,
+  ): void {
     if (
       !Object.values(identity).every(
         (value) => typeof value === "string" && stableIdPattern.test(value),
@@ -1070,8 +1088,38 @@ export class DurablePrpControlPlane {
         { ...lease, identity: structuredClone(identity) },
       ]),
     );
-    Object.assign(this.#store.state, initialCoreState(identity), { leases });
+    Object.assign(this.#store.state, initialCoreState(identity), {
+      leases,
+      runAttachTemplate:
+        runAttachTemplate === undefined
+          ? null
+          : structuredClone(runAttachTemplate),
+    });
     this.#identity = structuredClone(identity);
+    this.#store.save();
+  }
+
+  /**
+   * Retain the connection-free provider preparation payload before the first
+   * runner bootstrap. Completed command history is bounded and may be
+   * compacted before a warm continuation arrives, so it cannot be the sole
+   * source for a later run.attach. Repeating the same write is idempotent;
+   * changing an established seed fails closed.
+   */
+  persistRunAttachTemplate(runAttachTemplate: Record<string, unknown>): void {
+    if (!isRecord(runAttachTemplate.provider)) {
+      throw new Error("Durable PRP run attachment template is invalid.");
+    }
+    const existing = this.#store.state.runAttachTemplate;
+    if (
+      existing !== undefined &&
+      existing !== null &&
+      canonicalJson(existing) !== canonicalJson(runAttachTemplate)
+    ) {
+      throw new Error("Durable PRP run attachment template conflicts.");
+    }
+    if (existing !== undefined && existing !== null) return;
+    this.#store.state.runAttachTemplate = structuredClone(runAttachTemplate);
     this.#store.save();
   }
 

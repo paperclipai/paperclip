@@ -656,9 +656,30 @@ describe("Capability live runnerd and Codex session", () => {
     expect(session.snapshot().config).toMatchObject({
       provider: "opencode",
       driver: "opencode_server",
-      providerVersion: "1.18.17",
+      providerVersion: "1.18.29",
       requestedModel: "openrouter/deepseek/deepseek-v4-flash-0731",
     });
+    await service.shutdown(session.id);
+  });
+
+  it("passes caller-supplied native system instructions to the provider", async () => {
+    const state = providerState();
+    const service = new CapabilityLiveSessionService({
+      transportFactory: fakeTransportFactory(state),
+      transportOptions: {
+        baseInstructions:
+          "Native instructions\n\nRead-only instruction sibling root: /runtime/instructions",
+      },
+    });
+    const session = await service.create();
+
+    expect(
+      state.transports[0]?.requests.find(
+        (request) => request.method === "thread/start",
+      )?.params.baseInstructions,
+    ).toBe(
+      "Native instructions\n\nRead-only instruction sibling root: /runtime/instructions",
+    );
     await service.shutdown(session.id);
   });
 

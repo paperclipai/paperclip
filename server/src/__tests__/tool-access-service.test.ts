@@ -38,6 +38,8 @@ import {
   toolRuntimeMetricCounters,
   toolRuntimeSlots,
   toolStdioCommandTemplates,
+  userSecretDefinitions,
+  userSecretDeclarations,
 } from "@paperclipai/db";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import {
@@ -5001,6 +5003,36 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(activity.lifecycleEvents.map((event) => event.type)).toEqual(["app_paused"]);
   });
 
+  it("preserves all active personal OAuth declarations through pause, resume, and metadata edits", async () => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+    const [application] = await db.insert(toolApplications).values({ companyId: company.id, name: "GitHub", type: "mcp_http" }).returning();
+    const [connection] = await db.insert(toolConnections).values({
+      companyId: company.id, applicationId: application.id, name: "GitHub", uid: randomUUID(),
+      transport: "mcp_remote", status: "active", enabled: true, credentialPolicy: "per_user",
+      config: { url: "https://api.githubcopilot.com/mcp/", sourceTemplateKey: "github" },
+    }).returning();
+    const [sharedDefinition] = await db.insert(userSecretDefinitions).values({ companyId: company.id, key: randomUUID(), name: "OAuth access token" }).returning();
+    const definitionIds = [sharedDefinition.id];
+    for (const user of ["A", "B", "revoked"]) {
+      const definition = user === "revoked"
+        ? (await db.insert(userSecretDefinitions).values({ companyId: company.id, key: randomUUID(), name: "Revoked identity" }).returning())[0]
+        : sharedDefinition;
+      const [secret] = await db.insert(companySecrets).values({ companyId: company.id, key: randomUUID(), name: user,
+        scope: "user", ownerUserId: user, userSecretDefinitionId: definition.id }).returning();
+      await db.insert(connectionGrants).values({ companyId: company.id, connectionId: connection.id, kind: "user",
+        subjectUserId: user, status: user === "revoked" ? "revoked" : "active",
+        credentialSecretRefs: [{ secretId: secret.id, configPath: "oauth.access_token", versionSelector: "latest" }],
+      });
+    }
+    for (const edit of [{ enabled: false }, { enabled: true }, { name: "Renamed GitHub" }]) {
+      await service.updateConnection(connection.id, edit);
+      const declarations = await db.select().from(userSecretDeclarations).where(eq(userSecretDeclarations.targetId, connection.id));
+      expect(declarations.map((row) => row.userSecretDefinitionId).sort()).toEqual([...definitionIds].sort());
+      expect(declarations.every((row) => row.configPath === "oauth.access_token")).toBe(true);
+    }
+  });
+
   it("allows same-company Google Sheets updates and derives the env mirror from the allowlist", async () => {
     const company = await createCompany(db);
     const service = createTestToolAccessService(db);
@@ -5103,7 +5135,7 @@ describeEmbeddedPostgres("tool access service", () => {
     }
   }, 15_000);
 
-  it("binds a non-expiring managed GitHub identity and installation to one agent", async () => {
+  it.each(["none", "event", "same-time-refresh"])("binds a managed GitHub identity and protects refresh from concurrent access changes (%s)", async (concurrentChange) => {
     const company = await createCompany(db);
     const userId = `github-manager-${randomUUID()}`;
     await grantBoardUser(db, company.id, userId, [], "owner");
@@ -5114,6 +5146,7 @@ describeEmbeddedPostgres("tool access service", () => {
     const githubDefinition = getConnectableAppDefinition("github")!;
     const previousOwnershipAvailability = githubDefinition.ownershipAvailability;
     githubDefinition.ownershipAvailability = { ...previousOwnershipAvailability, platform_shared: true };
+    let beforeRepositoryResponse = async () => {};
     vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
       const href = String(url);
       if (href === "https://api.github.com/user") {
@@ -5128,7 +5161,8 @@ describeEmbeddedPostgres("tool access service", () => {
         }] });
       }
       if (href.includes("https://api.github.com/user/installations/101/repositories?")) {
-        return mcpHttpResponse({ total_count: 3, repositories: [{ full_name: "paperclipai/do-not-store" }] });
+        await beforeRepositoryResponse();
+        return mcpHttpResponse({ total_count: 3, repositories: [1, 2, 3].map((id) => ({ id, full_name: `paperclipai/repo-${id}`, description: "do-not-store" })) });
       }
       if (href === GITHUB_CONNECTOR_PROFILES["github.code"].serverUrl) {
         return mcpHttpResponse({
@@ -5226,6 +5260,33 @@ describeEmbeddedPostgres("tool access service", () => {
         eq(toolConnectionInstalls.targetType, "agent"),
         eq(toolConnectionInstalls.targetId, agent.id),
       ))).resolves.toHaveLength(1);
+      vi.mocked(connector.setWebhookBinding).mockClear();
+      if (concurrentChange !== "none") {
+        beforeRepositoryResponse = async () => {
+          const [latest] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, grant!.id));
+          await db.update(connectionGrants).set({ providerTenant: {
+            ...latest!.providerTenant,
+            github: {
+              ...latest!.providerTenant!.github!,
+              accessRevision: randomUUID(),
+              // Simulate a refresh with identical timestamps, so only the unique
+              // access revision can distinguish its newer access snapshot.
+              ...(concurrentChange === "event" ? { lastWebhookAt: new Date().toISOString() } : {}),
+              installationIds: [], installationCount: 0, repositoryCount: 0,
+              repositorySelection: "none", repositories: undefined, webhookHealth: "unhealthy",
+            },
+          } }).where(eq(connectionGrants.id, grant!.id));
+        };
+        await expect(service.checkHealth(connected.connectionId, actor))
+          .rejects.toThrow("GitHub access changed during refresh. Try again.");
+        const [latest] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, grant!.id));
+        expect(latest?.providerTenant?.github).toMatchObject({ installationIds: [], repositoryCount: 0, webhookHealth: "unhealthy" });
+        expect(latest?.providerTenant?.github?.repositories).toBeUndefined();
+        expect(connector.setWebhookBinding).not.toHaveBeenCalled();
+      } else {
+        await expect(service.checkHealth(connected.connectionId, actor)).resolves.toMatchObject({ connection: { healthStatus: "ok" } });
+        expect(connector.setWebhookBinding).toHaveBeenCalled();
+      }
     } finally {
       githubDefinition.ownershipAvailability = previousOwnershipAvailability;
     }
@@ -5261,7 +5322,7 @@ describeEmbeddedPostgres("tool access service", () => {
         }] });
       }
       if (href.includes("https://api.github.com/user/installations/101/repositories?")) {
-        return mcpHttpResponse({ total_count: 1, repositories: [] });
+        return mcpHttpResponse({ total_count: 1, repositories: [{ id: 1, full_name: "paperclipai/repo-1" }] });
       }
       if (href === GITHUB_CONNECTOR_PROFILES["github.code"].serverUrl) {
         return mcpHttpResponse({

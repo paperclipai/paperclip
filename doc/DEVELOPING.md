@@ -275,6 +275,15 @@ These browser suites are intended for targeted local verification and CI, not th
 
 For normal issue work, start with the smallest targeted check that proves the change. Reserve repo-wide typecheck/build/test runs for PR-ready handoff or changes broad enough that narrow checks do not cover the risk.
 
+### Recent task ordering
+
+The streamlined sidebar keeps five recent tasks per company and account in browser
+storage. It sorts by the newest observed task or comment activity, not by live-run
+state. Older detail responses cannot move the stored activity time backward.
+Activity-only reorderings wait for one second without further activity changes;
+new and removed tasks appear immediately. Titles, status, and live indicators stay
+current during that delay.
+
 ## One-Command Local Run
 
 For a first-time local install, you can bootstrap and run in one command:
@@ -807,6 +816,22 @@ agent workspace. The host `HOME` itself, a directory that contains it, a
 filesystem root, a `CODEX_HOME` overlap, or a canonical path outside the
 assigned workspace is rejected before provider startup.
 
+### Preinstalled remote runner runtime
+
+For fast sandbox startup, bake `paperclip-runnerd` and the latest stable agent
+CLIs into the sandbox image. Keep one version of each CLI shared by native and
+local adapters; never retain an older global CLI beside a newer private copy.
+Pin the resolved releases at image build time for reproducibility and refresh
+the runner's qualification versions and binary digests together with those pins.
+The ACP bridges remain separately qualified protocol dependencies.
+
+Native discovery checks `/opt/paperclip-runner/bin`, then `$HOME/.local/bin`,
+then PATH. Any preferred-directory entry must launch the same shared CLI that
+normal adapters use. Discovery picks the first executable; it does not compare
+versions across directories. With these artifacts preinstalled, startup links
+and verifies them without uploading a binary or installing packages. Deploy
+the updated sandbox image with the matching runner qualification changes.
+
 ### Native runner restart recovery
 
 Paperclip Runner keeps its heartbeat run, native session, logical runner, and
@@ -1244,3 +1269,7 @@ Networking behavior for this smoke script:
 - auto-detects and prints a Paperclip host URL reachable from inside OpenClaw Docker
 - default container-side host alias is `host.docker.internal` (override with `PAPERCLIP_HOST_FROM_CONTAINER` / `PAPERCLIP_HOST_PORT`)
 - if Paperclip rejects container hostnames in authenticated/private mode, allow `host.docker.internal` via `npx paperclipai allowed-hostname host.docker.internal` and restart Paperclip
+
+### GitHub identity for shared agents
+
+See [execution GitHub identity](execution-github-identity.md) for the operation-time credential contract, continuation rules, runtime rollout, and acceptance-test requirements.

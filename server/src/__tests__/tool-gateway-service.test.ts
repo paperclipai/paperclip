@@ -8,6 +8,9 @@ import {
   companies,
   companySecretBindings,
   companySecrets,
+  companyMemberships,
+  toolConnectionInstalls,
+  issueComments,
   connectionGrants,
   createDb,
   heartbeatRuns,
@@ -26,6 +29,7 @@ import {
 } from "@paperclipai/db";
 import type { PluginToolDispatcher } from "../services/plugin-tool-dispatcher.js";
 import type { VercelConnectClient } from "../services/vercel-connect.js";
+import { initializeRunIdentity, reserveSteeredIdentity, reconcileSteeredIdentity } from "../services/run-identity.js";
 import { secretService } from "../services/secrets.js";
 import {
   createToolGatewayService,
@@ -1203,6 +1207,53 @@ describeEmbeddedPostgres("tool gateway service", () => {
     expect(storedGrant?.externalCredential).toMatchObject({ tokenId: "stk_fresh" });
   });
 
+  it("keeps managed GitHub personal identity even under a legacy shared policy", async () => {
+    const { company, agent, issue, run } = await createRunFixture(db);
+    const { connection } = await createRemoteMcpToolFixture(db, company.id);
+    await db.update(toolConnections).set({ authKind: "oauth", credentialSource: "paperclip_vault",
+      config: { ...connection.config, sourceTemplateKey: "github" },
+    }).where(eq(toolConnections.id, connection.id));
+    await db.insert(toolConnectionInstalls).values({ companyId: company.id,
+      connectionId: connection.id, targetType: "agent", targetId: agent.id });
+    await db.insert(companyMemberships).values(["A", "B"].map(principalId => ({ companyId: company.id,
+      principalType: "user", principalId, status: "active", membershipRole: "member" })));
+    const grants = await db.insert(connectionGrants).values(["A", "B"].map(subjectUserId => ({
+      companyId: company.id, connectionId: connection.id, kind: "user", subjectUserId,
+      status: "active", credentialSecretRefs: [],
+    }))).returning();
+    await initializeRunIdentity(db, { companyId: company.id, runId: run.id, issueId: issue.id,
+      responsibleUserId: "A", cause: "instruction" });
+    await db.insert(toolPolicies).values({ companyId: company.id, name: "Allow reads",
+      policyType: "allow", selectors: { riskLevel: "read" } });
+    const resolvedGrants: string[] = [];
+    const gateway = createTestToolGatewayService(db, {
+      oauthGrantRefresher: async ({ grantId }) => {
+        resolvedGrants.push(grantId);
+        return db.select().from(connectionGrants).where(eq(connectionGrants.id, grantId)).then(rows => rows[0]!);
+      },
+      remoteHttpRequest: async (_url, init) => new Response(JSON.stringify({ jsonrpc: "2.0",
+        id: JSON.parse(String(init.body)).id, result: { content: [{ type: "text", text: "ok" }] },
+      }), { status: 200, headers: { "content-type": "application/json" } }),
+    });
+    const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+    const tool = (await gateway.listToolsForSession(session.token)).find(t => t.providerType === "mcp_remote_http")!;
+    for (const [index, user] of ["A", "B", "A"].entries()) {
+      if (index > 0) {
+        const [message] = await db.insert(issueComments).values({ companyId: company.id, issueId: issue.id,
+          authorUserId: user, body: "Next instruction" }).returning();
+        const pending = await reserveSteeredIdentity(db, { companyId: company.id, runId: run.id,
+          issueId: issue.id, messageId: message.id });
+        await reconcileSteeredIdentity(db, pending!);
+      }
+      expect((await gateway.executeTool({ sessionToken: session.token, tool: tool.name, parameters: {} })).status).toBe("completed");
+    }
+    expect(resolvedGrants).toEqual([grants[0].id, grants[1].id, grants[0].id]);
+    await db.delete(companyMemberships).where(eq(companyMemberships.companyId, company.id));
+    await expect(gateway.executeTool({ sessionToken: session.token, tool: tool.name, parameters: {} }))
+      .rejects.toMatchObject({ reasonCode: "grant_owner_membership_inactive" });
+    expect(resolvedGrants).toHaveLength(3);
+  });
+
   it("refreshes a customer OAuth grant once and retries after an upstream 401", async () => {
     const { company, agent, run } = await createRunFixture(db);
     const { connection } = await createRemoteMcpToolFixture(db, company.id);
@@ -1222,6 +1273,7 @@ describeEmbeddedPostgres("tool gateway service", () => {
     await db.update(toolConnections).set({
       authKind: "oauth",
       credentialSource: "paperclip_vault",
+      credentialRefs: [{ name: "oauth.access_token", placement: "header", key: "Authorization", prefix: "Bearer ", secretId: accessSecret.id, versionSelector: "latest" }],
       config: {
         url: "https://example.invalid/mcp",
         oauth: {

@@ -30,6 +30,9 @@ describe("opencode_local environment diagnostics", () => {
 
   it("treats an empty OPENAI_API_KEY override as missing", async () => {
     const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-opencode-env-empty-key-"));
+    // This case tests environment precedence, not model-discovery retry delays.
+    const fakeOpencode = path.join(cwd, "opencode");
+    await fs.writeFile(fakeOpencode, "#!/bin/sh\necho openai/test-model\n", { mode: 0o755 });
     const originalOpenAiKey = process.env.OPENAI_API_KEY;
     process.env.OPENAI_API_KEY = "sk-host-value";
 
@@ -38,7 +41,7 @@ describe("opencode_local environment diagnostics", () => {
         companyId: "company-1",
         adapterType: "opencode_local",
         config: {
-          command: process.execPath,
+          command: fakeOpencode,
           cwd,
           env: {
             OPENAI_API_KEY: "",

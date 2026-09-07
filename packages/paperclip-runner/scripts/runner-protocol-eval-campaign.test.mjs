@@ -26,6 +26,7 @@ async function fixture() {
     mkdir(join(program, "rosters"), { recursive: true }),
     mkdir(join(program, "configs"), { recursive: true }),
     mkdir(join(program, "cases"), { recursive: true }),
+    mkdir(join(program, "campaigns"), { recursive: true }),
   ]);
   const config = {
     schema: "paperclip-runner/eval-config/v1",
@@ -33,7 +34,7 @@ async function fixture() {
     provider: "opencode",
     driver: "opencode_server",
     model: "openrouter/example/model",
-    opencodeVersion: "1.18.17",
+    opencodeVersion: "1.18.29",
   };
   const evalCase = {
     schema: "paperclip-runner/eval-case/v1",
@@ -64,6 +65,19 @@ async function fixture() {
     writeFile(
       join(program, "rosters/live-opencode-model.json"),
       JSON.stringify(roster),
+    ),
+    writeFile(
+      join(program, "campaigns/live-direct-full.json"),
+      JSON.stringify({
+        schema: "paperclip-runner/live-campaign/v1",
+        lanes: [
+          {
+            id: "opencode-model",
+            executionClass: "default",
+            roster: "../rosters/live-opencode-model.json",
+          },
+        ],
+      }),
     ),
   ]);
   return { root, program, config, evalCase, roster };
@@ -97,6 +111,7 @@ test("catalogs roster plus case cells and emits bounded balanced shards", async 
     maxParallel: 80,
   });
   assert.equal(catalog.cells.length, 1);
+  assert.equal(catalog.selection.kind, "maintained_full");
   assert.equal(catalog.cells[0].credentialName, "OPENROUTER_API_KEY");
   assert.equal(catalog.maxParallelPerShard, 40);
   assert.equal(catalog.matrices[0].include.length, 1);
@@ -116,6 +131,84 @@ test("catalogs roster plus case cells and emits bounded balanced shards", async 
       maxParallel: 1,
     }),
     /from 2 through 100/,
+  );
+});
+
+test("all selects the maintained enabled campaign and explicit diagnostics can select disabled rosters", async () => {
+  const { root, program, config, evalCase } = await fixture();
+  const disabledRoster = {
+    schema: "paperclip-runner/live-roster/v1",
+    id: "protocol-live-disabled-model",
+    model: config.model,
+    config: "../configs/live-opencode-model.json",
+    cases: [evalCase.id],
+  };
+  await Promise.all([
+    writeFile(
+      join(program, "rosters/live-disabled-model.json"),
+      JSON.stringify(disabledRoster),
+    ),
+    writeFile(
+      join(program, "campaigns/live-direct-full.json"),
+      JSON.stringify({
+        schema: "paperclip-runner/live-campaign/v1",
+        lanes: [
+          {
+            id: "opencode-model",
+            executionClass: "default",
+            roster: "../rosters/live-opencode-model.json",
+          },
+          {
+            id: "disabled-model",
+            executionClass: "disabled",
+            roster: "../rosters/live-disabled-model.json",
+          },
+        ],
+      }),
+    ),
+  ]);
+
+  const maintained = await buildProtocolEvalCatalog({
+    evalsRoot: root,
+    campaignId: "gha-42-1",
+  });
+  assert.deepEqual(
+    maintained.rosters.map((roster) => roster.rosterId),
+    ["protocol-live-opencode-model"],
+  );
+
+  const diagnostic = await buildProtocolEvalCatalog({
+    evalsRoot: root,
+    campaignId: "gha-42-2",
+    rosterSelection: "protocol-live-disabled-model",
+  });
+  assert.deepEqual(
+    diagnostic.rosters.map((roster) => roster.rosterId),
+    ["protocol-live-disabled-model"],
+  );
+  assert.equal(diagnostic.selection.kind, "subset");
+});
+
+test("all fails closed when the maintained campaign is missing", async () => {
+  const { root, program } = await fixture();
+  await rm(join(program, "campaigns/live-direct-full.json"));
+
+  await assert.rejects(
+    buildProtocolEvalCatalog({
+      evalsRoot: root,
+      campaignId: "gha-42-1",
+    }),
+    /ENOENT/,
+  );
+
+  const diagnostic = await buildProtocolEvalCatalog({
+    evalsRoot: root,
+    campaignId: "gha-42-2",
+    rosterSelection: "protocol-live-opencode-model",
+  });
+  assert.deepEqual(
+    diagnostic.rosters.map((roster) => roster.rosterId),
+    ["protocol-live-opencode-model"],
   );
 });
 
@@ -161,6 +254,37 @@ test("aggregates retained attempts and synthesizes missing cells as infrastructu
   );
 });
 
+test("campaign cost includes failed attempts before a successful retry", async () => {
+  const { root, config, evalCase } = await fixture();
+  const catalog = await buildProtocolEvalCatalog({ evalsRoot: root, campaignId: "gha-42-1" });
+  const catalogPath = join(root, "catalog.json");
+  const download = join(root, "downloads/cell");
+  await mkdir(download, { recursive: true });
+  await writeFile(catalogPath, JSON.stringify(catalog));
+  await writeFile(join(download, "cell.json"), JSON.stringify({
+    cellId: catalog.cells[0].cellId, caseId: evalCase.id,
+    rosterFile: catalog.cells[0].rosterFile, exitCode: 0,
+  }));
+  for (const [attemptId, amount, passed] of [["attempt-01", 2, false], ["attempt-02", 3, true]]) {
+    const directory = join(download, "runs", attemptId);
+    await mkdir(directory, { recursive: true });
+    for (const [file, value] of Object.entries({
+      "artifact.json": { attemptId, usage: { estimatedCostNanodollars: amount } },
+      "score.json": { attemptId, caseId: evalCase.id, passed, disposition: passed ? "passed" : "infrastructure_failure" },
+      "case.json": evalCase, "config.json": config,
+    })) await writeFile(join(directory, file), JSON.stringify(value));
+  }
+  const result = await aggregateProtocolEvalCampaign({
+    catalogPath, downloadsRoot: join(root, "downloads"), evalsRoot: root,
+    runsOut: join(root, "merged"), campaignOut: join(root, "campaign.json"), source: {},
+  });
+  assert.equal(result.totals.passed, 1);
+  assert.equal(result.results[0].usage.estimatedCostNanodollars, 3);
+  assert.equal(result.costs.estimated.nanodollars, 5);
+  assert.equal(result.costs.attempts, 2);
+  assert.equal(result.selection.kind, "maintained_full");
+});
+
 test("rejects downloaded cells that were not declared by the immutable catalog", async () => {
   const { root } = await fixture();
   const catalog = await buildProtocolEvalCatalog({
@@ -195,7 +319,7 @@ test("rejects downloaded cells that were not declared by the immutable catalog",
   );
 });
 
-test("public run projection removes provider sessions, traces, transcripts, evidence, and state", async () => {
+test("public run projection removes raw evidence and gives unverified recordings an empty chat view", async () => {
   const { root, config, evalCase } = await fixture();
   const attemptId = "get-task-context-opencode-gha-42-1-attempt-01";
   const source = join(root, "raw-runs", attemptId);
@@ -266,12 +390,14 @@ test("public run projection removes provider sessions, traces, transcripts, evid
   );
   assert.doesNotMatch(
     serialized,
-    /private-session|private transcript|private-turn|issueThread|trace/,
+    /private-session|private transcript|private-turn|"trace":/,
   );
   const artifact = JSON.parse(serialized);
   assert.deepEqual(artifact.snapshot.transcript, []);
   assert.deepEqual(artifact.snapshot.evidence, []);
   assert.deepEqual(artifact.devtools.revisions, []);
+  assert.equal(artifact.issueThread.composer.state, "disabled");
+  assert.equal(artifact.issueThread.turns[0].items[0].kind, "system_notice");
   const score = JSON.parse(
     await readFile(join(root, "public-runs", attemptId, "score.json"), "utf8"),
   );

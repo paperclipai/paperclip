@@ -107,6 +107,8 @@
       "@agentclientprotocol/codex-acp@1.6.2": "patches/@agentclientprotocol__codex-acp@1.6.2.patch"
     },
     "overrides": {
+      "@agentclientprotocol/codex-acp@1.6.2>@openai/codex": "0.153.4",
+      "@agentclientprotocol/claude-agent-acp@0.70.0>@anthropic-ai/claude-agent-sdk": "0.3.263",
       "rollup": ">=4.59.0",
       "react": "^19.2.8",
       "react-dom": "^19.2.8"

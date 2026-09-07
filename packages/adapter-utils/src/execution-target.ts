@@ -3,6 +3,7 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { randomBytes, randomUUID } from "node:crypto";
+import { githubLauncherSource } from "./github-launcher.js";
 import type { SshRemoteExecutionSpec } from "./ssh.js";
 import {
   prepareCommandManagedRuntime,
@@ -1492,6 +1493,70 @@ export function runtimeAssetDir(
   fallbackRemoteCwd: string,
 ): string {
   return prepared.assetDirs[key] ?? path.posix.join(fallbackRemoteCwd, ".paperclip-runtime", key);
+}
+
+type GitHubLauncherLocation = {
+  runId: string; target: AdapterExecutionTarget | null | undefined;
+};
+
+function githubOperationLauncherDirectory(input: GitHubLauncherLocation): string {
+  // Only controller-generated run IDs may name a removable directory.
+  if (!/^[a-zA-Z0-9_-]+$/.test(input.runId)) throw new Error("Invalid GitHub launcher run ID");
+  return input.target?.kind === "remote"
+    ? path.posix.join(input.target.remoteCwd, ".paperclip-runtime", "github", input.runId)
+    : path.join(os.tmpdir(), "paperclip-github-runtime", input.runId);
+}
+
+/** Call only after execution settles, before releasing its remote environment lease. */
+export async function cleanupGitHubOperationLaunchers(input: GitHubLauncherLocation): Promise<void> {
+  const directory = githubOperationLauncherDirectory(input);
+  if (input.target?.kind === "remote") {
+    const result = await adapterExecutionTargetCommandRunner(input.target).execute({
+      command: "sh", args: ["-c", `rm -rf -- ${shellQuote(directory)}`],
+      cwd: input.target.remoteCwd, timeoutMs: 5_000,
+    });
+    if (result.exitCode !== 0) throw new Error("Could not clean managed GitHub launchers");
+  } else {
+    await fs.rm(directory, { recursive: true, force: true });
+  }
+}
+
+/** Stage token-free launchers next to the execution, not in shared global Git config. */
+export async function prepareGitHubOperationLaunchers(input: {
+  runId: string; target: AdapterExecutionTarget | null | undefined; cwd: string; env: Record<string, string>;
+}): Promise<Record<string, string>> {
+  const remote = input.target?.kind === "remote" ? input.target : null;
+  const directory = githubOperationLauncherDirectory(input);
+  const configDirectory = path.posix.join(directory, "gh-config");
+  const basePath = input.env.PATH || (remote ? "/usr/local/bin:/usr/bin:/bin" : process.env.PATH) || "/usr/bin:/bin";
+  const managedPath = `${directory}:${basePath}`;
+  // Login shells may reorder PATH through /etc/profile or path_helper. Restore
+  // the managed launchers after startup without loading a host user's profile.
+  const profile = `export PATH=${shellQuote(managedPath)}\n`;
+  const files: Record<string, string> = Object.fromEntries([
+    ...["git", "gh"].map((name) => [name, githubLauncherSource()] as const),
+    ...[".zshenv", ".zprofile", ".zshrc", ".bash_profile", ".bashrc", ".profile"].map((name) => [name, profile] as const),
+  ]);
+  if (remote) {
+    const runner = adapterExecutionTargetCommandRunner(remote);
+    for (const [program, body] of Object.entries(files)) {
+      await syncRemoteTextFileWithHashSkip({
+        runner, remoteCwd: remote.remoteCwd, remoteDir: directory,
+        remotePath: path.posix.join(directory, program), body,
+        label: "GitHub operation launcher", action: "stage GitHub operation launcher",
+        lockDir: path.posix.join(directory, `.${program}.lock`),
+        timeoutMs: 15_000, shellCommand: adapterExecutionTargetShellCommand(remote),
+      });
+    }
+    const permissions = await runner.execute({ command: "sh", args: ["-c", `chmod 700 ${shellQuote(directory)}/git ${shellQuote(directory)}/gh && mkdir -p ${shellQuote(configDirectory)}`], cwd: remote.remoteCwd, timeoutMs: 15_000 });
+    if (permissions.exitCode !== 0) throw new Error("Could not prepare managed GitHub launchers");
+  } else {
+    await fs.mkdir(directory, { recursive: true, mode: 0o700 });
+    await fs.mkdir(configDirectory, { recursive: true, mode: 0o700 });
+    for (const [program, body] of Object.entries(files)) await fs.writeFile(path.join(directory, program), body, { mode: 0o700 });
+  }
+  return { ...input.env, PATH: managedPath, ZDOTDIR: directory, BASH_ENV: `${directory}/.bashrc`,
+    GH_CONFIG_DIR: configDirectory, PAPERCLIP_GITHUB_LAUNCHER_DIR: directory };
 }
 
 function buildBridgeResponseHeaders(response: Response): Record<string, string> {

@@ -637,6 +637,13 @@ describe("historical publication security", () => {
     expect(() =>
       validateHistoryDestination({
         bucket: "paperclip-runner-e2e-history",
+        prefix: "runner-e2e?other",
+        publicBaseUrl: "https://history.paperclip.ai/",
+      }),
+    ).toThrow("safe non-empty key prefix");
+    expect(() =>
+      validateHistoryDestination({
+        bucket: "paperclip-runner-e2e-history",
         prefix: "runner-e2e",
         publicBaseUrl: "http://history.paperclip.ai/",
       }),

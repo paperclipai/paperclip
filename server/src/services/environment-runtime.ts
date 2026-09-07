@@ -1077,7 +1077,16 @@ export function findReusableSandboxLeaseId(input: {
   config: SandboxEnvironmentConfig;
   leases: Array<Pick<EnvironmentLease, "providerLeaseId" | "metadata">>;
 }): string | null {
-  return findReusableSandboxProviderLeaseId(input);
+  // Host-only run behavior (for example streamRunLogs) is intentionally not
+  // echoed by a sandbox provider in lease metadata and must not invalidate an
+  // otherwise identical reusable provider lease.
+  return findReusableSandboxProviderLeaseId({
+    config: {
+      provider: input.config.provider,
+      ...stripSandboxProviderEnvelope(input.config),
+    } as SandboxEnvironmentConfig,
+    leases: input.leases,
+  });
 }
 
 function createLocalEnvironmentDriver(db: Db): EnvironmentRuntimeDriver {
@@ -2083,6 +2092,16 @@ function createSandboxEnvironmentDriver(
               acquiredLease.expiresAt ? new Date(acquiredLease.expiresAt) : undefined,
             ),
             metadata: pluginLeaseMetadata,
+            reusesReusableLeaseId:
+              providerLease &&
+              reusableLease?.heartbeatRunId === input.heartbeatRunId
+                ? reusableLease.id
+                : null,
+            replacesReusableLeaseId:
+              providerLease &&
+              reusableLease?.heartbeatRunId !== input.heartbeatRunId
+                ? reusableLease?.id
+                : null,
           });
         } catch (error) {
           // The conditional lease insert rejected, so no lease row exists. A
@@ -2312,6 +2331,18 @@ function createSandboxEnvironmentDriver(
             providerLease.expiresAt ? new Date(providerLease.expiresAt) : undefined,
           ),
           metadata: builtinLeaseMetadata,
+          reusesReusableLeaseId:
+            reusableLease &&
+            providerLease.providerLeaseId === reusableLease.providerLeaseId &&
+            reusableLease.heartbeatRunId === input.heartbeatRunId
+              ? reusableLease.id
+              : null,
+          replacesReusableLeaseId:
+            reusableLease &&
+            providerLease.providerLeaseId === reusableLease.providerLeaseId &&
+            reusableLease.heartbeatRunId !== input.heartbeatRunId
+              ? reusableLease.id
+              : null,
         });
       } catch (error) {
         // The conditional lease insert rejected, so no lease row exists. A managed
@@ -3717,6 +3748,9 @@ export function environmentRuntimeService(
           }
           if (
             providerResourceDisposition === "destroy" &&
+            isRecord(leaseSnapshot.metadata?.reusableSandboxLease) &&
+            leaseSnapshot.metadata.reusableSandboxLease.adapterType ===
+              "paperclip_runner" &&
             leaseSnapshot.metadata?.sandboxLeaseAcquisition &&
             (!leaseSnapshot.providerLeaseId ||
               !verifyNativeHarnessBackupStamp(
@@ -3845,8 +3879,39 @@ export function environmentRuntimeService(
           ),
         );
 
+      const holdingRunIds = leaseRows
+        .map((row) => row.heartbeatRunId)
+        .filter((runId): runId is string => Boolean(runId));
+      const liveRunIds = new Set<string>();
+      if (holdingRunIds.length > 0) {
+        const liveRuns = await db
+          .select({ id: heartbeatRuns.id })
+          .from(heartbeatRuns)
+          .where(
+            and(
+              inArray(heartbeatRuns.id, holdingRunIds),
+              inArray(heartbeatRuns.status, [
+                "queued",
+                "scheduled_retry",
+                "running",
+              ]),
+            ),
+          );
+        for (const liveRun of liveRuns) liveRunIds.add(liveRun.id);
+      }
+
       const destroyed: EnvironmentRuntimeLeaseRecord[] = [];
       for (const leaseRow of leaseRows) {
+        // An issue may become terminal inside its provider turn. Do not tear
+        // down the sandbox while that run is still exporting its workspace or
+        // polling the callback bridge. The heartbeat finalizer observes the
+        // terminal issue and destroys the resource after those boundaries.
+        if (
+          leaseRow.heartbeatRunId &&
+          liveRunIds.has(leaseRow.heartbeatRunId)
+        ) {
+          continue;
+        }
         const environment = leaseRow.environmentId
           ? await environmentsSvc.getById(leaseRow.environmentId)
           : null;

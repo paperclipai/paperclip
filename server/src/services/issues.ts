@@ -3294,6 +3294,8 @@ const issueListSelect = {
   originKind: issues.originKind,
   originId: issues.originId,
   originRunId: issues.originRunId,
+  originIdentityContextId: issues.originIdentityContextId,
+  continuationIdentityContextId: issues.continuationIdentityContextId,
   originFingerprint: issues.originFingerprint,
   requestDepth: issues.requestDepth,
   billingCode: issues.billingCode,
@@ -9152,7 +9154,7 @@ export function issueService(db: Db) {
       });
     },
 
-    addComment: async (
+    addComment: async function addComment(
       issueId: string,
       body: string,
       actor: {
@@ -9170,7 +9172,21 @@ export function issueService(db: Db) {
         createdAt?: Date | string | null;
       },
       dbOrTx: any = db,
-    ) => {
+    ): Promise<IssueComment> {
+      if (dbOrTx === db && actor.runId) {
+        return db.transaction(async (tx) => {
+          // Serialize run-authored comments on the issue so a provider retry
+          // cannot publish the same visible result twice. This needs no schema
+          // change: the issue row is the transaction fence, and the recursive
+          // call below performs the lookup and insert while holding it.
+          await tx
+            .select({ id: issues.id })
+            .from(issues)
+            .where(eq(issues.id, issueId))
+            .for("update");
+          return addComment(issueId, body, actor, options, tx);
+        });
+      }
       const issue = await dbOrTx
         .select({ companyId: issues.companyId })
         .from(issues)
@@ -9205,11 +9221,45 @@ export function issueService(db: Db) {
             actor.onBehalfOfUserId,
           )
         : null;
-      const metadata = issueCommentMetadataSchema.nullable().parse(
-        actor.agentId
-          ? withAgentCommentAuthorizationMetadata(options?.metadata ?? null, options?.authorizationReason)
-          : options?.metadata ?? null,
-      );
+      const metadata = issueCommentMetadataSchema
+        .nullable()
+        .parse(
+          actor.agentId
+            ? withAgentCommentAuthorizationMetadata(
+                options?.metadata ?? null,
+                options?.authorizationReason,
+              )
+            : (options?.metadata ?? null),
+        );
+      if (createdByRunId) {
+        const existing = await dbOrTx
+          .select()
+          .from(issueComments)
+          .where(
+            and(
+              eq(issueComments.companyId, issue.companyId),
+              eq(issueComments.issueId, issueId),
+              eq(issueComments.createdByRunId, createdByRunId),
+              eq(issueComments.authorType, authorType),
+              actor.agentId
+                ? eq(issueComments.authorAgentId, actor.agentId)
+                : isNull(issueComments.authorAgentId),
+              eq(issueComments.body, redactedBody),
+              isNull(issueComments.deletedAt),
+            ),
+          )
+          .orderBy(issueComments.createdAt, issueComments.id)
+          .limit(1)
+          .then(
+            (rows: Array<typeof issueComments.$inferSelect>) => rows[0] ?? null,
+          );
+        if (existing) {
+          return redactIssueComment(
+            existing,
+            currentUserRedactionOptions.enabled,
+          );
+        }
+      }
       const [comment] = await dbOrTx
         .insert(issueComments)
         .values({

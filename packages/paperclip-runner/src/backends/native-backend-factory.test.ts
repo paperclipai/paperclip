@@ -101,7 +101,7 @@ function acpxExecution(
               ? "@openai/codex"
               : "@anthropic-ai/claude-agent-sdk",
         agentRuntimeVersion:
-          agent === "pi" ? "0.84.2" : agent === "codex" ? "0.148.0" : "0.3.232",
+          agent === "pi" ? "0.84.2" : agent === "codex" ? "0.153.4" : "0.3.263",
         commandDigest:
           agent === "codex"
             ? "sha256:7a923b3829884d3cabcc9659d22cace3f86813e7bfffc90974b10140a45bc400"
@@ -209,7 +209,7 @@ function managedExecution(
         contextBucket: "context-bucket",
         contextPrefix: "companies/company/profiles/profile",
         contextKmsKeyArn: "arn:aws:kms:us-east-1:123456789012:key/test",
-        qualificationRevision: "aws-agentcore-harness-v1",
+        qualificationRevision: "aws-agentcore-harness-context-v2",
         eventExpiryDays: 90,
       },
     },
@@ -266,7 +266,7 @@ describe("native backend factory", () => {
     await expect(backend.descriptor()).resolves.toMatchObject({
       kind: "runner",
       name: "opencode_server",
-      version: "1.18.17",
+      version: "1.18.29",
       capabilities: {
         steering: false,
         resume: true,
@@ -388,7 +388,7 @@ describe("native backend factory", () => {
     [
       "aws_agentcore" as const,
       "aws_agentcore_harness_api",
-      "aws-agentcore-harness-v1",
+      "aws-agentcore-harness-context-v2",
     ],
   ])("routes %s through runnerd", async (kind, name, version) => {
     const backend = createNativeSessionBackend(managedExecution(kind), {
@@ -418,7 +418,7 @@ describe("native backend factory", () => {
     await expect(backend.descriptor()).resolves.toMatchObject({
       kind: "runner",
       name: "opencode_server",
-      version: "1.18.17",
+      version: "1.18.29",
       capabilities: {
         resume: true,
         interruption: true,

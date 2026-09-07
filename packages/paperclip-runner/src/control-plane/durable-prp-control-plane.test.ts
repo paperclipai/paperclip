@@ -37,6 +37,90 @@ const identity: DurableRecoveryIdentity = {
 const expectedRunnerVersion = "0.3.0";
 const expectedRunnerDigest = `sha256:${"a".repeat(64)}`;
 
+it("persists the initial warm attachment seed idempotently and rejects replacement", () => {
+  const root = mkdtempSync(
+    resolve(tmpdir(), "runner-initial-attachment-seed-test-"),
+  );
+  const template = {
+    provider: {
+      kind: "codex",
+      runId: identity.runId,
+      normalizedSessionId: identity.normalizedSessionId,
+    },
+    authorizedTools: {},
+  };
+  try {
+    const core = new DurablePrpControlPlane({
+      stateDirectory: root,
+      identity,
+      expectedRunnerVersion,
+      expectedRunnerDigest,
+    });
+    core.persistRunAttachTemplate(template);
+    core.persistRunAttachTemplate(structuredClone(template));
+
+    expect(
+      JSON.parse(
+        readFileSync(resolve(root, "control-plane-state.json"), "utf8"),
+      ).runAttachTemplate,
+    ).toEqual(template);
+    expect(() =>
+      core.persistRunAttachTemplate({
+        ...template,
+        provider: { ...template.provider, kind: "opencode" },
+      }),
+    ).toThrow("attachment template conflicts");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+it("persists a connection-free warm attachment seed when rotating run identity", () => {
+  const root = mkdtempSync(resolve(tmpdir(), "runner-attachment-seed-test-"));
+  const nextIdentity: DurableRecoveryIdentity = {
+    ...identity,
+    runId: "00000000-0000-4000-8000-000000000002",
+    turnId: "turn-test-2",
+    itemId: "item-test-2",
+  };
+  const template = {
+    provider: {
+      kind: "acpx",
+      runId: nextIdentity.runId,
+      normalizedSessionId: nextIdentity.normalizedSessionId,
+    },
+    workspace: { cwd: "/workspace" },
+  };
+  try {
+    const core = new DurablePrpControlPlane({
+      stateDirectory: root,
+      identity,
+      expectedRunnerVersion,
+      expectedRunnerDigest,
+    });
+    core.rotateRunIdentity(nextIdentity, template);
+
+    const stored = JSON.parse(
+      readFileSync(resolve(root, "control-plane-state.json"), "utf8"),
+    ) as Record<string, unknown>;
+    expect(stored.identity).toEqual(nextIdentity);
+    expect(stored.commands).toEqual([]);
+    expect(stored.runAttachTemplate).toEqual(template);
+
+    expect(
+      () =>
+        new DurablePrpControlPlane({
+          stateDirectory: root,
+          identity: nextIdentity,
+          expectedRunnerVersion,
+          expectedRunnerDigest,
+        }),
+    ).not.toThrow();
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 it.skipIf(process.platform === "win32")(
   "never persists raw child stdout or stderr as durable diagnostics",
   async () => {

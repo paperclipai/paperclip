@@ -150,6 +150,9 @@ describe("runner E2E report aggregation", () => {
           GITHUB_SERVER_URL: "https://github.com",
           GITHUB_REPOSITORY: "paperclipai/paperclip",
           GITHUB_RUN_ID: "123456",
+          PAPERCLIP_RUNNER_E2E_HISTORY_PUBLIC_BASE_URL:
+            "https://reports.example.test/",
+          PAPERCLIP_RUNNER_E2E_HISTORY_PREFIX: "/runner-e2e/",
         },
       },
     );
@@ -203,6 +206,9 @@ describe("runner E2E report aggregation", () => {
     expect(dashboard).toContain("<img");
     expect(dashboard).toContain('class="brand-lockup"');
     expect(dashboard).toContain("data-gallery-dialog");
+    expect(dashboard).toContain(
+      `id="execution-core-compatibility.${executionId}"`,
+    );
     expect(dashboard).toContain("data-gallery-previous");
     expect(dashboard).toContain("data-gallery-next");
     expect(dashboard).toContain("View gallery · 1");
@@ -265,6 +271,20 @@ describe("runner E2E report aggregation", () => {
     ).toBe("fake-png");
     expect(await readFile(path.join(output, "index.html"), "utf8")).toBe(
       dashboard,
+    );
+    const summary = await readFile(path.join(output, "summary.md"), "utf8");
+    expect(summary).toContain("## View results");
+    expect(summary).toContain(
+      "[Open the exact interactive campaign report](https://reports.example.test/runner-e2e/campaigns/gha-123456-1/index.html)",
+    );
+    expect(summary).toContain(
+      "[Open the workflow run and per-cell job logs](https://github.com/paperclipai/paperclip/actions/runs/123456)",
+    );
+    expect(summary).toContain(
+      "[Download the merged report and per-cell evidence](https://github.com/paperclipai/paperclip/actions/runs/123456#artifacts)",
+    );
+    expect(summary).toContain(
+      `[core-compatibility.${executionId}](https://reports.example.test/runner-e2e/campaigns/gha-123456-1/index.html#execution-core-compatibility.${executionId})`,
     );
   });
 

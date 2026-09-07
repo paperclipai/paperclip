@@ -166,6 +166,12 @@ export interface HeartbeatRun {
   triggerDetail: WakeupTriggerDetail | null;
   status: HeartbeatRunStatus;
   responsibleUserId: string | null;
+  activeIdentityContextId?: string | null;
+  identityHistory?: Array<{
+    id: string; revision: number; responsibleUserId: string | null; messageId: string | null;
+    parentContextId: string | null; cause: string; status: string; acceptedAt: Date | string | null;
+    github: { status: "available" | "absent" | "unavailable"; login?: string; source?: "personal" | "dedicated"; reason?: string } | null;
+  }>;
   startedAt: Date | null;
   finishedAt: Date | null;
   error: string | null;

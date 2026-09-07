@@ -1999,6 +1999,62 @@ describe.sequential("issue thread interaction routes", () => {
     );
   });
 
+  it("delivers generic confirmation rejection feedback as the next turn message", async () => {
+    mockInteractionService.rejectInteraction.mockResolvedValueOnce({
+      id: "interaction-warm-turn",
+      companyId: "company-1",
+      issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      kind: "request_confirmation",
+      status: "rejected",
+      continuationPolicy: "wake_assignee",
+      idempotencyKey: "warm-turn-1",
+      sourceCommentId: null,
+      sourceRunId: RUN_3,
+      payload: {
+        version: 1,
+        prompt: "Continue to turn two?",
+        target: {
+          type: "custom",
+          key: "warm_turn_1",
+          revisionId: "turn-1",
+        },
+      },
+      result: {
+        version: 1,
+        outcome: "rejected",
+        reason: "Read T1, append T2, and verify both lines.",
+      },
+      createdAt: "2026-04-20T12:00:00.000Z",
+      updatedAt: "2026-04-20T12:05:00.000Z",
+      resolvedAt: "2026-04-20T12:05:00.000Z",
+    });
+
+    const res = await request(await createApp())
+      .post(
+        "/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-warm-turn/reject",
+      )
+      .send({ reason: "Read T1, append T2, and verify both lines." });
+
+    expect(res.status).toBe(200);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      ASSIGNEE_AGENT_ID,
+      expect.objectContaining({
+        payload: expect.objectContaining({
+          paperclipAgentMessage: {
+            text: "Read T1, append T2, and verify both lines.",
+            source: "interaction_rejection",
+            sessionId: "interaction-warm-turn",
+          },
+        }),
+        contextSnapshot: expect.objectContaining({
+          paperclipAgentMessage: expect.objectContaining({
+            text: "Read T1, append T2, and verify both lines.",
+          }),
+        }),
+      }),
+    );
+  });
+
   it("returns a rejected native completion review with a narrow reviewer-reason continuation", async () => {
     const issue = createIssue({ status: "in_review" });
     mockIssueService.getById.mockResolvedValue(issue);

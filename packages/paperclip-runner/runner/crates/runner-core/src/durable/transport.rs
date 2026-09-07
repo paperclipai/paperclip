@@ -215,6 +215,39 @@ impl RunnerTransportEndpoint {
         Ok(Self::Dial(ResolvedWsTarget::resolve(input)?))
     }
 
+    /// Advance a run-bound transport endpoint without needlessly rebinding the
+    /// fixed provider-ingress listener. `run.attach` changes the WebSocket path
+    /// for the next run while retaining the same sandbox listener. Constructing
+    /// a second `TcpListener` before dropping the first one fails with
+    /// `EADDRINUSE`, which would terminate an otherwise healthy warm runner.
+    pub(crate) fn rotate(&mut self, input: &str, run_id: &str) -> Result<(), DurableRunnerError> {
+        if let Some(remainder) = input.strip_prefix("listen://") {
+            if let Self::Listen { path, .. } = self {
+                let (authority, next_path) = remainder.split_once('/').ok_or_else(|| {
+                    DurableRunnerError::invalid(
+                        "runner_ingress_bind_conflict: listener path is required",
+                    )
+                })?;
+                if authority != "0.0.0.0:43127" {
+                    return Err(DurableRunnerError::invalid(
+                        "runner_ingress_bind_conflict: listener must bind 0.0.0.0:43127",
+                    ));
+                }
+                let next_path = format!("/{next_path}");
+                validate_listener_path(&next_path)?;
+                if next_path != format!("/api/runner/v1/connect/{run_id}") {
+                    return Err(DurableRunnerError::invalid(
+                        "runner listener path does not match the configured run",
+                    ));
+                }
+                *path = next_path;
+                return Ok(());
+            }
+        }
+        *self = Self::new(input, run_id)?;
+        Ok(())
+    }
+
     fn open(
         &self,
         max_frame_bytes: usize,

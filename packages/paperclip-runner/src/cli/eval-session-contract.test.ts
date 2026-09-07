@@ -1,5 +1,10 @@
+import { chmod, mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { describe, expect, it } from "vitest";
 
+import { parseNativeRuntimeContext } from "../contracts/runtime-context.js";
 import type { CapabilityLiveSessionSnapshot } from "../live/live-session.js";
 import {
   evalSessionUsage,
@@ -7,7 +12,9 @@ import {
 } from "./eval-session-contract.js";
 import {
   boundedEvalSessionUsage,
+  evalRuntimeSystemInstructions,
   evalSessionProviderVersion,
+  prepareEvalRuntimeContext,
 } from "./eval-session.js";
 
 function request(overrides: Record<string, unknown> = {}): unknown {
@@ -55,6 +62,38 @@ function agentCoreProfile(overrides: Record<string, unknown> = {}) {
 }
 
 describe("eval-session request contract", () => {
+  it("materializes a production-v3 runtime context for direct live providers", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "paperclip-eval-context-"));
+    let instructionRoot: string | null = null;
+    try {
+      const context = await prepareEvalRuntimeContext(workspace);
+      instructionRoot = context.instructions.bundle.rootPath;
+      expect(parseNativeRuntimeContext(context)).toEqual(context);
+      expect(context.skills).toEqual([]);
+      expect(context.mcp.assignmentSetId).toBe("paperclip-runner-direct-eval-v1");
+      expect(context.instructions.entryPath).toBe("AGENTS.md");
+      expect(await readFile(
+        join(context.instructions.bundle.rootPath, "AGENTS.md"),
+        "utf8",
+      )).toContain("Paperclip direct live evaluation");
+      const systemInstructions = evalRuntimeSystemInstructions(context);
+      expect(systemInstructions).toContain("Paperclip direct live evaluation");
+      expect(systemInstructions).toContain("Task-state changes in this mock control plane use finish_task and block_task");
+      expect(systemInstructions).toContain("The current user request defines the work for this turn");
+      expect(systemInstructions).toContain("Do not finish or block the mock task unless the current request asks for that state change");
+      expect(systemInstructions).toContain(
+        `Read-only instruction sibling root: ${context.instructions.bundle.rootPath}`,
+      );
+      expect((await stat(context.instructions.bundle.rootPath)).mode & 0o777)
+        .toBe(0o555);
+    } finally {
+      if (instructionRoot !== null) {
+        await chmod(instructionRoot, 0o700).catch(() => undefined);
+      }
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
   it("normalizes the current local live-session provider contract", () => {
     expect(parseEvalSessionRequest(request())).toMatchObject({
       provider: "codex",

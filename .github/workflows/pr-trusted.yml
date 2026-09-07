@@ -633,6 +633,9 @@ jobs:
       - name: Verify Paperclip Runner
         run: pnpm --filter @paperclipai/paperclip-runner check:all
 
+      - name: Build Runner Evalbook viewer
+        run: pnpm --filter @paperclipai/paperclip-runner build:issue-thread
+
       - name: Build
         run: pnpm build
 

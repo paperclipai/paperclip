@@ -247,6 +247,7 @@ function renderCase(
       </div>`
     : "";
   return `<article
+    id="execution-${html(execution.id)}"
     class="case case-${state}"
     data-execution-id="${html(execution.id)}"
     data-report-case

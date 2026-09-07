@@ -90,6 +90,7 @@ export type NativeWorkspaceInboundEvidence =
   | {
       kind: "existing_run";
       restartRecovery: boolean;
+      sameRunRecovery?: boolean;
       sameProviderLease: boolean;
     }
   | {
@@ -102,7 +103,7 @@ export function classifyNativeWorkspaceInbound(
   evidence: NativeWorkspaceInboundEvidence,
 ): WorkspaceInboundMode {
   if (evidence.kind === "existing_run") {
-    if (!evidence.restartRecovery) {
+    if (!evidence.restartRecovery && !evidence.sameRunRecovery) {
       throw new Error("native_workspace_sync_unexpected_existing_descriptor");
     }
     return evidence.sameProviderLease ? "adopt_remote" : "durable_seed";
@@ -734,6 +735,7 @@ export async function prepareNativeWorkspaceSync(input: {
   target: AdapterExecutionTarget | null;
   lease: EnvironmentLease;
   restartRecovery?: NativeRestartRecoveryClaim;
+  sameRunRecovery?: boolean;
   resourceDisposition?: NativeWorkspaceResourceDisposition;
 }): Promise<PreparedNativeWorkspaceSync | null> {
   if (input.target?.kind !== "remote" || input.target.transport !== "sandbox") {
@@ -777,6 +779,7 @@ export async function prepareNativeWorkspaceSync(input: {
     mode = classifyNativeWorkspaceInbound({
       kind: "existing_run",
       restartRecovery: Boolean(input.restartRecovery),
+      sameRunRecovery: input.sameRunRecovery,
       sameProviderLease,
     });
     const durableSeed =

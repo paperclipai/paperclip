@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { Building2, Loader2, TriangleAlert, UserRound } from "lucide-react";
+import { Building2, Loader2, Lock, RefreshCw, Search, TriangleAlert, UserRound } from "lucide-react";
 import type {
   ConnectionAudienceMember,
   ConnectionGrant,
@@ -8,6 +8,9 @@ import type {
 } from "@paperclipai/shared";
 import { Button } from "@/components/ui/button";
 import { Identity } from "@/components/Identity";
+import { GithubIcon } from "@/components/icons/github-icon";
+import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { InlineBanner } from "@/components/InlineBanner";
 import { MemberMultiSelect } from "@/components/MemberMultiSelect";
@@ -176,6 +179,7 @@ export function IdentitiesSection({
     return (
       <section className="space-y-5">
         <h2 className="text-sm font-semibold text-foreground">GitHub identity</h2>
+        <p className="text-sm text-muted-foreground">This agent uses this GitHub account for everyone’s work, instead of the person giving instructions.</p>
         <IdentityRow
           title={github ? `@${github.login}` : "Dedicated GitHub account"}
           status={agentGrant?.status ?? null}
@@ -291,8 +295,29 @@ function GitHubConnectionSummary({
   onRefreshAccess?: () => void;
   refreshPending: boolean;
 }) {
+  const [repositoryOwner, setRepositoryOwner] = useState("*");
+  const [repositorySearch, setRepositorySearch] = useState("");
+  useEffect(() => {
+    setRepositoryOwner("*");
+    setRepositorySearch("");
+  }, [grant.id]);
   const github = grant.providerTenant?.github;
   if (!github) return null;
+  const owners = [...new Set([
+    ...(github.installationOwnerLogins ?? []),
+    ...(github.repositories ?? []).map((repository) => repository.fullName.split("/")[0]),
+  ])].sort((a, b) => a.localeCompare(b));
+  const selectedOwner = owners.includes(repositoryOwner) ? repositoryOwner : "*";
+  const search = repositorySearch.trim().toLowerCase();
+  const visibleRepositories = github.repositories?.filter((repository) => (
+    (selectedOwner === "*" || repository.fullName.split("/")[0] === selectedOwner)
+    && repository.fullName.toLowerCase().includes(search)
+  ));
+  const configurationUrl = github.appSlug
+    ? `https://github.com/apps/${encodeURIComponent(github.appSlug)}/installations/new`
+    : /^https:\/\/github\.com\/apps\/[a-z0-9-]+\/installations\/new$/.test(github.installationUrl ?? "")
+      ? github.installationUrl
+      : null;
   const repositoryWarning = github.repositorySelection === "all"
     ? "All current and future repositories"
     : github.repositorySelection === "mixed"
@@ -300,44 +325,90 @@ function GitHubConnectionSummary({
       : null;
   const repositorySummary = github.repositorySelection === "none"
     ? "No repositories selected"
-    : `${github.repositoryCount} selected repositories`;
+    : `${github.repositoryCount} selected ${github.repositoryCount === 1 ? "repository" : "repositories"}`;
   return (
     <div className="divide-y divide-border border-y border-border">
-      <div className="flex flex-wrap items-center justify-between gap-3 py-3">
-        <div className="min-w-0">
-          <div className="text-sm font-medium text-foreground">Repositories</div>
-          {repositoryWarning ? (
-            <div
-              role="note"
-              className={cn(
-                "mt-1 inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs",
-                brandBanner.warning,
-              )}
-            >
-              <TriangleAlert className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-              {repositoryWarning}
-            </div>
-          ) : (
-            <div className="text-xs text-muted-foreground">{repositorySummary}</div>
-          )}
-        </div>
-        {github.managementUrl ? (
-          <Button asChild size="sm" variant="outline">
-            <a href={github.managementUrl} target="_blank" rel="noreferrer">Manage repositories on GitHub</a>
-          </Button>
-        ) : null}
+      <div className="py-3">
+        <div className="text-sm font-medium text-foreground">GitHub account</div>
+        <a className="text-sm text-muted-foreground hover:underline" href={`https://github.com/${encodeURIComponent(github.login)}`} target="_blank" rel="noreferrer">
+          @{github.login}
+        </a>
       </div>
-      <div className="flex flex-wrap items-center justify-between gap-3 py-3">
-        <div className="min-w-0">
-          <div className="text-sm font-medium text-foreground">Refresh access</div>
-          <div className="text-xs text-muted-foreground">Sync repository access from GitHub.</div>
+      <div className="space-y-3 py-3">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="min-w-0">
+            <div className="text-sm font-medium text-foreground">Repositories</div>
+            {repositoryWarning ? (
+              <div
+                role="note"
+                className={cn(
+                  "mt-1 inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs",
+                  brandBanner.warning,
+                )}
+              >
+                <TriangleAlert className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                {repositoryWarning}
+              </div>
+            ) : (
+              <div className="text-xs text-muted-foreground">{repositorySummary}</div>
+            )}
+          </div>
+          <div className="flex items-center gap-2">
+            {onRefreshAccess && configurationUrl ? (
+              <Button size="icon-sm" variant="outline" aria-label="Refresh access" title="Refresh access" disabled={refreshPending} onClick={onRefreshAccess}>
+                {refreshPending ? <Loader2 className="animate-spin" aria-hidden="true" /> : <RefreshCw aria-hidden="true" />}
+              </Button>
+            ) : null}
+            {configurationUrl ? (
+              <Button asChild size="sm" variant="outline">
+                <a href={configurationUrl} target="_blank" rel="noreferrer">Configure on GitHub</a>
+              </Button>
+            ) : onRefreshAccess ? (
+              <Button size="sm" variant="outline" disabled={refreshPending} onClick={onRefreshAccess}>
+                {refreshPending ? <Loader2 className="animate-spin" aria-hidden="true" /> : <RefreshCw aria-hidden="true" />}
+                Load GitHub configuration
+              </Button>
+            ) : null}
+          </div>
         </div>
-        {onRefreshAccess ? (
-          <Button size="sm" variant="outline" disabled={refreshPending} onClick={onRefreshAccess}>
-            {refreshPending ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : null}
-            Refresh access
-          </Button>
-        ) : null}
+        <div className="grid gap-2 sm:grid-cols-2">
+          <Select value={selectedOwner} onValueChange={setRepositoryOwner}>
+            <SelectTrigger aria-label="Filter repositories by account or organization" className="w-full">
+              <span className="flex min-w-0 items-center gap-2">
+                <GithubIcon className="h-4 w-4 shrink-0" aria-hidden="true" />
+                <SelectValue />
+              </span>
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="*">All accounts</SelectItem>
+              {owners.map((owner) => <SelectItem key={owner} value={owner}>{owner}</SelectItem>)}
+            </SelectContent>
+          </Select>
+          <div className="relative">
+            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
+            <Input aria-label="Search GitHub repositories" placeholder="Search repositories" className="pl-9" value={repositorySearch} onChange={(event) => setRepositorySearch(event.target.value)} />
+          </div>
+        </div>
+        {github.repositories ? (
+          visibleRepositories?.length ? <ul aria-label="Accessible GitHub repositories" tabIndex={0} className="max-h-(--sz-github-repository-list) space-y-2 overflow-y-auto text-sm">
+            {visibleRepositories.map((repository) => (
+              <li key={repository.id}>
+                <a className="flex items-center gap-2 text-muted-foreground hover:underline" href={`https://github.com/${repository.fullName.split("/").map(encodeURIComponent).join("/")}`} target="_blank" rel="noreferrer">
+                  <GithubIcon className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                  <span className="break-all">{repository.fullName}</span>
+                  {repository.private === true ? <Lock className="h-3 w-3 shrink-0" role="img" aria-label="Private repository" /> : null}
+                </a>
+              </li>
+            ))}
+          </ul> : <p role="status" className="text-sm text-muted-foreground">
+            {search ? "No repositories match your search." : "No accessible repositories for this account or organization."}
+          </p>
+        ) : (
+          <p className="text-sm text-muted-foreground">Refresh access to load the current repository list.</p>
+        )}
+        {configurationUrl ? <p className="text-xs text-muted-foreground">
+          Missing an organization or repository? <a href={configurationUrl} target="_blank" rel="noreferrer" className="text-foreground hover:underline">Configure access on GitHub</a>, then refresh this list.
+        </p> : null}
       </div>
     </div>
   );

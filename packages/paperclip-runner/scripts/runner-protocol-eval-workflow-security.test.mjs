@@ -8,6 +8,10 @@ const workflowPath = resolve(
   repositoryRoot,
   ".github/workflows/runner-protocol-live-evals.yml",
 );
+const trustedPrWorkflowPath = resolve(
+  repositoryRoot,
+  ".github/workflows/pr-trusted.yml",
+);
 
 test("direct live eval workflow keeps paid execution behind stable actor authorization", async () => {
   const workflow = await readFile(workflowPath, "utf8");
@@ -32,6 +36,19 @@ test("direct live eval workflow keeps paid execution behind stable actor authori
   for (const action of actions) assert.match(action, /^[^@]+@[0-9a-f]{40}$/u);
 });
 
+test("pull request CI builds the canonical Evalbook viewer", async () => {
+  const workflow = await readFile(trustedPrWorkflowPath, "utf8");
+  const buildJob = workflow.slice(
+    workflow.indexOf("  build:"),
+    workflow.indexOf("  verify_serialized_server:"),
+  );
+
+  assert.match(
+    buildJob,
+    /name: Build Runner Evalbook viewer[\s\S]*pnpm --filter @paperclipai\/paperclip-runner build:issue-thread/u,
+  );
+});
+
 test("resolves both repositories immutably and bounds total matrix concurrency", async () => {
   const workflow = await readFile(workflowPath, "utf8");
   const authorize = workflow.slice(
@@ -45,6 +62,7 @@ test("resolves both repositories immutably and bounds total matrix concurrency",
     /repos\/paperclipai\/paperclip-evals\/commits\/\$EVALS_SHA/u,
   );
   assert.match(authorize, /COMMITPERCLIP_KEY/u);
+  assert.match(authorize, /GH_REPO: paperclipai\/paperclip-evals/u);
   assert.match(
     authorize,
     /GH_TOKEN: \$\{\{ steps\.evals_token\.outputs\.value \}\}/u,
@@ -66,6 +84,19 @@ test("resolves both repositories immutably and bounds total matrix concurrency",
     ),
   ];
   assert.equal(privateCheckouts.length, 3);
+  const privateTokenSteps = [
+    ...workflow.matchAll(
+      /^      - name: Generate private eval-repository token\n(?<body>(?:^ {8,}.*\n?)*)/gmu,
+    ),
+  ];
+  assert.equal(privateTokenSteps.length, 4);
+  for (const tokenStep of privateTokenSteps) {
+    assert.match(
+      tokenStep.groups.body,
+      /^ {10}GH_REPO: paperclipai\/paperclip-evals$/mu,
+      "every private-eval token must be minted from the eval repository installation",
+    );
+  }
   for (const checkout of privateCheckouts) {
     assert.match(
       checkout[0],
@@ -74,6 +105,15 @@ test("resolves both repositories immutably and bounds total matrix concurrency",
   }
   assert.match(workflow, /matrix_0/u);
   assert.match(workflow, /matrix_1/u);
+  assert.match(
+    workflow,
+    /pnpm --filter @paperclipai\/paperclip-runner deploy --prod/u,
+  );
+  assert.match(
+    workflow,
+    /--runner-cli runner-protocol-build\/extracted\/portable\/dist\/cli\/eval-session\.js/u,
+  );
+  assert.doesNotMatch(workflow, /npm install --prefix/u);
 });
 
 test("publishes only the separately sanitized Evalbook through trusted OIDC code", async () => {
@@ -96,6 +136,19 @@ test("publishes only the separately sanitized Evalbook through trusted OIDC code
     /Upload access-controlled canonical Evalbook and raw attempts/u,
   );
   assert.match(report, /Upload publisher-only sanitized Evalbook/u);
+  assert.match(
+    report,
+    /verify-runner-evalbook-viewer\.mjs --report-root runner-protocol-merged\/public-report/u,
+  );
+  assert.match(
+    report,
+    /verify-runner-evalbook-viewer\.mjs --report-root runner-protocol-merged\/report/u,
+  );
+  assert.match(
+    report,
+    /--viewer-root runner-protocol-build\/extracted\/dist-issue-thread\s*\\\n\s*--public-viewer/u,
+  );
+  assert.equal([...report.matchAll(/--viewer-root /gu)].length, 2);
 
   const publisher = workflow.slice(workflow.indexOf("  publish_history:"));
   assert.match(publisher, /ref: \$\{\{ github\.sha \}\}/u);
@@ -103,6 +156,10 @@ test("publishes only the separately sanitized Evalbook through trusted OIDC code
   assert.match(publisher, /runner-protocol-eval-public-/u);
   assert.match(publisher, /publish-runner-protocol-eval-history\.mjs/u);
   assert.match(publisher, /runner-protocol-evals/u);
+  assert.match(publisher, /runner-protocol-viewer-/u);
+  assert.match(publisher, /PAPERCLIP_RUNNER_PROTOCOL_EVAL_VIEWER_DIR/u);
+  assert.match(publisher, /url: \$\{\{ steps\.publish\.outputs\.report_url \}\}/u);
+  assert.match(publisher, /Publish versioned report and refresh the root index\n\s+id: publish/u);
   assert.doesNotMatch(publisher, /(?:OPENAI|ANTHROPIC|OPENROUTER)_API_KEY/u);
   assert.doesNotMatch(publisher, /paperclipai\/paperclip-evals/u);
   assert.doesNotMatch(publisher, /downloaded-runner-protocol-evals/u);
