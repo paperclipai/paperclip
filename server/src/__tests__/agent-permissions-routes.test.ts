@@ -1994,6 +1994,56 @@ describe.sequential("agent permission routes", () => {
       expect(JSON.stringify(res.body)).not.toContain(plaintextValue);
     });
 
+    // SEC-1808: redactAgentAdapterConfig previously returned a non-object
+    // adapterConfig unchanged (fail-open) instead of `{}`, and the `?? {}`
+    // in redactAgentConfiguration only rescues null/undefined, not a
+    // present-but-malformed value such as a raw string.
+    it("redacts a non-object adapterConfig in the single-agent configuration response", async () => {
+      const plaintextValue = "malformed-adapter-config-canary-must-not-leak";
+      mockAgentService.getById.mockResolvedValue({
+        ...baseAgent,
+        adapterConfig: plaintextValue,
+      });
+
+      const app = await createApp({
+        type: "board",
+        userId: "board-user",
+        source: "session",
+        isInstanceAdmin: false,
+        companyIds: [companyId],
+      });
+
+      const res = await request(app).get(`/api/agents/${agentId}/configuration`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.adapterConfig).toEqual({});
+      expect(JSON.stringify(res.body)).not.toContain(plaintextValue);
+    });
+
+    it("redacts a non-object adapterConfig in company configuration-list responses", async () => {
+      const plaintextValue = "malformed-adapter-config-list-canary-must-not-leak";
+      mockAgentService.list.mockResolvedValue([
+        {
+          ...baseAgent,
+          adapterConfig: plaintextValue,
+        },
+      ]);
+
+      const app = await createApp({
+        type: "board",
+        userId: "board-user",
+        source: "session",
+        isInstanceAdmin: false,
+        companyIds: [companyId],
+      });
+
+      const res = await request(app).get(`/api/companies/${companyId}/agent-configurations`);
+
+      expect(res.status).toBe(200);
+      expect(res.body[0].adapterConfig).toEqual({});
+      expect(JSON.stringify(res.body)).not.toContain(plaintextValue);
+    });
+
     it("redacts plaintext env values in configuration revisions", async () => {
       const plaintextValue = "revision-value-must-not-leak";
       mockAgentService.listConfigRevisions.mockResolvedValue([

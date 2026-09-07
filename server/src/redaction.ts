@@ -1035,7 +1035,10 @@ function redactAgentEnvBinding(value: unknown): unknown {
 export function redactAgentAdapterConfig(
   adapterConfig: Record<string, unknown>,
 ): Record<string, unknown> {
-  if (!isPlainObject(adapterConfig)) return adapterConfig;
+  // A non-plain-object input (malformed/legacy/attacker-influenced data) must
+  // fail closed to `{}`, not pass through unchanged — returning it verbatim
+  // would serialize whatever it contains straight into API responses.
+  if (!isPlainObject(adapterConfig)) return {};
   // A missing/invalid `env` shape must still deny-by-default through
   // redactConfigurationPayload, not the legacy redactEventPayload/
   // sanitizeRecord path, which preserves scalars under neutral/unrecognized
