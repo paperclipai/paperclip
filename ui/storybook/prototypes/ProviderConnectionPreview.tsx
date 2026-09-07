@@ -58,7 +58,7 @@ export function ProviderConnectionPreview({ provider, initialMethod = "subscript
       animate={{ height: cardSpace ? "auto" : 0, opacity: live ? 1 : 0 }}
       transition={{ height: MAKE_ROOM, opacity: live ? { ...CARD_ENTER, delay: MAKE_ROOM.duration } : CARD_EXIT }}>
       {cardSpace && <div className="pt-5">
-        <OnboardingLoginCard onCancel={cancel} loading={!live} instruction={method === "api"
+        <OnboardingLoginCard loading={!live} instruction={method === "api"
           ? `Provide your ${provider} API key to connect`
           : provider === "Claude" ? <><button type="button" className="underline underline-offset-2" onClick={() => setPhase("waiting")}>Sign in to Claude</button> then come back and enter authorization code</>
           : <><button type="button" className="underline underline-offset-2" onClick={() => setPhase("waiting")}>Sign in to OpenAI</button> and enter this code</>}>

@@ -171,7 +171,6 @@ export function AgentProviderConnection({
           <div className="pt-5">
             {method === "api" ? (
               <OnboardingLoginCard
-                onCancel={cancel}
                 instruction={`Provide your ${provider} API key to connect`}
               >
                 <OnboardingCardField
@@ -199,7 +198,6 @@ export function AgentProviderConnection({
                 environmentId={environmentId}
                 chrome="onboarding"
                 autoStart
-                onCancel={cancel}
                 onStored={(storedSessionId) => {
                   const connection = {
                     env: buildFixedClaudeOAuthBinding(),
