@@ -1,13 +1,16 @@
 import { logger } from "../middleware/logger.js";
 
-const AGENT_START_LOCK_STALE_MS = 30_000;
-const startLocksByAgent = new Map<string, { promise: Promise<void>; startedAtMs: number }>();
+const START_LOCK_STALE_MS = 30_000;
+const startLocksByKey = new Map<string, { promise: Promise<void>; startedAtMs: number }>();
 
-async function waitForAgentStartLock(agentId: string, lock: { promise: Promise<void>; startedAtMs: number }) {
+async function waitForStartLock(
+  logContext: Record<string, unknown>,
+  lock: { promise: Promise<void>; startedAtMs: number },
+) {
   const elapsedMs = Date.now() - lock.startedAtMs;
-  const remainingMs = AGENT_START_LOCK_STALE_MS - elapsedMs;
+  const remainingMs = START_LOCK_STALE_MS - elapsedMs;
   if (remainingMs <= 0) {
-    logger.warn({ agentId, staleMs: elapsedMs }, "agent start lock stale; continuing queued-run start");
+    logger.warn({ ...logContext, staleMs: elapsedMs }, "start lock stale; continuing queued-run start");
     return;
   }
 
@@ -25,24 +28,38 @@ async function waitForAgentStartLock(agentId: string, lock: { promise: Promise<v
   if (timeout) clearTimeout(timeout);
 
   if (timedOut) {
-    logger.warn({ agentId, staleMs: AGENT_START_LOCK_STALE_MS }, "agent start lock timed out; continuing queued-run start");
+    logger.warn({ ...logContext, staleMs: START_LOCK_STALE_MS }, "start lock timed out; continuing queued-run start");
   }
 }
 
-export async function withAgentStartLock<T>(agentId: string, fn: () => Promise<T>) {
-  const previous = startLocksByAgent.get(agentId);
-  const waitForPrevious = previous ? waitForAgentStartLock(agentId, previous) : Promise.resolve();
+// In-process, promise-chain mutex keyed by an arbitrary string. Safe because
+// heartbeat dispatch runs inside a single Node process (see GRO-60) — this is
+// not a distributed lock and must not be relied on across processes.
+async function withKeyedStartLock<T>(key: string, logContext: Record<string, unknown>, fn: () => Promise<T>) {
+  const previous = startLocksByKey.get(key);
+  const waitForPrevious = previous ? waitForStartLock(logContext, previous) : Promise.resolve();
   const run = waitForPrevious.then(fn);
   const marker = run.then(
     () => undefined,
     () => undefined,
   );
-  startLocksByAgent.set(agentId, { promise: marker, startedAtMs: Date.now() });
+  startLocksByKey.set(key, { promise: marker, startedAtMs: Date.now() });
   try {
     return await run;
   } finally {
-    if (startLocksByAgent.get(agentId)?.promise === marker) {
-      startLocksByAgent.delete(agentId);
+    if (startLocksByKey.get(key)?.promise === marker) {
+      startLocksByKey.delete(key);
     }
   }
+}
+
+export async function withAgentStartLock<T>(agentId: string, fn: () => Promise<T>) {
+  return withKeyedStartLock(`agent:${agentId}`, { agentId }, fn);
+}
+
+// Serializes the company-wide slot check + claim against every other agent's
+// dispatch decision in the same company, so two agents can't both read a
+// stale running count and jointly overshoot companies.maxConcurrentAgentRuns.
+export async function withCompanyRunDispatchLock<T>(companyId: string, fn: () => Promise<T>) {
+  return withKeyedStartLock(`company:${companyId}`, { companyId }, fn);
 }
