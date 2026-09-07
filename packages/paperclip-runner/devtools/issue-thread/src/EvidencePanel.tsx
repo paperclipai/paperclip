@@ -114,6 +114,8 @@ export interface EvidencePanelProps {
   snapshot: CapabilityIssueThreadSnapshot;
   devtools?: CapabilityDevtoolsSnapshot | null;
   evalReport?: EvalInspectorReport | null;
+  devtoolsTab: CapabilityDevtoolsTab;
+  onDevtoolsTabChange: (tab: CapabilityDevtoolsTab) => void;
   onForkRevision?: (revision: number) => void;
   layout: "side" | "overlay" | "segment";
   width: number;
@@ -331,11 +333,12 @@ function Section({
 }
 
 export function EvidencePanel(props: EvidencePanelProps) {
-  const [devtoolsTab, setDevtoolsTab] = useState<CapabilityDevtoolsTab>(props.evalReport ? "eval" : "evidence");
   const {
     snapshot,
     devtools,
     evalReport,
+    devtoolsTab,
+    onDevtoolsTabChange,
     onForkRevision = () => undefined,
     layout,
     width,
@@ -394,7 +397,7 @@ export function EvidencePanel(props: EvidencePanelProps) {
           {devtools === null ? (
             evalReport ? <EvalReportInspector evalReport={evalReport} /> : <p className="pit-muted pit-devtools-loading">Loading company state…</p>
           ) : (
-            <DevtoolsInspector snapshot={devtools} onFork={onForkRevision} tab={devtoolsTab} onTabChange={setDevtoolsTab} evalReport={evalReport} />
+            <DevtoolsInspector snapshot={devtools} onFork={onForkRevision} tab={devtoolsTab} onTabChange={onDevtoolsTabChange} evalReport={evalReport} />
           )}
         </>
       ) : null}

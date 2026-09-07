@@ -12,6 +12,7 @@ import type { CapabilityDevtoolsSnapshot } from "../../../src/devtools";
 import { capabilityDenialCount } from "../../../src/issue-thread/types";
 import { Composer } from "./Composer";
 import { EvidencePanel } from "./EvidencePanel";
+import type { CapabilityDevtoolsTab } from "./DevtoolsInspector";
 import { Icon } from "./Icons";
 import { IssueHeader } from "./IssueHeader";
 import { applyFakeInteractionResponse } from "./fake-store";
@@ -333,6 +334,7 @@ export function App() {
   const [panelOpen, setPanelOpen] = useState(() => embeddedEval !== null ||
     readStoredFlag(route.surface === "chat" ? CHAT_PANEL_OPEN_KEY : PANEL_OPEN_KEY, false));
   const [panelWidth, setPanelWidth] = useState(() => readStoredNumber(PANEL_WIDTH_KEY, 384));
+  const [devtoolsTab, setDevtoolsTab] = useState<CapabilityDevtoolsTab>(embeddedEval !== null ? "eval" : "evidence");
   const [segment, setSegment] = useState<"thread" | "evidence">(route.segment);
   const [openSections, setOpenSections] = useState<CapabilityEvidenceSectionId[]>(["tools"]);
   const [selectedTurnId, setSelectedTurnId] = useState<string | "all">("all");
@@ -572,6 +574,7 @@ export function App() {
   const openEvidence = useCallback(
     (section: CapabilityEvidenceSectionId, recordId: string) => {
       setPanelOpen(true);
+      setDevtoolsTab("evidence");
       setSegment("evidence");
       setSelectedTurnId("all");
       setOpenSections((current) => (current.includes(section) ? current : [...current, section]));
@@ -1497,6 +1500,8 @@ export function App() {
         {showPanel ? (
           <EvidencePanel
             snapshot={snapshot}
+            devtoolsTab={devtoolsTab}
+            onDevtoolsTabChange={setDevtoolsTab}
             evalReport={embeddedEval}
             {...(embeddedEval !== null || (route.mode === "live" && historicSessionId === null) ? { devtools } : {})}
             onForkRevision={(revision) => {

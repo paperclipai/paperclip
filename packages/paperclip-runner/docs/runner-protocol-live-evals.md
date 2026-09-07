@@ -27,6 +27,9 @@ Before uploading, the report job runs the actual built application in Chromium
 against representative passing, failing and missing-recording pages in both
 reports. It checks initial rendering, tool expansion, read-only controls,
 navigation, reload, a narrow viewport and the public no-API-request boundary.
+In full-evidence reports, a tool's **View in Evidence** link selects the Evidence
+tab and highlights its record, including when reopening that same record after
+switching tabs. The browser check exercises this cross-link too.
 Run the same check locally with
 `node packages/paperclip-runner/scripts/verify-runner-evalbook-viewer.mjs --report-root /path/to/report`.
 Add `--screenshots /path/to/proof` for visual evidence. Public screenshots are

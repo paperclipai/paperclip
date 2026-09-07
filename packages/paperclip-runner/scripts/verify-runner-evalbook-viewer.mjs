@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { readFile, readdir, mkdir } from "node:fs/promises";
 import { resolve, join, extname, sep } from "node:path";
-import { chromium } from "@playwright/test";
+import { chromium, expect } from "@playwright/test";
 
 const arg = (name) => process.argv[process.argv.indexOf(name) + 1];
 if (!process.argv.includes("--report-root"))
@@ -110,6 +110,21 @@ try {
             })
             .count(),
         );
+      else if (payload.devtools) {
+        const evidenceLink = page
+          .locator('[data-thread-item="tool_activity"][open]')
+          .first()
+          .getByRole("button", { name: "View in Evidence", exact: true });
+        const evidenceTab = page.getByRole("tab", { name: "Evidence", exact: true });
+        await evidenceLink.click();
+        await expect(evidenceTab).toHaveAttribute("aria-selected", "true");
+        await expect(page.locator('[data-highlighted="true"]').first()).toBeVisible();
+        // Reopening the same record after selecting another tab must work too.
+        await page.getByRole("tab", { name: "Eval", exact: true }).click();
+        await evidenceLink.click();
+        await expect(evidenceTab).toHaveAttribute("aria-selected", "true");
+        await page.getByRole("tab", { name: "Eval", exact: true }).click();
+      }
     }
     if (payload.publication) {
       assert.ok(
