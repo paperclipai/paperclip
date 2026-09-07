@@ -104,6 +104,14 @@ fn install_diagnostic_panic_hook(directory: Option<PathBuf>) {
     }));
 }
 
+fn install_crypto_provider() {
+    // The production dependency graph enables both rustls crypto backends.
+    // Select the backend declared by this workspace before any TLS builder
+    // asks rustls for the process-level default. An embedding process may have
+    // already selected a provider, which is also a valid initialized state.
+    let _ = rustls::crypto::ring::default_provider().install_default();
+}
+
 fn build_metadata() -> serde_json::Value {
     json!({
         "schema": RUNNERD_BUILD_METADATA_SCHEMA,
@@ -375,6 +383,17 @@ mod tests {
     }
 
     #[test]
+    fn installs_a_crypto_provider_before_tls_initialization() {
+        install_crypto_provider();
+        assert!(rustls::crypto::CryptoProvider::get_default().is_some());
+
+        // Installation is process-global. A repeated startup call must remain
+        // safe when a provider was selected earlier in the process lifetime.
+        install_crypto_provider();
+        let _ = rustls::ClientConfig::builder();
+    }
+
+    #[test]
     fn persistent_diagnostic_is_private_bounded_and_redacted() {
         let unique = format!(
             "paperclip-runnerd-diagnostic-test-{}-{}",
@@ -425,6 +444,7 @@ fn main() -> ExitCode {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
     let diagnostics_directory = diagnostic_directory(&args);
     install_diagnostic_panic_hook(diagnostics_directory.clone());
+    install_crypto_provider();
     match run(&args) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
