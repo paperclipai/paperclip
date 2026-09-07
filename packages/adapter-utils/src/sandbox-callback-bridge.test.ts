@@ -265,6 +265,41 @@ describe("sandbox callback bridge", () => {
     expect(seenRequests[0]?.headers.authorization).toBeUndefined();
     expect(seenRequests[0]?.headers["x-paperclip-run-id"]).toBeUndefined();
 
+    // The public Paperclip API documents the "X-API-Key" header, so an agent in
+    // the sandbox sends that header before it sends "Authorization: Bearer".
+    // The gateway accepts the same per-run token through either header.
+    const apiKeyResponse = await fetch(`${bridge.baseUrl}/api/agents/me`, {
+      headers: {
+        "x-api-key": bridgeToken,
+        accept: "application/json",
+      },
+    });
+    expect(apiKeyResponse.status).toBe(200);
+    await expect(apiKeyResponse.json()).resolves.toMatchObject({
+      ok: true,
+      method: "GET",
+      path: "/api/agents/me",
+    });
+
+    // A wrong token in the same header still fails closed.
+    const apiKeyDeniedResponse = await fetch(`${bridge.baseUrl}/api/agents/me`, {
+      headers: {
+        "x-api-key": "wrong-token",
+      },
+    });
+    expect(apiKeyDeniedResponse.status).toBe(401);
+    await expect(apiKeyDeniedResponse.json()).resolves.toMatchObject({
+      error: "Invalid bridge token.",
+    });
+
+    // The header allowlist strips the credential header, so the token never
+    // leaves the sandbox with the forwarded request.
+    expect(seenRequests).toHaveLength(2);
+    expect(seenRequests[1]).toMatchObject({
+      method: "GET",
+      path: "/api/agents/me",
+    });
+    expect(seenRequests[1]?.headers["x-api-key"]).toBeUndefined();
   });
 
   it("denies non-allowlisted requests by default", async () => {
@@ -3434,4 +3469,59 @@ describe("sandbox callback bridge", () => {
     expect(typeof seenRequests[0]?.body).toBe("string");
     expect(seenRequests[0]?.body).toBe(requestBodyText);
   });
+
+  it("accepts the bridge token in X-API-Key on the HTTP/2 path and strips the header", async () => {
+    // Both generated gateways share one token reader, so the HTTP/2 transport
+    // must accept "X-API-Key" exactly as the file-mode transport does. The
+    // header allowlist must still strip the credential before the gateway
+    // forwards the request to the host.
+    const bridgeToken = createSandboxCallbackBridgeToken();
+    const seenHeaders: Array<Record<string, string>> = [];
+    const gateway = await startHttp2GatewayForTest({
+      bridgeToken,
+      forwardRequest: async (request) => {
+        seenHeaders.push(request.headers);
+        return {
+          status: 200,
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ ok: true }),
+        };
+      },
+    });
+
+    const response = await fetch(`${gateway.baseUrl}/api/agents/me`, {
+      headers: {
+        "x-api-key": bridgeToken,
+        accept: "application/json",
+      },
+    });
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({ ok: true });
+    expect(seenHeaders).toHaveLength(1);
+    expect(seenHeaders[0]?.["x-api-key"]).toBeUndefined();
+
+    const deniedResponse = await fetch(`${gateway.baseUrl}/api/agents/me`, {
+      headers: {
+        "x-api-key": "wrong-token",
+      },
+    });
+    expect(deniedResponse.status).toBe(401);
+    await expect(deniedResponse.json()).resolves.toMatchObject({
+      error: "Invalid bridge token.",
+    });
+    // The rejected request never opened a stream to the host.
+    expect(seenHeaders).toHaveLength(1);
+
+    // A bearer token still works and still wins when both headers are present.
+    const bearerResponse = await fetch(`${gateway.baseUrl}/api/agents/me`, {
+      headers: {
+        authorization: `Bearer ${bridgeToken}`,
+        "x-api-key": "wrong-token",
+      },
+    });
+    expect(bearerResponse.status).toBe(200);
+    expect(seenHeaders).toHaveLength(2);
+    expect(seenHeaders[1]?.authorization).toBeUndefined();
+    expect(seenHeaders[1]?.["x-api-key"]).toBeUndefined();
+  }, 15_000);
 });
