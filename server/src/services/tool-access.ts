@@ -1942,7 +1942,7 @@ export async function loadGitHubGrantMetadata(
   repositorySelection: "all" | "selected" | "mixed" | "none";
   installationIds: string[];
   installationOwnerLogins: string[];
-  repositories: Array<{ id: string; fullName: string; installationId: string }>;
+  repositories: Array<{ id: string; fullName: string; installationId: string; private?: boolean }>;
   installationUrl: string;
   managementUrl: string;
   appSlug?: string;
@@ -1991,7 +1991,7 @@ export async function loadGitHubGrantMetadata(
   const owners = new Set<string>();
   const selections = new Set<"all" | "selected">();
   const managementUrls = new Set<string>();
-  const repositories = new Map<string, { id: string; fullName: string; installationId: string }>();
+  const repositories = new Map<string, { id: string; fullName: string; installationId: string; private?: boolean }>();
   for (const installation of installations) {
     const installationId = githubId(installation.id);
     if (!installationId) continue;
@@ -2009,7 +2009,10 @@ export async function loadGitHubGrantMetadata(
       if (!id || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(fullName)) {
         throw unprocessable("GitHub returned invalid repository metadata", { code: "github_bad_response" });
       }
-      repositories.set(id, { id, fullName, installationId });
+      repositories.set(id, {
+        id, fullName, installationId,
+        ...(typeof repository.private === "boolean" ? { private: repository.private } : {}),
+      });
     }
   }
   const repositoryCount = repositories.size;

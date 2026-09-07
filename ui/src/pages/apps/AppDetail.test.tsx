@@ -282,6 +282,7 @@ function dedicatedGitHubGrant(
         installationIds: ["456"],
         installationOwnerLogins: ["paperclipai"],
         repositories: [{ id: "789", fullName: "paperclipai/test-repo", installationId: "456" }],
+        installationUrl: "https://github.com/apps/paperclip-test/installations/new",
         managementUrl: "https://github.com/settings/installations/456",
         webhookHealth: "pending",
         lastWebhookAt: null,
@@ -1464,8 +1465,8 @@ describe("AppDetail", () => {
       grants: [dedicatedGitHubGrant({ kind: "user", subjectAgentId: null, subjectUserId: "user-1" }, {
         repositoryCount: 2,
         repositories: [
-          { id: "1", fullName: "paperclipai/first", installationId: "456" },
-          { id: "2", fullName: "paperclipai/second", installationId: "456" },
+          { id: "1", fullName: "paperclipai/first", installationId: "456", private: true },
+          { id: "2", fullName: "paperclipai/second", installationId: "456", private: false },
         ],
       })],
       capabilities: fullCapabilities(), currentUserId: "user-1", members: [],
@@ -1476,6 +1477,56 @@ describe("AppDetail", () => {
     expect(container.querySelectorAll('ul[aria-label="Accessible GitHub repositories"] li')).toHaveLength(2);
     expect(container.textContent).toContain("paperclipai/first");
     expect(container.textContent).toContain("paperclipai/second");
+    expect(container.querySelector('a[href="https://github.com/paperclipai/first"] [aria-label="Private repository"]')).toBeTruthy();
+    expect(container.querySelector('a[href="https://github.com/paperclipai/second"] [aria-label="Private repository"]')).toBeNull();
+    const configureHint = [...container.querySelectorAll("p a")].find((link) => link.textContent === "Configure access on GitHub");
+    expect(configureHint?.getAttribute("href")).toBe("https://github.com/apps/paperclip-test/installations/new");
+  });
+
+  it("filters the combined GitHub repository list by owner and search without changing access", async () => {
+    mockParams.tab = "permissions";
+    getConnectionMock.mockResolvedValue(perUserConnection());
+    listConnectionGrantsMock.mockResolvedValue({
+      connection: { id: "conn-1", uid: "conn-1" },
+      grants: [dedicatedGitHubGrant({ kind: "user", subjectAgentId: null, subjectUserId: "user-1" }, {
+        repositoryCount: 3,
+        installationOwnerLogins: ["paperclipai", "dottabot", "empty-org"],
+        repositories: [
+          { id: "1", fullName: "paperclipai/first", installationId: "456" },
+          { id: "2", fullName: "paperclipai/second", installationId: "456" },
+          { id: "3", fullName: "dottabot/first", installationId: "789" },
+        ],
+      })],
+      capabilities: fullCapabilities(), currentUserId: "user-1", members: [],
+    });
+    await renderAppDetail();
+    const repositoryNames = () => [...container.querySelectorAll('ul[aria-label="Accessible GitHub repositories"] a')].map((link) => link.textContent);
+    const selectOwner = async (label: string) => {
+      await act(async () => {
+        container.querySelector('[role="combobox"][aria-label="Filter repositories by account or organization"]')!
+          .dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+      });
+      const option = [...document.querySelectorAll('[role="option"]')].find((item) => item.textContent === label);
+      expect(option).toBeTruthy();
+      await act(async () => {
+        option!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+      });
+    };
+    expect(repositoryNames()).toEqual(["paperclipai/first", "paperclipai/second", "dottabot/first"]);
+    await selectOwner("paperclipai");
+    expect(repositoryNames()).toEqual(["paperclipai/first", "paperclipai/second"]);
+    const search = container.querySelector<HTMLInputElement>('input[aria-label="Search GitHub repositories"]')!;
+    await act(async () => { setInputValue(search, "FIRST"); });
+    expect(repositoryNames()).toEqual(["paperclipai/first"]);
+    await selectOwner("All accounts");
+    expect(repositoryNames()).toEqual(["paperclipai/first", "dottabot/first"]);
+    await act(async () => { setInputValue(search, "missing"); });
+    expect(container.textContent).toContain("No repositories match your search.");
+    await act(async () => { setInputValue(search, ""); });
+    await selectOwner("empty-org");
+    expect(container.textContent).toContain("No accessible repositories for this account or organization.");
+    expect(container.querySelector('a[href="https://github.com/apps/paperclip-test/installations/new"]')?.textContent).toBe("Configure on GitHub");
+    expect(updateConnectionMock).not.toHaveBeenCalled();
   });
 
   it("shows dedicated GitHub access as compact action rows and links to the agent", async () => {
@@ -1500,9 +1551,9 @@ describe("AppDetail", () => {
     expect(container.querySelector('a[href="https://github.com/dottabot"]')?.textContent).toBe("@dottabot");
     expect(container.querySelector('a[href="https://github.com/paperclipai/test-repo"]')?.textContent).toBe("paperclipai/test-repo");
     expect(container.querySelector(
-      'a[href="https://github.com/settings/installations/456"]',
-    )?.textContent).toBe("Manage repositories on GitHub");
-    expect(findButton("Refresh access")).toBeTruthy();
+      'a[href="https://github.com/apps/paperclip-test/installations/new"]',
+    )?.textContent).toBe("Configure on GitHub");
+    expect(container.querySelector('button[aria-label="Refresh access"]')).toBeTruthy();
     expect(container.textContent).not.toContain("Installation");
     expect(container.textContent).not.toContain("Token continuity");
     expect(container.textContent).not.toContain("Webhook health");

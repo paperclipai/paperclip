@@ -195,7 +195,7 @@ export const connectionGrants = pgTable(
         installationIds: string[];
         installationOwnerLogins: string[];
         /** Repository metadata visible to this credential; refreshed from GitHub. */
-        repositories?: Array<{ id: string; fullName: string; installationId: string }>;
+        repositories?: Array<{ id: string; fullName: string; installationId: string; private?: boolean }>;
         installationUrl?: string;
         managementUrl?: string;
         appSlug?: string;
