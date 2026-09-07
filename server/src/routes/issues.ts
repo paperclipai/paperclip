@@ -11759,6 +11759,10 @@ export function issueRoutes(
       return;
     }
 
+    if (result.previous.executionRunId) {
+      await heartbeat.cancelRun(result.previous.executionRunId, "admin force-release");
+    }
+
     const actor = getActorInfo(req);
     await logActivity(db, {
       companyId: result.issue.companyId,
