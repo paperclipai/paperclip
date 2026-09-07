@@ -4180,6 +4180,9 @@ export function issueRoutes(
       assigneeAgentId: string | null;
       assigneeUserId: string | null;
       reviewPolicy?: IssueReviewPolicy | null;
+      checkoutRunId?: string | null;
+      /** With checkoutRunId, decides run-lock vs assignee-scope denial (the recovery fix). */
+      executionRunId?: string | null;
       /** Used only to name the task in denial copy (plan §6). */
       identifier?: string | null;
     },
@@ -4227,12 +4230,27 @@ export function issueRoutes(
       }
       if (issue.status === "in_progress") {
         // Run/checkout ownership stays assignee-scoped even though writes are
-        // open, so this lock clears on its own — the copy routes to comments.
-        return denyIssueWrite(req, res, issue, "issue_write_assignee_run_lock", {
-          issueId: issue.id,
-          assigneeAgentId: issue.assigneeAgentId,
-          actorAgentId,
-        });
+        // open, so the copy routes to comments either way. But WHICH refusal
+        // this is depends on whether a run actually holds the issue, and until
+        // the recovery fix `in_progress` alone claimed a live checkout: a peer read
+        // "wait for the run to release the lock" off an issue whose
+        // checkoutRunId, executionRunId and executionLockedAt were all null,
+        // and armed a wait that no event could end. A lock clears on its own;
+        // this boundary does not.
+        const heldByRun = Boolean(issue.checkoutRunId ?? issue.executionRunId);
+        return denyIssueWrite(
+          req,
+          res,
+          issue,
+          heldByRun ? "issue_write_assignee_run_lock" : "issue_write_assignee_scoped_field_edit",
+          {
+            issueId: issue.id,
+            assigneeAgentId: issue.assigneeAgentId,
+            actorAgentId,
+            checkoutRunId: issue.checkoutRunId ?? null,
+            executionRunId: issue.executionRunId ?? null,
+          },
+        );
       }
       // Past the run lock the issue is idle, so only channels that have not
       // adopted the default-open rule still refuse another agent's issue.

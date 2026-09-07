@@ -6195,6 +6195,206 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(runs).toHaveLength(0);
   });
 
+  it("re-wakes a routable blocked owner when recovery finds no live path", async () => {
+    const { companyId, issueId, runId } = await seedStrandedIssueFixture({
+      status: "blocked",
+      runStatus: "succeeded",
+      livenessState: "blocked",
+    });
+    // The owner must be someone other than the blocked assignee, otherwise the
+    // wake is an address that resolves back to the sender (the recovery fix, below).
+    const ownerAgentId = randomUUID();
+    await db.insert(agents).values({
+      id: ownerAgentId,
+      companyId,
+      name: "CodexReviewer",
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db
+      .update(issues)
+      .set({
+        unblockDescriptor: { owner: { agentId: ownerAgentId }, action: "Review the blocked work" },
+        blockedTransitionAt: new Date("2026-07-23T18:30:00.000Z"),
+        blockedOwnerNotifiedAt: new Date("2026-07-23T18:31:00.000Z"),
+      })
+      .where(eq(issues.id, issueId));
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+
+    expect(result.blockedRequeued).toBe(1);
+    expect(result.issueIds).toEqual([issueId]);
+    const wakeup = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(and(
+        eq(agentWakeupRequests.companyId, companyId),
+        eq(agentWakeupRequests.agentId, ownerAgentId),
+        eq(agentWakeupRequests.reason, "issue_unblock_requested"),
+      ))
+      .then((rows) => rows[0] ?? null);
+    expect(wakeup).toMatchObject({
+      payload: { issueId, action: "Review the blocked work" },
+      idempotencyKey: `issue-unblock-recovery:${issueId}:${runId}`,
+    });
+    expect(result.selfAddressedUnblockSuppressed).toBe(0);
+    // The enqueued wake is the sweep's output and the whole assertion. The run
+    // it dispatches belongs to a second agent the fixture never prepared a
+    // runtime for, so it stays queued; afterEach cancels it.
+  });
+
+  /**
+   * the recovery fix. Until this test existed the sweep re-woke the blocked assignee
+   * from the descriptor that assignee had just written, on every pass — the
+   * `recoveryKey` carries the latest run id, so the idempotency key was fresh
+   * each time. the affected task ran 40 times in under three hours that way, and
+   * the finding routine, the only routine allowed to promote a finding to assigned work,
+   * ran 25 times in 30 minutes while 30 findings queued behind it.
+   *
+   * The previous test above asserted exactly this loop as correct behaviour; it
+   * now seeds a distinct owner agent, which is the case that wake was for.
+   */
+  it("does not re-wake a blocked issue whose unblock owner is its own assignee", async () => {
+    const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
+      status: "blocked",
+      runStatus: "succeeded",
+      livenessState: "blocked",
+    });
+    await db
+      .update(issues)
+      .set({
+        unblockDescriptor: { owner: { agentId }, action: "Inject the gateway, then rerun the reads" },
+        blockedTransitionAt: new Date("2026-07-23T18:30:00.000Z"),
+        blockedOwnerNotifiedAt: new Date("2026-07-23T18:31:00.000Z"),
+      })
+      .where(eq(issues.id, issueId));
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+
+    expect(result.selfAddressedUnblockSuppressed).toBe(1);
+    expect(result.blockedRequeued).toBe(0);
+    expect(result.continuationRequeued).toBe(0);
+    expect(result.issueIds).toEqual([]);
+    // Not a swap of one wake reason for another: nothing at all is enqueued.
+    expect(await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(and(
+        eq(agentWakeupRequests.companyId, companyId),
+        eq(agentWakeupRequests.status, "queued"),
+      ))).toHaveLength(0);
+  });
+
+  it("does not re-wake a blocked issue with an unresolved first-class blocker", async () => {
+    const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
+      status: "blocked",
+      runStatus: "succeeded",
+      livenessState: "blocked",
+    });
+    const blockerId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    await db.insert(issues).values({
+      id: blockerId,
+      companyId,
+      title: "Still-open blocker",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      issueNumber: 2,
+      identifier: `${issuePrefix}-2`,
+    });
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: blockerId,
+      relatedIssueId: issueId,
+      type: "blocks",
+    });
+    await db
+      .update(issues)
+      .set({
+        unblockDescriptor: { owner: { agentId }, action: "Review the blocked work" },
+        blockedTransitionAt: new Date("2026-07-23T18:30:00.000Z"),
+      })
+      .where(eq(issues.id, issueId));
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+
+    expect(result.blockedRequeued).toBe(0);
+    // Sweep-wide counter: the fixture leaves two assigned candidates - the blocked
+    // issue under test and the still-open blocker that blocks it - and both are
+    // correctly skipped.
+    expect(result.skipped).toBe(2);
+    expect(result.issueIds).toEqual([]);
+    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.reason, "issue_unblock_requested")))
+      .toHaveLength(0);
+  });
+
+  it("requeues in-progress work after a stale queued process-loss retry never promotes", async () => {
+    const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+      retryReason: "issue_continuation_needed",
+    });
+    const staleWakeupId = randomUUID();
+    const staleRetryId = randomUUID();
+    const staleAt = new Date("2026-03-19T00:05:00.000Z");
+    await db.insert(agentWakeupRequests).values({
+      id: staleWakeupId,
+      companyId,
+      agentId,
+      source: "automation",
+      triggerDetail: "system",
+      reason: "process_lost_retry",
+      payload: { issueId, retryOfRunId: runId },
+      status: "queued",
+      runId: staleRetryId,
+      createdAt: staleAt,
+      updatedAt: staleAt,
+    });
+    await db.insert(heartbeatRuns).values({
+      id: staleRetryId,
+      companyId,
+      agentId,
+      invocationSource: "automation",
+      triggerDetail: "system",
+      status: "queued",
+      wakeupRequestId: staleWakeupId,
+      contextSnapshot: {
+        issueId,
+        taskId: issueId,
+        wakeReason: "process_lost_retry",
+        retryReason: "issue_continuation_needed",
+      },
+      retryOfRunId: runId,
+      createdAt: staleAt,
+      updatedAt: staleAt,
+    });
+    await db.update(issues).set({ executionRunId: staleRetryId }).where(eq(issues.id, issueId));
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+
+    expect(result.continuationRequeued).toBe(1);
+    expect(result.issueIds).toEqual([issueId]);
+    const staleRetry = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, staleRetryId)).then((rows) => rows[0]);
+    expect(staleRetry).toMatchObject({ status: "cancelled", errorCode: "process_lost_retry_stale" });
+    const recoveryRetry = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId))
+      .then((rows) => rows.find((run) => run.id !== runId && run.id !== staleRetryId &&
+        (run.contextSnapshot as Record<string, unknown> | null)?.source === "issue.continuation_recovery"));
+    expect(recoveryRetry).toBeTruthy();
+    if (recoveryRetry) await waitForRunToSettle(heartbeat, recoveryRetry.id);
+  });
+
   it("creates a board recovery action for budget-blocked assigned work and continues the sweep", async () => {
     const blocked = await seedAssignedTodoNoRunFixture();
     const unblocked = await seedAssignedTodoNoRunFixture();

@@ -44,6 +44,10 @@ import {
   parseIssueExecutionState,
 } from "../issue-execution-policy.js";
 import {
+  deliverAgentUnblockNotification,
+  isSelfAddressedUnblockDescriptor,
+} from "../routable-blocked.js";
+import {
   ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,
   buildIssueBlockersResolvedWakeStateKey,
   findExistingIssueBlockersResolvedWakeForReadyState,
@@ -2870,6 +2874,8 @@ export function recoveryService(
       escalated: 0,
       waitingOnReviewResolved: 0,
       providerQuotaMonitored: 0,
+      blockedRequeued: 0,
+      selfAddressedUnblockSuppressed: 0,
       recentProgressExempted: 0,
       operatorCancelExempted: 0,
       skipped: 0,
@@ -3006,6 +3012,100 @@ export function recoveryService(
         continue;
       }
       const recoveryNow = new Date();
+
+      if (issue.status === "blocked") {
+        if (
+          await hasPersistedDurableWaitPath(issue) ||
+          await hasPendingIssueApproval(issue.companyId, issue.id)
+        ) {
+          result.skipped += 1;
+          continue;
+        }
+
+        const owner = issue.unblockDescriptor?.owner;
+        const unblockOwnerAgentId = owner && typeof owner === "object" && "agentId" in owner
+          ? owner.agentId
+          : null;
+        if (owner && !unblockOwnerAgentId) {
+          result.skipped += 1;
+          continue;
+        }
+
+        // the recovery fix: a descriptor naming the issue's own assignee resolves back
+        // to the sender. The sweep is where that closes into a loop, because
+        // `recoveryKey` carries the latest run id and so mints a fresh
+        // idempotency key on every pass. Suppress, and do not fall through to
+        // the continuation arm below — that would only swap one wake reason for
+        // another. The issue stays `blocked` and every event-carrying wake
+        // still reaches it.
+        if (unblockOwnerAgentId && isSelfAddressedUnblockDescriptor(issue)) {
+          result.selfAddressedUnblockSuppressed += 1;
+          result.skipped += 1;
+          logger.info(
+            {
+              issueId: issue.id,
+              identifier: issue.identifier,
+              agentId: unblockOwnerAgentId,
+            },
+            "recovery suppressed self-addressed unblock wake",
+          );
+          continue;
+        }
+
+        const targetAgentId = unblockOwnerAgentId ?? agentId;
+        const targetAgent = unblockOwnerAgentId ? await getAgent(unblockOwnerAgentId) : agent;
+        const targetInvokable = targetAgent && targetAgent.companyId === issue.companyId
+          ? await isAgentInvokable(targetAgent)
+          : false;
+        if (!targetInvokable || await isInvocationBudgetBlocked(issue, targetAgentId)) {
+          result.skipped += 1;
+          continue;
+        }
+        if (await hasQueuedIssueWake(issue.companyId, issue.id, targetAgentId)) {
+          result.skipped += 1;
+          continue;
+        }
+
+        if (unblockOwnerAgentId) {
+          if (!reserveRoutineExecutionRecovery(issue)) continue;
+          let notifiedAt: Date | null = null;
+          const delivered = await deliverAgentUnblockNotification({
+            issue,
+            recoveryKey: latestRun?.id ?? issue.blockedTransitionAt?.toISOString() ?? issue.updatedAt.toISOString(),
+            wakeup: deps.enqueueWakeup,
+            markNotified: async (at) => {
+              notifiedAt = at;
+            },
+          });
+          if (delivered && notifiedAt) {
+            await db
+              .update(issues)
+              .set({ blockedOwnerNotifiedAt: notifiedAt, updatedAt: notifiedAt })
+              .where(and(eq(issues.companyId, issue.companyId), eq(issues.id, issue.id)));
+            result.blockedRequeued += 1;
+            result.issueIds.push(issue.id);
+          } else {
+            result.skipped += 1;
+          }
+          continue;
+        }
+
+        const recoveryEnqueue = await enqueueRecovery({
+          issue,
+          agentId: targetAgentId,
+          reason: "issue_continuation_needed",
+          retryReason: "issue_continuation_needed",
+          source: "issue.blocked_continuation_recovery",
+          retryOfRunId: latestRun?.id ?? null,
+        });
+        if (recoveryEnqueue.queued) {
+          result.blockedRequeued += 1;
+          result.issueIds.push(issue.id);
+        } else if (!recoveryEnqueue.suppressed) {
+          result.skipped += 1;
+        }
+        continue;
+      }
       const participantLatestRunForRecovery = issue.status === "in_review" && participantAgentId
         ? await getLatestIssueRunForAgent(issue.companyId, issue.id, participantAgentId)
         : null;
