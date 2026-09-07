@@ -2,6 +2,11 @@
 
 This project can run fully in local dev without setting up PostgreSQL manually.
 
+> **Repository workflow.** All code changes go through a git worktree — never
+> by committing directly to `master`, which is the running production
+> checkout. Read `doc/WORKTREE-POLICY.md` before opening any worktree, PR, or
+> rebuild. It is the contract for the local checkout, merge, and deploy rules.
+
 ## Deployment Modes
 
 For mode definitions and intended CLI behavior, see `doc/DEPLOYMENT-MODES.md`.
