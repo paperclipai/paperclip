@@ -18307,6 +18307,189 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     ).toBe(true);
   });
 
+  it("publishes long structured Telegram Markdown as one durable lossless document", async () => {
+    const fixture = await seedCompany();
+    const { callbacks, endpoint, runtime, service } =
+      await configuredTelegramEndpoint(fixture);
+    const chatId = "77118845";
+    const dm = makeThread({
+      channelId: chatId,
+      id: `telegram:${chatId}`,
+      isDM: true,
+      name: "Telegram structured output",
+    });
+    await deliverMessage({
+      callbacks,
+      endpointId: endpoint.id,
+      provider: "telegram",
+      thread: dm.thread,
+      message: makeMessage({
+        id: `${chatId}:1`,
+        text: "Send the complete formatted result",
+        userId: chatId,
+      }),
+      trigger: "direct_message",
+    });
+    await qualifySetupRoundTrip(service, endpoint.id, chatId);
+    await service.test(endpoint.id, "owner-user");
+    const [conversation] = await service.listConversations(endpoint.id);
+    if (!conversation)
+      throw new Error("Expected Telegram structured conversation");
+    const source = [
+      "## Complete result",
+      "[Open the evidence](https://example.test/evidence?case=telegram)",
+      `\`\`\`ts\n${"const value = 1;\n".repeat(100)}\`\`\``,
+      Array.from({ length: 100 }, (_value, index) => `- Finding ${index}`).join(
+        "\n",
+      ),
+    ].join("\n\n");
+    const providerSafeSource = projectSafeChatPublicationText(source);
+    const comment = await issueService(db).addComment(
+      conversation.issueId,
+      source,
+      { userId: "owner-user" },
+      { authorType: "user" },
+    );
+    const providerRuntime = runtime.endpoints.get(endpoint.id);
+    if (!providerRuntime) throw new Error("Expected Telegram provider runtime");
+    providerRuntime.posts.length = 0;
+    let transportAttempt = 0;
+    providerRuntime.postHook = async () => {
+      transportAttempt += 1;
+      if (transportAttempt === 1) {
+        throw Object.assign(new Error("Telegram document rate limited"), {
+          adapter: "telegram",
+          status: 429,
+          retryAfterMs: 1_000,
+        });
+      }
+    };
+
+    const blocked = await service.publishComment(
+      endpoint.id,
+      conversation.id,
+      comment.id,
+    );
+    expect(blocked).toMatchObject({ state: "retry" });
+    const [afterFailure] = await db
+      .select()
+      .from(chatPublications)
+      .where(eq(chatPublications.commentId, comment.id));
+    expect(afterFailure).toMatchObject({
+      state: "retry",
+      attempts: 1,
+      payload: {
+        text: providerSafeSource,
+        transportPart: {
+          count: 1,
+          index: 0,
+          mode: "telegram_markdown_attachment",
+        },
+      },
+    });
+    expect(providerRuntime.posts).toHaveLength(0);
+
+    providerRuntime.postHook = undefined;
+    await db
+      .update(chatPublications)
+      .set({ nextAttemptAt: new Date(0) })
+      .where(eq(chatPublications.id, afterFailure.id));
+    await service.processPendingPublications();
+
+    const [completed] = await db
+      .select()
+      .from(chatPublications)
+      .where(eq(chatPublications.id, afterFailure.id));
+    expect(completed).toMatchObject({ state: "published", attempts: 2 });
+    expect(providerRuntime.posts).toHaveLength(1);
+    expect(providerRuntime.posts[0]?.text).toBe(
+      "Paperclip attached the complete response to preserve its Markdown formatting.",
+    );
+    const attachment = providerRuntime.posts[0]?.attachments?.[0] as {
+      data: Buffer;
+      mimeType: string;
+      name: string;
+      size: number;
+      type: string;
+    };
+    expect(attachment).toMatchObject({
+      mimeType: "text/markdown; charset=utf-8",
+      name: "paperclip-response.md",
+      size: Buffer.byteLength(providerSafeSource),
+      type: "file",
+    });
+    expect(Buffer.isBuffer(attachment.data)).toBe(true);
+    expect(attachment.data.toString("utf8")).toBe(providerSafeSource);
+    expect(attachment.data.toString("utf8")).not.toContain("?case=telegram");
+
+    providerRuntime.posts.length = 0;
+    providerRuntime.edits.length = 0;
+    providerRuntime.editAttempts.length = 0;
+    const runId = randomUUID();
+    const workingCreatedAt = new Date();
+    await db.insert(chatPublications).values({
+      companyId: fixture.companyId,
+      endpointId: endpoint.id,
+      conversationId: conversation.id,
+      issueId: conversation.issueId,
+      idempotencyKey: `run:${runId}:working:${endpoint.id}`,
+      payload: { text: "Maya is working…", progressState: "working" },
+      state: "published",
+      providerMessageId: "telegram-working-message-1",
+      createdAt: workingCreatedAt,
+      updatedAt: workingCreatedAt,
+    });
+    const [finalPublication] = await db
+      .insert(chatPublications)
+      .values({
+        companyId: fixture.companyId,
+        endpointId: endpoint.id,
+        conversationId: conversation.id,
+        issueId: conversation.issueId,
+        idempotencyKey: `run:${runId}:completed:${endpoint.id}`,
+        payload: { text: providerSafeSource, progressState: "completed" },
+        state: "pending",
+        createdAt: new Date(workingCreatedAt.getTime() + 1),
+        updatedAt: new Date(workingCreatedAt.getTime() + 1),
+      })
+      .returning();
+    await service.processPendingPublications();
+
+    const replacementBatch = await db
+      .select()
+      .from(chatPublications)
+      .where(
+        sql`${chatPublications.payload}->'transportPart'->>'batchId' = ${finalPublication.id}`,
+      )
+      .orderBy(
+        sql`(${chatPublications.payload}->'transportPart'->>'index')::int`,
+      );
+    expect(replacementBatch).toHaveLength(2);
+    expect(replacementBatch.map((row) => row.state)).toEqual([
+      "published",
+      "published",
+    ]);
+    expect(
+      replacementBatch.map((row) => row.payload.transportPart?.mode),
+    ).toEqual(["inline", "telegram_markdown_attachment"]);
+    expect(providerRuntime.editAttempts).toEqual([
+      {
+        threadId: dm.thread.id,
+        messageId: "telegram-working-message-1",
+      },
+    ]);
+    expect(providerRuntime.edits[0]?.text).toBe(
+      "Paperclip’s complete response is attached in the next message.",
+    );
+    expect(providerRuntime.posts).toHaveLength(1);
+    expect(providerRuntime.posts[0]?.text).toBe("Complete response attached.");
+    const replacementAttachment = providerRuntime.posts[0]
+      ?.attachments?.[0] as { data: Buffer };
+    expect(replacementAttachment.data.toString("utf8")).toBe(
+      providerSafeSource,
+    );
+  });
+
   it.each([
     {
       label: "rate limits as an automatic retry",

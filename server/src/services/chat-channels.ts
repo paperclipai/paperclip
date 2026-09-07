@@ -148,6 +148,7 @@ import {
   shouldStreamSafePublicationText,
   splitTelegramPublicationText,
   streamSafePublicationText,
+  telegramMarkdownRequiresAttachment,
 } from "./chat-publication-stream.js";
 import { issueThreadInteractionService } from "./issue-thread-interactions.js";
 import {
@@ -19981,6 +19982,17 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     };
   }
 
+  function telegramMarkdownAttachment(text: string): Attachment {
+    const data = Buffer.from(text, "utf8");
+    return {
+      data,
+      mimeType: "text/markdown; charset=utf-8",
+      name: "paperclip-response.md",
+      size: data.byteLength,
+      type: "file",
+    };
+  }
+
   async function postSafePublication(input: {
     endpoint: EndpointRow;
     conversation: ConversationRow;
@@ -20026,6 +20038,16 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         input.payload.transportPart.count > 1
           ? "Complete response attached."
           : "Paperclip attached the complete response because it exceeds Discord’s message limit.";
+    }
+    if (
+      input.endpoint.provider === "telegram" &&
+      input.payload.transportPart?.mode === "telegram_markdown_attachment"
+    ) {
+      attachments.push(telegramMarkdownAttachment(text));
+      text =
+        input.payload.transportPart.count > 1
+          ? "Complete response attached."
+          : "Paperclip attached the complete response to preserve its Markdown formatting.";
     }
     if (card && CAPABILITIES[input.endpoint.provider].cards) {
       return await attemptProviderPublication(async () =>
@@ -20979,6 +21001,93 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       persisted.attachmentIds?.length
     ) {
       return publication;
+    }
+    if (telegramMarkdownRequiresAttachment(persisted.text)) {
+      // Telegram parses each message independently. A fixed-size split can
+      // turn the second half of a code fence, link, or list into unrelated
+      // plain text even though concatenating the source parts is lossless.
+      // Preserve structured long Markdown as one document. When this is a run
+      // final, first complete its existing progress placeholder, then send the
+      // file through a separate ordered outbox row because Telegram cannot add
+      // an attachment while editing that placeholder.
+      const replacesProgressMessage = Boolean(
+        await runPublicationToReplace(publication, persisted),
+      );
+      return db.transaction(async (tx) => {
+        const current = await tx
+          .select()
+          .from(chatPublications)
+          .where(eq(chatPublications.id, publication.id))
+          .for("update")
+          .then((rows) => rows[0] ?? null);
+        if (!current) return publication;
+        const currentPayload = current.payload as SafeChatPublicationPayload;
+        if (
+          currentPayload.transportPart ||
+          currentPayload.card ||
+          currentPayload.interactionId ||
+          currentPayload.attachmentIds?.length ||
+          !["pending", "retry"].includes(current.state) ||
+          !telegramMarkdownRequiresAttachment(currentPayload.text)
+        ) {
+          return current;
+        }
+
+        const batchId = current.id;
+        const updatedAt = new Date();
+        const transportPart = (
+          index: number,
+          count: number,
+          mode: "inline" | "telegram_markdown_attachment",
+        ) => ({
+          batchId,
+          count,
+          index,
+          mode,
+          orderKey: `${batchId}:${String(index).padStart(4, "0")}`,
+        });
+        if (!replacesProgressMessage) {
+          const attachmentPayload: SafeChatPublicationPayload = {
+            ...currentPayload,
+            transportPart: transportPart(0, 1, "telegram_markdown_attachment"),
+          };
+          await tx
+            .update(chatPublications)
+            .set({ payload: attachmentPayload, updatedAt })
+            .where(eq(chatPublications.id, current.id));
+          return { ...current, payload: attachmentPayload, updatedAt };
+        }
+
+        const handoffPayload: SafeChatPublicationPayload = {
+          ...currentPayload,
+          text: "Paperclip’s complete response is attached in the next message.",
+          transportPart: transportPart(0, 2, "inline"),
+        };
+        delete handoffPayload.attachmentIds;
+        await tx
+          .update(chatPublications)
+          .set({ payload: handoffPayload, updatedAt })
+          .where(eq(chatPublications.id, current.id));
+
+        const attachmentPayload: SafeChatPublicationPayload = {
+          ...currentPayload,
+          transportPart: transportPart(1, 2, "telegram_markdown_attachment"),
+        };
+        delete attachmentPayload.progressState;
+        await tx.insert(chatPublications).values({
+          companyId: current.companyId,
+          endpointId: current.endpointId,
+          conversationId: current.conversationId,
+          issueId: current.issueId,
+          commentId: current.commentId,
+          idempotencyKey: `telegram-markdown-attachment:${current.id}`,
+          payload: attachmentPayload,
+          state: "pending",
+          createdAt: current.createdAt,
+          updatedAt,
+        });
+        return { ...current, payload: handoffPayload, updatedAt };
+      });
     }
     const parts = splitTelegramPublicationText(persisted.text);
     if (parts.length === 1) return publication;

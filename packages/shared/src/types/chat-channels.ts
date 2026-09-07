@@ -318,7 +318,8 @@ export interface SafeChatPublicationPayload {
     count: number;
     index: number;
     /** Server-managed provider rendering for this transport part. */
-    mode?: "inline" | "discord_markdown_attachment";
+    mode?:
+      "inline" | "discord_markdown_attachment" | "telegram_markdown_attachment";
     orderKey: string;
   };
   progressState?:
