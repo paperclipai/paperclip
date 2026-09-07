@@ -42,6 +42,11 @@ export function codexCommandEnvironment(
     const value = source[key];
     if (value !== undefined) environment[key] = value;
   }
+  if (source.PAPERCLIP_GITHUB_LAUNCHER_DIR) {
+    environment.HOME = source.PAPERCLIP_GITHUB_LAUNCHER_DIR;
+    environment.ZDOTDIR = source.PAPERCLIP_GITHUB_LAUNCHER_DIR;
+    environment.BASH_ENV = `${source.PAPERCLIP_GITHUB_LAUNCHER_DIR}/.bashrc`;
+  }
   return environment;
 }
 
@@ -80,6 +85,7 @@ export function createIsolatedCodexAppServerArgs(
   const hasGitHubCredential = hasGitHubCredentialEnvironment(source);
   const externalRunnerSandbox = usesExternalRunnerSandbox(source);
   const inheritedGitHubKeys = githubCredentialEnvironmentKeys(source);
+  if (source.PAPERCLIP_GITHUB_LAUNCHER_DIR) readOnlyRoots = [...readOnlyRoots, source.PAPERCLIP_GITHUB_LAUNCHER_DIR];
   const deniedHostRoots = [
     ...new Set(
       [source.HOME, source.CODEX_HOME]
@@ -96,6 +102,8 @@ export function createIsolatedCodexAppServerArgs(
     `":tmpdir"="none"`,
     ...deniedHostRoots.map((path) => `${tomlString(path)}="none"`),
     ...readOnlyRoots.map((path) => `${tomlString(resolve(path))}="read"`),
+    ...(source.PAPERCLIP_GITHUB_BROKER_TOKEN && source.GH_CONFIG_DIR
+      ? [`${tomlString(resolve(source.GH_CONFIG_DIR))}="write"`] : []),
     `":workspace_roots"={"."="write"}`,
   ].join(",");
   const planningFilesystemRules = [
@@ -104,6 +112,8 @@ export function createIsolatedCodexAppServerArgs(
     `":tmpdir"="none"`,
     ...deniedHostRoots.map((path) => `${tomlString(path)}="none"`),
     ...readOnlyRoots.map((path) => `${tomlString(resolve(path))}="read"`),
+    ...(source.PAPERCLIP_GITHUB_BROKER_TOKEN && source.GH_CONFIG_DIR
+      ? [`${tomlString(resolve(source.GH_CONFIG_DIR))}="write"`] : []),
     `":workspace_roots"={"."="read"}`,
   ].join(",");
   const commandEnv = Object.entries(codexCommandEnvironment(source))

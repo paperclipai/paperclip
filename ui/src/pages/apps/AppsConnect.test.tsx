@@ -7,6 +7,7 @@ import { CONNECTABLE_APP_DEFINITIONS } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "@/api/client";
 import { i18n } from "@/i18n";
+import ruTranslations from "@/i18n/locales/ru.json";
 import { queryKeys } from "@/lib/queryKeys";
 import { ConnectionSetupFlow } from "@/features/connections/ConnectionSetupFlow";
 import { AppsConnect } from "./AppsConnect";
@@ -820,6 +821,81 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
       );
     },
   );
+
+  it("localizes the dedicated GitHub explanation while preserving the selected identity and agent", async () => {
+    await i18n.changeLanguage("en");
+    mockParams.appKey = "github";
+    const gallery = { apps: [GITHUB_MANAGED], capabilities: {
+      canCreateOrganizationGrant: true, organizationGrantReason: null,
+      canSetCompanyInstall: true, companyInstallReason: null,
+    } };
+    const original = JSON.stringify(gallery);
+    listGalleryMock.mockResolvedValue(gallery);
+    await render();
+    const english = "This agent uses this GitHub account for everyone’s work, instead of the person giving instructions.";
+    const russian = ruTranslations.localizationApps.dedicatedGitHubAccountExplanation;
+    const personal = radioContaining("My GitHub account")!;
+    const dedicated = radioContaining("A dedicated account for an agent")!;
+    const mutations = [connectAppMock, startOAuthMock, finishAppMock, putConnectionInstallsMock, startCloudConnectorEnrollmentMock];
+    const mutationCounts = mutations.map((mock) => mock.mock.calls.length);
+    expect(personal).toBeTruthy();
+    expect(dedicated).toBeTruthy();
+    for (const language of ["en", "ru", "en"] as const) {
+      await act(async () => { await i18n.changeLanguage(language); });
+      await flushReact();
+      expect(container.contains(personal)).toBe(true);
+      expect(personal.getAttribute("aria-checked")).toBe("true");
+      expect(container.textContent).not.toContain(english);
+      expect(container.textContent).not.toContain(russian);
+      expect(mutations.map((mock) => mock.mock.calls.length)).toEqual(mutationCounts);
+    }
+
+    await act(async () => { dedicated.click(); });
+    await flushReact();
+    const explanation = [...container.querySelectorAll("p")].find((node) => node.textContent === english)!;
+    expect(explanation).toBeTruthy();
+    await act(async () => { buttonByText("Select agents")!.click(); });
+    await flushReact();
+    const ada = document.body.querySelector<HTMLButtonElement>('[aria-label="Allow Ada"]')!;
+    expect(ada).toBeTruthy();
+    await act(async () => { ada.click(); });
+    await flushReact();
+    const filter = document.body.querySelector<HTMLInputElement>('input[placeholder="Filter agents"]');
+    expect(filter).toBeTruthy();
+    await act(async () => { setInputValue(filter!, "Ada"); });
+    await flushReact();
+    const next = buttonByText("Continue")!;
+    expect(next).toBeTruthy();
+    expect(next.disabled).toBe(false);
+    for (const language of ["en", "ru", "en"] as const) {
+      await act(async () => { await i18n.changeLanguage(language); });
+      await flushReact();
+      expect(container.contains(explanation)).toBe(true);
+      expect(explanation.textContent).toBe(language === "ru" ? russian : english);
+      expect(container.contains(dedicated)).toBe(true);
+      expect(dedicated.getAttribute("aria-checked")).toBe("true");
+      expect(personal.getAttribute("aria-checked")).toBe("false");
+      expect(document.body.contains(ada)).toBe(true);
+      expect(ada.getAttribute("aria-checked")).toBe("true");
+      expect(document.body.contains(filter)).toBe(true);
+      expect(filter!.value).toBe("Ada");
+      expect(container.contains(next)).toBe(true);
+      expect(next.disabled).toBe(false);
+      expect(mutations.map((mock) => mock.mock.calls.length)).toEqual(mutationCounts);
+      expect(JSON.stringify(gallery)).toBe(original);
+      expect(mockNavigate).not.toHaveBeenCalled();
+      expect(navigateTopLevelMock).not.toHaveBeenCalled();
+    }
+
+    await act(async () => { buttonByText("Done")!.click(); });
+    await act(async () => { next.click(); });
+    await flushReact();
+    await act(async () => { buttonByText("Continue to GitHub")!.click(); });
+    await flushReact();
+    expect(connectAppMock).toHaveBeenCalledExactlyOnceWith("company-1", expect.objectContaining({
+      galleryKey: "github", grantKind: "agent", subjectAgentId: "agent-1",
+    }));
+  });
 
   it("labels GitHub's local setup transition without promising a provider handoff", async () => {
     mockSearch.value = "source=github";

@@ -38,6 +38,8 @@ import {
   toolRuntimeMetricCounters,
   toolRuntimeSlots,
   toolStdioCommandTemplates,
+  userSecretDefinitions,
+  userSecretDeclarations,
 } from "@paperclipai/db";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import {
@@ -4999,6 +5001,36 @@ describeEmbeddedPostgres("tool access service", () => {
 
     const activity = await service.listConnectionActivity(connection.id, company.id, 20);
     expect(activity.lifecycleEvents.map((event) => event.type)).toEqual(["app_paused"]);
+  });
+
+  it("preserves all active personal OAuth declarations through pause, resume, and metadata edits", async () => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+    const [application] = await db.insert(toolApplications).values({ companyId: company.id, name: "GitHub", type: "mcp_http" }).returning();
+    const [connection] = await db.insert(toolConnections).values({
+      companyId: company.id, applicationId: application.id, name: "GitHub", uid: randomUUID(),
+      transport: "mcp_remote", status: "active", enabled: true, credentialPolicy: "per_user",
+      config: { url: "https://api.githubcopilot.com/mcp/", sourceTemplateKey: "github" },
+    }).returning();
+    const [sharedDefinition] = await db.insert(userSecretDefinitions).values({ companyId: company.id, key: randomUUID(), name: "OAuth access token" }).returning();
+    const definitionIds = [sharedDefinition.id];
+    for (const user of ["A", "B", "revoked"]) {
+      const definition = user === "revoked"
+        ? (await db.insert(userSecretDefinitions).values({ companyId: company.id, key: randomUUID(), name: "Revoked identity" }).returning())[0]
+        : sharedDefinition;
+      const [secret] = await db.insert(companySecrets).values({ companyId: company.id, key: randomUUID(), name: user,
+        scope: "user", ownerUserId: user, userSecretDefinitionId: definition.id }).returning();
+      await db.insert(connectionGrants).values({ companyId: company.id, connectionId: connection.id, kind: "user",
+        subjectUserId: user, status: user === "revoked" ? "revoked" : "active",
+        credentialSecretRefs: [{ secretId: secret.id, configPath: "oauth.access_token", versionSelector: "latest" }],
+      });
+    }
+    for (const edit of [{ enabled: false }, { enabled: true }, { name: "Renamed GitHub" }]) {
+      await service.updateConnection(connection.id, edit);
+      const declarations = await db.select().from(userSecretDeclarations).where(eq(userSecretDeclarations.targetId, connection.id));
+      expect(declarations.map((row) => row.userSecretDefinitionId).sort()).toEqual([...definitionIds].sort());
+      expect(declarations.every((row) => row.configPath === "oauth.access_token")).toBe(true);
+    }
   });
 
   it("allows same-company Google Sheets updates and derives the env mirror from the allowlist", async () => {

@@ -1,3 +1,6 @@
+import { runIdentityContexts } from "@paperclipai/db";
+import { captureRunIdentity } from "./run-identity.js";
+import { resolveManagedGitHubIdentitySelection } from "./git-credentials.js";
 import { spawn } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { and, desc, eq, inArray, isNull, lte, ne, or, sql } from "drizzle-orm";
@@ -257,6 +260,8 @@ export interface ToolGatewaySession {
   actorId?: string | null;
   /** Human whose personal connection grant applies to this execution. */
   responsibleUserId?: string | null;
+  /** Captured by the controller for this request, never accepted from tool arguments. */
+  identityContextId?: string | null;
   createdAt: Date;
   expiresAt: Date;
 }
@@ -1306,6 +1311,7 @@ export function createToolGatewayService(
           projectId: input.session?.projectId ?? null,
           runId: input.runId,
           gatewaySessionId: input.session?.id ?? null,
+          identityContextId: input.session?.identityContextId ?? null,
           gatewayId: input.session?.gatewayId ?? null,
           gatewayPublicId: input.session?.gatewayPublicId ?? null,
           gatewayName: input.session?.gatewayName ?? null,
@@ -1450,7 +1456,21 @@ export function createToolGatewayService(
       .set({ lastUsedAt: now, updatedAt: now })
       .where(eq(toolGatewaySessions.id, row.id));
 
-    return gatewaySessionFromRow({ ...row, lastUsedAt: now, updatedAt: now });
+    const session = gatewaySessionFromRow({ ...row, lastUsedAt: now, updatedAt: now });
+    return captureSessionIdentity(session);
+  }
+
+  async function captureSessionIdentity(session: ToolGatewaySession): Promise<ToolGatewaySession> {
+    // Authentication creates a fresh operation snapshot on every invocation.
+    // Never trust a previously attached context on a reusable transport session.
+    // Approved operations restore their signed origin after authentication.
+    if (!session.runId || !session.agentId) return session;
+    const [run] = await db.select({ activeIdentityContextId: heartbeatRuns.activeIdentityContextId })
+      .from(heartbeatRuns).where(and(eq(heartbeatRuns.id, session.runId), eq(heartbeatRuns.companyId, session.companyId)));
+    if (!run?.activeIdentityContextId) return session;
+    const captured = await captureRunIdentity(db, { companyId: session.companyId, agentId: session.agentId, runId: session.runId });
+    return { ...session, identityContextId: captured.context?.id,
+      responsibleUserId: captured.context?.cause === "company_default" ? null : captured.context?.responsibleUserId };
   }
 
   function normalizeGatewayTokenActions(value: unknown): ToolMcpGatewayTokenAction[] {
@@ -1523,9 +1543,10 @@ export function createToolGatewayService(
       resultHash: input.resultSummary?.sha256 ?? null,
       resultSummary: input.resultSummary ?? null,
       resultSizeBytes: input.resultSummary?.sizeBytes ?? null,
-      metadata: Object.keys(metadata).length > 0 || input.metadata || input.session.projectId
+      metadata: Object.keys(metadata).length > 0 || input.metadata || input.session.projectId || input.session.identityContextId
         ? {
             ...metadata,
+            identityContextId: input.session.identityContextId ?? null,
             gatewayId: input.session.gatewayId ?? null,
             gatewayName: input.session.gatewayName ?? null,
             projectId: input.session.projectId ?? null,
@@ -1709,6 +1730,7 @@ export function createToolGatewayService(
         canonicalArguments,
         approvalSnapshot: approvalSnapshot ?? undefined,
         executionOnApprove: true,
+        identityContextId: input.session.identityContextId ?? undefined,
         signingSecret: options.toolActionSigningSecret,
       });
     } catch (error) {
@@ -2016,6 +2038,21 @@ export function createToolGatewayService(
       .find((candidate) => candidate.name === toolName);
     if (!tool) {
       throw new ToolGatewayHttpError(404, `Tool "${toolName}" not found`, "tool_not_found", { tool: toolName });
+    }
+    if (session.identityContextId && session.agentId && tool.connectionId) {
+      const [connection] = await db.select().from(toolConnections).where(and(
+        eq(toolConnections.id, tool.connectionId), eq(toolConnections.companyId, session.companyId),
+      ));
+      if (connection?.config.sourceTemplateKey === "github" || connection?.transportConfig?.sourceTemplateKey === "github") {
+        const selected = await resolveManagedGitHubIdentitySelection(db, session.companyId, {
+          agentId: session.agentId, responsibleUserId: session.responsibleUserId, allowStandingDelegation: false,
+        });
+        if (!selected.grant) throw new ToolGatewayHttpError(409, selected.error ?? "No GitHub identity connected", "github_identity_unavailable");
+        const target = connectedTools.find((candidate) => candidate.connectionId === selected.grant!.connectionId
+          && candidate.upstreamToolName === tool.upstreamToolName && candidate.providerType === tool.providerType);
+        if (!target) throw new ToolGatewayHttpError(404, "This GitHub tool is unavailable for the responsible person", "github_tool_unavailable");
+        return target;
+      }
     }
     return tool;
   }
@@ -2773,6 +2810,28 @@ export function createToolGatewayService(
   }
 
   async function resolveCredentialHeaders(
+    session: ToolGatewaySession, connection: typeof toolConnections.$inferSelect,
+    grant: typeof connectionGrants.$inferSelect, resolveOptions: { forceRefresh?: boolean } = {},
+  ): Promise<Record<string, string>> {
+    const tracked = session.identityContextId && (connection.config.sourceTemplateKey === "github"
+      || connection.transportConfig?.sourceTemplateKey === "github");
+    try {
+      const headers = await resolveCredentialHeadersUnrecorded(session, connection, grant, resolveOptions);
+      if (tracked) await db.update(runIdentityContexts).set({ github: {
+        status: "available", login: grant.providerTenant?.github?.login,
+        source: grant.kind === "agent" ? "dedicated" : "personal",
+      } }).where(and(eq(runIdentityContexts.id, session.identityContextId!), eq(runIdentityContexts.companyId, session.companyId)));
+      return headers;
+    } catch (error) {
+      if (tracked) await db.update(runIdentityContexts).set({ github: {
+        status: "unavailable", reason: "GitHub authorization is unavailable",
+        source: grant.kind === "agent" ? "dedicated" : "personal",
+      } }).where(and(eq(runIdentityContexts.id, session.identityContextId!), eq(runIdentityContexts.companyId, session.companyId)));
+      throw error;
+    }
+  }
+
+  async function resolveCredentialHeadersUnrecorded(
     session: ToolGatewaySession,
     connection: typeof toolConnections.$inferSelect,
     grant: typeof connectionGrants.$inferSelect,
@@ -2913,7 +2972,10 @@ export function createToolGatewayService(
           connection,
           grant,
           grantRef,
-          `credentials.${ref.name}`,
+          // OAuth grants declare their canonical oauth.* path. Treating
+          // this header projection as a generic credentials.* binding loses
+          // the personal secret declaration created by the OAuth callback.
+          grantRef.configPath.startsWith("oauth.") ? grantRef.configPath : `credentials.${ref.name}`,
         );
         headers[ref.key] = `${ref.prefix ?? ""}${value}`;
       } catch {
@@ -3114,7 +3176,7 @@ export function createToolGatewayService(
     session: ToolGatewaySession,
     connection: typeof toolConnections.$inferSelect,
   ): Promise<typeof connectionGrants.$inferSelect> {
-    const [run] = session.runId
+    const [run] = session.runId && !session.identityContextId
       ? await db.select({
           responsibleUserId: heartbeatRuns.responsibleUserId,
           invocationSource: heartbeatRuns.invocationSource,
@@ -3123,8 +3185,30 @@ export function createToolGatewayService(
           eq(heartbeatRuns.companyId, session.companyId),
         )).limit(1)
       : [];
-    const actingUserId = run?.responsibleUserId ?? session.responsibleUserId ?? null;
-    const autonomous = run?.invocationSource === "automation" || run?.invocationSource === "timer";
+    const actingUserId = session.identityContextId ? session.responsibleUserId ?? null : run?.responsibleUserId ?? session.responsibleUserId ?? null;
+    if (session.identityContextId && session.agentId && (
+      connection.config.sourceTemplateKey === "github" || connection.transportConfig?.sourceTemplateKey === "github"
+    )) {
+      const selected = await resolveManagedGitHubIdentitySelection(db, session.companyId, {
+        agentId: session.agentId, responsibleUserId: session.responsibleUserId, allowStandingDelegation: false,
+      });
+      if (!selected.grant || selected.grant.connectionId !== connection.id) {
+        throw new ToolGatewayHttpError(409, selected.error ?? "GitHub identity changed; retry through the managed tool", "github_identity_unavailable");
+      }
+      if (selected.grant.kind === "user") {
+        const [member] = await db.select({ role: companyMemberships.membershipRole }).from(companyMemberships).where(and(
+          eq(companyMemberships.companyId, session.companyId), eq(companyMemberships.principalType, "user"),
+          eq(companyMemberships.principalId, selected.grant.subjectUserId!), eq(companyMemberships.status, "active"),
+        )).limit(1);
+        if (!member || member.role === "viewer") {
+          throw new ToolGatewayHttpError(403, "The personal grant owner is not an authorized company member", "grant_owner_membership_inactive");
+        }
+      }
+      // Managed GitHub selection is final: a legacy shared policy cannot replace
+      // the captured person's grant with an organization or teammate's account.
+      return selected.grant;
+    }
+    const autonomous = !session.identityContextId && (run?.invocationSource === "automation" || run?.invocationSource === "timer");
     const findUserGrant = async () => {
       if (!actingUserId) return undefined;
       const [membership] = await db.select({ id: companyMemberships.id }).from(companyMemberships).where(and(
@@ -4898,7 +4982,7 @@ export function createToolGatewayService(
       expiresAt: row.token.expiresAt ?? new Date(Date.now() + 3650 * 24 * 60 * 60 * 1000),
     };
     await assertNamedGatewayProtocolLimit(session, input.protocolMethod, clientMetadata);
-    return session;
+    return captureSessionIdentity(session);
   }
 
   /**
@@ -5510,6 +5594,17 @@ export function createToolGatewayService(
       createdAt: new Date(),
       expiresAt: new Date(Date.now() + DEFAULT_SESSION_TTL_MS),
     };
+    if (signedPayload.identityContextId) {
+      const [origin] = await db.select().from(runIdentityContexts).where(and(
+        eq(runIdentityContexts.id, signedPayload.identityContextId),
+        eq(runIdentityContexts.companyId, session.companyId),
+        eq(runIdentityContexts.runId, session.runId!),
+        eq(runIdentityContexts.status, "accepted"),
+      ));
+      if (!origin) throw new ToolGatewayHttpError(409, "Approved action identity is unavailable", "identity_context_unavailable");
+      session.identityContextId = origin.id;
+      session.responsibleUserId = origin.cause === "company_default" ? null : origin.responsibleUserId;
+    }
     let tool: ToolGatewayDescriptor;
     let liveApprovalSnapshot: Awaited<ReturnType<typeof connectedRemoteApprovalSnapshot>>;
     try {
@@ -6771,6 +6866,30 @@ export function createToolGatewayService(
       let invocationId = String(randomUUID());
       const startedAt = Date.now();
 
+      // A retry carries the signed originating operation, even if steering has
+      // since accepted instructions from someone else in this same run.
+      if (input.approvedActionRequestId) {
+        const [request] = await db.select().from(toolActionRequests).where(and(
+          eq(toolActionRequests.id, input.approvedActionRequestId), eq(toolActionRequests.companyId, session.companyId),
+        ));
+        const [invocation] = request ? await db.select().from(toolInvocations).where(and(
+          eq(toolInvocations.id, request.invocationId), eq(toolInvocations.companyId, session.companyId),
+          eq(toolInvocations.runId, session.runId!), eq(toolInvocations.agentId, session.agentId!),
+        )) : [];
+        const payload = request && invocation ? readSignedToolArgumentsPayload({
+          signedArguments: request.signedArguments, invocationId: invocation.id,
+          toolName: invocation.toolName, signingSecret: options.toolActionSigningSecret,
+        }) : null;
+        if (payload?.identityContextId) {
+          const [origin] = await db.select().from(runIdentityContexts).where(and(
+            eq(runIdentityContexts.id, payload.identityContextId), eq(runIdentityContexts.companyId, session.companyId),
+            eq(runIdentityContexts.runId, session.runId!), eq(runIdentityContexts.status, "accepted"),
+          ));
+          if (!origin) throw new ToolGatewayHttpError(409, "Approved action identity is unavailable", "identity_context_unavailable");
+          session.identityContextId = origin.id;
+          session.responsibleUserId = origin.cause === "company_default" ? null : origin.responsibleUserId;
+        }
+      }
       let tool = await findToolForSession(session, input.tool);
       let virtualToolName: string | null = null;
       let requestedParameters: unknown = input.parameters ?? {};
@@ -7109,6 +7228,7 @@ export function createToolGatewayService(
             canonicalArguments: storedCanonical,
             approvalSnapshot: signedPayload.approvalSnapshot,
             executionOnApprove: signedPayload.executionOnApprove,
+            identityContextId: signedPayload.identityContextId,
             signingSecret: options.toolActionSigningSecret,
           })
         ) {

@@ -372,6 +372,7 @@ const LOCALIZED_FALLBACK_ACTIVITY_ACTIONS = new Set<string>([
   "routine.trigger_secret_rotated",
   "routine.trigger_updated",
   "routine.updated",
+  "runner.api_called",
   "secret.access.listed",
   "secret.binding.created",
   "secret.created",

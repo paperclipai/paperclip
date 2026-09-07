@@ -3561,6 +3561,22 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         this.#authorizedTools,
         this.options.resumeCompletionContract,
       );
+      if (provider === "codex" && this.options.environment?.PAPERCLIP_GITHUB_BROKER_TOKEN) {
+        // These controller-owned, token-free paths belong to the new run.
+        // Keep the durable provider profile and thread identity unchanged.
+        runAttachTemplate.runtimeLaunchArgs = this.options.codexArgs ?? createRunnerdCodexAppServerArgs({
+          environment: this.options.environment,
+          codexHome,
+          readOnlyRoots: [
+            ...trustedRuntimeReadOnlyRoots(this.options.environment),
+            ...(runtimeContext ? [
+              resolve(codexHome, "skills"),
+              runtimeContext.instructions.bundle.rootPath,
+              ...runtimeContext.skills.map((skill) => skill.bundle.rootPath),
+            ] : []),
+          ],
+        });
+      }
       this.#runAttachTemplate = structuredClone(runAttachTemplate);
       core.queueCommand("run.attach", runAttachTemplate);
     }

@@ -181,6 +181,7 @@ export function IdentitiesSection({
     return (
       <section className="space-y-5">
         <h2 className="text-sm font-semibold text-foreground">{t("localizationApps.gitHubIdentity370")}</h2>
+        <p className="text-sm text-muted-foreground">{t("localizationApps.dedicatedGitHubAccountExplanation")}</p>
         <IdentityRow
           title={github ? `@${github.login}` : t("localizationApps.dedicatedGitHubAccount371")}
           status={agentGrant?.status ?? null}

@@ -6,6 +6,8 @@ import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { i18n } from "@/i18n";
+import ruTranslations from "@/i18n/locales/ru.json";
+import { queryKeys } from "@/lib/queryKeys";
 import { AppDetail } from "./AppDetail";
 import { APP_TABS } from "./app-tabs";
 
@@ -453,6 +455,7 @@ describe("AppDetail", () => {
       );
     });
     await flushReact();
+    return client;
   }
 
   it("uses Permissions as the primary connection page and has no Setup tab", () => {
@@ -1764,6 +1767,77 @@ describe("AppDetail", () => {
     expect(container.contains(load)).toBe(false);
     expect(JSON.stringify(grant)).toBe(canonicalGrant);
     expect(updateConnectionMock).not.toHaveBeenCalled();
+  });
+
+  it("localizes the dedicated GitHub explanation without changing identity or permission choices", async () => {
+    await i18n.changeLanguage("en");
+    const english = "This agent uses this GitHub account for everyone’s work, instead of the person giving instructions.";
+    const russian = ruTranslations.localizationApps.dedicatedGitHubAccountExplanation;
+    const dedicatedConnection = connection({ credentialPolicy: "per_agent", authKind: "oauth" });
+    const grant = dedicatedGitHubGrant({}, { login: "Board" });
+    const grantsResponse = {
+      connection: { id: "conn-1", uid: "conn-1" }, grants: [grant],
+      capabilities: fullCapabilities(), currentUserId: "user-1", members: [],
+    };
+    const original = JSON.stringify({ dedicatedConnection, grantsResponse });
+    getConnectionMock.mockResolvedValue(dedicatedConnection);
+    listConnectionGrantsMock.mockResolvedValue(grantsResponse);
+    const client = await renderAppDetail();
+    const explanation = [...container.querySelectorAll("p")].find((node) => node.textContent === english)!;
+    const account = container.querySelector('a[href="https://github.com/Board"]')!;
+    const agent = container.querySelector('a[href="/agents/coder"]')!;
+    const askFirst = container.querySelector<HTMLButtonElement>('button[aria-label="Write issue: Ask first"]')!;
+    const actionSearch = container.querySelector<HTMLInputElement>('input[aria-label="Find an action"]')!;
+    expect(explanation).toBeTruthy();
+    expect(account).toBeTruthy();
+    expect(agent).toBeTruthy();
+    expect(askFirst).toBeTruthy();
+    expect(actionSearch).toBeTruthy();
+    await act(async () => { setInputValue(actionSearch, "Write issue"); });
+    await flushReact();
+    expect(askFirst.getAttribute("aria-checked")).toBe("true");
+    const mutations = [updateConnectionMock, finishAppMock, finalizeOAuthAccessMock, putConnectionInstallsMock,
+      refreshCatalogMock, checkConnectionHealthMock, startOAuthMock, revokeConnectionGrantMock,
+      createConnectionGrantDelegationMock, revokeConnectionGrantDelegationMock,
+      replaceConnectionGrantMembersMock, startPersonalAuthorizationMock];
+    const mutationCounts = mutations.map((mock) => mock.mock.calls.length);
+
+    for (const language of ["en", "ru", "en"] as const) {
+      await act(async () => { await i18n.changeLanguage(language); });
+      await flushReact();
+      expect(container.contains(explanation)).toBe(true);
+      expect(explanation.textContent).toBe(language === "ru" ? russian : english);
+      expect(container.querySelector('a[href="https://github.com/Board"]')).toBe(account);
+      expect(account.textContent).toBe("@Board");
+      expect(container.querySelector('a[href="/agents/coder"]')).toBe(agent);
+      expect(agent.textContent).toContain("Coder");
+      expect(container.contains(askFirst)).toBe(true);
+      expect(askFirst.getAttribute("aria-checked")).toBe("true");
+      expect(container.contains(actionSearch)).toBe(true);
+      expect(actionSearch.value).toBe("Write issue");
+      expect(mutations.map((mock) => mock.mock.calls.length)).toEqual(mutationCounts);
+      expect(JSON.stringify({ dedicatedConnection, grantsResponse })).toBe(original);
+    }
+
+    const personalConnection = perUserConnection();
+    const personalResponse = { ...grantsResponse, grants: [dedicatedGitHubGrant({
+      kind: "user", subjectAgentId: null, subjectUserId: "user-1",
+    }, { login: "Board" })] };
+    const originalPersonal = JSON.stringify({ personalConnection, personalResponse });
+    await act(async () => {
+      client.setQueryData(queryKeys.tools.connection("conn-1"), personalConnection);
+      client.setQueryData(queryKeys.tools.connectionGrants("conn-1"), personalResponse);
+    });
+    await flushReact();
+    for (const language of ["en", "ru", "en"] as const) {
+      await act(async () => { await i18n.changeLanguage(language); });
+      await flushReact();
+      expect(container.textContent).not.toContain(english);
+      expect(container.textContent).not.toContain(russian);
+      expect(container.querySelector('a[href="https://github.com/Board"]')?.textContent).toBe("@Board");
+      expect(mutations.map((mock) => mock.mock.calls.length)).toEqual(mutationCounts);
+      expect(JSON.stringify({ personalConnection, personalResponse })).toBe(originalPersonal);
+    }
   });
 
   it("shows dedicated GitHub access as compact action rows and links to the agent", async () => {

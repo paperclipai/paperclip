@@ -15,6 +15,7 @@ import { logActivity } from "../services/activity-log.js";
 import { accessService } from "../services/access.js";
 import type { heartbeatService } from "../services/heartbeat.js";
 import { assertBoard, assertCompanyAccess } from "./authz.js";
+import { resolveGitHubOperationCredentials } from "../services/github-operation-credentials.js";
 
 function bearer(req: Request) {
   const value = req.header("authorization") ?? "";
@@ -60,6 +61,19 @@ export const RUNTIME_CONNECTION_TOOL_DEFINITIONS = [
 export function runtimeConnectionIntentRoutes(db: Db) {
   const router = Router();
   const service = connectionIntentService(db);
+
+  router.post("/runtime-tools/github/credentials", async (req, res) => {
+    // This capability is never accepted as board/session authentication.
+    // Node fetch sends Sec-Fetch-Mode too; browsers additionally send Origin or Sec-Fetch-Site.
+    if (req.headers.origin || req.headers.cookie || req.headers["sec-fetch-site"]) throw forbidden("GitHub credentials require runtime authentication");
+    const claims = verifyRuntimeToolsToken(typeof req.headers["x-paperclip-github-capability"] === "string"
+      ? req.headers["x-paperclip-github-capability"] : bearer(req), "github_credentials");
+    if (!claims) throw unauthorized("Invalid GitHub runtime capability");
+    res.setHeader("Cache-Control", "no-store");
+    res.json(await resolveGitHubOperationCredentials(db, {
+      companyId: claims.company_id, agentId: claims.sub, runId: claims.run_id,
+    }));
+  });
 
   router.get("/mcp/runtime-tools", async (req, res) => {
     await service.validate(runtimeClaims(req));

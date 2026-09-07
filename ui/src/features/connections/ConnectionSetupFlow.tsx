@@ -3623,6 +3623,9 @@ export function AccessStep({
         <div className="divide-y divide-border">
           <section className="p-6">
             <h2 className="text-sm font-semibold text-foreground">{identityHeading}</h2>
+            {githubIdentity && grantKind === "agent" ? (
+              <p className="mt-2 text-sm text-muted-foreground">{t("localizationApps.dedicatedGitHubAccountExplanation")}</p>
+            ) : null}
             {identityLoading ? (
               <div className="mt-4 grid gap-2 sm:grid-cols-2" aria-label={t("localizationConnections.loadingConnectionIdentity172")}>
                 <Skeleton className="h-20 w-full rounded-md" />

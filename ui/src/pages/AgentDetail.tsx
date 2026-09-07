@@ -89,6 +89,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { Input } from "@/components/ui/input";
 import { AgentIcon, AgentIconPicker } from "../components/AgentIconPicker";
 import { RunTranscriptView, type TranscriptMode } from "../components/transcript/RunTranscriptView";
+import { RunIdentityHistory } from "../components/RunIdentityHistory";
 import { AgentToolsTab } from "./AgentToolsTab";
 import {
   appendCapped,
@@ -3532,6 +3533,7 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
                 </span>
               </div>
             )}
+            <RunIdentityHistory history={run.identityHistory} users={userDirectory?.users} />
             {resumeRun.isError && (
               <div className="text-xs text-destructive">
                 {resumeRun.error instanceof Error ? resumeRun.error.message : t("pages.agentDetail.failedToResume")}

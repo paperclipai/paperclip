@@ -1,3 +1,5 @@
+import { experimentalApiMetadata } from "./experimental-api-metadata.js";
+import { experimentalApiPaths, experimentalApiQueries } from "./experimental-api-paths.js";
 import { Router } from "express";
 import { z } from "zod";
 import {
@@ -819,6 +821,7 @@ const RUNTIME_TOOLS_SECURITY: Array<Record<string, string[]>> = [
 ];
 
 const RUNTIME_TOOLS_OPERATIONS = new Set([
+  "POST /runtime-tools/github/credentials",
   "GET /mcp/runtime-tools",
   "POST /mcp/runtime-tools",
   "POST /runtime-tools/connections/search",
@@ -855,6 +858,8 @@ const BOARD_ONLY_PREFIXES = [
 ];
 
 const BOARD_ONLY_OPERATIONS = new Set([
+  "DELETE /api/issues/{id}/documents/{key}",
+  "GET /api/companies/{companyId}/decisions",
   "GET /api/cloud/stacks",
   "GET /api/companies",
   "POST /api/companies",
@@ -1103,7 +1108,7 @@ function resolveOperationAuthLevel(method: string, path: string): OpenApiAuthLev
   if (PUBLIC_OPERATIONS.has(key)) return "public";
   if (RUNTIME_TOOLS_OPERATIONS.has(key)) return "runtime_tools";
   if (INSTANCE_ADMIN_OPERATIONS.has(key)) return "instance_admin";
-  if (isBoardOnlyOperation(method, path)) return "board";
+  if (isBoardOnlyOperation(method, path) || experimentalApiMetadata[`${method.toUpperCase()} ${path}`]?.boardOnly) return "board";
   return "authenticated";
 }
 
@@ -1146,7 +1151,7 @@ function applyDocumentFixups(document: any): any {
       scheme: "bearer",
       bearerFormat: "Heartbeat-bound runtime tools token",
       description:
-        "Short-lived token bound to an active heartbeat run and presented in the Authorization bearer header.",
+        "Scoped token bound to an active heartbeat run and presented in the Authorization bearer header. The GitHub credential endpoint requires the distinct github_credentials scope.",
     },
   };
   document.security = AUTHENTICATED_SECURITY;
@@ -7433,6 +7438,14 @@ for (const route of [
 // --- Connection intents ------------------------------------------------------
 
 registerCurrentRoute({
+  method: "post",
+  path: "/runtime-tools/github/credentials",
+  tags: ["connection-intents"],
+  summary: "Resolve operation credentials using a run capability with github_credentials scope; browser sessions are rejected",
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 409: r.conflict },
+});
+
+registerCurrentRoute({
   method: "get",
   path: "/mcp/runtime-tools",
   tags: ["connection-intents"],
@@ -8347,6 +8360,24 @@ registerCurrentRoute({
     cursor: z.string().optional(),
   }),
 });
+
+// Every experimental REST route remains discoverable while its runtime feature
+// flag and actor checks stay authoritative. Shared validators prevent drift.
+for (const [method, path, body] of experimentalApiPaths) {
+  const query = experimentalApiQueries[`${method.toUpperCase()} ${path}`];
+  const metadata = experimentalApiMetadata[`${method.toUpperCase()} ${path}`];
+  registry.registerPath({
+    method, path, tags: ["Experimental"],
+    summary: `${method.toUpperCase()} ${path.replace(/\{[^}]+\}/g, "").replace(/\/api\//, "").replaceAll("/", " ")}`,
+    description: "Experimental API; the corresponding instance feature must be enabled. Existing route authorization applies." + (path.startsWith("/api/cases/{caseId}") ? " Pipeline case resource. On overlapping /cases routes the server selects the handler by resource identity; use a pipeline case ID." : path.startsWith("/api/cases/{id}") ? " Cases resource (not a pipeline case). Overlapping /cases routes select their handler by resource identity." : ""),
+    request: {
+      params: z.object(Object.fromEntries([...path.matchAll(/\{([^}]+)\}/g)].map((match) => [match[1], z.string()]))),
+      ...(query ? { query } : {}),
+      ...(path === "/api/cases/{id}/attachments" ? { body: { required: true, content: { "multipart/form-data": { schema: { type: "object", required: ["file"], properties: { file: { type: "string", format: "binary" } } } } } } } : body ? { body: { required: true, content: { "application/json": { schema: body } } } } : {}),
+    },
+    responses: { ...Object.fromEntries((metadata?.successStatuses ?? [200]).map(status => [status, responses.ok()])), 400: responses.badRequest, 403: responses.forbidden, 404: responses.notFound },
+  });
+}
 
 // ─── Spec builder ─────────────────────────────────────────────────────────────
 

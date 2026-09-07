@@ -83,6 +83,36 @@ describe("recent task persistence", () => {
     ]);
   });
 
+  it("does not demote recent comment activity when older task details arrive", () => {
+    const storageKey = getRecentTasksStorageKey("company-1", "user-1");
+    recordRecentTask(issue("1"), "user-1", 100);
+    recordRecentTask(issue("2"), "user-1", 90);
+    const listener = vi.fn();
+    window.addEventListener(RECENT_TASKS_UPDATED_EVENT, listener);
+
+    for (let index = 0; index < 10; index += 1) {
+      recordRecentTask({ ...issue("1"), updatedAt: new Date(50) }, "user-1");
+      updateRecentTaskSnapshots(storageKey, "company-1", [
+        { ...issue("1"), updatedAt: new Date(50) },
+        { ...issue("2"), updatedAt: new Date(80) },
+      ]);
+    }
+
+    expect(readRecentTasks(storageKey, "company-1").map(({ id, recordedAt }) => ({ id, recordedAt }))).toEqual([
+      { id: "1", recordedAt: 100 },
+      { id: "2", recordedAt: 90 },
+    ]);
+    expect(listener).not.toHaveBeenCalled();
+    window.removeEventListener(RECENT_TASKS_UPDATED_EVENT, listener);
+
+    updateRecentTaskSnapshots(storageKey, "company-1", [{
+      ...issue("1"), title: "Renamed task", status: "done", updatedAt: new Date(60),
+    }]);
+    expect(readRecentTasks(storageKey, "company-1")[0]).toMatchObject({
+      id: "1", title: "Renamed task", status: "done", recordedAt: 100,
+    });
+  });
+
   it("ignores malformed and cross-company entries", () => {
     const storageKey = getRecentTasksStorageKey("company-1", "user-1");
     window.localStorage.setItem(storageKey, JSON.stringify([
