@@ -1644,6 +1644,26 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     );
   });
 
+  it("shows installation recovery for GitHub even when an advanced PAT method is available", async () => {
+    const connectionId = "22222222-2222-4222-8222-222222222222";
+    mockSearch.value = `source=github&resume=${connectionId}&oauth=failed&code=github_installation_required&installation_url=https%3A%2F%2Fgithub.com%2Fapps%2Fpaperclip-for-github%2Finstallations%2Fnew`;
+    listGalleryMock.mockResolvedValue({ apps: [GITHUB_MANAGED] });
+    listApplicationsMock.mockResolvedValue({ applications: [{ id: "app-github", status: "draft", metadata: { sourceTemplateKey: "github" } }] });
+    listConnectionsMock.mockResolvedValue({ connections: [{
+      id: connectionId, applicationId: "app-github", authKind: "oauth", credentialPolicy: "per_user", status: "draft",
+      config: { sourceTemplateKey: "github", connectionMethodKey: "managed" }, transportConfig: {},
+    }] });
+    await render();
+    await flushReact();
+    expect(container.textContent).toContain("Install Paperclip and grant at least one repository");
+    expect(container.querySelector('a[href="https://github.com/apps/paperclip-for-github/installations/new"]')?.textContent).toBe("Install Paperclip on GitHub");
+    expect(container.textContent).not.toContain("Your GitHub key");
+    await act(async () => buttonByText("Try again")!.click());
+    await flushReact();
+    expect(startOAuthMock).toHaveBeenCalledWith(connectionId, { asCurrentUser: true });
+    expect(connectAppMock).not.toHaveBeenCalled();
+  });
+
   it("returns a declined OAuth draft to the same one-action resume checkpoint", async () => {
     mockSearch.value = "source=notion&resume=22222222-2222-4222-8222-222222222222&oauth=denied&code=oauth_authorization_denied";
     listGalleryMock.mockResolvedValueOnce({ apps: [NOTION] });
