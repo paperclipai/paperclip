@@ -387,6 +387,8 @@ describe("PaperclipRunnerToolAuthority", () => {
       },
     });
     const prerequisiteId = (prerequisite as { task: { id: string } }).task.id;
+    expect(await db.select().from(activityLog).where(eq(activityLog.entityId, prerequisiteId)))
+      .toEqual(expect.arrayContaining([expect.objectContaining({ action: "issue.created", agentId, runId, companyId })]));
     const dependent = await authority.execute({
       tool: "create_task",
       callId: "create-dependent",
@@ -480,6 +482,10 @@ describe("PaperclipRunnerToolAuthority", () => {
         title: "Conflicting title for the same caller key",
       },
     })).rejects.toThrow("paperclip_runner_tool_idempotency_conflict");
+
+    const creationEvents = (await db.select().from(activityLog).where(eq(activityLog.entityId, prerequisiteId)))
+      .filter(event => event.action === "issue.created");
+    expect(creationEvents).toHaveLength(1);
 
     const foreignCompanyId = "00000000-0000-4000-8000-000000000201";
     const foreignAgentId = "00000000-0000-4000-8000-000000000202";
