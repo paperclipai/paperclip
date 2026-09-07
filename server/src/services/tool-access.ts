@@ -8600,21 +8600,28 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         throw retryError;
       }
     }
-    const previousGitHub = grant.providerTenant?.github;
-    const providerTenant = {
-      ...(grant.providerTenant ?? {}),
-      github: {
-        ...metadata,
-        ...(previousGitHub?.lastWebhookAt ? { lastWebhookAt: previousGitHub.lastWebhookAt } : {}),
-        webhookHealth: previousGitHub?.webhookHealth ?? metadata.webhookHealth,
-      },
-    };
-    const [updated] = await db.update(connectionGrants).set({
-      providerTenant,
-      status: "active",
-      updatedAt: now(),
-    }).where(and(eq(connectionGrants.id, grant.id), eq(connectionGrants.companyId, grant.companyId))).returning();
-    if (!updated) throw notFound("GitHub authorization not found");
+    const { updated, previousGitHub } = await db.transaction(async (tx) => {
+      const [currentGrant] = await tx.select().from(connectionGrants).where(and(
+        eq(connectionGrants.id, grant.id), eq(connectionGrants.companyId, grant.companyId),
+      )).for("update").limit(1);
+      if (!currentGrant || currentGrant.status === "revoked") throw notFound("GitHub authorization not found");
+      const previousGitHub = currentGrant.providerTenant?.github;
+      const providerTenant = {
+        ...(currentGrant.providerTenant ?? {}),
+        github: {
+          ...metadata,
+          ...(previousGitHub?.lastWebhookAt ? { lastWebhookAt: previousGitHub.lastWebhookAt } : {}),
+          webhookHealth: previousGitHub?.webhookHealth ?? metadata.webhookHealth,
+        },
+      };
+      const [updated] = await tx.update(connectionGrants).set({
+        providerTenant,
+        status: "active",
+        updatedAt: now(),
+      }).where(and(eq(connectionGrants.id, grant.id), eq(connectionGrants.companyId, grant.companyId))).returning();
+      if (!updated) throw notFound("GitHub authorization not found");
+      return { updated, previousGitHub };
+    });
 
     const cloudConnector = currentCloudConnector();
     const subject = updated.kind === "agent" && updated.subjectAgentId

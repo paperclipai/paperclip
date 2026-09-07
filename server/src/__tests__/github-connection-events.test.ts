@@ -253,7 +253,6 @@ describeEmbeddedPostgres.sequential("GitHub connection event delivery", () => {
           repositorySelection: "selected",
           installationIds: ["101"],
           installationOwnerLogins: ["paperclipai"],
-          lastAccessRefreshAt: refreshed ? "2026-09-04T12:00:02.000Z" : undefined,
           repositories: [{ id: "203", fullName: "paperclipai/removed", installationId: "101" }],
           webhookHealth: "pending",
         },
@@ -283,7 +282,16 @@ describeEmbeddedPostgres.sequential("GitHub connection event delivery", () => {
       refresh: vi.fn(),
       revoke: vi.fn(),
       setWebhookBinding: vi.fn(async () => undefined),
-      leaseEvents: vi.fn(async () => ({ leaseId: `lease-${++poll}`, events: [leasedEvent] })),
+      leaseEvents: vi.fn(async () => {
+        if (refreshed) {
+          const [latest] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, grantId));
+          await db.update(connectionGrants).set({ providerTenant: {
+            ...latest!.providerTenant,
+            github: { ...latest!.providerTenant!.github!, lastAccessRefreshAt: "2026-09-04T12:00:02.000Z" },
+          } }).where(eq(connectionGrants.id, grantId));
+        }
+        return ({ leaseId: `lease-${++poll}`, events: [leasedEvent] });
+      }),
       acknowledgeEvents: vi.fn(async () => 1),
     } as unknown as PaperclipCloudConnector;
     let currentTime = new Date("2026-09-04T12:00:05.000Z");

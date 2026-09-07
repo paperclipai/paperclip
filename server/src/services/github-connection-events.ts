@@ -269,13 +269,22 @@ export function githubConnectionEventService(
   }
 
   async function applyInstallationEvent(database: Db, binding: GitHubBinding, event: LeasedEvent) {
-    const github = binding.providerTenant.github!;
+    // Bindings are loaded before the Cloud request. Lock and read the grant
+    // again so a refresh completed during that request cannot be overwritten.
+    const [currentGrant] = await database.select().from(connectionGrants).where(and(
+      eq(connectionGrants.id, binding.grantId),
+      eq(connectionGrants.companyId, binding.companyId),
+      eq(connectionGrants.status, "active"),
+    )).for("update").limit(1);
+    const currentProviderTenant = currentGrant?.providerTenant;
+    const github = currentProviderTenant?.github;
+    if (!github) return;
     // A newly bound instance can receive installation events from before OAuth
     // verified its repository list. Those events must not erase newer access.
     if (Date.parse(github.lastAccessRefreshAt ?? "") > Date.parse(event.createdAt)) {
       await database.update(connectionGrants).set({
         providerTenant: {
-          ...binding.providerTenant,
+          ...currentProviderTenant,
           github: { ...github, lastWebhookAt: now().toISOString(), webhookHealth: "healthy" },
         },
         updatedAt: now(),
@@ -297,7 +306,7 @@ export function githubConnectionEventService(
           : github.repositoryCount + added - removed,
     );
     const providerTenant = {
-      ...binding.providerTenant,
+      ...currentProviderTenant,
       github: {
         ...github,
         // Lifecycle webhooks carry IDs, not the user token’s complete repository view.
@@ -368,12 +377,19 @@ export function githubConnectionEventService(
             const github = binding.providerTenant.github;
             if (!github) continue;
             await database.update(connectionGrants).set({
-              providerTenant: {
-                ...binding.providerTenant,
-                github: { ...github, lastWebhookAt: touchedAt.toISOString(), webhookHealth: "healthy" },
-              },
+              // Update only webhook fields; a concurrent access/token refresh
+              // owns the remaining metadata and must not be replaced here.
+              providerTenant: sql`jsonb_set(${connectionGrants.providerTenant}, '{github}',
+                (${connectionGrants.providerTenant}->'github') || ${JSON.stringify({
+                  lastWebhookAt: touchedAt.toISOString(), webhookHealth: "healthy",
+                })}::jsonb)`,
               updatedAt: touchedAt,
-            }).where(and(eq(connectionGrants.id, binding.grantId), eq(connectionGrants.companyId, companyId)));
+            }).where(and(
+              eq(connectionGrants.id, binding.grantId),
+              eq(connectionGrants.companyId, companyId),
+              eq(connectionGrants.status, "active"),
+              sql`${connectionGrants.providerTenant}->'github' is not null`,
+            ));
           }
         }
         const finishedAt = now();
