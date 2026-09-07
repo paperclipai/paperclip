@@ -678,7 +678,9 @@ describe("loopback bind is forced on the guest, not merely requested (PAP-17256)
       serviceName: "paperclip-dev",
       command: declared,
       expose: { ...LEGACY_HTTP_EXPOSE, tailscaleHttps: false },
-      port: { type: "auto", envKey: "PORT" },
+      // This guest opens a second listener at appPort + 10000. An arbitrary
+      // ephemeral app port can overflow the valid TCP port range.
+      port: await findFreeExposureAppPort(RUNTIME_EXPOSURE_APP_PORT_MIN),
     }));
 
     expect(calls).toEqual([]);
