@@ -1,3 +1,4 @@
+import { canBrowseProjectRepositoryGrant, mergeProjectRepository } from "./project-repositories.js";
 import { captureRunIdentity } from "./run-identity.js";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -1930,6 +1931,27 @@ function managedConnectorProfile(value: string | undefined): {
   return null;
 }
 
+export async function loadGitHubTokenRepositories(headers: Record<string, string>, request: typeof fetch = fetch) {
+  const repositories: Array<{ id: string; fullName: string; private?: boolean }> = [];
+  for (let page = 1; ; page += 1) {
+    const response = await request(`https://api.github.com/user/repos?per_page=100&page=${page}`, {
+      headers: { ...headers, accept: "application/vnd.github+json", "user-agent": "Paperclip", "x-github-api-version": "2022-11-28" },
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!response.ok) throw unprocessable("Could not load GitHub repositories. Reconnect GitHub and try again.");
+    const rows: unknown = await response.json();
+    if (!Array.isArray(rows)) throw unprocessable("GitHub returned invalid repositories");
+    for (const row of rows) {
+      if (!recordValue(row) || !githubId(row.id) || typeof row.full_name !== "string" || !/^[A-Za-z0-9][A-Za-z0-9-]*\/(?!\.{1,2}$)[A-Za-z0-9_.-]+$/.test(row.full_name)) {
+        throw unprocessable("GitHub returned invalid repository metadata");
+      }
+      repositories.push({ id: githubId(row.id)!, fullName: row.full_name, ...(typeof row.private === "boolean" ? { private: row.private } : {}) });
+    }
+    if (!/;\s*rel="next"/.test(response.headers.get("link") ?? "")) return repositories;
+    if (!rows.length) throw unprocessable("GitHub returned invalid pagination");
+  }
+}
+
 export async function loadGitHubGrantMetadata(
   accessToken: string,
   request: typeof fetch = fetch,
@@ -2014,7 +2036,7 @@ export async function loadGitHubGrantMetadata(
     for (const repository of await list(`/user/installations/${installationId}/repositories`, "repositories")) {
       const id = githubId(repository.id);
       const fullName = typeof repository.full_name === "string" ? repository.full_name : "";
-      if (!id || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(fullName)) {
+      if (!id || !/^[A-Za-z0-9][A-Za-z0-9-]*\/(?!\.{1,2}$)[A-Za-z0-9_.-]+$/.test(fullName)) {
         throw unprocessable("GitHub returned invalid repository metadata", { code: "github_bad_response" });
       }
       repositories.set(id, {
@@ -12372,6 +12394,70 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       }
       if (!row) throw notFound("Tool application not found");
       return toApplication(row);
+    },
+
+    // Repository discovery uses credential audiences, not connection-management
+    // visibility. An administrator cannot browse another user's private repos.
+    listProjectRepositories: async (companyId: string, userId: string | null, localTrusted = false) => {
+      const [connections, grants, members, memberships] = await Promise.all([
+        db.select().from(toolConnections).where(and(eq(toolConnections.companyId, companyId), eq(toolConnections.enabled, true))),
+        db.select().from(connectionGrants).where(eq(connectionGrants.companyId, companyId)),
+        db.select().from(connectionGrantMembers).where(eq(connectionGrantMembers.companyId, companyId)),
+        userId ? db.select().from(companyMemberships).where(and(
+          eq(companyMemberships.companyId, companyId), eq(companyMemberships.principalType, "user"),
+          eq(companyMemberships.principalId, userId), eq(companyMemberships.status, "active"),
+        )) : Promise.resolve([]),
+      ]);
+      const repositories = new Map<string, import("@paperclipai/shared").ProjectRepository>();
+      let connectionCount = 0;
+      let failedConnectionCount = 0;
+      for (const connection of connections) {
+        if (connection.status !== "active" || asRecord(connection.config).sourceTemplateKey !== "github") continue;
+        const connectionGrants = grants.filter((grant) => grant.connectionId === connection.id);
+        const availableGrants = connectionGrants.filter((grant) =>
+          !(grant.kind === "organization" && ["per_user", "per_agent"].includes(connection.credentialPolicy))
+          && canBrowseProjectRepositoryGrant({
+          grant, userId, activeMember: localTrusted || memberships.length > 0,
+          audience: members.filter((member) => member.grantId === grant.id).map((member) => member.subjectId),
+        }));
+        // Legacy shared PAT connections predate grants. Never fall back when a
+        // grant exists but is revoked, private, or outside the caller's audience.
+        const legacyShared = connectionGrants.length === 0 && connection.credentialPolicy === "shared"
+          && (localTrusted || !!userId && memberships.length > 0);
+        if (!availableGrants.length && !legacyShared) continue;
+        connectionCount += 1;
+        const actor: ActorInfo = { actorType: "user", actorId: userId ?? "board" };
+        let failed = false;
+        for (const initialGrant of legacyShared ? [null] : availableGrants) {
+          try {
+            let rows: Array<{ id: string; fullName: string; private?: boolean }>;
+            if (initialGrant && asRecord(asRecord(connection.config).oauth).connectorProfile === "github.code") {
+              const grant = await refreshManagedGitHubGrantAccess(connection, initialGrant, actor);
+              rows = grant.providerTenant?.github?.repositories ?? [];
+            } else {
+              const headers = initialGrant
+                ? await (async () => {
+                  const ref = initialGrant.credentialSecretRefs.find((ref) =>
+                    ref.configPath === "oauth.access_token" || /authorization|token|api_key/i.test(ref.configPath));
+                  if (!ref) throw unprocessable("Reconnect GitHub to load repositories");
+                  const secret = await resolveOAuthGrantSecret(connection, initialGrant, ref, actor, undefined);
+                  return { Authorization: `Bearer ${secret.value}` };
+                })()
+                : await resolveCredentialHeaders(connection, actor);
+              rows = await loadGitHubTokenRepositories(headers);
+            }
+            for (const row of rows) {
+              mergeProjectRepository(repositories, row, connection.name);
+            }
+          } catch {
+            // Credential/provider errors may contain secrets. Only expose an
+            // aggregate failure; successful connections remain usable.
+            failed = true;
+          }
+        }
+        if (failed) failedConnectionCount += 1;
+      }
+      return { repositories: [...repositories.values()].sort((a, b) => a.fullName.localeCompare(b.fullName)), connectionCount, failedConnectionCount };
     },
 
     listConnections: async (companyId: string): Promise<ToolConnection[]> => {

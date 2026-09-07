@@ -1,5 +1,4 @@
-import { useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { createPortal } from "react-dom";
+import { useMemo, useState } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Project } from "@paperclipai/shared";
 import { Boxes, ChevronRight, ChevronsUpDown, CircleCheck, Folder, History, Inbox, LayoutDashboard, Menu, Package, Repeat, Search, SquarePen, Star, Unplug, Users } from "lucide-react";
@@ -8,68 +7,9 @@ import { PageTabBar } from "@/components/PageTabBar";
 import { Button } from "@/components/ui/button";
 import { Tabs } from "@/components/ui/tabs";
 import { queryKeys } from "@/lib/queryKeys";
-import { cn, formatDate } from "@/lib/utils";
+import { cn } from "@/lib/utils";
 import { storybookProjects } from "../../fixtures/paperclipData";
 import { RepositoryConfigurationSection, type PrototypeProps } from "./ProjectReposPrototype";
-
-/**
- * Story-only slot adapter: reuse the real ProjectProperties editors, omit
- * Status/Goals, and place repos before Env and Created at the bottom. The current
- * production component has no slot. This temporary DOM seam avoids adding a
- * production API or maintaining a copied 1,300-line settings component before
- * design approval. Fail visibly if the source component's structure changes.
- */
-function ConfigurationWithRepoProposal({ children, project, onUpdate, onArchive }: {
-  children: ReactNode;
-  project: Project;
-  onUpdate: (data: Record<string, unknown>) => void;
-  onArchive: (archived: boolean) => void;
-}) {
-  const host = useRef<HTMLDivElement>(null);
-  const [slot, setSlot] = useState<HTMLElement | null>(null);
-  const [missingSlot, setMissingSlot] = useState(false);
-  useLayoutEffect(() => {
-    const labels = [...(host.current?.querySelectorAll("span") ?? [])];
-    const findLabel = (text: string) => labels.find((node) => node.textContent === text);
-    const fieldRow = (text: string) => findLabel(text)?.parentElement?.parentElement?.parentElement;
-    const codebase = findLabel("Codebase")?.parentElement?.parentElement?.parentElement;
-    const environment = fieldRow("Env");
-    const omittedRows = [fieldRow("Status"), fieldRow("Goals"), fieldRow("Created")];
-    if (!codebase || !environment || omittedRows.some((row) => !row)) {
-      setMissingSlot(true);
-      return;
-    }
-    const placeholder = document.createElement("div");
-    placeholder.className = "py-4";
-    environment.before(placeholder);
-    const separator = codebase.previousElementSibling;
-    const environmentHints = [...environment.querySelectorAll("p")].filter((node) => {
-      const text = node.textContent?.trim() ?? "";
-      return text.startsWith("Set the KEY to the env var name")
-        || text.startsWith("Applied to all runs for tasks in this project.");
-    });
-    const hiddenNodes = [codebase, ...omittedRows as HTMLElement[], ...environmentHints];
-    if (separator instanceof HTMLElement && separator.dataset.slot === "separator") hiddenNodes.push(separator);
-    const previousHidden = hiddenNodes.map((node) => node.hidden);
-    hiddenNodes.forEach((node) => { node.hidden = true; });
-    setSlot(placeholder);
-    return () => {
-      hiddenNodes.forEach((node, index) => { node.hidden = previousHidden[index]!; });
-      placeholder.remove();
-    };
-  }, []);
-  return (
-    <div ref={host}>
-      <ProjectProperties project={project} onFieldUpdate={(_, data) => onUpdate(data)} onArchive={onArchive} />
-      {slot && createPortal(children, slot)}
-      {missingSlot && <p role="alert">The configuration story needs its field slots updated to match ProjectProperties.</p>}
-      <div className="flex gap-3 border-t border-border py-4 text-xs text-muted-foreground">
-        <span className="w-20 shrink-0">Created</span>
-        <span>{formatDate(project.createdAt)}</span>
-      </div>
-    </div>
-  );
-}
 
 const navigation = [
   { label: "Search", icon: Search, path: "search" },
@@ -134,9 +74,7 @@ export function ProjectConfigurationPrototype(props: PrototypeProps) {
               <header className="flex items-center gap-3"><span className="flex size-7 items-center justify-center rounded-md bg-muted"><Folder className="size-4 text-muted-foreground" /></span><h1 className="min-w-0 flex-1 truncate text-xl font-bold">{project.name}</h1><Button variant="ghost" size="icon-sm" aria-label={`Star ${project.name}`} aria-pressed={starred} onClick={() => setStarred(!starred)}><Star className={cn("size-4", starred && "fill-current")} /></Button></header>
               <Tabs value={activeTab} onValueChange={setActiveTab}><PageTabBar align="start" value={activeTab} onValueChange={setActiveTab} items={[{ value: "list", label: "Tasks" }, { value: "configuration", label: "Configuration" }, { value: "budget", label: "Budget" }]} /></Tabs>
               <div className={activeTab === "configuration" ? "max-w-4xl" : "hidden"}>
-                <ConfigurationWithRepoProposal project={project} onUpdate={(data) => setProject((previous) => ({ ...previous, ...data }))} onArchive={(archived) => setProject((previous) => ({ ...previous, archivedAt: archived ? new Date() : null }))}>
-                  <RepositoryConfigurationSection {...props} />
-                </ConfigurationWithRepoProposal>
+                <ProjectProperties project={project} onUpdate={(data) => setProject((previous) => ({ ...previous, ...data }))} onArchive={(archived) => setProject((previous) => ({ ...previous, archivedAt: archived ? new Date() : null }))} repositories={<RepositoryConfigurationSection {...props} />} />
               </div>
               {activeTab !== "configuration" && <div className="flex flex-col items-start gap-3 py-6"><p className="text-sm text-muted-foreground">This story previews the Configuration tab.</p><Button variant="outline" onClick={() => setActiveTab("configuration")}>Return to configuration</Button></div>}
             </div>

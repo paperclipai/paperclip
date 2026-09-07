@@ -13,6 +13,7 @@ import { AppsConnect } from "./AppsConnect";
 const listGalleryMock = vi.hoisted(() => vi.fn());
 const listApplicationsMock = vi.hoisted(() => vi.fn());
 const listConnectionsMock = vi.hoisted(() => vi.fn());
+const getConnectionMock = vi.hoisted(() => vi.fn());
 const connectAppMock = vi.hoisted(() => vi.fn());
 const startOAuthMock = vi.hoisted(() => vi.fn());
 const finishAppMock = vi.hoisted(() => vi.fn());
@@ -57,6 +58,7 @@ vi.mock("@/api/tools", () => ({
     listGallery: (companyId: string) => listGalleryMock(companyId),
     listApplications: (companyId: string) => listApplicationsMock(companyId),
     listConnections: (companyId: string) => listConnectionsMock(companyId),
+    getConnection: (id: string) => getConnectionMock(id),
     connectApp: (companyId: string, input: unknown) => connectAppMock(companyId, input),
     startOAuth: (connectionId: string, input?: unknown) => startOAuthMock(connectionId, input),
     finishApp: (companyId: string, connectionId: string, input: unknown) =>
@@ -1429,6 +1431,35 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(focus).toHaveBeenCalled();
 
     openSpy.mockRestore();
+    await act(async () => dialogRoot.unmount());
+  });
+
+  it("returns a standalone GitHub popup to its host only after verifying the saved connection", async () => {
+    listGalleryMock.mockResolvedValue({ apps: [GITHUB_MANAGED] });
+    connectAppMock.mockResolvedValue({
+      connectionId: "conn-github", application: { id: "app-github", name: "GitHub" },
+      connection: { id: "conn-github", credentialPolicy: "per_user" },
+      actions: { readOnly: [], canMakeChanges: [] }, catalog: [], suggestedDefaults: {},
+      auth: { kind: "oauth" },
+    });
+    const popup = { closed: false, location: { href: "about:blank", assign: vi.fn() }, focus: vi.fn(), close: vi.fn() };
+    vi.spyOn(window, "open").mockReturnValue(popup as unknown as Window);
+    const onComplete = vi.fn();
+    getConnectionMock.mockResolvedValue({ id: "conn-github", status: "active" });
+    const dialogRoot = await render(undefined, false, <ConnectionSetupFlow host="dialog" serviceSlug="github" forceNewConnection onComplete={onComplete} />);
+    await passAccessStep();
+    await act(async () => buttonByText("Continue to GitHub")!.click());
+    await flushReact();
+    await flushReact();
+    expect(connectAppMock, container.textContent ?? "").toHaveBeenCalled();
+    expect(startOAuthMock, container.textContent ?? "").toHaveBeenCalledWith("conn-github", { asCurrentUser: true });
+    expect(onComplete).not.toHaveBeenCalled();
+    popup.location.href = `${window.location.origin}/CO/apps/conn-github/permissions?success=1`;
+    await act(async () => {
+      await vi.waitFor(() => expect(onComplete).toHaveBeenCalledWith({ connectionId: "conn-github" }), { timeout: 2500 });
+    });
+    expect(getConnectionMock).toHaveBeenCalledWith("conn-github");
+    expect(popup.close).toHaveBeenCalled();
     await act(async () => dialogRoot.unmount());
   });
 
