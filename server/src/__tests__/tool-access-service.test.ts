@@ -4156,6 +4156,26 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(requests.filter(({ method }) => method === "initialize").length).toBeGreaterThanOrEqual(1);
   });
 
+  it("does not treat a 404 that survives the handshake as a session requirement", async () => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+    const methods: string[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
+      const payload = JSON.parse(String(init?.body ?? "{}")) as { method?: string };
+      methods.push(payload.method ?? "");
+      // A wrong endpoint 404s everything, the handshake included, so the
+      // original failure must survive rather than being retried forever.
+      return new Response("Not Found", { status: 404, headers: { "content-type": "text/plain" } });
+    });
+
+    await expect(service.connectGalleryApp(company.id, {
+      link: "https://missing.example/mcp",
+      name: "Missing MCP",
+    }, { actorType: "user", actorId: "board" })).rejects.toThrow();
+
+    expect(methods.filter((method) => method === "tools/list").length).toBe(1);
+  });
+
   it("serves persisted MCP actions until the cache expires and then refreshes them", async () => {
     const company = await createCompany(db);
     let currentTime = new Date("2026-08-20T12:00:00.000Z");
