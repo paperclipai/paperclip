@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { chmod, writeFile, symlink } from "node:fs/promises";
 import { join } from "node:path";
 import { eq } from "drizzle-orm";
-import { heartbeatRuns, issues } from "@paperclipai/db";
+import { documents, heartbeatRuns, issues, routineDocuments, routines } from "@paperclipai/db";
 import { beforeAll, afterAll, describe, expect, it, vi } from "vitest";
 import { startRunnerApiTestServer } from "../../__tests__/helpers/runner-api-server.js";
 import { createRunnerdCodexTransport, defaultCapabilityRunnerdBinary } from "../../vendor/paperclip-runner/index.js";
@@ -100,6 +100,25 @@ else if(m.id!==undefined) send({id:m.id,result:{}});
     const [run] = await server.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId));
     expect((run.resultJson as Record<string, unknown> | null)?.apiToolReceipts).toBeUndefined();
     expect((await fixture.snapshot()).issues.find(row => row.id === fixture.blockerId)?.status).toBe("todo");
+  });
+
+  it("supports routine annotation collaboration without changing scheduling", async () => {
+    const fixture = await server.fixture();
+    const [document] = await server.db.select().from(documents).where(eq(documents.companyId, fixture.companyId));
+    const [routine] = await server.db.insert(routines).values({ companyId: fixture.companyId, projectId: fixture.projectId, title: "Review schedule", description: document.latestBody, assigneeAgentId: fixture.agentId, status: "paused" }).returning();
+    await server.db.insert(routineDocuments).values({ companyId: fixture.companyId, routineId: routine.id, documentId: document.id, key: "description" });
+    const exact = "silver-wren", start = document.latestBody.indexOf(exact);
+    const base = "/api/routines/{id}/description/annotations";
+    const call = (callId: string, operationId: string, body: unknown, threadId?: string) => fixture.authority.execute({ tool: "call_api", callId, arguments: { operationId, pathParams: { id: routine.id, ...(threadId ? { threadId } : {}) }, body } }) as Promise<any>;
+    const created = await call("annotation-create", `POST ${base}`, { baseRevisionId: document.latestRevisionId, baseRevisionNumber: document.latestRevisionNumber, selector: { quote: { exact, prefix: document.latestBody.slice(0, start), suffix: document.latestBody.slice(start + exact.length) }, position: { normalizedStart: start, normalizedEnd: start + exact.length, markdownStart: start, markdownEnd: start + exact.length } }, body: "Please clarify this note" });
+    expect(created).toMatchObject({ status: 201, data: { routineId: routine.id, status: "open" } });
+    const threadId = created.data.id;
+    expect(await call("annotation-comment", `POST ${base}/{threadId}/comments`, { body: "Clarified note" }, threadId)).toMatchObject({ status: 201, data: { body: "Clarified note" } });
+    expect(await call("annotation-resolve", `PATCH ${base}/{threadId}`, { status: "resolved" }, threadId)).toMatchObject({ status: 200, data: { status: "resolved" } });
+    expect(await call("annotation-reopen", `PATCH ${base}/{threadId}`, { status: "open" }, threadId)).toMatchObject({ status: 200, data: { status: "open" } });
+    const [unchanged] = await server.db.select().from(routines).where(eq(routines.id, routine.id));
+    expect(unchanged).toMatchObject({ status: "paused", lastTriggeredAt: null, lastEnqueuedAt: null });
+    expect((await fixture.snapshot()).activity).toEqual(expect.arrayContaining([expect.objectContaining({ action: "routine.document_annotation_thread_created", agentId: fixture.agentId, runId: fixture.runId })]));
   });
 
   it("rejects every restricted REST mutation before dispatch or durable receipt", async () => {

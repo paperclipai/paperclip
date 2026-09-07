@@ -15,7 +15,8 @@ export function runnerApiRestriction(method: string, path: string): string | nul
 /** Runner-owned transitions cannot be reached by the generic HTTP escape hatch. */
 export function runnerApiMutationRestriction(path: string): string | null {
   const issueRoute = /^\/api\/issues\/\{[^}]+\}/.test(path);
-  if (/\/(routines|routine-triggers)(\/|$)/.test(path)
+  const routineAnnotation = /^\/api\/routines\/\{[^}]+\}\/description\/annotations(?:\/\{[^}]+\}(?:\/comments)?)?$/.test(path);
+  if ((!routineAnnotation && /\/(routines|routine-triggers)(\/|$)/.test(path))
     || /\/(runtime-commands|runtime-services)\/\{action\}$/.test(path)
     || /\/(?:tool-gateway|tools)\/runtime-slots\/\{[^}]+\}\/(restart|stop)$/.test(path)
     || /^\/api\/cases\/\{[^}]+\}\/(automation|automations)\//.test(path)

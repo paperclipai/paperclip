@@ -63,11 +63,18 @@ describe("runner API request boundary", () => {
     await expect(executeRunnerApi({ operationId }, context, io(request))).rejects.toThrow("existing protocol client");
     expect(request).not.toHaveBeenCalled();
   });
-  it.each(runnerApiCatalog().filter(operation => !["GET", "HEAD", "OPTIONS"].includes(operation.method) && /\/(routines|routine-triggers)(\/|$)/.test(operation.path)))("keeps scheduled execution $operationId behind its existing client", async operation => {
+  it.each(runnerApiCatalog().filter(operation => !["GET", "HEAD", "OPTIONS"].includes(operation.method) && /\/(routines|routine-triggers)(\/|$)/.test(operation.path) && !operation.path.includes("/description/annotations")))("keeps scheduled execution $operationId behind its existing client", async operation => {
     const request = vi.fn<typeof fetch>();
     await expect(executeRunnerApi({ operationId: operation.operationId }, context, io(request))).rejects.toThrow(/cannot bypass|credential broker/);
     expect(request).not.toHaveBeenCalled();
     expect(operation.callPolicy).toBe("restricted");
+  });
+  it.each(runnerApiCatalog().filter(operation => !["GET", "HEAD", "OPTIONS"].includes(operation.method) && operation.path.includes("/routines/{id}/description/annotations")))("preserves routine collaboration $operationId", async operation => {
+    const request = vi.fn<typeof fetch>(async () => Response.json({ id: "thread", status: "open" }));
+    const pathParams = Object.fromEntries(operation.parameters.filter(parameter => parameter.in === "path").map(parameter => [parameter.name, "fixture"]));
+    await expect(executeRunnerApi({ operationId: operation.operationId, pathParams }, context, io(request))).resolves.toMatchObject({ status: 200 });
+    expect(request).toHaveBeenCalledOnce();
+    expect(operation.callPolicy).toBe("rest");
   });
   it("keeps routine metadata readable", () => {
     expect(validateRunnerApiCall({ operationId: "GET /api/companies/{companyId}/routines" }, context).operation.callPolicy).toBe("rest");

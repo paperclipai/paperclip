@@ -77,7 +77,8 @@ changes and manual/public routine execution require the existing scheduling
 clients. Direct workspace runtime commands, runtime-slot stop/restart, case
 automation retries and skill test-run controls also require their existing
 execution clients. Gateway session credentials cannot enter generic results.
-Routine metadata remains readable. API-only ordinary fields, such as a
+Routine metadata remains readable; annotation threads, comments and thread
+resolution remain available through the fallback. API-only ordinary fields, such as a
 task's `billingCode`, remain accessible even when a dedicated tool covers other
 fields on that endpoint.
 
