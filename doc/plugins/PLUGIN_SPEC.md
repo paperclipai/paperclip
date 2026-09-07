@@ -495,6 +495,7 @@ If a worker fails:
 - keep the rest of the instance running
 - retry start with bounded backoff
 - do not drop other plugins or core services
+- a bundled plugin (shipped with the release image) that is still `error` at the next server boot is moved back to `ready` once per boot, so the startup loader gets a fresh activation attempt; an operator-`disabled` plugin is never touched
 
 ## 12.5 Graceful Shutdown Policy
 

@@ -193,6 +193,7 @@ interface RegistryPluginRow {
   status: string;
   version: string;
   manifestJson: PaperclipPluginManifestV1;
+  lastError?: string | null;
 }
 
 export interface BundledPluginProvisionerDeps {
@@ -211,9 +212,12 @@ export interface BundledPluginProvisionerDeps {
   };
   lifecycle: {
     load(pluginId: string): Promise<unknown>;
+    /** Transitions an `error` (or `disabled` / `upgrade_pending`) plugin back to `ready`. */
+    enable(pluginId: string): Promise<unknown>;
   };
   logger: {
     info(obj: unknown, msg?: string): void;
+    warn(obj: unknown, msg?: string): void;
     error(obj: unknown, msg?: string): void;
   };
   /** Overridable for tests; defaults to checking `dist/manifest.js`. */
@@ -268,6 +272,52 @@ async function reconcileBundledPluginManifest(
 }
 
 /**
+ * Re-enable a bundled plugin that a previous boot left in `error`.
+ *
+ * `error` is not an operator choice: the loader records it when activation
+ * fails (for example the worker's `initialize` RPC timed out once) and it
+ * also switches off the worker's auto-restart. Every automatic path
+ * afterwards (`loadAll()`, the lazy worker recovery, the run lease) only
+ * considers `ready` plugins, so a bundled plugin in `error` stays unusable
+ * across restarts until an operator enables it by hand, and every run that
+ * needs its provider fails with "that plugin is currently error". The bundle
+ * ships with the release image and is expected to work, so one fresh attempt
+ * per boot is the right default: `enable` moves the row back to `ready`, and
+ * the startup `loadAll()` activates it. If activation fails again the loader
+ * marks `error` again and nothing retries until the next boot, so this
+ * cannot loop within one process.
+ *
+ * Fail-safe like the rest of the provisioner: a failed `enable` is logged and
+ * boot continues with the plugin unavailable.
+ */
+async function reenableErroredBundledPlugin(
+  existing: RegistryPluginRow,
+  install: ResolvedBundledPlugin,
+  deps: BundledPluginProvisionerDeps,
+): Promise<void> {
+  deps.logger.warn(
+    {
+      pluginId: existing.id,
+      pluginKey: install.pluginKey,
+      lastError: existing.lastError ?? null,
+    },
+    "bundled plugin is in error status from a previous activation; re-enabling it for this boot",
+  );
+  try {
+    await deps.lifecycle.enable(existing.id);
+    deps.logger.info(
+      { pluginId: existing.id, pluginKey: install.pluginKey },
+      "bundled plugin re-enabled; the startup loader will activate it",
+    );
+  } catch (err) {
+    deps.logger.error(
+      { err, pluginId: existing.id, pluginKey: install.pluginKey },
+      "Failed to re-enable errored bundled plugin; continuing boot (degraded: plugin unavailable)",
+    );
+  }
+}
+
+/**
  * Ensure each resolved bundled plugin is installed and loaded.
  *
  * Same mechanism the kubernetes bundle has always used: in-process
@@ -280,6 +330,10 @@ async function reconcileBundledPluginManifest(
  *   operator-disabled plugin is not silently re-enabled on reboot. Before the
  *   skip, the persisted manifest is reconciled to the shipped bundle version
  *   (see `reconcileBundledPluginManifest`).
+ * - The one exception is `error`, which the loader sets when an activation
+ *   fails and which no automatic path ever clears. A bundled plugin in
+ *   `error` is moved back to `ready` once per boot so `loadAll()` gets a
+ *   fresh attempt (see `reenableErroredBundledPlugin`).
  * - A soft-uninstalled plugin is reinstalled only when
  *   `reinstallUninstalled` is set (managed mode, where the control plane
  *   owns provisioning). Self-hosted keeps the pre-refactor behavior of
@@ -303,6 +357,10 @@ export async function ensureBundledPlugins(
         // plugin. The reconcile updates only the stored manifest row; the
         // running worker already runs the shipped code.
         await reconcileBundledPluginManifest(existing, install, deps, bundleManifestExists);
+        if (existing.status === "error") {
+          await reenableErroredBundledPlugin(existing, install, deps);
+          continue;
+        }
         deps.logger.info(
           { pluginKey: install.pluginKey, status: existing.status },
           "bundled plugin already present; skipping auto-install",

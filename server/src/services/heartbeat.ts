@@ -354,6 +354,7 @@ import {
 } from "./recovery/index.js";
 import { isAutomaticRecoverySuppressedByPauseHold } from "./recovery/pause-hold-guard.js";
 import {
+  SANDBOX_PROVIDER_PLUGIN_NOT_READY_REASON,
   buildConfigurationIncompleteRecoveryNoticeSeed,
   buildExecutionReviewParticipantRecoveryNoticeSeed,
   buildImmediateExecutionPathRecoveryNoticeSeed,
@@ -742,6 +743,39 @@ export class ConfigurationIncompleteFailure extends Error {
 // branch (`fix/foo` and `origin/fix/foo`) share one fingerprint, so a repeated
 // failure reuses one active recovery action and does not reset the attempt
 // count or post a duplicate notice. A different branch makes a new action.
+// Build the configuration-incomplete result payload for a sandbox provider
+// plugin that is installed but not `ready`. The `fingerprint` is the plugin
+// key plus its status, so every run that hits the same stuck plugin reuses
+// one active recovery action instead of posting a fresh notice per attempt,
+// while a status change (say `error` -> `disabled`) makes a new one.
+function buildSandboxProviderPluginNotReadyResultJson(
+  run: typeof heartbeatRuns.$inferSelect,
+  failure: { provider: string; pluginKey: string; pluginStatus: string },
+): Record<string, unknown> {
+  const context = parseObject(run.contextSnapshot);
+  return {
+    configurationIncomplete: {
+      reason: SANDBOX_PROVIDER_PLUGIN_NOT_READY_REASON,
+      companyId: run.companyId,
+      agentId: run.agentId,
+      issueId: readNonEmptyString(context.issueId) ?? null,
+      projectId: readNonEmptyString(context.projectId) ?? null,
+      sandboxProvider: failure.provider,
+      pluginKey: failure.pluginKey,
+      pluginStatus: failure.pluginStatus,
+      fingerprint: `sandbox_provider_plugin:${failure.pluginKey}:${failure.pluginStatus}`,
+      missingBindings: [],
+    },
+  };
+}
+
+function readConfigurationIncompletePayload(
+  run: Pick<typeof heartbeatRuns.$inferSelect, "resultJson"> | null | undefined,
+): Record<string, unknown> | null {
+  const payload = parseObject(parseObject(run?.resultJson).configurationIncomplete);
+  return Object.keys(payload).length > 0 ? payload : null;
+}
+
 function buildUnresolvedWorkspaceBaseRefResultJson(
   run: typeof heartbeatRuns.$inferSelect,
   error: UnresolvedWorkspaceBaseRefError,
@@ -946,6 +980,33 @@ function isSandboxProviderWorkerUnavailableFailureMessage(value: unknown) {
   return /sandbox provider .* is installed via plugin .* but its worker is not running/i.test(
     value,
   );
+}
+
+// environment-runtime.ts's resolveSandboxProviderPlugin "not_ready" message,
+// e.g. 'Sandbox provider "kubernetes" is installed via plugin
+// "acme.kubernetes-sandbox-provider", but that plugin is currently error.'
+// The plugin row exists but its status is `error` (a failed activation),
+// `disabled` (an operator switched it off) or `upgrade_pending`. Unlike the
+// worker restart window above, nothing on the run path ever changes that
+// status: only an operator enabling the plugin, or a server boot that
+// re-activates a bundled plugin, does. Re-running the agent produces the
+// identical failure every time, so the setup catch classifies it as
+// `configuration_incomplete` (routed to a human owner) instead of a retryable
+// `setup_failed` that the scheduler would keep re-dispatching.
+const SANDBOX_PROVIDER_PLUGIN_NOT_READY_RE =
+  /sandbox provider "([^"]*)" is installed via plugin "([^"]*)", but that plugin is currently (error|disabled|upgrade_pending)\b/i;
+
+export function parseSandboxProviderPluginNotReadyFailureMessage(
+  value: unknown,
+): { provider: string; pluginKey: string; pluginStatus: string } | null {
+  if (typeof value !== "string") return null;
+  const match = SANDBOX_PROVIDER_PLUGIN_NOT_READY_RE.exec(value);
+  if (!match) return null;
+  return {
+    provider: match[1] ?? "",
+    pluginKey: match[2] ?? "",
+    pluginStatus: (match[3] ?? "").toLowerCase(),
+  };
 }
 
 function isRetryableInteractionContinuationInfrastructureFailure(
@@ -22626,6 +22687,13 @@ export function heartbeatService(
         )
           ? outerErr
           : null;
+        // A sandbox provider plugin stuck in error/disabled/upgrade_pending
+        // fails every lease the same way until an operator acts, so it is a
+        // configuration gap, not a transient setup failure.
+        const sandboxProviderPluginNotReadySetupFailure =
+          parseSandboxProviderPluginNotReadyFailureMessage(
+            outerErr instanceof Error ? outerErr.message : null,
+          );
         const recordedResponsibleUserDenialCode =
           normalizeResponsibleUserDenialCode(
             (await getRun(runId).catch(() => null))?.errorCode,
@@ -22633,7 +22701,7 @@ export function heartbeatService(
         const setupFailureErrorCode =
           workspaceValidationSetupFailure?.code ??
           configurationIncompleteSetupFailure?.code ??
-          (unresolvedBaseRefSetupFailure
+          (unresolvedBaseRefSetupFailure || sandboxProviderPluginNotReadySetupFailure
             ? CONFIGURATION_INCOMPLETE_FAILURE_CODE
             : null) ??
           recordedResponsibleUserDenialCode ??
@@ -22662,6 +22730,12 @@ export function heartbeatService(
                         ? buildUnresolvedWorkspaceBaseRefResultJson(
                             run,
                             unresolvedBaseRefSetupFailure,
+                          )
+                        : null) ??
+                      (sandboxProviderPluginNotReadySetupFailure
+                        ? buildSandboxProviderPluginNotReadyResultJson(
+                            run,
+                            sandboxProviderPluginNotReadySetupFailure,
                           )
                         : null),
                   },
@@ -23045,7 +23119,7 @@ export function heartbeatService(
           issue,
           previousStatus: issue.status,
           notice: configurationIncomplete
-            ? buildConfigurationIncompleteRecoveryNoticeSeed()
+            ? buildConfigurationIncompleteRecoveryNoticeSeed(readConfigurationIncompletePayload(run))
             : buildWorkspaceValidationRecoveryNoticeSeed(),
           recoveryCause: configurationIncomplete
             ? CONFIGURATION_INCOMPLETE_RECOVERY_CAUSE
@@ -23693,7 +23767,7 @@ export function heartbeatService(
         const notice = workspaceValidationFailure
           ? buildWorkspaceValidationRecoveryNoticeSeed()
           : configurationIncompleteFailure
-            ? buildConfigurationIncompleteRecoveryNoticeSeed()
+            ? buildConfigurationIncompleteRecoveryNoticeSeed(readConfigurationIncompletePayload(run))
             : buildImmediateExecutionPathRecoveryNoticeSeed({
                 status: issue.status as "todo" | "in_progress",
               });

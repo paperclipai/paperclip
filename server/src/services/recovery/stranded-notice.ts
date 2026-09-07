@@ -71,7 +71,35 @@ export function buildWorkspaceValidationRecoveryNoticeSeed(): StrandedRecoveryNo
   };
 }
 
-export function buildConfigurationIncompleteRecoveryNoticeSeed(): StrandedRecoveryNoticeSeed {
+export const SANDBOX_PROVIDER_PLUGIN_NOT_READY_REASON = "sandbox_provider_plugin_not_ready";
+
+function readNonEmptyStringField(payload: Record<string, unknown> | null | undefined, key: string): string | null {
+  const value = payload?.[key];
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+/**
+ * Seed for a `configuration_incomplete` escalation. `configurationIncomplete`
+ * is the structured payload the failed run recorded in `resultJson`; the body
+ * names the specific gap for the reasons this notice knows, and falls back to
+ * the secret/env-binding wording (the original and most common reason).
+ */
+export function buildConfigurationIncompleteRecoveryNoticeSeed(
+  configurationIncomplete?: Record<string, unknown> | null,
+): StrandedRecoveryNoticeSeed {
+  if (readNonEmptyStringField(configurationIncomplete, "reason") === SANDBOX_PROVIDER_PLUGIN_NOT_READY_REASON) {
+    const pluginKey = readNonEmptyStringField(configurationIncomplete, "pluginKey") ?? "the sandbox provider plugin";
+    const pluginStatus = readNonEmptyStringField(configurationIncomplete, "pluginStatus") ?? "not ready";
+    return {
+      body:
+        `Paperclip stopped before dispatching the adapter because the sandbox provider plugin \`${pluginKey}\` ` +
+        `is in status \`${pluginStatus}\` and cannot lease a sandbox. Runs will keep failing the same way until the ` +
+        "plugin is enabled again. Moving it to `blocked` so an operator can enable the plugin " +
+        "(Plugins → Enable) before resuming.",
+      title: "Configuration incomplete",
+      tone: "danger",
+    };
+  }
   return {
     body:
       "Paperclip stopped before dispatching the adapter because required secret/env bindings are missing. " +
