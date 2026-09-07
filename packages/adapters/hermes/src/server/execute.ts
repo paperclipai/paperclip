@@ -259,12 +259,36 @@ const STDOUT_ABORT_REGEXES: RegExp[] = [
   /Billing or credits exhausted:/i,
 ];
 
-/** Find the first stdout line that marks a terminal Hermes API abort. */
+/**
+ * How many trailing non-empty stdout lines to scan for a terminal abort
+ * marker. Hermes emits its abort line immediately before its own trailing
+ * `Resume this session with:` / `Session:` / `Duration:` / `Messages:` block
+ * (see the ABORT_STDOUT fixture in execute.stdout-abort.test.ts, where the
+ * abort line sits 9 non-empty lines from the end) — bounding the scan to the
+ * tail keeps that case covered while refusing to match an abort phrase an
+ * agent merely quotes or narrates earlier in a long, otherwise successful
+ * transcript.
+ */
+const STDOUT_ABORT_SCAN_TAIL_LINE_COUNT = 12;
+
+/**
+ * Find the first stdout line, within the trailing
+ * STDOUT_ABORT_SCAN_TAIL_LINE_COUNT non-empty lines, that marks a terminal
+ * Hermes API abort.
+ *
+ * Scoped to the tail (not the full transcript) so that an agent's own prose
+ * quoting or explaining one of these phrases mid-run — e.g. narrating a bug
+ * it just fixed — does not get misread as Hermes's own terminal abort.
+ */
 function findStdoutAbortLine(stdout: string): string | undefined {
   if (!stdout) return undefined;
+  const nonEmptyLines: string[] = [];
   for (const rawLine of stdout.split("\n")) {
     const line = rawLine.trim();
-    if (!line) continue;
+    if (line) nonEmptyLines.push(line);
+  }
+  const tail = nonEmptyLines.slice(-STDOUT_ABORT_SCAN_TAIL_LINE_COUNT);
+  for (const line of tail) {
     if (STDOUT_ABORT_REGEXES.some((re) => re.test(line))) return line;
   }
   return undefined;

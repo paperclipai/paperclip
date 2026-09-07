@@ -198,6 +198,32 @@ describe("hermes-local adapter stdout abort detection", () => {
     expect(result.errorMessage).toBeUndefined();
   });
 
+  it("does not fail a run where an abort phrase is quoted mid-transcript but the run succeeds", async () => {
+    const filler = Array.from(
+      { length: 14 },
+      (_, i) => `Step ${i + 1}: continuing work, nothing wrong here.`,
+    );
+    mockRun({
+      stdout: [
+        "[hermes] Starting Hermes Agent (model=auto, provider=auto [auto], timeout=1800s)",
+        'I found this in the old run log: "API call failed after 3 retries: Connection error." and patched the retry handler so it no longer happens.',
+        ...filler,
+        "Done — fix verified, all tests green.",
+        "",
+        "Session:        20260823_050000_aaaaaa",
+        "Duration:       40s",
+        "Messages:       2 (1 user, 1 tool calls)",
+        "session_id: 20260823_050000_aaaaaa",
+        "",
+      ].join("\n"),
+      exitCode: 0,
+    });
+
+    const result = await execute(makeCtx() as never);
+
+    expect(result.errorMessage).toBeUndefined();
+  });
+
   it("keeps stderr as the higher-priority error source", async () => {
     mockRun({
       stdout: ABORT_STDOUT,
