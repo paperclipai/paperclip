@@ -537,6 +537,7 @@
       "builtFromCount_few": "Создано из {{formattedCount}} элементов",
       "builtFromCount_many": "Создано из {{formattedCount}} элементов",
       "builtFromCount_other": "Создано из {{formattedCount}} элемента",
+      "builtFromNamedCount": "Составные элементы типа «{{noun}}»: {{formattedCount}}",
       "cancel": "Отменить",
       "changeAcknowledged": "Изменение принято к сведению",
       "changesRequested": "Запрошены изменения",

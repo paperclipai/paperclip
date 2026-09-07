@@ -533,6 +533,7 @@
       "builtFrom": "Built from",
       "builtFromCount_one": "Built from {{formattedCount}} item",
       "builtFromCount_other": "Built from {{formattedCount}} items",
+      "builtFromNamedCount": "Built from {{formattedCount}} {{noun}}",
       "cancel": "Cancel",
       "changeAcknowledged": "Change acknowledged",
       "changesRequested": "Changes requested",

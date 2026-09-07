@@ -80,6 +80,13 @@ update, compare against that commit, then perform a Russian-only fluency pass
 and a separate source/target accuracy pass. Run structure checks again after
 wording changes. Key parity alone does not measure visible UI coverage.
 
+`locale-interpolation-usage.test.ts` checks statically bound translation calls
+against both catalogs, including required display placeholders such as
+`formattedCount`. It reports its scan coverage and intentionally skips calls
+whose keys, options, or plural-specific requirements cannot be resolved safely.
+Keep runtime regression tests for those cases; this guard checks property
+presence, not the values supplied at runtime.
+
 ## Rendering and runtime boundaries
 
 Use `useTranslation()` in rendered components so open surfaces update on a
@@ -121,6 +128,7 @@ pnpm --filter @paperclipai/ui exec vitest run \
   src/i18n/locale-validation.test.ts \
   src/i18n/locale-sync.test.ts \
   src/i18n/locale-changes.test.ts \
+  src/i18n/locale-interpolation-usage.test.ts \
   src/lib/utils-localization.test.ts
 pnpm --filter @paperclipai/ui typecheck
 ```

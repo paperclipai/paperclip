@@ -5,7 +5,7 @@ import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import pipelineSource from "./Pipelines.tsx?raw";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { Learnings, PipelinesIndexTable } from "./Pipelines";
+import { Learnings, pipelineBuiltFromTitle, PipelinesIndexTable } from "./Pipelines";
 import { i18n } from "@/i18n";
 import { queryKeys } from "@/lib/queryKeys";
 import { pipelinesApi, type PipelineListItem } from "@/api/pipelines";
@@ -27,6 +27,38 @@ vi.mock("@/components/ui/popover", () => ({
 afterEach(async () => { vi.restoreAllMocks(); await i18n.changeLanguage("en"); });
 
 describe("pipeline locale switching", () => {
+  it.each([
+    [0, "Built from 0 items", "Создано из 0 элементов"],
+    [1, "Built from 1 item", "Создано из 1 элемента"],
+    [2, "Built from 2 items", "Создано из 2 элементов"],
+    [5, "Built from 5 items", "Создано из 5 элементов"],
+    [21, "Built from 21 items", "Создано из 21 элемента"],
+  ] as const)("interpolates the item-detail heading for %i items across EN→RU→EN", async (count, english, russian) => {
+    for (const [locale, expected] of [["en", english], ["ru", russian], ["en", english]] as const) {
+      await i18n.changeLanguage(locale);
+      const heading = pipelineBuiltFromTitle(count);
+      expect(heading).toBe(expected);
+      expect(heading).not.toMatch(/{{[^}]*}}/);
+    }
+  });
+
+  it.each([
+    [0, "No Raw_Chapters needed", "Элементы типа «Raw_Chapter» не требуются"],
+    [1, "Built from 1 Raw_Chapter", "Составные элементы типа «Raw_Chapter»: 1"],
+    [2, "Built from 2 Raw_Chapters", "Составные элементы типа «Raw_Chapter»: 2"],
+    [5, "Built from 5 Raw_Chapters", "Составные элементы типа «Raw_Chapter»: 5"],
+    [21, "Built from 21 Raw_Chapters", "Составные элементы типа «Raw_Chapter»: 21"],
+  ] as const)("preserves the configured piece name for %i pieces across EN→RU→EN", async (count, english, russian) => {
+    const breakdown = Object.freeze({ pieceNoun: "Raw_Chapter" });
+    for (const [locale, expected] of [["en", english], ["ru", russian], ["en", english]] as const) {
+      await i18n.changeLanguage(locale);
+      const heading = pipelineBuiltFromTitle(count, breakdown.pieceNoun);
+      expect(heading).toBe(expected);
+      expect(heading).not.toMatch(/{{[^}]*}}/);
+      expect(breakdown.pieceNoun).toBe("Raw_Chapter");
+    }
+  });
+
   it("updates every sort option on the mounted table and keeps the selected direction", async () => {
     const container = document.createElement("div");
     document.body.append(container);

@@ -140,6 +140,23 @@ export function normalizePipelineConversationComments(value: unknown): IssueChat
   return Array.isArray(value) ? value : [];
 }
 
+export function pipelineBuiltFromTitle(count: number, pieceNoun?: string): string {
+  if (pieceNoun !== undefined) {
+    const noun = count === 1 ? pieceNoun : pieceNounPlural(pieceNoun);
+    return count > 0
+      ? t("pages.pipelines.builtFromNamedCount", {
+          count,
+          formattedCount: formatNumber(count),
+          noun,
+        })
+      : t("pages.pipelines.noPiecesNeeded", { defaultValue: "No {{noun}} needed", noun });
+  }
+  return t("pages.pipelines.builtFromCount", {
+    count,
+    formattedCount: formatNumber(count),
+  });
+}
+
 interface DraftRow {
   id: string;
   expanded: boolean;
@@ -3441,23 +3458,7 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
           </DetailSection>
 
           <DetailSection
-            title={
-              breakdown
-                ? pieceCountTotal > 0
-                  ? t("pages.pipelines.builtFromCount", {
-                      defaultValue: "Built from {{count}} {{noun}}",
-                      count: pieceCountTotal,
-                      noun: pieceLabel(pieceCountTotal),
-                    })
-                  : t("pages.pipelines.noPiecesNeeded", { defaultValue: "No {{noun}} needed", noun: pieceNounPluralLabel })
-                : t("pages.pipelines.builtFromCount", {
-                    defaultValue: "Built from {{count}} {{noun}}",
-                    count: pieceCountTotal,
-                    noun: pieceCountTotal === 1
-                      ? t("pages.pipelines.itemWord", { defaultValue: "item" })
-                      : t("pages.pipelines.itemsWord", { defaultValue: "items" }),
-                  })
-            }
+            title={pipelineBuiltFromTitle(pieceCountTotal, breakdown?.pieceNoun)}
           >
             {breakdown && pieceCountTotal > 0 ? (
               <p className="py-2 text-sm text-muted-foreground">
