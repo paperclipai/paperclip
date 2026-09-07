@@ -28,8 +28,21 @@ describe("runner E2E Daytona image contract", () => {
         "utf8",
       ),
     ]);
+    const normalizedDockerfile = dockerfile.replace(/\\\r?\n\s*/g, " ");
     expect(dockerfile).toContain("--bin paperclip-runnerd");
     expect(dockerfile).toContain("build-provider-pack.mjs /provider-pack");
+    expect(normalizedDockerfile).not.toContain(
+      "COPY packages/paperclip-eval-kernel ./packages/paperclip-eval-kernel",
+    );
+    expect(normalizedDockerfile).not.toContain(
+      "COPY packages/paperclip-runner ./packages/paperclip-runner",
+    );
+    expect(dockerfile).toContain(
+      "COPY packages/paperclip-eval-kernel/src ./packages/paperclip-eval-kernel/src",
+    );
+    expect(dockerfile).toContain(
+      "COPY packages/paperclip-runner/src ./packages/paperclip-runner/src",
+    );
     expect(dockerfile).toContain(
       "/opt/paperclip-runner/provider-pack/provider-pack.json",
     );
@@ -59,6 +72,20 @@ describe("runner E2E Daytona image contract", () => {
     expect(dockerignore).toContain("**/node_modules");
     expect(dockerignore).toContain("packages/paperclip-runner/dist");
     expect(dockerignore).toContain("packages/paperclip-runner/runner/target");
+    for (const developmentOnlyInput of [
+      "packages/paperclip-runner/devtools",
+      "packages/paperclip-runner/docs",
+      "packages/paperclip-runner/examples",
+      "packages/paperclip-runner/test",
+      "packages/paperclip-runner/test-fixtures",
+      "packages/paperclip-runner/test-support",
+      "packages/paperclip-runner/**/*.md",
+      "packages/paperclip-runner/**/*.test.ts",
+      "packages/paperclip-runner/runner/crates/*/tests",
+      "packages/paperclip-runner/scripts/*-smoke.mjs",
+    ]) {
+      expect(dockerignore).toContain(developmentOnlyInput);
+    }
     expect(workflow).toContain("--platform linux/amd64");
     expect(workflow).toContain(
       "Compute Daytona image content ID with pinned bases",
@@ -69,13 +96,33 @@ describe("runner E2E Daytona image contract", () => {
     expect(workflow).toContain(
       '--build-arg "PAPERCLIP_RUNNER_CONTENT_ID=${IMAGE_CONTENT_ID}"',
     );
+    expect(workflow).toContain(
+      "IMAGE_CACHE: ghcr.io/paperclipai/paperclip-daytona-runner:e2e-buildcache-amd64",
+    );
+    expect(workflow).toContain(
+      '--cache-from "type=registry,ref=${IMAGE_CACHE}"',
+    );
+    expect(workflow).toContain(
+      '--cache-to "type=registry,ref=${IMAGE_CACHE},mode=max"',
+    );
+    expect(workflow).toContain(
+      'if [ "$TARGET_REF" = "refs/heads/$DEFAULT_BRANCH" ]; then',
+    );
     expect(workflow).not.toContain("e2e-git-${{ github.sha }}");
     expect(workflow).toContain("cosign sign --yes");
-    expect(workflow).toContain("docker image inspect");
-    expect(workflow).toContain('.Config.User == "daytona"');
+    expect(workflow).toContain("docker logout ghcr.io");
+    expect(workflow).toContain(`docker buildx imagetools inspect "$immutable"`);
+    expect(workflow).toContain(`--format '{{json .Image}}'`);
+    expect(workflow).not.toContain(`docker --config "$anonymous_config" pull`);
+    expect(workflow).not.toContain("docker image inspect");
+    expect(workflow).not.toContain("docker buildx prune --all --force");
+    expect(workflow).not.toContain("docker system prune --all --force");
+    expect(workflow).toContain('.architecture == "amd64"');
+    expect(workflow).toContain('.os == "linux"');
+    expect(workflow).toContain('.config.User == "daytona"');
     expect(workflow).toContain("PAPERCLIP_RUNNER_PROVIDER_PACK_ROOT=");
     expect(workflow).toContain(
-      "pnpm --filter @paperclipai/paperclip-runner build:provider-pack",
+      "node packages/paperclip-runner/scripts/build-provider-pack.mjs packages/paperclip-runner/provider-pack",
     );
     expect(workflow).toContain(
       "PAPERCLIP_RUNNER_REMOTE_PROVIDER_PACK_PATH: ${{ github.workspace }}/packages/paperclip-runner/provider-pack",
@@ -83,7 +130,30 @@ describe("runner E2E Daytona image contract", () => {
     expect(workflow).toContain(
       "PAPERCLIP_RUNNER_SOURCE_REVISION: ${{ needs.daytona_image.outputs.source_revision }}",
     );
-    expect(workflow).toContain("anonymous_config");
+    expect(workflow.indexOf("cosign verify")).toBeLessThan(
+      workflow.indexOf("docker logout ghcr.io"),
+    );
+    expect(workflow.indexOf("docker logout ghcr.io")).toBeLessThan(
+      workflow.indexOf(`--format '{{json .Image}}'`),
+    );
+    const providerInstall = dockerfile.indexOf(
+      "RUN pnpm install --frozen-lockfile --filter '@paperclipai/paperclip-runner...'",
+    );
+    const runnerSourceCopy = dockerfile.indexOf(
+      "COPY packages/paperclip-runner/src ./packages/paperclip-runner/src",
+    );
+    const providerRevisionArg = dockerfile.indexOf(
+      "ARG PAPERCLIP_RUNNER_SOURCE_REVISION",
+    );
+    const cliInstall = dockerfile.indexOf("RUN npm install -g");
+    const finalMetadataArgs = dockerfile.lastIndexOf(
+      "ARG PAPERCLIP_RUNNER_CONTENT_ID",
+    );
+    expect(providerInstall).toBeGreaterThan(0);
+    expect(providerInstall).toBeLessThan(runnerSourceCopy);
+    expect(providerInstall).toBeLessThan(providerRevisionArg);
+    expect(cliInstall).toBeGreaterThan(0);
+    expect(cliInstall).toBeLessThan(finalMetadataArgs);
   });
 
   it("hashes the audited image dependency closure rather than the repository revision", async () => {
@@ -92,11 +162,19 @@ describe("runner E2E Daytona image contract", () => {
       "docker/daytona-runner/Dockerfile",
       "pnpm-lock.yaml",
       "patches",
-      "packages/paperclip-eval-kernel",
-      "packages/paperclip-runner",
+      "packages/paperclip-eval-kernel/src",
+      "packages/paperclip-runner/package.json",
+      "packages/paperclip-runner/runner/crates",
+      "packages/paperclip-runner/src",
     ]) {
       expect(DAYTONA_IMAGE_INPUT_PATHS).toContain(requiredPath);
     }
+    expect(DAYTONA_IMAGE_INPUT_PATHS).not.toContain(
+      "packages/paperclip-eval-kernel",
+    );
+    expect(DAYTONA_IMAGE_INPUT_PATHS).not.toContain(
+      "packages/paperclip-runner",
+    );
     expect(DAYTONA_IMAGE_DOCKERFILE_PATH).toBe(
       "docker/daytona-runner/Dockerfile",
     );
@@ -105,34 +183,72 @@ describe("runner E2E Daytona image contract", () => {
     expect(contentId).toMatch(/^[0-9a-f]{64}$/);
   });
 
-  it("changes only when an image input, frontend, base, or platform changes", async () => {
+  it("changes for runtime source, package, lockfile, Dockerfile, frontend, base, or platform inputs", async () => {
     const root = await mkdtemp(
       path.join(tmpdir(), "paperclip-daytona-image-id-"),
     );
+    const inputPaths = [
+      "docker/daytona-runner/Dockerfile",
+      "package.json",
+      "pnpm-lock.yaml",
+      "packages/paperclip-runner/package.json",
+      "packages/paperclip-runner/src",
+      "packages/paperclip-runner/runner/crates",
+    ] as const;
+    const options = {
+      repositoryRoot: root,
+      inputPaths,
+      baseImages: [`example.test/base:1@sha256:${"a".repeat(64)}`],
+      frontendDigest: `sha256:${"c".repeat(64)}`,
+    } as const;
     try {
-      await mkdir(path.join(root, "image-input"));
+      await mkdir(path.join(root, "docker/daytona-runner"), {
+        recursive: true,
+      });
+      await mkdir(path.join(root, "packages/paperclip-runner/src"), {
+        recursive: true,
+      });
+      await mkdir(
+        path.join(
+          root,
+          "packages/paperclip-runner/runner/crates/runner-core/src",
+        ),
+        { recursive: true },
+      );
       await writeFile(
-        path.join(root, "image-input", "runner.ts"),
+        path.join(root, "docker/daytona-runner/Dockerfile"),
+        "FROM pinned\n",
+      );
+      await writeFile(path.join(root, "package.json"), '{"private":true}\n');
+      await writeFile(
+        path.join(root, "pnpm-lock.yaml"),
+        "lockfileVersion: 9\n",
+      );
+      await writeFile(
+        path.join(root, "packages/paperclip-runner/package.json"),
+        '{"name":"@paperclipai/paperclip-runner"}\n',
+      );
+      await writeFile(
+        path.join(root, "packages/paperclip-runner/src/runner.ts"),
         "version one\n",
       );
-      const baseline = await computeDaytonaImageContentId({
-        repositoryRoot: root,
-        inputPaths: ["image-input"],
-        baseImages: [`example.test/base:1@sha256:${"a".repeat(64)}`],
-        frontendDigest: `sha256:${"c".repeat(64)}`,
-      });
+      await writeFile(
+        path.join(
+          root,
+          "packages/paperclip-runner/runner/crates/runner-core/src/lib.rs",
+        ),
+        'pub const VERSION: &str = "one";\n',
+      );
+      const baseline = await computeDaytonaImageContentId(options);
       expect(
         await computeDaytonaImageContentId({
-          repositoryRoot: root,
-          inputPaths: ["image-input"],
+          ...options,
           baseImages: [`example.test/base:1@sha256:${"b".repeat(64)}`],
-          frontendDigest: `sha256:${"c".repeat(64)}`,
         }),
       ).not.toBe(baseline);
       expect(
         await computeDaytonaImageContentId({
-          repositoryRoot: root,
-          inputPaths: ["image-input"],
+          ...options,
           baseImages: [`example.test/base:1@sha256:${"a".repeat(64)}`],
           frontendDigest: `sha256:${"d".repeat(64)}`,
         }),
@@ -142,36 +258,141 @@ describe("runner E2E Daytona image contract", () => {
         path.join(root, "unrelated.txt"),
         "does not enter the image\n",
       );
+      expect(await computeDaytonaImageContentId(options)).toBe(baseline);
+
+      for (const relativePath of [
+        "docker/daytona-runner/Dockerfile",
+        "package.json",
+        "pnpm-lock.yaml",
+        "packages/paperclip-runner/package.json",
+        "packages/paperclip-runner/src/runner.ts",
+        "packages/paperclip-runner/runner/crates/runner-core/src/lib.rs",
+      ]) {
+        const absolutePath = path.join(root, relativePath);
+        const original = await readFile(absolutePath, "utf8");
+        await writeFile(absolutePath, `${original}changed\n`);
+        expect(await computeDaytonaImageContentId(options)).not.toBe(baseline);
+        await writeFile(absolutePath, original);
+      }
       expect(
         await computeDaytonaImageContentId({
-          repositoryRoot: root,
-          inputPaths: ["image-input"],
-          baseImages: [`example.test/base:1@sha256:${"a".repeat(64)}`],
-          frontendDigest: `sha256:${"c".repeat(64)}`,
+          ...options,
+          platform: "linux/arm64",
         }),
-      ).toBe(baseline);
+      ).not.toBe(baseline);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("reuses the image for runner-only tests and documentation", async () => {
+    const root = await mkdtemp(
+      path.join(tmpdir(), "paperclip-daytona-runner-development-inputs-"),
+    );
+    const options = {
+      repositoryRoot: root,
+      inputPaths: ["packages/paperclip-runner"],
+      baseImages: [`example.test/base:1@sha256:${"a".repeat(64)}`],
+      frontendDigest: `sha256:${"c".repeat(64)}`,
+    } as const;
+    try {
+      const runnerRoot = path.join(root, "packages/paperclip-runner");
+      await mkdir(path.join(runnerRoot, "src/live"), { recursive: true });
+      await mkdir(path.join(runnerRoot, "docs"), { recursive: true });
+      await mkdir(path.join(runnerRoot, "spec"), { recursive: true });
+      await mkdir(path.join(runnerRoot, "scripts"), { recursive: true });
+      await mkdir(path.join(runnerRoot, "test-fixtures"), { recursive: true });
+      await mkdir(path.join(runnerRoot, "runner/crates/runner-core/src"), {
+        recursive: true,
+      });
+      await mkdir(path.join(runnerRoot, "runner/crates/runner-core/tests"), {
+        recursive: true,
+      });
+      await writeFile(
+        path.join(runnerRoot, "src/live/transport.ts"),
+        "export const runtime = 'one';\n",
+      );
+      await writeFile(
+        path.join(runnerRoot, "runner/crates/runner-core/src/lib.rs"),
+        'pub const RUNTIME: &str = "one";\n',
+      );
+      await writeFile(path.join(runnerRoot, "README.md"), "first readme\n");
+      await writeFile(
+        path.join(runnerRoot, "docs/local-runner.md"),
+        "first documentation\n",
+      );
+      await writeFile(
+        path.join(runnerRoot, "spec/architecture.md"),
+        "first architecture note\n",
+      );
+      await writeFile(
+        path.join(runnerRoot, "src/live/transport.test.ts"),
+        "first TypeScript test\n",
+      );
+      await writeFile(
+        path.join(runnerRoot, "test-fixtures/provider.json"),
+        '{"fixture":"one"}\n',
+      );
+      await writeFile(
+        path.join(runnerRoot, "scripts/capability-clean-room-smoke.mjs"),
+        "first smoke probe\n",
+      );
+      await writeFile(
+        path.join(runnerRoot, "runner/crates/runner-core/tests/recovery.rs"),
+        "// first Rust integration test\n",
+      );
+
+      const baseline = await computeDaytonaImageContentId(options);
+      await mkdir(path.join(runnerRoot, "src/new-test-only-directory"));
+      await writeFile(
+        path.join(
+          runnerRoot,
+          "src/new-test-only-directory/transport-edge.test.ts",
+        ),
+        "new TypeScript test\n",
+      );
+      await writeFile(path.join(runnerRoot, "README.md"), "second readme\n");
+      await writeFile(
+        path.join(runnerRoot, "docs/local-runner.md"),
+        "second documentation\n",
+      );
+      await writeFile(
+        path.join(runnerRoot, "spec/architecture.md"),
+        "second architecture note\n",
+      );
+      await writeFile(
+        path.join(runnerRoot, "src/live/transport.test.ts"),
+        "second TypeScript test\n",
+      );
+      await writeFile(
+        path.join(runnerRoot, "test-fixtures/provider.json"),
+        '{"fixture":"two"}\n',
+      );
+      await writeFile(
+        path.join(runnerRoot, "scripts/capability-clean-room-smoke.mjs"),
+        "second smoke probe\n",
+      );
+      await writeFile(
+        path.join(runnerRoot, "runner/crates/runner-core/tests/recovery.rs"),
+        "// second Rust integration test\n",
+      );
+      expect(await computeDaytonaImageContentId(options)).toBe(baseline);
 
       await writeFile(
-        path.join(root, "image-input", "runner.ts"),
-        "version two\n",
+        path.join(runnerRoot, "src/live/transport.ts"),
+        "export const runtime = 'two';\n",
       );
-      expect(
-        await computeDaytonaImageContentId({
-          repositoryRoot: root,
-          inputPaths: ["image-input"],
-          baseImages: [`example.test/base:1@sha256:${"a".repeat(64)}`],
-          frontendDigest: `sha256:${"c".repeat(64)}`,
-        }),
-      ).not.toBe(baseline);
-      expect(
-        await computeDaytonaImageContentId({
-          repositoryRoot: root,
-          inputPaths: ["image-input"],
-          platform: "linux/arm64",
-          baseImages: [`example.test/base:1@sha256:${"a".repeat(64)}`],
-          frontendDigest: `sha256:${"c".repeat(64)}`,
-        }),
-      ).not.toBe(baseline);
+      expect(await computeDaytonaImageContentId(options)).not.toBe(baseline);
+
+      await writeFile(
+        path.join(runnerRoot, "src/live/transport.ts"),
+        "export const runtime = 'one';\n",
+      );
+      await writeFile(
+        path.join(runnerRoot, "runner/crates/runner-core/src/lib.rs"),
+        'pub const RUNTIME: &str = "two";\n',
+      );
+      expect(await computeDaytonaImageContentId(options)).not.toBe(baseline);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

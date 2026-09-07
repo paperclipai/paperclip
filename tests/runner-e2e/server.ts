@@ -5,6 +5,7 @@ import path from "node:path";
 import {
   assertIsolatedServerEnvironment,
   buildPaperclipServerEnvironment,
+  runnerE2EServerControlPaths,
 } from "./harness-env.js";
 
 function required(name: string) {
@@ -21,17 +22,19 @@ const port = required("PAPERCLIP_RUNNER_E2E_PORT");
 const repositoryRoot = path.resolve(import.meta.dirname, "../..");
 const tsxCli = path.join(repositoryRoot, "cli/node_modules/tsx/dist/cli.mjs");
 const paperclipCli = path.join(repositoryRoot, "cli/src/index.ts");
-const controlDirectory = path.join(temporaryRoot, "control");
-const restartRequestPath = path.join(
+const {
   controlDirectory,
-  "server-restart.request.json",
-);
-const restartAckPath = path.join(controlDirectory, "server-restart.ack.json");
+  restartRequestPath,
+  restartAcknowledgementPath: restartAckPath,
+} = runnerE2EServerControlPaths(temporaryRoot);
 const restartTimeoutMs = 180_000;
 const gracefulStopTimeoutMs = 30_000;
 const serverEnvironment = buildPaperclipServerEnvironment(process.env, {
   NODE_ENV: "test",
   PORT: port,
+  // Keep provider caches attempt-private without changing Playwright's browser
+  // cache lookup in the parent process.
+  XDG_CACHE_HOME: path.join(temporaryRoot, "xdg-cache"),
   PAPERCLIP_HOME: paperclipHome,
   PAPERCLIP_CONFIG: configPath,
   PAPERCLIP_INSTANCE_ID: required("PAPERCLIP_INSTANCE_ID"),

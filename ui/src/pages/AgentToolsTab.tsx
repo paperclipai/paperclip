@@ -3,6 +3,7 @@ import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/rea
 import { HelpCircle, PackageCheck } from "lucide-react";
 import type {
   AgentDetail as AgentDetailRecord,
+  ConnectionGrant,
   ToolCatalogEntry,
   ToolConnection,
   ToolPolicy,
@@ -11,6 +12,8 @@ import { Link } from "@/lib/router";
 import { queryKeys } from "../lib/queryKeys";
 import { toolsApi } from "../api/tools";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Button } from "@/components/ui/button";
+import { GithubIcon } from "@/components/icons/github-icon";
 import { InlineBanner } from "@/components/InlineBanner";
 import { EnforcementBanner } from "../components/EnforcementBanner";
 import {
@@ -22,6 +25,109 @@ import {
 import { cn } from "../lib/utils";
 import { brandChipBadge } from "../lib/status-colors";
 import { installPayload, installStateFrom, isAgentInstalled, INSTALLED_HINT } from "../lib/tool-installs";
+
+function isGitHubConnection(connection: ToolConnection): boolean {
+  return (connection.config?.sourceTemplateKey ?? connection.transportConfig?.sourceTemplateKey) === "github";
+}
+
+function isEligibleGitHubIdentityConnection(connection: ToolConnection, agentId: string): boolean {
+  return isGitHubConnection(connection)
+    && connection.enabled
+    && connection.status === "active"
+    && isAgentInstalled(installStateFrom(connection.installs), agentId);
+}
+
+function GitHubIdentitySection({
+  agentName,
+  dedicatedIdentity,
+  personalIdentity,
+  loading,
+  loadError,
+  onRetry,
+}: {
+  agentName: string;
+  dedicatedIdentity: { connection: ToolConnection; grant: ConnectionGrant } | null;
+  personalIdentity: { connection: ToolConnection; grant: ConnectionGrant } | null;
+  loading: boolean;
+  loadError: boolean;
+  onRetry: () => void;
+}) {
+  const dedicatedLogin = dedicatedIdentity?.grant.providerTenant?.github?.login;
+  const personalLogin = personalIdentity?.grant.providerTenant?.github?.login;
+
+  return (
+    <section className="rounded-lg border border-border bg-card">
+      <div className="flex flex-wrap items-start justify-between gap-3 px-3 py-3">
+        <div className="flex min-w-0 items-start gap-3">
+          <div className="rounded-md border border-border bg-muted/40 p-2 text-foreground">
+            <GithubIcon className="h-4 w-4" />
+          </div>
+          <div className="min-w-0">
+            <h3 className="text-sm font-semibold text-foreground">GitHub identity</h3>
+            {loading ? (
+              <p className="mt-0.5 text-xs text-muted-foreground">Checking GitHub identity…</p>
+            ) : loadError ? (
+              <>
+                <p className="mt-0.5 text-sm font-medium text-foreground">Could not load GitHub identity</p>
+                <p className="mt-0.5 text-xs text-muted-foreground">
+                  Paperclip could not verify this agent&apos;s current connection. Your existing setup was not changed.
+                </p>
+              </>
+            ) : dedicatedIdentity ? (
+              <>
+                <p className="mt-0.5 text-sm font-medium text-foreground">
+                  {dedicatedLogin ? `@${dedicatedLogin}` : "Dedicated GitHub account"}
+                </p>
+                <p className="mt-0.5 text-xs text-muted-foreground">
+                  Used only by {agentName}. This dedicated connection takes precedence over the responsible person&apos;s GitHub.
+                </p>
+              </>
+            ) : (
+              <>
+                <p className="mt-0.5 text-sm font-medium text-foreground">Use responsible person&apos;s GitHub</p>
+                <p className="mt-0.5 text-xs text-muted-foreground">
+                  At run start, Paperclip uses the personal GitHub connection of the person responsible for the task.
+                </p>
+                {personalIdentity ? (
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    Your account is connected{personalLogin ? ` as @${personalLogin}` : ""}.
+                  </p>
+                ) : null}
+              </>
+            )}
+          </div>
+        </div>
+
+        {!loading ? (
+          <div className="flex flex-wrap items-center gap-2">
+            {loadError ? (
+              <Button variant="outline" size="sm" onClick={onRetry}>Retry</Button>
+            ) : dedicatedIdentity ? (
+              <Button variant="outline" size="sm" asChild>
+                <Link to={`/apps/${dedicatedIdentity.connection.id}/permissions`}>Manage GitHub identity</Link>
+              </Button>
+            ) : (
+              <>
+                {personalIdentity ? (
+                  <Button variant="outline" size="sm" asChild>
+                    <Link to={`/apps/${personalIdentity.connection.id}/permissions`}>Manage my GitHub</Link>
+                  </Button>
+                ) : (
+                  <Button size="sm" asChild>
+                    <Link to="/apps/connect?source=github">Connect my GitHub</Link>
+                  </Button>
+                )}
+                <Button variant="outline" size="sm" asChild>
+                  <Link to="/apps/connect?source=github">Use a dedicated account</Link>
+                </Button>
+              </>
+            )}
+          </div>
+        ) : null}
+      </div>
+    </section>
+  );
+}
 
 /** Normalize a selector value (string or string[]) into a flat string list. */
 function selectorStringList(value: unknown): string[] {
@@ -249,6 +355,34 @@ export function AgentToolsTab({ agent, companyId }: { agent: AgentDetailRecord; 
   });
 
   const connectionList = connectionsQuery.data?.connections ?? [];
+  const eligibleGitHubConnections = useMemo(
+    () => connectionList.filter((connection) => isEligibleGitHubIdentityConnection(connection, agent.id)),
+    [agent.id, connectionList],
+  );
+  const githubGrantQueries = useQueries({
+    queries: eligibleGitHubConnections.map((connection) => ({
+      queryKey: queryKeys.tools.connectionGrants(connection.id),
+      queryFn: () => toolsApi.listConnectionGrants(connection.id),
+      staleTime: 30_000,
+    })),
+  });
+  const githubIdentityRows = eligibleGitHubConnections.flatMap((connection, index) =>
+    (githubGrantQueries[index]?.data?.grants ?? []).map((grant) => ({
+      connection,
+      grant,
+      currentUserId: githubGrantQueries[index]?.data?.currentUserId,
+    })),
+  );
+  const dedicatedGitHubIdentity = githubIdentityRows.find(({ grant }) => (
+    grant.kind === "agent"
+    && grant.subjectAgentId === agent.id
+    && grant.status === "active"
+  )) ?? null;
+  const personalGitHubIdentity = githubIdentityRows.find(({ grant, currentUserId }) => (
+    grant.kind === "user"
+    && grant.subjectUserId === currentUserId
+    && grant.status === "active"
+  )) ?? null;
   const connectionInstallSignature = useMemo(
     () =>
       connectionList
@@ -439,6 +573,20 @@ export function AgentToolsTab({ agent, companyId }: { agent: AgentDetailRecord; 
             default.
           </>
         }
+      />
+
+      <GitHubIdentitySection
+        agentName={agent.name}
+        dedicatedIdentity={dedicatedGitHubIdentity}
+        personalIdentity={personalGitHubIdentity}
+        loading={connectionsQuery.isLoading || githubGrantQueries.some((query) => query.isLoading)}
+        loadError={connectionsQuery.isError || githubGrantQueries.some((query) => query.isError)}
+        onRetry={() => {
+          if (connectionsQuery.isError) void connectionsQuery.refetch();
+          for (const query of githubGrantQueries) {
+            if (query.isError) void query.refetch();
+          }
+        }}
       />
 
       <InstalledAppsSection

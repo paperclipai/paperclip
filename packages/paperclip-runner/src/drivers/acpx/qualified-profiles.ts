@@ -19,12 +19,13 @@ export interface QualifiedAcpxProfile {
   readonly commandDigest: string;
   readonly qualificationModel: string;
   /**
-   * Model identifier the pinned ACP server reports after accepting the exact
-   * qualification model. Most agents echo the requested model. Claude's ACP
-   * server deliberately exposes its stable SDK selector (`sonnet`) while the
-   * SDK resolves that selector to the canonical wire model
-   * (`claude-sonnet-5`). Paperclip verifies the exact request was accepted
-   * before treating this identifier as the qualified effective model.
+   * Model identifier the pinned ACP server accepts and reports. Profile
+   * resolution first binds the caller's exact canonical model request. Most
+   * agents use that same identifier at the ACP boundary; Claude exposes its
+   * stable SDK selector (`sonnet`) while the SDK resolves it to the canonical
+   * wire model (`claude-sonnet-5`). Paperclip selects only this profile-pinned
+   * identifier and verifies the provider reports it before publishing the
+   * canonical model as the qualified effective model.
    */
   readonly reportedModelId: string;
   readonly permissionPolicy: "interactive";
@@ -62,8 +63,8 @@ export const QUALIFIED_ACPX_PROFILES: Readonly<
     agentProfileVersion: 1,
     agentServerPackage: "@agentclientprotocol/claude-agent-acp",
     agentServerVersion: "0.70.0",
-    agentRuntimePackage: null,
-    agentRuntimeVersion: null,
+    agentRuntimePackage: "@anthropic-ai/claude-agent-sdk",
+    agentRuntimeVersion: "0.3.232",
     commandDigest:
       "sha256:9d73d1f0f121fb96cc8badb28c22d5bff02d8582eb2e40360a81c189e1b9422a",
     qualificationModel: "claude-sonnet-5",
@@ -78,10 +79,10 @@ export const QUALIFIED_ACPX_PROFILES: Readonly<
     agentProfileVersion: 1,
     agentServerPackage: "@agentclientprotocol/codex-acp",
     agentServerVersion: "1.6.2",
-    agentRuntimePackage: null,
-    agentRuntimeVersion: null,
+    agentRuntimePackage: "@openai/codex",
+    agentRuntimeVersion: "0.148.0",
     commandDigest:
-      "sha256:94049b3e3c3aee87de62703786e4fa81d031d7bd979f99bdf516d84f28791a79",
+      "sha256:7a923b3829884d3cabcc9659d22cace3f86813e7bfffc90974b10140a45bc400",
     qualificationModel: "gpt-5.6-sol",
     reportedModelId: "gpt-5.6-sol",
     permissionPolicy: "interactive",

@@ -236,13 +236,217 @@ fn semantic_result_event(
     }
 }
 
+fn validate_opencode_run_result(
+    state: &CodexProviderState,
+    params: &Value,
+) -> Result<(Value, String, String), DurableRunnerError> {
+    if state.config.provider != "opencode" {
+        return Err(DurableRunnerError::invalid(
+            "paperclip/runResult is reserved for the verified OpenCode provider",
+        ));
+    }
+    if state.lifecycle != "turn_active" || state.active_provider_turn_id.is_none() {
+        return Err(DurableRunnerError::invalid(
+            "OpenCode emitted paperclip/runResult without an active provider turn",
+        ));
+    }
+    if params.get("threadId").and_then(Value::as_str) != state.thread_id.as_deref()
+        || params.get("turnId").and_then(Value::as_str) != state.active_provider_turn_id.as_deref()
+    {
+        return Err(DurableRunnerError::invalid(
+            "OpenCode paperclip/runResult is not bound to the active provider turn",
+        ));
+    }
+    let result = params.get("result").cloned().ok_or_else(|| {
+        DurableRunnerError::invalid("OpenCode paperclip/runResult omitted its result")
+    })?;
+    let (fingerprint, disposition) = validate_run_result(state, &result)?;
+    Ok((result, fingerprint, disposition))
+}
+
+fn validate_run_result(
+    state: &CodexProviderState,
+    result: &Value,
+) -> Result<(String, String), DurableRunnerError> {
+    let schema: Value = serde_json::from_str(include_str!(
+        "../../../../protocol/schemas/result.schema.json"
+    ))
+    .map_err(|_| DurableRunnerError::invalid("embedded Paperclip result schema is invalid"))?;
+    let validator = jsonschema::validator_for(&schema).map_err(|_| {
+        DurableRunnerError::invalid("embedded Paperclip result schema cannot compile")
+    })?;
+    if !validator.is_valid(result) {
+        return Err(DurableRunnerError::invalid(
+            "provider semantic result failed the Paperclip result schema",
+        ));
+    }
+    let contract = state.completion_contract.as_ref().ok_or_else(|| {
+        DurableRunnerError::invalid("OpenCode paperclip/runResult has no bound completion contract")
+    })?;
+    let claim = result.get("completionClaim").ok_or_else(|| {
+        DurableRunnerError::invalid("OpenCode paperclip/runResult omitted its completion claim")
+    })?;
+    if claim.get("contractRevision").and_then(Value::as_str) != Some(contract.revision.as_str()) {
+        return Err(DurableRunnerError::invalid(
+            "OpenCode paperclip/runResult changed its completion contract revision",
+        ));
+    }
+    let criteria = claim
+        .get("criteria")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            DurableRunnerError::invalid(
+                "OpenCode paperclip/runResult omitted its completion criteria",
+            )
+        })?;
+    let mut reported_criterion_ids = HashSet::new();
+    for criterion in criteria {
+        let criterion_id = criterion
+            .get("criterionId")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                DurableRunnerError::invalid(
+                    "OpenCode paperclip/runResult has an invalid completion criterion",
+                )
+            })?;
+        if !reported_criterion_ids.insert(criterion_id) {
+            return Err(DurableRunnerError::invalid(
+                "OpenCode paperclip/runResult repeated a completion criterion",
+            ));
+        }
+    }
+    if reported_criterion_ids.len() != contract.criterion_ids.len()
+        || !contract
+            .criterion_ids
+            .iter()
+            .all(|criterion_id| reported_criterion_ids.contains(criterion_id.as_str()))
+    {
+        return Err(DurableRunnerError::invalid(
+            "OpenCode paperclip/runResult changed its bound completion criteria",
+        ));
+    }
+    let disposition = result
+        .get("reportedWorkDisposition")
+        .and_then(Value::as_str)
+        .expect("the validated result schema requires a disposition")
+        .to_owned();
+    let fingerprint = semantic_value_digest(result);
+    Ok((fingerprint, disposition))
+}
+
+fn admit_terminal_tool_authority(
+    state: &mut CodexProviderState,
+    operation_id: &str,
+    input: &Value,
+    result_is_error: bool,
+) -> Result<(), DurableRunnerError> {
+    if result_is_error || !matches!(operation_id, "paperclip_finish" | "paperclip_block") {
+        return Ok(());
+    }
+    // The correlated TypeScript semantic-tool handler validates the provider
+    // input against the operation schema, normalizes its defaults, and commits
+    // the accepted result before returning success. The bridge deliberately
+    // retains the original provider input, so validating that raw value against
+    // the stricter canonical result schema here would reject valid omitted
+    // defaults. Record the authenticated tool authority without trying to
+    // repeat the controller's normalization.
+    let reported_disposition = input
+        .get("reportedWorkDisposition")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            DurableRunnerError::invalid(format!("{operation_id} omitted its work disposition"))
+        })?;
+    let disposition = match reported_disposition {
+        "complete" | "completed" => "done",
+        other => other,
+    }
+    .to_owned();
+    let fingerprint = semantic_value_digest(input);
+    let disposition_matches_operation = match operation_id {
+        "paperclip_finish" => matches!(disposition.as_str(), "done" | "needs_review"),
+        "paperclip_block" => disposition == "blocked",
+        _ => false,
+    };
+    if !disposition_matches_operation {
+        return Err(DurableRunnerError::invalid(format!(
+            "{operation_id} supplied an incompatible work disposition"
+        )));
+    }
+    match (
+        state.active_provider_result_fingerprint.as_deref(),
+        state.active_provider_result_disposition.as_deref(),
+    ) {
+        (None, None) => {
+            // The TypeScript driver commits this exact tool input while
+            // servicing the correlated provider request. Retain only its
+            // digest and disposition here so runnerd does not synthesize a
+            // second, conflicting result when the provider turn terminates.
+            state.active_provider_result_fingerprint = Some(fingerprint);
+            state.active_provider_result_disposition = Some(disposition);
+            Ok(())
+        }
+        (Some(existing_fingerprint), Some(existing_disposition))
+            if existing_fingerprint == fingerprint && existing_disposition == disposition =>
+        {
+            Ok(())
+        }
+        _ => Err(DurableRunnerError::invalid(
+            "provider emitted conflicting terminal semantic tool results for one turn",
+        )),
+    }
+}
+
+fn normalize_provider_notification(
+    state: &mut CodexProviderState,
+    method: &str,
+    params: &Value,
+) -> Result<Vec<NormalizedProviderEvent>, DurableRunnerError> {
+    if method != "paperclip/runResult" {
+        return Ok(normalize_codex_notification(method, params)
+            .into_iter()
+            .map(|event| relabel_provider_event(event, &state.config.provider))
+            .collect());
+    }
+    let (result, fingerprint, disposition) = validate_opencode_run_result(state, params)?;
+    match (
+        state.active_provider_result_fingerprint.as_deref(),
+        state.active_provider_result_disposition.as_deref(),
+    ) {
+        (None, None) => {
+            state.active_provider_result_fingerprint = Some(fingerprint);
+            state.active_provider_result_disposition = Some(disposition);
+            Ok(vec![NormalizedProviderEvent {
+                event_type: "run.result.proposed".to_owned(),
+                priority: EventPriority::P0,
+                payload: result,
+            }])
+        }
+        (Some(existing_fingerprint), Some(existing_disposition))
+            if existing_fingerprint == fingerprint && existing_disposition == disposition =>
+        {
+            Ok(Vec::new())
+        }
+        _ => Err(DurableRunnerError::invalid(
+            "OpenCode emitted conflicting paperclip/runResult notifications for one turn",
+        )),
+    }
+}
+
 fn terminal_events(state: &CodexProviderState, event_type: &str) -> Vec<NormalizedProviderEvent> {
     let Some(contract) = state.completion_contract.as_ref() else {
         return Vec::new();
     };
-    let succeeded = event_type == "turn.completed";
+    // Once the correlated semantic-tool result has been accepted, Paperclip's
+    // bounded controller finalizer may interrupt the provider after the result
+    // proposal. That provider terminal closes the exact turn; it does not
+    // revoke the already-authoritative semantic outcome.
+    let succeeded =
+        event_type == "turn.completed" || state.active_provider_result_fingerprint.is_some();
     let cancelled = matches!(event_type, "turn.cancelled" | "turn.interrupted");
-    let disposition = if succeeded { "done" } else { "needs_review" };
+    let disposition = state
+        .active_provider_result_disposition
+        .as_deref()
+        .unwrap_or(if succeeded { "done" } else { "needs_review" });
     let provider = state.config.provider.as_str();
     let provider_name = if provider == "opencode" {
         "OpenCode"
@@ -308,18 +512,20 @@ fn terminal_events(state: &CodexProviderState, event_type: &str) -> Vec<Normaliz
         "runTerminalState": if succeeded { "succeeded" } else if cancelled { "cancelled" } else { "failed" },
         "reportedWorkDisposition": disposition,
     });
-    vec![
-        NormalizedProviderEvent {
+    let mut events = Vec::new();
+    if state.active_provider_result_fingerprint.is_none() {
+        events.push(NormalizedProviderEvent {
             event_type: "run.result.proposed".to_owned(),
             priority: EventPriority::P0,
             payload: result,
-        },
-        NormalizedProviderEvent {
-            event_type: "run.terminal".to_owned(),
-            priority: EventPriority::P0,
-            payload: terminal,
-        },
-    ]
+        });
+    }
+    events.push(NormalizedProviderEvent {
+        event_type: "run.terminal".to_owned(),
+        priority: EventPriority::P0,
+        payload: terminal,
+    });
+    events
 }
 
 fn relabel_provider_event(
@@ -396,6 +602,10 @@ struct CodexProviderState {
     receipt_limit_interrupt_attempts: u8,
     #[serde(default)]
     receipt_limit_interrupt_deadline_unix_ms: Option<u64>,
+    #[serde(default)]
+    active_provider_result_fingerprint: Option<String>,
+    #[serde(default)]
+    active_provider_result_disposition: Option<String>,
     last_agent_message: Option<String>,
     #[serde(default)]
     pending_events: VecDeque<PolledEvent>,
@@ -466,6 +676,8 @@ impl CodexProviderState {
             receipt_limit_interrupt_accepted: false,
             receipt_limit_interrupt_attempts: 0,
             receipt_limit_interrupt_deadline_unix_ms: None,
+            active_provider_result_fingerprint: None,
+            active_provider_result_disposition: None,
             last_agent_message: None,
             pending_events: VecDeque::new(),
             queued_events: VecDeque::new(),
@@ -566,6 +778,25 @@ impl CodexProviderState {
             || self
                 .receipt_limit_interrupt_deadline_unix_ms
                 .is_some_and(|deadline| deadline == 0 || !self.receipt_limit_interrupt_pending)
+            || self.active_provider_result_fingerprint.is_some()
+                != self.active_provider_result_disposition.is_some()
+            || self
+                .active_provider_result_fingerprint
+                .as_ref()
+                .is_some_and(|fingerprint| {
+                    fingerprint.len() != 71
+                        || !fingerprint.starts_with("sha256:")
+                        || !fingerprint[7..]
+                            .chars()
+                            .all(|character| character.is_ascii_hexdigit())
+                })
+            || self
+                .active_provider_result_disposition
+                .as_deref()
+                .is_some_and(|disposition| {
+                    !matches!(disposition, "done" | "blocked" | "needs_review" | "yielded")
+                        || !matches!(self.config.provider.as_str(), "codex" | "opencode")
+                })
             || (matches!(
                 self.lifecycle.as_str(),
                 "prepared" | "session_open" | "closed"
@@ -776,6 +1007,8 @@ impl CodexProviderState {
             self.completed_turn_process_generation = None;
             self.completed_provider_turn_id = None;
             self.ambiguous_turn_start_pending = false;
+            self.active_provider_result_fingerprint = None;
+            self.active_provider_result_disposition = None;
             self.last_agent_message = None;
         }
         self.lifecycle = if self.active_provider_turn_id.is_some() {
@@ -986,6 +1219,8 @@ impl CodexCommandExecutor {
         let completed_turn_authoritative = state.completed_turn_authoritative;
         let completed_turn_process_generation = state.completed_turn_process_generation;
         let completed_provider_turn_id = state.completed_provider_turn_id.clone();
+        let active_provider_result_authoritative =
+            state.active_provider_result_fingerprint.is_some();
         let ambiguous_turn_start_pending = state.ambiguous_turn_start_pending;
         let tool_replay_history_blocks_admission =
             state.tool_bridge.replay_history_blocks_admission();
@@ -1001,6 +1236,12 @@ impl CodexCommandExecutor {
             Some(&thread_id),
             process_generation,
             self.opencode_launch_profile.as_ref(),
+            state.completion_contract.as_ref().map(|contract| {
+                (
+                    contract.revision.as_str(),
+                    contract.criterion_ids.as_slice(),
+                )
+            }),
         )
         .map_err(|error| {
             DurableRunnerError::invalid(format!(
@@ -1019,6 +1260,9 @@ impl CodexCommandExecutor {
                 ))
             })?;
         let recovered_active_turn_id = provider.active_provider_turn_id().map(str::to_owned);
+        let recovered_turn_ended_with_result = active_provider_result_authoritative
+            && previous_active_turn_id.is_some()
+            && recovered_active_turn_id.is_none();
         let legacy_epoch_is_ambiguous = (provider_epoch_requires_rollover
             && (ambiguous_turn_start_pending || recovered_active_turn_id.is_some()))
             || (tool_replay_history_blocks_admission
@@ -1050,6 +1294,8 @@ impl CodexCommandExecutor {
             state.receipt_limit_interrupt_accepted = false;
             state.receipt_limit_interrupt_attempts = 0;
             state.receipt_limit_interrupt_deadline_unix_ms = None;
+            state.active_provider_result_fingerprint = None;
+            state.active_provider_result_disposition = None;
             state.last_agent_message = None;
             state.lifecycle = "closed".to_owned();
             let _ = state.push_terminal_event(NormalizedProviderEvent {
@@ -1102,6 +1348,8 @@ impl CodexCommandExecutor {
             state.receipt_limit_interrupt_accepted = false;
             state.receipt_limit_interrupt_attempts = 0;
             state.receipt_limit_interrupt_deadline_unix_ms = None;
+            state.active_provider_result_fingerprint = None;
+            state.active_provider_result_disposition = None;
             state.last_agent_message = None;
             state.lifecycle = "closed".to_owned();
             // Closing the provider is the safety boundary. Preserve that
@@ -1137,17 +1385,37 @@ impl CodexCommandExecutor {
         }
         provider
             .restore_completed_turn_authority(
-                completed_turn_authoritative
+                (completed_turn_authoritative || recovered_turn_ended_with_result)
                     && recovered_active_turn_id.is_none()
                     && !ambiguous_turn_start_pending,
-                completed_turn_process_generation,
-                completed_provider_turn_id.as_deref(),
+                if recovered_turn_ended_with_result {
+                    Some(process_generation)
+                } else {
+                    completed_turn_process_generation
+                },
+                if recovered_turn_ended_with_result {
+                    previous_active_turn_id.as_deref()
+                } else {
+                    completed_provider_turn_id.as_deref()
+                },
             )
             .map_err(|error| {
                 DurableRunnerError::invalid(format!(
                     "failed to restore local provider completion authority: {error}"
                 ))
             })?;
+        if active_provider_result_authoritative
+            && recovered_active_turn_id.is_some()
+            && recovered_active_turn_id == previous_active_turn_id
+        {
+            provider
+                .mark_active_turn_result_authoritative()
+                .map_err(|error| {
+                    DurableRunnerError::invalid(format!(
+                        "failed to restore semantic result authority for the active {provider_name} turn: {error}"
+                    ))
+                })?;
+        }
         let resumed_provider_session_id = provider.provider_session_id().map(str::to_owned);
         let resumed_process_id = provider.process_id();
         {
@@ -1209,6 +1477,11 @@ impl CodexCommandExecutor {
                 state.receipt_limit_interrupt_accepted = false;
                 state.receipt_limit_interrupt_attempts = 0;
                 state.receipt_limit_interrupt_deadline_unix_ms = None;
+                if recovered_turn_ended_with_result {
+                    state.completed_turn_authoritative = true;
+                    state.completed_turn_process_generation = Some(process_generation);
+                    state.completed_provider_turn_id = previous_active_turn_id.clone();
+                }
             }
             state.reconcile_active_provider_turn(recovered_active_turn_id.clone());
             let reconciled = NormalizedProviderEvent {
@@ -1223,21 +1496,29 @@ impl CodexCommandExecutor {
             };
             if recovered_turn_ended {
                 state.push_terminal_event(reconciled)?;
-                // A turn that disappeared while runnerd was offline has no
-                // trustworthy success notification to replay. Terminate it
-                // conservatively so the controller cannot wait forever or
-                // mistake an unknown outcome for success.
-                state.push_terminal_event(NormalizedProviderEvent {
-                    event_type: "turn.failed".to_owned(),
-                    priority: EventPriority::P0,
-                    payload: json!({
-                        "provider": provider_label,
-                        "providerTurnId": previous_active_turn_id,
-                        "status": "failed",
-                        "providerTerminalObserved": false,
-                    }),
-                })?;
-                state.extend_terminal_events(terminal_events(state, "turn.failed"))?;
+                if recovered_turn_ended_with_result {
+                    // The durable correlated tool receipt proves Paperclip
+                    // accepted this exact turn's semantic result before the
+                    // runner stopped observing provider output. Resume
+                    // finalization without inventing another provider turn.
+                    state.extend_terminal_events(terminal_events(state, "turn.completed"))?;
+                } else {
+                    // A turn that disappeared while runnerd was offline has no
+                    // trustworthy success notification to replay. Terminate it
+                    // conservatively so the controller cannot wait forever or
+                    // mistake an unknown outcome for success.
+                    state.push_terminal_event(NormalizedProviderEvent {
+                        event_type: "turn.failed".to_owned(),
+                        priority: EventPriority::P0,
+                        payload: json!({
+                            "provider": provider_label,
+                            "providerTurnId": previous_active_turn_id,
+                            "status": "failed",
+                            "providerTerminalObserved": false,
+                        }),
+                    })?;
+                    state.extend_terminal_events(terminal_events(state, "turn.failed"))?;
+                }
             } else {
                 state.push_event(reconciled)?;
             }
@@ -1395,6 +1676,12 @@ impl CodexCommandExecutor {
                 state.thread_id.as_deref(),
                 process_generation,
                 self.opencode_launch_profile.as_ref(),
+                state.completion_contract.as_ref().map(|contract| {
+                    (
+                        contract.revision.as_str(),
+                        contract.criterion_ids.as_slice(),
+                    )
+                }),
             )
             .map_err(|error| {
                 DurableRunnerError::invalid(format!("failed to start Codex provider: {error}"))
@@ -1498,20 +1785,43 @@ impl CodexCommandExecutor {
         next_state.receipt_limit_interrupt_accepted = false;
         next_state.receipt_limit_interrupt_attempts = 0;
         next_state.receipt_limit_interrupt_deadline_unix_ms = None;
+        next_state.active_provider_result_fingerprint = None;
+        next_state.active_provider_result_disposition = None;
         next_state.last_agent_message = None;
-        if let Some(provider) = self.provider.as_mut() {
+        let provider = self.provider.as_mut().ok_or_else(|| {
+            DurableRunnerError::invalid("run.attach requires the restored Codex provider process")
+        })?;
+        let retained_provider = provider
+            .attach_run_in_place(
+                next_state.tool_bridge.authorized_tools().cloned(),
+                next_state.completion_contract.as_ref().map(|contract| {
+                    (
+                        contract.revision.as_str(),
+                        contract.criterion_ids.as_slice(),
+                    )
+                }),
+            )
+            .map_err(|error| {
+                DurableRunnerError::invalid(format!(
+                    "failed to retain Codex for warm run attachment: {error}"
+                ))
+            })?;
+        if !retained_provider {
             provider.shutdown().map_err(|error| {
                 DurableRunnerError::invalid(format!(
                     "failed to checkpoint Codex before attaching a new run: {error}"
                 ))
             })?;
+            self.provider = None;
         }
-        self.provider = None;
         next_state.pending_events.clear();
-        // Persist the checkpoint as not-open before open_session resumes it for
-        // the new authority. Otherwise recovery emits a second session.resumed
-        // notice into the provider queue in addition to the command event.
-        next_state.lifecycle = "prepared".to_owned();
+        next_state.lifecycle = if retained_provider {
+            "session_open".to_owned()
+        } else {
+            // The next provider command restores the same checkpointed session
+            // with the rotated tool/completion authority.
+            "prepared".to_owned()
+        };
         self.persist_state(&next_state)?;
         self.state = Some(next_state);
         Ok(())
@@ -1618,6 +1928,8 @@ impl CodexCommandExecutor {
         state.receipt_limit_interrupt_accepted = false;
         state.receipt_limit_interrupt_attempts = 0;
         state.receipt_limit_interrupt_deadline_unix_ms = None;
+        state.active_provider_result_fingerprint = None;
+        state.active_provider_result_disposition = None;
         state.last_agent_message = None;
         state.lifecycle = "closed".to_owned();
         let provider_label = state.config.provider.clone();
@@ -1842,6 +2154,8 @@ impl CodexCommandExecutor {
                 state.completed_turn_authoritative = false;
                 state.completed_turn_process_generation = None;
                 state.completed_provider_turn_id = None;
+                state.active_provider_result_fingerprint = None;
+                state.active_provider_result_disposition = None;
                 state.last_agent_message = None;
             }
             self.save_state()?;
@@ -1878,6 +2192,8 @@ impl CodexCommandExecutor {
         state.receipt_limit_interrupt_accepted = false;
         state.receipt_limit_interrupt_attempts = 0;
         state.receipt_limit_interrupt_deadline_unix_ms = None;
+        state.active_provider_result_fingerprint = None;
+        state.active_provider_result_disposition = None;
         state.last_agent_message = None;
         state.lifecycle = "turn_active".to_owned();
         let provider_label = state.config.provider.clone();
@@ -1935,6 +2251,83 @@ impl CodexCommandExecutor {
             "status": "interrupt_requested",
             "reason": reason,
             "providerTurnId": provider_turn_id,
+        })))
+    }
+
+    fn stop_turn_for_suspension(
+        &mut self,
+        reason: &str,
+    ) -> Result<CommandExecution, DurableRunnerError> {
+        self.restore_provider_if_needed()?;
+        let provider_turn_id = self
+            .state
+            .as_ref()
+            .and_then(|state| state.active_provider_turn_id.clone());
+        let Some(provider_turn_id) = provider_turn_id else {
+            return Ok(CommandExecution::result(json!({
+                "status": "already_settled",
+                "reason": reason,
+            })));
+        };
+
+        // The cooperative interrupt is useful to the provider, but its RPC
+        // acknowledgement is not proof that an active turn stopped. A
+        // controller issues turn.stop only while closing a run whose result is
+        // already durable, so terminate the exact process generation before
+        // publishing the provider state as attachable by a successor run.
+        let interrupt_accepted = self.interrupt_turn(reason).is_ok();
+        let provider_shutdown_failed = self
+            .provider
+            .as_mut()
+            .is_some_and(|provider| provider.shutdown().is_err());
+        if provider_shutdown_failed {
+            return Err(DurableRunnerError::invalid(
+                "failed to prove provider termination at the suspension boundary",
+            ));
+        }
+        self.provider = None;
+
+        let identity = self.event_identity()?;
+        let state = self
+            .state
+            .as_mut()
+            .expect("Codex state remains available after provider termination");
+        state.settle_active_provider_turn_identity()?;
+        let settled = state
+            .tool_bridge
+            .settle_turn("provider_turn_stopped_for_suspension")
+            .map_err(|error| {
+                DurableRunnerError::invalid(format!(
+                    "failed to settle semantic tools at the suspension boundary: {error}"
+                ))
+            })?;
+        for result in settled {
+            state.push_terminal_event(semantic_result_event(&identity, &result))?;
+        }
+        state.active_provider_turn_id = None;
+        state.ambiguous_turn_start_pending = false;
+        state.completed_turn_authoritative = false;
+        state.completed_turn_process_generation = None;
+        state.completed_provider_turn_id = None;
+        state.receipt_limit_diagnostic_emitted = false;
+        state.receipt_limit_interrupt_pending = false;
+        state.receipt_limit_interrupt_accepted = false;
+        state.receipt_limit_interrupt_attempts = 0;
+        state.receipt_limit_interrupt_deadline_unix_ms = None;
+        state.active_provider_result_fingerprint = None;
+        state.active_provider_result_disposition = None;
+        state.last_agent_message = None;
+        // Do not let the runner.drain command that follows turn.stop restore a
+        // fresh provider process. `prepared` retains the durable thread while
+        // deferring the only authorized restart to the successor run.attach.
+        state.lifecycle = "prepared".to_owned();
+        self.save_state()?;
+        Ok(CommandExecution::result(json!({
+            "status": "stopped",
+            "providerTurnId": provider_turn_id,
+            "reason": reason,
+            "interruptAccepted": interrupt_accepted,
+            "providerExitConfirmed": true,
         })))
     }
 
@@ -2342,6 +2735,11 @@ impl CodexCommandExecutor {
             .state
             .clone()
             .ok_or_else(|| DurableRunnerError::invalid("Codex provider is not prepared"))?;
+        let terminal_tool_input = next_state
+            .tool_bridge
+            .pending_calls()
+            .find(|call| call.call_id == result.call_id)
+            .map(|call| (call.operation_id.clone(), call.input.clone()));
         next_state
             .tool_bridge
             .apply_result(result.clone())
@@ -2354,16 +2752,37 @@ impl CodexCommandExecutor {
                 "callId": result.call_id,
             })));
         }
+        let terminal_tool_authoritative =
+            terminal_tool_input
+                .as_ref()
+                .is_some_and(|(operation_id, _)| {
+                    !result.is_error
+                        && matches!(
+                            operation_id.as_str(),
+                            "paperclip_finish" | "paperclip_block"
+                        )
+                });
+        if let Some((operation_id, input)) = terminal_tool_input {
+            admit_terminal_tool_authority(&mut next_state, &operation_id, &input, result.is_error)?;
+        }
         next_state.push_event(semantic_result_event(&identity, &result))?;
         self.persist_state(&next_state)?;
         self.state = Some(next_state);
-        self.ensure_provider()?
-            .deliver_tool_result(&result)
-            .map_err(|error| {
-                DurableRunnerError::invalid(format!(
-                    "failed to return semantic tool result to Codex: {error}"
-                ))
-            })?;
+        let provider = self.ensure_provider()?;
+        if terminal_tool_authoritative {
+            provider
+                .mark_active_turn_result_authoritative()
+                .map_err(|error| {
+                    DurableRunnerError::invalid(format!(
+                        "failed to bind semantic result to the active Codex turn: {error}"
+                    ))
+                })?;
+        }
+        provider.deliver_tool_result(&result).map_err(|error| {
+            DurableRunnerError::invalid(format!(
+                "failed to return semantic tool result to Codex: {error}"
+            ))
+        })?;
         Ok(CommandExecution::result(json!({
             "status": "delivered",
             "callId": result.call_id,
@@ -2388,6 +2807,8 @@ impl CodexCommandExecutor {
         state.receipt_limit_interrupt_accepted = false;
         state.receipt_limit_interrupt_attempts = 0;
         state.receipt_limit_interrupt_deadline_unix_ms = None;
+        state.active_provider_result_fingerprint = None;
+        state.active_provider_result_disposition = None;
         state.lifecycle = "closed".to_owned();
         let thread_id = state.thread_id.clone();
         let provider_name = state.config.provider.clone();
@@ -2402,18 +2823,51 @@ impl CodexCommandExecutor {
         })
     }
 
-    fn snapshot(&mut self) -> Result<CommandExecution, DurableRunnerError> {
+    fn snapshot(&mut self, payload: &Value) -> Result<CommandExecution, DurableRunnerError> {
         self.restore_provider_if_needed()?;
+        let quiesce_for_warm_attach = payload
+            .get("quiesceForWarmAttach")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let mut warm_attach_blockers = self
+            .provider
+            .as_mut()
+            .map(|provider| provider.warm_run_attachment_blockers(quiesce_for_warm_attach))
+            .transpose()
+            .map_err(|error| {
+                DurableRunnerError::invalid(format!(
+                    "failed to inspect Codex warm attachment readiness: {error}"
+                ))
+            })?
+            .unwrap_or_else(|| vec!["provider_unavailable"]);
         let state = self
             .state
             .as_ref()
             .ok_or_else(|| DurableRunnerError::invalid("Codex provider is not prepared"))?;
+        if state.active_provider_turn_id.is_some() {
+            warm_attach_blockers.push("durable_active_turn");
+        }
+        if state.ambiguous_turn_start_pending {
+            warm_attach_blockers.push("durable_ambiguous_turn_start");
+        }
+        if !state.pending_events.is_empty() {
+            warm_attach_blockers.push("durable_pending_events");
+        }
+        if !state.queued_events.is_empty() {
+            warm_attach_blockers.push("durable_queued_events");
+        }
+        let warm_attach_ready = warm_attach_blockers.is_empty();
         Ok(CommandExecution::result(json!({
             "status": state.lifecycle,
             "provider": state.config.provider,
             "driver": state.config.driver,
+            "driverSessionId": state.thread_id,
             "providerSessionId": state.thread_id,
+            "sessionId": state.provider_session_id,
+            "providerAccountSessionId": state.provider_session_id,
             "activeProviderTurnId": state.active_provider_turn_id,
+            "warmAttachReady": warm_attach_ready,
+            "warmAttachBlockers": warm_attach_blockers,
             "cwd": state.config.cwd,
         })))
     }
@@ -2477,38 +2931,22 @@ impl CodexCommandExecutor {
                     };
                     let normalized_terminal_type =
                         normalized_codex_terminal_event_type(&method, &params);
-                    let completed_turn_authority =
-                        if normalized_terminal_type == Some("turn.completed") {
-                            self.provider
-                                .as_ref()
-                                .and_then(CodexProvider::completed_turn_authority)
-                                .map(|(generation, turn_id)| (generation, turn_id.to_owned()))
-                        } else {
-                            None
-                        };
-                    let provider_name = self
-                        .state
-                        .as_ref()
-                        .map(|state| state.config.provider.clone())
-                        .unwrap_or_else(|| "codex".to_owned());
-                    let normalized = normalize_codex_notification(&method, &params)
-                        .into_iter()
-                        .map(|event| relabel_provider_event(event, &provider_name))
-                        .collect::<Vec<_>>();
-                    let normalized_event_count = normalized.len();
-                    let terminal_event_type = normalized
-                        .iter()
-                        .find(|event| event.event_type.starts_with("turn."))
-                        .map(|event| event.event_type.clone())
-                        .filter(|event_type| {
-                            matches!(
-                                event_type.as_str(),
-                                "turn.completed"
-                                    | "turn.failed"
-                                    | "turn.cancelled"
-                                    | "turn.interrupted"
-                            )
+                    let result_authoritative = normalized_terminal_type.is_some()
+                        && self.state.as_ref().is_some_and(|state| {
+                            state.active_provider_result_fingerprint.is_some()
                         });
+                    let completed_turn_authority = if normalized_terminal_type
+                        == Some("turn.completed")
+                        || result_authoritative
+                    {
+                        self.provider
+                            .as_ref()
+                            .and_then(CodexProvider::completed_turn_authority)
+                            .map(|(generation, turn_id)| (generation, turn_id.to_owned()))
+                    } else {
+                        None
+                    };
+                    let terminal_event_type = normalized_terminal_type.map(str::to_owned);
                     let identity = self.event_identity.clone();
                     let state = self
                         .state
@@ -2532,6 +2970,8 @@ impl CodexCommandExecutor {
                         })?;
                         state.reconcile_active_provider_turn(Some(provider_turn_id));
                     }
+                    let normalized = normalize_provider_notification(state, &method, &params)?;
+                    let normalized_event_count = normalized.len();
                     if terminal_event_type.is_some() {
                         state.settle_active_provider_turn_identity()?;
                         let settled = state
@@ -2555,7 +2995,9 @@ impl CodexCommandExecutor {
                             }
                         }
                         state.active_provider_turn_id = None;
-                        if terminal_event_type.as_deref() == Some("turn.completed") {
+                        if terminal_event_type.as_deref() == Some("turn.completed")
+                            || result_authoritative
+                        {
                             let (process_generation, provider_turn_id) = completed_turn_authority
                                 .ok_or_else(|| {
                                 DurableRunnerError::invalid(
@@ -2748,12 +3190,11 @@ impl CommandExecutor for CodexCommandExecutor {
             "session.open" => self.open_session(),
             "turn.start" => self.start_turn(&command.payload),
             "turn.steer" => self.steer_turn(&command.payload),
-            "turn.interrupt" | "turn.stop" | "run.cancel" => {
-                self.interrupt_turn(&command.command_type)
-            }
+            "turn.interrupt" | "run.cancel" => self.interrupt_turn(&command.command_type),
+            "turn.stop" => self.stop_turn_for_suspension(&command.command_type),
             "request.resolve" => self.resolve_request(&command.payload),
             "semantic_tool.result" => self.deliver_semantic_result(&command.payload),
-            "session.snapshot" => self.snapshot(),
+            "session.snapshot" => self.snapshot(&command.payload),
             "session.close" | "session.destroy" => self.close_session(),
             "runner.drain" | "runner.suspend" | "runner.shutdown" => {
                 Ok(CommandExecution::result(json!({"status": "completed"})))
@@ -2764,6 +3205,10 @@ impl CommandExecutor for CodexCommandExecutor {
                 "message": "the Codex provider does not implement this command in the current layer",
             }))),
         }
+    }
+
+    fn rotate_authority(&mut self, config: &DurableRunnerConfig) {
+        self.event_identity = Some(ProviderEventIdentity::from_config(config));
     }
 
     fn poll_events(&mut self) -> Result<Vec<PolledEvent>, DurableRunnerError> {
@@ -2798,6 +3243,11 @@ impl CommandExecutor for CodexCommandExecutor {
     }
 
     fn shutdown(&mut self) -> Result<(), DurableRunnerError> {
+        // Terminal-result recovery can invoke shutdown on a fresh executor.
+        // Loading the durable provider identity here ensures that cleanup is
+        // attempted against the persisted session instead of reporting a
+        // successful no-op from an empty in-memory provider slot.
+        self.restore()?;
         if let Some(provider) = self.provider.as_mut() {
             provider.shutdown().map_err(|error| {
                 DurableRunnerError::invalid(format!("failed to stop Codex provider: {error}"))
@@ -2811,6 +3261,233 @@ impl CommandExecutor for CodexCommandExecutor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn opencode_result_state() -> CodexProviderState {
+        let mut state = CodexProviderState::new(
+            CodexProviderConfig {
+                provider: "opencode".to_owned(),
+                driver: "opencode_server".to_owned(),
+                provider_version: "1.18.17".to_owned(),
+                command: PathBuf::from("node"),
+                args: Vec::new(),
+                cwd: std::env::current_dir()
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned(),
+                model: Some("openrouter/model".to_owned()),
+                provider_session_id: None,
+                instructions: String::new(),
+                approval_policy: "never".to_owned(),
+                externally_sandboxed: false,
+            },
+            Some(CompletionContractBinding {
+                revision: "revision-1".to_owned(),
+                criterion_ids: vec!["criterion-1".to_owned()],
+            }),
+            ProviderToolBridge::default(),
+        );
+        state.thread_id = Some("thread-1".to_owned());
+        state.active_provider_turn_id = Some("turn-1".to_owned());
+        state.lifecycle = "turn_active".to_owned();
+        state
+    }
+
+    fn valid_opencode_result() -> Value {
+        json!({
+            "schema": "paperclip.run_result.v1",
+            "reportedWorkDisposition": "done",
+            "summary": "Finished the requested work.",
+            "completionClaim": {
+                "contractRevision": "revision-1",
+                "objectiveSatisfied": true,
+                "criteria": [{
+                    "criterionId": "criterion-1",
+                    "status": "satisfied",
+                    "evidenceRefs": ["provider:opencode:agent-message"],
+                }],
+                "remainingWork": [],
+            },
+            "evidence": [{"ref": "provider:opencode:agent-message"}],
+            "verification": [],
+            "attentionRequests": [],
+            "artifacts": [],
+        })
+    }
+
+    #[test]
+    fn preserves_one_verified_opencode_result_before_its_terminal() {
+        let mut state = opencode_result_state();
+        let params = json!({
+            "threadId": "thread-1",
+            "turnId": "turn-1",
+            "itemId": "semantic-result",
+            "result": valid_opencode_result(),
+        });
+
+        let result_events =
+            normalize_provider_notification(&mut state, "paperclip/runResult", &params).unwrap();
+        let replay_events =
+            normalize_provider_notification(&mut state, "paperclip/runResult", &params).unwrap();
+        let terminal = terminal_events(&state, "turn.completed");
+
+        assert_eq!(result_events.len(), 1);
+        assert_eq!(result_events[0].event_type, "run.result.proposed");
+        assert_eq!(result_events[0].priority, EventPriority::P0);
+        assert!(replay_events.is_empty());
+        assert_eq!(terminal.len(), 1);
+        assert_eq!(terminal[0].event_type, "run.terminal");
+        assert_eq!(terminal[0].payload["reportedWorkDisposition"], "done");
+        assert!(state.validate().is_ok());
+    }
+
+    #[test]
+    fn accepted_terminal_tool_suppresses_the_generated_terminal_fallback() {
+        let mut state = opencode_result_state();
+        let mut result = valid_opencode_result();
+        result["reportedWorkDisposition"] = json!("needs_review");
+        result.as_object_mut().unwrap().remove("attentionRequests");
+        result.as_object_mut().unwrap().remove("artifacts");
+
+        admit_terminal_tool_authority(&mut state, "paperclip_finish", &result, false).unwrap();
+        let terminal = terminal_events(&state, "turn.completed");
+
+        assert_eq!(terminal.len(), 1);
+        assert_eq!(terminal[0].event_type, "run.terminal");
+        assert_eq!(
+            terminal[0].payload["reportedWorkDisposition"],
+            "needs_review"
+        );
+        assert!(state.validate().is_ok());
+    }
+
+    #[test]
+    fn accepted_terminal_tool_remains_successful_after_controller_interrupt() {
+        let mut state = opencode_result_state();
+        let result = valid_opencode_result();
+
+        admit_terminal_tool_authority(&mut state, "paperclip_finish", &result, false).unwrap();
+        let terminal = terminal_events(&state, "turn.interrupted");
+
+        assert_eq!(terminal.len(), 1);
+        assert_eq!(terminal[0].event_type, "run.terminal");
+        assert_eq!(terminal[0].payload["runTerminalState"], "succeeded");
+        assert_eq!(terminal[0].payload["turnTerminalState"], "completed");
+        assert_eq!(terminal[0].payload["reportedWorkDisposition"], "done");
+        assert!(state.validate().is_ok());
+    }
+
+    #[test]
+    fn codex_terminal_tool_authority_is_valid_durable_state() {
+        let mut state = opencode_result_state();
+        state.config.provider = "codex".to_owned();
+        state.config.driver = "codex_app_server".to_owned();
+        state.config.provider_version = "test".to_owned();
+
+        admit_terminal_tool_authority(
+            &mut state,
+            "paperclip_finish",
+            &valid_opencode_result(),
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(
+            state.active_provider_result_disposition.as_deref(),
+            Some("done")
+        );
+        assert!(state.validate().is_ok());
+    }
+
+    #[test]
+    fn terminal_tool_authority_rejects_an_incompatible_disposition() {
+        let mut state = opencode_result_state();
+
+        assert!(admit_terminal_tool_authority(
+            &mut state,
+            "paperclip_block",
+            &valid_opencode_result(),
+            false,
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("incompatible work disposition"));
+        assert!(state.active_provider_result_fingerprint.is_none());
+    }
+
+    #[test]
+    fn rejects_unbound_conflicting_or_spoofed_opencode_results() {
+        let params = |result: Value| {
+            json!({
+                "threadId": "thread-1",
+                "turnId": "turn-1",
+                "itemId": "semantic-result",
+                "result": result,
+            })
+        };
+
+        let mut wrong_revision = opencode_result_state();
+        let mut result = valid_opencode_result();
+        result["completionClaim"]["contractRevision"] = json!("revision-2");
+        assert!(normalize_provider_notification(
+            &mut wrong_revision,
+            "paperclip/runResult",
+            &params(result),
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("contract revision"));
+
+        let mut malformed = opencode_result_state();
+        assert!(normalize_provider_notification(
+            &mut malformed,
+            "paperclip/runResult",
+            &params(json!({"schema": "paperclip.run_result.v1"})),
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("failed the Paperclip result schema"));
+
+        let mut wrong_criteria = opencode_result_state();
+        let mut result = valid_opencode_result();
+        result["completionClaim"]["criteria"][0]["criterionId"] = json!("criterion-2");
+        assert!(normalize_provider_notification(
+            &mut wrong_criteria,
+            "paperclip/runResult",
+            &params(result),
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("bound completion criteria"));
+
+        let mut conflicting = opencode_result_state();
+        normalize_provider_notification(
+            &mut conflicting,
+            "paperclip/runResult",
+            &params(valid_opencode_result()),
+        )
+        .unwrap();
+        let mut result = valid_opencode_result();
+        result["summary"] = json!("A conflicting second result.");
+        assert!(normalize_provider_notification(
+            &mut conflicting,
+            "paperclip/runResult",
+            &params(result),
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("conflicting"));
+
+        let mut spoofed = opencode_result_state();
+        spoofed.config.provider = "codex".to_owned();
+        assert!(normalize_provider_notification(
+            &mut spoofed,
+            "paperclip/runResult",
+            &params(valid_opencode_result()),
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("reserved for the verified OpenCode provider"));
+    }
 
     #[test]
     fn opencode_terminal_fallback_uses_its_actual_provider_identity() {
@@ -2829,6 +3506,7 @@ mod tests {
                 provider_session_id: None,
                 instructions: String::new(),
                 approval_policy: "never".to_owned(),
+                externally_sandboxed: false,
             },
             Some(CompletionContractBinding {
                 revision: "revision-1".to_owned(),
@@ -2871,6 +3549,7 @@ mod tests {
                 provider_session_id: None,
                 instructions: String::new(),
                 approval_policy: "never".to_owned(),
+                externally_sandboxed: false,
             },
             opencode_launch_profile_digest: None,
             completion_contract: None,
@@ -2890,6 +3569,8 @@ mod tests {
             receipt_limit_interrupt_accepted: false,
             receipt_limit_interrupt_attempts: 0,
             receipt_limit_interrupt_deadline_unix_ms: None,
+            active_provider_result_fingerprint: None,
+            active_provider_result_disposition: None,
             last_agent_message: None,
             pending_events: VecDeque::new(),
             queued_events: VecDeque::new(),
@@ -2915,6 +3596,7 @@ mod tests {
                 provider_session_id: None,
                 instructions: String::new(),
                 approval_policy: "never".to_owned(),
+                externally_sandboxed: false,
             },
             None,
             ProviderToolBridge::default(),
@@ -2955,6 +3637,7 @@ mod tests {
                 provider_session_id: None,
                 instructions: String::new(),
                 approval_policy: "never".to_owned(),
+                externally_sandboxed: false,
             },
             Some(CompletionContractBinding {
                 revision: "1".to_owned(),
@@ -3010,6 +3693,7 @@ mod tests {
                 provider_session_id: None,
                 instructions: String::new(),
                 approval_policy: "never".to_owned(),
+                externally_sandboxed: false,
             },
             None,
             ProviderToolBridge::default(),
@@ -3074,6 +3758,7 @@ mod tests {
                 provider_session_id: None,
                 instructions: String::new(),
                 approval_policy: "never".to_owned(),
+                externally_sandboxed: false,
             },
             None,
             ProviderToolBridge::default(),
@@ -3121,6 +3806,7 @@ mod tests {
                 provider_session_id: None,
                 instructions: String::new(),
                 approval_policy: "never".to_owned(),
+                externally_sandboxed: false,
             },
             None,
             ProviderToolBridge::default(),
@@ -3242,6 +3928,7 @@ mod tests {
                 provider_session_id: None,
                 instructions: String::new(),
                 approval_policy: "never".to_owned(),
+                externally_sandboxed: false,
             },
             None,
             bridge,
@@ -3351,6 +4038,7 @@ mod tests {
                 provider_session_id: None,
                 instructions: String::new(),
                 approval_policy: "never".to_owned(),
+                externally_sandboxed: false,
             },
             None,
             bridge,
@@ -3405,6 +4093,7 @@ mod tests {
                 provider_session_id: None,
                 instructions: String::new(),
                 approval_policy: "never".to_owned(),
+                externally_sandboxed: false,
             },
             None,
             ProviderToolBridge::default(),
@@ -3523,6 +4212,7 @@ mod tests {
                 provider_session_id: None,
                 instructions: String::new(),
                 approval_policy: "never".to_owned(),
+                externally_sandboxed: false,
             },
             None,
             bridge,
@@ -3561,6 +4251,7 @@ mod tests {
                 provider_session_id: None,
                 instructions: String::new(),
                 approval_policy: "never".to_owned(),
+                externally_sandboxed: false,
             },
             None,
             ProviderToolBridge::default(),
@@ -3596,6 +4287,7 @@ mod tests {
                 provider_session_id: None,
                 instructions: String::new(),
                 approval_policy: "never".to_owned(),
+                externally_sandboxed: false,
             },
             None,
             ProviderToolBridge::default(),
@@ -3670,6 +4362,7 @@ mod tests {
                 provider_session_id: None,
                 instructions: String::new(),
                 approval_policy: "never".to_owned(),
+                externally_sandboxed: false,
             },
             None,
             ProviderToolBridge::default(),

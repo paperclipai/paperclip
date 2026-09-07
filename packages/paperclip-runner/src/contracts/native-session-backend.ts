@@ -91,15 +91,27 @@ export interface NativeSession {
   identity(): NativeRunIdentity;
   capabilities(): Promise<NativeSessionCapabilities>;
   attachRun?(input: { identity: NativeRunIdentity }): Promise<void>;
+  /** Relinquish controller authority without suspending provider execution. */
+  detachControllerForRestart?(): Promise<void>;
   events(input?: { afterCursor?: string | null }): AsyncIterable<PrpEvent>;
   startTurn(input: {
     message: NativeUserMessage;
     requestedCollaborationMode?: "default" | "plan";
-  }): Promise<{ turnId: string; effectiveCollaborationMode?: "default" | "plan" }>;
-  steer?(input: { turnId: string; message: NativeUserMessage; correlationId?: string }): Promise<void>;
+  }): Promise<{
+    turnId: string;
+    effectiveCollaborationMode?: "default" | "plan";
+  }>;
+  steer?(input: {
+    turnId: string;
+    message: NativeUserMessage;
+    correlationId?: string;
+  }): Promise<void>;
   interrupt?(input: { turnId?: string; reason?: string }): Promise<void>;
   /** Commit cancellation synchronously; the returned promise owns cleanup only. */
-  cancel?(input: { reason: string; signal: AbortSignal }): NativeSessionCancellation;
+  cancel?(input: {
+    reason: string;
+    signal: AbortSignal;
+  }): NativeSessionCancellation;
   resolveRuntimeRequest?(input: {
     requestId: string;
     turnId: string;
@@ -122,7 +134,9 @@ export interface NativeSession {
     turnId: string | null;
   } | null>;
   usage?(): Promise<Record<string, unknown> | null>;
-  snapshot(options?: NativeSessionSnapshotOptions): Promise<PersistedNativeSession>;
+  snapshot(
+    options?: NativeSessionSnapshotOptions,
+  ): Promise<PersistedNativeSession>;
   /**
    * Idempotently stop provider work and release every pending `events().next()`
    * before this promise resolves. Implementations must settle every promise

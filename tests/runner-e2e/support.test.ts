@@ -10,9 +10,12 @@ import { classifyFailure, shouldRetryFailure } from "./failure-classifier.js";
 import {
   assertIsolatedServerEnvironment,
   buildPaperclipServerEnvironment,
+  buildRunnerE2EProcessEnvironment,
+  resolvePaperclipRemoteRunnerBinaryForHarness,
   resolvePaperclipRunnerBinaryForHarness,
+  runnerE2EServerControlPaths,
 } from "./harness-env.js";
-import { runnerExecutionById } from "./catalog.js";
+import { runnerExecutionById, runnerMatrix } from "./catalog.js";
 import { assertEmbeddedDatabaseIsolation } from "./instance-isolation.js";
 import { evaluateMatchers } from "./matchers.js";
 import {
@@ -26,8 +29,18 @@ import {
 } from "./redaction.js";
 import { parseDarwinSharedMemory } from "./shared-memory.js";
 import {
+  reserveRunnerE2EServerPort,
+  runnerE2EServerPortConflictsWithDatabase,
+  type LoopbackPortReservation,
+} from "./ports.js";
+import {
+  acceptedPlanSessionResetFailures,
+  hasTerminalMalformedPlanConfirmation,
+  isControlPlaneGovernedResponseWait,
   isNonExecutingReviewFenceRun,
+  isOpenRouterDeepSeekHelloTerminalVariance,
   numberedPlanStepCount,
+  providerSessionContinuityFailures,
 } from "./run-observations.js";
 import { runnerE2EWebServerCommand } from "./web-server-command.js";
 
@@ -45,6 +58,9 @@ afterEach(async () => {
 describe("runner E2E local binary resolution", () => {
   const localNativeExecution = runnerExecutionById(
     "core-compatibility.runner-codex.local.message-marker",
+  );
+  const remoteNativeExecution = runnerExecutionById(
+    "core-compatibility.runner-acpx-claude.daytona.message-marker",
   );
 
   it("uses the debug runner binary built by the E2E workflow", () => {
@@ -72,6 +88,118 @@ describe("runner E2E local binary resolution", () => {
         "linux",
       ),
     ).toBe("/custom/paperclip-runnerd");
+  });
+
+  it("uses and stages the same build-once binary for remote native cells", () => {
+    const runnerBinary = resolvePaperclipRunnerBinaryForHarness(
+      [remoteNativeExecution],
+      "/repository",
+      undefined,
+      "linux",
+    );
+    expect(runnerBinary).toBe(
+      path.join(
+        "/repository",
+        "packages/paperclip-runner/runner/target/debug/paperclip-runnerd",
+      ),
+    );
+    expect(
+      resolvePaperclipRemoteRunnerBinaryForHarness(
+        [remoteNativeExecution],
+        runnerBinary,
+        undefined,
+        "linux",
+      ),
+    ).toBe(runnerBinary);
+    expect(
+      resolvePaperclipRemoteRunnerBinaryForHarness(
+        [localNativeExecution],
+        runnerBinary,
+        undefined,
+        "linux",
+      ),
+    ).toBeUndefined();
+    expect(
+      resolvePaperclipRemoteRunnerBinaryForHarness(
+        [remoteNativeExecution],
+        runnerBinary,
+        undefined,
+        "darwin",
+      ),
+    ).toBeUndefined();
+    expect(
+      resolvePaperclipRemoteRunnerBinaryForHarness(
+        [remoteNativeExecution],
+        runnerBinary,
+        "/cross-compiled/paperclip-runnerd",
+        "darwin",
+      ),
+    ).toBe("/cross-compiled/paperclip-runnerd");
+  });
+});
+
+describe("runner E2E provider environment", () => {
+  const legacyLocal = runnerExecutionById(
+    "core-compatibility.legacy-opencode.local.message-marker",
+  );
+  const legacyDaytona = runnerExecutionById(
+    "core-compatibility.legacy-opencode.daytona.message-marker",
+  );
+  const nativeOpenCode = runnerExecutionById(
+    "core-compatibility.runner-opencode.local.message-marker",
+  );
+  const breadthOpenCode = runnerMatrix.find(
+    (execution) => execution.suite.id === "openrouter-model-breadth",
+  )!;
+
+  it("allows the pinned model only for isolated legacy OpenCode harnesses", () => {
+    for (const execution of [legacyLocal, legacyDaytona]) {
+      expect(
+        buildRunnerE2EProcessEnvironment(
+          { KEEP_ME: "yes", OPENCODE_ALLOW_ALL_MODELS: "ambient" },
+          [execution],
+        ),
+      ).toEqual({ KEEP_ME: "yes", OPENCODE_ALLOW_ALL_MODELS: "true" });
+    }
+
+    for (const execution of [nativeOpenCode, breadthOpenCode]) {
+      expect(
+        buildRunnerE2EProcessEnvironment(
+          { KEEP_ME: "yes", OPENCODE_ALLOW_ALL_MODELS: "ambient" },
+          [execution],
+        ),
+      ).toEqual({ KEEP_ME: "yes" });
+    }
+  });
+});
+
+describe("runner E2E server port allocation", () => {
+  it("rejects direct and derived embedded-Postgres collisions", () => {
+    expect(runnerE2EServerPortConflictsWithDatabase(44_329)).toBe(true);
+    expect(runnerE2EServerPortConflictsWithDatabase(54_329)).toBe(true);
+    expect(runnerE2EServerPortConflictsWithDatabase(64_329)).toBe(true);
+    expect(runnerE2EServerPortConflictsWithDatabase(43_123)).toBe(false);
+  });
+
+  it("retries a derived collision while closing every reservation", async () => {
+    const closed: number[] = [];
+    const ports = [44_329, 43_123, 53_123];
+    const openPort = vi.fn(async (requestedPort: number) => {
+      const port = requestedPort === 0 ? ports.shift() : requestedPort;
+      if (port === undefined) throw new Error("Missing fake port");
+      return {
+        port,
+        close: async () => {
+          closed.push(port);
+        },
+      } satisfies LoopbackPortReservation;
+    });
+
+    await expect(reserveRunnerE2EServerPort({ openPort })).resolves.toBe(
+      43_123,
+    );
+    expect(openPort.mock.calls.map(([port]) => port)).toEqual([0, 0, 53_123]);
+    expect(closed).toEqual([44_329, 53_123, 43_123]);
   });
 });
 
@@ -233,6 +361,23 @@ describe("runner E2E matchers", () => {
     expect(result?.detail).toContain("observed 2");
   });
 
+  it("matches finalized workspace files byte-for-byte", async () => {
+    const [matched, extraLine] = await evaluateMatchers(
+      [
+        { kind: "file_exact", path: "continuity.txt", expected: "T1\nT2\n" },
+        { kind: "file_exact", path: "duplicate.txt", expected: "T1\nT2\n" },
+      ],
+      {
+        files: {
+          "continuity.txt": "T1\nT2\n",
+          "duplicate.txt": "T1\nT2\nT2\n",
+        },
+      },
+    );
+    expect(matched?.passed).toBe(true);
+    expect(extraLine?.passed).toBe(false);
+  });
+
   it("normalizes ordered fragments and evaluates nested JSON Schema", async () => {
     const results = await evaluateMatchers(
       [
@@ -266,6 +411,110 @@ describe("runner E2E matchers", () => {
 });
 
 describe("runner E2E run observations", () => {
+  it("retries only terminal Plan confirmations missing a revision-bound target", () => {
+    const observation = {
+      runs: [{ status: "succeeded" }],
+      interactions: [
+        {
+          kind: "request_confirmation",
+          status: "pending",
+          payload: { version: 1, prompt: "Approve the Plan?" },
+        },
+      ],
+      minimumRunCount: 1,
+    };
+
+    expect(hasTerminalMalformedPlanConfirmation(observation)).toBe(true);
+    expect(
+      hasTerminalMalformedPlanConfirmation({
+        ...observation,
+        runs: [{ status: "running" }],
+      }),
+    ).toBe(false);
+    expect(
+      hasTerminalMalformedPlanConfirmation({
+        ...observation,
+        interactions: [
+          {
+            ...observation.interactions[0],
+            payload: {
+              target: {
+                type: "issue_document",
+                key: "plan",
+                revisionId: "revision-1",
+              },
+            },
+          },
+        ],
+      }),
+    ).toBe(false);
+  });
+
+  it("retries only the zero-marker DeepSeek hello terminal emission variance", () => {
+    const expectedMarker = "PC_H_nonce-1";
+    const observation = {
+      suiteId: "openrouter-model-breadth",
+      profileId: "openrouter-deepseek-deepseek-v4-flash-0731",
+      taskId: "hello-complete",
+      expectedMarker,
+      finalRunMessage:
+        "I'll complete this deterministic hello task by calling paperclip_finish once.",
+      allAgentMessages:
+        "I'll complete this deterministic hello task by calling paperclip_finish once.",
+      semanticSummary: expectedMarker,
+      issueStatus: "done",
+      runStatuses: ["succeeded"],
+      matcherResults: [
+        {
+          matcher: { kind: "message_exact", expected: expectedMarker },
+          passed: false,
+        },
+        {
+          matcher: {
+            kind: "message_occurrences",
+            expected: expectedMarker,
+            count: 1,
+          },
+          passed: false,
+        },
+        { matcher: { kind: "issue_status", expected: "done" }, passed: true },
+      ],
+      invariantFailures: [],
+    };
+
+    expect(isOpenRouterDeepSeekHelloTerminalVariance(observation)).toBe(true);
+    expect(
+      isOpenRouterDeepSeekHelloTerminalVariance({
+        ...observation,
+        allAgentMessages: `${expectedMarker}\n${expectedMarker}`,
+      }),
+    ).toBe(false);
+    expect(
+      isOpenRouterDeepSeekHelloTerminalVariance({
+        ...observation,
+        semanticSummary: "different-summary",
+      }),
+    ).toBe(false);
+    expect(
+      isOpenRouterDeepSeekHelloTerminalVariance({
+        ...observation,
+        invariantFailures: ["missing native terminal event"],
+      }),
+    ).toBe(false);
+    expect(
+      isOpenRouterDeepSeekHelloTerminalVariance({
+        ...observation,
+        matcherResults: [
+          ...observation.matcherResults,
+          {
+            matcher: { kind: "environment", expected: "local" },
+            passed: false,
+          },
+        ],
+      }),
+    ).toBe(false);
+  });
+
   it("counts provider-equivalent numbered Plan step formats", () => {
     expect(numberedPlanStepCount("1. First\n2) Second")).toBe(2);
     expect(
@@ -298,6 +547,139 @@ describe("runner E2E run observations", () => {
       }),
     ).toBe(false);
   });
+
+  it("recognizes only authoritative control-plane governed response waits", () => {
+    const event = {
+      eventType: "run.result.accepted",
+      payload: {
+        prpEvent: {
+          schema: "paperclip.prp.event.v1",
+          eventType: "run.result.accepted",
+          sourceKind: "control_plane",
+          payload: {
+            result: {
+              schema: "paperclip.run_result.v1",
+              reportedWorkDisposition: "yielded",
+              evidence: [{ ref: "interaction:pending" }],
+              artifacts: [
+                {
+                  kind: "issue_thread_interaction",
+                  ref: "interaction:pending",
+                },
+              ],
+              continuation: {
+                kind: "response_wake",
+                idempotencyKey: "interaction-response:pending",
+              },
+            },
+          },
+        },
+      },
+    };
+    expect(isControlPlaneGovernedResponseWait([event])).toBe(true);
+    expect(
+      isControlPlaneGovernedResponseWait([
+        {
+          ...event,
+          payload: {
+            prpEvent: {
+              ...event.payload.prpEvent,
+              sourceKind: "runner",
+            },
+          },
+        },
+      ]),
+    ).toBe(false);
+    expect(
+      isControlPlaneGovernedResponseWait([
+        {
+          ...event,
+          payload: {
+            prpEvent: {
+              ...event.payload.prpEvent,
+              payload: {
+                result: {
+                  ...event.payload.prpEvent.payload.result,
+                  artifacts: [],
+                },
+              },
+            },
+          },
+        },
+      ]),
+    ).toBe(false);
+    expect(
+      isControlPlaneGovernedResponseWait([
+        event,
+        { ...event, payload: structuredClone(event.payload) },
+      ]),
+    ).toBe(false);
+  });
+
+  it("requires continuity except for an explicit accepted-Plan reset", () => {
+    const initial = {
+      id: "initial",
+      sessionIdBefore: null,
+      sessionIdAfter: "session-one",
+    };
+    const resumed = {
+      id: "resumed",
+      sessionIdBefore: "session-one",
+      sessionIdAfter: "session-one",
+    };
+    const acceptedPlan = {
+      id: "accepted-plan",
+      sessionIdBefore: null,
+      sessionIdAfter: "session-two",
+      contextSnapshot: {
+        forceFreshSession: true,
+        workspaceRefreshReason: "accepted_plan_confirmation",
+        source: "issue.interaction.accept",
+        interactionStatus: "accepted",
+      },
+    };
+    expect(
+      providerSessionContinuityFailures("codex", [
+        initial,
+        resumed,
+        acceptedPlan,
+      ]),
+    ).toEqual([]);
+    expect(
+      providerSessionContinuityFailures("codex", [
+        initial,
+        { ...acceptedPlan, sessionIdAfter: "session-one" },
+      ]),
+    ).toEqual([
+      "expected accepted Plan run accepted-plan to rotate the codex provider session",
+    ]);
+    expect(
+      providerSessionContinuityFailures("codex", [
+        initial,
+        { ...resumed, sessionIdAfter: "session-two" },
+      ]),
+    ).toEqual([
+      "expected codex to preserve its provider session for run resumed",
+    ]);
+    expect(
+      acceptedPlanSessionResetFailures(
+        "acpx",
+        initial.sessionIdAfter,
+        acceptedPlan,
+      ),
+    ).toEqual([]);
+    expect(
+      acceptedPlanSessionResetFailures("acpx", initial.sessionIdAfter, {
+        ...acceptedPlan,
+        sessionIdBefore: initial.sessionIdAfter,
+      }),
+    ).toEqual([
+      "expected accepted Plan run accepted-plan to start without a prior provider session",
+    ]);
+    expect(
+      acceptedPlanSessionResetFailures("acpx", initial.sessionIdAfter, resumed),
+    ).toBeNull();
+  });
 });
 
 describe("runner E2E failure policy", () => {
@@ -320,6 +702,7 @@ describe("runner E2E failure policy", () => {
     expect(
       shouldRetryFailure(classifyFailure(new Error("marker matcher failed"))),
     ).toBe(false);
+    expect(shouldRetryFailure("provider_variance")).toBe(true);
     expect(
       classifyFailure(
         new Error(
@@ -354,6 +737,22 @@ describe("runner E2E failure policy", () => {
 });
 
 describe("runner E2E server isolation", () => {
+  it("shares restart control files beneath the isolated temporary root", () => {
+    expect(runnerE2EServerControlPaths("/tmp/cell")).toEqual({
+      controlDirectory: path.join("/tmp/cell", "control"),
+      restartRequestPath: path.join(
+        "/tmp/cell",
+        "control",
+        "server-restart.request.json",
+      ),
+      restartAcknowledgementPath: path.join(
+        "/tmp/cell",
+        "control",
+        "server-restart.ack.json",
+      ),
+    });
+  });
+
   it("strips database and paid-provider credentials from the Paperclip process", () => {
     const env = buildPaperclipServerEnvironment(
       {
@@ -376,6 +775,7 @@ describe("runner E2E server isolation", () => {
       {
         PAPERCLIP_HOME: "/tmp/cell/paperclip-home",
         PAPERCLIP_CONFIG: "/tmp/cell/paperclip-home/instances/e2e/config.json",
+        XDG_CACHE_HOME: "/tmp/cell/xdg-cache",
         PAPERCLIP_AGENT_JWT_SECRET: "generated-agent-jwt",
         PAPERCLIP_DECISION_SIGNING_SECRET: "generated-decision-key",
         PAPERCLIP_TOOL_ACTION_SIGNING_SECRET: "generated-tool-key",
@@ -388,6 +788,7 @@ describe("runner E2E server isolation", () => {
     expect(env.OPENAI_ORG_ID).toBeUndefined();
     expect(env.PAPERCLIP_API_KEY).toBeUndefined();
     expect(env.PAPERCLIP_AGENT_API_KEY).toBeUndefined();
+    expect(env.XDG_CACHE_HOME).toBe("/tmp/cell/xdg-cache");
     expect(env.PAPERCLIP_AGENT_JWT_SECRET).toBe("generated-agent-jwt");
     expect(env.PAPERCLIP_TASK_BRIDGE_TOKEN).toBeUndefined();
     expect(env.PAPERCLIP_SETUP_TOKEN).toBeUndefined();
@@ -475,6 +876,24 @@ describe("runner E2E evidence redaction", () => {
     expect(sanitizeJson({ nested: [secret] }, [secret])).toEqual({
       nested: ["[REDACTED]"],
     });
+    expect(
+      sanitizeJson(
+        {
+          metadata: {
+            apiKey: "opaque-provider-issued-value",
+            access_token: "opaque-access-token",
+            apiKeyRef: "DAYTONA_API_KEY",
+          },
+        },
+        [],
+      ),
+    ).toEqual({
+      metadata: {
+        apiKey: "[REDACTED]",
+        access_token: "[REDACTED]",
+        apiKeyRef: "DAYTONA_API_KEY",
+      },
+    });
     expect(sanitizeJson("paperclip.runner-e2e.evidence/v1", [secret])).toBe(
       "paperclip.runner-e2e.evidence/v1",
     );
@@ -543,7 +962,7 @@ describe("runner E2E evidence redaction", () => {
     ).resolves.toMatchObject({ file: forbiddenConfig });
   });
 
-  it("recognizes both managed and durable-session Codex runtime auth files", () => {
+  it("recognizes managed and durable Codex runtime auth files", () => {
     const root = path.join(os.tmpdir(), "paperclip-home");
     expect(
       isEphemeralCodexRuntimeAuthFile(
@@ -551,6 +970,15 @@ describe("runner E2E evidence redaction", () => {
         path.join(
           root,
           "instances/instance-1/companies/company-1/agents/agent-1/codex-home/auth.json",
+        ),
+      ),
+    ).toBe(true);
+    expect(
+      isEphemeralCodexRuntimeAuthFile(
+        root,
+        path.join(
+          root,
+          "instances/instance-1/runtime/paperclip-runner/acpx/acpx/session-1/codex-home/auth.json",
         ),
       ),
     ).toBe(true);

@@ -75,7 +75,10 @@ import {
 } from "../lib/issue-timeline-events";
 import { queryKeys } from "../lib/queryKeys";
 import { keepPreviousDataForSameQueryTail } from "../lib/query-placeholder-data";
-import { normalizeIssueQueuedCommentQueue } from "../lib/issue-queued-comment-queue";
+import {
+  mergePendingIssueQueuedComments,
+  normalizeIssueQueuedCommentQueue,
+} from "../lib/issue-queued-comment-queue";
 import { collectLiveIssueIds } from "../lib/liveIssueIds";
 import {
   hasLegacyIssueDetailQuery,
@@ -84,6 +87,7 @@ import {
   readIssueDetailBreadcrumb,
   readIssueDetailHeaderSeed,
   rememberIssueDetailLocationState,
+  shouldArmIssueDetailInboxQuickArchive,
 } from "../lib/issueDetailBreadcrumb";
 import {
   resolveIssueActiveRun,
@@ -143,6 +147,7 @@ import {
   upsertInterruptedRun,
 } from "../lib/optimistic-issue-runs";
 import { useProjectOrder } from "../hooks/useProjectOrder";
+import { recordRecentTask } from "../lib/recent-tasks";
 import {
   relativeTime,
   cn,
@@ -162,6 +167,7 @@ import {
 import { TaskChatThread } from "../components/TaskChatThread";
 import type { TaskChatIssueBrief } from "../components/task-chat/TaskChatDescriptionBubble";
 import { useClassicTaskInterfaceEnabled } from "../hooks/useClassicTaskInterfaceEnabled";
+import { useStreamlinedUiEnabled } from "../hooks/useStreamlinedUiEnabled";
 import { workModeMetaFor } from "../lib/work-mode-meta";
 import { IssueContinuationHandoff } from "../components/IssueContinuationHandoff";
 import { IssueAttachmentsSection } from "../components/IssueAttachmentsSection";
@@ -265,7 +271,10 @@ import { Textarea } from "@/components/ui/textarea";
 import { formatIssueActivityAction } from "@/lib/activity-format";
 import { copyTextToClipboard } from "../lib/clipboard";
 import { buildIssuePropertiesPanelKey } from "../lib/issue-properties-panel-key";
-import { buildAnsweredQuestionsDeliveryText } from "../lib/issue-thread-interactions";
+import {
+  buildAnsweredQuestionsDeliveryText,
+  buildIssueThreadInteractionSummary,
+} from "../lib/issue-thread-interactions";
 import { resolveIssueDocumentDeepLink } from "../lib/issue-document-deep-link";
 import {
   buildIssueSiblingNavigation,
@@ -962,6 +971,25 @@ function IssueChatSkeleton() {
   );
 }
 
+function useTaskDetailInterfaceMode() {
+  const {
+    enabled: classicTaskInterfacePreferenceEnabled,
+    loaded: classicTaskInterfaceLoaded,
+  } = useClassicTaskInterfaceEnabled();
+  const { enabled: streamlinedUiEnabled, loaded: streamlinedUiLoaded } =
+    useStreamlinedUiEnabled();
+  const classicTaskInterfaceEnabled = classicTaskInterfacePreferenceEnabled;
+  const taskChatShellEnabled = !classicTaskInterfaceEnabled;
+
+  return {
+    classicTaskInterfaceEnabled,
+    taskChatShellEnabled,
+    streamlinedTaskDetailEnabled: streamlinedUiEnabled && taskChatShellEnabled,
+    streamlinedUiEnabled,
+    loaded: classicTaskInterfaceLoaded && streamlinedUiLoaded,
+  };
+}
+
 function IssueDetailLoadingState({
   headerSeed,
 }: {
@@ -969,9 +997,7 @@ function IssueDetailLoadingState({
 }) {
   const identifier =
     headerSeed?.identifier ?? headerSeed?.id.slice(0, 8) ?? null;
-  const { enabled: classicTaskInterfaceEnabled } =
-    useClassicTaskInterfaceEnabled();
-  const taskChatShellEnabled = !classicTaskInterfaceEnabled;
+  const { taskChatShellEnabled } = useTaskDetailInterfaceMode();
 
   return (
     <div
@@ -1084,6 +1110,7 @@ function IssueDetailLoadingState({
 
 interface InboxMobileToolbarProps {
   backHref: string;
+  preferHistoryBack: boolean;
   issueId: string | undefined;
   issueHidden: boolean;
   onArchive: () => void;
@@ -1095,6 +1122,7 @@ interface InboxMobileToolbarProps {
 
 function InboxMobileToolbar({
   backHref,
+  preferHistoryBack,
   issueId: issueIdProp,
   issueHidden,
   onArchive,
@@ -1115,7 +1143,7 @@ function InboxMobileToolbar({
           // Use browser back when we have real history so the inbox
           // restores its scroll position. Fall back to a PUSH to
           // backHref when there's no prior entry (e.g. deep-link).
-          if (window.history.length > 1) {
+          if (preferHistoryBack && window.history.length > 1) {
             navigate(-1);
           } else {
             navigate(backHref);
@@ -1405,12 +1433,10 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   externalReferences,
   linkCaseReferences,
 }: IssueDetailChatTabProps) {
-  // Seam for the Classic Task Interface (flag: enableClassicTaskInterface).
-  // Flag ON renders the legacy IssueChatThread verbatim; flag OFF (the
-  // default) renders the chat-style TaskChatThread. Both components share one
-  // prop type, so no cast is needed.
-  const { enabled: classicTaskInterfaceEnabled } =
-    useClassicTaskInterfaceEnabled();
+  // Preserve master's Classic Task Interface seam: Streamlined UI changes the
+  // TaskChatThread presentation but never swaps it for IssueChatThread.
+  const { classicTaskInterfaceEnabled, streamlinedTaskDetailEnabled } =
+    useTaskDetailInterfaceMode();
   const ThreadComponent = classicTaskInterfaceEnabled
     ? IssueChatThread
     : TaskChatThread;
@@ -1430,7 +1456,8 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   });
   const resolvedLiveRuns = liveRuns ?? [];
   const liveRunCount = resolvedLiveRuns.length;
-  const activeRunQueryEnabled = !!executionRunId || issueStatus === "in_progress";
+  const activeRunQueryEnabled =
+    !!executionRunId || issueStatus === "in_progress";
   const { data: activeRun = null, isFetched: activeRunFetched } = useQuery({
     queryKey: queryKeys.issues.activeRun(issueId),
     queryFn: () => heartbeatsApi.activeRunForIssue(issueId),
@@ -1455,20 +1482,16 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
       (run) => run.status === "running" || run.status === "queued",
     ) ??
     null;
-  // Do not briefly enable runner-only queue traffic from the current assignee
-  // while the authoritative active-run lookup is still loading. A task can be
-  // reassigned to a Paperclip Runner agent while an existing direct-adapter
-  // run remains active; that legacy run must never create or poll native queue
-  // state.
+  // Do not briefly select queue behavior from the current assignee while the
+  // authoritative active-run lookup is still loading. The active runtime owns
+  // the protocol: native Paperclip turns can steer in place, while legacy
+  // adapters expose the same composer queue with an interrupt fallback.
   const runtimeSelectionKnown =
     liveRunsFetched && (!activeRunQueryEnabled || activeRunFetched);
-  const paperclipQueueEnabled =
+  const queuedCommentQueueEnabled =
     !classicTaskInterfaceEnabled &&
     runtimeSelectionKnown &&
-    (liveRuntimeRun
-      ? liveRuntimeRun.runtimeMode === "native" &&
-        liveRuntimeRun.adapterType === "paperclip_runner"
-      : assigneeUsesPaperclipRunner);
+    Boolean(liveRuntimeRun || assigneeUsesPaperclipRunner);
   const { data: authoritativeQueuedCommentQueue } = useQuery({
     queryKey: queryKeys.issues.queuedComments(issueId),
     queryFn: async () =>
@@ -1476,8 +1499,8 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
         await issuesApi.getQueuedComments(issueId),
         issueId,
       ),
-    enabled: paperclipQueueEnabled,
-    refetchInterval: paperclipQueueEnabled ? 1000 : false,
+    enabled: queuedCommentQueueEnabled,
+    refetchInterval: queuedCommentQueueEnabled ? 1000 : false,
   });
   const [consumedQueuedCommentIds, setConsumedQueuedCommentIds] = useState<
     ReadonlySet<string>
@@ -1485,10 +1508,19 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   const [discardedQueuedCommentIds, setDiscardedQueuedCommentIds] = useState<
     ReadonlySet<string>
   >(() => new Set());
+  const [localSteeringPlacements, setLocalSteeringPlacements] = useState<
+    ReadonlyMap<
+      string,
+      { targetRunId: string; anchorAt: string; sequence: number }
+    >
+  >(() => new Map());
   useEffect(() => {
     setConsumedQueuedCommentIds(new Set());
     setDiscardedQueuedCommentIds(new Set());
-  }, [authoritativeQueuedCommentQueue?.queueId, issueId]);
+  }, [issueId]);
+  useEffect(() => {
+    setLocalSteeringPlacements(new Map());
+  }, [issueId]);
   const hasLiveRuns = liveRunCount > 0 || !!resolvedActiveRun;
   const { data: linkedRuns } = useQuery({
     queryKey: queryKeys.issues.runs(issueId),
@@ -1654,6 +1686,16 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
         kind: "steer",
       });
     }
+    for (const [commentId, placement] of localSteeringPlacements) {
+      if (inputPlacementByCommentId.has(commentId)) continue;
+      inputPlacementByCommentId.set(commentId, {
+        runId: placement.targetRunId,
+        anchorAt: placement.anchorAt,
+        sequence: placement.sequence,
+        anchorMs: new Date(placement.anchorAt).getTime(),
+        kind: "steer",
+      });
+    }
     for (const evt of resolvedActivity) {
       if (evt.action !== "issue.comment_added" || !evt.runId) continue;
       const details = evt.details ?? {};
@@ -1687,6 +1729,45 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
     const projectedComments = comments.map((comment) => {
       const meta = runMetaByCommentId.get(comment.id);
       const inputPlacement = inputPlacementByCommentId.get(comment.id);
+      const submittedAtMs = new Date(comment.createdAt).getTime();
+      // Older activity rows may predate the explicit followUpRequested flag.
+      // A run-start input is a provable queued follow-up only when it was
+      // submitted during a completed run for this issue and the same agent,
+      // before the target run consumed it. Merely overlapping any linked run
+      // is not enough: issue activity can link otherwise unrelated runs.
+      const targetRun =
+        inputPlacement?.kind === "run_start"
+          ? resolvedLinkedRuns.find((run) => run.runId === inputPlacement.runId)
+          : undefined;
+      const targetStartedAtMs = targetRun
+        ? new Date(targetRun.startedAt ?? targetRun.createdAt).getTime()
+        : Number.NaN;
+      const submittedDuringSourceRun = Boolean(
+        targetRun?.contextIssueId === issueId &&
+        Number.isFinite(targetStartedAtMs) &&
+        Number.isFinite(submittedAtMs) &&
+        resolvedLinkedRuns.some((run) => {
+          if (
+            run.runId === targetRun.runId ||
+            run.agentId !== targetRun.agentId ||
+            run.contextIssueId !== issueId ||
+            !run.finishedAt
+          ) {
+            return false;
+          }
+          const startedAtMs = new Date(
+            run.startedAt ?? run.createdAt,
+          ).getTime();
+          const finishedAtMs = new Date(run.finishedAt).getTime();
+          return (
+            Number.isFinite(startedAtMs) &&
+            Number.isFinite(finishedAtMs) &&
+            startedAtMs <= submittedAtMs &&
+            submittedAtMs <= finishedAtMs &&
+            finishedAtMs <= targetStartedAtMs
+          );
+        }),
+      );
       const nextComment: IssueDetailComment = {
         ...comment,
         ...(meta ?? {}),
@@ -1701,13 +1782,16 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
             }
           : {}),
       };
-      if (followUpCommentIds.has(comment.id)) {
+      if (followUpCommentIds.has(comment.id) || submittedDuringSourceRun) {
         nextComment.followUpRequested = true;
       }
       const queuedTargetRunId =
         locallyQueuedCommentRunIds.get(comment.id) ??
         nextComment.queueTargetRunId ??
         null;
+      if (inputPlacement?.kind === "steer") {
+        return nextComment;
+      }
       const locallyQueuedComment = applyLocalQueuedIssueCommentState(
         nextComment,
         {
@@ -1720,9 +1804,6 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
       );
       if (locallyQueuedComment !== nextComment) {
         return locallyQueuedComment;
-      }
-      if (inputPlacement?.kind === "steer") {
-        return nextComment;
       }
       // A queued target is fixed when the message is submitted. If that run
       // settles while the request is still in flight, do not rebind the
@@ -1784,78 +1865,77 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
     }
     const responseComments = classicTaskInterfaceEnabled
       ? []
-      : interactions.flatMap(
-          (interaction): IssueDetailComment[] => {
-            const answeredQuestions =
-              interaction.kind === "ask_user_questions" &&
-              interaction.status === "answered";
-            const resolvedPlanDecision =
-              isPlanConfirmationInteraction(interaction) &&
-              (interaction.status === "accepted" ||
-                interaction.status === "rejected");
-            if (
-              (!answeredQuestions && !resolvedPlanDecision) ||
-              !interaction.resolvedAt
-            ) {
-              return [];
-            }
-            const resolvedAt =
-              interaction.resolvedAt instanceof Date
-                ? interaction.resolvedAt
-                : new Date(interaction.resolvedAt);
-            if (Number.isNaN(resolvedAt.getTime())) return [];
-            const delivery = answeredQuestions
-              ? (questionDeliveryByInteractionId.get(interaction.id) ?? null)
+      : interactions.flatMap((interaction): IssueDetailComment[] => {
+          const answeredQuestions =
+            interaction.kind === "ask_user_questions" &&
+            interaction.status === "answered";
+          const resolvedPlanDecision =
+            isPlanConfirmationInteraction(interaction) &&
+            (interaction.status === "accepted" ||
+              interaction.status === "rejected");
+          if (
+            (!answeredQuestions && !resolvedPlanDecision) ||
+            !interaction.resolvedAt
+          ) {
+            return [];
+          }
+          const resolvedAt =
+            interaction.resolvedAt instanceof Date
+              ? interaction.resolvedAt
+              : new Date(interaction.resolvedAt);
+          if (Number.isNaN(resolvedAt.getTime())) return [];
+          const delivery = answeredQuestions
+            ? (questionDeliveryByInteractionId.get(interaction.id) ?? null)
+            : null;
+          const queuedTargetRunId =
+            interaction.sourceRunId &&
+            interruptibleIssueRun?.id === interaction.sourceRunId &&
+            interruptibleIssueRun.adapterType !== "paperclip_runner"
+              ? interaction.sourceRunId
               : null;
-            const queuedTargetRunId =
-              interaction.sourceRunId &&
-              interruptibleIssueRun?.id === interaction.sourceRunId &&
-              interruptibleIssueRun.adapterType !== "paperclip_runner"
-                ? interaction.sourceRunId
-                : null;
-            const body =
-              interaction.kind === "ask_user_questions"
-                ? buildAnsweredQuestionsDeliveryText(interaction)
-                : isPlanConfirmationInteraction(interaction)
-                  ? buildPlanDecisionResponseText(interaction)
-                  : "";
-            return [
-              {
-                id: `interaction-response:${interaction.id}`,
-                companyId: interaction.companyId,
-                issueId: interaction.issueId,
-                authorType: interaction.resolvedByAgentId ? "agent" : "user",
-                authorAgentId: interaction.resolvedByAgentId ?? null,
-                authorUserId: interaction.resolvedByUserId ?? null,
-                createdByRunId: interaction.resolvedByRunId ?? null,
-                body,
-                presentation: null,
-                metadata: null,
-                createdAt: resolvedAt,
-                updatedAt: resolvedAt,
-                consumedByRunId: delivery?.targetRunId ?? null,
-                ...(delivery?.deliveryMode === "steered"
-                  ? { steeredIntoRunId: delivery.targetRunId }
-                  : {}),
-                conversationAnchorAt: resolvedAt,
-                conversationAnchorSequence: 0,
-                ...(queuedTargetRunId
-                  ? {
-                      queueState: "queued" as const,
-                      queueTargetRunId: queuedTargetRunId,
-                      queueReason: queuedCommentReason,
-                    }
-                  : {}),
-              },
-            ];
-          },
-        );
+          const body =
+            interaction.kind === "ask_user_questions"
+              ? buildAnsweredQuestionsDeliveryText(interaction)
+              : isPlanConfirmationInteraction(interaction)
+                ? buildPlanDecisionResponseText(interaction)
+                : "";
+          return [
+            {
+              id: `interaction-response:${interaction.id}`,
+              companyId: interaction.companyId,
+              issueId: interaction.issueId,
+              authorType: interaction.resolvedByAgentId ? "agent" : "user",
+              authorAgentId: interaction.resolvedByAgentId ?? null,
+              authorUserId: interaction.resolvedByUserId ?? null,
+              createdByRunId: interaction.resolvedByRunId ?? null,
+              body,
+              presentation: null,
+              metadata: null,
+              createdAt: resolvedAt,
+              updatedAt: resolvedAt,
+              consumedByRunId: delivery?.targetRunId ?? null,
+              ...(delivery?.deliveryMode === "steered"
+                ? { steeredIntoRunId: delivery.targetRunId }
+                : {}),
+              conversationAnchorAt: resolvedAt,
+              conversationAnchorSequence: 0,
+              ...(queuedTargetRunId
+                ? {
+                    queueState: "queued" as const,
+                    queueTargetRunId: queuedTargetRunId,
+                    queueReason: queuedCommentReason,
+                  }
+                : {}),
+            },
+          ];
+        });
     return [...projectedComments, ...responseComments];
   }, [
     comments,
     classicTaskInterfaceEnabled,
     interactions,
     liveRunIds,
+    localSteeringPlacements,
     locallyQueuedCommentRunIds,
     queuedCommentReason,
     resolvedActivity,
@@ -1863,23 +1943,54 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
     interruptibleIssueRun,
   ]);
   const effectiveQueuedCommentQueue = useMemo(() => {
-    if (!paperclipQueueEnabled || !authoritativeQueuedCommentQueue?.queueId)
-      return null;
-    return {
-      ...authoritativeQueuedCommentQueue,
-      entries: authoritativeQueuedCommentQueue.entries
-        .filter(
-          (entry) =>
-            !consumedQueuedCommentIds.has(entry.comment.id) &&
-            !discardedQueuedCommentIds.has(entry.comment.id),
-        )
-        .map((entry, position) => ({ ...entry, position })),
-    };
+    if (!queuedCommentQueueEnabled) return null;
+    const visibleAuthoritativeQueue = authoritativeQueuedCommentQueue
+      ? {
+          ...authoritativeQueuedCommentQueue,
+          entries: authoritativeQueuedCommentQueue.entries.filter(
+            (entry) =>
+              !consumedQueuedCommentIds.has(entry.comment.id) &&
+              !discardedQueuedCommentIds.has(entry.comment.id),
+          ),
+        }
+      : null;
+    const pendingComments = commentsWithRunMeta.flatMap((comment) => {
+      if (
+        consumedQueuedCommentIds.has(comment.id) ||
+        discardedQueuedCommentIds.has(comment.id) ||
+        comment.steeredIntoRunId
+      ) {
+        return [];
+      }
+      const targetRunId =
+        locallyQueuedCommentRunIds.get(comment.id) ??
+        ("clientStatus" in comment && comment.clientStatus === "queued"
+          ? (comment.queueTargetRunId ?? null)
+          : comment.queueState === "queued"
+            ? (comment.queueTargetRunId ?? null)
+            : null);
+      return targetRunId ? [{ comment, targetRunId }] : [];
+    });
+    const fallbackProtocol =
+      liveRuntimeRun?.runtimeMode === "native" &&
+      liveRuntimeRun.adapterType === "paperclip_runner"
+        ? "paperclip_runner_v1"
+        : "legacy";
+    return mergePendingIssueQueuedComments({
+      issueId,
+      authoritativeQueue: visibleAuthoritativeQueue,
+      pendingComments,
+      fallbackProtocol,
+    });
   }, [
     authoritativeQueuedCommentQueue,
+    commentsWithRunMeta,
     consumedQueuedCommentIds,
     discardedQueuedCommentIds,
-    paperclipQueueEnabled,
+    issueId,
+    liveRuntimeRun,
+    locallyQueuedCommentRunIds,
+    queuedCommentQueueEnabled,
   ]);
   const commentsForThread = useMemo(
     () =>
@@ -1889,6 +2000,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
         return [
           {
             ...comment,
+            clientStatus: undefined,
             queueState: undefined,
             queueTargetRunId: null,
             queueReason: undefined,
@@ -1985,6 +2097,16 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
         throw new Error(
           "The queued message no longer has an active run target.",
         );
+      const anchorAt = new Date().toISOString();
+      setLocalSteeringPlacements((current) => {
+        const next = new Map(current);
+        const sequence = [...current.values()].filter(
+          (placement) => placement.targetRunId === targetRunId,
+        ).length;
+        next.set(commentId, { targetRunId, anchorAt, sequence });
+        return next;
+      });
+      setConsumedQueuedCommentIds((current) => new Set(current).add(commentId));
       try {
         const nextQueue = await issuesApi.steerQueuedComment(
           issueId,
@@ -1995,12 +2117,10 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
             revision,
           },
         );
-        // Keep the message in the composer queue until its durable steering
-        // acknowledgement has refreshed. Removing it first briefly projects the
-        // comment as an ordinary historical bubble above one unsplit live turn;
-        // the later activity refresh then re-sorts it into the middle. Publish
-        // the queue removal only after comment + activity placement are ready so
-        // the blue bubble enters the timeline once, at its final causal slot.
+        // The local steering placement already promoted the message into the
+        // active turn. Refresh its durable acknowledgement before publishing
+        // the returned queue so the local and server anchors hand off without a
+        // bubble-to-queue-to-bubble jump.
         await Promise.all([
           queryClient.invalidateQueries({
             queryKey: queryKeys.issues.comments(issueId),
@@ -2010,10 +2130,17 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
           }),
         ]);
         storeQueuedCommentQueue(nextQueue);
-        setConsumedQueuedCommentIds((current) =>
-          new Set(current).add(commentId),
-        );
       } catch (error) {
+        setConsumedQueuedCommentIds((current) => {
+          const next = new Set(current);
+          next.delete(commentId);
+          return next;
+        });
+        setLocalSteeringPlacements((current) => {
+          const next = new Map(current);
+          next.delete(commentId);
+          return next;
+        });
         await refreshQueueAfterConflict(error);
       }
     },
@@ -2043,6 +2170,19 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
         );
         setDiscardedQueuedCommentIds((current) =>
           new Set(current).add(commentId),
+        );
+        // Discard deletes the persisted issue comment. Remove the cached copy
+        // in the same commit as the queue update so it cannot briefly return as
+        // a normal user bubble when the now-empty queue loses its queueId.
+        queryClient.setQueryData<
+          InfiniteData<IssueComment[], string | null> | undefined
+        >(queryKeys.issues.comments(issueId), (current) =>
+          current
+            ? {
+                ...current,
+                pages: removeIssueCommentFromPages(current.pages, commentId),
+              }
+            : current,
         );
         await queryClient.invalidateQueries({
           queryKey: queryKeys.issues.comments(issueId),
@@ -2132,7 +2272,12 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
         ) : (
           // Chat shell: center the bubbles at the thread cap (mirrors
           // TaskChatThreadView) and dock a composer placeholder beneath them.
-          <div className="mx-auto flex w-full max-w-(--tc-shell-max-w) flex-col gap-3 px-4 py-4">
+          <div
+            className={cn(
+              "mx-auto flex w-full max-w-(--tc-shell-max-w) flex-col gap-3 px-4 py-4",
+              streamlinedTaskDetailEnabled && "md:px-0",
+            )}
+          >
             <IssueChatSkeleton />
             <IssueChatComposerSkeleton className="mt-3" />
           </div>
@@ -2632,16 +2777,16 @@ function IssueDetailActivityTab({
 export function IssueDetail() {
   const { issueId } = useParams<{ issueId: string }>();
   const { selectedCompanyId } = useCompany();
-  // Classic Task Interface (flag: enableClassicTaskInterface): with the flag
-  // OFF (the default) the chat-style thread owns the center column — the
-  // legacy title/description block, sub-tasks table, plan decompositions and
-  // Documents section are gated off (plan lives in the properties-pane Plan
-  // tab). Flag ON restores the legacy page.
+  // Classic Task Interface remains the sole task-chat-vs-pre-chat switch from
+  // master. Streamlined UI only layers the new task-detail presentation onto
+  // master's default task-chat shell.
   const {
-    enabled: classicTaskInterfaceEnabled,
-    loaded: classicTaskInterfaceLoaded,
-  } = useClassicTaskInterfaceEnabled();
-  const taskChatShellEnabled = !classicTaskInterfaceEnabled;
+    classicTaskInterfaceEnabled,
+    taskChatShellEnabled,
+    streamlinedTaskDetailEnabled,
+    streamlinedUiEnabled,
+    loaded: taskInterfaceSettingsLoaded,
+  } = useTaskDetailInterfaceMode();
   // Chat-style: the page wrapper spans the full center pane so the thread's
   // scroll viewport (and its scrollbar) reaches the properties-pane border;
   // every non-thread section re-centers itself at the 60rem shell cap instead.
@@ -2649,9 +2794,20 @@ export function IssueDetail() {
     ? "mx-auto w-full max-w-(--tc-shell-max-w)"
     : undefined;
   const { openNewIssue } = useDialogActions();
-  const { openPanel, closePanel, panelVisible, setPanelVisible } = usePanel();
-  const { setBreadcrumbs, setBreadcrumbToolbar, setMobileToolbar } =
-    useBreadcrumbs();
+  const {
+    openPanel,
+    closePanel,
+    panelVisible,
+    setPanelVisible,
+    requestPanelMaximize,
+    clearPanelMaximizeRequest,
+  } = usePanel();
+  const {
+    setBreadcrumbs,
+    setBreadcrumbToolbar,
+    setBreadcrumbPanelControl,
+    setMobileToolbar,
+  } = useBreadcrumbs();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const navigationType = useNavigationType();
@@ -2703,6 +2859,25 @@ export function IssueDetail() {
     () =>
       readIssueDetailLocationState(issueId, location.state, location.search),
     [issueId, location.state, location.search],
+  );
+  const relationIssueLinkState = useMemo(() => {
+    const sourceState = resolvedIssueDetailState ?? location.state;
+    if (!streamlinedTaskDetailEnabled) return sourceState;
+    if (typeof sourceState !== "object" || sourceState === null)
+      return sourceState;
+    return {
+      ...sourceState,
+      // The inbox `y` shortcut is intentionally armed only for the selected
+      // inbox row. Preserve the origin/breadcrumb when opening a related task,
+      // but do not let that one-row archive affordance leak to the relation.
+      issueDetailInboxQuickArchiveArmed: false,
+    };
+  }, [location.state, resolvedIssueDetailState, streamlinedTaskDetailEnabled]);
+  const preferInboxHistoryBack = useMemo(
+    () =>
+      readIssueDetailLocationState(null, location.state)?.issueDetailSource ===
+      "inbox",
+    [location.state],
   );
   const issueHeaderSeed = useMemo(
     () =>
@@ -2830,7 +3005,8 @@ export function IssueDetail() {
 
   const { data: workProducts } = useQuery({
     queryKey: queryKeys.issues.workProducts(issueId!),
-    queryFn: () => issuesApi.listWorkProducts(issueId!, { refreshPullRequests: true }),
+    queryFn: () =>
+      issuesApi.listWorkProducts(issueId!, { refreshPullRequests: true }),
     enabled: !!issueId,
     refetchOnMount: "always",
     placeholderData: keepPreviousDataForSameQueryTail<IssueWorkProduct[]>(
@@ -2974,7 +3150,7 @@ export function IssueDetail() {
     ),
   });
 
-  const { data: session } = useQuery({
+  const { data: session, isFetched: sessionResolved } = useQuery({
     queryKey: queryKeys.auth.session,
     queryFn: () => authApi.getSession(),
   });
@@ -2985,6 +3161,10 @@ export function IssueDetail() {
     enabled: !!selectedCompanyId,
   });
   const currentUserId = session?.user?.id ?? session?.session?.userId ?? null;
+  useEffect(() => {
+    if (!streamlinedUiEnabled || !issue || !sessionResolved) return;
+    recordRecentTask(issue, currentUserId);
+  }, [issue, currentUserId, sessionResolved, streamlinedUiEnabled]);
   const { data: boardAccess } = useQuery({
     queryKey: queryKeys.access.currentBoardAccess,
     queryFn: () => accessApi.getCurrentBoardAccess(),
@@ -3193,6 +3373,18 @@ export function IssueDetail() {
     }
     setPanelVisible(true);
   }, [issue?.id, setPanelVisible, suppressPanelUntilPlan]);
+  const toggleTaskSidePanel = useCallback(() => {
+    if (!panelVisible || suppressPanelUntilPlan) {
+      openTaskSidePanel();
+      return;
+    }
+    setPanelVisible(false);
+  }, [
+    openTaskSidePanel,
+    panelVisible,
+    setPanelVisible,
+    suppressPanelUntilPlan,
+  ]);
   const showRichSubIssuesSection = shouldRenderRichSubIssuesSection(
     childIssuesLoading,
     childIssues.length,
@@ -3576,6 +3768,9 @@ export function IssueDetail() {
       const issueRefs = new Set<string>([issueId!, nextIssue.id]);
       if (nextIssue.identifier) issueRefs.add(nextIssue.identifier);
       mergeIssueResponseIntoCaches(issueRefs, nextIssue);
+      if (streamlinedUiEnabled && sessionResolved) {
+        recordRecentTask(nextIssue, currentUserId);
+      }
       queryClient.invalidateQueries({
         queryKey: queryKeys.issues.activity(issueId!),
       });
@@ -3944,13 +4139,12 @@ export function IssueDetail() {
     [updateChildIssue.mutate],
   );
 
-  // PAP-496: the chat shell keeps the full sub-task tree directly below the
-  // title in the center column. This is the tree's single chat-shell home; the
-  // Properties pane does not duplicate it. Classic mode keeps its existing
-  // center-column section below the header.
   const subTasksTree = useMemo(
     () =>
-      taskChatShellEnabled && issue && showRichSubIssuesSection ? (
+      taskChatShellEnabled &&
+      !streamlinedTaskDetailEnabled &&
+      issue &&
+      showRichSubIssuesSection ? (
         <IssuesList
           issues={childIssues}
           isLoading={childIssuesLoading}
@@ -3975,6 +4169,7 @@ export function IssueDetail() {
       ) : null,
     [
       taskChatShellEnabled,
+      streamlinedTaskDetailEnabled,
       issue,
       showRichSubIssuesSection,
       childIssues,
@@ -4161,6 +4356,9 @@ export function IssueDetail() {
           next.set(comment.id, context.queuedCommentTargetRunId!);
           return next;
         });
+        void queryClient.invalidateQueries({
+          queryKey: queryKeys.issues.queuedComments(issueId!),
+        });
       }
       queryClient.setQueryData<InfiniteData<IssueComment[], string | null>>(
         queryKeys.issues.comments(issueId!),
@@ -4180,6 +4378,13 @@ export function IssueDetail() {
           current.filter(
             (entry) => entry.clientId !== context.optimisticCommentId,
           ),
+        );
+      }
+      if (streamlinedUiEnabled && issue && sessionResolved) {
+        recordRecentTask(
+          issue,
+          currentUserId,
+          new Date(comment.createdAt).getTime(),
         );
       }
     },
@@ -4286,7 +4491,7 @@ export function IssueDetail() {
       pushToast({
         title:
           interaction.kind === "request_confirmation"
-            ? "Request declined"
+            ? buildIssueThreadInteractionSummary(interaction)
             : "Suggestion rejected",
         tone: "success",
       });
@@ -4519,6 +4724,9 @@ export function IssueDetail() {
           const next = new Map(current);
           next.set(comment.id, context.queuedCommentTargetRunId!);
           return next;
+        });
+        void queryClient.invalidateQueries({
+          queryKey: queryKeys.issues.queuedComments(issueId!),
         });
       }
       if (comment) {
@@ -5016,8 +5224,31 @@ export function IssueDetail() {
   ]);
 
   useEffect(() => {
+    if (!streamlinedTaskDetailEnabled || !taskChatShellEnabled || !issue?.id) {
+      setBreadcrumbPanelControl(null);
+      return;
+    }
+
+    setBreadcrumbPanelControl({
+      open: panelVisible && !suppressPanelUntilPlan,
+      onToggle: toggleTaskSidePanel,
+    });
+
+    return () => setBreadcrumbPanelControl(null);
+  }, [
+    issue?.id,
+    panelVisible,
+    setBreadcrumbPanelControl,
+    streamlinedTaskDetailEnabled,
+    suppressPanelUntilPlan,
+    taskChatShellEnabled,
+    toggleTaskSidePanel,
+  ]);
+
+  useEffect(() => {
     const showTaskPanelLauncher =
       taskChatShellEnabled &&
+      !streamlinedTaskDetailEnabled &&
       !isMobile &&
       Boolean(issue?.id) &&
       (!panelVisible || suppressPanelUntilPlan);
@@ -5042,6 +5273,7 @@ export function IssueDetail() {
     openTaskSidePanel,
     panelVisible,
     setBreadcrumbToolbar,
+    streamlinedTaskDetailEnabled,
     suppressPanelUntilPlan,
     taskChatShellEnabled,
   ]);
@@ -5113,6 +5345,9 @@ export function IssueDetail() {
     const sharedProps = {
       issue: panelIssue,
       childIssues: panelChildIssues,
+      issueLinkState: streamlinedTaskDetailEnabled
+        ? relationIssueLinkState
+        : undefined,
       onAddSubIssue: openNewSubIssue,
       onUpdate: handleIssuePropertiesUpdate,
       hasActiveRun: resolvedHasActiveRun,
@@ -5140,6 +5375,8 @@ export function IssueDetail() {
           {...sharedProps}
           accountScope={currentUserId ?? "anonymous"}
           fileTabsEnabled={fileViewerEnabled}
+          streamlinedTabs={streamlinedTaskDetailEnabled}
+          showSubtasksTab={streamlinedTaskDetailEnabled}
         />,
         { contentMode: "full-bleed" },
       );
@@ -5156,6 +5393,8 @@ export function IssueDetail() {
     panelChildIssues,
     panelIssue,
     suppressPanelUntilPlan,
+    relationIssueLinkState,
+    streamlinedTaskDetailEnabled,
     resolvedHasActiveRun,
     checkIssueMonitorNow.isPending,
     checkIssueMonitorNow.mutate,
@@ -5172,7 +5411,11 @@ export function IssueDetail() {
 
   const goToInboxShortcutArmedRef = useRef(false);
   const goToInboxShortcutTimeoutRef = useRef<number | null>(null);
-  const canQuickArchiveFromInbox = keyboardShortcutsEnabled && !issue?.hiddenAt;
+  const canQuickArchiveFromInbox =
+    keyboardShortcutsEnabled &&
+    (!streamlinedUiEnabled ||
+      (isFromInbox && shouldArmIssueDetailInboxQuickArchive(location.state))) &&
+    !issue?.hiddenAt;
 
   useEffect(() => {
     if (!issue?.id || !canQuickArchiveFromInbox) return;
@@ -5305,6 +5548,12 @@ export function IssueDetail() {
     sourceBreadcrumb.href,
   ]);
 
+  // One maximize request per issue + `viewer=full` hash: routing re-runs
+  // whenever a callback dependency changes identity, and re-requesting then
+  // would re-maximize a pane the user deliberately restored. The key carries
+  // the issue param so navigating to another issue with an identical hash
+  // still maximizes the destination pane.
+  const lastMaximizeRequestKeyRef = useRef<string | null>(null);
   const routeIssueDocumentDeepLink = useCallback(
     (hash: string) => {
       const route = resolveIssueDocumentDeepLink(hash);
@@ -5319,7 +5568,7 @@ export function IssueDetail() {
 
       // The classic interface owns document links in its center-column
       // Documents section. Do not open its tab-less properties panel.
-      if (!classicTaskInterfaceLoaded || !taskChatShellEnabled) return false;
+      if (!taskInterfaceSettingsLoaded || !taskChatShellEnabled) return false;
 
       if (isMobile) {
         setMobilePropsOpen(true);
@@ -5328,6 +5577,16 @@ export function IssueDetail() {
           setPanelBeforePlanOverrideIssueId(issue.id);
         }
         setPanelVisible(true);
+        // `viewer=full` (LOOA-2181): external links (Slack approval cards)
+        // land with the pane maximized. Mobile uses the sheet, which is
+        // already full-screen, so the request is desktop-only.
+        if (route.maximize) {
+          const requestKey = `${issueId ?? ""}::${hash}`;
+          if (lastMaximizeRequestKeyRef.current !== requestKey) {
+            lastMaximizeRequestKeyRef.current = requestKey;
+            requestPanelMaximize();
+          }
+        }
       }
       const targetIssueId = issue?.id ?? issueId ?? "";
       setDocumentDeepLink((current) => ({
@@ -5340,11 +5599,12 @@ export function IssueDetail() {
       return true;
     },
     [
-      classicTaskInterfaceLoaded,
+      taskInterfaceSettingsLoaded,
       isMobile,
       issue?.id,
       issueId,
       setPanelVisible,
+      requestPanelMaximize,
       suppressPanelUntilPlan,
       taskChatShellEnabled,
     ],
@@ -5353,8 +5613,26 @@ export function IssueDetail() {
   useEffect(() => {
     if (!routeIssueDocumentDeepLink(location.hash)) {
       setDocumentDeepLink(null);
+      // The deep link ended (hash cleared or issue changed): drop any
+      // maximize request the panel never consumed so it cannot maximize a
+      // later, unrelated panel, and re-arm for the next viewer=full hash.
+      lastMaximizeRequestKeyRef.current = null;
+      clearPanelMaximizeRequest();
     }
-  }, [issueId, location.hash, routeIssueDocumentDeepLink]);
+  }, [
+    issueId,
+    location.hash,
+    routeIssueDocumentDeepLink,
+    clearPanelMaximizeRequest,
+  ]);
+
+  // Leaving the issue page entirely also ends the deep link's lifetime.
+  useEffect(
+    () => () => {
+      clearPanelMaximizeRequest();
+    },
+    [clearPanelMaximizeRequest],
+  );
 
   // React Router does not emit a location update when the user clicks a link
   // whose hash is already current. Capture that repeated intent so a manually
@@ -5619,6 +5897,7 @@ export function IssueDetail() {
     setMobileToolbar(
       <InboxMobileToolbar
         backHref={backHref}
+        preferHistoryBack={streamlinedUiEnabled ? preferInboxHistoryBack : true}
         issueId={issue?.id}
         issueHidden={issueHidden}
         archivePending={archivePending}
@@ -5633,6 +5912,8 @@ export function IssueDetail() {
   }, [
     showInboxToolbar,
     backHref,
+    preferInboxHistoryBack,
+    streamlinedUiEnabled,
     issue?.id,
     issueHidden,
     archivePending,
@@ -6365,52 +6646,88 @@ export function IssueDetail() {
   // scroll viewport, so they scroll away with the messages and the composer
   // stays near the viewport bottom. Flag OFF renders the same nodes in the
   // page flow, in their original order relative to the alert banners.
-  const ancestorsNav = ancestors.length > 0 && (
-    <nav
-      className={cn(
-        "flex items-center gap-1 text-xs text-muted-foreground flex-wrap",
-        shellSectionClass,
-      )}
-    >
-      {[...ancestors].reverse().map((ancestor, i) => (
-        <span key={ancestor.id} className="flex items-center gap-1">
-          {i > 0 && <ChevronRight className="h-3 w-3 shrink-0" />}
-          <Link
-            to={createIssueDetailPath(ancestor.identifier ?? ancestor.id)}
-            state={resolvedIssueDetailState ?? location.state}
-            onClickCapture={() =>
-              rememberIssueDetailLocationState(
-                ancestor.identifier ?? ancestor.id,
-                resolvedIssueDetailState ?? location.state,
-                location.search,
-              )
-            }
-            className="hover:text-foreground transition-colors truncate max-w-(--sz-200px)"
-            title={ancestor.title}
-          >
-            {ancestor.title}
-          </Link>
+  const ancestorsNav =
+    !streamlinedTaskDetailEnabled && ancestors.length > 0 ? (
+      <nav
+        className={cn(
+          "flex items-center gap-1 text-xs text-muted-foreground flex-wrap",
+          shellSectionClass,
+        )}
+      >
+        {[...ancestors].reverse().map((ancestor, i) => (
+          <span key={ancestor.id} className="flex items-center gap-1">
+            {i > 0 && <ChevronRight className="h-3 w-3 shrink-0" />}
+            <Link
+              to={createIssueDetailPath(ancestor.identifier ?? ancestor.id)}
+              state={resolvedIssueDetailState ?? location.state}
+              onClickCapture={() =>
+                rememberIssueDetailLocationState(
+                  ancestor.identifier ?? ancestor.id,
+                  resolvedIssueDetailState ?? location.state,
+                  location.search,
+                )
+              }
+              className="hover:text-foreground transition-colors truncate max-w-(--sz-200px)"
+              title={ancestor.title}
+            >
+              {ancestor.title}
+            </Link>
+          </span>
+        ))}
+        <ChevronRight className="h-3 w-3 shrink-0" />
+        <span className="text-foreground/60 truncate max-w-(--sz-200px)">
+          {issue.title}
         </span>
-      ))}
-      <ChevronRight className="h-3 w-3 shrink-0" />
-      <span className="text-foreground/60 truncate max-w-(--sz-200px)">
-        {issue.title}
-      </span>
-    </nav>
+      </nav>
+    ) : null;
+
+  const issueStatusControl = (
+    <StatusIcon
+      status={issue.status}
+      size="lg"
+      blockerAttention={issue.blockerAttention}
+      onChange={(status) => updateIssue.mutate({ status })}
+    />
   );
 
   const issueHeaderBlock = (
     <div
       data-testid="issue-detail-header"
-      className={cn("space-y-3", shellSectionClass)}
+      className={cn(
+        streamlinedTaskDetailEnabled ? "relative space-y-2" : "space-y-3",
+        shellSectionClass,
+      )}
     >
-      <div className="flex items-center gap-2 min-w-0 flex-wrap">
-        <StatusIcon
-          status={issue.status}
-          size="lg"
-          blockerAttention={issue.blockerAttention}
-          onChange={(status) => updateIssue.mutate({ status })}
-        />
+      {streamlinedTaskDetailEnabled ? (
+        <div className="flex min-w-0 items-center gap-2 pr-8">
+          {issueStatusControl}
+          <div
+            data-slot="task-detail-title"
+            className="flex min-w-0 flex-1 items-baseline gap-2"
+          >
+            <InlineEditor
+              value={issue.title}
+              onSave={(title) => updateIssue.mutateAsync({ title })}
+              as="h2"
+              className="min-w-0 text-xl font-semibold leading-normal text-balance"
+            />
+            <span
+              data-slot="task-title-identifier"
+              className="shrink-0 font-mono text-sm text-muted-foreground"
+            >
+              {issue.identifier ?? issue.id.slice(0, 8)}
+            </span>
+          </div>
+        </div>
+      ) : null}
+
+      <div
+        className={cn(
+          "flex min-w-0 flex-wrap items-center gap-2",
+          streamlinedTaskDetailEnabled && "gap-x-6 gap-y-2 pl-7",
+        )}
+      >
+        {!streamlinedTaskDetailEnabled ? issueStatusControl : null}
         {/* PAP-411: priority UI hidden behind SHOW_TASK_PRIORITY_UI. */}
         {SHOW_TASK_PRIORITY_UI && (
           <PriorityIcon
@@ -6418,10 +6735,11 @@ export function IssueDetail() {
             onChange={(priority) => updateIssue.mutate({ priority })}
           />
         )}
-        <span className="text-sm font-mono text-muted-foreground shrink-0">
-          {issue.identifier ?? issue.id.slice(0, 8)}
-        </span>
-
+        {!streamlinedTaskDetailEnabled ? (
+          <span className="shrink-0 font-mono text-sm text-muted-foreground">
+            {issue.identifier ?? issue.id.slice(0, 8)}
+          </span>
+        ) : null}
         {hasLiveRuns && (
           <Badge
             variant="outline"
@@ -6545,7 +6863,7 @@ export function IssueDetail() {
           userLabelMap={userLabelMap}
         />
 
-        {(issue.labels ?? []).length > 0 && (
+        {!streamlinedTaskDetailEnabled && (issue.labels ?? []).length > 0 && (
           <div className="hidden sm:flex items-center gap-1">
             {(issue.labels ?? []).slice(0, 4).map((label) => (
               <Badge
@@ -6569,7 +6887,7 @@ export function IssueDetail() {
           </div>
         )}
 
-        {!(isMobile && isFromInbox) && (
+        {!streamlinedTaskDetailEnabled && !(isMobile && isFromInbox) && (
           <div className="ml-auto flex items-center gap-0.5 md:hidden shrink-0">
             <Button
               variant="ghost"
@@ -6595,7 +6913,7 @@ export function IssueDetail() {
         )}
 
         <div className="hidden md:flex items-center md:ml-auto shrink-0">
-          {canArchiveFromInbox && (
+          {!streamlinedTaskDetailEnabled && canArchiveFromInbox && (
             <Button
               variant="ghost"
               size="icon-xs"
@@ -6621,20 +6939,23 @@ export function IssueDetail() {
               <FileCode2 className="h-4 w-4" />
             </Button>
           ) : null}
-          <Button
-            variant="ghost"
-            size="icon-xs"
-            onClick={copyIssueToClipboard}
-            title="Copy task as markdown"
-          >
-            {copied ? (
-              <Check className="h-4 w-4 text-green-500" />
-            ) : (
-              <Copy className="h-4 w-4" />
-            )}
-          </Button>
-          {taskChatShellEnabled ||
-          (panelVisible && !suppressPanelUntilPlan) ? null : (
+          {!streamlinedTaskDetailEnabled ? (
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              onClick={copyIssueToClipboard}
+              title="Copy task as markdown"
+            >
+              {copied ? (
+                <Check className="h-4 w-4 text-green-500" />
+              ) : (
+                <Copy className="h-4 w-4" />
+              )}
+            </Button>
+          ) : null}
+          {!streamlinedTaskDetailEnabled &&
+          !taskChatShellEnabled &&
+          (!panelVisible || suppressPanelUntilPlan) ? (
             <TooltipProvider>
               <SidePanelToggleButton
                 open={false}
@@ -6643,59 +6964,76 @@ export function IssueDetail() {
                 className="shrink-0"
               />
             </TooltipProvider>
-          )}
-
-          <Popover open={moreOpen} onOpenChange={setMoreOpen}>
-            <PopoverTrigger asChild>
-              <Button
-                variant="ghost"
-                size="icon-xs"
-                className="shrink-0"
-                aria-label="More task actions"
-                title="More task actions"
-                onKeyDown={(event) => {
-                  if (event.key === "Enter" || event.key === " ") {
-                    event.preventDefault();
-                    setMoreOpen(true);
-                  }
-                }}
-              >
-                <MoreHorizontal className="h-4 w-4" />
-              </Button>
-            </PopoverTrigger>
-            <PopoverContent className="w-52 p-1" align="end">
-              {canPauseLeafWork ? (
-                <button
-                  className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50"
-                  onClick={() => {
-                    setTreeControlMode("pause");
-                    setTreeControlCancelConfirmed(false);
-                    setTreeControlOpen(true);
-                    setMoreOpen(false);
+          ) : null}
+          <div
+            data-slot="task-title-actions"
+            className={cn(
+              streamlinedTaskDetailEnabled &&
+                "absolute right-0 top-0 flex h-7 items-center",
+            )}
+          >
+            <Popover open={moreOpen} onOpenChange={setMoreOpen}>
+              <PopoverTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon-xs"
+                  className="shrink-0"
+                  aria-label="More task actions"
+                  title="More task actions"
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      setMoreOpen(true);
+                    }
                   }}
                 >
-                  <PauseCircle className="h-3 w-3" />
-                  Pause work...
-                </button>
-              ) : null}
-              {canResumeLeafWork ? (
-                <button
-                  className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50"
-                  onClick={() => {
-                    setTreeControlMode("resume");
-                    setTreeControlWakeAgentsOnResume(
-                      isAgentOwnedNonTerminalIssue,
-                    );
-                    setTreeControlOpen(true);
-                    setMoreOpen(false);
-                  }}
-                >
-                  <PlayCircle className="h-3 w-3" />
-                  Resume work
-                </button>
-              ) : null}
-              {canShowSubtreeControls ? (
-                <>
+                  <MoreHorizontal className="h-4 w-4" />
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent className="w-52 p-1" align="end">
+                {streamlinedTaskDetailEnabled ? (
+                  <>
+                    <button
+                      className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-xs hover:bg-accent/50"
+                      onClick={() => {
+                        openNewSubIssue();
+                        setMoreOpen(false);
+                      }}
+                    >
+                      <Plus className="h-3 w-3" />
+                      Add subtask
+                    </button>
+                    <button
+                      className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-xs hover:bg-accent/50"
+                      onClick={() => {
+                        void copyIssueToClipboard();
+                        setMoreOpen(false);
+                      }}
+                    >
+                      {copied ? (
+                        <Check className="h-3 w-3" />
+                      ) : (
+                        <Copy className="h-3 w-3" />
+                      )}
+                      Copy as markdown
+                    </button>
+                    {canArchiveFromInbox ? (
+                      <button
+                        className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-xs hover:bg-accent/50 disabled:opacity-50"
+                        disabled={archivePending}
+                        onClick={() => {
+                          if (!archivePending && issue?.id)
+                            archiveFromInbox.mutate(issue.id);
+                          setMoreOpen(false);
+                        }}
+                      >
+                        <Archive className="h-3 w-3" />
+                        Archive from inbox
+                      </button>
+                    ) : null}
+                  </>
+                ) : null}
+                {canPauseLeafWork ? (
                   <button
                     className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50"
                     onClick={() => {
@@ -6706,79 +7044,117 @@ export function IssueDetail() {
                     }}
                   >
                     <PauseCircle className="h-3 w-3" />
-                    Pause subtree...
+                    Pause work...
                   </button>
-                  {canResumeSubtree ? (
-                    <button
-                      className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50"
-                      onClick={() => {
-                        setTreeControlMode("resume");
-                        setTreeControlWakeAgentsOnResume(true);
-                        setTreeControlOpen(true);
-                        setMoreOpen(false);
-                      }}
-                    >
-                      <PlayCircle className="h-3 w-3" />
-                      Resume subtree
-                    </button>
-                  ) : null}
+                ) : null}
+                {canResumeLeafWork ? (
                   <button
-                    className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-destructive"
+                    className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50"
                     onClick={() => {
-                      setTreeControlMode("cancel");
-                      setTreeControlCancelConfirmed(false);
+                      setTreeControlMode("resume");
+                      setTreeControlWakeAgentsOnResume(
+                        isAgentOwnedNonTerminalIssue,
+                      );
                       setTreeControlOpen(true);
                       setMoreOpen(false);
                     }}
                   >
-                    <XCircle className="h-3 w-3" />
-                    Cancel subtree...
+                    <PlayCircle className="h-3 w-3" />
+                    Resume work
                   </button>
-                  {canRestoreSubtree ? (
+                ) : null}
+                {canShowSubtreeControls ? (
+                  <>
                     <button
                       className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50"
                       onClick={() => {
-                        setTreeControlMode("restore");
-                        setTreeControlWakeAgentsOnResume(false);
+                        setTreeControlMode("pause");
                         setTreeControlCancelConfirmed(false);
                         setTreeControlOpen(true);
                         setMoreOpen(false);
                       }}
                     >
-                      <Repeat className="h-3 w-3" />
-                      Restore subtree...
+                      <PauseCircle className="h-3 w-3" />
+                      Pause subtree...
                     </button>
-                  ) : null}
-                </>
-              ) : null}
-              <button
-                className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-destructive"
-                onClick={() => {
-                  updateIssue.mutate(
-                    { hiddenAt: new Date().toISOString() },
-                    { onSuccess: () => navigate("/issues/all") },
-                  );
-                  setMoreOpen(false);
-                }}
-              >
-                <EyeOff className="h-3 w-3" />
-                Hide this task
-              </button>
-            </PopoverContent>
-          </Popover>
+                    {canResumeSubtree ? (
+                      <button
+                        className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50"
+                        onClick={() => {
+                          setTreeControlMode("resume");
+                          setTreeControlWakeAgentsOnResume(true);
+                          setTreeControlOpen(true);
+                          setMoreOpen(false);
+                        }}
+                      >
+                        <PlayCircle className="h-3 w-3" />
+                        Resume subtree
+                      </button>
+                    ) : null}
+                    <button
+                      className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-destructive"
+                      onClick={() => {
+                        setTreeControlMode("cancel");
+                        setTreeControlCancelConfirmed(false);
+                        setTreeControlOpen(true);
+                        setMoreOpen(false);
+                      }}
+                    >
+                      <XCircle className="h-3 w-3" />
+                      Cancel subtree...
+                    </button>
+                    {canRestoreSubtree ? (
+                      <button
+                        className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50"
+                        onClick={() => {
+                          setTreeControlMode("restore");
+                          setTreeControlWakeAgentsOnResume(false);
+                          setTreeControlCancelConfirmed(false);
+                          setTreeControlOpen(true);
+                          setMoreOpen(false);
+                        }}
+                      >
+                        <Repeat className="h-3 w-3" />
+                        Restore subtree...
+                      </button>
+                    ) : null}
+                  </>
+                ) : null}
+                <button
+                  className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-destructive"
+                  onClick={() => {
+                    updateIssue.mutate(
+                      { hiddenAt: new Date().toISOString() },
+                      { onSuccess: () => navigate("/issues/all") },
+                    );
+                    setMoreOpen(false);
+                  }}
+                >
+                  <EyeOff className="h-3 w-3" />
+                  Hide this task
+                </button>
+              </PopoverContent>
+            </Popover>
+          </div>
         </div>
       </div>
 
-      <InlineEditor
-        value={issue.title}
-        onSave={(title) => updateIssue.mutateAsync({ title })}
-        as="h2"
-        className={
-          taskChatShellEnabled ? "text-base font-semibold" : "text-xl font-bold"
-        }
-      />
+      {!streamlinedTaskDetailEnabled ? (
+        <InlineEditor
+          value={issue.title}
+          onSave={(title) => updateIssue.mutateAsync({ title })}
+          as="h2"
+          className={
+            taskChatShellEnabled
+              ? "text-base font-semibold"
+              : "text-xl font-bold"
+          }
+        />
+      ) : null}
 
-      {taskChatShellEnabled ? subTasksTree : null}
+      {taskChatShellEnabled && !streamlinedTaskDetailEnabled
+        ? subTasksTree
+        : null}
 
       <IssueMonitorBanner
         issue={issue}
@@ -6878,7 +7254,10 @@ export function IssueDetail() {
                 "flex w-full flex-col gap-6"
               : // Fill main exactly so the outer page never scrolls — the
                 // thread's own viewport is the only scroll surface.
-                "flex h-full min-h-0 w-full flex-col gap-6"
+                // Keep status banners close to the transcript. A full section
+                // gap here shortens the pinned message viewport enough to
+                // leave its first visible bubble sliced at the top edge.
+                "flex h-full min-h-0 w-full flex-col gap-3"
             : "max-w-3xl space-y-6"
         }
       >
@@ -6890,6 +7269,7 @@ export function IssueDetail() {
             className={cn(
               "flex items-center gap-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive",
               shellSectionClass,
+              taskChatShellEnabled && (isMobile ? "mt-4" : "mt-3"),
             )}
           >
             <EyeOff className="h-4 w-4 shrink-0" />
@@ -6901,6 +7281,9 @@ export function IssueDetail() {
             className={cn(
               "rounded-md border border-amber-500/35 bg-amber-500/10 p-3 text-sm text-amber-800 dark:text-amber-200",
               shellSectionClass,
+              taskChatShellEnabled &&
+                !issue.hiddenAt &&
+                (isMobile ? "mt-4" : "mt-3"),
             )}
           >
             {activePauseHold.isRoot ? (
@@ -7239,17 +7622,20 @@ export function IssueDetail() {
             </TabsList>
           )}
 
-          {/* Flag ON the thread viewport extends under main's horizontal padding
-            (symmetric, so the centered column keeps the same axis) and its top
-            padding, placing task metadata in the side-panel tab header band. */}
+          {/* The chat shell keeps the page's responsive 16px/24px gutters so
+            thread content and the composer do not touch either sidebar. */}
           <TabsContent
             data-testid="issue-detail-content"
             value="chat"
             className={
               taskChatShellEnabled
                 ? isMobile
-                  ? "-mx-4"
-                  : "-mx-4 -mt-4 md:-mx-6 md:-mt-6 flex min-h-0 flex-col"
+                  ? streamlinedTaskDetailEnabled
+                    ? undefined
+                    : "-mx-4"
+                  : streamlinedTaskDetailEnabled
+                    ? "flex min-h-0 flex-col"
+                    : "-mx-4 -mt-4 md:-mx-6 md:-mt-6 flex min-h-0 flex-col"
                 : undefined
             }
           >
@@ -7766,6 +8152,11 @@ export function IssueDetail() {
                   issue={issue}
                   accountScope={currentUserId ?? "anonymous"}
                   childIssues={childIssues}
+                  issueLinkState={
+                    streamlinedTaskDetailEnabled
+                      ? relationIssueLinkState
+                      : undefined
+                  }
                   onAddSubIssue={openNewSubIssue}
                   onUpdate={(data) => updateIssue.mutate(data)}
                   inline
@@ -7793,6 +8184,8 @@ export function IssueDetail() {
                   onCheckMonitorNow={() => checkIssueMonitorNow.mutate()}
                   checkingMonitorNow={checkIssueMonitorNow.isPending}
                   fileTabsEnabled={fileViewerEnabled}
+                  streamlinedTabs={streamlinedTaskDetailEnabled}
+                  showSubtasksTab={streamlinedTaskDetailEnabled}
                   documentDeepLink={
                     documentDeepLink?.issueId === issue.id
                       ? documentDeepLink
@@ -7815,6 +8208,11 @@ export function IssueDetail() {
                     <IssueProperties
                       issue={issue}
                       childIssues={childIssues}
+                      issueLinkState={
+                        streamlinedTaskDetailEnabled
+                          ? relationIssueLinkState
+                          : undefined
+                      }
                       onAddSubIssue={openNewSubIssue}
                       onUpdate={(data) => updateIssue.mutate(data)}
                       inline

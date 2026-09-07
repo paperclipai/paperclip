@@ -31,6 +31,7 @@ export interface RunForIssue {
   wakeCommentIds?: string[] | null;
   wakeCommentId?: string | null;
   contextCommentId?: string | null;
+  contextIssueId?: string | null;
   contextSnapshot?: Record<string, unknown> | null;
   environment?: {
     id: string;

@@ -4,6 +4,7 @@ import {
   dirname,
   isAbsolute,
   parse,
+  posix,
   relative,
   resolve,
   sep,
@@ -28,6 +29,9 @@ const SENSITIVE_HOST_HOME_DIRECTORIES = [
   ".ssh",
 ] as const;
 
+export type CodexWorkingDirectoryAuthority =
+  "local_filesystem" | "remote_runner";
+
 function record(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -37,9 +41,13 @@ function record(value: unknown): Record<string, unknown> {
 export function validateCodexWorkingDirectory(
   workingDirectory: string,
   environment: NodeJS.ProcessEnv = process.env,
+  authority: CodexWorkingDirectoryAuthority = "local_filesystem",
 ): string {
   if (workingDirectory.trim().length === 0) {
     throw new Error("Codex working directory is required");
+  }
+  if (authority === "remote_runner") {
+    return validateRemoteRunnerWorkingDirectory(workingDirectory, environment);
   }
   const requested = resolve(workingDirectory);
   let resolved: string;
@@ -107,6 +115,47 @@ export function validateCodexWorkingDirectory(
     }
   }
   return resolved;
+}
+
+function validateRemoteRunnerWorkingDirectory(
+  workingDirectory: string,
+  environment: NodeJS.ProcessEnv,
+): string {
+  if (
+    !posix.isAbsolute(workingDirectory) ||
+    posix.normalize(workingDirectory) !== workingDirectory ||
+    /[\u0000-\u001f\u007f]/u.test(workingDirectory)
+  ) {
+    throw new Error(
+      "Remote Codex working directory must be a normalized absolute path",
+    );
+  }
+  if (workingDirectory === posix.parse(workingDirectory).root) {
+    throw new Error("Codex working directory cannot be a filesystem root");
+  }
+  const configuredRoot = environment.PAPERCLIP_WORKSPACE_CWD?.trim();
+  if (!configuredRoot) {
+    throw new Error(
+      "Remote Codex working directory requires an assigned workspace",
+    );
+  }
+  if (
+    !posix.isAbsolute(configuredRoot) ||
+    posix.normalize(configuredRoot) !== configuredRoot
+  ) {
+    throw new Error(
+      "Assigned remote workspace must be a normalized absolute path",
+    );
+  }
+  // The controller cannot inspect a provider-owned filesystem. Pin the facade
+  // to the exact remote workspace while runnerd validates existence, type, and
+  // canonical identity inside the authoritative filesystem before launch.
+  if (workingDirectory !== configuredRoot) {
+    throw new Error(
+      "Remote Codex working directory does not match the assigned workspace",
+    );
+  }
+  return workingDirectory;
 }
 
 function canonicalConfiguredPath(value: string | undefined): string | null {

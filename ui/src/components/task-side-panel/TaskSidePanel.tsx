@@ -19,6 +19,7 @@ import {
   FileText,
   FolderOpen,
   Lightbulb,
+  ListTree,
   Plus,
   SlidersHorizontal,
 } from "lucide-react";
@@ -28,6 +29,7 @@ import { PROPERTIES_PANE_HEADER_SLOT_ID } from "@/components/PropertiesPanel";
 import { WorkspaceFileBrowser } from "@/components/WorkspaceFileBrowser";
 import { IssuePropertiesArtifactsTab } from "@/components/issue-properties/IssuePropertiesArtifactsTab";
 import { IssuePropertiesPlansTab } from "@/components/issue-properties/IssuePropertiesPlansTab";
+import { TaskDetailSubtasksPanel } from "@/components/task-detail/TaskDetailRelationsPanel";
 import {
   SidePanelLauncher,
   SidePanelToggleButton,
@@ -63,6 +65,7 @@ import {
   taskPanelDocumentTab,
   taskPanelFilesTab,
   taskPanelPropertiesTab,
+  taskPanelSubtasksTab,
   taskPanelWorkspaceFileTab,
   writeTaskSidePanelState,
   type TaskSidePanelTabPayload,
@@ -75,6 +78,7 @@ export interface TaskSidePanelProps {
   issue: Issue;
   accountScope: string;
   childIssues?: Issue[];
+  issueLinkState?: unknown;
   onAddSubIssue?: () => void;
   onUpdate: (data: Record<string, unknown>) => void;
   inline?: boolean;
@@ -88,6 +92,8 @@ export interface TaskSidePanelProps {
   fileTabsEnabled: boolean;
   documentDeepLink?: { requestId: number; documentKey: string } | null;
   onRequestClose?: () => void;
+  streamlinedTabs?: boolean;
+  showSubtasksTab?: boolean;
 }
 
 const EMPTY_ISSUE_DOCUMENTS: IssueDocument[] = [];
@@ -95,11 +101,22 @@ const EMPTY_ISSUE_DOCUMENTS: IssueDocument[] = [];
 function tabIcon(tab: SidePanelTabRecord<TaskSidePanelTabPayload>): ReactNode {
   switch (tab.payload.kind) {
     case "properties": return <SlidersHorizontal />;
+    case "subtasks": return <ListTree />;
     case "artifacts": return <Box />;
     case "files-browser": return <FolderOpen />;
     case "workspace-file": return <FileCode2 />;
     case "issue-document": return tab.payload.documentKey === "plan" ? <Lightbulb /> : <FileText />;
   }
+}
+
+function insertSubtasksAfterProperties(
+  tabs: SidePanelTabRecord<TaskSidePanelTabPayload>[],
+) {
+  if (tabs.some((tab) => tab.id === "subtasks")) return tabs;
+  const propertiesIndex = tabs.findIndex((tab) => tab.id === "properties");
+  const next = [...tabs];
+  next.splice(propertiesIndex < 0 ? 0 : propertiesIndex + 1, 0, taskPanelSubtasksTab());
+  return next;
 }
 
 function selectorForWorkspaceKind(kind: "execution_workspace" | "project_workspace") {
@@ -190,6 +207,7 @@ export function TaskSidePanel({
   issue,
   accountScope,
   childIssues = [],
+  issueLinkState,
   onAddSubIssue,
   onUpdate,
   inline = false,
@@ -203,6 +221,8 @@ export function TaskSidePanel({
   fileTabsEnabled,
   documentDeepLink,
   onRequestClose,
+  streamlinedTabs = false,
+  showSubtasksTab = false,
 }: TaskSidePanelProps) {
   const handleScroll = useScrollbarWhileScrolling();
   const viewer = useTaskSidePanelFileRouting();
@@ -212,16 +232,33 @@ export function TaskSidePanel({
   const restoredRef = useRef(
     readTaskSidePanelState(accountScope, issue.companyId, issue.id, fileTabsEnabled),
   );
+  const initialSubtasksAvailableRef = useRef(showSubtasksTab && childIssues.length > 0);
+  const subtasksDismissedRef = useRef(
+    restoredRef.current?.userInteracted === true
+      && restoredRef.current.state.tabs.length === 0,
+  );
   const [launcherOpen, setLauncherOpen] = useState(restoredRef.current?.launcherOpen ?? false);
   const [paneHeaderSlot, setPaneHeaderSlot] = useState<HTMLElement | null>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
   const scrollPositionsRef = useRef(new Map<string, number>());
   const userInteractedRef = useRef(restoredRef.current?.userInteracted ?? false);
   const autoPlanHandledRef = useRef(restoredRef.current?.autoPlanHandled ?? false);
-  const initialState = useMemo(() => restoredRef.current?.state ?? ({
-    tabs: [taskPanelPropertiesTab()],
-    activeTabId: "properties",
-  }), []);
+  const initialState = useMemo(() => {
+    const restored = restoredRef.current?.state;
+    let tabs = restored?.tabs ?? [taskPanelPropertiesTab()];
+    if (!initialSubtasksAvailableRef.current) {
+      tabs = tabs.filter((tab) => tab.payload.kind !== "subtasks");
+    } else if (!subtasksDismissedRef.current) {
+      tabs = insertSubtasksAfterProperties(tabs);
+    }
+    const requestedActive = restored?.activeTabId ?? "properties";
+    return {
+      tabs,
+      activeTabId: tabs.some((tab) => tab.id === requestedActive)
+        ? requestedActive
+        : tabs[0]?.id ?? null,
+    };
+  }, []);
 
   const persist = useCallback((state: { tabs: SidePanelTabRecord<TaskSidePanelTabPayload>[]; activeTabId: string | null }) => {
     writeTaskSidePanelState(accountScope, issue.companyId, issue.id, {
@@ -234,6 +271,29 @@ export function TaskSidePanel({
   }, [accountScope, issue.companyId, issue.id, launcherOpen]);
   const controller = useSidePanelTabs<TaskSidePanelTabPayload>({ initialState, onStateChange: persist });
   const activeTab = controller.tabs.find((tab) => tab.id === controller.activeTabId) ?? null;
+  const subtasksAvailable = showSubtasksTab && childIssues.length > 0;
+  const hasSubtasksTab = controller.tabs.some((tab) => tab.id === "subtasks");
+
+  useEffect(() => {
+    if (!subtasksAvailable) {
+      subtasksDismissedRef.current = false;
+      if (hasSubtasksTab) controller.closeTab("subtasks");
+      return;
+    }
+    if (!hasSubtasksTab && !subtasksDismissedRef.current) {
+      controller.resetTabs({
+        tabs: insertSubtasksAfterProperties(controller.tabs),
+        activeTabId: controller.activeTabId,
+      });
+    }
+  }, [
+    controller.activeTabId,
+    controller.closeTab,
+    controller.resetTabs,
+    controller.tabs,
+    hasSubtasksTab,
+    subtasksAvailable,
+  ]);
 
   useEffect(() => {
     if (inline) {
@@ -353,6 +413,7 @@ export function TaskSidePanel({
 
   function closeTab(tabId: string) {
     markInteracted();
+    if (tabId === "subtasks") subtasksDismissedRef.current = true;
     const tab = controller.tabs.find((candidate) => candidate.id === tabId);
     controller.closeTab(tabId);
     if (tabId === controller.activeTabId && (tab?.payload.kind === "workspace-file" || tab?.payload.kind === "files-browser")) {
@@ -392,7 +453,7 @@ export function TaskSidePanel({
       id: tab.id,
       type: tab.type,
       label: document ? documentDisplayTitle(document) : tab.label,
-      ariaLabel: tab.ariaLabel,
+      ariaLabel: tab.payload.kind === "subtasks" ? "Subtasks" : tab.ariaLabel,
       closable: true,
       contentMode: tab.contentMode,
       icon: tabIcon(tab),
@@ -402,6 +463,7 @@ export function TaskSidePanel({
   const launcherSections = useMemo<SidePanelLauncherSection[]>(() => {
     const primary: SidePanelLauncherItem[] = [
       { id: "properties", label: "Properties", icon: <SlidersHorizontal />, alreadyOpen: controller.tabs.some((tab) => tab.id === "properties") },
+      ...(subtasksAvailable ? [{ id: "subtasks", label: "Subtasks", description: `${childIssues.length} total`, icon: <ListTree />, alreadyOpen: controller.tabs.some((tab) => tab.id === "subtasks") }] : []),
       { id: "artifacts", label: "Artifacts", icon: <Box />, alreadyOpen: controller.tabs.some((tab) => tab.id === "artifacts") },
     ];
     if (fileTabsEnabled) {
@@ -451,11 +513,18 @@ export function TaskSidePanel({
       });
     }
     return sections;
-  }, [controller.tabs, documents, fileTabsEnabled, planDocument, recentFilesQuery.data, recentFilesQuery.isError, recentFilesQuery.isLoading]);
+  }, [childIssues.length, controller.tabs, documents, fileTabsEnabled, planDocument, recentFilesQuery.data, recentFilesQuery.isError, recentFilesQuery.isLoading, subtasksAvailable]);
 
   function selectLauncherItem(item: SidePanelLauncherItem) {
     markInteracted();
     if (item.id === "properties") controller.openTab(taskPanelPropertiesTab());
+    else if (item.id === "subtasks") {
+      subtasksDismissedRef.current = false;
+      controller.resetTabs({
+        tabs: insertSubtasksAfterProperties(controller.tabs),
+        activeTabId: "subtasks",
+      });
+    }
     else if (item.id === "artifacts") controller.openTab(taskPanelArtifactsTab());
     else if (item.id === "files") {
       controller.openTab(taskPanelFilesTab());
@@ -486,7 +555,18 @@ export function TaskSidePanel({
       open={launcherOpen}
       onOpenChange={setLauncherOpen}
       trigger={(
-        <Button type="button" variant="ghost" size="icon-sm" className="h-(--side-panel-tab-height) w-(--side-panel-tab-height) shrink-0 rounded-(--side-panel-control-radius) text-muted-foreground hover:text-foreground focus-visible:text-foreground" aria-label="Open a new tab">
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon-sm"
+          className={cn(
+            "shrink-0 text-muted-foreground hover:text-foreground focus-visible:text-foreground",
+            streamlinedTabs
+              ? "h-(--side-panel-tab-height) w-(--side-panel-tab-height) rounded-md"
+              : "h-(--side-panel-tab-height) w-(--side-panel-tab-height) rounded-(--side-panel-control-radius)",
+          )}
+          aria-label="Open a new tab"
+        >
           <Plus aria-hidden />
         </Button>
       )}
@@ -503,6 +583,7 @@ export function TaskSidePanel({
         controller.reorderTabs(ordered);
       }}
       addControl={launcherControl}
+      appearance={streamlinedTabs ? "streamlined-task" : "default"}
     />
   );
 
@@ -514,6 +595,7 @@ export function TaskSidePanel({
       <IssueProperties
         issue={issue}
         childIssues={childIssues}
+        issueLinkState={issueLinkState}
         onAddSubIssue={onAddSubIssue}
         onUpdate={onUpdate}
         inline={inline}
@@ -525,6 +607,14 @@ export function TaskSidePanel({
         onCheckMonitorNow={onCheckMonitorNow}
         checkingMonitorNow={checkingMonitorNow}
         sidePanelContentOnly
+      />
+    );
+  } else if (activeTab.payload.kind === "subtasks") {
+    content = (
+      <TaskDetailSubtasksPanel
+        items={childIssues}
+        onAddSubtask={onAddSubIssue}
+        issueLinkState={issueLinkState}
       />
     );
   } else if (activeTab.payload.kind === "artifacts") {

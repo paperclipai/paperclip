@@ -4,6 +4,7 @@ import {
   chmodSync,
   copyFileSync,
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
@@ -24,16 +25,14 @@ const outputRoot = resolve(
   outputArgument ?? join(packageRoot, "provider-pack"),
 );
 if (
-  outputRoot === workspaceRoot
-  || outputRoot === packageRoot
-  || outputRoot === "/"
+  outputRoot === workspaceRoot ||
+  outputRoot === packageRoot ||
+  outputRoot === "/"
 ) {
   throw new Error(`Refusing unsafe provider-pack output path: ${outputRoot}`);
 }
 
-const temporaryParent = mkdtempSync(
-  join(tmpdir(), "paperclip-provider-pack-"),
-);
+const temporaryParent = mkdtempSync(join(tmpdir(), "paperclip-provider-pack-"));
 const temporaryRoot = join(temporaryParent, "pack");
 
 function canonicalJson(value) {
@@ -56,8 +55,9 @@ function sha256File(path) {
 function sha256Tree(root) {
   const hash = createHash("sha256");
   const visit = (directory, prefix = "") => {
-    const entries = readdirSync(directory, { withFileTypes: true })
-      .sort((left, right) => left.name.localeCompare(right.name));
+    const entries = readdirSync(directory, { withFileTypes: true }).sort(
+      (left, right) => left.name.localeCompare(right.name),
+    );
     for (const entry of entries) {
       const relativePath = prefix ? `${prefix}/${entry.name}` : entry.name;
       const absolutePath = join(directory, entry.name);
@@ -67,9 +67,13 @@ function sha256Tree(root) {
       } else if (entry.isFile()) {
         hash.update(`file\0${relativePath}\0${sha256File(absolutePath)}\n`);
       } else if (entry.isSymbolicLink()) {
-        hash.update(`symlink\0${relativePath}\0${readlinkSync(absolutePath)}\n`);
+        hash.update(
+          `symlink\0${relativePath}\0${readlinkSync(absolutePath)}\n`,
+        );
       } else {
-        throw new Error(`Provider pack tree contains unsupported entry ${relativePath}`);
+        throw new Error(
+          `Provider pack tree contains unsupported entry ${relativePath}`,
+        );
       }
     }
   };
@@ -122,6 +126,32 @@ try {
   if (deployed.status !== 0) {
     throw new Error(`pnpm deploy failed with exit code ${deployed.status}`);
   }
+
+  // Reuse the already-qualified build interpreter instead of introducing a
+  // package-manager lifecycle hook or a second binary supply chain. The pack
+  // manifest binds the copied bytes, platform, architecture, and minimum
+  // version before any provider is launched.
+  const minimumNodeVersion = [24, 11, 0];
+  const actualNodeVersion = process.versions.node.split(".").map(Number);
+  if (
+    actualNodeVersion[0] < minimumNodeVersion[0] ||
+    (actualNodeVersion[0] === minimumNodeVersion[0] &&
+      (actualNodeVersion[1] < minimumNodeVersion[1] ||
+        (actualNodeVersion[1] === minimumNodeVersion[1] &&
+          actualNodeVersion[2] < minimumNodeVersion[2])))
+  ) {
+    throw new Error("Provider pack build Node is older than 24.11.0");
+  }
+  const stableNodeRoot = join(temporaryRoot, "node_modules", "node");
+  if (existsSync(stableNodeRoot)) {
+    throw new Error(
+      "Provider pack deployment unexpectedly claimed the stable Node path",
+    );
+  }
+  const stableNodeCommand = join(stableNodeRoot, "bin", "node");
+  mkdirSync(dirname(stableNodeCommand), { recursive: true, mode: 0o755 });
+  copyFileSync(process.execPath, stableNodeCommand);
+  chmodSync(stableNodeCommand, 0o755);
 
   // pnpm's generated .bin shims embed the temporary deployment directory in
   // NODE_PATH. That makes an otherwise identical provider pack hash differ on
@@ -187,13 +217,16 @@ try {
     );
   }
 
-  const opencodeProxyPath = "dist/cli/opencode-app-server-proxy.js";
-  const acpxSidecarPath = "dist/cli/acpx-runtime-sidecar.js";
+  const opencodeProxyPath = "dist/cli/opencode-app-server-proxy.cjs";
+  const acpxSidecarPath = "dist/cli/acpx-runtime-sidecar.cjs";
   const opencodeCommand = "node_modules/.bin/opencode";
   const opencodeExecutable = "node_modules/opencode-ai/bin/opencode.exe";
   const nodeCommand = "node_modules/node/bin/node";
   const productionLock = "pnpm-lock.yaml";
-  copyFileSync(join(workspaceRoot, "pnpm-lock.yaml"), join(temporaryRoot, productionLock));
+  copyFileSync(
+    join(workspaceRoot, "pnpm-lock.yaml"),
+    join(temporaryRoot, productionLock),
+  );
   for (const relativePath of [
     nodeCommand,
     productionLock,
@@ -207,16 +240,14 @@ try {
     }
   }
 
-  const opencodeProxySha = sha256File(
-    join(temporaryRoot, opencodeProxyPath),
-  );
+  const opencodeProxySha = sha256File(join(temporaryRoot, opencodeProxyPath));
   const acpxSidecarSha = sha256File(join(temporaryRoot, acpxSidecarPath));
   const distDigest = sha256Tree(join(temporaryRoot, "dist"));
   const configuredRevision =
     process.env.PAPERCLIP_RUNNER_SOURCE_REVISION?.trim();
   const revision =
-    configuredRevision
-    ?? execFileSync("git", ["rev-parse", "HEAD"], {
+    configuredRevision ??
+    execFileSync("git", ["rev-parse", "HEAD"], {
       cwd: workspaceRoot,
       encoding: "utf8",
     }).trim();
@@ -225,14 +256,12 @@ try {
   }
   const dirty = configuredRevision
     ? false
-    : spawnSync(
-        "git",
-        ["diff", "--quiet", "--", "packages/paperclip-runner"],
-        { cwd: workspaceRoot },
-      ).status !== 0;
+    : spawnSync("git", ["diff", "--quiet", "--", "packages/paperclip-runner"], {
+        cwd: workspaceRoot,
+      }).status !== 0;
   const payload = {
     pins: {
-      nodeMinimum: "24.11.0",
+      nodeMinimum: minimumNodeVersion.join("."),
       codex: "0.148.0",
       opencode: "1.18.17",
       acpx: "0.13.1",
@@ -253,7 +282,7 @@ try {
       claude:
         "sha256:9d73d1f0f121fb96cc8badb28c22d5bff02d8582eb2e40360a81c189e1b9422a",
       codex:
-        "sha256:94049b3e3c3aee87de62703786e4fa81d031d7bd979f99bdf516d84f28791a79",
+        "sha256:7a923b3829884d3cabcc9659d22cace3f86813e7bfffc90974b10140a45bc400",
     },
     artifacts: {
       nodeCommand: {

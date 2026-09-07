@@ -35,6 +35,14 @@ impl CommandExecutor for SelectedExecutor {
         }
     }
 
+    fn rotate_authority(&mut self, config: &DurableRunnerConfig) {
+        match self {
+            Self::LocalFacade(executor) => executor.rotate_authority(config),
+            Self::Acpx(executor) => executor.rotate_authority(config),
+            Self::Managed(executor) => executor.rotate_authority(config),
+        }
+    }
+
     fn acknowledge_events(&mut self, count: usize) -> Result<(), DurableRunnerError> {
         match self {
             Self::LocalFacade(executor) => executor.acknowledge_events(count),
@@ -163,6 +171,13 @@ impl CommandExecutor for NativeProviderCommandExecutor {
             .map_or_else(|| Ok(Vec::new()), CommandExecutor::poll_events)
     }
 
+    fn rotate_authority(&mut self, config: &DurableRunnerConfig) {
+        self.config = config.clone();
+        if let Some(executor) = self.selected.as_mut() {
+            executor.rotate_authority(config);
+        }
+    }
+
     fn acknowledge_events(&mut self, count: usize) -> Result<(), DurableRunnerError> {
         self.select_recovery()?;
         if let Some(executor) = self.selected.as_mut() {
@@ -177,6 +192,11 @@ impl CommandExecutor for NativeProviderCommandExecutor {
     }
 
     fn shutdown(&mut self) -> Result<(), DurableRunnerError> {
+        // Terminal delivery can be reconciled by a replacement runner whose
+        // executor has not processed a provider command. Select the durable
+        // provider authority before cleanup so an absent in-memory selection
+        // can never turn the cleanup fence into a successful no-op.
+        self.select_recovery()?;
         if let Some(executor) = self.selected.as_mut() {
             executor.shutdown()
         } else {

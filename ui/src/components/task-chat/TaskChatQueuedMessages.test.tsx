@@ -5,7 +5,10 @@ import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { IssueQueuedCommentQueue } from "@paperclipai/shared";
-import { TaskChatQueuedMessages } from "./TaskChatQueuedMessages";
+import {
+  reorderQueuedMessageEntries,
+  TaskChatQueuedMessages,
+} from "./TaskChatQueuedMessages";
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -23,24 +26,26 @@ const queue: IssueQueuedCommentQueue = {
   revision: "rev-1",
   protocol: "paperclip_runner_v1",
   steeringDisposition: "available",
-  entries: ["First queued message", "Second queued message"].map((body, position) => ({
-    comment: {
-      id: `comment-${position + 1}`,
-      companyId: "company-1",
-      issueId: "issue-1",
-      authorType: "user",
-      authorAgentId: null,
-      authorUserId: "user-1",
-      body,
-      presentation: null,
-      metadata: null,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    },
-    position,
-    canEdit: true,
-    canDiscard: true,
-  })),
+  entries: ["First queued message", "Second queued message"].map(
+    (body, position) => ({
+      comment: {
+        id: `comment-${position + 1}`,
+        companyId: "company-1",
+        issueId: "issue-1",
+        authorType: "user",
+        authorAgentId: null,
+        authorUserId: "user-1",
+        body,
+        presentation: null,
+        metadata: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+      position,
+      canEdit: true,
+      canDiscard: true,
+    }),
+  ),
 };
 
 describe("TaskChatQueuedMessages", () => {
@@ -58,7 +63,9 @@ describe("TaskChatQueuedMessages", () => {
     container.remove();
   });
 
-  function render(overrides: Partial<ComponentProps<typeof TaskChatQueuedMessages>> = {}) {
+  function render(
+    overrides: Partial<ComponentProps<typeof TaskChatQueuedMessages>> = {},
+  ) {
     const props = {
       queue,
       onEdit: vi.fn(),
@@ -73,56 +80,122 @@ describe("TaskChatQueuedMessages", () => {
 
   it("renders each queued message once as a compact one-line row", () => {
     render();
-    const pane = container.querySelector('[data-testid="task-chat-queued-messages"]');
+    const pane = container.querySelector(
+      '[data-testid="task-chat-queued-messages"]',
+    );
     expect(pane?.classList).toContain("mx-3");
     expect(pane?.classList).toContain("rounded-b-none");
     expect(pane?.classList).toContain("border-b-0");
     expect(pane?.classList).toContain("-mb-px");
-    expect(container.querySelectorAll('[data-testid^="task-chat-queued-message-"]')).toHaveLength(2);
+    expect(
+      container.querySelectorAll('[data-testid^="task-chat-queued-message-"]'),
+    ).toHaveLength(2);
     expect(container.textContent).toContain("First queued message");
     expect(container.textContent).toContain("Second queued message");
   });
 
-  it("removes only the acknowledged steering row", async () => {
-    const props = render();
+  it("reorders the complete queue and rewrites contiguous positions", () => {
+    const next = reorderQueuedMessageEntries(
+      queue.entries,
+      "comment-2",
+      "comment-1",
+    );
+
+    expect(next?.map((entry) => entry.comment.id)).toEqual([
+      "comment-2",
+      "comment-1",
+    ]);
+    expect(next?.map((entry) => entry.position)).toEqual([0, 1]);
+  });
+
+  it("promotes only the selected steering row immediately", async () => {
+    const acknowledgement = deferred<void>();
+    const props = render({
+      onSteer: vi.fn().mockReturnValue(acknowledgement.promise),
+    });
     await act(async () => {
-      container.querySelector<HTMLButtonElement>('[data-testid="task-chat-queued-steer-comment-1"]')?.click();
+      container
+        .querySelector<HTMLButtonElement>(
+          '[data-testid="task-chat-queued-steer-comment-1"]',
+        )
+        ?.click();
+      await Promise.resolve();
     });
     expect(props.onSteer).toHaveBeenCalledWith("comment-1", "rev-1");
-    expect(container.querySelector('[data-testid="task-chat-queued-message-comment-1"]')).toBeNull();
-    expect(container.querySelector('[data-testid="task-chat-queued-message-comment-2"]')).not.toBeNull();
+    expect(
+      container.querySelector(
+        '[data-testid="task-chat-queued-message-comment-1"]',
+      ),
+    ).toBeNull();
+    expect(
+      container.querySelector(
+        '[data-testid="task-chat-queued-message-comment-2"]',
+      ),
+    ).not.toBeNull();
+
+    await act(async () => {
+      acknowledgement.resolve();
+      await acknowledgement.promise;
+    });
   });
 
   it("keeps a row queued when steering fails and announces the retryable state", async () => {
-    render({ onSteer: vi.fn().mockRejectedValue(new Error("steering_timeout")) });
-    await act(async () => {
-      container.querySelector<HTMLButtonElement>('[data-testid="task-chat-queued-steer-comment-1"]')?.click();
+    render({
+      onSteer: vi.fn().mockRejectedValue(new Error("steering_timeout")),
     });
-    expect(container.querySelector('[data-testid="task-chat-queued-message-comment-1"]')).not.toBeNull();
-    expect(container.textContent).toContain("Couldn’t steer. Message is still queued.");
+    await act(async () => {
+      container
+        .querySelector<HTMLButtonElement>(
+          '[data-testid="task-chat-queued-steer-comment-1"]',
+        )
+        ?.click();
+    });
+    expect(
+      container.querySelector(
+        '[data-testid="task-chat-queued-message-comment-1"]',
+      ),
+    ).not.toBeNull();
+    expect(container.textContent).toContain(
+      "Couldn’t steer. Message is still queued.",
+    );
   });
 
   it("disables steering when the provider does not advertise it", () => {
     render({ queue: { ...queue, steeringDisposition: "unsupported" } });
-    expect(container.querySelector<HTMLButtonElement>('[data-testid="task-chat-queued-steer-comment-1"]')?.disabled)
-      .toBe(true);
+    expect(
+      container.querySelector<HTMLButtonElement>(
+        '[data-testid="task-chat-queued-steer-comment-1"]',
+      )?.disabled,
+    ).toBe(true);
   });
 
   it("waits for authoritative discard acknowledgement before removing the row", async () => {
     const acknowledgement = deferred<void>();
     render({ onDiscard: vi.fn().mockReturnValue(acknowledgement.promise) });
     await act(async () => {
-      container.querySelector<HTMLButtonElement>('[data-testid="task-chat-queued-discard-comment-1"]')?.click();
+      container
+        .querySelector<HTMLButtonElement>(
+          '[data-testid="task-chat-queued-discard-comment-1"]',
+        )
+        ?.click();
       await Promise.resolve();
     });
-    expect(container.querySelector('[data-testid="task-chat-queued-message-comment-1"]')).not.toBeNull();
+    expect(
+      container.querySelector(
+        '[data-testid="task-chat-queued-message-comment-1"]',
+      ),
+    ).not.toBeNull();
     expect(container.textContent).not.toContain("Queued message discarded.");
 
     await act(async () => {
       acknowledgement.resolve();
       await acknowledgement.promise;
     });
-    expect(container.querySelector('[data-testid="task-chat-queued-message-comment-1"]')).toBeNull();
+    expect(
+      container.querySelector(
+        '[data-testid="task-chat-queued-message-comment-1"]',
+      ),
+    ).toBeNull();
     expect(container.textContent).toContain("Queued message discarded.");
   });
 
@@ -133,10 +206,20 @@ describe("TaskChatQueuedMessages", () => {
       }),
     });
     await act(async () => {
-      container.querySelector<HTMLButtonElement>('[data-testid="task-chat-queued-discard-comment-1"]')?.click();
+      container
+        .querySelector<HTMLButtonElement>(
+          '[data-testid="task-chat-queued-discard-comment-1"]',
+        )
+        ?.click();
     });
-    expect(container.querySelector('[data-testid="task-chat-queued-message-comment-1"]')).not.toBeNull();
-    expect(container.textContent).toContain("Too late to discard: this message is already being sent.");
+    expect(
+      container.querySelector(
+        '[data-testid="task-chat-queued-message-comment-1"]',
+      ),
+    ).not.toBeNull();
+    expect(container.textContent).toContain(
+      "Too late to discard: this message is already being sent.",
+    );
   });
 
   it("shows stale revisions without announcing a discard", async () => {
@@ -146,9 +229,15 @@ describe("TaskChatQueuedMessages", () => {
       }),
     });
     await act(async () => {
-      container.querySelector<HTMLButtonElement>('[data-testid="task-chat-queued-discard-comment-1"]')?.click();
+      container
+        .querySelector<HTMLButtonElement>(
+          '[data-testid="task-chat-queued-discard-comment-1"]',
+        )
+        ?.click();
     });
-    expect(container.textContent).toContain("The queue changed in another session. Review it and try again.");
+    expect(container.textContent).toContain(
+      "The queue changed in another session. Review it and try again.",
+    );
     expect(container.textContent).not.toContain("Queued message discarded.");
   });
 
@@ -162,4 +251,71 @@ describe("TaskChatQueuedMessages", () => {
     expect(props.onDiscard).not.toHaveBeenCalled();
   });
 
+  it("can discard a local optimistic row before the queue id is acknowledged", async () => {
+    const optimisticQueue = {
+      ...queue,
+      queueId: null,
+      state: "deferred" as const,
+      entries: [
+        {
+          ...queue.entries[0],
+          comment: {
+            ...queue.entries[0].comment,
+            id: "optimistic-local-1",
+          },
+        },
+      ],
+    };
+    const props = render({ queue: optimisticQueue });
+
+    await act(async () => {
+      container
+        .querySelector<HTMLButtonElement>(
+          '[data-testid="task-chat-queued-discard-optimistic-local-1"]',
+        )
+        ?.click();
+    });
+
+    expect(props.onDiscard).toHaveBeenCalledWith("optimistic-local-1", "rev-1");
+    expect(
+      container.querySelector(
+        '[data-testid="task-chat-queued-message-optimistic-local-1"]',
+      ),
+    ).toBeNull();
+  });
+
+  it("uses interrupt instead of steer for legacy runners and keeps the row queued", async () => {
+    const onInterrupt = vi.fn().mockResolvedValue(undefined);
+    render({
+      queue: {
+        ...queue,
+        protocol: "legacy",
+        steeringDisposition: "unsupported",
+      },
+      onInterrupt,
+    });
+
+    await act(async () => {
+      container
+        .querySelector<HTMLButtonElement>(
+          '[data-testid="task-chat-queued-interrupt-comment-1"]',
+        )
+        ?.click();
+    });
+
+    expect(onInterrupt).toHaveBeenCalledOnce();
+    expect(
+      container.querySelector(
+        '[data-testid="task-chat-queued-steer-comment-1"]',
+      ),
+    ).toBeNull();
+    expect(
+      container.querySelector(
+        '[data-testid="task-chat-queued-message-comment-1"]',
+      ),
+    ).not.toBeNull();
+    expect(container.textContent).toContain(
+      "Active turn interrupted. Message remains queued.",
+    );
+  });
 });

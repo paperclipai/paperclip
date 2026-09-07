@@ -5,7 +5,9 @@ import { and, eq, or } from "drizzle-orm";
 import {
   APP_STORE_DEFINITIONS,
   DEFAULT_OWNERSHIP_AVAILABILITY,
+  GITHUB_CONNECTOR_PROFILES,
   GOOGLE_WORKSPACE_CONNECTOR_PROFILES,
+  isGitHubConnectorProfileId,
   isGoogleWorkspaceConnectorProfileId,
   TOOL_ACTION_REQUEST_STATUSES,
   type DeploymentExposure,
@@ -60,6 +62,7 @@ import {
   type PaperclipCloudConnector,
   paperclipCloudConnectorCapabilitiesFromEnv,
 } from "../services/paperclip-cloud-connector.js";
+import { runtimeCanonicalOrigin } from "../services/cloud-runtime-identity.js";
 import {
   completePaperclipCloudConnectorEnrollment,
   loadPaperclipCloudConnectorIdentity,
@@ -298,12 +301,14 @@ export function toolAccessRoutes(
   }
 
   function configuredPublicBaseUrl() {
+    const runtimeOrigin = runtimeCanonicalOrigin();
+    if (runtimeOrigin) return runtimeOrigin;
     const raw = (
-      process.env.PAPERCLIP_PUBLIC_URL?.trim()
-      || process.env.PAPERCLIP_AUTH_PUBLIC_BASE_URL?.trim()
+      process.env.PAPERCLIP_AUTH_PUBLIC_BASE_URL?.trim()
       || process.env.BETTER_AUTH_URL?.trim()
       || process.env.BETTER_AUTH_BASE_URL?.trim()
       || options.authPublicBaseUrl?.trim()
+      || process.env.PAPERCLIP_PUBLIC_URL?.trim()
       || process.env.PAPERCLIP_MANAGED_RUNTIME_PUBLIC_URL?.trim()
     );
     if (!raw) return null;
@@ -426,7 +431,6 @@ export function toolAccessRoutes(
   async function oauthAppPath(
     companyId: string,
     connectionId: string,
-    tab: "setup" | "test",
   ) {
     const [company] = await db
       .select({ issuePrefix: companies.issuePrefix })
@@ -434,8 +438,8 @@ export function toolAccessRoutes(
       .where(eq(companies.id, companyId))
       .limit(1);
     if (!company) throw new Error("OAuth callback connection belongs to a missing company");
-    return `/${company.issuePrefix}/apps/${connectionId}/${tab}`;
-}
+    return `/${company.issuePrefix}/apps/${connectionId}/permissions`;
+  }
 
 function connectorEnrollmentPrincipal(req: Request): string {
   return req.actor.userId ? `user:${req.actor.userId}` : `source:${req.actor.source ?? "board"}`;
@@ -451,24 +455,45 @@ function connectorEnrollmentPrincipal(req: Request): string {
     connection: ToolConnection,
     outcome: "failed" | "denied",
     code?: string | null,
+    providerRecovery?: { installationUrl?: unknown; managementUrl?: unknown },
   ) {
-    const detailSetupPath = await oauthAppPath(connection.companyId, connection.id, "setup");
+    const detailPermissionsPath = await oauthAppPath(connection.companyId, connection.id);
     const params = new URLSearchParams({ oauth: outcome });
     if (code) params.set("code", code);
+    const addGitHubRecoveryUrls = (target: URLSearchParams) => {
+      if (code !== "github_installation_required") return;
+      for (const [key, value] of [
+        ["installation_url", providerRecovery?.installationUrl],
+        ["management_url", providerRecovery?.managementUrl],
+      ] as const) {
+        if (typeof value !== "string") continue;
+        try {
+          const url = new URL(value);
+          if (url.protocol === "https:" && url.hostname.toLowerCase() === "github.com") {
+            target.set(key, url.toString());
+          }
+        } catch {
+          // Provider recovery links are optional. The retry path remains usable
+          // when an upstream response omits or malforms one.
+        }
+      }
+    };
+    addGitHubRecoveryUrls(params);
     const source = connection.config?.sourceTemplateKey
       ?? connection.transportConfig?.sourceTemplateKey;
     if (connection.status !== "draft" || typeof source !== "string" || !source.trim()) {
-      return `${detailSetupPath}?${params.toString()}`;
+      return `${detailPermissionsPath}?${params.toString()}`;
     }
 
-    const appsSegment = detailSetupPath.indexOf("/apps/");
-    const companyPrefix = appsSegment >= 0 ? detailSetupPath.slice(0, appsSegment) : "";
+    const appsSegment = detailPermissionsPath.indexOf("/apps/");
+    const companyPrefix = appsSegment >= 0 ? detailPermissionsPath.slice(0, appsSegment) : "";
     const setupParams = new URLSearchParams({
       source,
       resume: connection.id,
       oauth: outcome,
     });
     if (code) setupParams.set("code", code);
+    addGitHubRecoveryUrls(setupParams);
     const setupRoute = connection.credentialSource === "vercel_connect"
       ? "/apps/vercel-connect"
       : "/apps/connect";
@@ -732,7 +757,7 @@ function connectorEnrollmentPrincipal(req: Request): string {
       returnTo: req.body.returnTo,
       redirectUri: oauthRedirectUri(req),
     });
-    res.json({ url: result.authorizationUrl });
+    res.json({ url: result.authorizationUrl, ...(result.handoff ? { handoff: result.handoff } : {}) });
   });
 
   router.post("/agents/me/connections/:connectionId/token", validate(connectionTokenRequestSchema), async (req, res) => {
@@ -772,7 +797,7 @@ function connectorEnrollmentPrincipal(req: Request): string {
       : options.paperclipCloudConnector
         ? await options.paperclipCloudConnector.getCapabilities()
         : [];
-    const googleConnectorProfiles = new Set(advertisedProfiles);
+    const connectorProfiles = new Set<string>(advertisedProfiles);
     const vercelConnect = vercelConnectIntegrationStatus();
     res.json({
       capabilities: await describeConnectionCreateCapabilities(req, companyId),
@@ -792,7 +817,7 @@ function connectorEnrollmentPrincipal(req: Request): string {
       apps: APP_STORE_DEFINITIONS.map((app) => {
         const methods = app.methods.filter((method) =>
           !isPaperclipCloudConnectorStrategy(method.oauthStrategy)
-          || Boolean(method.connectorProfile && googleConnectorProfiles.has(method.connectorProfile as never))
+          || Boolean(method.connectorProfile && connectorProfiles.has(method.connectorProfile))
         );
         return {
           ...app,
@@ -841,14 +866,22 @@ function connectorEnrollmentPrincipal(req: Request): string {
       ? await svc.getConnection(req.body.resumeConnectionId, companyId)
       : null;
     const effectiveGrantKind = resumedConnection
-      ? resumedConnection.credentialPolicy === "per_user" ? "user" : "organization"
+      ? resumedConnection.credentialPolicy === "per_user"
+        ? "user"
+        : resumedConnection.credentialPolicy === "per_agent"
+          ? "agent"
+          : "organization"
       : req.body.grantKind ?? "organization";
     // Personal connection creation remains available to ordinary active
     // members, but sharing a credential with every human is a manager
     // operation and must be enforced here, not inferred by the client.
-    const createsOrganizationGrant = effectiveGrantKind === "organization";
-    if (createsOrganizationGrant && !await isToolConnectionManagerQuiet(req, companyId)) {
-      throw forbidden(ORGANIZATION_GRANT_DENIAL_REASON);
+    const createsManagedGrant = effectiveGrantKind === "organization" || effectiveGrantKind === "agent";
+    if (createsManagedGrant && !await isToolConnectionManagerQuiet(req, companyId)) {
+      throw forbidden(
+        effectiveGrantKind === "agent"
+          ? "Only connection managers can authorize a dedicated agent identity"
+          : ORGANIZATION_GRANT_DENIAL_REASON,
+      );
     }
     try {
       const result = await svc.connectGalleryApp(companyId, req.body, getActorInfo(req));
@@ -860,13 +893,16 @@ function connectorEnrollmentPrincipal(req: Request): string {
           // (PAP-17835). The service refuses any subject other than the actor,
           // so this cannot start consent on someone else's behalf.
           const personalSubjectUserId = req.body.grantKind === "user" ? req.actor.userId ?? null : null;
+          const dedicatedSubjectAgentId = req.body.grantKind === "agent" ? req.body.subjectAgentId ?? null : null;
           const start = await svc.startOAuth(companyId, result.connectionId, {
             redirectUri: oauthRedirectUri(req),
             actor: getActorInfo(req),
             ...(personalSubjectUserId ? { subjectUserId: personalSubjectUserId } : {}),
+            ...(dedicatedSubjectAgentId ? { subjectAgentId: dedicatedSubjectAgentId } : {}),
             ...(req.body.interactionId ? { interactionId: req.body.interactionId } : {}),
           });
           result.auth.startUrl = start.authorizationUrl;
+          result.auth.handoff = start.handoff;
           result.auth.issuer = start.issuer ?? result.auth.issuer ?? null;
           result.auth.resource = start.resource ?? result.auth.resource ?? null;
           result.auth.registrationSource = start.registrationSource ?? null;
@@ -923,7 +959,7 @@ function connectorEnrollmentPrincipal(req: Request): string {
         scopes: req.body.scopes,
         returnTo: req.body.returnTo,
       });
-      res.json({ url: result.authorizationUrl });
+      res.json({ url: result.authorizationUrl, ...(result.handoff ? { handoff: result.handoff } : {}) });
     },
   );
 
@@ -931,6 +967,7 @@ function connectorEnrollmentPrincipal(req: Request): string {
     const existing = await getAccessibleResource(req, res, svc.getConnection(req.params.connectionId as string), "Tool connection not found");
     if (!existing) return;
     const subjectUserId = req.body?.asCurrentUser === true ? req.actor.userId ?? null : null;
+    const subjectAgentId = req.body?.asAgentId ?? null;
     if (req.body?.asCurrentUser === true && !subjectUserId) {
       throw forbidden("Connecting an app as yourself requires a signed-in user");
     }
@@ -948,6 +985,7 @@ function connectorEnrollmentPrincipal(req: Request): string {
       actor: getActorInfo(req),
       returnTo: oauthBrowserOrigin(req) ?? undefined,
       ...(subjectUserId ? { subjectUserId } : {}),
+      ...(subjectAgentId ? { subjectAgentId } : {}),
       ...(req.body?.interactionId ? { interactionId: req.body.interactionId } : {}),
     });
     res.json(result);
@@ -1065,11 +1103,15 @@ function connectorEnrollmentPrincipal(req: Request): string {
       const connectorProfileValue = typeof oauthConfig?.connectorProfile === "string"
         ? oauthConfig.connectorProfile
         : null;
-      const connectorProfile = connectorProfileValue && isGoogleWorkspaceConnectorProfileId(connectorProfileValue)
+      const connectorProfile = connectorProfileValue && (
+        isGoogleWorkspaceConnectorProfileId(connectorProfileValue) || isGitHubConnectorProfileId(connectorProfileValue)
+      )
         ? connectorProfileValue
         : null;
       const connectorDefinition = connectorProfile
-        ? GOOGLE_WORKSPACE_CONNECTOR_PROFILES[connectorProfile]
+        ? isGitHubConnectorProfileId(connectorProfile)
+          ? GITHUB_CONNECTOR_PROFILES[connectorProfile]
+          : GOOGLE_WORKSPACE_CONNECTOR_PROFILES[connectorProfile]
         : null;
       await logActivity(db, {
         companyId: result.connection.companyId,
@@ -1081,7 +1123,7 @@ function connectorEnrollmentPrincipal(req: Request): string {
         details: {
           applicationId: result.application.id,
           catalogEntryCount: result.catalog.length,
-          provider: connectorDefinition?.appSlug ?? "google",
+          provider: connectorDefinition?.appSlug ?? "managed",
           ...(connectorDefinition ? { profile: connectorProfile } : {}),
         },
       });
@@ -1103,8 +1145,8 @@ function connectorEnrollmentPrincipal(req: Request): string {
         return;
       }
       if (acceptsHtml) {
-        const testPath = await oauthAppPath(result.connection.companyId, result.connection.id, "test");
-        res.redirect(303, `${testPath}?success=1`);
+        const permissionsPath = await oauthAppPath(result.connection.companyId, result.connection.id);
+        res.redirect(303, `${permissionsPath}?success=1`);
         return;
       }
       res.json(result);
@@ -1135,6 +1177,10 @@ function connectorEnrollmentPrincipal(req: Request): string {
         pendingConnection,
         outcome,
         typeof details?.code === "string" ? details.code : null,
+        {
+          installationUrl: details?.installationUrl,
+          managementUrl: details?.managementUrl,
+        },
       ));
     }
   };
@@ -1194,8 +1240,8 @@ function connectorEnrollmentPrincipal(req: Request): string {
         return;
       }
       if (acceptsHtml) {
-        const testPath = await oauthAppPath(result.connection.companyId, result.connection.id, "test");
-        res.redirect(303, `${testPath}?success=1`);
+        const permissionsPath = await oauthAppPath(result.connection.companyId, result.connection.id);
+        res.redirect(303, `${permissionsPath}?success=1`);
         return;
       }
       res.json(result);
@@ -1356,8 +1402,8 @@ function connectorEnrollmentPrincipal(req: Request): string {
       return;
     }
     if (acceptsHtml) {
-      const testPath = await oauthAppPath(result.connection.companyId, result.connection.id, "test");
-      res.redirect(303, `${testPath}?success=1`);
+      const permissionsPath = await oauthAppPath(result.connection.companyId, result.connection.id);
+      res.redirect(303, `${permissionsPath}?success=1`);
       return;
     }
     res.json(result);
@@ -2101,7 +2147,8 @@ function connectorEnrollmentPrincipal(req: Request): string {
   router.post("/tool-connections/:connectionId/health-check", async (req, res) => {
     const existing = await getAccessibleResource(req, res, svc.getConnection(req.params.connectionId as string), "Tool connection not found");
     if (!existing) return;
-    await assertToolConnectionConfigureAccess(req, existing);
+    if (existing.credentialPolicy === "per_user") await assertToolConnectionAccess(req, existing);
+    else await assertToolConnectionConfigureAccess(req, existing);
     res.json(await svc.checkHealth(existing.id, getActorInfo(req)));
   });
 
@@ -2135,7 +2182,20 @@ function connectorEnrollmentPrincipal(req: Request): string {
     const existing = await getAccessibleResource(req, res, svc.getConnection(req.params.connectionId as string), "Tool connection not found");
     if (!existing) return;
     await assertToolConnectionConfigureAccess(req, existing);
-    res.json(await svc.refreshCatalog(existing.id, getActorInfo(req)));
+    const result = await svc.refreshCatalog(existing.id, getActorInfo(req));
+    await logActivity(db, {
+      companyId: existing.companyId,
+      actorType: "user",
+      actorId: req.actor.userId ?? "board",
+      action: "tool_connection.catalog_refresh",
+      entityType: "tool_connection",
+      entityId: existing.id,
+      details: {
+        discoveredCount: result.discoveredCount,
+        quarantinedCount: result.quarantinedCount,
+      },
+    });
+    res.json(result);
   });
 
   router.get("/tool-connections/:connectionId/catalog", async (req, res) => {

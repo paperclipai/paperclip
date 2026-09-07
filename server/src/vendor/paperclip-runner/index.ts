@@ -64,7 +64,7 @@ const sourceUrl = new URL(
   "../../../../packages/paperclip-runner/src/index.ts",
   import.meta.url,
 );
-const runner = await import(sourceUrl.href) as RunnerModule;
+const runner = (await import(sourceUrl.href)) as RunnerModule;
 
 export const DurablePrpControlPlane = runner.DurablePrpControlPlane;
 export const PaperclipSemanticDispatcher = runner.PaperclipSemanticDispatcher;
@@ -76,6 +76,8 @@ export const NATIVE_RUNTIME_ASSET_SCHEMA = runner.NATIVE_RUNTIME_ASSET_SCHEMA;
 export const PAPERCLIP_EXECUTION_PROMPT = runner.PAPERCLIP_EXECUTION_PROMPT;
 export const PAPERCLIP_EXECUTION_PROMPT_REVISION =
   runner.PAPERCLIP_EXECUTION_PROMPT_REVISION;
+export const acpxRuntimeSessionDirectoryName =
+  runner.acpxRuntimeSessionDirectoryName;
 export const canonicalNativeRuntimeContextDigest =
   runner.canonicalNativeRuntimeContextDigest;
 export const createNativeSessionBackend = runner.createNativeSessionBackend;
@@ -96,7 +98,8 @@ export const parseHarnessRuntimeRequestResolution =
 export const parseNativeExecutionInput = runner.parseNativeExecutionInput;
 export const parseNativeRuntimeContext = runner.parseNativeRuntimeContext;
 export const parsePaperclipQuestionSet = runner.parsePaperclipQuestionSet;
-export const parsePaperclipQuestionResponse = runner.parsePaperclipQuestionResponse;
+export const parsePaperclipQuestionResponse =
+  runner.parsePaperclipQuestionResponse;
 export const resolveQualifiedAcpxProfile = runner.resolveQualifiedAcpxProfile;
 export const resolveSourceCodexHome = runner.resolveSourceCodexHome;
 export const validatePrpEvent = runner.validatePrpEvent;

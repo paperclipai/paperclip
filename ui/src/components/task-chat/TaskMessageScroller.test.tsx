@@ -133,11 +133,17 @@ describe("TaskMessageScroller", () => {
     expect(el.scrollTop).toBe(el.scrollHeight);
   });
 
-  it("keeps the scrollbar at the full-width thread viewport edge", () => {
+  it("extends only the streamlined scroll box through the page gutter", () => {
     render();
-    const frame = scroller().parentElement;
+    const el = scroller();
+    const frame = el.parentElement;
 
     expect(frame?.className).toBe("relative min-h-0 flex-1");
+    expect(el.classList).toContain("-right-4");
+    expect(el.classList).toContain("pr-4");
+    expect(el.classList).toContain("md:-right-6");
+    expect(el.classList).toContain("md:pr-6");
+    expect(el.classList).not.toContain("right-0");
   });
 
   it("shows the scrollbar only while scroll activity is recent", () => {
@@ -158,6 +164,13 @@ describe("TaskMessageScroller", () => {
     expect(el.getAttribute("data-scroll-active")).toBe("true");
     vi.advanceTimersByTime(1);
     expect(el.getAttribute("data-scroll-active")).toBeNull();
+  });
+
+  it("contains horizontal overflow so no scrollbar appears above the composer", () => {
+    render();
+
+    expect(scroller().classList).toContain("overflow-x-hidden");
+    expect(scroller().classList).toContain("overflow-y-auto");
   });
 
   it("auto-follows content instantly while pinned", async () => {
@@ -181,6 +194,8 @@ describe("TaskMessageScroller", () => {
     expect(btn).not.toBeNull();
     expect(btn!.className).toContain("tc-scroll-pill-in");
     expect(btn!.className).toContain("size-8");
+    expect(btn!.className).toContain("bottom-7");
+    expect(btn!.className).not.toContain("bottom-3");
     expect(btn!.className).not.toContain("-translate-x-1/2");
     // Icon-only: no visible text.
     expect(btn!.textContent).toBe("");

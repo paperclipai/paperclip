@@ -8,6 +8,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useStreamlinedTaskChatPresentation } from "./presentation-mode";
 import { MarkdownBody } from "@/components/MarkdownBody";
 import { Button } from "@/components/ui/button";
 import {
@@ -52,6 +53,7 @@ export function TaskChatSystemNotice({
   onTryAgainNoLiveExecutionPath?: () => Promise<void> | void;
   tryAgainNoLiveExecutionPathPending?: boolean;
 }) {
+  const streamlined = useStreamlinedTaskChatPresentation();
   const [open, setOpen] = useState(Boolean(item.presentation?.detailsDefaultOpen));
   const detailsId = useId();
   const { title, tone, detail } = humanizeSystemNotice({
@@ -75,7 +77,13 @@ export function TaskChatSystemNotice({
   };
 
   return (
-    <div className="tc-enter-bubble flex flex-col items-start py-1" data-testid="task-chat-system-notice">
+    <div
+      className={cn("tc-enter-bubble flex flex-col items-center", streamlined ? "py-0.5" : "py-1")}
+      data-testid="task-chat-system-notice"
+      data-tone={streamlined ? tone : undefined}
+      role={streamlined ? "group" : undefined}
+      aria-label={streamlined ? `System update: ${title}` : undefined}
+    >
       <div className="flex max-w-(--pct-85) items-center gap-1.5">
         <button
           type="button"

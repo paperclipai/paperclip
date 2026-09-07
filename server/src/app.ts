@@ -19,6 +19,7 @@ import {
 } from "./services/company-import-transfers.js";
 import { companyTransferRunService } from "./services/company-transfer-runs.js";
 import { healthRoutes } from "./routes/health.js";
+import { cloudRuntimeIdentityMiddleware } from "./middleware/cloud-runtime-identity.js";
 import { cloudRoutes } from "./routes/cloud.js";
 import { companyRoutes } from "./routes/companies.js";
 import { companySkillRoutes } from "./routes/company-skills.js";
@@ -364,6 +365,7 @@ export async function createApp(
       bindHost: opts.bindHost,
     }),
   );
+  app.use(cloudRuntimeIdentityMiddleware(db));
   // Connection-intent tools carry their own short-lived, run-bound bearer and
   // must be reachable by remote adapters that intentionally do not receive an
   // agent API key. Every request revalidates the active heartbeat row.
@@ -772,9 +774,18 @@ export async function createApp(
       res.end("Upgrade Required");
     });
     const { createServer: createViteServer } = await import("vite");
+    const configuredViteCacheDir = process.env.PAPERCLIP_VITE_CACHE_DIR?.trim();
     const vite = await createViteServer({
       root: uiRoot,
+      ...(configuredViteCacheDir
+        ? { cacheDir: path.resolve(configuredViteCacheDir) }
+        : {}),
       appType: "custom",
+      // Vite otherwise discovers every HTML entry below the UI root. Generated
+      // Storybook output can reference dependencies that are intentionally not
+      // part of the application install, poisoning a clean embedded dev-server
+      // cache before the browser opens. The embedded UI has one real entry.
+      optimizeDeps: { entries: [path.resolve(uiRoot, "index.html")] },
       server: {
         // Listener binding and browser HMR hostname are deliberately separate:
         // exposed branch runtimes stay loopback-only while the browser uses the

@@ -24,6 +24,7 @@ import {
   resolvedNightlyCandidates,
   runnerLiveRotationWeek,
   runnerLiveScheduleCoverage,
+  selectRunnerLiveEvalSchedule,
   RunnerWorkflowInfrastructureError,
 } from "./live-workflow-matrix.js";
 import { unavailableLiveRunnerWorkflowObservation } from "./live-workflow-executor.js";
@@ -306,6 +307,35 @@ describe("balanced live Runner workflow matrix", () => {
     );
   });
 
+  it("selects a stable bounded paid subset and rejects invalid selectors", () => {
+    const schedule = buildRunnerLiveEvalSchedule({
+      seed: "subset-v1",
+      rotationDay: 0,
+      generatedAt: "2026-08-24T00:00:00.000Z",
+    });
+    const selected = selectRunnerLiveEvalSchedule(schedule, {
+      candidateIds: ["codex-luna"],
+      limit: 2,
+    });
+    expect(selected.expectedExecutions).toBe(2);
+    expect(selected.entries).toHaveLength(2);
+    expect(
+      selected.entries.every((entry) => entry.candidateId === "codex-luna"),
+    ).toBe(true);
+    expect(selected.candidates.map((candidate) => candidate.id)).toEqual([
+      "codex-luna",
+    ]);
+    expect(schedule.expectedExecutions).toBe(40);
+    expect(() =>
+      selectRunnerLiveEvalSchedule(schedule, {
+        candidateIds: ["unknown-candidate"],
+      }),
+    ).toThrow("unknown Runner live eval candidate");
+    expect(() => selectRunnerLiveEvalSchedule(schedule, { limit: 0 })).toThrow(
+      "selection limit must be a positive integer",
+    );
+  });
+
   it("retries only one retryable infrastructure failure", async () => {
     const schedule = buildRunnerLiveEvalSchedule({
       seed: "retry-v1",
@@ -409,7 +439,7 @@ describe("workflow reports and stress traceability", () => {
     }
   });
 
-  it("renders safe JSON-derived Markdown, JUnit, and GitHub summaries", async () => {
+  it("renders safe JSON-derived Evalbook, Markdown, JUnit, and GitHub summaries", async () => {
     const results = await runDeterministicRunnerWorkflowMatrix();
     const report = buildRunnerWorkflowEvalReport({
       source: "deterministic",

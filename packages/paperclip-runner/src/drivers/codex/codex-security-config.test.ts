@@ -51,6 +51,34 @@ describe("Codex security configuration", () => {
     expect(serialized).not.toContain("must-not-cross");
   });
 
+  it("inherits only projected GitHub credentials without serializing their values", () => {
+    const args = createIsolatedCodexAppServerArgs({
+      PATH: "/safe/bin",
+      GH_TOKEN: "must-remain-in-process-environment",
+      GITHUB_TOKEN: "must-remain-in-process-environment",
+      PAPERCLIP_GIT_TOKEN: "must-remain-in-process-environment",
+      GIT_TERMINAL_PROMPT: "0",
+      GIT_CONFIG_COUNT: "1",
+      GIT_CONFIG_KEY_0: "credential.https://github.com.helper",
+      GIT_CONFIG_VALUE_0: "!trusted-helper",
+      OPENAI_API_KEY: "must-not-cross",
+    });
+    const serialized = args.join("\n");
+
+    expect(serialized).toContain("network.enabled=true");
+    expect(serialized).toContain('shell_environment_policy.inherit="all"');
+    expect(serialized).toContain(
+      "shell_environment_policy.ignore_default_excludes=true",
+    );
+    expect(serialized).toContain("shell_environment_policy.include_only=");
+    expect(serialized).toContain('"GH_TOKEN"');
+    expect(serialized).toContain('"GIT_CONFIG_KEY_0"');
+    expect(serialized).toContain('"GIT_CONFIG_VALUE_0"');
+    expect(serialized).not.toContain("must-remain-in-process-environment");
+    expect(serialized).not.toContain("must-not-cross");
+    expect(serialized).not.toContain("!trusted-helper");
+  });
+
   it("uses a read-only permission profile for plan mode", () => {
     expect(createSecuredCodexThreadParams("/workspace", "plan")).toMatchObject({
       cwd: "/workspace",
@@ -61,5 +89,48 @@ describe("Codex security configuration", () => {
         include_collaboration_mode_instructions: true,
       },
     });
+  });
+
+  it("uses the outer sandbox for default-mode commands only when the controller authorizes it", () => {
+    const source = { PAPERCLIP_RUNNER_EXTERNAL_SANDBOX: "1" };
+    const externalArgs = createIsolatedCodexAppServerArgs(source);
+    const serializedExternalArgs = externalArgs.join("\n");
+    expect(externalArgs).toContain(
+      "--dangerously-bypass-approvals-and-sandbox",
+    );
+    expect(serializedExternalArgs).toContain(
+      'default_permissions="paperclip-runner-external-sandbox"',
+    );
+    expect(serializedExternalArgs).toContain(
+      'permissions.paperclip-runner-external-sandbox.filesystem={":root"="write"}',
+    );
+    expect(serializedExternalArgs).toContain(
+      "permissions.paperclip-runner-external-sandbox.network.enabled=true",
+    );
+    expect(
+      createSecuredCodexThreadParams(
+        "/workspace",
+        "default",
+        true,
+        false,
+        source,
+      ),
+    ).toMatchObject({
+      permissions: "paperclip-runner-external-sandbox",
+    });
+    expect(
+      createSecuredCodexThreadParams(
+        "/workspace",
+        "plan",
+        true,
+        false,
+        source,
+      ),
+    ).toMatchObject({
+      permissions: "paperclip-runner-workspace-read-only",
+    });
+    expect(createIsolatedCodexAppServerArgs({})).not.toContain(
+      "--dangerously-bypass-approvals-and-sandbox",
+    );
   });
 });

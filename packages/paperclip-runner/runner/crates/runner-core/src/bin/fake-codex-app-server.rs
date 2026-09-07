@@ -31,6 +31,48 @@ fn send(value: Value) -> io::Result<()> {
     stdout.flush()
 }
 
+fn send_split_event_burst(state: &FakeState) -> io::Result<()> {
+    let turn_id = state.active_turn_id.as_deref().unwrap_or("provider-turn-1");
+    for index in 0..96 {
+        send(json!({
+            "method": "item/agentMessage/delta",
+            "params": {
+                "threadId": state.thread_id,
+                "turnId": turn_id,
+                "itemId": "split-burst-message",
+                "delta": format!("first-{index} "),
+            }
+        }))?;
+    }
+    send(json!({
+        "id": "split-burst-tool",
+        "method": "item/tool/call",
+        "params": {
+            "threadId": state.thread_id,
+            "turnId": turn_id,
+            "callId": "split-burst-semantic-call",
+            "tool": "get_task_context",
+            "arguments": {}
+        }
+    }))
+}
+
+fn finish_split_event_burst(state: &FakeState) -> io::Result<()> {
+    let turn_id = state.active_turn_id.as_deref().unwrap_or("provider-turn-1");
+    for index in 0..48 {
+        send(json!({
+            "method": "item/agentMessage/delta",
+            "params": {
+                "threadId": state.thread_id,
+                "turnId": turn_id,
+                "itemId": "split-burst-message",
+                "delta": format!("second-{index} "),
+            }
+        }))?;
+    }
+    Ok(())
+}
+
 fn load_state(path: &Path) -> FakeState {
     fs::read(path)
         .ok()
@@ -483,6 +525,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .any(|value| value == "--opencode-proxy-runtime-question");
     let emit_runtime_elicitation = args.iter().any(|value| value == "--runtime-elicitation");
     let emit_structured_activity = args.iter().any(|value| value == "--structured-activity");
+    let emit_split_event_burst = args.iter().any(|value| value == "--split-event-burst");
     let require_skill_instructions = args
         .iter()
         .any(|value| value == "--include-skill-instructions");
@@ -514,6 +557,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .iter()
         .any(|value| value == "--finish-turn-with-pending-tool");
     let require_dynamic_tool = args.iter().any(|value| value == "--require-dynamic-tool");
+    let require_completion_contract = args
+        .iter()
+        .any(|value| value == "--require-completion-contract");
+    let require_external_sandbox = args
+        .iter()
+        .any(|value| value == "--require-external-sandbox");
     let expected_canonical_task_context = argument(&args, "--expected-canonical-task-context")
         .map(|value| serde_json::from_str::<Value>(&value))
         .transpose()?;
@@ -528,6 +577,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let emit_post_completion_warning = args
         .iter()
         .any(|value| value == "--emit-post-completion-warning");
+    let emit_post_completion_passive_statuses = args
+        .iter()
+        .any(|value| value == "--emit-post-completion-passive-statuses");
+    let emit_post_completion_foreign_turn = args
+        .iter()
+        .any(|value| value == "--emit-post-completion-foreign-turn");
+    let post_completion_notification_gate =
+        argument(&args, "--post-completion-notification-gate").map(PathBuf::from);
     let fail_after_turn_completion = args
         .iter()
         .any(|value| value == "--fail-after-turn-completion");
@@ -700,6 +757,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             finish_turn(&state_path, &mut state, "completed")?;
             continue;
         }
+        if message.get("method").is_none() && message.get("id") == Some(&json!("split-burst-tool"))
+        {
+            if message.pointer("/result/success") != Some(&json!(true)) {
+                return Err("split event burst semantic tool failed".into());
+            }
+            finish_split_event_burst(&state)?;
+            finish_turn(&state_path, &mut state, "completed")?;
+            continue;
+        }
         if message.get("method").is_none() && message.get("id") == Some(&json!("tool-request-1")) {
             if message.pointer("/result/success") == Some(&json!(false)) {
                 log_call(call_log.as_deref(), "tool-response:failure")?;
@@ -763,8 +829,23 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }))?,
             "initialized" => {}
             "thread/start" => {
+                if require_external_sandbox
+                    && (message.pointer("/params/sandbox") != Some(&json!("danger-full-access"))
+                        || message.pointer("/params/permissions").is_some())
+                {
+                    return Err("thread/start omitted the external sandbox boundary".into());
+                }
                 if require_dynamic_tool && !has_task_context_tool(&message) {
                     return Err("thread/start omitted the authorized dynamic tool".into());
+                }
+                if require_completion_contract
+                    && message.pointer("/params/completionContract")
+                        != Some(&json!({
+                            "revision": "revision-1",
+                            "criterionIds": ["criterion-1"],
+                        }))
+                {
+                    return Err("thread/start omitted the durable completion contract".into());
                 }
                 state.thread_id = "codex-thread-1".to_owned();
                 state.active_turn_id = None;
@@ -781,8 +862,23 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 }))?;
             }
             "thread/resume" => {
+                if require_external_sandbox
+                    && (message.pointer("/params/sandbox") != Some(&json!("danger-full-access"))
+                        || message.pointer("/params/permissions").is_some())
+                {
+                    return Err("thread/resume omitted the external sandbox boundary".into());
+                }
                 if require_dynamic_tool && !has_task_context_tool(&message) {
                     return Err("thread/resume omitted the authorized dynamic tool".into());
+                }
+                if require_completion_contract
+                    && message.pointer("/params/completionContract")
+                        != Some(&json!({
+                            "revision": "revision-1",
+                            "criterionIds": ["criterion-1"],
+                        }))
+                {
+                    return Err("thread/resume omitted the durable completion contract".into());
                 }
                 let unowned_turn_marker = state_path.with_file_name("resume-unowned-turn");
                 if resume_unowned_turn_when_marked && unowned_turn_marker.exists() {
@@ -827,6 +923,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
             "turn/start" => {
+                if require_external_sandbox
+                    && (message.pointer("/params/sandboxPolicy")
+                        != Some(&json!({
+                            "type": "externalSandbox",
+                            "networkAccess": "enabled",
+                        }))
+                        || message.pointer("/params/permissions").is_some())
+                {
+                    return Err("turn/start omitted the external sandbox boundary".into());
+                }
                 turn_start_count += 1;
                 if durable_turn_ids {
                     state.next_turn = state
@@ -1089,6 +1195,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 } else if emit_structured_activity {
                     send_structured_activity(&state)?;
                     finish_turn(&state_path, &mut state, "completed")?;
+                } else if emit_split_event_burst {
+                    send_split_event_burst(&state)?;
                 } else if emit_question {
                     send_question(&state)?;
                 } else if !hold_turn {
@@ -1111,6 +1219,60 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                             "method": "warning",
                             "params": {"message": "provider remained live after terminal"}
                         }))?;
+                    }
+                    if emit_post_completion_passive_statuses {
+                        for notification in [
+                            json!({
+                                "method": "remoteControl/status/changed",
+                                "params": {"status": "disabled", "environmentId": null}
+                            }),
+                            json!({
+                                "method": "mcpServer/startupStatus/updated",
+                                "params": {"name": "codex_apps", "status": "ready", "error": null}
+                            }),
+                            json!({
+                                "method": "account/rateLimits/updated",
+                                "params": {"rateLimits": {}}
+                            }),
+                            json!({
+                                "method": "rawResponseItem/completed",
+                                "params": {"item": {"id": "raw-tail", "type": "reasoning"}}
+                            }),
+                            json!({
+                                "method": "rawResponse/completed",
+                                "params": {"response": {"id": "response-tail"}}
+                            }),
+                            json!({
+                                "method": "thread/goal/updated",
+                                "params": {"threadId": state.thread_id, "goal": "finish the turn"}
+                            }),
+                            json!({
+                                "method": "thread/goal/cleared",
+                                "params": {"threadId": state.thread_id}
+                            }),
+                        ] {
+                            send(notification)?;
+                        }
+                    }
+                    if emit_post_completion_foreign_turn {
+                        if let Some(gate) = post_completion_notification_gate.as_ref() {
+                            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+                            while !gate.is_file() {
+                                if std::time::Instant::now() >= deadline {
+                                    return Err(
+                                        "post-completion notification gate timed out".into()
+                                    );
+                                }
+                                thread::sleep(Duration::from_millis(1));
+                            }
+                        }
+                        send(json!({
+                            "method": "turn/started",
+                            "params": {"threadId": state.thread_id, "turn": {"id": "unowned-turn"}}
+                        }))?;
+                        if let Some(gate) = post_completion_notification_gate.as_ref() {
+                            fs::write(gate.with_extension("emitted"), b"emitted")?;
+                        }
                     }
                     if fail_after_turn_completion {
                         if let Some(delay_ms) = fail_after_turn_completion_delay_ms {

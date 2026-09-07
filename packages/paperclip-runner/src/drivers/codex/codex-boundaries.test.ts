@@ -120,6 +120,47 @@ describe("Codex value and workspace boundaries", () => {
     }
   });
 
+  it("defers provider-owned workspace existence without weakening its assignment", () => {
+    const remoteWorkspace = "/home/daytona/paperclip-workspace";
+    const remoteEnvironment = {
+      HOME: remoteWorkspace,
+      CODEX_HOME: `${remoteWorkspace}/.codex`,
+      PAPERCLIP_WORKSPACE_CWD: remoteWorkspace,
+    };
+
+    expect(
+      validateCodexWorkingDirectory(
+        remoteWorkspace,
+        remoteEnvironment,
+        "remote_runner",
+      ),
+    ).toBe(remoteWorkspace);
+    expect(() =>
+      validateCodexWorkingDirectory(remoteWorkspace, remoteEnvironment),
+    ).toThrow("must exist before provider admission");
+    expect(() =>
+      validateCodexWorkingDirectory(
+        `${remoteWorkspace}/nested`,
+        remoteEnvironment,
+        "remote_runner",
+      ),
+    ).toThrow("does not match the assigned workspace");
+    expect(() =>
+      validateCodexWorkingDirectory(
+        `${remoteWorkspace}/../escape`,
+        remoteEnvironment,
+        "remote_runner",
+      ),
+    ).toThrow("must be a normalized absolute path");
+    expect(() =>
+      validateCodexWorkingDirectory(
+        "/",
+        { PAPERCLIP_WORKSPACE_CWD: "/" },
+        "remote_runner",
+      ),
+    ).toThrow("filesystem root");
+  });
+
   it("bounds retained values and redacts protected diagnostics", () => {
     const bounded = boundedCodexPayload({
       short: "ok",

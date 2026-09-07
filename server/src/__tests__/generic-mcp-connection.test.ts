@@ -1552,7 +1552,7 @@ describeEmbeddedPostgres("generic remote MCP connections", () => {
     await expect(db.select().from(toolOauthStates).where(eq(toolOauthStates.state, state))).resolves.toHaveLength(0);
   });
 
-  it("returns browser denials to setup without reflecting provider-authored details", async () => {
+  it("returns browser denials to Permissions without reflecting provider-authored details", async () => {
     vi.stubEnv("PAPERCLIP_PUBLIC_URL", PUBLIC_BASE_URL);
     installMcpOAuthFixture({ auth: "oauth" });
     const company = await createCompany(db);
@@ -1580,7 +1580,7 @@ describeEmbeddedPostgres("generic remote MCP connections", () => {
 
     expect(res.status).toBe(303);
     const location = new URL(res.headers.location, PUBLIC_BASE_URL);
-    expect(location.pathname).toBe(`/${company.issuePrefix}/apps/${connected.connectionId}/setup`);
+    expect(location.pathname).toBe(`/${company.issuePrefix}/apps/${connected.connectionId}/permissions`);
     expect(location.searchParams.get("oauth")).toBe("denied");
     expect(location.searchParams.get("code")).toBe("oauth_authorization_denied");
     expect(res.headers.location).not.toContain(PROVIDER_CANARY);
@@ -2144,6 +2144,18 @@ describeEmbeddedPostgres("generic remote MCP connections", () => {
       application_type: "web",
     });
     expect(JSON.stringify(response.body)).not.toContain(company.id);
+  });
+
+  it("uses the configured auth origin for self-hosted OAuth callbacks", async () => {
+    vi.stubEnv("PAPERCLIP_PUBLIC_URL", "https://public.paperclip.example");
+    vi.stubEnv("PAPERCLIP_AUTH_PUBLIC_BASE_URL", "https://auth.paperclip.example");
+    const app = createRouteApp(db);
+
+    const response = await request(app).get("/api/tools/oauth/client-metadata").expect(200);
+
+    expect(response.body.redirect_uris).toEqual([
+      "https://auth.paperclip.example/api/tools/oauth/callback",
+    ]);
   });
 
   it("uses the managed runtime origin when no explicit callback origin is configured", async () => {

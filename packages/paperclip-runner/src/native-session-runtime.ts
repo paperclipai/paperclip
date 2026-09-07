@@ -29,6 +29,12 @@ export const DEFAULT_NATIVE_RUNTIME_INPUT_LIVE_WINDOW_MS = 120_000;
 export const DEFAULT_NATIVE_SEMANTIC_RESULT_TERMINAL_GRACE_MS = 5_000;
 const OPTIONAL_SESSION_CANCELLATION_GRACE_MS = 100;
 const FAILED_OPERATION_SETTLEMENT_GRACE_MS = 100;
+// Retaining a remote provider requires its semantic-result interruption to be
+// acknowledged before the session is handed to another run. Daytona command
+// round trips routinely exceed the generic failed-operation grace, but remain
+// bounded by the transport. Other iterator and handoff cleanup keeps the short
+// fail-closed quarantine boundary below.
+const REUSABLE_SESSION_CANCELLATION_SETTLEMENT_GRACE_MS = 10_000;
 const DEFAULT_NATIVE_CHECKPOINT_TIMEOUT_MS = 30_000;
 type NativeSessionCleanupDomain = string;
 
@@ -83,13 +89,30 @@ export interface ExecuteNativeSessionOptions {
   /** Internal test seam; production gives the provider five seconds to end after a result. */
   semanticResultTerminalGraceMs?: number;
   onSession?: (session: NativeSession | null) => void;
+  /** Observes why a retained session was removed from warm reuse. */
+  onSessionQuarantined?: (reason: string) => Promise<void> | void;
   existingSession?: NativeSession;
   persistedSession?: PersistedNativeSession | null;
   keepSessionOpen?: boolean;
+  /**
+   * Wait for the backend's close contract before returning a durable result.
+   * Use this only for backends whose close path is internally bounded and
+   * carries required persistence (for example, a remote runner checkpoint).
+   */
+  requireSessionCloseBeforeReturn?: boolean;
   onCheckpoint?: (
     snapshot: PersistedNativeSession,
     options?: CheckpointControlPlaneSessionOptions,
   ) => Promise<void> | void;
+  /**
+   * Observes a post-result failure after completeRun has committed. Checkpoint
+   * failures quarantine the retained session; usage failures only omit
+   * optional accounting enrichment.
+   */
+  onPostCompletionEnrichmentFailure?: (input: {
+    stage: "checkpoint" | "usage";
+    error: unknown;
+  }) => Promise<void> | void;
   /** Called when exact provider recovery failed and policy opened a new provider session. */
   onContinuityBreak?: (input: {
     reason: string;
@@ -680,8 +703,9 @@ async function consumeTurn(
   timeoutMs: number,
   runtimeInputLiveWindowMs: number,
   semanticResultTerminalGraceMs: number,
+  reusableSessionCancellationGraceMs: number,
   closeFailedSession: () => Promise<void>,
-  quarantineSession: () => void,
+  quarantineSession: (reason: string) => void,
   resolveGovernedWait?: ExecuteNativeSessionOptions["resolveGovernedWait"],
   externalSignal?: AbortSignal,
 ) {
@@ -691,6 +715,8 @@ async function consumeTurn(
   const appendAbort = new AbortController();
   const governedCleanupOperations = new Set<Promise<unknown>>();
   let governedCancellationCommitted = false;
+  let semanticCancellationCommitted = false;
+  let semanticResultObserved = false;
   let deferredGovernedCleanupSettlement: Promise<unknown> | null = null;
   let deferredSessionCancellationSettlement: Promise<unknown> | null = null;
   const inputTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -749,10 +775,11 @@ async function consumeTurn(
         signal: appendAbort.signal,
       });
       governedCancellationCommitted = true;
+      semanticCancellationCommitted = event.eventType === "run.result.proposed";
       const cleanup = cancellation.cleanup;
       governedCleanupOperations.add(cleanup);
       void cleanup
-        .catch(() => quarantineSession())
+        .catch(() => quarantineSession("governed_cleanup_failed"))
         .finally(() => governedCleanupOperations.delete(cleanup));
       return {
         event,
@@ -763,9 +790,10 @@ async function consumeTurn(
     };
     while (true) {
       pendingNext ??= eventIterator.next();
-      const next = semanticResultDeadline === null
-        ? await pendingNext
-        : await Promise.race([pendingNext, semanticResultDeadline]);
+      const next =
+        semanticResultDeadline === null
+          ? await pendingNext
+          : await Promise.race([pendingNext, semanticResultDeadline]);
       if (next === semanticResultGraceExpired) {
         void pendingNext.catch(() => undefined);
         if (semanticResultEvent === null || governedResult === null) {
@@ -886,7 +914,10 @@ async function consumeTurn(
           // Invalid structured inputs remain rejected by the driver and never become durable questions.
         }
       }
-      if (governedResult === null && event.eventType === "run.result.proposed") {
+      if (
+        governedResult === null &&
+        event.eventType === "run.result.proposed"
+      ) {
         const validation = validatePrpStructuredRunResult(event.payload);
         if (!validation.ok) {
           throw new Error("native_semantic_result_invalid");
@@ -894,6 +925,7 @@ async function consumeTurn(
         governedResult = validation.result;
         resultSource = "semantic_result";
         semanticResultEvent = event;
+        semanticResultObserved = true;
         if (session.cancel !== undefined) {
           semanticResultDeadline = new Promise((resolve) => {
             semanticResultTimer = setTimeout(
@@ -1049,14 +1081,21 @@ async function consumeTurn(
       );
     } else {
       // Iterator and provider cleanup own no control-plane mutation authority.
-      // A slow subscription or cleanup remains observed and is released by the
-      // normal session close, but it cannot erase an already committed
-      // terminal fact or prevent result retrieval and durable finalization.
+      // A reusable session with a semantic result needs a longer bounded
+      // window for the remote event subscription to release. This applies
+      // both when Paperclip forced an interrupt and when the provider emitted
+      // its own terminal immediately afterward: the latter still crosses the
+      // remote PRP acknowledgement boundary and routinely takes longer than
+      // the generic local cleanup grace. Governed waits and unrelated stalled
+      // cleanup retain the short fail-closed boundary.
       const teardownSettled = await settlesWithin(
         passiveTeardownSettlement,
-        FAILED_OPERATION_SETTLEMENT_GRACE_MS,
+        semanticCancellationCommitted || semanticResultObserved
+          ? reusableSessionCancellationGraceMs
+          : FAILED_OPERATION_SETTLEMENT_GRACE_MS,
       );
-      if (!teardownSettled) quarantineSession();
+      if (!teardownSettled)
+        quarantineSession("provider_event_teardown_timed_out");
     }
     if (timer !== undefined) clearTimeout(timer);
     if (semanticResultTimer !== undefined) clearTimeout(semanticResultTimer);
@@ -1176,6 +1215,151 @@ async function replayCheckpointedTurnTerminal(input: {
     }
     afterSourceSeq = pageHighWater;
   }
+}
+
+const EFFECT_FREE_ACPX_USAGE_COUNTERS = [
+  "inputTokens",
+  "outputTokens",
+  "activeSeconds",
+  "providerCostUsd",
+  "cacheReadTokens",
+  "cacheWriteTokens",
+] as const;
+
+function objectRecord(value: unknown): Record<string, unknown> | null {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function isZeroWorkAcpxUsage(payload: Record<string, unknown>): boolean {
+  if (payload.kind !== "usage") return false;
+  const usage = objectRecord(payload.usage);
+  if (
+    usage === null ||
+    Object.keys(usage).some((key) => key !== "total" && key !== "runDelta")
+  ) {
+    return false;
+  }
+  return ["total", "runDelta"].every((sectionName) => {
+    const section = objectRecord(usage[sectionName]);
+    if (
+      section === null ||
+      section.requests !== 1 ||
+      Object.keys(section).some(
+        (key) =>
+          key !== "requests" &&
+          !EFFECT_FREE_ACPX_USAGE_COUNTERS.includes(
+            key as (typeof EFFECT_FREE_ACPX_USAGE_COUNTERS)[number],
+          ),
+      )
+    ) {
+      return false;
+    }
+    return EFFECT_FREE_ACPX_USAGE_COUNTERS.every(
+      (counter) => section[counter] === 0,
+    );
+  });
+}
+
+async function replayProvesEffectFreeInitialAcpxTurn(input: {
+  controlPlane: ControlPlanePort;
+  checkpoint: PersistedNativeSession;
+  runId: string;
+  sourceInstanceId: string;
+}): Promise<boolean> {
+  const terminalTurns = input.checkpoint.terminalTurns ?? [];
+  if (
+    input.checkpoint.driverKind !== "acpx_runtime" ||
+    input.checkpoint.semanticResult ||
+    input.checkpoint.activeTurnId ||
+    terminalTurns.length !== 1 ||
+    terminalTurns[0]!.turnId.length === 0
+  ) {
+    return false;
+  }
+  const targetTurnId = terminalTurns[0]!.turnId;
+  const events: PrpEvent[] = [];
+  let afterSourceSeq = 0;
+  try {
+    while (true) {
+      const replay = await input.controlPlane.replayEvents({
+        runId: input.runId,
+        sourceInstanceId: input.sourceInstanceId,
+        afterSourceSeq,
+        limit: 1_000,
+      });
+      if (replay.events.length === 0) break;
+      for (const event of replay.events) {
+        // An incomplete or reordered replay cannot prove absence of work.
+        if (event.sourceSeq !== afterSourceSeq + 1) return false;
+        events.push(structuredClone(event));
+        afterSourceSeq = event.sourceSeq;
+        if (events.length > 10_000) return false;
+      }
+    }
+  } catch {
+    return false;
+  }
+
+  const submittedIndexes = events.flatMap((event, index) =>
+    event.eventType === "turn.submitted" ? [index] : [],
+  );
+  const startedIndexes = events.flatMap((event, index) =>
+    event.turnId === targetTurnId && event.eventType === "turn.started"
+      ? [index]
+      : [],
+  );
+  const acceptedIndexes = events.flatMap((event, index) =>
+    event.turnId === targetTurnId && event.eventType === "turn.accepted"
+      ? [index]
+      : [],
+  );
+  const completedIndexes = events.flatMap((event, index) =>
+    event.turnId === targetTurnId && event.eventType === "turn.completed"
+      ? [index]
+      : [],
+  );
+  if (
+    submittedIndexes.length !== 1 ||
+    startedIndexes.length !== 1 ||
+    acceptedIndexes.length !== 1 ||
+    completedIndexes.length !== 1
+  ) {
+    return false;
+  }
+  const submittedIndex = submittedIndexes[0]!;
+  const startedIndex = startedIndexes[0]!;
+  const acceptedIndex = acceptedIndexes[0]!;
+  const completedIndex = completedIndexes[0]!;
+  const completedPayload = objectRecord(events[completedIndex]!.payload);
+  if (
+    startedIndex !== submittedIndex + 1 ||
+    acceptedIndex !== startedIndex + 1 ||
+    completedIndex <= acceptedIndex ||
+    events[submittedIndex]!.turnId != null ||
+    completedPayload?.status !== "completed" ||
+    (completedPayload?.error !== undefined && completedPayload?.error !== null)
+  ) {
+    return false;
+  }
+  if (
+    events.some(
+      (event, index) =>
+        event.turnId === targetTurnId &&
+        (index < startedIndex || index > completedIndex),
+    )
+  ) {
+    return false;
+  }
+  return events
+    .slice(acceptedIndex + 1, completedIndex)
+    .every(
+      (event) =>
+        event.turnId === targetTurnId &&
+        event.eventType === "item.completed" &&
+        isZeroWorkAcpxUsage(event.payload),
+    );
 }
 
 function checkpointedResultlessDispositionFallback(input: {
@@ -1475,9 +1659,14 @@ export async function executeNativeSession(
   }
   let sessionClosePromise: Promise<void> | null = null;
   let sessionQuarantined = false;
-  const quarantineSession = () => {
+  const quarantineSession = (reason: string) => {
     if (sessionQuarantined) return;
     sessionQuarantined = true;
+    try {
+      void options.onSessionQuarantined?.(reason);
+    } catch {
+      // Diagnostics cannot prevent provider cleanup.
+    }
     try {
       options.onSession?.(null);
     } catch {
@@ -1488,7 +1677,7 @@ export async function executeNativeSession(
   let sessionCloseRecoveryPromise: Promise<void> | null = null;
   const retainFailedCleanup = (cleanup: Promise<void>) => {
     failedCleanupDeferred = true;
-    quarantineSession();
+    quarantineSession("session_close_recovery_retained");
     retainFailedSessionCleanupOwner(cleanup, cleanupDomain);
   };
   const startSessionClose = (reason: string) => {
@@ -1496,9 +1685,9 @@ export async function executeNativeSession(
     sessionClosePromise = attempt;
     return attempt;
   };
-  const closeSession = () => {
+  const closeSession = (quarantineReason = "session_close_started") => {
     if (sessionClosePromise === null) {
-      quarantineSession();
+      quarantineSession(quarantineReason);
       const firstAttempt = startSessionClose(
         "native session execution complete",
       );
@@ -1696,6 +1885,9 @@ export async function executeNativeSession(
                 DEFAULT_NATIVE_RUNTIME_INPUT_LIVE_WINDOW_MS,
               options.semanticResultTerminalGraceMs ??
                 DEFAULT_NATIVE_SEMANTIC_RESULT_TERMINAL_GRACE_MS,
+              options.keepSessionOpen
+                ? REUSABLE_SESSION_CANCELLATION_SETTLEMENT_GRACE_MS
+                : FAILED_OPERATION_SETTLEMENT_GRACE_MS,
               closeSession,
               quarantineSession,
               options.resolveGovernedWait,
@@ -1729,7 +1921,16 @@ export async function executeNativeSession(
             (persistedSession?.terminalTurns?.length ?? 0) > 0 &&
             !recoveredActiveTurnId,
           );
-          if (dispositionOnlyRecovery) {
+          const effectFreeInitialAcpxTurn =
+            dispositionOnlyRecovery && persistedSession
+              ? await replayProvesEffectFreeInitialAcpxTurn({
+                  controlPlane: options.controlPlane,
+                  checkpoint: persistedSession,
+                  runId: input.binding.runId,
+                  sourceInstanceId: options.runnerInstanceId,
+                })
+              : false;
+          if (dispositionOnlyRecovery && !effectFreeInitialAcpxTurn) {
             modelEnvelope.task.prompt = [
               "Paperclip semantic-result recovery for a prior completed provider turn.",
               "The prior turn already performed the work and its user-facing final answer is recorded.",
@@ -1957,13 +2158,19 @@ export async function executeNativeSession(
         };
       },
     });
-    let enrichment: {
-      providerSessionId: string | null;
-      driverVersion: string;
-      usage: Record<string, unknown> | null;
+    const observeEnrichmentFailure = async (
+      stage: "checkpoint" | "usage",
+      error: unknown,
+    ) => {
+      try {
+        await options.onPostCompletionEnrichmentFailure?.({ stage, error });
+      } catch {
+        // Diagnostics cannot revoke or delay a durably committed result.
+      }
     };
+    let completedSnapshot: PersistedNativeSession;
     try {
-      enrichment = await finalizeWithin({
+      completedSnapshot = await finalizeWithin({
         timeoutMs: options.timeoutMs ?? 900_000,
         operation: async (signal) => {
           const snapshot = await session.snapshot({ signal });
@@ -1975,45 +2182,80 @@ export async function executeNativeSession(
           };
           await persistCheckpoint(completedSnapshot, signal);
           signal.throwIfAborted();
-          const usage = (await session.usage?.()) ?? null;
-          signal.throwIfAborted();
-          return {
-            providerSessionId: snapshot.providerSessionId ?? null,
-            driverVersion:
-              typeof usage?.driverVersion === "string"
-                ? usage.driverVersion
-                : descriptor.version,
-            usage,
-          };
+          return completedSnapshot;
         },
       });
-    } catch {
-      // completeRun is the durable commit boundary. Snapshot/checkpoint/usage
-      // enrichment cannot revoke that success, but a session whose final
-      // checkpoint is unknown must not remain available for reuse.
-      void closeSession().catch(() => undefined);
-      enrichment = {
+    } catch (error) {
+      await observeEnrichmentFailure("checkpoint", error);
+      // completeRun is the durable commit boundary. A final snapshot or
+      // checkpoint failure cannot revoke that success, but a session whose
+      // exact checkpoint is unknown must not remain available for reuse.
+      void closeSession("post_completion_checkpoint_failed").catch(
+        () => undefined,
+      );
+      executionSucceeded = true;
+      return {
+        ...durableExecutionResult,
         providerSessionId: recoveredSnapshot.providerSessionId ?? null,
         driverVersion: descriptor.version,
         usage: null,
       };
     }
+
+    let usage: Record<string, unknown> | null = null;
+    try {
+      usage = await finalizeWithin({
+        timeoutMs: options.timeoutMs ?? 900_000,
+        operation: async (signal) => {
+          const current = (await session.usage?.()) ?? null;
+          signal.throwIfAborted();
+          return current;
+        },
+      });
+    } catch (error) {
+      // Usage is optional accounting enrichment. Once the exact completed
+      // checkpoint is durable, an unavailable usage capability must not tear
+      // down an otherwise reusable warm provider session.
+      await observeEnrichmentFailure("usage", error);
+    }
+    const enrichment = {
+      providerSessionId: completedSnapshot.providerSessionId ?? null,
+      driverVersion:
+        typeof usage?.driverVersion === "string"
+          ? usage.driverVersion
+          : descriptor.version,
+      usage,
+    };
     executionSucceeded = true;
     return { ...durableExecutionResult, ...enrichment };
   } finally {
-    if (
-      (!options.keepSessionOpen || !executionSucceeded || sessionQuarantined) &&
-      !failedCleanupDeferred
-    ) {
+    const shouldClose =
+      !options.keepSessionOpen || !executionSucceeded || sessionQuarantined;
+    if (shouldClose && options.requireSessionCloseBeforeReturn) {
+      if (!failedCleanupDeferred) {
+        closeSession(
+          `execution_finally_close:keep=${options.keepSessionOpen === true}:succeeded=${executionSucceeded}:quarantined=${sessionQuarantined}`,
+        );
+      }
+      // A remote runner close owns its suspension and verified checkpoint.
+      // Its implementation is finite, and the host must not release the
+      // environment until the complete close/retry owner has settled.
+      const requiredClose = sessionCloseRecoveryPromise ?? sessionClosePromise;
+      if (requiredClose !== null) {
+        // Unlike ordinary provider cleanup, this close owns required remote
+        // checkpoint persistence. Exhausting its bounded recovery must fail
+        // the execution instead of converting the rejection into success.
+        await requiredClose;
+      }
+    } else if (shouldClose && !failedCleanupDeferred) {
       // A provider that ignores close must not keep execution pending forever.
       // closeSession removes it from the caller before invoking the backend;
       // retain observation of the promise, but bound the final join. Provider
       // cleanup cannot reverse a result the control plane already committed;
       // after that durable boundary the session remains unavailable for reuse
       // and late close rejection stays observed without contradicting success.
-      const closeSettlement = Promise.allSettled([closeSession()]);
       await settlesWithin(
-        closeSettlement,
+        Promise.allSettled([closeSession()]),
         FAILED_OPERATION_SETTLEMENT_GRACE_MS,
       );
     }
@@ -2035,7 +2277,10 @@ function canonicalJson(value: unknown): string {
 function completedSemanticResultTurnId(
   snapshot: PersistedNativeSession,
 ): string | null {
-  if (snapshot.semanticResult === undefined || snapshot.semanticResult === null) {
+  if (
+    snapshot.semanticResult === undefined ||
+    snapshot.semanticResult === null
+  ) {
     return null;
   }
   const semanticFingerprint = canonicalJson(snapshot.semanticResult);
@@ -2043,12 +2288,12 @@ function completedSemanticResultTurnId(
     try {
       const value: unknown = JSON.parse(terminal.fingerprint);
       if (
-        typeof value === "object"
-        && value !== null
-        && !Array.isArray(value)
-        && (value as Record<string, unknown>).status === "completed"
-        && (value as Record<string, unknown>).semanticResult
-          === semanticFingerprint
+        typeof value === "object" &&
+        value !== null &&
+        !Array.isArray(value) &&
+        (value as Record<string, unknown>).status === "completed" &&
+        (value as Record<string, unknown>).semanticResult ===
+          semanticFingerprint
       ) {
         return terminal.turnId;
       }

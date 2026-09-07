@@ -30,6 +30,7 @@ import {
 import {
   buildTurnTimelineRows,
   isTerminalRunStatus,
+  omitProgressRepeatedByResponse,
   paperclipRunnerFinalResponse,
   paperclipRunnerTimelineItems,
 } from "./transcript-adapter";
@@ -186,25 +187,17 @@ function FoldedReasoningTicker({
   );
 }
 
-function FoldedLiveNarration({ narration }: { narration: FoldedNarration }) {
-  if (narration.kind === "reasoning") {
-    if (!narration.line) return null;
-    return (
-      <FoldedReasoningTicker
-        logicalKey={`${narration.item.id}:${narration.lineIndex}`}
-        text={narration.line}
-      />
-    );
-  }
+function FoldedLiveNarration({
+  narration,
+}: {
+  narration: Extract<FoldedNarration, { kind: "reasoning" }>;
+}) {
+  if (!narration.line) return null;
   return (
-    <div
-      className="tc-enter-cot-line min-w-0 px-1 py-1.5 text-sm text-foreground/90"
-      data-testid="task-chat-progress-update"
-    >
-      <MarkdownBody softBreaks linkIssueReferences>
-        {narration.item.text}
-      </MarkdownBody>
-    </div>
+    <FoldedReasoningTicker
+      logicalKey={`${narration.item.id}:${narration.lineIndex}`}
+      text={narration.line}
+    />
   );
 }
 
@@ -298,10 +291,12 @@ function RunnerTurnStatus({
   status,
   startedAtMs,
   finishedAtMs,
+  continuedAfterSteering = false,
 }: {
   status: string;
   startedAtMs: number | null;
   finishedAtMs?: number | null;
+  continuedAfterSteering?: boolean;
 }) {
   const terminal = isTerminalRunStatus(status);
   useSecondTick(!terminal && startedAtMs != null);
@@ -321,6 +316,9 @@ function RunnerTurnStatus({
       ? `${label} ${failed ? "after" : "for"} ${elapsed}`
       : label
     : `${label} for ${elapsed ?? "0s"}`;
+  const visibleLabel = continuedAfterSteering
+    ? `Continued after steering · ${semanticLabel}`
+    : semanticLabel;
 
   return (
     <span
@@ -330,7 +328,7 @@ function RunnerTurnStatus({
       aria-live="polite"
       aria-atomic="true"
     >
-      {semanticLabel}
+      {visibleLabel}
     </span>
   );
 }
@@ -431,6 +429,7 @@ export function TaskChatRunnerTurn({
   finishedAtMs,
   activityUnavailable = false,
   suppressFinal = false,
+  continuedAfterSteering = false,
   onRuntimeRequestDecision,
 }: {
   /** Stable identity used to clear replay-latched final text for the next turn. */
@@ -444,6 +443,8 @@ export function TaskChatRunnerTurn({
   activityUnavailable?: boolean;
   /** Accepted wait/interaction authority overrides an early provider final. */
   suppressFinal?: boolean;
+  /** The visible tail resumes the same native run after an accepted steer. */
+  continuedAfterSteering?: boolean;
   onRuntimeRequestDecision?: (
     item: TaskChatRuntimeRequestItem,
     decision: TaskChatRuntimeRequestDecision,
@@ -451,10 +452,6 @@ export function TaskChatRunnerTurn({
 }) {
   const terminal = isTerminalRunStatus(status);
   const narration = latestFoldedNarration(items);
-  const timelineRows = buildTurnTimelineRows(
-    paperclipRunnerTimelineItems(items),
-    !terminal,
-  );
   const currentActivityItems = currentActivityStatusItems(items);
   const yielded = items.some(
     (item) =>
@@ -501,6 +498,11 @@ export function TaskChatRunnerTurn({
     finalRef.current.providerText = observedProviderText;
   }
   const final = finalRef.current.item;
+  const timelineItems = paperclipRunnerTimelineItems(items);
+  const timelineRows = buildTurnTimelineRows(
+    omitProgressRepeatedByResponse(timelineItems, final?.text),
+    !terminal,
+  );
 
   return (
     <div
@@ -522,9 +524,10 @@ export function TaskChatRunnerTurn({
           status={status}
           startedAtMs={startedAtMs}
           finishedAtMs={finishedAtMs}
+          continuedAfterSteering={continuedAfterSteering}
         />
       </div>
-      {!terminal && narration && !final ? (
+      {!terminal && narration?.kind === "reasoning" && !final ? (
         <div
           className="flex min-w-0 flex-col py-1"
           data-testid="task-chat-live-narration"

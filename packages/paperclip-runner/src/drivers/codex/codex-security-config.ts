@@ -1,7 +1,20 @@
 import { resolve } from "node:path";
 
-export const CODEX_SKILLLESS_PERMISSION_PROFILE = "paperclip-runner-workspace-only";
-export const CODEX_PLANNING_PERMISSION_PROFILE = "paperclip-runner-workspace-read-only";
+import {
+  githubCredentialEnvironmentKeys,
+  hasGitHubCredentialEnvironment,
+} from "../../github-credential-environment.js";
+
+export const CODEX_SKILLLESS_PERMISSION_PROFILE =
+  "paperclip-runner-workspace-only";
+export const CODEX_PLANNING_PERMISSION_PROFILE =
+  "paperclip-runner-workspace-read-only";
+export const CODEX_EXTERNAL_SANDBOX_PERMISSION_PROFILE =
+  "paperclip-runner-external-sandbox";
+
+function usesExternalRunnerSandbox(source: NodeJS.ProcessEnv): boolean {
+  return source.PAPERCLIP_RUNNER_EXTERNAL_SANDBOX === "1";
+}
 
 const SKILLLESS_BASE_CONFIG = {
   "skills.include_instructions": false,
@@ -64,6 +77,9 @@ export function createIsolatedCodexAppServerArgs(
   source: NodeJS.ProcessEnv = process.env,
   readOnlyRoots: string[] = [],
 ): string[] {
+  const hasGitHubCredential = hasGitHubCredentialEnvironment(source);
+  const externalRunnerSandbox = usesExternalRunnerSandbox(source);
+  const inheritedGitHubKeys = githubCredentialEnvironmentKeys(source);
   const deniedHostRoots = [
     ...new Set(
       [source.HOME, source.CODEX_HOME]
@@ -93,26 +109,46 @@ export function createIsolatedCodexAppServerArgs(
   const commandEnv = Object.entries(codexCommandEnvironment(source))
     .map(([key, value]) => `${key}=${tomlString(value)}`)
     .join(",");
+  const defaultPermissionProfile = externalRunnerSandbox
+    ? CODEX_EXTERNAL_SANDBOX_PERMISSION_PROFILE
+    : CODEX_SKILLLESS_PERMISSION_PROFILE;
   return [
     "-c",
-    `default_permissions=${tomlString(CODEX_SKILLLESS_PERMISSION_PROFILE)}`,
+    `default_permissions=${tomlString(defaultPermissionProfile)}`,
     "-c",
     `permissions.${CODEX_SKILLLESS_PERMISSION_PROFILE}.filesystem={${filesystemRules}}`,
     "-c",
-    `permissions.${CODEX_SKILLLESS_PERMISSION_PROFILE}.network.enabled=false`,
+    `permissions.${CODEX_SKILLLESS_PERMISSION_PROFILE}.network.enabled=${hasGitHubCredential}`,
+    ...(externalRunnerSandbox
+      ? [
+          "-c",
+          `permissions.${CODEX_EXTERNAL_SANDBOX_PERMISSION_PROFILE}.filesystem={":root"="write"}`,
+          "-c",
+          `permissions.${CODEX_EXTERNAL_SANDBOX_PERMISSION_PROFILE}.network.enabled=true`,
+        ]
+      : []),
     "-c",
     `permissions.${CODEX_PLANNING_PERMISSION_PROFILE}.filesystem={${planningFilesystemRules}}`,
     "-c",
-    `permissions.${CODEX_PLANNING_PERMISSION_PROFILE}.network.enabled=false`,
+    `permissions.${CODEX_PLANNING_PERMISSION_PROFILE}.network.enabled=${hasGitHubCredential}`,
     "-c",
-    `shell_environment_policy.inherit="none"`,
+    `shell_environment_policy.inherit=${tomlString(hasGitHubCredential ? "all" : "none")}`,
     "-c",
-    "shell_environment_policy.ignore_default_excludes=false",
+    `shell_environment_policy.ignore_default_excludes=${hasGitHubCredential}`,
+    ...(hasGitHubCredential
+      ? [
+          "-c",
+          `shell_environment_policy.include_only=${JSON.stringify(inheritedGitHubKeys)}`,
+        ]
+      : []),
     ...(commandEnv.length > 0
       ? ["-c", `shell_environment_policy.set={${commandEnv}}`]
       : []),
     "--disable",
     "image_generation",
+    ...(externalRunnerSandbox
+      ? ["--dangerously-bypass-approvals-and-sandbox"]
+      : []),
     "app-server",
   ];
 }
@@ -122,9 +158,12 @@ export function createSecuredCodexThreadParams(
   mode: "default" | "plan" = "default",
   includeCollaborationModeInstructions = true,
   includeSkillInstructions = false,
+  source: NodeJS.ProcessEnv = process.env,
 ): Record<string, unknown> {
   const permissionProfile =
-    mode === "plan"
+    mode === "default" && usesExternalRunnerSandbox(source)
+      ? CODEX_EXTERNAL_SANDBOX_PERMISSION_PROFILE
+      : mode === "plan"
       ? CODEX_PLANNING_PERMISSION_PROFILE
       : CODEX_SKILLLESS_PERMISSION_PROFILE;
   return {

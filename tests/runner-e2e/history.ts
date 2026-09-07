@@ -3,6 +3,7 @@ import {
   aggregateCampaignBilling,
   summarizeExecutionBilling,
 } from "./billing.js";
+import { resolveRunnerE2ESource } from "./source.js";
 import type {
   RunnerE2ECampaign,
   RunnerE2EHistoryCampaign,
@@ -56,15 +57,7 @@ export function buildRunnerCampaign(input: {
   }));
   const resultSource = results.find((result) => result.source)?.source;
   const source = {
-    sha: resultSource?.sha ?? process.env.GITHUB_SHA ?? null,
-    ref: resultSource?.ref ?? process.env.GITHUB_REF ?? null,
-    workflowRunUrl:
-      resultSource?.workflowRunUrl ??
-      (process.env.GITHUB_SERVER_URL &&
-      process.env.GITHUB_REPOSITORY &&
-      process.env.GITHUB_RUN_ID
-        ? `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`
-        : null),
+    ...resolveRunnerE2ESource(resultSource),
     eventName: input.eventName ?? process.env.GITHUB_EVENT_NAME ?? null,
   };
   const suites = runnerSuites

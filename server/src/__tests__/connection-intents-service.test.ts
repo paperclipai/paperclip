@@ -172,7 +172,7 @@ describeEmbeddedPostgres("connectionIntentService", () => {
     expect(serialized).not.toContain(claims.sub);
   });
 
-  it("creates one addressed request, resolves only after delegation and install, and then reports ready", async () => {
+  it("creates one addressed request, resolves after install, and then reports ready for the responsible user", async () => {
     const service = connectionIntentService(db);
     const first = await service.request(claims, "notion");
     const repeated = await service.request(claims, "notion");
@@ -266,6 +266,11 @@ describeEmbeddedPostgres("connectionIntentService", () => {
       expect.objectContaining({ targetType: "agent", targetId: otherAgent!.id }),
     ]));
 
+    // A task-bound run already carries the responsible user's identity. The
+    // standing delegation created by an agent-initiated setup is only needed
+    // for future automated runs that have no responsible user.
+    await db.delete(connectionGrantDelegations).where(eq(connectionGrantDelegations.grantId, grant!.id));
+
     const continuationRunId = randomUUID();
     await db.insert(heartbeatRuns).values({
       id: continuationRunId,
@@ -283,20 +288,58 @@ describeEmbeddedPostgres("connectionIntentService", () => {
     expect(readySearch.results).toEqual([
       expect.objectContaining({ service: "notion", state: "ready", connectionId: connection!.id }),
     ]);
+
+    const [dedicatedConnection] = await db.insert(toolConnections).values({
+      companyId: claims.company_id,
+      applicationId: application!.id,
+      name: "Researcher's dedicated Notion",
+      uid: `notion/${randomUUID()}`,
+      transport: "mcp_remote",
+      authKind: "api_key",
+      credentialPolicy: "per_agent",
+      status: "active",
+      enabled: true,
+      healthStatus: "ok",
+      config: { sourceTemplateKey: "notion" },
+      transportConfig: { sourceTemplateKey: "notion" },
+    }).returning();
+    await db.insert(connectionGrants).values({
+      companyId: claims.company_id,
+      connectionId: dedicatedConnection!.id,
+      kind: "agent",
+      subjectAgentId: claims.sub,
+      status: "active",
+      isDefault: false,
+    });
+    await db.insert(toolConnectionInstalls).values({
+      companyId: claims.company_id,
+      connectionId: dedicatedConnection!.id,
+      targetType: "agent",
+      targetId: claims.sub,
+    });
+
+    const dedicatedSearch = await service.search(continuationClaims, "notion");
+    expect(dedicatedSearch.results).toEqual([
+      expect.objectContaining({ service: "notion", state: "ready", connectionId: dedicatedConnection!.id }),
+    ]);
     const readyRequest = await service.request(continuationClaims, "notion");
     expect(readyRequest).toMatchObject({
       state: "ready",
       interactionId: null,
-      connectionId: connection!.id,
+      connectionId: dedicatedConnection!.id,
     });
     expect(await db.select().from(issueThreadInteractions)).toHaveLength(1);
     await expect(service.complete(first.interactionId!, connection!.id, claims.responsible_user_id))
       .rejects.toThrow("already resolved");
     await expect(service.request(claims, "unknown-service"))
       .rejects.toThrow("is not available");
-    expect((await service.search(claims, "github")).results).toEqual([]);
-    await expect(service.request(claims, "github"))
-      .rejects.toThrow("is not available");
+    expect((await service.search(claims, "github")).results).toEqual([
+      expect.objectContaining({ service: "github", state: "available" }),
+    ]);
+    await expect(service.request(claims, "github")).resolves.toMatchObject({
+      state: "needs_user_action",
+      connectionId: null,
+    });
   });
 
   it("serializes OAuth intent completion behind addressed-user membership revocation", async () => {

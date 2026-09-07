@@ -1,6 +1,7 @@
 import { useState, type ReactNode } from "react";
 import type { IssueAttachment } from "@paperclipai/shared";
 import { cn } from "@/lib/utils";
+import { useStreamlinedTaskChatPresentation } from "./presentation-mode";
 import { MarkdownBody } from "@/components/MarkdownBody";
 import {
   ImageGalleryModal,
@@ -139,6 +140,7 @@ export function TaskChatBubble({
   onTryAgainNoLiveExecutionPath,
   tryAgainNoLiveExecutionPathPending,
 }: TaskChatBubbleProps) {
+  const streamlined = useStreamlinedTaskChatPresentation();
   // Clicking an embedded image opens the full-screen lightbox (with download);
   // arrow keys walk across the other images in the same bubble.
   const [lightboxSrc, setLightboxSrc] = useState<string | null>(null);
@@ -364,16 +366,25 @@ export function TaskChatBubble({
           {attachedTurn}
         </div>
       ) : actions ? (
-        // Agent reply without run activity: the actions still lead the footer,
-        // with the always-visible timestamp trailing (PAP-413).
-        <div className="flex items-center gap-1">
-          {actions}
-          {item.timestamp ? (
-            <span className="px-1 text-(length:--text-micro) text-muted-foreground">
-              {item.timestamp}
-            </span>
-          ) : null}
-        </div>
+        streamlined ? (
+          <div className="flex w-full items-center justify-between gap-2 px-1">
+            {item.timestamp ? (
+              <span className="text-(length:--text-micro) text-muted-foreground">
+                {item.timestamp}
+              </span>
+            ) : null}
+            {actions}
+          </div>
+        ) : (
+          <div className="flex items-center gap-1">
+            {actions}
+            {item.timestamp ? (
+              <span className="px-1 text-(length:--text-micro) text-muted-foreground">
+                {item.timestamp}
+              </span>
+            ) : null}
+          </div>
+        )
       ) : item.timestamp ? (
         // Timestamps are always visible (round 9) — no longer hover-revealed.
         <span className="px-1 text-(length:--text-micro) text-muted-foreground">

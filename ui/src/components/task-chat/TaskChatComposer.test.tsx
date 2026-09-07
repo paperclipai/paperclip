@@ -293,7 +293,24 @@ describe("TaskChatComposer", () => {
     expect(composer?.className).not.toContain("p-2");
   });
 
-  it("renders the composer shell and its selectors without outlines", () => {
+  it("leaves an 8px token gap between the editor and action row", () => {
+    render(
+      <TaskChatComposer
+        onAdd={async () => {}}
+        workMode="planning"
+        onWorkModeChange={async () => {}}
+      />,
+    );
+
+    const actions = container.querySelector(
+      '[data-testid="task-chat-composer-actions"]',
+    );
+
+    expect(actions?.classList).toContain("mt-2");
+    expect(actions?.classList).not.toContain("mt-1");
+  });
+
+  it("renders a light card shell while preserving the borderless dark treatment", () => {
     render(
       <TaskChatComposer
         onAdd={async () => {}}
@@ -313,9 +330,14 @@ describe("TaskChatComposer", () => {
       '[data-testid="task-chat-composer-assignee"]',
     )!;
 
-    expect(composer.classList).not.toContain("border");
-    expect(composer.className).not.toContain("shadow-");
-    expect(composer.className).not.toContain("focus-within:ring-");
+    expect(composer.classList).toContain("border");
+    expect(composer.classList).toContain("border-border");
+    expect(composer.classList).toContain("bg-card");
+    expect(composer.classList).toContain("shadow-(--shadow-task-composer)");
+    expect(composer.classList).toContain("dark:border-0");
+    expect(composer.classList).toContain("dark:bg-muted");
+    expect(composer.classList).toContain("dark:shadow-none");
+    expect(composer.className).not.toContain("focus-within:ring");
     expect(mode.classList).not.toContain("border");
     expect(mode.className).not.toContain("ring-");
     expect(runner.classList).toContain("border-0");
@@ -448,6 +470,34 @@ describe("TaskChatComposer", () => {
     expect(chip.getAttribute("data-pending-work-mode")).toBe("standard");
     expect(chip.textContent).toContain("Auto");
     expect(onWorkModeChange).not.toHaveBeenCalled();
+  });
+
+  it("uses the borderless Paper controls and inverse circular send button", () => {
+    render(
+      <TaskChatComposer
+        onAdd={vi.fn()}
+        workMode="standard"
+        onWorkModeChange={vi.fn()}
+        enableReassign
+        reassignOptions={[{ id: "agent:a1", label: "Chief of Staff" }]}
+        currentAssigneeValue="agent:a1"
+      />,
+    );
+
+    const mode = container.querySelector<HTMLButtonElement>('[data-testid="task-chat-composer-mode"]')!;
+    const assignee = container.querySelector<HTMLButtonElement>('[data-testid="task-chat-composer-assignee"]')!;
+    const send = sendButton();
+
+    expect(mode.classList).not.toContain("border");
+    expect(mode.classList).toContain("border-0");
+    expect(mode.classList).toContain("status-chip");
+    expect(mode.style.getPropertyValue("--sc")).toBe("var(--tc-mode-agent)");
+    expect(assignee.classList).toContain("border-0");
+    expect(assignee.classList).toContain("shadow-none");
+    expect(send.classList).toContain("rounded-full");
+    expect(send.classList).toContain("bg-foreground");
+    expect(send.classList).toContain("text-background");
+    expect(send.classList).toContain("disabled:opacity-100");
   });
 
   it("passes reopen=true when the issue resumes-to-todo and the assignee is an agent", async () => {

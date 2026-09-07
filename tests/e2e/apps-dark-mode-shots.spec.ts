@@ -115,12 +115,12 @@ test.describe.serial("dark-mode Apps surfaces", () => {
     await healthy?.close();
   });
 
-  test("sidebar says Apps and links to /apps", async ({ page }) => {
+  test("sidebar says Connectors and links to /apps", async ({ page }) => {
     await forceDark(page);
     await page.goto(`/${seed.prefix}/dashboard`);
-    const appsLink = page.getByRole("link", { name: "Apps", exact: true });
-    await expect(appsLink).toBeVisible({ timeout: 30_000 });
-    await expect(appsLink).toHaveAttribute("href", new RegExp(`/${seed.prefix}/apps$`));
+    const connectorsLink = page.getByRole("link", { name: "Connectors", exact: true });
+    await expect(connectorsLink).toBeVisible({ timeout: 30_000 });
+    await expect(connectorsLink).toHaveAttribute("href", new RegExp(`/${seed.prefix}/apps$`));
   });
 
   test("apps list dark mode with attention banner", async ({ page }) => {
@@ -161,29 +161,31 @@ test.describe.serial("dark-mode Apps surfaces", () => {
     await expect(page.locator('a[href$="/apps/advanced/gateways"]', { hasText: "Gateways" })).toHaveCount(0);
     await expect(page.locator('a[href$="/apps/advanced/profiles"]', { hasText: "Profiles" })).toHaveCount(0);
     await expect(page.locator('a[href$="/apps/advanced/audit"]', { hasText: "Activity" })).toHaveCount(0);
-    await expect(page.locator('a[href$="/activity"]', { hasText: "Activity" })).toBeVisible();
+    await expect(page.locator('a[href$="/activity"]', { hasText: "Audit" })).toBeVisible();
     await expect(page.getByRole("link", { name: "Applications", exact: true })).toHaveCount(0);
     // Apps section lives in the same sidebar now.
     await expect(page.locator('a[href$="/apps"]', { hasText: "Connectors" })).toBeVisible();
     await page.screenshot({ path: `${SCREENSHOT_DIR}/apps-nav-05-developer-overview-dark.png`, fullPage: true });
   });
 
-  test("app detail rename and danger zone removal", async ({ page }) => {
+  test("app detail rename and connector-list removal", async ({ page }) => {
     await forceDark(page);
-    await page.goto(`/${seed.prefix}/apps/${brokenId}/advanced`);
-    await expect(page.getByText("Danger zone")).toBeVisible({ timeout: 30_000 });
+    await page.goto(`/${seed.prefix}/apps/${brokenId}/permissions`);
+    await expect(page.getByRole("heading").first()).toBeVisible({ timeout: 30_000 });
 
     // Rename from the header pencil.
     await page.getByRole("button", { name: "Rename app" }).click();
     await page.getByLabel("App name").fill("QA Renamed App");
     await page.getByRole("button", { name: "Save", exact: true }).click();
     await expect(page.getByRole("heading", { name: "QA Renamed App" })).toBeVisible({ timeout: 20_000 });
-    await page.getByText("Danger zone", { exact: true }).click();
-    await page.getByRole("button", { name: "Remove app", exact: true }).click();
+
+    await page.goto(`/${seed.prefix}/apps`);
+    await page.getByRole("button", { name: "Manage QA Renamed App connection" }).click();
+    await page.getByRole("menuitem", { name: "Remove connection" }).click();
     await page.screenshot({ path: `${SCREENSHOT_DIR}/apps-nav-06-danger-zone-dark.png`, fullPage: true });
-    await page.getByRole("button", { name: "Yes, remove it" }).click();
+    await page.getByRole("button", { name: "Remove connection" }).click();
     await expect(page).toHaveURL(new RegExp(`/${seed.prefix}/apps$`), { timeout: 20_000 });
-    await expect(page.getByText("App removed").first()).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByText("Connection removed").first()).toBeVisible({ timeout: 20_000 });
     await expect(page.getByRole("heading", { name: "Connectors" })).toBeVisible();
     await page.screenshot({ path: `${SCREENSHOT_DIR}/apps-nav-07-after-remove-dark.png`, fullPage: true });
   });

@@ -159,8 +159,9 @@ async function navigateForEvidence(page: Page, seed: Seed, connectionId: string,
     return;
   }
   if (scenario.uiEntryPath === "activity") {
-    await page.goto(`/${seed.prefix}/apps/${connectionId}/activity`);
-    await expect(page.getByRole("heading", { name: "Recent activity" })).toBeVisible({ timeout: 20_000 });
+    await page.goto(`/${seed.prefix}/activity?action=tool_`);
+    await expect(page.locator("#main-content").getByRole("heading", { name: "Audit" })).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByRole("combobox").filter({ hasText: "Apps & tools" })).toBeVisible();
     return;
   }
   if (scenario.uiEntryPath === "attention") {
@@ -347,7 +348,7 @@ export const defineSmokeLabSuite = (label: string, scenarios: SmokeLabScenario[]
             agentId: scout.id,
             search: scenario.lifecycle.allowedRead.name,
           });
-          await page.goto(`/${seed.prefix}/apps/${connection.id}/activity`);
+          await page.goto(`/${seed.prefix}/activity?action=tool_`);
           return `Allowed read ${scenario.lifecycle.allowedRead.name}`;
         });
 
@@ -383,7 +384,7 @@ export const defineSmokeLabSuite = (label: string, scenarios: SmokeLabScenario[]
 
         await runRecordedStep(page, request, seed, smokeRun.id, scenario, "schema-change-quarantine", async () => {
           if (connection.transport !== "mcp_remote") {
-            await page.goto(`/${seed.prefix}/apps/${connection.id}/activity`);
+            await page.goto(`/${seed.prefix}/activity?action=tool_`);
             return "Non-HTTP path records governance/quarantine evidence through fixture metadata.";
           }
           await json<ToolConnection>(await request.patch(`/api/tool-connections/${connection.id}`, {
@@ -415,7 +416,7 @@ export const defineSmokeLabSuite = (label: string, scenarios: SmokeLabScenario[]
               data: { companyId: seed.companyId },
             }));
             await expectError(await gatewayFetch(request, session.toolsUrl, session.token), 401);
-            await page.goto(`/${seed.prefix}/apps/${connection.id}/activity`);
+            await page.goto(`/${seed.prefix}/activity?action=tool_`);
             return scenario.lifecycle.revoke;
           }
           const disabled = await json<ToolConnection>(await request.patch(`/api/tool-connections/${connection.id}`, {
@@ -435,7 +436,7 @@ export const defineSmokeLabSuite = (label: string, scenarios: SmokeLabScenario[]
             agentId: scout.id,
             search: scenario.lifecycle.allowedRead.name,
           });
-          await page.goto(`/${seed.prefix}/apps/${connection.id}/activity`);
+          await page.goto(`/${seed.prefix}/activity?action=tool_`);
           return scenario.lifecycle.auditEvidence;
         });
       }

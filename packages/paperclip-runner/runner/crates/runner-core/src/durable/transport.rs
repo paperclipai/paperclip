@@ -215,6 +215,39 @@ impl RunnerTransportEndpoint {
         Ok(Self::Dial(ResolvedWsTarget::resolve(input)?))
     }
 
+    /// Advance a run-bound transport endpoint without needlessly rebinding the
+    /// fixed provider-ingress listener. `run.attach` changes the WebSocket path
+    /// for the next run while retaining the same sandbox listener. Constructing
+    /// a second `TcpListener` before dropping the first one fails with
+    /// `EADDRINUSE`, which would terminate an otherwise healthy warm runner.
+    pub(crate) fn rotate(&mut self, input: &str, run_id: &str) -> Result<(), DurableRunnerError> {
+        if let Some(remainder) = input.strip_prefix("listen://") {
+            if let Self::Listen { path, .. } = self {
+                let (authority, next_path) = remainder.split_once('/').ok_or_else(|| {
+                    DurableRunnerError::invalid(
+                        "runner_ingress_bind_conflict: listener path is required",
+                    )
+                })?;
+                if authority != "0.0.0.0:43127" {
+                    return Err(DurableRunnerError::invalid(
+                        "runner_ingress_bind_conflict: listener must bind 0.0.0.0:43127",
+                    ));
+                }
+                let next_path = format!("/{next_path}");
+                validate_listener_path(&next_path)?;
+                if next_path != format!("/api/runner/v1/connect/{run_id}") {
+                    return Err(DurableRunnerError::invalid(
+                        "runner listener path does not match the configured run",
+                    ));
+                }
+                *path = next_path;
+                return Ok(());
+            }
+        }
+        *self = Self::new(input, run_id)?;
+        Ok(())
+    }
+
     fn open(
         &self,
         max_frame_bytes: usize,
@@ -2458,6 +2491,22 @@ mod tests {
             );
             let shutdown_result = receive_secure(&mut second, &mut second_secure, &server_config);
             assert_eq!(shutdown_result["kind"], "command_result");
+            send_secure(
+                &mut second,
+                &mut second_secure,
+                &server_config,
+                &control(
+                    &server_state,
+                    "connection_2",
+                    "command_result_ack",
+                    json!({
+                        "commandId": "command_shutdown",
+                        "commandType": "runner.shutdown",
+                        "controllerSeq": 2,
+                        "status": "completed",
+                    }),
+                ),
+            );
         });
 
         let session_open_calls = Arc::new(AtomicUsize::new(0));
@@ -2479,6 +2528,7 @@ mod tests {
         let final_state: DurableState = serde_json::from_slice(&state_bytes).unwrap();
         assert_eq!(final_state.acked_source_seq, 1);
         assert!(final_state.outbox.is_empty());
+        assert!(final_state.pending_terminal_delivery.is_none());
         assert_eq!(final_state.reconnect_count, 1);
         std::fs::remove_dir_all(directory).unwrap();
     }

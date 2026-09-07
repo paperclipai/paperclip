@@ -75,7 +75,11 @@ export function effectiveToolProfileBindings<T extends BindingLike>(
   bindings: T[],
   profiles: ProfileLike[],
   connectionId?: string | null,
+  options?: { includeAdditiveAppProfiles?: boolean },
 ): T[] {
+  if (options?.includeAdditiveAppProfiles === false) {
+    return narrowestScopeBindings(bindings);
+  }
   const appProfileIds = new Set(
     profiles.filter((profile) => isWizardAppProfile(profile, connectionId)).map((profile) => profile.id),
   );

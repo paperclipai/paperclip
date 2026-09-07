@@ -224,6 +224,7 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
       enableManagedSandboxOnly: parsed.data.enableManagedSandboxOnly ?? false,
       enableIsolatedWorkspaces: parsed.data.enableIsolatedWorkspaces ?? false,
       enableStreamlinedLeftNavigation: parsed.data.enableStreamlinedLeftNavigation ?? true,
+      enableStreamlinedUi: parsed.data.enableStreamlinedUi ?? true,
       // Apps graduated from Experimental. Ignore historical off values while
       // continuing to accept the compatibility key in stored settings.
       enableApps: true,
@@ -262,6 +263,7 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
     enableManagedSandboxOnly: false,
     enableIsolatedWorkspaces: false,
     enableStreamlinedLeftNavigation: true,
+    enableStreamlinedUi: true,
     enableApps: true,
     enablePipelines: false,
     enableCases: false,

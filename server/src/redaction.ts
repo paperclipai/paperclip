@@ -94,6 +94,7 @@ export const PAPERCLIP_PUBLIC_SCHEMA_IDS = new Set([
   "paperclip.native-finalization.v1",
   "paperclip.native-finalization.v2",
   "paperclip.native-harness-backup-stamp.v1",
+  "paperclip.native-harness-backup-stamp.v2",
   "paperclip.native-harness-backup.v1",
   "paperclip.native-model-envelope.v1",
   "paperclip.native-model-envelope.v2",
@@ -318,6 +319,7 @@ const NATIVE_RUN_SPAN_NAMES = new Set([
   "provider.turn.queue",
   "runner.artifact.discover",
   "runner.artifact.prepare",
+  "runner.prp.authenticate",
   "runner.prp.route.register",
   "runner.runtime.stage",
   "runner.session.bootstrap",
@@ -939,6 +941,35 @@ export function redactEventPayload(
     }
   }
   return sanitized;
+}
+
+function redactAgentEnvBinding(value: unknown): unknown {
+  if (isSecretRefBinding(value) || isUserSecretRefBinding(value)) {
+    return sanitizeValue(value);
+  }
+  if (typeof value === "string" || isPlainBinding(value)) {
+    return { type: "plain", value: REDACTED_EVENT_VALUE };
+  }
+  if (value === null || value === undefined) return value;
+  return REDACTED_EVENT_VALUE;
+}
+
+export function redactAgentAdapterConfig(
+  adapterConfig: Record<string, unknown>,
+): Record<string, unknown> {
+  if (!isPlainObject(adapterConfig)) return adapterConfig;
+  if (!isPlainObject(adapterConfig.env)) return redactEventPayload(adapterConfig) ?? {};
+
+  // Redact `env` here and sanitize the remaining keys separately, so bindings
+  // are never processed twice. `redactAgentEnvBinding` is authoritative for
+  // `env`; keeping it out of `sanitizeRecord` means a future change there
+  // cannot alter entries this function has already redacted.
+  const { env, ...rest } = adapterConfig;
+  const redactedEnv = Object.fromEntries(
+    Object.entries(env).map(([key, value]) => [key, redactAgentEnvBinding(value)]),
+  );
+
+  return { ...(redactEventPayload(rest) ?? {}), env: redactedEnv };
 }
 
 export function redactSensitiveText(input: string): string {

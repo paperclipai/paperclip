@@ -178,6 +178,144 @@ describe("nativeRunEventsToTranscript", () => {
     ]);
   });
 
+  it("coalesces sparse Codex tool lifecycle events at the named write boundary", () => {
+    const transcript = nativeRunEventsToTranscript([
+      event(1, "tool.execution.started", {
+        schema: "paperclip.tool.execution.v1",
+        executionId: "exec-write-plan",
+        transport: "dynamic",
+        operation: "unknown",
+        name: null,
+        status: "running",
+        output: null,
+      }),
+      itemEvent(2, "item.started", "exec-write-plan", {
+        kind: "dynamicToolCall",
+        item: { id: "exec-write-plan" },
+      }),
+      itemEvent(3, "item.started", "exec-write-plan", {
+        kind: "dynamicToolCall",
+        item: {
+          type: "tool_use",
+          id: "exec-write-plan",
+          name: "write_document",
+          input: {
+            key: "plan",
+            title: "Plan",
+            body: "Ship the durable runner.",
+          },
+        },
+      }),
+      itemEvent(4, "item.completed", "exec-write-plan", {
+        kind: "dynamicToolCall",
+        item: {
+          type: "tool_result",
+          id: "exec-write-plan",
+          tool_use_id: "exec-write-plan",
+          result: {
+            commandKind: "write_document",
+            revisionId: "revision-1",
+          },
+        },
+      }),
+      event(5, "tool.execution.completed", {
+        schema: "paperclip.tool.execution.v1",
+        executionId: "exec-write-plan",
+        transport: "dynamic",
+        operation: "unknown",
+        name: null,
+        status: "completed",
+        output: null,
+      }),
+      itemEvent(6, "item.completed", "exec-write-plan", {
+        kind: "dynamicToolCall",
+        item: { id: "exec-write-plan", status: "completed" },
+      }),
+    ]);
+
+    expect(transcript).toEqual([
+      expect.objectContaining({
+        kind: "tool_call",
+        name: "write_document",
+        toolUseId: "exec-write-plan",
+        input: {
+          key: "plan",
+          title: "Plan",
+          body: "Ship the durable runner.",
+        },
+      }),
+      expect.objectContaining({
+        kind: "tool_result",
+        toolUseId: "exec-write-plan",
+        toolName: "write_document",
+        content: JSON.stringify({
+          commandKind: "write_document",
+          revisionId: "revision-1",
+        }),
+        isError: false,
+      }),
+    ]);
+  });
+
+  it("projects ACPX item-only tool lifecycles at the named write boundary", () => {
+    const transcript = nativeRunEventsToTranscript([
+      itemEvent(1, "item.started", "2", {
+        kind: "dynamicToolCall",
+        item: {
+          type: "tool_use",
+          id: "2",
+          name: "write_document",
+          input: {
+            key: "plan",
+            title: "Plan",
+            body: "Ship the durable runner.",
+          },
+        },
+      }),
+      itemEvent(2, "item.completed", "2", {
+        kind: "dynamicToolCall",
+        item: {
+          type: "tool_result",
+          id: "2",
+          tool_use_id: "2",
+          result: {
+            disposition: "applied",
+            document: {
+              key: "plan",
+              latestRevisionId: "revision-1",
+            },
+          },
+        },
+      }),
+    ]);
+
+    expect(transcript).toEqual([
+      expect.objectContaining({
+        kind: "tool_call",
+        name: "write_document",
+        toolUseId: "2",
+        input: {
+          key: "plan",
+          title: "Plan",
+          body: "Ship the durable runner.",
+        },
+      }),
+      expect.objectContaining({
+        kind: "tool_result",
+        toolUseId: "2",
+        toolName: "write_document",
+        content: JSON.stringify({
+          disposition: "applied",
+          document: {
+            key: "plan",
+            latestRevisionId: "revision-1",
+          },
+        }),
+        isError: false,
+      }),
+    ]);
+  });
+
   it("streams deltas until a loss-resistant completed item is available", () => {
     expect(nativeRunEventsToTranscript([
       event(1, "item.delta", { itemId: "message-1", kind: "agentMessage", text: "Still " }),

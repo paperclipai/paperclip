@@ -36,6 +36,7 @@ const DIRECT_ADAPTER_TYPES = [
   "http",
   "custom_plugin",
 ] as const;
+const streamlinedState = vi.hoisted(() => ({ enabled: true }));
 
 vi.mock("@/components/transcript/useLiveRunTranscripts", () => ({
   useLiveRunTranscripts: ({ runs }: { runs: unknown[] }) => {
@@ -60,6 +61,12 @@ vi.mock("@/context/SidebarContext", () => ({
 }));
 vi.mock("@/hooks/useIssuePlanDocument", () => ({
   useIssuePlanDocument: () => planState,
+}));
+vi.mock("@/hooks/useStreamlinedUiEnabled", () => ({
+  useStreamlinedUiEnabled: () => ({
+    enabled: streamlinedState.enabled,
+    loaded: true,
+  }),
 }));
 vi.mock("@/lib/router", () => ({
   Link: ({
@@ -101,6 +108,7 @@ beforeEach(() => {
   transcriptHookRuns.native.length = 0;
   sidebarState.isMobile = false;
   planState.data = null;
+  streamlinedState.enabled = true;
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
@@ -269,6 +277,22 @@ function questionInteraction(
   } as IssueThreadInteraction;
 }
 
+function createLongThreadComments() {
+  return Array.from({ length: 4 }, (_, index) => ({
+    id: `comment-${index + 1}`,
+    companyId: "company-1",
+    issueId: "issue-1",
+    authorType: "user" as const,
+    authorAgentId: null,
+    authorUserId: "user-1",
+    body: `Thread message ${index + 1}`,
+    presentation: null,
+    metadata: null,
+    createdAt: new Date(`2026-08-15T12:0${index}:00.000Z`),
+    updatedAt: new Date(`2026-08-15T12:0${index}:00.000Z`),
+  }));
+}
+
 describe("TaskChatThread draft pass-through", () => {
   it("aligns the desktop thread header with the side-panel tab row", () => {
     render(
@@ -323,8 +347,19 @@ describe("TaskChatThread draft pass-through", () => {
     const dock = container.querySelector(
       '[data-testid="task-chat-composer-dock"]',
     );
+    const thread = container.querySelector(
+      '[data-testid="task-chat-thread"]',
+    );
+    expect(thread?.classList).not.toContain("h-(--tc-thread-max-h)");
+    expect(thread?.classList).toContain("flex-1");
     expect(dock?.classList).toContain("px-4");
     expect(dock?.classList).not.toContain("px-1");
+    expect(dock?.classList).not.toContain("-mt-(--radius-task-composer)");
+    expect(dock?.classList).not.toContain("pt-1");
+    expect(dock?.classList).toContain("md:pb-0");
+    expect(dock?.classList).not.toContain("md:pb-4");
+    expect(dock?.classList).not.toContain("bg-background/80");
+    expect(dock?.classList).not.toContain("backdrop-blur");
   });
 
   it("forwards draftKey so the composer restores a task's saved draft", () => {
@@ -332,7 +367,7 @@ describe("TaskChatThread draft pass-through", () => {
 
     render(
       <TaskChatThread
-        comments={[]}
+        comments={createLongThreadComments()}
         onAdd={async () => {}}
         draftKey="task-chat-draft:issue-1"
       />,
@@ -1127,6 +1162,255 @@ describe("TaskChatThread runtime transcript selection", () => {
     ).toBeNull();
   });
 
+  it("does not repeat progress when the persisted completion comment owns the same text", () => {
+    const repeated = "BASELINE-DONE";
+    nativeTranscriptState.transcriptByRun.set("native-repeated-final", [
+      {
+        kind: "assistant",
+        ts: "2026-08-25T18:00:01.000Z",
+        text: repeated,
+        channel: "progress",
+      },
+      {
+        kind: "assistant",
+        ts: "2026-08-25T18:00:02.000Z",
+        text: repeated,
+        channel: "final",
+      },
+    ]);
+
+    render(
+      <TaskChatThread
+        comments={[
+          {
+            id: "native-repeated-final-comment",
+            companyId: "company-1",
+            issueId: "issue-1",
+            authorType: "agent",
+            authorAgentId: "agent-1",
+            authorUserId: null,
+            body: repeated,
+            presentation: null,
+            metadata: null,
+            runId: "native-repeated-final",
+            createdAt: new Date("2026-08-25T18:00:03.000Z"),
+            updatedAt: new Date("2026-08-25T18:00:03.000Z"),
+          },
+        ]}
+        onAdd={async () => {}}
+        linkedRuns={[
+          {
+            runId: "native-repeated-final",
+            runtimeMode: "native",
+            status: "succeeded",
+            agentId: "agent-1",
+            agentName: "Runner",
+            adapterType: "paperclip_runner",
+            createdAt: "2026-08-25T18:00:00.000Z",
+            startedAt: "2026-08-25T18:00:00.000Z",
+            finishedAt: "2026-08-25T18:00:03.000Z",
+            resultJson: {
+              presentationDecision: {
+                schema: "paperclip.run_presentation_decision.v1",
+                chosenSource: "final_agent_message",
+                commentId: "native-repeated-final-comment",
+              },
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(container.textContent?.split(repeated)).toHaveLength(2);
+    expect(
+      Array.from(
+        container.querySelectorAll(
+          '[data-testid="task-chat-phase-interstitial"]',
+        ),
+      ).some((element) => element.textContent?.includes(repeated)),
+    ).toBe(false);
+    expect(
+      container.querySelector('[data-testid="task-chat-agent-bubble"]')
+        ?.textContent,
+    ).toContain(repeated);
+  });
+
+  it("removes only the final repeated progress across steering segments", () => {
+    const repeated = "SAME-BEFORE-AND-AFTER";
+    nativeTranscriptState.transcriptByRun.set("native-steered-repetition", [
+      {
+        kind: "assistant",
+        ts: "2026-08-25T18:00:01.000Z",
+        text: repeated,
+        channel: "progress",
+      },
+      {
+        kind: "assistant",
+        ts: "2026-08-25T18:00:03.000Z",
+        text: repeated,
+        channel: "progress",
+      },
+      {
+        kind: "assistant",
+        ts: "2026-08-25T18:00:04.000Z",
+        text: repeated,
+        channel: "final",
+      },
+    ]);
+
+    render(
+      <TaskChatThread
+        comments={[
+          {
+            id: "steering-comment",
+            companyId: "company-1",
+            issueId: "issue-1",
+            authorType: "user",
+            authorAgentId: null,
+            authorUserId: "user-1",
+            body: "Steer this run.",
+            presentation: null,
+            metadata: null,
+            runId: null,
+            followUpRequested: true,
+            consumedByRunId: "native-steered-repetition",
+            steeredIntoRunId: "native-steered-repetition",
+            conversationAnchorAt: new Date("2026-08-25T18:00:02.000Z"),
+            createdAt: new Date("2026-08-25T17:59:32.000Z"),
+            updatedAt: new Date("2026-08-25T18:00:02.000Z"),
+          },
+          {
+            id: "native-steered-repetition-final",
+            companyId: "company-1",
+            issueId: "issue-1",
+            authorType: "agent",
+            authorAgentId: "agent-1",
+            authorUserId: null,
+            body: repeated,
+            presentation: null,
+            metadata: null,
+            runId: "native-steered-repetition",
+            createdAt: new Date("2026-08-25T18:00:05.000Z"),
+            updatedAt: new Date("2026-08-25T18:00:05.000Z"),
+          },
+        ]}
+        onAdd={async () => {}}
+        linkedRuns={[
+          {
+            runId: "native-steered-repetition",
+            runtimeMode: "native",
+            status: "succeeded",
+            agentId: "agent-1",
+            agentName: "Runner",
+            adapterType: "paperclip_runner",
+            createdAt: "2026-08-25T18:00:00.000Z",
+            startedAt: "2026-08-25T18:00:00.000Z",
+            finishedAt: "2026-08-25T18:00:05.000Z",
+            resultJson: {
+              presentationDecision: {
+                schema: "paperclip.run_presentation_decision.v1",
+                chosenSource: "final_agent_message",
+                commentId: "native-steered-repetition-final",
+              },
+            },
+          },
+        ]}
+      />,
+    );
+
+    const matchingPhases = Array.from(
+      container.querySelectorAll(
+        '[data-testid="task-chat-phase-interstitial"]',
+      ),
+    ).filter((element) => element.textContent?.includes(repeated));
+    expect(matchingPhases).toHaveLength(1);
+    expect(
+      container.querySelector('[data-testid="task-chat-agent-bubble"]')
+        ?.textContent,
+    ).toContain(repeated);
+    expect(container.textContent).toContain(
+      `Queued ${new Date("2026-08-25T17:59:32.000Z").toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })} · Steered ${new Date("2026-08-25T18:00:02.000Z").toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`,
+    );
+    const turnHeaders = Array.from(
+      container.querySelectorAll('[data-testid="task-chat-turn-summary"]'),
+    );
+    expect(turnHeaders).toHaveLength(2);
+    expect(turnHeaders[0]?.textContent).not.toContain(
+      "Continued after steering",
+    );
+    expect(turnHeaders[1]?.textContent).toContain(
+      "Continued after steering · Worked for",
+    );
+  });
+
+  it("labels the live tail as a continuation after the steering bubble", () => {
+    nativeTranscriptState.transcriptByRun.set("native-live-steered", [
+      {
+        kind: "assistant",
+        ts: "2026-08-25T18:00:01.000Z",
+        text: "Work before steering.",
+        channel: "progress",
+      },
+      {
+        kind: "assistant",
+        ts: "2026-08-25T18:00:03.000Z",
+        text: "Work after steering.",
+        channel: "progress",
+      },
+    ]);
+
+    render(
+      <TaskChatThread
+        comments={[
+          {
+            id: "live-steering-comment",
+            companyId: "company-1",
+            issueId: "issue-1",
+            authorType: "user",
+            authorAgentId: null,
+            authorUserId: "user-1",
+            body: "Change course now.",
+            presentation: null,
+            metadata: null,
+            runId: null,
+            consumedByRunId: "native-live-steered",
+            steeredIntoRunId: "native-live-steered",
+            conversationAnchorAt: new Date("2026-08-25T18:00:02.000Z"),
+            createdAt: new Date("2026-08-25T17:59:32.000Z"),
+            updatedAt: new Date("2026-08-25T18:00:02.000Z"),
+          },
+        ]}
+        onAdd={async () => {}}
+        issueStatus="in_progress"
+        activeRun={{
+          id: "native-live-steered",
+          runtimeMode: "native",
+          status: "running",
+          invocationSource: "issue",
+          triggerDetail: null,
+          startedAt: "2026-08-25T18:00:00.000Z",
+          finishedAt: null,
+          createdAt: "2026-08-25T18:00:00.000Z",
+          agentId: "agent-1",
+          agentName: "Runner",
+          adapterType: "paperclip_runner",
+        }}
+      />,
+    );
+
+    expect(
+      container.querySelector('[data-testid="task-chat-turn-summary"]')
+        ?.textContent,
+    ).not.toContain("Continued after steering");
+    expect(
+      container.querySelector('[data-testid="task-chat-turn-status-header"]')
+        ?.textContent,
+    ).toContain("Continued after steering · Working for");
+    expect(container.textContent).toContain(
+      `Queued ${new Date("2026-08-25T17:59:32.000Z").toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })} · Steered ${new Date("2026-08-25T18:00:02.000Z").toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`,
+    );
+  });
+
   it("keeps a yielded question turn out of the final-response slot", () => {
     nativeTranscriptState.transcriptByRun.set("native-question", [
       {
@@ -1477,6 +1761,29 @@ describe("TaskChatThread composer alignment", () => {
     expect(dock?.className).toContain("max-w-(--tc-shell-max-w)");
     expect(dock?.className).not.toContain("md:w-(--pct-80)");
   });
+
+  it("uses master's production composer and gutters when Streamlined UI is off", () => {
+    streamlinedState.enabled = false;
+    render(<TaskChatThread comments={[]} onAdd={async () => {}} />);
+
+    const dock = container.querySelector(
+      '[data-testid="task-chat-composer-dock"]',
+    );
+    const composer = container.querySelector(".paperclip-task-chat-composer");
+    const send = container.querySelector(
+      '[data-testid="task-chat-composer-send"]',
+    );
+
+    expect(dock?.classList).not.toContain("md:px-0");
+    expect(dock?.classList).not.toContain("md:pb-4");
+    expect(dock?.classList).toContain("bg-background/80");
+    expect(dock?.classList).toContain("pt-1");
+    expect(dock?.classList).not.toContain("-mt-(--radius-task-composer)");
+    expect(composer?.classList).not.toContain("border");
+    expect(composer?.classList).toContain("bg-card");
+    expect(send?.classList).toContain("rounded-md");
+    expect(send?.classList).not.toContain("rounded-full");
+  });
 });
 
 describe("TaskChatThread no-live-execution-path recovery", () => {
@@ -1551,7 +1858,7 @@ describe("TaskChatThread blocker links", () => {
 
     render(
       <TaskChatThread
-        comments={[]}
+        comments={createLongThreadComments()}
         onAdd={async () => {}}
         issueStatus="blocked"
         blockedBy={[
@@ -1586,13 +1893,17 @@ describe("TaskChatThread blocker links", () => {
     expect(notices).toHaveLength(2);
     expect(notices[0]?.getAttribute("data-placement")).toBe("top");
     expect(notices[1]?.getAttribute("data-placement")).toBe("bottom");
+    expect(notices[0]?.textContent).toContain(
+      "Blocked byPAP-600Waiting in review",
+    );
+    expect(notices[0]?.textContent).toContain("Root blockerPAP-777Actual work");
+    expect(notices[1]?.textContent).toContain(
+      "Still blocked byPAP-600Waiting in review",
+    );
+    expect(notices[1]?.textContent).toContain(
+      "Root blocker remainsPAP-777Actual work",
+    );
     for (const notice of notices) {
-      expect(notice.textContent).toContain(
-        "Blocked byPAP-600Waiting in review",
-      );
-      expect(notice.textContent).toContain(
-        "Ultimately blocked byPAP-777Actual work",
-      );
       expect(notice.querySelector('a[href="/issues/PAP-600"]')).not.toBeNull();
       expect(notice.querySelector('a[href="/issues/PAP-777"]')).not.toBeNull();
     }
@@ -1615,7 +1926,7 @@ describe("TaskChatThread blocker links", () => {
 
     render(
       <TaskChatThread
-        comments={[]}
+        comments={createLongThreadComments()}
         onAdd={async () => {}}
         issueStatus="blocked"
         liveIssueIds={new Set(["direct-running", "terminal-running"])}
@@ -1672,8 +1983,9 @@ describe("TaskChatThread blocker links", () => {
     expect(notices).toHaveLength(2);
     expect(notices[0]?.getAttribute("data-placement")).toBe("top");
     expect(notices[1]?.getAttribute("data-placement")).toBe("bottom");
+    expect(notices[0]?.textContent).toContain("Waiting on live work");
+    expect(notices[1]?.textContent).toContain("Still waiting on live work");
     for (const notice of notices) {
-      expect(notice.textContent).toContain("Waiting on live work");
       const orderedLinks = [
         ...notice.querySelectorAll(
           '[data-testid="task-chat-live-work-step"] a',
@@ -1690,6 +2002,12 @@ describe("TaskChatThread blocker links", () => {
       expect(
         notice.querySelector('a[href="/issues/PAP-17426"]'),
       ).not.toBeNull();
+      expect(
+        notice.querySelector('[data-testid="task-chat-live-work-step"] > a'),
+      ).not.toBeNull();
+      expect(
+        notice.querySelector('[data-testid="task-chat-live-work-step"] > span'),
+      ).toBeNull();
     }
     expect(
       container.querySelector('[data-testid="task-chat-blocker-links"]'),
@@ -1699,7 +2017,7 @@ describe("TaskChatThread blocker links", () => {
   it("keeps the compact blocker rows when covered work is no longer live", () => {
     render(
       <TaskChatThread
-        comments={[]}
+        comments={createLongThreadComments()}
         onAdd={async () => {}}
         issueStatus="blocked"
         liveIssueIds={new Set()}
@@ -1739,7 +2057,7 @@ describe("TaskChatThread blocker links", () => {
   it("shows only the direct row when the blocker has no deeper unresolved leaf", () => {
     render(
       <TaskChatThread
-        comments={[]}
+        comments={createLongThreadComments()}
         onAdd={async () => {}}
         issueStatus="blocked"
         blockedBy={[
@@ -1763,6 +2081,7 @@ describe("TaskChatThread blocker links", () => {
       "Blocked byPAP-500Direct dependency",
     );
     expect(container.textContent).not.toContain("Ultimately blocked by");
+    expect(container.textContent).not.toContain("Root blocker");
   });
 
   it("keeps a server-selected intermediate blocker on its direct chain", () => {
@@ -1794,7 +2113,7 @@ describe("TaskChatThread blocker links", () => {
 
     render(
       <TaskChatThread
-        comments={[]}
+        comments={createLongThreadComments()}
         onAdd={async () => {}}
         issueStatus="blocked"
         blockedBy={[
@@ -1825,34 +2144,26 @@ describe("TaskChatThread blocker links", () => {
       />,
     );
 
-    for (const notice of container.querySelectorAll(
+    const notices = container.querySelectorAll(
       '[data-testid="task-chat-blocker-links"]',
-    )) {
-      expect(notice.textContent).toContain(
-        "Blocked byPAP-600Selected dependency",
-      );
-      expect(notice.textContent).toContain(
-        "Ultimately blocked byPAP-650Stalled intermediate review",
-      );
-    }
+    );
+    expect(notices[0]?.textContent).toContain(
+      "Blocked byPAP-600Selected dependency",
+    );
+    expect(notices[0]?.textContent).toContain(
+      "Root blockerPAP-650Stalled intermediate review",
+    );
+    expect(notices[1]?.textContent).toContain(
+      "Still blocked byPAP-600Selected dependency",
+    );
+    expect(notices[1]?.textContent).toContain(
+      "Root blocker remainsPAP-650Stalled intermediate review",
+    );
     expect(container.textContent).not.toContain("Unrelated dependency");
     expect(container.textContent).not.toContain("Deeper structural leaf");
   });
 
   it("auto-follows the new bottom blocker row when a pinned thread becomes blocked", () => {
-    const comment = {
-      id: "comment-1",
-      companyId: "company-1",
-      issueId: "issue-1",
-      authorType: "user" as const,
-      authorAgentId: null,
-      authorUserId: "user-1",
-      body: "Waiting for the dependency.",
-      presentation: null,
-      metadata: null,
-      createdAt: new Date("2026-08-15T12:00:00.000Z"),
-      updatedAt: new Date("2026-08-15T12:00:00.000Z"),
-    };
     const directBlocker = {
       id: "direct-1",
       identifier: "PAP-500",
@@ -1863,7 +2174,7 @@ describe("TaskChatThread blocker links", () => {
       assigneeUserId: null,
     };
     const baseProps = {
-      comments: [comment],
+      comments: createLongThreadComments(),
       onAdd: async () => {},
       blockedBy: [directBlocker],
     };
@@ -1879,10 +2190,37 @@ describe("TaskChatThread blocker links", () => {
     expect(scroller.scrollTop).toBe(scroller.scrollHeight);
   });
 
+  it("keeps a short blocked thread to one top affordance", () => {
+    render(
+      <TaskChatThread
+        comments={createLongThreadComments().slice(0, 1)}
+        onAdd={async () => {}}
+        issueStatus="blocked"
+        blockedBy={[
+          {
+            id: "direct-1",
+            identifier: "PAP-500",
+            title: "Direct dependency",
+            status: "todo",
+            priority: "medium",
+            assigneeAgentId: null,
+            assigneeUserId: null,
+          },
+        ]}
+      />,
+    );
+
+    const notices = container.querySelectorAll(
+      '[data-testid="task-chat-blocker-links"]',
+    );
+    expect(notices).toHaveLength(1);
+    expect(notices[0]?.getAttribute("data-placement")).toBe("top");
+  });
+
   it("does not show blocker rows outside the blocked state", () => {
     render(
       <TaskChatThread
-        comments={[]}
+        comments={createLongThreadComments()}
         onAdd={async () => {}}
         issueStatus="in_progress"
         blockedBy={[
@@ -2051,6 +2389,92 @@ describe("TaskChatThread Paperclip Runner queue", () => {
       ),
     ).toBeNull();
     expect(occurrenceCount(queuedComment.body)).toBe(1);
+  });
+
+  it("keeps legacy follow-ups in the composer queue with an interrupt fallback", () => {
+    const onInterruptQueued = vi.fn(async () => {});
+    render(
+      <TaskChatThread
+        comments={[
+          {
+            ...queuedComment,
+            clientStatus: "queued",
+            queueTargetRunId: "run-1",
+          },
+        ]}
+        onAdd={async () => {}}
+        onInterruptQueued={onInterruptQueued}
+        queuedCommentQueue={{
+          ...queue,
+          protocol: "legacy",
+          steeringDisposition: "unsupported",
+        }}
+        onEditQueuedComment={async () => {}}
+        onReorderQueuedComments={async () => {}}
+        onSteerQueuedComment={async () => {}}
+        onDiscardQueuedComment={async () => {}}
+      />,
+    );
+
+    expect(
+      container.querySelector(
+        '[data-testid="task-chat-queued-message-queued-prp-1"]',
+      ),
+    ).not.toBeNull();
+    expect(occurrenceCount(queuedComment.body)).toBe(1);
+    expect(container.textContent).not.toContain("QueuedInterrupt");
+
+    const interrupt = container.querySelector<HTMLButtonElement>(
+      '[data-testid="task-chat-queued-interrupt-queued-prp-1"]',
+    );
+    expect(interrupt).not.toBeNull();
+    flushSync(() => interrupt!.click());
+    expect(onInterruptQueued).toHaveBeenCalledWith("run-1");
+  });
+
+  it("cancels an optimistic queued row locally before server acknowledgement", async () => {
+    const onCancelQueued = vi.fn();
+    render(
+      <TaskChatThread
+        comments={[]}
+        onAdd={async () => {}}
+        onCancelQueued={onCancelQueued}
+        queuedCommentQueue={{
+          ...queue,
+          queueId: null,
+          entries: [
+            {
+              ...queue.entries[0],
+              comment: {
+                ...queuedComment,
+                id: "optimistic-local-1",
+                body: "Delete before acknowledgement",
+              },
+              canEdit: false,
+            },
+          ],
+        }}
+        onEditQueuedComment={async () => {}}
+        onReorderQueuedComments={async () => {}}
+        onSteerQueuedComment={async () => {}}
+        onDiscardQueuedComment={async () => {}}
+      />,
+    );
+
+    await act(async () => {
+      container
+        .querySelector<HTMLButtonElement>(
+          '[data-testid="task-chat-queued-discard-optimistic-local-1"]',
+        )
+        ?.click();
+    });
+
+    expect(onCancelQueued).toHaveBeenCalledWith("optimistic-local-1");
+    expect(
+      container.querySelector(
+        '[data-testid="task-chat-queued-message-optimistic-local-1"]',
+      ),
+    ).toBeNull();
   });
 });
 

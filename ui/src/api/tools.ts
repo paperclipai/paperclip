@@ -306,6 +306,7 @@ export const toolsApi = {
     connectionId: string,
     input: {
       asCurrentUser?: boolean;
+      asAgentId?: string;
       interactionId?: string;
     } = {},
   ) =>
@@ -396,7 +397,7 @@ export const toolsApi = {
     connectionId: string,
     input: { subjectUserId: string; scopes?: string[]; returnTo?: string },
   ) =>
-    api.post<{ url: string }>(
+    api.post<{ url: string; handoff?: ToolOAuthStartResult["handoff"] }>(
       `/companies/${companyId}/tools/connections/${connectionId}/start-authorization`,
       input,
     ),

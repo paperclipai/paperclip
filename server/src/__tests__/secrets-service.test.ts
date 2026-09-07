@@ -4,6 +4,7 @@ import { mkdir, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import type { MockInstance } from "vitest";
 import { and, eq } from "drizzle-orm";
 import { resolveCodexAuthCacheDir, withAccountHomeSecretMutationLock } from "@paperclipai/adapter-codex-local/server";
 import {
@@ -35,6 +36,112 @@ if (!embeddedPostgresSupport.supported) {
   console.warn(
     `Skipping secrets service tests on this host: ${embeddedPostgresSupport.reason ?? "unsupported environment"}`,
   );
+}
+
+// A deferred promise: a concurrency test resolves `resolve` from inside a
+// mocked call, then a waiter `await`s `promise`. This proves the waiter's
+// side reached a state, instead of guessing how long that state takes to
+// reach.
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((promiseResolve, promiseReject) => {
+    resolve = promiseResolve;
+    reject = promiseReject;
+  });
+  return { promise, resolve, reject };
+}
+
+// Waits for the given entry signal, but not blindly: if the operation
+// itself settles first, the entry signal can never resolve, because the
+// call never reached its mocked provider method. A plain `await` on the
+// signal alone would then hang until the test's own timeout and hide the
+// real error. Race the signal against the operation instead, so a create,
+// rotate, or cleanup failure at setup surfaces immediately, at its own
+// throw site.
+async function awaitEntryOrOperationFailure(
+  entered: Promise<void>,
+  operation: Promise<unknown>,
+  label: string,
+): Promise<void> {
+  const failIfOperationSettlesFirst = operation.then(() => {
+    throw new Error(`${label}: the operation settled before it entered its mocked provider method`);
+  });
+  // Attach a no-op handler so a later rejection here, once `entered` has
+  // already won the race below, never surfaces as an unhandled rejection.
+  failIfOperationSettlesFirst.catch(() => {});
+  await Promise.race([entered, failIfOperationSettlesFirst]);
+}
+
+// A wait built from a measured "uncontended entry" duration needs margin
+// over that duration to absorb normal timing jitter, while it must still
+// finish long before an unexcluded second operation could reach its own
+// provider write. This multiple gives that margin.
+const ENTRY_DETECTION_SAFETY_MULTIPLIER = 10;
+
+// The number of uncontended baseline calls to measure. One sample can be
+// unusually fast by chance, which would understate real timing variance and
+// let a broken lock slip past a too-short wait. The slowest of several
+// samples gives a sturdier upper bound than any single sample alone.
+const ENTRY_DETECTION_BASELINE_SAMPLE_COUNT = 3;
+
+// An absolute ceiling on the detection wait, independent of the measured
+// baseline. A noisy baseline sample must never let this wait grow large
+// enough to consume the test's own timeout.
+const ENTRY_DETECTION_MAX_WAIT_MS = 3000;
+
+// Measures how long an uncontended call takes to reach a mocked provider
+// method, by recording the time the mock is entered relative to the time
+// the caller started. Repeats the measurement and keeps the slowest result,
+// so the returned duration is a real, per-run upper bound, not a single
+// possibly-lucky sample, and stays valid at any machine speed.
+//
+// Each baseline call must actually enter the mocked provider method. When
+// one does not, that sample is meaningless, and a wait built from it would
+// silently collapse toward its own one-millisecond floor instead of a real
+// window. Throw here instead, so a broken baseline call fails loudly.
+async function measureUncontendedEntryDurationMs<TArgs extends unknown[], TReturn>(
+  spy: MockInstance<(...args: TArgs) => Promise<TReturn>>,
+  original: (...args: TArgs) => Promise<TReturn>,
+  triggerUncontendedCall: () => Promise<unknown>,
+): Promise<number> {
+  let worstDurationMs = 0;
+  for (let sample = 0; sample < ENTRY_DETECTION_BASELINE_SAMPLE_COUNT; sample += 1) {
+    const startedAt = performance.now();
+    let entered = false;
+    let enteredAt = startedAt;
+    spy.mockImplementationOnce(async (...args: TArgs) => {
+      entered = true;
+      enteredAt = performance.now();
+      return original(...args);
+    });
+    await triggerUncontendedCall();
+    if (!entered) {
+      throw new Error(
+        "measureUncontendedEntryDurationMs: a baseline call never entered the mocked provider method, so it produced no valid measurement",
+      );
+    }
+    worstDurationMs = Math.max(worstDurationMs, enteredAt - startedAt);
+  }
+  return worstDurationMs;
+}
+
+// Waits long enough that a second operation, still queued behind a
+// correctly excluding lock, cannot yet have reached its provider write —
+// unless `violationSignal` resolves first. An unexcluded second operation
+// resolves `violationSignal` itself, from inside its own mocked provider
+// method, the instant it gets there, however long that takes: this ties the
+// wait to the second operation's own confirmed progress, not to a blind
+// sleep-then-check against a single guessed duration. The measured window
+// below is only a ceiling on how long a correctly excluding lock is given
+// to prove the second operation stayed queued.
+function waitEntryDetectionWindow(uncontendedEntryDurationMs: number, violationSignal: Promise<void>): Promise<void> {
+  const waitMs = Math.min(
+    Math.max(uncontendedEntryDurationMs, 1) * ENTRY_DETECTION_SAFETY_MULTIPLIER,
+    ENTRY_DETECTION_MAX_WAIT_MS,
+  );
+  const timeout = new Promise<void>((resolve) => setTimeout(resolve, waitMs));
+  return Promise.race([timeout, violationSignal]);
 }
 
 describeEmbeddedPostgres("secretService", () => {
@@ -382,21 +489,42 @@ describeEmbeddedPostgres("secretService", () => {
     // whichever caller goes first.
     const companyId = await seedCompany();
     const svc = secretService(db);
+    const originalCreateSecret = localEncryptedProvider.createSecret.bind(localEncryptedProvider);
+    const createSecretSpy = vi.spyOn(localEncryptedProvider, "createSecret");
+
+    // An uncontended create still crosses several asynchronous steps
+    // (directory checks, lock-root setup, database round trips) before it
+    // reaches its provider write. Measure that duration here, so the wait
+    // below can use a real measured value instead of a guessed sleep.
+    const uncontendedEntryDurationMs = await measureUncontendedEntryDurationMs(
+      createSecretSpy,
+      originalCreateSecret,
+      () =>
+        svc.create(companyId, {
+          name: `baseline-${randomUUID()}`,
+          provider: "local_encrypted",
+          value: "/company/codex-home/acct-baseline",
+        }),
+    );
+
     const events: string[] = [];
+    const firstEntered = deferred<void>();
+    const secondEntered = deferred<void>();
     let releaseFirstWrite!: () => void;
     const firstWriteGate = new Promise<void>((resolve) => {
       releaseFirstWrite = resolve;
     });
-    const originalCreateSecret = localEncryptedProvider.createSecret.bind(localEncryptedProvider);
-    vi.spyOn(localEncryptedProvider, "createSecret")
+    createSecretSpy
       .mockImplementationOnce(async (input) => {
         events.push("first-provider-enter");
+        firstEntered.resolve();
         await firstWriteGate;
         events.push("first-provider-exit");
         return originalCreateSecret(input);
       })
       .mockImplementationOnce(async (input) => {
         events.push("second-provider-enter");
+        secondEntered.resolve();
         return originalCreateSecret(input);
       });
 
@@ -405,22 +533,49 @@ describeEmbeddedPostgres("secretService", () => {
       provider: "local_encrypted",
       value: "/company/codex-home/acct-a",
     });
-    // Give the first call a chance to acquire the lock and enter its provider
-    // write before the second call starts racing for the same lock.
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    const secondCreate = svc.create(companyId, {
-      name: `hand-named-${randomUUID()}`,
-      provider: "local_encrypted",
-      value: "/company/codex-home/acct-a",
-    });
-    // The second call must stay blocked on the lock while the first call
-    // still holds it: it must never enter its own provider write before the
-    // first call's provider write exits.
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    expect(events).toEqual(["first-provider-enter"]);
-
-    releaseFirstWrite();
-    await Promise.all([firstCreate, secondCreate]);
+    let secondCreate: ReturnType<typeof svc.create> | undefined;
+    let outcomes: PromiseSettledResult<unknown>[] = [];
+    try {
+      // Wait for the confirmed signal that the first call now holds the
+      // lock and sits inside its provider write. The lock stays held until
+      // we release it below, so the second call, once we start it, must
+      // contend for the same lock while the first call still holds it. Race
+      // against the call's own promise, so a setup failure that happens
+      // before the call ever reaches the lock surfaces immediately, at its
+      // own throw site, instead of hanging this wait until the test
+      // timeout.
+      await awaitEntryOrOperationFailure(firstEntered.promise, firstCreate, "firstCreate");
+      secondCreate = svc.create(companyId, {
+        name: `hand-named-${randomUUID()}`,
+        provider: "local_encrypted",
+        value: "/company/codex-home/acct-a",
+      });
+      // Wait a safety multiple of the measured uncontended entry duration,
+      // or until the second call itself confirms it reached its provider
+      // write, whichever comes first. A correctly excluding lock keeps the
+      // second call queued for the whole wait, so this cannot produce a
+      // false failure. A broken lock resolves `secondEntered` on its own,
+      // from inside the second call's mocked provider method, the instant
+      // it gets there.
+      await waitEntryDetectionWindow(uncontendedEntryDurationMs, secondEntered.promise);
+      // The lock is still held (we have not released it yet), so the second
+      // call must still be queued behind it and must not have entered its
+      // provider write.
+      expect(events).toEqual(["first-provider-enter"]);
+    } finally {
+      // Release and settle both calls even when the check above fails, so
+      // neither call stays parked inside the lock past this test and
+      // corrupts teardown.
+      releaseFirstWrite();
+      outcomes = await Promise.allSettled([firstCreate, secondCreate]);
+    }
+    for (const outcome of outcomes) {
+      if (outcome.status === "rejected") throw outcome.reason;
+    }
+    // The lock enforces this order: the second call cannot start its
+    // provider write until the first call's whole locked operation
+    // completes. This final order is proof of mutual exclusion, not a
+    // timing guess.
     expect(events).toEqual(["first-provider-enter", "first-provider-exit", "second-provider-enter"]);
   });
 
@@ -435,7 +590,26 @@ describeEmbeddedPostgres("secretService", () => {
       provider: "local_encrypted",
       value: "/company/codex-home/acct-b",
     });
+    const originalCreateSecret = localEncryptedProvider.createSecret.bind(localEncryptedProvider);
+    const createSecretSpy = vi.spyOn(localEncryptedProvider, "createSecret");
+
+    // The contended call below is a create, so measure how long an
+    // uncontended create takes to reach its own provider write. The wait
+    // later in this test uses that measured duration, not a guessed sleep.
+    const uncontendedEntryDurationMs = await measureUncontendedEntryDurationMs(
+      createSecretSpy,
+      originalCreateSecret,
+      () =>
+        svc.create(companyId, {
+          name: `baseline-${randomUUID()}`,
+          provider: "local_encrypted",
+          value: "/company/codex-home/acct-baseline",
+        }),
+    );
+
     const events: string[] = [];
+    const rotateEntered = deferred<void>();
+    const createEntered = deferred<void>();
     let releaseRotateWrite!: () => void;
     const rotateWriteGate = new Promise<void>((resolve) => {
       releaseRotateWrite = resolve;
@@ -443,28 +617,60 @@ describeEmbeddedPostgres("secretService", () => {
     const originalCreateVersion = localEncryptedProvider.createVersion.bind(localEncryptedProvider);
     vi.spyOn(localEncryptedProvider, "createVersion").mockImplementationOnce(async (input) => {
       events.push("rotate-provider-enter");
+      rotateEntered.resolve();
       await rotateWriteGate;
       events.push("rotate-provider-exit");
       return originalCreateVersion(input);
     });
-    const originalCreateSecret = localEncryptedProvider.createSecret.bind(localEncryptedProvider);
-    vi.spyOn(localEncryptedProvider, "createSecret").mockImplementationOnce(async (input) => {
+    createSecretSpy.mockImplementationOnce(async (input) => {
       events.push("create-provider-enter");
+      createEntered.resolve();
       return originalCreateSecret(input);
     });
 
     const rotateCall = svc.rotate(existing.id, { value: "/company/codex-home/acct-b-rotated" });
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    const createCall = svc.create(companyId, {
-      name: `hand-named-${randomUUID()}`,
-      provider: "local_encrypted",
-      value: "/company/codex-home/acct-b",
-    });
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    expect(events).toEqual(["rotate-provider-enter"]);
-
-    releaseRotateWrite();
-    await Promise.all([rotateCall, createCall]);
+    let createCall: ReturnType<typeof svc.create> | undefined;
+    let outcomes: PromiseSettledResult<unknown>[] = [];
+    try {
+      // Wait for the confirmed signal that the rotate now holds the lock
+      // and sits inside its provider write. The lock stays held until we
+      // release it below, so the create call, once we start it, must
+      // contend for the same lock while the rotate still holds it. Race
+      // against the call's own promise, so a setup failure that happens
+      // before the call ever reaches the lock surfaces immediately, at its
+      // own throw site, instead of hanging this wait until the test
+      // timeout.
+      await awaitEntryOrOperationFailure(rotateEntered.promise, rotateCall, "rotateCall");
+      createCall = svc.create(companyId, {
+        name: `hand-named-${randomUUID()}`,
+        provider: "local_encrypted",
+        value: "/company/codex-home/acct-b",
+      });
+      // Wait a safety multiple of the measured uncontended entry duration,
+      // or until the create call itself confirms it reached its provider
+      // write, whichever comes first. A correctly excluding lock keeps the
+      // create call queued for the whole wait, so this cannot produce a
+      // false failure. A broken lock resolves `createEntered` on its own,
+      // from inside the create call's mocked provider method, the instant
+      // it gets there.
+      await waitEntryDetectionWindow(uncontendedEntryDurationMs, createEntered.promise);
+      // The lock is still held (we have not released it yet), so the create
+      // call must still be queued behind it and must not have entered its
+      // provider write.
+      expect(events).toEqual(["rotate-provider-enter"]);
+    } finally {
+      // Release and settle both calls even when the check above fails, so
+      // neither call stays parked inside the lock past this test and
+      // corrupts teardown.
+      releaseRotateWrite();
+      outcomes = await Promise.allSettled([rotateCall, createCall]);
+    }
+    for (const outcome of outcomes) {
+      if (outcome.status === "rejected") throw outcome.reason;
+    }
+    // The lock enforces this order: the create call cannot start its
+    // provider write until the rotate's whole locked operation completes.
+    // This final order is proof of mutual exclusion, not a timing guess.
     expect(events).toEqual(["rotate-provider-enter", "rotate-provider-exit", "create-provider-enter"]);
   });
 
@@ -478,32 +684,79 @@ describeEmbeddedPostgres("secretService", () => {
     const companyId = await seedCompany();
     const svc = secretService(db);
     const accountHomeDir = await makeAccountHomeDir(companyId, "acct-queued-create");
+    const originalCreateSecret = localEncryptedProvider.createSecret.bind(localEncryptedProvider);
+    const createSecretSpy = vi.spyOn(localEncryptedProvider, "createSecret");
+
+    // The contended call below is a create, so measure how long an
+    // uncontended create takes to reach its own provider write. The wait
+    // later in this test uses that measured duration, not a guessed sleep.
+    const uncontendedEntryDurationMs = await measureUncontendedEntryDurationMs(
+      createSecretSpy,
+      originalCreateSecret,
+      () =>
+        svc.create(companyId, {
+          name: `baseline-${randomUUID()}`,
+          provider: "local_encrypted",
+          value: "/company/codex-home/acct-baseline",
+        }),
+    );
 
     const events: string[] = [];
+    const cleanupEntered = deferred<void>();
+    const createEntered = deferred<void>();
     let releaseCleanup!: () => void;
     const cleanupGate = new Promise<void>((resolve) => {
       releaseCleanup = resolve;
     });
     const cleanupCall = withAccountHomeSecretMutationLock(undefined, companyId, async () => {
       events.push("cleanup-enter");
+      cleanupEntered.resolve();
       await cleanupGate;
       await rm(accountHomeDir, { recursive: true, force: true });
       events.push("cleanup-exit");
     });
-    // Give the cleanup a chance to acquire the lock before the create starts
-    // racing for the same lock.
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    const createCall = svc.create(companyId, {
-      name: `account-home-${randomUUID()}`,
-      provider: "local_encrypted",
-      value: accountHomeDir,
+    createSecretSpy.mockImplementationOnce(async (input) => {
+      events.push("create-provider-enter");
+      createEntered.resolve();
+      return originalCreateSecret(input);
     });
-    // The create must stay queued behind the held lock.
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    expect(events).toEqual(["cleanup-enter"]);
-
-    releaseCleanup();
-    await cleanupCall;
+    let createCall: ReturnType<typeof svc.create> | undefined;
+    let outcomes: PromiseSettledResult<unknown>[] = [];
+    try {
+      // Wait for the confirmed signal that the cleanup now holds the lock.
+      // The lock stays held until we release it below, so the create call,
+      // once we start it, must queue behind the cleanup. Race against the
+      // cleanup's own promise, so a setup failure that happens before the
+      // cleanup ever reaches the lock surfaces immediately, at its own
+      // throw site, instead of hanging this wait until the test timeout.
+      await awaitEntryOrOperationFailure(cleanupEntered.promise, cleanupCall, "cleanupCall");
+      createCall = svc.create(companyId, {
+        name: `account-home-${randomUUID()}`,
+        provider: "local_encrypted",
+        value: accountHomeDir,
+      });
+      // Wait a safety multiple of the measured uncontended entry duration,
+      // or until the create call itself confirms it reached its provider
+      // write, whichever comes first. A correctly excluding lock keeps the
+      // create call queued behind the cleanup's still-held lock for the
+      // whole wait, so this cannot produce a false failure. A broken lock
+      // resolves `createEntered` on its own, from inside the create call's
+      // mocked provider method, the instant it clears the directory check
+      // and gets there — the directory still exists until the cleanup
+      // (still paused on its own gate) actually removes it.
+      await waitEntryDetectionWindow(uncontendedEntryDurationMs, createEntered.promise);
+      // The lock is still held (we have not released it yet), so the create
+      // call must still be queued behind it and must not have entered its
+      // provider write.
+      expect(events).toEqual(["cleanup-enter"]);
+    } finally {
+      // Release and settle both calls even when the check above fails, so
+      // neither call stays parked inside the lock past this test and
+      // corrupts teardown.
+      releaseCleanup();
+      outcomes = await Promise.allSettled([cleanupCall, createCall]);
+    }
+    if (outcomes[0]?.status === "rejected") throw outcomes[0].reason;
     await expect(createCall).rejects.toThrow(/no longer exists/);
   });
 
@@ -519,25 +772,75 @@ describeEmbeddedPostgres("secretService", () => {
       value: "/some/unrelated/placeholder/value",
     });
     const accountHomeDir = await makeAccountHomeDir(companyId, "acct-queued-rotate");
+    const originalCreateVersion = localEncryptedProvider.createVersion.bind(localEncryptedProvider);
+    const createVersionSpy = vi.spyOn(localEncryptedProvider, "createVersion");
+
+    // The contended call below is a rotate, so measure how long an
+    // uncontended rotate takes to reach its own provider write. The wait
+    // later in this test uses that measured duration, not a guessed sleep.
+    const baselineSecret = await svc.create(companyId, {
+      name: `baseline-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "/some/unrelated/placeholder/baseline",
+    });
+    const uncontendedEntryDurationMs = await measureUncontendedEntryDurationMs(
+      createVersionSpy,
+      originalCreateVersion,
+      () => svc.rotate(baselineSecret.id, { value: "/some/unrelated/placeholder/baseline-rotated" }),
+    );
 
     const events: string[] = [];
+    const cleanupEntered = deferred<void>();
+    const rotateEntered = deferred<void>();
     let releaseCleanup!: () => void;
     const cleanupGate = new Promise<void>((resolve) => {
       releaseCleanup = resolve;
     });
     const cleanupCall = withAccountHomeSecretMutationLock(undefined, companyId, async () => {
       events.push("cleanup-enter");
+      cleanupEntered.resolve();
       await cleanupGate;
       await rm(accountHomeDir, { recursive: true, force: true });
       events.push("cleanup-exit");
     });
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    const rotateCall = svc.rotate(existing.id, { value: accountHomeDir });
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    expect(events).toEqual(["cleanup-enter"]);
-
-    releaseCleanup();
-    await cleanupCall;
+    createVersionSpy.mockImplementationOnce(async (input) => {
+      events.push("rotate-provider-enter");
+      rotateEntered.resolve();
+      return originalCreateVersion(input);
+    });
+    let rotateCall: ReturnType<typeof svc.rotate> | undefined;
+    let outcomes: PromiseSettledResult<unknown>[] = [];
+    try {
+      // Wait for the confirmed signal that the cleanup now holds the lock.
+      // The lock stays held until we release it below, so the rotate call,
+      // once we start it, must queue behind the cleanup. Race against the
+      // cleanup's own promise, so a setup failure that happens before the
+      // cleanup ever reaches the lock surfaces immediately, at its own
+      // throw site, instead of hanging this wait until the test timeout.
+      await awaitEntryOrOperationFailure(cleanupEntered.promise, cleanupCall, "cleanupCall");
+      rotateCall = svc.rotate(existing.id, { value: accountHomeDir });
+      // Wait a safety multiple of the measured uncontended entry duration,
+      // or until the rotate call itself confirms it reached its provider
+      // write, whichever comes first. A correctly excluding lock keeps the
+      // rotate call queued behind the cleanup's still-held lock for the
+      // whole wait, so this cannot produce a false failure. A broken lock
+      // resolves `rotateEntered` on its own, from inside the rotate call's
+      // mocked provider method, the instant it clears the directory check
+      // and gets there — the directory still exists until the cleanup
+      // (still paused on its own gate) actually removes it.
+      await waitEntryDetectionWindow(uncontendedEntryDurationMs, rotateEntered.promise);
+      // The lock is still held (we have not released it yet), so the
+      // rotate call must still be queued behind it and must not have
+      // entered its provider write.
+      expect(events).toEqual(["cleanup-enter"]);
+    } finally {
+      // Release and settle both calls even when the check above fails, so
+      // neither call stays parked inside the lock past this test and
+      // corrupts teardown.
+      releaseCleanup();
+      outcomes = await Promise.allSettled([cleanupCall, rotateCall]);
+    }
+    if (outcomes[0]?.status === "rejected") throw outcomes[0].reason;
     await expect(rotateCall).rejects.toThrow(/no longer exists/);
   });
 

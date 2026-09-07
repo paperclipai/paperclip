@@ -26,8 +26,23 @@ const AMBIENT_EXTERNAL_STATE_KEYS = [
 ] as const;
 const PROVIDER_SECRET_KEY = /^(?:OPENAI|ANTHROPIC|OPENROUTER|DAYTONA)(?:_|$)/;
 
+export function runnerE2EServerControlPaths(temporaryRoot: string) {
+  const controlDirectory = path.join(temporaryRoot, "control");
+  return {
+    controlDirectory,
+    restartRequestPath: path.join(
+      controlDirectory,
+      "server-restart.request.json",
+    ),
+    restartAcknowledgementPath: path.join(
+      controlDirectory,
+      "server-restart.ack.json",
+    ),
+  };
+}
+
 /**
- * Local native cells use the debug binary produced by build:runner-binaries.
+ * Native cells use the debug binary produced once by build:runner-binaries.
  * Preserve an explicit override for release builds and developer workflows.
  */
 export function resolvePaperclipRunnerBinaryForHarness(
@@ -38,11 +53,7 @@ export function resolvePaperclipRunnerBinaryForHarness(
 ): string | undefined {
   if (configuredPath?.trim()) return configuredPath;
   if (
-    !executions.some(
-      (execution) =>
-        execution.environment.id === "local" &&
-        execution.profile.generation === "native",
-    )
+    !executions.some((execution) => execution.profile.generation === "native")
   ) {
     return undefined;
   }
@@ -56,6 +67,55 @@ export function resolvePaperclipRunnerBinaryForHarness(
     "debug",
     platform === "win32" ? "paperclip-runnerd.exe" : "paperclip-runnerd",
   );
+}
+
+/**
+ * Remote native cells stage the same controller-owned binary whose digest is
+ * authorized by the PRP control plane. Local cells launch it directly.
+ */
+export function resolvePaperclipRemoteRunnerBinaryForHarness(
+  executions: readonly MatrixExecution[],
+  runnerBinary: string | undefined,
+  configuredPath = process.env.PAPERCLIP_RUNNER_REMOTE_BINARY_PATH,
+  platform: NodeJS.Platform = process.platform,
+): string | undefined {
+  if (configuredPath?.trim()) return configuredPath;
+  if (!runnerBinary) return undefined;
+  // Daytona runs Linux. A default debug binary built by a macOS developer is
+  // Mach-O and cannot be staged into that sandbox. Leave the remote override
+  // unset so the pinned Daytona image's verified runnerd is discovered instead.
+  if (platform !== "linux") return undefined;
+  return executions.some(
+    (execution) =>
+      execution.profile.generation === "native" &&
+      execution.environment.expectedExecutionTarget.kind === "remote",
+  )
+    ? runnerBinary
+    : undefined;
+}
+
+/**
+ * Keep fixture-only provider switches scoped to the one isolated harness that
+ * needs them. In particular, the pinned legacy OpenCode model is routed by the
+ * paid gateway and may not appear in OpenCode's public model catalog.
+ */
+export function buildRunnerE2EProcessEnvironment(
+  source: NodeJS.ProcessEnv,
+  executions: readonly MatrixExecution[],
+): NodeJS.ProcessEnv {
+  const result = { ...source };
+  delete result.OPENCODE_ALLOW_ALL_MODELS;
+  if (
+    executions.length > 0 &&
+    executions.every(
+      (execution) =>
+        execution.profile.generation === "legacy" &&
+        execution.profile.provider === "opencode",
+    )
+  ) {
+    result.OPENCODE_ALLOW_ALL_MODELS = "true";
+  }
+  return result;
 }
 
 /**
@@ -105,6 +165,11 @@ export function assertIsolatedServerEnvironment(
   ) {
     throw new Error(
       "Paperclip server paths escape the isolated temporary root",
+    );
+  }
+  if (env.XDG_CACHE_HOME !== path.join(expected.temporaryRoot, "xdg-cache")) {
+    throw new Error(
+      "Paperclip server cache does not use the allocated temporary root",
     );
   }
   for (const key of [

@@ -48,6 +48,10 @@ class AsyncQueue<T> implements AsyncIterable<T> {
       waiter({ value: undefined, done: true });
   }
 
+  clear(): void {
+    this.#values = [];
+  }
+
   [Symbol.asyncIterator](): AsyncIterator<T> {
     return {
       next: async () => {
@@ -82,6 +86,14 @@ export class CodexSessionState {
   resultCallId: string | null = null;
   resultTurnId: string | null = null;
   turnStartPending = false;
+  /**
+   * Resolves once a pending turn/start settles, on the accepted path or on a
+   * provider rejection. A terminal notification for that turn must wait on
+   * this promise, so turn.accepted always precedes any terminal event for
+   * the same turn even when the provider notifies the terminal turn before
+   * the turn/start response arrives.
+   */
+  turnStartSettled: Promise<void> = Promise.resolve();
   protocolFailed = false;
   protocolFailureCode: string | null = null;
   protocolFailureMessage: string | null = null;
@@ -332,7 +344,7 @@ export class CodexSessionState {
     }
     this.terminal = true;
     this.eventQueue.close();
-    void this.transport.close();
+    void this.transport.close(`protocol_failure:${code}`);
   }
 
   emit(

@@ -2,10 +2,10 @@ import { randomBytes } from "node:crypto";
 import { spawn } from "node:child_process";
 import { createWriteStream } from "node:fs";
 import { createRequire } from "node:module";
-import { createServer } from "node:net";
 import os from "node:os";
 import path from "node:path";
 import {
+  access,
   chmod,
   cp,
   lstat,
@@ -22,7 +22,11 @@ import { renderRunnerE2EDashboard } from "./dashboard.js";
 import { packageEvidence } from "./evidence.js";
 import { classifyFailure, shouldRetryFailure } from "./failure-classifier.js";
 import { buildRunnerCampaign } from "./history.js";
-import { resolvePaperclipRunnerBinaryForHarness } from "./harness-env.js";
+import {
+  buildRunnerE2EProcessEnvironment,
+  resolvePaperclipRemoteRunnerBinaryForHarness,
+  resolvePaperclipRunnerBinaryForHarness,
+} from "./harness-env.js";
 import { assertEmbeddedDatabaseIsolation } from "./instance-isolation.js";
 import {
   assertSecretFree,
@@ -37,6 +41,7 @@ import {
   RunnerSelectorError,
   selectRunnerExecutions,
 } from "./selectors.js";
+import { resolveRunnerE2ESource } from "./source.js";
 import {
   CREDENTIAL_NAMES,
   type MatrixExecution,
@@ -46,12 +51,40 @@ import {
   reapNewDetachedDarwinSharedMemory,
   snapshotDarwinSharedMemory,
 } from "./shared-memory.js";
+import { reserveRunnerE2EServerPort } from "./ports.js";
+import {
+  createResultExitGuard,
+  enforceResultProcessIntegrity,
+} from "./result-exit-guard.js";
+import {
+  observeDescendantProcessTree,
+  refreshContinuouslyLiveProcessGroups,
+  revalidateObservedProcessGroups,
+  safeProcessGroupTerminationOrder,
+  type ObservedProcessGroup,
+  type ProcessObservation,
+} from "./process-tree.js";
 
 const repositoryRoot = path.resolve(import.meta.dirname, "../..");
 const localEnvPath = path.join(repositoryRoot, ".env.runner-e2e.local");
 const resultsRoot = path.join(repositoryRoot, "tests/runner-e2e/results");
 const activeProcessGroups = new Set<number>();
 const activeProcessCleanup = new Map<number, Promise<string | null>>();
+const activeProcessTerminators = new Map<number, () => void>();
+const completedResultExitGraceMs = 120_000;
+const diagnosticProcessKinds = new Set([
+  "bash",
+  "chrome",
+  "codex",
+  "google-chrome",
+  "node",
+  "paperclip-runnerd",
+  "playwright",
+  "pnpm",
+  "postgres",
+  "sh",
+  "tsx",
+]);
 let cancelled = false;
 
 function cleanId(value: string) {
@@ -116,12 +149,117 @@ async function terminateProcessGroup(pid: number) {
     : null;
 }
 
+function wait(milliseconds: number) {
+  return new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
+}
+
+interface ProcessTreeDiagnostic {
+  summary: string;
+  groups: ObservedProcessGroup[];
+}
+
+function observedGroupsSelectedForTermination(
+  groups: readonly ObservedProcessGroup[],
+  processGroupIds: readonly number[],
+) {
+  const selected = new Set(processGroupIds);
+  return groups.filter((group) => selected.has(group.processGroupId));
+}
+
+async function readProcessTable(): Promise<ProcessObservation[] | null> {
+  if (process.platform === "win32") {
+    return null;
+  }
+  return await new Promise<ProcessObservation[] | null>((resolve) => {
+    const inspector = spawn(
+      "ps",
+      ["-e", "-o", "pid=,ppid=,pgid=,lstart=,comm="],
+      {
+        env: { PATH: "/usr/bin:/bin", LANG: "C", LC_ALL: "C" },
+        stdio: ["ignore", "pipe", "ignore"],
+      },
+    );
+    let output = "";
+    let settled = false;
+    const finish = (value: ProcessObservation[] | null) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(inspectionTimeout);
+      resolve(value);
+    };
+    const inspectionTimeout = setTimeout(() => {
+      inspector.kill("SIGKILL");
+      finish(null);
+    }, 5_000);
+    inspectionTimeout.unref();
+    inspector.stdout?.setEncoding("utf8").on("data", (chunk: string) => {
+      output = `${output}${chunk}`.slice(-1024 * 1024);
+    });
+    inspector.once("error", () => finish(null));
+    inspector.once("close", () => {
+      const observations = output
+        .split(/\r?\n/)
+        .map((line) =>
+          /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\S+\s+\S+\s+\d+\s+\d{2}:\d{2}:\d{2}\s+\d{4})\s+(.+?)\s*$/.exec(
+            line,
+          ),
+        )
+        .filter((match): match is RegExpExecArray => match !== null)
+        .map((match): ProcessObservation => {
+          // A target process can choose its own argv and process name. Emit a
+          // fixed category instead of target-controlled text so diagnostics
+          // can never turn that metadata into a secret-exfiltration channel.
+          const command = path.basename(match[5]!);
+          const kind = diagnosticProcessKinds.has(command) ? command : "other";
+          return {
+            pid: Number(match[1]),
+            parentPid: Number(match[2]),
+            processGroupId: Number(match[3]),
+            started: match[4]!,
+            kind,
+          };
+        });
+      finish(observations);
+    });
+  }).catch(() => null);
+}
+
+async function processTreeDiagnostic(
+  rootPid: number,
+): Promise<ProcessTreeDiagnostic> {
+  const table = await readProcessTable();
+  if (!table) {
+    return {
+      summary: `process tree ${rootPid} (member inspection unavailable)`,
+      groups: [],
+    };
+  }
+  const observed = observeDescendantProcessTree(table, rootPid);
+  const members = observed.members
+    .slice(0, 64)
+    .map(
+      ({ process: candidate, depth }) =>
+        `pid=${candidate.pid} ppid=${candidate.parentPid} pgid=${candidate.processGroupId} depth=${depth} kind=${candidate.kind}`,
+    );
+  const descendantGroupIds = observed.groups
+    .filter((group) => group.processGroupId !== rootPid)
+    .map((group) => group.processGroupId);
+  return {
+    summary:
+      members.length > 0
+        ? `process tree ${rootPid}: ${members.join("; ")}; descendant pgids=${descendantGroupIds.join(",") || "none"}`
+        : `process tree ${rootPid}: no members reported`,
+    groups: observed.groups,
+  };
+}
+
 for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
   process.on(signal, () => {
     cancelled = true;
     for (const pid of activeProcessGroups) {
-      if (activeProcessCleanup.has(pid)) {
-        stopProcessGroup(pid, "SIGKILL");
+      const terminate = activeProcessTerminators.get(pid);
+      if (terminate) {
+        terminate();
         continue;
       }
       activeProcessCleanup.set(pid, terminateProcessGroup(pid));
@@ -155,21 +293,6 @@ async function loadLocalEnvironment(target: NodeJS.ProcessEnv) {
     }
     target[match[1]] = value;
   }
-}
-
-async function reservePort() {
-  const server = createServer();
-  await new Promise<void>((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", resolve);
-  });
-  const address = server.address();
-  if (!address || typeof address === "string")
-    throw new Error("Failed to reserve a loopback port");
-  await new Promise<void>((resolve, reject) =>
-    server.close((error) => (error ? reject(error) : resolve())),
-  );
-  return address.port;
 }
 
 async function prepareProviderPath(
@@ -215,6 +338,8 @@ async function runProcess(
   env: NodeJS.ProcessEnv,
   timeoutMs: number | null,
   logPath: string,
+  completionPaths: readonly string[],
+  interactive: boolean,
 ) {
   const log = createWriteStream(logPath, { flags: "a", mode: 0o600 });
   const child = spawn("pnpm", args, {
@@ -239,40 +364,171 @@ async function runProcess(
   child.stderr?.on("data", (chunk: Buffer) =>
     recordOutput(chunk, process.stderr),
   );
+  let childSettled = false;
+  let postResultStallError: string | null = null;
+  let boundedCleanup: Promise<string | null> | undefined;
+  const forceStopDirectChild = () => {
+    if (!childSettled && child.exitCode === null && child.signalCode === null) {
+      child.kill("SIGKILL");
+    }
+  };
+  const stopChildTree = (diagnostic?: ProcessTreeDiagnostic) => {
+    if (boundedCleanup) return;
+    const rootProcessGroupId = child.pid!;
+    boundedCleanup = (async () => {
+      const snapshot = diagnostic ?? (await processTreeDiagnostic(child.pid!));
+      const validationTable = await readProcessTable();
+      const currentProcessGroupId = validationTable
+        ? (validationTable.find((candidate) => candidate.pid === process.pid)
+            ?.processGroupId ?? null)
+        : null;
+      const observedGroups = validationTable
+        ? revalidateObservedProcessGroups(snapshot.groups, validationTable)
+        : [];
+      const terminationOrder = safeProcessGroupTerminationOrder({
+        rootProcessGroupId,
+        currentProcessGroupId,
+        groups: observedGroups,
+      });
+      const verifiedGroups = observedGroupsSelectedForTermination(
+        observedGroups,
+        terminationOrder,
+      );
+      if (verifiedGroups.length === 0) {
+        forceStopDirectChild();
+        return "Could not revalidate an owned process group before cleanup";
+      }
+      for (const processGroupId of terminationOrder) {
+        stopProcessGroup(processGroupId, "SIGTERM");
+      }
+
+      let remainingGroups = verifiedGroups;
+      const gracefulDeadline = Date.now() + 5_000;
+      while (remainingGroups.length > 0 && Date.now() < gracefulDeadline) {
+        const table = await readProcessTable();
+        if (table) {
+          remainingGroups = refreshContinuouslyLiveProcessGroups(
+            remainingGroups,
+            table,
+          );
+        }
+        if (remainingGroups.length > 0) await wait(50);
+      }
+      const remainingGroupIds = new Set(
+        remainingGroups.map((group) => group.processGroupId),
+      );
+      const forcedOrder = safeProcessGroupTerminationOrder({
+        rootProcessGroupId,
+        currentProcessGroupId,
+        groups: remainingGroups,
+      }).filter((processGroupId) => remainingGroupIds.has(processGroupId));
+      for (const processGroupId of forcedOrder) {
+        stopProcessGroup(processGroupId, "SIGKILL");
+      }
+
+      const forcedDeadline = Date.now() + 5_000;
+      let forcedVerificationUnavailable = false;
+      while (Date.now() < forcedDeadline) {
+        const table = await readProcessTable();
+        if (!table) {
+          forcedVerificationUnavailable = true;
+          await wait(50);
+          continue;
+        }
+        forcedVerificationUnavailable = false;
+        remainingGroups = refreshContinuouslyLiveProcessGroups(
+          remainingGroups,
+          table,
+        );
+        if (remainingGroups.length === 0) return null;
+        await wait(50);
+      }
+      if (forcedVerificationUnavailable) {
+        return "Could not verify descendant process exit after SIGKILL";
+      }
+      return `Verified descendant process groups ${remainingGroups
+        .map((group) => group.processGroupId)
+        .join(",")} survived SIGKILL`;
+    })();
+    activeProcessCleanup.set(rootProcessGroupId, boundedCleanup);
+  };
+  activeProcessTerminators.set(child.pid, stopChildTree);
+  const resultExitGuard = createResultExitGuard({
+    resultPaths: completionPaths,
+    interactive,
+    graceMs: completedResultExitGraceMs,
+    now: Date.now,
+    pathExists: (candidate) =>
+      access(candidate).then(
+        () => true,
+        () => false,
+      ),
+    onExpired: async () => {
+      const diagnostic = await processTreeDiagnostic(child.pid!);
+      if (childSettled) return;
+      postResultStallError = `Playwright remained alive for ${completedResultExitGraceMs}ms after every result was written`;
+      recordOutput(
+        Buffer.from(
+          `\n${postResultStallError}; forcing bounded cleanup. ${diagnostic.summary}\n`,
+        ),
+        process.stderr,
+      );
+      stopChildTree(diagnostic);
+    },
+  });
+  const completionPoll = resultExitGuard.enabled
+    ? setInterval(() => {
+        void resultExitGuard.poll().catch(() => {
+          if (childSettled || postResultStallError) return;
+          postResultStallError =
+            "Completed-result exit guard failed during bounded inspection";
+          recordOutput(
+            Buffer.from(`\n${postResultStallError}; forcing cleanup.\n`),
+            process.stderr,
+          );
+          stopChildTree();
+        });
+      }, 500)
+    : undefined;
+  completionPoll?.unref();
   let timedOut = false;
   const timer =
     timeoutMs === null
       ? undefined
       : setTimeout(() => {
           timedOut = true;
-          stopProcessGroup(child.pid!, "SIGTERM");
-          setTimeout(
-            () => stopProcessGroup(child.pid!, "SIGKILL"),
-            10_000,
-          ).unref();
+          stopChildTree();
         }, timeoutMs);
   timer?.unref();
   let spawnError: string | null = null;
   const exitCode = await new Promise<number>((resolve, reject) => {
     child.once("error", reject);
-    child.once("exit", (code) => resolve(code ?? 1));
+    child.once("exit", (code) => {
+      childSettled = true;
+      resolve(code ?? 1);
+    });
   }).catch((error) => {
+    childSettled = true;
     spawnError = error instanceof Error ? error.message : String(error);
     return 1;
   });
   if (timer) clearTimeout(timer);
+  if (completionPoll) clearInterval(completionPoll);
   const processCleanupError = child.pid
-    ? await (activeProcessCleanup.get(child.pid) ??
+    ? await (boundedCleanup ??
+        activeProcessCleanup.get(child.pid) ??
         terminateProcessGroup(child.pid))
     : null;
   if (child.pid) {
     activeProcessGroups.delete(child.pid);
     activeProcessCleanup.delete(child.pid);
+    activeProcessTerminators.delete(child.pid);
   }
   await new Promise<void>((resolve) => log.end(resolve));
   return {
     exitCode,
     timedOut,
+    postResultStallError,
     processCleanupError,
     spawnError,
     outputTail,
@@ -292,16 +548,7 @@ function syntheticResult(
     executionId: execution.id,
     suiteId: execution.suite.id,
     suiteDefinitionHash: execution.suiteDefinitionHash,
-    source: {
-      sha: process.env.GITHUB_SHA ?? null,
-      ref: process.env.GITHUB_REF ?? null,
-      workflowRunUrl:
-        process.env.GITHUB_SERVER_URL &&
-        process.env.GITHUB_REPOSITORY &&
-        process.env.GITHUB_RUN_ID
-          ? `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`
-          : null,
-    },
+    source: resolveRunnerE2ESource(),
     ...(execution.profile.ranking
       ? { rankingSnapshot: execution.profile.ranking }
       : {}),
@@ -388,7 +635,7 @@ async function runAttempt(input: {
       instanceId,
       "config.json",
     );
-    const port = await reservePort();
+    const port = await reserveRunnerE2EServerPort();
     await Promise.all([
       mkdir(paperclipHome, { recursive: true }),
       mkdir(workspace, { recursive: true }),
@@ -410,8 +657,12 @@ async function runAttempt(input: {
       betterAuthSecret,
     ]);
     attemptSecrets = credentials;
+    const runnerBinary = resolvePaperclipRunnerBinaryForHarness(
+      executions,
+      repositoryRoot,
+    );
     const childEnv: NodeJS.ProcessEnv = {
-      ...process.env,
+      ...buildRunnerE2EProcessEnvironment(process.env, executions),
       PATH: providerPath,
       PAPERCLIP_RUNNER_E2E_EXECUTION_IDS: JSON.stringify(
         executions.map((candidate) => candidate.id),
@@ -422,10 +673,9 @@ async function runAttempt(input: {
       PAPERCLIP_RUNNER_E2E_PRIVATE_DIR: privateDir,
       PAPERCLIP_RUNNER_E2E_WORKSPACE: workspace,
       PAPERCLIP_RUNNER_E2E_SERVER_LOG: path.join(privateDir, "server.log"),
-      PAPERCLIP_RUNNER_BINARY: resolvePaperclipRunnerBinaryForHarness(
-        executions,
-        repositoryRoot,
-      ),
+      PAPERCLIP_RUNNER_BINARY: runnerBinary,
+      PAPERCLIP_RUNNER_REMOTE_BINARY_PATH:
+        resolvePaperclipRemoteRunnerBinaryForHarness(executions, runnerBinary),
       // Vite's optimized dependency cache embeds revision query strings. A
       // private per-attempt cache prevents an earlier cell or local rebuild
       // from producing `504 Outdated Optimize Dep` during browser bootstrap.
@@ -477,6 +727,10 @@ async function runAttempt(input: {
       childEnv,
       watchdog,
       path.join(privateDir, "playwright.log"),
+      executions.map((candidate) =>
+        path.join(privateDir, "cases", candidate.task.id, "result.json"),
+      ),
+      options.ui || options.debug,
     );
     const processFailure = processResult.spawnError
       ? `Playwright failed to start: ${processResult.spawnError}`
@@ -509,15 +763,7 @@ async function runAttempt(input: {
           processFailureClass,
         );
         const result = await readResult(resultPath, fallback);
-        return processResult.processCleanupError
-          ? {
-              ...result,
-              status: "failed" as const,
-              failureClass: "cleanup_failure" as const,
-              error: processResult.processCleanupError,
-              cleanup: "failed" as const,
-            }
-          : result;
+        return enforceResultProcessIntegrity(result, processResult);
       }),
     );
     let isolationError: unknown;
@@ -770,7 +1016,7 @@ async function runExecutionWithRetry(input: {
   }
   if (cancelled) throw new Error("Runner E2E campaign cancelled");
   console.warn(
-    `Retrying ${execution.id} in a fresh isolated harness after transient infrastructure failure`,
+    `Retrying ${execution.id} in a fresh isolated harness after ${firstResult.failureClass.replaceAll("_", " ")}`,
   );
   const [retryResult] = await runAttempt({
     executions: [execution],

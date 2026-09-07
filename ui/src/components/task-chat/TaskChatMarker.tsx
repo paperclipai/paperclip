@@ -1,6 +1,7 @@
 import { useId, useState } from "react";
 import { cn } from "@/lib/utils";
 import { ChevronDown, CircleDot, OctagonX, Flag } from "lucide-react";
+import { useStreamlinedTaskChatPresentation } from "./presentation-mode";
 import type { TaskChatMarkerItem } from "./task-chat-model";
 import { Button } from "@/components/ui/button";
 import { Link } from "@/lib/router";
@@ -28,6 +29,7 @@ export function TaskChatMarker({
 }) {
   const [open, setOpen] = useState(false);
   const detailsId = useId();
+  const streamlined = useStreamlinedTaskChatPresentation();
   const Icon = VARIANT_ICON[item.variant];
   const interrupted = item.variant === "interrupted";
   const relative = item.createdAtIso ? timeAgo(item.createdAtIso) : undefined;
@@ -117,7 +119,11 @@ export function TaskChatMarker({
   }
 
   return (
-    <div className="tc-enter-marker flex items-center gap-2 py-1 text-xs text-muted-foreground">
+    <div
+      className="tc-enter-marker flex items-center gap-2 py-1 text-xs text-muted-foreground"
+      role={streamlined ? "separator" : undefined}
+      aria-label={streamlined ? item.label : undefined}
+    >
       <span className={cn("h-px flex-1", interrupted ? "border-t border-dashed border-destructive/50" : "bg-border")} />
       <span className={cn("flex items-center gap-1.5", interrupted && "text-destructive")}>
         <Icon className="h-3.5 w-3.5" />

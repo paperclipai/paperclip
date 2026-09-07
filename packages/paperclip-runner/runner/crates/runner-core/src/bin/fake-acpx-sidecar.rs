@@ -589,6 +589,7 @@ fn bootstrap_success(
                     "requestedModel": model,
                     "effectiveModel": if mode == "bootstrap-wrong-model" { "wrong-model" } else { model },
                     "permissionMode": params.get("permissionMode"),
+                    "providerLifetimeFenceCandidates": [60001, 60002, 60003],
                 },
                 "status": {},
             })
@@ -614,6 +615,7 @@ fn bootstrap_success(
                 "requestedModel": "gpt-5.6-sol",
                 "effectiveModel": "gpt-5.6-sol",
                 "permissionMode": "approve-reads",
+                "providerLifetimeFenceCandidates": [60001, 60002, 60003],
             })},
         }),
         "tool.resolve" => json!({

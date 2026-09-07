@@ -898,14 +898,19 @@ describe("OnboardingWizard — which step it lands on", () => {
     }
 
     /**
-     * The step's own CTA. By exact text, because "Back" sits beside it and both
-     * steps of the arc label their forward button the same way.
+     * The step's own CTA. By exact text, because "Back" sits beside it.
+     *
+     * Two labels rather than one: the connect step calls its forward button
+     * "Connect", since there the press starts a sign-in rather than simply
+     * advancing. The rest of the arc still says "Next". These tests are about
+     * where a press lands, so either will do.
      */
     function stepCta(): HTMLButtonElement {
-      const cta = [...document.body.querySelectorAll("button")].find(
-        (b) => b.textContent?.trim() === "Next",
-      );
-      expect(cta, "the step should render its Next button").toBeTruthy();
+      const cta = [...document.body.querySelectorAll("button")].find((b) => {
+        const text = b.textContent?.trim();
+        return text === "Next" || text === "Connect";
+      });
+      expect(cta, "the step should render its forward button").toBeTruthy();
       return cta as HTMLButtonElement;
     }
 

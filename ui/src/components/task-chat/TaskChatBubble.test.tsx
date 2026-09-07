@@ -406,7 +406,7 @@ describe("TaskChatBubble footer actions (PAP-413)", () => {
     expect(slot?.querySelector('[data-testid="fake-actions"]')).toBeNull();
   });
 
-  it("leads a runless agent reply with actions, timestamp trailing", () => {
+  it("keeps runless timestamp left and actions at the stable right edge", () => {
     render(
       { id: "m1", kind: "message", author: "agent", authorName: "CEO", text: "Done.", timestamp: "2:34 PM" },
       { actions },
@@ -414,6 +414,9 @@ describe("TaskChatBubble footer actions (PAP-413)", () => {
     expect(container.querySelector('[data-testid="fake-actions"]')).not.toBeNull();
     const stamp = [...container.querySelectorAll("span")].find((el) => el.textContent === "2:34 PM");
     expect(stamp).not.toBeNull();
+    const actionNode = container.querySelector('[data-testid="fake-actions"]')!;
+    expect(stamp!.compareDocumentPosition(actionNode) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+    expect(actionNode.parentElement?.className).toContain("justify-between");
   });
 
   it("omits the actions row entirely when none are supplied (human bubble)", () => {

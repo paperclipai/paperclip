@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { cn } from "@/lib/utils";
+import { useStreamlinedTaskChatPresentation } from "./presentation-mode";
 import { ArrowDown } from "lucide-react";
 import { parseCssTimeMs } from "./motion-tokens";
 
@@ -42,6 +43,7 @@ interface TaskMessageScrollerProps {
  * while pinned stays instant, so no reflow/jump happens during streaming.
  */
 export function TaskMessageScroller({ children, contentKey, className }: TaskMessageScrollerProps) {
+  const streamlined = useStreamlinedTaskChatPresentation();
   const ref = useRef<HTMLDivElement>(null);
   const pinnedRef = useRef(true);
   const easingRef = useRef(false);
@@ -213,10 +215,19 @@ export function TaskMessageScroller({ children, contentKey, className }: TaskMes
       <div
         ref={ref}
         onScroll={handleScroll}
-        // absolute inset-0 (not h-full): the viewport must equal the flex-sized
-        // wrapper exactly — percentage heights don't reliably resolve against
-        // flex-determined block heights, which let the thread overflow the page.
-        className={cn("scrollbar-while-scrolling absolute inset-0 overflow-y-auto", className)}
+        // Keep the viewport tied to the flex-sized wrapper vertically —
+        // percentage heights don't reliably resolve against flex-determined
+        // block heights, which let the thread overflow the page. In the
+        // streamlined shell, extend only the scroll box through the page's
+        // right gutter; matching padding preserves the message column while
+        // placing the scrollbar against the properties-panel boundary.
+        className={cn(
+          "scrollbar-while-scrolling absolute inset-y-0 left-0 overflow-y-auto",
+          streamlined
+            ? "-right-4 overflow-x-hidden pr-4 md:-right-6 md:pr-6"
+            : "right-0",
+          className,
+        )}
         data-testid="task-chat-scroller"
       >
         {children}
@@ -232,7 +243,8 @@ export function TaskMessageScroller({ children, contentKey, className }: TaskMes
           // The tc-scroll-pill-* keyframes carry the translate(-50%) X-centering
           // (fill: both keeps it after the animation) — no -translate-x-1/2 here.
           className={cn(
-            "absolute bottom-3 left-1/2 flex size-8 items-center justify-center rounded-full border border-border bg-background shadow-sm hover:bg-muted",
+            "absolute left-1/2 flex size-8 items-center justify-center rounded-full border border-border bg-background shadow-sm hover:bg-muted",
+            streamlined ? "bottom-7" : "bottom-3",
             pillPhase === "out" ? "tc-scroll-pill-out" : "tc-scroll-pill-in",
           )}
         >

@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { CapabilityFixtureSeed } from "../mock-core/capability-control-plane-types.js";
 import { CapabilityMockControlPlaneAdapter } from "../mock-core/capability-mock-control-plane-adapter.js";
 import { CAPABILITY_SEMANTIC_TOOL_CATALOG } from "./catalog.js";
+import { CAPABILITY_DISCOVERY_GATEWAY_DEFINITIONS } from "./discovery.js";
 import { CapabilitySemanticDispatcher } from "./dispatcher.js";
 import { createCapabilityProviderNeutralBinding } from "./provider-neutral.js";
 
@@ -42,6 +43,13 @@ async function running(
 }
 
 describe("Capability semantic catalog and authorization", () => {
+  it("accepts the conventional ten-result capability discovery limit", () => {
+    expect(
+      CAPABILITY_DISCOVERY_GATEWAY_DEFINITIONS[0].inputSchema.properties.limit
+        .maximum,
+    ).toBe(10);
+  });
+
   it("publishes a stable narrow catalog without credentials or control-plane-owned tools", () => {
     const names = CAPABILITY_SEMANTIC_TOOL_CATALOG.map((tool) => tool.operationId);
     expect(new Set(names).size).toBe(names.length);

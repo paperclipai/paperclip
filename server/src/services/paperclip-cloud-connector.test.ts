@@ -1,5 +1,6 @@
 import {
   createCipheriv,
+  createHash,
   diffieHellman,
   generateKeyPairSync,
   hkdfSync,
@@ -69,6 +70,10 @@ describe("Paperclip Cloud connector", () => {
       });
       return Response.json({
         confirmationUrl: "https://my.example.test/connections/confirm?session=broker-state",
+        handoff: {
+          kind: "tenant_background",
+          session: "broker_state_abcdefghijklmnop",
+        },
         expiresAt: "2026-08-21T20:00:00.000Z",
       }, { status: 201 });
     });
@@ -79,7 +84,158 @@ describe("Paperclip Cloud connector", () => {
       companyId,
       returnUri: "https://paperclip.example.test/api/tools/oauth/cloud-connector/callback",
       returnState: "state-1",
-    })).resolves.toMatchObject({ authorizationUrl: expect.stringContaining("/connections/confirm") });
+    })).resolves.toMatchObject({
+      authorizationUrl: expect.stringContaining("/connections/confirm"),
+      handoff: {
+        kind: "paperclip_cloud",
+        session: "broker_state_abcdefghijklmnop",
+      },
+    });
+  });
+
+  it("prefers a validated HTTPS provider URL over the legacy confirmation URL", async () => {
+    const keys = config();
+    const connector = createPaperclipCloudConnector({
+      config: keys.config,
+      request: vi.fn(async () => Response.json({
+        confirmationUrl: "https://my.example.test/connections/confirm?session=broker-state",
+        authorizationUrl: "https://github.com/login/oauth/authorize?client_id=client&state=broker-state",
+        expiresAt: "2099-08-21T20:00:00.000Z",
+      })) as typeof fetch,
+    });
+
+    await expect(connector.startAuthorization({
+      subject,
+      companyId,
+      profile: "github.code",
+      returnUri: "https://paperclip.example.test/api/tools/oauth/cloud-connector/callback",
+      returnState: "state-direct",
+    })).resolves.toMatchObject({
+      authorizationUrl: "https://github.com/login/oauth/authorize?client_id=client&state=broker-state",
+    });
+  });
+
+  it("accepts the fixed Google authorization endpoint for Google profiles", async () => {
+    const keys = config();
+    const connector = createPaperclipCloudConnector({
+      config: keys.config,
+      request: vi.fn(async () => Response.json({
+        confirmationUrl: "https://my.example.test/connections/confirm?session=broker-state",
+        authorizationUrl: "https://accounts.google.com/o/oauth2/v2/auth?client_id=client&state=broker-state",
+        expiresAt: "2099-08-21T20:00:00.000Z",
+      })) as typeof fetch,
+    });
+
+    await expect(connector.startAuthorization({
+      subject,
+      companyId,
+      profile: "gmail.draft",
+      returnUri: "https://paperclip.example.test/api/tools/oauth/cloud-connector/callback",
+      returnState: "state-direct-google",
+    })).resolves.toMatchObject({
+      authorizationUrl: "https://accounts.google.com/o/oauth2/v2/auth?client_id=client&state=broker-state",
+    });
+  });
+
+  it.each([
+    ["non-string", { href: "https://github.com/login/oauth/authorize" }],
+    ["plaintext HTTP", "http://github.com/login/oauth/authorize"],
+    ["embedded credentials", "https://user:password@github.com/login/oauth/authorize"],
+    ["fragment", "https://github.com/login/oauth/authorize#unexpected"],
+    ["unapproved HTTPS origin", "https://attacker.example.test/login/oauth/authorize"],
+    ["unapproved provider path", "https://github.com/session/authorize"],
+    ["not a URL", "not-a-url"],
+  ])("rejects a malformed direct provider URL: %s", async (_label, authorizationUrl) => {
+    const keys = config();
+    const connector = createPaperclipCloudConnector({
+      config: keys.config,
+      request: vi.fn(async () => Response.json({
+        confirmationUrl: "https://my.example.test/connections/confirm?session=broker-state",
+        authorizationUrl,
+        expiresAt: "2099-08-21T20:00:00.000Z",
+      })) as typeof fetch,
+    });
+
+    await expect(connector.startAuthorization({
+      subject,
+      companyId,
+      profile: "github.code",
+      returnUri: "https://paperclip.example.test/api/tools/oauth/cloud-connector/callback",
+      returnState: "state-malformed-direct",
+    })).rejects.toMatchObject({ code: "CONNECTOR_BAD_RESPONSE" });
+  });
+
+  it("binds active GitHub installations to proof from the current user token", async () => {
+    const keys = config();
+    const request = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as { request: string; binding: string };
+      const claims = JSON.parse(Buffer.from(body.request.split(".")[1]!, "base64url").toString("utf8"));
+      const binding = JSON.parse(body.binding);
+      expect(binding).toEqual({
+        id: "binding-1",
+        installationId: "42",
+        connectionId: "connection-1",
+        grantId: "grant-1",
+        active: true,
+        accessToken: "ghu-user-token",
+      });
+      expect(claims.sh).toBe(createHash("sha256").update(body.binding).digest("base64url"));
+      return Response.json({ active: true, installationId: "42" });
+    });
+    const connector = createPaperclipCloudConnector({ config: keys.config, request: request as typeof fetch });
+
+    await expect(connector.setWebhookBinding({
+      subject,
+      companyId,
+      id: "binding-1",
+      installationId: "42",
+      connectionId: "connection-1",
+      grantId: "grant-1",
+      active: true,
+      accessToken: "ghu-user-token",
+    })).resolves.toBeUndefined();
+    await expect(connector.setWebhookBinding({
+      subject,
+      companyId,
+      id: "binding-2",
+      installationId: "43",
+      connectionId: "connection-1",
+      grantId: "grant-1",
+      active: true,
+    })).rejects.toMatchObject({ code: "CONNECTOR_CONFIG_INVALID" });
+    expect(request).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps legacy session responses compatible and rejects malformed handoff descriptors", async () => {
+    const keys = config();
+    const legacy = createPaperclipCloudConnector({
+      config: keys.config,
+      request: vi.fn(async () => Response.json({
+        confirmationUrl: "https://my.example.test/connections/confirm?session=broker-state",
+        expiresAt: "2099-08-21T20:00:00.000Z",
+      })) as typeof fetch,
+    });
+    await expect(legacy.startAuthorization({
+      subject,
+      companyId,
+      returnUri: "https://paperclip.example.test/api/tools/oauth/cloud-connector/callback",
+      returnState: "state-legacy",
+    })).resolves.not.toHaveProperty("handoff");
+
+    const malformed = createPaperclipCloudConnector({
+      config: keys.config,
+      request: vi.fn(async () => Response.json({
+        confirmationUrl: "https://my.example.test/connections/confirm?session=broker-state",
+        handoff: { kind: "tenant_background", session: "not valid" },
+        expiresAt: "2099-08-21T20:00:00.000Z",
+      })) as typeof fetch,
+    });
+    await expect(malformed.startAuthorization({
+      subject,
+      companyId,
+      returnUri: "https://paperclip.example.test/api/tools/oauth/cloud-connector/callback",
+      returnState: "state-malformed",
+    })).rejects.toMatchObject({ code: "CONNECTOR_BAD_RESPONSE" });
   });
 
   it("opens an instance-sealed claim and verifies its user, company, and exact scopes", async () => {
@@ -90,6 +246,7 @@ describe("Paperclip Cloud connector", () => {
       refreshToken: "refresh-secret",
       tokenType: "Bearer",
       accessTokenExpiresAt: "2026-08-21T20:00:00.000Z",
+      refreshTokenExpiresAt: null,
       scopes: [...GMAIL_CONNECTOR_SCOPES],
       subject,
       companyId,
@@ -123,6 +280,7 @@ describe("Paperclip Cloud connector", () => {
       refreshToken: "drive-refresh-secret",
       tokenType: "Bearer",
       accessTokenExpiresAt: "2026-08-21T20:00:00.000Z",
+      refreshTokenExpiresAt: null,
       scopes: [...GOOGLE_WORKSPACE_CONNECTOR_PROFILES[profile].scopes],
       subject,
       companyId,

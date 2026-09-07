@@ -1,3 +1,4 @@
+import type { PersistedHarnessProviderIdentity } from "../../contracts/harness-driver.js";
 import type { NativeUserMessage } from "../../contracts/types.js";
 import {
   CODEX_BLOCK_RESULT_PROVIDER_INPUT_SCHEMA,
@@ -9,7 +10,10 @@ import {
   validatePrpStructuredRunResult,
   type PrpStructuredRunResult,
 } from "../../protocol/replay-contract.js";
-import { boundedCodexValue, isRetainableCodexPayload } from "./codex-boundaries.js";
+import {
+  boundedCodexValue,
+  isRetainableCodexPayload,
+} from "./codex-boundaries.js";
 
 export function record(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
@@ -17,8 +21,89 @@ export function record(value: unknown): Record<string, unknown> {
     : {};
 }
 
+/**
+ * Marks an item reconstructed from runnerd's canonical PRP event stream.
+ *
+ * The symbol is intentionally process-local: a provider JSON payload cannot
+ * forge it. Runnerd has already selected the authoritative semantic result,
+ * so the compatibility Codex facade must preserve the item as activity
+ * without trying to infer a second result from its text.
+ */
+export const RUNNERD_CANONICAL_ITEM = Symbol(
+  "paperclip.runnerd.canonical-item",
+);
+
 export function text(value: unknown, fallback = ""): string {
   return typeof value === "string" ? value : fallback;
+}
+
+export function parseProviderIdentity(
+  value: unknown,
+): PersistedHarnessProviderIdentity | undefined {
+  const identity = record(value);
+  if (identity.kind !== "acpx") return undefined;
+  const requiredStrings = [
+    "normalizedSessionId",
+    "acpxRecordId",
+    "backendSessionId",
+    "agentSessionId",
+    "profileDigest",
+    "workspaceDigest",
+    "requestedModel",
+    "effectiveModel",
+  ] as const;
+  if (
+    requiredStrings.some(
+      (key) =>
+        typeof identity[key] !== "string" ||
+        identity[key].length === 0 ||
+        identity[key].length > 240,
+    )
+  ) {
+    throw new Error("ACPX provider identity is incomplete");
+  }
+  const permissionMode = identity.permissionMode;
+  if (
+    permissionMode !== undefined &&
+    permissionMode !== "approve-all" &&
+    permissionMode !== "approve-reads" &&
+    permissionMode !== "deny-all"
+  ) {
+    throw new Error(
+      "ACPX provider identity contains an invalid permission mode",
+    );
+  }
+  const fenceCandidates = identity.providerLifetimeFenceCandidates;
+  if (
+    !Array.isArray(fenceCandidates) ||
+    fenceCandidates.length !== 3 ||
+    fenceCandidates.some(
+      (candidate) =>
+        !Number.isInteger(candidate) ||
+        candidate < 49_152 ||
+        candidate > 65_535,
+    ) ||
+    new Set(fenceCandidates).size !== 3
+  ) {
+    throw new Error("ACPX provider identity contains invalid lifetime fences");
+  }
+  return {
+    kind: "acpx",
+    normalizedSessionId: identity.normalizedSessionId as string,
+    acpxRecordId: identity.acpxRecordId as string,
+    backendSessionId: identity.backendSessionId as string,
+    agentSessionId: identity.agentSessionId as string,
+    profileDigest: identity.profileDigest as string,
+    workspaceDigest: identity.workspaceDigest as string,
+    requestedModel: identity.requestedModel as string,
+    effectiveModel: identity.effectiveModel as string,
+    ...(permissionMode === undefined ? {} : { permissionMode }),
+    providerLifetimeFenceCandidates: fenceCandidates as [
+      number,
+      number,
+      number,
+    ],
+  };
 }
 
 export function boundedText(
@@ -96,13 +181,19 @@ export function differingJsonPaths(
   if (limit <= 0) return [];
   if (Array.isArray(left) && Array.isArray(right)) {
     const paths: string[] = [];
-    for (let index = 0; index < Math.max(left.length, right.length); index += 1) {
-      paths.push(...differingJsonPaths(
-        left[index],
-        right[index],
-        `${prefix}[${index}]`,
-        limit - paths.length,
-      ));
+    for (
+      let index = 0;
+      index < Math.max(left.length, right.length);
+      index += 1
+    ) {
+      paths.push(
+        ...differingJsonPaths(
+          left[index],
+          right[index],
+          `${prefix}[${index}]`,
+          limit - paths.length,
+        ),
+      );
       if (paths.length >= limit) break;
     }
     return paths.length > 0 ? paths : [prefix || "result"];
@@ -110,23 +201,26 @@ export function differingJsonPaths(
   const leftRecord = record(left);
   const rightRecord = record(right);
   if (
-    (typeof left === "object" && left !== null) &&
-    (typeof right === "object" && right !== null) &&
+    typeof left === "object" &&
+    left !== null &&
+    typeof right === "object" &&
+    right !== null &&
     !Array.isArray(left) &&
     !Array.isArray(right)
   ) {
     const paths: string[] = [];
-    const keys = [...new Set([
-      ...Object.keys(leftRecord),
-      ...Object.keys(rightRecord),
-    ])].sort();
+    const keys = [
+      ...new Set([...Object.keys(leftRecord), ...Object.keys(rightRecord)]),
+    ].sort();
     for (const key of keys) {
-      paths.push(...differingJsonPaths(
-        leftRecord[key],
-        rightRecord[key],
-        prefix ? `${prefix}.${key}` : key,
-        limit - paths.length,
-      ));
+      paths.push(
+        ...differingJsonPaths(
+          leftRecord[key],
+          rightRecord[key],
+          prefix ? `${prefix}.${key}` : key,
+          limit - paths.length,
+        ),
+      );
       if (paths.length >= limit) break;
     }
     return paths.length > 0 ? paths : [prefix || "result"];

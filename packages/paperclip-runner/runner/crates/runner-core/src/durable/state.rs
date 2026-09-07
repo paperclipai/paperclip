@@ -153,6 +153,15 @@ pub struct StoredCommandResult {
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub(crate) struct PendingTerminalDelivery {
+    pub(crate) command_id: String,
+    pub(crate) controller_seq: u64,
+    pub(crate) command_type: String,
+    pub(crate) lifecycle: String,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct ExecutorEventReceipt {
     fingerprint: String,
     source_seq: u64,
@@ -189,6 +198,8 @@ pub struct DurableState {
     #[serde(default)]
     pub processed_command_fingerprints: BTreeMap<String, String>,
     #[serde(default)]
+    pub(crate) pending_terminal_delivery: Option<PendingTerminalDelivery>,
+    #[serde(default)]
     executor_event_receipts: BTreeMap<String, ExecutorEventReceipt>,
     pub diagnostics: Vec<String>,
     pub backpressure: bool,
@@ -217,6 +228,7 @@ impl DurableState {
             outbox: Vec::new(),
             processed_commands: BTreeMap::new(),
             processed_command_fingerprints: BTreeMap::new(),
+            pending_terminal_delivery: None,
             executor_event_receipts: BTreeMap::new(),
             diagnostics: Vec::new(),
             backpressure: false,
@@ -537,6 +549,28 @@ impl DurableState {
         command: &Command,
         result: Value,
     ) -> Result<StoredCommandResult, DurableRunnerError> {
+        self.finish_command(command, "completed", result)
+    }
+
+    pub fn fail_command(
+        &mut self,
+        command: &Command,
+        result: Value,
+    ) -> Result<StoredCommandResult, DurableRunnerError> {
+        self.finish_command(command, "failed", result)
+    }
+
+    fn finish_command(
+        &mut self,
+        command: &Command,
+        status: &str,
+        result: Value,
+    ) -> Result<StoredCommandResult, DurableRunnerError> {
+        if status != "completed" && status != "failed" {
+            return Err(DurableRunnerError::invalid(
+                "durable command terminal status is unsupported",
+            ));
+        }
         {
             let stored = self
                 .processed_commands
@@ -568,7 +602,7 @@ impl DurableState {
             .processed_commands
             .get_mut(&command.command_id)
             .expect("pending command was checked above");
-        stored.status = "completed".to_owned();
+        stored.status = status.to_owned();
         stored.result = sanitized_result;
         Ok(stored.clone())
     }
@@ -903,7 +937,7 @@ fn validate_binding(
                 || command.controller_seq > state.last_controller_command_seq
                 || !matches!(
                     command.status.as_str(),
-                    "pending" | "completed" | "indeterminate"
+                    "pending" | "completed" | "failed" | "indeterminate"
                 )
             {
                 return Err(DurableRunnerError::invalid(
@@ -943,6 +977,29 @@ fn validate_binding(
                     && receipt.source_seq <= state.highest_source_seq()
                     && executor_receipt_sequences.insert(receipt.source_seq)
             });
+    let pending_terminal_delivery_is_valid =
+        state
+            .pending_terminal_delivery
+            .as_ref()
+            .map_or(true, |pending| {
+                let expected_lifecycle = match pending.command_type.as_str() {
+                    "runner.suspend" => "suspended",
+                    "runner.shutdown" => "stopped",
+                    _ => return false,
+                };
+                pending.lifecycle == expected_lifecycle
+                    && state.lifecycle == expected_lifecycle
+                    && pending.controller_seq == state.last_controller_command_seq
+                    && state
+                        .processed_commands
+                        .get(&pending.command_id)
+                        .is_some_and(|result| {
+                            result.command_id == pending.command_id
+                                && result.controller_seq == pending.controller_seq
+                                && result.command_type == pending.command_type
+                                && result.status != "pending"
+                        })
+            });
     command_sequences.sort_unstable();
     let command_cursors_are_valid = match (command_sequences.first(), command_sequences.last()) {
         (None, None) => state.compacted_through_controller_seq == state.last_controller_command_seq,
@@ -969,6 +1026,7 @@ fn validate_binding(
         || !command_cursors_are_valid
         || !command_fingerprints_are_valid
         || !executor_event_receipts_are_valid
+        || !pending_terminal_delivery_is_valid
     {
         return Err(DurableRunnerError::invalid(
             "durable state cursors, bounds, or journals are inconsistent",
@@ -1077,6 +1135,12 @@ fn sensitive_key(key: &str, value: &Value) -> bool {
             | "outputtokens"
             | "cachereadtokens"
             | "cachewritetokens"
+            // The qualified ACPX sidecar uses these numeric billing aliases.
+            // Strings under the same names remain credentials, not counters.
+            | "cachedreadtokens"
+            | "cachedwritetokens"
+            | "thoughttokens"
+            | "totaltokens"
             | "pretokens"
             | "posttokens"
     ) {
@@ -1767,6 +1831,24 @@ mod tests {
             sanitize_value(&json!({"inputTokens": "plain-provider-secret"})),
             json!({"inputTokens": "[REDACTED]"})
         );
+        for key in [
+            "cachedReadTokens",
+            "cachedWriteTokens",
+            "thoughtTokens",
+            "totalTokens",
+        ] {
+            assert_eq!(sanitize_value(&json!({key: 12})), json!({key: 12}));
+            for value in [
+                json!("plain-provider-secret"),
+                json!({"value":"secret"}),
+                json!(["secret"]),
+            ] {
+                assert_eq!(
+                    sanitize_value(&json!({key: value})),
+                    json!({key: "[REDACTED]"})
+                );
+            }
+        }
     }
 
     #[test]

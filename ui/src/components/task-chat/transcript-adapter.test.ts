@@ -13,6 +13,7 @@ import {
   flattenSelfTalk,
   isNestableLiveChild,
   ISSUE_BRIEF_ITEM_ID,
+  omitProgressRepeatedByResponseAcrossSegments,
   paperclipRunnerActivityItems,
   paperclipRunnerFinalResponse,
   paperclipRunnerHistoryItems,
@@ -33,6 +34,34 @@ import type {
 import { providerActivityPresentation } from "./task-chat-activity-presentation";
 
 const TS = "2026-07-31T12:00:00.000Z";
+
+describe("omitProgressRepeatedByResponseAcrossSegments", () => {
+  const progress = (id: string, text: string): TaskChatItem => ({
+    id,
+    kind: "message",
+    author: "agent",
+    text,
+    channel: "progress",
+    interstitial: true,
+  });
+
+  it("removes only the final matching progress item across a steered run", () => {
+    const first = progress("first", "Repeated answer");
+    const second = progress("second", "Repeated answer");
+    const segments = [[first], [second]];
+
+    expect(
+      omitProgressRepeatedByResponseAcrossSegments(segments, "Repeated answer"),
+    ).toEqual([[first], []]);
+  });
+
+  it("preserves segment identity when there is no durable-response match", () => {
+    const segments = [[progress("first", "Progress only")]];
+    expect(
+      omitProgressRepeatedByResponseAcrossSegments(segments, "Final answer"),
+    ).toBe(segments);
+  });
+});
 
 function toolCall(name: string, input?: unknown): TranscriptEntry {
   return {

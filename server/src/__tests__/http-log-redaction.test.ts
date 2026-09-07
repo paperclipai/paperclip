@@ -127,4 +127,42 @@ describe("HTTP logger redaction", () => {
     expect(log.req.query).toBeUndefined();
     expect(log.reqQuery).toBeUndefined();
   });
+
+  it("redacts failed secret payload values from structured request logs", async () => {
+    const chunks: string[] = [];
+    const stream = new Writable({
+      write(chunk, _encoding, callback) {
+        chunks.push(chunk.toString());
+        callback();
+      },
+    });
+    const testLogger = pino({ redact: [...HTTP_LOG_REDACT_PATHS] }, stream);
+    const app = express();
+    app.use(express.json());
+    app.use(createHttpLogger(testLogger));
+    app.post("/api/companies/:companyId/secrets", (_req, res) => {
+      res.status(422).json({ error: "validation failed" });
+    });
+
+    const response = await request(app)
+      .post("/api/companies/company-1/secrets")
+      .send({
+        name: "OpenAI",
+        value: "value-canary-4c845d",
+        metadata: { token: "token-canary-902ffc" },
+      });
+
+    expect(response.status).toBe(422);
+    const output = chunks.join("");
+    expect(output).not.toMatch(/value-canary-4c845d|token-canary-902ffc/);
+
+    const log = JSON.parse(output.trim()) as {
+      reqBody: Record<string, unknown>;
+    };
+    expect(log.reqBody).toEqual({
+      name: "OpenAI",
+      value: "[REDACTED]",
+      metadata: { token: "[REDACTED]" },
+    });
+  });
 });
