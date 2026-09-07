@@ -14,7 +14,9 @@ import {
   createFileSystemSandboxCallbackBridgeQueueClient,
   createSandboxCallbackBridgeAsset,
   createSandboxCallbackBridgeToken,
+  getSandboxBridgeProcessBodyLedgerSource,
   getSandboxCallbackBridgeServerSource,
+  HTTP2_SANDBOX_CALLBACK_BRIDGE_ROUTE_ALLOWLIST,
   sandboxCallbackBridgeDirectories,
   syncRemoteTextFileWithHashSkip,
   syncSandboxCallbackBridgeEntrypoint,
@@ -949,6 +951,24 @@ describe("sandbox callback bridge", () => {
     await expect(nonJsonResponse.json()).resolves.toEqual({
       error: "Bridge only accepts JSON request bodies.",
     });
+
+    // The queue transport keeps its 415 gate for the attachment upload path
+    // too: it carries a string envelope only, so it never admits a binary body.
+    const attachmentOctetStreamResponse = await fetch(
+      `${bridge.baseUrl}/api/companies/co-1/issues/issue-1/attachments`,
+      {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${bridgeToken}`,
+          "content-type": "application/octet-stream",
+        },
+        body: Buffer.from([0x50, 0x4b, 0x03, 0x04]),
+      },
+    );
+    expect(attachmentOctetStreamResponse.status).toBe(415);
+    await expect(attachmentOctetStreamResponse.json()).resolves.toEqual({
+      error: "Bridge only accepts JSON request bodies.",
+    });
   });
 
   it("returns a 502 when the host response times out", async () => {
@@ -1403,6 +1423,44 @@ describe("sandbox callback bridge", () => {
       { method: "PATCH", path: "/api/secrets/secret-1" },
     ];
     for (const request of denied) {
+      expect(authorizeSandboxCallbackBridgeRequestWithRoutes(request)).toBe(
+        `Route not allowed: ${request.method} ${request.path}`,
+      );
+    }
+
+    // The HTTP/2 route list adds the two binary attachment routes on top of
+    // the documented heartbeat surface.
+    const http2Allowed: Array<{ method: string; path: string }> = [
+      { method: "POST", path: "/api/companies/co-1/issues/issue-1/attachments" },
+      { method: "GET", path: "/api/attachments/att-1/content" },
+    ];
+    for (const request of http2Allowed) {
+      expect(
+        authorizeSandboxCallbackBridgeRequestWithRoutes(request, HTTP2_SANDBOX_CALLBACK_BRIDGE_ROUTE_ALLOWLIST),
+      ).toBeNull();
+    }
+
+    const http2Denied: Array<{ method: string; path: string }> = [
+      // Wrong method for each attachment rule.
+      { method: "GET", path: "/api/companies/co-1/issues/issue-1/attachments" },
+      { method: "POST", path: "/api/attachments/att-1/content" },
+      // Extra path segment for each attachment rule.
+      { method: "POST", path: "/api/companies/co-1/issues/issue-1/attachments/att-1" },
+      { method: "GET", path: "/api/attachments/att-1/content/extra" },
+    ];
+    for (const request of http2Denied) {
+      expect(
+        authorizeSandboxCallbackBridgeRequestWithRoutes(request, HTTP2_SANDBOX_CALLBACK_BRIDGE_ROUTE_ALLOWLIST),
+      ).toBe(`Route not allowed: ${request.method} ${request.path}`);
+    }
+  });
+
+  it("denies both attachment routes on the default (queue) route list", () => {
+    const attachmentRequests: Array<{ method: string; path: string }> = [
+      { method: "POST", path: "/api/companies/co-1/issues/issue-1/attachments" },
+      { method: "GET", path: "/api/attachments/att-1/content" },
+    ];
+    for (const request of attachmentRequests) {
       expect(authorizeSandboxCallbackBridgeRequestWithRoutes(request)).toBe(
         `Route not allowed: ${request.method} ${request.path}`,
       );
@@ -3234,7 +3292,11 @@ describe("sandbox callback bridge", () => {
       bridgeToken,
       forwardRequest: async (request) => {
         seenBodies.push(request.body);
-        return { status: 200, headers: { "content-type": "application/json" }, body: JSON.stringify({ ok: true }) };
+        return {
+          status: 200,
+          headers: { "content-type": "application/json" },
+          body: Buffer.from(JSON.stringify({ ok: true }), "utf8"),
+        };
       },
     });
 
@@ -3260,19 +3322,22 @@ describe("sandbox callback bridge", () => {
   it("forwards malformed UTF-8 bytes to the HTTP/2 host handler unchanged", async () => {
     const bridgeToken = createSandboxCallbackBridgeToken();
     const seenBodies: Buffer[] = [];
+    // Byte 0xC3 opens a two-byte UTF-8 sequence; 0x28 is not a valid
+    // continuation byte, so this body is not valid UTF-8. The gateway does
+    // not decode or validate the body, so these exact bytes must still
+    // arrive at the host handler unchanged, and the same bytes must return
+    // to the caller unchanged. The host answers with a non-JSON content
+    // type, so the round trip proves the gateway applies no format-specific
+    // handling on the response leg either.
+    const malformedBytes = Buffer.from([0x7b, 0x22, 0x61, 0x22, 0x3a, 0xc3, 0x28, 0x7d]);
     const gateway = await startHttp2GatewayForTest({
       bridgeToken,
       forwardRequest: async (request) => {
         seenBodies.push(request.body);
-        return { status: 200, headers: {}, body: "" };
+        return { status: 200, headers: { "content-type": "application/octet-stream" }, body: malformedBytes };
       },
     });
 
-    // Byte 0xC3 opens a two-byte UTF-8 sequence; 0x28 is not a valid
-    // continuation byte, so this body is not valid UTF-8. The gateway does
-    // not decode or validate the body, so these exact bytes must still
-    // arrive at the host handler unchanged.
-    const malformedBytes = Buffer.from([0x7b, 0x22, 0x61, 0x22, 0x3a, 0xc3, 0x28, 0x7d]);
     const response = await fetch(`${gateway.baseUrl}/api/issues/issue-1/comments`, {
       method: "POST",
       headers: {
@@ -3284,6 +3349,8 @@ describe("sandbox callback bridge", () => {
     expect(response.status).toBe(200);
     expect(seenBodies).toHaveLength(1);
     expect(seenBodies[0]?.equals(malformedBytes)).toBe(true);
+    const responseBytes = Buffer.from(await response.arrayBuffer());
+    expect(responseBytes.equals(malformedBytes)).toBe(true);
   }, 15_000);
 
   it("rejects a request body over maxBodyBytes on the HTTP/2 path before it forwards a byte", async () => {
@@ -3295,7 +3362,7 @@ describe("sandbox callback bridge", () => {
       maxBodyBytes,
       forwardRequest: async () => {
         forwardCalls += 1;
-        return { status: 200, headers: {}, body: "" };
+        return { status: 200, headers: {}, body: Buffer.alloc(0) };
       },
     });
 
@@ -3313,6 +3380,133 @@ describe("sandbox callback bridge", () => {
       error: "Bridge request body exceeded the configured size limit.",
     });
     expect(forwardCalls).toBe(0);
+  }, 15_000);
+
+  /** A resolvable gate a test can await, then release on its own schedule. */
+  function createGate(): { reached: Promise<void>; reach: () => void } {
+    let reach!: () => void;
+    const reached = new Promise<void>((resolve) => {
+      reach = resolve;
+    });
+    return { reached, reach };
+  }
+
+  it("denies a body once concurrent reservations reach the gateway's own process ledger ceiling, then admits again once they release", async () => {
+    // The per-body maxBodyBytes cap alone does not bound how many bodies
+    // this gateway process holds in memory at once. The generated gateway's
+    // own process ledger gives it a second, independent ceiling: 4
+    // concurrent max-size bodies, each counted twice (the retained chunk
+    // array and the concatenated copy), exactly fills maxBodyBytes * 8. This
+    // drives 4 concurrent requests to that exact ceiling, held open by a
+    // forward call that does not return, then proves a 5th is denied and a
+    // later one succeeds once the 4 held requests release their bytes.
+    const bridgeToken = createSandboxCallbackBridgeToken();
+    const maxBodyBytes = 400;
+    const holdBody = Buffer.alloc(maxBodyBytes, 0x42);
+    const HOLD_COUNT = 4;
+    const reachedGates = Array.from({ length: HOLD_COUNT }, () => createGate());
+    const releaseGates = Array.from({ length: HOLD_COUNT }, () => createGate());
+    let forwardCalls = 0;
+    const gateway = await startHttp2GatewayForTest({
+      bridgeToken,
+      maxBodyBytes,
+      forwardRequest: async () => {
+        const callIndex = forwardCalls;
+        forwardCalls += 1;
+        if (callIndex < HOLD_COUNT) {
+          reachedGates[callIndex]!.reach();
+          await releaseGates[callIndex]!.reached;
+        }
+        return { status: 200, headers: {}, body: Buffer.alloc(0) };
+      },
+    });
+
+    const postHoldBody = () =>
+      fetch(`${gateway.baseUrl}/api/issues/issue-1/comments`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${bridgeToken}`, "content-type": "application/json" },
+        body: holdBody,
+      });
+
+    const holdResponses = Promise.all(Array.from({ length: HOLD_COUNT }, () => postHoldBody()));
+    // Each held request's own forward call started, which only happens
+    // after readBodyBytes already reserved that request's bytes, so all 4
+    // reservations are live once every gate below resolves.
+    await Promise.all(reachedGates.map((gate) => gate.reached));
+
+    const deniedResponse = await postHoldBody();
+    expect(deniedResponse.status).toBe(503);
+    await expect(deniedResponse.json()).resolves.toMatchObject({
+      error: "The bridge gateway process reached its reserved body byte ceiling. Retry later.",
+    });
+    // The denial happened during the body read, before this stream's own
+    // forward call ever ran.
+    expect(forwardCalls).toBe(HOLD_COUNT);
+
+    releaseGates.forEach((gate) => gate.reach());
+    const responses = await holdResponses;
+    for (const response of responses) {
+      expect(response.status).toBe(200);
+    }
+
+    // Every held reservation released once its own forward call settled: a
+    // fresh request at the same size now succeeds again.
+    const recoveredResponse = await postHoldBody();
+    expect(recoveredResponse.status).toBe(200);
+  }, 15_000);
+
+  it("maps an indeterminate host outcome to a non-retryable 409 on the HTTP/2 gateway for an unsafe method", async () => {
+    // The host answers a mutating request's response-body capacity denial with a
+    // 504 and the indeterminate outcome header, exactly like an aborted in-flight
+    // forward: the host may have already committed the mutation, so the status
+    // must not be retryable. The HTTP/2 gateway must map that 504 to a 409, the
+    // same map the file gateway already applies, so a standard retry policy does
+    // not repeat the mutation. The outcome header and body must survive the map.
+    const bridgeToken = createSandboxCallbackBridgeToken();
+    const indeterminateBody = JSON.stringify({ error: "response body over limit", outcome: "indeterminate" });
+    const gateway = await startHttp2GatewayForTest({
+      bridgeToken,
+      forwardRequest: async () => ({
+        status: 504,
+        headers: { "content-type": "application/json", "x-paperclip-bridge-outcome": "indeterminate" },
+        body: Buffer.from(indeterminateBody, "utf8"),
+      }),
+    });
+
+    const response = await fetch(`${gateway.baseUrl}/api/issues/issue-1/comments`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${bridgeToken}`, "content-type": "application/json" },
+      body: JSON.stringify({ note: "test" }),
+    });
+
+    expect(response.status).toBe(409);
+    expect(response.status).toBeLessThan(500);
+    expect(response.headers.get("x-paperclip-bridge-outcome")).toBe("indeterminate");
+    const responseBytes = Buffer.from(await response.arrayBuffer());
+    expect(responseBytes.toString("utf8")).toBe(indeterminateBody);
+  }, 15_000);
+
+  it("passes through a safe method's retryable 503 on the HTTP/2 gateway unchanged", async () => {
+    // A safe method's response-body capacity denial carries no indeterminate
+    // outcome header, so the gateway must keep it retryable: the map above must
+    // not fire on a plain 503.
+    const bridgeToken = createSandboxCallbackBridgeToken();
+    const gateway = await startHttp2GatewayForTest({
+      bridgeToken,
+      forwardRequest: async () => ({
+        status: 503,
+        headers: { "content-type": "application/json" },
+        body: Buffer.from(JSON.stringify({ error: "response body over limit" }), "utf8"),
+      }),
+    });
+
+    const response = await fetch(`${gateway.baseUrl}/api/issues/issue-1/comments`, {
+      method: "GET",
+      headers: { authorization: `Bearer ${bridgeToken}` },
+    });
+
+    expect(response.status).toBe(503);
+    expect(response.headers.get("x-paperclip-bridge-outcome")).toBeNull();
   }, 15_000);
 
   it("rejects a request body over maxBodyBytes on the queue path before it writes the queue file", async () => {
@@ -3433,5 +3627,42 @@ describe("sandbox callback bridge", () => {
     expect(seenRequests).toHaveLength(1);
     expect(typeof seenRequests[0]?.body).toBe("string");
     expect(seenRequests[0]?.body).toBe(requestBodyText);
+  });
+});
+
+interface EmbeddedBridgeProcessBodyLedger {
+  reserve(byteCount: number): boolean;
+  release(byteCount: number): void;
+  readonly reservedBytes: number;
+}
+
+// This describe block covers the zero-dependency process body-byte ledger
+// every generated gateway embeds (`BRIDGE_PROCESS_BODY_LEDGER_SOURCE`),
+// exercised directly with no spawned process involved, the same way the
+// codec source in `execution-target-sandbox.test.ts` gets its own direct
+// coverage.
+describe("embedded sandbox gateway process body ledger", () => {
+  it("reserves and releases bytes against its own ceiling, denying only once it is exceeded", () => {
+    const ledgerFactory = new Function(
+      `${getSandboxBridgeProcessBodyLedgerSource()}\nreturn createBridgeProcessBodyLedger;`,
+    ) as unknown as () => (maxBytes: number) => EmbeddedBridgeProcessBodyLedger;
+    const createBridgeProcessBodyLedger = ledgerFactory();
+    const ledger = createBridgeProcessBodyLedger(100);
+
+    expect(ledger.reserve(60)).toBe(true);
+    expect(ledger.reservedBytes).toBe(60);
+    // A denied reservation reserves nothing: the total stays exactly what
+    // the first call reserved.
+    expect(ledger.reserve(41)).toBe(false);
+    expect(ledger.reservedBytes).toBe(60);
+    expect(ledger.reserve(40)).toBe(true);
+    expect(ledger.reservedBytes).toBe(100);
+
+    ledger.release(60);
+    expect(ledger.reservedBytes).toBe(40);
+    // Room freed by the release admits a request the full ceiling would
+    // have denied.
+    expect(ledger.reserve(60)).toBe(true);
+    expect(ledger.reservedBytes).toBe(100);
   });
 });

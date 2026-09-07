@@ -34,6 +34,7 @@ import {
   createSandboxCallbackBridgeAsset,
   createSandboxCallbackBridgeToken,
   DEFAULT_SANDBOX_CALLBACK_BRIDGE_MAX_BODY_BYTES,
+  HTTP2_SANDBOX_CALLBACK_BRIDGE_ROUTE_ALLOWLIST,
   SANDBOX_CALLBACK_BRIDGE_ENTRYPOINT,
   SANDBOX_CALLBACK_BRIDGE_HTTP2_MODE,
   sandboxCallbackBridgeDirectories,
@@ -44,6 +45,8 @@ import {
 } from "./sandbox-callback-bridge.js";
 import {
   createHttp2BridgeServer,
+  BridgeProcessCapacityError,
+  type BridgeBodyReservation,
   type Http2BridgeForwardHandler,
 } from "./http2-bridge-server.js";
 import {
@@ -86,12 +89,18 @@ import type { RunnerIngressEndpoint } from "./runner-connectivity.js";
 
 export type { RuntimeProgressSink } from "./runtime-progress.js";
 
-export function postedIssueCommentLogMarker(method: string, requestPath: string, status: number, body: string) {
+export function postedIssueCommentLogMarker(
+  method: string,
+  requestPath: string,
+  status: number,
+  body: Buffer | string,
+) {
   if (method !== "POST" || !/^\/api\/issues\/[^/]+\/comments$/.test(requestPath) || status < 200 || status >= 300) {
     return null;
   }
+  const bodyText = typeof body === "string" ? body : body.toString("utf8");
   try {
-    const parsed = JSON.parse(body) as { id?: unknown };
+    const parsed = JSON.parse(bodyText) as { id?: unknown };
     return typeof parsed.id === "string" && parsed.id.length > 0 ? `comment id: ${parsed.id}\n` : null;
   } catch {
     return null;
@@ -645,12 +654,19 @@ function preferredSandboxShell(target: AdapterSandboxExecutionTarget): "bash" | 
 
 type AdapterCommandCapableExecutionTarget = AdapterSshExecutionTarget | AdapterSandboxExecutionTarget;
 
+// The Secure Shell command runner's own output buffer. This value used to
+// derive from the bridge body limit (`DEFAULT_SANDBOX_CALLBACK_BRIDGE_MAX_BODY_BYTES
+// * 4`), so a bridge limit rise silently grew it too. It now stands on its
+// own local constant, independent of the bridge body limit, so a later
+// bridge limit change never resizes this buffer as a side effect.
+const SSH_COMMAND_MAX_BUFFER_BYTES = 1024 * 1024;
+
 function adapterExecutionTargetCommandRunner(target: AdapterCommandCapableExecutionTarget): CommandManagedRuntimeRunner {
   if (target.transport === "ssh") {
     return createSshCommandManagedRuntimeRunner({
       spec: target.spec,
       defaultCwd: target.remoteCwd,
-      maxBufferBytes: DEFAULT_SANDBOX_CALLBACK_BRIDGE_MAX_BODY_BYTES * 4,
+      maxBufferBytes: SSH_COMMAND_MAX_BUFFER_BYTES,
     });
   }
   return requireSandboxRunner(target);
@@ -1520,15 +1536,30 @@ function bridgeResponseBodyLimitError(maxBodyBytes: number): Error {
 }
 
 /**
- * Read the forward response body into a string. The per-request `maxBodyBytes`
- * limit rejects a body larger than the configured per-request ceiling.
+ * Read the forward response body into a `Buffer`, with no text decoding. The
+ * per-request `maxBodyBytes` limit rejects a body larger than the configured
+ * per-request ceiling.
  *
- * This function reserves no process-wide byte budget: it enforces only the
- * one request's own ceiling. See the "Known behavior: aggregate retained
- * body bytes" section in `doc/observability.md` for the accepted aggregate
- * ceiling this leaves across every concurrent route.
+ * When the caller passes a `reservation`, this reserves each chunk's bytes
+ * against it immediately after `reader.read()` yields the chunk, and before
+ * `Buffer.from(value)` copies it — the allocation happens inside that
+ * expression, so reserving only before the later `chunks.push` would let the
+ * copy happen first. It also reserves the concatenated buffer's own byte
+ * count before `Buffer.concat` allocates it: the chunk array and the
+ * concatenated buffer are two separate live copies. A denied reservation
+ * cancels the reader and throws {@link BridgeProcessCapacityError}, copying
+ * no further chunk. This function never releases the reservation; the
+ * stream owner that created it does, once the whole forward call settles.
+ *
+ * With no `reservation`, this function enforces only the one request's own
+ * ceiling, exactly as it did before this parameter existed — the queue
+ * transport calls it with no reservation, and its behavior must not change.
  */
-async function readBridgeForwardResponseBody(response: Response, maxBodyBytes: number): Promise<string> {
+async function readBridgeForwardResponseBody(
+  response: Response,
+  maxBodyBytes: number,
+  reservation?: BridgeBodyReservation,
+): Promise<Buffer> {
   const rawContentLength = response.headers.get("content-length");
   if (rawContentLength) {
     const contentLength = Number.parseInt(rawContentLength, 10);
@@ -1538,7 +1569,7 @@ async function readBridgeForwardResponseBody(response: Response, maxBodyBytes: n
   }
 
   if (!response.body) {
-    return "";
+    return Buffer.alloc(0);
   }
 
   const reader = response.body.getReader();
@@ -1554,9 +1585,17 @@ async function readBridgeForwardResponseBody(response: Response, maxBodyBytes: n
       await reader.cancel().catch(() => undefined);
       throw bridgeResponseBodyLimitError(maxBodyBytes);
     }
+    if (reservation && !reservation.reserve(chunkBytes)) {
+      await reader.cancel().catch(() => undefined);
+      throw new BridgeProcessCapacityError();
+    }
     chunks.push(Buffer.from(value));
   }
-  return Buffer.concat(chunks, totalBytes).toString("utf8");
+  if (reservation && !reservation.reserve(totalBytes)) {
+    await reader.cancel().catch(() => undefined);
+    throw new BridgeProcessCapacityError();
+  }
+  return Buffer.concat(chunks, totalBytes);
 }
 
 const PROCESS_SESSION_PROXY_SCRIPT = "paperclip-process-session-proxy.mjs";
@@ -4002,14 +4041,24 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
       path: string;
       query: string;
       headers: Record<string, string>;
-      /** The file bridge passes the whole request body here as one string. */
-      body?: string;
+      /** The file bridge passes the whole request body here as one string.
+       * The HTTP/2 bridge passes it as the raw `Buffer` it read off the wire. */
+      body?: string | Buffer;
     },
     signal?: AbortSignal,
     options?: {
       suppressDebugLog?: boolean;
+      /**
+       * The caller's stream reservation owner, if it has one. The HTTP/2
+       * bridge passes the stream's own owner here, so the response body copy
+       * reserves against the same ceiling the request body copy already
+       * reserved against. The queue transport passes no owner, so its
+       * response-body read enforces only the per-request size ceiling, exactly
+       * as it did before this option existed.
+       */
+      reservation?: BridgeBodyReservation;
     },
-  ): Promise<{ status: number; headers: Record<string, string>; body: string }> => {
+  ): Promise<{ status: number; headers: Record<string, string>; body: Buffer }> => {
     const method = request.method.trim().toUpperCase() || "GET";
     // The per-request debug log prints the method, the path, and the query. The
     // duplex path suppresses it, so no route or query rides a log line there. The
@@ -4034,14 +4083,19 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
     const timeoutSignal = AbortSignal.timeout(forwardTimeoutMs);
     const forwardSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
     // Build the request-body init. A GET or a HEAD carries no body. The file
-    // bridge passes the whole body as one string.
+    // bridge passes the whole body as one string; the HTTP/2 bridge passes it
+    // as a raw `Buffer`. Undici accepts a `Buffer` request body directly (a
+    // `Buffer` is an `ArrayBufferView`), so neither shape needs a conversion.
+    // The cast below only bridges a `BodyInit` typing gap: the DOM library
+    // type this project's ambient `RequestInit` resolves to excludes a
+    // `Buffer`, though Undici accepts one at runtime.
     const forwardInit: RequestInit = {
       method,
       headers,
       signal: forwardSignal,
     };
-    if (method !== "GET" && method !== "HEAD" && typeof request.body === "string") {
-      forwardInit.body = request.body;
+    if (method !== "GET" && method !== "HEAD" && request.body !== undefined) {
+      forwardInit.body = request.body as BodyInit;
     }
     const response = await fetch(buildBridgeForwardUrl(hostApiUrl, request), forwardInit);
     if (emitDebugLog) {
@@ -4062,10 +4116,23 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
     // non-retryable 504 and marks the outcome indeterminate, exactly like an
     // aborted in-flight forward. The in-sandbox server maps the indeterminate 504
     // to a non-retryable 409 for both the file bridge and the duplex broker.
-    let responseBody: string;
+    let responseBody: Buffer;
     try {
-      responseBody = await readBridgeForwardResponseBody(response, maxBodyBytes);
+      responseBody = await readBridgeForwardResponseBody(response, maxBodyBytes, options?.reservation);
     } catch (error) {
+      // A denied reservation is retryable capacity pressure for a safe
+      // method, not a body-read fault: rethrow it before the method-safety
+      // classification below runs, so it reaches the HTTP/2 bridge's own
+      // capacity-denial catch (which answers the retryable 503 and settles
+      // the stream) instead of this function turning it into a 502. For an
+      // unsafe (mutating) method, the host has already delivered response
+      // headers by this point, so it may already have committed the
+      // mutation. Rethrowing there too would let the retryable 503 reach a
+      // caller that repeats the request, applying the mutation twice. An
+      // unsafe method's capacity denial falls through to the same
+      // non-retryable indeterminate 504 any other response-body read fault
+      // gets below.
+      if (error instanceof BridgeProcessCapacityError && isSafeBridgeMethod(method)) throw error;
       if (isSafeBridgeMethod(method)) {
         // The method is safe, so a retry cannot double-apply a mutation. Return a
         // retryable 502 with no indeterminate marker, so the gateway passes it
@@ -4073,9 +4140,12 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
         return {
           status: 502,
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            error: error instanceof Error ? error.message : String(error),
-          }),
+          body: Buffer.from(
+            JSON.stringify({
+              error: error instanceof Error ? error.message : String(error),
+            }),
+            "utf8",
+          ),
         };
       }
       return {
@@ -4084,11 +4154,14 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
           "content-type": "application/json",
           "x-paperclip-bridge-outcome": "indeterminate",
         },
-        body: JSON.stringify({
-          error: error instanceof Error ? error.message : String(error),
-          outcome: "indeterminate",
-          retryable: false,
-        }),
+        body: Buffer.from(
+          JSON.stringify({
+            error: error instanceof Error ? error.message : String(error),
+            outcome: "indeterminate",
+            retryable: false,
+          }),
+          "utf8",
+        ),
       };
     }
     const commentMarker = postedIssueCommentLogMarker(method, request.path, response.status, responseBody);
@@ -4290,10 +4363,10 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
                   path: request.pathname,
                   query: request.query,
                   headers: request.headers,
-                  body: request.body.toString("utf8"),
+                  body: request.body,
                 },
                 request.signal,
-                { suppressDebugLog: true },
+                { suppressDebugLog: true, reservation: request.reservation },
               );
               duplexObservability.recordRequest({ latencyMs: Date.now() - dispatchStartMs, outcome: "ok" });
               return { status: result.status, headers: result.headers, body: result.body };
@@ -4306,6 +4379,13 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
           const http2Server = createHttp2BridgeServer({
             bridgeToken,
             forwardRequest: http2ForwardRequest,
+            routes: HTTP2_SANDBOX_CALLBACK_BRIDGE_ROUTE_ALLOWLIST,
+            // The same resolved limit the launch environment hands the
+            // sandbox-side gateway (`PAPERCLIP_BRIDGE_MAX_BODY_BYTES`,
+            // below), so the host check and the gateway check enforce one
+            // value instead of the host silently falling back to the
+            // package default.
+            maxBodyBytes,
             onGoaway: () => recordHttp2Loss("session_goaway"),
             onSessionError: () => recordHttp2Loss("session_error"),
           });
@@ -4413,7 +4493,13 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
       maxBodyBytes,
       getRuntimeParentContext: input.getRuntimeParentContext,
       runtimeSpan: input.runtimeSpan,
-      handleRequest: async (request, options) => forwardBridgeRequest(request, options?.signal),
+      // The queue transport writes the response body to a text file, so this
+      // is the one place the forward path decodes the response `Buffer` to a
+      // UTF-8 string. The queue's own on-wire behavior does not change.
+      handleRequest: async (request, options) => {
+        const result = await forwardBridgeRequest(request, options?.signal);
+        return { status: result.status, headers: result.headers, body: result.body.toString("utf8") };
+      },
     });
     server = await startSandboxCallbackBridgeServer({
       runner,

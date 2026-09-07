@@ -20,7 +20,23 @@ const DEFAULT_BRIDGE_POLL_INTERVAL_MS = 100;
 const DEFAULT_BRIDGE_RESPONSE_TIMEOUT_MS = 30_000;
 const DEFAULT_BRIDGE_STOP_TIMEOUT_MS = 2_000;
 const DEFAULT_BRIDGE_MAX_QUEUE_DEPTH = 64;
-const DEFAULT_BRIDGE_MAX_BODY_BYTES = 256 * 1024;
+// A `BridgeBodyReservation` owner (`http2-bridge-server.ts`) now bounds the
+// process-wide total of live request and response body bytes at
+// `HTTP2_BRIDGE_MAX_PROCESS_BODY_BYTES` (1 GiB), so this per-body limit can
+// rise to the same ceiling `MAX_ATTACHMENT_BYTES`
+// (`server/src/attachment-types.ts`) already accepts, with no unbounded
+// growth in process memory.
+//
+// The attachment upload route carries its file inside a multipart body, so a
+// file at the exact `MAX_ATTACHMENT_BYTES` ceiling needs more than
+// `MAX_ATTACHMENT_BYTES` raw bytes to cross the bridge: the multipart
+// boundary line, each part's `Content-Disposition` and `Content-Type`
+// headers, and the small JSON metadata field this route also accepts all add
+// bytes on top of the file content the server measures. This headroom
+// covers that framing with a wide margin, so a valid maximum-size attachment
+// never fails at the bridge before the server ever sees it.
+const BRIDGE_MULTIPART_FRAMING_HEADROOM_BYTES = 64 * 1024;
+const DEFAULT_BRIDGE_MAX_BODY_BYTES = 10 * 1024 * 1024 + BRIDGE_MULTIPART_FRAMING_HEADROOM_BYTES;
 // Per-iteration timeout for one poll-loop client call. A healthy control-plane
 // round trip finishes in well under one second, so 10s is far above a normal
 // iteration and never false-fires on a slow-but-live call. It is also well
@@ -179,6 +195,16 @@ export const DEFAULT_SANDBOX_CALLBACK_BRIDGE_ROUTE_ALLOWLIST: readonly SandboxCa
   { method: "POST", path: /^\/api\/routines\/[^/]+\/triggers$/ },
   { method: "PATCH", path: /^\/api\/routine-triggers\/[^/]+$/ },
   { method: "DELETE", path: /^\/api\/routine-triggers\/[^/]+$/ },
+] as const;
+
+// The HTTP/2 bridge carries the request body as raw bytes, so it can admit
+// the two binary attachment routes. The queue transport keeps
+// `DEFAULT_SANDBOX_CALLBACK_BRIDGE_ROUTE_ALLOWLIST`, because its envelope
+// carries a string body only.
+export const HTTP2_SANDBOX_CALLBACK_BRIDGE_ROUTE_ALLOWLIST: readonly SandboxCallbackBridgeRouteRule[] = [
+  ...DEFAULT_SANDBOX_CALLBACK_BRIDGE_ROUTE_ALLOWLIST,
+  { method: "POST", path: /^\/api\/companies\/[^/]+\/issues\/[^/]+\/attachments$/ },
+  { method: "GET", path: /^\/api\/attachments\/[^/]+\/content$/ },
 ] as const;
 
 export const DEFAULT_SANDBOX_CALLBACK_BRIDGE_HEADER_ALLOWLIST = [
@@ -2036,6 +2062,48 @@ export function getSandboxDuplexGatewayCodecSource(): string {
   return DUPLEX_GATEWAY_CODEC_SOURCE;
 }
 
+/**
+ * Zero-dependency source for the gateway's own aggregate body-byte ledger.
+ * `readBodyBytes` in the generated gateway reserves against one instance of
+ * this ledger before it retains a chunk and before it concatenates the final
+ * buffer, so a burst of concurrent requests cannot grow the gateway
+ * process's own memory without limit. This ledger is separate from, and
+ * independent of, the ceiling `http2-bridge-server.ts` enforces on the host
+ * side of the bridge connection: each side bounds only the memory in its own
+ * process. It uses no global beyond plain JavaScript, so it embeds inside the
+ * gateway template literal with no escape. A test wraps this source directly
+ * to exercise `reserve`/`release`, the same way
+ * {@link getSandboxDuplexGatewayCodecSource} lets a test exercise the codec.
+ */
+const BRIDGE_PROCESS_BODY_LEDGER_SOURCE = `function createBridgeProcessBodyLedger(maxBytes) {
+  let reservedBytes = 0;
+  return {
+    reserve(byteCount) {
+      if (reservedBytes + byteCount > maxBytes) {
+        return false;
+      }
+      reservedBytes += byteCount;
+      return true;
+    },
+    release(byteCount) {
+      reservedBytes -= byteCount;
+    },
+    get reservedBytes() {
+      return reservedBytes;
+    },
+  };
+}`;
+
+/**
+ * Return the exact zero-dependency ledger source the generated gateway
+ * embeds. A test wraps this source and calls `createBridgeProcessBodyLedger`
+ * to prove the embedded copy reserves and releases bytes correctly, with no
+ * spawned process involved.
+ */
+export function getSandboxBridgeProcessBodyLedgerSource(): string {
+  return BRIDGE_PROCESS_BODY_LEDGER_SOURCE;
+}
+
 export function getSandboxCallbackBridgeServerSource(): string {
   return `import { randomUUID, timingSafeEqual } from "node:crypto";
 import { createServer } from "node:http";
@@ -2116,6 +2184,32 @@ process.on("unhandledRejection", (reason) => {
 // gateway ignores it.
 ${DUPLEX_GATEWAY_CODEC_SOURCE}
 
+// The embedded zero-dependency process body-byte ledger. Both gateway modes
+// use it: readBodyBytes reserves against it, and each mode's request
+// handler releases what it reserved once the body is no longer needed.
+${BRIDGE_PROCESS_BODY_LEDGER_SOURCE}
+
+// The multiplier matches HTTP2_BRIDGE_MAX_CONCURRENT_STREAMS (4) in
+// http2-bridge-server.ts, doubled because readBodyBytes reserves a body's
+// bytes twice: once for the retained chunk array, once for the concatenated
+// copy, since both are live buffers at once. This gives the gateway process
+// its own aggregate ceiling on live request-body bytes, so a burst of
+// concurrent requests cannot grow this process's memory without limit, even
+// though every individual body already passes the maxBodyBytes check below.
+// This ceiling is independent of, and separate from, the ceiling the host
+// enforces on its own side of the bridge connection.
+const maxProcessBodyBytes = maxBodyBytes * 8;
+const processBodyLedger = createBridgeProcessBodyLedger(maxProcessBodyBytes);
+
+// A denied process-ledger reservation answers 503: the sandbox client should
+// retry once other in-flight bodies finish and release their bytes, the same
+// retry contract the host side gives for its own capacity denial.
+class BridgeProcessCapacityError extends Error {
+  constructor() {
+    super("The bridge gateway process reached its reserved body byte ceiling. Retry later.");
+  }
+}
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -2133,22 +2227,49 @@ function normalizeHeaders(headers) {
   return out;
 }
 
+// Reserves each chunk's bytes against the process ledger before the chunk
+// joins the retained array, and reserves the concatenated buffer's own byte
+// count before Buffer.concat allocates it, mirroring the order
+// readHttp2StreamBody enforces on the host side. Returns the body buffer
+// together with a release function: the caller must call release exactly
+// once, after the body is no longer needed, so its reserved bytes return to
+// the ledger on completion, on an error the caller raises later, on a client
+// abort, and on a timeout — every path funnels through the caller's own
+// finally block. A read that fails here (the size limit, or a denied
+// process reservation) releases its own partial reservation immediately, so
+// no caller-side release call is needed for that path.
 async function readBodyBytes(req) {
   const chunks = [];
   let totalBytes = 0;
-  for await (const chunk of req) {
-    const nextChunk = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-    chunks.push(nextChunk);
-    totalBytes += nextChunk.byteLength;
-    if (totalBytes > maxBodyBytes) {
-      throw new Error("Bridge request body exceeded the configured size limit.");
+  let reservedBytes = 0;
+  try {
+    for await (const chunk of req) {
+      const nextChunk = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      totalBytes += nextChunk.byteLength;
+      if (totalBytes > maxBodyBytes) {
+        throw new Error("Bridge request body exceeded the configured size limit.");
+      }
+      if (!processBodyLedger.reserve(nextChunk.byteLength)) {
+        throw new BridgeProcessCapacityError();
+      }
+      reservedBytes += nextChunk.byteLength;
+      chunks.push(nextChunk);
     }
+    if (!processBodyLedger.reserve(totalBytes)) {
+      throw new BridgeProcessCapacityError();
+    }
+    reservedBytes += totalBytes;
+    const body = Buffer.concat(chunks);
+    return { body, release: () => processBodyLedger.release(reservedBytes) };
+  } catch (error) {
+    processBodyLedger.release(reservedBytes);
+    throw error;
   }
-  return Buffer.concat(chunks);
 }
 
 async function readBody(req) {
-  return (await readBodyBytes(req)).toString("utf8");
+  const { body, release } = await readBodyBytes(req);
+  return { body: body.toString("utf8"), release };
 }
 
 function tokensMatch(received) {
@@ -2208,6 +2329,12 @@ async function runFileGateway() {
   }
 
   const server = createServer(async (req, res) => {
+    // readBody reserves the body's bytes against the process ledger and
+    // hands back a release function; this holds it so the finally below
+    // releases those bytes exactly once no matter how this handler ends —
+    // its normal completion, a thrown error, a client abort, or a deadline
+    // timeout all reach the same finally.
+    let releaseBodyReservation = null;
     try {
       const auth = req.headers.authorization || "";
       const receivedToken = auth.startsWith("Bearer ") ? auth.slice("Bearer ".length) : "";
@@ -2233,7 +2360,8 @@ async function runFileGateway() {
         return;
       }
       const requestId = randomUUID();
-      const requestBody = await readBody(req);
+      const { body: requestBody, release } = await readBody(req);
+      releaseBodyReservation = release;
       const payload = {
         id: requestId,
         method: req.method || "GET",
@@ -2281,7 +2409,13 @@ async function runFileGateway() {
       }
       res.end(typeof response.body === "string" ? response.body : "");
     } catch (error) {
-      writeJsonResponse(res, 502, { error: error instanceof Error ? error.message : String(error) });
+      // A denied process-ledger reservation is retryable: the caller should
+      // try again once other in-flight bodies release their bytes. Every
+      // other body-read or handling fault stays a generic 502.
+      const status = error instanceof BridgeProcessCapacityError ? 503 : 502;
+      writeJsonResponse(res, status, { error: error instanceof Error ? error.message : String(error) });
+    } finally {
+      releaseBodyReservation?.();
     }
   });
 
@@ -2462,6 +2596,12 @@ function runHttp2Gateway() {
   }
 
   const server = createServer(async (req, res) => {
+    // readBodyBytes reserves the body's bytes against the process ledger
+    // and hands back a release function; this holds it so the finally
+    // below releases those bytes exactly once no matter how this handler
+    // ends — its normal completion, a thrown error, a client abort, or a
+    // deadline timeout all reach the same finally.
+    let releaseBodyReservation = null;
     try {
       const auth = req.headers.authorization || "";
       const receivedToken = auth.startsWith("Bearer ") ? auth.slice("Bearer ".length) : "";
@@ -2474,12 +2614,8 @@ function runHttp2Gateway() {
         return;
       }
       const url = new URL(req.url || "/", "http://127.0.0.1");
-      const contentType = typeof req.headers["content-type"] === "string" ? req.headers["content-type"] : "";
-      if (req.method && req.method !== "GET" && req.method !== "HEAD" && !/json/i.test(contentType)) {
-        writeJsonResponse(res, 415, { error: "Bridge only accepts JSON request bodies." });
-        return;
-      }
-      const requestBodyBuffer = await readBodyBytes(req);
+      const { body: requestBodyBuffer, release } = await readBodyBytes(req);
+      releaseBodyReservation = release;
       let response;
       try {
         response = await forwardOverHttp2({
@@ -2493,14 +2629,32 @@ function runHttp2Gateway() {
         writeJsonResponse(res, 502, { error: error instanceof Error ? error.message : String(error) });
         return;
       }
-      res.statusCode = typeof response.status === "number" ? response.status : 200;
+      // The host marks a possibly-committed mutation with an indeterminate outcome.
+      // The host cannot cancel a host operation that is in flight, so the mutation
+      // may have committed before the worker aborted the handler. A 5xx status is
+      // retryable by convention, so a caller that retries 5xx would apply the
+      // mutation twice. Map the indeterminate outcome to a non-retryable 409, so a
+      // standard retry policy does not repeat the request. The outcome header and
+      // body stay, so a caller that reads them still sees the indeterminate result.
+      const bridgeOutcome = (response.headers || {})["x-paperclip-bridge-outcome"];
+      if (bridgeOutcome === "indeterminate") {
+        res.statusCode = 409;
+      } else {
+        res.statusCode = typeof response.status === "number" ? response.status : 200;
+      }
       for (const [key, value] of Object.entries(response.headers || {})) {
         if (typeof value !== "string" || key.toLowerCase() === "content-length") continue;
         res.setHeader(key, value);
       }
       res.end(response.body);
     } catch (error) {
-      writeJsonResponse(res, 502, { error: error instanceof Error ? error.message : String(error) });
+      // A denied process-ledger reservation is retryable: the caller should
+      // try again once other in-flight bodies release their bytes. Every
+      // other body-read or handling fault stays a generic 502.
+      const status = error instanceof BridgeProcessCapacityError ? 503 : 502;
+      writeJsonResponse(res, status, { error: error instanceof Error ? error.message : String(error) });
+    } finally {
+      releaseBodyReservation?.();
     }
   });
 
