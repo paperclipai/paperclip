@@ -1237,21 +1237,21 @@ describeEmbeddedPostgres("tool gateway service", () => {
     });
     const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
     const tool = (await gateway.listToolsForSession(session.token)).find(t => t.providerType === "mcp_remote_http")!;
-    for (const user of ["A", "B"]) {
-      if (user === "B") {
+    for (const [index, user] of ["A", "B", "A"].entries()) {
+      if (index > 0) {
         const [message] = await db.insert(issueComments).values({ companyId: company.id, issueId: issue.id,
-          authorUserId: "B", body: "Next instruction" }).returning();
+          authorUserId: user, body: "Next instruction" }).returning();
         const pending = await reserveSteeredIdentity(db, { companyId: company.id, runId: run.id,
           issueId: issue.id, messageId: message.id });
         await reconcileSteeredIdentity(db, pending!);
       }
       expect((await gateway.executeTool({ sessionToken: session.token, tool: tool.name, parameters: {} })).status).toBe("completed");
     }
-    expect(resolvedGrants).toEqual(grants.map(grant => grant.id));
+    expect(resolvedGrants).toEqual([grants[0].id, grants[1].id, grants[0].id]);
     await db.delete(companyMemberships).where(eq(companyMemberships.companyId, company.id));
     await expect(gateway.executeTool({ sessionToken: session.token, tool: tool.name, parameters: {} }))
       .rejects.toMatchObject({ reasonCode: "grant_owner_membership_inactive" });
-    expect(resolvedGrants).toHaveLength(2);
+    expect(resolvedGrants).toHaveLength(3);
   });
 
   it("refreshes a customer OAuth grant once and retries after an upstream 401", async () => {

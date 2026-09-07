@@ -1461,7 +1461,10 @@ export function createToolGatewayService(
   }
 
   async function captureSessionIdentity(session: ToolGatewaySession): Promise<ToolGatewaySession> {
-    if (!session.runId || !session.agentId || session.identityContextId) return session;
+    // Authentication creates a fresh operation snapshot on every invocation.
+    // Never trust a previously attached context on a reusable transport session.
+    // Approved operations restore their signed origin after authentication.
+    if (!session.runId || !session.agentId) return session;
     const [run] = await db.select({ activeIdentityContextId: heartbeatRuns.activeIdentityContextId })
       .from(heartbeatRuns).where(and(eq(heartbeatRuns.id, session.runId), eq(heartbeatRuns.companyId, session.companyId)));
     if (!run?.activeIdentityContextId) return session;
