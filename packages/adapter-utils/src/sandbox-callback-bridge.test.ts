@@ -214,6 +214,7 @@ describe("sandbox callback bridge", () => {
         authorization: `Bearer ${bridgeToken}`,
         accept: "application/json",
         "if-none-match": '"client-cache-key"',
+        "idempotency-key": "hire-once-123",
         "x-paperclip-run-id": "run-bridge-1",
         "x-bridge-debug": "drop-me",
       },
@@ -260,6 +261,10 @@ describe("sandbox callback bridge", () => {
       headers: {
         accept: "application/json",
         "if-none-match": '"client-cache-key"',
+        // Idempotency-Key must survive the header allowlist so agent retries of
+        // mutating calls (e.g. routine runs, hires) dedupe server-side instead
+        // of double-executing.
+        "idempotency-key": "hire-once-123",
       },
     });
     expect(seenRequests[0]?.headers.authorization).toBeUndefined();
