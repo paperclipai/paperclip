@@ -167,8 +167,13 @@ describe("chat connector UI contract", () => {
     expect(setup).toContain("ChatMessage.Read.Chat");
     expect(setup).toContain("not Microsoft Graph permissions in Entra");
     expect(setup).toContain("does not use Teams single sign-on");
-    expect(setup).toContain("does not require a");
     expect(setup).toContain("webApplicationInfo");
+    expect(setup).toContain('resource: "https://paperclip.ing"');
+    expect(setup).toContain("only associates the RSC");
+    expect(setup).toContain("you do not need to register an Entra");
+    expect(setup).not.toContain(
+      "does not require a <code>webApplicationInfo</code>",
+    );
     expect(setup).not.toContain("api://paperclip-chat/");
     expect(setup).toContain("not private channels");
     expect(setup).toContain("native file receipt only in personal chat");
@@ -207,6 +212,15 @@ describe("chat connector UI contract", () => {
     expect(setup).not.toContain("Copy setup command");
     expect(setup).not.toContain("Add {agentName} to Slack");
     expect(setup).not.toContain("Create in GitHub");
+  });
+
+  it("keeps provider setup failures visible without rendering submitted credentials", () => {
+    const setup = source("./ChatEndpointSetup.tsx");
+    expect(setup).toContain("sanitizedSetupErrorMessage");
+    expect(setup).toContain('role="alert"');
+    expect(setup).toContain('message.replaceAll(candidate, "[redacted]")');
+    expect(setup).toContain("onMutate: () => setSetupError(null)");
+    expect(setup).not.toContain('title: "Connection failed"');
   });
 
   it("keeps the current GitHub review artifact on the shipped customer-owned App path", () => {

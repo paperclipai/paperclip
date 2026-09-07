@@ -51,6 +51,35 @@ function publicOrigin(value: string | null | undefined): string | null {
   }
 }
 
+const setupErrorFallback =
+  "Check the required values and provider access, then try again.";
+
+function sanitizedSetupErrorMessage(
+  error: unknown,
+  submittedValues: Record<string, string> | undefined,
+): string {
+  let message = error instanceof Error ? error.message.trim() : "";
+  if (!message) return setupErrorFallback;
+
+  const submittedSecrets = Object.values(submittedValues ?? {})
+    .map((value) => value.trim())
+    .filter(Boolean)
+    .sort((left, right) => right.length - left.length);
+  for (const secret of submittedSecrets) {
+    const escapedSecret = JSON.stringify(secret).slice(1, -1);
+    for (const candidate of new Set([
+      secret,
+      escapedSecret,
+      encodeURIComponent(secret),
+    ])) {
+      message = message.replaceAll(candidate, "[redacted]");
+    }
+  }
+
+  const normalized = message.replace(/\s+/g, " ").trim();
+  return normalized ? normalized.slice(0, 500) : setupErrorFallback;
+}
+
 export function isChatEndpointRepairing(
   endpoint: Pick<
     ChatEndpoint,
@@ -125,6 +154,7 @@ export function ChatEndpointSetup() {
   const [endpoint, setEndpoint] = useState<ChatEndpoint | null>(null);
   const [credentials, setCredentials] = useState<Record<string, string>>({});
   const [generatedWebhookSecret, setGeneratedWebhookSecret] = useState("");
+  const [setupError, setSetupError] = useState<string | null>(null);
 
   useEffect(() => {
     setBreadcrumbs([
@@ -194,16 +224,13 @@ export function ChatEndpointSetup() {
       action: ChatEndpointSetupAction;
       values?: Record<string, string>;
     }) => chatEndpointsApi.setup(endpoint!.id, { action, credentials: values }),
-    onSuccess: setEndpoint,
-    onError: (error) =>
-      pushToast({
-        title: "Connection failed",
-        body:
-          error instanceof Error
-            ? error.message
-            : "Check the required values and try again.",
-        tone: "error",
-      }),
+    onMutate: () => setSetupError(null),
+    onSuccess: (next) => {
+      setSetupError(null);
+      setEndpoint(next);
+    },
+    onError: (error, variables) =>
+      setSetupError(sanitizedSetupErrorMessage(error, variables.values)),
   });
   const generateSetupSecret = useMutation({
     mutationFn: () => chatEndpointsApi.generateSetupSecret(endpoint!.id),
@@ -348,21 +375,32 @@ export function ChatEndpointSetup() {
             </div>
           </>
         ) : step === 1 ? (
-          <ProviderConnectStep
-            provider={provider}
-            agentName={selectedAgent?.name ?? endpoint.assignedAgentName}
-            endpoint={endpoint}
-            credentials={credentials}
-            setCredentials={setCredentials}
-            repairing={repairing}
-            pending={setupAction.isPending}
-            generatedWebhookSecret={generatedWebhookSecret}
-            generatingSetupSecret={generateSetupSecret.isPending}
-            onGenerateSetupSecret={() => generateSetupSecret.mutate()}
-            onAction={(action, values) =>
-              setupAction.mutate({ action, values })
-            }
-          />
+          <>
+            {setupError ? (
+              <div
+                role="alert"
+                className="rounded-lg border border-destructive/30 bg-destructive/10 p-4 text-sm text-destructive"
+              >
+                <p className="font-medium">Connection failed</p>
+                <p className="mt-1">{setupError}</p>
+              </div>
+            ) : null}
+            <ProviderConnectStep
+              provider={provider}
+              agentName={selectedAgent?.name ?? endpoint.assignedAgentName}
+              endpoint={endpoint}
+              credentials={credentials}
+              setCredentials={setCredentials}
+              repairing={repairing}
+              pending={setupAction.isPending}
+              generatedWebhookSecret={generatedWebhookSecret}
+              generatingSetupSecret={generateSetupSecret.isPending}
+              onGenerateSetupSecret={() => generateSetupSecret.mutate()}
+              onAction={(action, values) =>
+                setupAction.mutate({ action, values })
+              }
+            />
+          </>
         ) : (
           <TryStep
             provider={provider}
@@ -532,6 +570,10 @@ settings:
           isNotificationOnly: false,
         },
       ],
+      webApplicationInfo: {
+        id: teamsClientId,
+        resource: "https://paperclip.ing",
+      },
       authorization: {
         permissions: {
           resourceSpecific: [
@@ -709,10 +751,11 @@ settings:
           </li>
           <li>
             In Teams Developer Portal, create an app, add a bot with the same
-            Application ID, then apply the manifest settings shown below. These
-            are Teams resource-specific consent permissions in the app manifest,
-            not Microsoft Graph permissions in Entra. Download the package and
-            upload it to the target standard channel or chat.
+            Application ID, then apply the manifest settings shown below. The
+            block binds the Teams resource-specific consent permissions to that
+            Entra app; these are not Microsoft Graph permissions in Entra.
+            Download the package and upload it to the target standard channel or
+            chat.
           </li>
         </ol>
         <div className="flex flex-wrap gap-2">
@@ -838,10 +881,11 @@ settings:
           the manifest with your app icons.
         </p>
         <p className="text-sm text-muted-foreground">
-          Paperclip does not use Teams single sign-on in this release, so this
-          connection does not require a <code>webApplicationInfo</code> manifest
-          entry, an Entra Application ID URI, or delegated Microsoft Graph
-          permissions. Do not add them solely for Paperclip.
+          Paperclip does not use Teams single sign-on in this release. The
+          copied <code>webApplicationInfo</code> entry only associates the RSC
+          permissions with the same Entra Application ID. Its nonempty resource
+          is an RSC placeholder; you do not need to register an Entra
+          Application ID URI or add delegated Microsoft Graph permissions.
         </p>
         <p className="text-sm text-muted-foreground">
           This release supports personal chats, group chats, and standard team

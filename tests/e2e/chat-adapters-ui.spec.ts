@@ -301,6 +301,7 @@ function endpointFixture(provider: ProviderCase, seed: Seed) {
 type ChatMock = {
   createdWithAgentId: string | null;
   configuredCredentialKeys: string[];
+  setupAttempts: number;
   updatedResource: boolean;
   resourceUpdates: Array<Array<{ id: string; enabled: boolean }>>;
   allowDirectMessages: boolean | null;
@@ -324,6 +325,7 @@ async function installChatControlPlaneMock(
     created: false,
     createdWithAgentId: null,
     configuredCredentialKeys: [],
+    setupAttempts: 0,
     updatedResource: false,
     resourceUpdates: [],
     allowDirectMessages: null,
@@ -437,9 +439,23 @@ async function installChatControlPlaneMock(
       }
       expect(["configure", "verify"]).toContain(action);
       if (body.action === "configure") {
+        state.setupAttempts += 1;
         state.configuredCredentialKeys = Object.keys(
           (body.credentials ?? {}) as Record<string, string>,
         ).sort();
+        if (provider.provider === "telegram" && state.setupAttempts === 1) {
+          const submittedToken = String(
+            ((body.credentials ?? {}) as Record<string, string>).botToken ?? "",
+          );
+          await fulfill(
+            route,
+            {
+              error: `Telegram rejected bot token ${submittedToken}. Confirm the token in BotFather and try again.`,
+            },
+            422,
+          );
+          return;
+        }
       } else {
         expect(provider.provider).toBe("slack");
       }
@@ -654,13 +670,22 @@ async function fillProviderSetup(page: Page, provider: ProviderCase) {
         "-----BEGIN PRIVATE KEY-----\ne2e-redacted\n-----END PRIVATE KEY-----",
       );
   } else if (provider.provider === "microsoft-teams") {
-    await page
-      .getByLabel("Application / Client ID")
-      .fill("00000000-0000-4000-8000-000000000001");
+    const clientId = "00000000-0000-4000-8000-000000000001";
+    await page.getByLabel("Application / Client ID").fill(clientId);
     await page
       .getByLabel("Directory / Tenant ID")
       .fill("00000000-0000-4000-8000-000000000002");
     await page.getByLabel("Client secret").fill("teams-client-secret");
+    const manifest = JSON.parse(
+      await page.getByLabel("Required Teams app manifest block").inputValue(),
+    ) as { webApplicationInfo?: { id?: string; resource?: string } };
+    expect(manifest.webApplicationInfo).toEqual({
+      id: clientId,
+      resource: "https://paperclip.ing",
+    });
+    await expect(
+      page.getByRole("button", { name: "Copy manifest settings" }),
+    ).toBeEnabled();
   } else if (provider.provider === "discord") {
     await page.getByLabel("Application ID").fill("1457808928258658549");
     await page.getByLabel("Server ID").fill("1457808928258658549");
@@ -838,7 +863,12 @@ async function expectMinimumProviderSetup(page: Page, provider: ProviderCase) {
     expect(manifest).toContain('"personal"');
     expect(manifest).toContain('"team"');
     expect(manifest).toContain('"groupchat"');
-    expect(manifest).not.toContain("webApplicationInfo");
+    expect(JSON.parse(manifest)).toMatchObject({
+      webApplicationInfo: {
+        id: "<application-client-id>",
+        resource: "https://paperclip.ing",
+      },
+    });
     expect(manifest).not.toContain("api://paperclip-chat/");
     await expect(
       page.getByRole("button", { name: "Copy manifest settings" }),
@@ -846,6 +876,9 @@ async function expectMinimumProviderSetup(page: Page, provider: ProviderCase) {
     await expect(page.getByText(/not a complete app package/)).toBeVisible();
     await expect(
       page.getByText(/does not use Teams single sign-on/),
+    ).toBeVisible();
+    await expect(
+      page.getByText(/only associates the RSC permissions/),
     ).toBeVisible();
     await expect(
       page.getByRole("link", { name: "Open Microsoft Entra" }),
@@ -1051,6 +1084,26 @@ test.describe.serial("native chat adapter UI", () => {
       await expectSetupRail(page);
       await expectMinimumProviderSetup(page, provider);
       await fillProviderSetup(page, provider);
+
+      if (provider.provider === "telegram") {
+        const submittedToken = "123456:e2e-redacted";
+        const setupAlert = page.getByRole("alert");
+        await expect(setupAlert).toContainText("Connection failed");
+        await expect(setupAlert).toContainText(
+          "Telegram rejected bot token [redacted]. Confirm the token in BotFather and try again.",
+        );
+        await expect(page.locator("body")).not.toContainText(submittedToken);
+        const tokenInput = page.getByLabel("Bot token");
+        await expect(tokenInput).toHaveAttribute("type", "password");
+        await expect(tokenInput).toHaveValue(submittedToken);
+        await tokenInput.focus();
+        await tokenInput.press("Tab");
+        await expect(setupAlert).toBeVisible();
+
+        await page.getByRole("button", { name: provider.setupButton }).click();
+        await expect(setupAlert).toHaveCount(0);
+        expect(mock.setupAttempts).toBe(2);
+      }
 
       if (provider.provider === "slack") {
         await expect(
