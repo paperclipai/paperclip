@@ -2628,6 +2628,92 @@ describe("gemini ACP flag selection", () => {
     expect(result.errorMessage).toBe(expectedMessage);
     expect(cancelReasons).toContain(expectedMessage);
   }, 15_000);
+
+  it("kills the child and reports a distinct error when no ACP event arrives before the inactivity monitor fires", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const cwd = path.join(root, "worktree");
+    await fs.mkdir(cwd, { recursive: true });
+
+    const cancelReasons: string[] = [];
+    let releaseTurn: (() => void) | null = null;
+    const turnCancelled = new Promise<void>((resolve) => {
+      releaseTurn = resolve;
+    });
+    const startedAt = "2026-01-01T00:00:00.000Z";
+    const killedPids: number[] = [];
+    const originalKill = process.kill.bind(process);
+    const killSpy = vi.spyOn(process, "kill").mockImplementation((pid: number, signal?: string | number) => {
+      killedPids.push(pid as number);
+      // A synthetic pid is never a real process; swallow ESRCH like the real
+      // signalAdapterChild fallback does, so the monitor's kill attempt
+      // doesn't throw into the test.
+      try {
+        return originalKill(pid, signal as never);
+      } catch {
+        return true;
+      }
+    });
+
+    const execute = createAcpxEngineExecutor({
+      // Real-but-short: this exercises the same real setTimeout the monitor
+      // uses in production, just at a duration a test can afford to wait for.
+      outputInactivityTimeoutMs: 50,
+      createRuntime: (options) => {
+        const opts = options as AcpRuntimeOptions & {
+          onAgentSpawn?: (meta: { pid: number; startedAt: string }) => Promise<void>;
+        };
+        return {
+          ensureSession: async () => {
+            await opts.onAgentSpawn?.({ pid: 999_999, startedAt });
+            return {
+              backendSessionId: "backend-session",
+              agentSessionId: "agent-session",
+              runtimeSessionName: "runtime-session",
+            };
+          },
+          startTurn: () => ({
+            // Never yields an event on its own: only the inactivity monitor's
+            // fire-triggered cancel unblocks it, simulating a hung run.
+            events: (async function* () {
+              await turnCancelled;
+            })(),
+            result: turnCancelled.then(() => ({ status: "cancelled", stopReason: "cancelled" })),
+            cancel: async ({ reason }: { reason: string }) => {
+              cancelReasons.push(reason);
+              releaseTurn?.();
+            },
+          }),
+          close: async () => {},
+        } as never;
+      },
+    });
+
+    try {
+      const result = await execute({
+        runId: "run-inactivity-1",
+        agent: { id: "agent-1", companyId: "company-1" },
+        runtime: {},
+        config: {
+          agent: "custom",
+          agentCommand: "node ./fake-acp.js",
+          stateDir,
+          cwd,
+        },
+        context: {},
+        onLog: async () => {},
+        onMeta: async () => {},
+      } as never);
+
+      expect(result.timedOut).toBe(true);
+      expect(result.errorCode).toBe("acpx_output_inactivity_monitor");
+      expect(result.errorMessage).toContain("monitor: no acpx activity");
+      expect(cancelReasons).toEqual([result.errorMessage]);
+      expect(killedPids).toContain(999_999);
+    } finally {
+      killSpy.mockRestore();
+    }
+  }, 15_000);
 });
 
 describe("summarizeAcpxTurnUsage", () => {

@@ -112,6 +112,13 @@ import type {
   StartupResult,
   TurnCompletion,
 } from "./run-contracts.js";
+import {
+  createOutputInactivityMonitor,
+  formatOutputInactivityMonitorErrorMessage,
+  signalAdapterChild,
+  DEFAULT_OUTPUT_INACTIVITY_TIMEOUT_MS,
+  OUTPUT_INACTIVITY_MONITOR_SIGTERM_GRACE_MS,
+} from "../output-inactivity-monitor.js";
 import { createRunResourceLedger } from "./run-resource-ledger.js";
 import { settleAcpRun, type SettlementSteps } from "./settlement-sequence.js";
 import {
@@ -340,6 +347,12 @@ export interface AcpxRemoteManagedHomeResult {
 export interface AcpxEngineExecutorOptions {
   createRuntime?: AcpxRuntimeFactory;
   now?: () => number;
+  /**
+   * Kill the turn's child if no ACP event arrives for this long. Defaults to
+   * `DEFAULT_OUTPUT_INACTIVITY_TIMEOUT_MS` (30m); a test overrides it to a
+   * short value instead of waiting on the real default.
+   */
+  outputInactivityTimeoutMs?: number;
   warmHandles?: Map<string, RuntimeCacheEntry>;
   /**
    * Per-session staged-runtime cache for the remote runner-backed lane (PR 3).
@@ -3910,6 +3923,14 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
       // `endSession` step can cancel a running turn before it closes the runtime
       // (the cancel-before-close order). The turn wrapper assigns it in `turnStart`.
       let activeTurn: AcpRuntimeTurn | null = null;
+      // Fires SIGTERM (then SIGKILL after a grace period) at the child if a turn
+      // goes silent for too long — no relayed ACP event at all. This is the ACP
+      // lane's counterpart to the CLI lane's output-inactivity watchdog
+      // (`output-inactivity-monitor.ts`), fed here by every relayed turn event
+      // instead of raw stdout/stderr chunks.
+      let inactivityMonitor: ReturnType<typeof createOutputInactivityMonitor> | null = null;
+      let inactivityMonitorFired = false;
+      let inactivityMonitorElapsedMs = 0;
       // How the settlement `endSession` step must release the runtime for the path
       // this run took. Each exit path that acquired the runtime records it before it
       // returns; a build or create-runtime failure never registers the runtime, so
@@ -4560,6 +4581,29 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           signal,
         });
         activeTurn = turn;
+        inactivityMonitor = createOutputInactivityMonitor({
+          timeoutMs: deps.outputInactivityTimeoutMs ?? DEFAULT_OUTPUT_INACTIVITY_TIMEOUT_MS,
+          now,
+          onFire: (state) => {
+            inactivityMonitorFired = true;
+            const elapsedMs = (state.firedAt ?? Date.now()) - state.lastEventAt;
+            inactivityMonitorElapsedMs = elapsedMs;
+            const message = formatOutputInactivityMonitorErrorMessage(elapsedMs, "acpx");
+            void ctx
+              .onLog(
+                "stderr",
+                `[paperclip] adapter.invoke ${message}; terminating acpx child via SIGTERM (5s grace, then SIGKILL).\n`,
+              )
+              .catch(() => {});
+            const killTarget = { pid: processIdentitySink.latest?.pid ?? null, processGroupId: null };
+            signalAdapterChild(killTarget, "SIGTERM");
+            const sigkillTimer = setTimeout(() => {
+              signalAdapterChild(killTarget, "SIGKILL");
+            }, OUTPUT_INACTIVITY_MONITOR_SIGTERM_GRACE_MS);
+            sigkillTimer.unref?.();
+            void turn.cancel({ reason: message }).catch(() => {});
+          },
+        });
         return {
           cancel: async (reason: string) => {
             await turn.cancel({ reason });
@@ -4570,6 +4614,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         const turn = activeTurn as AcpRuntimeTurn;
         const toolTitles = new Map<string, string>();
         for await (const event of turn.events) {
+          inactivityMonitor?.noteProcessActivity();
           if (event.type === "text_delta" && event.stream !== "thought") {
             currentOutputChunk.push(event.text);
           } else if (event.type === "tool_call" && event.tag !== "tool_call_update") {
@@ -4586,14 +4631,16 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           await emitRuntimeEvent(ctx, event, toolTitles, prepared.coalescePlaceholderToolUpdates);
         }
         flushOutputSegment();
+        inactivityMonitor?.stop();
         return await turn.result;
       };
       const stepTurnFinalize = async (
         input: TurnFinalizeInput<AcpRuntimeTurnResult>,
       ): Promise<TurnCompletion> => {
+        inactivityMonitor?.stop();
         if (input.kind === "terminal") {
         const terminal = input.terminal;
-        const timedOut = input.timedOut;
+        const timedOut = input.timedOut || inactivityMonitorFired;
         // Read the sandbox duplex control-channel disposition at the ACP
         // terminal-finalization boundary, before the bridge teardown. A control
         // channel that died mid-turn latches a failure with a typed loss reason;
@@ -4670,11 +4717,13 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           skipRemoteClose: channelLost,
         };
 
-        const errorMessage = timedOut
-          ? formatAdapterExecutionTimeoutErrorMessage(prepared.timeoutResolution)
-          : channelLost
-            ? channelLostMessage
-            : resultErrorMessage(terminal);
+        const errorMessage = inactivityMonitorFired
+          ? formatOutputInactivityMonitorErrorMessage(inactivityMonitorElapsedMs, "acpx")
+          : timedOut
+            ? formatAdapterExecutionTimeoutErrorMessage(prepared.timeoutResolution)
+            : channelLost
+              ? channelLostMessage
+              : resultErrorMessage(terminal);
         const terminalStopReason = terminal.status === "failed" ? terminal.error.message : terminal.stopReason;
         await emitAcpxLog(ctx, {
           type: turnSucceeded ? "acpx.result" : "acpx.error",
@@ -4693,11 +4742,13 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           errorMessage,
           errorCode: terminal.status === "failed"
             ? "acpx_turn_failed"
-            : timedOut
-              ? "acpx_timeout"
-              : channelLost
-                ? DUPLEX_CHANNEL_LOST_ERROR_CODE
-                : null,
+            : inactivityMonitorFired
+              ? "acpx_output_inactivity_monitor"
+              : timedOut
+                ? "acpx_timeout"
+                : channelLost
+                  ? DUPLEX_CHANNEL_LOST_ERROR_CODE
+                  : null,
           sessionId: sessionHandle.backendSessionId ?? sessionHandle.runtimeSessionName,
           sessionParams: buildSessionParams({ prepared, handle: sessionHandle }),
           sessionDisplayId: sessionHandle.agentSessionId ?? sessionHandle.backendSessionId ?? sessionHandle.runtimeSessionName,
