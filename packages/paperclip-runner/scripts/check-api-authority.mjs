@@ -10,6 +10,7 @@ function run(args, cwd, env = process.env) {
   if (result.status !== 0) process.exit(result.status ?? 1);
 }
 
+run(["--filter", "@paperclipai/plugin-sdk", "ensure-build-deps"], fileURLToPath(new URL("../../../", import.meta.url)));
 run(["run", "build:binary"], fileURLToPath(new URL("../", import.meta.url)));
 run([
   "exec", "vitest", "run",
