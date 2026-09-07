@@ -25,6 +25,7 @@ const secrets = vi.hoisted(() => ({
   createUserSecretDefinition: vi.fn(),
   createMyUserSecret: vi.fn(),
   rotateMyUserSecret: vi.fn(),
+  removeUserSecretDefinition: vi.fn(),
 }));
 const state = vi.hoisted(() => ({
   params: new URLSearchParams(),
@@ -175,6 +176,7 @@ beforeEach(() => {
   secrets.listMyUserSecrets.mockResolvedValue([]);
   secrets.createUserSecretDefinition.mockResolvedValue({ id: "definition-1" });
   secrets.createMyUserSecret.mockResolvedValue({ id: "secret-1" });
+  secrets.removeUserSecretDefinition.mockResolvedValue({ ok: true });
 });
 afterEach(async () => {
   await act(async () => root.unmount());
@@ -258,6 +260,23 @@ describe("New agent setup", () => {
       });
     },
   );
+  it.each([
+    ["claude_local", "claude", "Claude", "ANTHROPIC_API_KEY"],
+    ["codex_local", "codex", "OpenAI", "OPENAI_API_KEY"],
+    ["paperclip_runner", "claude", "Claude", "ANTHROPIC_API_KEY"],
+    ["paperclip_runner", "codex", "OpenAI", "OPENAI_API_KEY"],
+  ])("stores %s %s API credentials only when finishing", async (adapter, runner, provider, key) => {
+    await render(adapter, runner);
+    await click("Use API key insteadUse subscription insteadUse API key instead");
+    await click(provider + "API");
+    await fill("API key", "connection-key");
+    await click("Connect");
+    expect(api.testEnvironment.mock.calls[0][2].testCredentials).toEqual({ [key]: "connection-key" });
+    expect(secrets.createUserSecretDefinition).not.toHaveBeenCalled();
+    await click("Finish setup");
+    expect(api.hire.mock.calls[0][1].adapterConfig.env[key].type).toBe("user_secret_ref");
+    expect(JSON.stringify(api.hire.mock.calls)).not.toContain("connection-key");
+  });
   it.each(["opencode_local", "pi_local"])(
     "persists %s OpenRouter credentials only as a secret reference",
     async (adapter) => {
@@ -266,18 +285,17 @@ describe("New agent setup", () => {
       await fill("OPENROUTER_API_KEY", "example-test-secret");
       await click("Run test");
       expect(secrets.rotateMyUserSecret).not.toHaveBeenCalled();
-      expect(secrets.createMyUserSecret).toHaveBeenCalledWith(
-        "company-1",
-        expect.objectContaining({ value: "example-test-secret" }),
-      );
-      const testedConfig = api.testEnvironment.mock.calls[0][2].adapterConfig;
-      expect(testedConfig.env.OPENROUTER_API_KEY).toEqual({
+      expect(secrets.createMyUserSecret).not.toHaveBeenCalled();
+      expect(api.testEnvironment.mock.calls[0][2].testCredentials).toEqual({ OPENROUTER_API_KEY: "example-test-secret" });
+      await click("Finish setup");
+      expect(api.hire.mock.calls[0][1].adapterConfig.env.OPENROUTER_API_KEY).toEqual({
         type: "user_secret_ref",
         key: expect.stringMatching(/^OPENROUTER_API_KEY\.setup\./),
         version: "latest",
       });
-      await click("Finish setup");
-      expect(api.hire.mock.calls[0][1].adapterConfig).toEqual(testedConfig);
+      expect(secrets.createMyUserSecret).toHaveBeenCalledWith(
+        "company-1", expect.objectContaining({ value: "example-test-secret" }),
+      );
       expect(JSON.stringify(api.hire.mock.calls)).not.toContain(
         "example-test-secret",
       );
@@ -321,10 +339,27 @@ describe("New agent setup", () => {
     api.testEnvironment.mockResolvedValueOnce({ ...pass, status: "fail" });
     await click("Run test");
     expect(secrets.rotateMyUserSecret).not.toHaveBeenCalled();
-    expect(secrets.createUserSecretDefinition.mock.calls[0][1].key).not.toBe("OPENROUTER_API_KEY");
-    expect(api.testEnvironment.mock.calls[0][2].adapterConfig.env.OPENROUTER_API_KEY.key).toMatch(/^OPENROUTER_API_KEY\.setup\./);
+    expect(secrets.createUserSecretDefinition).not.toHaveBeenCalled();
+    expect(api.testEnvironment.mock.calls[0][2].testCredentials.OPENROUTER_API_KEY).toBe("invalid-replacement");
     await click("Finish setup");
     expect(api.hire).not.toHaveBeenCalled();
+  });
+  it("does not store a key when leaving after a successful test", async () => {
+    await render();
+    await fill("Model", "openrouter/anthropic/claude-sonnet-4.6");
+    await fill("OPENROUTER_API_KEY", "abandoned-key");
+    await click("Run test");
+    await act(async () => root.render(null));
+    expect(secrets.createUserSecretDefinition).not.toHaveBeenCalled();
+  });
+  it("removes the staged credential when hiring fails", async () => {
+    await render();
+    await fill("Model", "openrouter/anthropic/claude-sonnet-4.6");
+    await fill("OPENROUTER_API_KEY", "new-key");
+    api.hire.mockRejectedValueOnce(new Error("Creation rejected"));
+    await click("Finish setup");
+    expect(secrets.removeUserSecretDefinition).toHaveBeenCalledWith("company-1", "definition-1");
+    expect(container.textContent).toContain("Creation rejected");
   });
   it("requires an explicit provider/model for Pi", async () => {
     await render();

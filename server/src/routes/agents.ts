@@ -3128,6 +3128,14 @@ export function agentRoutes(
           return;
         }
 
+        // Probe-only credentials bypass storage, not authorization. The schema
+        // allows only provider key names; they never enter persisted config.
+        if (req.body.testCredentials) {
+          effectiveAdapterConfig = {
+            ...effectiveAdapterConfig,
+            env: { ...parseObject(effectiveAdapterConfig.env), ...req.body.testCredentials },
+          };
+        }
         const result = await adapter.testEnvironment({
           companyId,
           adapterType: type,

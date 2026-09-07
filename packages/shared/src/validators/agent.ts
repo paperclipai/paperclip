@@ -228,6 +228,16 @@ export const resetAgentSessionSchema = z.object({
 export type ResetAgentSession = z.infer<typeof resetAgentSessionSchema>;
 
 export const testAdapterEnvironmentSchema = z.object({
+  /** One-shot provider keys for a probe. Never persist these in agent config. */
+  testCredentials: z.object({
+    ANTHROPIC_API_KEY: z.string().max(16384),
+    OPENAI_API_KEY: z.string().max(16384),
+    OPENROUTER_API_KEY: z.string().max(16384),
+    GEMINI_API_KEY: z.string().max(16384),
+    XAI_API_KEY: z.string().max(16384),
+    GROQ_API_KEY: z.string().max(16384),
+    OPENCODE_API_KEY: z.string().max(16384),
+  }).partial().strict().optional(),
   adapterConfig: adapterConfigSchema.optional().default({}),
   /**
    * Optional environment to run the adapter test inside. When omitted, the

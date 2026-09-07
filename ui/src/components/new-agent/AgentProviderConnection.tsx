@@ -3,7 +3,6 @@ import { useQuery } from "@tanstack/react-query";
 import { motion } from "motion/react";
 import { agentsApi } from "@/api/agents";
 import { queryKeys } from "@/lib/queryKeys";
-import { storeProviderApiKey } from "@/lib/provider-credential";
 import { AdapterLoginPanel } from "../AgentConfigForm";
 import {
   OnboardingCardField,
@@ -18,6 +17,8 @@ import type { EnvBinding } from "@paperclipai/shared";
 
 export type ProviderConnection = {
   env: Record<string, EnvBinding>;
+  /** Kept in memory until the user finishes setup. */
+  credentials?: Record<string, string>;
   storedSessionId?: string;
   applyStoredClaudeLogin?: boolean;
 };
@@ -85,9 +86,8 @@ export function AgentProviderConnection({
       const connection =
         method === "api"
           ? (storedConnection ?? {
-              env: {
-                [envKey]: await storeProviderApiKey(companyId, envKey, apiKey),
-              },
+              env: {},
+              credentials: { [envKey]: apiKey.trim() },
             })
           : {
               env: {},
@@ -180,7 +180,7 @@ export function AgentProviderConnection({
                   value={apiKey}
                   placeholder={
                     storedConnection
-                      ? "Key saved. Retry the connection."
+                      ? "Key entered. Retry the connection."
                       : "Enter API key here"
                   }
                   onChange={(value) => {

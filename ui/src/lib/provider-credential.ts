@@ -10,8 +10,8 @@ export const PROVIDER_ENV_KEYS: Record<string, string> = {
   opencode: "OPENCODE_API_KEY",
 };
 
-/** Store an isolated setup credential. Never rotate a key used by other agents,
- * including when a later connection test fails or the user leaves the wizard. */
+/** Store a validated key during agent creation without rotating other agents’
+ * credentials. The caller removes this definition if creation fails. */
 export async function storeProviderApiKey(
   companyId: string,
   envKey: string,
@@ -23,14 +23,19 @@ export async function storeProviderApiKey(
     name: `${envKey} · agent setup`,
     description: "Model provider credential for a new agent setup.",
   });
-  await secretsApi.createMyUserSecret(companyId, {
-    definitionId: definition.id,
-    definitionKey: key,
-    value: value.trim(),
-  });
+  const remove = () => secretsApi.removeUserSecretDefinition(companyId, definition.id);
+  try {
+    await secretsApi.createMyUserSecret(companyId, {
+      definitionId: definition.id,
+      definitionKey: key,
+      value: value.trim(),
+    });
+  } catch (error) {
+    await remove();
+    throw error;
+  }
   return {
-    type: "user_secret_ref" as const,
-    key,
-    version: "latest" as const,
+    binding: { type: "user_secret_ref" as const, key, version: "latest" as const },
+    remove,
   };
 }

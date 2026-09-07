@@ -9,10 +9,12 @@ export async function testAgentSetup(input: {
   adapterType: string;
   providerAdapter: string;
   adapterConfig: Record<string, unknown>;
+  testCredentials?: Record<string, string>;
   environmentId: string | null;
 }): Promise<AdapterEnvironmentTestResult> {
   const payload = {
     adapterConfig: input.adapterConfig,
+    ...(input.testCredentials ? { testCredentials: input.testCredentials } : {}),
     environmentId: input.environmentId,
   };
   const runtime = await agentsApi.testEnvironment(

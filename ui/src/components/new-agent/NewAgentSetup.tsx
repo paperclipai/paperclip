@@ -308,7 +308,7 @@ function Setup({
       Object.assign(config, { repository, branch });
     return config;
   }
-  async function preparedConfig(nextConnection = connection) {
+  function preparedConfig(nextConnection = connection) {
     if (multiProvider && (!model.trim() || !model.includes("/")))
       throw new Error("Choose or enter a model in provider/model format.");
     if (
@@ -316,17 +316,15 @@ function Setup({
       !/^https:\/\/github\.com\/[^/]+\/[^/]+/.test(repository)
     )
       throw new Error("Enter a GitHub repository URL.");
-    let binding = providerBinding;
-    if (multiProvider && apiKey.trim()) {
-      binding = await storeProviderApiKey(companyId, envKey, apiKey);
-      setProviderBinding(binding);
-      setApiKey("");
-      void cache.invalidateQueries({
-        queryKey: queryKeys.secrets.myUserSecrets(companyId),
-      });
-    }
-    return buildConfig(nextConnection, binding);
+    return buildConfig(nextConnection);
   }
+  function pendingCredentials(nextConnection = connection) {
+    return {
+      ...nextConnection?.credentials,
+      ...(multiProvider && apiKey.trim() ? { [envKey]: apiKey.trim() } : {}),
+    };
+  }
+
   async function runTest(nextConnection = connection): Promise<boolean> {
     if (!ready) return false;
     const run = ++generation.current;
@@ -340,6 +338,7 @@ function Setup({
         adapterType,
         providerAdapter: brandType,
         adapterConfig: config,
+        testCredentials: pendingCredentials(nextConnection),
         environmentId,
       });
       if (run !== generation.current) return false;
@@ -377,8 +376,18 @@ function Setup({
     savingRef.current = true;
     setSaving(true);
     setError(null);
+    const staged: Awaited<ReturnType<typeof storeProviderApiKey>>[] = [];
+    let hired = false;
     try {
-      const config = await preparedConfig();
+      const config = preparedConfig();
+      const credentials = pendingCredentials();
+      // Untested entered keys must pass a probe before they can be stored.
+      if (Object.keys(credentials).length && !(await runTest())) return;
+      for (const [key, value] of Object.entries(credentials)) {
+        const secret = await storeProviderApiKey(companyId, key, value);
+        staged.push(secret);
+        config.env = { ...((config.env as object) ?? {}), [key]: secret.binding };
+      }
       const existing = agents.data ?? [];
       const leader = existing.find(
         (agent) => agent.role === "ceo" && agent.status !== "terminated",
@@ -401,6 +410,9 @@ function Setup({
           ? { applyStoredClaudeLogin: true }
           : {}),
       });
+      hired = true;
+      setApiKey("");
+      setConnection(null);
       setCreated(response.agent);
       setScreen("saved");
       navigate(
@@ -422,6 +434,11 @@ function Setup({
         cause instanceof Error ? cause.message : "Could not create the agent.",
       );
     } finally {
+      if (!hired) {
+        try { await Promise.all(staged.map((secret) => secret.remove())); }
+        catch { setError("Could not remove an unused setup credential. Remove it from My Secrets before retrying."); }
+      }
+      void cache.invalidateQueries({ queryKey: queryKeys.secrets.myUserSecrets(companyId) });
       savingRef.current = false;
       setSaving(false);
     }

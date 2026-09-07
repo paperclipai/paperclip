@@ -189,6 +189,26 @@ describe("agent test-environment route", () => {
     await unregisterTestAdapter("external_test");
   });
 
+  it("passes one-shot provider credentials only to the probe, never persistence normalization", async () => {
+    const app = await createApp();
+    const res = await request(app)
+      .post("/api/companies/company-1/adapters/external_test/test-environment")
+      .send({ adapterConfig: { env: { KEEP: "value" } }, testCredentials: { OPENROUTER_API_KEY: "probe-only-key" } });
+    expect(res.status).toBe(200);
+    expect(mockSecretService.normalizeAdapterConfigForPersistence.mock.calls[0]?.[1]).toEqual({ env: { KEEP: "value" } });
+    expect(testEnvironmentSpy.mock.calls[0]?.[0].config.env).toEqual({ KEEP: "value", OPENROUTER_API_KEY: "probe-only-key" });
+    expect(JSON.stringify(res.body)).not.toContain("probe-only-key");
+  });
+
+  it("rejects non-provider variables in one-shot credentials", async () => {
+    const app = await createApp();
+    const res = await request(app)
+      .post("/api/companies/company-1/adapters/external_test/test-environment")
+      .send({ testCredentials: { NODE_OPTIONS: "--require unsafe" } });
+    expect(res.status).toBe(400);
+    expect(testEnvironmentSpy).not.toHaveBeenCalled();
+  });
+
   it("does not fall back to a host probe when a requested environment cannot produce an execution target", async () => {
     const app = await createApp();
 
