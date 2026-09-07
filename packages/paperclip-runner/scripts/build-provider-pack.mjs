@@ -9,12 +9,14 @@ import {
   readdirSync,
   readFileSync,
   readlinkSync,
+  realpathSync,
   renameSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
+import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -127,6 +129,22 @@ try {
     throw new Error(`pnpm deploy failed with exit code ${deployed.status}`);
   }
 
+  // Fail the image build if a bridge silently brings back an older/private
+  // provider CLI. A direct dependency alone does not deduplicate pnpm's graph.
+  const packRequire = createRequire(join(temporaryRoot, "package.json"));
+  for (const [bridge, runtime] of [
+    ["@agentclientprotocol/codex-acp", "@openai/codex"],
+    ["@agentclientprotocol/claude-agent-acp", "@anthropic-ai/claude-agent-sdk"],
+  ]) {
+    const bridgeRequire = createRequire(packRequire.resolve(`${bridge}/package.json`));
+    // Claude SDK exports its entrypoint but intentionally hides package.json.
+    const entrypoint = runtime === "@openai/codex" ? `${runtime}/package.json` : runtime;
+    if (realpathSync(bridgeRequire.resolve(entrypoint)) !==
+        realpathSync(packRequire.resolve(entrypoint))) {
+      throw new Error(`${bridge} must share the image's ${runtime} installation`);
+    }
+  }
+
   // Reuse the already-qualified build interpreter instead of introducing a
   // package-manager lifecycle hook or a second binary supply chain. The pack
   // manifest binds the copied bytes, platform, architecture, and minimum
@@ -158,6 +176,20 @@ try {
   // every build and leaks a nonexistent host path after relocation. Replace
   // every provider-facing shim with a pack-relative launcher that always uses
   // the pinned Node executable owned by this pack.
+  // The image exposes these same installations to every adapter. Never add a
+  // separate global/runner-only CLI version; refresh these packages and their
+  // qualification digests together to the latest stable releases.
+  writePortableNodeShim("codex", "@openai/codex/bin/codex.js");
+  const sdkRequire = createRequire(
+    realpathSync(join(temporaryRoot, "node_modules/@anthropic-ai/claude-agent-sdk/package.json")),
+  );
+  const claudeExecutable = sdkRequire.resolve(
+    `@anthropic-ai/claude-agent-sdk-${process.platform}-${process.arch}/claude`,
+  );
+  writePortableExecutableShim(
+    "claude",
+    relative(join(temporaryRoot, "node_modules"), realpathSync(claudeExecutable)),
+  );
   writePortableExecutableShim("node", "node/bin/node");
   writePortableExecutableShim("opencode", "opencode-ai/bin/opencode.exe");
   writePortableNodeShim("acpx", "acpx/dist/cli.js");
@@ -262,8 +294,8 @@ try {
   const payload = {
     pins: {
       nodeMinimum: minimumNodeVersion.join("."),
-      codex: "0.148.0",
-      opencode: "1.18.17",
+      codex: "0.153.4",
+      opencode: "1.18.29",
       acpx: "0.13.1",
       claudeAcp: "0.70.0",
       codexAcp: "1.6.2",

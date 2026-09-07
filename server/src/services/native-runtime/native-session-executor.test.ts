@@ -624,8 +624,8 @@ describe("remote provider pack manifest", () => {
     const payload = {
       pins: {
         nodeMinimum: "24.11.0",
-        codex: "0.148.0",
-        opencode: "1.18.17",
+        codex: "0.153.4",
+        opencode: "1.18.29",
         acpx: "0.13.1",
         claudeAcp: "0.70.0",
         codexAcp: "1.6.2",
@@ -682,7 +682,7 @@ describe("remote provider pack manifest", () => {
       );
     await writeManifest();
     expect(readRemoteProviderPackManifest(root).payload.pins.opencode).toBe(
-      "1.18.17",
+      "1.18.29",
     );
     for (const [artifactName, substituteName] of [
       ["nodeCommand", "productionLock"],
@@ -6011,7 +6011,7 @@ describe("runnerd provider runtime wiring", () => {
     );
   });
 
-  it("uses the image's isolated Codex without uploading or installing artifacts", async () => {
+  it("uses the image's shared Codex without uploading or installing artifacts", async () => {
     const syncIn = vi.fn(async () => undefined);
     const remoteExecute = vi.fn(
       async (command: { command: string; args?: string[] }) => {
@@ -6033,10 +6033,7 @@ describe("runnerd provider runtime wiring", () => {
           ) {
             throw new Error("reached-preinstalled-codex-verification");
           }
-          stdout =
-            command.command === "/opt/paperclip-runner/bin/codex"
-              ? "codex-cli 0.148.0"
-              : "codex-cli 0.128.0";
+          stdout = "codex-cli 0.153.4";
         } else if (script.includes("command -v paperclip-runnerd")) {
           stdout = "/usr/local/bin/paperclip-runnerd\n";
         } else if (script.includes("command -v codex")) {

@@ -5036,8 +5036,8 @@ const RUNNERD_BINARY_CONTRACT_VERSION = 2;
 const REMOTE_PROVIDER_PACK_SCHEMA = "paperclip-runner/remote-provider-pack/v1";
 const REMOTE_PROVIDER_PACK_PINS = {
   nodeMinimum: "24.11.0",
-  codex: "0.148.0",
-  opencode: "1.18.17",
+  codex: "0.153.4",
+  opencode: "1.18.29",
   acpx: "0.13.1",
   claudeAcp: "0.70.0",
   codexAcp: "1.6.2",
@@ -6463,6 +6463,9 @@ async function createRunnerdBackendWithinSessionClaim(
     return parseRemoteExecutableCandidate(result.stdout);
   };
 
+  // Image policy: keep one latest stable CLI installation shared by native and
+  // local adapters. Preferred bin entries must point to that same installation;
+  // never bake an older global CLI alongside a private runner-only version.
   const discoverPreinstalledExecutable = async (
     name: "paperclip-runnerd" | "codex",
   ) => {

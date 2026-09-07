@@ -34,7 +34,7 @@ async function fixture() {
     provider: "opencode",
     driver: "opencode_server",
     model: "openrouter/example/model",
-    opencodeVersion: "1.18.17",
+    opencodeVersion: "1.18.29",
   };
   const evalCase = {
     schema: "paperclip-runner/eval-case/v1",

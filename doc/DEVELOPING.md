@@ -809,14 +809,19 @@ assigned workspace is rejected before provider startup.
 
 ### Preinstalled remote runner runtime
 
-For fast sandbox startup, bake `paperclip-runnerd` and the runner's pinned
-Codex version into the sandbox image. Native runner discovery checks
-`/opt/paperclip-runner/bin` before the user's local bin directory and PATH.
-This lets the image retain its existing global Codex version for legacy
-adapters while the native runner uses its own verified copy. With these
-artifacts preinstalled, runner startup links and verifies them without
-uploading a binary or installing packages. Deploy the updated sandbox image
-with this discovery change.
+For fast sandbox startup, bake `paperclip-runnerd` and the latest stable agent
+CLIs into the sandbox image. Keep one version of each CLI shared by native and
+local adapters; never retain an older global CLI beside a newer private copy.
+Pin the resolved releases at image build time for reproducibility and refresh
+the runner's qualification versions and binary digests together with those pins.
+The ACP bridges remain separately qualified protocol dependencies.
+
+Native discovery checks `/opt/paperclip-runner/bin`, then `$HOME/.local/bin`,
+then PATH. Any preferred-directory entry must launch the same shared CLI that
+normal adapters use. Discovery picks the first executable; it does not compare
+versions across directories. With these artifacts preinstalled, startup links
+and verifies them without uploading a binary or installing packages. Deploy
+the updated sandbox image with the matching runner qualification changes.
 
 ### Native runner restart recovery
 

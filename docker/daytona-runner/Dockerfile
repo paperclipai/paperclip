@@ -38,7 +38,8 @@ ARG PAPERCLIP_RUNNER_SOURCE_REVISION
 RUN test -n "${PAPERCLIP_RUNNER_SOURCE_REVISION}"
 RUN pnpm --filter @paperclipai/paperclip-runner build:typescript \
     && PAPERCLIP_RUNNER_SOURCE_REVISION="${PAPERCLIP_RUNNER_SOURCE_REVISION}" \
-      node packages/paperclip-runner/scripts/build-provider-pack.mjs /provider-pack
+      node packages/paperclip-runner/scripts/build-provider-pack.mjs /provider-pack \
+    && chmod -R a+rX /provider-pack
 
 # Fleet sandbox base image. Keep this section aligned with
 # paperclipai/paperclip-cloud/fleet-sandbox-image/Dockerfile. The only Paperclip
@@ -50,19 +51,19 @@ USER root
 ENV PAPERCLIP_RUNNER_PROVIDER_PACK_ROOT=/opt/paperclip-runner/provider-pack
 ENV PATH=${PAPERCLIP_RUNNER_PROVIDER_PACK_ROOT}/node_modules/.bin:/usr/local/share/nvm/current/bin:/usr/local/python/current/bin:/usr/local/py-utils/bin:${PATH}
 
-RUN npm install -g \
-      @anthropic-ai/claude-code@2.1.19 \
-      @openai/codex@0.148.0 \
-      @xai-official/grok@1.0.3 \
-      @google/gemini-cli@0.56.0 \
-      @moonshot-ai/kimi-code@0.38.0 \
-      opencode-ai@1.18.17 \
+# Share the pack's latest stable Codex, Claude and OpenCode with every adapter.
+# Never add a second CLI version to work around a runner compatibility pin.
+RUN npm uninstall -g @anthropic-ai/claude-code @openai/codex opencode-ai \
+    && npm install -g \
+      @xai-official/grok@1.0.13 \
+      @google/gemini-cli@0.58.0 \
+      @moonshot-ai/kimi-code@0.41.0 \
     && npm cache clean --force
 
-RUN pip install --no-cache-dir --break-system-packages hermes-agent==0.15.2
+RUN pip install --no-cache-dir --break-system-packages hermes-agent==0.19.0
 
-ARG CURSOR_VERSION=2026.08.11-e8db854
-ARG CURSOR_SHA256_AMD64=bfff4bf6f4e9dd30c1d0ef0a70b6077b074015dd2948e4c50685d53afdcfce5a
+ARG CURSOR_VERSION=2026.09.02-c22c1a3
+ARG CURSOR_SHA256_AMD64=b73b59854762535c0fc20d7ccc51c3b5a356a851491088d60a362be48750f53c
 RUN set -eu; \
     arch="$(dpkg --print-architecture)"; \
     [ "$arch" = "amd64" ] || { echo "FATAL: cursor pin only covers amd64, not $arch" >&2; exit 1; }; \
@@ -76,8 +77,8 @@ RUN set -eu; \
     ln -sf /usr/local/bin/cursor-agent /usr/local/bin/agent; \
     chmod -R a+rX /opt/cursor
 
-ARG GH_VERSION=2.98.0
-ARG GH_SHA256_AMD64=3b8ac6b30336802fc1a858d7c084e11cdf24ac1a761ca90b68022d7d729208de
+ARG GH_VERSION=2.100.0
+ARG GH_SHA256_AMD64=e4d4bb4498e8d007abe545b6568926793ace1b6447da598294a610018cb164be
 RUN set -eu; \
     arch="$(dpkg --print-architecture)"; \
     [ "$arch" = "amd64" ] || { echo "FATAL: gh pin only covers amd64, not $arch" >&2; exit 1; }; \
@@ -90,6 +91,10 @@ RUN set -eu; \
 
 COPY --from=runnerd-build /workspace/packages/paperclip-runner/runner/target/release/paperclip-runnerd /usr/local/bin/paperclip-runnerd
 COPY --from=provider-pack-build /provider-pack /opt/paperclip-runner/provider-pack
+RUN set -eu; for cli in codex claude opencode; do \
+      printf '#!/bin/sh\nexec /opt/paperclip-runner/provider-pack/node_modules/.bin/%s "$@"\n' "$cli" > "/usr/local/bin/$cli"; \
+      chmod 755 "/usr/local/bin/$cli"; \
+    done
 
 # Keep revision-dependent metadata below the stable agent CLI installation
 # layers. A source-only image miss can then reuse those expensive layers from
@@ -100,7 +105,6 @@ RUN test -n "${PAPERCLIP_RUNNER_CONTENT_ID}" \
     && test -n "${PAPERCLIP_RUNNER_SOURCE_REVISION}"
 
 RUN set -eu; \
-    chmod -R a+rX /opt/paperclip-runner/provider-pack; \
     printf '%s\n' 'export PATH=/opt/paperclip-runner/provider-pack/node_modules/.bin:$PATH' \
       > /etc/profile.d/01-paperclip-runner-provider-pack.sh; \
     chmod 0644 /etc/profile.d/01-paperclip-runner-provider-pack.sh; \

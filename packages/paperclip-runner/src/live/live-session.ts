@@ -924,7 +924,7 @@ export class CapabilityLiveSessionService {
               ? "aws_agentcore_harness_api"
           : input.provider === "acpx" ? "acpx_runtime" : "codex_app_server",
         providerVersion: input.provider === "opencode"
-          ? "1.18.17"
+          ? "1.18.29"
           : input.provider === "claude_managed"
             ? input.managedProfile!.agentVersion
             : input.provider === "aws_agentcore"

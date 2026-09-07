@@ -158,10 +158,12 @@
   "dependencies": {
     "@agentclientprotocol/claude-agent-acp": "0.70.0",
     "@agentclientprotocol/codex-acp": "1.6.2",
+    "@anthropic-ai/claude-agent-sdk": "0.3.263",
+    "@openai/codex": "0.153.4",
     "acpx": "0.13.1",
     "ajv": "^8.20.0",
     "json-schema-to-ts": "^3.1.1",
-    "opencode-ai": "1.18.17",
+    "opencode-ai": "1.18.29",
     "react-markdown": "^10.1.0",
     "remark-gfm": "^4.0.1"
   },

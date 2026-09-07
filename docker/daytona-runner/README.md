@@ -2,7 +2,7 @@
 
 This image is the Paperclip Cloud fleet sandbox image plus a source-built
 `paperclip-runnerd` and immutable provider pack. The pack contains Node 24.11,
-OpenCode 1.18.17, the compiled OpenCode proxy, ACPX 0.13.1 sidecar, qualified ACP
+OpenCode 1.18.29, the compiled OpenCode proxy, ACPX 0.13.1 sidecar, qualified ACP
 agents, and the production lockfile. Its manifest digests each executable bridge
 and binds the pack to the runner source revision, avoiding artifact upload and
 npm installation on every fresh lease.
