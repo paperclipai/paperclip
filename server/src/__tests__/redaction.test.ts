@@ -129,6 +129,22 @@ describe("redaction", () => {
     });
   });
 
+  it("redacts scalars nested under array-of-object elements at an allowlisted path", () => {
+    const secretValue = "must-not-survive-under-array-object";
+
+    // `heartbeat.enabled` is an allowlisted scalar path, but a malformed
+    // array of objects at `heartbeat` must not let `heartbeat[0].enabled`
+    // inherit that public status once object recursion resumes inside the
+    // array — the array's `insideArray` state must propagate to descendants.
+    const runtimeResult = redactConfigurationPayload({
+      heartbeat: [{ enabled: secretValue }],
+    }, "runtime");
+    expect(runtimeResult).toEqual({
+      heartbeat: [{ enabled: REDACTED_EVENT_VALUE }],
+    });
+    expect(JSON.stringify(runtimeResult)).not.toContain(secretValue);
+  });
+
   it("restores round-tripped redaction markers without discarding intentional edits", () => {
     const existing = {
       model: "old-model",

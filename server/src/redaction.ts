@@ -1081,7 +1081,10 @@ function redactConfigurationValue(
   }
   return Object.fromEntries(Object.entries(value).map(([childKey, child]) => [
     childKey,
-    redactConfigurationValue(child, [...path, childKey], surface),
+    // Preserve `insideArray` through object recursion: a scalar nested under
+    // an array element (e.g. `heartbeat[0].enabled`) must not be mistaken
+    // for the public `heartbeat.enabled` scalar once inside array descent.
+    redactConfigurationValue(child, [...path, childKey], surface, insideArray),
   ]));
 }
 
