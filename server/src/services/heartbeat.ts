@@ -11075,14 +11075,45 @@ export function heartbeatService(
       // finish some later run. finalizeAgentStatus re-reads the agent, no-ops on
       // paused/terminated, and recomputes from the running-run count, so a
       // concurrently live second run still holds the agent at "running".
-      await finalizeAgentStatus(terminalRun.agentId, terminalStatus, terminalRun.error ?? null, {
-        wasFirstHeartbeat: timerClaimWasFirstHeartbeat(terminalRun),
-      }).catch((agentStatusErr) => {
+      //
+      // There is no periodic sweep that reconciles a latched "running" status on
+      // its own (confirmed by reading `sweepStaleIssueLocks`, MAS-116: it walks
+      // issue lock columns, and by the time a lease is released those columns
+      // are typically already cleared, so it does not reliably catch this case)
+      // — so a failure here is not self-healing until the agent's *next* run
+      // completes, which for a quiet seat may be a long time or never (MAS-98/
+      // MAS-114 latch signature). A single bounded retry (not an unbounded loop
+      // — that is the same defect class as the continuation-cap bug above) gives
+      // a transient DB blip one more chance; if it still fails we escalate the
+      // log level so the failure is not silently swallowed, since we do not yet
+      // have durable-repair-marker infrastructure to requeue this out-of-band.
+      try {
+        await finalizeAgentStatus(terminalRun.agentId, terminalStatus, terminalRun.error ?? null, {
+          wasFirstHeartbeat: timerClaimWasFirstHeartbeat(terminalRun),
+        });
+      } catch (agentStatusErr) {
         logger.warn(
           { err: agentStatusErr, runId: run.id, agentId: terminalRun.agentId },
-          "failed to finalize agent status after lease-release terminalization",
+          "failed to finalize agent status after lease-release terminalization; retrying once",
         );
-      });
+        try {
+          await finalizeAgentStatus(terminalRun.agentId, terminalStatus, terminalRun.error ?? null, {
+            wasFirstHeartbeat: timerClaimWasFirstHeartbeat(terminalRun),
+          });
+        } catch (retryErr) {
+          // Both attempts failed. This agent may now be latched at "running" with
+          // no live run behind it until its next run completes and recomputes the
+          // status from the running-run count (see finalizeAgentStatus above).
+          // Logged at error, not warn: this is the exact latch signature MAS-98/
+          // MAS-114 investigated as a false "availability outage", so it needs to
+          // be findable rather than buried in routine warn-level noise.
+          logger.error(
+            { err: retryErr, runId: run.id, agentId: terminalRun.agentId, terminalStatus },
+            "failed to finalize agent status after lease-release terminalization on retry; " +
+              "agent may be latched at a stale status until its next run completes",
+          );
+        }
+      }
     }
     return terminalRun ?? run;
   }

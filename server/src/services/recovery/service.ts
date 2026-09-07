@@ -414,6 +414,20 @@ const NON_RETRYABLE_CONTINUATION_ERROR_CODES = new Set<string>([
   "issue_dependencies_blocked",
 ]);
 
+// Maps an error code to the failure *class* used by the continuation retry-streak
+// cap (`match: "error_class"`). Both TRANSIENT_INFRA and HOST_FAULT are multi-code
+// buckets on purpose: a flaky adapter/network can legitimately alternate between
+// codes within the same class from one retry to the next (adapter_failed → timeout
+// → adapter_failed is still one ongoing "the adapter/network is flaky" failure, not
+// three distinct ones), and the cap must treat that as a single streak or it never
+// becomes reachable — see MAS-93 / MAS-614.
+function continuationErrorClassOf(errorCode: string | null): "transient_infra" | "host_fault" | null {
+  if (!errorCode) return null;
+  if (TRANSIENT_INFRA_CONTINUATION_ERROR_CODES.has(errorCode)) return "transient_infra";
+  if (HOST_FAULT_CONTINUATION_ERROR_CODES.has(errorCode)) return "host_fault";
+  return null;
+}
+
 // A continuation cancelled with this code is a *deliberate wait* (the latest run
 // reported it was parked for review/approval), not a lost execution path. When the
 // issue has a real waiting target we convert it into a normal dependency wait rather
@@ -803,11 +817,17 @@ export function recoveryService(
    *  - `match: "recovery_lineage"` — reason- and error-code-agnostic. Used by the
    *    continuation cap for `default`-class failures, because cap=1 means any single
    *    failed lineage run exhausts the budget.
-   *  - `match: "error_code"` — pins `errorCode` only, still counts any lineage run.
-   *    Used for `transient_infra` and `host_fault` classes: a different error code in
-   *    the chain represents a different failure mode and should reset the streak for the
-   *    current code. This lets `adapter_failed` x2 → `timeout` x1 → `adapter_failed` (latest)
-   *    count as consecutive=1 (not 3), preventing mixed-cause runs from exhausting the cap.
+   *  - `match: "error_class"` — pins the failure *class* (`transient_infra` or
+   *    `host_fault`), not the literal `errorCode`. Used for those two classes: they
+   *    each bundle several distinct error codes that are all the same failure mode
+   *    (a flaky adapter/network can legitimately alternate between them run to run —
+   *    MAS-93's "retry chains ran unbounded, observed depth 11" defect was exactly a
+   *    chain that alternated codes within one class and so never tripped an
+   *    exact-code match). This lets `adapter_failed` x2 → `timeout` x1 →
+   *    `adapter_failed` (latest) count as consecutive=3, still exhausting the shared
+   *    budget for the class, while a `transient_infra` run never counts against a
+   *    `host_fault` streak or vice versa (those two classes have different caps and
+   *    backoffs on purpose — see `CONTINUATION_RECOVERY_*_MAX_ATTEMPTS`).
    *  - `match: "exact"` — pins `retryReason` and `errorCode`. Used by the
    *    accepted-interaction requeue guard, which is deliberately counting one
    *    specific cancellation code and nothing else.
@@ -824,8 +844,8 @@ export function recoveryService(
       match: "recovery_lineage";
       since?: Date | null;
     } | {
-      match: "error_code";
-      errorCodeToMatch: string | null;
+      match: "error_class";
+      errorClassToMatch: "transient_infra" | "host_fault";
       since?: Date | null;
     } | {
       match: "exact";
@@ -874,12 +894,15 @@ export function recoveryService(
         continue;
       }
 
-      if (opts.match === "error_code") {
+      if (opts.match === "error_class") {
         // Only lineage retries (not the original failed run) count against the cap.
         if (!isRecoveryLineageRun(row)) continue;
-        // A different error code in the chain is a different failure mode — stop the
-        // streak for the current code so mixed-cause histories do not exhaust the cap.
-        if (readNonEmptyString(row.errorCode) !== opts.errorCodeToMatch) break;
+        // Bucket by failure *class*, not literal error code: a flaky adapter/network
+        // can alternate between codes in the same class run to run (adapter_failed,
+        // timeout, ...), and that is still one ongoing failure mode against the
+        // class's shared budget. A code from the *other* class (or an unclassified
+        // one) is a genuinely different failure mode and stops the streak.
+        if (continuationErrorClassOf(readNonEmptyString(row.errorCode)) !== opts.errorClassToMatch) break;
         consecutive += 1;
         continue;
       }
@@ -3689,14 +3712,17 @@ export function recoveryService(
         }
 
         if (didRecoveryLineageRunFail(latestRun)) {
-          // `transient_infra` and `host_fault` classes pin to the same error code so
-          // that a mixed-cause chain (e.g. adapter_failed → timeout → adapter_failed)
-          // does not exhaust the cap for the *current* error code. `default` class uses
-          // lineage mode: cap=1 means any single failed lineage run exhausts it, so the
-          // code pinning is irrelevant, and lineage mode is simpler.
+          // `transient_infra` and `host_fault` classes pin to the failure *class*, not
+          // the exact error code, so a mixed-cause chain within one class (e.g.
+          // adapter_failed → timeout → adapter_failed) still accumulates against that
+          // class's shared cap instead of resetting on every code change (MAS-93 /
+          // MAS-614: the reset-on-change behavior made the cap unreachable for the
+          // realistic case of an alternating flaky adapter/network). `default` class
+          // uses lineage mode: cap=1 means any single failed lineage run exhausts it,
+          // so class pinning is irrelevant there, and lineage mode is simpler.
           const streakMode: Parameters<typeof summarizeRecentContinuationRetries>[3] =
             classification.kind === "transient_infra" || classification.kind === "host_fault"
-              ? { match: "error_code", errorCodeToMatch: classification.errorCode }
+              ? { match: "error_class", errorClassToMatch: classification.kind }
               : { match: "recovery_lineage" };
           const { consecutive, latestFinishedAt } = await summarizeRecentContinuationRetries(
             issue.companyId,

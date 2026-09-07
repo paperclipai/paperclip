@@ -8813,7 +8813,14 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
   });
 
-  it("does not count mixed-cause continuation failures toward the transient cap", async () => {
+  it("counts mixed-cause continuation failures within one class toward the shared cap (MAS-614)", async () => {
+    // Regression for Greptile finding #1 on PR #12946: the old `error_code` exact-match
+    // mode reset the streak on every error-code change, so a chain alternating
+    // adapter_failed -> timeout -> adapter_failed never reached the cap (this is the
+    // same "retry chains ran unbounded" defect MAS-93 was meant to close). The fixed
+    // `error_class` mode buckets both codes as `transient_infra` and accumulates them
+    // against the shared budget, so this mixed-cause chain of 4 unsuccessful lineage
+    // runs (cap=3) now escalates instead of requeuing indefinitely.
     const { companyId, agentId, issueId, runId } =
       await seedStrandedIssueFixture({
         status: "in_progress",
@@ -8892,8 +8899,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const heartbeat = heartbeatService(db);
 
     const result = await heartbeat.reconcileStrandedAssignedIssues();
-    expect(result.continuationRequeued).toBe(1);
-    expect(result.escalated).toBe(0);
+    expect(result.continuationRequeued).toBe(0);
+    expect(result.escalated).toBe(1);
     expect(result.issueIds).toEqual([issueId]);
 
     const issue = await db
@@ -8901,32 +8908,33 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .from(issues)
       .where(eq(issues.id, issueId))
       .then((rows) => rows[0] ?? null);
-    expect(issue?.status).toBe("in_progress");
+    expect(issue?.status).toBe("blocked");
 
-    const runs = await db
-      .select()
-      .from(heartbeatRuns)
-      .where(eq(heartbeatRuns.agentId, agentId));
-    expect(runs).toHaveLength(5);
-    const retryRun = runs.find((row) => {
-      const ctx = row.contextSnapshot as Record<string, unknown> | null;
-      return (
-        row.id !== runId &&
-        row.errorCode === null &&
-        ctx?.retryReason === "issue_continuation_needed" &&
-        ctx?.source === "issue.continuation_recovery"
-      );
-    });
-    expect(
-      retryRun?.contextSnapshot as Record<string, unknown> | undefined,
-    ).toMatchObject({
+    await expectSourceScopedStrandedRecoveryAction({
+      companyId,
+      agentId,
       issueId,
+      runId,
+      previousStatus: "in_progress",
       retryReason: "issue_continuation_needed",
-      source: "issue.continuation_recovery",
     });
-    if (retryRun) {
-      await waitForRunToSettle(heartbeat, retryRun.id);
-    }
+
+    const comments = await db
+      .select()
+      .from(issueComments)
+      .where(eq(issueComments.issueId, issueId));
+    expect(comments).toHaveLength(1);
+    expect(comments[0]?.body).toContain("retried continuation");
+    // 4 unsuccessful lineage runs (adapter_failed, timeout x2, adapter_failed) all bucket
+    // into the `transient_infra` class under the fixed `error_class` match mode, so the
+    // streak reaches the cap (3) at the 3rd consecutive lineage run counted — the comment
+    // reports whichever count triggered escalation, and it must be >= the cap, not 1.
+    expect(comments[0]?.body).toMatch(/\d+× attempts/);
+    expect(commentMetadataRows(comments[0])).toContainEqual({
+      type: "key_value",
+      label: "Failure code",
+      value: "adapter_failed",
+    });
   });
 
   it("escalates non-retryable continuation failures immediately without enqueuing another retry", async () => {

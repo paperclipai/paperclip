@@ -46,3 +46,34 @@ describe("continuation retry classification: host-fault codes", () => {
     expect(classifyContinuationFailure(run(null)).kind).toBe("default");
   });
 });
+
+// MAS-614 (Greptile finding #1 on PR #12946): `summarizeRecentContinuationRetries`'s
+// `error_code` match mode pinned the *exact* error code, so a chain that alternated
+// between codes in the same failure class (e.g. adapter_failed -> timeout ->
+// adapter_failed) broke the streak on every change and never reached
+// consecutive >= maxAttempts. That is the same "retry chains ran unbounded" defect
+// MAS-93 was meant to close, just reopened for the realistic alternating-code case.
+// The fix buckets by failure *class* (`error_class` match mode) instead of exact code.
+describe("continuation retry streak: mixed error codes within one failure class", () => {
+  it("classifies alternating transient_infra codes into the same class", () => {
+    // adapter_failed and timeout are both TRANSIENT_INFRA_CONTINUATION_ERROR_CODES.
+    const a = classifyContinuationFailure(run("adapter_failed"));
+    const t = classifyContinuationFailure(run("timeout"));
+    expect(a.kind).toBe("transient_infra");
+    expect(t.kind).toBe("transient_infra");
+    expect(a.kind).toBe(t.kind);
+  });
+
+  it("classifies alternating host_fault codes into the same class", () => {
+    const a = classifyContinuationFailure(run("process_lost"));
+    const b = classifyContinuationFailure(run("acpx_turn_failed"));
+    expect(a.kind).toBe("host_fault");
+    expect(b.kind).toBe("host_fault");
+  });
+
+  it("a code from the other class is a different failure mode", () => {
+    const transient = classifyContinuationFailure(run("adapter_failed"));
+    const hostFault = classifyContinuationFailure(run("process_lost"));
+    expect(transient.kind).not.toBe(hostFault.kind);
+  });
+});
