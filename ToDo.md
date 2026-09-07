@@ -105,6 +105,66 @@ Chatuebergreifende Aufgabenliste. Was hier steht, ist noch offen.
       Agent-Config, Zustand unter `~/.paperclip-adapter-lmstudio/breaker-state.json`.
       *(2026-09-05, Chat: Routinen, Fallback und Mail-Anhänge)*
 
+## Kontext-Budget und LM-Studio-Flotte
+
+- [ ] **★★`maxPromptTokens` ist gesetzt und wirkungslos — 268 Overflows bei
+      `gemma4-31b-it`** — 36 Agenten tragen `maxPromptTokens: 70000`, MAX30d
+      liegt aber bei 83,8k (gemma) bzw. 97,7k (qwen). Gegenprobe in
+      `heartbeat_run_events`: in **11.080 Lauf-Events der letzten 7 Tage kein
+      einziges** `Kontext gekuerzt` und kein `Kontextbudget:` — der Mechanismus
+      hat nie ausgeloest. Ursache im Adapter (`execute.ts`): `enforceBudget()`
+      kehrt unterhalb `BUDGET_LOOKUP_THRESHOLD_TOKENS = 32_000` sofort zurueck,
+      und **`tokenFactor` startet bei 1** — kalibriert wird er erst an einer
+      erfolgreichen Antwort, die es beim Overflow nie gibt. `chars/4`
+      unterschaetzt JSON/Shell-Ausgaben um mehr als das Doppelte, ein real 96k
+      grosser Prompt wird als ~31k geschaetzt und ungekuerzt gesendet.
+      **Hebel:** `tokenFactor` konservativ initialisieren (z. B. 2,5) oder die
+      Schwelle am ungeschaetzten Zeichenvolumen pruefen — kostet kein VRAM.
+      Das Fenster zu vergroessern hilft *nicht*: 98k deckt 98 % der Last.
+      Kontrollbeweis: `qwen3.6-35b` faehrt gleiches Geraet, Fenster und Deckel
+      bei hoeherem p99 (44k) und hat **1** Overflow. Haengt mit den vier
+      blockierten R2-Issues bei Clara zusammen (gleiche Fehlermeldung).
+      *(2026-09-07, Chat: Kontext-Bedarf und MLX-Autofit)*
+
+- [ ] **★Die Ampel im Kontext-Bericht unterschaetzt den Bedarf** — bei
+      `gemma4-31b-it` scheitern die obersten **1,83 %** der Aufrufe, der echte
+      p99 liegt damit **ueber 98.304**; ausgewiesen sind **34.600** (Faktor 2,8
+      zu niedrig). Grund: p99 und MAX entstehen nur aus erfolgreichen Aufrufen.
+      `ctx_report.py` kennt das Problem (Kommentar in `parse_overflows`) und
+      zaehlt die Overflows separat, faerbt die Zeile aber weiterhin nach dem
+      geschoenten p99 — die Zeile liest sich wie „Fenster fast dreifach
+      ausreichend". Vorschlag: den effektiven p99 unter Einbeziehung der
+      gezaehlten Overflows ausweisen.
+      *(2026-09-07, Chat: Kontext-Bedarf und MLX-Autofit)*
+
+- [ ] **MacBook seit 03.09. aus der Flotte** — `lms ls` kennt nur noch zwei
+      Geraete (Local, RTX Pro 6000). `qwen3.6-35b-a3b-mlx` steht im Bericht als
+      „anderes Geraet, seit 03.09. keine Calls", `gemma-4-31b-it-mlx` ist von
+      `MacbookM5Mx128` (Stand KW35) nach `Local` gewandert. Der als „rund um die
+      Uhr komplett" geplante Drei-Node-Betrieb laeuft damit auf zwei Knoten.
+      Ursache ungeklaert — LM Link getrennt, Geraet aus oder bewusst umgezogen?
+      *(2026-09-07, Chat: Kontext-Bedarf und MLX-Autofit)*
+
+- [ ] **KW36-Bericht (Montag 31.08.) ist ersatzlos ausgefallen** — kein
+      `ctx-report-2026-08-31.json` in `ctx-stats/state/`, in einer seit dem
+      06.07. lueckenlosen Montagsserie. Der Ausfall fiel nur auf, weil der
+      Trendvergleich zwei Wochen ueberspringen musste. Ursache ungeklaert;
+      pruefen, ob die Routine still scheiterte oder gar nicht ausgeloest wurde.
+      *(2026-09-07, Chat: Kontext-Bedarf und MLX-Autofit)*
+
+- [ ] **MLX-Autofit: Wiedervorlage beim naechsten Engine-Update** — am 07.09.
+      nachrecherchiert, weiterhin **ungeloest**: `lmstudio-bug-tracker#2250` und
+      `mlx-engine#366` beide offen und unkommentiert, `lms runtime get -l
+      mlx-llm` meldet 1.11.0 als neueste (auch `--channel beta`), App 0.4.22 und
+      0.4.23 erwaehnen MLX-Kontext in keinem Changelog. **Der Fix existiert
+      upstream** — PR #355 fuehrte am 31.07. das Feld `auto_fit_context` ein —
+      ist aber nach fuenf Wochen in keinem Build. **Nicht auf die Versionsnummer
+      pruefen, sondern auf das Feld:**
+      `grep -rl auto_fit_context ~/.lmstudio/extensions/backends/vendor/_amphibian/app-mlx-generate-mac14-arm64@*/lib/python3.11/site-packages/mlx_engine/`
+      Am 07.09. ueber @31–@34 null Treffer. Gegenrichtung beachten: Commit
+      `bc4bd41` (21.08.) vergroessert das autogefittete Fenster noch.
+      *(2026-09-07, Chat: Kontext-Bedarf und MLX-Autofit)*
+
 ## Kontaktrecherche-Agent (Clara Sound, R9)
 
 - [ ] **★Agent wartet auf den deterministischen Vorlauf** — „Kontaktrecherche
@@ -183,6 +243,18 @@ Chatuebergreifende Aufgabenliste. Was hier steht, ist noch offen.
       zurückspielen, Datei für Datei geprüft.
       Nachweis: `diff -rq ~/.paperclip/scripts tools | grep differ`
       *(2026-09-05, Chat: Release-Kette repariert)*
+      **Gegenprobe 07.09.: 211 inhaltlich abweichende Dateien** (der Zaehler
+      enthaelt auch `__pycache__`/`.pytest_cache`-Rauschen — die acht bekannten
+      Quelldateien stehen unveraendert darunter). Nichts verschlechtert, aber
+      auch nichts aufgeholt. *(2026-09-07, Chat: Kontext-Bedarf und MLX-Autofit)*
+
+- [ ] **10+ Commits nicht gepusht** — `git log fork/master..HEAD` zeigt auf
+      `master` mindestens zehn unveroeffentlichte Commits, aelteste reichen bis
+      `ca9e6179d` zurueck (u. a. Chatverlauf 05.09., Clara-R9-Instruktionen,
+      Heartbeat-Tagesstatistik, Link-Detektor-Fix). Upstream ist `fork/master`
+      (whitestagai) — **nicht** `origin` (paperclipai, fremd). Push ist
+      ansagepflichtig und wurde am 07.09. bewusst nicht ausgefuehrt.
+      *(2026-09-07, Chat: Kontext-Bedarf und MLX-Autofit)*
 
 - [ ] **7 uncommittete Dateien im Worktree `agent-learning-tree`** — liegt unter
       `~/.paperclip/scripts/agent-learning-tree`, Branch
