@@ -242,6 +242,7 @@ describe("matchProjectIdByRepoReference", () => {
 describe("resolveExplicitProjectSelection", () => {
   function recordingLookups(map: {
     issue?: Record<string, string | null>;
+    issueWorkspace?: Record<string, { projectWorkspaceId?: string | null; executionWorkspaceId?: string | null }>;
     projectWorkspace?: Record<string, string | null>;
     executionWorkspace?: Record<string, string | null>;
   }) {
@@ -252,6 +253,15 @@ describe("resolveExplicitProjectSelection", () => {
         getIssueProjectId: async (issueId: string) => {
           calls.push(["issue", issueId]);
           return map.issue?.[issueId] ?? null;
+        },
+        getIssueWorkspaceSelection: async (issueId: string) => {
+          calls.push(["issueWorkspace", issueId]);
+          const selection = map.issueWorkspace?.[issueId];
+          if (!selection) return null;
+          return {
+            projectWorkspaceId: selection.projectWorkspaceId ?? null,
+            executionWorkspaceId: selection.executionWorkspaceId ?? null,
+          };
         },
         getProjectWorkspaceProjectId: async (projectWorkspaceId: string) => {
           calls.push(["projectWorkspace", projectWorkspaceId]);
@@ -318,7 +328,7 @@ describe("resolveExplicitProjectSelection", () => {
         lookups,
       ),
     ).toBeNull();
-    expect(calls).toEqual([["issue", "issue-orphan"]]);
+    expect(calls).toEqual([["issue", "issue-orphan"], ["issueWorkspace", "issue-orphan"]]);
   });
 
   it("resolves an inherit source that has a project", async () => {
@@ -347,6 +357,67 @@ describe("resolveExplicitProjectSelection", () => {
   it("only looks up fields that are present", async () => {
     const { calls, lookups } = recordingLookups({});
     await resolveExplicitProjectSelection({ parentId: "issue-orphan" }, lookups);
-    expect(calls).toEqual([["issue", "issue-orphan"]]);
+    // The source issue is the one present field, and resolving it means both
+    // its project and the workspace linkage the create would inherit from it.
+    expect(calls).toEqual([["issue", "issue-orphan"], ["issueWorkspace", "issue-orphan"]]);
+  });
+
+  it("resolves a project-less source through the project workspace the create inherits from it", async () => {
+    // `issueService.create` forwards a project-less source's projectWorkspaceId
+    // into the child and then derives the child's project from that workspace.
+    // The route pins this gate's answer, so stopping at the source's own
+    // projectId would let a text guess outrank a workspace the create is about
+    // to inherit.
+    const { lookups } = recordingLookups({
+      issueWorkspace: { "issue-orphan": { projectWorkspaceId: "pw-1" } },
+      projectWorkspace: { "pw-1": "project-c" },
+    });
+    expect(await resolveExplicitProjectSelection({ parentId: "issue-orphan" }, lookups)).toBe("project-c");
+  });
+
+  it("keeps a workspace named on the request ahead of the one it would inherit", async () => {
+    // The service only fills an *empty* workspace slot from the source, so the
+    // request's own workspace is what it derives from.
+    const { lookups } = recordingLookups({
+      issueWorkspace: { "issue-orphan": { projectWorkspaceId: "pw-1" } },
+      projectWorkspace: { "pw-1": "project-c", "pw-2": "project-d" },
+    });
+    expect(
+      await resolveExplicitProjectSelection({ parentId: "issue-orphan", projectWorkspaceId: "pw-2" }, lookups),
+    ).toBe("project-d");
+  });
+
+  it("resolves a project-less source through the execution workspace the create inherits from it", async () => {
+    const { lookups } = recordingLookups({
+      issueWorkspace: { "issue-orphan": { executionWorkspaceId: "ew-1" } },
+      executionWorkspace: { "ew-1": "project-e" },
+    });
+    expect(await resolveExplicitProjectSelection({ parentId: "issue-orphan" }, lookups)).toBe("project-e");
+  });
+
+  it("does not inherit the source's execution workspace when the request overrides one", async () => {
+    // Mirrors the service's `hasExplicitExecutionWorkspaceOverride`: any of the
+    // three execution-workspace fields being present suppresses the
+    // inheritance, so the signal yields nothing and inference may run.
+    const { lookups } = recordingLookups({
+      issueWorkspace: { "issue-orphan": { executionWorkspaceId: "ew-1" } },
+      executionWorkspace: { "ew-1": "project-e" },
+    });
+    expect(
+      await resolveExplicitProjectSelection(
+        { parentId: "issue-orphan", executionWorkspacePreference: "isolated_workspace" },
+        lookups,
+      ),
+    ).toBeNull();
+  });
+
+  it("does not consult the inherited linkage when the source has a project of its own", async () => {
+    const { calls, lookups } = recordingLookups({
+      issue: { "issue-1": "project-b" },
+      issueWorkspace: { "issue-1": { projectWorkspaceId: "pw-1" } },
+      projectWorkspace: { "pw-1": "project-c" },
+    });
+    expect(await resolveExplicitProjectSelection({ parentId: "issue-1" }, lookups)).toBe("project-b");
+    expect(calls).toEqual([["issue", "issue-1"]]);
   });
 });

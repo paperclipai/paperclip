@@ -3120,6 +3120,14 @@ export function issueRoutes(
         const issue = await svc.getById(issueId);
         return issue && issue.companyId === companyId ? issue.projectId ?? null : null;
       },
+      getIssueWorkspaceSelection: async (issueId) => {
+        const issue = await svc.getById(issueId);
+        if (!issue || issue.companyId !== companyId) return null;
+        return {
+          projectWorkspaceId: issue.projectWorkspaceId ?? null,
+          executionWorkspaceId: issue.executionWorkspaceId ?? null,
+        };
+      },
       getProjectWorkspaceProjectId: async (projectWorkspaceId) => {
         const workspace = await db
           .select({ companyId: projectWorkspaces.companyId, projectId: projectWorkspaces.projectId })
@@ -9527,10 +9535,23 @@ export function issueRoutes(
       parentId: parent.id,
       projectWorkspaceId: createBody.projectWorkspaceId,
       executionWorkspaceId: createBody.executionWorkspaceId,
+      ...("executionWorkspacePreference" in createBody
+        ? { executionWorkspacePreference: createBody.executionWorkspacePreference }
+        : {}),
+      ...("executionWorkspaceSettings" in createBody
+        ? { executionWorkspaceSettings: createBody.executionWorkspaceSettings }
+        : {}),
     }, {
       ...routeLookups,
       getIssueProjectId: async (issueId) =>
         issueId === parent.id ? parent.projectId ?? null : routeLookups.getIssueProjectId(issueId),
+      getIssueWorkspaceSelection: async (issueId) =>
+        issueId === parent.id
+          ? {
+            projectWorkspaceId: parent.projectWorkspaceId ?? null,
+            executionWorkspaceId: parent.executionWorkspaceId ?? null,
+          }
+          : routeLookups.getIssueWorkspaceSelection(issueId),
     });
     const inferredChildProjectId = explicitChildProjectId != null
       ? null

@@ -460,6 +460,101 @@ describeEmbeddedPostgres("issue create project inference", () => {
     expect(created.body.projectId).toBe(chosen.id);
   });
 
+  /**
+   * A source issue that carries a workspace but no project of its own. No
+   * create or update path writes that row today — every one of them derives the
+   * project from the workspace whenever the project is absent — so it only
+   * arrives with imported or hand-repaired data. The gate must not depend on
+   * that invariant holding: `issueService.create` forwards this source's
+   * workspace into the child and derives the child's project from it, so the
+   * signal resolves and a repo named in the child's text must not outrank it.
+   */
+  async function seedWorkspaceOnlySourceIssue(companyId: string, projectId: string, title: string) {
+    const workspace = await db
+      .select({ id: projectWorkspaces.id })
+      .from(projectWorkspaces)
+      .where(eq(projectWorkspaces.projectId, projectId))
+      .then((rows) => rows[0]!);
+    const issue = await seedIssue(companyId, null, title);
+    await db.update(issues).set({ projectWorkspaceId: workspace.id }).where(eq(issues.id, issue.id));
+    return issue;
+  }
+
+  it("resolves a project-less parent through the workspace the child inherits from it", async () => {
+    const companyId = await seedCompany();
+    const linked = await seedProject(companyId, "shove", {
+      repoUrl: "https://github.com/zannis/shove",
+      cwd: "/repos/shove",
+    });
+    await seedProject(companyId, "actual", { repoUrl: "https://github.com/zannis/actual", cwd: "/repos/actual" });
+    const parent = await seedWorkspaceOnlySourceIssue(companyId, linked.id, "Imported project-less root");
+    const { token, runId } = await agentContext(companyId, null);
+
+    const created = await agentPost(createApp(), companyId, token, runId)
+      .send({
+        title: "Harden the retry loop",
+        parentId: parent.id,
+        description: "The flake lives in https://github.com/zannis/actual and blocks the release.",
+      })
+      .expect(201);
+
+    expect(created.body.projectId).toBe(linked.id);
+  });
+
+  it("resolves a project-less parent through its workspace on the children route too", async () => {
+    const companyId = await seedCompany();
+    const linked = await seedProject(companyId, "shove", {
+      repoUrl: "https://github.com/zannis/shove",
+      cwd: "/repos/shove",
+    });
+    await seedProject(companyId, "actual", { repoUrl: "https://github.com/zannis/actual", cwd: "/repos/actual" });
+    const parent = await seedWorkspaceOnlySourceIssue(companyId, linked.id, "Imported project-less root");
+    const { token, runId } = await agentContext(companyId, null);
+
+    const created = await request(createApp())
+      .post(`/api/issues/${parent.id}/children`)
+      .set("Authorization", `Bearer ${token}`)
+      .set("X-Paperclip-Run-Id", runId)
+      .send({
+        title: "Split out the repro",
+        description: "Reproduce it under https://github.com/zannis/actual first.",
+      })
+      .expect(201);
+
+    expect(created.body.projectId).toBe(linked.id);
+  });
+
+  it("keeps a workspace named on the request ahead of the one the parent lends", async () => {
+    const companyId = await seedCompany();
+    const lent = await seedProject(companyId, "shove", {
+      repoUrl: "https://github.com/zannis/shove",
+      cwd: "/repos/shove",
+    });
+    const chosen = await seedProject(companyId, "actual", {
+      repoUrl: "https://github.com/zannis/actual",
+      cwd: "/repos/actual",
+    });
+    const parent = await seedWorkspaceOnlySourceIssue(companyId, lent.id, "Imported project-less root");
+    const chosenWorkspace = await db
+      .select({ id: projectWorkspaces.id })
+      .from(projectWorkspaces)
+      .where(eq(projectWorkspaces.projectId, chosen.id))
+      .then((rows) => rows[0]!);
+    const { token, runId } = await agentContext(companyId, null);
+
+    // The service only fills an empty workspace slot from the source, so the
+    // workspace on the request is the one it derives the project from.
+    const created = await agentPost(createApp(), companyId, token, runId)
+      .send({
+        title: "Scoped by its own workspace",
+        parentId: parent.id,
+        projectWorkspaceId: chosenWorkspace.id,
+      })
+      .expect(201);
+
+    expect(created.body.projectId).toBe(chosen.id);
+  });
+
   it("infers for a child created via the children route when the parent is project-less", async () => {
     const companyId = await seedCompany();
     const actual = await seedProject(companyId, "actual", {

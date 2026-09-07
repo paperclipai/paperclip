@@ -304,11 +304,24 @@ export type ExplicitProjectSelectionInput = {
   inheritExecutionWorkspaceFromIssueId?: string | null;
   projectWorkspaceId?: string | null;
   executionWorkspaceId?: string | null;
+  executionWorkspacePreference?: unknown;
+  executionWorkspaceSettings?: unknown;
+};
+
+/** The workspace ids a create inherits from its source issue. */
+export type IssueWorkspaceSelection = {
+  projectWorkspaceId: string | null;
+  executionWorkspaceId: string | null;
 };
 
 export type ExplicitProjectSelectionLookups = {
   /** An issue's project, or `null` when the issue is missing, cross-company or project-less. */
   getIssueProjectId: (issueId: string) => Promise<string | null>;
+  /**
+   * The workspace linkage the create inherits from a source issue that holds no
+   * project of its own, or `null` when the issue is missing or cross-company.
+   */
+  getIssueWorkspaceSelection: (issueId: string) => Promise<IssueWorkspaceSelection | null>;
   getProjectWorkspaceProjectId: (projectWorkspaceId: string) => Promise<string | null>;
   getExecutionWorkspaceProjectId: (executionWorkspaceId: string) => Promise<string | null>;
 };
@@ -326,6 +339,15 @@ export type ExplicitProjectSelectionLookups = {
  * outranking `parentId`, and does not fall back to the parent's project when
  * the inherit source has none — so neither does this.
  *
+ * A source issue holding no project of its own is still not necessarily empty:
+ * the service forwards that source's *workspace* linkage into the child and
+ * then derives the child's project from it, so the walk fills each empty
+ * workspace slot from the source exactly as the service does before reading it.
+ * Mirroring that matters because the caller pins this answer — the service no
+ * longer re-derives the project — so a gate that stopped at the source's
+ * `projectId` would let a guess outrank a workspace the create is about to
+ * inherit.
+ *
  * The returned id only ever gates inference; the actual assignment stays with
  * the service, so a signal that resolves keeps byte-identical behaviour.
  */
@@ -335,16 +357,29 @@ export async function resolveExplicitProjectSelection(
 ): Promise<string | null> {
   if (input.projectId != null) return input.projectId;
   const sourceIssueId = input.inheritExecutionWorkspaceFromIssueId ?? input.parentId;
+  let inherited: IssueWorkspaceSelection | null = null;
   if (sourceIssueId != null) {
     const sourceProjectId = await lookups.getIssueProjectId(sourceIssueId);
     if (sourceProjectId) return sourceProjectId;
+    inherited = await lookups.getIssueWorkspaceSelection(sourceIssueId);
   }
-  if (input.projectWorkspaceId != null) {
-    const workspaceProjectId = await lookups.getProjectWorkspaceProjectId(input.projectWorkspaceId);
+  const projectWorkspaceId = input.projectWorkspaceId ?? inherited?.projectWorkspaceId ?? null;
+  if (projectWorkspaceId != null) {
+    const workspaceProjectId = await lookups.getProjectWorkspaceProjectId(projectWorkspaceId);
     if (workspaceProjectId) return workspaceProjectId;
   }
-  if (input.executionWorkspaceId != null) {
-    const workspaceProjectId = await lookups.getExecutionWorkspaceProjectId(input.executionWorkspaceId);
+  // The service's `hasExplicitExecutionWorkspaceOverride`: a request that names
+  // any of the three execution-workspace fields keeps the source's execution
+  // workspace out, so only its own id can resolve here.
+  const hasExplicitExecutionWorkspaceOverride =
+    input.executionWorkspaceId !== undefined ||
+    input.executionWorkspacePreference !== undefined ||
+    input.executionWorkspaceSettings !== undefined;
+  const executionWorkspaceId = input.executionWorkspaceId
+    ?? (hasExplicitExecutionWorkspaceOverride ? null : inherited?.executionWorkspaceId)
+    ?? null;
+  if (executionWorkspaceId != null) {
+    const workspaceProjectId = await lookups.getExecutionWorkspaceProjectId(executionWorkspaceId);
     if (workspaceProjectId) return workspaceProjectId;
   }
   return null;
