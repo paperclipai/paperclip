@@ -74,7 +74,11 @@ import { z } from "zod";
 import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { authorizationService, type AuthorizationActor } from "./authorization.js";
 import { LOW_TRUST_ISSUE_ANCESTRY_MAX_DEPTH } from "./trust-preset-resolver.js";
-import { lockIssueAncestryForAuthorization, type LockedIssueAncestryRow } from "./issue-ancestry-locks.js";
+import {
+  canonicalIssueAncestryId,
+  lockIssueAncestryForAuthorization,
+  type LockedIssueAncestryRow,
+} from "./issue-ancestry-locks.js";
 import { resolveActorTrustDecisionForIssue } from "./source-trust.js";
 import { getTelemetryClient } from "../telemetry.js";
 import { logActivity, publishActivity, type ActivityPublication } from "./activity-log.js";
@@ -2944,13 +2948,19 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
         selectedClientKeys: input.selectedClientKeys,
       });
       const orderedTasks = buildTaskCreationOrder(selectedTasks);
+      // Canonicalize every parent id the payload named: `guid()` validation
+      // accepts an uppercase uuid and the uuid column matches it, so a
+      // mixed-case id names a real parent, but the lock map below is keyed by
+      // the spelling Postgres returns. Looking a row up under the request's
+      // spelling would miss a parent that was locked successfully and report
+      // it as being outside the company or issue tree.
       const explicitParentIds = [...new Set([
         issue.id,
         ...(interaction.payload.defaultParentId ? [interaction.payload.defaultParentId] : []),
         ...selectedTasks
           .map((task) => task.parentId ?? null)
           .filter((value): value is string => Boolean(value)),
-      ])];
+      ].map(canonicalIssueAncestryId))];
 
       const createdByClientKey = new Map<string, SuggestTasksResultCreatedTask>();
       const createdProjectByClientKey = new Map<string, string | null>();
@@ -3021,9 +3031,11 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
           actor.authorization.keyScope?.kind === "task_bridge";
 
         for (const task of orderedTasks) {
+          // Canonical for the same reason as `explicitParentIds`: this id is
+          // the key the locked-parent lookups below use.
           const parentIssueId = task.parentClientKey
             ? createdByClientKey.get(task.parentClientKey)?.issueId ?? null
-            : task.parentId ?? interaction.payload.defaultParentId ?? issue.id;
+            : canonicalIssueAncestryId(task.parentId ?? interaction.payload.defaultParentId ?? issue.id);
           if (!parentIssueId) {
             throw unprocessable(`Unable to resolve parent for suggested task ${task.clientKey}`);
           }

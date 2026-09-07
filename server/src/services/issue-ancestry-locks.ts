@@ -15,6 +15,19 @@ export interface LockedIssueAncestryRow {
 const ANCESTRY_LOCK_VERIFY_ATTEMPTS = 3;
 
 /**
+ * The canonical spelling of an issue id: the lowercase form Postgres returns
+ * for a uuid column.
+ *
+ * Request payloads carry whatever spelling the caller sent — `guid()`
+ * validation accepts an uppercase uuid and the uuid column matches it
+ * case-insensitively, so a mixed-case id names a real row. The lock map below
+ * is keyed by the id as Postgres returns it, so any caller addressing a locked
+ * row must canonicalize its lookup key through this helper; keeping the
+ * request's spelling misses a row that was locked successfully.
+ */
+export const canonicalIssueAncestryId = (id: string): string => id.toLowerCase();
+
+/**
  * Pin an issue's parent chain for the rest of the transaction so the
  * authorization decisions that walk it (a task-bridge key's parent-tree
  * boundary, a run's low-trust boundary) decide against the same chain the
@@ -53,7 +66,7 @@ export const lockIssueAncestryForAuthorization = async (
   // would sort — and therefore lock — differently across transactions.
   // Canonicalize to the lowercase form Postgres returns before anything
   // is sorted, deduped, or used as a map key.
-  const directIds = [...new Set(directParentIds.map((id) => id.toLowerCase()))];
+  const directIds = [...new Set(directParentIds.map(canonicalIssueAncestryId))];
   const locked = new Map<string, LockedIssueAncestryRow>();
   if (directIds.length === 0) return locked;
   const ancestorDepth = options.ancestorDepth ?? LOW_TRUST_ISSUE_ANCESTRY_MAX_DEPTH;

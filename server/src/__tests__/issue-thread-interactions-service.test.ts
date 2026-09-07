@@ -1295,6 +1295,107 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     });
   });
 
+  it("accepts a suggested task naming its pre-existing parent in a mixed-case uuid spelling", async () => {
+    // `guid()` validation accepts an uppercase uuid, and the uuid column
+    // matches it case-insensitively, so a mixed-case parentId names a real
+    // parent. The ancestry lock canonicalizes ids to the lowercase form
+    // Postgres returns before keying its result map, so a lookup that keeps
+    // the request's spelling misses a row that was locked successfully and
+    // reports the valid parent as being outside the tree.
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    const parentIssueId = randomUUID();
+    const resolverAgentId = randomUUID();
+    const projectId = randomUUID();
+    const runId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: false });
+    await db.insert(agents).values({
+      id: resolverAgentId,
+      companyId,
+      name: "Resolver",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "shove",
+      status: "in_progress",
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Project-less host issue",
+      status: "in_progress",
+      priority: "medium",
+    });
+    await db.insert(issues).values({
+      id: parentIssueId,
+      companyId,
+      projectId,
+      title: "Existing tracked parent",
+      status: "in_progress",
+      priority: "medium",
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId: resolverAgentId,
+      status: "running",
+      contextSnapshot: {},
+    });
+
+    const created = await interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "suggest_tasks",
+      payload: {
+        version: 1,
+        tasks: [
+          {
+            clientKey: "child",
+            parentId: parentIssueId.toUpperCase(),
+            title: "Land the mixed-case fix",
+          },
+        ],
+      },
+    }, {
+      userId: "local-board",
+    });
+
+    await interactionsSvc.acceptSuggestedTasks({
+      id: issueId,
+      companyId,
+      goalId: null,
+      projectId: null,
+    }, created.id, {}, {
+      agentId: resolverAgentId,
+      runId,
+      suggestedTaskEffectsAuthorized: true,
+    });
+
+    // The child lands under the named parent and inherits its project — the
+    // acceptance saw the locked parent row rather than treating it as absent.
+    const [child] = await db
+      .select({ parentId: issues.parentId, projectId: issues.projectId })
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.title, "Land the mixed-case fix")));
+    expect(child?.parentId).toBe(parentIssueId);
+    expect(child?.projectId).toBe(projectId);
+  });
+
   it("re-reads a pre-existing parent's project under lock so a concurrent move cannot dodge quarantine", async () => {
     // The parent snapshot feeding the tasks:assign and source-trust
     // decisions must be the same row createChild inherits the project from
