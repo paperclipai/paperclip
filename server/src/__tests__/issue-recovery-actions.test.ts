@@ -1345,8 +1345,82 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       noticeMetadataReferencesRecoveryAction(comment.metadata, actionRows[0]!.id),
     );
     expect(escalationComments).toHaveLength(1);
+    const ownerNotificationComments = comments.filter((comment) =>
+      comment.presentation?.title === "Blocked issue: action required",
+    );
+    expect(ownerNotificationComments).toHaveLength(1);
     expect(enqueueWakeup).not.toHaveBeenCalled();
   });
+
+  it("clears stale unblock ownership when an ownerless startup fault supersedes recovery on a blocked issue", async () => {
+    const { companyId, coderId, sourceIssue } = await seedCompany();
+    await db.update(issues).set({ responsibleUserId: "responsible-user" }).where(eq(issues.id, sourceIssue.id));
+    const [issueWithOwner] = await db.select().from(issues).where(eq(issues.id, sourceIssue.id));
+    const enqueueWakeup = vi.fn(async () => null);
+    const recovery = recoveryService(db, { enqueueWakeup });
+    const startupFaultA = {
+      kind: "worktree_requires_git_repository",
+      fingerprint: "startup_fault:v1:worktree_requires_git_repository:aaaaaaaaaaaaaaaaaaaaaaaa",
+      diagnostic: "x --worktree requires being inside a git repository",
+    };
+    const startupFaultB = {
+      kind: "worktree_requires_git_repository",
+      fingerprint: "startup_fault:v1:worktree_requires_git_repository:bbbbbbbbbbbbbbbbbbbbbbbb",
+      diagnostic: "y --worktree requires being inside a git repository",
+    };
+
+    await recovery.escalateStrandedAssignedIssue({
+      issue: issueWithOwner!,
+      previousStatus: "in_progress",
+      latestRun: {
+        id: randomUUID(),
+        agentId: coderId,
+        status: "failed",
+        error: startupFaultA.diagnostic,
+        errorCode: "adapter_startup_fault",
+        contextSnapshot: { retryReason: "startup_fault_retry" },
+        livenessState: "failed",
+        resultJson: { startupFault: startupFaultA },
+      },
+      recoveryCause: "startup_fault",
+    });
+
+    await db.update(issues).set({ responsibleUserId: null }).where(eq(issues.id, sourceIssue.id));
+    const [blockedIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssue.id));
+    expect(blockedIssue?.unblockDescriptor).toMatchObject({ owner: { userId: "responsible-user" } });
+    expect(blockedIssue?.blockedOwnerNotifiedAt).toBeTruthy();
+
+    await recovery.escalateStrandedAssignedIssue({
+      issue: blockedIssue!,
+      previousStatus: "blocked",
+      latestRun: {
+        id: randomUUID(),
+        agentId: coderId,
+        status: "failed",
+        error: startupFaultB.diagnostic,
+        errorCode: "adapter_startup_fault",
+        contextSnapshot: { retryReason: "startup_fault_retry" },
+        livenessState: "failed",
+        resultJson: { startupFault: startupFaultB },
+      },
+      recoveryCause: "startup_fault",
+    });
+
+    const updatedIssue = await db.select().from(issues).where(eq(issues.id, sourceIssue.id)).then((rows) => rows[0] ?? null);
+    expect(updatedIssue?.unblockDescriptor).toBeNull();
+    expect(updatedIssue?.blockedOwnerNotifiedAt).toBeNull();
+
+    const notificationReceipts = await db
+      .select()
+      .from(activityLog)
+      .where(and(
+        eq(activityLog.companyId, companyId),
+        eq(activityLog.entityId, sourceIssue.id),
+        eq(activityLog.action, "issue.blocked_owner_notification_delivered"),
+      ));
+    expect(notificationReceipts).toHaveLength(1);
+  });
+
   it("deduplicates workspace-incoherence recovery actions by the typed workspace fingerprint", async () => {
     const { companyId, coderId, sourceIssue } = await seedCompany();
     const enqueueWakeup = vi.fn(async () => null);

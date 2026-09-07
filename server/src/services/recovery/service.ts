@@ -267,6 +267,105 @@ function recoveryNoticeMetadata(input: {
   };
 }
 
+function blockedOwnerNotificationCommentMetadata(input: {
+  recipientUserId: string;
+  action: string;
+}): IssueCommentMetadata {
+  return {
+    version: 1,
+    sections: [{
+      title: "Unblock request",
+      rows: [
+        { type: "key_value", label: "Recipient", value: input.recipientUserId },
+        { type: "key_value", label: "Required action", value: input.action.slice(0, 500) },
+      ],
+    }],
+  };
+}
+
+async function deliverBlockedOwnerUserNotification(input: {
+  db: Db;
+  issuesSvc: ReturnType<typeof issueService>;
+  issue: Pick<typeof issues.$inferSelect, "id" | "companyId">;
+  delivery: { userId: string; action: string; idempotencyKey: string };
+  notifiedAt: Date;
+}) {
+  return input.db.transaction(async (tx) => {
+    const [lockedIssue] = await tx
+      .select({ blockedOwnerNotifiedAt: issues.blockedOwnerNotifiedAt })
+      .from(issues)
+      .where(eq(issues.id, input.issue.id))
+      .for("update");
+
+    const existingReceipt = await tx
+      .select({ id: activityLog.id })
+      .from(activityLog)
+      .where(and(
+        eq(activityLog.companyId, input.issue.companyId),
+        eq(activityLog.entityType, "issue"),
+        eq(activityLog.entityId, input.issue.id),
+        eq(activityLog.action, "issue.blocked_owner_notification_delivered"),
+        sql`${activityLog.details}->>'idempotencyKey' = ${input.delivery.idempotencyKey}`,
+      ))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (existingReceipt) {
+      if (!lockedIssue?.blockedOwnerNotifiedAt) {
+        await tx
+          .update(issues)
+          .set({ blockedOwnerNotifiedAt: input.notifiedAt, updatedAt: new Date() })
+          .where(eq(issues.id, input.issue.id));
+      }
+      return { receiptId: existingReceipt.id };
+    }
+
+    if (lockedIssue?.blockedOwnerNotifiedAt) {
+      throw new Error("blocked owner notification receipt missing for marked issue");
+    }
+
+    await input.issuesSvc.addComment(
+      input.issue.id,
+      [
+        "This blocked issue is waiting on your decision.",
+        "",
+        input.delivery.action,
+      ].join("\n"),
+      {},
+      {
+        authorType: "system",
+        presentation: compactRecoveryPresentation("Blocked issue: action required"),
+        metadata: blockedOwnerNotificationCommentMetadata({
+          recipientUserId: input.delivery.userId,
+          action: input.delivery.action,
+        }),
+      },
+      tx,
+    );
+
+    const activity = await logActivity(tx as unknown as Db, {
+      companyId: input.issue.companyId,
+      actorType: "system",
+      actorId: "blocked-owner-notification",
+      action: "issue.blocked_owner_notification_delivered",
+      entityType: "issue",
+      entityId: input.issue.id,
+      responsibleUserIdOverride: input.delivery.userId,
+      details: {
+        idempotencyKey: input.delivery.idempotencyKey,
+        recipientUserId: input.delivery.userId,
+        action: input.delivery.action,
+      },
+    });
+
+    await tx
+      .update(issues)
+      .set({ blockedOwnerNotifiedAt: input.notifiedAt, updatedAt: new Date() })
+      .where(eq(issues.id, input.issue.id));
+
+    return { receiptId: activity.id };
+  });
+}
+
 function readRecoveryRunErrorFamily(latestRun: LatestIssueRun) {
   const result = parseObject(latestRun?.resultJson);
   return readNonEmptyString(result.errorFamily);
@@ -3794,7 +3893,12 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     const updated = await issuesSvc.update(input.issue.id, {
       status: "blocked",
       blockedByIssueIds: blockerIds,
-      ...(unblockDescriptor ? { unblockDescriptor } : {}),
+      ...(boardEscalation
+        ? {
+            unblockDescriptor,
+            ...(unblockDescriptor ? {} : { blockedOwnerNotifiedAt: null }),
+          }
+        : {}),
     });
     if (!updated) return null;
     if (unblockDescriptor) {
@@ -3808,38 +3912,17 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           responsibleUserId: updated.responsibleUserId,
         },
         deliverToUser: async (delivery) => {
-          const existing = await db
-            .select({ id: activityLog.id })
-            .from(activityLog)
-            .where(and(
-              eq(activityLog.companyId, updated.companyId),
-              eq(activityLog.entityType, "issue"),
-              eq(activityLog.entityId, updated.id),
-              eq(activityLog.action, "issue.blocked_owner_notification_delivered"),
-              sql`${activityLog.details}->>'idempotencyKey' = ${delivery.idempotencyKey}`,
-            ))
-            .limit(1)
-            .then((rows) => rows[0] ?? null);
-          if (existing) return { receiptId: existing.id };
-          const activity = await logActivity(db, {
-            companyId: updated.companyId,
-            actorType: "system",
-            actorId: "blocked-owner-notification",
-            action: "issue.blocked_owner_notification_delivered",
-            entityType: "issue",
-            entityId: updated.id,
-            responsibleUserIdOverride: delivery.userId,
-            details: {
-              idempotencyKey: delivery.idempotencyKey,
-              recipientUserId: delivery.userId,
-              action: delivery.action,
-            },
+          const notifiedAt = new Date();
+          const result = await deliverBlockedOwnerUserNotification({
+            db,
+            issuesSvc,
+            issue: updated,
+            delivery,
+            notifiedAt,
           });
-          return { receiptId: activity.id };
+          return result;
         },
-        markNotified: async (blockedOwnerNotifiedAt) => {
-          await issuesSvc.update(input.issue.id, { blockedOwnerNotifiedAt });
-        },
+        markNotified: async () => undefined,
       }).catch((notificationError) => {
         logger.warn(
           { err: notificationError, issueId: input.issue.id, recoveryCause },

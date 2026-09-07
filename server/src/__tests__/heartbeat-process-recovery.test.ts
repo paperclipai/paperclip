@@ -7896,10 +7896,25 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const allRuns = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
     expect(allRuns.length).toBeLessThanOrEqual(2);
 
+    const recoveryAction = await waitForValue(async () =>
+      db
+        .select()
+        .from(issueRecoveryActions)
+        .where(and(eq(issueRecoveryActions.companyId, companyId), eq(issueRecoveryActions.sourceIssueId, issueId)))
+        .then((rows) => {
+          const row = rows[0] ?? null;
+          return row?.cause === "startup_fault" && row.status === "active" ? row : null;
+        }),
+    );
+    expect(recoveryAction).toMatchObject({
+      cause: "startup_fault",
+      status: "active",
+    });
+
     const issue = await waitForValue(async () =>
       db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => {
         const row = rows[0] ?? null;
-        return row?.status === "blocked" ? row : null;
+        return row?.status === "blocked" && row.blockedOwnerNotifiedAt ? row : null;
       }),
     );
     expect(issue?.unblockDescriptor).toMatchObject({
@@ -7908,25 +7923,17 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
     expect(issue?.blockedOwnerNotifiedAt).toBeTruthy();
 
-    const recoveryAction = await db
-      .select()
-      .from(issueRecoveryActions)
-      .where(and(eq(issueRecoveryActions.companyId, companyId), eq(issueRecoveryActions.sourceIssueId, issueId)))
-      .then((rows) => rows[0] ?? null);
-    expect(recoveryAction).toMatchObject({
-      cause: "startup_fault",
-      status: "active",
-    });
-
-    const escalationComments = await db
-      .select()
-      .from(issueComments)
-      .where(eq(issueComments.issueId, issueId));
-    expect(
-      escalationComments.filter((comment) =>
+    const escalationComments = await waitForValue(async () => {
+      const comments = await db
+        .select()
+        .from(issueComments)
+        .where(eq(issueComments.issueId, issueId));
+      const matched = comments.filter((comment) =>
         noticeMetadataReferencesRecoveryAction(comment.metadata, recoveryAction!.id),
-      ),
-    ).toHaveLength(1);
+      );
+      return matched.length === 1 ? matched : null;
+    });
+    expect(escalationComments).toHaveLength(1);
 
     for (let tick = 0; tick < 100; tick += 1) {
       await heartbeat.reconcileStrandedAssignedIssues();
