@@ -1,20 +1,34 @@
 import { describe, expect, it } from "vitest";
-import { redactSensitive, stripSecretBearingUrlParts } from "../middleware/redact-sensitive.js";
+import {
+  collectSensitiveStringValues,
+  redactSensitive,
+  redactSensitiveValueOccurrences,
+  stripSecretBearingUrlParts,
+} from "../middleware/redact-sensitive.js";
 
 describe("redactSensitive", () => {
   it("redacts a plaintext password field on a sign-in body", () => {
-    const body = { email: "user@example.com", password: "founding6gomez6croaking" };
+    const body = {
+      email: "user@example.com",
+      password: "founding6gomez6croaking",
+    };
 
     const out = redactSensitive(body) as Record<string, unknown>;
 
     expect(out.email).toBe("user@example.com");
     expect(out.password).toBe("[REDACTED]");
-    expect((body as Record<string, unknown>).password).toBe("founding6gomez6croaking");
+    expect((body as Record<string, unknown>).password).toBe(
+      "founding6gomez6croaking",
+    );
   });
 
   it("redacts password key regardless of casing", () => {
-    expect((redactSensitive({ Password: "x" }) as Record<string, unknown>).Password).toBe("[REDACTED]");
-    expect((redactSensitive({ PASSWORD: "x" }) as Record<string, unknown>).PASSWORD).toBe("[REDACTED]");
+    expect(
+      (redactSensitive({ Password: "x" }) as Record<string, unknown>).Password,
+    ).toBe("[REDACTED]");
+    expect(
+      (redactSensitive({ PASSWORD: "x" }) as Record<string, unknown>).PASSWORD,
+    ).toBe("[REDACTED]");
   });
 
   it("redacts known credential-shaped keys", () => {
@@ -32,11 +46,83 @@ describe("redactSensitive", () => {
     }
   });
 
+  it("drops provider credential envelopes and redacts provider keys outside them", () => {
+    const out = redactSensitive({
+      credentials: {
+        botToken: "nested-bot-canary",
+        futureCredential: "nested-future-canary",
+      },
+      botToken: "bot-canary",
+      signing_secret: "signing-canary",
+      webhookSecret: "webhook-canary",
+      app_secret: "app-canary",
+      applicationSecret: "application-canary",
+    }) as Record<string, unknown>;
+
+    expect(out).toEqual({
+      credentials: "[REDACTED]",
+      botToken: "[REDACTED]",
+      signing_secret: "[REDACTED]",
+      webhookSecret: "[REDACTED]",
+      app_secret: "[REDACTED]",
+      applicationSecret: "[REDACTED]",
+    });
+    expect(JSON.stringify(out)).not.toContain("canary");
+  });
+
+  it("removes raw, JSON-escaped, and URL-encoded submitted credentials from prose", () => {
+    const credential = "secret value/with\nnewline";
+    const submittedValues = collectSensitiveStringValues({
+      action: "configure",
+      credentials: { botToken: credential },
+    });
+    const out = redactSensitiveValueOccurrences(
+      {
+        raw: `Provider rejected ${credential}`,
+        json: `Provider rejected ${JSON.stringify(credential).slice(1, -1)}`,
+        url: `Provider rejected ${encodeURIComponent(credential)}`,
+        form: `Provider rejected ${encodeURIComponent(credential).replaceAll("%20", "+")}`,
+        scopes: ["chat:write", "reactions:write"],
+      },
+      submittedValues,
+    );
+
+    expect(JSON.stringify(out)).not.toContain("secret value");
+    expect(JSON.stringify(out)).not.toContain("secret%20value");
+    expect(out).toMatchObject({ scopes: ["chat:write", "reactions:write"] });
+  });
+
+  it("sanitizes malformed UTF-16 credential values without throwing", () => {
+    const malformedCredential = "\ud800";
+
+    expect(() =>
+      redactSensitiveValueOccurrences(
+        `Provider rejected ${malformedCredential}`,
+        [malformedCredential],
+      ),
+    ).not.toThrow();
+    expect(
+      redactSensitiveValueOccurrences(
+        `Provider rejected ${malformedCredential}`,
+        [malformedCredential],
+      ),
+    ).toBe("Provider rejected [REDACTED]");
+  });
+
+  it("removes a normalized provider echo of a whitespace-padded credential", () => {
+    expect(
+      redactSensitiveValueOccurrences("Provider rejected padded-token-canary", [
+        "  padded-token-canary \n",
+      ]),
+    ).toBe("Provider rejected [REDACTED]");
+  });
+
   it("redacts an OAuth provider's error_description and error_uri from a callback query", () => {
     const out = redactSensitive({
       state: "paperclip-state",
       error: "access_denied",
-      error_description: "\u001b[31mPaste your recovery key\u001b[0m sk-live-canary",
+      error_description:
+        "\u001b[31mPaste your recovery key\u001b[0m sk-live-canary",
       error_uri: "https://attacker.example/explain?leak=sk-live-canary",
     }) as Record<string, unknown>;
 
@@ -60,9 +146,13 @@ describe("redactSensitive", () => {
 
     expect(out.token).toBe("[REDACTED]");
     expect((out.nested as Record<string, unknown>).value).toBe("[REDACTED]");
-    expect((out.entries as Array<Record<string, unknown>>)[0].value).toBe("[REDACTED]");
+    expect((out.entries as Array<Record<string, unknown>>)[0].value).toBe(
+      "[REDACTED]",
+    );
     expect(out.limit).toBe(20);
-    expect(JSON.stringify(out)).not.toMatch(/secret-token|secret-value|array-secret/);
+    expect(JSON.stringify(out)).not.toMatch(
+      /secret-token|secret-value|array-secret/,
+    );
   });
 
   it("strips secret-bearing query and fragment values from source URLs", () => {
@@ -79,7 +169,9 @@ describe("redactSensitive", () => {
       tokens: [{ access_token: "t1" }, { access_token: "t2" }],
     }) as Record<string, unknown>;
 
-    expect((out.user as Record<string, unknown>).email).toBe("user@example.com");
+    expect((out.user as Record<string, unknown>).email).toBe(
+      "user@example.com",
+    );
     expect((out.user as Record<string, unknown>).password).toBe("[REDACTED]");
     const tokens = out.tokens as Array<Record<string, unknown>>;
     expect(tokens[0].access_token).toBe("[REDACTED]");
@@ -87,7 +179,13 @@ describe("redactSensitive", () => {
   });
 
   it("leaves primitives and non-sensitive keys untouched", () => {
-    const body = { email: "a@b.c", name: "Alice", count: 7, active: true, missing: null };
+    const body = {
+      email: "a@b.c",
+      name: "Alice",
+      count: 7,
+      active: true,
+      missing: null,
+    };
 
     expect(redactSensitive(body)).toEqual(body);
   });
@@ -127,8 +225,10 @@ describe("redactSensitive", () => {
 
 describe("stripSecretBearingUrlParts", () => {
   it("keeps a request path legible while dropping its complete query and fragment", () => {
-    expect(stripSecretBearingUrlParts(
-      "/api/tools/oauth/callback?code=authorization-code&error_description=provider-prose#fragment",
-    )).toBe("/api/tools/oauth/callback");
+    expect(
+      stripSecretBearingUrlParts(
+        "/api/tools/oauth/callback?code=authorization-code&error_description=provider-prose#fragment",
+      ),
+    ).toBe("/api/tools/oauth/callback");
   });
 });

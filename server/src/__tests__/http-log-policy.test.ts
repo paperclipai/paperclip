@@ -1,9 +1,43 @@
 import { describe, expect, it } from "vitest";
-import { shouldSilenceHttpSuccessLog } from "../middleware/http-log-policy.js";
+import {
+  isSecretSensitiveHttpRequest,
+  shouldSilenceHttpSuccessLog,
+} from "../middleware/http-log-policy.js";
+
+describe("isSecretSensitiveHttpRequest", () => {
+  it("identifies credential-bearing chat setup mutations", () => {
+    expect(
+      isSecretSensitiveHttpRequest(
+        "POST",
+        "/api/chat-endpoints/endpoint-1/setup",
+      ),
+    ).toBe(true);
+    expect(
+      isSecretSensitiveHttpRequest(
+        "POST",
+        "/api/chat-endpoints/endpoint-1/setup-secret?rotation=true",
+      ),
+    ).toBe(true);
+    expect(
+      isSecretSensitiveHttpRequest(
+        "GET",
+        "/api/chat-endpoints/endpoint-1/setup",
+      ),
+    ).toBe(false);
+    expect(
+      isSecretSensitiveHttpRequest(
+        "POST",
+        "/api/chat-endpoints/endpoint-1/test",
+      ),
+    ).toBe(false);
+  });
+});
 
 describe("shouldSilenceHttpSuccessLog", () => {
   it("silences cached 304 responses", () => {
-    expect(shouldSilenceHttpSuccessLog("GET", "/api/issues/PAP-1383", 304)).toBe(true);
+    expect(
+      shouldSilenceHttpSuccessLog("GET", "/api/issues/PAP-1383", 304),
+    ).toBe(true);
   });
 
   it("silences successful polling endpoints", () => {
@@ -55,19 +89,39 @@ describe("shouldSilenceHttpSuccessLog", () => {
   it("silences successful static asset requests", () => {
     expect(shouldSilenceHttpSuccessLog("GET", "/", 200)).toBe(true);
     expect(shouldSilenceHttpSuccessLog("GET", "/index.html", 200)).toBe(true);
-    expect(shouldSilenceHttpSuccessLog("GET", "/@fs/Users/dotta/paperclip/ui/src/main.tsx", 200)).toBe(true);
-    expect(shouldSilenceHttpSuccessLog("GET", "/src/App.tsx?t=123", 200)).toBe(true);
-    expect(shouldSilenceHttpSuccessLog("GET", "/site.webmanifest", 200)).toBe(true);
+    expect(
+      shouldSilenceHttpSuccessLog(
+        "GET",
+        "/@fs/Users/dotta/paperclip/ui/src/main.tsx",
+        200,
+      ),
+    ).toBe(true);
+    expect(shouldSilenceHttpSuccessLog("GET", "/src/App.tsx?t=123", 200)).toBe(
+      true,
+    );
+    expect(shouldSilenceHttpSuccessLog("GET", "/site.webmanifest", 200)).toBe(
+      true,
+    );
     expect(shouldSilenceHttpSuccessLog("GET", "/sw.js", 200)).toBe(true);
   });
 
   it("keeps normal successful application requests", () => {
-    expect(shouldSilenceHttpSuccessLog("GET", "/api/issues/PAP-1383", 200)).toBe(false);
-    expect(shouldSilenceHttpSuccessLog("PATCH", "/api/issues/PAP-1383", 200)).toBe(false);
+    expect(
+      shouldSilenceHttpSuccessLog("GET", "/api/issues/PAP-1383", 200),
+    ).toBe(false);
+    expect(
+      shouldSilenceHttpSuccessLog("PATCH", "/api/issues/PAP-1383", 200),
+    ).toBe(false);
   });
 
   it("keeps failing requests visible", () => {
     expect(shouldSilenceHttpSuccessLog("GET", "/api/health", 500)).toBe(false);
-    expect(shouldSilenceHttpSuccessLog("GET", "/@fs/Users/dotta/paperclip/ui/src/main.tsx", 404)).toBe(false);
+    expect(
+      shouldSilenceHttpSuccessLog(
+        "GET",
+        "/@fs/Users/dotta/paperclip/ui/src/main.tsx",
+        404,
+      ),
+    ).toBe(false);
   });
 });

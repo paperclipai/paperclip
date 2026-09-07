@@ -17,6 +17,7 @@ import {
 } from "@/api/chatEndpoints";
 import { useNavigate, useSearchParams } from "@/lib/router";
 import { isAgentStatusInvokable } from "@paperclipai/shared";
+import { sanitizedSetupErrorMessage } from "./chat-setup-error";
 
 const providerNames: Record<ChatProvider, string> = {
   slack: "Slack",
@@ -49,35 +50,6 @@ function publicOrigin(value: string | null | undefined): string | null {
   } catch {
     return null;
   }
-}
-
-const setupErrorFallback =
-  "Check the required values and provider access, then try again.";
-
-function sanitizedSetupErrorMessage(
-  error: unknown,
-  submittedValues: Record<string, string> | undefined,
-): string {
-  let message = error instanceof Error ? error.message.trim() : "";
-  if (!message) return setupErrorFallback;
-
-  const submittedSecrets = Object.values(submittedValues ?? {})
-    .map((value) => value.trim())
-    .filter(Boolean)
-    .sort((left, right) => right.length - left.length);
-  for (const secret of submittedSecrets) {
-    const escapedSecret = JSON.stringify(secret).slice(1, -1);
-    for (const candidate of new Set([
-      secret,
-      escapedSecret,
-      encodeURIComponent(secret),
-    ])) {
-      message = message.replaceAll(candidate, "[redacted]");
-    }
-  }
-
-  const normalized = message.replace(/\s+/g, " ").trim();
-  return normalized ? normalized.slice(0, 500) : setupErrorFallback;
 }
 
 export function isChatEndpointRepairing(

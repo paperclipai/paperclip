@@ -12,6 +12,12 @@
 // the logger.
 
 const SENSITIVE_KEYS = new Set<string>([
+  // Provider setup payloads deliberately group all durable authentication
+  // material under `credentials`. Redact the whole subtree instead of trying
+  // to keep an ever-changing allowlist of provider-specific field names in
+  // sync with every connector.
+  "credential",
+  "credentials",
   "password",
   "currentpassword",
   "newpassword",
@@ -44,6 +50,20 @@ const SENSITIVE_KEYS = new Set<string>([
   "sessiontoken",
   "private_key",
   "privatekey",
+  // Defense in depth for legacy, malformed, or provider-specific payloads
+  // that place a credential outside the standard `credentials` envelope.
+  "app_secret",
+  "appsecret",
+  "application_secret",
+  "applicationsecret",
+  "bot_token",
+  "bottoken",
+  "secret_token",
+  "secrettoken",
+  "signing_secret",
+  "signingsecret",
+  "webhook_secret",
+  "webhooksecret",
   "paperclip_capability",
   // The Claude setup-token login fields. `browserCode` carries the one-time
   // sign-in code and `authorization_code` carries the OAuth code; neither may
@@ -95,7 +115,8 @@ function isUrlishKey(key: string): boolean {
 
 export function stripSecretBearingUrlParts(value: string): string {
   const suffixStart = value.search(/[?#]/);
-  const withoutQueryOrFragment = suffixStart === -1 ? value : value.slice(0, suffixStart);
+  const withoutQueryOrFragment =
+    suffixStart === -1 ? value : value.slice(0, suffixStart);
 
   try {
     const url = new URL(withoutQueryOrFragment);
@@ -130,4 +151,98 @@ export function redactSensitive(value: unknown, depth = 0): unknown {
     out[key] = redactSensitive(entry, depth + 1);
   }
   return out;
+}
+
+function collectSensitiveStringValuesInto(
+  value: unknown,
+  values: Set<string>,
+  collectAll: boolean,
+  depth: number,
+): void {
+  if (depth > MAX_DEPTH || value === null || value === undefined) return;
+  if (typeof value === "string") {
+    if (collectAll && value.length > 0) values.add(value);
+    return;
+  }
+  if (typeof value !== "object") return;
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      collectSensitiveStringValuesInto(entry, values, collectAll, depth + 1);
+    }
+    return;
+  }
+  for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+    collectSensitiveStringValuesInto(
+      entry,
+      values,
+      collectAll || isSensitiveKey(key),
+      depth + 1,
+    );
+  }
+}
+
+/** Collects submitted credential strings without exposing them to callers' logs. */
+export function collectSensitiveStringValues(value: unknown): string[] {
+  const values = new Set<string>();
+  collectSensitiveStringValuesInto(value, values, false, 0);
+  return [...values];
+}
+
+function encodedSensitiveVariants(values: readonly string[]): string[] {
+  const variants = new Set<string>();
+  for (const value of values) {
+    const normalizedValues = new Set([value, value.trim()]);
+    for (const normalizedValue of normalizedValues) {
+      if (normalizedValue.length === 0) continue;
+      variants.add(normalizedValue);
+      const json = JSON.stringify(normalizedValue);
+      if (json.length >= 2) variants.add(json.slice(1, -1));
+      try {
+        const urlEncoded = encodeURIComponent(normalizedValue);
+        variants.add(urlEncoded);
+        variants.add(urlEncoded.replaceAll("%20", "+"));
+      } catch {
+        // A lone UTF-16 surrogate is not URI-encodable. The raw and JSON-escaped
+        // forms are still covered, and error handling must never throw again
+        // while trying to sanitize malformed input.
+      }
+    }
+  }
+  return [...variants]
+    .filter(Boolean)
+    .sort((left, right) => right.length - left.length);
+}
+
+/**
+ * Redacts sensitive-shaped fields, then removes submitted credential values
+ * wherever an upstream validator/provider echoed them into otherwise-safe
+ * response prose.
+ */
+export function redactSensitiveValueOccurrences(
+  value: unknown,
+  sensitiveValues: readonly string[],
+): unknown {
+  const variants = encodedSensitiveVariants(sensitiveValues);
+  const redacted = redactSensitive(value);
+
+  const visit = (entry: unknown, depth: number): unknown => {
+    if (depth > MAX_DEPTH) return undefined;
+    if (typeof entry === "string") {
+      return variants.reduce(
+        (text, sensitiveValue) => text.replaceAll(sensitiveValue, REDACTED),
+        entry,
+      );
+    }
+    if (entry === null || typeof entry !== "object") return entry;
+    if (Array.isArray(entry))
+      return entry.map((item) => visit(item, depth + 1));
+    return Object.fromEntries(
+      Object.entries(entry as Record<string, unknown>).map(([key, item]) => [
+        key,
+        visit(item, depth + 1),
+      ]),
+    );
+  };
+
+  return visit(redacted, 0);
 }

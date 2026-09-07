@@ -216,9 +216,11 @@ describe("chat connector UI contract", () => {
 
   it("keeps provider setup failures visible without rendering submitted credentials", () => {
     const setup = source("./ChatEndpointSetup.tsx");
+    const setupError = source("./chat-setup-error.ts");
     expect(setup).toContain("sanitizedSetupErrorMessage");
     expect(setup).toContain('role="alert"');
-    expect(setup).toContain('message.replaceAll(candidate, "[redacted]")');
+    expect(setupError).toContain('message.replaceAll(candidate, "[redacted]")');
+    expect(setupError).toContain("return encodeURIComponent(value)");
     expect(setup).toContain("onMutate: () => setSetupError(null)");
     expect(setup).not.toContain('title: "Connection failed"');
   });
