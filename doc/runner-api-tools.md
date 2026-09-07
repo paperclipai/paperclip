@@ -14,8 +14,9 @@ initial company rollout, also set `PAPERCLIP_RUNNER_API_TOOLS_COMPANY_IDS` to a
 comma-separated list of company UUIDs. An unset list allows every company;
 an explicitly empty list allows none. IDs must match exactly.
 
-Setting `PAPERCLIP_RUNNER_API_TOOLS_ENABLED=false` overrides even a server-owned
-test binding that opts in. The server checks this switch when advertising tools,
+The server always requires the explicit `true` flag, including for server-owned
+bindings. A binding can disable these tools for a baseline eval but cannot enable
+them without operator opt-in. Setting the flag to `false` disables them. The server checks this switch when advertising tools,
 when accepting a call, and immediately before HTTP dispatch after preparing any
 files. Existing dedicated tools remain available. Operators must update the
 environment of each server process and restart it for deployment-level changes;

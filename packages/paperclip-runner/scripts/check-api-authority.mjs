@@ -14,6 +14,7 @@ run(["run", "build:binary"], fileURLToPath(new URL("../", import.meta.url)));
 run([
   "exec", "vitest", "run",
   "server/src/services/native-runtime/runner-api.test.ts",
+  "server/src/services/native-runtime/runner-api-rollout.test.ts",
   "server/src/services/native-runtime/runner-api.integration.test.ts",
 ], fileURLToPath(new URL("../../../", import.meta.url)), {
   ...process.env, PAPERCLIP_REQUIRE_RUNNER_API_INTEGRATION: "1",

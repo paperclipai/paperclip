@@ -5,9 +5,8 @@ export function runnerApiToolsEnabled(
   environment: NodeJS.ProcessEnv = process.env,
 ): boolean {
   const enabled = environment.PAPERCLIP_RUNNER_API_TOOLS_ENABLED;
-  // An explicit operator stop wins over a previously advertised tool or eval binding.
-  if (enabled === "false" || bindingOverride === false) return false;
-  if (enabled !== "true" && bindingOverride !== true) return false;
+  // A binding can only narrow operator permission, never opt into this surface.
+  if (enabled !== "true" || bindingOverride === false) return false;
   const companies = environment.PAPERCLIP_RUNNER_API_TOOLS_COMPANY_IDS;
   if (companies === undefined) return true;
   return companies.split(",").map(value => value.trim()).filter(Boolean).includes(companyId);

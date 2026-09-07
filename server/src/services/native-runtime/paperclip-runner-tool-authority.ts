@@ -48,7 +48,7 @@ type Binding = {
   /** Server-owned API origin and storage; never obtained from tool input. */
   apiUrl?: string;
   storage?: StorageService;
-  /** Server-owned eval/rollout override; explicit operator disable always wins. */
+  /** Server-owned suppression for baseline evals; true never overrides operator opt-in. */
   apiToolsEnabled?: boolean;
   workMode?: "standard" | "planning" | "ask";
   enqueueWakeup?: (agentId: string, options: {
