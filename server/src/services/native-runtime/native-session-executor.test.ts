@@ -4,6 +4,7 @@ import {
   mkdir,
   mkdtemp,
   readdir,
+  readFile,
   rm,
   symlink,
   writeFile,
@@ -180,6 +181,7 @@ import {
   nativeSessionRecoveryProjection,
   nativeGovernedWaitResult,
   parseRemoteExecutableCandidate,
+  buildRemoteCodexLauncherCommand,
   mayUsePreinstalledRunnerArtifact,
   nativeUsageCostUsd,
   normalizeNativeUsage,
@@ -1601,6 +1603,32 @@ describe("remote provider checkpoint restores", () => {
 });
 
 describe("remote preinstalled executable discovery", () => {
+  it("stages a relative-path CLI shim without changing its installation or losing arguments", async () => {
+    const root = await mkdtemp(join(tmpdir(), "paperclip-codex-shim-"));
+    try {
+      const installation = join(root, "image install's bin");
+      const target = join(root, "workspace", "bin", "codex");
+      const source = join(installation, "codex");
+      await mkdir(installation, { recursive: true });
+      await mkdir(join(root, "workspace", "bin"), { recursive: true });
+      const shim = '#!/bin/sh\ncat "$(dirname "$0")/version.txt"\nprintf "%s\\n" "$@"\n';
+      await writeFile(source, shim, { mode: 0o755 });
+      await writeFile(join(installation, "version.txt"), "codex-cli 0.153.4\n");
+      // Existing deployments may already have the old symlink. Never write
+      // through it into the shared installation while upgrading the launcher.
+      await symlink(source, target);
+      for (let pass = 0; pass < 2; pass++) {
+        execFileSync("sh", ["-c", buildRemoteCodexLauncherCommand(source, target)]);
+        expect(execFileSync(target, ["--version", "argument with 'quotes'"], { encoding: "utf8" }))
+          .toBe("codex-cli 0.153.4\n--version\nargument with 'quotes'\n");
+        expect(await readFile(source, "utf8")).toBe(shim);
+      }
+      expect(await readdir(join(root, "workspace", "bin"))).toEqual(["codex"]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("accepts one normalized absolute executable path", () => {
     expect(
       parseRemoteExecutableCandidate(
@@ -6057,7 +6085,7 @@ describe("runnerd provider runtime wiring", () => {
           stdout = script.includes("/opt/paperclip-runner/bin/codex")
             ? "/opt/paperclip-runner/bin/codex\n"
             : "/usr/local/bin/codex\n";
-        } else if (!script.includes("ln -sfn")) {
+        } else if (!script.includes("ln -sfn") && !script.includes("paperclip_codex_launcher_tmp")) {
           throw new Error(`unexpected command: ${command.command}`);
         }
         return {

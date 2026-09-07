@@ -5036,6 +5036,22 @@ function processEnvironment(
   );
 }
 
+/** Preserve package-manager shims that resolve dependencies relative to argv[0]. */
+export function buildRemoteCodexLauncherCommand(sourcePath: string, targetPath: string): string {
+  if (sourcePath === targetPath) throw new Error("runner_remote_preinstalled_source_conflict");
+  const quote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'";
+  const launcher = `#!/bin/sh\nexec ${quote(sourcePath)} "$@"\n`;
+  // Replace atomically: writing through an existing symlink would corrupt the
+  // image's shared CLI, and another run may be executing this launcher already.
+  return `umask 077; mkdir -p ${quote(posix.dirname(targetPath))} && ` +
+    `[ ! -d ${quote(targetPath)} ] && ` +
+    `paperclip_codex_launcher_tmp=$(mktemp ${quote(targetPath + ".tmp.XXXXXX")}) && ` +
+    `trap 'rm -f "$paperclip_codex_launcher_tmp"' 0 && ` +
+    `printf '%s' ${quote(launcher)} > "$paperclip_codex_launcher_tmp" && ` +
+    `chmod 700 "$paperclip_codex_launcher_tmp" && ` +
+    `mv -f "$paperclip_codex_launcher_tmp" ${quote(targetPath)}`;
+}
+
 export function parseRemoteExecutableCandidate(stdout: string): string | null {
   const lines = stdout
     .split(/\r?\n/)
@@ -6528,8 +6544,10 @@ async function createRunnerdBackendWithinSessionClaim(
       command: "sh",
       args: [
         "-c",
-        `umask 077; mkdir -p '${escapedDirectory}' && ` +
-          `ln -sfn '${escapedSource}' '${escapedTarget}'`,
+        targetPath === remoteCodexBinary
+          ? buildRemoteCodexLauncherCommand(sourcePath, targetPath)
+          : `umask 077; mkdir -p '${escapedDirectory}' && ` +
+            `ln -sfn '${escapedSource}' '${escapedTarget}'`,
       ],
       cwd: remoteTarget.remoteCwd,
       bypassSession: true,
