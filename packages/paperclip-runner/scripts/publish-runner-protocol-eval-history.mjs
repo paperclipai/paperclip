@@ -14,6 +14,9 @@ import {
 import { tmpdir } from "node:os";
 import { extname, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
+import { enrichProtocolEvalHistory } from "./runner-protocol-eval-metrics.mjs";
+import { renderProtocolEvalHistoryIndex } from "./runner-protocol-eval-history-view.mjs";
+export { renderProtocolEvalHistoryIndex } from "./runner-protocol-eval-history-view.mjs";
 import {
   trustedViewerFiles,
   validatePublicViewerPage,
@@ -46,19 +49,9 @@ const ACTIVE_HTML_PATTERNS = [
   /javascript\s*:/iu,
   /(?:src|href)\s*=\s*["'](?:https?:)?\/\//iu,
 ];
-const MAX_HISTORY_CAMPAIGNS = 200;
 
 function json(value) {
   return `${JSON.stringify(value, null, 2)}\n`;
-}
-
-function html(value) {
-  return String(value ?? "")
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#39;");
 }
 
 async function loadObject(path) {
@@ -338,18 +331,13 @@ export function mergeProtocolEvalHistory(history, record) {
     qualifications.find(
       (campaign) => campaign.complete && campaign.allPassed,
     ) ?? null;
-  const pointers = [...new Set([latest, latestGreen].filter(Boolean))];
-  const retained = campaigns
-    .filter((campaign) => !pointers.includes(campaign))
-    .slice(0, MAX_HISTORY_CAMPAIGNS - pointers.length)
-    .concat(pointers)
-    .sort(activityOrder);
   return {
     schema: history.schema,
     updatedAt: new Date().toISOString(),
     latestCampaignId: latest?.campaignId ?? null,
     latestGreenCampaignId: latestGreen?.campaignId ?? null,
-    campaigns: retained,
+    campaigns,
+    ...(history.analytics ? { analytics: history.analytics } : {}),
   };
 }
 
@@ -381,46 +369,6 @@ export function buildProtocolEvalPointers(history) {
       campaign: project(history.latestGreenCampaignId),
     },
   };
-}
-
-function date(value) {
-  return new Intl.DateTimeFormat("en-US", {
-    dateStyle: "medium",
-    timeStyle: "short",
-    timeZone: "UTC",
-  }).format(new Date(value));
-}
-
-export function renderProtocolEvalHistoryIndex(history, stylesheetHref) {
-  if (!/^campaigns\/gha-[a-z0-9-]+\/viewer\/assets\/[A-Za-z0-9._-]+\.css$/.test(stylesheetHref ?? ""))
-    throw new Error("History requires an immutable campaign's Runner Lab stylesheet");
-  const rows = history.campaigns.length
-    ? history.campaigns
-        .map((campaign) => {
-          const status =
-            campaign.complete && campaign.allPassed ? "passed" : "failed";
-          const rosters = campaign.rosters
-            .map(
-              (roster) =>
-                `${html(roster.model)} · ${roster.passed}/${roster.selected}`,
-            )
-            .join("<br>");
-          return `<tr><td><a href="${html(campaign.publicUrl)}"><code>${html(campaign.campaignId)}</code></a><small>${html(date(campaign.generatedAt))} UTC</small>${campaign.reportRevision ? `<small>Report refresh · no new model calls · source ${html(campaign.reportRevision.sourceCampaignId)}</small>` : ""}</td><td><span class="status ${status}">${status}</span></td><td><strong>${html(campaign.totals.passed)}/${html(campaign.totals.selected)}</strong><small>${html(campaign.totals.behaviorFailures)} behavior · ${html(campaign.totals.infrastructureFailures)} infrastructure</small></td><td>${rosters}</td><td><code>${html(campaign.source?.paperclip?.sha?.slice(0, 8) ?? "unknown")}</code><small>evals ${html(campaign.source?.evals?.sha?.slice(0, 8) ?? "unknown")}</small></td><td><a href="${html(campaign.publicUrl)}">Open Evalbook →</a></td></tr>`;
-        })
-        .join("")
-    : '<tr><td colspan="6" class="empty">No campaigns have been published yet.</td></tr>';
-  const latest = history.campaigns.find(
-    (campaign) => campaign.campaignId === history.latestCampaignId,
-  );
-  const latestGreen = history.campaigns.find(
-    (campaign) => campaign.campaignId === history.latestGreenCampaignId,
-  );
-  return `<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Runner protocol eval campaigns · Paperclip</title>
-<link rel="stylesheet" href="${html(stylesheetHref)}"></head>
-<body class="evalbook-site"><main><header class="top"><a href="index.html">paperclip-runner evals</a><span class="badge">Run history</span></header><h1>Runner protocol eval campaigns</h1><p class="muted">Versioned live-runner reports. Full provider evidence remains in access-controlled workflow artifacts.</p>
-<nav class="pointers">${latest ? `<a href="${html(latest.publicUrl)}">Latest · ${html(latest.campaignId)}</a>` : ""}${latestGreen ? `<a href="${html(latestGreen.publicUrl)}">Latest green · ${html(latestGreen.campaignId)}</a>` : ""}</nav>
-<div class="table"><table><thead><tr><th>Campaign</th><th>Status</th><th>Cells</th><th>Models / rosters</th><th>Source</th><th></th></tr></thead><tbody>${rows}</tbody></table></div><footer>Updated ${html(date(history.updatedAt))} UTC · Immutable campaign bundles · Canonical Evalbook layout with public-safe evidence projections</footer></main></body></html>`;
 }
 
 function awsObject(bucket, key) {
@@ -521,7 +469,7 @@ export async function publishProtocolEvalHistory({
     join(tmpdir(), "runner-protocol-eval-history-"),
   );
   const historyKey = `${validatedDestination.prefix}/history.json`;
-  const history = mergeProtocolEvalHistory(
+  const mergedHistory = mergeProtocolEvalHistory(
     (await downloadJson(
       validatedDestination.bucket,
       historyKey,
@@ -532,6 +480,15 @@ export async function publishProtocolEvalHistory({
       `${validatedDestination.publicBaseUrl}/${validatedDestination.prefix}`,
     ),
   );
+  const history = await enrichProtocolEvalHistory(mergedHistory, {
+    currentCampaign: campaign,
+    loadCampaign: async (id) => {
+      if (!SAFE_CAMPAIGN.test(id)) throw new Error("Unsafe historical campaign ID");
+      return downloadJson(validatedDestination.bucket,
+        `${validatedDestination.prefix}/campaigns/${id}/campaign.json`,
+        join(temporary, `${id}.json`));
+    },
+  });
   const campaignPrefix = `${validatedDestination.prefix}/campaigns/${campaign.campaignId}`;
   const manifestKey = `${campaignPrefix}/bundle-manifest.json`;
   const existing = await downloadJson(

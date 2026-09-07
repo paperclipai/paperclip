@@ -74,8 +74,10 @@ revisions do not change. This is not a new model qualification run. Future live
 runs create chat reports automatically.
 Refreshes are ordered by their render time in the history list, but keep the
 original measurement timestamp and never replace the latest or latest-green
-qualification pointers. Those two real-run records remain retained even when
-many report revisions fill the history window.
+qualification identities. The HTML history links each measurement to its newest
+presentation, while retaining every original bundle and listing refreshes separately.
+Refreshes also recover retry-inclusive estimated and provider-list costs from the
+retained attempt records. They never add another model-cost measurement.
 
 This is the provider-backed, one-turn protocol qualification layer in
 `paperclipai/paperclip-evals/evals/paperclip-runner`. It is intentionally
@@ -255,9 +257,27 @@ runner-protocol-evals/
 Campaign files use immutable cache headers and a digest manifest. Reusing a
 campaign ID with different bytes fails closed. Only the root history and
 pointer files are mutable, and the publisher never deletes objects. The root
-history retains at most 200 records, reserving one record for the latest green
-campaign when it would otherwise fall outside that window so its pointer stays
-valid.
+history retains **all** run records; it no longer drops entries after 200 campaigns.
+
+The history index includes:
+
+- Pass-rate and cost timelines, grouped by identical cell/model/driver membership
+  and eval-suite SHA. Different suites and subsets cannot silently share a baseline.
+- Regression and recovery lists against the previous matching run, linking to the
+  affected tests. Infrastructure failures stay distinct from behavior failures.
+- Estimated cost and provider-reported list cost, shown separately, never added.
+  New campaigns include all retained attempts (including retries). Backfilled old
+  campaigns with only final-cell usage are labeled **historical final attempts only**.
+  Missing usage is unknown, not zero; partial totals use `≥` and display coverage.
+- Exact Paperclip and eval-suite commit links (full SHA on hover), the source ref,
+  and the GitHub Actions run. These identify the code **evaluated**, not merely
+  the commit used to render an old report.
+- A separate report-refresh list, excluded from trend points and model-spend totals.
+
+`history.json` stores a versioned, derived `analytics` projection separately from
+immutable campaign records. The publisher backfills missing analytics from each
+original `campaign.json`; a refresh may enrich costs using retained raw attempts
+only when its source metadata and scores still match the original record.
 
 The publishing job uses dedicated `RUNNER_PROTOCOL_EVAL_HISTORY_*` variables
 when present and falls back to the existing Runner E2E history role, region,

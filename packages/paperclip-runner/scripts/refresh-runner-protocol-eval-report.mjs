@@ -2,10 +2,11 @@
 // Re-render immutable recorded evidence; this command never invokes a model.
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdir, readFile, writeFile, lstat } from "node:fs/promises";
+import { mkdir, readFile, writeFile, lstat, readdir } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { sanitizeProtocolEvalRuns } from "./runner-protocol-eval-campaign.mjs";
 import { validatePublicProtocolEvalReport } from "./publish-runner-protocol-eval-history.mjs";
+import { sumAttemptCosts } from "./runner-protocol-eval-metrics.mjs";
 
 export async function refreshProtocolEvalReport({
   sourceRoot,
@@ -13,6 +14,7 @@ export async function refreshProtocolEvalReport({
   viewerRoot,
   outputRoot,
   revision,
+  selection,
   renderedAt = new Date().toISOString(),
 }) {
   if (!/^[a-z0-9][a-z0-9-]{0,39}$/.test(revision ?? ""))
@@ -59,6 +61,10 @@ export async function refreshProtocolEvalReport({
   );
   const refreshed = {
     ...campaign,
+    ...(selection ? { selection } : {}),
+    // Recover retry-inclusive cost from retained evidence, not just winning cells.
+    costs: sumAttemptCosts(await Promise.all((await readdir(runsRoot)).map(async (id) =>
+      JSON.parse(await readFile(join(runsRoot, id, "artifact.json"), "utf8")).usage))),
     campaignId: `${campaign.campaignId}-report-${revision}`,
     // A presentation refresh is not a new model measurement.
     generatedAt: campaign.generatedAt,

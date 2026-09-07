@@ -211,7 +211,7 @@ test("retains immutable history and independent latest-green pointers", () => {
   );
 });
 
-test("report refreshes never replace qualification pointers, including after retention", () => {
+test("report refreshes never replace qualification pointers or evict older measurements", () => {
   const record = (value) =>
     protocolEvalHistoryRecord(
       value,
@@ -258,14 +258,14 @@ test("report refreshes never replace qualification pointers, including after ret
     buildProtocolEvalPointers(history).latestGreen.campaign.campaignId,
     "gha-42-1",
   );
-  assert.equal(history.campaigns.length, 200);
+  assert.equal(history.campaigns.length, 207);
   assert.match(
     renderProtocolEvalHistoryIndex(history, "campaigns/gha-42-1-report-chat-v1/viewer/assets/index.css"),
     /Report refresh · no new model calls/,
   );
 });
 
-test("retains the latest green pointer outside the 200 newest campaigns", () => {
+test("retains every run and the latest green pointer beyond 200 campaigns", () => {
   const green = protocolEvalHistoryRecord(
     campaign(),
     "https://reports.example/runner-protocol-evals",
@@ -287,7 +287,7 @@ test("retains the latest green pointer outside the 200 newest campaigns", () => 
     );
   }
 
-  assert.equal(history.campaigns.length, 200);
+  assert.equal(history.campaigns.length, 202);
   assert.equal(history.latestCampaignId, "gha-243-1");
   assert.equal(history.latestGreenCampaignId, "gha-42-1");
   assert.equal(history.campaigns.at(-1).campaignId, "gha-42-1");

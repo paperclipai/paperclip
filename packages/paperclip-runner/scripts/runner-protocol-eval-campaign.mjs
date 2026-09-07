@@ -11,6 +11,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
+import { sumAttemptCosts } from "./runner-protocol-eval-metrics.mjs";
 import {
   publicChatView,
   PUBLIC_CHAT_SCHEMA,
@@ -207,6 +208,7 @@ export async function buildProtocolEvalCatalog({
     schema: "paperclip.runner-protocol-eval.catalog/v1",
     campaignId,
     source,
+    selection: { kind: requested === null ? "maintained_full" : "subset", rosters: rosterSelection },
     rosters,
     cells,
     matrices: shards.map((include) => ({ include })),
@@ -438,6 +440,7 @@ export async function aggregateProtocolEvalCampaign({
   }
 
   const results = [];
+  const attemptUsages = [];
   for (const cell of catalog.cells) {
     const retained = retainedByCell.get(cell.cellId);
     const attemptIds = retained?.attemptIds?.length
@@ -451,6 +454,10 @@ export async function aggregateProtocolEvalCampaign({
           }),
         ];
     const finalAttemptId = attemptIds.at(-1);
+    for (const attemptId of attemptIds) {
+      const attempt = await loadObject(join(runsOut, attemptId, "artifact.json"));
+      attemptUsages.push(attempt.usage);
+    }
     const [score, artifact] = await Promise.all([
       loadObject(join(runsOut, finalAttemptId, "score.json")),
       loadObject(join(runsOut, finalAttemptId, "artifact.json")),
@@ -490,6 +497,8 @@ export async function aggregateProtocolEvalCampaign({
     schema: "paperclip.runner-protocol-eval.campaign/v1",
     campaignId: catalog.campaignId,
     generatedAt,
+    selection: catalog.selection,
+    costs: sumAttemptCosts(attemptUsages),
     source: {
       paperclip: source.paperclip,
       evals: source.evals,

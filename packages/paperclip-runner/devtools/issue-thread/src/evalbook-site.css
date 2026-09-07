@@ -56,9 +56,32 @@
 .evalbook-site .status { display: inline-block; padding: var(--pit-space-1) var(--pit-space-2); border-radius: var(--pit-radius-sm); font-weight: 600; text-transform: uppercase; }
 .evalbook-site small { display: block; margin-top: var(--pit-space-1); }
 .evalbook-site footer { margin-top: var(--pit-space-5); font-size: var(--pit-text-xs); }
+.evalbook-site .trend-group { padding: var(--pit-space-4); border: 1px solid var(--pit-border); border-radius: var(--pit-radius-sm); background: var(--pit-surface-sunken); }
+.evalbook-site .trend-group > summary { color: var(--pit-foreground); font-weight: 600; }
+.evalbook-site .trend-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--pit-space-5); }
+.evalbook-site figure { min-width: 0; margin: var(--pit-space-4) 0; }
+.evalbook-site figcaption { color: var(--pit-muted-foreground); font-size: var(--pit-text-xs); }
+.evalbook-site .trend-chart { width: 100%; overflow: visible; }
+.evalbook-site .trend-chart text { fill: var(--pit-muted-foreground); font: var(--pit-text-xs) var(--pit-font-mono); }
+.evalbook-site .trend-axis { fill: none; stroke: var(--pit-border); }
+.evalbook-site .trend-line { fill: none; stroke-width: 2; }
+.evalbook-site :is(.trend-line, .trend-point).pass { stroke: var(--pit-success); }
+.evalbook-site :is(.trend-line, .trend-point).all_attempts { stroke: var(--pit-live); }
+.evalbook-site :is(.trend-line, .trend-point).final_attempts { stroke: var(--pit-accent); stroke-dasharray: 4 3; }
+.evalbook-site .trend-point { fill: var(--pit-surface); stroke-width: 2; }
+.evalbook-site .trend-point:hover { fill: var(--pit-foreground); }
+.evalbook-site .pass-rate { display: block; margin-top: var(--pit-space-2); white-space: nowrap; }
+.evalbook-site .history-table table { min-width: 68rem; }
+.evalbook-site .history-table td:first-child { max-width: 22rem; }
+.evalbook-site .history-table details { margin: var(--pit-space-2) 0; }
+.evalbook-site .history-table li { margin: var(--pit-space-2) 0; }
+.evalbook-site .incomplete { background: var(--pit-warning-surface); color: var(--pit-warning); }
 @media (max-width: 760px) {
   .evalbook-site main { padding: var(--pit-space-4); }
   .evalbook-site .grid { grid-template-columns: 1fr; }
+  .evalbook-site .trend-grid { grid-template-columns: 1fr; }
+  .evalbook-site .trend-grid figure { overflow-x: auto; }
+  .evalbook-site .trend-chart { min-width: 30rem; }
   .evalbook-site .matrix th:first-child { width: 12rem; min-width: 10rem; }
   .evalbook-site .badge { white-space: normal; text-align: center; }
 }
