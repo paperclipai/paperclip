@@ -32,6 +32,29 @@ function readNonEmpty(value: unknown) {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
 
+function isStartupBannerOrWarningLine(line: string) {
+  return (
+    HERMES_WARNING_RE.test(line)
+    || UNKNOWN_TOOLSETS_WARNING_RE.test(line)
+    || HERMES_STARTUP_BANNER_RE.test(line)
+    || HERMES_EXIT_BANNER_RE.test(line)
+  );
+}
+
+function isStartupDiagnosticOnlyLine(line: string) {
+  return WORKTREE_STARTUP_LINE_RE.test(line) || WORKTREE_CD_LINE_RE.test(line);
+}
+
+function stripStartupNoiseFromText(text: string) {
+  return text
+    .split("\n")
+    .map((line) => normalizeDiagnosticLine(line))
+    .filter(Boolean)
+    .filter((line) => !isStartupBannerOrWarningLine(line) && !isStartupDiagnosticOnlyLine(line))
+    .join("\n")
+    .trim();
+}
+
 function hasPositiveStartupEvidence(input: {
   sessionId?: string | null;
   response?: string | null;
@@ -39,11 +62,7 @@ function hasPositiveStartupEvidence(input: {
   if (readNonEmpty(input.sessionId)) return true;
   const response = readNonEmpty(input.response);
   if (!response) return false;
-  const normalized = normalizeDiagnosticLine(response);
-  if (HERMES_STARTUP_BANNER_RE.test(normalized)) return false;
-  if (HERMES_EXIT_BANNER_RE.test(normalized)) return false;
-  if (WORKTREE_STARTUP_LINE_RE.test(normalized)) return false;
-  return normalized.length > 0;
+  return stripStartupNoiseFromText(response).length > 0;
 }
 
 function collectDiagnosticLines(stdout: string, stderr: string) {
@@ -51,15 +70,20 @@ function collectDiagnosticLines(stdout: string, stderr: string) {
     .split("\n")
     .map((line) => normalizeDiagnosticLine(line))
     .filter(Boolean)
-    .filter((line) => !HERMES_WARNING_RE.test(line))
-    .filter((line) => !UNKNOWN_TOOLSETS_WARNING_RE.test(line))
-    .filter((line) => !HERMES_STARTUP_BANNER_RE.test(line))
-    .filter((line) => !HERMES_EXIT_BANNER_RE.test(line));
+    .filter((line) => !isStartupBannerOrWarningLine(line));
   return lines;
 }
 
-function findWorktreeStartupDiagnosticLine(stdout: string, stderr: string) {
-  return collectDiagnosticLines(stdout, stderr).find(
+function findWorktreeStartupDiagnosticLine(input: {
+  stdout: string;
+  stderr: string;
+  response?: string | null;
+}) {
+  const combinedStdout = [
+    input.stdout,
+    readNonEmpty(input.response) ?? "",
+  ].filter(Boolean).join("\n");
+  return collectDiagnosticLines(combinedStdout, input.stderr).find(
     (line) => WORKTREE_STARTUP_LINE_RE.test(line) || WORKTREE_CD_LINE_RE.test(line),
   ) ?? null;
 }
@@ -103,7 +127,7 @@ export function classifyAdapterStartupOutput(input: {
     effectiveConfigFingerprint: input.effectiveConfigFingerprint,
   };
 
-  const worktreeLine = findWorktreeStartupDiagnosticLine(input.stdout, input.stderr);
+  const worktreeLine = findWorktreeStartupDiagnosticLine(input);
   if (worktreeLine) {
     const kind: StartupFaultKind = "worktree_requires_git_repository";
     return {

@@ -214,6 +214,30 @@ describe("hermes-local adapter onSpawn forwarding", () => {
     });
   });
 
+
+  it("classifies startup faults when parsed stdout retains warning and worktree diagnostic lines", async () => {
+    vi.mocked(serverUtils.runChildProcess).mockResolvedValueOnce({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      stdout: [
+        "Warning: Unknown toolsets: mcp-codegraph, messaging",
+        "x --worktree requires being inside a git repository",
+        "cd into your project repo first, then run hermes -w",
+      ].join("\n"),
+      stderr: "",
+      pid: null,
+      startedAt: null,
+    });
+
+    const { ctx } = makeCtx({ worktreeMode: true });
+    const result = await execute(ctx as any);
+
+    expect(result.errorCode).toBe("adapter_startup_fault");
+    expect(result.errorMessage).toContain("worktree requires being inside a git repository");
+    expect(result.summary).toBeUndefined();
+  });
+
   it("keeps a genuine successful hermes response when a session id is present", async () => {
     vi.mocked(serverUtils.runChildProcess).mockResolvedValueOnce({
       exitCode: 0,

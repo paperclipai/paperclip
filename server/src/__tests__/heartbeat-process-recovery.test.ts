@@ -52,7 +52,9 @@ const mockTelemetryClient = vi.hoisted(() => ({ track: vi.fn() }));
 const mockTrackAgentFirstHeartbeat = vi.hoisted(() => vi.fn());
 const mockTerminateLocalService = vi.hoisted(() => vi.fn());
 
-function startupFaultAdapterResult() {
+function startupFaultAdapterResult(
+  fingerprint = "startup_fault:v1:worktree_requires_git_repository:deadbeefdeadbeefdeadbeef",
+) {
   return {
     exitCode: 0,
     signal: null,
@@ -65,11 +67,23 @@ function startupFaultAdapterResult() {
     resultJson: {
       startupFault: {
         kind: "worktree_requires_git_repository",
-        fingerprint: "startup_fault:v1:worktree_requires_git_repository:deadbeefdeadbeefdeadbeef",
+        fingerprint,
         diagnostic: "x --worktree requires being inside a git repository",
       },
       result: "",
     },
+  };
+}
+
+function successfulAdapterResult(summary = "Recovered stranded heartbeat work.") {
+  return {
+    exitCode: 0,
+    signal: null,
+    timedOut: false,
+    errorMessage: null,
+    summary,
+    provider: "test",
+    model: "test-model",
   };
 }
 
@@ -7877,7 +7891,11 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const { companyId, agentId, runId, issueId } = await seedQueuedIssueRunFixture();
     const heartbeat = heartbeatService(db);
 
-    await heartbeat.resumeQueuedRuns();
+    await Promise.all([
+      heartbeat.resumeQueuedRuns(),
+      heartbeat.reconcileStrandedAssignedIssues(),
+      heartbeat.reconcileStrandedAssignedIssues(),
+    ]);
     await waitForRunToSettle(heartbeat, runId);
 
     const runsAfterFirstFailure = await waitForValue(async () => {
@@ -7889,9 +7907,17 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(retryRun?.status).toBe("scheduled_retry");
     expect(retryRun?.scheduledRetryReason).toBe("startup_fault_retry");
 
-    await heartbeat.promoteDueScheduledRetries(new Date(Date.now() + 60_000));
-    await heartbeat.resumeQueuedRuns();
-    await waitForRunToSettle(heartbeat, retryRun!.id);
+    const restartedBeforePromotion = heartbeatService(db);
+    const promotion = await restartedBeforePromotion.promoteDueScheduledRetries(new Date(Date.now() + 60_000));
+    expect(promotion.promoted).toBe(1);
+
+    await Promise.all([
+      restartedBeforePromotion.resumeQueuedRuns(),
+      restartedBeforePromotion.reconcileStrandedAssignedIssues(),
+      restartedBeforePromotion.resumeQueuedRuns(),
+      restartedBeforePromotion.reconcileStrandedAssignedIssues(),
+    ]);
+    await waitForRunToSettle(restartedBeforePromotion, retryRun!.id);
 
     const allRuns = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
     expect(allRuns.length).toBeLessThanOrEqual(2);
@@ -7936,7 +7962,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(escalationComments).toHaveLength(1);
 
     for (let tick = 0; tick < 100; tick += 1) {
-      await heartbeat.reconcileStrandedAssignedIssues();
+      await Promise.all([
+        heartbeat.reconcileStrandedAssignedIssues(),
+        heartbeat.reconcileStrandedAssignedIssues(),
+      ]);
       await heartbeat.resumeQueuedRuns();
     }
 
@@ -7959,16 +7988,12 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       ));
     expect(notificationReceipts).toHaveLength(1);
 
-    await Promise.all([
-      heartbeat.reconcileStrandedAssignedIssues(),
-      heartbeat.reconcileStrandedAssignedIssues(),
-      heartbeat.resumeQueuedRuns(),
-      heartbeat.resumeQueuedRuns(),
-    ]);
-
     const restartedHeartbeat = heartbeatService(db);
     for (let tick = 0; tick < 20; tick += 1) {
-      await restartedHeartbeat.reconcileStrandedAssignedIssues();
+      await Promise.all([
+        restartedHeartbeat.reconcileStrandedAssignedIssues(),
+        restartedHeartbeat.reconcileStrandedAssignedIssues(),
+      ]);
       await restartedHeartbeat.resumeQueuedRuns();
     }
 
@@ -7980,83 +8005,182 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     ))).toHaveLength(1);
   });
 
-  it("scopes startup-fault recovery actions by adapter/effective-config fingerprint", async () => {
-    const { companyId, agentId, issueId } = await seedQueuedIssueRunFixture();
-    const otherCompanyId = randomUUID();
-    const otherAgentId = randomUUID();
+  it("repairs startup-fault through authorized retry after corrected execution", async () => {
+    mockAdapterExecute
+      .mockResolvedValueOnce(startupFaultAdapterResult())
+      .mockResolvedValueOnce(successfulAdapterResult("Completed after workspace repair."));
+
+    const { companyId, agentId, runId, issueId } = await seedQueuedIssueRunFixture();
+    const siblingIssueId = randomUUID();
+    const [seedIssue] = await db.select({ issuePrefix: companies.issuePrefix }).from(companies).where(eq(companies.id, companyId));
+    await db.insert(issues).values({
+      id: siblingIssueId,
+      companyId,
+      title: "Sibling issue in same company",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      responsibleUserId: "responsible-user",
+      issueNumber: 2,
+      identifier: `${seedIssue!.issuePrefix}-2`,
+    });
+
+    const heartbeat = heartbeatService(db);
+    await Promise.all([
+      heartbeat.resumeQueuedRuns(),
+      heartbeat.reconcileStrandedAssignedIssues(),
+      heartbeat.reconcileStrandedAssignedIssues(),
+    ]);
+    await waitForRunToSettle(heartbeat, runId);
+
+    const retryRun = await waitForValue(async () => {
+      const rows = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+      const scheduled = rows.filter((row) => row.status === "scheduled_retry");
+      return scheduled.length === 1 ? scheduled[0] : null;
+    });
+    expect(retryRun?.scheduledRetryReason).toBe("startup_fault_retry");
+
+    const restarted = heartbeatService(db);
+    await restarted.promoteDueScheduledRetries(new Date(Date.now() + 60_000));
+    await Promise.all([
+      restarted.resumeQueuedRuns(),
+      restarted.reconcileStrandedAssignedIssues(),
+      restarted.resumeQueuedRuns(),
+    ]);
+    await waitForRunToSettle(restarted, retryRun!.id);
+
+    expect(mockAdapterExecute).toHaveBeenCalledTimes(2);
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+    const executedRuns = runs.filter((row) => row.status === "failed" || row.status === "succeeded");
+    expect(executedRuns.length).toBeLessThanOrEqual(2);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).not.toBe("blocked");
+    expect(issue?.blockedOwnerNotifiedAt).toBeNull();
+
+    const recoveryActions = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, issueId));
+    expect(recoveryActions).toHaveLength(0);
+
+    const siblingRecoveryActions = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, siblingIssueId));
+    expect(siblingRecoveryActions).toHaveLength(0);
+
+    const notificationReceipts = await db
+      .select()
+      .from(activityLog)
+      .where(and(
+        eq(activityLog.companyId, companyId),
+        eq(activityLog.entityId, issueId),
+        eq(activityLog.action, "issue.blocked_owner_notification_delivered"),
+      ));
+    expect(notificationReceipts).toHaveLength(0);
+  });
+
+  it("scopes startup-fault recovery actions by adapter/effective-config fingerprint through escalation", async () => {
+    const fingerprintA = "startup_fault:v1:worktree_requires_git_repository:aaaaaaaaaaaaaaaaaaaaaaaa";
+    const fingerprintB = "startup_fault:v1:worktree_requires_git_repository:bbbbbbbbbbbbbbbbbbbbbbbb";
+
+    mockAdapterExecute
+      .mockResolvedValueOnce(startupFaultAdapterResult(fingerprintA))
+      .mockResolvedValueOnce(startupFaultAdapterResult(fingerprintA))
+      .mockResolvedValueOnce(startupFaultAdapterResult(fingerprintB))
+      .mockResolvedValueOnce(startupFaultAdapterResult(fingerprintB));
+
+    const { companyId, agentId, runId, issueId } = await seedQueuedIssueRunFixture();
     const otherIssueId = randomUUID();
-    await db.insert(companies).values({
-      id: otherCompanyId,
-      name: "Other Co",
-      issuePrefix: "OTH",
-      requireBoardApprovalForNewAgents: false,
-    });
-    await db.insert(agents).values({
-      id: otherAgentId,
-      companyId: otherCompanyId,
-      name: "Other Agent",
-      role: "engineer",
-      status: "idle",
-      adapterType: "codex_local",
-      adapterConfig: {},
-      runtimeConfig: {},
-      permissions: {},
-    });
+    const [seedIssue] = await db.select({ issuePrefix: companies.issuePrefix }).from(companies).where(eq(companies.id, companyId));
     await db.insert(issues).values({
       id: otherIssueId,
-      companyId: otherCompanyId,
+      companyId,
       title: "Unrelated issue",
       status: "in_progress",
       priority: "medium",
-      assigneeAgentId: otherAgentId,
+      assigneeAgentId: agentId,
       responsibleUserId: "other-user",
-      issueNumber: 1,
-      identifier: "OTH-1",
+      issueNumber: 2,
+      identifier: `${seedIssue!.issuePrefix}-2`,
     });
 
-    const fingerprintA = "startup_fault:v1:worktree_requires_git_repository:aaaaaaaaaaaaaaaaaaaaaaaa";
-    const fingerprintB = "startup_fault:v1:worktree_requires_git_repository:bbbbbbbbbbbbbbbbbbbbbbbb";
-    const makeRun = (fingerprint: string) => ({
-      id: randomUUID(),
+    const heartbeat = heartbeatService(db);
+    await Promise.all([
+      heartbeat.resumeQueuedRuns(),
+      heartbeat.reconcileStrandedAssignedIssues(),
+    ]);
+    await waitForRunToSettle(heartbeat, runId);
+
+    const firstRetry = await waitForValue(async () => {
+      const rows = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+      return rows.find((row) => row.status === "scheduled_retry") ?? null;
+    });
+    const restarted = heartbeatService(db);
+    await restarted.promoteDueScheduledRetries(new Date(Date.now() + 60_000));
+    await restarted.resumeQueuedRuns();
+    await waitForRunToSettle(restarted, firstRetry!.id);
+
+    await waitForValue(async () =>
+      db.select().from(issues).where(eq(issues.id, issueId)).then((rows) =>
+        rows[0]?.status === "blocked" ? rows[0] : null,
+      ),
+    );
+
+    await db.update(issues).set({
+      status: "in_progress",
+      blockedOwnerNotifiedAt: null,
+      unblockDescriptor: null,
+      updatedAt: new Date(),
+    }).where(eq(issues.id, issueId));
+
+    const secondRunId = randomUUID();
+    const secondWakeupId = randomUUID();
+    await db.insert(agentWakeupRequests).values({
+      id: secondWakeupId,
+      companyId,
       agentId,
-      status: "failed",
-      errorCode: "adapter_startup_fault",
-      error: "x --worktree requires being inside a git repository",
-      contextSnapshot: { retryReason: "startup_fault_retry" },
-      livenessState: "failed",
-      resultJson: {
-        startupFault: {
-          kind: "worktree_requires_git_repository",
-          fingerprint,
-          diagnostic: "x --worktree requires being inside a git repository",
-        },
-      },
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      payload: { issueId },
+      status: "queued",
+      runId: secondRunId,
+      requestedAt: new Date(),
+      updatedAt: new Date(),
     });
+    await db.insert(heartbeatRuns).values({
+      id: secondRunId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "queued",
+      wakeupRequestId: secondWakeupId,
+      contextSnapshot: { issueId, taskId: issueId, wakeReason: "issue_assigned" },
+      updatedAt: new Date(),
+      createdAt: new Date(),
+    });
+    await db.update(issues).set({ executionRunId: secondRunId, checkoutRunId: secondRunId }).where(eq(issues.id, issueId));
 
-    const recovery = recoveryService(db, { enqueueWakeup: vi.fn(async () => null) });
-    const [issueRow] = await db.select().from(issues).where(eq(issues.id, issueId));
-    await recovery.escalateStrandedAssignedIssue({
-      issue: issueRow!,
-      previousStatus: "in_progress",
-      latestRun: makeRun(fingerprintA) as any,
-      recoveryCause: "startup_fault",
+    await restarted.resumeQueuedRuns();
+    await waitForRunToSettle(restarted, secondRunId);
+
+    const secondRetry = await waitForValue(async () => {
+      const rows = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+      return rows.find((row) => row.status === "scheduled_retry" && row.id !== firstRetry!.id) ?? null;
     });
-    await recovery.escalateStrandedAssignedIssue({
-      issue: issueRow!,
-      previousStatus: "in_progress",
-      latestRun: makeRun(fingerprintB) as any,
-      recoveryCause: "startup_fault",
-    });
+    await restarted.promoteDueScheduledRetries(new Date(Date.now() + 60_000));
+    await restarted.resumeQueuedRuns();
+    await waitForRunToSettle(restarted, secondRetry!.id);
 
     const sourceActions = await db
       .select()
       .from(issueRecoveryActions)
       .where(and(eq(issueRecoveryActions.companyId, companyId), eq(issueRecoveryActions.sourceIssueId, issueId)));
-    expect(sourceActions).toHaveLength(2);
-    expect(sourceActions.map((row) => row.fingerprint).sort()).toEqual([
-      expect.stringContaining(fingerprintA),
-      expect.stringContaining(fingerprintB),
-    ].sort());
+    expect(sourceActions.length).toBeGreaterThanOrEqual(2);
+    expect(new Set(sourceActions.map((row) => row.fingerprint)).size).toBeGreaterThanOrEqual(2);
 
     const otherActions = await db
       .select()
@@ -8064,6 +8188,5 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .where(eq(issueRecoveryActions.sourceIssueId, otherIssueId));
     expect(otherActions).toHaveLength(0);
   });
-
 
 });

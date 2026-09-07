@@ -98,6 +98,47 @@ describe("classifyAdapterStartupOutput", () => {
     expect(first?.fingerprint).not.toBe(second?.fingerprint);
   });
 
+
+  it("classifies worktree diagnostics when warning lines are retained in the parsed response", () => {
+    const response = [
+      "Warning: Unknown toolsets: mcp-codegraph, messaging",
+      "x --worktree requires being inside a git repository",
+      "cd into your project repo first, then run hermes -w",
+    ].join("\n");
+    expect(
+      classifyAdapterStartupOutput({
+        stdout: "",
+        stderr: "",
+        exitCode: 0,
+        timedOut: false,
+        response,
+        worktreeMode: true,
+        adapterType: "hermes",
+        effectiveConfigFingerprint: "cfg-a",
+      }),
+    ).toMatchObject({
+      kind: "worktree_requires_git_repository",
+      diagnostic: expect.stringContaining("worktree requires being inside a git repository"),
+    });
+  });
+
+  it("classifies a cd diagnostic passed only as response without positive agent output", () => {
+    expect(
+      classifyAdapterStartupOutput({
+        stdout: "",
+        stderr: "",
+        exitCode: 0,
+        timedOut: false,
+        response: "cd into your project repo first, then run hermes -w",
+        worktreeMode: true,
+        adapterType: "hermes",
+        effectiveConfigFingerprint: "cfg-a",
+      }),
+    ).toMatchObject({
+      kind: "worktree_requires_git_repository",
+    });
+  });
+
   it("ignores warning-only stderr without treating it as a startup fault", () => {
     expect(
       classifyAdapterStartupOutput({
