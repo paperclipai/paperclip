@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import { isValidElement, memo, useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Check, Copy, ExternalLink, WrapText } from "lucide-react";
@@ -110,6 +111,7 @@ function MarkdownIssueLink({
   issuePathId: string;
   children: ReactNode;
 }) {
+  const { t } = useTranslation();
   const { data } = useQuery({
     queryKey: queryKeys.issues.detail(issuePathId),
     queryFn: () => issuesApi.get(issuePathId),
@@ -119,7 +121,7 @@ function MarkdownIssueLink({
   const identifier = data?.identifier ?? issuePathId;
   const title = data?.title ?? identifier;
   const status = data?.status;
-  const issueLabel = title !== identifier ? `Issue ${identifier}: ${title}` : `Issue ${identifier}`;
+  const issueLabel = t(title !== identifier ? "localizationCommonTail.issueWithTitle" : "localizationCommonTail.issueIdentifier", { identifier, title });
 
   return (
     <Link
@@ -146,6 +148,7 @@ function MarkdownCaseLink({
   identifier: string;
   children: ReactNode;
 }) {
+  const { t } = useTranslation();
   // Cases resolve via the get-by-identifier route; navigate there on click.
   // Kept boxless/underlined to match the issue mention treatment.
   const caseHref = useCaseHref();
@@ -154,7 +157,7 @@ function MarkdownCaseLink({
       to={caseHref(identifier)}
       data-mention-kind="case"
       className={cn("paperclip-markdown-case-ref", "font-normal underline")}
-      aria-label={`Case ${identifier}`}
+      aria-label={t("localizationCommonTail.caseIdentifier", { identifier })}
     >
       {children}
     </Link>
@@ -170,6 +173,7 @@ function MarkdownExternalLink({
   reference: MarkdownExternalReference;
   children: ReactNode;
 }) {
+  useTranslation();
   const provider = externalObjectProviderLabel(reference.providerKey);
   const displayKey = reference.displayKey?.trim() || provider;
   const statusLabel = reference.statusLabel ?? externalObjectCategoryLabel(reference.statusCategory);
@@ -559,6 +563,7 @@ function CodeBlock({
   children: ReactNode;
   preProps: React.HTMLAttributes<HTMLPreElement>;
 }) {
+  const { t } = useTranslation();
   const [copied, setCopied] = useState(false);
   const [failed, setFailed] = useState(false);
   const [wrapLines, setWrapLines] = useState(false);
@@ -584,8 +589,8 @@ function CodeBlock({
     }, 1500);
   }, [children]);
 
-  const copyLabel = failed ? "Copy failed" : copied ? "Copied!" : "Copy";
-  const wrapLabel = wrapLines ? "Unwrap lines" : "Wrap lines";
+  const copyLabel = t(failed ? "localizationCommonTail.copyFailed" : copied ? "localizationCommonTail.copiedCode" : "localizationCommonTail.copy");
+  const wrapLabel = t(wrapLines ? "localizationCommonTail.unwrapCode" : "localizationCommonTail.wrapCode");
 
   return (
     <div className="paperclip-markdown-codeblock" data-wrap-lines={wrapLines || undefined}>
@@ -632,7 +637,7 @@ function CodeBlock({
         <button
           type="button"
           onClick={handleCopy}
-          aria-label="Copy code"
+          aria-label={t("localizationCommonTail.copyCode")}
           title={copyLabel}
           className="paperclip-markdown-codeblock-action paperclip-markdown-codeblock-copy"
           style={codeBlockActionStyle}
@@ -652,6 +657,7 @@ function CodeBlock({
 }
 
 function MermaidDiagramBlock({ source, darkMode }: { source: string; darkMode: boolean }) {
+  const { t } = useTranslation();
   const renderId = useId().replace(/[^a-zA-Z0-9_-]/g, "");
   const [svg, setSvg] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -695,13 +701,22 @@ function MermaidDiagramBlock({ source, darkMode }: { source: string; darkMode: b
       ) : (
         <>
           <p className={cn("paperclip-mermaid-status", error && "paperclip-mermaid-status-error")}>
-            {error ? `Unable to render Mermaid diagram: ${error}` : "Rendering Mermaid diagram..."}
+            {error ? t("localizationCommonTail.mermaidError", { error: error === "Failed to render Mermaid diagram." ? t("localizationCommonTail.mermaidFailed") : error }) : t("localizationCommonTail.mermaidLoading")}
           </p>
           <pre className="paperclip-mermaid-source">
             <code className="language-mermaid">{source}</code>
           </pre>
         </>
       )}
+    </div>
+  );
+}
+
+function MarkdownScrollableTable({ node: _node, style, children, ...tableProps }: React.ComponentProps<"table"> & { node?: unknown }) {
+  const { t } = useTranslation();
+  return (
+    <div className="paperclip-markdown-table-scroll" role="region" aria-label={t("localizationCommonTail.scrollableTable")} tabIndex={0}>
+      <table {...tableProps} style={style}>{children}</table>
     </div>
   );
 }
@@ -784,13 +799,7 @@ function MarkdownBodyImpl({
         {blockquoteChildren}
       </blockquote>
     ),
-    table: ({ node: _node, style: tableStyle, children: tableChildren, ...tableProps }) => (
-      <div className="paperclip-markdown-table-scroll" role="region" aria-label="Scrollable table" tabIndex={0}>
-        <table {...tableProps} style={tableStyle as React.CSSProperties | undefined}>
-          {tableChildren}
-        </table>
-      </div>
-    ),
+    table: MarkdownScrollableTable,
     td: ({ node: _node, style: tableCellStyle, children: tableCellChildren, ...tableCellProps }) => (
       <td {...tableCellProps} style={mergeTableCellStyle(tableCellStyle as React.CSSProperties | undefined)}>
         {tableCellChildren}

@@ -26,7 +26,7 @@ import { useTranslation } from "@/i18n";
 const NO_COMPANY = "__none__";
 
 function initials(name: string | null | undefined) {
-  const value = name?.trim() || "User";
+  const value = name?.trim() || "";
   const parts = value.split(/\s+/).filter(Boolean);
   if (parts.length > 1) return `${parts[0]?.[0] ?? ""}${parts[parts.length - 1]?.[0] ?? ""}`.toUpperCase();
   return value.slice(0, 2).toUpperCase();
@@ -57,7 +57,7 @@ function WindowColumn({ stats }: { stats: UserProfileWindowStats }) {
   return (
     <div className="flex min-w-0 flex-col gap-4 border-l border-border pl-5 first:border-l-0 first:pl-0">
       <div className="flex items-baseline justify-between gap-3">
-        <h2 className="text-(length:--text-micro) font-medium uppercase tracking-wide text-muted-foreground">{stats.label}</h2>
+        <h2 className="text-(length:--text-micro) font-medium uppercase tracking-wide text-muted-foreground">{t(`localizationSettings.profileWindow_${stats.key}`)}</h2>
         <span className="text-(length:--text-micro) text-muted-foreground tabular-nums">
           {completionRate(stats)} {t("pages.userProfile.done")}
         </span>
@@ -121,10 +121,10 @@ function UsageChart({ points }: { points: UserProfileDailyPoint[] }) {
               <div
                 className="w-full bg-foreground/80 transition-opacity group-hover:bg-foreground"
                 style={{ height: `${heightPct}%`, minHeight: tokens === 0 ? 1 : undefined }}
-                title={t("pages.userProfile.chartBarTitle", {
+                title={t("localizationSettings.profileChartBar", {
                   date: formatShortDate(point.date),
                   tokens: formatTokens(tokens),
-                  completed: point.completedIssues,
+                  count: point.completedIssues,
                 })}
               />
               {completedPct > 0 ? (
@@ -222,13 +222,13 @@ export function UserProfile() {
 
   const allTime = data?.stats.find((entry) => entry.key === "all");
   const last7 = data?.stats.find((entry) => entry.key === "last7");
-  const displayName = data?.user.name?.trim() || data?.user.email?.split("@")[0] || "User";
+  const displayName = data?.user.name?.trim() || data?.user.email?.split("@")[0] || t("localizationSettings.user");
 
   const agentUsageRows = useMemo<UsageRow[]>(
     () =>
       (data?.topAgents ?? []).map((row) => ({
         key: row.agentId ?? "unknown",
-        label: row.agentName ?? (row.agentId ? row.agentId.slice(0, 8) : "unknown"),
+        label: row.agentName ?? (row.agentId ? row.agentId.slice(0, 8) : t("common.unknown")),
         sublabel: t("pages.userProfile.taskLinkedUsage"),
         costCents: row.costCents,
         inputTokens: row.inputTokens,
@@ -268,8 +268,10 @@ export function UserProfile() {
 
   const allTimeTokens = allTime ? totalTokens(allTime) : 0;
   const metaParts = [
-    data.user.membershipRole ?? "member",
-    data.user.membershipStatus,
+    data.user.membershipRole
+      ? t(`pages.inviteLanding.roles.${data.user.membershipRole}`, { defaultValue: data.user.membershipRole })
+      : t("localizationSettings.member"),
+    data.user.membershipStatus === "suspended" ? t("localizationSettings.suspended") : t(`status.${data.user.membershipStatus}`, { defaultValue: data.user.membershipStatus }),
     t("pages.userProfile.joinedDate", { date: formatDate(data.user.joinedAt) }),
   ];
 
@@ -371,9 +373,9 @@ export function UserProfile() {
               {data.recentActivity.map((event) => (
                 <li key={event.id} className="grid gap-2 py-2.5 sm:grid-cols-(--gtc-17) sm:items-center">
                   <div className="min-w-0">
-                    <div className="truncate text-sm">{event.action.replaceAll("_", " ")}</div>
+                    <div className="truncate text-sm">{t(`localizationSettings.profileAction_${event.action.replaceAll(".", "_")}`, { defaultValue: event.action.replaceAll("_", " ") })}</div>
                     <div className="truncate text-xs text-muted-foreground">
-                      {event.entityType} · {event.entityId.slice(0, 12)}
+                      {t(`localizationSettings.profileEntity_${event.entityType}`, { defaultValue: event.entityType })} · {event.entityId.slice(0, 12)}
                     </div>
                   </div>
                   <span className="text-xs tabular-nums text-muted-foreground sm:justify-self-end">{relativeTime(event.createdAt)}</span>

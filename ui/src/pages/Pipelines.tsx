@@ -441,11 +441,11 @@ type PipelineSortField = "name" | "activity" | "review" | "inMotion" | "openItem
 type PipelineSortDir = "asc" | "desc";
 
 const PIPELINE_SORT_OPTIONS: ReadonlyArray<readonly [PipelineSortField, string]> = [
-  ["name", t("pages.pipelines.sortName", { defaultValue: "Name" })],
-  ["activity", t("pages.pipelines.sortLastActivity", { defaultValue: "Last activity" })],
-  ["review", t("pages.pipelines.sortMostToReview", { defaultValue: "Most to review" })],
-  ["inMotion", t("pages.pipelines.sortMostInMotion", { defaultValue: "Most in motion" })],
-  ["openItems", t("pages.pipelines.sortMostOpenItems", { defaultValue: "Most open items" })],
+  ["name", "pages.pipelines.sortName"],
+  ["activity", "pages.pipelines.sortLastActivity"],
+  ["review", "pages.pipelines.sortMostToReview"],
+  ["inMotion", "pages.pipelines.sortMostInMotion"],
+  ["openItems", "pages.pipelines.sortMostOpenItems"],
 ];
 
 function comparePipelinesBySort(field: PipelineSortField, dir: PipelineSortDir) {
@@ -728,7 +728,7 @@ export function PipelinesIndexTable({
             </PopoverTrigger>
             <PopoverContent align="end" className="w-48 p-0">
               <div className="space-y-0.5 p-2">
-                {PIPELINE_SORT_OPTIONS.map(([field, label]) => (
+                {PIPELINE_SORT_OPTIONS.map(([field, labelKey]) => (
                   <button
                     key={field}
                     type="button"
@@ -738,7 +738,7 @@ export function PipelinesIndexTable({
                     )}
                     onClick={() => selectSort(field)}
                   >
-                    <span>{label}</span>
+                    <span>{t(labelKey)}</span>
                     {sortField === field && (
                       <span className="text-xs text-muted-foreground">{sortDir === "asc" ? "↑" : "↓"}</span>
                     )}
@@ -811,12 +811,12 @@ export function PipelinesIndexTable({
                         {attentionCount > 0 ? (
                           <span className="inline-flex items-center gap-1.5 font-semibold text-red-700 dark:text-red-400">
                             <span className="h-2 w-2 rounded-full bg-red-600" aria-hidden="true" />
-                            {t("pages.pipelines.toReviewCount", { defaultValue: "{{count}} to review", count: formatNumber(attentionCount) })}
+                            {t("pages.pipelines.toReviewCount", { count: attentionCount, formattedCount: formatNumber(attentionCount) })}
                           </span>
                         ) : null}
                         {inMotionCount > 0 ? (
                           <span className="text-muted-foreground">
-                            {t("pages.pipelines.inMotionCount", { defaultValue: "{{count}} in motion", count: formatNumber(inMotionCount) })}
+                            {t("pages.pipelines.inMotionCount", { count: inMotionCount, formattedCount: formatNumber(inMotionCount) })}
                           </span>
                         ) : null}
                         {liveDownstreamCount > 0 ? (
@@ -989,11 +989,8 @@ function PipelinesIndex() {
           <h1 className="text-2xl font-semibold text-foreground">{t("nav.pipelines")}</h1>
           <p className="mt-1 text-sm text-muted-foreground">
             {t("pages.pipelines.indexDescription", {
-              defaultValue: "{{count}} {{pipelineWord}}. Connected ones are grouped from upstream work into downstream work.",
-              count: formatNumber(pipelines.length),
-              pipelineWord: pipelines.length === 1
-                ? t("pages.pipelines.pipelineWord", { defaultValue: "pipeline" })
-                : t("pages.pipelines.pipelineWordPlural", { defaultValue: "pipelines" }),
+              count: pipelines.length,
+              formattedCount: formatNumber(pipelines.length),
             })}
           </p>
         </div>
@@ -1044,7 +1041,9 @@ function PipelinesIndex() {
 // ---------------------------------------------------------------------------
 
 const UNASSIGNED_STAGE_ID = "__pipeline_unassigned_stage";
-const UNASSIGNED_STAGE_NAME = t("pages.pipelines.unassignedStageName", { defaultValue: "Unassigned" });
+function unassignedStageName() {
+  return t("pages.pipelines.unassignedStageName", { defaultValue: "Unassigned" });
+}
 
 type BoardCase = PipelineCase & {
   activeWork?: PipelineCaseActiveWork | null;
@@ -1152,7 +1151,7 @@ export function createUnassignedStage(pipelineId: string): PipelineStage {
     id: UNASSIGNED_STAGE_ID,
     pipelineId,
     key: "__unassigned",
-    name: UNASSIGNED_STAGE_NAME,
+    name: unassignedStageName(),
     kind: "working",
     position: Number.MAX_SAFE_INTEGER,
     config: {},
@@ -1320,11 +1319,8 @@ function PipelineCaseCard({
         {childrenSummary != null ? (
           <p className="mt-1.5 text-xs text-muted-foreground">
             {t("pages.pipelines.builtFromCount", {
-              defaultValue: "Built from {{count}} {{noun}}",
-              count: formatNumber(childrenSummary),
-              noun: childrenSummary === 1
-                ? t("pages.pipelines.itemWord", { defaultValue: "item" })
-                : t("pages.pipelines.itemsWord", { defaultValue: "items" }),
+              count: childrenSummary,
+              formattedCount: formatNumber(childrenSummary),
             })}
           </p>
         ) : null}
@@ -1572,7 +1568,7 @@ function PipelineBoard({ pipelineId }: { pipelineId: string }) {
     }
 
     return { columns, byStage, caseToColumn, caseById };
-  }, [orderedStages, cases, stageIds, pipelineId]);
+  }, [orderedStages, cases, stageIds, pipelineId, t]);
 
   const transitions = useMemo<PipelineTransitionEdge[]>(
     () => pipeline?.transitions ?? [],
@@ -1723,8 +1719,8 @@ function PipelineBoard({ pipelineId }: { pipelineId: string }) {
     const targetStageKey = stageKeyById.get(targetStageId);
     if (!targetStageKey) return;
 
-    const sourceName = stageNameById.get(sourceStageId ?? "") ?? UNASSIGNED_STAGE_NAME;
-    const targetName = stageNameById.get(targetStageId) ?? UNASSIGNED_STAGE_NAME;
+    const sourceName = stageNameById.get(sourceStageId ?? "") ?? unassignedStageName();
+    const targetName = stageNameById.get(targetStageId) ?? unassignedStageName();
     setPendingMove({
       caseId: activeCase.id,
       caseVersion: activeCase.version ?? 1,
@@ -3915,25 +3911,25 @@ function DetailSection({
 }
 
 const DELIVERABLE_OUTPUT_PATTERNS: Array<[RegExp, string]> = [
-  [/brief/i, t("pages.pipelines.deliverableBrief", { defaultValue: "Brief" })],
-  [/spec/i, t("pages.pipelines.deliverableSpec", { defaultValue: "Spec" })],
-  [/report/i, t("pages.pipelines.deliverableReport", { defaultValue: "Report" })],
-  [/design/i, t("pages.pipelines.deliverableDesign", { defaultValue: "Design" })],
-  [/summary/i, t("pages.pipelines.deliverableSummary", { defaultValue: "Summary" })],
-  [/plan/i, t("pages.pipelines.deliverablePlan", { defaultValue: "Plan" })],
+  [/brief/i, "pages.pipelines.deliverableBrief"],
+  [/spec/i, "pages.pipelines.deliverableSpec"],
+  [/report/i, "pages.pipelines.deliverableReport"],
+  [/design/i, "pages.pipelines.deliverableDesign"],
+  [/summary/i, "pages.pipelines.deliverableSummary"],
+  [/plan/i, "pages.pipelines.deliverablePlan"],
 ];
 
 const OUTPUT_SOURCE_ROLE_LABELS: Record<string, string> = {
-  origin: t("pages.pipelines.outputSourceOrigin", { defaultValue: "Origin" }),
-  conversation: t("pages.pipelines.outputSourceConversation", { defaultValue: "Conversation" }),
-  work: t("pages.pipelines.outputSourceWork", { defaultValue: "Work" }),
-  automation: t("pages.pipelines.outputSourceAutomation", { defaultValue: "Automation" }),
+  origin: "pages.pipelines.outputSourceOrigin",
+  conversation: "pages.pipelines.outputSourceConversation",
+  work: "pages.pipelines.outputSourceWork",
+  automation: "pages.pipelines.outputSourceAutomation",
 };
 
 function deliverableDocumentLabel(item: PipelineCaseDocumentOutputItem): string | null {
   const haystack = `${item.title} ${item.documentKey}`;
   for (const [pattern, label] of DELIVERABLE_OUTPUT_PATTERNS) {
-    if (pattern.test(haystack)) return label;
+    if (pattern.test(haystack)) return t(label);
   }
   return null;
 }
@@ -4013,7 +4009,8 @@ function OutputPreview({ text, dimmed }: { text: string; dimmed: boolean }) {
 function ItemOutputMeta({ item, children }: { item: PipelineCaseOutputItem; children?: ReactNode }) {
   const { t } = useTranslation();
   const statusClass = issueStatusText[item.sourceIssueStatus] ?? issueStatusTextDefault;
-  const roleLabel = OUTPUT_SOURCE_ROLE_LABELS[item.sourceRole] ?? humanizeOutputStatus(item.sourceRole);
+  const roleKey = OUTPUT_SOURCE_ROLE_LABELS[item.sourceRole];
+  const roleLabel = roleKey ? t(roleKey) : humanizeOutputStatus(item.sourceRole);
   return (
     <div className="mt-0.5 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-(length:--text-micro) text-muted-foreground">
       <Link
@@ -4904,7 +4901,7 @@ function ReviewQueueSection({
     <section className="space-y-2">
       <div className="flex items-baseline justify-between border-b border-border pb-2">
         <h2 className="text-sm font-semibold text-foreground">{title}</h2>
-        <span className="text-xs text-muted-foreground">{t("pages.pipelines.queueItemCount", { defaultValue: "{{count}} item(s)", count: formatNumber(rows.length) })}</span>
+        <span className="text-xs text-muted-foreground">{t("pages.pipelines.queueItemCount", { count: rows.length, formattedCount: formatNumber(rows.length) })}</span>
       </div>
       <div className="divide-y divide-border">
         {rows.map((row) => {
@@ -5245,7 +5242,7 @@ export function ReviewQueue() {
         <div>
           <h1 className="text-2xl font-semibold tracking-normal text-foreground">{t("pages.pipelines.reviewQueueTitle", { defaultValue: "Review queue" })}</h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            {t("pages.pipelines.needsYourAttention", { defaultValue: "Needs your attention ({{count}})", count: formatNumber(visibleRows.length) })}
+            {t("pages.pipelines.needsYourAttention", { count: visibleRows.length, formattedCount: formatNumber(visibleRows.length) })}
           </p>
         </div>
         <Button
@@ -5254,7 +5251,7 @@ export function ReviewQueue() {
           onClick={() => bulkApprove.mutate(selectedRows)}
         >
           {bulkApprove.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}
-          {t("pages.pipelines.approveItems", { defaultValue: "Approve {{count}} item(s)", count: formatNumber(selectedCount) })}
+          {t("pages.pipelines.approveItems", { count: selectedCount, formattedCount: formatNumber(selectedCount) })}
         </Button>
       </div>
 

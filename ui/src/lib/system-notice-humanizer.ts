@@ -1,3 +1,5 @@
+import { t } from "@/i18n";
+import { systemNoticeTitleDisplay } from "./system-notice-comment";
 import type { IssueCommentPresentation } from "@paperclipai/shared";
 import type { SystemNoticeTone } from "../components/SystemNotice";
 
@@ -13,6 +15,18 @@ export interface HumanizedSystemNotice {
   tone: SystemNoticeTone;
   /** Optional muted trailing snippet for the generic fallback row. */
   detail?: string;
+}
+
+/** Localized view of the raw classifier; server payloads and recognition stay intact. */
+export function humanizeSystemNoticeDisplay(input: Parameters<typeof humanizeSystemNotice>[0]): HumanizedSystemNotice {
+  const notice = humanizeSystemNotice(input);
+  if (!input.presentation?.title?.trim() && input.body.includes("no live execution path")) {
+    const owner = recoveryOwnerName(input.body);
+    if (owner && notice.title === `Task paused — waiting on ${owner}`) {
+      return { ...notice, title: t("localizationTaskRuntime.noticeWaitingOwner", { owner }) };
+    }
+  }
+  return { ...notice, title: systemNoticeTitleDisplay(notice.title) };
 }
 
 const FALLBACK_TITLE = "System update";

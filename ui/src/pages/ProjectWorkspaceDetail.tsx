@@ -22,7 +22,7 @@ import { useCompany } from "../context/CompanyContext";
 import { useManagedSandboxOnly } from "../hooks/useManagedSandboxOnly";
 import { queryKeys } from "../lib/queryKeys";
 import { projectRouteRef, projectWorkspaceUrl } from "../lib/utils";
-import { t as translate, useTranslation } from "@/i18n";
+import { i18n, t as translate, useTranslation } from "@/i18n";
 
 type WorkspaceFormState = {
   name: string;
@@ -705,7 +705,7 @@ export function ProjectWorkspaceDetail() {
               ) : t("workspaces.values.none")}
             </DetailRow>
             <DetailRow label={t("workspaces.fields.defaultRef")}>{workspace.defaultRef ?? t("workspaces.values.none")}</DetailRow>
-            <DetailRow label={t("workspaces.fields.updated")}>{new Date(workspace.updatedAt).toLocaleString()}</DetailRow>
+            <DetailRow label={t("workspaces.fields.updated")}>{new Date(workspace.updatedAt).toLocaleString(i18n.resolvedLanguage)}</DetailRow>
           </Card>
 
           <Card className="block p-5">

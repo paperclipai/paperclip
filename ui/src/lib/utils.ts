@@ -102,10 +102,13 @@ export function relativeTime(date: Date | string): string {
 }
 
 export function formatTokens(n: number): string {
-  if (n >= 1_000_000_000) return `${(n / 1_000_000_000).toFixed(1)}B`;
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
-  return String(n);
+  for (const [threshold, unit] of [[1_000_000_000, "billions"], [1_000_000, "millions"], [1_000, "thousands"]] as const) {
+    if (n >= threshold) {
+      const value = (n / threshold).toLocaleString(activeLocale(), { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+      return t(`localizationCommon.compact.${unit}`, { value });
+    }
+  }
+  return formatNumber(n);
 }
 
 /** Humanize a millisecond duration into a compact `1h 2m`, `45m 12s`, `12s` string. */
@@ -161,7 +164,7 @@ export function billingTypeDisplayName(billingType: BillingType): string {
     fixed: "Fixed",
     unknown: "Unknown",
   };
-  return map[billingType];
+  return t(`localizationCommon.billingType.${billingType}`, { defaultValue: map[billingType] });
 }
 
 export function quotaSourceDisplayName(source: string): string {
@@ -224,11 +227,11 @@ export function financeEventKindDisplayName(eventKind: FinanceEventKind): string
     custom_model_storage_charge: "Custom model storage",
     manual_adjustment: "Manual adjustment",
   };
-  return map[eventKind];
+  return t(`localizationCommon.financeKind.${eventKind}`, { defaultValue: map[eventKind] });
 }
 
 export function financeDirectionDisplayName(direction: FinanceDirection): string {
-  return direction === "credit" ? "Credit" : "Debit";
+  return t(`localizationCommon.financeDirection.${direction}`, { defaultValue: direction === "credit" ? "Credit" : "Debit" });
 }
 
 /** Build an issue URL using the human-readable identifier when available. */

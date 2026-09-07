@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import { useMemo, useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useDialog } from "../context/DialogContext";
@@ -40,14 +41,15 @@ import { ChoosePathButton } from "./PathInstructionsModal";
 import { useManagedSandboxOnly } from "../hooks/useManagedSandboxOnly";
 
 const projectStatuses = [
-  { value: "backlog", label: "Backlog" },
-  { value: "planned", label: "Planned" },
-  { value: "in_progress", label: "In Progress" },
-  { value: "completed", label: "Completed" },
-  { value: "cancelled", label: "Cancelled" },
+  { value: "backlog", get ["label"]() { return t("localizationProjects.ui_Backlog"); } },
+  { value: "planned", get ["label"]() { return t("localizationProjects.ui_Planned"); } },
+  { value: "in_progress", get ["label"]() { return t("localizationProjects.ui_In_Progress"); } },
+  { value: "completed", get ["label"]() { return t("localizationProjects.ui_Completed"); } },
+  { value: "cancelled", get ["label"]() { return t("localizationProjects.ui_Cancelled"); } },
 ];
 
 export function NewProjectDialog() {
+  const { t } = useTranslation();
   const { newProjectOpen, closeNewProject } = useDialog();
   const { selectedCompanyId, selectedCompany } = useCompany();
   const queryClient = useQueryClient();
@@ -98,7 +100,7 @@ export function NewProjectDialog() {
 
   const uploadDescriptionImage = useMutation({
     mutationFn: async (file: File) => {
-      if (!selectedCompanyId) throw new Error("No organization selected");
+      if (!selectedCompanyId) throw new Error(t("localizationProjects.error_No_organization_selected"));
       return assetsApi.uploadImage(selectedCompanyId, file, "projects/drafts");
     },
   });
@@ -151,11 +153,11 @@ export function NewProjectDialog() {
     const repoUrl = workspaceRepoUrl.trim();
 
     if (localPath && !isAbsolutePath(localPath)) {
-      setWorkspaceError("Local folder must be a full absolute path.");
+      setWorkspaceError(t("localizationProjects.error_Local_folder_must_be_a_full_absolute_path_"));
       return;
     }
     if (repoUrl && !looksLikeRepoUrl(repoUrl)) {
-      setWorkspaceError("Repo must use a valid GitHub or GitHub Enterprise repo URL.");
+      setWorkspaceError(t("localizationProjects.error_Repo_must_use_a_valid_GitHub_or_GitHub_Enterprise_repo_URL_"));
       return;
     }
 
@@ -225,7 +227,7 @@ export function NewProjectDialog() {
               </span>
             )}
             <span className="text-muted-foreground/60">&rsaquo;</span>
-            <span>New project</span>
+            <span>{t("nav.newProject")}</span>
           </div>
           <div className="flex items-center gap-1">
             <Button
@@ -251,7 +253,7 @@ export function NewProjectDialog() {
         <div className="px-4 pt-4 pb-2 shrink-0">
           <input
             className="w-full text-lg font-semibold bg-transparent outline-none placeholder:text-muted-foreground/50"
-            placeholder="Project name"
+            placeholder={t("localizationFilters.operators.project.label")}
             value={name}
             onChange={(e) => setName(e.target.value)}
             onKeyDown={(e) => {
@@ -270,7 +272,7 @@ export function NewProjectDialog() {
             ref={descriptionEditorRef}
             value={description}
             onChange={setDescription}
-            placeholder="Add description..."
+            placeholder={t("localizationIssueLists.addDescription")}
             bordered={false}
             mentions={mentionOptions}
             contentClassName={cn("text-sm text-muted-foreground", expanded ? "min-h-(--sz-220px)" : "min-h-(--sz-120px)")}
@@ -284,15 +286,13 @@ export function NewProjectDialog() {
         <div className="px-4 pt-3 pb-3 space-y-3 border-t border-border">
           <div>
             <div className="mb-1 flex items-center gap-1.5">
-              <label className="block text-xs text-muted-foreground">Repo URL</label>
-              <span className="text-xs text-muted-foreground/50">optional</span>
+              <label className="block text-xs text-muted-foreground">{t("workspaces.fields.repoUrl")}</label>
+              <span className="text-xs text-muted-foreground/50">{t("pages.secrets.usage.optionalSuffix")}</span>
               <Tooltip delayDuration={300}>
                 <TooltipTrigger asChild>
                   <HelpCircle className="h-3 w-3 text-muted-foreground/50 cursor-help" />
                 </TooltipTrigger>
-                <TooltipContent side="top" className="max-w-(--sz-240px) text-xs">
-                  Link a GitHub repository so agents can clone, read, and push code for this project.
-                </TooltipContent>
+                <TooltipContent side="top" className="max-w-(--sz-240px) text-xs">{t("localizationProjects.ui_Link_a_GitHub_repository_so_agents_can_clone_read_and_push_code_for_this_project_")}</TooltipContent>
               </Tooltip>
             </div>
             <input
@@ -313,15 +313,13 @@ export function NewProjectDialog() {
           {!hideHostPaths && (
             <div>
               <div className="mb-1 flex items-center gap-1.5">
-                <label className="block text-xs text-muted-foreground">Local folder</label>
-                <span className="text-xs text-muted-foreground/50">optional</span>
+                <label className="block text-xs text-muted-foreground">{t("localizationProjects.ui_Local_folder")}</label>
+                <span className="text-xs text-muted-foreground/50">{t("pages.secrets.usage.optionalSuffix")}</span>
                 <Tooltip delayDuration={300}>
                   <TooltipTrigger asChild>
                     <HelpCircle className="h-3 w-3 text-muted-foreground/50 cursor-help" />
                   </TooltipTrigger>
-                  <TooltipContent side="top" className="max-w-(--sz-240px) text-xs">
-                    Set an absolute path on this machine where local agents will read and write files for this project.
-                  </TooltipContent>
+                  <TooltipContent side="top" className="max-w-(--sz-240px) text-xs">{t("localizationProjects.ui_Set_an_absolute_path_on_this_machine_where_local_agents_will_read_and_write_files_for_this_project_")}</TooltipContent>
                 </Tooltip>
               </div>
               <div className="flex items-center gap-2">
@@ -376,7 +374,7 @@ export function NewProjectDialog() {
               <button
                 className="text-muted-foreground hover:text-foreground"
                 onClick={() => setGoalIds((prev) => prev.filter((id) => id !== goal.id))}
-                aria-label={`Remove goal ${goal.title}`}
+                aria-label={t("localizationProjects.removeGoal", { title: goal.title })}
                 type="button"
               >
                 <X className="h-3 w-3" />
@@ -391,7 +389,7 @@ export function NewProjectDialog() {
                 disabled={selectedGoals.length > 0 && availableGoals.length === 0}
               >
                 {selectedGoals.length > 0 ? <Plus className="h-3 w-3 text-muted-foreground" /> : <Target className="h-3 w-3 text-muted-foreground" />}
-                {selectedGoals.length > 0 ? "+ Goal" : "Goal"}
+                {selectedGoals.length > 0 ? t("localizationProjects.ui__Goal") : t("localizationSettings.profileEntity_goal")}
               </button>
             </PopoverTrigger>
             <PopoverContent className="w-56 p-1" align="start">
@@ -399,9 +397,7 @@ export function NewProjectDialog() {
                 <button
                   className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-muted-foreground"
                   onClick={() => setGoalOpen(false)}
-                >
-                  No goal
-                </button>
+                >{t("localizationProjects.ui_No_goal")}</button>
               )}
               {availableGoals.map((g) => (
                 <button
@@ -416,9 +412,7 @@ export function NewProjectDialog() {
                 </button>
               ))}
               {selectedGoals.length > 0 && availableGoals.length === 0 && (
-                <div className="px-2 py-1.5 text-xs text-muted-foreground">
-                  All goals already selected.
-                </div>
+                <div className="px-2 py-1.5 text-xs text-muted-foreground">{t("localizationProjects.ui_All_goals_already_selected_")}</div>
               )}
             </PopoverContent>
           </Popover>
@@ -431,7 +425,7 @@ export function NewProjectDialog() {
               className="bg-transparent outline-none text-xs w-24"
               value={targetDate}
               onChange={(e) => setTargetDate(e.target.value)}
-              placeholder="Target date"
+              placeholder={t("pages.projects.sort.targetDate")}
             />
           </div>
         </div>
@@ -439,7 +433,7 @@ export function NewProjectDialog() {
         {/* Footer */}
         <div className="flex items-center justify-between px-4 py-2.5 border-t border-border">
           {createProject.isError ? (
-            <p className="text-xs text-destructive">Failed to create project.</p>
+            <p className="text-xs text-destructive">{t("localizationProjects.ui_Failed_to_create_project_")}</p>
           ) : (
             <span />
           )}
@@ -448,7 +442,7 @@ export function NewProjectDialog() {
             disabled={!name.trim() || createProject.isPending}
             onClick={handleSubmit}
           >
-            {createProject.isPending ? "Creating…" : "Create project"}
+            {createProject.isPending ? t("pages.newAgent.creating") : t("localizationProjects.ui_Create_project")}
           </Button>
         </div>
       </DialogContent>

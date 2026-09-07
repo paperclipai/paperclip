@@ -1,3 +1,4 @@
+import { Trans } from "react-i18next";
 import { Link } from "@/lib/router";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { deriveInitials } from "./Identity";
@@ -30,10 +31,7 @@ interface ActivityRowProps {
 
 export function ActivityRow({ event, agentMap, userProfileMap, entityNameMap, entityTitleMap, className }: ActivityRowProps) {
   const { t } = useTranslation();
-  const defaultVerb = formatActivityVerb(event.action, event.details, { agentMap, userProfileMap });
-  const verb = event.action === "company.created"
-    ? t("pages.dashboard.activityCreatedOrganization")
-    : defaultVerb;
+  const verb = formatActivityVerb(event.action, event.details, { agentMap, userProfileMap });
 
   const isHeartbeatEvent = event.entityType === "heartbeat_run";
   const heartbeatAgentId = isHeartbeatEvent
@@ -71,9 +69,15 @@ export function ActivityRow({ event, agentMap, userProfileMap, entityNameMap, en
             <AvatarFallback>{deriveInitials(actorName)}</AvatarFallback>
           </Avatar>
           <p className="min-w-0 flex-1 truncate">
-            <span>{actorName}</span>
-            <span className="text-muted-foreground"> {verb} </span>
-            {name && <span className="font-medium">{name}</span>}
+            <Trans
+              t={t}
+              i18nKey={name ? "localizationActivity.activitySentence" : "localizationActivity.activitySentenceWithoutEntity"}
+              components={{
+                actor: <span>{actorName}</span>,
+                action: <span className="text-muted-foreground">{verb}</span>,
+                entity: <span className="font-medium">{name}</span>,
+              }}
+            />
             {entityTitle && <span className="text-muted-foreground"> — {entityTitle}</span>}
           </p>
         </div>

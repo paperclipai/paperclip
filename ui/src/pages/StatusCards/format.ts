@@ -1,10 +1,15 @@
+import { t, i18n } from "@/i18n";
 import type { StatusCardRefreshPolicy, StatusCardUpdate } from "@paperclipai/shared";
+
+function formatNumber(value: number, digits = 0): string {
+  return new Intl.NumberFormat(i18n.resolvedLanguage, { useGrouping: false, minimumFractionDigits: digits, maximumFractionDigits: digits }).format(value);
+}
 
 /** "1.1k tok" / "940 tok" — compact token count for footers and chips. */
 export function formatTokens(tokens: number | null | undefined): string | null {
   if (tokens === null || tokens === undefined) return null;
-  if (tokens < 1000) return `${tokens} tok`;
-  return `${(tokens / 1000).toFixed(1)}k tok`;
+  if (tokens < 1000) return t("localizationStatusCards.tokens", { count: tokens, formatted: formatNumber(tokens) });
+  return t("localizationStatusCards.thousandTokens", { count: tokens, formatted: formatNumber(tokens / 1000, 1) });
 }
 
 /**
@@ -14,9 +19,8 @@ export function formatTokens(tokens: number | null | undefined): string | null {
 export function formatCents(cents: number | null | undefined): string | null {
   if (cents === null || cents === undefined) return null;
   const dollars = cents / 100;
-  if (dollars === 0) return "$0.00";
-  if (dollars < 0.1) return `$${dollars.toFixed(3)}`;
-  return `$${dollars.toFixed(2)}`;
+  const digits = dollars !== 0 && dollars < 0.1 ? 3 : 2;
+  return new Intl.NumberFormat(i18n.resolvedLanguage, { style: "currency", currency: "USD", minimumFractionDigits: digits, maximumFractionDigits: digits }).format(dollars);
 }
 
 export interface StatusCardRollup {
@@ -98,8 +102,8 @@ export function estimateStatusCardCost(policy: StatusCardRefreshPolicy): StatusC
     const cost = `${formatCents(EST_FULL_CENTS)} · ${formatTokens(EST_FULL_TOKENS)}`;
     return {
       cost,
-      primary: `~1 rebuild per refresh ≈ ${cost}`,
-      note: "Manual cards only cost tokens when you press Refresh.",
+      primary: t("localizationStatusCards.rebuildCost", { cost }),
+      note: t("localizationStatusCards.manualCardsOnlyCostTokensWhenYouPressRefresh27"),
     };
   }
 
@@ -109,11 +113,11 @@ export function estimateStatusCardCost(policy: StatusCardRefreshPolicy): StatusC
   if (policy.mode === "interval") {
     const interval = policy.intervalMinutes ?? 15;
     maxPerDay = Math.floor(windowMinutes / interval);
-    cadence = `every ${interval} min`;
+    cadence = t("localizationStatusCards.everyMinutes", { count: interval });
   } else {
     const perHour = policy.maxUpdatesPerHour ?? 6;
     maxPerDay = Math.round((windowMinutes / 60) * perHour);
-    cadence = `up to ${perHour}/hour`;
+    cadence = t("localizationStatusCards.perHour", { count: perHour });
   }
 
   const cap = policy.dailyTokenCap ?? null;
@@ -123,33 +127,33 @@ export function estimateStatusCardCost(policy: StatusCardRefreshPolicy): StatusC
 
   const tokens = effective * EST_INCREMENTAL_TOKENS;
   const cents = effective * EST_INCREMENTAL_CENTS;
-  const withinHours = policy.activeHours ? " during active hours" : "";
+  const withinHours = policy.activeHours ? t("localizationStatusCards.duringActiveHours30") : "";
   const cost = `${formatCents(cents)} · ${formatTokens(tokens)}`;
 
   return {
     cost,
-    primary: `Up to ~${effective} updates/day (${cadence}${withinHours}) ≈ ${cost}`,
+    primary: t("localizationStatusCards.maxDailyUpdates", { count: effective, cadence, withinHours, cost }),
     note: cappedByTokenCap
-      ? `Capped by your ${formatTokens(cap!)} daily token cap — the card pauses when it's hit.`
-      : "Only runs when something changed; a cheap no-op check otherwise.",
+      ? t("localizationStatusCards.dailyCapPause", { tokens: formatTokens(cap!) })
+      : t("localizationStatusCards.onlyRunsWhenSomethingChangedACheapNoOpCheckOtherwise34"),
   };
 }
 
 /** "0.4k in / 0.2k out" — the per-update token split shown in history rows. */
 export function formatTokenSplit(inputTokens: number, outputTokens: number): string {
-  const fmt = (n: number) => (n < 1000 ? `${n}` : `${(n / 1000).toFixed(1)}k`);
-  return `${fmt(inputTokens)} in / ${fmt(outputTokens)} out`;
+  const fmt = (n: number) => (n < 1000 ? formatNumber(n) : t("localizationStatusCards.thousands", { number: formatNumber(n / 1000, 1) }));
+  return t("localizationStatusCards.tokenSplit", { input: fmt(inputTokens), output: fmt(outputTokens) });
 }
 
 /** Human label for an update's kind. */
 export function updateKindLabel(kind: StatusCardUpdate["kind"]): string {
   switch (kind) {
     case "compile":
-      return "compile";
+      return t("localizationStatusCards.compileKind");
     case "full":
-      return "full rebuild";
+      return t("localizationStatusCards.fullRebuild37");
     case "incremental":
-      return "incremental";
+      return t("localizationStatusCards.incrementalKind");
     default:
       return kind;
   }

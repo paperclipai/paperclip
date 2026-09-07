@@ -1,3 +1,4 @@
+import { t, useTranslation, i18n } from "@/i18n";
 import { useEffect, useMemo, useState } from "react";
 import {
   DndContext,
@@ -94,6 +95,7 @@ function SortableQueuedMessage({
   onInterrupt?: () => void;
   onDiscard: () => void;
 }) {
+  useTranslation();
   const sortable = useSortable({
     id: entry.comment.id,
     disabled: queueMutationDisabled,
@@ -106,10 +108,10 @@ function SortableQueuedMessage({
     queueMutationDisabled || queue.steeringDisposition !== "available";
   const steerTitle =
     queue.steeringDisposition === "unsupported"
-      ? "This runner does not support steering"
+      ? t("localizationTaskRuntime.ui_This_runner_does_not_support_steering_olnjdz")
       : queue.steeringDisposition === "temporarily_unavailable"
-        ? "Steering is temporarily unavailable"
-        : "Steer this message into the active turn";
+        ? t("localizationTaskRuntime.ui_Steering_is_temporarily_unavailable_1s6ixoc")
+        : t("localizationTaskRuntime.ui_Steer_this_message_into_the_active_turn_ygumrj");
 
   return (
     <div
@@ -128,7 +130,7 @@ function SortableQueuedMessage({
         {...sortable.attributes}
         {...sortable.listeners}
         disabled={queueMutationDisabled}
-        aria-label={`Reorder queued message: ${entry.comment.body}`}
+        aria-label={t("localizationTaskRuntime.reorderMessage", { message: entry.comment.body })}
         className="flex h-7 w-7 shrink-0 cursor-grab items-center justify-center rounded-md text-muted-foreground/70 transition-colors hover:bg-accent hover:text-foreground active:cursor-grabbing disabled:cursor-default disabled:opacity-40"
       >
         <GripVertical className="h-3.5 w-3.5" aria-hidden />
@@ -147,7 +149,7 @@ function SortableQueuedMessage({
           type="button"
           onClick={onInterrupt}
           disabled={busy || !queue.targetRunId || !onInterrupt}
-          title="Interrupt the active turn; this message stays queued"
+          title={t("localizationTaskRuntime.ui_Interrupt_the_active_turn_this_message_stays_queued_o1fby9")}
           className="flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"
           data-testid={`task-chat-queued-interrupt-${entry.comment.id}`}
         >
@@ -156,7 +158,7 @@ function SortableQueuedMessage({
           ) : (
             <CornerDownRight className="h-3.5 w-3.5" aria-hidden />
           )}
-          Interrupt
+          {t("localizationTaskRuntime.ui_Interrupt_1arf5yo")}
         </button>
       ) : (
         <button
@@ -172,7 +174,7 @@ function SortableQueuedMessage({
           ) : (
             <CornerDownRight className="h-3.5 w-3.5" aria-hidden />
           )}
-          Steer
+          {t("localizationTaskRuntime.ui_Steer_1fy22vq")}
         </button>
       )}
 
@@ -184,8 +186,8 @@ function SortableQueuedMessage({
           (!queue.queueId && !entry.comment.id.startsWith("optimistic-")) ||
           !entry.canDiscard
         }
-        title="Discard queued message"
-        aria-label={`Discard queued message: ${entry.comment.body}`}
+        title={t("localizationTaskRuntime.ui_Discard_queued_message_f9gls5")}
+        aria-label={t("localizationTaskRuntime.discardMessage", { message: entry.comment.body })}
         className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive disabled:opacity-40"
         data-testid={`task-chat-queued-discard-${entry.comment.id}`}
       >
@@ -201,8 +203,8 @@ function SortableQueuedMessage({
           <button
             type="button"
             disabled={queueMutationDisabled}
-            title="Queued message actions"
-            aria-label={`Queued message actions: ${entry.comment.body}`}
+            title={t("localizationTaskRuntime.ui_Queued_message_actions_1o00n1c")}
+            aria-label={t("localizationTaskRuntime.messageActions", { message: entry.comment.body })}
             className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"
           >
             <MoreHorizontal className="h-4 w-4" aria-hidden />
@@ -211,7 +213,7 @@ function SortableQueuedMessage({
         <DropdownMenuContent align="end" className="w-44">
           <DropdownMenuItem disabled={!entry.canEdit} onSelect={onEdit}>
             <Pencil className="h-4 w-4" aria-hidden />
-            Edit message
+            {t("localizationTaskRuntime.ui_Edit_message_1h90stm")}
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
@@ -228,6 +230,7 @@ export function TaskChatQueuedMessages({
   onInterrupt,
   onDiscard,
 }: TaskChatQueuedMessagesProps) {
+  useTranslation();
   const [entries, setEntries] = useState(queue.entries);
   const [pending, setPending] = useState<{
     commentId: string;
@@ -249,7 +252,7 @@ export function TaskChatQueuedMessages({
 
   const ids = useMemo(
     () => entries.map((entry) => entry.comment.id),
-    [entries],
+    [i18n.resolvedLanguage, entries],
   );
 
   async function handleDragEnd(event: DragEndEvent) {
@@ -276,7 +279,7 @@ export function TaskChatQueuedMessages({
     setReordering(true);
     setVisibleError(null);
     setAnnouncement(
-      `Moved queued message to position ${to + 1} of ${next.length}.`,
+      t("localizationTaskRuntime.messageMoved", { position: to + 1, total: next.length }),
     );
     try {
       await onReorder(orderedIds, queue.revision);
@@ -285,8 +288,8 @@ export function TaskChatQueuedMessages({
       setAnnouncement("");
       setVisibleError(
         queueActionErrorCode(error) === "queued_comment_revision_conflict"
-          ? "The queue changed in another session. Its latest order has been restored."
-          : "Couldn’t reorder. Previous order restored.",
+          ? t("localizationTaskRuntime.ui_The_queue_changed_in_another_session_Its_latest_order_has_been_re_14gdp20")
+          : t("localizationTaskRuntime.ui_Couldn_t_reorder_Previous_order_restored_1aifil5"),
       );
     } finally {
       setReordering(false);
@@ -311,10 +314,10 @@ export function TaskChatQueuedMessages({
     setVisibleError(null);
     setAnnouncement(
       action === "steer"
-        ? "Steering queued message."
+        ? t("localizationTaskRuntime.ui_Steering_queued_message_14queke")
         : action === "interrupt"
-          ? "Interrupting the active turn."
-          : "Discarding queued message.",
+          ? t("localizationTaskRuntime.ui_Interrupting_the_active_turn_n0zo1s")
+          : t("localizationTaskRuntime.ui_Discarding_queued_message_wbq7ev"),
     );
     if (action === "steer") {
       setEntries((current) =>
@@ -332,10 +335,10 @@ export function TaskChatQueuedMessages({
       }
       setAnnouncement(
         action === "steer"
-          ? "Message steered into the active turn."
+          ? t("localizationTaskRuntime.ui_Message_steered_into_the_active_turn_1a5u1dy")
           : action === "interrupt"
-            ? "Active turn interrupted. Message remains queued."
-            : "Queued message discarded.",
+            ? t("localizationTaskRuntime.ui_Active_turn_interrupted_Message_remains_queued_vrk821")
+            : t("localizationTaskRuntime.ui_Queued_message_discarded_cx3l12"),
       );
     } catch (error) {
       if (action === "steer") setEntries(previous);
@@ -343,14 +346,14 @@ export function TaskChatQueuedMessages({
       const code = queueActionErrorCode(error);
       setVisibleError(
         code === "queued_comment_already_dispatching"
-          ? "Too late to discard: this message is already being sent."
+          ? t("localizationTaskRuntime.ui_Too_late_to_discard_this_message_is_already_being_sent_ji0xc2")
           : action === "steer"
-            ? "Couldn’t steer. Message is still queued."
+            ? t("localizationTaskRuntime.ui_Couldn_t_steer_Message_is_still_queued_kglcgc")
             : action === "interrupt"
-              ? "Couldn’t interrupt. Message is still queued."
+              ? t("localizationTaskRuntime.ui_Couldn_t_interrupt_Message_is_still_queued_ttxid2")
               : code === "queued_comment_revision_conflict"
-                ? "The queue changed in another session. Review it and try again."
-                : "Couldn’t discard. Message is still queued.",
+                ? t("localizationTaskRuntime.ui_The_queue_changed_in_another_session_Review_it_and_try_again_1rm1y02")
+                : t("localizationTaskRuntime.ui_Couldn_t_discard_Message_is_still_queued_qbg3bz"),
       );
     } finally {
       setPending(null);
@@ -363,7 +366,7 @@ export function TaskChatQueuedMessages({
     <div
       className="relative z-0 mx-3 -mb-px overflow-hidden rounded-t-xl rounded-b-none border border-b-0 border-border/75 bg-card shadow-sm"
       data-testid="task-chat-queued-messages"
-      aria-label="Queued messages"
+      aria-label={t("localizationTaskRuntime.ui_Queued_messages_3244mw")}
     >
       <DndContext
         sensors={sensors}

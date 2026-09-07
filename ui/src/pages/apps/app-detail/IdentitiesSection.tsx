@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Building2, Loader2, TriangleAlert, UserRound } from "lucide-react";
 import type {
@@ -52,6 +53,7 @@ const STATUS_CHIP: Record<GrantStatusTone, string> = {
 };
 
 function StatusText({ status }: { status: ConnectionGrant["status"] | null }) {
+  useTranslation();
   const tone = grantStatusTone(status);
   return (
     <span
@@ -121,6 +123,7 @@ export function IdentitiesSection({
   onOpenAudience: (grantId: string) => void;
   onCloseAudience: () => void;
 }) {
+  const { t } = useTranslation();
   const grants = grantsQuery?.grants ?? [];
   const capabilities = grantsQuery?.capabilities;
   const currentUserId = grantsQuery?.currentUserId ?? null;
@@ -164,9 +167,7 @@ export function IdentitiesSection({
     return (
       <section className="space-y-5">
         <IdentitiesHeading />
-        <InlineBanner tone="warning" compact>
-          We couldn't load who this connection acts as. Reload the page to try again.
-        </InlineBanner>
+        <InlineBanner tone="warning" compact>{t("localizationApps.weCouldnTLoadWhoThisConnectionActsAsReloadThe369")}</InlineBanner>
       </section>
     );
   }
@@ -175,23 +176,21 @@ export function IdentitiesSection({
     const github = agentGrant?.providerTenant?.github;
     return (
       <section className="space-y-5">
-        <h2 className="text-sm font-semibold text-foreground">GitHub identity</h2>
+        <h2 className="text-sm font-semibold text-foreground">{t("localizationApps.gitHubIdentity370")}</h2>
         <IdentityRow
-          title={github ? `@${github.login}` : "Dedicated GitHub account"}
+          title={github ? `@${github.login}` : t("localizationApps.dedicatedGitHubAccount371")}
           status={agentGrant?.status ?? null}
           detail={dedicatedAgent ? (
             <Link
               to={agentUrl(dedicatedAgent)}
               className="transition-colors hover:text-foreground hover:underline"
             >
-              Used only by {dedicatedAgent.name}
+              {t("localizationApps.usedOnlyBy", { agent: dedicatedAgent.name })}
             </Link>
-          ) : "Dedicated to one agent"}
+          ) : t("localizationApps.dedicatedToOneAgent373")}
           actions={!agentGrant && dedicatedAgent && capabilities?.canConfigure ? (
             <Button size="sm" disabled={connectPending} onClick={() => onConnectAgent(dedicatedAgent.id)}>
-              {connectPending ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : null}
-              Connect dedicated account
-            </Button>
+              {connectPending ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : null}{t("localizationApps.connectDedicatedAccount374")}</Button>
           ) : null}
         />
         {github ? <GitHubConnectionSummary grant={agentGrant} onRefreshAccess={onRefreshAccess} refreshPending={refreshAccessPending} /> : null}
@@ -231,14 +230,12 @@ export function IdentitiesSection({
           personalGrant ? null : (
             <IdentityRow
               id="personal-identity"
-              title="Personal account"
+              title={t("localizationApps.personalAccount375")}
               status={null}
-              detail="Personal identity"
+              detail={t("localizationApps.personalIdentity376")}
               actions={capabilities?.canConnectAsCurrentUser ? (
                   <Button size="sm" disabled={connectPending} onClick={onConnectAsMe}>
-                    {connectPending ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : null}
-                    Connect as me
-                  </Button>
+                    {connectPending ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : null}{t("localizationApps.connectAsMe377")}</Button>
                 ) : null}
             />
           )
@@ -246,20 +243,16 @@ export function IdentitiesSection({
           orgGrant ? (
             orgGrant.capabilities?.canEditAudience ? (
               <div className="flex justify-end">
-                  <Button size="sm" variant="outline" onClick={() => onOpenAudience(orgGrant.id)}>
-                    Manage access
-                  </Button>
+                  <Button size="sm" variant="outline" onClick={() => onOpenAudience(orgGrant.id)}>{t("localizationApps.manageAccess378")}</Button>
               </div>
             ) : null
           ) : (
             <IdentityRow
-              title="Organization account"
+              title={t("localizationApps.organizationAccount379")}
               status={null}
-              detail="Organization identity"
+              detail={t("localizationConnections.organizationIdentity201")}
               actions={capabilities?.canCreateOrganizationGrant ? (
-                  <Button size="sm" disabled={connectPending} onClick={onConnectOrganization}>
-                    Connect organization identity
-                  </Button>
+                  <Button size="sm" disabled={connectPending} onClick={onConnectOrganization}>{t("localizationApps.connectOrganizationIdentity381")}</Button>
                 ) : null}
             />
           )
@@ -291,21 +284,22 @@ function GitHubConnectionSummary({
   onRefreshAccess?: () => void;
   refreshPending: boolean;
 }) {
+  const { t } = useTranslation();
   const github = grant.providerTenant?.github;
   if (!github) return null;
   const repositoryWarning = github.repositorySelection === "all"
-    ? "All current and future repositories"
+    ? t("localizationApps.allCurrentAndFutureRepositories382")
     : github.repositorySelection === "mixed"
-      ? "Mixed access; scope varies by installation"
+      ? t("localizationApps.mixedAccessScopeVariesByInstallation383")
       : null;
   const repositorySummary = github.repositorySelection === "none"
-    ? "No repositories selected"
-    : `${github.repositoryCount} selected repositories`;
+    ? t("localizationApps.noRepositoriesSelected384")
+    : t("localizationApps.selectedRepositories", { count: github.repositoryCount });
   return (
     <div className="divide-y divide-border border-y border-border">
       <div className="flex flex-wrap items-center justify-between gap-3 py-3">
         <div className="min-w-0">
-          <div className="text-sm font-medium text-foreground">Repositories</div>
+          <div className="text-sm font-medium text-foreground">{t("localizationApps.repositories386")}</div>
           {repositoryWarning ? (
             <div
               role="note"
@@ -323,20 +317,18 @@ function GitHubConnectionSummary({
         </div>
         {github.managementUrl ? (
           <Button asChild size="sm" variant="outline">
-            <a href={github.managementUrl} target="_blank" rel="noreferrer">Manage repositories on GitHub</a>
+            <a href={github.managementUrl} target="_blank" rel="noreferrer">{t("localizationConnections.manageRepositoriesOnGitHub81")}</a>
           </Button>
         ) : null}
       </div>
       <div className="flex flex-wrap items-center justify-between gap-3 py-3">
         <div className="min-w-0">
-          <div className="text-sm font-medium text-foreground">Refresh access</div>
-          <div className="text-xs text-muted-foreground">Sync repository access from GitHub.</div>
+          <div className="text-sm font-medium text-foreground">{t("localizationApps.refreshAccess387")}</div>
+          <div className="text-xs text-muted-foreground">{t("localizationApps.syncRepositoryAccessFromGitHub388")}</div>
         </div>
         {onRefreshAccess ? (
           <Button size="sm" variant="outline" disabled={refreshPending} onClick={onRefreshAccess}>
-            {refreshPending ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : null}
-            Refresh access
-          </Button>
+            {refreshPending ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : null}{t("localizationApps.refreshAccess387")}</Button>
         ) : null}
       </div>
     </div>
@@ -344,7 +336,8 @@ function GitHubConnectionSummary({
 }
 
 function IdentitiesHeading() {
-  return <h2 className="text-sm font-semibold text-foreground">Which humans can use this credential?</h2>;
+  const { t } = useTranslation();
+  return <h2 className="text-sm font-semibold text-foreground">{t("localizationConnections.whichHumansCanUseThisCredential167")}</h2>;
 }
 
 function HumanAccessCards({
@@ -366,10 +359,11 @@ function HumanAccessCards({
   onChooseAll: () => void;
   onChooseSelected: () => void;
 }) {
+  const { t } = useTranslation();
   return (
     <div className="space-y-3">
       <RadioCardGroup
-        ariaLabel="Which humans can use this credential"
+        ariaLabel={t("localizationApps.whichHumansCanUseThisCredential389")}
         value={personal ? "personal" : restricted ? "selected" : "company"}
         className="sm:grid-cols-2"
         onValueChange={(next) => {
@@ -380,22 +374,22 @@ function HumanAccessCards({
         options={personal ? [
           {
             value: "personal",
-            title: "Just me",
-            description: "Only you can use this connection.",
+            title: t("localizationConnections.justMe174"),
+            description: t("localizationApps.onlyYouCanUseThisConnection391"),
             icon: <UserRound className="h-4 w-4" />,
           },
         ] : [
           {
             value: "selected",
-            title: "Humans I pick",
-            description: "Only selected people in your company.",
+            title: t("localizationApps.humansIPick392"),
+            description: t("localizationApps.onlySelectedPeopleInYourCompany393"),
             icon: <UserRound className="h-4 w-4" />,
             disabled: !canEditAudience,
           },
           {
             value: "company",
-            title: "Any human in the company",
-            description: "Anyone in your company can use this connection.",
+            title: t("localizationConnections.anyHumanInTheCompany177"),
+            description: t("localizationApps.anyoneInYourCompanyCanUseThisConnection395"),
             icon: <Building2 className="h-4 w-4" />,
             disabled: !canEditAudience,
           },
@@ -424,6 +418,7 @@ function IdentityRow({
   detail: ReactNode;
   actions: ReactNode;
 }) {
+  useTranslation();
   return (
     <div id={id} className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between sm:gap-8">
       <div className="min-w-0">
@@ -460,6 +455,7 @@ export function AudienceDialog({
   onCancel: () => void;
   onSave: (memberUserIds: string[]) => void;
 }) {
+  const { t } = useTranslation();
   const initialSelection = useMemo(() => audienceUserIds(grant), [grant]);
   const [scope, setScope] = useState<"all" | "selected">(initialSelection.size === 0 ? "all" : "selected");
   const [selected, setSelected] = useState<Set<string>>(initialSelection);
@@ -475,7 +471,7 @@ export function AudienceDialog({
     <Dialog open onOpenChange={(open) => { if (!open) onCancel(); }}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Who can use this identity</DialogTitle>
+          <DialogTitle>{t("localizationApps.whoCanUseThisIdentity396")}</DialogTitle>
           <DialogDescription>
             {grantAccountLabel(grant)} · {appName}
           </DialogDescription>
@@ -483,19 +479,19 @@ export function AudienceDialog({
 
         <div className="space-y-3">
           <RadioCardGroup
-            ariaLabel="Who can use this identity"
+            ariaLabel={t("localizationApps.whoCanUseThisIdentity396")}
             value={scope}
             onValueChange={(next) => setScope(next as "all" | "selected")}
             options={[
               {
                 value: "all",
-                title: "All organization members",
-                description: "Anyone in this organization can have work use this identity.",
+                title: t("localizationApps.allOrganizationMembers397"),
+                description: t("localizationApps.anyoneInThisOrganizationCanHaveWorkUseThisIde398"),
               },
               {
                 value: "selected",
-                title: "Selected members",
-                description: "Only the people you choose.",
+                title: t("localizationApps.selectedMembers399"),
+                description: t("localizationApps.onlyThePeopleYouChoose400"),
               },
             ]}
           />
@@ -510,15 +506,12 @@ export function AudienceDialog({
               selectedUserIds={selected}
               onChange={setSelected}
               triggerLabel={selected.size === 0
-                ? "Choose people"
-                : `${selected.size} ${selected.size === 1 ? "person" : "people"} selected`}
+                ? t("localizationApps.choosePeople401")
+                : t("localizationApps.selectedPeople", { count: selected.size })}
             />
           ) : null}
 
-          <p className="text-xs text-muted-foreground">
-            This controls whose work can use the identity. It does not change which agents have the
-            connection.
-          </p>
+          <p className="text-xs text-muted-foreground">{t("localizationApps.thisControlsWhoseWorkCanUseTheIdentityItDoesN403")}</p>
 
           {error ? (
             <InlineBanner tone="warning" compact>
@@ -528,16 +521,12 @@ export function AudienceDialog({
         </div>
 
         <DialogFooter>
-          <Button variant="ghost" onClick={onCancel} disabled={pending}>
-            Cancel
-          </Button>
+          <Button variant="ghost" onClick={onCancel} disabled={pending}>{t("pages.apps.common.cancel")}</Button>
           <Button
             disabled={pending || !canSave}
             onClick={() => onSave(scope === "all" ? [] : [...selected])}
           >
-            {pending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-            Save audience
-          </Button>
+            {pending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}{t("localizationApps.saveAudience404")}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
@@ -567,19 +556,20 @@ export function RevokeGrantDialog({
   onCancel: () => void;
   onConfirm: () => void;
 }) {
+  const { t } = useTranslation();
   const personal = grant.kind === "user";
   const title = personal
     ? isOwnIdentity
-      ? `Revoke your ${providerName} identity?`
-      : `Revoke this ${providerName} identity?`
-    : "Revoke the organization identity?";
+      ? t("localizationApps.revokeYourIdentity", { provider: providerName })
+      : t("localizationApps.revokeThisIdentity", { provider: providerName })
+    : t("localizationApps.revokeTheOrganizationIdentity407");
   const body = personal
     ? isOwnIdentity
-      ? "Agents will stop acting as you. Work that needs this identity can ask you to connect again."
-      : "Agents will stop acting as this person. They can connect again themselves; no one else can do it for them."
+      ? t("localizationApps.agentsWillStopActingAsYouWorkThatNeedsThisIde408")
+      : t("localizationApps.agentsWillStopActingAsThisPersonTheyCanConnec409")
     : credentialPolicy === "per_user"
-      ? "Installed agents lose this shared identity immediately."
-      : "Eligible members and installed agents will lose this shared identity immediately.";
+      ? t("localizationApps.installedAgentsLoseThisSharedIdentityImmediat410")
+      : t("localizationApps.eligibleMembersAndInstalledAgentsWillLoseThis411");
 
   return (
     <AlertDialog open onOpenChange={(open) => { if (!open) onCancel(); }}>
@@ -589,18 +579,14 @@ export function RevokeGrantDialog({
           <AlertDialogDescription>{body}</AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
-          <AlertDialogCancel disabled={pending} autoFocus>
-            Cancel
-          </AlertDialogCancel>
+          <AlertDialogCancel disabled={pending} autoFocus>{t("pages.apps.common.cancel")}</AlertDialogCancel>
           <AlertDialogAction
             disabled={pending}
             onClick={(event) => {
               event.preventDefault();
               onConfirm();
             }}
-          >
-            Revoke identity
-          </AlertDialogAction>
+          >{t("localizationApps.revokeIdentity359")}</AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>
     </AlertDialog>

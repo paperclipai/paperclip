@@ -13,7 +13,7 @@ import { Button } from "@/components/ui/button";
 import { useManagedSandboxOnly } from "@/hooks/useManagedSandboxOnly";
 import { cn, relativeTime } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
-import { t } from "@/i18n";
+import { t, useTranslation } from "@/i18n";
 import type {
   WorkspaceServiceControlAction,
   WorkspaceServiceControlEntry,
@@ -236,6 +236,7 @@ function exposureFailureCopy(exposure: RuntimeExposureStatus | null) {
 }
 
 function ExposureFailureDetail({ exposure }: { exposure: RuntimeExposureStatus | null }) {
+  useTranslation();
   const copy = exposureFailureCopy(exposure);
   if (!copy) return null;
   return (
@@ -392,6 +393,7 @@ function CommandActionButtons({
   square?: boolean;
   iconOnly?: boolean;
 }) {
+  useTranslation();
   const actions: WorkspaceRuntimeAction[] =
     item.kind === "job"
       ? ["run"]
@@ -457,6 +459,7 @@ function CommandSection({
   square?: boolean;
   iconOnly?: boolean;
 }) {
+  useTranslation();
   // Managed-sandbox-only policy: the working directory is a path on the
   // execution host, so the command rows drop it, and keep dropping it until the
   // policy is known. The URL, the port, and the command itself stay — they
@@ -547,6 +550,7 @@ export function WorkspaceRuntimeControls({
   className,
   square,
 }: WorkspaceRuntimeControlsProps) {
+  useTranslation();
   const resolvedSections = sections ?? {
     services: (items ?? []).map((item) => ({
       ...item,

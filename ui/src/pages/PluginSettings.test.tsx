@@ -5,6 +5,7 @@ import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { queryKeys } from "../lib/queryKeys";
+import { i18n } from "@/i18n";
 import { PluginSettings } from "./PluginSettings";
 
 const mockPluginsApi = vi.hoisted(() => ({
@@ -176,6 +177,14 @@ describe("PluginSettings", () => {
     expect(container.textContent).toContain("secret bindings still resolve through the selected organization context");
     const link = container.querySelector('a[href="/company/settings/instance/environments"]');
     expect(link?.textContent).toContain("Open Environments");
+    await act(async () => { await i18n.changeLanguage("ru"); });
+    expect(container.textContent).toContain("Настройте плагин в разделе");
+    expect(container.textContent).toContain("привязки секретов определяются в контексте выбранной организации");
+    expect(container.textContent).toContain("E2B Cloud Sandbox");
+    expect(container.textContent).toContain("E2B environments for Paperclip.");
+    expect(link?.getAttribute("href")).toBe("/company/settings/instance/environments");
+    await act(async () => { await i18n.changeLanguage("en"); });
+    expect(link?.textContent).toContain("Open Environments");
 
     await act(async () => {
       root.unmount();
@@ -211,6 +220,14 @@ describe("PluginSettings", () => {
     expect(container.textContent).toContain("Needs attention");
     expect(container.textContent).toContain("No local folder path is configured.");
     expect(container.textContent).toContain("Missing directories: raw, wiki");
+    expect(container.textContent).toContain("Missing files: WIKI.md, index.md");
+    await act(async () => { await i18n.changeLanguage("ru"); });
+    expect(container.textContent).toContain("Локальные папки");
+    expect(container.textContent).toContain("Отсутствующие файлы: WIKI.md, index.md");
+    expect(container.textContent).toContain("Wiki root");
+    expect(container.textContent).toContain("No local folder path is configured.");
+    expect(container.querySelector("input")?.getAttribute("id")).toBe("local-folder-wiki-root");
+    await act(async () => { await i18n.changeLanguage("en"); });
     expect(container.textContent).toContain("Missing files: WIKI.md, index.md");
 
     await act(async () => {

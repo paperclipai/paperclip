@@ -1,5 +1,7 @@
 // @vitest-environment jsdom
 
+import { act as reactAct } from "react";
+import { i18n } from "@/i18n";
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
@@ -31,6 +33,7 @@ const mdxEditorMockState = vi.hoisted(() => ({
   /** Every string handed to the editor's imperative `insertMarkdown`. */
   insertedMarkdownValues: [] as string[],
   suppressHtmlProcessingValues: [] as boolean[],
+  translation: null as null | ((key: string, fallback: string, values?: Record<string, unknown>) => string),
 }));
 
 /**
@@ -68,6 +71,7 @@ vi.mock("@mdxeditor/editor", async () => {
       onError,
       className,
       suppressHtmlProcessing,
+      translation,
     }: {
       markdown: string;
       placeholder?: string;
@@ -75,6 +79,7 @@ vi.mock("@mdxeditor/editor", async () => {
       onError?: (error: unknown) => void;
       suppressHtmlProcessing?: boolean;
       className?: string;
+      translation?: (key: string, fallback: string, values?: Record<string, unknown>) => string;
     },
     forwardedRef: React.ForwardedRef<{
       setMarkdown: (value: string) => void;
@@ -85,6 +90,7 @@ vi.mock("@mdxeditor/editor", async () => {
     if (mdxEditorMockState.throwOnRender) {
       throw new Error("Rich editor render crashed");
     }
+    mdxEditorMockState.translation = translation ?? null;
     mdxEditorMockState.markdownValues.push(markdown);
     mdxEditorMockState.suppressHtmlProcessingValues.push(Boolean(suppressHtmlProcessing));
     const [content, setContent] = React.useState(markdown);
@@ -1536,5 +1542,36 @@ describe("MarkdownEditor", () => {
     await act(async () => {
       root.unmount();
     });
+  });
+});
+
+describe("MarkdownEditor live locale", () => {
+  it("updates MDX toolbar and dialog translations without remounting or modifying stored markdown", async () => {
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const root = createRoot(host);
+    const onChange = vi.fn();
+    const content = "Keep English user text and `status:in_progress` unchanged.";
+    try {
+      await reactAct(async () => {
+        await i18n.changeLanguage("ru");
+        root.render(<MarkdownEditor value={content} onChange={onChange} />);
+      });
+      const editor = host.querySelector('[data-testid="mdx-editor"]');
+      expect(editor).not.toBeNull();
+      for (const locale of ["ru", "en", "ru"]) {
+        await reactAct(async () => { await i18n.changeLanguage(locale); });
+        expect(host.querySelector('[data-testid="mdx-editor"]')).toBe(editor);
+        expect(editor?.textContent).toBe(content);
+        expect(mdxEditorMockState.translation?.("table.deleteTable", "Delete table")).toBe(locale === "ru" ? "Удалить таблицу" : "Delete table");
+        expect(mdxEditorMockState.translation?.("toolbar.undo", "Undo {{shortcut}}", { shortcut: "⌘Z" })).toBe(locale === "ru" ? "Отменить ⌘Z" : "Undo ⌘Z");
+        expect(mdxEditorMockState.translation?.("linkPreview.open", "Open {{url}} in new window", { url: "https://example.com/user" })).toBe(locale === "ru" ? "Открыть https://example.com/user в новом окне" : "Open https://example.com/user in new window");
+      }
+      expect(onChange).not.toHaveBeenCalled();
+    } finally {
+      await reactAct(async () => root.unmount());
+      host.remove();
+      await i18n.changeLanguage("en");
+    }
   });
 });

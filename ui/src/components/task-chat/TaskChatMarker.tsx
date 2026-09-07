@@ -1,3 +1,5 @@
+import { useTranslation } from "@/i18n";
+import { taskChatDisplayLabel, taskThreadMarkerDetailDisplay } from "./task-chat-display";
 import { useId, useState } from "react";
 import { cn } from "@/lib/utils";
 import { ChevronDown, CircleDot, OctagonX, Flag } from "lucide-react";
@@ -27,6 +29,7 @@ export function TaskChatMarker({
   onTryAgain?: () => Promise<void> | void;
   tryAgainPending?: boolean;
 }) {
+  const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const detailsId = useId();
   const streamlined = useStreamlinedTaskChatPresentation();
@@ -58,7 +61,7 @@ export function TaskChatMarker({
             )}
           >
             <Icon className="h-3.5 w-3.5 shrink-0" aria-hidden />
-            <span className="truncate font-medium">{item.label}</span>
+            <span className="truncate font-medium">{taskChatDisplayLabel(item.label)}</span>
             {relative ? (
               <span className="shrink-0 text-muted-foreground/70">· {relative}</span>
             ) : null}
@@ -79,7 +82,7 @@ export function TaskChatMarker({
               disabled={tryAgainPending}
               data-testid="task-chat-run-failed-try-again"
             >
-              {tryAgainPending ? "Trying again..." : "Try again"}
+              {tryAgainPending ? t("localizationTaskRuntime.ui_Trying_again_1nesku4") : t("localizationTaskRuntime.ui_Try_again_982hh6")}
             </Button>
           ) : null}
         </div>
@@ -90,13 +93,13 @@ export function TaskChatMarker({
             className="mt-1 w-full max-w-(--pct-85) overflow-hidden rounded-lg border border-border bg-muted/25 text-left text-sm dark:bg-muted/15"
           >
             {item.detail ? (
-              <div className="px-3 py-2.5 text-foreground/90">{item.detail}</div>
+              <div className="px-3 py-2.5 text-foreground/90">{taskThreadMarkerDetailDisplay(item.detail)}</div>
             ) : null}
             {item.runHref || onTryAgain ? (
               <div className="flex items-center justify-end gap-2 border-t border-border/70 bg-background/50 px-3 py-2 dark:bg-background/30">
                 {item.runHref ? (
                   <Button asChild variant="ghost" size="xs">
-                    <Link to={item.runHref}>View run</Link>
+                    <Link to={item.runHref}>{t("localizationActivity.viewRun")}</Link>
                   </Button>
                 ) : null}
                 {onTryAgain ? (
@@ -107,7 +110,7 @@ export function TaskChatMarker({
                     disabled={tryAgainPending}
                     data-testid="task-chat-run-failed-try-again"
                   >
-                    {tryAgainPending ? "Trying again..." : "Try again"}
+                    {tryAgainPending ? t("localizationTaskRuntime.ui_Trying_again_1nesku4") : t("localizationTaskRuntime.ui_Try_again_982hh6")}
                   </Button>
                 ) : null}
               </div>
@@ -122,13 +125,13 @@ export function TaskChatMarker({
     <div
       className="tc-enter-marker flex items-center gap-2 py-1 text-xs text-muted-foreground"
       role={streamlined ? "separator" : undefined}
-      aria-label={streamlined ? item.label : undefined}
+      aria-label={streamlined ? taskChatDisplayLabel(item.label) : undefined}
     >
       <span className={cn("h-px flex-1", interrupted ? "border-t border-dashed border-destructive/50" : "bg-border")} />
       <span className={cn("flex items-center gap-1.5", interrupted && "text-destructive")}>
         <Icon className="h-3.5 w-3.5" />
-        <span className="font-medium">{item.label}</span>
-        {item.detail ? <span className="text-muted-foreground">· {item.detail}</span> : null}
+        <span className="font-medium">{taskChatDisplayLabel(item.label)}</span>
+        {item.detail ? <span className="text-muted-foreground">· {taskThreadMarkerDetailDisplay(item.detail)}</span> : null}
         {onTryAgain ? (
           <Button
             type="button"
@@ -138,7 +141,7 @@ export function TaskChatMarker({
             disabled={tryAgainPending}
             data-testid="task-chat-run-failed-try-again"
           >
-            {tryAgainPending ? "Trying again..." : "Try again"}
+            {tryAgainPending ? t("localizationTaskRuntime.ui_Trying_again_1nesku4") : t("localizationTaskRuntime.ui_Try_again_982hh6")}
           </Button>
         ) : null}
       </span>

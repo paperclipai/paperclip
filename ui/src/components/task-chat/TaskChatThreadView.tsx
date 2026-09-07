@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import type { ReactNode } from "react";
 import type { IssueAttachment } from "@paperclipai/shared";
 import { cn } from "@/lib/utils";
@@ -319,6 +320,7 @@ export function TaskChatThreadView({
   scroll = true,
   attachments = [],
 }: TaskChatThreadViewProps) {
+  useTranslation();
   const streamlined = useStreamlinedTaskChatPresentation();
   const retryableMarkerId = onRetryFailedRun || onTryAgainNoLiveExecutionPath
     ? [...items]

@@ -8,6 +8,7 @@ import {
   type IssueStatus,
 } from "@paperclipai/shared";
 import type { CompanySearchParams } from "@/api/search";
+import { t } from "@/i18n";
 
 const SEARCH_FILTER_PARAM_KEYS = [
   "status",
@@ -40,13 +41,13 @@ export interface SearchOperatorSuggestion {
 export const SEARCH_OPERATOR_QUICK_FILTERS = ["assignee:me", "is:open", "updated:>7d"] as const;
 
 export const SEARCH_OPERATOR_SUGGESTIONS: SearchOperatorSuggestion[] = [
-  { token: "status:todo", label: "Open todo tasks", description: "Filter by task status" },
-  { token: "status:blocked", label: "Blocked tasks", description: "Find blocked work" },
-  { token: "assignee:me", label: "Assigned to me", description: "Use your current board user" },
-  { token: "project:\"Paperclip App\"", label: "Project name", description: "Quote multi-word project names" },
-  { token: "label:bug", label: "Label", description: "Filter by issue label" },
-  { token: "priority:high", label: "High priority", description: "Filter by priority" },
-  { token: "updated:>7d", label: "Recently updated", description: "Updated in the last 7 days" },
+  { token: "status:todo", get label() { return t("localizationFilters.operators.todo.label", { defaultValue: "Open todo tasks" }); }, get description() { return t("localizationFilters.operators.todo.description", { defaultValue: "Filter by task status" }); } },
+  { token: "status:blocked", get label() { return t("localizationFilters.operators.blocked.label", { defaultValue: "Blocked tasks" }); }, get description() { return t("localizationFilters.operators.blocked.description", { defaultValue: "Find blocked work" }); } },
+  { token: "assignee:me", get label() { return t("localizationFilters.operators.mine.label", { defaultValue: "Assigned to me" }); }, get description() { return t("localizationFilters.operators.mine.description", { defaultValue: "Use your current board user" }); } },
+  { token: "project:\"Paperclip App\"", get label() { return t("localizationFilters.operators.project.label", { defaultValue: "Project name" }); }, get description() { return t("localizationFilters.operators.project.description", { defaultValue: "Quote multi-word project names" }); } },
+  { token: "label:bug", get label() { return t("localizationFilters.operators.label.label", { defaultValue: "Label" }); }, get description() { return t("localizationFilters.operators.label.description", { defaultValue: "Filter by issue label" }); } },
+  { token: "priority:high", get label() { return t("localizationFilters.operators.priority.label", { defaultValue: "High priority" }); }, get description() { return t("localizationFilters.operators.priority.description", { defaultValue: "Filter by priority" }); } },
+  { token: "updated:>7d", get label() { return t("localizationFilters.operators.updated.label", { defaultValue: "Recently updated" }); }, get description() { return t("localizationFilters.operators.updated.description", { defaultValue: "Updated in the last 7 days" }); } },
 ];
 
 export interface SearchQueryParserContext {

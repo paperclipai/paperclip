@@ -1403,7 +1403,9 @@ export function Cases() {
                 groupedRows.map((group) => group.label ? (
                   <CaseGroup
                     key={group.key}
-                    label={group.label}
+                    label={viewState.groupBy === "status" && STATUS_FILTER_OPTIONS.some((option) => option.value === group.label)
+                      ? t(STATUS_FILTER_OPTIONS.find((option) => option.value === group.label)!.labelKey)
+                      : group.label}
                     count={group.rows.length}
                     collapsed={collapsedGroupKeys.has(group.key)}
                     selected={selectedIndex === keyboardNavItems.findIndex((item) => item.type === "group" && item.groupKey === group.key)}

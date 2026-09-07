@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import type { AdapterConfigFieldsProps } from "../types";
 import {
   Field,
@@ -32,9 +33,10 @@ export function ProcessConfigFields({
   eff,
   mark,
 }: AdapterConfigFieldsProps) {
+  const { t } = useTranslation();
   return (
     <>
-      <Field label="Command" hint={help.command}>
+      <Field label={t("pages.cliAuth.command")} hint={help.command}>
         <DraftInput
           value={
             isCreate
@@ -48,10 +50,10 @@ export function ProcessConfigFields({
           }
           immediate
           className={inputClass}
-          placeholder="e.g. node, python"
+          placeholder={t("localizationAgents.ui267_e_g_node_python")}
         />
       </Field>
-      <Field label="Args (comma-separated)" hint={help.args}>
+      <Field label={t("localizationAgents.ui268_Args_comma_separated_")} hint={help.args}>
         <DraftInput
           value={
             isCreate
@@ -69,7 +71,7 @@ export function ProcessConfigFields({
           }
           immediate
           className={inputClass}
-          placeholder="e.g. script.js, --flag"
+          placeholder={t("localizationAgents.ui269_e_g_script_js_flag")}
         />
       </Field>
     </>

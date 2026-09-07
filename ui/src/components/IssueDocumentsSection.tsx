@@ -1,3 +1,4 @@
+import { t, useTranslation, i18n } from "@/i18n";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { QueryClient, QueryKey } from "@tanstack/react-query";
@@ -165,11 +166,11 @@ function getRevisionActor(
     const profile = maps.userProfileMap?.get(revision.createdByUserId);
     return {
       kind: "user",
-      name: profile?.label ?? (revision.createdByUserId === "local-board" ? "Board" : revision.createdByUserId.slice(0, 8)),
+      name: profile?.label ?? (revision.createdByUserId === "local-board" ? t("localizationTaskRuntime.ui_Board_1hpelzf") : revision.createdByUserId.slice(0, 8)),
       imageUrl: profile?.image ?? null,
     };
   }
-  return { kind: "system", name: "System" };
+  return { kind: "system", get name() { return t("localizationTaskRuntime.ui_System_13qbhrw"); } };
 }
 
 function documentHasUnsavedChanges(doc: IssueDocument, draft: DraftState | null) {
@@ -288,13 +289,14 @@ export function IssueDocumentsSection({
   forceEditDocumentKey?: string | null;
   externalReferences?: MarkdownExternalReferenceMap;
 }) {
+  const { t } = useTranslation();
   const queryClient = useQueryClient();
   const location = useLocation();
   const documentSubject = useMemo(() => {
     if (subject) return subject;
     if (!issue) throw new Error("IssueDocumentsSection requires either issue or subject");
     return makeIssueDocumentSubject(issue);
-  }, [issue, subject]);
+  }, [i18n.resolvedLanguage, issue, subject]);
   const annotationTargetForKey = useCallback((documentKey: string) => {
     const configured = documentSubject.annotations?.target;
     if (!configured) return undefined;
@@ -387,14 +389,14 @@ export function IssueDocumentsSection({
   const deleteDocument = useMutation({
     mutationFn: (key: string) => documentSubject.deleteDocument
       ? documentSubject.deleteDocument(key)
-      : Promise.reject(new Error("Document deletion is not available")),
+      : Promise.reject(new Error(t("localizationTaskRuntime.ui_Document_deletion_is_not_available_90ar5k"))),
     onSuccess: () => {
       setError(null);
       setConfirmDeleteKey(null);
       invalidateIssueDocuments();
     },
     onError: (err) => {
-      setError(err instanceof Error ? err.message : "Failed to delete document");
+      setError(err instanceof Error ? err.message : t("localizationTaskRuntime.ui_Failed_to_delete_document_f6x62t"));
     },
   });
 
@@ -402,7 +404,7 @@ export function IssueDocumentsSection({
     mutationFn: ({ key, revisionId }: { key: string; revisionId: string }) =>
       documentSubject.restoreDocumentRevision
         ? documentSubject.restoreDocumentRevision(key, revisionId)
-        : Promise.reject(new Error("Document revision restore is not available")),
+        : Promise.reject(new Error(t("localizationTaskRuntime.ui_Document_revision_restore_is_not_available_l2qn4n"))),
     onSuccess: (document, variables) => {
       syncDocumentCaches(document);
       setSelectedRevisionIds((current) => ({ ...current, [variables.key]: null }));
@@ -413,7 +415,7 @@ export function IssueDocumentsSection({
       invalidateIssueDocuments();
     },
     onError: (err) => {
-      setError(err instanceof Error ? err.message : "Failed to restore document revision");
+      setError(err instanceof Error ? err.message : t("localizationTaskRuntime.ui_Failed_to_restore_document_revision_1aq1nw1"));
     },
   });
 
@@ -421,7 +423,7 @@ export function IssueDocumentsSection({
     mutationFn: ({ key, locked }: { key: string; locked: boolean }) =>
       documentSubject.setDocumentLock
         ? documentSubject.setDocumentLock(key, locked)
-        : Promise.reject(new Error("Document locking is not available")),
+        : Promise.reject(new Error(t("localizationTaskRuntime.ui_Document_locking_is_not_available_dl4049"))),
     onSuccess: (document) => {
       syncDocumentCaches(document);
       setDraft((current) => current?.key === document.key ? null : current);
@@ -431,7 +433,7 @@ export function IssueDocumentsSection({
       invalidateIssueDocuments();
     },
     onError: (err) => {
-      setError(err instanceof Error ? err.message : "Failed to update document lock");
+      setError(err instanceof Error ? err.message : t("localizationTaskRuntime.ui_Failed_to_update_document_lock_ckawki"));
     },
   });
 
@@ -441,7 +443,7 @@ export function IssueDocumentsSection({
       if (a.key !== "plan" && b.key === "plan") return 1;
       return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime();
     });
-  }, [documentSubject.hideSystemDocuments, documents]);
+  }, [i18n.resolvedLanguage, documentSubject.hideSystemDocuments, documents]);
 
   const feedbackVoteByTargetId = useMemo(() => {
     const map = new Map<string, FeedbackVoteValue>();
@@ -450,13 +452,13 @@ export function IssueDocumentsSection({
       map.set(feedbackVote.targetId, feedbackVote.vote);
     }
     return map;
-  }, [feedbackVotes]);
+  }, [i18n.resolvedLanguage, feedbackVotes]);
 
   const hasRealPlan = sortedDocuments.some((doc) => doc.key === "plan");
   const isEmpty = sortedDocuments.length === 0 && !documentSubject.legacyPlanDocument;
   const newDocumentKeyError =
     draft?.isNew && draft.key.trim().length > 0 && !DOCUMENT_KEY_PATTERN.test(draft.key.trim())
-      ? "Use lowercase letters, numbers, -, or _, and start with a letter or number."
+      ? t("localizationTaskRuntime.ui_Use_lowercase_letters_numbers_or_and_start_with_a_letter_or_numbe_k1kvid")
       : null;
 
   const resetAutosaveState = useCallback(() => {
@@ -539,9 +541,9 @@ export function IssueDocumentsSection({
 
     if (!normalizedKey || !normalizedBody) {
       if (currentDraft.isNew) {
-        setError("Document key and body are required");
+        setError(t("localizationTaskRuntime.ui_Document_key_and_body_are_required_1dlpzi1"));
       } else if (!normalizedBody) {
-        setError("Document body cannot be empty");
+        setError(t("localizationTaskRuntime.ui_Document_body_cannot_be_empty_p5j1pt"));
       }
       if (options?.trackAutosave) {
         resetAutosaveState();
@@ -550,7 +552,7 @@ export function IssueDocumentsSection({
     }
 
     if (!DOCUMENT_KEY_PATTERN.test(normalizedKey)) {
-      setError("Document key must start with a letter or number and use only lowercase letters, numbers, -, or _.");
+      setError(t("localizationTaskRuntime.ui_Document_key_must_start_with_a_letter_or_number_and_use_only_lowe_pf5u8u"));
       if (options?.trackAutosave) {
         resetAutosaveState();
       }
@@ -610,7 +612,7 @@ export function IssueDocumentsSection({
       return true;
     } catch (err) {
       if (isLockedDocumentError(err)) {
-        setError("Document is locked. Unlock it before editing.");
+        setError(t("localizationTaskRuntime.ui_Document_is_locked_Unlock_it_before_editing_sy4j0m"));
         resetAutosaveState();
         invalidateIssueDocuments();
         return false;
@@ -635,11 +637,11 @@ export function IssueDocumentsSection({
           resetAutosaveState();
           return false;
         } catch {
-          setError("Document changed remotely and the latest version could not be loaded");
+          setError(t("localizationTaskRuntime.ui_Document_changed_remotely_and_the_latest_version_could_not_be_loa_ko8ih0"));
           return false;
         }
       }
-      setError(err instanceof Error ? err.message : "Failed to save document");
+      setError(err instanceof Error ? err.message : t("localizationTaskRuntime.ui_Failed_to_save_document_1m88khf"));
       return false;
     }
   }, [documentConflict, documentSubject, invalidateIssueDocuments, resetAutosaveState, runSave, sortedDocuments, syncDocumentCaches, upsertDocument]);
@@ -700,7 +702,7 @@ export function IssueDocumentsSection({
         setCopiedDocumentKey((current) => current === key ? null : current);
       }, 1400);
     } catch {
-      setError("Could not copy document");
+      setError(t("localizationTaskRuntime.ui_Could_not_copy_document_1mtscil"));
     }
   }, []);
 
@@ -725,7 +727,7 @@ export function IssueDocumentsSection({
       return;
     }
     if (documentConflict?.key === doc.key || documentHasUnsavedChanges(doc, draft)) {
-      setError("Save or cancel your local changes before viewing an older revision.");
+      setError(t("localizationTaskRuntime.ui_Save_or_cancel_your_local_changes_before_viewing_an_older_revisio_kle3aq"));
       return;
     }
     resetAutosaveState();
@@ -739,7 +741,7 @@ export function IssueDocumentsSection({
   const toggleDocumentLock = useCallback((doc: IssueDocument, locked: boolean) => {
     if (!canManageDocumentLocks || setDocumentLock.isPending) return;
     if (locked && (documentConflict?.key === doc.key || documentHasUnsavedChanges(doc, draft))) {
-      setError("Save or cancel local changes before changing the document lock.");
+      setError(t("localizationTaskRuntime.ui_Save_or_cancel_local_changes_before_changing_the_document_lock_18f53g0"));
       return;
     }
     setDocumentLock.mutate({ key: doc.key, locked });
@@ -895,19 +897,19 @@ export function IssueDocumentsSection({
           {extraActions}
           <Button variant="outline" size="sm" onClick={beginNewDocument} className="shrink-0">
             <Plus className="mr-1.5 h-3.5 w-3.5" />
-            <span className="hidden sm:inline">New document</span>
-            <span className="sm:hidden">New</span>
+            <span className="hidden sm:inline">{t("localizationTaskRuntime.ui_New_document_1q8dr7a")}</span>
+            <span className="sm:hidden">{t("localizationTaskRuntime.ui_New_12ludo1")}</span>
           </Button>
         </div>
       ) : (
         <div className="flex flex-wrap items-center gap-2 min-w-0">
-          <h3 className="w-full text-sm font-medium text-muted-foreground shrink-0 sm:w-auto">Documents</h3>
+          <h3 className="w-full text-sm font-medium text-muted-foreground shrink-0 sm:w-auto">{t("localizationTaskRuntime.ui_Documents_oz47lx")}</h3>
           <div className="flex flex-wrap items-center gap-2 min-w-0 sm:ml-auto">
             {extraActions}
             <Button variant="outline" size="sm" onClick={beginNewDocument} className="shrink-0">
               <Plus className="mr-1.5 h-3.5 w-3.5" />
-              <span className="hidden sm:inline">New document</span>
-              <span className="sm:hidden">New</span>
+              <span className="hidden sm:inline">{t("localizationTaskRuntime.ui_New_document_1q8dr7a")}</span>
+              <span className="sm:hidden">{t("localizationTaskRuntime.ui_New_12ludo1")}</span>
             </Button>
           </div>
         </div>
@@ -927,7 +929,7 @@ export function IssueDocumentsSection({
             onChange={(event) =>
               setDraft((current) => current ? { ...current, key: event.target.value.toLowerCase() } : current)
             }
-            placeholder="Document key"
+            placeholder={t("localizationTaskRuntime.ui_Document_key_m7fld7")}
           />
           {newDocumentKeyError && (
             <p className="text-xs text-destructive">{newDocumentKeyError}</p>
@@ -938,7 +940,7 @@ export function IssueDocumentsSection({
               onChange={(event) =>
                 setDraft((current) => current ? { ...current, title: event.target.value } : current)
               }
-              placeholder="Optional title"
+              placeholder={t("localizationTaskRuntime.ui_Optional_title_hhz9i3")}
             />
           )}
           <MarkdownEditor
@@ -946,7 +948,7 @@ export function IssueDocumentsSection({
             onChange={(body) =>
               setDraft((current) => current ? { ...current, body } : current)
             }
-            placeholder="Markdown body"
+            placeholder={t("localizationTaskRuntime.ui_Markdown_body_1467tts")}
             bordered={false}
             className="bg-transparent"
             contentClassName="min-h-(--sz-220px) text-sm leading-7"
@@ -957,14 +959,14 @@ export function IssueDocumentsSection({
           <div className="flex items-center justify-end gap-2">
             <Button variant="outline" size="sm" onClick={cancelDraft}>
               <X className="mr-1.5 h-3.5 w-3.5" />
-              Cancel
+              {t("localizationTaskRuntime.ui_Cancel_ew9em3")}
             </Button>
             <Button
               size="sm"
               onClick={() => void commitDraft(draft, { clearAfterSave: false, trackAutosave: false })}
               disabled={upsertDocument.isPending}
             >
-              {upsertDocument.isPending ? "Saving..." : "Create document"}
+              {upsertDocument.isPending ? t("localizationTaskRuntime.ui_Saving_8kfkb3") : t("localizationTaskRuntime.ui_Create_document_1rfu1vm")}
             </Button>
           </div>
         </div>
@@ -981,7 +983,7 @@ export function IssueDocumentsSection({
           <div className="mb-2 flex items-center gap-2">
             <FileText className="h-4 w-4 text-amber-600" />
             <Badge variant="outline" className="border-amber-500/30 font-mono text-(length:--text-nano) uppercase tracking-(--tracking-eyebrow) text-amber-700 dark:text-amber-300">
-              PLAN
+              {t("localizationTaskRuntime.ui_PLAN_18ten82")}
             </Badge>
           </div>
           <div className={documentBodyPaddingClassName}>
@@ -1067,15 +1069,15 @@ export function IssueDocumentsSection({
                         "text-muted-foreground transition-colors",
                         isLocked && "text-amber-700 hover:text-amber-800 dark:text-amber-300 dark:hover:text-amber-200",
                       )}
-                      title={isLocked ? "Unlock document" : "Lock document"}
-                      aria-label={isLocked ? `Unlock ${doc.key} document` : `Lock ${doc.key} document`}
+                      title={isLocked ? t("localizationTaskRuntime.ui_Unlock_document_1xx70re") : t("localizationTaskRuntime.ui_Lock_document_wcl6wr")}
+                      aria-label={t(isLocked ? "localizationTaskRuntime.unlockDocumentKey" : "localizationTaskRuntime.lockDocumentKey", { key: doc.key })}
                       onClick={() => toggleDocumentLock(doc, !isLocked)}
                       disabled={lockActionPending}
                     >
                       {isLocked ? <Lock className="h-3.5 w-3.5" /> : <Unlock className="h-3.5 w-3.5" />}
                     </Button>
                     ) : isLocked ? (
-                      <span title="Locked document" aria-label="Locked document" className="inline-flex h-6 w-6 items-center justify-center text-amber-700 dark:text-amber-300">
+                      <span title={t("localizationTaskRuntime.ui_Locked_document_jboab4")} aria-label={t("localizationTaskRuntime.ui_Locked_document_jboab4")} className="inline-flex h-6 w-6 items-center justify-center text-amber-700 dark:text-amber-300">
                         <Lock className="h-3.5 w-3.5" />
                       </span>
                     ) : null}
@@ -1086,7 +1088,7 @@ export function IssueDocumentsSection({
                         "text-muted-foreground transition-colors",
                         copiedDocumentKey === doc.key && "text-foreground",
                       )}
-                      title={copiedDocumentKey === doc.key ? "Copied" : "Copy document"}
+                      title={copiedDocumentKey === doc.key ? t("localizationTaskRuntime.ui_Copied_13bzcw5") : t("localizationTaskRuntime.ui_Copy_document_15nl3h9")}
                       onClick={() => void copyDocumentBody(doc.key, displayedBody)}
                     >
                       {copiedDocumentKey === doc.key ? (
@@ -1101,7 +1103,7 @@ export function IssueDocumentsSection({
                           variant="ghost"
                           size="icon-xs"
                           className="text-muted-foreground"
-                          title="Document actions"
+                          title={t("localizationTaskRuntime.ui_Document_actions_uel1nr")}
                         >
                           <MoreHorizontal className="h-3.5 w-3.5" />
                         </Button>
@@ -1110,7 +1112,7 @@ export function IssueDocumentsSection({
                         {!isHistoricalPreview && !isLocked ? (
                           <DropdownMenuItem onClick={() => beginEdit(doc.key)}>
                             <FilePenLine className="h-3.5 w-3.5" />
-                            Edit document
+                            {t("localizationTaskRuntime.ui_Edit_document_1nsjks6")}
                           </DropdownMenuItem>
                         ) : null}
                         {!isHistoricalPreview && !isLocked ? <DropdownMenuSeparator /> : null}
@@ -1118,13 +1120,11 @@ export function IssueDocumentsSection({
                           onClick={() => downloadDocumentFile(doc.key, displayedBody)}
                         >
                           <Download className="h-3.5 w-3.5" />
-                          Download document
+                          {t("localizationTaskRuntime.ui_Download_document_1ubmq66")}
                         </DropdownMenuItem>
                         {doc.latestRevisionNumber > 1 ? (
                           <DropdownMenuItem onClick={() => setDiffViewKey(doc.key)}>
-                            <Diff className="h-3.5 w-3.5" />
-                            View diff
-                          </DropdownMenuItem>
+                            <Diff className="h-3.5 w-3.5" />{t("localizationSkills.viewDiff235")}</DropdownMenuItem>
                         ) : null}
                         {canDeleteDocuments && !isLocked ? <DropdownMenuSeparator /> : null}
                         {canDeleteDocuments && !isLocked ? (
@@ -1133,7 +1133,7 @@ export function IssueDocumentsSection({
                             onClick={() => setConfirmDeleteKey(doc.key)}
                           >
                             <Trash2 className="h-3.5 w-3.5" />
-                            Delete document
+                            {t("localizationTaskRuntime.ui_Delete_document_yjg48z")}
                           </DropdownMenuItem>
                         ) : null}
                       </DropdownMenuContent>
@@ -1165,10 +1165,10 @@ export function IssueDocumentsSection({
                       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                         <div className="space-y-1">
                           <p className="text-sm font-medium text-amber-800 dark:text-amber-200">
-                            Viewing revision {selectedHistoricalRevision.revisionNumber}
+                            {t("localizationTaskRuntime.viewingRevision", { number: selectedHistoricalRevision.revisionNumber })}
                           </p>
                           <p className="text-xs text-muted-foreground">
-                            This is a historical preview. Restoring it creates a new latest revision and keeps history append-only.
+                            {t("localizationTaskRuntime.ui_This_is_a_historical_preview_Restoring_it_creates_a_new_latest_re_11vojno")}
                           </p>
                         </div>
                         <div className="flex flex-wrap items-center gap-2">
@@ -1177,7 +1177,7 @@ export function IssueDocumentsSection({
                             size="sm"
                             onClick={() => returnToLatestRevision(doc.key)}
                           >
-                            Return to latest
+                            {t("localizationTaskRuntime.ui_Return_to_latest_1qcx9un")}
                           </Button>
                           {!isLocked ? (
                             <Button
@@ -1189,8 +1189,8 @@ export function IssueDocumentsSection({
                               disabled={restoreDocumentRevision.isPending}
                             >
                               {restoreDocumentRevision.isPending && restoreDocumentRevision.variables?.key === doc.key
-                                ? "Restoring..."
-                                : "Restore this revision"}
+                                ? t("localizationTaskRuntime.ui_Restoring_n64ky8")
+                                : t("localizationRoutineHistory.restoreThis")}
                             </Button>
                           ) : null}
                         </div>
@@ -1201,9 +1201,9 @@ export function IssueDocumentsSection({
                     <div className="rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-3">
                       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                         <div className="space-y-1">
-                          <p className="text-sm font-medium text-amber-800 dark:text-amber-200">Out of date</p>
+                          <p className="text-sm font-medium text-amber-800 dark:text-amber-200">{t("localizationTaskRuntime.ui_Out_of_date_4lkzro")}</p>
                           <p className="text-xs text-muted-foreground">
-                            This document changed while you were editing. Your local draft is preserved and autosave is paused.
+                            {t("localizationTaskRuntime.ui_This_document_changed_while_you_were_editing_Your_local_draft_is__134fi9b")}
                           </p>
                         </div>
                         <div className="flex flex-wrap items-center gap-2">
@@ -1218,37 +1218,37 @@ export function IssueDocumentsSection({
                               )
                             }
                           >
-                            {activeConflict.showRemote ? "Hide remote" : "Review remote"}
+                            {activeConflict.showRemote ? t("localizationTaskRuntime.ui_Hide_remote_1st24sl") : t("localizationTaskRuntime.ui_Review_remote_1qp3789")}
                           </Button>
                           <Button
                             variant="outline"
                             size="sm"
                             onClick={() => keepConflictedDraft(doc.key)}
                           >
-                            Keep my draft
+                            {t("localizationTaskRuntime.ui_Keep_my_draft_jffe91")}
                           </Button>
                           <Button
                             variant="outline"
                             size="sm"
                             onClick={() => reloadDocumentFromServer(doc.key)}
                           >
-                            Reload remote
+                            {t("localizationTaskRuntime.ui_Reload_remote_12tae82")}
                           </Button>
                           <Button
                             size="sm"
                             onClick={() => void overwriteDocumentFromDraft(doc.key)}
                             disabled={upsertDocument.isPending}
                           >
-                            {upsertDocument.isPending ? "Saving..." : "Overwrite remote"}
+                            {upsertDocument.isPending ? t("localizationTaskRuntime.ui_Saving_8kfkb3") : t("localizationTaskRuntime.ui_Overwrite_remote_xh7vd0")}
                           </Button>
                         </div>
                       </div>
                       {activeConflict.showRemote && (
                         <div className="mt-3 rounded-md border border-border/70 bg-background/60 p-3">
                           <div className="mb-2 flex items-center gap-2 text-(length:--text-micro) text-muted-foreground">
-                            <span>Remote revision {activeConflict.serverDocument.latestRevisionNumber}</span>
+                            <span>{t("localizationTaskRuntime.remoteRevision", { number: activeConflict.serverDocument.latestRevisionNumber })}</span>
                             <span>•</span>
-                            <span>updated {relativeTime(activeConflict.serverDocument.updatedAt)}</span>
+                            <span>{t("localizationTaskRuntime.updatedAgo", { time: relativeTime(activeConflict.serverDocument.updatedAt) })}</span>
                           </div>
                           {!isPlanKey(doc.key) && activeConflict.serverDocument.title ? (
                             <p className="mb-2 text-sm font-medium">{activeConflict.serverDocument.title}</p>
@@ -1265,7 +1265,7 @@ export function IssueDocumentsSection({
                         markDocumentDirty(doc.key);
                         setDraft((current) => current ? { ...current, title: event.target.value } : current);
                       }}
-                      placeholder="Optional title"
+                      placeholder={t("localizationTaskRuntime.ui_Optional_title_hhz9i3")}
                     />
                   )}
                   <div
@@ -1288,7 +1288,7 @@ export function IssueDocumentsSection({
                               return current;
                             });
                           }}
-                          placeholder="Markdown body"
+                          placeholder={t("localizationTaskRuntime.ui_Markdown_body_1467tts")}
                           bordered={false}
                           className="bg-transparent"
                           contentClassName={documentBodyContentClassName}
@@ -1337,17 +1337,17 @@ export function IssueDocumentsSection({
                       } ${activeDraft || isHistoricalPreview ? "opacity-100" : "opacity-0"}`}
                     >
                       {isHistoricalPreview
-                        ? "Viewing historical revision"
+                        ? t("localizationTaskRuntime.ui_Viewing_historical_revision_4rf72p")
                         : activeDraft
                           ? activeConflict
-                          ? "Out of date"
+                          ? t("localizationTaskRuntime.ui_Out_of_date_4lkzro")
                           : autosaveDocumentKey === doc.key
                             ? autosaveState === "saving"
-                              ? "Autosaving..."
+                              ? t("localizationTaskRuntime.ui_Autosaving_1nqd4cq")
                               : autosaveState === "saved"
-                                ? "Saved"
+                                ? t("pages.companySettings.saved")
                                 : autosaveState === "error"
-                                  ? "Could not save"
+                                  ? t("localizationTaskRuntime.ui_Could_not_save_1ht6nc")
                                   : ""
                             : ""
                           : ""}
@@ -1369,7 +1369,7 @@ export function IssueDocumentsSection({
               {confirmDeleteKey === doc.key && (
                 <div className="mt-3 flex items-center justify-between gap-3 rounded-md border border-destructive/20 bg-destructive/5 px-4 py-3">
                   <p className="text-sm text-destructive font-medium">
-                    Delete this document? This cannot be undone.
+                    {t("localizationTaskRuntime.ui_Delete_this_document_This_cannot_be_undone_1pnhq1b")}
                   </p>
                   <div className="flex items-center gap-2 shrink-0">
                     <Button
@@ -1378,7 +1378,7 @@ export function IssueDocumentsSection({
                       onClick={() => setConfirmDeleteKey(null)}
                       disabled={deleteDocument.isPending}
                     >
-                      Cancel
+                      {t("localizationTaskRuntime.ui_Cancel_ew9em3")}
                     </Button>
                     <Button
                       variant="destructive"
@@ -1386,7 +1386,7 @@ export function IssueDocumentsSection({
                       onClick={() => deleteDocument.mutate(doc.key)}
                       disabled={deleteDocument.isPending}
                     >
-                      {deleteDocument.isPending ? "Deleting..." : "Delete"}
+                      {deleteDocument.isPending ? t("localizationTaskRuntime.ui_Deleting_e2v55t") : t("localizationTaskRuntime.ui_Delete_oay2cq")}
                     </Button>
                   </div>
                 </div>

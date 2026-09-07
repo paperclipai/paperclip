@@ -1,3 +1,5 @@
+import { t, useTranslation } from "@/i18n";
+import { Trans } from "react-i18next";
 import { useMemo, useState, useRef, useCallback, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useVisibilityRefetchInterval } from "@/lib/polling";
@@ -113,10 +115,10 @@ type FilterValue = "all" | "in-progress" | "for-review" | "completed";
 type GroupMode = "flat" | "by-task";
 
 const FILTER_OPTIONS: Array<{ value: FilterValue; label: string }> = [
-  { value: "all", label: "All" },
-  { value: "in-progress", label: "In Progress" },
-  { value: "for-review", label: "In Review" },
-  { value: "completed", label: "Done" },
+  { value: "all", get label() { return t("localizationActivityChrome.all"); } },
+  { value: "in-progress", get label() { return t("localizationActivityChrome.inProgress"); } },
+  { value: "for-review", get label() { return t("localizationActivityChrome.inReview"); } },
+  { value: "completed", get label() { return t("localizationActivityChrome.done"); } },
 ];
 
 const FILTER_ACTIONS: Record<FilterValue, Set<string> | null> = {
@@ -253,14 +255,15 @@ function CollapsedFeedGroup({
   entityNameMap: Map<string, string>;
   entityTitleMap: Map<string, string>;
 }) {
+  const { t } = useTranslation();
   const [expanded, setExpanded] = useState(false);
   const actor = group.latestEvent.actorType === "agent"
     ? agentMap.get(group.latestEvent.actorId)
     : null;
   const actorName = actor?.name
-    ?? (group.latestEvent.actorType === "system" ? "System"
-      : group.latestEvent.actorType === "user" ? "Board"
-      : "Unknown");
+    ?? (group.latestEvent.actorType === "system" ? t("localizationActivityChrome.system")
+      : group.latestEvent.actorType === "user" ? t("localizationActivityChrome.board")
+      : t("localizationActivityChrome.unknown"));
   const entityName = entityNameMap.get(`${group.entityType}:${group.entityId}`);
 
   return (
@@ -286,9 +289,14 @@ function CollapsedFeedGroup({
             : <Settings className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
         }
         <span className="flex-1 min-w-0 truncate">
-          <span data-fc="actor" className="font-medium text-(--hex-959596) group-hover:text-white">{actorName}</span>
-          <span data-fc="verb" className="ml-1 text-(--hex-959596)">made {group.events.length} updates to</span>
-          <span data-fc="title" className="ml-1 text-(--hex-959596) group-hover:text-white">{entityName ?? group.entityId}</span>
+          <Trans t={t} i18nKey="localizationActivityChrome.collapsedUpdates" count={group.events.length}
+            values={{ actorName, entityName: entityName ?? group.entityId }}
+            components={{
+              actor: <span data-fc="actor" className="font-medium text-(--hex-959596) group-hover:text-white" />,
+              verb: <span data-fc="verb" className="ml-1 text-(--hex-959596)" />,
+              entity: <span data-fc="title" className="ml-1 text-(--hex-959596) group-hover:text-white" />,
+            }}
+          />
         </span>
         <span data-fc="time" className="text-muted-foreground shrink-0">
           {timeAgo(group.latestEvent.createdAt)}
@@ -321,6 +329,7 @@ interface ActivityFeedProps {
 }
 
 export function ActivityFeed({ className }: ActivityFeedProps) {
+  const { t } = useTranslation();
   const { selectedCompanyId } = useCompany();
   const [filter, setFilter] = useState<FilterValue>("all");
   const [groupMode, setGroupMode] = useState<GroupMode>("flat");
@@ -486,7 +495,7 @@ export function ActivityFeed({ className }: ActivityFeedProps) {
           <div className="flex items-center gap-2 px-4 py-1.5" key={`sep-${index}`}>
             <div className="h-px flex-1 bg-border" />
             <span className="text-(length:--text-nano) font-medium text-muted-foreground uppercase tracking-wider">
-              Earlier
+              {t("localizationActivityChrome.earlier")}
             </span>
             <div className="h-px flex-1 bg-border" />
           </div>
@@ -568,7 +577,7 @@ export function ActivityFeed({ className }: ActivityFeedProps) {
       const issueName = entityNameMap.get(`issue:${groupKey}`);
       const issueTitle = entityTitleMap.get(`issue:${groupKey}`);
       const label = isOther
-        ? "Other activity"
+        ? t("localizationActivityChrome.otherActivity")
         : `${issueName ?? groupKey}${issueTitle ? ` — ${issueTitle}` : ""}`;
 
       return (
@@ -590,22 +599,22 @@ export function ActivityFeed({ className }: ActivityFeedProps) {
     if (!agents) return null;
     if (agents.length === 0) {
       return {
-        text: "No agents set up yet. Add an agent to get started.",
+        text: t("localizationActivityChrome.noAgents"),
         showPulse: false,
       };
     }
     const allPaused = agents.every((a) => a.status === "paused");
     if (allPaused) {
       return {
-        text: "All agents are paused. Resume agents from the sidebar to see activity.",
+        text: t("localizationActivityChrome.allAgentsPaused"),
         showPulse: false,
       };
     }
     return {
-      text: "Your agents are running — activity will appear here shortly.",
+      text: t("localizationActivityChrome.agentsWorking"),
       showPulse: true,
     };
-  }, [agents]);
+  }, [agents, t]);
 
   const isEmpty = visibleItems.length === 0;
 
@@ -621,9 +630,9 @@ export function ActivityFeed({ className }: ActivityFeedProps) {
           aria-hidden
         />
         <div className="min-w-0 flex-1">
-          <h3 className="text-sm font-semibold">Agent Feed</h3>
+          <h3 className="text-sm font-semibold">{t("localizationActivityChrome.agentFeed")}</h3>
           <p className="text-xs text-muted-foreground">
-            Live activity from your agents
+            {t("localizationActivityChrome.agentFeedDescription")}
           </p>
         </div>
         <div className="flex items-center gap-1">
@@ -635,14 +644,14 @@ export function ActivityFeed({ className }: ActivityFeedProps) {
                 variant={groupMode === "by-task" ? "secondary" : "ghost"}
                 size="icon-sm"
                 className="shrink-0 text-muted-foreground"
-                aria-label="group by task"
+                aria-label={t("localizationActivityChrome.groupByTaskAria")}
                 onClick={() => setGroupMode((m) => (m === "flat" ? "by-task" : "flat"))}
               >
                 <Layers className="h-3.5 w-3.5" />
               </Button>
             </TooltipTrigger>
             <TooltipContent side="bottom">
-              {groupMode === "flat" ? "Group by task" : "Show flat"}
+              {groupMode === "flat" ? t("localizationActivityChrome.groupByTask") : t("localizationActivityChrome.showFlat")}
             </TooltipContent>
           </Tooltip>
 
@@ -656,13 +665,13 @@ export function ActivityFeed({ className }: ActivityFeedProps) {
                     variant={filter !== "all" || showAllActivity ? "secondary" : "ghost"}
                     size="icon-sm"
                     className="shrink-0 text-muted-foreground"
-                    aria-label="filter by"
+                    aria-label={t("localizationActivityChrome.filterByAria")}
                   >
                     <ListFilter className="h-3.5 w-3.5" />
                   </Button>
                 </DropdownMenuTrigger>
               </TooltipTrigger>
-              <TooltipContent side="bottom">Filter by</TooltipContent>
+              <TooltipContent side="bottom">{t("localizationActivityChrome.filterBy")}</TooltipContent>
             </Tooltip>
             <DropdownMenuContent align="end" className="w-48">
               <DropdownMenuRadioGroup
@@ -680,7 +689,7 @@ export function ActivityFeed({ className }: ActivityFeedProps) {
                 checked={showAllActivity}
                 onCheckedChange={(v) => setShowAllActivity(!!v)}
               >
-                Show all activity
+                {t("localizationActivityChrome.showAllActivity")}
               </DropdownMenuCheckboxItem>
             </DropdownMenuContent>
           </DropdownMenu>
@@ -703,7 +712,7 @@ export function ActivityFeed({ className }: ActivityFeedProps) {
                 </span>
               )}
               <p className="text-center text-sm text-muted-foreground">
-                {emptyMessage?.text ?? "Activity from your agents will appear here."}
+                {emptyMessage?.text ?? t("localizationActivityChrome.activityEmpty")}
               </p>
             </div>
           </div>

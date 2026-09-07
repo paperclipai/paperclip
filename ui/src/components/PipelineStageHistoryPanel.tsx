@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ChevronDown, ChevronRight, History, RotateCcw } from "lucide-react";
@@ -30,6 +31,7 @@ export function PipelineStageHistoryPanel({
   hasDocument: boolean;
   onRestored: (body: string, baseRevisionId: string | null) => void;
 }) {
+  const { t } = useTranslation();
   const { pushToast } = useToastActions();
   const queryClient = useQueryClient();
   const [open, setOpen] = useState(false);
@@ -56,15 +58,15 @@ export function PipelineStageHistoryPanel({
       ]);
       onRestored(result.revision.body, result.revision.id);
       pushToast({
-        title: `Restored revision ${result.restoredFromRevisionNumber}`,
-        body: `Saved as revision ${result.revision.revisionNumber}.`,
+        title: t("localizationOperations.revisionRestored", { number: result.restoredFromRevisionNumber }),
+        body: t("localizationOperations.savedAsRevision", { number: result.revision.revisionNumber }),
         tone: "success",
       });
     },
     onError: (error) => {
       pushToast({
-        title: "Failed to restore revision",
-        body: error instanceof Error ? error.message : "Paperclip could not restore the revision.",
+        get ["title"]() { return t("localizationOperations.ui_Failed_to_restore_revision"); },
+        body: error instanceof Error ? error.message : t("localizationOperations.couldNotRestore"),
         tone: "error",
       });
     },
@@ -78,8 +80,8 @@ export function PipelineStageHistoryPanel({
         <div className="flex items-center gap-2">
           <History className="h-4 w-4 text-muted-foreground" />
           <div>
-            <p className="text-sm font-medium">History</p>
-            <p className="text-xs text-muted-foreground">Past versions of these instructions.</p>
+            <p className="text-sm font-medium">{t("localizationRoutines.history")}</p>
+            <p className="text-xs text-muted-foreground">{t("localizationOperations.ui_Past_versions_of_these_instructions_")}</p>
           </div>
         </div>
         {open ? (
@@ -90,17 +92,15 @@ export function PipelineStageHistoryPanel({
       </CollapsibleTrigger>
       <CollapsibleContent className="border-t border-border/70">
         {!hasDocument ? (
-          <p className="px-4 py-3 text-xs text-muted-foreground">
-            No history yet. Save the instructions to create the first revision.
-          </p>
+          <p className="px-4 py-3 text-xs text-muted-foreground">{t("localizationOperations.ui_No_history_yet_Save_the_instructions_to_create_the_first_revision_")}</p>
         ) : revisionsQuery.isLoading ? (
-          <p className="px-4 py-3 text-xs text-muted-foreground">Loading revisions…</p>
+          <p className="px-4 py-3 text-xs text-muted-foreground">{t("localizationOperations.ui_Loading_revisions_")}</p>
         ) : revisionsQuery.error ? (
           <p className="px-4 py-3 text-xs text-destructive">
-            {revisionsQuery.error instanceof Error ? revisionsQuery.error.message : "Could not load revisions."}
+            {revisionsQuery.error instanceof Error ? revisionsQuery.error.message : t("localizationOperations.ui_Could_not_load_revisions_")}
           </p>
         ) : revisions.length === 0 ? (
-          <p className="px-4 py-3 text-xs text-muted-foreground">No revisions recorded yet.</p>
+          <p className="px-4 py-3 text-xs text-muted-foreground">{t("localizationOperations.ui_No_revisions_recorded_yet_")}</p>
         ) : (
           <ul className="divide-y divide-border/70">
             {revisions.map((revision) => {
@@ -112,11 +112,9 @@ export function PipelineStageHistoryPanel({
                 >
                   <div className="min-w-0">
                     <p className="text-sm font-medium">
-                      Revision {revision.revisionNumber}
+                      {t("localizationOperations.revisionNumber", { number: revision.revisionNumber })}
                       {isCurrent ? (
-                        <Badge variant="ghost" className="ml-2 bg-muted text-(length:--text-micro) text-muted-foreground">
-                          Current
-                        </Badge>
+                        <Badge variant="ghost" className="ml-2 bg-muted text-(length:--text-micro) text-muted-foreground">{t("localizationOperations.ui_Current")}</Badge>
                       ) : null}
                     </p>
                     <p className="text-xs text-muted-foreground">
@@ -132,9 +130,7 @@ export function PipelineStageHistoryPanel({
                       disabled={restore.isPending}
                       onClick={() => restore.mutate(revision.id)}
                     >
-                      <RotateCcw className="h-3.5 w-3.5" />
-                      Restore
-                    </Button>
+                      <RotateCcw className="h-3.5 w-3.5" />{t("localizationOperations.ui_Restore")}</Button>
                   )}
                 </li>
               );

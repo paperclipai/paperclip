@@ -12,6 +12,7 @@ import {
   recordRecentTask,
 } from "@/lib/recent-tasks";
 import { queryKeys } from "@/lib/queryKeys";
+import { setLocale } from "@/i18n";
 
 const mockAuthApi = vi.hoisted(() => ({ getSession: vi.fn() }));
 const mockAgentsApi = vi.hoisted(() => ({ wakeup: vi.fn() }));
@@ -60,6 +61,7 @@ describe("SidebarRecentTasks", () => {
 
   beforeEach(() => {
     window.localStorage.clear();
+    setLocale("en");
     Object.values(mockAgentsApi).forEach((mock) => mock.mockReset());
     Object.values(mockIssuesApi).forEach((mock) => mock.mockReset());
     container = document.createElement("div");
@@ -75,6 +77,7 @@ describe("SidebarRecentTasks", () => {
     act(() => root.unmount());
     container.remove();
     vi.clearAllMocks();
+    setLocale("en");
   });
 
   async function render() {
@@ -263,6 +266,14 @@ describe("SidebarRecentTasks", () => {
       setInputValue(input!, "New title");
       await Promise.resolve();
     });
+    await act(async () => setLocale("ru"));
+    expect(input?.value).toBe("New title");
+    expect(input?.getAttribute("aria-label")).toBe("Название задачи");
+    expect(document.body.textContent).toContain("Переименовать задачу");
+    expect(mockIssuesApi.update).not.toHaveBeenCalled();
+    await act(async () => setLocale("en"));
+    expect(input?.value).toBe("New title");
+    expect(input?.getAttribute("aria-label")).toBe("Task name");
     await act(async () => {
       input?.closest("form")?.dispatchEvent(new SubmitEvent("submit", { bubbles: true, cancelable: true }));
       await Promise.resolve();

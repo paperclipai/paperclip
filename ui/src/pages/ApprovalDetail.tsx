@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { Trans } from "react-i18next";
 import { Link, useNavigate, useParams, useSearchParams } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { approvalsApi } from "../api/approvals";
@@ -286,10 +287,10 @@ export function ApprovalDetail() {
           )}
           {isBudgetApproval && approval.status === "pending" && (
             <p className="text-sm text-muted-foreground">
-              {t("pages.approvalDetail.budgetStopResolve", {
-                defaultValue: "Resolve this budget stop from the budget controls on {{link}}.",
-                link: <Link to="/costs" className="underline underline-offset-2">/costs</Link>,
-              })}
+              <Trans
+                i18nKey="pages.approvalDetail.budgetStopResolve"
+                components={{ costsLink: <Link to="/costs" className="underline underline-offset-2" /> }}
+              />
             </p>
           )}
           {approval.status === "pending" && (

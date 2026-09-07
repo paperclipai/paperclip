@@ -64,7 +64,7 @@ export function FingerprintChip({
   length: number | null;
   className?: string;
 }) {
-  useTranslation();
+  const { t } = useTranslation();
   const { pushToast } = useToastActions();
   const label = fingerprintLabel(fingerprint, length);
   if (!fingerprint) {
@@ -115,6 +115,7 @@ export function ProposalJustification({
   justification: string;
   className?: string;
 }) {
+  const { t } = useTranslation();
   return (
     <div className={cn("space-y-0.5", className)}>
       <p className="text-(length:--text-micro) text-muted-foreground">
@@ -135,6 +136,7 @@ export function AgentRefChip({
   agent: SecretProposalAgentRef;
   className?: string;
 }) {
+  useTranslation();
   return (
     <span className={cn("inline-flex min-w-0 items-center gap-1", className)}>
       <AgentIcon icon={agent.icon ?? null} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
@@ -145,6 +147,7 @@ export function AgentRefChip({
 
 /** Env-var vs API-access delivery badge for a binding `configPath`. */
 export function DeliveryBadge({ configPath }: { configPath: string | null }) {
+  const { t } = useTranslation();
   const mode = deliveryModeForConfigPath(configPath);
   const isEnv = mode === "env";
   const isApi = mode === "api";
@@ -166,6 +169,7 @@ export function DeliveryBadge({ configPath }: { configPath: string | null }) {
 
 /** Distinct "Proposed" pill used wherever a proposal is inlined among live rows. */
 export function ProposedBadge({ className }: { className?: string }) {
+  const { t } = useTranslation();
   return (
     <Badge
       variant="outline"
@@ -200,7 +204,7 @@ export function bindingSecretLabel(proposal: SecretProposalView): {
 }
 
 function readableError(error: unknown): string {
-  if (error instanceof ApiError) return error.message || `Request failed: ${error.status}`;
+  if (error instanceof ApiError) return error.message || t("localizationSecrets.requestFailed", { status: error.status });
   if (error instanceof Error) return error.message;
   return t("pages.secrets.errors.genericRetry");
 }
@@ -399,6 +403,7 @@ function ApproveDialog({
   onCancel: () => void;
   onConfirm: () => void;
 }) {
+  const { t } = useTranslation();
   const isSecret = draft?.proposal.kind === "secret";
   const previewName = draft
     ? draft.folder.trim()
@@ -550,6 +555,7 @@ function BindingApproveBody({
   draft: ApproveDraft;
   onChange: (next: ApproveDraft) => void;
 }) {
+  const { t } = useTranslation();
   const { proposal } = draft;
   const secret = bindingSecretLabel(proposal);
   const envKey = bindingEnvKey(proposal);
@@ -628,6 +634,7 @@ function RejectDialog({
   onCancel: () => void;
   onConfirm: () => void;
 }) {
+  const { t } = useTranslation();
   const canConfirm = reason.trim().length > 0;
   return (
     <Dialog open={Boolean(proposal)} onOpenChange={(open) => !open && onCancel()}>
@@ -692,6 +699,7 @@ export function ProposalActions({
   disabled?: boolean;
   size?: "sm" | "xs";
 }) {
+  const { t } = useTranslation();
   const blocked = !proposal.viewerCanApprove;
   const heightClass = size === "xs" ? "h-7 px-2 text-xs" : "";
   const approveButton = (

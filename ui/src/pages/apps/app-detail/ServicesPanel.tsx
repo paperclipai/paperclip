@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, Check, ExternalLink, Loader2, RefreshCw } from "lucide-react";
@@ -51,6 +52,7 @@ export function ServicesPanel({
   connectionId: string;
   appName: string;
 }) {
+  const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
   const [confirmDisconnect, setConfirmDisconnect] = useState<ComposioServiceRow | null>(null);
@@ -88,23 +90,23 @@ export function ServicesPanel({
       // boundary before the browser acts on it (same rule as PAP-17099).
       const target = resolveAuthorizationTarget(link.redirect_url);
       if (!target.ok) {
-        pushToast({ title: `Couldn't connect ${row.name}`, body: target.message, tone: "error" });
+        pushToast({ title: t("localizationApps.couldNotConnectService", { app: row.name }), body: target.message, tone: "error" });
         return;
       }
       // A new tab, not a top-level navigation: the user keeps this page — and its
       // poll — alive while authorizing, which is what makes the row flip in place.
       window.open(target.url, "_blank", "noopener,noreferrer");
       pushToast({
-        title: `Finish connecting ${row.name} in Composio`,
-        body: "We opened Composio in a new tab. This list updates as soon as it reports back.",
+        title: t("localizationApps.finishConnectingService", { app: row.name }),
+        body: t("localizationApps.weOpenedComposioInANewTabThisListUpdatesAsSoo608"),
         tone: "info",
       });
       void servicesQuery.refetch();
     },
     onError: (error, row) =>
       pushToast({
-        title: `Couldn't connect ${row.name}`,
-        body: error instanceof Error ? error.message : "Please try again.",
+        title: t("localizationApps.couldNotConnectService", { app: row.name }),
+        body: error instanceof Error ? error.message : t("pages.apps.common.tryAgain"),
         tone: "error",
       }),
     onSettled: () => setBusySlug(null),
@@ -117,8 +119,8 @@ export function ServicesPanel({
     onSuccess: () => invalidateConnectionLists(),
     onError: (error, row) =>
       pushToast({
-        title: `Couldn't check ${row.name}`,
-        body: error instanceof Error ? error.message : "Please try again.",
+        title: t("localizationApps.couldNotCheckService", { app: row.name }),
+        body: error instanceof Error ? error.message : t("pages.apps.common.tryAgain"),
         tone: "error",
       }),
     onSettled: () => setBusySlug(null),
@@ -132,15 +134,15 @@ export function ServicesPanel({
       setConfirmDisconnect(null);
       invalidateConnectionLists();
       pushToast({
-        title: `${row.name} disconnected`,
-        body: `Agents can no longer use ${row.name}, and its credentials are deleted from Composio.`,
+        title: t("localizationApps.serviceDisconnected", { app: row.name }),
+        body: t("localizationApps.serviceCredentialsDeleted", { app: row.name }),
         tone: "success",
       });
     },
     onError: (error, row) =>
       pushToast({
-        title: `Couldn't disconnect ${row.name}`,
-        body: error instanceof Error ? error.message : "Please try again.",
+        title: t("localizationApps.couldNotDisconnectService", { app: row.name }),
+        body: error instanceof Error ? error.message : t("pages.apps.common.tryAgain"),
         tone: "error",
       }),
     onSettled: () => setBusySlug(null),
@@ -149,9 +151,7 @@ export function ServicesPanel({
   if (servicesQuery.isLoading) {
     return (
       <div className="flex items-center gap-2 py-8 text-sm text-muted-foreground" role="status">
-        <Loader2 className="h-4 w-4 animate-spin" />
-        Loading services from Composio, this may take a moment.
-      </div>
+        <Loader2 className="h-4 w-4 animate-spin" />{t("localizationApps.loadingServicesFromComposioThisMayTakeAMoment613")}</div>
     );
   }
 
@@ -190,18 +190,34 @@ export function ServicesPanel({
   );
 }
 
+function composioStatusLabel(status: string): string {
+  const normalized = status.toLowerCase();
+  const known: Record<string, string> = {
+    active: t("localizationApps.composioStatus_active"),
+    expired: t("localizationApps.composioStatus_expired"),
+    inactive: t("localizationApps.composioStatus_inactive"),
+    disabled: t("localizationApps.composioStatus_disabled"),
+    failed: t("localizationApps.composioStatus_failed"),
+    revoked: t("localizationApps.composioStatus_revoked"),
+    error: t("localizationApps.composioStatus_error"),
+    initiated: t("localizationApps.composioStatus_initiated"),
+    pending: t("localizationApps.composioStatus_pending")
+  };
+  return known[normalized] ?? normalized;
+}
+
 function ServicesIntro({ appName, connectedCount }: { appName: string; connectedCount: number }) {
+  const { t } = useTranslation();
   return (
     <div className="max-w-2xl space-y-1">
-      <h2 className="text-lg font-semibold">Services</h2>
+      <h2 className="text-lg font-semibold">{t("localizationApps.services1")}</h2>
       <p className="text-sm leading-6 text-muted-foreground">
-        {appName} brokers these services. Connect one and it becomes its own app in Paperclip, which
-        you then give to agents on its Permissions tab.
+        {t("localizationApps.brokerServicesHint", { app: appName })}
         {connectedCount > 0 && (
           <>
             {" "}
             <span className="font-medium text-foreground">
-              {connectedCount} {connectedCount === 1 ? "service is" : "services are"} connected.
+              {t("localizationApps.connectedServices", { count: connectedCount })}
             </span>
           </>
         )}
@@ -211,24 +227,23 @@ function ServicesIntro({ appName, connectedCount }: { appName: string; connected
 }
 
 function ServicesEmptyState() {
+  const { t } = useTranslation();
   return (
     <div className="rounded-xl border border-border bg-card p-6">
-      <p className="text-sm font-medium">No services available yet</p>
-      <p className="mt-1 max-w-xl text-sm text-muted-foreground">
-        This Composio project has no toolkits Paperclip can offer. Add a toolkit and an auth
-        configuration in Composio, then check back.
-      </p>
+      <p className="text-sm font-medium">{t("localizationApps.noServicesAvailableYet618")}</p>
+      <p className="mt-1 max-w-xl text-sm text-muted-foreground">{t("localizationApps.thisComposioProjectHasNoToolkitsPaperclipCanO619")}</p>
     </div>
   );
 }
 
 function ServicesLoadError({ message, onRetry }: { message: string | null; onRetry: () => void }) {
+  const { t } = useTranslation();
   return (
     <div className="space-y-3 py-8">
       <p className="text-sm text-destructive">
-        {message ?? "Couldn’t load services from Composio."}
+        {message ?? t("localizationApps.couldnTLoadServicesFromComposio620")}
       </p>
-      <Button size="sm" variant="outline" onClick={onRetry}>Try again</Button>
+      <Button size="sm" variant="outline" onClick={onRetry}>{t("pages.apps.common.retry")}</Button>
     </div>
   );
 }
@@ -250,6 +265,7 @@ export function ServicesList({
   onRecheck: (row: ComposioServiceRow) => void;
   onDisconnect: (row: ComposioServiceRow) => void;
 }) {
+  useTranslation();
   return (
     <ul className="divide-y divide-border overflow-hidden rounded-xl border border-border bg-card">
       {rows.map((row) => (
@@ -279,6 +295,7 @@ export function ServiceRow({
   onRecheck: (row: ComposioServiceRow) => void;
   onDisconnect: (row: ComposioServiceRow) => void;
 }) {
+  const { t } = useTranslation();
   return (
     <li className="flex flex-wrap items-center gap-3 px-4 py-3 transition-colors hover:bg-accent/50">
       <AppLogo name={row.name} logoUrl={row.logoUrl} size={32} />
@@ -292,7 +309,7 @@ export function ServiceRow({
       <div className="flex shrink-0 items-center gap-2">
         {row.state === "connected" && row.childConnectionId && (
           <Button asChild size="sm" variant="ghost">
-            <Link to={appTabHref(row.childConnectionId, "permissions")}>Manage</Link>
+            <Link to={appTabHref(row.childConnectionId, "permissions")}>{t("localizationAgents.ui44_Manage")}</Link>
           </Button>
         )}
         {row.state === "pending" && (
@@ -301,7 +318,7 @@ export function ServiceRow({
             variant="ghost"
             disabled={busy}
             onClick={() => onRecheck(row)}
-            aria-label={`Check ${row.name} again`}
+            aria-label={t("localizationApps.checkServiceAgain", { app: row.name })}
           >
             {busy
               ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -311,25 +328,19 @@ export function ServiceRow({
         {row.state === "not_connected" ? (
           <Button size="sm" disabled={busy} onClick={() => onConnect(row)}>
             {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : (
-              <>
-                Connect
-                <ExternalLink className="ml-1.5 h-3.5 w-3.5" />
+              <>{t("pages.apps.connections.connect")}<ExternalLink className="ml-1.5 h-3.5 w-3.5" />
               </>
             )}
           </Button>
         ) : row.state === "attention" ? (
           <>
             <Button size="sm" disabled={busy} onClick={() => onConnect(row)}>
-              {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : "Reconnect"}
+              {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : t("pages.apps.connections.reconnect")}
             </Button>
-            <Button size="sm" variant="ghost" disabled={busy} onClick={() => onDisconnect(row)}>
-              Disconnect
-            </Button>
+            <Button size="sm" variant="ghost" disabled={busy} onClick={() => onDisconnect(row)}>{t("localizationApps.disconnect622")}</Button>
           </>
         ) : row.state === "connected" ? (
-          <Button size="sm" variant="ghost" disabled={busy} onClick={() => onDisconnect(row)}>
-            Disconnect
-          </Button>
+          <Button size="sm" variant="ghost" disabled={busy} onClick={() => onDisconnect(row)}>{t("localizationApps.disconnect622")}</Button>
         ) : null}
       </div>
     </li>
@@ -343,31 +354,31 @@ export function ServiceRow({
  */
 function serviceDetailLine(row: ComposioServiceRow): string {
   const toolCount = row.toolCount !== null
-    ? `${row.toolCount} ${row.toolCount === 1 ? "action" : "actions"}`
+    ? t("localizationApps.actionCount", { count: row.toolCount })
     : null;
   if (row.state === "pending") {
-    return "Waiting for Composio to confirm the connection.";
+    return t("localizationApps.waitingForComposioToConfirmTheConnection624");
   }
   if (row.state === "attention") {
     return row.connectedAccountStatus
-      ? `Composio reports this connection as ${row.connectedAccountStatus.toLowerCase()}. Reconnect to fix it.`
-      : "This connection is no longer usable. Reconnect to fix it.";
+      ? t("localizationApps.composioReportsStatus", { status: composioStatusLabel(row.connectedAccountStatus) })
+      : t("localizationApps.thisConnectionIsNoLongerUsableReconnectToFixI626");
   }
   if (row.state === "connected") {
-    return [toolCount, "available to agents you install it for"].filter(Boolean).join(" · ");
+    return [toolCount, t("localizationApps.availableToAgentsYouInstallItFor627")].filter(Boolean).join(" · ");
   }
   return [
     row.description,
     toolCount,
-    row.noAuth ? "No sign-in needed" : null,
-  ].filter(Boolean).join(" · ") || "Not connected";
+    row.noAuth ? t("localizationConnections.noSignInNeeded120") : null,
+  ].filter(Boolean).join(" · ") || t("pages.apps.connections.statusNotConnected");
 }
 
 const STATE_LABEL: Record<ComposioServiceState, string> = {
-  not_connected: "Not connected",
-  pending: "Pending",
-  connected: "Connected",
-  attention: "Needs attention",
+  get not_connected() { return t("pages.apps.connections.statusNotConnected"); },
+  get pending() { return t("status.pending"); },
+  get connected() { return t("pages.apps.notConnected.statusConnected"); },
+  get attention() { return t("pages.apps.connections.statusNeedsAttention"); },
 };
 
 /**
@@ -375,6 +386,7 @@ const STATE_LABEL: Record<ComposioServiceState, string> = {
  * app header — a reader should not have to learn two palettes for "connected".
  */
 function ServiceStateBadge({ state }: { state: ComposioServiceState }) {
+  useTranslation();
   const klass: Record<ComposioServiceState, string> = {
     connected: "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
     pending: "border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-300",
@@ -407,18 +419,18 @@ function DisconnectDialog({
   onCancel: () => void;
   onConfirm: () => void;
 }) {
+  const { t } = useTranslation();
   return (
     <AlertDialog open onOpenChange={(open) => { if (!open) onCancel(); }}>
       <AlertDialogContent>
         <AlertDialogHeader>
-          <AlertDialogTitle>Disconnect {row.name}?</AlertDialogTitle>
+          <AlertDialogTitle>{t("localizationApps.disconnectServiceConfirm", { app: row.name })}</AlertDialogTitle>
           <AlertDialogDescription>
-            This removes {row.name} from Paperclip and deletes its credentials in Composio. Agents
-            using its actions lose them immediately. Connecting it again needs a new sign-in.
+            {t("localizationApps.disconnectServiceWarning", { app: row.name })}
           </AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
-          <AlertDialogCancel disabled={pending} autoFocus>Cancel</AlertDialogCancel>
+          <AlertDialogCancel disabled={pending} autoFocus>{t("pages.apps.common.cancel")}</AlertDialogCancel>
           <AlertDialogAction
             disabled={pending}
             onClick={(event) => {
@@ -426,7 +438,7 @@ function DisconnectDialog({
               onConfirm();
             }}
           >
-            {pending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : `Disconnect ${row.name}`}
+            {pending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : t("localizationApps.disconnectService", { app: row.name })}
           </AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>

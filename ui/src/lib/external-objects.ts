@@ -1,3 +1,4 @@
+import { t } from "@/i18n";
 import {
   AlertCircle,
   AlertOctagon,
@@ -75,33 +76,33 @@ export function externalObjectIconForLiveness(liveness: string): LucideIcon | nu
 }
 
 const CATEGORY_LABELS: Record<string, string> = {
-  unknown: "Not yet resolved",
-  open: "Open",
-  waiting: "Waiting",
-  running: "Running",
-  succeeded: "Succeeded",
-  failed: "Failed",
-  blocked: "Blocked",
-  closed: "Closed",
-  archived: "Archived",
-  auth_required: "Authorization required",
-  unreachable: "Unreachable",
+  get unknown() { return t("localizationExternalChrome.category_unknown"); },
+  get open() { return t("localizationExternalChrome.category_open"); },
+  get waiting() { return t("localizationExternalChrome.category_waiting"); },
+  get running() { return t("localizationExternalChrome.category_running"); },
+  get succeeded() { return t("localizationExternalChrome.category_succeeded"); },
+  get failed() { return t("localizationExternalChrome.category_failed"); },
+  get blocked() { return t("localizationExternalChrome.category_blocked"); },
+  get closed() { return t("localizationExternalChrome.category_closed"); },
+  get archived() { return t("localizationExternalChrome.category_archived"); },
+  get auth_required() { return t("localizationExternalChrome.category_auth_required"); },
+  get unreachable() { return t("localizationExternalChrome.category_unreachable"); },
 };
 
 export function externalObjectCategoryLabel(category: string): string {
-  return CATEGORY_LABELS[category] ?? category.replace(/_/g, " ");
+  return Object.hasOwn(CATEGORY_LABELS, category) ? CATEGORY_LABELS[category] : category.replace(/_/g, " ");
 }
 
 const LIVENESS_LABELS: Record<string, string> = {
-  unknown: "Not yet refreshed",
-  fresh: "Fresh",
-  stale: "Stale",
-  auth_required: "Requires auth",
-  unreachable: "Unreachable",
+  get unknown() { return t("localizationExternalChrome.liveness_unknown"); },
+  get fresh() { return t("localizationExternalChrome.liveness_fresh"); },
+  get stale() { return t("localizationExternalChrome.liveness_stale"); },
+  get auth_required() { return t("localizationExternalChrome.liveness_auth_required"); },
+  get unreachable() { return t("localizationExternalChrome.category_unreachable"); },
 };
 
 export function externalObjectLivenessLabel(liveness: string): string {
-  return LIVENESS_LABELS[liveness] ?? liveness.replace(/_/g, " ");
+  return Object.hasOwn(LIVENESS_LABELS, liveness) ? LIVENESS_LABELS[liveness] : liveness.replace(/_/g, " ");
 }
 
 export function externalObjectDisplayStatusLabel(input: {
@@ -116,7 +117,7 @@ export function externalObjectDisplayStatusLabel(input: {
   const isGenericUrl = input.providerKey === "url" && input.objectType === "link";
   const hasKnownObjectType = Boolean(input.providerKey && input.objectType);
   if (input.statusCategory === "unknown" && hasKnownObjectType && !isGenericUrl) {
-    if (input.liveness === "fresh") return "Status unavailable";
+    if (input.liveness === "fresh") return t("localizationExternalChrome.statusUnavailable");
     return externalObjectLivenessLabel(input.liveness);
   }
   return externalObjectCategoryLabel(input.statusCategory);
@@ -172,8 +173,8 @@ const PROVIDER_LABELS: Record<string, string> = {
 };
 
 export function externalObjectProviderLabel(providerKey: string | null | undefined): string {
-  if (!providerKey) return "External";
-  const lookup = PROVIDER_LABELS[providerKey];
+  if (!providerKey) return t("localizationExternalChrome.externalProvider");
+  const lookup = Object.hasOwn(PROVIDER_LABELS, providerKey) ? PROVIDER_LABELS[providerKey] : undefined;
   if (lookup) return lookup;
   return providerKey
     .split(/[._-]/)
@@ -182,18 +183,18 @@ export function externalObjectProviderLabel(providerKey: string | null | undefin
 }
 
 const OBJECT_TYPE_LABELS: Record<string, string> = {
-  pull_request: "pull request",
-  issue: "issue",
-  deployment: "deployment",
-  workflow_run: "workflow run",
-  ticket: "ticket",
-  lead: "lead",
+  get pull_request() { return t("localizationExternalChrome.type_pull_request"); },
+  get issue() { return t("localizationExternalChrome.type_issue"); },
+  get deployment() { return t("localizationExternalChrome.type_deployment"); },
+  get workflow_run() { return t("localizationExternalChrome.type_workflow_run"); },
+  get ticket() { return t("localizationExternalChrome.type_ticket"); },
+  get lead() { return t("localizationExternalChrome.type_lead"); },
   url_link: "URL",
 };
 
 export function externalObjectTypeLabel(objectType: string | null | undefined): string {
-  if (!objectType) return "object";
-  return OBJECT_TYPE_LABELS[objectType] ?? objectType.replace(/_/g, " ");
+  if (!objectType) return t("localizationExternalChrome.type_object");
+  return Object.hasOwn(OBJECT_TYPE_LABELS, objectType) ? OBJECT_TYPE_LABELS[objectType] : objectType.replace(/_/g, " ");
 }
 
 export function externalObjectDisplayLabel(
@@ -204,7 +205,21 @@ export function externalObjectDisplayLabel(
   const trimmedDisplayKey = displayKey?.trim();
   if (trimmedDisplayKey) return trimmedDisplayKey;
   if (providerKey === "url" && objectType === "link") return "URL";
-  return `${externalObjectProviderLabel(providerKey)} ${externalObjectTypeLabel(objectType)}`;
+  if (!providerKey) {
+    const labels: Record<string, () => string> = {
+      pull_request: () => t("localizationExternalChrome.externalType_pull_request"),
+      issue: () => t("localizationExternalChrome.externalType_issue"),
+      deployment: () => t("localizationExternalChrome.externalType_deployment"),
+      workflow_run: () => t("localizationExternalChrome.externalType_workflow_run"),
+      ticket: () => t("localizationExternalChrome.externalType_ticket"),
+      lead: () => t("localizationExternalChrome.externalType_lead"),
+      url_link: () => t("localizationExternalChrome.externalType_url_link"),
+      object: () => t("localizationExternalChrome.externalType_object"),
+    };
+    const type = objectType || "object";
+    return Object.hasOwn(labels, type) ? labels[type]() : t("localizationExternalChrome.externalUnknownType", { type: externalObjectTypeLabel(objectType) });
+  }
+  return t("localizationExternalChrome.providerObject", { provider: externalObjectProviderLabel(providerKey), type: externalObjectTypeLabel(objectType) });
 }
 
 /**

@@ -390,7 +390,7 @@ function CasePropertiesContent({
           {propertyRows.map(({ key, label, value }) => (
             <CasePropertyRow
               key={key}
-              label={label}
+              label={PRIMARY_FIELD_KEYS.includes(key as typeof PRIMARY_FIELD_KEYS[number]) ? t("localizationDocuments.caseField_" + key, { defaultValue: label }) : label}
               wrap={isFull || Array.isArray(value) || (typeof value === "object" && value !== null)}
               mode={mode}
             >

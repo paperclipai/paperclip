@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import { useEffect, useState } from "react";
 import { Eye, EyeOff } from "lucide-react";
 import type { AdapterConfigFieldsProps, CreateConfigValues } from "../types";
@@ -71,6 +72,7 @@ function SecretField({
   placeholder?: string;
   stored?: boolean;
 }) {
+  const { t } = useTranslation();
   const [visible, setVisible] = useState(false);
   return (
     <Field label={label}>
@@ -79,7 +81,7 @@ function SecretField({
           type="button"
           onClick={() => setVisible((v) => !v)}
           className="absolute left-2 top-1/2 -translate-y-1/2 text-muted-foreground/50 hover:text-muted-foreground transition-colors"
-          aria-label={visible ? `Hide ${label}` : `Show ${label}`}
+          aria-label={visible ? t("localizationAgents.hideLabel", { label }) : t("localizationAgents.showLabel", { label })}
         >
           {visible ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />}
         </button>
@@ -89,7 +91,7 @@ function SecretField({
           immediate
           type={visible ? "text" : "password"}
           className={inputClass + " pl-8"}
-          placeholder={stored ? "Stored secret; enter a new value to replace it" : placeholder}
+          placeholder={stored ? t("localizationAgents.ui382_Stored_secret_enter_a_new_value_to_replace_it") : placeholder}
         />
       </div>
     </Field>
@@ -104,6 +106,7 @@ export function HermesGatewayConfigFields({
   eff,
   mark,
 }: AdapterConfigFieldsProps) {
+  const { t } = useTranslation();
   const storedApiKey = config.apiKey;
   const hasStoredApiKey = isSecretRef(storedApiKey) || typeof storedApiKey === "string";
   const editApiKeyValue = typeof storedApiKey === "string" ? String(eff("adapterConfig", "apiKey", storedApiKey)) : "";
@@ -141,8 +144,8 @@ export function HermesGatewayConfigFields({
   return (
     <>
       <Field
-        label="API base URL"
-        hint="Hermes API server base URL that Paperclip can reach, such as http://127.0.0.1:8642 or a private HTTPS URL. Default dashboard root/chat URLs such as http://127.0.0.1:9119/chat are accepted and map to /api."
+        label={t("localizationAgents.ui383_API_base_URL")}
+        hint={t("localizationAgents.ui384_Hermes_API_server_base_URL_that_Paperclip_can_reach_such_as_")}
       >
         <DraftInput
           value={apiBaseUrl}
@@ -154,16 +157,16 @@ export function HermesGatewayConfigFields({
       </Field>
 
       <SecretField
-        label="API key"
+        label={t("localizationAgents.ui386_API_key")}
         value={isCreate ? String(readCreateValue(values, "apiKey", "") ?? "") : editApiKeyValue}
         onCommit={(v) => writeValue("apiKey", v || undefined)}
-        placeholder="Hermes API_SERVER_KEY, not PAPERCLIP_API_KEY"
+        placeholder={t("localizationAgents.ui387_Hermes_API_SERVER_KEY_not_PAPERCLIP_API_KEY")}
         stored={!isCreate && hasStoredApiKey && !editApiKeyValue}
       />
 
       <Field
-        label="Paperclip API URL"
-        hint="Optional Paperclip API URL reachable by the Hermes host. This is not a credential."
+        label={t("localizationAgents.ui388_Paperclip_API_URL")}
+        hint={t("localizationAgents.ui389_Optional_Paperclip_API_URL_reachable_by_the_Hermes_host_This")}
       >
         <DraftInput
           value={paperclipApiUrl}
@@ -175,22 +178,22 @@ export function HermesGatewayConfigFields({
       </Field>
 
       <Field
-        label="Session key strategy"
-        hint="Controls X-Hermes-Session-Key. Issue scoped prevents cross-task memory bleed by default."
+        label={t("localizationAgents.ui391_Session_key_strategy")}
+        hint={t("localizationAgents.ui392_Controls_X_Hermes_Session_Key_Issue_scoped_prevents_cross_ta")}
       >
         <select
           value={sessionKeyStrategy}
           onChange={(event) => writeValue("sessionKeyStrategy", event.target.value)}
           className={inputClass}
         >
-          <option value="issue">Issue scoped</option>
-          <option value="agent">Agent scoped</option>
-          <option value="run">Run scoped</option>
-          <option value="none">None</option>
+          <option value="issue">{t("localizationAgents.ui393_Issue_scoped")}</option>
+          <option value="agent">{t("localizationAgents.ui394_Agent_scoped")}</option>
+          <option value="run">{t("localizationAgents.ui395_Run_scoped")}</option>
+          <option value="none">{t("localizationAgents.ui396_None")}</option>
         </select>
       </Field>
 
-      <Field label="Timeout seconds">
+      <Field label={t("localizationAgents.ui397_Timeout_seconds")}>
         <DraftNumberInput
           value={Number.isFinite(timeoutSec) ? timeoutSec : DEFAULT_TIMEOUT_SEC}
           onCommit={(v) => writeValue("timeoutSec", v)}
@@ -200,8 +203,8 @@ export function HermesGatewayConfigFields({
       </Field>
 
       <Field
-        label="Event reconnect ms"
-        hint="Delay before reconnecting the Hermes SSE events stream after a nonterminal disconnect."
+        label={t("localizationAgents.ui398_Event_reconnect_ms")}
+        hint={t("localizationAgents.ui399_Delay_before_reconnecting_the_Hermes_SSE_events_stream_after")}
       >
         <DraftNumberInput
           value={Number.isFinite(eventReconnectMs) ? eventReconnectMs : DEFAULT_EVENT_RECONNECT_MS}
@@ -212,15 +215,15 @@ export function HermesGatewayConfigFields({
       </Field>
 
       <ToggleField
-        label="Dangerously allow remote HTTP"
-        hint="Unsafe dev-only escape hatch. Remote Hermes gateways should use HTTPS; loopback HTTP remains allowed."
+        label={t("localizationAgents.ui400_Dangerously_allow_remote_HTTP")}
+        hint={t("localizationAgents.ui401_Unsafe_dev_only_escape_hatch_Remote_Hermes_gateways_should_u")}
         checked={allowInsecureRemoteHttp}
         onChange={(v) => writeValue("dangerouslyAllowInsecureRemoteHttp", v)}
       />
 
       <Field
-        label="Extra headers"
-        hint="Optional JSON object of extra nonsecret headers. Security-critical headers are generated by the adapter."
+        label={t("localizationAgents.ui402_Extra_headers")}
+        hint={t("localizationAgents.ui403_Optional_JSON_object_of_extra_nonsecret_headers_Security_cri")}
       >
         <textarea
           value={headers}
@@ -239,7 +242,7 @@ export function HermesGatewayConfigFields({
         />
       </Field>
 
-      <Field label="Instructions" hint="Optional stable Hermes instructions sent separately from the wake input.">
+      <Field label={t("localizationAgents.ui1_Instructions")} hint={t("localizationAgents.ui404_Optional_stable_Hermes_instructions_sent_separately_from_the")}>
         <DraftTextarea
           value={instructions}
           onCommit={(v) => writeValue("instructions", v || undefined)}

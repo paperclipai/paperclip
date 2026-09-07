@@ -51,7 +51,7 @@ import {
 } from "@/components/ui/select";
 import { EmptyState } from "../../components/EmptyState";
 import { cn } from "../../lib/utils";
-import { t, useTranslation } from "@/i18n";
+import { i18n, t, useTranslation } from "@/i18n";
 
 type Step = "select" | "review" | "result";
 
@@ -145,6 +145,7 @@ function StatusBadge({
 }: {
   status: RemoteSecretImportCandidate["status"];
 }) {
+  useTranslation();
   const Icon =
     status === "conflict"
       ? AlertTriangle
@@ -160,6 +161,7 @@ function StatusBadge({
 }
 
 function RowResultBadge({ status }: { status: RemoteSecretImportRowResult["status"] }) {
+  const { t } = useTranslation();
   switch (status) {
     case "imported":
       return (
@@ -204,7 +206,7 @@ function formatRelativeShort(value: string | null | undefined): string {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "—";
   const diff = Date.now() - date.getTime();
-  if (diff < 0) return date.toLocaleDateString();
+  if (diff < 0) return date.toLocaleDateString(i18n.resolvedLanguage ?? i18n.language);
   const seconds = Math.floor(diff / 1000);
   if (seconds < 60) return t("pages.secrets.time.secondsAgo", { count: seconds });
   const minutes = Math.floor(seconds / 60);
@@ -213,12 +215,12 @@ function formatRelativeShort(value: string | null | undefined): string {
   if (hours < 48) return t("pages.secrets.time.hoursAgo", { count: hours });
   const days = Math.floor(hours / 24);
   if (days < 30) return t("pages.secrets.time.daysAgo", { count: days });
-  return date.toLocaleDateString();
+  return date.toLocaleDateString(i18n.resolvedLanguage ?? i18n.language);
 }
 
 function readableErrorMessage(error: unknown): string {
   if (error instanceof ApiError) {
-    return error.message || `Request failed: ${error.status}`;
+    return error.message || t("localizationSecrets.requestFailed", { status: error.status });
   }
   if (error instanceof Error) return error.message;
   return t("pages.secrets.errors.unexpected");
@@ -356,7 +358,7 @@ export function ImportFromVaultDialog({
   onImportComplete,
   onManageVaults,
 }: ImportFromVaultDialogProps) {
-  useTranslation();
+  const { t } = useTranslation();
   const queryClient = useQueryClient();
   const toast = useToastActions();
   const awsVaults = useMemo(() => awsVaultOptions(providerConfigs), [providerConfigs]);
@@ -480,7 +482,7 @@ export function ImportFromVaultDialog({
       if (error) errors.set(draft.candidate.externalRef, error);
     }
     return errors;
-  }, [draftList, existingSecrets]);
+  }, [draftList, existingSecrets, t]);
 
   const blockedReviewCount = reviewErrors.size;
   const readyReviewCount = draftList.length - blockedReviewCount;
@@ -808,6 +810,7 @@ export function ImportFromVaultDialog({
 }
 
 function Stepper({ step }: { step: Step }) {
+  const { t } = useTranslation();
   const steps: { id: Step; label: string }[] = [
     { id: "select", label: t("pages.secrets.import.steps.select") },
     { id: "review", label: t("pages.secrets.import.steps.review") },
@@ -875,6 +878,7 @@ interface SelectStepProps {
 }
 
 function SelectStep(props: SelectStepProps) {
+  const { t } = useTranslation();
   const {
     awsVaults,
     eligible,
@@ -1173,6 +1177,7 @@ function SelectStep(props: SelectStepProps) {
 }
 
 function PreviewErrorBanner({ error, onRetry }: { error: unknown; onRetry: () => void }) {
+  const { t } = useTranslation();
   const isPermission = isPermissionError(error);
   const isThrottling = isThrottlingError(error);
   const message = readableErrorMessage(error);
@@ -1217,6 +1222,7 @@ function PreviewErrorBanner({ error, onRetry }: { error: unknown; onRetry: () =>
 }
 
 function SkeletonRows({ rows }: { rows: number }) {
+  useTranslation();
   return (
     <div className="flex flex-col gap-1.5 p-3">
       {Array.from({ length: rows }).map((_, idx) => (
@@ -1227,6 +1233,7 @@ function SkeletonRows({ rows }: { rows: number }) {
 }
 
 function EmptyCandidates({ query }: { query: string }) {
+  const { t } = useTranslation();
   if (query) {
     return (
       <EmptyState
@@ -1252,6 +1259,7 @@ interface ReviewStepProps {
 }
 
 function ReviewStep({ drafts, reviewErrors, updateDraft, removeDraft, importing }: ReviewStepProps) {
+  const { t } = useTranslation();
   if (drafts.length === 0) {
     return (
       <div className="flex min-h-0 flex-1 items-center justify-center p-6">
@@ -1392,6 +1400,7 @@ interface ResultStepProps {
 }
 
 function ResultStep({ result, draftList }: ResultStepProps) {
+  const { t } = useTranslation();
   const grouped = useMemo(() => {
     const created: RemoteSecretImportRowResult[] = [];
     const skipped: RemoteSecretImportRowResult[] = [];
@@ -1467,6 +1476,7 @@ function ResultGroup({
   rows: RemoteSecretImportRowResult[];
   draftLookup: Map<string, DraftSelection>;
 }) {
+  useTranslation();
   return (
     <section>
       <header className="bg-muted/30 px-5 py-1.5 text-xs uppercase tracking-wide text-muted-foreground">
@@ -1533,6 +1543,7 @@ function FooterStatus({
   blockedReviewCount,
   result,
 }: FooterStatusProps) {
+  const { t } = useTranslation();
   if (step === "select") {
     return (
       <div className="text-xs text-muted-foreground">

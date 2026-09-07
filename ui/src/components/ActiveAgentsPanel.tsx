@@ -20,24 +20,26 @@ import { Badge } from "@/components/ui/badge";
 import { useTranslation } from "@/i18n";
 
 function RunCardRecoveryChip({ action }: { action: IssueRecoveryAction }) {
+  const { t } = useTranslation();
   const state = deriveActiveRecoveryDisplayState(action);
   if (!state) return null;
   const tone = RECOVERY_CHIP_DEFAULT_TONE[state];
   const Icon = tone.icon;
+  const label = tone.label;
   return (
     <Badge variant="outline"
       data-testid="active-agent-run-recovery-indicator"
       data-recovery-state={state}
       role="status"
-      aria-label={tone.label}
-      title={`${tone.label} — open the source task to act.`}
+      aria-label={label}
+      title={t("localizationActivity.recoveryHint", { label })}
       className={cn(
         "gap-0.5 px-1.5 text-(length:--text-nano)",
         tone.className,
       )}
     >
       <Icon className="h-2.5 w-2.5" aria-hidden />
-      {tone.label}
+      {label}
     </Badge>
   );
 }
@@ -184,6 +186,7 @@ const AgentRunCard = memo(function AgentRunCard({
   isActive: boolean;
   className?: string;
 }) {
+  const { t } = useTranslation();
   return (
     <div className={cn(
       "flex h-(--sz-320px) flex-col overflow-hidden rounded-xl border shadow-sm",
@@ -207,12 +210,13 @@ const AgentRunCard = memo(function AgentRunCard({
               <Identity name={run.agentName} size="sm" className="[&>span:last-child]:!text-(length:--text-micro)" />
             </div>
             <div className="mt-2 flex items-center gap-2 text-(length:--text-micro) text-muted-foreground">
-              <span>{isActive ? "Live now" : run.finishedAt ? `Finished ${relativeTime(run.finishedAt)}` : `Started ${relativeTime(run.createdAt)}`}</span>
+              <span>{isActive ? t("localizationActivity.liveNow") : run.finishedAt ? t("localizationActivity.finishedAgo", { time: relativeTime(run.finishedAt) }) : t("localizationActivity.startedAgo", { time: relativeTime(run.createdAt) })}</span>
             </div>
           </div>
 
           <Link
             to={`/agents/${run.agentId}/runs/${run.id}`}
+            aria-label={t("localizationActivity.viewRun")}
             className="inline-flex items-center gap-1 rounded-full border border-border/70 bg-background/70 px-2 py-1 text-(length:--text-nano) text-muted-foreground transition-colors hover:text-foreground"
           >
             <ExternalLink className="h-2.5 w-2.5" />

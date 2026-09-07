@@ -1,8 +1,26 @@
+import { t } from "@/i18n";
+import { documentDisplayTitle } from "@/lib/issue-artifacts";
 import type { WorkspaceFileSelector } from "@paperclipai/shared";
 import type { SidePanelTabRecord, SidePanelTabsState } from "@/components/side-panel";
 
 const STORAGE_VERSION = 1;
 const MAX_TASK_STATES = 50;
+
+/** Display projection; saved labels, tab IDs and payloads stay locale-independent. */
+export function taskPanelTabLabelDisplay(tab: SidePanelTabRecord<TaskSidePanelTabPayload>): string {
+  const keys: Record<string, string> = {
+    "properties": "localizationIssuePanels.ui_Properties_100clx8",
+    "subtasks": "localizationIssuePanels.ui_Subtasks_hx67r1",
+    "artifacts": "localizationIssuePanels.ui_Artifacts_dvv9u8",
+    "files-browser": "localizationIssuePanels.ui_Files_1s4j38w",
+  };
+  return keys[tab.payload.kind] ? t(keys[tab.payload.kind]) : tab.label;
+}
+
+export function taskDocumentTitleDisplay(document: { key: string; title: string | null }): string {
+  if (!document.title?.trim() && document.key === "plan") return t("localizationIssuePanels.plan");
+  return documentDisplayTitle(document);
+}
 
 export type TaskSidePanelTabPayload =
   | { kind: "properties" }

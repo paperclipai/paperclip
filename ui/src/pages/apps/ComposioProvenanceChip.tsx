@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import { Blocks } from "lucide-react";
 import { Link } from "@/lib/router";
 import { cn } from "@/lib/utils";
@@ -24,6 +25,7 @@ export function ConnectionProvenanceChip({
   } | null | undefined;
   className?: string;
 }) {
+  const { t } = useTranslation();
   const chipClass = cn(
     "inline-flex items-center gap-1 rounded-full border border-border bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground",
     className,
@@ -33,11 +35,9 @@ export function ConnectionProvenanceChip({
     return (
       <span
         className={chipClass}
-        title={connectorUid ? `Credentials managed by Vercel Connect (${connectorUid})` : "Credentials managed by Vercel Connect"}
+        title={connectorUid ? t("localizationApps.credentialsVercel", { id: connectorUid }) : t("localizationApps.credentialsManagedByVercelConnect733")}
       >
-        <Blocks className="h-3 w-3" />
-        via Vercel Connect
-      </span>
+        <Blocks className="h-3 w-3" />{t("localizationApps.viaVercelConnect734")}</span>
     );
   }
 
@@ -46,22 +46,20 @@ export function ConnectionProvenanceChip({
   const parentConnectionId = composioChildParentConnectionId(connection);
   const label = (
     <>
-      <Blocks className="h-3 w-3" />
-      via Composio
-    </>
+      <Blocks className="h-3 w-3" />{t("localizationApps.viaComposio735")}</>
   );
 
   // Without a parent id there is nowhere to send the reader, so the chip stays a
   // label rather than becoming a dead link.
   if (!parentConnectionId) {
-    return <span className={chipClass} title={`Brokered by Composio (${toolkitSlug})`}>{label}</span>;
+    return <span className={chipClass} title={t("localizationApps.brokeredComposio", { slug: toolkitSlug })}>{label}</span>;
   }
 
   return (
     <Link
       to={appTabHref(parentConnectionId, "services")}
       className={cn(chipClass, "transition-colors hover:bg-accent hover:text-accent-foreground")}
-      title={`Brokered by Composio (${toolkitSlug}) — open the Composio Services tab`}
+      title={t("localizationApps.brokeredComposioOpenServices", { slug: toolkitSlug })}
       onClick={(event) => event.stopPropagation()}
     >
       {label}

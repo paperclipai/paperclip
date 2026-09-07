@@ -2,6 +2,7 @@ import { UserCheck } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "../lib/utils";
+import { t, useTranslation } from "@/i18n";
 
 /**
  * "for {user}" chip on an agent comment posted to a task the agent does not own
@@ -22,10 +23,7 @@ import { cn } from "../lib/utils";
  * driving Radix's portal open.
  */
 export function commentAttributionTooltip(agentName: string, userName: string): string {
-  return (
-    `${agentName} posted this on behalf of ${userName}. ${agentName} is not assigned to ` +
-    `this task — its authority to write here comes from ${userName}, and never exceeds it.`
-  );
+  return t("localizationCommonChrome.attributionTooltip", { agentName, userName });
 }
 
 export function CommentAttributionChip({
@@ -39,9 +37,10 @@ export function CommentAttributionChip({
   userName?: string | null;
   className?: string;
 }) {
+  const { t } = useTranslation();
   const user = userName?.trim();
   if (!user) return null;
-  const agent = agentName?.trim() || "This agent";
+  const agent = agentName?.trim() || t("localizationCommonChrome.thisAgent");
 
   return (
     <Tooltip>
@@ -49,7 +48,7 @@ export function CommentAttributionChip({
         <Badge
           variant="outline"
           data-testid="comment-attribution-chip"
-          aria-label={`Posted on behalf of ${user}`}
+          aria-label={t("localizationCommonChrome.postedOnBehalf", { user })}
           // `Badge` renders a span, which is not focusable — without this a
           // sighted keyboard user can never open the explanation. Radix opens
           // the tooltip on focus as well as hover.
@@ -61,7 +60,7 @@ export function CommentAttributionChip({
           )}
         >
           <UserCheck className="h-3 w-3 shrink-0" aria-hidden="true" />
-          <span className="truncate">for {user}</span>
+          <span className="truncate">{t("localizationCommonChrome.forUser", { user })}</span>
         </Badge>
       </TooltipTrigger>
       <TooltipContent className="max-w-xs text-xs">

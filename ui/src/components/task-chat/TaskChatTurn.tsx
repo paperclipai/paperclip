@@ -1,3 +1,5 @@
+import { t, useTranslation } from "@/i18n";
+import { taskChatDurationLabel, taskChatTokenLabel } from "./task-chat-display";
 import { useState, type ReactNode } from "react";
 import { cn } from "@/lib/utils";
 import { useStreamlinedTaskChatPresentation } from "./presentation-mode";
@@ -32,21 +34,21 @@ export function turnSummaryMetrics(
   summary: TaskChatTurnItem["summary"],
 ): string {
   const parts: string[] = [];
-  if (summary.durationLabel) parts.push(summary.durationLabel);
+  if (summary.durationLabel) parts.push(taskChatDurationLabel(summary.durationLabel));
   if (summary.toolCount > 0)
     parts.push(
-      `${summary.toolCount} tool${summary.toolCount === 1 ? "" : "s"}`,
+      t("localizationTaskRuntime.toolCount", { count: summary.toolCount }),
     );
   if (summary.added > 0 || summary.removed > 0)
     parts.push(`+${summary.added} −${summary.removed}`);
-  if (summary.tokensLabel) parts.push(summary.tokensLabel);
+  if (summary.tokensLabel) parts.push(taskChatTokenLabel(summary.tokensLabel));
   return parts.join(" · ");
 }
 
 /** "✓ Worked · 38s · 3 tools · +34 −3 · 12.3k tokens" (parts omitted when unknown). */
 export function turnSummaryText(summary: TaskChatTurnItem["summary"]): string {
   const metrics = turnSummaryMetrics(summary);
-  const label = summary.failed ? "Stopped" : "Worked";
+  const label = summary.failed ? t("localizationTaskRuntime.ui_Stopped_118y86m") : t("localizationTaskRuntime.worked");
   return metrics ? `${label} · ${metrics}` : label;
 }
 
@@ -75,6 +77,7 @@ export function TaskChatTurn({
   timestampPrefix,
   leading,
 }: TaskChatTurnProps) {
+  useTranslation();
   const streamlined = useStreamlinedTaskChatPresentation();
   const parentRow = !item.settled && item.liveStatus != null;
   // The new Paperclip Runner task surface owns one durable chronological
@@ -100,12 +103,12 @@ export function TaskChatTurn({
             />
           ) : null}
           <span className="min-w-0 truncate">
-            {item.continuedAfterSteering ? "Continued after steering · " : ""}
+            {item.continuedAfterSteering ? t("localizationTaskRuntime.continuedAfterSteering") : ""}
             {item.summary.durationLabel
-              ? `${item.summary.failed ? "Stopped" : "Worked"} for ${item.summary.durationLabel}`
+              ? t(item.summary.failed ? "localizationTaskRuntime.stoppedFor" : "localizationTaskRuntime.workedFor", { duration: taskChatDurationLabel(item.summary.durationLabel) })
               : item.summary.failed
-                ? "Stopped"
-                : "Worked"}
+                ? t("localizationTaskRuntime.ui_Stopped_118y86m")
+                : t("localizationTaskRuntime.worked")}
           </span>
         </div>
         {item.items.length > 0 ? (
@@ -201,10 +204,10 @@ export function TaskChatTurn({
       ) : null}
       <span>
         {item.standaloneHeader && item.summary.durationLabel
-          ? `${item.summary.failed ? "Stopped" : "Worked"} for ${item.summary.durationLabel}`
+          ? t(item.summary.failed ? "localizationTaskRuntime.stoppedFor" : "localizationTaskRuntime.workedFor", { duration: taskChatDurationLabel(item.summary.durationLabel) })
           : item.summary.failed
-            ? "Stopped"
-            : "Worked"}
+            ? t("localizationTaskRuntime.ui_Stopped_118y86m")
+            : t("localizationTaskRuntime.worked")}
       </span>
       {!item.standaloneHeader && turnSummaryMetrics(item.summary) ? (
         // Time/tools/tokens is demoted, not deleted (PAP-502): it stays in the

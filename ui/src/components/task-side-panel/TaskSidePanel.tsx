@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import {
   useCallback,
   useEffect,
@@ -61,6 +62,8 @@ import { queryKeys } from "@/lib/queryKeys";
 import { useLocation, useNavigate } from "@/lib/router";
 import {
   readTaskSidePanelState,
+  taskPanelTabLabelDisplay,
+  taskDocumentTitleDisplay,
   taskPanelArtifactsTab,
   taskPanelDocumentTab,
   taskPanelFilesTab,
@@ -224,6 +227,7 @@ export function TaskSidePanel({
   streamlinedTabs = false,
   showSubtasksTab = false,
 }: TaskSidePanelProps) {
+  const { t } = useTranslation();
   const handleScroll = useScrollbarWhileScrolling();
   const viewer = useTaskSidePanelFileRouting();
   const { data: documentsData } = useIssueDocuments(issue.id);
@@ -407,7 +411,7 @@ export function TaskSidePanel({
   useEffect(() => {
     if (activeTab) return;
     window.requestAnimationFrame(() => {
-      bodyRef.current?.querySelector<HTMLInputElement>('input[aria-label="Search tabs and resources…"]')?.focus();
+      bodyRef.current?.querySelector<HTMLInputElement>('input[cmdk-input]')?.focus();
     });
   }, [activeTab]);
 
@@ -452,28 +456,28 @@ export function TaskSidePanel({
     return {
       id: tab.id,
       type: tab.type,
-      label: document ? documentDisplayTitle(document) : tab.label,
-      ariaLabel: tab.payload.kind === "subtasks" ? "Subtasks" : tab.ariaLabel,
+      label: document ? taskDocumentTitleDisplay(document) : taskPanelTabLabelDisplay(tab),
+      ariaLabel: tab.payload.kind === "subtasks" ? t("localizationIssuePanels.ui_Subtasks_hx67r1") : tab.ariaLabel,
       closable: true,
       contentMode: tab.contentMode,
       icon: tabIcon(tab),
     };
-  }), [controller.tabs, documentByKey]);
+  }), [controller.tabs, documentByKey, t]);
 
   const launcherSections = useMemo<SidePanelLauncherSection[]>(() => {
     const primary: SidePanelLauncherItem[] = [
-      { id: "properties", label: "Properties", icon: <SlidersHorizontal />, alreadyOpen: controller.tabs.some((tab) => tab.id === "properties") },
-      ...(subtasksAvailable ? [{ id: "subtasks", label: "Subtasks", description: `${childIssues.length} total`, icon: <ListTree />, alreadyOpen: controller.tabs.some((tab) => tab.id === "subtasks") }] : []),
-      { id: "artifacts", label: "Artifacts", icon: <Box />, alreadyOpen: controller.tabs.some((tab) => tab.id === "artifacts") },
+      { id: "properties", label: t("localizationIssuePanels.ui_Properties_100clx8"), icon: <SlidersHorizontal />, alreadyOpen: controller.tabs.some((tab) => tab.id === "properties") },
+      ...(subtasksAvailable ? [{ id: "subtasks", label: t("localizationIssuePanels.ui_Subtasks_hx67r1"), description: t("localizationIssuePanels.subtasksTotal", { count: childIssues.length }), icon: <ListTree />, alreadyOpen: controller.tabs.some((tab) => tab.id === "subtasks") }] : []),
+      { id: "artifacts", label: t("localizationIssuePanels.ui_Artifacts_dvv9u8"), icon: <Box />, alreadyOpen: controller.tabs.some((tab) => tab.id === "artifacts") },
     ];
     if (fileTabsEnabled) {
-      primary.push({ id: "files", label: "Files", icon: <FolderOpen />, shortcut: "G F", alreadyOpen: controller.tabs.some((tab) => tab.id === "files") });
+      primary.push({ id: "files", label: t("localizationIssuePanels.ui_Files_1s4j38w"), icon: <FolderOpen />, shortcut: "G F", alreadyOpen: controller.tabs.some((tab) => tab.id === "files") });
     }
     const documentItems: SidePanelLauncherItem[] = [
       ...(planDocument ? [{
         id: "document:plan",
-        label: documentDisplayTitle(planDocument),
-        description: `Revision ${planDocument.latestRevisionNumber ?? 1}`,
+        label: taskDocumentTitleDisplay(planDocument),
+        description: t("localizationIssuePanels.revision", { revision: planDocument.latestRevisionNumber ?? 1 }),
         icon: <Lightbulb />,
         alreadyOpen: controller.tabs.some((tab) => tab.id === "document:plan"),
       }] : []),
@@ -482,17 +486,17 @@ export function TaskSidePanel({
         .sort((left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime())
         .map((document) => ({
           id: `document:${document.key}`,
-          label: documentDisplayTitle(document),
-          description: `Revision ${document.latestRevisionNumber ?? 1}`,
+          label: taskDocumentTitleDisplay(document),
+          description: t("localizationIssuePanels.revision", { revision: document.latestRevisionNumber ?? 1 }),
           icon: <FileText />,
           alreadyOpen: controller.tabs.some((tab) => tab.id === `document:${document.key}`),
         })),
     ];
     const sections: SidePanelLauncherSection[] = [
-      { id: "open", label: "Open", items: primary },
+      { id: "open", label: t("localizationIssuePanels.ui_Open_n6hn1l"), items: primary },
     ];
     if (documentItems.length > 0) {
-      sections.push({ id: "documents", label: "Task documents", items: documentItems });
+      sections.push({ id: "documents", label: t("localizationIssuePanels.ui_Task_documents_1ckgyma"), items: documentItems });
     }
     if (fileTabsEnabled) {
       const recentItems = recentFilesQuery.data?.state === "available"
@@ -506,14 +510,14 @@ export function TaskSidePanel({
         : [];
       sections.push({
         id: "recent-files",
-        label: "Recent workspace files",
+        label: t("localizationIssuePanels.ui_Recent_workspace_files_1qpva6k"),
         items: recentItems,
         loading: recentFilesQuery.isLoading,
-        error: recentFilesQuery.isError ? "Recent files are temporarily unavailable." : null,
+        error: recentFilesQuery.isError ? t("localizationIssuePanels.ui_Recent_files_are_temporarily_unavailable_we0tkx") : null,
       });
     }
     return sections;
-  }, [childIssues.length, controller.tabs, documents, fileTabsEnabled, planDocument, recentFilesQuery.data, recentFilesQuery.isError, recentFilesQuery.isLoading, subtasksAvailable]);
+  }, [childIssues.length, controller.tabs, documents, fileTabsEnabled, planDocument, recentFilesQuery.data, recentFilesQuery.isError, recentFilesQuery.isLoading, subtasksAvailable, t]);
 
   function selectLauncherItem(item: SidePanelLauncherItem) {
     markInteracted();
@@ -531,7 +535,9 @@ export function TaskSidePanel({
       viewer.openBrowse();
     } else if (item.id.startsWith("document:")) {
       const key = item.id.slice("document:".length);
-      controller.openTab(taskPanelDocumentTab(key, item.label));
+      const document = key === "plan" ? planDocument : documentByKey.get(key);
+      const rawLabel = document ? documentDisplayTitle(document) : key === "plan" ? "Plan" : key;
+      controller.openTab(taskPanelDocumentTab(key, rawLabel));
     } else if (item.id.startsWith("recent-file:") && recentFilesQuery.data?.state === "available") {
       const recent = recentFilesQuery.data.items.find((candidate) =>
         item.id === `recent-file:${candidate.workspaceId}:${candidate.relativePath}`,
@@ -565,7 +571,7 @@ export function TaskSidePanel({
               ? "h-(--side-panel-tab-height) w-(--side-panel-tab-height) rounded-md"
               : "h-(--side-panel-tab-height) w-(--side-panel-tab-height) rounded-(--side-panel-control-radius)",
           )}
-          aria-label="Open a new tab"
+          aria-label={t("localizationIssuePanels.ui_Open_a_new_tab_1ur8g0b")}
         >
           <Plus aria-hidden />
         </Button>

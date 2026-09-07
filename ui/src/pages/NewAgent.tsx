@@ -12,7 +12,7 @@ import { resolveSkillSummaryText } from "../lib/company-skill-summary";
 import { AGENT_ROLES, type AdapterEnvironmentTestResult, type AgentPermissions } from "@paperclipai/shared";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
-import { t, useTranslation } from "@/i18n";
+import { useTranslation } from "@/i18n";
 import {
   Popover,
   PopoverContent,

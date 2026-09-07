@@ -1,3 +1,5 @@
+import { useTranslation } from "@/i18n";
+import { taskChatDisplayLabel, taskThreadBuiltinLabel } from "@/components/task-chat/task-chat-display";
 import {
   useCallback,
   useEffect,
@@ -423,6 +425,26 @@ function durableInputLabel(
   return interaction.title ?? "Confirmation";
 }
 
+function pendingInputDisplayLabel(input: PendingComposerInput): string {
+  const providedTitle = input.kind === "runtime" ? input.item.questionSet?.title : input.interaction.title;
+  return providedTitle ?? taskThreadBuiltinLabel(input.label);
+}
+
+function QueuedInterruptButton({ isInterrupting, runId, onInterrupt }: {
+  isInterrupting: boolean;
+  runId: string;
+  onInterrupt: NonNullable<TaskChatThreadProps["onInterruptQueued"]>;
+}) {
+  const { t } = useTranslation();
+  return (
+    <Button type="button" variant="link" className="h-auto p-0 text-(length:--text-micro)"
+      disabled={isInterrupting} onClick={() => void onInterrupt(runId)}
+    >
+      {t(isInterrupting ? "localizationTaskThread.interrupting" : "localizationTaskThread.interrupt")}
+    </Button>
+  );
+}
+
 /**
  * Chat-style task thread — the default task detail experience.
  *
@@ -446,6 +468,7 @@ function durableInputLabel(
  * folded row. flag-OFF remains byte-for-byte IssueChatThread.
  */
 export function TaskChatThread(props: TaskChatThreadProps) {
+  const { t } = useTranslation();
   const { enabled: streamlinedUiEnabled } = useStreamlinedUiEnabled();
   const {
     comments,
@@ -466,7 +489,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     footer,
     showComposer = true,
     composerDisabledReason,
-    emptyMessage = "No messages yet.",
+    emptyMessage = t("localizationTaskThread.empty"),
     companyId,
     linkedRuns,
     liveRuns,
@@ -2245,15 +2268,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
 
       const isInterrupting = interruptingQueuedRunId === runId;
       return (
-        <Button
-          type="button"
-          variant="link"
-          className="h-auto p-0 text-(length:--text-micro)"
-          disabled={isInterrupting}
-          onClick={() => void onInterruptQueued(runId)}
-        >
-          {isInterrupting ? "Interrupting…" : "Interrupt"}
-        </Button>
+        <QueuedInterruptButton isInterrupting={isInterrupting} runId={runId} onInterrupt={onInterruptQueued} />
       );
     },
     [interruptingQueuedRunId, onInterruptQueued],
@@ -2348,7 +2363,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     takeoverMode === "open" && selectedPendingInput && takeoverContent
       ? {
           id: selectedPendingInput.key,
-          label: selectedPendingInput.label,
+          label: pendingInputDisplayLabel(selectedPendingInput),
           pendingCount: pendingComposerInputs.length,
           content: takeoverContent,
           onDismiss: () => setTakeoverMode("normal"),
@@ -2486,10 +2501,10 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                               items={tailItems}
                               emptyMessage={
                                 tailStatus === "queued"
-                                  ? "Waiting to start..."
+                                  ? t("localizationTaskThread.waitingStart")
                                   : (liveRun && liveRun.id === tailRunId
-                                      ? liveRun.currentStatusMessage
-                                      : null) || "Waiting for transcript..."
+                                      ? (liveRun.currentStatusMessage ? taskChatDisplayLabel(liveRun.currentStatusMessage) : null)
+                                      : null) || t("localizationTaskThread.waitingTranscript")
                               }
                             />
                           </>
@@ -2610,7 +2625,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                     pendingComposerInputs.length > 0
                       ? {
                           count: pendingComposerInputs.length,
-                          label: `${pendingComposerInputs.length} pending input${pendingComposerInputs.length === 1 ? "" : "s"}`,
+                          label: t("localizationTaskThread.pendingInputs", { count: pendingComposerInputs.length }),
                           onOpen: openPendingTakeover,
                         }
                       : null

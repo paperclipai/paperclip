@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import type { SecretStatus, UserSecretCoverageSummary } from "@paperclipai/shared";
 import { UserRound } from "lucide-react";
 import { cn } from "../../lib/utils";
@@ -21,6 +22,7 @@ export function UserSecretChip({
   className?: string;
   label?: string;
 }) {
+  useTranslation();
   return (
     <Badge variant="outline"
       className={cn(

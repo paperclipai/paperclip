@@ -7,6 +7,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PasteConfigTab } from "./PasteConfigTab";
 import { MCP_CONFIG_HELP_PROMPT } from "@paperclipai/shared";
+import { i18n } from "@/i18n";
 
 const toolsApiMock = vi.hoisted(() => ({
   importMcpJson: vi.fn(),
@@ -119,6 +120,25 @@ describe("Paste a config — MCP config help", () => {
     // The prompt has an associated label, so a screen reader announces what the
     // focused field is.
     expect(document.body.querySelector('label[for="mcp-config-help-prompt"]')).toBeTruthy();
+  });
+
+  it("translates help instructions but keeps the copied execution prompt unchanged", async () => {
+    const originalLanguage = i18n.language;
+    try {
+      await i18n.changeLanguage("en");
+      await render();
+      await openHelp();
+      await act(async () => { await i18n.changeLanguage("ru"); });
+      expect(document.body.textContent).toContain("Скопируйте промпт и отправьте его агенту");
+      expect(promptTextarea()?.value).toBe(MCP_CONFIG_HELP_PROMPT);
+      await act(async () => { buttonWithText("Скопировать промпт")!.click(); });
+      expect(copyTextToClipboardMock).toHaveBeenCalledWith(MCP_CONFIG_HELP_PROMPT);
+      expect(toolsApiMock.importMcpJson).not.toHaveBeenCalled();
+      expect(toolsApiMock.connectApp).not.toHaveBeenCalled();
+      expect(toolsApiMock.finishApp).not.toHaveBeenCalled();
+    } finally {
+      await act(async () => { await i18n.changeLanguage(originalLanguage); });
+    }
   });
 
   it("copies the prompt and confirms it", async () => {

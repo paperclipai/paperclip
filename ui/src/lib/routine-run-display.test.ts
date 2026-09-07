@@ -1,6 +1,25 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import type { RoutineVariable } from "@paperclipai/shared";
-import { dedupedTriggerLabel, runRowSubtitle } from "./routine-run-display";
+import { dedupedTriggerLabel, runRowSubtitle, routineRunStatusLabel, routineRunSourceLabel } from "./routine-run-display";
+import { i18n } from "@/i18n";
+
+afterEach(async () => { await i18n.changeLanguage("en"); });
+
+describe("localized routine run display", () => {
+  it("resolves known labels at call time and preserves machine values and user content", async () => {
+    await i18n.changeLanguage("ru");
+    expect(routineRunStatusLabel("issue_created")).toBe("задача создана");
+    expect(routineRunSourceLabel("schedule")).toBe("по расписанию");
+    expect(runRowSubtitle({ status: "skipped", failureReason: "paused", triggerPayload: null }, [])).toBe("Пропущен — регламент приостановлен");
+    expect(runRowSubtitle({ status: "failed", failureReason: "Custom backend error", triggerPayload: null }, [])).toBe("Custom backend error");
+    expect(dedupedTriggerLabel({ kind: "schedule", label: "schedule" })).toBeNull();
+    expect(dedupedTriggerLabel({ kind: "schedule", label: "Customer schedule" })).toBe("Customer schedule");
+    expect(routineRunSourceLabel("custom_source")).toBe("custom_source");
+    await i18n.changeLanguage("en");
+    expect(routineRunStatusLabel("issue_created")).toBe("issue created");
+    expect(routineRunSourceLabel("schedule")).toBe("schedule");
+  });
+});
 
 const variables: RoutineVariable[] = [
   { name: "customer", label: null, type: "text", defaultValue: null, required: true, options: [] },

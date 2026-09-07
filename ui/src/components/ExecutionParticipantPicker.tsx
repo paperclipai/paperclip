@@ -1,8 +1,9 @@
+import { useTranslation } from "@/i18n";
 import { useMemo, useState } from "react";
 import type { Agent, Issue } from "@paperclipai/shared";
 import { useQuery } from "@tanstack/react-query";
 import { accessApi } from "../api/access";
-import { formatAssigneeUserLabel } from "../lib/assignees";
+import { formatAssigneeUserDisplayLabel as formatAssigneeUserLabel } from "../lib/assignees";
 import { buildCompanyUserInlineOptions, buildCompanyUserLabelMap } from "../lib/company-members";
 import { queryKeys } from "../lib/queryKeys";
 import { sortAgentsByRecency, getRecentAssigneeIds } from "../lib/recent-assignees";
@@ -32,6 +33,7 @@ export function ExecutionParticipantPicker({
   currentUserId,
   onUpdate,
 }: ExecutionParticipantPickerProps) {
+  const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState("");
 
@@ -68,7 +70,7 @@ export function ExecutionParticipantPicker({
 
   const participantLabel = (value: string) => {
     if (value.startsWith("agent:")) return agentName(value.slice("agent:".length));
-    if (value.startsWith("user:")) return userLabel(value.slice("user:".length)) ?? "User";
+    if (value.startsWith("user:")) return userLabel(value.slice("user:".length)) ?? t("localizationCommonChrome.user");
     return value;
   };
 
@@ -89,7 +91,7 @@ export function ExecutionParticipantPicker({
     updatePolicy(next);
   };
 
-  const label = stageType === "review" ? "Reviewers" : "Approvers";
+  const label = t(stageType === "review" ? "localizationCommonChrome.reviewers" : "localizationCommonChrome.approvers");
   const Icon = stageType === "review" ? Eye : ShieldCheck;
 
   return (
@@ -116,7 +118,7 @@ export function ExecutionParticipantPicker({
       <PopoverContent className="p-1 w-56" align="start" collisionPadding={16}>
         <input
           className="w-full px-2 py-1.5 text-xs bg-transparent outline-none border-b border-border mb-1 placeholder:text-muted-foreground/50"
-          placeholder={`Search ${label.toLowerCase()}...`}
+          placeholder={t(stageType === "review" ? "localizationCommonChrome.searchReviewers" : "localizationCommonChrome.searchApprovers")}
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           autoFocus
@@ -129,7 +131,7 @@ export function ExecutionParticipantPicker({
             )}
             onClick={() => updatePolicy([])}
           >
-            No {label.toLowerCase()}
+            {t(stageType === "review" ? "localizationCommonChrome.noReviewers" : "localizationCommonChrome.noApprovers")}
           </button>
           {currentUserId && (
             <button
@@ -139,9 +141,7 @@ export function ExecutionParticipantPicker({
               )}
               onClick={() => toggle(`user:${currentUserId}`)}
             >
-              <User className="h-3 w-3 shrink-0 text-muted-foreground" />
-              Assign to me
-            </button>
+              <User className="h-3 w-3 shrink-0 text-muted-foreground" />{t("localizationCommonChrome.assignToMe")}</button>
           )}
           {issue.createdByUserId && issue.createdByUserId !== currentUserId && (
             <button
@@ -152,7 +152,7 @@ export function ExecutionParticipantPicker({
               onClick={() => toggle(`user:${issue.createdByUserId}`)}
             >
               <User className="h-3 w-3 shrink-0 text-muted-foreground" />
-              {creatorUserLabel ?? "Requester"}
+              {creatorUserLabel ?? t("localizationCommonChrome.requester")}
             </button>
           )}
           {otherUserOptions

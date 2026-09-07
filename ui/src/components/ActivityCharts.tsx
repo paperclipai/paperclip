@@ -1,5 +1,6 @@
 import type { DashboardRunActivityDay, HeartbeatRun } from "@paperclipai/shared";
-import { useTranslation } from "@/i18n";
+import { t, useTranslation } from "@/i18n";
+import { formatShortDate } from "@/lib/utils";
 
 /* ---- Utilities ---- */
 
@@ -12,8 +13,7 @@ export function getLast14Days(): string[] {
 }
 
 function formatDayLabel(dateStr: string): string {
-  const d = new Date(dateStr + "T12:00:00");
-  return `${d.getMonth() + 1}/${d.getDate()}`;
+  return formatShortDate(new Date(dateStr + "T12:00:00"));
 }
 
 function emptyRunDay(date: string): DashboardRunActivityDay {
@@ -29,21 +29,22 @@ const runSegmentColors = {
 
 // Compact per-day tooltip that also attributes failures to their error class.
 function runDayTooltip(entry: DashboardRunActivityDay): string {
-  const lines = [`${entry.date}: ${entry.total} run${entry.total === 1 ? "" : "s"}`];
-  if (entry.succeeded > 0) lines.push(`  succeeded: ${entry.succeeded}`);
-  if (entry.recovered > 0) lines.push(`  recovered: ${entry.recovered} (retry succeeded)`);
+  const lines = [t("localizationActivity.runsOnDate", { date: formatDayLabel(entry.date), count: entry.total })];
+  if (entry.succeeded > 0) lines.push(t("localizationActivity.chart_succeeded", { count: entry.succeeded }));
+  if (entry.recovered > 0) lines.push(t("localizationActivity.chart_recovered", { count: entry.recovered }));
   if (entry.failed > 0) {
-    lines.push(`  failed: ${entry.failed}`);
+    lines.push(t("localizationActivity.chart_failed", { count: entry.failed }));
     const codes = Object.entries(entry.failedByErrorCode ?? {}).sort((a, b) => b[1] - a[1]);
     for (const [code, count] of codes) lines.push(`    ${code}: ${count}`);
   }
-  if (entry.other > 0) lines.push(`  other: ${entry.other}`);
+  if (entry.other > 0) lines.push(t("localizationActivity.chartOther", { count: entry.other }));
   return lines.join("\n");
 }
 
 /* ---- Sub-components ---- */
 
 function DateLabels({ days }: { days: string[] }) {
+  useTranslation();
   return (
     <div className="flex gap-(--sz-3px) mt-1.5">
       {days.map((day, i) => (
@@ -201,7 +202,7 @@ export function PriorityChart({ issues }: { issues: { priority: string; createdA
           const total = Object.values(entry).reduce((a, b) => a + b, 0);
           const heightPct = (total / maxValue) * 100;
           return (
-            <div key={day} className="flex-1 h-full flex flex-col justify-end" title={`${day}: ${total} issues`}>
+            <div key={day} className="flex-1 h-full flex flex-col justify-end" title={t("localizationActivity.issuesOnDate", { date: formatDayLabel(day), count: total })}>
               {total > 0 ? (
                 <div className="flex flex-col-reverse gap-px overflow-hidden" style={{ height: `${heightPct}%`, minHeight: 2 }}>
                   {priorityOrder.map(p => entry[p] > 0 ? (
@@ -276,7 +277,7 @@ export function IssueStatusChart({ issues }: { issues: { status: string; created
           const total = Object.values(entry).reduce((a, b) => a + b, 0);
           const heightPct = (total / maxValue) * 100;
           return (
-            <div key={day} className="flex-1 h-full flex flex-col justify-end" title={`${day}: ${total} issues`}>
+            <div key={day} className="flex-1 h-full flex flex-col justify-end" title={t("localizationActivity.issuesOnDate", { date: formatDayLabel(day), count: total })}>
               {total > 0 ? (
                 <div className="flex flex-col-reverse gap-px overflow-hidden" style={{ height: `${heightPct}%`, minHeight: 2 }}>
                   {statusOrder.map(s => (entry[s] ?? 0) > 0 ? (
@@ -316,7 +317,7 @@ export function SuccessRateChart(props: RunChartProps) {
           const rate = entry.total > 0 ? effectiveSucceeded / entry.total : 0;
           const color = entry.total === 0 ? undefined : rate >= 0.8 ? "var(--hex-10b981)" : rate >= 0.5 ? "var(--hex-eab308)" : "var(--hex-ef4444)";
           return (
-            <div key={day} className="flex-1 h-full flex flex-col justify-end" title={`${day}: ${entry.total > 0 ? Math.round(rate * 100) : 0}% (${effectiveSucceeded}/${entry.total})`}>
+            <div key={day} className="flex-1 h-full flex flex-col justify-end" title={`${formatDayLabel(day)}: ${entry.total > 0 ? Math.round(rate * 100) : 0}% (${effectiveSucceeded}/${entry.total})`}>
               {entry.total > 0 ? (
                 <div style={{ height: `${rate * 100}%`, minHeight: 2, backgroundColor: color }} />
               ) : (

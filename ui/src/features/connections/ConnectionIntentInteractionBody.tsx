@@ -1,3 +1,5 @@
+import { useTranslation } from "@/i18n";
+import { Trans } from "react-i18next";
 import { useCallback, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -36,6 +38,7 @@ export function ConnectionIntentInteractionBody({
   currentUserId,
   addresseeLabel,
 }: ConnectionIntentInteractionBodyProps) {
+  const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const focusTargetRef = useRef<HTMLDivElement>(null);
   const queryClient = useQueryClient();
@@ -136,26 +139,26 @@ export function ConnectionIntentInteractionBody({
     interaction.status === "accepted"
       ? {
           icon: CheckCircle2,
-          title: `${interaction.payload.serviceName} connected`,
-          body: `${interaction.payload.requestingAgentName} can use this connection on the continuation run.`,
+          title: t("localizationConnections.serviceConnected", { service: interaction.payload.serviceName }),
+          body: t("localizationConnections.continuationAccess", { agent: interaction.payload.requestingAgentName }),
         }
       : interaction.status === "rejected"
         ? {
             icon: XCircle,
-            title: "Connection declined",
-            body: `${interaction.payload.requestingAgentName} was notified and can continue without it.`,
+            title: t("localizationConnections.connectionDeclined212"),
+            body: t("localizationConnections.declineNotified", { agent: interaction.payload.requestingAgentName }),
           }
         : interaction.status === "expired"
           ? {
               icon: Clock,
               title:
                 resultOutcome === "superseded"
-                  ? "Request superseded"
-                  : "Connection request expired",
+                  ? t("localizationConnections.requestSuperseded214")
+                  : t("localizationConnections.connectionRequestExpired215"),
               body:
                 resultOutcome === "superseded"
-                  ? "A newer run requested this connection. Use the latest card instead."
-                  : "This request is no longer active.",
+                  ? t("localizationConnections.aNewerRunRequestedThisConnectionUseTheLatestC216")
+                  : t("localizationConnections.thisRequestIsNoLongerActive217"),
             }
           : null;
   const StatusIcon = status?.icon;
@@ -197,12 +200,9 @@ export function ConnectionIntentInteractionBody({
           <Clock className="mt-0.5 h-5 w-5 shrink-0 text-muted-foreground" />
           <div>
             <p className="font-medium text-foreground">
-              Waiting for {addresseeLabel}
+              {t("localizationConnections.waitingFor", { name: addresseeLabel })}
             </p>
-            <p className="mt-1 text-sm text-muted-foreground">
-              Only the addressed person can choose an identity or authorize this
-              connection.
-            </p>
+            <p className="mt-1 text-sm text-muted-foreground">{t("localizationConnections.onlyTheAddressedPersonCanChooseAnIdentityOrAu219")}</p>
           </div>
         </div>
       </div>
@@ -229,22 +229,15 @@ export function ConnectionIntentInteractionBody({
           />
           <div>
             <p className="font-medium text-foreground">
-              {interaction.payload.requestingAgentName} needs{" "}
-              {interaction.payload.serviceName}
+              {t("localizationConnections.agentNeedsService", { agent: interaction.payload.requestingAgentName, service: interaction.payload.serviceName })}
             </p>
-            <p className="mt-1 text-sm text-muted-foreground">
-              Connect your identity or reuse an eligible connection. Access is
-              added only for this agent.
-            </p>
+            <p className="mt-1 text-sm text-muted-foreground">{t("localizationConnections.connectYourIdentityOrReuseAnEligibleConnectio221")}</p>
           </div>
         </div>
 
         {needsRetry ? (
           <p className="mt-4 flex items-center gap-2 text-sm text-destructive">
-            <RotateCcw className="h-4 w-4" />
-            Authorization didn’t finish. Your previous choices are safe; try
-            again.
-          </p>
+            <RotateCcw className="h-4 w-4" />{t("localizationConnections.authorizationDidnTFinishYourPreviousChoicesAr222")}</p>
         ) : null}
 
         <div className="mt-4 flex flex-wrap gap-2">
@@ -257,10 +250,10 @@ export function ConnectionIntentInteractionBody({
                   <Plug className="h-4 w-4" />
                 )}
                 {authorizing
-                  ? "Authorizing…"
+                  ? t("localizationConnections.authorizing223")
                   : needsRetry
-                    ? "Try again"
-                    : "Connect / Use existing"}
+                    ? t("localizationConnections.tryAgain32")
+                    : t("localizationConnections.connectUseExisting224")}
               </Button>
             </DialogTrigger>
             <DialogContent
@@ -271,35 +264,26 @@ export function ConnectionIntentInteractionBody({
               }}
             >
               <DialogHeader className="sr-only">
-                <DialogTitle>
-                  Connect {interaction.payload.serviceName}
+                <DialogTitle>{t("localizationConnections.connectApp", { app: interaction.payload.serviceName })}
                 </DialogTitle>
-                <DialogDescription>
-                  Complete connection setup without leaving this task.
-                </DialogDescription>
+                <DialogDescription>{t("localizationConnections.completeConnectionSetupWithoutLeavingThisTask225")}</DialogDescription>
               </DialogHeader>
               {setupQuery.isLoading ? (
                 <div className="flex min-h-48 items-center justify-center gap-2 text-sm text-muted-foreground">
-                  <Loader2 className="h-4 w-4 animate-spin" /> Loading
-                  connection options…
-                </div>
+                  <Loader2 className="h-4 w-4 animate-spin" />{t("localizationConnections.loadingConnectionOptions226")}</div>
               ) : setupQuery.isError ? (
                 <div className="py-8 text-center">
-                  <p className="font-medium text-foreground">
-                    Couldn’t load connection setup
-                  </p>
+                  <p className="font-medium text-foreground">{t("localizationConnections.couldnTLoadConnectionSetup30")}</p>
                   <p className="mt-1 text-sm text-muted-foreground">
                     {setupQuery.error instanceof Error
                       ? setupQuery.error.message
-                      : "Try again."}
+                      : t("localizationConnections.tryAgain227")}
                   </p>
                   <Button
                     className="mt-4"
                     variant="outline"
                     onClick={() => setupQuery.refetch()}
-                  >
-                    Try again
-                  </Button>
+                  >{t("localizationConnections.tryAgain32")}</Button>
                 </div>
               ) : setupQuery.data ? (
                 <ConnectionSetupFlow
@@ -326,9 +310,7 @@ export function ConnectionIntentInteractionBody({
             variant="ghost"
             disabled={declineMutation.isPending || authorizing}
             onClick={() => declineMutation.mutate()}
-          >
-            Not now
-          </Button>
+          >{t("localizationIssueDetail.ui_Not_now")}</Button>
         </div>
 
         {completeMutation.isError ||
@@ -343,7 +325,7 @@ export function ConnectionIntentInteractionBody({
                   declineMutation.error ??
                   phaseMutation.error
                 )?.message
-              : "Couldn’t update this connection request."}
+              : t("localizationConnections.couldnTUpdateThisConnectionRequest228")}
           </p>
         ) : null}
       </div>

@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import type { IssueDocument } from "@paperclipai/shared";
@@ -7,7 +8,8 @@ import { issuesApi } from "@/api/issues";
 import { DocumentAnnotationsCountChip, IssueDocumentAnnotations } from "@/components/IssueDocumentAnnotations";
 import { MarkdownBody } from "@/components/MarkdownBody";
 import { queryKeys } from "@/lib/queryKeys";
-import { documentDisplayTitle } from "@/lib/issue-artifacts";
+import { taskDocumentTitleDisplay as documentDisplayTitle } from "@/lib/task-side-panel-state";
+import { formatDateTime } from "@/lib/utils";
 import { useLocation } from "@/lib/router";
 
 export function TaskDocumentPanel({
@@ -19,6 +21,7 @@ export function TaskDocumentPanel({
   documentKey: string;
   initialDocument?: IssueDocument;
 }) {
+  const { t } = useTranslation();
   const location = useLocation();
   const [annotationPanelOpen, setAnnotationPanelOpen] = useState(false);
   const query = useQuery<IssueDocument | null>({
@@ -38,14 +41,14 @@ export function TaskDocumentPanel({
     return (
       <div className="flex items-center gap-2 py-8 text-sm text-muted-foreground" role="status">
         <Loader2 className="size-4 animate-spin" aria-hidden />
-        Loading document…
+        {t("localizationIssuePanels.ui_Loading_document_u2ja1y")}
       </div>
     );
   }
   if (query.isError) {
     return (
       <div className="py-8 text-sm text-muted-foreground" role="alert">
-        The document could not be loaded. Retry from the tab launcher or refresh the task.
+        {t("localizationIssuePanels.ui_The_document_could_not_be_loaded_Retry_from_the_tab_launcher_or_r_w8xn0j")}
       </div>
     );
   }
@@ -55,9 +58,9 @@ export function TaskDocumentPanel({
       <div className="flex items-start gap-3 py-8 text-sm" role="status">
         <FileQuestion className="mt-0.5 size-5 shrink-0 text-muted-foreground" aria-hidden />
         <div className="space-y-1">
-          <p className="font-medium">Document no longer available</p>
+          <p className="font-medium">{t("localizationIssuePanels.ui_Document_no_longer_available_v5afzj")}</p>
           <p className="text-muted-foreground">
-            This tab is preserved so the missing resource is explicit. Close it or choose another document.
+            {t("localizationIssuePanels.ui_This_tab_is_preserved_so_the_missing_resource_is_explicit_Close_i_97bkvm")}
           </p>
         </div>
       </div>
@@ -69,9 +72,9 @@ export function TaskDocumentPanel({
       <header className="space-y-1">
         <h2 className="text-lg font-semibold">{documentDisplayTitle(document)}</h2>
         <div className="flex flex-wrap items-center gap-1 text-xs text-muted-foreground">
-          <span>{`Revision ${document.latestRevisionNumber ?? 1}`}</span>
+          <span>{t("localizationIssuePanels.revision", { revision: document.latestRevisionNumber ?? 1 })}</span>
           <span aria-hidden>·</span>
-          <span>{`Updated ${new Date(document.updatedAt).toLocaleString()}`}</span>
+          <span>{t("localizationIssuePanels.updatedSentence", { time: formatDateTime(document.updatedAt) })}</span>
           <DocumentAnnotationsCountChip
             issueId={issueId}
             docKey={document.key}
@@ -96,7 +99,7 @@ export function TaskDocumentPanel({
           <MarkdownBody>{document.body}</MarkdownBody>
         </IssueDocumentAnnotations>
       ) : (
-        <p className="text-sm text-muted-foreground">Document is empty.</p>
+        <p className="text-sm text-muted-foreground">{t("localizationIssuePanels.ui_Document_is_empty_tzvgex")}</p>
       )}
     </article>
   );

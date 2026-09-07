@@ -1,3 +1,4 @@
+import { i18n, t, useTranslation } from "@/i18n";
 import type {
   Issue,
   IssuePriority,
@@ -27,7 +28,7 @@ export type RoutineScheduleSummary = {
 };
 
 export function formatRoutineTimestamp(value: Date | string) {
-  return new Date(value).toLocaleString(undefined, {
+  return new Date(value).toLocaleString(i18n.language, {
     dateStyle: "medium",
     timeStyle: "short",
   });
@@ -41,15 +42,15 @@ export function summarizeRoutineSchedule(triggers: RoutineTrigger[]): RoutineSch
     .sort((left, right) => left.getTime() - right.getTime())[0] ?? null;
 
   if (schedules.length === 0) {
-    return { label: "No active schedule", detail: "Manual runs only", nextRunAt: null };
+    return { label: t("localizationRoutines.noActiveSchedule"), detail: t("localizationRoutines.manualOnly"), nextRunAt: null };
   }
 
   const first = schedules[0]!;
   return {
-    label: schedules.length === 1 ? "1 active schedule" : `${schedules.length} active schedules`,
+    label: t("localizationRoutines.activeSchedules", { count: schedules.length }),
     detail: first.cronExpression
       ? `${first.cronExpression}${first.timezone ? ` · ${first.timezone}` : ""}`
-      : first.label ?? "Scheduled trigger",
+      : first.label ?? t("localizationRoutines.scheduledTrigger"),
     nextRunAt,
   };
 }
@@ -119,6 +120,7 @@ function OverviewFact({
   value: React.ReactNode;
   detail?: React.ReactNode;
 }) {
+  useTranslation();
   return (
     <div className="flex min-w-0 flex-col gap-1 rounded-lg border border-border p-3">
       <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
@@ -132,6 +134,7 @@ function OverviewFact({
 }
 
 export function RoutineOverview() {
+  const { t } = useTranslation();
   const { routine, routineRuns, currentAssignee, hasLiveRun } = useRoutineDetail();
   const schedule = summarizeRoutineSchedule(routine.triggers);
   const sortedRuns = [...(routineRuns ?? [])].sort(
@@ -155,32 +158,32 @@ export function RoutineOverview() {
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <OverviewFact
           icon={Repeat}
-          label="State"
+          label={t("pages.secrets.import.columns.state")}
           value={<StatusBadge status={automationState} />}
           detail={hasLiveRun ? "A run is active now" : "No active run"}
         />
         <OverviewFact
           icon={CalendarClock}
-          label="Schedule"
+          label={t("localizationRoutines.schedule")}
           value={schedule.label}
           detail={<span className="font-mono">{schedule.detail}</span>}
         />
         <OverviewFact
           icon={Clock3}
-          label="Next run"
+          label={t("localizationRoutines.nextRun")}
           value={schedule.nextRunAt ? formatRoutineTimestamp(schedule.nextRunAt) : "Not scheduled"}
           detail={schedule.nextRunAt ? "Scheduled" : "Add or enable a schedule"}
         />
         <OverviewFact
           icon={Play}
-          label="Last run"
-          value={lastRun ? <StatusBadge status={lastRun.status} /> : "No runs yet"}
+          label={t("localizationRoutines.lastRun")}
+          value={lastRun ? <StatusBadge status={lastRun.status} /> : t("localizationRoutines.noRunsYet")}
           detail={lastRun ? formatRoutineTimestamp(lastRun.triggeredAt) : "Run manually or wait for the schedule"}
         />
       </div>
 
       <section className="flex flex-col gap-2" aria-labelledby="routine-agent-heading">
-        <h2 id="routine-agent-heading" className="text-sm font-semibold">Default agent</h2>
+        <h2 id="routine-agent-heading" className="text-sm font-semibold">{t("localizationRoutines.defaultAgent")}</h2>
         {currentAssignee ? (
           <Link
             to={`/agents/${currentAssignee.urlKey ?? currentAssignee.id}`}
@@ -190,32 +193,30 @@ export function RoutineOverview() {
             {currentAssignee.name}
           </Link>
         ) : (
-          <p className="text-sm text-muted-foreground">No default agent. Automatic triggers remain paused.</p>
+          <p className="text-sm text-muted-foreground">{t("localizationRoutines.noDefaultAgent")}</p>
         )}
       </section>
 
       <section className="flex flex-col gap-2" aria-labelledby="routine-description-heading">
-        <h2 id="routine-description-heading" className="text-sm font-semibold">Description</h2>
+        <h2 id="routine-description-heading" className="text-sm font-semibold">{t("localizationRoutines.description")}</h2>
         {routine.description?.trim() ? (
           <MarkdownBody className="text-sm text-foreground" linkIssueReferences>
             {routine.description}
           </MarkdownBody>
         ) : (
-          <p className="text-sm text-muted-foreground">No description yet.</p>
+          <p className="text-sm text-muted-foreground">{t("localizationRoutines.noDescriptionYet")}</p>
         )}
       </section>
 
       <section className="flex flex-col gap-2" aria-labelledby="routine-recent-runs-heading">
         <div className="flex items-center justify-between gap-3">
-          <h2 id="routine-recent-runs-heading" className="text-sm font-semibold">Recent runs</h2>
+          <h2 id="routine-recent-runs-heading" className="text-sm font-semibold">{t("localizationActivity.recentRuns")}</h2>
           <Button variant="ghost" size="sm" asChild>
-            <Link to={routineRunsAuditHref(routine.id)}>View all runs</Link>
+            <Link to={routineRunsAuditHref(routine.id)}>{t("localizationRoutines.viewAllRuns")}</Link>
           </Button>
         </div>
         {recentRuns.length === 0 ? (
-          <p className="py-6 text-center text-sm text-muted-foreground">
-            No runs yet. Run the routine now or wait for its schedule.
-          </p>
+          <p className="py-6 text-center text-sm text-muted-foreground">{t("localizationRoutines.noRunsOverview")}</p>
         ) : (
           <div className="flex flex-col gap-0.5">
             {recentRuns.map((run) => run.linkedIssue ? (
@@ -241,7 +242,7 @@ export function RoutineOverview() {
           </div>
         )}
         <Button variant="link" size="sm" className="w-fit px-0" asChild>
-          <Link to={routineActivityAuditHref(routine.id)}>View routine activity</Link>
+          <Link to={routineActivityAuditHref(routine.id)}>{t("localizationRoutines.viewRoutineActivity")}</Link>
         </Button>
       </section>
     </div>

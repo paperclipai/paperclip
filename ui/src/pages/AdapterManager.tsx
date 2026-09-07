@@ -326,7 +326,9 @@ export function AdapterManager() {
       setIsLocalPath(false);
       pushToast({
         title: t("pages.adapterManager.adapterInstalled"),
-        body: `Type "${result.type}" registered successfully.${result.version ? ` (v${result.version})` : ""}`,
+        body: result.version
+          ? t("localizationMiscPages.adapterRegisteredVersion", { type: result.type, version: result.version })
+          : t("localizationMiscPages.adapterRegistered", { type: result.type }),
         tone: "success",
       });
     },
@@ -376,7 +378,9 @@ export function AdapterManager() {
       invalidateConfigSchemaCache(result.type);
       pushToast({
         title: t("pages.adapterManager.adapterReloaded"),
-        body: `Type "${result.type}" reloaded.${result.version ? ` (v${result.version})` : ""}`,
+        body: result.version
+          ? t("localizationMiscPages.adapterReloadedVersion", { type: result.type, version: result.version })
+          : t("localizationMiscPages.adapterReloaded", { type: result.type }),
         tone: "success",
       });
     },
@@ -393,7 +397,9 @@ export function AdapterManager() {
       invalidateConfigSchemaCache(result.type);
       pushToast({
         title: t("pages.adapterManager.adapterReinstalled"),
-        body: `Type "${result.type}" updated from npm.${result.version ? ` (v${result.version})` : ""}`,
+        body: result.version
+          ? t("localizationMiscPages.adapterUpdatedVersion", { type: result.type, version: result.version })
+          : t("localizationMiscPages.adapterUpdated", { type: result.type }),
         tone: "success",
       });
     },
@@ -436,7 +442,7 @@ export function AdapterManager() {
           <Cpu className="h-6 w-6 text-muted-foreground" />
           <h1 className="text-xl font-semibold">{t("pages.adapterManager.adapters")}</h1>
           <Badge variant="outline" className="text-amber-600 border-amber-400">
-            Alpha
+            {t("localizationMiscPages.alpha")}
           </Badge>
         </div>
 
@@ -500,7 +506,7 @@ export function AdapterManager() {
                     <Input
                       id="adapterLocalPath"
                       className="flex-1 font-mono text-xs"
-                      placeholder="/mnt/e/Projects/my-adapter  or  E:\Projects\my-adapter"
+                      placeholder={t("localizationMiscPages.adapterPathExamples", { unixPath: "/mnt/e/Projects/my-adapter", windowsPath: "E:\\Projects\\my-adapter" })}
                       value={installPackage}
                       onChange={(e) => setInstallPackage(e.target.value)}
                     />

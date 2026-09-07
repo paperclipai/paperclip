@@ -1,3 +1,4 @@
+import { i18n, t } from "@/i18n";
 import type { PipelineCaseLiveness } from "@paperclipai/shared";
 
 /**
@@ -39,8 +40,9 @@ export interface LivenessBannerView {
   helperNote: string | null;
 }
 
-const AUTO_RETRY_NOTE =
-  "Paperclip retries automatically once the blocker clears — you don't need to move the item by hand.";
+function autoRetryNote() {
+  return t("localizationActivityTail.autoRetryNote");
+}
 
 /**
  * Prosumer-voice body for the `no_action_path` "stuck" banner. The server's
@@ -48,9 +50,9 @@ const AUTO_RETRY_NOTE =
  * review, or breakdown action path is visible.") leaks implementation vocabulary
  * the PAP-11245 voice rule forbids, so we translate it here. See PAP-11259.
  */
-const NO_ACTION_PATH_BODY =
-  "Paperclip can't see anything to work on next here — no automation, retry, blocker, or review. " +
-  "Re-run the stage to nudge it, or use the ⋯ menu to move it by hand.";
+function noActionPathBody() {
+  return t("localizationActivityTail.noActionPathBody");
+}
 
 /**
  * The `pipelines:write` permission key is the only permission the Phase 2
@@ -106,7 +108,7 @@ export function derivePipelineLivenessBanner(
       return {
         reason: liveness.reason,
         tone: "blocked",
-        title: "Automation paused — waiting on a blocker",
+        title: t("localizationActivityTail.blocked"),
         body: liveness.message,
         blockerLink: blockerLinkFromLiveness(liveness),
         automationLink: automationLinkFromLiveness(liveness),
@@ -114,14 +116,14 @@ export function derivePipelineLivenessBanner(
         showRetry: false,
         retryKind: null,
         retryLabel: "",
-        helperNote: AUTO_RETRY_NOTE,
+        helperNote: autoRetryNote(),
       };
 
     case "linked_issue_blocked":
       return {
         reason: liveness.reason,
         tone: "blocked",
-        title: "Automation paused — waiting on a blocker",
+        title: t("localizationActivityTail.blocked"),
         body: liveness.message,
         blockerLink: blockerLinkFromLiveness(liveness),
         automationLink: automationLinkFromLiveness(liveness),
@@ -129,14 +131,14 @@ export function derivePipelineLivenessBanner(
         showRetry: false,
         retryKind: null,
         retryLabel: "",
-        helperNote: AUTO_RETRY_NOTE,
+        helperNote: autoRetryNote(),
       };
 
     case "permission_preflight_failed":
       return {
         reason: liveness.reason,
         tone: "permission",
-        title: "Permission needed before this can run",
+        title: t("localizationActivityTail.permission"),
         body: liveness.message,
         blockerLink: null,
         automationLink: automationLinkFromLiveness(liveness),
@@ -145,7 +147,7 @@ export function derivePipelineLivenessBanner(
         retryKind: null,
         retryLabel: "",
         helperNote:
-          "Grant the access above to the configured responsible, then Paperclip retries automatically.",
+          t("localizationActivityTail.grantAccess"),
       };
 
     case "automation_failed": {
@@ -157,15 +159,15 @@ export function derivePipelineLivenessBanner(
       return {
         reason: liveness.reason,
         tone: recovered ? "retry" : "attention",
-        title: recovered ? "Blocker resolved — ready to retry" : "Automation failed",
+        title: recovered ? t("localizationActivityTail.resolved") : t("localizationActivityTail.automationFailed"),
         body: liveness.message,
         blockerLink: null,
         automationLink: automationLinkFromLiveness(liveness),
         permissionKey: null,
         showRetry: true,
         retryKind: automationId ? "automation" : "stage",
-        retryLabel: "Retry now",
-        helperNote: recovered ? AUTO_RETRY_NOTE : null,
+        retryLabel: t("localizationActivityTail.retryNow"),
+        helperNote: recovered ? autoRetryNote() : null,
       };
     }
 
@@ -173,14 +175,14 @@ export function derivePipelineLivenessBanner(
       return {
         reason: liveness.reason,
         tone: "attention",
-        title: "Waiting on breakdown evidence",
+        title: t("localizationActivityTail.breakdownPending"),
         body: liveness.message,
         blockerLink: null,
         automationLink: null,
         permissionKey: null,
         showRetry: true,
         retryKind: "stage",
-        retryLabel: "Re-run stage automation",
+        retryLabel: t("localizationActivityTail.rerunStage"),
         helperNote: null,
       };
 
@@ -188,14 +190,14 @@ export function derivePipelineLivenessBanner(
       return {
         reason: liveness.reason,
         tone: "blocked",
-        title: "Breakdown is incomplete",
+        title: t("localizationActivityTail.breakdownIncomplete"),
         body: missingPiecesBody(liveness),
         blockerLink: null,
         automationLink: null,
         permissionKey: null,
         showRetry: true,
         retryKind: "stage",
-        retryLabel: "Re-run stage automation",
+        retryLabel: t("localizationActivityTail.rerunStage"),
         helperNote: null,
       };
 
@@ -203,14 +205,14 @@ export function derivePipelineLivenessBanner(
       return {
         reason: liveness.reason,
         tone: "attention",
-        title: "This item is stuck",
-        body: NO_ACTION_PATH_BODY,
+        title: t("localizationActivityTail.itemStuck"),
+        body: noActionPathBody(),
         blockerLink: null,
         automationLink: null,
         permissionKey: null,
         showRetry: true,
         retryKind: "stage",
-        retryLabel: "Re-run stage automation",
+        retryLabel: t("localizationActivityTail.rerunStage"),
         helperNote: null,
       };
 
@@ -222,12 +224,12 @@ export function derivePipelineLivenessBanner(
 function missingPiecesBody(liveness: PipelineCaseLiveness): string {
   const missing = liveness.breakdown?.missingRequestKeys?.length ?? 0;
   if (missing > 0) {
-    return `${liveness.message} ${missing} expected ${missing === 1 ? "piece is" : "pieces are"} still missing.`;
+    return t("localizationActivityTail.missingPieces", { message: liveness.message, count: missing, value: new Intl.NumberFormat(i18n.resolvedLanguage).format(missing) });
   }
   return liveness.message;
 }
 
-/** True when the PAP-11238 "Re-run stage automation" menu item must be disabled. */
+/** True when the PAP-11238 t("localizationActivityTail.rerunStage") menu item must be disabled. */
 export function shouldDisableRerunForPermission(
   liveness: PipelineCaseLiveness | null | undefined,
 ): boolean {

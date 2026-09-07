@@ -474,6 +474,7 @@ export function RuntimeProvisionStatusValue({
   status: RuntimeProvisionStatus;
   onViewLogs: () => void;
 }) {
+  useTranslation();
   if (status.kind === "eager") {
     return (
       <span className="text-sm text-muted-foreground">{translate("workspaces.provision.eager")}</span>
@@ -517,6 +518,7 @@ export function RuntimeProvisionStatusValue({
 }
 
 function MonoValue({ value, copy }: { value: string; copy?: boolean }) {
+  useTranslation();
   return (
     <div className="inline-flex max-w-full items-start gap-2">
       <span className="break-all font-mono text-xs">{value}</span>
@@ -634,6 +636,7 @@ function WorkspaceRoutineRow({
   runningRoutineId: string | null;
   onRunNow: (routine: RoutineListItem) => void;
 }) {
+  useTranslation();
   const isArchived = routine.status === "archived";
   const isRunning = runningRoutineId === routine.id;
 
@@ -681,6 +684,7 @@ function ExecutionWorkspaceRoutinesList({
   workspace: ExecutionWorkspace;
   project: Project | null;
 }) {
+  useTranslation();
   const queryClient = useQueryClient();
   const { pushToast } = useToastActions();
   const [runDialogRoutine, setRunDialogRoutine] = useState<RoutineListItem | null>(null);
@@ -911,11 +915,11 @@ export function ExecutionWorkspaceDetail() {
   }, [form, inheritedRuntimeConfig]);
   const configuredRuntimeServicePorts = useMemo(
     () => readConfiguredRuntimeServicePorts(configuredRuntimeConfig),
-    [configuredRuntimeConfig],
+    [configuredRuntimeConfig, t],
   );
   const configuredRuntimeServicePortWarnings = useMemo(
     () => getConfiguredRuntimeServicePortWarnings(configuredRuntimeServicePorts),
-    [configuredRuntimeServicePorts],
+    [configuredRuntimeServicePorts, t],
   );
 
   const initialState = useMemo(() => (workspace ? formStateFromWorkspace(workspace) : null), [workspace]);
@@ -1318,7 +1322,7 @@ export function ExecutionWorkspaceDetail() {
                           className="font-mono"
                           value={form.providerRef}
                           onChange={(event) => setForm((current) => current ? { ...current, providerRef: event.target.value } : current)}
-                          placeholder="/path/to/worktree or provider ref"
+                          placeholder={t("localizationWorkspaces.pathOrProviderRef")}
                         />
                       </Field>
                     </div>

@@ -1,3 +1,5 @@
+import { t, useTranslation } from "@/i18n";
+import { taskChatDurationLabel, taskChatToolActivityLabel, taskChatDisplayLabel } from "./task-chat-display";
 import { useRef, useState, type ComponentType, type SVGProps } from "react";
 import { Brain, OctagonX } from "lucide-react";
 import { MarkdownBody } from "@/components/MarkdownBody";
@@ -24,8 +26,8 @@ import { TaskChatToolCard } from "./TaskChatToolCard";
 import { TaskChatUsageReadout } from "./TaskChatUsageReadout";
 import {
   protocolActivityIsRunning,
-  protocolActivityLabel,
-  protocolActivityPresentation,
+  protocolActivityDisplayLabel as protocolActivityLabel,
+  protocolActivityDisplayPresentation as protocolActivityPresentation,
 } from "./task-chat-activity-presentation";
 import {
   buildTurnTimelineRows,
@@ -132,6 +134,7 @@ function FoldedReasoningTicker({
   logicalKey: string;
   text: string;
 }) {
+  useTranslation();
   const [ticker, setTicker] = useState({
     logicalKey,
     motionKey: 0,
@@ -192,6 +195,7 @@ function FoldedLiveNarration({
 }: {
   narration: Extract<FoldedNarration, { kind: "reasoning" }>;
 }) {
+  useTranslation();
   if (!narration.line) return null;
   return (
     <FoldedReasoningTicker
@@ -204,10 +208,10 @@ function FoldedLiveNarration({
 function formatCompactDuration(ms: number | null): string | null {
   if (ms == null || !Number.isFinite(ms)) return null;
   const totalSeconds = Math.max(0, Math.floor(ms / 1000));
-  if (totalSeconds < 60) return `${totalSeconds}s`;
+  if (totalSeconds < 60) return taskChatDurationLabel(`${totalSeconds}s`);
   const minutes = Math.floor(totalSeconds / 60);
   const seconds = totalSeconds % 60;
-  return seconds === 0 ? `${minutes}m` : `${minutes}m ${seconds}s`;
+  return taskChatDurationLabel(seconds === 0 ? `${minutes}m` : `${minutes}m ${seconds}s`);
 }
 
 function terminalStatusFailed(status: string): boolean {
@@ -220,6 +224,7 @@ function terminalStatusFailed(status: string): boolean {
 }
 
 function RunnerActivityTimeline({ items }: { items: readonly TaskChatItem[] }) {
+  useTranslation();
   if (items.length === 0) return null;
   return (
     <div className="relative ml-4 min-w-0 pl-6">
@@ -230,7 +235,7 @@ function RunnerActivityTimeline({ items }: { items: readonly TaskChatItem[] }) {
       />
       <ol
         className="flex min-w-0 flex-col gap-2 py-1"
-        aria-label="Run activity"
+        aria-label={t("localizationTaskRuntime.ui_Run_activity_8ny2w3")}
         data-testid="task-chat-runner-activity-list"
       >
         {items.map((item, index) => (
@@ -268,6 +273,7 @@ function RunnerActivityTimeline({ items }: { items: readonly TaskChatItem[] }) {
 }
 
 function RunnerActivityMarker({ item }: { item: TaskChatMarkerItem }) {
+  useTranslation();
   return (
     <div className="flex min-h-6 min-w-0 items-center gap-2 py-1 text-xs text-destructive">
       <span className="flex w-5 shrink-0 items-center justify-center">
@@ -277,7 +283,7 @@ function RunnerActivityMarker({ item }: { item: TaskChatMarkerItem }) {
           data-testid="task-chat-marker-icon"
         />
       </span>
-      <span className="shrink-0 font-medium">{item.label}</span>
+      <span className="shrink-0 font-medium">{taskChatDisplayLabel(item.label)}</span>
       {item.detail ? (
         <span className="min-w-0 truncate text-muted-foreground">
           {item.detail}
@@ -298,6 +304,7 @@ function RunnerTurnStatus({
   finishedAtMs?: number | null;
   continuedAfterSteering?: boolean;
 }) {
+  useTranslation();
   const terminal = isTerminalRunStatus(status);
   useSecondTick(!terminal && startedAtMs != null);
   const elapsedMs =
@@ -310,15 +317,15 @@ function RunnerTurnStatus({
   const elapsed = formatCompactDuration(elapsedMs);
 
   const failed = terminalStatusFailed(status);
-  const label = terminal ? (failed ? "Stopped" : "Worked") : "Working";
-  const semanticLabel = terminal
-    ? elapsed
-      ? `${label} ${failed ? "after" : "for"} ${elapsed}`
-      : label
-    : `${label} for ${elapsed ?? "0s"}`;
-  const visibleLabel = continuedAfterSteering
-    ? `Continued after steering · ${semanticLabel}`
-    : semanticLabel;
+  const label = terminal ? (failed ? t("localizationTaskRuntime.ui_Stopped_118y86m") : t("localizationTaskRuntime.worked")) : t("localizationTaskRuntime.ui_Working_1pyssg8");
+const semanticLabel = terminal
+? elapsed
+? t(failed ? "localizationTaskRuntime.stoppedAfter" : "localizationTaskRuntime.workedDuration", { duration: elapsed })
+: label
+: t("localizationTaskRuntime.workingFor", { duration: elapsed ?? taskChatDurationLabel("0s") });
+const visibleLabel = continuedAfterSteering
+? t("localizationTaskRuntime.continuedAfterSteeringLabel", { label: semanticLabel })
+: semanticLabel;
 
   return (
     <span
@@ -340,6 +347,7 @@ function RunnerCurrentActivityTail({
   items: readonly TaskChatItem[];
   status: string;
 }) {
+  useTranslation();
   if (isTerminalRunStatus(status)) return null;
   const activity = lastOf<
     TaskChatThinkingItem | TaskChatToolItem | TaskChatProtocolItem
@@ -354,14 +362,14 @@ function RunnerCurrentActivityTail({
   );
 
   let Icon: ComponentType<SVGProps<SVGSVGElement>> | null = null;
-  let label = "Thinking";
+  let label = t("localizationTaskRuntime.ui_Thinking_jkajtp");
   let detail: string | undefined;
   let family: string | undefined;
   let active = true;
   if (activity?.kind === "tool") {
     const taxonomy = toolTaxonomy(activity.rawName ?? activity.name);
     Icon = taxonomy.icon;
-    label = taxonomy.verbLabel;
+    label = taskChatToolActivityLabel(taxonomy.verbLabel);
     detail = activity.target;
     active = activity.status === "pending" || activity.status === "in_progress";
   } else if (activity?.kind === "protocol") {
@@ -450,6 +458,7 @@ export function TaskChatRunnerTurn({
     decision: TaskChatRuntimeRequestDecision,
   ) => void | Promise<void>;
 }) {
+  useTranslation();
   const terminal = isTerminalRunStatus(status);
   const narration = latestFoldedNarration(items);
   const currentActivityItems = currentActivityStatusItems(items);
@@ -541,7 +550,7 @@ export function TaskChatRunnerTurn({
           role="status"
           data-testid="task-chat-activity-unavailable"
         >
-          Live runner activity is temporarily unavailable. Retrying…
+          {t("localizationTaskRuntime.ui_Live_runner_activity_is_temporarily_unavailable_Retrying_ts41ok")}
         </div>
       ) : null}
       {timelineRows.length > 0 ? (

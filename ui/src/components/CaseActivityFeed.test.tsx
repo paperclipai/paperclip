@@ -102,7 +102,7 @@ describe("CaseActivityFeed", () => {
       event({ kind: "status_changed", payload: { previousStatus: "draft", status: "in_review" } }),
     ]);
     // The status-transition detail only appears in the status_changed row.
-    expect(container.textContent).toContain("draft → in_review");
+    expect(container.textContent).toContain("Draft → In Review");
 
     // Open the activity filter dropdown and choose "created"; only created
     // rows remain, so the status-transition detail disappears.
@@ -116,7 +116,7 @@ describe("CaseActivityFeed", () => {
     );
     expect(createdItem).toBeTruthy();
     act(() => createdItem!.dispatchEvent(new MouseEvent("click", { bubbles: true })));
-    expect(container.textContent).not.toContain("draft → in_review");
+    expect(container.textContent).not.toContain("Draft → In Review");
     act(() => root.unmount());
   });
 });

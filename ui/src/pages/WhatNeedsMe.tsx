@@ -38,6 +38,7 @@ import {
   type AttentionGroupBy,
   type AttentionSortOrder,
 } from "../lib/attention";
+import { attentionGroupLabelDisplay } from "../lib/attention";
 import { hasBlockingShortcutDialog, resolveAttentionQueueKeyAction } from "../lib/keyboardShortcuts";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { AttentionQueueRow } from "../components/AttentionQueueRow";
@@ -559,7 +560,7 @@ export function WhatNeedsMe() {
           ) : (
             <>
               {groups.map((group) => {
-              const groupLabel = group.label;
+              const groupLabel = attentionGroupLabelDisplay(group);
               const collapsed = groupLabel !== null && collapsedGroupKeys.has(group.key);
               return (
                 <section key={group.key} className="space-y-2">
@@ -688,10 +689,7 @@ export function WhatNeedsMe() {
               onToggle={() => setAgingOpen((prev) => !prev)}
             >
               <p className="text-xs text-muted-foreground">
-                {t("pages.tasks.agingDescription", {
-                  defaultValue: "Idle past {{days}} days — kept off the desk. Keep any you still want surfaced.",
-                  days: ATTENTION_AGING_DAYS,
-                })}
+                {t("localizationAttention.deskIdle", { count: ATTENTION_AGING_DAYS })}
               </p>
               {agingItems.map((item) => (
                 <AgingItemRow
@@ -782,18 +780,11 @@ export function DecisionBundleHeader({
   count: number;
 }) {
   const { t } = useTranslation();
-  const noun = count === 1
-    ? t("pages.tasks.decisionSingular", { defaultValue: "decision" })
-    : t("pages.tasks.decisionPlural", { defaultValue: "decisions" });
+
   return (
     <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 rounded-sm border-l-2 border-violet-500/60 bg-violet-500/5 px-3 py-1.5 text-xs">
       <span className="font-semibold text-violet-800 dark:text-violet-200">
-        {t("pages.tasks.bundleProposed", {
-          defaultValue: "{{agentName}} proposed {{count}} {{noun}}",
-          agentName: agentName ?? t("pages.tasks.anAgent", { defaultValue: "An agent" }),
-          count,
-          noun,
-        })}
+        {t("localizationAttention.bundleProposed", { agent: agentName ?? t("pages.tasks.anAgent", { defaultValue: "An agent" }), count })}
       </span>
       {originIssue && (originIssue.identifier || originIssue.title) && (
         <span className="text-muted-foreground">
@@ -808,7 +799,7 @@ export function DecisionBundleHeader({
         </span>
       )}
       {title && <span className="text-muted-foreground">· {title}</span>}
-      <span className="text-muted-foreground">{t("pages.tasks.bundlePending", { defaultValue: "· {{count}} pending", count })}</span>
+      <span className="text-muted-foreground">{t("localizationAttention.bundlePending", { count })}</span>
     </div>
   );
 }

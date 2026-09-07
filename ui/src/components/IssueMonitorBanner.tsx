@@ -1,3 +1,4 @@
+import { t, i18n, useTranslation } from "@/i18n";
 import { useMemo } from "react";
 import { Clock } from "lucide-react";
 import type { Issue } from "@paperclipai/shared";
@@ -9,6 +10,8 @@ import {
   deriveMonitorState,
   formatMonitorAbsolute,
   formatMonitorEta,
+  formatMonitorEtaDisplay,
+  formatMonitorAbsoluteDisplay,
   useMonitorCountdown,
   type DerivedMonitorState,
   type MonitorDisplayState,
@@ -111,13 +114,51 @@ export function buildMonitorSurfaceCopy(
   };
 }
 
+/** Display projection only; the raw builder remains stable for callers and tests. */
+export function buildMonitorSurfaceCopyDisplay(derived: DerivedMonitorState, now: MonitorDate): MonitorSurfaceCopy | null {
+  const raw = buildMonitorSurfaceCopy(derived, now);
+  if (!raw || !derived.nextCheckAt || i18n.resolvedLanguage === "en") return raw;
+  const eta = formatMonitorEtaDisplay(derived.nextCheckAt, now);
+  const absolute = formatMonitorAbsoluteDisplay(derived.nextCheckAt, {}, now);
+  const retryOnly = derived.source === "scheduled-retry";
+  let bannerTitle: string;
+  let stripTitle: string;
+  let statusHint: string | null = null;
+  switch (derived.state) {
+    case "scheduled":
+    case "retrying":
+      bannerTitle = t(retryOnly ? "localizationIssueChrome.monitorAgentResumes" : "localizationIssueChrome.monitorWaitResumes", { eta });
+      stripTitle = t("localizationIssueChrome.monitorResumes", { eta });
+      break;
+    case "due-now":
+      bannerTitle = t(retryOnly ? "localizationIssueChrome.monitorAgentDue" : "localizationIssueChrome.monitorWaitDue");
+      stripTitle = t("localizationIssueChrome.monitorDue");
+      statusHint = t("localizationIssueChrome.monitorMomentarily");
+      break;
+    default:
+      bannerTitle = t(retryOnly ? "localizationIssueChrome.monitorAgentOverdue" : "localizationIssueChrome.monitorWaitOverdue", { eta });
+      stripTitle = capitalize(eta);
+      statusHint = t("localizationIssueChrome.monitorNextTick");
+  }
+  const attempt = derived.attemptCount >= 1 ? t("localizationIssueChrome.monitorAttempt", { attempt: derived.attemptCount }) : null;
+  const service = derived.serviceName ? t("localizationIssueChrome.monitorService", { service: derived.serviceName }) : null;
+  return {
+    ...raw,
+    bannerTitle,
+    stripTitle,
+    bannerMeta: [statusHint, t("localizationIssueChrome.monitorLocalTime", { time: absolute }), attempt, service].filter((value): value is string => Boolean(value)),
+    stripMeta: [statusHint, absolute, attempt, service].filter((value): value is string => Boolean(value)),
+  };
+}
+
 function useMonitorSurfaceCopy(issue: Issue): MonitorSurfaceCopy | null {
+  const { t } = useTranslation();
   // `nextCheckAt` is stable for a given issue; derive once to seed the ticking
   // countdown cadence, then re-derive against the live clock so the surfaces
   // roll scheduled → due → overdue on their own.
   const nextCheckAt = useMemo(() => deriveMonitorState(issue).nextCheckAt, [issue]);
   const now = useMonitorCountdown(nextCheckAt);
-  return useMemo(() => buildMonitorSurfaceCopy(deriveMonitorState(issue, now), now), [issue, now]);
+  return useMemo(() => buildMonitorSurfaceCopyDisplay(deriveMonitorState(issue, now), now), [issue, now, t]);
 }
 
 function CheckNowButton({
@@ -127,6 +168,7 @@ function CheckNowButton({
   onCheckNow: () => void;
   checkingNow: boolean;
 }) {
+  const { t } = useTranslation();
   return (
     <Button
       type="button"
@@ -136,7 +178,7 @@ function CheckNowButton({
       onClick={onCheckNow}
       disabled={checkingNow}
     >
-      {checkingNow ? "Checking…" : "Check now"}
+      {checkingNow ? t("localizationIssueChrome.checking") : t("localizationIssueChrome.checkNow")}
     </Button>
   );
 }
@@ -184,6 +226,7 @@ export function IssueMonitorComposerStrip({
   checkingNow = false,
   className,
 }: IssueMonitorSurfaceProps & { className?: string }) {
+  const { t } = useTranslation();
   const copy = useMonitorSurfaceCopy(issue);
   if (!copy) return null;
 
@@ -204,7 +247,7 @@ export function IssueMonitorComposerStrip({
         {onCheckNow ? <CheckNowButton onCheckNow={onCheckNow} checkingNow={checkingNow} /> : null}
       </div>
       <p className="mt-1.5 text-xs text-muted-foreground">
-        Sending a reply wakes the agent now — before the scheduled check.
+        {t("localizationIssueChrome.replyWakesAgent")}
       </p>
     </div>
   );

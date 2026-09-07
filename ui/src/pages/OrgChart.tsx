@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import { useEffect, useRef, useState, useMemo, useCallback } from "react";
 import { Link, useNavigate } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
@@ -12,7 +13,8 @@ import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { AgentIcon } from "../components/AgentIconPicker";
 import { Download, Maximize2, Minus, Network, Plus, Upload } from "lucide-react";
-import { AGENT_ROLE_LABELS, type Agent } from "@paperclipai/shared";
+import { agentRoleLabel } from "../lib/entity-labels";
+import { type Agent } from "@paperclipai/shared";
 import { useCloudInstance } from "@/hooks/useCloudInstance";
 import { useHiddenSettings } from "@/hooks/useHiddenSettings";
 
@@ -206,6 +208,7 @@ export interface OrgChartProps {
 }
 
 export function OrgChart({ orgTree: providedOrgTree, agents: providedAgents, embedded = false }: OrgChartProps = {}) {
+  const { t } = useTranslation();
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const navigate = useNavigate();
@@ -238,8 +241,8 @@ export function OrgChart({ orgTree: providedOrgTree, agents: providedAgents, emb
   }, [agents]);
 
   useEffect(() => {
-    if (!embedded) setBreadcrumbs([{ label: "Org Chart" }]);
-  }, [embedded, setBreadcrumbs]);
+    if (!embedded) setBreadcrumbs([{ label: t("pages.org.title") }]);
+  }, [embedded, setBreadcrumbs, t]);
 
   // Layout computation
   const layout = useMemo(() => layoutForest(orgTree ?? []), [orgTree]);
@@ -465,7 +468,7 @@ export function OrgChart({ orgTree: providedOrgTree, agents: providedAgents, emb
   }, [pan, zoom]);
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={Network} message="Select an organization to view the org chart." />;
+    return <EmptyState icon={Network} message={t("pages.orgChart.selectCompany")} />;
   }
 
   if (providedOrgTree === undefined && isLoading) {
@@ -473,7 +476,7 @@ export function OrgChart({ orgTree: providedOrgTree, agents: providedAgents, emb
   }
 
   if (orgTree && orgTree.length === 0) {
-    return <EmptyState icon={Network} message="No organizational hierarchy defined." />;
+    return <EmptyState icon={Network} message={t("pages.agents.noOrg")} />;
   }
 
   return (
@@ -487,17 +490,13 @@ export function OrgChart({ orgTree: providedOrgTree, agents: providedAgents, emb
         {showImport ? (
           <Link to="/company/import">
             <Button variant="outline" size="sm">
-              <Upload className="mr-1.5 h-3.5 w-3.5" />
-              Import organization
-            </Button>
+              <Upload className="mr-1.5 h-3.5 w-3.5" />{t("pages.orgChart.importCompany")}</Button>
           </Link>
         ) : null}
         {showExport ? (
           <Link to="/company/export">
             <Button variant="outline" size="sm">
-              <Download className="mr-1.5 h-3.5 w-3.5" />
-              Export organization
-            </Button>
+              <Download className="mr-1.5 h-3.5 w-3.5" />{t("pages.orgChart.exportCompany")}</Button>
           </Link>
         ) : null}
         </div>
@@ -534,8 +533,8 @@ export function OrgChart({ orgTree: providedOrgTree, agents: providedAgents, emb
                 });
               }
             }}
-            title="Zoom in"
-            aria-label="Zoom in"
+            title={t("pages.orgChart.zoomIn")}
+            aria-label={t("pages.orgChart.zoomIn")}
           >
             <Plus className="h-4 w-4 sm:h-3.5 sm:w-3.5" />
           </button>
@@ -550,16 +549,16 @@ export function OrgChart({ orgTree: providedOrgTree, agents: providedAgents, emb
                 });
               }
             }}
-            title="Zoom out"
-            aria-label="Zoom out"
+            title={t("pages.orgChart.zoomOut")}
+            aria-label={t("pages.orgChart.zoomOut")}
           >
             <Minus className="h-4 w-4 sm:h-3.5 sm:w-3.5" />
           </button>
           <button
             className="flex size-9 items-center justify-center rounded border border-border bg-background text-(length:--text-nano) transition-colors hover:bg-accent sm:size-7"
             onClick={fitToScreen}
-            title="Fit to screen"
-            aria-label="Fit chart to screen"
+            title={t("pages.orgChart.fitToScreen")}
+            aria-label={t("pages.orgChart.fitChartToScreen")}
           >
             <Maximize2 className="h-4 w-4 sm:h-3.5 sm:w-3.5" />
           </button>
@@ -666,8 +665,6 @@ export function OrgChart({ orgTree: providedOrgTree, agents: providedAgents, emb
   );
 }
 
-const roleLabels: Record<string, string> = AGENT_ROLE_LABELS;
-
 function roleLabel(role: string): string {
-  return roleLabels[role] ?? role;
+  return agentRoleLabel(role);
 }

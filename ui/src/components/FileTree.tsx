@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import type { KeyboardEvent, ReactNode } from "react";
 import { useMemo, useRef, useState } from "react";
 import { cn } from "../lib/utils";
@@ -217,18 +218,18 @@ export function parseFrontmatter(content: string): { data: FrontmatterData; body
 }
 
 export const FRONTMATTER_FIELD_LABELS: Record<string, string> = {
-  name: "Name",
-  title: "Title",
-  kind: "Kind",
-  reportsTo: "Reports to",
-  skills: "Skills",
-  status: "Status",
-  description: "Description",
-  priority: "Priority",
-  assignee: "Responsible",
-  project: "Project",
-  recurring: "Recurring",
-  targetDate: "Target date",
+  get name() { return t("localizationProjects.frontmatter_name"); },
+  get title() { return t("localizationProjects.frontmatter_title"); },
+  get kind() { return t("localizationProjects.frontmatter_kind"); },
+  get reportsTo() { return t("localizationProjects.frontmatter_reportsTo"); },
+  get skills() { return t("localizationProjects.frontmatter_skills"); },
+  get status() { return t("localizationProjects.frontmatter_status"); },
+  get description() { return t("localizationProjects.frontmatter_description"); },
+  get priority() { return t("localizationProjects.frontmatter_priority"); },
+  get assignee() { return t("localizationProjects.frontmatter_assignee"); },
+  get project() { return t("localizationProjects.frontmatter_project"); },
+  get recurring() { return t("localizationProjects.frontmatter_recurring"); },
+  get targetDate() { return t("localizationProjects.frontmatter_targetDate"); },
 };
 
 // -- File tree component -----------------------------------------------------
@@ -275,8 +276,10 @@ export function FileTree({
   loading = false,
   error,
   empty,
-  ariaLabel = "Files",
+  ariaLabel,
 }: FileTreeProps) {
+  const { t } = useTranslation();
+  const treeAriaLabel = ariaLabel ?? t("localizationProjects.fileTreeLabel");
   const effectiveCheckedFiles = checkedFiles ?? new Set<string>();
   const visibleNodes = useMemo(
     () => flattenVisibleNodes(nodes, expandedDirs),
@@ -338,7 +341,7 @@ export function FileTree({
 
   if (loading) {
     return (
-      <div aria-busy="true" aria-label={ariaLabel} role="tree" className="py-1">
+      <div aria-busy="true" aria-label={treeAriaLabel} role="tree" className="py-1">
         {[0, 1, 2, 3].map((row) => (
           <div key={row} className={cn("flex items-center gap-2 px-4", TREE_ROW_HEIGHT_CLASS)}>
             <Skeleton className="h-4 w-4 shrink-0 rounded-sm" />
@@ -351,7 +354,7 @@ export function FileTree({
 
   if (error) {
     return (
-      <div aria-label={ariaLabel} role="tree" className="p-3">
+      <div aria-label={treeAriaLabel} role="tree" className="p-3">
         <div
           role="treeitem"
           aria-level={1}
@@ -364,13 +367,13 @@ export function FileTree({
                 statusBadge.error ?? statusBadgeDefault,
               )}
             >
-              error
+              {t("localizationProjects.treeError")}
             </Badge>
             <span className="min-w-0 text-destructive">{error.message}</span>
           </div>
           {error.retry && (
             <Button type="button" size="xs" variant="outline" onClick={error.retry}>
-              Retry
+              {t("localizationProjects.treeRetry")}
             </Button>
           )}
         </div>
@@ -380,11 +383,11 @@ export function FileTree({
 
   if (nodes.length === 0) {
     return (
-      <div aria-label={ariaLabel} role="tree" className="p-3">
+      <div aria-label={treeAriaLabel} role="tree" className="p-3">
         <div className="rounded-md border border-dashed border-border px-4 py-8 text-center">
-          <div className="text-sm font-medium">{empty?.title ?? "No files"}</div>
+          <div className="text-sm font-medium">{empty?.title ?? t("localizationProjects.noFiles")}</div>
           <div className="mt-1 text-xs text-muted-foreground">
-            {empty?.description ?? "Files will appear here when they are available."}
+            {empty?.description ?? t("localizationProjects.noFilesDescription")}
           </div>
         </div>
       </div>
@@ -392,7 +395,7 @@ export function FileTree({
   }
 
   return (
-    <div aria-label={ariaLabel} role="tree">
+    <div aria-label={treeAriaLabel} role="tree">
       {visibleNodes.map(({ node, depth }, index) => {
         const expanded = node.kind === "dir" && expandedDirs.has(node.path);
         const { allChecked, someChecked } = checkboxState(node, effectiveCheckedFiles);
@@ -484,7 +487,7 @@ export function FileTree({
                   event.stopPropagation();
                   onToggleDir(node.path);
                 }}
-                aria-label={expanded ? `Collapse ${node.name}` : `Expand ${node.name}`}
+                aria-label={expanded ? t("localizationProjects.collapseFolder", { name: node.name }) : t("localizationProjects.expandFolder", { name: node.name })}
               >
                 {expanded ? (
                   <ChevronDown className="h-3.5 w-3.5" />

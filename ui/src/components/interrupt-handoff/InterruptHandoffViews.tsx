@@ -1,3 +1,5 @@
+import { t, useTranslation } from "@/i18n";
+import { Trans } from "react-i18next";
 import { AlertTriangle, Info, PauseCircle, User, X } from "lucide-react";
 import { cn } from "../../lib/utils";
 import { AgentIcon } from "../AgentIconPicker";
@@ -38,8 +40,34 @@ function agentIcon(agentId: string, resolvers: HandoffChipResolvers): string | n
 
 function userLabel(userId: string, resolvers: HandoffChipResolvers): string {
   const label = resolvers.resolveUserLabel?.(userId) ?? null;
-  const base = label ?? "Board";
-  return resolvers.currentUserId && resolvers.currentUserId === userId ? `${base} (you)` : base;
+  const base = label ?? t("localizationActivityChrome.board");
+  return resolvers.currentUserId && resolvers.currentUserId === userId ? t("localizationActivityChrome.youLabel", { name: base }) : base;
+}
+
+// Only known host-authored copy is translated; custom copy stays verbatim.
+const HANDOFF_DISPLAY_KEYS: Record<string, string> = {
+  "Interrupt the current run?": "localizationActivityChrome.interruptCurrent",
+  "Interrupt & assign": "localizationActivityChrome.interruptAndAssign",
+  "Cancel": "localizationActivityChrome.cancel",
+  "Live agent runs": "localizationActivityChrome.pauseLiveRuns",
+  "Queued wakes": "localizationActivityChrome.queuedWakes",
+  "Agent-owned": "localizationActivityChrome.agentOwned",
+  "Human-owned": "localizationActivityChrome.humanOwned",
+  "Static": "localizationActivityChrome.staticTasks",
+  "interrupted now, re-queued when you resume": "localizationActivityChrome.pauseLiveDetail",
+  "held — they won't start until you resume": "localizationActivityChrome.pauseQueuedDetail",
+  "responsible agent; no run is live": "localizationActivityChrome.pauseAgentDetail",
+  "owned by a board user; pausing won't notify them": "localizationActivityChrome.pauseHumanDetail",
+  "no responsible; nothing was going to run": "localizationActivityChrome.pauseStaticDetail",
+};
+function handoffText(text: string): string {
+  return HANDOFF_DISPLAY_KEYS[text] ? t(HANDOFF_DISPLAY_KEYS[text]) : text;
+}
+function interruptBannerText(banner: string): string {
+  const suffix = " is running — changing the responsible will interrupt this run.";
+  if (!banner.endsWith(suffix)) return banner;
+  const name = banner.slice(0, -suffix.length);
+  return t("localizationActivityChrome.interruptBanner", { name: name === "An agent" ? t("localizationActivityChrome.anAgent") : name });
 }
 
 const CHIP_CLASS =
@@ -56,10 +84,11 @@ export function AssigneeChip({
   resolvers: HandoffChipResolvers;
   className?: string;
 }) {
+  const { t } = useTranslation();
   if (assignee.agentId) {
     return (
       <span className={cn(CHIP_CLASS, className)} data-testid="handoff-assignee-chip" data-kind="agent">
-        <span className="sr-only">Agent </span>
+        <span className="sr-only">{t("localizationActivityChrome.agentPrefix")}</span>
         <AgentIcon icon={agentIcon(assignee.agentId, resolvers)} className="h-3 w-3 shrink-0 text-muted-foreground" />
         <span className="max-w-(--sz-12rem) truncate">{agentName(assignee.agentId, resolvers)}</span>
       </span>
@@ -68,7 +97,7 @@ export function AssigneeChip({
   if (assignee.userId) {
     return (
       <span className={cn(CHIP_CLASS, className)} data-testid="handoff-assignee-chip" data-kind="user">
-        <span className="sr-only">User </span>
+        <span className="sr-only">{t("localizationActivityChrome.userPrefix")}</span>
         <User className="h-3 w-3 shrink-0 text-muted-foreground" />
         <span className="max-w-(--sz-12rem) truncate">{userLabel(assignee.userId, resolvers)}</span>
       </span>
@@ -80,8 +109,8 @@ export function AssigneeChip({
       data-testid="handoff-assignee-chip"
       data-kind="unassigned"
     >
-      <span className="sr-only">No responsible — </span>
-      Unassigned
+      <span className="sr-only">{t("localizationActivityChrome.noResponsiblePrefix")}</span>
+      {t("localizationActivityChrome.unassigned")}
     </span>
   );
 }
@@ -97,6 +126,7 @@ export function HandoffWakeRow({
   resolvers: HandoffChipResolvers;
   interruptedRunAttached?: boolean;
 }) {
+  const { t } = useTranslation();
   const info = classifyAssigneeHandoff(to, {
     agentName: to.agentId ? agentName(to.agentId, resolvers) : null,
     interruptedRunAttached,
@@ -107,9 +137,13 @@ export function HandoffWakeRow({
       data-testid="handoff-wake-row"
       data-kind={info.kind}
     >
-      <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Wake</span>
+      <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">{t("localizationActivityChrome.wakeHeading")}</span>
       <span className={cn(info.kind === "agent_wake" ? "text-foreground" : "text-muted-foreground")}>
-        {info.wakeText}
+        {info.kind === "agent_wake" && to.agentId
+          ? t(interruptedRunAttached ? "localizationActivityChrome.queuedForAttached" : "localizationActivityChrome.queuedFor", { name: agentName(to.agentId, resolvers) })
+          : info.kind === "user_handoff"
+            ? t("localizationActivityChrome.noWakeUser")
+            : t("localizationActivityChrome.noWakeUnassigned")}
       </span>
     </div>
   );
@@ -126,15 +160,20 @@ export function RunStatusBadge({
   operatorInterrupted?: boolean;
   className?: string;
 }) {
+  const { t } = useTranslation();
   const p = resolveRunStatusPresentation(status, { operatorInterrupted });
+  const statusKeys: Record<string, string> = {"succeeded":"localizationActivityChrome.runStatus_succeeded","failed":"localizationActivityChrome.runStatus_failed","error":"localizationActivityChrome.runStatus_error","timed_out":"localizationActivityChrome.runStatus_timed_out","running":"localizationActivityChrome.runStatus_running","queued":"localizationActivityChrome.runStatus_queued","pending":"localizationActivityChrome.runStatus_pending","cancelled":"localizationActivityChrome.runStatus_cancelled"};
+  const label = status === "cancelled" && operatorInterrupted
+    ? t("localizationActivityChrome.interrupted")
+    : statusKeys[status] ? t(statusKeys[status]) : p.label;
   return (
     <span
       className={cn("font-medium", p.className, className)}
       data-testid="run-status-badge"
       data-interrupted={operatorInterrupted ? "true" : "false"}
     >
-      {p.label}
-      {p.srHint ? <span className="sr-only"> — {p.srHint}</span> : null}
+      {label}
+      {p.srHint ? <span className="sr-only"> — {t("localizationActivityChrome.interruptedByComment")}</span> : null}
     </span>
   );
 }
@@ -162,7 +201,14 @@ export function ComposerHandoffPreviewRow({
   preview: ComposerHandoffPreview;
   resolvers: HandoffChipResolvers;
 }) {
+  const { t } = useTranslation();
   if (preview.kind === "none") return null;
+  const knownPreviews = [{"kind":"interrupt_handoff_agent","text":"Interrupt current run, hand off to","key":"localizationActivityChrome.interruptPreview"},{"kind":"wake_agent","text":"Wake","key":"localizationActivityChrome.wakePreview"},{"kind":"user_handoff","text":"Hand off to","suffix":"— no agent will be notified","key":"localizationActivityChrome.userPreview"},{"kind":"clear_assignee","text":"Clear responsible — no agent will be notified","key":"localizationActivityChrome.clearPreview"},{"kind":"plain_text_only","text":"No agent will be notified. Use @ to mention an agent.","key":"localizationActivityChrome.plainPreview"}];
+  const knownPreview = knownPreviews.find((entry) => entry.kind === preview.kind && entry.text === preview.text && entry.suffix === preview.suffix);
+  const previewKey = knownPreview?.key ?? (preview.kind === "notify_agent" && preview.text === "Notify"
+    ? preview.chip && !preview.suffix ? "localizationActivityChrome.notifyPreview"
+      : !preview.chip && preview.suffix === "the mentioned agent" ? "localizationActivityChrome.notifyMentionedPreview" : null
+    : null);
   return (
     <div
       className={cn(
@@ -174,9 +220,15 @@ export function ComposerHandoffPreviewRow({
       role="status"
       aria-live="polite"
     >
-      <span>{preview.text}</span>
-      {preview.chip ? <PreviewChip chip={preview.chip} resolvers={resolvers} /> : null}
-      {preview.suffix ? <span>{preview.suffix}</span> : null}
+      {previewKey ? (
+        <Trans t={t} i18nKey={previewKey} components={{ target: preview.chip ? <PreviewChip chip={preview.chip} resolvers={resolvers} /> : <span /> }} />
+      ) : (
+        <>
+          <span>{preview.text}</span>
+          {preview.chip ? <PreviewChip chip={preview.chip} resolvers={resolvers} /> : null}
+          {preview.suffix ? <span>{preview.suffix}</span> : null}
+        </>
+      )}
     </div>
   );
 }
@@ -194,6 +246,7 @@ export function ComposerMentionCoach({
   onInsert: () => void;
   onDismiss: () => void;
 }) {
+  const { t } = useTranslation();
   return (
     <div
       className="flex items-center gap-2 rounded-md border border-amber-300/40 bg-amber-50/70 px-2 py-1.5 text-xs text-amber-700 dark:bg-amber-500/10 dark:text-amber-300"
@@ -203,22 +256,21 @@ export function ComposerMentionCoach({
     >
       <Info className="h-3.5 w-3.5 shrink-0" aria-hidden />
       <span className="min-w-0 flex-1">
-        Did you mean <span className="font-medium">@{candidate.matchedText}</span>? Plain text won't
-        notify or assign an agent.
+        <Trans t={t} i18nKey="localizationActivityChrome.mentionCoach" values={{ name: candidate.matchedText }} components={{ mention: <span className="font-medium" /> }} />
       </span>
       <button
         type="button"
         onClick={onInsert}
         className="shrink-0 rounded border border-amber-400/50 px-1.5 py-0.5 font-medium hover:bg-amber-100/60 dark:hover:bg-amber-500/20"
-        aria-label={`Insert mention for ${agentDisplayName} into your comment`}
+        aria-label={t("localizationActivityChrome.insertMentionAria", { name: agentDisplayName })}
       >
-        Insert mention
+        {t("localizationActivityChrome.insertMention")}
       </button>
       <button
         type="button"
         onClick={onDismiss}
         className="shrink-0 rounded p-0.5 hover:bg-amber-100/60 dark:hover:bg-amber-500/20"
-        aria-label="Dismiss suggestion"
+        aria-label={t("localizationActivityChrome.dismissSuggestion")}
       >
         <X className="h-3.5 w-3.5" aria-hidden />
       </button>
@@ -235,6 +287,7 @@ export function AssigneeRunningBanner({
   copy: ReassignInterruptCopy;
   className?: string;
 }) {
+  useTranslation();
   return (
     <div
       role="status"
@@ -246,7 +299,7 @@ export function AssigneeRunningBanner({
       )}
     >
       <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden />
-      <span className="min-w-0 flex-1">{copy.banner}</span>
+      <span className="min-w-0 flex-1">{interruptBannerText(copy.banner)}</span>
     </div>
   );
 }
@@ -267,6 +320,7 @@ export function InterruptAssignConfirm({
   onConfirm: () => void;
   onCancel: () => void;
 }) {
+  const { t } = useTranslation();
   return (
     <div
       data-testid="interrupt-assign-confirm"
@@ -275,9 +329,9 @@ export function InterruptAssignConfirm({
       <div className="flex items-start gap-1.5">
         <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden />
         <div className="min-w-0 flex-1 space-y-1">
-          <p className="font-medium">{copy.confirmTitle}</p>
+          <p className="font-medium">{handoffText(copy.confirmTitle)}</p>
           <p className="flex flex-wrap items-center gap-1 text-amber-700/90 dark:text-amber-300/90">
-            <span>Hand off to</span>
+            <span>{t("localizationActivityChrome.handOffTo")}</span>
             <AssigneeChip assignee={to} resolvers={resolvers} />
           </p>
         </div>
@@ -288,7 +342,7 @@ export function InterruptAssignConfirm({
           onClick={onCancel}
           className="rounded border border-amber-400/50 px-2 py-0.5 font-medium hover:bg-amber-100/60 dark:hover:bg-amber-500/20"
         >
-          {copy.cancelAction}
+          {handoffText(copy.cancelAction)}
         </button>
         <button
           type="button"
@@ -296,7 +350,7 @@ export function InterruptAssignConfirm({
           data-testid="interrupt-assign-confirm-action"
           className="rounded bg-amber-600 px-2 py-0.5 font-medium text-white hover:bg-amber-700 dark:bg-amber-500 dark:hover:bg-amber-400"
         >
-          {copy.confirmAction}
+          {handoffText(copy.confirmAction)}
         </button>
       </div>
     </div>
@@ -311,6 +365,7 @@ export function PauseAffectsSummaryView({
   summary: PauseAffectsSummary;
   className?: string;
 }) {
+  const { t } = useTranslation();
   const visibleBuckets = summary.buckets.filter((bucket) => bucket.count > 0);
   return (
     <div
@@ -319,12 +374,11 @@ export function PauseAffectsSummaryView({
     >
       <div className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wider text-muted-foreground">
         <PauseCircle className="h-3.5 w-3.5" aria-hidden />
-        What this affects
+        {t("localizationActivityChrome.whatAffected")}
       </div>
       {summary.nothingLive ? (
         <p role="status" className="text-xs text-muted-foreground" data-testid="pause-nothing-live">
-          Nothing live to pause — no agent run is in flight or queued. This records a hold so new work
-          won't start until you resume.
+          {t("localizationActivityChrome.nothingLiveToPause")}
         </p>
       ) : null}
       {visibleBuckets.length > 0 ? (
@@ -335,14 +389,14 @@ export function PauseAffectsSummaryView({
               data-bucket={bucket.key}
               className="flex flex-wrap items-baseline gap-x-1.5 gap-y-0.5 text-xs"
             >
-              <span className="font-medium text-foreground">{bucket.label}:</span>
+              <span className="font-medium text-foreground">{handoffText(bucket.label)}:</span>
               <span className="tabular-nums text-foreground">{bucket.count}</span>
-              <span className="text-muted-foreground">— {bucket.detail}</span>
+              <span className="text-muted-foreground">— {handoffText(bucket.detail)}</span>
             </li>
           ))}
         </ul>
       ) : (
-        <p className="text-xs text-muted-foreground">No tasks are affected.</p>
+        <p className="text-xs text-muted-foreground">{t("localizationActivityChrome.noTasksAffected")}</p>
       )}
     </div>
   );

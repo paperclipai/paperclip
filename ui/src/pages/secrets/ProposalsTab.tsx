@@ -56,6 +56,7 @@ function ProposalRow({
   onReject: (p: SecretProposalView) => void;
   disabled: boolean;
 }) {
+  const { t } = useTranslation();
   const isSecret = proposal.kind === "secret";
   const expiry = expiryLabel(proposal.expiresAt);
   const secret = bindingSecretLabel(proposal);
@@ -151,6 +152,7 @@ export function ProposalsTab({
   companyId: string;
   providerConfigs: CompanySecretProviderConfig[];
 }) {
+  const { t } = useTranslation();
   useTranslation();
   const proposalsQuery = useQuery({
     queryKey: queryKeys.secrets.proposals(companyId, "pending"),

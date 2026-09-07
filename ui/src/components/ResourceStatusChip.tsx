@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import { brandChipBadge, type BrandChipColor } from "@/lib/status-colors";
@@ -33,40 +34,40 @@ interface VariantSpec {
 }
 
 const VARIANTS: Record<ResourceStatusVariant, VariantSpec> = {
-  ready: { color: "green", glyph: "●", label: "Ready", title: "Materialized and matches the shipped default" },
-  needs_setup: { color: "amber", glyph: "⚠", label: "Needs setup", title: "Present but not usable yet" },
-  missing: { color: "amber", glyph: "⚠", label: "Missing", title: "Expected resource absent; reconcile will recreate it" },
-  error: { color: "red", glyph: "✕", label: "Error", title: "Failed to load or reconcile" },
+  ready: { color: "green", glyph: "●", get label() { return t("localizationAgentManagement.resourceStatus0"); }, get title() { return t("localizationAgentManagement.resourceStatus1"); } },
+  needs_setup: { color: "amber", glyph: "⚠", get label() { return t("localizationAgentManagement.resourceStatus2"); }, get title() { return t("localizationAgentManagement.resourceStatus3"); } },
+  missing: { color: "amber", glyph: "⚠", get label() { return t("localizationAgentManagement.resourceStatus4"); }, get title() { return t("localizationAgentManagement.resourceStatus5"); } },
+  error: { color: "red", glyph: "✕", get label() { return t("localizationAgentManagement.resourceStatus6"); }, get title() { return t("localizationAgentManagement.resourceStatus7"); } },
   update_available: {
     color: "blue",
     glyph: "↑",
-    label: "Update available",
-    title: "Unedited — a newer shipped default can be applied",
+    get label() { return t("localizationAgentManagement.resourceStatus8"); },
+    get title() { return t("localizationAgentManagement.resourceStatus9"); },
   },
   drifted: {
     color: "gray",
     glyph: "✎",
-    label: "Drifted",
-    title: "You've edited this; your changes are kept, not overwritten",
+    get label() { return t("localizationAgentManagement.resourceStatus10"); },
+    get title() { return t("localizationAgentManagement.resourceStatus11"); },
   },
   schedule_off: {
     color: "gray",
     glyph: "◌",
-    label: "Schedule off",
-    title: "No background work runs until you enable it — costs zero tokens",
+    get label() { return t("localizationAgentManagement.resourceStatus12"); },
+    get title() { return t("localizationAgentManagement.resourceStatus13"); },
   },
-  schedule_on: { color: "green", glyph: "●", label: "Weekly", title: "Runs on the weekly schedule" },
+  schedule_on: { color: "green", glyph: "●", get label() { return t("localizationAgentManagement.resourceStatus14"); }, get title() { return t("localizationAgentManagement.resourceStatus15"); } },
   pending_approval: {
     color: "amber",
     glyph: "⚠",
-    label: "Pending approval",
-    title: "Waiting on board hire approval before it can run",
+    get label() { return t("localizationAgentManagement.resourceStatus16"); },
+    get title() { return t("localizationAgentManagement.resourceStatus17"); },
   },
   proposal_pending: {
     color: "blue",
     glyph: "↑",
-    label: "Proposal pending",
-    title: "A proposed update is waiting for your review",
+    get label() { return t("localizationAgentManagement.resourceStatus18"); },
+    get title() { return t("localizationAgentManagement.resourceStatus19"); },
   },
 };
 
@@ -82,6 +83,7 @@ export function ResourceStatusChip({
   compact?: boolean;
   className?: string;
 }) {
+  useTranslation();
   const spec = VARIANTS[variant];
   return (
     <Badge

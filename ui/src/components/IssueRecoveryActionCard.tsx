@@ -1,3 +1,6 @@
+import { t, useTranslation, i18n } from "@/i18n";
+import { Trans } from "react-i18next";
+import { formatMonitorOffset } from "@/lib/issue-monitor";
 import { useMemo, useState } from "react";
 import type {
   Agent,
@@ -128,30 +131,23 @@ export interface IssueRecoveryActionCardProps {
 }
 
 const KIND_LABEL: Record<IssueRecoveryActionKind, string> = {
-  missing_disposition: "Missing Disposition",
-  deliberate_wait_without_target: "Wait Without A Target",
-  stranded_assigned_issue: "Stranded Task",
-  workspace_validation: "Workspace Validation",
-  configuration_validation: "Configuration Validation",
-  active_run_watchdog: "Active Watchdog",
-  issue_graph_liveness: "Task Needs Next Step",
+  get missing_disposition() { return t("localizationTaskRuntime.ui_Missing_Disposition_1abnus4"); },
+  get deliberate_wait_without_target() { return t("localizationTaskRuntime.ui_Wait_Without_A_Target_15il2w0"); },
+  get stranded_assigned_issue() { return t("localizationTaskRuntime.ui_Stranded_Task_paup11"); },
+  get workspace_validation() { return t("localizationTaskRuntime.ui_Workspace_Validation_froeq9"); },
+  get configuration_validation() { return t("localizationTaskRuntime.ui_Configuration_Validation_1wid8wc"); },
+  get active_run_watchdog() { return t("localizationTaskRuntime.ui_Active_Watchdog_d52jne"); },
+  get issue_graph_liveness() { return t("localizationTaskRuntime.ui_Task_Needs_Next_Step_j4cexo"); },
 };
 
 const KIND_HEADLINE: Record<IssueRecoveryActionKind, string> = {
-  missing_disposition:
-    "This task's run finished, but no next step was chosen. Choose what happens next — try the task again, mark it done, or send it for review.",
-  deliberate_wait_without_target:
-    "This task's last run stopped to wait, but there is no reviewer, blocker, monitor, or approval to wait for. Paperclip is repairing the next step; the task stays with its owner.",
-  stranded_assigned_issue:
-    "Paperclip retried this task's last run, but there is still no queued run, reviewer, blocker, or other next owner. To get it moving, choose what happens next — try the task again, mark it done, or send it for review.",
-  workspace_validation:
-    "Paperclip stopped this run because the task's git workspace could not be validated.",
-  configuration_validation:
-    "Paperclip stopped before dispatching this run because required secret/env bindings are missing.",
-  active_run_watchdog:
-    "The active run has been silent. Recovery is observing without interrupting it.",
-  issue_graph_liveness:
-    "Paperclip could not find a clear next step for this open task. Choose whether to continue work, send it for review, mark it done, or record what is blocking it.",
+  get missing_disposition() { return t("localizationTaskRuntime.ui_This_task_s_run_finished_but_no_next_step_was_chosen_Choose_what__3l04i6"); },
+  get deliberate_wait_without_target() { return t("localizationTaskRuntime.ui_This_task_s_last_run_stopped_to_wait_but_there_is_no_reviewer_blo_l34oxz"); },
+  get stranded_assigned_issue() { return t("localizationTaskRuntime.ui_Paperclip_retried_this_task_s_last_run_but_there_is_still_no_queu_1tal3xx"); },
+  get workspace_validation() { return t("localizationTaskRuntime.ui_Paperclip_stopped_this_run_because_the_task_s_git_workspace_could_rxz8fx"); },
+  get configuration_validation() { return t("localizationTaskRuntime.ui_Paperclip_stopped_before_dispatching_this_run_because_required_se_mdzi3h"); },
+  get active_run_watchdog() { return t("localizationTaskRuntime.ui_The_active_run_has_been_silent_Recovery_is_observing_without_inte_1qakayo"); },
+  get issue_graph_liveness() { return t("localizationTaskRuntime.ui_Paperclip_could_not_find_a_clear_next_step_for_this_open_task_Cho_1nnuzb8"); },
 };
 
 /** Shared shell for the retry-timing pill so every timing state reads as the same control. */
@@ -168,7 +164,7 @@ const STATE_TONE: Record<RecoveryCardCardState, {
   divider: string;
 }> = {
   needed: {
-    label: "RECOVERY NEEDED",
+    get label() { return t("localizationTaskRuntime.ui_RECOVERY_NEEDED_rcn3df"); },
     containerClass:
       "border-amber-300/70 bg-amber-50/85 text-amber-950 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-100",
     iconWrapClass: "bg-amber-100 text-amber-800 dark:bg-amber-500/20 dark:text-amber-200",
@@ -178,7 +174,7 @@ const STATE_TONE: Record<RecoveryCardCardState, {
     divider: "border-amber-300/60 dark:border-amber-500/30",
   },
   in_progress: {
-    label: "RECOVERY IN PROGRESS",
+    get label() { return t("localizationTaskRuntime.ui_RECOVERY_IN_PROGRESS_12zrtvc"); },
     containerClass:
       "border-sky-300/70 bg-sky-50/80 text-sky-950 dark:border-sky-500/40 dark:bg-sky-500/10 dark:text-sky-100",
     iconWrapClass: "bg-sky-100 text-sky-800 dark:bg-sky-500/20 dark:text-sky-200",
@@ -188,7 +184,7 @@ const STATE_TONE: Record<RecoveryCardCardState, {
     divider: "border-sky-300/60 dark:border-sky-500/30",
   },
   observe_only: {
-    label: "OBSERVING ACTIVE RUN",
+    get label() { return t("localizationTaskRuntime.ui_OBSERVING_ACTIVE_RUN_kal09b"); },
     containerClass:
       "border-border bg-muted/40 text-foreground dark:bg-muted/20",
     iconWrapClass: "bg-muted text-foreground/70",
@@ -198,7 +194,7 @@ const STATE_TONE: Record<RecoveryCardCardState, {
     divider: "border-border/70",
   },
   escalated: {
-    label: "RECOVERY ESCALATED",
+    get label() { return t("localizationTaskRuntime.ui_RECOVERY_ESCALATED_l3176i"); },
     containerClass:
       "border-red-400/60 bg-red-50/85 text-red-950 dark:border-red-500/40 dark:bg-red-500/10 dark:text-red-100",
     iconWrapClass: "bg-red-100 text-red-800 dark:bg-red-500/20 dark:text-red-200",
@@ -208,7 +204,7 @@ const STATE_TONE: Record<RecoveryCardCardState, {
     divider: "border-red-400/50 dark:border-red-500/30",
   },
   resolved: {
-    label: "RECOVERY RESOLVED",
+    get label() { return t("localizationTaskRuntime.ui_RECOVERY_RESOLVED_1tfmzlu"); },
     containerClass:
       "border-emerald-300/70 bg-emerald-50/80 text-emerald-950 dark:border-emerald-500/40 dark:bg-emerald-500/10 dark:text-emerald-100",
     iconWrapClass: "bg-emerald-100 text-emerald-800 dark:bg-emerald-500/20 dark:text-emerald-200",
@@ -221,10 +217,10 @@ const STATE_TONE: Record<RecoveryCardCardState, {
 
 const OUTCOME_LABEL: Record<IssueRecoveryActionOutcome, string> = {
   restored: "restored",
-  handed_back: "handed back to original owner",
-  owner_completed: "completed by recovery owner",
-  delegated: "delegated to follow-up",
-  false_positive: "false positive",
+  get handed_back() { return t("localizationTaskRuntime.ui_handed_back_to_original_owner_9x8ikj"); },
+  get owner_completed() { return t("localizationTaskRuntime.ui_completed_by_recovery_owner_4l39ed"); },
+  get delegated() { return t("localizationTaskRuntime.ui_delegated_to_follow_up_1l19v1a"); },
+  get false_positive() { return t("localizationTaskRuntime.ui_false_positive_17dhhnf"); },
   blocked: "blocked",
   escalated: "escalated",
   cancelled: "cancelled",
@@ -394,15 +390,15 @@ const ANCESTRY_BADGE: Record<
   { label: string; className: string }
 > = {
   ancestor: {
-    label: "Forward-only",
+    get label() { return t("localizationTaskRuntime.ui_Forward_only_1wiabgn"); },
     className: "border-emerald-400/50 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
   },
   diverged: {
-    label: "Diverged",
+    get label() { return t("localizationTaskRuntime.ui_Diverged_12ugv55"); },
     className: "border-red-400/50 bg-red-500/10 text-red-700 dark:text-red-300",
   },
   unknown: {
-    label: "Ancestry unknown",
+    get label() { return t("localizationTaskRuntime.ui_Ancestry_unknown_1s4kfhu"); },
     className: "border-border bg-muted/60 text-muted-foreground",
   },
 };
@@ -416,6 +412,7 @@ function BranchFacet({
   branch: string | null;
   sha: string | null;
 }) {
+  const { t } = useTranslation();
   const shortSha = formatShortSha(sha);
   return (
     <div className="min-w-0 rounded-md border border-border/70 bg-background/60 px-2.5 py-2">
@@ -427,7 +424,7 @@ function BranchFacet({
         {branch ? (
           <code className="truncate font-mono text-xs text-foreground/90">{branch}</code>
         ) : (
-          <span className="text-xs italic text-muted-foreground">detached / unknown</span>
+          <span className="text-xs italic text-muted-foreground">{t("localizationTaskRuntime.ui_detached_unknown_oz18oc")}</span>
         )}
       </div>
       <div className="mt-0.5 pl-5 font-mono text-(length:--text-micro) text-muted-foreground">
@@ -444,6 +441,7 @@ function DivergenceDiagnosis({
   divergence: WorkspaceDivergence;
   dividerClass: string;
 }) {
+  const { t } = useTranslation();
   const badge = ANCESTRY_BADGE[divergence.ancestryVerdict ?? "unknown"];
   return (
     <div
@@ -455,7 +453,7 @@ function DivergenceDiagnosis({
     >
       <div className="flex flex-wrap items-center gap-2">
         <span className="text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-eyebrow) text-muted-foreground">
-          Divergence diagnosis
+          {t("localizationTaskRuntime.ui_Divergence_diagnosis_1n2t632")}
         </span>
         <Badge variant="outline"
           data-testid="recovery-ancestry-verdict"
@@ -469,12 +467,12 @@ function DivergenceDiagnosis({
       </div>
       <div className="grid gap-2 sm:grid-cols-2">
         <BranchFacet
-          label="Expected · recorded"
+          label={t("localizationTaskRuntime.ui_Expected_recorded_1cy6nj4")}
           branch={divergence.expectedBranch}
           sha={divergence.expectedHeadSha}
         />
         <BranchFacet
-          label="Live · checked out"
+          label={t("localizationTaskRuntime.ui_Live_checked_out_11cf5ln")}
           branch={divergence.liveBranch}
           sha={divergence.liveHeadSha}
         />
@@ -489,10 +487,7 @@ function DivergenceDiagnosis({
         >
           <Lock className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden />
           <span>
-            Worktree claimed by{" "}
-            <code className="font-mono text-foreground/90">{contentionLabel(divergence.contention)}</code>{" "}
-            {divergence.contention.hasActiveRun ? "(active run)" : "(claim held)"} — the lossless repair
-            can&apos;t run while another workspace holds the live branch.
+            <Trans i18nKey={divergence.contention.hasActiveRun ? "localizationTaskRuntime.contentionActive" : "localizationTaskRuntime.contentionHeld"} values={{ owner: contentionLabel(divergence.contention) }} components={{ owner: <code className="font-mono text-foreground/90" /> }} />
           </span>
         </p>
       ) : null}
@@ -503,7 +498,7 @@ function DivergenceDiagnosis({
 function contentionLabel(contention: WorkspaceContention): string {
   return (
     contention.claimedByIssueIdentifier ??
-    (contention.claimedByIssueId ? `issue ${contention.claimedByIssueId.slice(0, 8)}` : "another task")
+    (contention.claimedByIssueId ? t("localizationTaskRuntime.issueReference", { id: contention.claimedByIssueId.slice(0, 8) }) : t("localizationTaskRuntime.ui_another_task_1s252sp"))
   );
 }
 
@@ -523,6 +518,7 @@ function BreakGlassOverride({
   onConfirm: (reason: string) => void;
   pending: boolean;
 }) {
+  const { t } = useTranslation();
   const [reason, setReason] = useState("");
   const trimmedReason = reason.trim();
   const canSubmit = trimmedReason.length > 0 && !pending;
@@ -541,7 +537,7 @@ function BreakGlassOverride({
           className="border-red-400/60 text-red-700 hover:bg-red-500/10 dark:border-red-500/40 dark:text-red-300"
         >
           <OctagonAlert className="h-3.5 w-3.5" aria-hidden />
-          I&apos;ve verified this — reconcile anyway
+          {t("localizationTaskRuntime.ui_I_ve_verified_this_reconcile_anyway_xf1ok9")}
         </Button>
       </PopoverTrigger>
       <PopoverContent
@@ -556,13 +552,10 @@ function BreakGlassOverride({
             className="flex items-center gap-1.5 text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-eyebrow) text-red-700 dark:text-red-300"
           >
             <OctagonAlert className="h-3.5 w-3.5" aria-hidden />
-            Break-glass reconciliation
+            {t("localizationTaskRuntime.ui_Break_glass_reconciliation_g31w92")}
           </div>
           <p className="text-xs leading-5 text-muted-foreground">
-            This overrides Paperclip&apos;s safety check and points the recorded workspace at the live
-            branch{" "}
-            <span className="font-medium text-foreground/80">without an ancestry proof</span>. Confirm
-            the divergence below and record why before continuing.
+            <Trans i18nKey="localizationTaskRuntime.breakGlassDescription" components={{ emphasis: <span className="font-medium text-foreground/80" /> }} />
           </p>
         </div>
         <dl
@@ -570,33 +563,33 @@ function BreakGlassOverride({
           className="space-y-1.5 rounded-md border border-red-400/40 bg-red-500/5 px-2.5 py-2 text-(length:--text-micro)"
         >
           <div className="flex items-center justify-between gap-2">
-            <dt className="shrink-0 text-muted-foreground">Recorded · expected</dt>
+            <dt className="shrink-0 text-muted-foreground">{t("localizationTaskRuntime.ui_Recorded_expected_1bewcvk")}</dt>
             <dd className="min-w-0 truncate font-mono text-foreground/90">
-              {divergence.expectedBranch ?? "detached"}
+              {divergence.expectedBranch ?? t("localizationTaskRuntime.ui_detached_1ng32df")}
               {expectedSha ? ` @ ${expectedSha}` : ""}
             </dd>
           </div>
           <div className="flex items-center justify-between gap-2">
-            <dt className="shrink-0 text-muted-foreground">Live · checked out</dt>
+            <dt className="shrink-0 text-muted-foreground">{t("localizationTaskRuntime.ui_Live_checked_out_11cf5ln")}</dt>
             <dd className="min-w-0 truncate font-mono text-foreground/90">
-              {divergence.liveBranch ?? "detached"}
+              {divergence.liveBranch ?? t("localizationTaskRuntime.ui_detached_1ng32df")}
               {liveSha ? ` @ ${liveSha}` : ""}
             </dd>
           </div>
           <div className="flex items-center justify-between gap-2">
-            <dt className="shrink-0 text-muted-foreground">Ancestry verdict</dt>
+            <dt className="shrink-0 text-muted-foreground">{t("localizationTaskRuntime.ui_Ancestry_verdict_at1bkx")}</dt>
             <dd className="font-medium">{verdictBadge.label}</dd>
           </div>
         </dl>
         <div className="space-y-1">
           <Label htmlFor="recovery-breakglass-reason" className="text-(length:--text-micro) text-muted-foreground">
-            Reason <span className="text-red-600 dark:text-red-400">(required — recorded in the audit log)</span>
+            {t("localizationTaskRuntime.ui_Reason_i36sl5")} <span className="text-red-600 dark:text-red-400">{t("localizationTaskRuntime.ui__required_recorded_in_the_audit_log_qkw9vi")}</span>
           </Label>
           <Textarea
             id="recovery-breakglass-reason"
             value={reason}
             onChange={(event) => setReason(event.target.value)}
-            placeholder="e.g. Verified the live branch carries only the intended follow-up commits; safe to adopt."
+            placeholder={t("localizationTaskRuntime.ui_e_g_Verified_the_live_branch_carries_only_the_intended_follow_up__1roxg5l")}
             className="min-h-20 text-xs"
             data-testid="recovery-breakglass-reason"
             aria-required="true"
@@ -614,7 +607,7 @@ function BreakGlassOverride({
             onConfirm(trimmedReason);
           }}
         >
-          {pending ? "Reconciling…" : "Reconcile anyway (break-glass)"}
+          {pending ? t("localizationTaskRuntime.ui_Reconciling_10yih3m") : t("localizationTaskRuntime.ui_Reconcile_anyway_break_glass_1wooz5h")}
         </Button>
       </PopoverContent>
     </Popover>
@@ -642,11 +635,12 @@ function RepairWorkspace({
   disabled: boolean;
   disabledReason: string | null;
 }) {
+  const { t } = useTranslation();
   const dirtyCount = divergence.dirtyFileCount;
   const dirtyLabel =
     dirtyCount === null
-      ? "Uncommitted changes"
-      : `${dirtyCount} uncommitted ${dirtyCount === 1 ? "change" : "changes"}`;
+      ? t("localizationTaskRuntime.ui_Uncommitted_changes_vgiqzl")
+      : t("localizationTaskRuntime.uncommittedCount", { count: dirtyCount });
   const trigger = (
     <Button
       type="button"
@@ -661,7 +655,7 @@ function RepairWorkspace({
       ) : (
         <Wrench className="h-3.5 w-3.5" aria-hidden />
       )}
-      Repair workspace — quarantine changes &amp; restore branch
+      {t("localizationTaskRuntime.ui_Repair_workspace_quarantine_changes_restore_branch_2025n2")}
     </Button>
   );
   if (disabled) {
@@ -693,12 +687,10 @@ function RepairWorkspace({
             className="flex items-center gap-1.5 text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-eyebrow) text-sky-700 dark:text-sky-300"
           >
             <Wrench className="h-3.5 w-3.5" aria-hidden />
-            Repair workspace
+            {t("localizationTaskRuntime.ui_Repair_workspace_a2tpvd")}
           </div>
           <p className="text-xs leading-5 text-muted-foreground">
-            This is lossless — no reason required. Your uncommitted changes are committed onto a fresh
-            rescue branch, then the recorded branch is restored so the task can resume. The live branch
-            is left exactly as it is.
+            {t("localizationTaskRuntime.ui_This_is_lossless_no_reason_required_Your_uncommitted_changes_are__1ilr5zy")}
           </p>
         </div>
         <dl
@@ -706,20 +698,20 @@ function RepairWorkspace({
           className="space-y-1.5 rounded-md border border-sky-400/30 bg-sky-500/5 px-2.5 py-2 text-(length:--text-micro)"
         >
           <div className="flex items-center justify-between gap-2">
-            <dt className="shrink-0 text-muted-foreground">Dirty changes</dt>
+            <dt className="shrink-0 text-muted-foreground">{t("localizationTaskRuntime.ui_Dirty_changes_f5cygm")}</dt>
             <dd data-testid="recovery-repair-dirty-count" className="font-medium text-foreground/90">
               {dirtyLabel}
             </dd>
           </div>
           <div className="flex items-center justify-between gap-2">
-            <dt className="shrink-0 text-muted-foreground">Live branch</dt>
+            <dt className="shrink-0 text-muted-foreground">{t("localizationTaskRuntime.ui_Live_branch_901w9p")}</dt>
             <dd className="min-w-0 truncate font-mono text-foreground/90">
-              {divergence.liveBranch ?? "detached"}
-              <span className="ml-1 font-sans text-muted-foreground">(left untouched)</span>
+              {divergence.liveBranch ?? t("localizationTaskRuntime.ui_detached_1ng32df")}
+              <span className="ml-1 font-sans text-muted-foreground">{t("localizationTaskRuntime.ui__left_untouched_eeauek")}</span>
             </dd>
           </div>
           <div className="flex items-center justify-between gap-2">
-            <dt className="shrink-0 text-muted-foreground">Rescue branch</dt>
+            <dt className="shrink-0 text-muted-foreground">{t("localizationTaskRuntime.ui_Rescue_branch_1snhfzg")}</dt>
             <dd
               data-testid="recovery-repair-rescue-branch"
               className="min-w-0 truncate font-mono text-foreground/90"
@@ -729,9 +721,9 @@ function RepairWorkspace({
             </dd>
           </div>
           <div className="flex items-center justify-between gap-2">
-            <dt className="shrink-0 text-muted-foreground">Restore to</dt>
+            <dt className="shrink-0 text-muted-foreground">{t("localizationTaskRuntime.ui_Restore_to_13bljgu")}</dt>
             <dd className="min-w-0 truncate font-mono text-foreground/90">
-              {divergence.expectedBranch ?? "recorded branch"}
+              {divergence.expectedBranch ?? t("localizationTaskRuntime.ui_recorded_branch_q9aqd3")}
             </dd>
           </div>
         </dl>
@@ -746,7 +738,7 @@ function RepairWorkspace({
             onConfirm();
           }}
         >
-          {pending ? "Repairing…" : "Quarantine changes & restore branch"}
+          {pending ? t("localizationTaskRuntime.ui_Repairing_pc685i") : t("localizationTaskRuntime.ui_Quarantine_changes_restore_branch_bfq5e0")}
         </Button>
       </PopoverContent>
     </Popover>
@@ -758,17 +750,17 @@ function readWakePolicySummary(action: IssueRecoveryAction): string | null {
   if (!policy) return null;
   const type = readEvidenceString(policy.type);
   if (!type) return null;
-  if (type === "wake_owner") return "An agent will be asked to choose the next step";
+  if (type === "wake_owner") return t("localizationTaskRuntime.ui_An_agent_will_be_asked_to_choose_the_next_step_zrk71y");
   if (type === "bounded_owner_disposition_repair") {
-    return "Paperclip is retrying the original owner";
+    return t("localizationTaskRuntime.ui_Paperclip_is_retrying_the_original_owner_1adn32u");
   }
-  if (type === "bounded_recovery_owner") return "A recovery owner is repairing the next step";
-  if (type === "board_escalation") return "Board decision required";
-  if (type === "manual") return "Manual follow-up needed";
-  if (type === "manual_repair_required") return "Repair needed before retry";
+  if (type === "bounded_recovery_owner") return t("localizationTaskRuntime.ui_A_recovery_owner_is_repairing_the_next_step_s00kap");
+  if (type === "board_escalation") return t("localizationTaskRuntime.ui_Board_decision_required_1kwnj60");
+  if (type === "manual") return t("localizationTaskRuntime.ui_Manual_follow_up_needed_155ii0b");
+  if (type === "manual_repair_required") return t("localizationTaskRuntime.ui_Repair_needed_before_retry_x6ltta");
   if (type === "monitor") {
     const interval = readEvidenceString(policy.intervalLabel);
-    return interval ? `Check scheduled · ${interval}` : "Check scheduled";
+    return interval ? t("localizationTaskRuntime.checkScheduledInterval", { interval }) : t("localizationTaskRuntime.ui_Check_scheduled_1cw4bug");
   }
   return type.replaceAll("_", " ");
 }
@@ -782,9 +774,9 @@ function formatTimeShort(value: string | Date | null | undefined): string | null
     const diffMs = date.getTime() - now;
     const absMin = Math.round(Math.abs(diffMs) / 60_000);
     if (absMin < 60) {
-      return diffMs >= 0 ? `in ${absMin}m` : `${absMin}m ago`;
+      return diffMs >= 0 ? t("localizationTaskRuntime.minutesFromNow", { count: absMin }) : t("localizationTaskRuntime.minutesAgo", { count: absMin });
     }
-    return date.toLocaleString(undefined, {
+    return date.toLocaleString(i18n.resolvedLanguage, {
       month: "short",
       day: "numeric",
       hour: "numeric",
@@ -808,6 +800,7 @@ function MetadataRow({
   label: string;
   children: React.ReactNode;
 }) {
+  useTranslation();
   return (
     <div className="grid grid-cols-(--gtc-8) gap-x-3 gap-y-0 px-3 py-1.5 text-xs sm:px-4">
       <dt className="truncate text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">
@@ -819,6 +812,7 @@ function MetadataRow({
 }
 
 function MissingValue() {
+  useTranslation();
   return <span className="text-muted-foreground">—</span>;
 }
 
@@ -831,11 +825,12 @@ function AgentLink({
   agentMap?: ReadonlyMap<string, Agent>;
   fallback?: string | null;
 }) {
+  const { t } = useTranslation();
   if (!agentId) {
     return fallback ? <span>{fallback}</span> : <MissingValue />;
   }
   const agent = agentMap?.get(agentId);
-  const label = agent?.name ?? `agent ${agentId.slice(0, 8)}`;
+  const label = agent?.name ?? t("localizationTaskRuntime.agentReference", { id: agentId.slice(0, 8) });
   if (agent) {
     return (
       <Link
@@ -858,12 +853,13 @@ function RunChip({
   agentId: string | null | undefined;
   status?: string | null;
 }) {
+  const { t } = useTranslation();
   if (!runId) return <MissingValue />;
   const short = shortenRunId(runId);
   const inner = (
     <>
       <code className="rounded bg-background/80 px-1.5 py-0.5 font-mono text-(length:--text-micro) text-foreground/80">
-        run {short}
+        {t("localizationTaskRuntime.runReference", { id: short })}
       </code>
       {status ? (
         <span className="font-sans text-(length:--text-micro) text-muted-foreground">{status}</span>
@@ -887,7 +883,7 @@ function formatTimeAbsolute(value: string | Date | null | undefined): string | n
   if (!value) return null;
   const date = value instanceof Date ? value : new Date(value);
   if (Number.isNaN(date.getTime())) return null;
-  return date.toLocaleString(undefined, {
+  return date.toLocaleString(i18n.resolvedLanguage, {
     month: "short",
     day: "numeric",
     hour: "numeric",
@@ -904,21 +900,22 @@ function lineageHeadline(lineage: RecoveryRetryLineage): string {
   // An attempt that came due and never ran leaves nobody working on this task, even though
   // attempts remain on paper. Say so before any lane wording that ends in "no action needed".
   if (lineage.retryExpired) {
-    return "This task's automatic retry came due and did not run, so nothing is moving it forward right now. Someone must retry it or record the next step. The task stays with its original owner.";
+    return t("localizationTaskRuntime.ui_This_task_s_automatic_retry_came_due_and_did_not_run_so_nothing_i_4d8aka");
   }
   if (lineage.lane === "source_owner") {
     return lineage.exhausted
-      ? "This task's last run stopped to wait, but nothing was waiting for it. The original owner has used every automatic repair attempt, so the next step needs a decision. The task stays with its owner."
-      : "This task's last run stopped to wait, but nothing was waiting for it. Paperclip is retrying the original owner to record a real next step. The task stays with its owner, and no action is needed yet.";
+      ? t("localizationTaskRuntime.ui_This_task_s_last_run_stopped_to_wait_but_nothing_was_waiting_for__1pld6bb")
+      : t("localizationTaskRuntime.ui_This_task_s_last_run_stopped_to_wait_but_nothing_was_waiting_for__w6xxnx");
   }
   if (lineage.lane === "recovery_owner") {
-    return "The original owner could not record a next step within its retry budget. A recovery owner is now repairing the path only — the task itself still belongs to its original owner.";
+    return t("localizationTaskRuntime.ui_The_original_owner_could_not_record_a_next_step_within_its_retry__cu3ztn");
   }
-  return "Automatic recovery is exhausted, so the board must choose the next step. The task itself still belongs to its original owner.";
+  return t("localizationTaskRuntime.ui_Automatic_recovery_is_exhausted_so_the_board_must_choose_the_next_1vv73p7");
 }
 
 /** Spent/remaining attempts as pips. The readable count lives beside it in text. */
 function AttemptMeter({ lineage }: { lineage: RecoveryRetryLineage }) {
+  useTranslation();
   if (lineage.maxAttempts === null || lineage.maxAttempts > 12) return null;
   const spent = Math.min(lineage.attempt, lineage.maxAttempts);
   return (
@@ -945,30 +942,30 @@ const RESOLVE_OPTIONS: Array<{
 }> = [
   {
     outcome: "todo",
-    label: "Try again",
-    description: "Dismiss recovery and return the source task to todo.",
+    get label() { return t("localizationTaskRuntime.ui_Try_again_982hh6"); },
+    get description() { return t("localizationTaskRuntime.ui_Dismiss_recovery_and_return_the_source_task_to_todo_1mvn0q5"); },
   },
   {
     outcome: "done",
-    label: "Mark task done",
-    description: "Restore by recording the requested work as complete.",
+    get label() { return t("localizationTaskRuntime.ui_Mark_task_done_8sbvrv"); },
+    get description() { return t("localizationTaskRuntime.ui_Restore_by_recording_the_requested_work_as_complete_91lefy"); },
   },
   {
     outcome: "in_review",
-    label: "Send for review",
-    description: "Hand off to a reviewer with a real review path.",
+    get label() { return t("localizationTaskRuntime.ui_Send_for_review_1s55ckc"); },
+    get description() { return t("localizationTaskRuntime.ui_Hand_off_to_a_reviewer_with_a_real_review_path_1edyhi8"); },
   },
   {
     outcome: "false_positive_done",
-    label: "False positive, done",
-    description: "Dismiss recovery and mark the source task complete.",
+    get label() { return t("localizationTaskRuntime.ui_False_positive_done_1daw97f"); },
+    get description() { return t("localizationTaskRuntime.ui_Dismiss_recovery_and_mark_the_source_task_complete_zxjjnu"); },
     destructive: true,
     boardOnly: true,
   },
   {
     outcome: "false_positive_in_review",
-    label: "False positive, review",
-    description: "Dismiss recovery and send the source task for review.",
+    get label() { return t("localizationTaskRuntime.ui_False_positive_review_1nsot13"); },
+    get description() { return t("localizationTaskRuntime.ui_Dismiss_recovery_and_send_the_source_task_for_review_xmdlzf"); },
     destructive: true,
     boardOnly: true,
   },
@@ -992,27 +989,28 @@ export function IssueRecoveryActionCard({
   variant = "full",
   className,
 }: IssueRecoveryActionCardProps) {
-  const liveness = useMemo(() => ({ scheduledRetry }), [scheduledRetry]);
+  const { t } = useTranslation();
+  const liveness = useMemo(() => ({ scheduledRetry }), [i18n.resolvedLanguage, scheduledRetry]);
   const cardState: RecoveryCardCardState = forcedState ?? deriveRecoveryCardState(action, liveness);
   const tone = STATE_TONE[cardState];
   const ToneIcon = tone.Icon;
-  const divergence = useMemo(() => readWorkspaceDivergence(action), [action]);
-  const lineage = useMemo(() => readRecoveryRetryLineage(action, liveness), [action, liveness]);
+  const divergence = useMemo(() => readWorkspaceDivergence(action), [i18n.resolvedLanguage, action]);
+  const lineage = useMemo(() => readRecoveryRetryLineage(action, liveness), [i18n.resolvedLanguage, action, liveness]);
 
   const headline = useMemo(() => {
     if (cardState === "resolved" && action.outcome) {
-      return `Recovery resolved as ${OUTCOME_LABEL[action.outcome] ?? action.outcome}.`;
+      return t("localizationTaskRuntime.recoveryResolvedSentence", { outcome: OUTCOME_LABEL[action.outcome] ?? action.outcome });
     }
     if (lineage) return lineageHeadline(lineage);
     return KIND_HEADLINE[action.kind] ?? KIND_HEADLINE.missing_disposition;
-  }, [action.kind, action.outcome, cardState, lineage]);
+  }, [i18n.resolvedLanguage, action.kind, action.outcome, cardState, lineage]);
 
   // A lane with no path left must not keep advertising a retry that will never run — whether
   // the budget ran out or the scheduled attempt simply never fired.
   const wakeSummary = lineage?.retryExpired
-    ? "The scheduled retry did not run — a retry or a decision is needed"
+    ? t("localizationTaskRuntime.ui_The_scheduled_retry_did_not_run_a_retry_or_a_decision_is_needed_j4ypro")
     : lineage?.exhausted && lineage.lane !== "board"
-    ? "Automatic retries are finished — a decision is needed"
+    ? t("localizationTaskRuntime.ui_Automatic_retries_are_finished_a_decision_is_needed_1rx4rqk")
     : readWakePolicySummary(action);
   const evidenceSummary = pickEvidenceSummary(action);
   const sourceRunId = readEvidenceRunId(action, "sourceRunId") ?? readEvidenceRunId(action, "latestRunId");
@@ -1041,13 +1039,7 @@ export function IssueRecoveryActionCard({
   })();
   const updatedAtLabel = formatTimeShort(action.updatedAt);
 
-  const ariaState = ({
-    needed: "needed",
-    in_progress: "in progress",
-    observe_only: "observing active run",
-    escalated: "escalated",
-    resolved: "resolved",
-  } satisfies Record<RecoveryCardCardState, string>)[cardState];
+  const ariaState = t(`localizationTaskRuntime.state_${cardState}`);
 
   const showResolveActions = onResolve !== undefined && cardState !== "resolved";
   const visibleResolveOptions = RESOLVE_OPTIONS.filter((option) => {
@@ -1087,7 +1079,7 @@ export function IssueRecoveryActionCard({
     divergence !== null &&
     divergence.cleanliness === "dirty";
   const repairDisabledReason = repairContention
-    ? `Held by ${contentionLabel(repairContention)} — re-issue on an isolated workspace instead.`
+    ? t("localizationTaskRuntime.heldReissue", { owner: contentionLabel(repairContention) })
     : null;
   // When contended, the re-issue is the recommended path, so it takes the primary emphasis and a
   // "Recommended" hint while the repair button is disabled.
@@ -1102,7 +1094,7 @@ export function IssueRecoveryActionCard({
   return (
     <section
       role="status"
-      aria-label={`Recovery action: ${ariaState}`}
+      aria-label={t("localizationTaskRuntime.recoveryActionState", { state: ariaState })}
       data-recovery-state={cardState}
       data-recovery-kind={action.kind}
       data-recovery-lane={lineage?.lane}
@@ -1145,7 +1137,7 @@ export function IssueRecoveryActionCard({
       <dl className={cn("border-t bg-background/40 dark:bg-background/20", tone.divider)}>
         {lineage ? (
           <>
-            <MetadataRow label="Task owner">
+            <MetadataRow label={t("localizationTaskRuntime.ui_Task_owner_k0czyb")}>
               <span
                 className="inline-flex flex-wrap items-center gap-1.5"
                 data-testid="recovery-source-owner"
@@ -1155,34 +1147,34 @@ export function IssueRecoveryActionCard({
                   agentMap={agentMap}
                   fallback="unassigned"
                 />
-                <span className="text-muted-foreground">keeps this task</span>
+                <span className="text-muted-foreground">{t("localizationTaskRuntime.ui_keeps_this_task_1ec14ow")}</span>
               </span>
             </MetadataRow>
-            <MetadataRow label="Recovery owner">
+            <MetadataRow label={t("localizationTaskRuntime.ui_Recovery_owner_yll8q5")}>
               <span
                 className="inline-flex flex-wrap items-center gap-1.5"
                 data-testid="recovery-recovery-owner"
               >
                 {recoveryOwnerIsSourceOwner ? (
-                  <span className="font-medium">Original owner — retrying itself</span>
+                  <span className="font-medium">{t("localizationTaskRuntime.ui_Original_owner_retrying_itself_byem4o")}</span>
                 ) : action.ownerType === "agent" && action.ownerAgentId ? (
                   <>
                     <AgentLink agentId={action.ownerAgentId} agentMap={agentMap} />
-                    <span className="text-muted-foreground">repairs the next step only</span>
+                    <span className="text-muted-foreground">{t("localizationTaskRuntime.ui_repairs_the_next_step_only_13y1iyb")}</span>
                   </>
                 ) : action.ownerType === "board" ? (
                   <>
-                    <span className="font-medium">Board</span>
-                    <span className="text-muted-foreground">decides the next step only</span>
+                    <span className="font-medium">{t("localizationTaskRuntime.ui_Board_1hpelzf")}</span>
+                    <span className="text-muted-foreground">{t("localizationTaskRuntime.ui_decides_the_next_step_only_169ne72")}</span>
                   </>
                 ) : action.ownerType === "user" && action.ownerUserId ? (
-                  <span className="font-medium">user {action.ownerUserId.slice(0, 6)}</span>
+                  <span className="font-medium">{t("localizationTaskRuntime.userReference", { id: action.ownerUserId.slice(0, 6) })}</span>
                 ) : (
-                  <span className="text-muted-foreground">unassigned — pick one to wake them</span>
+                  <span className="text-muted-foreground">{t("localizationTaskRuntime.ui_unassigned_pick_one_to_wake_them_r2ngju")}</span>
                 )}
               </span>
             </MetadataRow>
-            <MetadataRow label="Retry progress">
+            <MetadataRow label={t("localizationTaskRuntime.ui_Retry_progress_qgx7tw")}>
               <span
                 className="inline-flex flex-wrap items-center gap-x-2 gap-y-1"
                 data-testid="recovery-retry-progress"
@@ -1191,14 +1183,14 @@ export function IssueRecoveryActionCard({
                 data-recovery-max-attempts={lineage.maxAttempts ?? undefined}
               >
                 <AttemptMeter lineage={lineage} />
-                <span>{attemptLabel ?? "Attempts not bounded"}</span>
+                <span>{attemptLabel ?? t("localizationTaskRuntime.ui_Attempts_not_bounded_xqrjjr")}</span>
                 {lineage.liveRunId ? (
                   <span
                     className={RETRY_PILL_CLASS}
                     title={formatTimeAbsolute(lineage.nextRetryAt) ?? undefined}
                     data-testid="recovery-next-retry"
                   >
-                    Attempt running now
+                    {t("localizationTaskRuntime.ui_Attempt_running_now_1dzdor9")}
                   </span>
                 ) : lineage.retryExpired ? (
                   // The due time is stated plainly as missed. Rendering it as "Next try 5m
@@ -1209,7 +1201,7 @@ export function IssueRecoveryActionCard({
                     data-testid="recovery-next-retry"
                     data-recovery-retry-expired="true"
                   >
-                    {retryOffset ? `Retry missed ${retryOffset}` : "Retry missed"}
+                    {retryOffset ? t("localizationTaskRuntime.retryMissedTime", { time: retryOffset }) : t("localizationTaskRuntime.ui_Retry_missed_izj2cu")}
                   </span>
                 ) : retryOffset ? (
                   <span
@@ -1217,59 +1209,58 @@ export function IssueRecoveryActionCard({
                     title={formatTimeAbsolute(lineage.nextRetryAt) ?? undefined}
                     data-testid="recovery-next-retry"
                   >
-                    {retryOffset === "now" ? "Next try now" : `Next try ${retryOffset}`}
+                    {lineage.nextRetryAt && formatMonitorOffset(lineage.nextRetryAt) === "now" ? t("localizationTaskRuntime.ui_Next_try_now_du0j0d") : t("localizationTaskRuntime.nextTryTime", { time: retryOffset })}
                   </span>
                 ) : lineage.exhausted ? (
                   <span className={RETRY_PILL_CLASS} data-testid="recovery-next-retry">
-                    Automatic retries used up
+                    {t("localizationTaskRuntime.ui_Automatic_retries_used_up_aoa7d0")}
                   </span>
                 ) : null}
               </span>
             </MetadataRow>
             {lineage.lane !== "source_owner" && lineage.sourceMaxAttempts !== null ? (
-              <MetadataRow label="Owner retries">
+              <MetadataRow label={t("localizationTaskRuntime.ui_Owner_retries_otn1bi")}>
                 <span data-testid="recovery-source-attempts">
-                  The original owner used {lineage.sourceAttempt ?? lineage.sourceMaxAttempts} of{" "}
-                  {lineage.sourceMaxAttempts} automatic attempts.
+                  {t("localizationTaskRuntime.ownerRetryBudget", { used: lineage.sourceAttempt ?? lineage.sourceMaxAttempts, max: lineage.sourceMaxAttempts })}
                 </span>
               </MetadataRow>
             ) : null}
           </>
         ) : (
-        <MetadataRow label="Owner">
+        <MetadataRow label={t("pages.inviteLanding.roles.owner")}>
           <span className="inline-flex flex-wrap items-center gap-1.5">
             {action.ownerType === "agent" && action.ownerAgentId ? (
               <>
-                <span className="text-muted-foreground">Recovery:</span>
+                <span className="text-muted-foreground">{t("localizationTaskRuntime.ui_Recovery_1i2gv84")}</span>
                 <AgentLink agentId={action.ownerAgentId} agentMap={agentMap} />
               </>
             ) : action.ownerType === "board" ? (
-              <span className="font-medium">Board</span>
+              <span className="font-medium">{t("localizationTaskRuntime.ui_Board_1hpelzf")}</span>
             ) : action.ownerType === "user" && action.ownerUserId ? (
-              <span className="font-medium">user {action.ownerUserId.slice(0, 6)}</span>
+              <span className="font-medium">{t("localizationTaskRuntime.userReference", { id: action.ownerUserId.slice(0, 6) })}</span>
             ) : action.ownerType === "system" ? (
-              <span className="font-medium">System</span>
+              <span className="font-medium">{t("localizationTaskRuntime.ui_System_13qbhrw")}</span>
             ) : (
-              <span className="text-muted-foreground">unassigned — pick one to wake them</span>
+              <span className="text-muted-foreground">{t("localizationTaskRuntime.ui_unassigned_pick_one_to_wake_them_r2ngju")}</span>
             )}
             {action.returnOwnerAgentId ? (
               <>
-                <span className="text-muted-foreground">→ Returns to:</span>
+                <span className="text-muted-foreground">{t("localizationTaskRuntime.ui__Returns_to_3o8cq3")}</span>
                 <AgentLink agentId={action.returnOwnerAgentId} agentMap={agentMap} />
               </>
             ) : null}
           </span>
         </MetadataRow>
         )}
-        <MetadataRow label="Source run">
+        <MetadataRow label={t("localizationTaskRuntime.ui_Source_run_lzyuvx")}>
           <RunChip runId={sourceRunId} agentId={action.previousOwnerAgentId} />
         </MetadataRow>
         {correctiveRunId ? (
-          <MetadataRow label="Corrective run">
+          <MetadataRow label={t("localizationTaskRuntime.ui_Corrective_run_izw65s")}>
             <RunChip runId={correctiveRunId} agentId={action.previousOwnerAgentId} />
           </MetadataRow>
         ) : null}
-        <MetadataRow label="Evidence">
+        <MetadataRow label={t("localizationTaskRuntime.ui_Evidence_1wt8chw")}>
           {evidenceSummary ? (
             evidenceSummary.isCode ? (
               <span className="break-words font-mono text-(length:--text-micro) text-foreground/80">
@@ -1282,28 +1273,28 @@ export function IssueRecoveryActionCard({
             <MissingValue />
           )}
         </MetadataRow>
-        <MetadataRow label="Next action">
+        <MetadataRow label={t("localizationTaskRuntime.ui_Next_action_107tu5e")}>
           {action.nextAction ? <span>{action.nextAction}</span> : <MissingValue />}
         </MetadataRow>
-        <MetadataRow label="Follow-up">
+        <MetadataRow label={t("localizationTaskRuntime.ui_Follow_up_91gycy")}>
           <span className="inline-flex flex-wrap items-center gap-1.5">
             {wakeSummary ? <span>{wakeSummary}</span> : <MissingValue />}
             {showAttempt ? (
               <span className="rounded-md border border-border/50 bg-background/60 px-1.5 py-0.5 text-(length:--text-micro) text-muted-foreground">
-                attempt {action.attemptCount} of {action.maxAttempts}
+                {t("localizationTaskRuntime.attemptBudget", { attempt: action.attemptCount, max: action.maxAttempts })}
               </span>
             ) : null}
             {showTimeoutInline ? (
               <span className="rounded-md border border-border/50 bg-background/60 px-1.5 py-0.5 text-(length:--text-micro) text-muted-foreground">
-                Times out {formatTimeShort(action.timeoutAt) ?? "soon"}
+                {t("localizationTaskRuntime.timesOut", { time: formatTimeShort(action.timeoutAt) ?? t("localizationTaskRuntime.soon") })}
               </span>
             ) : null}
           </span>
         </MetadataRow>
         {cardState === "resolved" && action.outcome ? (
-          <MetadataRow label="Resolution">
+          <MetadataRow label={t("localizationTaskRuntime.ui_Resolution_1cj3d7z")}>
             <span className={cn("font-medium", tone.labelClass)}>
-              Resolved as {OUTCOME_LABEL[action.outcome]}
+              {t("localizationTaskRuntime.recoveryResolved", { outcome: OUTCOME_LABEL[action.outcome] })}
               {action.resolvedAt ? ` · ${formatTimeShort(action.resolvedAt) ?? ""}` : ""}
             </span>
           </MetadataRow>
@@ -1321,9 +1312,9 @@ export function IssueRecoveryActionCard({
                   size="sm"
                   variant="default"
                   data-testid="recovery-action-resolve-trigger"
-                  aria-label="Resolve recovery"
+                  aria-label={t("localizationTaskRuntime.ui_Resolve_recovery_dbbddm")}
                 >
-                  Resolve…
+                  {t("localizationTaskRuntime.ui_Resolve_3w6bsv")}
                 </Button>
               </PopoverTrigger>
               <PopoverContent
@@ -1332,7 +1323,7 @@ export function IssueRecoveryActionCard({
                 className="w-72 p-1.5"
               >
                 <div className="px-2 py-1 text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-eyebrow) text-muted-foreground">
-                  Resolve recovery
+                  {t("localizationTaskRuntime.ui_Resolve_recovery_dbbddm")}
                 </div>
                 <div className="flex flex-col">
                   {visibleResolveOptions.map((option) => (
@@ -1368,7 +1359,7 @@ export function IssueRecoveryActionCard({
               ) : (
                 <RefreshCw className="h-3.5 w-3.5" aria-hidden />
               )}
-              Reconcile forward &amp; continue
+              {t("localizationTaskRuntime.ui_Reconcile_forward_continue_5txr55")}
             </Button>
           ) : null}
           {showRepairAction && divergence ? (
@@ -1396,41 +1387,38 @@ export function IssueRecoveryActionCard({
                   ) : (
                     <GitBranchPlus className="h-3.5 w-3.5" aria-hidden />
                   )}
-                  Re-issue on isolated workspace
+                  {t("localizationTaskRuntime.ui_Re_issue_on_isolated_workspace_196rf4z")}
                   {reissueRecommended ? (
                     <span
                       data-testid="recovery-reissue-recommended"
                       className="ml-1 rounded-sm bg-background/25 px-1.5 py-0.5 text-(length:--text-nano) font-semibold uppercase tracking-(--tracking-label)"
-                    >
-                      Recommended
-                    </span>
+                    >{t("pages.apps.connect.access.recommended")}</span>
                   ) : null}
                 </Button>
               </PopoverTrigger>
               <PopoverContent align="start" sideOffset={6} className="w-80 space-y-3 p-3">
                 <div className="space-y-1">
                   <div className="text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-eyebrow) text-muted-foreground">
-                    Re-issue on isolated workspace
+                    {t("localizationTaskRuntime.ui_Re_issue_on_isolated_workspace_196rf4z")}
                   </div>
                   <p className="text-xs leading-5 text-muted-foreground">
-                    Creates a fresh copy of this task on an isolated git worktree based on the live
-                    branch. Your current workspace and its commits are left untouched.
+                    {t("localizationTaskRuntime.ui_Creates_a_fresh_copy_of_this_task_on_an_isolated_git_worktree_bas_emkkn9")}
                   </p>
                 </div>
                 <dl className="space-y-1 rounded-md border border-border/70 bg-muted/30 px-2.5 py-2 text-(length:--text-micro)">
                   <div className="flex items-center justify-between gap-2">
-                    <dt className="text-muted-foreground">Base ref</dt>
+                    <dt className="text-muted-foreground">{t("workspaces.fields.baseRef")}</dt>
                     <dd className="min-w-0 truncate font-mono text-foreground/90">{reissueBaseRef}</dd>
                   </div>
                   <div className="flex items-center justify-between gap-2">
-                    <dt className="text-muted-foreground">Recorded</dt>
+                    <dt className="text-muted-foreground">{t("localizationTaskRuntime.ui_Recorded_1bfaoyl")}</dt>
                     <dd className="min-w-0 truncate font-mono text-foreground/80">
                       {divergence.expectedBranch ?? "—"}
                     </dd>
                   </div>
                   {reissueVerdictBadge ? (
                     <div className="flex items-center justify-between gap-2">
-                      <dt className="text-muted-foreground">Ancestry</dt>
+                      <dt className="text-muted-foreground">{t("localizationTaskRuntime.ui_Ancestry_1spav54")}</dt>
                       <dd className="font-medium">{reissueVerdictBadge.label}</dd>
                     </div>
                   ) : null}
@@ -1450,7 +1438,7 @@ export function IssueRecoveryActionCard({
                     })
                   }
                 >
-                  {reissuePending ? "Creating…" : "Create isolated re-issue"}
+                  {reissuePending ? t("pages.newAgent.creating") : t("localizationTaskRuntime.ui_Create_isolated_re_issue_1jgrpj7")}
                 </Button>
               </PopoverContent>
             </Popover>
@@ -1465,11 +1453,11 @@ export function IssueRecoveryActionCard({
           {showResolveActions ? (
             cardState === "observe_only" ? (
               <span className="text-(length:--text-micro) text-muted-foreground">
-                Recovery is observing without interrupting the live run.
+                {t("localizationTaskRuntime.ui_Recovery_is_observing_without_interrupting_the_live_run_ckrcke")}
               </span>
             ) : (
               <span className="text-(length:--text-micro) text-muted-foreground">
-                The card stays open until an explicit decision is recorded.
+                {t("localizationTaskRuntime.ui_The_card_stays_open_until_an_explicit_decision_is_recorded_1rtm7ah")}
               </span>
             )
           ) : null}

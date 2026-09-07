@@ -1,10 +1,12 @@
+import { i18n, t, useTranslation } from "@/i18n";
+import { Trans } from "react-i18next";
 import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { Agent } from "@paperclipai/shared";
 import { AlertTriangle, ArrowUpRight, Bot, Check, CheckCircle2, ChevronDown, ChevronRight, CircleDashed, Clock, ExternalLink, FileText, GitBranch, ImagePlus, KeyRound, Loader2, MessageSquareQuote, MinusCircle, ShieldAlert, ThumbsUp, TriangleAlert, Wrench, X, XCircle } from "lucide-react";
 import { Link } from "@/lib/router";
-import { formatAssigneeUserLabel } from "../lib/assignees";
-import { describeInteractionAudience, type InteractionAudienceDescription } from "../lib/interaction-audience";
-import { interactionResolutionErrorMessage } from "../lib/interaction-resolution-error";
+import { formatAssigneeUserDisplayLabel as formatAssigneeUserLabel } from "../lib/assignees";
+import { describeInteractionAudienceDisplay as describeInteractionAudience, type InteractionAudienceDescription } from "../lib/interaction-audience";
+import { InteractionResolutionDisplayError } from "../lib/interaction-resolution-error";
 import {
   buildSuggestedTaskTree,
   collectSuggestedTaskClientKeys,
@@ -60,7 +62,7 @@ const InteractionAudienceContext = createContext<InteractionAudienceDescription 
  */
 function useResolutionErrorMessage() {
   const audience = useContext(InteractionAudienceContext);
-  return (error: unknown) => interactionResolutionErrorMessage(error, audience);
+  return (error: unknown) => new InteractionResolutionDisplayError(error, audience);
 }
 
 /**
@@ -75,12 +77,13 @@ function useResolutionErrorMessage() {
  * nesting one inside another makes some screen reader / browser pairs announce
  * the same denial twice (PAP-17289).
  */
-function InteractionActionError({ message }: { message: string | null }) {
+function InteractionActionError({ message }: { message: InteractionResolutionDisplayError | null }) {
+  useTranslation();
   return (
     <div aria-live="assertive" data-testid="interaction-action-error">
       {message ? (
         <div className="rounded-sm border border-destructive/60 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-          {message}
+          {message.displayMessage}
         </div>
       ) : null}
     </div>
@@ -136,9 +139,9 @@ function resolveActorLabel(args: {
     return agentMap?.get(agentId)?.name ?? agentId.slice(0, 8);
   }
   if (userId) {
-    return formatAssigneeUserLabel(userId, currentUserId, userLabelMap) ?? "Board";
+    return formatAssigneeUserLabel(userId, currentUserId, userLabelMap) ?? t("localizationActivity.board");
   }
-  return "Unknown";
+  return t("common.unknown");
 }
 
 /**
@@ -170,19 +173,19 @@ function getAdministrativeReason(interaction: IssueThreadInteraction): string | 
 function statusLabel(status: IssueThreadInteraction["status"]) {
   switch (status) {
     case "pending":
-      return "Pending";
+      return t("localizationIssueDetail.ui_Pending");
     case "accepted":
-      return "Accepted";
+      return t("localizationIssueDetail.ui_Accepted");
     case "rejected":
-      return "Rejected";
+      return t("localizationIssueDetail.ui_Rejected");
     case "answered":
-      return "Answered";
+      return t("localizationIssueDetail.ui_Answered");
     case "cancelled":
-      return "Cancelled";
+      return t("localizationIssueDetail.ui_Cancelled");
     case "expired":
-      return "Expired";
+      return t("pages.tasks.expired");
     case "failed":
-      return "Failed";
+      return t("status.failed");
     default:
       return status;
   }
@@ -191,17 +194,17 @@ function statusLabel(status: IssueThreadInteraction["status"]) {
 function interactionKindLabel(kind: IssueThreadInteraction["kind"]) {
   switch (kind) {
     case "suggest_tasks":
-      return "Suggested tasks";
+      return t("localizationSettings.kind_suggest_tasks");
     case "ask_user_questions":
-      return "Ask user questions";
+      return t("localizationSettings.kind_ask_user_questions");
     case "request_confirmation":
-      return "Confirmation";
+      return t("localizationIssueDetail.ui_Confirmation");
     case "request_checkbox_confirmation":
-      return "Checkbox confirmation";
+      return t("localizationIssueDetail.ui_Checkbox_confirmation");
     case "request_item_verdicts":
-      return "Item verdicts";
+      return t("localizationIssueDetail.ui_Item_verdicts");
     case "connection_intent":
-      return "Connection request";
+      return t("localizationIssueDetail.ui_Connection_request");
     default:
       return kind;
   }
@@ -280,14 +283,14 @@ function planStatusClasses(
         return {
           shell: "border-2 border-amber-500/70 bg-transparent",
           badge: "border-amber-500/60 bg-amber-500/10 text-amber-900 dark:bg-amber-500/15 dark:text-amber-100",
-          label: "Approved — agent resume failed",
+          get label() { return t("localizationIssueDetail.ui_Approved_agent_resume_failed"); },
           Icon: AlertTriangle,
         };
       }
       return {
         shell: "border-2 border-green-500/80 bg-transparent",
         badge: "border-green-500/60 bg-green-500/10 text-green-900 dark:bg-green-500/15 dark:text-green-100",
-        label: "Approved",
+        get label() { return t("status.approved"); },
         Icon: CheckCircle2,
       };
     case "rejected":
@@ -295,7 +298,7 @@ function planStatusClasses(
       return {
         shell: "border-2 border-red-500/80 bg-transparent",
         badge: "border-red-500/60 bg-red-500/10 text-red-900 dark:bg-red-500/15 dark:text-red-100",
-        label: outcome === "withdrawn" ? "Withdrawn" : "Changes requested",
+        label: outcome === "withdrawn" ? t("localizationIssueDetail.ui_Withdrawn") : t("pages.pipelines.changesRequested"),
         Icon: XCircle,
       };
     case "failed":
@@ -303,14 +306,14 @@ function planStatusClasses(
       return {
         shell: "border-2 border-amber-500/70 bg-transparent",
         badge: "border-amber-500/60 bg-amber-500/10 text-amber-900 dark:bg-amber-500/15 dark:text-amber-100",
-        label: "Expired",
+        get label() { return t("pages.tasks.expired"); },
         Icon: AlertTriangle,
       };
     default:
       return {
         shell: "border-2 border-violet-500/80 bg-transparent",
         badge: "border-violet-500/60 bg-violet-500/10 text-violet-900 dark:bg-violet-500/15 dark:text-violet-100",
-        label: "In review",
+        get label() { return t("pages.pipelines.inReview"); },
         Icon: FileText,
       };
   }
@@ -469,7 +472,7 @@ function toolActionStatusClasses(state: ToolActionCardState): {
       return {
         shell: "border-2 border-amber-500/70 bg-transparent",
         badge: "border-amber-500/60 bg-amber-500/10 text-amber-900 dark:bg-amber-500/15 dark:text-amber-100",
-        label: "Running…",
+        get label() { return t("localizationIssueDetail.ui_Running"); },
         Icon: Loader2,
         spin: true,
       };
@@ -477,21 +480,21 @@ function toolActionStatusClasses(state: ToolActionCardState): {
       return {
         shell: "border-2 border-green-500/80 bg-transparent",
         badge: "border-green-500/60 bg-green-500/10 text-green-900 dark:bg-green-500/15 dark:text-green-100",
-        label: "Executed",
+        get label() { return t("localizationIssueDetail.ui_Executed"); },
         Icon: CheckCircle2,
       };
     case "failed":
       return {
         shell: "border-2 border-amber-500/70 bg-transparent",
         badge: "border-amber-500/60 bg-amber-500/10 text-amber-900 dark:bg-amber-500/15 dark:text-amber-100",
-        label: "Failed",
+        get label() { return t("status.failed"); },
         Icon: XCircle,
       };
     case "declined":
       return {
         shell: "border-2 border-red-500/80 bg-transparent",
         badge: "border-red-500/60 bg-red-500/10 text-red-900 dark:bg-red-500/15 dark:text-red-100",
-        label: "Declined",
+        get label() { return t("pages.apps.review.declinedTitle"); },
         Icon: XCircle,
         dimmed: true,
       };
@@ -499,7 +502,7 @@ function toolActionStatusClasses(state: ToolActionCardState): {
       return {
         shell: "border-2 border-border bg-transparent",
         badge: "border-border bg-muted/60 text-muted-foreground",
-        label: "Expired",
+        get label() { return t("pages.tasks.expired"); },
         Icon: Clock,
         dimmed: true,
       };
@@ -507,7 +510,7 @@ function toolActionStatusClasses(state: ToolActionCardState): {
       return {
         shell: "border-2 border-violet-500/80 bg-transparent",
         badge: "border-violet-500/60 bg-violet-500/10 text-violet-900 dark:bg-violet-500/15 dark:text-violet-100",
-        label: "Awaiting approval",
+        get label() { return t("localizationIssueDetail.ui_Awaiting_approval"); },
         Icon: ShieldAlert,
       };
   }
@@ -516,14 +519,14 @@ function toolActionStatusClasses(state: ToolActionCardState): {
 function toolActionRiskBadge(risk: "write" | "destructive") {
   if (risk === "destructive") {
     return {
-      label: "DESTRUCTIVE",
+      get label() { return t("localizationIssueDetail.ui_DESTRUCTIVE"); },
       Icon: TriangleAlert,
       className:
         "border-red-500/60 bg-red-500/10 text-red-900 dark:bg-red-500/15 dark:text-red-100",
     };
   }
   return {
-    label: "WRITE",
+    get label() { return t("localizationIssueDetail.ui_WRITE"); },
     Icon: AlertTriangle,
     className:
       "border-amber-500/60 bg-amber-500/10 text-amber-900 dark:bg-amber-500/15 dark:text-amber-100",
@@ -546,11 +549,11 @@ function formatToolActionCountdown(expiresAt: string, nowMs: number): {
   if (Number.isNaN(expiresMs)) return null;
   const remainingMs = expiresMs - nowMs;
   if (remainingMs <= 0) {
-    return { text: "Approval window closed · auto-declines any moment", urgent: true };
+    return { get text() { return t("localizationIssueDetail.ui_Approval_window_closed_auto_declines_any_moment"); }, urgent: true };
   }
   const minutes = Math.ceil(remainingMs / 60000);
   return {
-    text: `Approval expires in ${minutes} min · auto-declines if not answered`,
+    text: t("localizationIssueDetail.approvalCountdown", { count: minutes }),
     urgent: minutes <= 5,
   };
 }
@@ -564,6 +567,7 @@ function TaskField({
   value: string;
   tone?: "default" | "subtle";
 }) {
+  useTranslation();
   return (
     <span
       className={cn(
@@ -609,6 +613,7 @@ function TaskTreeNode({
   showSelection?: boolean;
   onToggleSelection?: (node: SuggestedTaskTreeNode, checked: boolean) => void;
 }) {
+  const { t } = useTranslation();
   const visibleChildren = node.children.filter((child) => !child.task.hiddenInPreview);
   const hiddenChildCount = node.children
     .filter((child) => child.task.hiddenInPreview)
@@ -648,7 +653,7 @@ function TaskTreeNode({
                 <Checkbox
                   checked={isSelected}
                   onCheckedChange={(checked) => onToggleSelection?.(node, checked === true)}
-                  aria-label={`Include ${node.task.title}`}
+                  aria-label={t("localizationIssueDetail.includeTask", { title: node.task.title })}
                   className="mt-0.5"
                 />
               ) : null}
@@ -667,7 +672,7 @@ function TaskTreeNode({
                 </div>
                 {depth > 0 ? (
                   <div className="mt-0.5 text-(length:--text-nano) font-medium uppercase tracking-(--tracking-eyebrow) text-muted-foreground">
-                    Child task
+                    {t("localizationIssueDetail.ui_Child_task")}
                   </div>
                 ) : null}
                 {node.task.description ? (
@@ -689,7 +694,7 @@ function TaskTreeNode({
             </Link>
           ) : isSkipped ? (
             <span className="inline-flex shrink-0 items-center rounded-sm border border-amber-500/60 bg-amber-500/10 px-2.5 py-1 text-(length:--text-micro) font-medium text-amber-900 dark:text-amber-100">
-              Skipped
+              {t("pages.secrets.status.skipped")}
             </span>
           ) : null}
         </div>
@@ -697,16 +702,16 @@ function TaskTreeNode({
         {hasMetadata ? (
           <div className="mt-2 flex flex-wrap gap-1.5">
             {hasExplicitAssignee ? (
-              <TaskField label="Responsible" value={assigneeLabel} />
+              <TaskField label={t("localizationFilters.responsible")} value={assigneeLabel} />
             ) : null}
             {node.task.billingCode ? (
-              <TaskField label="Billing" value={node.task.billingCode} />
+              <TaskField label={t("localizationIssueDetail.ui_Billing")} value={node.task.billingCode} />
             ) : null}
             {node.task.projectId ? (
-              <TaskField label="Project" value={node.task.projectId} tone="subtle" />
+              <TaskField label={t("pages.inbox.groupByProject")} value={node.task.projectId} tone="subtle" />
             ) : null}
             {labels.map((label) => (
-              <TaskField key={label} label="Label" value={label} tone="subtle" />
+              <TaskField key={label} label={t("localizationFilters.label")} value={label} tone="subtle" />
             ))}
           </div>
         ) : null}
@@ -715,9 +720,7 @@ function TaskTreeNode({
           <div className="mt-2 flex items-center gap-2 rounded-sm border border-amber-500/60 bg-amber-500/10 px-3 py-2 text-xs text-amber-900 dark:text-amber-100">
             <GitBranch className="h-3.5 w-3.5 shrink-0" />
             <span>
-              {hiddenChildCount === 1
-                ? "1 follow-on task hidden in preview"
-                : `${hiddenChildCount} follow-on tasks hidden in preview`}
+              {t("localizationIssueDetail.hiddenFollowOn", { count: hiddenChildCount })}
             </span>
           </div>
         ) : null}
@@ -767,6 +770,7 @@ function SuggestTasksCard({
     reason?: string,
   ) => Promise<void> | void;
 }) {
+  const { t } = useTranslation();
   const [rejecting, setRejecting] = useState(false);
   const [working, setWorking] = useState<"accept" | "reject" | null>(null);
   const [rejectReason, setRejectReason] = useState(
@@ -786,15 +790,15 @@ function SuggestTasksCard({
       buildSuggestedTaskTree(interaction.payload.tasks).filter(
         (node) => !node.task.hiddenInPreview,
       ),
-    [interaction.payload.tasks],
+    [i18n.resolvedLanguage, interaction.payload.tasks],
   );
   const createdByClientKey = useMemo(
     () => createdTaskMap(interaction.result?.createdTasks),
-    [interaction.result?.createdTasks],
+    [i18n.resolvedLanguage, interaction.result?.createdTasks],
   );
   const skippedClientKeys = useMemo(
     () => new Set(interaction.result?.skippedClientKeys ?? []),
-    [interaction.result?.skippedClientKeys],
+    [i18n.resolvedLanguage, interaction.result?.skippedClientKeys],
   );
   const totalTasks = interaction.payload.tasks.length;
   const [selectedClientKeys, setSelectedClientKeys] = useState<Set<string>>(
@@ -802,7 +806,7 @@ function SuggestTasksCard({
   );
   const taskSelectionSeed = useMemo(
     () => interaction.payload.tasks.map((task) => task.clientKey).join("\n"),
-    [interaction.payload.tasks],
+    [i18n.resolvedLanguage, interaction.payload.tasks],
   );
 
   useEffect(() => {
@@ -811,10 +815,10 @@ function SuggestTasksCard({
 
   const taskByClientKey = useMemo(
     () => new Map(interaction.payload.tasks.map((task) => [task.clientKey, task] as const)),
-    [interaction.payload.tasks],
+    [i18n.resolvedLanguage, interaction.payload.tasks],
   );
   const selectedCount = selectedClientKeys.size;
-  const [actionError, setActionError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<InteractionResolutionDisplayError | null>(null);
   const resolutionErrorMessage = useResolutionErrorMessage();
   const createdCount = interaction.result?.createdTasks?.length ?? 0;
   const skippedCount = interaction.result?.skippedClientKeys?.length ?? 0;
@@ -873,9 +877,9 @@ function SuggestTasksCard({
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-        <span>{totalTasks === 1 ? "1 draft issue" : `${totalTasks} draft issues`}</span>
+        <span>{t("localizationIssueDetail.draftIssues", { count: totalTasks })}</span>
         {interaction.payload.defaultParentId ? (
-          <TaskField label="Default parent" value={interaction.payload.defaultParentId} tone="subtle" />
+          <TaskField label={t("localizationIssueDetail.ui_Default_parent")} value={interaction.payload.defaultParentId} tone="subtle" />
         ) : null}
       </div>
 
@@ -899,12 +903,12 @@ function SuggestTasksCard({
       {interaction.status === "accepted" ? (
         <div className="rounded-sm border border-emerald-500/60 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-900 dark:text-emerald-100">
           <div className="text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-eyebrow) text-emerald-700">
-            Resolution summary
+            {t("localizationIssueDetail.ui_Resolution_summary")}
           </div>
           <p className="mt-1 leading-6">
             {skippedCount > 0
-              ? `Created ${createdCount} draft ${createdCount === 1 ? "issue" : "issues"} and skipped ${skippedCount} during review.`
-              : `Created all ${createdCount} draft ${createdCount === 1 ? "issue" : "issues"}.`}
+              ? t("localizationIssueDetail.createdDraftsSkipped", { count: createdCount, skipped: skippedCount })
+              : t("localizationIssueDetail.createdAllDrafts", { count: createdCount })}
           </p>
         </div>
       ) : null}
@@ -912,13 +916,13 @@ function SuggestTasksCard({
       {interaction.status === "rejected" ? (
         <div className="rounded-sm border border-rose-500/60 bg-rose-500/10 px-4 py-3 text-sm text-rose-900 dark:text-rose-100">
           <div className="text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-eyebrow) text-rose-700">
-            Rejection reason
+            {t("localizationIssueDetail.ui_Rejection_reason")}
           </div>
           <p className={cn(
             "mt-1 leading-6",
             !interaction.result?.rejectionReason && "text-rose-900/75",
           )}>
-            {interaction.result?.rejectionReason || "No reason provided."}
+            {interaction.result?.rejectionReason || t("localizationIssueDetail.ui_No_reason_provided")}
           </p>
         </div>
       ) : null}
@@ -929,12 +933,12 @@ function SuggestTasksCard({
             <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
               <span>
                 {selectedCount === totalTasks
-                  ? `All ${totalTasks} draft ${totalTasks === 1 ? "issue" : "issues"} selected`
-                  : `${selectedCount} of ${totalTasks} draft ${totalTasks === 1 ? "issue" : "issues"} selected`}
+                  ? t("localizationIssueDetail.allDraftsSelected", { count: totalTasks })
+                  : t("localizationIssueDetail.draftsSelected", { count: totalTasks, selected: selectedCount })}
               </span>
               {selectedCount < totalTasks ? (
                 <span>
-                  {totalTasks - selectedCount} will be skipped if you accept this interaction.
+                  {t("localizationIssueDetail.draftsWillSkip", { count: totalTasks - selectedCount })}
                 </span>
               ) : null}
             </div>
@@ -948,10 +952,10 @@ function SuggestTasksCard({
                 {working === "accept" ? (
                   <>
                     <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
-                    Accepting...
+                    {t("localizationIssueDetail.ui_Accepting")}
                   </>
                 ) : (
-                  selectedCount === totalTasks ? "Accept drafts" : "Accept selected drafts"
+                  selectedCount === totalTasks ? t("localizationIssueDetail.ui_Accept_drafts") : t("localizationIssueDetail.ui_Accept_selected_drafts")
                 )}
               </Button>
               <Button
@@ -960,7 +964,7 @@ function SuggestTasksCard({
                 disabled={!onRejectInteraction || working !== null}
                 onClick={() => setRejecting((current) => !current)}
               >
-                Reject
+                {t("pages.inbox.reject")}
               </Button>
               {selectedCount < totalTasks ? (
                 <Button
@@ -969,7 +973,7 @@ function SuggestTasksCard({
                   disabled={working !== null}
                   onClick={() => setSelectedClientKeys(new Set(interaction.payload.tasks.map((task) => task.clientKey)))}
                 >
-                  Reset selection
+                  {t("localizationIssueDetail.ui_Reset_selection")}
                 </Button>
               ) : null}
             </div>
@@ -980,7 +984,7 @@ function SuggestTasksCard({
               <Textarea
                 value={rejectReason}
                 onChange={(event) => setRejectReason(event.target.value)}
-                placeholder="Add a short reason for rejecting this suggestion"
+                placeholder={t("localizationIssueDetail.ui_Add_a_short_reason_for_rejecting_this_suggestion")}
                 className="min-h-24 bg-background text-sm"
               />
               <div className="flex justify-end">
@@ -993,10 +997,10 @@ function SuggestTasksCard({
                   {working === "reject" ? (
                     <>
                       <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
-                      Saving...
+                      {t("pages.companySettings.saving")}
                     </>
                   ) : (
-                    "Save rejection"
+                    t("localizationIssueDetail.ui_Save_rejection")
                   )}
                 </Button>
               </div>
@@ -1025,6 +1029,7 @@ function QuestionOptionButton({
   selectionMode: "single" | "multi";
   onClick: () => void;
 }) {
+  useTranslation();
   return (
     <button
       type="button"
@@ -1079,6 +1084,7 @@ function AskUserQuestionsCard({
   ) => Promise<void> | void;
   externalReferences?: MarkdownExternalReferenceMap;
 }) {
+  const { t } = useTranslation();
   const [draftAnswers, setDraftAnswers] = useState<Record<string, string[]>>(() =>
     Object.fromEntries(
       (interaction.result?.answers ?? []).map((answer) => [
@@ -1103,7 +1109,7 @@ function AskUserQuestionsCard({
   );
   const [working, setWorking] = useState(false);
   const [cancelling, setCancelling] = useState(false);
-  const [actionError, setActionError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<InteractionResolutionDisplayError | null>(null);
   const resolutionErrorMessage = useResolutionErrorMessage();
 
   useEffect(() => {
@@ -1220,12 +1226,10 @@ function AskUserQuestionsCard({
       <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
         <Badge variant="outline" className="border-border/70 bg-background/70 px-2.5 py-1 uppercase tracking-(--tracking-eyebrow) text-foreground/70">
           <MessageSquareQuote className="h-3 w-3" />
-          Ask user questions
+          {t("pages.companySettings.interactionKind.askUserQuestions")}
         </Badge>
         <span>
-          {questions.length === 1
-            ? "1 question"
-            : `${questions.length} questions`}
+          {t("localizationIssueDetail.questionCount", { count: questions.length })}
         </span>
       </div>
 
@@ -1243,7 +1247,7 @@ function AskUserQuestionsCard({
               <div className="flex items-start justify-between gap-3">
                 <div>
                   <div className="text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-eyebrow) text-muted-foreground">
-                    Question {index + 1}
+                    {t("localizationIssueDetail.ui_Question")} {index + 1}
                   </div>
                   <div
                     id={`${interaction.id}-${question.id}-prompt`}
@@ -1258,8 +1262,8 @@ function AskUserQuestionsCard({
                   ) : null}
                 </div>
                 <TaskField
-                  label={question.selectionMode === "single" ? "Pick" : "Pick many"}
-                  value={question.required ? "Required" : "Optional"}
+                  label={question.selectionMode === "single" ? t("localizationIssueDetail.ui_Pick") : t("localizationIssueDetail.pickMultiple")}
+                  value={question.required ? t("localizationIssueDetail.ui_Required") : t("pages.secrets.common.optionalPlain")}
                   tone="subtle"
                 />
               </div>
@@ -1288,14 +1292,14 @@ function AskUserQuestionsCard({
                         />
                         {isFreeText && optionSelected ? (
                           <Textarea
-                            aria-label={`Describe your answer for ${question.prompt}`}
+                            aria-label={t("localizationIssueDetail.answerFor", { question: question.prompt })}
                             value={draftOtherAnswers[question.id] ?? ""}
                             onChange={(event) =>
                               setDraftOtherAnswers((current) => ({
                                 ...current,
                                 [question.id]: event.target.value,
                               }))}
-                            placeholder="Type your answer"
+                            placeholder={t("localizationIssueDetail.ui_Type_your_answer")}
                             className="min-h-24 bg-background text-sm"
                             autoFocus
                           />
@@ -1324,19 +1328,17 @@ function AskUserQuestionsCard({
                       )}
                       onClick={() =>
                         toggleOption(question.id, OTHER_ANSWER_ID, question.selectionMode)}
-                    >
-                      Other
-                    </button>
+                    >{t("pages.dashboard.chartOther")}</button>
                     {otherActiveQuestions[question.id] ? (
                       <Textarea
-                        aria-label={`Other answer for ${question.prompt}`}
+                        aria-label={t("localizationIssueDetail.otherAnswerFor", { question: question.prompt })}
                         value={draftOtherAnswers[question.id] ?? ""}
                         onChange={(event) =>
                           setDraftOtherAnswers((current) => ({
                             ...current,
                             [question.id]: event.target.value,
                           }))}
-                        placeholder="Type your answer"
+                        placeholder={t("localizationIssueDetail.ui_Type_your_answer")}
                         className="min-h-24 bg-background text-sm"
                       />
                     ) : null}
@@ -1349,7 +1351,7 @@ function AskUserQuestionsCard({
 
           <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-border/70 bg-background/75 p-4">
             <div className="text-sm text-muted-foreground">
-              Submit once after you finish the full form.
+              {t("localizationIssueDetail.ui_Submit_once_after_you_finish_the_full_form")}
             </div>
             <div className="flex flex-wrap items-center gap-2">
               {onCancelInteraction ? (
@@ -1361,11 +1363,9 @@ function AskUserQuestionsCard({
                 >
                   {cancelling ? (
                     <>
-                      <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
-                      Cancelling...
-                    </>
+                      <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />{t("pages.cliAuth.cancelling")}</>
                   ) : (
-                    "Cancel question"
+                    t("localizationIssueDetail.ui_Cancel_question")
                   )}
                   </Button>
                 ) : null}
@@ -1376,11 +1376,9 @@ function AskUserQuestionsCard({
               >
                 {working ? (
                   <>
-                    <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
-                    Submitting...
-                  </>
+                    <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />{t("pages.pipelines.submitting")}</>
                 ) : (
-                  interaction.payload.submitLabel ?? "Submit answers"
+                  interaction.payload.submitLabel ?? t("localizationIssueDetail.ui_Submit_answers")
                 )}
               </Button>
             </div>
@@ -1392,15 +1390,15 @@ function AskUserQuestionsCard({
         <div className="rounded-2xl border border-rose-300/60 bg-rose-50/85 p-4 text-sm leading-6 text-rose-950 dark:border-rose-500/40 dark:bg-rose-500/10 dark:text-rose-100">
           <div className="font-semibold">
             {interaction.result?.outcome === "withdrawn"
-              ? questions.length === 1 ? "Question withdrawn" : "Questions withdrawn"
-              : "Question cancelled"}
+              ? t("localizationIssueDetail.questionWithdrawn", { count: questions.length })
+              : t("localizationIssueDetail.ui_Question_cancelled")}
           </div>
           {interaction.result?.cancellationReason ? (
             <p className="mt-1">{interaction.result.cancellationReason}</p>
           ) : interaction.result?.reason ? (
             <p className="mt-1">{interaction.result.reason}</p>
           ) : (
-            <p className="mt-1">No answer was recorded.</p>
+            <p className="mt-1">{t("localizationIssueDetail.ui_No_answer_was_recorded")}</p>
           )}
         </div>
       ) : interaction.status === "expired" ? (
@@ -1408,24 +1406,20 @@ function AskUserQuestionsCard({
           <div className="flex items-center gap-2 font-semibold">
             <AlertTriangle className="h-4 w-4" />
             {interaction.result?.outcome === "issue_closed"
-              ? questions.length === 1
-                ? "Question expired when the issue closed"
-                : "Questions expired when the issue closed"
-              : questions.length === 1
-                ? "Question expired by comment"
-                : "Questions expired by comment"}
+              ? t("localizationIssueDetail.questionClosed", { count: questions.length })
+              : t("localizationIssueDetail.questionComment", { count: questions.length })}
           </div>
           <p className="mt-1">
             {interaction.result?.outcome === "issue_closed"
-              ? "This question request expired automatically when the issue reached a terminal state."
-              : "A later board/user comment superseded this question request. Create a fresh request if answers are still needed."}
+              ? t("localizationIssueDetail.ui_This_question_request_expired_automatically_when_the_issue_reached_a_terminal_state")
+              : t("localizationIssueDetail.ui_A_later_board_user_comment_superseded_this_question_request_Create_a_fresh_request_if")}
           </p>
           {interaction.result?.commentId ? (
             <a
               href={`#comment-${interaction.result.commentId}`}
               className="mt-3 inline-flex text-sm font-medium underline underline-offset-4"
             >
-              Jump to comment
+              {t("localizationIssueDetail.ui_Jump_to_comment")}
             </a>
           ) : null}
         </div>
@@ -1447,10 +1441,10 @@ function AskUserQuestionsCard({
                 <div className="mt-2 flex flex-wrap gap-2">
                   {labels.length > 0 ? (
                     labels.map((label) => (
-                      <TaskField key={label} label="Answer" value={label} />
+                      <TaskField key={label} label={t("localizationIssueDetail.ui_Answer")} value={label} />
                     ))
                   ) : (
-                    <span className="text-sm text-muted-foreground">No answer recorded.</span>
+                    <span className="text-sm text-muted-foreground">{t("localizationIssueDetail.ui_No_answer_recorded")}</span>
                   )}
                 </div>
               </div>
@@ -1460,7 +1454,7 @@ function AskUserQuestionsCard({
           {interaction.result?.summaryMarkdown ? (
             <div className="rounded-2xl border border-emerald-300/60 bg-emerald-50/85 p-4">
               <div className="mb-2 text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-eyebrow) text-emerald-700">
-                Submitted summary
+                {t("localizationIssueDetail.ui_Submitted_summary")}
               </div>
               <MarkdownBody externalReferences={externalReferences}>{interaction.result.summaryMarkdown}</MarkdownBody>
             </div>
@@ -1475,7 +1469,7 @@ function requestConfirmationTargetLabel(target: RequestConfirmationTarget) {
   if (target.label) return target.label;
   const revision = target.revisionNumber ? ` v${target.revisionNumber}` : "";
   if (target.type === "issue_document" && target.key === "plan") {
-    return `Plan${revision}`;
+    return t("localizationIssueDetail.planRevision", { revision });
   }
   return `${target.key}${revision}`;
 }
@@ -1504,6 +1498,7 @@ function RequestConfirmationTargetChip({
   target: RequestConfirmationTarget | null | undefined;
   tone?: "default" | "subtle";
 }) {
+  useTranslation();
   if (!target) return null;
 
   const href = requestConfirmationTargetHref({ interaction, target });
@@ -1541,6 +1536,7 @@ function RequestConfirmationResolution({
 }: {
   interaction: RequestConfirmationInteraction;
 }) {
+  const { t } = useTranslation();
   const outcome = interaction.result?.outcome;
   const target = interaction.payload.target ?? null;
   const staleTarget = interaction.result?.staleTarget ?? null;
@@ -1551,21 +1547,21 @@ function RequestConfirmationResolution({
       return (
         <div className="space-y-2">
           <div className="flex flex-wrap items-center gap-2 text-sm leading-6 text-foreground">
-            <span className="font-medium">Confirmed</span>
+            <span className="font-medium">{t("localizationIssueDetail.ui_Confirmed")}</span>
             <RequestConfirmationTargetChip interaction={interaction} target={target} />
           </div>
           <div className="rounded-sm border border-amber-500/60 bg-amber-500/10 px-4 py-3 text-sm text-amber-900 dark:text-amber-100">
             <div className="text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-eyebrow) text-amber-700">
-              Agent resume failed
+              {t("localizationIssueDetail.ui_Agent_resume_failed")}
             </div>
             <p className="mt-1 leading-6">
               {resumeFailure.status === "retrying"
-                ? `Paperclip is retrying the agent resume after approval (attempt ${resumeFailure.attempt}/${resumeFailure.maxAttempts}).`
-                : "Paperclip needs attention before the agent can resume this approved work."}
+                ? t("localizationIssueDetail.resumeRetry", { attempt: resumeFailure.attempt, max: resumeFailure.maxAttempts })
+                : t("localizationIssueDetail.ui_Paperclip_needs_attention_before_the_agent_can_resume_this_approved_work")}
             </p>
             {resumeFailure.errorCode ? (
               <p className="mt-1 leading-6">
-                Latest cause: <code className="font-mono text-(length:--text-micro)">{resumeFailure.errorCode}</code>
+                {t("localizationIssueDetail.ui_Latest_cause")} <code className="font-mono text-(length:--text-micro)">{resumeFailure.errorCode}</code>
               </p>
             ) : null}
           </div>
@@ -1574,7 +1570,7 @@ function RequestConfirmationResolution({
     }
     return (
       <div className="flex flex-wrap items-center gap-2 text-sm leading-6 text-foreground">
-        <span className="font-medium">Confirmed</span>
+        <span className="font-medium">{t("localizationIssueDetail.ui_Confirmed")}</span>
         <RequestConfirmationTargetChip interaction={interaction} target={target} />
       </div>
     );
@@ -1584,7 +1580,7 @@ function RequestConfirmationResolution({
     return (
       <div className="space-y-2">
         <div className="flex flex-wrap items-center gap-2 text-sm leading-6 text-foreground">
-          <span className="font-medium">Declined</span>
+          <span className="font-medium">{t("pages.apps.review.declinedTitle")}</span>
           <RequestConfirmationTargetChip interaction={interaction} target={target} />
         </div>
         {interaction.result?.reason ? (
@@ -1603,7 +1599,7 @@ function RequestConfirmationResolution({
     // and no duplicated reason text.
     return (
       <div className="flex flex-wrap items-center gap-2 text-sm leading-6 text-foreground">
-        <span className="font-medium">Withdrawn</span>
+        <span className="font-medium">{t("localizationIssueDetail.ui_Withdrawn")}</span>
         <RequestConfirmationTargetChip interaction={interaction} target={target} />
       </div>
     );
@@ -1623,19 +1619,19 @@ function RequestConfirmationResolution({
          */}
         {expiredByIssueClosed ? null : (
           <div className="text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-eyebrow) text-amber-700">
-            {expiredByComment ? "Expired by comment" : "Expired by target change"}
+            {expiredByComment ? t("localizationIssueDetail.ui_Expired_by_comment") : t("localizationIssueDetail.ui_Expired_by_target_change")}
           </div>
         )}
         <p className="leading-6">
           {expiredByComment
-            ? "A board comment superseded this confirmation before it was resolved."
+            ? t("localizationIssueDetail.ui_A_board_comment_superseded_this_confirmation_before_it_was_resolved")
             : expiredByIssueClosed
-              ? "This confirmation expired automatically when the issue reached a terminal state."
-              : "The requested target changed before this confirmation was resolved."}
+              ? t("localizationIssueDetail.ui_This_confirmation_expired_automatically_when_the_issue_reached_a_terminal_state")
+              : t("localizationIssueDetail.ui_The_requested_target_changed_before_this_confirmation_was_resolved")}
         </p>
         {expiredByComment && interaction.result?.commentId ? (
           <Button asChild size="sm" variant="ghost" className="h-7 px-2 text-amber-950 hover:bg-amber-500/15 dark:text-amber-50">
-            <a href={`#comment-${interaction.result.commentId}`}>Jump to comment</a>
+            <a href={`#comment-${interaction.result.commentId}`}>{t("localizationIssueDetail.ui_Jump_to_comment")}</a>
           </Button>
         ) : null}
         {expiredByTargetChange ? (
@@ -1658,7 +1654,7 @@ function RequestConfirmationResolution({
   if (interaction.status === "failed") {
     return (
       <p className="text-sm leading-6 text-muted-foreground">
-        This request could not be resolved. Try again or create a new request.
+        {t("localizationIssueDetail.ui_This_request_could_not_be_resolved_Try_again_or_create_a_new_request")}
       </p>
     );
   }
@@ -1673,6 +1669,7 @@ function ToolActionIdentityHeader({
   payload: NonNullable<RequestConfirmationInteraction["payload"]["toolAction"]>;
   state: ToolActionCardState;
 }) {
+  useTranslation();
   const risk = toolActionRiskBadge(payload.risk);
   const RiskIcon = risk.Icon;
   const dimmed = state === "declined" || state === "expired";
@@ -1718,6 +1715,7 @@ function ToolActionTechnicalDetails({
 }: {
   payload: NonNullable<RequestConfirmationInteraction["payload"]["toolAction"]>;
 }) {
+  const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const hasArgs = payload.argumentsSummaryJson.trim().length > 0;
 
@@ -1729,7 +1727,7 @@ function ToolActionTechnicalDetails({
         ) : (
           <ChevronRight className="h-3.5 w-3.5" />
         )}
-        Technical details
+        {t("localizationIssueDetail.ui_Technical_details")}
       </CollapsibleTrigger>
       <CollapsibleContent className="space-y-2 pt-2">
         {hasArgs ? (
@@ -1739,7 +1737,7 @@ function ToolActionTechnicalDetails({
         ) : null}
         <div className="flex items-center gap-2 text-xs text-muted-foreground">
           <span className="font-semibold uppercase tracking-(--tracking-eyebrow) text-(length:--text-nano)">
-            args hash
+            {t("localizationIssueDetail.ui_args_hash")}
           </span>
           <code className="truncate font-mono">{payload.argumentsHash}</code>
         </div>
@@ -1759,14 +1757,15 @@ function ToolActionResolution({
   resolvedByLabel: string | null;
   requestedByLabel: string;
 }) {
+  const { t } = useTranslation();
   const result = interaction.result?.toolAction ?? null;
-  const who = resolvedByLabel ?? "the board";
+  const who = resolvedByLabel ?? t("localizationIssueDetail.boardActor");
   const when = interaction.resolvedAt
     ? formatDateTime(interaction.resolvedAt)
     : result?.updatedAt
       ? formatDateTime(result.updatedAt)
       : null;
-  const whenSuffix = when ? ` at ${when}` : "";
+  const whenSuffix = when ? t("localizationIssueDetail.atTime", { time: when }) : "";
 
   if (state === "running") {
     return (
@@ -1776,9 +1775,9 @@ function ToolActionResolution({
       >
         <Loader2 className="mt-0.5 h-4 w-4 shrink-0 animate-spin" />
         <div className="space-y-1 leading-6">
-          <div className="font-medium">Approved by {who} — running the action now</div>
+          <div className="font-medium">{t("localizationIssueDetail.approvedRunning", { who })}</div>
           <p className="text-amber-900/80 dark:text-amber-100/80">
-            The action is executing server-side with the exact arguments you approved.
+            {t("localizationIssueDetail.ui_The_action_is_executing_server_side_with_the_exact_arguments_you_approved")}
           </p>
         </div>
       </div>
@@ -1796,9 +1795,9 @@ function ToolActionResolution({
         <div className="flex items-start gap-2 leading-6">
           <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" />
           <div>
-            <div className="font-medium">Executed · approved by {who}{whenSuffix}</div>
+            <div className="font-medium">{t("localizationIssueDetail.executedApproved", { who, when: whenSuffix })}</div>
             <p className="text-green-900/80 dark:text-green-100/80">
-              {requestedByLabel} was resumed with this result.
+              {t("localizationIssueDetail.resumedResult", { agent: requestedByLabel })}
             </p>
           </div>
         </div>
@@ -1808,14 +1807,14 @@ function ToolActionResolution({
           </div>
         ) : (
           <div className="rounded-sm border border-green-500/40 bg-background/60 px-3 py-2 text-foreground">
-            Executed successfully.
+            {t("localizationIssueDetail.ui_Executed_successfully")}
           </div>
         )}
         {href ? (
           <Button asChild size="sm" variant="outline" className="h-7 px-2">
             <a href={href} target="_blank" rel="noreferrer">
               <ExternalLink className="mr-1.5 h-3.5 w-3.5" />
-              View result
+              {t("localizationIssueDetail.ui_View_result")}
             </a>
           </Button>
         ) : null}
@@ -1834,10 +1833,10 @@ function ToolActionResolution({
         <div className="flex items-start gap-2 leading-6">
           <XCircle className="mt-0.5 h-4 w-4 shrink-0 text-red-600 dark:text-red-400" />
           <div>
-            <div className="font-medium">Failed · approved by {who}{whenSuffix}</div>
+            <div className="font-medium">{t("localizationIssueDetail.failedApproved", { who, when: whenSuffix })}</div>
             <p className="text-amber-900/80 dark:text-amber-100/80">
-              You approved it and it ran, but the connector returned an error.{" "}
-              {requestedByLabel} was resumed with this error.
+              {t("localizationIssueDetail.ui_You_approved_it_and_it_ran_but_the_connector_returned_an_error")}{" "}
+              {t("localizationIssueDetail.resumedError", { agent: requestedByLabel })}
             </p>
           </div>
         </div>
@@ -1864,10 +1863,9 @@ function ToolActionResolution({
         <div className="flex items-start gap-2 leading-6">
           <XCircle className="mt-0.5 h-4 w-4 shrink-0" />
           <div>
-            <div className="font-medium">Declined by {who}{whenSuffix}</div>
+            <div className="font-medium">{t("localizationIssueDetail.declinedBy", { who, when: whenSuffix })}</div>
             <p className="text-red-900/80 dark:text-red-100/80">
-              The action did <strong>not</strong> run. {requestedByLabel} was resumed with
-              your reason and told not to retry the same call.
+              <Trans i18nKey="localizationIssueDetail.declinedNoRun" values={{ agent: requestedByLabel }} components={{ strong: <strong /> }} />
             </p>
           </div>
         </div>
@@ -1887,11 +1885,10 @@ function ToolActionResolution({
         <Clock className="mt-0.5 h-4 w-4 shrink-0" />
         <div>
           <div className="font-medium text-foreground">
-            Expired{when ? ` at ${when}` : ""} — no one responded within 60 minutes
+            {t("localizationIssueDetail.approvalExpired", { when: whenSuffix })}
           </div>
           <p>
-            The action did <strong>not</strong> run. If it's still needed, the agent can
-            request approval again — a fresh card will appear.
+            <Trans i18nKey="localizationIssueDetail.expiredNoRun" components={{ strong: <strong /> }} />
           </p>
         </div>
       </div>
@@ -1921,11 +1918,12 @@ function RequestToolActionCard({
   ) => Promise<void> | void;
   externalReferences?: MarkdownExternalReferenceMap;
 }) {
+  const { t } = useTranslation();
   const payload = interaction.payload.toolAction!;
   const [rejecting, setRejecting] = useState(false);
   const [rejectReason, setRejectReason] = useState("");
   const [working, setWorking] = useState<"accept" | "reject" | null>(null);
-  const [actionError, setActionError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<InteractionResolutionDisplayError | null>(null);
   const resolutionErrorMessage = useResolutionErrorMessage();
   const [nowMs, setNowMs] = useState(() => Date.now());
   const isPending = state === "pending";
@@ -2009,11 +2007,9 @@ function RequestToolActionCard({
               >
                 {working === "accept" ? (
                   <>
-                    <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
-                    Approving…
-                  </>
+                    <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />{t("pages.secrets.status.approving")}</>
                 ) : (
-                  "Approve & run"
+                  t("localizationIssueDetail.ui_Approve_run")
                 )}
               </Button>
               <Button
@@ -2021,11 +2017,9 @@ function RequestToolActionCard({
                 variant="outline"
                 disabled={!onRejectInteraction || working !== null}
                 onClick={() => setRejecting((current) => !current)}
-              >
-                Decline
-              </Button>
+              >{t("pages.apps.review.decline")}</Button>
               <span className="text-(length:--text-micro) text-muted-foreground">
-                Approving runs this action now.
+                {t("localizationIssueDetail.ui_Approving_runs_this_action_now")}
               </span>
             </div>
 
@@ -2034,7 +2028,7 @@ function RequestToolActionCard({
                 <Textarea
                   value={rejectReason}
                   onChange={(event) => setRejectReason(event.target.value)}
-                  placeholder="Optional: tell the agent why, so it doesn't retry the same call."
+                  placeholder={t("localizationIssueDetail.ui_Optional_tell_the_agent_why_so_it_doesn_t_retry_the_same_call")}
                   className="min-h-20 bg-background text-sm"
                 />
                 <div className="flex flex-wrap justify-end gap-2">
@@ -2044,7 +2038,7 @@ function RequestToolActionCard({
                     disabled={working !== null}
                     onClick={() => setRejecting(false)}
                   >
-                    Cancel
+                    {t("localizationFilters.cancel")}
                   </Button>
                   <Button
                     size="sm"
@@ -2055,10 +2049,10 @@ function RequestToolActionCard({
                     {working === "reject" ? (
                       <>
                         <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
-                        Declining…
+                        {t("localizationIssueDetail.ui_Declining")}
                       </>
                     ) : (
-                      "Decline"
+                      t("pages.apps.review.decline")
                     )}
                   </Button>
                 </div>
@@ -2101,12 +2095,12 @@ function secretProposalCardState(
   return "running";
 }
 
-function secretProposalStatusClasses(state: SecretProposalCardState) {
+function secretProposalStatusClasses(state: SecretProposalCardState): ReturnType<typeof toolActionStatusClasses> {
   if (state === "failed") {
     return {
       shell: "border-2 border-red-500/80 bg-transparent",
       badge: "border-red-500/60 bg-red-500/10 text-red-900 dark:bg-red-500/15 dark:text-red-100",
-      label: "FAILED",
+      get label() { return t("localizationIssueDetail.ui_FAILED"); },
       Icon: XCircle,
     };
   }
@@ -2118,6 +2112,7 @@ function SecretProposalIdentityHeader({
 }: {
   state: SecretProposalCardState;
 }) {
+  const { t } = useTranslation();
   const dimmed = state === "declined" || state === "expired";
   return (
     <div className={cn("flex items-start gap-3", dimmed && "opacity-60 grayscale")}>
@@ -2129,7 +2124,7 @@ function SecretProposalIdentityHeader({
       </div>
       <div className="min-w-0 flex-1">
         <div className="text-base font-bold leading-tight text-foreground">
-          Bind an existing secret
+          {t("localizationIssueDetail.ui_Bind_an_existing_secret")}
         </div>
       </div>
     </div>
@@ -2141,23 +2136,22 @@ function SecretProposalDetails({
 }: {
   payload: NonNullable<RequestConfirmationInteraction["payload"]["secretProposal"]>;
 }) {
+  const { t } = useTranslation();
   return (
     <dl className="grid gap-3 rounded-sm border border-border/70 bg-muted/30 p-3 sm:grid-cols-2">
       <div className="min-w-0 space-y-1">
         <dt className="text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-eyebrow) text-muted-foreground">
-          Source secret
+          {t("localizationIssueDetail.ui_Source_secret")}
         </dt>
         <dd className="truncate text-sm font-medium text-foreground">{payload.sourceSecretLabel}</dd>
       </div>
       <div className="min-w-0 space-y-1">
-        <dt className="text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-eyebrow) text-muted-foreground">
-          Target agent
-        </dt>
+        <dt className="text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-eyebrow) text-muted-foreground">{t("pages.secrets.fields.targetAgent")}</dt>
         <dd className="truncate text-sm font-medium text-foreground">{payload.targetAgentName}</dd>
       </div>
       <div className="min-w-0 space-y-1 sm:col-span-2">
         <dt className="text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-eyebrow) text-muted-foreground">
-          New config path
+          {t("localizationIssueDetail.ui_New_config_path")}
         </dt>
         <dd className="break-all font-mono text-sm text-foreground">{payload.configPath}</dd>
       </div>
@@ -2174,8 +2168,9 @@ function SecretProposalResolution({
   state: SecretProposalCardState;
   resolvedByLabel: string | null;
 }) {
+  const { t } = useTranslation();
   const result = interaction.result?.secretProposal ?? null;
-  const who = resolvedByLabel ?? "the board";
+  const who = resolvedByLabel ?? t("localizationIssueDetail.boardActor");
   const when = interaction.resolvedAt
     ? formatDateTime(interaction.resolvedAt)
     : result?.updatedAt
@@ -2187,9 +2182,9 @@ function SecretProposalResolution({
       <div aria-live="polite" className="flex items-start gap-2 rounded-sm border border-amber-500/50 bg-amber-500/10 px-4 py-3 text-sm text-amber-900 dark:text-amber-100">
         <Loader2 className="mt-0.5 h-4 w-4 shrink-0 animate-spin" />
         <div>
-          <div className="font-medium">Approved by {who} — creating the binding</div>
+          <div className="font-medium">{t("localizationIssueDetail.approvedBinding", { who })}</div>
           <p className="mt-1 text-amber-900/80 dark:text-amber-100/80">
-            Paperclip is re-checking authority and the proposal snapshot before writing.
+            {t("localizationIssueDetail.ui_Paperclip_is_re_checking_authority_and_the_proposal_snapshot_before_writing")}
           </p>
         </div>
       </div>
@@ -2201,9 +2196,9 @@ function SecretProposalResolution({
       <div aria-live="polite" className="flex items-start gap-2 rounded-sm border border-green-500/50 bg-green-500/10 px-4 py-3 text-sm text-green-900 dark:text-green-100">
         <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" />
         <div>
-          <div className="font-medium">Binding created · approved by {who}</div>
+          <div className="font-medium">{t("localizationIssueDetail.bindingCreated", { who })}</div>
           <p className="mt-1 text-green-900/80 dark:text-green-100/80">
-            The target agent can now use the proposed config path{when ? ` · ${when}` : ""}.
+            {t("localizationIssueDetail.targetAgentPath", { when: when ? ` · ${when}` : "" })}
           </p>
         </div>
       </div>
@@ -2218,17 +2213,17 @@ function SecretProposalResolution({
           <XCircle className="mt-0.5 h-4 w-4 shrink-0" />
           <div>
             <div className="font-semibold uppercase tracking-(--tracking-eyebrow)">
-              FAILED · binding was not created
+              {t("localizationIssueDetail.ui_FAILED_binding_was_not_created")}
             </div>
             <p className="mt-1 text-red-900/80 dark:text-red-100/80">
-              The request was accepted, but execution failed closed. No secret value was exposed.
+              {t("localizationIssueDetail.ui_The_request_was_accepted_but_execution_failed_closed_No_secret_value_was_exposed")}
             </p>
           </div>
         </div>
         {errorCode ? (
           <div className="rounded-sm border border-red-500/50 bg-background/60 px-3 py-2">
             <span className="text-(length:--text-nano) font-semibold uppercase tracking-(--tracking-eyebrow)">
-              Error code
+              {t("localizationIssueDetail.ui_Error_code")}
             </span>{" "}
             <code className="font-mono text-foreground">{errorCode}</code>
           </div>
@@ -2244,8 +2239,8 @@ function SecretProposalResolution({
         <div className="flex items-start gap-2">
           <XCircle className="mt-0.5 h-4 w-4 shrink-0" />
           <div>
-            <div className="font-medium">Rejected by {who}</div>
-            <p className="mt-1 text-red-900/80 dark:text-red-100/80">The binding was not created.</p>
+            <div className="font-medium">{t("localizationIssueDetail.rejectedBy", { who })}</div>
+            <p className="mt-1 text-red-900/80 dark:text-red-100/80">{t("localizationIssueDetail.ui_The_binding_was_not_created")}</p>
           </div>
         </div>
         {reason ? (
@@ -2261,8 +2256,8 @@ function SecretProposalResolution({
     <div className="flex items-start gap-2 rounded-sm border border-border bg-muted/50 px-4 py-3 text-sm text-muted-foreground">
       <Clock className="mt-0.5 h-4 w-4 shrink-0" />
       <div>
-        <div className="font-medium text-foreground">Proposal expired{when ? ` · ${when}` : ""}</div>
-        <p className="mt-1">The binding was not created. A fresh proposal is required.</p>
+        <div className="font-medium text-foreground">{t("localizationIssueDetail.ui_Proposal_expired")}{when ? ` · ${when}` : ""}</div>
+        <p className="mt-1">{t("localizationIssueDetail.ui_The_binding_was_not_created_A_fresh_proposal_is_required")}</p>
       </div>
     </div>
   );
@@ -2284,9 +2279,10 @@ function RequestSecretProposalCard({
     reason?: string,
   ) => Promise<void> | void;
 }) {
+  const { t } = useTranslation();
   const payload = interaction.payload.secretProposal!;
   const [working, setWorking] = useState<"accept" | "reject" | null>(null);
-  const [actionError, setActionError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<InteractionResolutionDisplayError | null>(null);
   const resolutionErrorMessage = useResolutionErrorMessage();
   const isPending = state === "pending";
 
@@ -2328,19 +2324,19 @@ function RequestSecretProposalCard({
       <ProposalJustification justification={payload.justification} />
       <div className="flex items-center gap-2 text-(length:--text-micro) text-muted-foreground">
         <Clock className="h-3.5 w-3.5" />
-        Expires {formatDateTime(payload.expiresAt)}
+        {t("localizationIssueDetail.ui_Expires")} {formatDateTime(payload.expiresAt)}
       </div>
 
       {isPending ? (
         <ConfirmationActionRow
           resetKey={`${interaction.id}:${interaction.status}`}
-          approveLabel={interaction.payload.acceptLabel ?? "Approve & bind"}
-          reviseLabel="Add reason…"
-          rejectLabel={interaction.payload.rejectLabel ?? "Reject"}
+          approveLabel={interaction.payload.acceptLabel ?? t("localizationIssueDetail.ui_Approve_bind")}
+          reviseLabel={t("localizationIssueDetail.ui_Add_reason")}
+          rejectLabel={interaction.payload.rejectLabel ?? t("pages.inbox.reject")}
           approveVariant="cta"
           allowRevise={interaction.payload.allowDeclineReason !== false}
           rejectRequiresReason={interaction.payload.rejectRequiresReason === true}
-          reasonPlaceholder={interaction.payload.declineReasonPlaceholder ?? "Optional: explain why this binding should not be created."}
+          reasonPlaceholder={interaction.payload.declineReasonPlaceholder ?? t("localizationIssueDetail.ui_Optional_explain_why_this_binding_should_not_be_created")}
           working={working}
           actionError={actionError}
           canApprove={Boolean(onAcceptInteraction)}
@@ -2368,9 +2364,9 @@ function RequestSecretProposalCard({
  * producers may still override the accept/reject labels for domain-specific
  * confirmations (e.g. "Delete selected"), but the shape stays consistent.
  */
-const CONFIRMATION_APPROVE_LABEL = "Approve";
-const CONFIRMATION_REVISE_LABEL = "Revise…";
-const CONFIRMATION_REJECT_LABEL = "Reject";
+const CONFIRMATION_APPROVE_LABEL_KEY = "localizationSettings.approve";
+const CONFIRMATION_REVISE_LABEL_KEY = "localizationIssueDetail.reviseAction";
+const CONFIRMATION_REJECT_LABEL_KEY = "localizationSettings.reject";
 
 /**
  * The one action control every confirmation card renders (PAP-418), collapsing
@@ -2383,7 +2379,7 @@ const CONFIRMATION_REJECT_LABEL = "Reject";
 function ConfirmationActionRow({
   resetKey,
   approveLabel,
-  reviseLabel = CONFIRMATION_REVISE_LABEL,
+  reviseLabel = t(CONFIRMATION_REVISE_LABEL_KEY),
   rejectLabel,
   approveVariant = "default",
   primaryActionOnRight = false,
@@ -2414,7 +2410,7 @@ function ConfirmationActionRow({
   rejectRequiresReason: boolean;
   reasonPlaceholder: string;
   working: "accept" | "reject" | null;
-  actionError: string | null;
+  actionError: InteractionResolutionDisplayError | null;
   approveDisabled?: boolean;
   canApprove: boolean;
   canReject: boolean;
@@ -2432,6 +2428,7 @@ function ConfirmationActionRow({
    * hierarchy instead of relying on opportunistic flex wrapping. */
   stackActionsOnMobile?: boolean;
 }) {
+  const { t } = useTranslation();
   const [revising, setRevising] = useState(false);
   const [reason, setReason] = useState("");
   const [attempted, setAttempted] = useState(false);
@@ -2472,9 +2469,7 @@ function ConfirmationActionRow({
         >
           {working === "accept" ? (
             <>
-              <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
-              Approving…
-            </>
+              <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />{t("pages.secrets.status.approving")}</>
           ) : (
             approveLabel
           )}
@@ -2503,9 +2498,7 @@ function ConfirmationActionRow({
           >
             {working === "reject" && !revising ? (
               <>
-                <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
-                Rejecting…
-              </>
+                <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />{t("pages.secrets.status.rejecting")}</>
             ) : (
               rejectLabel
             )}
@@ -2526,7 +2519,7 @@ function ConfirmationActionRow({
             )}
           />
           {attempted && reasonMissing ? (
-            <p className="text-xs text-destructive">Add a note describing the changes you want.</p>
+            <p className="text-xs text-destructive">{t("localizationIssueDetail.ui_Add_a_note_describing_the_changes_you_want")}</p>
           ) : null}
           {revisePanelChildren}
           <div className="flex flex-wrap justify-end gap-2">
@@ -2539,7 +2532,7 @@ function ConfirmationActionRow({
                 setAttempted(false);
               }}
             >
-              Cancel
+              {t("localizationFilters.cancel")}
             </Button>
             <Button
               size="sm"
@@ -2550,10 +2543,10 @@ function ConfirmationActionRow({
               {working === "reject" ? (
                 <>
                   <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
-                  Sending…
+                  {t("localizationIssueDetail.ui_Sending")}
                 </>
               ) : (
-                "Send revision"
+                t("localizationIssueDetail.ui_Send_revision")
               )}
             </Button>
           </div>
@@ -2579,7 +2572,7 @@ function connectionAuthorizationStatusClasses(
       return {
         shell: "border-2 border-sky-500/70 bg-transparent",
         badge: "border-sky-500/60 bg-sky-500/10 text-sky-900 dark:bg-sky-500/15 dark:text-sky-100",
-        label: "Action required",
+        get label() { return t("localizationIssueDetail.ui_Action_required"); },
         Icon: KeyRound,
       };
     case "waiting":
@@ -2588,21 +2581,21 @@ function connectionAuthorizationStatusClasses(
       return {
         shell: "border-border bg-transparent",
         badge: "border-border bg-muted/60 text-muted-foreground",
-        label: `Waiting for ${copy.addresseeLabel}`,
+        label: t("localizationIssueDetail.waitingFor", { person: copy.addresseeLabel }),
         Icon: Clock,
       };
     case "connected":
       return {
         shell: "border-2 border-green-500/80 bg-transparent",
         badge: "border-green-500/60 bg-green-500/10 text-green-900 dark:bg-green-500/15 dark:text-green-100",
-        label: `${copy.providerName} connected`,
+        label: t("localizationIssueDetail.serviceConnected", { provider: copy.providerName }),
         Icon: CheckCircle2,
       };
     case "declined":
       return {
         shell: "border-border bg-transparent",
         badge: "border-border bg-muted/60 text-muted-foreground",
-        label: "Not connected",
+        get label() { return t("pages.apps.connections.statusNotConnected"); },
         Icon: MinusCircle,
       };
     case "expired":
@@ -2610,7 +2603,7 @@ function connectionAuthorizationStatusClasses(
       return {
         shell: "border-border bg-transparent",
         badge: "border-border bg-muted/60 text-muted-foreground",
-        label: "Authorization expired",
+        get label() { return t("localizationIssueDetail.ui_Authorization_expired"); },
         Icon: CircleDashed,
       };
   }
@@ -2662,8 +2655,9 @@ function RequestConnectionAuthorizationCard({
     reason?: string,
   ) => Promise<void> | void;
 }) {
+  const { t } = useTranslation();
   const [working, setWorking] = useState(false);
-  const [actionError, setActionError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<InteractionResolutionDisplayError | null>(null);
   const resolutionErrorMessage = useResolutionErrorMessage();
   const href = connectionAuthorizationHref(interaction);
   const declineReason = getAdministrativeReason(interaction);
@@ -2694,14 +2688,14 @@ function RequestConnectionAuthorizationCard({
   // person. Shown to a teammate it names the wrong account, so a reader who is
   // not the addressee gets the same fact stated about them. Caught by rendering
   // the card, not by reading it.
-  const agentLabel = requestingAgentLabel ?? "An agent";
+  const agentLabel = requestingAgentLabel ?? t("localizationIssueDetail.anAgent");
   const lead = isAddressee
     ? interaction.summary?.trim()
-      || `${agentLabel} needs your ${providerName} identity for work running as you.`
-    : `${agentLabel} ${state === "connected" ? "needed" : "needs"} ${addresseeLabel}'s ${providerName} identity for work running as them.`;
+      || t("localizationIssueDetail.identityForYou", { agent: agentLabel, provider: providerName })
+    : t(state === "connected" ? "localizationIssueDetail.identityForPersonPast" : "localizationIssueDetail.identityForPerson", { agent: agentLabel, person: addresseeLabel, provider: providerName });
   // Only the actionable state needs the consent boundary spelled out; the other
   // states carry it in their own status line.
-  const consentSentence = state === "actionable" ? "No one else can complete this step." : null;
+  const consentSentence = state === "actionable" ? t("localizationIssueDetail.ui_No_one_else_can_complete_this_step") : null;
 
   return (
     <div className="space-y-4">
@@ -2721,7 +2715,7 @@ function RequestConnectionAuthorizationCard({
             >
               <Button asChild size="sm" variant="cta" className="w-full sm:w-auto">
                 <a href={href} target="_blank" rel="noreferrer">
-                  Connect {providerName}
+                  {t("pages.apps.connections.connect")} {providerName}
                   <ArrowUpRight className="ml-1.5 h-3.5 w-3.5" />
                 </a>
               </Button>
@@ -2735,10 +2729,10 @@ function RequestConnectionAuthorizationCard({
                 {working ? (
                   <>
                     <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
-                    Saving…
+                    {t("pages.agentDetail.saving")}
                   </>
                 ) : (
-                  "Not now"
+                  t("localizationIssueDetail.ui_Not_now")
                 )}
               </Button>
             </div>
@@ -2748,8 +2742,8 @@ function RequestConnectionAuthorizationCard({
             <ConnectionAuthorizationStatusLine
               Icon={TriangleAlert}
               testId="connection-authorization-no-target"
-              headline="This authorization link is unavailable"
-              detail={`Ask ${requestingAgentLabel ?? "the agent"} to send a fresh ${providerName} authorization link.`}
+              headline={t("localizationIssueDetail.ui_This_authorization_link_is_unavailable")}
+              detail={t("localizationIssueDetail.freshAuthLink", { agent: requestingAgentLabel ?? t("localizationIssueDetail.agentActor"), provider: providerName })}
             />
           )}
           <InteractionActionError message={actionError} />
@@ -2758,23 +2752,19 @@ function RequestConnectionAuthorizationCard({
         <ConnectionAuthorizationStatusLine
           Icon={Clock}
           testId="connection-authorization-waiting"
-          headline={`Waiting for ${addresseeLabel}`}
-          detail={`Only ${addresseeLabel} can connect their own ${providerName} account.`}
+          headline={t("localizationIssueDetail.waitingFor", { person: addresseeLabel })}
+          detail={t("localizationIssueDetail.onlyConnectOwn", { person: addresseeLabel, provider: providerName })}
         />
       ) : state === "connected" ? (
         <ConnectionAuthorizationStatusLine
           Icon={CheckCircle2}
           testId="connection-authorization-connected"
-          headline={`${providerName} connected`}
+          headline={t("localizationIssueDetail.serviceConnected", { provider: providerName })}
           detail={
             <>
-              Connected by{" "}
-              <span className="font-medium text-foreground">
-                {/* "You" is display-cased for a badge; this is mid-sentence. */}
-                {(resolvedByLabel ?? addresseeLabel) === "You" ? "you" : resolvedByLabel ?? addresseeLabel}
-              </span>
+              <Trans i18nKey="localizationIssueDetail.connectedBy" values={{ person: resolvedByLabel ?? addresseeLabel }} components={{ actor: <span className="font-medium text-foreground" /> }} />
               {resolvedByAgent ? <ResolvedByAgentChip /> : null}
-              {interaction.resolvedAt ? ` on ${formatDateTime(interaction.resolvedAt)}` : ""}
+              {interaction.resolvedAt ? t("localizationIssueDetail.onDate", { date: formatDateTime(interaction.resolvedAt) }) : ""}
             </>
           }
         />
@@ -2785,10 +2775,10 @@ function RequestConnectionAuthorizationCard({
         <ConnectionAuthorizationStatusLine
           Icon={state === "declined" ? MinusCircle : CircleDashed}
           testId={state === "declined" ? "connection-authorization-declined" : "connection-authorization-expired"}
-          headline={state === "declined" ? `${providerName} was not connected` : "This authorization request expired"}
+          headline={state === "declined" ? t("localizationIssueDetail.notConnected", { provider: providerName }) : t("localizationIssueDetail.ui_This_authorization_request_expired")}
           detail={
             declineReason
-              ?? `${requestingAgentLabel ?? "The agent"} can ask again with a new ${providerName} authorization link.`
+              ?? t("localizationIssueDetail.canRequestAuthAgain", { agent: requestingAgentLabel ?? t("localizationIssueDetail.anAgent"), provider: providerName })
           }
         />
       )}
@@ -2807,6 +2797,7 @@ function ConnectionAuthorizationStatusLine({
   headline: string;
   detail: ReactNode;
 }) {
+  useTranslation();
   return (
     <div
       data-testid={testId}
@@ -2843,8 +2834,9 @@ function RequestConfirmationCard({
   onUploadImage?: (file: File) => Promise<string>;
   externalReferences?: MarkdownExternalReferenceMap;
 }) {
+  const { t } = useTranslation();
   const [working, setWorking] = useState<"accept" | "reject" | null>(null);
-  const [actionError, setActionError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<InteractionResolutionDisplayError | null>(null);
   const resolutionErrorMessage = useResolutionErrorMessage();
   const [shots, setShots] = useState<{ name: string; url: string }[]>([]);
   const [uploading, setUploading] = useState(false);
@@ -2858,8 +2850,8 @@ function RequestConfirmationCard({
   const reasonPlaceholder =
     interaction.payload.declineReasonPlaceholder
     ?? (interaction.payload.acceptLabel === "Approve plan"
-      ? "Optional: what would you like revised?"
-      : "Optional: tell the agent what you'd change.");
+      ? t("localizationIssueDetail.ui_Optional_what_would_you_like_revised")
+      : t("localizationIssueDetail.ui_Optional_tell_the_agent_what_you_d_change"));
 
   useEffect(() => {
     setActionError(null);
@@ -2883,7 +2875,7 @@ function RequestConfirmationCard({
       }
       if (uploaded.length > 0) setShots((current) => [...current, ...uploaded]);
     } catch {
-      setUploadError("Couldn't upload that image. Try again.");
+      setUploadError(t("localizationIssueDetail.ui_Couldn_t_upload_that_image_Try_again"));
     } finally {
       setUploading(false);
     }
@@ -2944,8 +2936,8 @@ function RequestConfirmationCard({
       {interaction.status === "pending" ? (
         <ConfirmationActionRow
           resetKey={`${interaction.id}:${interaction.status}`}
-          approveLabel={interaction.payload.acceptLabel ?? CONFIRMATION_APPROVE_LABEL}
-          rejectLabel={CONFIRMATION_REJECT_LABEL}
+          approveLabel={interaction.payload.acceptLabel ?? t(CONFIRMATION_APPROVE_LABEL_KEY)}
+          rejectLabel={t(CONFIRMATION_REJECT_LABEL_KEY)}
           approveVariant={isPlan ? "cta" : "default"}
           primaryActionOnRight={primaryActionOnRight}
           allowRevise={allowRevise}
@@ -2976,7 +2968,7 @@ function RequestConfirmationCard({
                         />
                         <button
                           type="button"
-                          aria-label={`Remove ${shot.name}`}
+                          aria-label={t("localizationIssueDetail.removeImage", { name: shot.name })}
                           className="absolute right-0.5 top-0.5 rounded-full bg-background/90 p-0.5 text-foreground opacity-0 transition-opacity group-hover:opacity-100"
                           onClick={() =>
                             setShots((current) => current.filter((_, i) => i !== index))
@@ -3009,12 +3001,12 @@ function RequestConfirmationCard({
                   {uploading ? (
                     <>
                       <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
-                      Uploading...
+                      {t("localizationIssueDetail.ui_Uploading")}
                     </>
                   ) : (
                     <>
                       <ImagePlus className="mr-2 h-3.5 w-3.5" />
-                      Attach screenshots
+                      {t("localizationIssueDetail.ui_Attach_screenshots")}
                     </>
                   )}
                 </Button>
@@ -3039,6 +3031,7 @@ function RequestCheckboxConfirmationResolution({
 }: {
   interaction: RequestCheckboxConfirmationInteraction;
 }) {
+  const { t } = useTranslation();
   const target = interaction.payload.target ?? null;
   const [expanded, setExpanded] = useState(false);
 
@@ -3062,15 +3055,15 @@ function RequestCheckboxConfirmationResolution({
         <div className="flex flex-wrap items-center gap-2 text-sm leading-6 text-foreground">
           <span className="font-medium">
             {selectedCount === 0
-              ? "Confirmed with no options selected"
-              : `Confirmed ${selectedCount} of ${totalOptions} ${totalOptions === 1 ? "option" : "options"}`}
+              ? t("localizationIssueDetail.ui_Confirmed_with_no_options_selected")
+              : t("localizationIssueDetail.confirmedOfOptions", { count: totalOptions, selected: selectedCount })}
           </span>
           <RequestConfirmationTargetChip interaction={interaction} target={target} />
         </div>
         {visibleLabels.length > 0 ? (
           <div className="flex flex-wrap gap-1.5">
             {visibleLabels.map((label, index) => (
-              <TaskField key={`${label}-${index}`} label="Selected" value={label} />
+              <TaskField key={`${label}-${index}`} label={t("localizationIssueDetail.ui_Selected")} value={label} />
             ))}
             {hasHiddenLabels ? (
               <button
@@ -3082,7 +3075,7 @@ function RequestCheckboxConfirmationResolution({
                 )}
                 aria-expanded={expanded}
               >
-                {expanded ? "Show less" : `+${hiddenCount} more`}
+                {expanded ? t("localizationIssueDetail.ui_Show_less") : t("localizationIssueDetail.moreCount", { count: hiddenCount })}
               </button>
             ) : null}
           </div>
@@ -3102,7 +3095,7 @@ function RequestCheckboxConfirmationResolution({
   if (interaction.status === "failed") {
     return (
       <p className="text-sm leading-6 text-muted-foreground">
-        This request could not be resolved. Try again or create a new request.
+        {t("localizationIssueDetail.ui_This_request_could_not_be_resolved_Try_again_or_create_a_new_request")}
       </p>
     );
   }
@@ -3125,6 +3118,7 @@ function CheckboxOptionRow({
   disabled: boolean;
   onToggle: (checked: boolean) => void;
 }) {
+  useTranslation();
   return (
     <label
       htmlFor={id}
@@ -3172,9 +3166,10 @@ function RequestCheckboxConfirmationCard({
   ) => Promise<void> | void;
   externalReferences?: MarkdownExternalReferenceMap;
 }) {
+  const { t } = useTranslation();
   const options = interaction.payload.options;
-  const optionIds = useMemo(() => options.map((option) => option.id), [options]);
-  const validOptionIds = useMemo(() => new Set(optionIds), [optionIds]);
+  const optionIds = useMemo(() => options.map((option) => option.id), [i18n.resolvedLanguage, options]);
+  const validOptionIds = useMemo(() => new Set(optionIds), [i18n.resolvedLanguage, optionIds]);
   const minSelected = interaction.payload.minSelected ?? 0;
   const maxSelected = interaction.payload.maxSelected ?? null;
 
@@ -3183,16 +3178,16 @@ function RequestCheckboxConfirmationCard({
       new Set(
         (interaction.payload.defaultSelectedOptionIds ?? []).filter((id) => validOptionIds.has(id)),
       ),
-    [interaction.payload.defaultSelectedOptionIds, validOptionIds],
+    [i18n.resolvedLanguage, interaction.payload.defaultSelectedOptionIds, validOptionIds],
   );
 
   const [selectedOptionIds, setSelectedOptionIds] = useState<Set<string>>(() => new Set(defaultSelected));
   const [working, setWorking] = useState<"accept" | "reject" | null>(null);
   const [acceptAttempted, setAcceptAttempted] = useState(false);
-  const [actionError, setActionError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<InteractionResolutionDisplayError | null>(null);
   const resolutionErrorMessage = useResolutionErrorMessage();
 
-  const optionSeed = useMemo(() => optionIds.join("\n"), [optionIds]);
+  const optionSeed = useMemo(() => optionIds.join("\n"), [i18n.resolvedLanguage, optionIds]);
 
   useEffect(() => {
     setSelectedOptionIds(new Set(defaultSelected));
@@ -3206,7 +3201,7 @@ function RequestCheckboxConfirmationCard({
   const rejectRequiresReason = interaction.payload.rejectRequiresReason === true;
   const allowRevise = interaction.payload.allowDeclineReason !== false;
   const reasonPlaceholder =
-    interaction.payload.declineReasonPlaceholder ?? "Optional: tell the agent what you'd change.";
+    interaction.payload.declineReasonPlaceholder ?? t("localizationIssueDetail.ui_Optional_tell_the_agent_what_you_d_change");
 
   const selectedCount = selectedOptionIds.size;
   const totalOptions = options.length;
@@ -3216,13 +3211,9 @@ function RequestCheckboxConfirmationCard({
   const selectionValid = !belowMin && !aboveMax;
 
   const validationMessage = belowMin
-    ? minSelected === 1
-      ? "Select at least 1 option."
-      : `Select at least ${minSelected} options.`
+    ? t("localizationIssueDetail.selectMin", { count: minSelected })
     : aboveMax && maxSelected != null
-      ? maxSelected === 1
-        ? "Select at most 1 option."
-        : `Select at most ${maxSelected} options.`
+      ? t("localizationIssueDetail.selectMax", { count: maxSelected })
       : null;
 
   function toggleOption(optionId: string, checked: boolean) {
@@ -3282,12 +3273,12 @@ function RequestCheckboxConfirmationCard({
   }
 
   const selectionSummary = totalOptions > 0 && selectedCount === totalOptions
-    ? `All ${totalOptions} options selected`
-    : `${selectedCount} of ${totalOptions} ${totalOptions === 1 ? "option" : "options"} selected`;
+    ? t("localizationIssueDetail.allOptionsSelected", { count: totalOptions })
+    : t("localizationIssueDetail.optionsSelected", { count: totalOptions, selected: selectedCount });
   const boundsHint = maxSelected != null
-    ? `Pick ${minSelected === maxSelected ? `exactly ${maxSelected}` : `${minSelected}-${maxSelected}`}.`
+    ? minSelected === maxSelected ? t("localizationIssueDetail.pickExactly", { count: maxSelected }) : t("localizationIssueDetail.pickRange", { min: minSelected, max: maxSelected })
     : minSelected > 0
-      ? `Pick at least ${minSelected}.`
+      ? t("localizationIssueDetail.pickAtLeast", { count: minSelected })
       : null;
 
   return (
@@ -3322,7 +3313,7 @@ function RequestCheckboxConfirmationCard({
               disabled={working !== null || selectedCount === totalOptions || (maxSelected != null && selectedCount >= maxSelected)}
               onClick={handleSelectAll}
             >
-              Select all
+              {t("localizationIssueDetail.ui_Select_all")}
             </Button>
             <Button
               size="sm"
@@ -3330,14 +3321,14 @@ function RequestCheckboxConfirmationCard({
               disabled={working !== null || selectedCount === 0}
               onClick={handleClearSelection}
             >
-              Clear selection
+              {t("localizationIssueDetail.ui_Clear_selection")}
             </Button>
           </div>
         </div>
 
         <div
           role="group"
-          aria-label="Selectable options"
+          aria-label={t("localizationIssueDetail.ui_Selectable_options")}
           className="max-h-80 overflow-y-auto rounded-sm border border-border/70"
         >
           {options.map((option) => {
@@ -3362,8 +3353,8 @@ function RequestCheckboxConfirmationCard({
 
         <ConfirmationActionRow
           resetKey={`${interaction.id}:${interaction.status}`}
-          approveLabel={interaction.payload.acceptLabel ?? CONFIRMATION_APPROVE_LABEL}
-          rejectLabel={interaction.payload.rejectLabel ?? CONFIRMATION_REJECT_LABEL}
+          approveLabel={interaction.payload.acceptLabel ?? t(CONFIRMATION_APPROVE_LABEL_KEY)}
+          rejectLabel={interaction.payload.rejectLabel ?? t(CONFIRMATION_REJECT_LABEL_KEY)}
           primaryActionOnRight={primaryActionOnRight}
           allowRevise={allowRevise}
           rejectRequiresReason={rejectRequiresReason}
@@ -3383,16 +3374,16 @@ function RequestCheckboxConfirmationCard({
 // --- Per-item verdicts (C3) ---------------------------------------------
 
 const VERDICT_LABEL: Record<RequestItemVerdictValue, string> = {
-  approve: "Approve",
-  reject: "Reject",
-  defer: "Defer",
+  get approve() { return t("localizationSettings.approve"); },
+  get reject() { return t("localizationSettings.reject"); },
+  get defer() { return t("localizationIssueDetail.ui_Defer"); },
 };
 
 /** Present-tense past-participle label for a resolved verdict chip. */
 const VERDICT_RESOLVED_LABEL: Record<RequestItemVerdictValue, string> = {
-  approve: "Approved",
-  reject: "Rejected",
-  defer: "Deferred",
+  get approve() { return t("status.approved"); },
+  get reject() { return t("localizationIssueDetail.ui_Rejected"); },
+  get defer() { return t("localizationIssueDetail.ui_Deferred"); },
 };
 
 function verdictChipClasses(verdict: RequestItemVerdictValue) {
@@ -3407,6 +3398,7 @@ function verdictChipClasses(verdict: RequestItemVerdictValue) {
 }
 
 function VerdictConsequenceChip({ verdict }: { verdict: RequestItemVerdictValue }) {
+  useTranslation();
   const Icon = verdict === "approve" ? CheckCircle2 : verdict === "reject" ? XCircle : MinusCircle;
   return (
     <span
@@ -3422,6 +3414,7 @@ function VerdictConsequenceChip({ verdict }: { verdict: RequestItemVerdictValue 
 }
 
 function ItemVerdictDeepLink({ item }: { item: RequestItemVerdictsItem }) {
+  const { t } = useTranslation();
   const href = item.href ? normalizeRequestConfirmationTargetHref(item.href) : null;
   if (!href) return null;
   const isInternal = href.startsWith("/") || href.startsWith("#");
@@ -3429,7 +3422,7 @@ function ItemVerdictDeepLink({ item }: { item: RequestItemVerdictsItem }) {
     "inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1";
   const label = (
     <>
-      Open
+      {t("pages.pipelines.open")}
       {isInternal ? <ArrowUpRight className="h-3 w-3" aria-hidden /> : <ExternalLink className="h-3 w-3" aria-hidden />}
     </>
   );
@@ -3460,10 +3453,11 @@ function ItemVerdictSegmentedControl({
   disabled: boolean;
   onSelect: (verdict: RequestItemVerdictValue) => void;
 }) {
+  const { t } = useTranslation();
   return (
     <div
       role="group"
-      aria-label="Choose a verdict"
+      aria-label={t("localizationIssueDetail.ui_Choose_a_verdict")}
       className="flex shrink-0 flex-wrap items-center gap-2"
     >
       {verdicts.map((verdict) => {
@@ -3482,7 +3476,7 @@ function ItemVerdictSegmentedControl({
             variant={variant}
             disabled={disabled}
             aria-pressed={active}
-            aria-label={`${VERDICT_LABEL[verdict]} this item`}
+            aria-label={t(`localizationIssueDetail.verdictAction_${verdict}`)}
             className="min-h-11 min-w-24"
             onClick={() => onSelect(verdict)}
             data-verdict={verdict}
@@ -3515,29 +3509,30 @@ function RequestItemVerdictsCard({
   ) => Promise<void> | void;
   externalReferences?: MarkdownExternalReferenceMap;
 }) {
+  const { t } = useTranslation();
   const payload = interaction.payload;
   const items = payload.items;
   const enabledVerdicts = useMemo<RequestItemVerdictValue[]>(
     () => payload.verdicts ?? ["approve", "reject"],
-    [payload.verdicts],
+    [i18n.resolvedLanguage, payload.verdicts],
   );
   const requireReasonOn = useMemo(
     () => new Set<RequestItemVerdictValue>(payload.requireReasonOn ?? ["reject"]),
-    [payload.requireReasonOn],
+    [i18n.resolvedLanguage, payload.requireReasonOn],
   );
   const allowBulkApprove = payload.allowBulkApprove !== false && enabledVerdicts.includes("approve");
-  const reasonLabel = payload.reasonLabel ?? "Reason";
+  const reasonLabel = payload.reasonLabel ?? t("pages.pipelines.reason");
 
   const resolvedById = useMemo(
     () => new Map<string, RequestItemVerdictsResultItem>((interaction.result?.items ?? []).map((item) => [item.id, item])),
-    [interaction.result],
+    [i18n.resolvedLanguage, interaction.result],
   );
 
   const [drafts, setDrafts] = useState<Map<string, VerdictDraft>>(new Map());
   const [applyingItemIds, setApplyingItemIds] = useState<Set<string>>(new Set());
   const [working, setWorking] = useState(false);
   const [attempted, setAttempted] = useState(false);
-  const [actionError, setActionError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<InteractionResolutionDisplayError | null>(null);
   const resolutionErrorMessage = useResolutionErrorMessage();
 
   // When the server merges newly-resolved items, drop their local drafts and
@@ -3634,9 +3629,7 @@ function RequestItemVerdictsCard({
     }
   }
 
-  const applyLabel = draftCount === 0
-    ? "Apply 0 decisions"
-    : `Apply ${draftCount} decision${draftCount === 1 ? "" : "s"}`;
+  const applyLabel = t("localizationIssueDetail.applyDecisions", { count: draftCount });
 
   return (
     <div className="space-y-4">
@@ -3662,22 +3655,21 @@ function RequestItemVerdictsCard({
           <div className="flex items-center gap-2 font-medium">
             <AlertTriangle className="h-4 w-4" aria-hidden />
             {interaction.result?.outcome === "superseded_by_comment"
-              ? "This review expired after a later comment."
+              ? t("localizationIssueDetail.ui_This_review_expired_after_a_later_comment")
               : interaction.result?.outcome === "stale_target"
-                ? "This review expired after the target changed."
-                : "This review expired."}
+                ? t("localizationIssueDetail.ui_This_review_expired_after_the_target_changed")
+                : t("localizationIssueDetail.ui_This_review_expired")}
           </div>
           {progress.decided > 0 ? (
             <p className="mt-1 text-xs leading-5">
-              {progress.decided === 1 ? "1 item was" : `${progress.decided} items were`} already applied and cannot be
-              reverted. Remaining items were cancelled.
+              {t("localizationIssueDetail.appliedCannotRevert", { count: progress.decided })}
             </p>
           ) : null}
         </div>
       ) : null}
 
       {/* Item list (S1/S2/S3/S4) */}
-      <ul className="space-y-2" aria-label="Items to review">
+      <ul className="space-y-2" aria-label={t("localizationIssueDetail.ui_Items_to_review")}>
         {items.map((item) => {
           const resolved = resolvedById.get(item.id);
           const applying = applyingItemIds.has(item.id);
@@ -3720,12 +3712,12 @@ function RequestItemVerdictsCard({
                   ) : applying ? (
                     <span className="inline-flex items-center gap-1.5 rounded-sm border border-border/70 bg-muted/40 px-2 py-0.5 text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-eyebrow) text-muted-foreground">
                       <Loader2 className="h-3.5 w-3.5 motion-safe:animate-spin" aria-hidden />
-                      Applying…
+                      {t("localizationIssueDetail.ui_Applying")}
                     </span>
                   ) : isTerminal ? (
                     <span className="inline-flex items-center gap-1 rounded-sm border border-border/70 bg-muted/30 px-2 py-0.5 text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-eyebrow) text-muted-foreground">
                       <CircleDashed className="h-3.5 w-3.5" aria-hidden />
-                      Not decided
+                      {t("localizationIssueDetail.ui_Not_decided")}
                     </span>
                   ) : (
                     <ItemVerdictSegmentedControl
@@ -3752,7 +3744,7 @@ function RequestItemVerdictsCard({
                     id={`${interaction.id}-${item.id}-reason`}
                     value={draft.reason}
                     onChange={(event) => setDraftReason(item.id, event.target.value)}
-                    placeholder="Give the agent a reason so it can act on this item."
+                    placeholder={t("localizationIssueDetail.ui_Give_the_agent_a_reason_so_it_can_act_on_this_item")}
                     aria-invalid={attempted && invalidDraftIds.has(item.id)}
                     className={cn(
                       "min-h-16 bg-background text-sm",
@@ -3760,7 +3752,7 @@ function RequestItemVerdictsCard({
                     )}
                   />
                   {attempted && invalidDraftIds.has(item.id) ? (
-                    <p className="text-xs text-destructive">A reason is required to {VERDICT_LABEL[draft.verdict].toLowerCase()} this item.</p>
+                    <p className="text-xs text-destructive">{t(`localizationIssueDetail.reasonRequired_${draft.verdict}`)}</p>
                   ) : null}
                 </div>
               ) : null}
@@ -3774,8 +3766,7 @@ function RequestItemVerdictsCard({
         <div className="flex flex-wrap items-center gap-2 rounded-sm border border-emerald-500/50 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-900 dark:text-emerald-100">
           <CheckCircle2 className="h-4 w-4" aria-hidden />
           <span className="font-medium">
-            {progress.decided} decided · {progress.approved} approved · {progress.rejected} rejected
-            {progress.deferred > 0 ? ` · ${progress.deferred} deferred` : ""}
+            {t("localizationIssueDetail.verdictComplete", { decided: progress.decided, approved: progress.approved, rejected: progress.rejected })} {progress.deferred > 0 ? ` · ${t("localizationIssueDetail.deferredCount", { count: progress.deferred })}` : ""}
           </span>
         </div>
       ) : null}
@@ -3785,8 +3776,8 @@ function RequestItemVerdictsCard({
         <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border/60 pt-3">
           <div className="text-xs text-muted-foreground">
             {draftCount > 0
-              ? `${draftCount} draft verdict${draftCount === 1 ? "" : "s"} ready to apply`
-              : "Mark verdicts, then apply them in one pass."}
+              ? t("localizationIssueDetail.draftVerdictsReady", { count: draftCount })
+              : t("localizationIssueDetail.ui_Mark_verdicts_then_apply_them_in_one_pass")}
           </div>
           <div className="flex flex-wrap items-center gap-2">
             {allowBulkApprove ? (
@@ -3798,7 +3789,7 @@ function RequestItemVerdictsCard({
                 onClick={handleApproveAll}
               >
                 <ThumbsUp className="h-4 w-4" aria-hidden />
-                Approve all
+                {t("localizationIssueDetail.ui_Approve_all")}
               </Button>
             ) : null}
             <Button
@@ -3812,7 +3803,7 @@ function RequestItemVerdictsCard({
               {working ? (
                 <>
                   <Loader2 className="h-4 w-4 motion-safe:animate-spin" aria-hidden />
-                  Applying…
+                  {t("localizationIssueDetail.ui_Applying")}
                 </>
               ) : (
                 applyLabel
@@ -3834,6 +3825,7 @@ function VerdictProgressBadge({
   progress: ReturnType<typeof getItemVerdictProgress>;
   pendingReason: boolean;
 }) {
+  const { t } = useTranslation();
   const pct = progress.total > 0 ? Math.round((progress.decided / progress.total) * 100) : 0;
   return (
     <div className="flex items-center gap-2">
@@ -3841,7 +3833,7 @@ function VerdictProgressBadge({
       {pendingReason ? (
         <span className="inline-flex items-center gap-1 rounded-sm border border-amber-500/60 bg-amber-500/10 px-1.5 py-0.5 text-(length:--text-nano) font-semibold uppercase tracking-(--tracking-eyebrow) text-amber-900 dark:text-amber-100">
           <AlertTriangle className="h-3 w-3" aria-hidden />
-          Reason needed
+          {t("localizationIssueDetail.ui_Reason_needed")}
         </span>
       ) : null}
       <div
@@ -3850,7 +3842,7 @@ function VerdictProgressBadge({
         aria-valuemin={0}
         aria-valuemax={progress.total}
         aria-valuenow={progress.decided}
-        aria-label={`${progress.decided} of ${progress.total} decided`}
+        aria-label={t("localizationIssueDetail.decidedOfTotal", { count: progress.decided, total: progress.total })}
       >
         <div className="h-1.5 w-16 overflow-hidden rounded-full bg-muted">
           <div
@@ -3859,7 +3851,7 @@ function VerdictProgressBadge({
           />
         </div>
         <span className="whitespace-nowrap text-xs font-medium text-muted-foreground">
-          {progress.decided} of {progress.total} decided
+          {t("localizationIssueDetail.decidedOfTotal", { count: progress.decided, total: progress.total })}
         </span>
       </div>
     </div>
@@ -3880,6 +3872,7 @@ export function IssueThreadInteractionCard({
   onUploadImage,
   externalReferences,
 }: IssueThreadInteractionCardProps) {
+  const { t } = useTranslation();
   // Single enforcement point (PAP-424, plan from PAP-420; extended by PAP-437):
   // a card that should never be drawn — a degenerate `ask_user_questions`
   // (placeholder junk like the onboarding `Test / A` card, no genuine question)
@@ -3939,7 +3932,7 @@ export function IssueThreadInteractionCard({
   const connectionAuthorizationStyles = connectionAuthorization && connectionAuthorizationState
     ? connectionAuthorizationStatusClasses(connectionAuthorizationState, {
         providerName: connectionAuthorization.providerName,
-        addresseeLabel: addresseeLabel ?? "the addressed person",
+        addresseeLabel: addresseeLabel ?? t("localizationIssueDetail.addressedPerson"),
       })
     : null;
   const activeStyles =
@@ -3989,14 +3982,16 @@ export function IssueThreadInteractionCard({
   // cannot promise a wider audience than the API allows.
   const audience = describeInteractionAudience({
     interaction,
-    creatorLabel: createdByLabel,
+    creatorLabel: interaction.createdByAgentId || interaction.createdByUserId ? createdByLabel : null,
     addresseeLabel,
+    isCreatorCurrentUser: Boolean(currentUserId && interaction.createdByUserId === currentUserId),
+    isAddresseeCurrentUser: Boolean(currentUserId && interaction.addresseeUserId === currentUserId),
   });
   const statusText =
     adminOutcome === "withdrawn"
-      ? "Withdrawn"
+      ? t("localizationIssueDetail.ui_Withdrawn")
       : adminOutcome === "issue_closed"
-        ? "Expired · issue closed"
+        ? t("localizationIssueDetail.ui_Expired_issue_closed")
         : activeStyles
           ? activeStyles.label
           : statusLabel(interaction.status);
@@ -4019,7 +4014,7 @@ export function IssueThreadInteractionCard({
                 <StatusIcon className={cn("h-3.5 w-3.5", iconSpin && "animate-spin")} />
                 {isSecretProposal ? (
                   <span className="flex flex-col sm:flex-row sm:items-center sm:gap-1">
-                    <span>Secret binding</span>
+                    <span>{t("localizationIssueDetail.ui_Secret_binding")}</span>
                     <span className="hidden text-current/60 sm:inline">/</span>
                     <span>{statusText}</span>
                   </span>
@@ -4030,7 +4025,7 @@ export function IssueThreadInteractionCard({
                   <span>{statusText}</span>
                 ) : (
                   <>
-                    {isPlan ? "Plan" : interactionKindLabel(interaction.kind)}
+                    {isPlan ? t("pages.pipelines.deliverablePlan") : interactionKindLabel(interaction.kind)}
                     <span className="text-current/60">/</span>
                     {statusText}
                   </>
@@ -4045,11 +4040,11 @@ export function IssueThreadInteractionCard({
                       data-testid="interaction-addressee-badge"
                     >
                       <Bot className="h-3 w-3" />
-                      For {addresseeLabel}
+                      {t("localizationIssueDetail.forPerson", { person: addresseeLabel })}
                     </Badge>
                   </TooltipTrigger>
                   <TooltipContent side="bottom" className="max-w-xs text-xs">
-                    Directed to {addresseeLabel}. Agent-addressed interactions are owned by that agent and are kept out of the open organization attention feed.
+                    {t("localizationIssueDetail.directedTo", { person: addresseeLabel })}
                   </TooltipContent>
                 </Tooltip>
               ) : null}
@@ -4058,27 +4053,27 @@ export function IssueThreadInteractionCard({
             <div className="mt-3 text-lg font-bold text-foreground">
               {interaction.title
                 ?? (interaction.kind === "suggest_tasks"
-                  ? "Suggested task tree"
+                  ? t("localizationIssueDetail.ui_Suggested_task_tree")
                   : interaction.kind === "ask_user_questions"
                     // Only a human-only card is genuinely "for the operator";
                     // an open card is answerable by any teammate (PAP-17280).
                     ? interaction.payload.title
                       ?? (audience.policy === "human_only"
-                        ? "Questions for the operator"
-                        : "Questions to answer")
+                        ? t("localizationIssueDetail.ui_Questions_for_the_operator")
+                        : t("localizationIssueDetail.ui_Questions_to_answer"))
                   : interaction.kind === "request_checkbox_confirmation"
-                    ? "Checkbox confirmation requested"
+                    ? t("localizationIssueDetail.ui_Checkbox_confirmation_requested")
                     : isSecretProposal
-                      ? "Secret binding requested"
+                      ? t("localizationIssueDetail.ui_Secret_binding_requested")
                     : connectionAuthorization
-                      ? `Connect your ${connectionAuthorization.providerName} to continue`
+                      ? t("localizationIssueDetail.connectToContinue", { provider: connectionAuthorization.providerName })
                     : isToolAction
-                      ? "Tool approval requested"
+                      ? t("localizationIssueDetail.ui_Tool_approval_requested")
                       : interaction.kind === "request_item_verdicts"
-                        ? "Review these items"
+                        ? t("localizationIssueDetail.ui_Review_these_items")
                         : isPlan
-                          ? "Plan review"
-                          : "Confirmation requested")}
+                          ? t("localizationIssueDetail.ui_Plan_review")
+                          : t("localizationIssueDetail.ui_Confirmation_requested"))}
             </div>
             {/* A connection-authorization card composes its own single body
                 below, because the closing sentence depends on whether the
@@ -4098,11 +4093,11 @@ export function IssueThreadInteractionCard({
             <TooltipTrigger asChild>
               <div className="rounded-sm border border-border/70 bg-transparent px-3 py-2 text-right text-xs text-muted-foreground">
                 <div className="font-medium text-foreground">{formatShortDate(interaction.createdAt)}</div>
-                <div>proposed by {createdByLabel}</div>
+                <div>{t("localizationIssueDetail.proposedBy", { person: createdByLabel })}</div>
               </div>
             </TooltipTrigger>
             <TooltipContent side="bottom" className="text-xs">
-              Created {formatDateTime(interaction.createdAt)}
+              {t("pages.projects.sort.created")} {formatDateTime(interaction.createdAt)}
             </TooltipContent>
           </Tooltip>
         </div>
@@ -4140,7 +4135,7 @@ export function IssueThreadInteractionCard({
               state={connectionAuthorizationState}
               isAddressee={isConnectionAddressee}
               providerName={connectionAuthorization.providerName}
-              addresseeLabel={addresseeLabel ?? "the addressed person"}
+              addresseeLabel={addresseeLabel ?? t("localizationIssueDetail.addressedPerson")}
               requestingAgentLabel={connectionAuthorization.requestingAgentName ?? null}
               resolvedByLabel={resolvedByLabel}
               resolvedByAgent={resolvedByAgent}
@@ -4168,7 +4163,7 @@ export function IssueThreadInteractionCard({
             <ConnectionIntentInteractionBody
               interaction={interaction}
               currentUserId={currentUserId}
-              addresseeLabel={addresseeLabel ?? "the addressed person"}
+              addresseeLabel={addresseeLabel ?? t("localizationIssueDetail.addressedPerson")}
             />
           ) : interaction.kind === "request_item_verdicts" ? (
             <RequestItemVerdictsCard
@@ -4195,10 +4190,9 @@ export function IssueThreadInteractionCard({
             data-testid="interaction-withdrawn-footer"
           >
             <div>
-              Withdrawn by{" "}
-              <span className="font-medium text-foreground">{resolvedByLabel ?? "an agent"}</span>
+              <Trans i18nKey="localizationIssueDetail.withdrawnBy" values={{ person: resolvedByLabel ?? t("localizationIssueDetail.agentActor") }} components={{ actor: <span className="font-medium text-foreground" /> }} />
               {resolvedByAgent ? <ResolvedByAgentChip /> : null}
-              {interaction.resolvedAt ? ` on ${formatShortDate(interaction.resolvedAt)}` : ""}
+              {interaction.resolvedAt ? t("localizationIssueDetail.onDate", { date: formatShortDate(interaction.resolvedAt) }) : ""}
             </div>
             {adminReason ? (
               <div className="mt-1 italic text-muted-foreground/90">"{adminReason}"</div>
@@ -4221,9 +4215,9 @@ export function IssueThreadInteractionCard({
             className="mt-4 flex flex-wrap items-center gap-x-1 gap-y-0.5 border-t border-border/60 pt-3 text-xs text-muted-foreground"
             data-testid="interaction-resolved-footer"
           >
-            Resolved by <span className="font-medium text-foreground">{resolvedByLabel}</span>
+            <Trans i18nKey="localizationIssueDetail.resolvedBy" values={{ person: resolvedByLabel }} components={{ actor: <span className="font-medium text-foreground" /> }} />
             {resolvedByAgent ? <ResolvedByAgentChip /> : null}
-            {interaction.resolvedAt ? ` on ${formatShortDate(interaction.resolvedAt)}` : ""}
+            {interaction.resolvedAt ? t("localizationIssueDetail.onDate", { date: formatShortDate(interaction.resolvedAt) }) : ""}
           </div>
         ) : null}
       </div>
@@ -4236,6 +4230,7 @@ export function IssueThreadInteractionCard({
  * than a human board member) — governed agent resolution introduced in P2.
  */
 function ResolvedByAgentChip() {
+  const { t } = useTranslation();
   return (
     <Tooltip>
       <TooltipTrigger asChild>
@@ -4245,11 +4240,11 @@ function ResolvedByAgentChip() {
           data-testid="interaction-resolved-by-agent-chip"
         >
           <Bot className="h-3 w-3" />
-          Agent
+          {t("pages.agentDetail.agentFallback")}
         </Badge>
       </TooltipTrigger>
       <TooltipContent side="bottom" className="max-w-xs text-xs">
-        Resolved by an agent under the organization's interaction governance policy — audit-distinct from a human board resolution.
+        {t("localizationIssueDetail.ui_Resolved_by_an_agent_under_the_organization_s_interaction_governance_policy_audit_dis")}
       </TooltipContent>
     </Tooltip>
   );

@@ -1,3 +1,6 @@
+import { t, useTranslation, i18n } from "@/i18n";
+import { Trans } from "react-i18next";
+import { attentionLabel } from "../lib/attention";
 import { useMemo, useState, type ReactNode } from "react";
 import {
   AlertTriangle,
@@ -64,14 +67,14 @@ export interface DecisionCardProps {
 // --- small helpers ----------------------------------------------------------
 
 function humanStatus(status: string | null | undefined): string {
-  if (!status) return "unknown";
-  return status.replaceAll("_", " ");
+  if (!status) return attentionLabel("unknown");
+  return i18n.resolvedLanguage?.startsWith("en") ? status.replaceAll("_", " ") : t(`status.${status}`, { defaultValue: status.replaceAll("_", " ") });
 }
 
 function issueLabel(ref: DecisionIssueRef | null, fallbackId: string): string {
   if (ref?.identifier) return ref.identifier;
   if (ref?.title) return ref.title;
-  return `issue ${fallbackId.slice(0, 8)}`;
+  return t("localizationAttention.issueReference", { id: fallbackId.slice(0, 8) });
 }
 
 function pluralize(count: number, singular: string): string {
@@ -97,26 +100,26 @@ function effectSummary(
   const target = issueLabel(resolve(effect.targetIssueId), effect.targetIssueId);
   switch (effect.type) {
     case "comment_on_issue":
-      return `Comment on ${target}`;
+      return t("localizationAttention.effectComment", { target });
     case "create_issue": {
       const parent = effect.draft.parentId
         ? issueLabel(resolve(effect.draft.parentId), effect.draft.parentId)
         : target;
-      return `Create issue “${effect.draft.title}” under ${parent}`;
+      return t("localizationAttention.effectCreate", { title: effect.draft.title, parent });
     }
     case "update_issue_status":
-      return `Set ${target} to ${humanStatus(effect.status)}`;
+      return t("localizationAttention.effectStatus", { target, status: humanStatus(effect.status) });
     case "assign_issue":
-      return `Reassign ${target}`;
+      return t("localizationAttention.effectAssign", { target });
     case "resolve_blocker":
-      return `Unblock ${target} — remove ${pluralize(effect.removeBlockedByIssueIds.length, "blocker")}`;
+      return t("localizationAttention.effectUnblock", { target, count: effect.removeBlockedByIssueIds.length });
     case "cancel_issue_tree": {
       const snapshot = snapshots[effect.targetIssueId];
       const descendantCount = snapshot?.descendantCount ?? snapshot?.descendantIds?.length ?? snapshot?.childCount ?? 0;
-      return `Cancel ${target} and its sub-tree (${pluralize(descendantCount + 1, "issue")})`;
+      return t("localizationAttention.effectCancelTree", { target, count: descendantCount + 1 });
     }
     default:
-      return "Apply effect";
+      return attentionLabel("Apply effect");
   }
 }
 
@@ -142,43 +145,43 @@ function executionRow(
   const target = issueLabel(targetRef, execution.targetIssueId);
   const result = execution.result ?? {};
   if (execution.status === "skipped") {
-    return { key: execution.id, status: "skipped", summary: `Skipped ${target} — target changed since proposal`, link: targetRef };
+    return { key: execution.id, status: "skipped", summary: t("localizationAttention.executionSkipped", { target }), link: targetRef };
   }
   if (execution.status === "failed") {
-    const cause = FAILURE_CAUSE[execution.error ?? ""] ?? execution.error ?? "the effect could not run";
-    return { key: execution.id, status: "failed", summary: `Failed on ${target} — ${cause}`, link: targetRef };
+    const cause = attentionLabel(FAILURE_CAUSE[execution.error ?? ""] ?? execution.error ?? "the effect could not run");
+    return { key: execution.id, status: "failed", summary: t("localizationAttention.executionFailed", { target, cause }), link: targetRef };
   }
   if (execution.status === "claimed") {
-    return { key: execution.id, status: "claimed", summary: `Running on ${target}…`, link: targetRef };
+    return { key: execution.id, status: "claimed", summary: t("localizationAttention.executionRunning", { target }), link: targetRef };
   }
   // executed
   switch (execution.effectType) {
     case "comment_on_issue":
-      return { key: execution.id, status: "executed", summary: `Commented on ${target}`, link: targetRef };
+      return { key: execution.id, status: "executed", summary: t("localizationAttention.executionComment", { target }), link: targetRef };
     case "create_issue": {
       const createdId = typeof result.issueId === "string" ? result.issueId : null;
       const created = createdId ? resolve(createdId) : null;
       return {
         key: execution.id,
         status: "executed",
-        summary: `Created ${created ? issueLabel(created, createdId!) : "a new issue"}`,
+        summary: created ? t("localizationAttention.executionCreated", { target: issueLabel(created, createdId!) }) : t("localizationAttention.executionCreatedNew"),
         link: created ?? targetRef,
       };
     }
     case "update_issue_status":
-      return { key: execution.id, status: "executed", summary: `Set ${target} to ${humanStatus(typeof result.status === "string" ? result.status : null)}`, link: targetRef };
+      return { key: execution.id, status: "executed", summary: t("localizationAttention.executionStatus", { target, status: humanStatus(typeof result.status === "string" ? result.status : null) }), link: targetRef };
     case "assign_issue":
-      return { key: execution.id, status: "executed", summary: `Reassigned ${target}`, link: targetRef };
+      return { key: execution.id, status: "executed", summary: t("localizationAttention.executionAssign", { target }), link: targetRef };
     case "resolve_blocker": {
       const removed = Array.isArray(result.removedBlockedByIssueIds) ? result.removedBlockedByIssueIds.length : 0;
-      return { key: execution.id, status: "executed", summary: `Removed ${pluralize(removed, "blocker")} from ${target}`, link: targetRef };
+      return { key: execution.id, status: "executed", summary: t("localizationAttention.executionUnblock", { target, count: removed }), link: targetRef };
     }
     case "cancel_issue_tree": {
       const cancelled = Array.isArray(result.cancelledIssueIds) ? result.cancelledIssueIds.length : 0;
-      return { key: execution.id, status: "executed", summary: `Cancelled ${pluralize(cancelled, "issue")} under ${target}`, link: targetRef };
+      return { key: execution.id, status: "executed", summary: t("localizationAttention.executionCancel", { target, count: cancelled }), link: targetRef };
     }
     default:
-      return { key: execution.id, status: "executed", summary: `Applied effect on ${target}`, link: targetRef };
+      return { key: execution.id, status: "executed", summary: t("localizationAttention.executionApplied", { target }), link: targetRef };
   }
 }
 
@@ -205,6 +208,7 @@ const BADGE: Record<CardTone, string> = {
 };
 
 function IssueLink({ ref: link }: { ref: DecisionIssueRef | null }) {
+  useTranslation();
   if (!link) return null;
   return (
     <a
@@ -239,6 +243,7 @@ export function DecisionCard({
   onDismiss,
   className,
 }: DecisionCardProps) {
+  const { t } = useTranslation();
   const [inputValues, setInputValues] = useState<Record<string, string>>({});
   const [confirmOptionId, setConfirmOptionId] = useState<string | null>(null);
   const [confirmText, setConfirmText] = useState("");
@@ -333,29 +338,24 @@ export function DecisionCard({
         <div className="flex shrink-0 items-center gap-1.5">
           {open && hasCancelTree && (
             <span className={cn("inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-(length:--text-micro) font-semibold uppercase tracking-wide", BADGE.destructive)}>
-              <ShieldAlert className="h-3 w-3" aria-hidden /> Destructive
-            </span>
+              <ShieldAlert className="h-3 w-3" aria-hidden />{t("localizationTools.destructive87")}</span>
           )}
           <span className={cn("inline-flex items-center rounded-full border px-2 py-0.5 text-(length:--text-micro) font-semibold uppercase tracking-wide", BADGE[tone])}>
-            {badgeLabel}
+            {attentionLabel(badgeLabel)}
           </span>
         </div>
       </div>
 
       {/* Provenance */}
       <p className="mt-1 text-xs text-muted-foreground">
-        Proposed by <span className="font-medium text-foreground">{originAgentName ?? "an agent"}</span>
-        {originIssue && (
-          <>
-            {" "}while running{" "}
-            <a href={originIssue.href} className="font-medium text-primary underline-offset-2 hover:underline">
-              {issueLabel(originIssue, originIssue.id)}
-            </a>
-          </>
-        )}
+        <Trans
+          i18nKey={originIssue ? "localizationAttention.proposedWhileRunning" : "localizationAttention.proposed"}
+          values={{ agent: originAgentName ?? t("localizationAttention.unknownAgent"), issue: originIssue ? issueLabel(originIssue, originIssue.id) : "" }}
+          components={{ agent: <span className="font-medium text-foreground" />, issue: <a href={originIssue?.href} className="font-medium text-primary underline-offset-2 hover:underline" /> }}
+        />
         {targetRefs.length > 0 && (
           <>
-            {" · applies to "}
+            {t("localizationAttention.appliesTo")}
             {targetRefs.map(({ id, ref }, index) => (
               <span key={id}>
                 {index > 0 && ", "}
@@ -373,7 +373,7 @@ export function DecisionCard({
         {runHref && (
           <>
             {" · "}
-            <a href={runHref} className="hover:underline">view run</a>
+            <a href={runHref} className="hover:underline">{t("localizationAttention.ui_view_run_9qu9ct")}</a>
           </>
         )}
       </p>
@@ -390,7 +390,7 @@ export function DecisionCard({
         <div className="mt-3 rounded-lg border border-amber-500/50 bg-amber-500/10 px-3 py-2">
           <div className="flex items-center gap-2 text-sm font-medium text-amber-800 dark:text-amber-200">
             <AlertTriangle className="h-4 w-4 shrink-0" aria-hidden />
-            {pluralize(staleTargetIds.length, "target")} changed since this was proposed
+            {t("localizationAttention.staleTargets", { count: staleTargetIds.length })}
           </div>
           <ul className="mt-1.5 space-y-1 text-xs text-amber-900/90 dark:text-amber-100/90">
             {staleTargetIds.map((id) => {
@@ -401,14 +401,12 @@ export function DecisionCard({
                   <span className="font-medium">{issueLabel(ref, id)}:</span>
                   <span className="tabular-nums">{humanStatus(from?.status)}</span>
                   <ArrowRight className="h-3 w-3" aria-hidden />
-                  <span className="tabular-nums">{humanStatus(ref?.status) || "changed"}</span>
+                  <span className="tabular-nums">{humanStatus(ref?.status) || t("localizationAttention.ui_changed_jgug0r")}</span>
                 </li>
               );
             })}
           </ul>
-          <p className="mt-1.5 text-xs text-amber-800/80 dark:text-amber-200/80">
-            Options that require an unchanged target are disabled below.
-          </p>
+          <p className="mt-1.5 text-xs text-amber-800/80 dark:text-amber-200/80">{t("localizationAttention.ui_Options_that_require_an_unchanged_target_are_disabled_below_1dmyxy1")}</p>
         </div>
       )}
 
@@ -466,9 +464,7 @@ export function DecisionCard({
                       {option.label}
                     </span>
                     {blockedStale && (
-                      <span className="shrink-0 rounded-full border border-amber-500/60 bg-amber-500/10 px-2 py-0.5 text-(length:--text-micro) font-medium text-amber-800 dark:text-amber-200">
-                        Blocked · stale
-                      </span>
+                      <span className="shrink-0 rounded-full border border-amber-500/60 bg-amber-500/10 px-2 py-0.5 text-(length:--text-micro) font-medium text-amber-800 dark:text-amber-200">{t("localizationAttention.ui_Blocked_stale_1096tuj")}</span>
                     )}
                   </div>
                   {option.description && (
@@ -496,12 +492,11 @@ export function DecisionCard({
                 {confirming && cancelTree && (
                   <div className="rounded-lg border border-rose-500/50 bg-rose-500/5 p-3">
                     <div className="flex items-center gap-2 text-sm font-semibold text-rose-700 dark:text-rose-300">
-                      <Ban className="h-4 w-4" aria-hidden /> This cancels an entire issue tree
-                    </div>
+                      <Ban className="h-4 w-4" aria-hidden />{t("localizationAttention.ui_This_cancels_an_entire_issue_tree_1n37vzn")}</div>
                     {previewRows && previewRows.length > 0 ? (
                       <>
                         <p className="mt-1 text-xs text-muted-foreground">
-                          {pluralize(previewRows.length, "issue")} will be cancelled:
+                          {t("localizationAttention.cancelPreview", { count: previewRows.length })}
                         </p>
                         <ul className="mt-1 max-h-40 space-y-0.5 overflow-auto text-xs">
                           {previewRows.map((row) => (
@@ -516,18 +511,16 @@ export function DecisionCard({
                         </ul>
                       </>
                     ) : (
-                      <p className="mt-1 text-xs text-muted-foreground">
-                        This issue and every sub-issue beneath it will be cancelled.
-                      </p>
+                      <p className="mt-1 text-xs text-muted-foreground">{t("localizationAttention.ui_This_issue_and_every_sub_issue_beneath_it_will_be_cancelled_ee7nwc")}</p>
                     )}
                     <p className="mt-2 text-xs text-muted-foreground">
-                      Type <span className="font-mono font-medium text-foreground">{confirmToken}</span> to confirm.
+                      <Trans i18nKey="localizationAttention.confirmToken" values={{ token: confirmToken }} components={{ token: <span className="font-mono font-medium text-foreground" /> }} />
                     </p>
                     <Input
                       value={confirmText}
                       onChange={(event) => setConfirmText(event.target.value)}
                       placeholder={confirmToken}
-                      aria-label="Type the issue identifier to confirm"
+                      aria-label={t("localizationAttention.ui_Type_the_issue_identifier_to_confirm_1agol6p")}
                       autoFocus
                       className="mt-1"
                     />
@@ -539,9 +532,7 @@ export function DecisionCard({
                           setConfirmOptionId(null);
                           setConfirmText("");
                         }}
-                      >
-                        Cancel
-                      </Button>
+                      >{t("localizationAttention.ui_Cancel_ew9em3")}</Button>
                       <Button
                         variant="destructive"
                         size="sm"
@@ -549,7 +540,7 @@ export function DecisionCard({
                         onClick={() => onDecide?.(option.id, inputValues)}
                       >
                         {busy && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-                        {previewRows ? `Cancel ${pluralize(previewRows.length, "issue")}` : "Cancel tree"}
+                        {previewRows ? t("localizationAttention.cancelIssues", { count: previewRows.length }) : t("localizationAttention.ui_Cancel_tree_1855b7d")}
                       </Button>
                     </div>
                   </div>
@@ -561,10 +552,8 @@ export function DecisionCard({
           {/* Always-present zero-effect Dismiss (telemetered "no", distinct from expiry) */}
           {!decision.options.some((option) => option.effects.length === 0) && (
             <div className="flex items-center justify-between gap-2 pt-1">
-              <span className="text-xs text-muted-foreground">Not now?</span>
-              <Button variant="ghost" size="sm" disabled={busy} onClick={() => onDismiss?.()}>
-                Dismiss — no effects
-              </Button>
+              <span className="text-xs text-muted-foreground">{t("localizationAttention.ui_Not_now_15jgv37")}</span>
+              <Button variant="ghost" size="sm" disabled={busy} onClick={() => onDismiss?.()}>{t("localizationAttention.ui_Dismiss_no_effects_1rxnewg")}</Button>
             </div>
           )}
           {errorMessage && <p className="text-xs text-rose-600 dark:text-rose-400">{errorMessage}</p>}
@@ -577,27 +566,22 @@ export function DecisionCard({
           {decision.status === "expired" && (
             <div className="rounded-lg border border-border/60 bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
               <div className="flex items-center gap-2 font-medium text-foreground">
-                <Clock className="h-4 w-4" aria-hidden /> The decision window closed
-              </div>
+                <Clock className="h-4 w-4" aria-hidden />{t("localizationAttention.ui_The_decision_window_closed_1uvsdhe")}</div>
               <p className="mt-1">
                 {expiredReason === "target_gone"
-                  ? "A target issue was cancelled before this was decided."
+                  ? t("localizationAttention.ui_A_target_issue_was_cancelled_before_this_was_decided_1ppwusu")
                   : expiredReason === "target_completed"
-                    ? "All target issues were completed before this was decided."
-                    : "No response before the expiry deadline."}
-                {decision.continuationPolicy === "wake_origin_agent" && " The proposer was re-woken."}
+                    ? t("localizationAttention.ui_All_target_issues_were_completed_before_this_was_decided_1c2m01")
+                    : t("localizationAttention.ui_No_response_before_the_expiry_deadline_ktjsos")}
+                {decision.continuationPolicy === "wake_origin_agent" && ` ${attentionLabel("The proposer was re-woken.")}`}
               </p>
             </div>
           )}
           {decision.status === "cancelled" && (
-            <p className="rounded-lg border border-border/60 bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
-              This decision was withdrawn by the proposer before a response.
-            </p>
+            <p className="rounded-lg border border-border/60 bg-muted/30 px-3 py-2 text-xs text-muted-foreground">{t("localizationAttention.ui_This_decision_was_withdrawn_by_the_proposer_before_a_response_4h4apd")}</p>
           )}
           {decision.status === "decided" && dismissed && (
-            <p className="rounded-lg border border-border/60 bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
-              Dismissed — no effects were run.
-            </p>
+            <p className="rounded-lg border border-border/60 bg-muted/30 px-3 py-2 text-xs text-muted-foreground">{t("localizationAttention.ui_Dismissed_no_effects_were_run_1odou9h")}</p>
           )}
           {decision.status === "decided" && !dismissed && (executions ?? []).length > 0 && (
             <>
@@ -614,9 +598,7 @@ export function DecisionCard({
                 })}
               </ul>
               {decision.executionStatus !== "succeeded" && (
-                <p className="text-xs text-muted-foreground">
-                  Some effects may already have been applied. Review the results before asking the proposer to re-propose.
-                </p>
+                <p className="text-xs text-muted-foreground">{t("localizationAttention.ui_Some_effects_may_already_have_been_applied_Review_the_results_bef_1vmqx9g")}</p>
               )}
             </>
           )}

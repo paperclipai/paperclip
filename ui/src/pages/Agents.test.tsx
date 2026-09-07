@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 
+import { i18n } from "@/i18n";
 import type { ReactNode } from "react";
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
@@ -355,6 +356,7 @@ describe("Agents", () => {
     container.remove();
     document.body.innerHTML = "";
     vi.clearAllMocks();
+    await i18n.changeLanguage("en");
   });
 
   it("shows the configured model beside the adapter on the all agents page", async () => {
@@ -410,6 +412,13 @@ describe("Agents", () => {
 
     expect(mockAgentsApi.org).toHaveBeenCalledWith("company-1");
     expect(orgToggle?.getAttribute("aria-pressed")).toBe("true");
+    await act(async () => { await i18n.changeLanguage("ru"); });
+    await flushReact();
+    expect(orgToggle?.getAttribute("aria-pressed")).toBe("true");
+    expect(orgToggle?.getAttribute("aria-label")).toBe(i18n.t("pages.agents.viewOrg"));
+    expect(container.textContent).toContain("1 агент");
+    await act(async () => { await i18n.changeLanguage("en"); });
+    await flushReact();
     const orgViewport = container.querySelector('[data-testid="org-chart-viewport"]');
     expect(orgViewport).not.toBeNull();
     expect(orgViewport?.parentElement?.classList.contains("flex-1")).toBe(true);

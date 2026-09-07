@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 
+import { i18n } from "@/i18n";
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -40,13 +41,14 @@ describe("AgentMultiSelect", () => {
     root = null;
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     if (root) {
       act(() => {
         root?.unmount();
       });
     }
     container.remove();
+    await i18n.changeLanguage("en");
     document.body.innerHTML = "";
   });
 
@@ -164,7 +166,13 @@ describe("AgentMultiSelect", () => {
     await flush();
 
     expect(onSave).not.toHaveBeenCalled();
-    const save = Array.from(document.body.querySelectorAll("button")).find((button) => button.textContent === "Save");
+    await act(async () => { await i18n.changeLanguage("ru"); });
+    await flush();
+    expect(document.body.querySelector('[aria-label="Разрешить доступ: Agent 5"]')?.getAttribute("aria-checked")).toBe("true");
+    expect(document.body.textContent).toContain("Выбрано: 6");
+    expect(container.textContent).toContain("и ещё 2");
+    expect(onSave).not.toHaveBeenCalled();
+    const save = Array.from(document.body.querySelectorAll("button")).find((button) => button.textContent === "Сохранить");
     act(() => {
       save?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });

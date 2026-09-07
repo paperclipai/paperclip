@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { i18n, t } from "@/i18n";
 
 const SECOND_MS = 1_000;
 const MINUTE_MS = 60 * SECOND_MS;
@@ -89,6 +90,47 @@ export function formatMonitorEta(nextCheckAt: MonitorDate, now: MonitorDate = ne
 export function formatMonitorEtaLabel(nextCheckAt: MonitorDate, now: MonitorDate = new Date()): string {
   const eta = formatMonitorEta(nextCheckAt, now);
   return `${eta.charAt(0).toUpperCase()}${eta.slice(1)}`;
+}
+
+/** Display-only copy: keep formatMonitorEta/Offset stable for state comparisons. */
+function localizedMonitorDuration(value: string): string {
+  const keys: Record<string, string> = {
+    s: "secondsShort", m: "minutesShort", h: "hoursShort", d: "daysShort",
+  };
+  return value.replace(/(\d+)([smhd])/g, (_, count: string, unit: string) =>
+    t(`common.formatting.${keys[unit]}`, { count: Number(count) }));
+}
+
+export function formatMonitorEtaDisplay(nextCheckAt: MonitorDate, now: MonitorDate = new Date()): string {
+  const eta = formatMonitorEta(nextCheckAt, now);
+  if (eta === "due now") return t("localizationIssueDetail.monitorDueNow");
+  if (eta.startsWith("overdue by ")) {
+    return t("localizationIssueDetail.monitorOverdue", { duration: localizedMonitorDuration(eta.slice("overdue by ".length)) });
+  }
+  return t("localizationIssueDetail.monitorIn", { duration: localizedMonitorDuration(eta.slice("in ".length)) });
+}
+
+export function formatMonitorEtaDisplayLabel(nextCheckAt: MonitorDate, now: MonitorDate = new Date()): string {
+  const label = formatMonitorEtaDisplay(nextCheckAt, now);
+  return label.charAt(0).toLocaleUpperCase(i18n.resolvedLanguage) + label.slice(1);
+}
+
+export function formatMonitorOffsetDisplay(nextCheckAt: MonitorDate): string {
+  const offset = formatMonitorOffset(nextCheckAt);
+  if (offset === "now") return t("localizationIssueDetail.monitorNow");
+  if (offset.endsWith(" ago")) {
+    return t("localizationIssueDetail.monitorAgo", { duration: localizedMonitorDuration(offset.slice(0, -4)) });
+  }
+  return t("localizationIssueDetail.monitorIn", { duration: localizedMonitorDuration(offset.slice("in ".length)) });
+}
+
+export function formatMonitorAbsoluteDisplay(nextCheckAt: MonitorDate, options: MonitorDateTimeFormatOptions = {}, now: MonitorDate = new Date()): string {
+  const label = formatMonitorAbsolute(nextCheckAt, { locale: i18n.resolvedLanguage, ...options }, now);
+  return label.startsWith("Today, ") ? t("localizationIssueDetail.monitorToday", { time: label.slice("Today, ".length) }) : label;
+}
+
+export function formatMonitorAbsoluteFullDisplay(nextCheckAt: MonitorDate, options: MonitorDateTimeFormatOptions = {}): string {
+  return formatMonitorAbsoluteFull(nextCheckAt, { locale: i18n.resolvedLanguage, ...options });
 }
 
 function zonedYmd(

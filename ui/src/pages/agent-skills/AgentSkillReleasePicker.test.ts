@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import { i18n } from "@/i18n";
+import { afterEach, describe, expect, it } from "vitest";
 import type { CompanySkillVersion } from "@paperclipai/shared";
 import {
   formatReleaseDate,
@@ -6,6 +7,8 @@ import {
   releaseOptionLabel,
   releaseShortLabel,
 } from "./AgentSkillReleasePicker";
+
+afterEach(async () => { await i18n.changeLanguage("en"); });
 
 function makeRelease(overrides: Partial<CompanySkillVersion> = {}): CompanySkillVersion {
   return {
@@ -46,6 +49,15 @@ describe("formatReleaseDate", () => {
 });
 
 describe("releaseOptionLabel", () => {
+  it("localizes display suffixes while preserving release metadata", async () => {
+    const release = makeRelease();
+    const original = structuredClone(release);
+    await i18n.changeLanguage("ru");
+    expect(releaseOptionLabel(release)).toBe("V7 — Roster champion · выпущен 2026-07-21");
+    expect(releaseName(release)).toBe("V7 — Roster champion");
+    expect(releaseShortLabel(release)).toBe("V7");
+    expect(release).toEqual(original);
+  });
   it("renders name and released date", () => {
     expect(releaseOptionLabel(makeRelease())).toBe("V7 — Roster champion · released 2026-07-21");
   });

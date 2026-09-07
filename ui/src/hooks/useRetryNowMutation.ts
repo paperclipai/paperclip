@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import { useCallback } from "react";
 import { useMutation, useQueryClient, type UseMutationResult } from "@tanstack/react-query";
 import type { IssueRetryNowOutcome, IssueRetryNowResponse } from "@paperclipai/shared";
@@ -28,11 +29,20 @@ export const RETRY_NOW_OUTCOME_HEADLINE: Record<IssueRetryNowOutcome, string> = 
   gate_suppressed: "Couldn't retry now",
 };
 
+/** Keep raw API/outcome text for logic; localize only known UI diagnostics. */
+export function retryNowErrorMessageDisplay(message: string): string {
+  if (message === "The request failed. Try again in a moment.") return t("localizationIssuePanels.retryRequestFailedGeneric");
+  if (message === "Missing issue id") return t("localizationIssuePanels.retryMissingIssue");
+  const failed = /^Request failed \((\d+)\)$/.exec(message);
+  return failed ? t("localizationIssuePanels.retryRequestFailed", { status: failed[1] }) : message;
+}
+
 export function useRetryNowMutation(
   issueId: string | null | undefined,
 ): UseMutationResult<IssueRetryNowResponse, unknown, void, unknown> & {
   lastError: RetryNowError | null;
 } {
+  useTranslation();
   const queryClient = useQueryClient();
   const { pushToast } = useToastActions();
 
@@ -51,13 +61,13 @@ export function useRetryNowMutation(
       }
       if (response.outcome === "promoted") {
         pushToast({
-          title: RETRY_NOW_OUTCOME_HEADLINE.promoted,
+          title: t("localizationIssuePanels.retryOutcome_promoted"),
           body: response.message,
           tone: "success",
         });
       } else if (response.outcome === "gate_suppressed") {
         pushToast({
-          title: RETRY_NOW_OUTCOME_HEADLINE.gate_suppressed,
+          title: t("localizationIssuePanels.retryOutcome_gate_suppressed"),
           body: response.message,
           tone: "error",
         });
@@ -65,8 +75,8 @@ export function useRetryNowMutation(
     },
     onError: (error) => {
       pushToast({
-        title: "Couldn't retry now",
-        body: readErrorMessage(error),
+        title: t("localizationIssuePanels.retryOutcome_gate_suppressed"),
+        body: retryNowErrorMessageDisplay(readErrorMessage(error)),
         tone: "error",
       });
     },
@@ -97,7 +107,7 @@ export function useRetryNowMutation(
   return {
     ...mutation,
     reset: wrappedReset,
-    lastError,
+    lastError: lastError ? { ...lastError, message: retryNowErrorMessageDisplay(lastError.message) } : null,
   } as UseMutationResult<IssueRetryNowResponse, unknown, void, unknown> & {
     lastError: RetryNowError | null;
   };

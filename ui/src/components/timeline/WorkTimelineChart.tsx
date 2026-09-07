@@ -1,3 +1,5 @@
+import { i18n, t, useTranslation } from "@/i18n";
+import { formatDurationMs } from "@/lib/utils";
 /**
  * Work Timeline — custom-SVG Gantt (board-locked Direction C, PAP-12422).
  *
@@ -19,7 +21,6 @@ import {
   barColor,
   chooseTickStepMs,
   computeLayout,
-  formatDuration,
   isCancelledStatus,
   shortLabel,
   TIMELINE_COLORS,
@@ -120,16 +121,15 @@ interface DragSelectionState {
 function fmtClock(ms: number): string {
   const d = new Date(ms);
   const hasMinutes = d.getMinutes() !== 0;
-  return d.toLocaleTimeString("en-US", {
+  return d.toLocaleTimeString(i18n.resolvedLanguage ?? i18n.language, {
     hour: "numeric",
     minute: hasMinutes ? "2-digit" : undefined,
-    hour12: true,
   });
 }
 
 function fmtTick(ms: number, stepMs: number): string {
   const d = new Date(ms);
-  const date = d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+  const date = d.toLocaleDateString(i18n.resolvedLanguage ?? i18n.language, { month: "short", day: "numeric" });
   if (stepMs >= 24 * 60 * 60 * 1000) {
     return date;
   }
@@ -140,23 +140,23 @@ export function formatVisibleDurationMinutes(minutes: number): string {
   const rounded = Math.max(1, Math.round(minutes));
   if (rounded >= 7 * 24 * 60 && rounded % (7 * 24 * 60) === 0) {
     const weeks = rounded / (7 * 24 * 60);
-    return `${weeks} week${weeks === 1 ? "" : "s"} visible`;
+    return t("localizationActivity.visible_week", { count: weeks });
   }
   if (rounded >= 24 * 60 && rounded % (24 * 60) === 0) {
     const days = rounded / (24 * 60);
-    return `${days} day${days === 1 ? "" : "s"} visible`;
+    return t("localizationActivity.visible_day", { count: days });
   }
   if (rounded >= 24 * 60) {
     const days = Math.floor(rounded / (24 * 60));
     const hours = Math.round((rounded % (24 * 60)) / 60);
-    return `${days}d${hours > 0 ? ` ${hours}h` : ""} visible`;
+    return t("localizationActivity.visibleDuration", { duration: [t("common.formatting.daysShort", { count: days }), ...(hours > 0 ? [t("common.formatting.hoursShort", { count: hours })] : [])].join(" ") });
   }
   if (rounded >= 60 && rounded % 60 === 0) {
     const hours = rounded / 60;
-    return `${hours} hour${hours === 1 ? "" : "s"} visible`;
+    return t("localizationActivity.visible_hour", { count: hours });
   }
-  if (rounded >= 60) return `${Math.floor(rounded / 60)}h ${rounded % 60}m visible`;
-  return `${rounded} minutes visible`;
+  if (rounded >= 60) return t("localizationActivity.visibleDuration", { duration: formatDurationMs(rounded * 60_000) });
+  return t("localizationActivity.visible_minute", { count: rounded });
 }
 
 function truncate(text: string, n = 42): string {
@@ -266,6 +266,7 @@ export function WorkTimelineChart({
   onVisibleWindowChange,
   nowMs,
 }: WorkTimelineChartProps) {
+  const { t } = useTranslation();
   const location = useLocation();
   const scrollRef = useRef<HTMLDivElement>(null);
   const initialWindowKeyRef = useRef<string | null>(null);
@@ -304,7 +305,7 @@ export function WorkTimelineChart({
   const pxPerMinute = zoomScale ?? zoomScaleForLevel(zoom, viewportW || DEFAULT_VIEWPORT_W);
   const layout = useMemo(
     () => computeLayout(data, { ...GEOM, pxPerMinute, nowMs: now }),
-    [data, pxPerMinute, now],
+    [data, pxPerMinute, now, t],
   );
   const connectedRunIds = useMemo(() => {
     if (!hoveredRunId) return null;
@@ -372,7 +373,7 @@ export function WorkTimelineChart({
     const effectiveViewportW = viewportW || DEFAULT_VIEWPORT_W;
     const minutes = plotViewportWidth(effectiveViewportW) / layout.pxPerMinute;
     onVisibleRangeLabelChange(formatVisibleDurationMinutes(minutes));
-  }, [layout.pxPerMinute, onVisibleRangeLabelChange, viewportW]);
+  }, [layout.pxPerMinute, onVisibleRangeLabelChange, viewportW, t]);
 
   useEffect(() => {
     if (!onVisibleWindowChange || viewportW <= 0) return;
@@ -452,8 +453,8 @@ export function WorkTimelineChart({
     const related = layout.connectors.filter((c) => c.sourceRunId === bar.span.runId || c.targetRunId === bar.span.runId);
     if (related.length === 0) return null;
     return related.some((c) => c.dashed)
-      ? "dashed handoff: retry or changes requested"
-      : "solid handoff: delegation or assignment";
+      ? "localizationActivity.dashedHandoff"
+      : "localizationActivity.solidHandoff";
   };
 
   const showTooltip = (evt: React.MouseEvent, bar: PositionedBar) => {
@@ -744,6 +745,7 @@ function TimeAxisOverlay({
   stepMs: number;
   scrollLeft: number;
 }) {
+  useTranslation();
   return (
     <div
       aria-hidden="true"
@@ -787,10 +789,11 @@ function TimeAxisOverlay({
 }
 
 function Tooltip({ tooltip, now }: { tooltip: TooltipState; now: number }) {
+  const { t } = useTranslation();
   const { bar } = tooltip;
   const startMs = new Date(bar.span.start).getTime();
   const endMs = bar.span.end ? new Date(bar.span.end).getTime() : now;
-  const title = bar.span.issueTitle ?? bar.span.issueIdentifier ?? "run";
+  const title = bar.span.issueTitle ?? bar.span.issueIdentifier ?? t("localizationActivity.run");
   const left = Math.min(tooltip.x + 14, (typeof window !== "undefined" ? window.innerWidth : 1200) - 300);
   return (
     <div
@@ -800,17 +803,17 @@ function Tooltip({ tooltip, now }: { tooltip: TooltipState; now: number }) {
     >
       <div className="text-(length:--text-compact) font-medium text-foreground">{truncate(title)}</div>
       <div className="mt-0.5 text-muted-foreground">
-        {fmtClock(startMs)}–{bar.span.end ? fmtClock(endMs) : "now"} · {formatDuration(startMs, endMs)} ·{" "}
-        <span className="font-medium text-foreground">{bar.span.status}</span>
+        {fmtClock(startMs)}–{bar.span.end ? fmtClock(endMs) : t("localizationActivity.now")} · {formatDurationMs(endMs - startMs)} ·{" "}
+        <span className="font-medium text-foreground">{t(`status.${bar.span.status}`, { defaultValue: bar.span.status })}</span>
       </div>
       {bar.kickoff && (
         <div className="text-muted-foreground">
-          kicked off by: {(bar.kickoff as WorkTimelineActor).name}
-          {bar.span.retryOfRunId ? " · retry" : ""}
+          {t("localizationActivity.kickedOffBy", { name: (bar.kickoff as WorkTimelineActor).name })}
+          {bar.span.retryOfRunId ? t("localizationActivity.retrySuffix") : ""}
         </div>
       )}
       {tooltip.connectorHint && (
-        <div className="text-muted-foreground">{tooltip.connectorHint}</div>
+        <div className="text-muted-foreground">{t(tooltip.connectorHint)}</div>
       )}
     </div>
   );
@@ -830,6 +833,7 @@ function MiniMap({
   onVisibleRangeChange: (fromMs: number, toMs: number) => void;
 }) {
   const documentDragCleanupRef = useRef<(() => void) | null>(null);
+  const { t } = useTranslation();
   const W = Math.max(320, viewportW || 900);
   const H = 54;
   const pad = 8;
@@ -954,7 +958,7 @@ function MiniMap({
           height={H - 2}
           width={handleW}
           testId="timeline-minimap-left-handle"
-          label="Drag left edge to resize visible range"
+          label={t("localizationActivity.drag_left")}
           onMouseDown={(e) => startRangeDrag("left", e)}
         />
         <MiniMapHandle
@@ -963,7 +967,7 @@ function MiniMap({
           height={H - 2}
           width={handleW}
           testId="timeline-minimap-right-handle"
-          label="Drag right edge to resize visible range"
+          label={t("localizationActivity.drag_right")}
           onMouseDown={(e) => startRangeDrag("right", e)}
         />
       </svg>

@@ -36,6 +36,7 @@ import {
   type AttentionGroupBy,
   type AttentionSortOrder,
 } from "../lib/attention";
+import { attentionGroupLabelDisplay, attentionLabel, decisionQueueTitleDisplay, decisionQueueDescriptionDisplay } from "../lib/attention";
 import { cn } from "../lib/utils";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { AttentionQueueRow } from "../components/AttentionQueueRow";
@@ -128,7 +129,7 @@ export function DecisionQueuePage() {
   }, [agents]);
 
   useEffect(() => {
-    setBreadcrumbs([{ label: t("nav.decisions"), href: "/decisions" }, { label: queue?.title ?? queueKey }]);
+    setBreadcrumbs([{ label: t("nav.decisions"), href: "/decisions" }, { label: queue ? decisionQueueTitleDisplay(queue) : queueKey }]);
   }, [setBreadcrumbs, t, queue?.title, queueKey]);
 
   // Re-hydrate per-company preferences when the company changes.
@@ -226,8 +227,8 @@ export function DecisionQueuePage() {
     <div className="max-w-3xl space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="min-w-0">
-          <h1 className="text-xl font-bold">{queue?.title ?? queueKey}</h1>
-          {queue?.description && <p className="mt-0.5 text-sm text-muted-foreground">{queue.description}</p>}
+          <h1 className="text-xl font-bold">{queue ? decisionQueueTitleDisplay(queue) : queueKey}</h1>
+          {queue?.description && <p className="mt-0.5 text-sm text-muted-foreground">{decisionQueueDescriptionDisplay(queue)}</p>}
         </div>
         <DecisionsToolbar
           visibleCount={visibleCount}
@@ -280,7 +281,7 @@ export function DecisionQueuePage() {
             </div>
           ) : (
             groups.map((group) => {
-              const groupLabel = group.label;
+              const groupLabel = attentionGroupLabelDisplay(group);
               const collapsed = groupLabel !== null && collapsedGroupKeys.has(group.key);
               return (
                 <section key={group.key} className="space-y-2">
@@ -328,10 +329,7 @@ export function DecisionQueuePage() {
               onToggle={() => setAgingOpen((prev) => !prev)}
             >
               <p className="text-xs text-muted-foreground">
-                {t("pages.decisions.agingDescription", {
-                  defaultValue: "Idle past {{days}} days — kept off the queue. Keep any you still want surfaced.",
-                  days: ATTENTION_AGING_DAYS,
-                })}
+                {t("localizationAttention.queueIdle", { count: ATTENTION_AGING_DAYS })}
               </p>
               {agingItems.map((item) => (
                 <AgingItemRow
@@ -394,7 +392,7 @@ function SeedRulesCard({
               {rules.map((rule) => (
                 <li key={rule} className="flex items-start gap-1.5 text-xs text-muted-foreground">
                   <Check className="mt-0.5 h-3 w-3 shrink-0" />
-                  {rule}
+                  {attentionLabel(rule)}
                 </li>
               ))}
             </ul>

@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import type { AdapterConfigFieldsProps } from "../types";
 import {
   DraftInput,
@@ -7,8 +8,7 @@ import { ChoosePathButton } from "../../components/PathInstructionsModal";
 
 const inputClass =
   "w-full rounded-md border border-border px-2.5 py-1.5 bg-transparent outline-none text-sm font-mono placeholder:text-muted-foreground/40";
-const instructionsFileHint =
-  "Absolute path to a markdown file (e.g. AGENTS.md) that defines this agent's behavior. Paperclip stages it into the Grok workspace as Agents.md when possible.";
+const instructionsFileHint = () => t("localizationAgents.instructionsHint_grok-local");
 
 export function GrokLocalConfigFields({
   isCreate,
@@ -19,10 +19,11 @@ export function GrokLocalConfigFields({
   mark,
   hideInstructionsFile,
 }: AdapterConfigFieldsProps) {
+  const { t } = useTranslation();
   if (hideInstructionsFile) return null;
   return (
     <>
-      <Field label="Agent instructions file" hint={instructionsFileHint}>
+      <Field label={t("localizationAgents.ui270_Agent_instructions_file")} hint={instructionsFileHint()}>
         <div className="flex items-center gap-2">
           <DraftInput
             value={

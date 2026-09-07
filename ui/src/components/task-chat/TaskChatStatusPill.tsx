@@ -1,3 +1,5 @@
+import { t, useTranslation, i18n } from "@/i18n";
+import { taskChatDisplayLabel, taskChatToolActivityLabel, taskChatDurationLabel } from "./task-chat-display";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 import { ChevronRight, Loader2, ShieldQuestion, OctagonX, Ban, Scissors } from "lucide-react";
@@ -9,16 +11,16 @@ import { parseCssTimeMs } from "./motion-tokens";
 function elapsedLabel(ms?: number): string | null {
   if (ms == null) return null;
   const s = Math.round(ms / 1000);
-  if (s < 60) return `${s}s`;
-  return `${Math.floor(s / 60)}m ${s % 60}s`;
+  if (s < 60) return taskChatDurationLabel(`${s}s`);
+  return taskChatDurationLabel(`${Math.floor(s / 60)}m ${s % 60}s`);
 }
 
 /** Tenths-precision elapsed ("24.3s", "1m 24.3s") so the readout visibly moves. */
 function liveElapsedLabel(ms?: number): string | null {
   if (ms == null) return null;
   const s = Math.max(0, ms) / 1000;
-  if (s < 60) return `${s.toFixed(1)}s`;
-  return `${Math.floor(s / 60)}m ${(s % 60).toFixed(1)}s`;
+  if (s < 60) return taskChatDurationLabel(`${s.toFixed(1)}s`);
+  return taskChatDurationLabel(`${Math.floor(s / 60)}m ${(s % 60).toFixed(1)}s`);
 }
 
 /** Elapsed ms since `startedAtMs`, ticking ten times a second while `live`. */
@@ -74,6 +76,7 @@ function LiveSelfTalkLine({
   streaming: boolean;
   leaving?: boolean;
 }) {
+  useTranslation();
   const innerRef = useRef<HTMLSpanElement | null>(null);
   const [offset, setOffset] = useState(0);
   const [entered, setEntered] = useState(false);
@@ -289,6 +292,7 @@ export function TaskChatStatusPill({
   chevronOpen,
   onToggle,
 }: TaskChatStatusPillProps) {
+  useTranslation();
   const { Icon, spin, tone } = CONFIG[item.status];
   const awaiting = item.status === "awaiting_approval";
   const live = item.status === "running" || item.status === "working";
@@ -336,7 +340,7 @@ export function TaskChatStatusPill({
             float above the label's baseline. */}
         <span className="flex min-w-0 flex-1 items-baseline gap-2">
           <span className="shimmer-text shimmer-text-muted shrink-0 font-medium">
-            {label}…
+            {taskChatToolActivityLabel(label)}…
           </span>
           {liveElapsed ? (
             <span className="shrink-0 font-mono tabular-nums text-(length:--text-micro)">
@@ -348,7 +352,7 @@ export function TaskChatStatusPill({
           ) : null}
           {item.tokens ? (
             <span className="ml-auto shrink-0 font-mono text-(length:--text-micro)">
-              {item.tokens.used.toLocaleString()}/{item.tokens.size.toLocaleString()} ctx
+              {t("localizationTaskRuntime.contextUsage", { used: item.tokens.used.toLocaleString(i18n.resolvedLanguage), size: item.tokens.size.toLocaleString(i18n.resolvedLanguage) })}
             </span>
           ) : null}
         </span>
@@ -409,12 +413,12 @@ export function TaskChatStatusPill({
     >
       <div className="flex min-w-0 items-center gap-2">
         <Icon className={cn("h-4 w-4 shrink-0", tone, spin && "animate-spin")} />
-        <span className="min-w-0 truncate font-medium">{item.label}</span>
+        <span className="min-w-0 truncate font-medium">{taskChatDisplayLabel(item.label)}</span>
         <span className="ml-auto flex shrink-0 items-center gap-2 text-xs text-muted-foreground">
           {elapsed ? <span>{elapsed}</span> : null}
           {item.tokens ? (
             <span>
-              {item.tokens.used.toLocaleString()}/{item.tokens.size.toLocaleString()} ctx
+              {t("localizationTaskRuntime.contextUsage", { used: item.tokens.used.toLocaleString(i18n.resolvedLanguage), size: item.tokens.size.toLocaleString(i18n.resolvedLanguage) })}
             </span>
           ) : null}
         </span>
@@ -436,7 +440,7 @@ export function TaskChatStatusPill({
                     : "border-primary bg-primary text-primary-foreground hover:bg-primary/90",
                 )}
               >
-                {opt.label}
+                {taskChatDisplayLabel(opt.label)}
               </button>
             );
           })}

@@ -1,3 +1,4 @@
+import { t } from "@/i18n";
 /**
  * Work Timeline layout — pure transform from the Phase B endpoint contract
  * (`WorkTimelineResult`) into a renderable view model for the custom-SVG Gantt.
@@ -281,7 +282,7 @@ export function computeLayout(result: WorkTimelineResult, opts: LayoutOptions): 
     const key = s.issueId;
     if (!issueLabel.has(key)) {
       issueOrder.push(key);
-      issueLabel.set(key, s.issueIdentifier ?? s.issueTitle ?? "issue");
+      issueLabel.set(key, s.issueIdentifier ?? s.issueTitle ?? t("localizationCosts.issueFallback"));
     }
   }
   const issues = issueOrder.map((key) => ({ key, label: issueLabel.get(key)!, color: issueColor(key) }));
@@ -409,7 +410,7 @@ export function chooseTickStepMs(pxPerMinute: number): number {
 
 export function formatDuration(startMs: number, endMs: number): string {
   const mins = Math.max(0, Math.round((endMs - startMs) / 60000));
-  if (mins >= 1440) return `${Math.floor(mins / 1440)}d ${Math.floor((mins % 1440) / 60)}h`;
-  if (mins >= 60) return `${Math.floor(mins / 60)}h ${mins % 60}m`;
-  return `${mins}m`;
+  if (mins >= 1440) return t("localizationCosts.daysHours", { days: Math.floor(mins / 1440), hours: Math.floor((mins % 1440) / 60) });
+  if (mins >= 60) return t("localizationCosts.hoursMinutes", { hours: Math.floor(mins / 60), minutes: mins % 60 });
+  return t("localizationCosts.minutes", { minutes: mins });
 }

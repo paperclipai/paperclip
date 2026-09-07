@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Trans } from "react-i18next";
 import { useQuery } from "@tanstack/react-query";
 import { Search as SearchIcon, AlertTriangle, FileQuestion, Plus, X } from "lucide-react";
 import {
@@ -15,7 +16,7 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
-import { t, useTranslation } from "@/i18n";
+import { useTranslation } from "@/i18n";
 import { cn } from "@/lib/utils";
 import { useNavigate, useSearchParams } from "@/lib/router";
 import { useCompany } from "../context/CompanyContext";
@@ -60,27 +61,27 @@ import type { Agent, IssueLabel, Project } from "@paperclipai/shared";
 const SEARCH_DEBOUNCE_MS = 250;
 const IDENTIFIER_PATTERN = /^[A-Z]+-\d+$/;
 
-const SCOPE_LABELS: Record<CompanySearchScope, string> = {
-  all: t("filter.all"),
-  issues: t("nav.tasks"),
-  comments: t("pages.search.scopeComments", { defaultValue: "Comments" }),
-  documents: t("pages.search.scopeDocuments", { defaultValue: "Documents" }),
-  artifacts: t("nav.artifacts"),
-  agents: t("nav.agents"),
-  projects: t("nav.projects"),
+const SCOPE_LABEL_KEYS: Record<CompanySearchScope, string> = {
+  all: "filter.all",
+  issues: "nav.tasks",
+  comments: "pages.search.scopeComments",
+  documents: "pages.search.scopeDocuments",
+  artifacts: "nav.artifacts",
+  agents: "nav.agents",
+  projects: "nav.projects",
 };
 
 type SubGroupKey = "issues" | "comments" | "documents" | "artifacts" | "agents" | "projects";
 
 const SUBGROUP_ORDER: SubGroupKey[] = ["issues", "comments", "documents", "artifacts", "agents", "projects"];
 
-const SUBGROUP_LABELS: Record<SubGroupKey, string> = {
-  issues: t("nav.tasks"),
-  comments: t("pages.search.scopeComments", { defaultValue: "Comments" }),
-  documents: t("pages.search.scopeDocuments", { defaultValue: "Documents" }),
-  artifacts: t("nav.artifacts"),
-  agents: t("nav.agents"),
-  projects: t("nav.projects"),
+const SUBGROUP_LABEL_KEYS: Record<SubGroupKey, string> = {
+  issues: "nav.tasks",
+  comments: "pages.search.scopeComments",
+  documents: "pages.search.scopeDocuments",
+  artifacts: "nav.artifacts",
+  agents: "nav.agents",
+  projects: "nav.projects",
 };
 
 function classifyResult(result: CompanySearchResult): SubGroupKey {
@@ -110,11 +111,6 @@ function buildSubgroups(results: CompanySearchResult[]): Array<{ key: SubGroupKe
 
 function isCompanySearchScope(value: string | null): value is CompanySearchScope {
   return Boolean(value) && (COMPANY_SEARCH_SCOPES as readonly string[]).includes(value as string);
-}
-
-function describeScope(scope: CompanySearchScope) {
-  if (scope === "all") return t("pages.search.allScopes", { defaultValue: "All scopes" });
-  return SCOPE_LABELS[scope];
 }
 
 function totalMatchCount(counts: Partial<Record<CompanySearchCountType, number>>): number {
@@ -162,8 +158,8 @@ export function buildSearchUrl(
   return `${url.pathname}${url.search}${url.hash}`;
 }
 
-function shapeError(error: unknown): { message: string; status?: number } {
-  if (!error) return { message: t("pages.search.unknownError", { defaultValue: "Unknown error" }) };
+function shapeError(error: unknown, unknownErrorMessage: string): { message: string; status?: number } {
+  if (!error) return { message: unknownErrorMessage };
   if (error instanceof Error) {
     const status = (error as Error & { status?: number }).status;
     return { message: error.message, status: typeof status === "number" ? status : undefined };
@@ -523,7 +519,7 @@ export function Search() {
         value,
         label: (
           <span className="flex items-center">
-            {SCOPE_LABELS[value as CompanySearchScope]}
+            {t(SCOPE_LABEL_KEYS[value as CompanySearchScope])}
             {dashOut ? (
               <span className="ml-1.5 text-(length:--text-nano) text-muted-foreground">—</span>
             ) : count !== null ? (
@@ -533,21 +529,23 @@ export function Search() {
         ),
       } satisfies PageTabItem;
     });
-  }, [counts, data, filtersActive]);
+  }, [counts, data, filtersActive, t]);
 
   const subgroups = useMemo(() => buildSubgroups(data?.results ?? []), [data?.results]);
 
-  const operatorPills = useMemo(() => searchFilterPills(draftFilters, parserContext), [draftFilters, parserContext]);
+  const operatorPills = useMemo(() => searchFilterPills(draftFilters, parserContext), [draftFilters, parserContext, t]);
   const operatorSuggestions = useMemo(
     () => (inputFocused ? searchOperatorSuggestions(draftQuery, 4) : []),
-    [draftQuery, inputFocused],
+    [draftQuery, inputFocused, t],
   );
   const showInitialState = !displayQuery && !hasSearchFilters(activeFilters);
   const isLoading = queryEnabled && isFetching && !data;
   const hasResults = !!data && totalResults > 0;
   const isEmpty = !!data && !isFetching && totalResults === 0;
   const hasError = !!error && !isLoading;
-  const apiError = hasError ? shapeError(error) : null;
+  const apiError = hasError
+    ? shapeError(error, t("pages.search.unknownError", { defaultValue: "Unknown error" }))
+    : null;
   const apiMessage = data?.results === undefined && data ? null : null;
   void apiMessage;
 
@@ -660,13 +658,15 @@ export function Search() {
               ))}
             </div>
           ) : (
-            <span className="truncate">
-              {t("pages.search.tryHint", {
-                defaultValue: "Try {{first}}, {{second}}, or {{third}}.",
-                first: <code className="rounded bg-muted px-1 py-0.5 text-(length:--text-micro)">status:todo</code>,
-                second: <code className="rounded bg-muted px-1 py-0.5 text-(length:--text-micro)">assignee:me</code>,
-                third: <code className="rounded bg-muted px-1 py-0.5 text-(length:--text-micro)">updated:&gt;7d</code>,
-              })}
+            <span className="truncate" data-testid="search-try-hint">
+              <Trans
+                i18nKey="pages.search.tryHint"
+                components={{
+                  first: <code className="rounded bg-muted px-1 py-0.5 text-(length:--text-micro)" />,
+                  second: <code className="rounded bg-muted px-1 py-0.5 text-(length:--text-micro)" />,
+                  third: <code className="rounded bg-muted px-1 py-0.5 text-(length:--text-micro)" />,
+                }}
+              />
             </span>
           )}
         </div>
@@ -841,10 +841,10 @@ function SearchTabContent({
         <ul className="space-y-1 text-xs text-muted-foreground">
           <li>
             <span className="font-medium text-foreground">{t("pages.search.tipIdentifierLookupLabel", { defaultValue: "Identifier lookup" })}:</span>{" "}
-            {t("pages.search.tipIdentifierLookupBody", {
-              defaultValue: "type {{code}} to jump straight to a task.",
-              code: <code className="rounded bg-muted px-1 py-0.5 text-(length:--text-micro)">PAP-123</code>,
-            })}
+            <Trans
+              i18nKey="pages.search.tipIdentifierLookupBody"
+              components={{ code: <code className="rounded bg-muted px-1 py-0.5 text-(length:--text-micro)" /> }}
+            />
           </li>
           <li>
             <span className="font-medium text-foreground">{t("pages.search.tipQuotedPhrasesLabel", { defaultValue: "Quoted phrases" })}:</span>{" "}
@@ -916,7 +916,12 @@ function SearchTabContent({
         <FileQuestion className="h-10 w-10 text-muted-foreground" aria-hidden />
         <div className="text-base font-semibold">{t("pages.search.noResultsFor", { defaultValue: "No results for “{{query}}”", query: trimmedQuery })}</div>
         <p className="text-sm text-muted-foreground">
-          {t("pages.search.noResultsMatchIn", { defaultValue: "We couldn’t find a match in {{scope}}.", scope: describeScope(scope).toLowerCase() })}{" "}
+          {t("pages.search.noResultsMatchIn", {
+            defaultValue: "We couldn’t find a match in {{scope}}.",
+            scope: (scope === "all"
+              ? t("pages.search.allScopes", { defaultValue: "All scopes" })
+              : t(SCOPE_LABEL_KEYS[scope])).toLowerCase(),
+          })}{" "}
           {t("pages.search.widenHint", { defaultValue: "Try widening the scope or rephrasing your query." })}
         </p>
         <div className="flex flex-wrap items-center justify-center gap-2">
@@ -936,10 +941,10 @@ function SearchTabContent({
         <ul className="mt-2 space-y-0.5 text-xs text-muted-foreground">
           <li>{t("pages.search.tipFewerTokens", { defaultValue: "Try fewer tokens or a single distinctive term." })}</li>
           <li>
-            {t("pages.search.tipIdentifierShortcut", {
-              defaultValue: "Use an identifier shortcut like {{code}}.",
-              code: <code className="rounded bg-muted px-1 py-0.5">PAP-123</code>,
-            })}
+            <Trans
+              i18nKey="pages.search.tipIdentifierShortcut"
+              components={{ code: <code className="rounded bg-muted px-1 py-0.5" /> }}
+            />
           </li>
           <li>{t("pages.search.tipWrapPhrases", { defaultValue: "Wrap multi-word phrases in quotes." })}</li>
         </ul>
@@ -972,11 +977,11 @@ function SearchTabContent({
           subgroups.map((group, groupIndex) => (
             <section
               key={group.key}
-              aria-label={SUBGROUP_LABELS[group.key]}
+              aria-label={t(SUBGROUP_LABEL_KEYS[group.key])}
               className={cn("flex flex-col", groupIndex > 0 && "mt-6")}
             >
               <IssueGroupHeader
-                label={SUBGROUP_LABELS[group.key]}
+                label={t(SUBGROUP_LABEL_KEYS[group.key])}
                 trailing={
                   <span className="text-xs font-normal tabular-nums text-muted-foreground">
                     {group.results.length}

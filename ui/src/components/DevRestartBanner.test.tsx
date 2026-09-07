@@ -4,6 +4,7 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DevRestartBanner } from "./DevRestartBanner";
+import { setLocale } from "@/i18n";
 
 const mockHealthApi = vi.hoisted(() => ({
   requestDevServerRestart: vi.fn(),
@@ -34,6 +35,7 @@ const devServer = {
 };
 
 beforeEach(() => {
+  setLocale("en");
   vi.spyOn(window, "confirm").mockReturnValue(true);
   vi.spyOn(window, "alert").mockImplementation(() => undefined);
   mockHealthApi.requestDevServerRestart.mockResolvedValue(undefined);
@@ -49,6 +51,7 @@ afterEach(() => {
   vi.restoreAllMocks();
   vi.useRealTimers();
   mockHealthApi.requestDevServerRestart.mockReset();
+  setLocale("en");
 });
 
 function render() {
@@ -60,6 +63,22 @@ function render() {
 }
 
 describe("DevRestartBanner", () => {
+  it.each([[1, "текущий запуск"], [2, "текущих запуска"], [5, "текущих запусков"], [21, "текущий запуск"], [22, "текущих запуска"], [25, "текущих запусков"]])("keeps the restart warning and raw file paths while switching locale (%i)", async (count, word) => {
+    const node = render();
+    await act(async () => root?.render(<DevRestartBanner devServer={{ ...devServer, activeRunCount: Number(count) }} />));
+    await act(async () => setLocale("ru"));
+    expect(node.textContent).toContain("Требуется перезапуск");
+    expect(node.textContent).toContain("server/src/routes/health.ts");
+    expect(mockHealthApi.requestDevServerRestart).not.toHaveBeenCalled();
+    expect(window.confirm).not.toHaveBeenCalled();
+    await act(async () => node.querySelector("button")?.click());
+    expect(window.confirm).toHaveBeenCalledExactlyOnceWith(`Перезапустить Paperclip сейчас? Это может прервать ${count} ${word}.`);
+    expect(mockHealthApi.requestDevServerRestart).toHaveBeenCalledTimes(1);
+    await act(async () => setLocale("en"));
+    expect(node.textContent).toContain("Restart requested");
+    expect(node.querySelector("button")?.disabled).toBe(true);
+  });
+
   it("confirms and requests an immediate restart while waiting for live runs", async () => {
     const node = render();
     const button = [...node.querySelectorAll("button")]

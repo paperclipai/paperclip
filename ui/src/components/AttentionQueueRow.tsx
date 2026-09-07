@@ -1,3 +1,4 @@
+import { t, useTranslation, i18n } from "@/i18n";
 import { memo, useState, type KeyboardEvent, type ReactNode } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
@@ -18,18 +19,19 @@ import { approvalsApi } from "../api/approvals";
 import { issuesApi } from "../api/issues";
 import { useToastActions } from "../context/ToastContext";
 import { queryKeys } from "../lib/queryKeys";
-import { describeAttentionResolverAudience, type InteractionAudienceDescription } from "../lib/interaction-audience";
-import { interactionResolutionErrorMessage } from "../lib/interaction-resolution-error";
+import { describeAttentionResolverAudienceDisplay as describeAttentionResolverAudience, type InteractionAudienceDescription } from "../lib/interaction-audience";
+import { interactionResolutionErrorMessageDisplay as interactionResolutionErrorMessage } from "../lib/interaction-resolution-error";
 import {
   attentionDetailImages,
-  attentionDetailLine,
+  attentionDetailLineDisplay as attentionDetailLine,
   attentionImageUrl,
   attentionStatus,
   attentionTaskRef,
-  decideByLabel,
+  decideByLabelDisplay as decideByLabel,
   isInlineResolvable,
   sourceMeta,
 } from "../lib/attention";
+import { attentionLabel } from "../lib/attention";
 import { cn, relativeTime } from "../lib/utils";
 import { DecisionTriageStrip } from "./DecisionTriageStrip";
 import { InteractionAudienceLine } from "./InteractionAudienceLine";
@@ -122,6 +124,7 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
   userLabelMap,
   selected = false,
 }: AttentionQueueRowProps) {
+  useTranslation();
   const meta = sourceMeta(item.sourceKind);
   // Colour + glyph are borrowed wholesale from the task status system, so a
   // blocking decision reads exactly like a blocked task (DESIGN.md principle 5).
@@ -179,12 +182,12 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
     <button
       type="button"
       className="inline-flex shrink-0 items-center gap-1 rounded-md text-xs font-medium text-muted-foreground hover:text-foreground focus-visible:ring-ring focus-visible:ring-(length:--rad-3) focus-visible:outline-none"
-      aria-label={expanded ? "Collapse decision" : "Expand decision"}
+      aria-label={expanded ? t("localizationAttention.ui_Collapse_decision_1q5wpvk") : t("localizationAttention.ui_Expand_decision_hspu1")}
       aria-expanded={expanded}
       onClick={activate}
     >
       {expanded ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
-      {expanded ? "See less" : "See more"}
+      {expanded ? t("localizationAttention.ui_See_less_gwajrd") : t("localizationAttention.ui_See_more_1dgp2j5")}
     </button>
   ) : null;
 
@@ -214,18 +217,14 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
 
           {showOpen && (
             <Button asChild variant="default" size="xs" className={ACTION_BTN}>
-              <Link to={href!}>
-                Open
-                <ExternalLink className="h-3 w-3" />
+              <Link to={href!}>{t("localizationAttention.ui_Open_n6hn1l")}<ExternalLink className="h-3 w-3" />
               </Link>
             </Button>
           )}
 
           {showRestore && (
             <Button type="button" variant="outline" size="xs" className={ACTION_BTN} onClick={() => onRestore(item)}>
-              <RotateCcw className="h-3 w-3" />
-              Restore
-            </Button>
+              <RotateCcw className="h-3 w-3" />{t("localizationAttention.ui_Restore_4fiyr5")}</Button>
           )}
         </div>
       </div>
@@ -257,7 +256,7 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
         <div className="flex min-w-0 flex-wrap items-center gap-1">
           <span className="inline-flex items-center gap-1 text-xs font-medium text-muted-foreground">
             <StatusGlyph status={status} size="md" />
-            {meta.label}
+            {attentionLabel(meta.label)}
           </span>
           {taskRef && (
             <>
@@ -277,12 +276,12 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
               <span
                 className="inline-flex items-center gap-1 text-(length:--text-nano) text-muted-foreground"
                 data-attention-decide-by={item.decideBy}
-                title={decideByProvenance(item) ? `Set by ${decideByProvenance(item)}` : undefined}
+                title={decideByProvenance(item) ?? undefined}
               >
                 <CalendarClock className="h-3 w-3" />
                 {decideByLabel(item.decideBy)}
                 {decideByProvenance(item) && (
-                  <span className="text-muted-foreground/80">· set by {decideByProvenance(item)}</span>
+                  <span className="text-muted-foreground/80">{decideByProvenance(item, true)}</span>
                 )}
               </span>
             </>
@@ -293,9 +292,9 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
           {isHidden && snoozedUntil ? (
             <span
               className="text-(length:--text-nano) text-muted-foreground"
-              title={`Reappears ${new Date(snoozedUntil).toLocaleString()}`}
+              title={t("localizationAttention.reappears", { time: new Date(snoozedUntil).toLocaleString(i18n.resolvedLanguage) })}
             >
-              Reappears {reappearLabel(snoozedUntil)}
+              {t("localizationAttention.reappears", { time: reappearLabel(snoozedUntil) })}
             </span>
           ) : (
             <span className="text-(length:--text-nano) text-muted-foreground">{relativeTime(item.activityAt)}</span>
@@ -307,7 +306,7 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
                   variant="ghost"
                   size="icon-xs"
                   className="text-muted-foreground"
-                  aria-label="Row actions"
+                  aria-label={t("localizationAttention.ui_Row_actions_1p4jgww")}
                 >
                   <MoreHorizontal className="h-4 w-4" />
                 </Button>
@@ -315,14 +314,12 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
               <DropdownMenuContent align="end">
                 {onSnooze && <SnoozeSubmenu onSnooze={(iso) => onSnooze(item, iso)} />}
                 <DropdownMenuItem onClick={() => onDismiss(item)}>
-                  <X className="h-4 w-4" />
-                  Dismiss
-                </DropdownMenuItem>
+                  <X className="h-4 w-4" />{t("localizationAttention.ui_Dismiss_an1pf7")}</DropdownMenuItem>
                 {href && (
                   <>
                     <DropdownMenuSeparator />
                     <DropdownMenuItem asChild>
-                      <Link to={href}>Open source</Link>
+                      <Link to={href}>{t("localizationAttention.ui_Open_source_18gxi32")}</Link>
                     </DropdownMenuItem>
                   </>
                 )}
@@ -344,7 +341,7 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
               role: "button",
               tabIndex: 0,
               "aria-expanded": expanded,
-              "aria-label": expanded ? "Collapse decision" : "Expand decision",
+              "aria-label": expanded ? t("localizationAttention.ui_Collapse_decision_1q5wpvk") : t("localizationAttention.ui_Expand_decision_hspu1"),
               onClick: activate,
               onKeyDown: onHeaderKeyDown,
             }
@@ -417,6 +414,7 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
  * a slash implies containment that the two segments do not have.
  */
 function EyebrowSeparator() {
+  useTranslation();
   return (
     <span className="text-xs text-muted-foreground" aria-hidden>
       ·
@@ -484,6 +482,7 @@ function CompactDecisionActions({
   audience: InteractionAudienceDescription | null;
   onOpen: () => void;
 }) {
+  useTranslation();
   const queryClient = useQueryClient();
   const { pushToast } = useToastActions();
   const actions = collectCompactActions(item);
@@ -502,11 +501,11 @@ function CompactDecisionActions({
       }
       if (item.sourceKind === "issue_thread_interaction") {
         const issueId = item.subject.metadata?.issueId;
-        if (typeof issueId !== "string") throw new Error("Missing issue reference for this decision.");
+        if (typeof issueId !== "string") throw new Error(t("localizationAttention.ui_Missing_issue_reference_for_this_decision_j06bre"));
         if (action === "accept") return issuesApi.acceptInteraction(issueId, item.subject.id);
         return issuesApi.rejectInteraction(issueId, item.subject.id);
       }
-      throw new Error("This decision must be completed from its detail view.");
+      throw new Error(t("localizationAttention.ui_This_decision_must_be_completed_from_its_detail_view_1tl4i4"));
     },
     onSuccess: (_result, action) => {
       queryClient.invalidateQueries({ queryKey: queryKeys.attention(companyId) });
@@ -524,7 +523,7 @@ function CompactDecisionActions({
       // A policy denial is permanent, so it keeps the server's reason and names
       // the real responder instead of asking for a retry that will fail again.
       pushToast({
-        title: `Could not ${decisionLabel(action)}`,
+        title: t(action === "request_revision" ? "localizationAttention.errorRevise" : action === "accept" || action === "approve" ? "localizationAttention.errorApprove" : "localizationAttention.errorReject"),
         body: interactionResolutionErrorMessage(error, audience),
         tone: "error",
       });
@@ -534,7 +533,7 @@ function CompactDecisionActions({
   if (actions.length === 0) return null;
 
   return (
-    <div className="flex w-full flex-wrap items-center gap-2 @xl:w-auto @xl:justify-end @xl:gap-1" aria-label="Decision actions">
+    <div className="flex w-full flex-wrap items-center gap-2 @xl:w-auto @xl:justify-end @xl:gap-1" aria-label={t("localizationAttention.ui_Decision_actions_19txe2g")}>
       {actions.map(({ action, id, label, description }) => (
         <Button
           key={id}
@@ -553,7 +552,7 @@ function CompactDecisionActions({
           }}
         >
           {decision.isPending && decision.variables === action && <Loader2 className="h-3 w-3 animate-spin" />}
-          {label}
+          {attentionLabel(label)}
         </Button>
       ))}
     </div>
@@ -567,9 +566,9 @@ function decisionLabel(action: CompactDecisionAction): string {
 }
 
 function compactDecisionSuccessLabel(sourceKind: AttentionItem["sourceKind"], action: CompactDecisionAction): string {
-  if (sourceKind === "approval") return `Approval ${decisionLabel(action)}`;
-  if (sourceKind === "join_request") return `Join request ${decisionLabel(action)}`;
-  return action === "accept" ? "Confirmation accepted" : "Confirmation declined";
+  if (sourceKind === "approval") return t(action === "request_revision" ? "localizationAttention.approvalRevision" : action === "approve" ? "localizationAttention.approvalApproved" : "localizationAttention.approvalRejected");
+  if (sourceKind === "join_request") return t(action === "approve" ? "localizationAttention.joinApproved" : "localizationAttention.joinRejected");
+  return t(action === "accept" ? "localizationAttention.confirmationAccepted" : "localizationAttention.confirmationDeclined");
 }
 
 function decisionVerbVariant(verb: AttentionItem["decisionVerbs"][number]): "default" | "outline" | "destructive" {
@@ -581,6 +580,7 @@ function decisionVerbVariant(verb: AttentionItem["decisionVerbs"][number]): "def
 
 /** Square screenshot thumbnails at the right of the description (plan §10). */
 function ThumbnailStack({ images }: { images: AttentionDetailImage[] }) {
+  useTranslation();
   const visible = images.slice(0, 3);
   const extra = images.length - visible.length;
   return (
@@ -612,6 +612,7 @@ function ThumbnailStack({ images }: { images: AttentionDetailImage[] }) {
  * links through to the issue where the full set lives.
  */
 function ExpandedImages({ images, issueHref }: { images: AttentionDetailImage[]; issueHref: string | null }) {
+  useTranslation();
   const visible = images.slice(0, 3);
   const extra = images.length - visible.length;
   return (
@@ -656,15 +657,13 @@ function ExpandedImages({ images, issueHref }: { images: AttentionDetailImage[];
           onClick={(e) => e.stopPropagation()}
           className="flex h-32 w-24 flex-col items-center justify-center rounded-md border border-dashed border-border bg-muted/40 text-sm font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:ring-ring focus-visible:ring-(length:--rad-3) focus-visible:outline-none"
         >
-          <span className="text-base font-semibold">{extra} more</span>
-          <span className="mt-0.5 inline-flex items-center gap-1 text-(length:--text-nano)">
-            View issue
-            <ExternalLink className="h-3 w-3" />
+          <span className="text-base font-semibold">{t("localizationAttention.moreImages", { count: extra })}</span>
+          <span className="mt-0.5 inline-flex items-center gap-1 text-(length:--text-nano)">{t("localizationAttention.ui_View_issue_ll8pr7")}<ExternalLink className="h-3 w-3" />
           </span>
         </Link>
       ) : (
         <span className="flex h-32 w-24 items-center justify-center rounded-md border border-dashed border-border bg-muted/40 text-sm font-semibold text-muted-foreground">
-          {extra} more
+          {t("localizationAttention.moreImages", { count: extra })}
         </span>
       ))}
     </div>
@@ -673,6 +672,7 @@ function ExpandedImages({ images, issueHref }: { images: AttentionDetailImage[];
 
 /** Snooze submenu: presets + a custom date-time (plan §6). */
 function SnoozeSubmenu({ onSnooze }: { onSnooze: (snoozedUntil: string) => void }) {
+  useTranslation();
   const [customValue, setCustomValue] = useState("");
   const applyCustom = () => {
     if (!customValue) return;
@@ -683,13 +683,11 @@ function SnoozeSubmenu({ onSnooze }: { onSnooze: (snoozedUntil: string) => void 
   return (
     <DropdownMenuSub>
       <DropdownMenuSubTrigger>
-        <AlarmClock className="h-4 w-4" />
-        Snooze
-      </DropdownMenuSubTrigger>
+        <AlarmClock className="h-4 w-4" />{t("localizationAttention.ui_Snooze_1k71mcf")}</DropdownMenuSubTrigger>
       <DropdownMenuSubContent>
         {SNOOZE_PRESETS.map((preset) => (
           <DropdownMenuItem key={preset.label} onClick={() => onSnooze(preset.resolve())}>
-            {preset.label}
+            {attentionLabel(preset.label)}
           </DropdownMenuItem>
         ))}
         <DropdownMenuSeparator />
@@ -700,18 +698,15 @@ function SnoozeSubmenu({ onSnooze }: { onSnooze: (snoozedUntil: string) => void 
           onKeyDown={(e) => e.stopPropagation()}
           onClick={(e) => e.stopPropagation()}
         >
-          <span className="text-(length:--text-nano) font-medium uppercase tracking-(--tracking-eyebrow) text-muted-foreground">
-            Custom
-          </span>
+          <span className="text-(length:--text-nano) font-medium uppercase tracking-(--tracking-eyebrow) text-muted-foreground">{t("localizationAttention.ui_Custom_15dsham")}</span>
           <input
             type="datetime-local"
+            aria-label={t("localizationAttention.snoozeDateAria")}
             value={customValue}
             onChange={(e) => setCustomValue(e.target.value)}
             className="w-full rounded-sm border border-border bg-background px-2 py-1 text-xs"
           />
-          <Button type="button" size="xs" disabled={!customValue} onClick={applyCustom}>
-            Snooze until…
-          </Button>
+          <Button type="button" size="xs" disabled={!customValue} onClick={applyCustom}>{t("localizationAttention.ui_Snooze_until_1q0vugz")}</Button>
         </div>
       </DropdownMenuSubContent>
     </DropdownMenuSub>
@@ -723,23 +718,25 @@ function SnoozeSubmenu({ onSnooze }: { onSnooze: (snoozedUntil: string) => void 
  * ("· set by Prioritizer"). Returns null when unattributed so the chip shows
  * the deadline alone rather than a hollow "set by".
  */
-function decideByProvenance(item: AttentionItem): string | null {
+function decideByProvenance(item: AttentionItem, inline = false): string | null {
   const attribution = item.decideByAttribution;
   if (!attribution) return null;
-  if (attribution.type === "agent") return attribution.agentName ?? "an agent";
-  return "you";
+  if (attribution.type === "agent") return attribution.agentName
+    ? t(inline ? "localizationAttention.setByInline" : "localizationAttention.setBy", { name: attribution.agentName })
+    : t(inline ? "localizationAttention.setByAgentInline" : "localizationAttention.setByAgent");
+  return t(inline ? "localizationAttention.setByYouInline" : "localizationAttention.setByYou");
 }
 
 /** Compact "when does this snooze end" label, e.g. `in 2h`, `in 3d`. */
 function reappearLabel(snoozedUntil: string): string {
   const diffMs = new Date(snoozedUntil).getTime() - Date.now();
-  if (!Number.isFinite(diffMs) || diffMs <= 0) return "soon";
+  if (!Number.isFinite(diffMs) || diffMs <= 0) return t("localizationAttention.reappearSoon");
   const diffMin = Math.round(diffMs / 60000);
-  if (diffMin < 60) return `in ${diffMin}m`;
+  if (diffMin < 60) return t("localizationAttention.reappearMinutes", { count: diffMin });
   const diffHr = Math.round(diffMin / 60);
-  if (diffHr < 24) return `in ${diffHr}h`;
+  if (diffHr < 24) return t("localizationAttention.reappearHours", { count: diffHr });
   const diffDay = Math.round(diffHr / 24);
-  return `in ${diffDay}d`;
+  return t("localizationAttention.reappearDays", { count: diffDay });
 }
 
 /**
@@ -763,6 +760,7 @@ function InlineResolver({
   userLabelMap?: ReadonlyMap<string, string> | null;
   toggle: ReactNode;
 }) {
+  useTranslation();
   if (item.sourceKind === "decision") {
     return (
       <DecisionResolver
@@ -777,7 +775,7 @@ function InlineResolver({
   if (item.sourceKind === "issue_thread_interaction") {
     const issueId = (item.subject.metadata?.issueId as string | undefined) ?? item.relatedIssue?.id;
     if (!issueId) {
-      return <p className="text-xs text-muted-foreground">Missing issue reference for this decision.</p>;
+      return <p className="text-xs text-muted-foreground">{t("localizationAttention.ui_Missing_issue_reference_for_this_decision_j06bre")}</p>;
     }
     return (
       <>
@@ -820,6 +818,7 @@ function InlineResolver({
 
 /** Footer shared by the resolvers that own their verbs: toggle left, verbs right. */
 function ResolverFooter({ toggle, children }: { toggle: ReactNode; children: ReactNode }) {
+  useTranslation();
   return (
     <div className="flex flex-wrap items-center justify-between gap-2" data-attention-actions="true">
       {toggle ?? <span />}
@@ -829,6 +828,7 @@ function ResolverFooter({ toggle, children }: { toggle: ReactNode; children: Rea
 }
 
 function ApprovalResolver({ item, companyId, toggle }: { item: AttentionItem; companyId: string; toggle: ReactNode }) {
+  useTranslation();
   const queryClient = useQueryClient();
   const [note, setNote] = useState("");
   const invalidate = () => {
@@ -856,28 +856,23 @@ function ApprovalResolver({ item, companyId, toggle }: { item: AttentionItem; co
       <Textarea
         value={note}
         onChange={(e) => setNote(e.target.value)}
-        placeholder="Optional decision note…"
+        placeholder={t("localizationAttention.ui_Optional_decision_note_1aifkgv")}
         className="min-h-16 text-sm"
       />
       <ResolverFooter toggle={toggle}>
         <Button size="sm" variant="outline" onClick={() => revise.mutate()} disabled={pending}>
-          {revise.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-          Request revision
-        </Button>
+          {revise.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}{t("localizationAttention.ui_Request_revision_122e0tr")}</Button>
         <Button size="sm" variant="destructive" onClick={() => reject.mutate()} disabled={pending}>
-          {reject.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-          Reject
-        </Button>
+          {reject.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}{t("localizationAttention.ui_Reject_1kej36u")}</Button>
         <Button size="sm" onClick={() => approve.mutate()} disabled={pending}>
-          {approve.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-          Approve
-        </Button>
+          {approve.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}{t("localizationAttention.ui_Approve_1s2ov2y")}</Button>
       </ResolverFooter>
     </>
   );
 }
 
 function JoinRequestResolver({ item, companyId, toggle }: { item: AttentionItem; companyId: string; toggle: ReactNode }) {
+  useTranslation();
   const queryClient = useQueryClient();
   const invalidate = () => {
     queryClient.invalidateQueries({ queryKey: queryKeys.attention(companyId) });
@@ -896,13 +891,9 @@ function JoinRequestResolver({ item, companyId, toggle }: { item: AttentionItem;
   return (
     <ResolverFooter toggle={toggle}>
       <Button size="sm" variant="destructive" onClick={() => reject.mutate()} disabled={pending}>
-        {reject.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-        Reject
-      </Button>
+        {reject.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}{t("localizationAttention.ui_Reject_1kej36u")}</Button>
       <Button size="sm" onClick={() => approve.mutate()} disabled={pending}>
-        {approve.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-        Approve
-      </Button>
+        {approve.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}{t("localizationAttention.ui_Approve_1s2ov2y")}</Button>
     </ResolverFooter>
   );
 }

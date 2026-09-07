@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import type { AdapterConfigFieldsProps } from "../types";
 import {
   Field,
@@ -16,8 +17,9 @@ export function HttpConfigFields({
   eff,
   mark,
 }: AdapterConfigFieldsProps) {
+  const { t } = useTranslation();
   return (
-    <Field label="Webhook URL" hint={help.webhookUrl}>
+    <Field label={t("onboarding.wizard.model.webhookUrl")} hint={help.webhookUrl}>
       <DraftInput
         value={
           isCreate

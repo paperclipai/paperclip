@@ -5,6 +5,7 @@ import { flushSync } from "react-dom";
 import type { ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { MemoryRouter } from "react-router-dom";
+import { i18n } from "@/i18n";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Agent } from "@paperclipai/shared";
 import {
@@ -3746,6 +3747,46 @@ describe("IssueChatThread", () => {
     });
   });
 
+  it("keeps transcript details open and canonical row identities through locale changes", async () => {
+    const root = createRoot(container);
+    const input = { cwd: "/RAW_DIR", paths: ["/A", "/B", "/C", "/D"], prompt: "RAW_PROMPT" };
+    const before = JSON.stringify(input);
+    try {
+      await act(async () => {
+        await i18n.changeLanguage("en");
+        root.render(<MemoryRouter><IssueChatThread
+          comments={[]}
+          linkedRuns={[{ runId: "raw-run", status: "succeeded", agentId: "raw-agent", agentName: "RAW_AGENT", createdAt: new Date("2026-04-06T12:00:00Z"), startedAt: new Date("2026-04-06T12:00:00Z"), finishedAt: new Date("2026-04-06T12:01:00Z") }]}
+          liveRuns={[]} timelineEvents={[]}
+          transcriptsByRunId={new Map([["raw-run", [{ kind: "tool_call", ts: "2026-04-06T12:00:10Z", name: "raw_tool", toolUseId: "raw-tool-id", input }]]])}
+          onAdd={async () => {}} showComposer={false} enableLiveTranscriptPolling={false}
+        /></MemoryRouter>);
+      });
+      const runHeader = container.querySelector<HTMLButtonElement>('#run-raw-run button');
+      expect(runHeader).toBeTruthy();
+      await act(async () => runHeader!.click());
+      const group = Array.from(container.querySelectorAll("button")).find((element) => element.textContent?.includes("Worked"));
+      expect(group, container.innerHTML).toBeTruthy();
+      await act(async () => group!.click());
+      const tool = Array.from(container.querySelectorAll("button")).find((element) => element.textContent?.includes("Raw Tool"));
+      expect(tool).toBeTruthy();
+      await act(async () => tool!.click());
+      const directory = Array.from(container.querySelectorAll("dd")).find((element) => element.textContent === "/RAW_DIR");
+      expect(directory).toBeTruthy();
+      await act(async () => { await i18n.changeLanguage("ru"); });
+      expect(container.textContent).toContain("Каталог");
+      expect(container.textContent).toContain("Промпт");
+      expect(container.textContent).toContain("/A, /B, /C, ещё 1 путь");
+      expect(Array.from(container.querySelectorAll("dd")).find((element) => element.textContent === "/RAW_DIR")).toBe(directory);
+      expect(container.textContent).toContain("RAW_PROMPT");
+      expect(JSON.stringify(input)).toBe(before);
+      await act(async () => { await i18n.changeLanguage("en"); });
+      expect(container.textContent).toContain("/A, /B, /C, +1 more");
+    } finally {
+      await act(async () => { root.unmount(); await i18n.changeLanguage("en"); });
+    }
+  });
+
   it("keeps a running chain-of-thought in the Working state between commands", () => {
     const root = createRoot(container);
 
@@ -3914,6 +3955,28 @@ describe("IssueChatThread", () => {
       authorName: "Alice",
       avatarUrl: "/avatars/alice.png",
     });
+  });
+
+  it("localizes canonical author fallbacks without rewriting stored metadata or real names", () => {
+    const current = { authorName: "You", authorUserId: "user-1", currentUserId: "user-1" };
+    const board = { authorName: "Board", authorUserId: "local-board", currentUserId: "user-1" };
+    const before = JSON.stringify([current, board]);
+    try {
+      void i18n.changeLanguage("ru");
+      expect(resolveIssueChatHumanAuthor(current).authorName).toBe("Вы");
+      expect(resolveIssueChatHumanAuthor(board).authorName).toBe("Руководство");
+      for (const label of ["You", "Board", "Me", "Alice"]) {
+        expect(resolveIssueChatHumanAuthor({ ...current, userProfileMap: new Map([["user-1", { label, image: null }]]) }).authorName).toBe(label);
+        expect(resolveIssueChatHumanAuthor({ ...current, userLabelMap: new Map([["user-1", label]]) }).authorName).toBe(label);
+      }
+      expect(resolveIssueChatHumanAuthor({ ...current, authorName: "Raw custom name" }).authorName).toBe("Raw custom name");
+      expect(JSON.stringify([current, board])).toBe(before);
+      void i18n.changeLanguage("en");
+      expect(resolveIssueChatHumanAuthor(current).authorName).toBe("You");
+      expect(resolveIssueChatHumanAuthor(board).authorName).toBe("Board");
+    } finally {
+      void i18n.changeLanguage("en");
+    }
   });
 });
 

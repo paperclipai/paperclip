@@ -1,12 +1,13 @@
 // @vitest-environment jsdom
 
-import type { ReactNode } from "react";
+import { act, type ReactNode } from "react";
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Search, buildSearchUrl } from "./Search";
+import { i18n } from "../i18n";
 
 const companyState = vi.hoisted(() => ({
   selectedCompanyId: "company-1",
@@ -178,8 +179,51 @@ describe("Search page", () => {
     window.localStorage.clear();
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    await act(async () => { await i18n.changeLanguage("en"); });
     container.remove();
+  });
+
+  it.each(["en", "ru"])("renders rich search hints without object coercion in %s", async (locale) => {
+    await act(async () => { await i18n.changeLanguage(locale); });
+    searchApiMock.search.mockReturnValueOnce(new Promise(() => {}));
+
+    const { root } = renderSearch("/search?q=Codex", container);
+    const hint = container.querySelector('[data-testid="search-try-hint"]');
+
+    expect(hint).not.toBeNull();
+    expect(hint?.textContent).not.toContain("[object Object]");
+    expect(Array.from(hint?.querySelectorAll("code") ?? [], (node) => node.textContent)).toEqual([
+      "status:todo",
+      "assignee:me",
+      "updated:>7d",
+    ]);
+
+    flushSync(() => root.unmount());
+  });
+
+  it("updates search scope labels after a live locale change", async () => {
+    await act(async () => { await i18n.changeLanguage("ru"); });
+    searchApiMock.search.mockReturnValueOnce(new Promise(() => {}));
+    const { root } = renderSearch("/search?q=Codex", container);
+
+    expect(container.textContent).toContain("Комментарии");
+    expect(container.textContent).toContain("Документы");
+
+    await act(async () => { await i18n.changeLanguage("en"); });
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("Comments");
+      expect(container.textContent).toContain("Documents");
+      expect(container.textContent).not.toContain("Комментарии");
+    });
+
+    await act(async () => { await i18n.changeLanguage("ru"); });
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("Комментарии");
+      expect(container.textContent).not.toContain("Comments");
+    });
+
+    flushSync(() => root.unmount());
   });
 
   it("issues a search request when ?q is in the URL and renders the result", async () => {

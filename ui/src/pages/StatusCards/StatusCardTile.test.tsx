@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
-import type { ReactNode } from "react";
+import { act, type ReactNode } from "react";
+import { i18n } from "@/i18n";
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -114,6 +115,28 @@ beforeEach(() => {
 afterEach(() => {
   flushSync(() => root.unmount());
   container.remove();
+});
+
+describe("StatusCardTile locale switching", () => {
+  it.each([[1, "изменение"], [2, "изменения"], [5, "изменений"], [21, "изменение"]])("updates %s pending changes without mutating the card or refreshing", async (count, noun) => {
+    const originalLanguage = i18n.language;
+    const card = baseCard({ pendingChangeCount: Number(count) });
+    const before = structuredClone(card);
+    const onRefresh = vi.fn();
+    try {
+      await i18n.changeLanguage("en");
+      render(tile(card, { onRefresh }));
+      await act(async () => { await i18n.changeLanguage("ru"); });
+      expect(container.textContent).toContain(`${count} ${noun} с последнего обновления`);
+      expect(container.textContent).toContain("каждые 15 мин при изменениях");
+      expect(container.textContent).toContain(card.summaryBody);
+      expect(container.querySelector('[data-lifecycle="stale"]')).toBeTruthy();
+      expect(onRefresh).not.toHaveBeenCalled();
+      expect(card).toEqual(before);
+    } finally {
+      await act(async () => { await i18n.changeLanguage(originalLanguage); });
+    }
+  });
 });
 
 describe("StatusCardTile lifecycle rendering", () => {

@@ -32,6 +32,7 @@ export function MissingUserSecretsBanner({
   secretsPath?: string;
   className?: string;
 }) {
+  const { t } = useTranslation();
   useTranslation();
   const [dialogFor, setDialogFor] = useState<MyUserSecretEntry | null>(null);
 

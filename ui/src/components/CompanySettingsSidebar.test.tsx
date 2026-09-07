@@ -1,10 +1,12 @@
 // @vitest-environment jsdom
 
+import { i18n } from "@/i18n";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { queryKeys } from "@/lib/queryKeys";
 import { CompanySettingsSidebar } from "./CompanySettingsSidebar";
+import { CompanySettingsSidebar as ProductionCompanySettingsSidebar } from "./CompanySettingsSidebar.production";
 import { primarySidebarStyles } from "./primary-sidebar-styles";
 
 const sidebarNavItemMock = vi.hoisted(() => vi.fn());
@@ -119,10 +121,29 @@ describe("CompanySettingsSidebar", () => {
     });
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     container.remove();
     document.body.innerHTML = "";
     vi.clearAllMocks();
+    await i18n.changeLanguage("en");
+  });
+
+  it("localizes the production settings sidebar without changing navigation targets", async () => {
+    const root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await act(async () => {
+      root.render(<QueryClientProvider client={queryClient}><ProductionCompanySettingsSidebar /></QueryClientProvider>);
+    });
+    await flushReact();
+    const hrefs = Array.from(container.querySelectorAll("a")).map((link) => link.getAttribute("href"));
+    expect(container.textContent).toContain("General");
+    await act(async () => { await i18n.changeLanguage("ru"); });
+    await flushReact();
+    expect(container.textContent).toContain("Общие");
+    expect(container.textContent).toContain("Секреты");
+    expect(Array.from(container.querySelectorAll("a")).map((link) => link.getAttribute("href"))).toEqual(hrefs);
+    await act(async () => root.unmount());
+    queryClient.clear();
   });
 
   it("renders a primary-style settings takeover with a back-to-app link", async () => {
@@ -388,10 +409,11 @@ describe("CompanySettingsSidebar operator-hidden entries", () => {
     mockUsePluginSlots.mockReturnValue({ slots: [], isLoading: false, errorMessage: null });
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     container.remove();
     document.body.innerHTML = "";
     vi.clearAllMocks();
+    await i18n.changeLanguage("en");
   });
 
   async function renderSidebar(hiddenSettings?: string[], cloud?: { managed: boolean }) {

@@ -1,11 +1,14 @@
 // @vitest-environment jsdom
 
+import { i18n } from "@/i18n";
+
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { queryKeys } from "@/lib/queryKeys";
 import { OrgChart } from "./OrgChart";
+import { OrgChart as ProductionOrgChart } from "./OrgChart.production";
 
 const navigateMock = vi.fn();
 const orgMock = vi.fn();
@@ -193,14 +196,15 @@ describe("OrgChart mobile gestures", () => {
     document.body.innerHTML = "";
     vi.restoreAllMocks();
     vi.clearAllMocks();
+    await i18n.changeLanguage("en");
   });
 
-  async function renderOrgChart() {
+  async function renderOrgChart(Component: typeof ProductionOrgChart = OrgChart) {
     root = createRoot(container);
     await act(async () => {
       root.render(
         <QueryClientProvider client={queryClient}>
-          <OrgChart />
+          <Component />
         </QueryClientProvider>,
       );
     });
@@ -266,6 +270,31 @@ describe("OrgChart mobile gestures", () => {
     });
 
     expect(layer.style.transform).toBe("translate(-45px, 40px) scale(1.5)");
+    await act(async () => { await i18n.changeLanguage("ru"); });
+    await flushReact();
+    expect(layer.style.transform).toBe("translate(-45px, 40px) scale(1.5)");
+    expect(container.querySelector('[aria-label="Zoom in"]')).toBeNull();
+    expect(container.querySelector('[aria-label="Увеличить масштаб"]')).toBeTruthy();
+    expect(navigateMock).not.toHaveBeenCalled();
+  });
+
+  it("keeps the production chart transform and routes when its chrome changes language", async () => {
+    const { viewport, layer } = await renderOrgChart(ProductionOrgChart);
+    await act(async () => {
+      viewport.dispatchEvent(createTouchEvent("touchstart", [{ clientX: 100, clientY: 100 }]));
+      viewport.dispatchEvent(createTouchEvent("touchmove", [{ clientX: 125, clientY: 140 }]));
+      viewport.dispatchEvent(createTouchEvent("touchend", []));
+    });
+    const transform = layer.style.transform;
+    expect(container.textContent).toContain("Import company");
+    const hrefs = Array.from(container.querySelectorAll("a")).map((link) => link.getAttribute("href"));
+    await act(async () => { await i18n.changeLanguage("ru"); });
+    await flushReact();
+    expect(layer.style.transform).toBe(transform);
+    expect(container.textContent).toContain("Импортировать компанию");
+    expect(container.textContent).toContain("Экспортировать компанию");
+    expect(Array.from(container.querySelectorAll("a")).map((link) => link.getAttribute("href"))).toEqual(hrefs);
+    expect(navigateMock).not.toHaveBeenCalled();
   });
 
   it("does not produce a negative zoom while the viewport has no usable height", async () => {

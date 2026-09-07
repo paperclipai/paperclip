@@ -5012,7 +5012,7 @@ describe("IssueDetail", () => {
 
     const restoreApplyButton = Array.from(
       container.querySelectorAll("button"),
-    ).find((button) => button.textContent?.trim() === "Restore 1 tasks");
+    ).find((button) => button.textContent?.trim() === "Restore 1 task");
     expect(restoreApplyButton).toBeTruthy();
 
     await act(async () => {

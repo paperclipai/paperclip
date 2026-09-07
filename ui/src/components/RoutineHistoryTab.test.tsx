@@ -13,6 +13,7 @@ import type {
 } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { RoutineHistoryTab } from "./RoutineHistoryTab";
+import { i18n } from "@/i18n";
 
 const mockRoutinesApi = vi.hoisted(() => ({
   listRevisions: vi.fn(),
@@ -166,20 +167,28 @@ function makeQueryClient() {
 
 describe("RoutineHistoryTab", () => {
   let container: HTMLDivElement;
+  const mountedRoots = new Set<ReturnType<typeof createRoot>>();
 
-  beforeEach(() => {
+  beforeEach(async () => {
+    await i18n.changeLanguage("en");
     container = document.createElement("div");
     document.body.appendChild(container);
     vi.clearAllMocks();
     toastSpy.mockReset();
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    await act(async () => {
+      for (const root of mountedRoots) root.unmount();
+      mountedRoots.clear();
+      await i18n.changeLanguage("en");
+    });
     container.remove();
   });
 
   async function render(props: Partial<Parameters<typeof RoutineHistoryTab>[0]> = {}) {
     const root = createRoot(container);
+    mountedRoots.add(root);
     const queryClient = makeQueryClient();
     const routine = props.routine ?? createRoutine();
     await act(async () => {
@@ -202,6 +211,27 @@ describe("RoutineHistoryTab", () => {
     await flush();
     return root;
   }
+
+  it("switches historical labels live without translating revision content or changing the selected revision", async () => {
+    mockRoutinesApi.listRevisions.mockResolvedValue([
+      createRevision({ id: "revision-2", revisionNumber: 2 }),
+      createRevision({ id: "revision-1", revisionNumber: 1, snapshot: snapshotV1({ status: "paused" }), changeSummary: "Operator-authored summary" }),
+    ]);
+    await render();
+    await act(async () => {
+      (container.querySelector("[data-testid='revision-row-1']") as HTMLButtonElement).click();
+    });
+    await flush();
+    expect(container.textContent).toContain("Viewing revision 1 (read-only)");
+    await act(async () => { await i18n.changeLanguage("ru"); });
+    expect(container.textContent).toContain("Operator-authored summary");
+    expect(container.textContent).toContain(i18n.t("status.paused"));
+    expect(container.textContent).toContain(i18n.t("localizationRoutines.restoreAsNew"));
+    expect(container.textContent).not.toContain("Viewing revision 1 (read-only)");
+    expect(mockRoutinesApi.restoreRevision).not.toHaveBeenCalled();
+    await act(async () => { await i18n.changeLanguage("en"); });
+    expect(container.textContent).toContain("Viewing revision 1 (read-only)");
+  });
 
   it("shows the empty state when only the bootstrap revision exists", async () => {
     mockRoutinesApi.listRevisions.mockResolvedValue([
@@ -259,7 +289,7 @@ describe("RoutineHistoryTab", () => {
       "Restoring this revision creates a new revision 3 with the same content. History stays append-only.",
     );
     expect(container.textContent).toContain("Status");
-    expect(container.textContent).toContain("paused");
+    expect(container.textContent).toContain("Paused");
     expect(container.textContent).toContain("Restore as new revision");
   });
 

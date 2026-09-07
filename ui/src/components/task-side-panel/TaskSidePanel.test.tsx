@@ -5,8 +5,10 @@ import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Issue, IssueDocument } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { i18n } from "@/i18n";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import {
+  readTaskSidePanelState,
   taskPanelDocumentTab,
   taskPanelPropertiesTab,
   writeTaskSidePanelState,
@@ -162,6 +164,38 @@ describe("TaskSidePanel", () => {
     await render(panel());
     expect(container.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toContain("Properties");
     expect(container.textContent).toContain("Properties content");
+  });
+
+  it("updates labels ru → en → ru without resetting active tabs, user titles or stored payloads", async () => {
+    const customDocument = issueDocument("notes", "Original document title");
+    fixture.documents = [customDocument];
+    writeTaskSidePanelState("user-1", "company-1", "task-1", {
+      state: { tabs: [taskPanelPropertiesTab(), taskPanelDocumentTab("notes", customDocument.title!)], activeTabId: "document:notes" },
+      launcherOpen: false, userInteracted: true, autoPlanHandled: true, updatedAt: 1,
+    });
+    try {
+      await act(async () => { await i18n.changeLanguage("ru"); });
+      await render(panel());
+      const properties = container.querySelector<HTMLButtonElement>('[data-side-panel-tab-target="properties"]')!;
+      const document = container.querySelector('[data-side-panel-tab-target="document:notes"]')!;
+      expect(properties.textContent).toContain("Свойства");
+      expect(document.textContent).toContain("Original document title");
+      expect(document.getAttribute("aria-selected")).toBe("true");
+      await act(async () => properties.click());
+      const stored = readTaskSidePanelState("user-1", "company-1", "task-1", false);
+      expect(stored?.state.tabs[0].label).toBe("Properties");
+      expect(stored?.state.activeTabId).toBe("properties");
+      await act(async () => { await i18n.changeLanguage("en"); });
+      expect(container.querySelector('[data-side-panel-tab-target="properties"]')).toBe(properties);
+      expect(properties.textContent).toContain("Properties");
+      await act(async () => { await i18n.changeLanguage("ru"); });
+      expect(properties.textContent).toContain("Свойства");
+      expect(properties.getAttribute("aria-selected")).toBe("true");
+      expect(container.contains(document)).toBe(true);
+      expect(readTaskSidePanelState("user-1", "company-1", "task-1", false)?.state).toEqual(stored?.state);
+    } finally {
+      await act(async () => { await i18n.changeLanguage("en"); });
+    }
   });
 
   it("uses the approved pre-rebase tab appearance for Streamlined UI", async () => {

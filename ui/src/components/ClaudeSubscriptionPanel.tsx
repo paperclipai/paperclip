@@ -1,3 +1,4 @@
+import { i18n, t, useTranslation } from "@/i18n";
 import type { QuotaWindow } from "@paperclipai/shared";
 import { cn, quotaSourceDisplayName } from "@/lib/utils";
 
@@ -21,17 +22,44 @@ function normalizeLabel(text: string): string {
   return text.toLowerCase().replace(/[^a-z0-9]+/g, "");
 }
 
+function quotaWindowLabel(label: string): string {
+  // Exact labels are emitted by the Claude quota adapter; custom labels stay unchanged.
+  const labels: Record<string, () => string> = {
+    "Current session": () => t("localizationFinalChrome.currentSession"),
+    "Current week (all models)": () => t("localizationFinalChrome.weekAll"),
+    "Current week (Sonnet only)": () => t("localizationFinalChrome.weekSonnet"),
+    "Current week (Opus only)": () => t("localizationFinalChrome.weekOpus"),
+    "Extra usage": () => t("localizationFinalChrome.extraUsage"),
+  };
+  return Object.hasOwn(labels, label) ? labels[label]() : label;
+}
+
+function quotaValueLabel(window: QuotaWindow): string | null | undefined {
+  return window.label === "Extra usage" && window.valueLabel === "Not enabled"
+    ? t("localizationFinalChrome.notEnabled")
+    : window.valueLabel;
+}
+
 function detailText(window: QuotaWindow): string | null {
-  if (typeof window.detail === "string" && window.detail.trim().length > 0) return window.detail.trim();
+  if (typeof window.detail === "string" && window.detail.trim().length > 0) {
+    const detail = window.detail.trim();
+    // These fixed phrases are adapter-owned; provider reset text and unknown details remain raw.
+    const extraDetails: Record<string, () => string> = {
+      "Extra usage not enabled": () => t("localizationFinalChrome.extraNotEnabled"),
+      "Monthly extra usage pool": () => t("localizationFinalChrome.extraMonthlyPool"),
+      "Extra usage not enabled • /extra-usage to enable": () => t("localizationFinalChrome.extraEnableCommand"),
+    };
+    return window.label === "Extra usage" && Object.hasOwn(extraDetails, detail) ? extraDetails[detail]() : detail;
+  }
   if (window.resetsAt) {
-    const formatted = new Date(window.resetsAt).toLocaleString(undefined, {
+    const formatted = new Date(window.resetsAt).toLocaleString(i18n.resolvedLanguage, {
       month: "short",
       day: "numeric",
       hour: "numeric",
       minute: "2-digit",
       timeZoneName: "short",
     });
-    return `Resets ${formatted}`;
+    return t("localizationAgentChrome.quotaResets", { date: formatted });
   }
   return null;
 }
@@ -56,6 +84,7 @@ export function ClaudeSubscriptionPanel({
   source = null,
   error = null,
 }: ClaudeSubscriptionPanelProps) {
+  const { t } = useTranslation();
   const ordered = orderedWindows(windows);
 
   return (
@@ -63,10 +92,10 @@ export function ClaudeSubscriptionPanel({
       <div className="flex items-start justify-between gap-3 border-b border-border pb-3">
         <div className="min-w-0">
           <div className="text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-caps) text-muted-foreground">
-            Anthropic subscription
+            {t("localizationFinalChrome.anthropicSubscription")}
           </div>
           <div className="mt-1 text-sm text-muted-foreground">
-            Live Claude quota windows.
+            {t("localizationFinalChrome.claudeQuotaWindows")}
           </div>
         </div>
         {source ? (
@@ -93,9 +122,9 @@ export function ClaudeSubscriptionPanel({
                 className="border border-border px-3.5 py-3"
               >
                 <div className="flex items-center justify-between gap-3">
-                  <div className="text-sm font-medium text-foreground">{window.label}</div>
+                  <div className="text-sm font-medium text-foreground">{quotaWindowLabel(window.label)}</div>
                   {window.valueLabel ? (
-                    <div className="text-sm font-medium text-foreground">{window.valueLabel}</div>
+                    <div className="text-sm font-medium text-foreground">{quotaValueLabel(window)}</div>
                   ) : null}
                 </div>
                 {detail ? (
@@ -113,14 +142,14 @@ export function ClaudeSubscriptionPanel({
             >
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
-                  <div className="text-sm font-medium text-foreground">{window.label}</div>
+                  <div className="text-sm font-medium text-foreground">{quotaWindowLabel(window.label)}</div>
                   {detail ? (
                     <div className="mt-1 text-xs text-muted-foreground">{detail}</div>
                   ) : null}
                 </div>
                 {window.usedPercent != null ? (
                   <div className="shrink-0 text-sm font-semibold tabular-nums text-foreground">
-                    {window.usedPercent}% used
+                    {t("localizationAgentChrome.quotaUsed", { percent: i18n.resolvedLanguage?.startsWith("ru") ? new Intl.NumberFormat(i18n.resolvedLanguage, { maximumFractionDigits: 20, useGrouping: false }).format(window.usedPercent) : String(window.usedPercent) })}
                   </div>
                 ) : null}
               </div>

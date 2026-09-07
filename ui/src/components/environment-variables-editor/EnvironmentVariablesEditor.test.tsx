@@ -7,6 +7,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import type { CompanySecret, EnvBinding } from "@paperclipai/shared";
 import { EnvironmentVariablesEditor } from "./index";
 import { SecretPicker } from "./SecretPicker";
+import { i18n } from "@/i18n";
 
 // Radix (DropdownMenu/Popover) relies on Pointer Capture APIs that jsdom omits.
 const OriginalPointerEvent = globalThis.PointerEvent;
@@ -111,6 +112,7 @@ describe("EnvironmentVariablesEditor", () => {
   });
 
   afterEach(async () => {
+    await i18n.changeLanguage("en");
     // Restore real timers first (the PAP-12478 test swaps in fake timers and may
     // exit without restoring if it throws) so unmount cleanup runs on real timers
     // and gets drained below.
@@ -306,6 +308,33 @@ describe("EnvironmentVariablesEditor", () => {
     await flush();
 
     expect(savedValues).toEqual([{ FOO: { type: "plain", value: "bar" } }]);
+  });
+
+  it.each(["en", "ru"])("flushes a marked outer save in %s without changing variable names or values", async (locale) => {
+    const savedValues: Array<Record<string, EnvBinding>> = [];
+    function MarkedSaveHarness() {
+      const [value, setValue] = useState<Record<string, EnvBinding>>({ FOO: { type: "plain", value: "" } });
+      return (
+        <div>
+          <EnvironmentVariablesEditor value={value} secrets={secrets} onChange={(next) => setValue(next ?? {})} onCreateSecret={async () => secrets[0]} />
+          <button type="button" data-env-draft-commit="true" onClick={() => savedValues.push(value)}>
+            {locale === "ru" ? "Сохранить настройки" : "Save settings"}
+          </button>
+        </div>
+      );
+    }
+    render(<MarkedSaveHarness />);
+    const input = container.querySelector<HTMLInputElement>('input[aria-label="Variable value"]')!;
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+    setter.call(input, "literal-value");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    await flush();
+    await i18n.changeLanguage(locale);
+    await flush();
+    expect(input.value).toBe("literal-value");
+    container.querySelector<HTMLButtonElement>('[data-env-draft-commit="true"]')!.click();
+    await flush();
+    expect(savedValues).toEqual([{ FOO: { type: "plain", value: "literal-value" } }]);
   });
 
   it("makes unsaved fields and save controls prominent while editing", async () => {

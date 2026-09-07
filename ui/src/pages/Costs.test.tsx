@@ -5,6 +5,7 @@ import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Costs } from "./Costs";
+import { i18n } from "@/i18n";
 
 const budgetOverviewMock = vi.hoisted(() => vi.fn());
 const setBreadcrumbsMock = vi.hoisted(() => vi.fn());
@@ -64,6 +65,7 @@ describe("Costs embedded Audit surfaces", () => {
     act(() => root?.unmount());
     container.remove();
     vi.clearAllMocks();
+    void i18n.changeLanguage("en");
   });
 
   it("renders a focused Budgets section without duplicate Costs chrome or spend queries", async () => {
@@ -88,5 +90,11 @@ describe("Costs embedded Audit surfaces", () => {
     expect(container.querySelector('[role="tab"]')).toBeFalsy();
     expect(setBreadcrumbsMock).not.toHaveBeenCalled();
     for (const mock of Object.values(costsApiMocks)) expect(mock).not.toHaveBeenCalled();
+    await act(async () => { await i18n.changeLanguage("ru"); });
+    expect(container.textContent).toContain("Управление бюджетом");
+    expect(container.textContent).toContain("Активные инциденты");
+    expect(budgetOverviewMock).toHaveBeenCalledWith("company-1");
+    await act(async () => { await i18n.changeLanguage("en"); });
+    expect(container.textContent).toContain("Budget control plane");
   });
 });

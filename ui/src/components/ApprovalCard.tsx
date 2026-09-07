@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import { CheckCircle2, XCircle, Clock } from "lucide-react";
 import { Link } from "@/lib/router";
 import { Badge } from "@/components/ui/badge";
@@ -42,6 +43,7 @@ export function ApprovalCard({
   isPending?: boolean;
   pendingAction?: "approve" | "reject" | null;
 }) {
+  const { t } = useTranslation();
   const payload = approval.payload as Record<string, unknown> | null;
   const Icon = typeIcon[approval.type] ?? defaultTypeIcon;
   const kindLabel = typeLabel[approval.type] ?? approval.type;
@@ -70,7 +72,7 @@ export function ApprovalCard({
                 </Badge>
                 {requesterAgent && (
                   <div className="inline-flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
-                    <span>Requested by</span>
+                    <span>{t("pages.approvalDetail.requestedBy")}</span>
                     <Identity name={requesterAgent.name} size="sm" className="inline-flex" />
                   </div>
                 )}
@@ -80,7 +82,7 @@ export function ApprovalCard({
                   {subject ?? kindLabel}
                 </h3>
                 <p className="text-xs leading-5 text-muted-foreground">
-                  Approval request created {timeAgo(approval.createdAt)}
+                  {t("localizationApprovals.created", { time: timeAgo(approval.createdAt) })}
                 </p>
               </div>
             </div>
@@ -89,7 +91,7 @@ export function ApprovalCard({
         <div className="shrink-0">
           <div className="inline-flex items-center gap-1.5 rounded-full border border-border/70 bg-background/80 px-2.5 py-1 text-xs text-muted-foreground">
             {statusIcon(approval.status)}
-            <span className="capitalize">{approval.status.replace(/_/g, " ")}</span>
+            <span>{t(`status.${approval.status}`, { defaultValue: approval.status.replace(/_/g, " ") })}</span>
           </div>
         </div>
       </div>
@@ -104,7 +106,7 @@ export function ApprovalCard({
 
       {approval.decisionNote && (
         <div className="mt-4 rounded-lg border border-border/60 bg-muted/30 px-3.5 py-3 text-xs leading-5 text-muted-foreground">
-          <span className="font-medium text-foreground">Decision note.</span> {approval.decisionNote}
+          <span className="font-medium text-foreground">{t("localizationApprovals.decisionNote")}</span> {approval.decisionNote}
         </div>
       )}
 
@@ -119,7 +121,7 @@ export function ApprovalCard({
                   onClick={onApprove}
                   disabled={isPending}
                 >
-                  {pendingAction === "approve" ? "Approving..." : "Approve"}
+                  {pendingAction === "approve" ? t("pages.cliAuth.approving") : t("localizationApprovals.approve")}
                 </Button>
                 <Button
                   variant="destructive"
@@ -127,7 +129,7 @@ export function ApprovalCard({
                   onClick={onReject}
                   disabled={isPending}
                 >
-                  {pendingAction === "reject" ? "Rejecting..." : "Reject"}
+                  {pendingAction === "reject" ? t("localizationApprovals.rejecting") : t("localizationApprovals.reject")}
                 </Button>
               </>
             )}
@@ -137,13 +139,9 @@ export function ApprovalCard({
               <Link
                 to={detailLink}
                 className={cn(buttonVariants({ variant: "ghost", size: "sm" }), "h-auto px-2 text-xs text-muted-foreground")}
-              >
-                View details
-              </Link>
+              >{t("pages.secrets.actions.viewDetails")}</Link>
             ) : (
-              <Button variant="ghost" size="sm" className="h-auto px-2 text-xs text-muted-foreground" onClick={onOpen}>
-                View details
-              </Button>
+              <Button variant="ghost" size="sm" className="h-auto px-2 text-xs text-muted-foreground" onClick={onOpen}>{t("pages.secrets.actions.viewDetails")}</Button>
             )
           ) : null}
         </div>

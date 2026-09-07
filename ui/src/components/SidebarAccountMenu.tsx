@@ -186,7 +186,7 @@ export function SidebarAccountMenu({
 
             <div className="flex flex-1 flex-col gap-0.5 border-t border-border px-2.5 pb-2.5 pt-2">
               <MenuAction
-                label={t("common.settings")}
+                label={t("nav.settings")}
                 icon={Settings}
                 href="/company/settings"
                 onClick={closeNavigationChrome}
@@ -241,13 +241,13 @@ export function SidebarAccountMenu({
                 href={FEEDBACK_URL}
                 target="_blank"
                 rel="noreferrer"
-                aria-label={t("account.feedback")}
+                aria-label={t("localizationAgentChrome.ui138_Share_feedback")}
                 className="flex size-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground/50 transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               >
                 <Flag className="h-4 w-4" aria-hidden="true" />
               </a>
             </TooltipTrigger>
-            <TooltipContent side="top">{t("account.feedback")}</TooltipContent>
+            <TooltipContent side="top">{t("localizationAgentChrome.ui138_Share_feedback")}</TooltipContent>
           </Tooltip>
         ) : null}
       </div>

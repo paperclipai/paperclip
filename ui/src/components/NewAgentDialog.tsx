@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@/lib/router";
@@ -43,6 +44,7 @@ function isAgentAdapterType(type: string): boolean {
 }
 
 export function NewAgentDialog() {
+  const { t } = useTranslation();
   const { newAgentOpen, closeNewAgent, openNewIssue } = useDialog();
   const { selectedCompanyId } = useCompany();
   const { pushToast } = useToast();
@@ -120,14 +122,14 @@ export function NewAgentDialog() {
         if (!a.recommended && b.recommended) return 1;
         return a.label.localeCompare(b.label);
       });
-  }, [disabledTypes, nativeRunnerAvailable, serverAdapters]);
+  }, [disabledTypes, nativeRunnerAvailable, serverAdapters, t]);
 
   function handleAskCeo() {
     closeNewAgent();
     openNewIssue({
       assigneeAgentId: ceoAgent?.id,
-      title: "Create a new agent",
-      description: "(type in what kind of agent you want here)",
+      get ["title"]() { return t("localizationAgents.ui209_Create_a_new_agent"); },
+      get ["description"]() { return t("localizationAgents.ui210__type_in_what_kind_of_agent_you_want_here_"); },
     });
   }
 
@@ -151,7 +153,7 @@ export function NewAgentDialog() {
       return true;
     } catch {
       pushToast({
-        title: "Clipboard unavailable",
+        get ["title"]() { return t("localizationAgents.ui212_Clipboard_unavailable"); },
         body: unavailableBody,
         tone: "warn",
       });
@@ -198,19 +200,19 @@ export function NewAgentDialog() {
       setLatestAgentPrompt(prompt);
       setLatestAgentPromptCopied(false);
       setMode("prompt");
-      const copied = await copyText(prompt, "Copy the agent onboarding prompt manually from the field below.");
+      const copied = await copyText(prompt, t("localizationAgents.copyPromptBelow"));
 
       await queryClient.invalidateQueries({ queryKey: inviteHistoryQueryKey });
       pushToast({
-        title: "Agent invite created",
-        body: copied ? "Agent onboarding prompt ready below and copied to clipboard." : "Agent onboarding prompt ready below.",
+        get ["title"]() { return t("localizationAgents.ui214_Agent_invite_created"); },
+        body: copied ? t("localizationAgents.promptReadyCopied") : t("localizationAgents.promptReady"),
         tone: "success",
       });
     },
     onError: (error) => {
       pushToast({
-        title: "Failed to create agent invite",
-        body: error instanceof Error ? error.message : "Unknown error",
+        get ["title"]() { return t("localizationAgents.ui215_Failed_to_create_agent_invite"); },
+        body: error instanceof Error ? error.message : t("localizationAgents.unknownError"),
         tone: "error",
       });
     },
@@ -235,7 +237,7 @@ export function NewAgentDialog() {
       >
         {/* Header */}
         <div className="flex items-center justify-between px-4 py-2.5 border-b border-border">
-          <span className="text-sm text-muted-foreground">Add a new agent</span>
+          <span className="text-sm text-muted-foreground">{t("localizationAgents.ui216_Add_a_new_agent")}</span>
           <Button
             variant="ghost"
             size="icon-xs"
@@ -257,30 +259,19 @@ export function NewAgentDialog() {
                 <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-accent">
                   <Bot className="h-6 w-6 text-foreground" />
                 </div>
-                <p className="text-sm text-muted-foreground">
-                  Ask a leader to propose the hire, configure a runtime yourself,
-                  or send an onboarding prompt to an external agent.
-                </p>
+                <p className="text-sm text-muted-foreground">{t("localizationAgents.ui217_Ask_a_leader_to_propose_the_hire_configure_a_runtime_yoursel")}</p>
               </div>
 
               <Button className="w-full" size="lg" onClick={handleAskCeo}>
-                <Bot className="h-4 w-4 mr-2" />
-                Ask the CEO to create a new agent
-              </Button>
+                <Bot className="h-4 w-4 mr-2" />{t("localizationAgents.ui218_Ask_the_CEO_to_create_a_new_agent")}</Button>
 
               <div className="grid gap-2">
                 <Button variant="outline" className="w-full" onClick={handleAdvancedConfig}>
-                  <Settings2 className="h-4 w-4 mr-2" />
-                  Configure a runtime manually
-                </Button>
+                  <Settings2 className="h-4 w-4 mr-2" />{t("localizationAgents.ui219_Configure_a_runtime_manually")}</Button>
                 <div className="space-y-1">
                   <Button variant="outline" className="w-full" onClick={handleInviteExternalAgent}>
-                    <MailPlus className="h-4 w-4 mr-2" />
-                    Invite an external agent
-                  </Button>
-                  <p className="text-xs text-muted-foreground text-center">
-                    (OpenClaw, Hermes, or any agent that can call the invite API.)
-                  </p>
+                    <MailPlus className="h-4 w-4 mr-2" />{t("localizationAgents.ui220_Invite_an_external_agent")}</Button>
+                  <p className="text-xs text-muted-foreground text-center">{t("localizationAgents.ui221__OpenClaw_Hermes_or_any_agent_that_can_call_the_invite_API_")}</p>
                 </div>
               </div>
             </>
@@ -291,12 +282,8 @@ export function NewAgentDialog() {
                   className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
                   onClick={() => setMode("choices")}
                 >
-                  <ArrowLeft className="h-3.5 w-3.5" />
-                  Back
-                </button>
-                <p className="text-sm text-muted-foreground">
-                  Choose the runtime Paperclip should start or resume directly.
-                </p>
+                  <ArrowLeft className="h-3.5 w-3.5" />{t("localizationAgents.ui222_Back")}</button>
+                <p className="text-sm text-muted-foreground">{t("localizationAgents.ui223_Choose_the_runtime_Paperclip_should_start_or_resume_directly")}</p>
               </div>
 
               <div className="grid grid-cols-2 gap-2">
@@ -314,9 +301,7 @@ export function NewAgentDialog() {
                     }}
                   >
                     {opt.recommended && (
-                      <Badge variant="ghost" className="absolute -top-1.5 right-1.5 bg-green-500 text-white text-(length:--text-nano) font-semibold px-1.5 leading-none">
-                        Recommended
-                      </Badge>
+                      <Badge variant="ghost" className="absolute -top-1.5 right-1.5 bg-green-500 text-white text-(length:--text-nano) font-semibold px-1.5 leading-none">{t("pages.apps.connect.access.recommended")}</Badge>
                     )}
                     <opt.icon className="h-4 w-4" />
                     <span className="font-medium">{opt.label}</span>
@@ -334,38 +319,32 @@ export function NewAgentDialog() {
                   className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
                   onClick={() => setMode("choices")}
                 >
-                  <ArrowLeft className="h-3.5 w-3.5" />
-                  Back
-                </button>
+                  <ArrowLeft className="h-3.5 w-3.5" />{t("localizationAgents.ui222_Back")}</button>
                 <div className="space-y-1">
-                  <h2 className="text-sm font-semibold">Invite an external agent</h2>
-                  <p className="text-sm text-muted-foreground">
-                    Generate a one-time onboarding prompt that any compatible agent can use to request access, wait for approval, and claim its Paperclip API key.
-                  </p>
+                  <h2 className="text-sm font-semibold">{t("localizationAgents.ui220_Invite_an_external_agent")}</h2>
+                  <p className="text-sm text-muted-foreground">{t("localizationAgents.ui224_Generate_a_one_time_onboarding_prompt_that_any_compatible_ag")}</p>
                 </div>
               </div>
 
               <label className="block space-y-2">
-                <span className="text-sm font-medium">Optional message for the agent</span>
+                <span className="text-sm font-medium">{t("localizationAgents.ui225_Optional_message_for_the_agent")}</span>
                 <Textarea
                   value={agentMessage}
                   onChange={(event) => setAgentMessage(event.target.value)}
                   className="min-h-24 resize-y"
-                  placeholder="Add onboarding context, expected role, or first instructions."
+                  placeholder={t("localizationAgents.ui226_Add_onboarding_context_expected_role_or_first_instructions_")}
                   maxLength={4000}
                 />
               </label>
 
-              <div className="rounded-lg border border-border px-4 py-3 text-sm text-muted-foreground">
-                Agent invites create a join request first. An organization admin still approves the request before the agent can claim its API key.
-              </div>
+              <div className="rounded-lg border border-border px-4 py-3 text-sm text-muted-foreground">{t("localizationAgents.ui227_Agent_invites_create_a_join_request_first_An_organization_ad")}</div>
 
               <div>
                 <Button
                   onClick={() => createAgentInviteMutation.mutate()}
                   disabled={!selectedCompanyId || createAgentInviteMutation.isPending}
                 >
-                  {createAgentInviteMutation.isPending ? "Generating…" : "Generate onboarding prompt"}
+                  {createAgentInviteMutation.isPending ? t("localizationAgents.ui228_Generating_") : t("localizationAgents.ui229_Generate_onboarding_prompt")}
                 </Button>
               </div>
             </div>
@@ -376,22 +355,16 @@ export function NewAgentDialog() {
                   className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
                   onClick={() => setMode("invite")}
                 >
-                  <ArrowLeft className="h-3.5 w-3.5" />
-                  Back
-                </button>
+                  <ArrowLeft className="h-3.5 w-3.5" />{t("localizationAgents.ui222_Back")}</button>
                 <div className="space-y-1">
                   <div className="flex items-center justify-between gap-3">
-                    <h2 className="text-sm font-semibold">Agent onboarding prompt</h2>
+                    <h2 className="text-sm font-semibold">{t("localizationAgents.ui230_Agent_onboarding_prompt")}</h2>
                     {latestAgentPromptCopied ? (
                       <div className="inline-flex items-center gap-1 text-xs font-medium text-foreground">
-                        <Check className="h-3.5 w-3.5" />
-                        Copied
-                      </div>
+                        <Check className="h-3.5 w-3.5" />{t("localizationAgents.ui231_Copied")}</div>
                     ) : null}
                   </div>
-                  <p className="text-sm text-muted-foreground">
-                    Send this prompt to the external agent that should join this organization.
-                  </p>
+                  <p className="text-sm text-muted-foreground">{t("localizationAgents.ui232_Send_this_prompt_to_the_external_agent_that_should_join_this")}</p>
                 </div>
               </div>
 
@@ -406,11 +379,11 @@ export function NewAgentDialog() {
                 disabled={!latestAgentPrompt}
                 onClick={async () => {
                   if (!latestAgentPrompt) return;
-                  const copied = await copyText(latestAgentPrompt, "Copy the agent onboarding prompt manually from the field above.");
+                  const copied = await copyText(latestAgentPrompt, t("localizationAgents.copyPromptAbove"));
                   setLatestAgentPromptCopied(copied);
                 }}
               >
-                {latestAgentPromptCopied ? "Copied prompt" : "Copy prompt"}
+                {latestAgentPromptCopied ? t("localizationAgents.ui233_Copied_prompt") : t("localizationAgents.ui234_Copy_prompt")}
               </Button>
             </div>
           )}

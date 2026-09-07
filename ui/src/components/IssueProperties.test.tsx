@@ -119,11 +119,11 @@ vi.mock("../lib/recent-assignees", () => ({
 }));
 
 vi.mock("../lib/assignees", () => ({
-  formatAssigneeUserLabel: (userId: string | null | undefined, currentUserId?: string | null, userLabelMap?: Map<string, string>) => {
+  formatAssigneeUserDisplayLabel: (userId: string | null | undefined, currentUserId?: string | null, userLabelMap?: Map<string, string>) => {
     if (!userId) return null;
     return userLabelMap?.get(userId) ?? (userId === currentUserId ? "You" : "User");
   },
-  formatUserLabel: (userId: string | null | undefined, userLabelMap?: Map<string, string>) => {
+  formatUserDisplayLabel: (userId: string | null | undefined, userLabelMap?: Map<string, string>) => {
     if (!userId) return null;
     return userLabelMap?.get(userId) ?? "User";
   },

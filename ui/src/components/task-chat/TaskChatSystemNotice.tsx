@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import { useId, useState } from "react";
 import {
   ChevronDown,
@@ -15,7 +16,7 @@ import {
   SystemNoticeMetadataSections,
   type SystemNoticeTone,
 } from "@/components/SystemNotice";
-import { humanizeSystemNotice } from "@/lib/system-notice-humanizer";
+import { humanizeSystemNoticeDisplay as humanizeSystemNotice } from "@/lib/system-notice-humanizer";
 import { mapCommentMetadataToSystemNoticeSections } from "@/lib/system-notice-comment";
 import { timeAgo } from "@/lib/timeAgo";
 import type { TaskChatMessageItem } from "./task-chat-model";
@@ -53,6 +54,7 @@ export function TaskChatSystemNotice({
   onTryAgainNoLiveExecutionPath?: () => Promise<void> | void;
   tryAgainNoLiveExecutionPathPending?: boolean;
 }) {
+  useTranslation();
   const streamlined = useStreamlinedTaskChatPresentation();
   const [open, setOpen] = useState(Boolean(item.presentation?.detailsDefaultOpen));
   const detailsId = useId();
@@ -82,7 +84,7 @@ export function TaskChatSystemNotice({
       data-testid="task-chat-system-notice"
       data-tone={streamlined ? tone : undefined}
       role={streamlined ? "group" : undefined}
-      aria-label={streamlined ? `System update: ${title}` : undefined}
+      aria-label={streamlined ? t("localizationTaskRuntime.systemUpdate", { title }) : undefined}
     >
       <div className="flex max-w-(--pct-85) items-center gap-1.5">
         <button
@@ -114,7 +116,7 @@ export function TaskChatSystemNotice({
             disabled={tryAgainNoLiveExecutionPathPending}
             data-testid="task-chat-no-live-path-try-again"
           >
-            {tryAgainNoLiveExecutionPathPending ? "Trying again..." : "Try again"}
+            {tryAgainNoLiveExecutionPathPending ? t("localizationTaskRuntime.ui_Trying_again_1nesku4") : t("localizationTaskRuntime.ui_Try_again_982hh6")}
           </Button>
         ) : null}
       </div>
@@ -143,7 +145,7 @@ export function TaskChatSystemNotice({
                 disabled={tryAgainNoLiveExecutionPathPending}
                 data-testid="task-chat-no-live-path-try-again"
               >
-                {tryAgainNoLiveExecutionPathPending ? "Trying again..." : "Try again"}
+                {tryAgainNoLiveExecutionPathPending ? t("localizationTaskRuntime.ui_Trying_again_1nesku4") : t("localizationTaskRuntime.ui_Try_again_982hh6")}
               </Button>
             </div>
           ) : null}

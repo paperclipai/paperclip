@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import type { ComponentProps } from "react";
 import type { IssueDocument } from "@paperclipai/shared";
 import type { MentionOption } from "@/components/MarkdownEditor";
@@ -36,6 +37,7 @@ export function TaskChatInteractionCard({
   draftKey,
   ...cardProps
 }: TaskChatInteractionCardProps) {
+  useTranslation();
   const interaction = item.interaction;
   const isSupersededQuestionReceipt =
     interaction.kind === "ask_user_questions" &&

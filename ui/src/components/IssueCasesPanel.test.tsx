@@ -89,7 +89,7 @@ describe("IssueCasesPanel", () => {
     expect(text).toContain("PAP-C7");
     expect(text).toContain("Launch post");
     expect(text).toContain("work");
-    expect(text).toContain("in review");
+    expect(text).toContain("In Review");
     expect(container.querySelector('a[href="/PAP/cases/PAP-C7"]')).not.toBeNull();
     act(() => root.unmount());
   });

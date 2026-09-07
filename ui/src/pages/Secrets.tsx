@@ -126,7 +126,7 @@ import {
   UserSecretChip,
 } from "./secrets/user-secret-presentation";
 import type { MyUserSecretEntry } from "../api/secrets";
-import { t, useTranslation } from "@/i18n";
+import { i18n, t, useTranslation } from "@/i18n";
 
 type CreateMode = "managed" | "external";
 // "value" writes a new secret value (for external references: through to the
@@ -260,7 +260,7 @@ function isAwsDiscoveryAccessDenied(error: unknown): boolean {
 }
 
 function readableErrorMessage(error: unknown): string {
-  if (error instanceof ApiError) return error.message || `Request failed: ${error.status}`;
+  if (error instanceof ApiError) return error.message || t("localizationSecrets.requestFailed", { status: error.status });
   if (error instanceof Error) return error.message;
   return t("pages.secrets.errors.unexpected");
 }
@@ -292,7 +292,7 @@ function formatRelative(value: Date | string | null | undefined): string {
   const date = typeof value === "string" ? new Date(value) : value;
   if (Number.isNaN(date.getTime())) return "—";
   const diff = Date.now() - date.getTime();
-  if (diff < 0) return date.toLocaleString();
+  if (diff < 0) return date.toLocaleString(i18n.resolvedLanguage ?? i18n.language);
   const seconds = Math.floor(diff / 1000);
   if (seconds < 60) return t("pages.secrets.time.secondsAgo", { count: seconds });
   const minutes = Math.floor(seconds / 60);
@@ -301,7 +301,7 @@ function formatRelative(value: Date | string | null | undefined): string {
   if (hours < 48) return t("pages.secrets.time.hoursAgo", { count: hours });
   const days = Math.floor(hours / 24);
   if (days < 30) return t("pages.secrets.time.daysAgo", { count: days });
-  return date.toLocaleDateString();
+  return date.toLocaleDateString(i18n.resolvedLanguage ?? i18n.language);
 }
 
 function statusTextTone(status: SecretStatus) {
@@ -388,6 +388,7 @@ function statusDotTone(status: SecretStatus) {
 }
 
 function StatusBadge({ status }: { status: SecretStatus }) {
+  useTranslation();
   return (
     <span className={cn("inline-flex items-center gap-1.5 text-xs font-medium", statusTextTone(status))}>
       <span className={cn("h-1.5 w-1.5 rounded-full", statusDotTone(status))} aria-hidden="true" />
@@ -397,6 +398,7 @@ function StatusBadge({ status }: { status: SecretStatus }) {
 }
 
 function MetaChip({ children }: { children: React.ReactNode }) {
+  useTranslation();
   return (
     <span className="inline-flex min-w-0 items-center gap-1 rounded-md border border-border bg-background px-2 py-0.5 text-(length:--text-micro) text-muted-foreground">
       {children}
@@ -432,6 +434,7 @@ function SecretProviderIndicator({
   providers: SecretProviderDescriptor[];
   providerConfigs: CompanySecretProviderConfig[];
 }) {
+  useTranslation();
   const label = providerIndicatorLabel(secret, providers, providerConfigs);
   const Icon = secret.managedMode === "external_reference" ? ExternalLink : Lock;
   return (
@@ -456,6 +459,7 @@ function UpdatedWithTooltip({
   updatedAt: Date | string | null | undefined;
   tooltip: string;
 }) {
+  useTranslation();
   return (
     <Tooltip>
       <TooltipTrigger asChild>
@@ -668,7 +672,7 @@ export function getAwsManagedPathPreview(input: {
 }
 
 export function Secrets() {
-  useTranslation();
+  const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
@@ -751,7 +755,7 @@ export function Secrets() {
 
   useEffect(() => {
     setBreadcrumbs([{ label: t("pages.secrets.title") }]);
-  }, [setBreadcrumbs]);
+  }, [setBreadcrumbs, t]);
 
   const secretsQuery = useQuery({
     queryKey: selectedCompanyId
@@ -3495,6 +3499,7 @@ export function Secrets() {
 }
 
 function SecretsHowToUse() {
+  const { t } = useTranslation();
   return (
     <div className="flex items-start gap-2 rounded-md border border-border bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
       <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" />
@@ -3535,6 +3540,7 @@ function SecretsFiltersPopover({
   onProviderChange: (value: SecretProvider | "all") => void;
   onProvidedByChange: (value: ProvidedByFilter) => void;
 }) {
+  const { t } = useTranslation();
   const resetFilters = () => {
     onStatusChange("active");
     onProviderChange("all");
@@ -3764,6 +3770,7 @@ function providerFamilyIcon(provider: SecretProvider) {
 }
 
 function ProviderVaultInlineWarning({ config }: { config: CompanySecretProviderConfig }) {
+  const { t } = useTranslation();
   const blockReason = getProviderConfigBlockReason(config);
   const message = blockReason ?? config.healthMessage;
   if (!message) {
@@ -3799,6 +3806,7 @@ function ImportFromVaultButton({
   onManageVaults,
   className,
 }: ImportFromVaultButtonProps) {
+  const { t } = useTranslation();
   const awsConfigs = providerConfigs.filter(
     (config) => config.provider === "aws_secrets_manager",
   );
@@ -3865,6 +3873,7 @@ export function ProviderVaultsTab({
   onImportSecrets: (config: CompanySecretProviderConfig) => void;
   pendingActionId: string | null;
 }) {
+  const { t } = useTranslation();
   if (loading) {
     return (
       <div className="flex items-center gap-2 py-4 text-sm text-muted-foreground">
@@ -3978,6 +3987,7 @@ function ProviderVaultCard({
   onHealthCheck: () => void;
   onImportSecrets: () => void;
 }) {
+  const { t } = useTranslation();
   const blockReason = getProviderConfigBlockReason(config);
   const details = config.healthDetails;
   return (
@@ -4090,6 +4100,7 @@ function ProviderVaultFields({
   form: ProviderVaultForm;
   onChange: React.Dispatch<React.SetStateAction<ProviderVaultForm>>;
 }) {
+  const { t } = useTranslation();
   const setField = (key: keyof ProviderVaultForm, value: string | boolean) => {
     onChange((current) => ({ ...current, [key]: value }));
   };
@@ -4113,12 +4124,12 @@ function ProviderVaultFields({
   if (form.provider === "aws_secrets_manager") {
     return (
       <div className="grid gap-3 sm:grid-cols-2">
-        <TextField label={t("pages.secrets.vault.fields.awsRegion")} value={form.region} onChange={(value) => setField("region", value)} placeholder="us-east-1" required />
-        <TextField label={t("pages.secrets.vault.fields.namespace")} value={form.namespace} onChange={(value) => setField("namespace", value)} placeholder="production" />
-        <TextField label={t("pages.secrets.vault.fields.secretNamePrefix")} value={form.secretNamePrefix} onChange={(value) => setField("secretNamePrefix", value)} placeholder="paperclip" />
-        <TextField label={t("pages.secrets.vault.fields.kmsKeyId")} value={form.kmsKeyId} onChange={(value) => setField("kmsKeyId", value)} placeholder="alias/paperclip-secrets" />
-        <TextField label={t("pages.secrets.vault.fields.ownerTag")} value={form.ownerTag} onChange={(value) => setField("ownerTag", value)} placeholder="platform" />
-        <TextField label={t("pages.secrets.vault.fields.environmentTag")} value={form.environmentTag} onChange={(value) => setField("environmentTag", value)} placeholder="prod" />
+        <TextField id="provider-vault-aws-region" label={t("pages.secrets.vault.fields.awsRegion")} value={form.region} onChange={(value) => setField("region", value)} placeholder="us-east-1" required />
+        <TextField id="provider-vault-namespace" label={t("pages.secrets.vault.fields.namespace")} value={form.namespace} onChange={(value) => setField("namespace", value)} placeholder="production" />
+        <TextField id="provider-vault-secret-name-prefix" label={t("pages.secrets.vault.fields.secretNamePrefix")} value={form.secretNamePrefix} onChange={(value) => setField("secretNamePrefix", value)} placeholder="paperclip" />
+        <TextField id="provider-vault-kms-key-id" label={t("pages.secrets.vault.fields.kmsKeyId")} value={form.kmsKeyId} onChange={(value) => setField("kmsKeyId", value)} placeholder="alias/paperclip-secrets" />
+        <TextField id="provider-vault-owner-tag" label={t("pages.secrets.vault.fields.ownerTag")} value={form.ownerTag} onChange={(value) => setField("ownerTag", value)} placeholder="platform" />
+        <TextField id="provider-vault-environment-tag" label={t("pages.secrets.vault.fields.environmentTag")} value={form.environmentTag} onChange={(value) => setField("environmentTag", value)} placeholder="prod" />
       </div>
     );
   }
@@ -4126,20 +4137,20 @@ function ProviderVaultFields({
   if (form.provider === "gcp_secret_manager") {
     return (
       <div className="grid gap-3 sm:grid-cols-2">
-        <TextField label={t("pages.secrets.vault.fields.projectId")} value={form.projectId} onChange={(value) => setField("projectId", value)} placeholder="paperclip-prod" />
-        <TextField label={t("pages.secrets.vault.fields.location")} value={form.location} onChange={(value) => setField("location", value)} placeholder="global" />
-        <TextField label={t("pages.secrets.vault.fields.namespace")} value={form.namespace} onChange={(value) => setField("namespace", value)} placeholder="production" />
-        <TextField label={t("pages.secrets.vault.fields.secretNamePrefix")} value={form.secretNamePrefix} onChange={(value) => setField("secretNamePrefix", value)} placeholder="paperclip" />
+        <TextField id="provider-vault-project-id" label={t("pages.secrets.vault.fields.projectId")} value={form.projectId} onChange={(value) => setField("projectId", value)} placeholder="paperclip-prod" />
+        <TextField id="provider-vault-location" label={t("pages.secrets.vault.fields.location")} value={form.location} onChange={(value) => setField("location", value)} placeholder="global" />
+        <TextField id="provider-vault-namespace" label={t("pages.secrets.vault.fields.namespace")} value={form.namespace} onChange={(value) => setField("namespace", value)} placeholder="production" />
+        <TextField id="provider-vault-secret-name-prefix" label={t("pages.secrets.vault.fields.secretNamePrefix")} value={form.secretNamePrefix} onChange={(value) => setField("secretNamePrefix", value)} placeholder="paperclip" />
       </div>
     );
   }
 
   return (
     <div className="grid gap-3 sm:grid-cols-2">
-      <TextField label={t("pages.secrets.vault.fields.address")} value={form.address} onChange={(value) => setField("address", value)} placeholder="https://vault.example.com" />
-      <TextField label={t("pages.secrets.vault.fields.namespace")} value={form.namespace} onChange={(value) => setField("namespace", value)} placeholder="admin" />
-      <TextField label={t("pages.secrets.vault.fields.mountPath")} value={form.mountPath} onChange={(value) => setField("mountPath", value)} placeholder="secret" />
-      <TextField label={t("pages.secrets.vault.fields.secretPathPrefix")} value={form.secretPathPrefix} onChange={(value) => setField("secretPathPrefix", value)} placeholder="paperclip/prod" />
+      <TextField id="provider-vault-address" label={t("pages.secrets.vault.fields.address")} value={form.address} onChange={(value) => setField("address", value)} placeholder="https://vault.example.com" />
+      <TextField id="provider-vault-namespace" label={t("pages.secrets.vault.fields.namespace")} value={form.namespace} onChange={(value) => setField("namespace", value)} placeholder="admin" />
+      <TextField id="provider-vault-mount-path" label={t("pages.secrets.vault.fields.mountPath")} value={form.mountPath} onChange={(value) => setField("mountPath", value)} placeholder="secret" />
+      <TextField id="provider-vault-secret-path-prefix" label={t("pages.secrets.vault.fields.secretPathPrefix")} value={form.secretPathPrefix} onChange={(value) => setField("secretPathPrefix", value)} placeholder="paperclip/prod" />
     </div>
   );
 }
@@ -4159,6 +4170,7 @@ function AwsProviderVaultDiscoveryPanel({
   onDiscover: () => void;
   onApply: (candidate: SecretProviderConfigDiscoveryCandidate) => void;
 }) {
+  const { t } = useTranslation();
   const canDiscover = Boolean(form.region.trim());
   const warnings = preview?.warnings ?? [];
 
@@ -4255,6 +4267,7 @@ function AwsProviderVaultDiscoveryError({
   form: ProviderVaultForm;
   error: unknown;
 }) {
+  const { t } = useTranslation();
   const details = apiErrorDetails(error);
   const isAccessDenied = isAwsDiscoveryAccessDenied(error);
   const region = (details?.region ?? form.region.trim()) || "unspecified";
@@ -4351,6 +4364,7 @@ function SecretCreateError({
   provider: SecretProvider;
   providerConfigId: string | null;
 }) {
+  const { t } = useTranslation();
   const details = apiErrorDetails(error);
   const message = readableErrorMessage(error);
   const isAwsCreateError =
@@ -4457,6 +4471,7 @@ function AwsProviderVaultDiscoveryCandidateRow({
   candidate: SecretProviderConfigDiscoveryCandidate;
   onApply: () => void;
 }) {
+  const { t } = useTranslation();
   const fieldSummary = [
     providerConfigValue(candidate.config, "region"),
     providerConfigValue(candidate.config, "namespace"),
@@ -4503,19 +4518,21 @@ function AwsProviderVaultDiscoveryCandidateRow({
 }
 
 function TextField({
+  id,
   label,
   value,
   onChange,
   placeholder,
   required,
 }: {
+  id: string;
   label: string;
   value: string;
   onChange: (value: string) => void;
   placeholder?: string;
   required?: boolean;
 }) {
-  const id = `provider-vault-${label.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`;
+  const { t } = useTranslation();
   return (
     <div>
       <label className="text-xs font-medium" htmlFor={id}>
@@ -4538,6 +4555,7 @@ function CoverageInline({
   definitionId: string;
   compact?: boolean;
 }) {
+  const { t } = useTranslation();
   const coverageQuery = useQuery({
     queryKey: queryKeys.secrets.userDefinitionCoverage(companyId, definitionId),
     queryFn: () => secretsApi.userSecretDefinitionCoverage(companyId, definitionId),
@@ -4582,6 +4600,7 @@ function UserSecretDetailsTab({
   definition: UserSecretDefinition;
   onViewCoverage: () => void;
 }) {
+  const { t } = useTranslation();
   return (
     <dl className="divide-y divide-border/60 text-xs">
       <DetailRow label={t("pages.secrets.fields.description")}>
@@ -4627,6 +4646,7 @@ function UserSecretCoverageTab({
   companyId: string;
   definitionId: string;
 }) {
+  const { t } = useTranslation();
   const coverageQuery = useQuery({
     queryKey: queryKeys.secrets.userDefinitionCoverage(companyId, definitionId),
     queryFn: () => secretsApi.userSecretDefinitionCoverage(companyId, definitionId),
@@ -4682,6 +4702,7 @@ function UserSecretCoverageTab({
 }
 
 function UserSecretUsageTab({ definition }: { definition: UserSecretDefinition }) {
+  const { t } = useTranslation();
   return (
     <div className="space-y-3 text-xs text-muted-foreground">
       <div className="rounded-md border border-border bg-muted/20 p-3">
@@ -4703,6 +4724,7 @@ function UserSecretUsageTab({ definition }: { definition: UserSecretDefinition }
 }
 
 function UserSecretAccessEventsTab() {
+  const { t } = useTranslation();
   return (
     <div className="py-6 text-center text-xs text-muted-foreground">
       {t("pages.secrets.events.userSecretDescription")}
@@ -4757,6 +4779,7 @@ function AgentAccessSection({
   companyId: string;
   reference: AgentAccessReference;
 }) {
+  const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { pushToast } = useToastActions();
   const [selectedAgentId, setSelectedAgentId] = useState("");
@@ -5023,6 +5046,7 @@ function SecretDetailsTab({
   providerConfigs: CompanySecretProviderConfig[];
   onViewUsage: () => void;
 }) {
+  const { t } = useTranslation();
   const bindingLabel = t("pages.secrets.usage.bindingCount", {
     count: secret.referenceCount ?? 0,
   });
@@ -5075,6 +5099,7 @@ function SecretDetailsTab({
 }
 
 function DetailRow({ label, children }: { label: string; children: React.ReactNode }) {
+  useTranslation();
   return (
     <div className="grid grid-cols-(--gtc-55) gap-3 py-2">
       <dt className="text-(length:--text-micro) uppercase tracking-wide text-muted-foreground">{label}</dt>
@@ -5084,7 +5109,7 @@ function DetailRow({ label, children }: { label: string; children: React.ReactNo
 }
 
 export function SecretUsageTab({ loading, bindings }: { loading: boolean; bindings: CompanySecretUsageBinding[] }) {
-  useTranslation();
+  const { t } = useTranslation();
   if (loading) {
     return <div className="py-6 text-center text-xs text-muted-foreground">{t("pages.secrets.status.loading")}</div>;
   }
@@ -5169,7 +5194,7 @@ export function SecretEventsTab({
   events: SecretAccessEvent[];
   companyId: string;
 }) {
-  useTranslation();
+  const { t } = useTranslation();
   // Resolve responsible/owner user ids to human names for user-scoped events.
   const anyUserScoped = events.some(
     (event) =>

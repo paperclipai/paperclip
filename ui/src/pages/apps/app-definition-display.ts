@@ -1,4 +1,6 @@
+import { t } from "@/i18n";
 import type { AppDefinition, ToolApplication, ToolConnection } from "@paperclipai/shared";
+import { APP_DEFINITION_COPY } from "./app-definition-copy";
 
 export type AppGalleryDisplayEntry = AppDefinition & {
   key?: string;
@@ -12,11 +14,18 @@ export function appDefinitionSlug(entry: AppGalleryDisplayEntry | null | undefin
 }
 
 export function appDefinitionName(entry: AppGalleryDisplayEntry | null | undefined): string {
-  return entry?.name ?? appDefinitionSlug(entry) ?? "App";
+  return entry?.name ?? appDefinitionSlug(entry) ?? t("pages.apps.common.app");
+}
+
+/** Translate known built-in display text without changing custom metadata or API objects. */
+export function appDefinitionText(entry: AppGalleryDisplayEntry | string | null | undefined, source: string): string {
+  const slug = typeof entry === "string" ? entry : appDefinitionSlug(entry);
+  const key = APP_DEFINITION_COPY[slug]?.[source];
+  return key ? t(key) : source;
 }
 
 export function appDefinitionDescription(entry: AppGalleryDisplayEntry | null | undefined): string {
-  return entry?.description ?? entry?.tagline ?? "";
+  return appDefinitionText(entry, entry?.description ?? entry?.tagline ?? "");
 }
 
 export function appDefinitionLogoUrl(entry: AppGalleryDisplayEntry | null | undefined): string | undefined {

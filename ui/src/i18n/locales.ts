@@ -8,7 +8,7 @@ export const DEFAULT_LOCALE = "en" as const;
 export const supportedLocales = [DEFAULT_LOCALE, "ru"] as const;
 export type SupportedLocale = (typeof supportedLocales)[number];
 
-// Register only catalogs that have complete, human-reviewed coverage. The
+// Register only catalogs with reviewed, complete message coverage. The
 // repository still contains small locale scaffolds for future contributors,
 // but exposing those files would present an almost entirely English UI as a
 // translated language.
@@ -16,7 +16,7 @@ export const localeMessages = { en, ru } as const;
 
 for (const [locale, messages] of Object.entries(localeMessages)) {
   try {
-    assertValidLocaleMessages(messages);
+    assertValidLocaleMessages(messages, en, locale);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(`Invalid ${locale} locale messages: ${message}`);

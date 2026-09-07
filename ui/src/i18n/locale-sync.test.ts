@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { i18n, LOCALE_STORAGE_KEY, resolveInitialLocale, setLocale, t } from ".";
 import en from "./locales/en.json";
 import { localeMessages, supportedLocales } from "./locales";
+import { validateLocaleMessages } from "./locale-validation";
 
 function flattenKeys(value: unknown, prefix: string[] = []): string[] {
   if (typeof value === "string") return [prefix.join(".")];
@@ -21,11 +22,9 @@ describe("locale sync", () => {
     vi.restoreAllMocks();
   });
 
-  it("keeps every supported locale in exact key parity with en.json", () => {
-    const englishKeys = flattenKeys(en).sort();
+  it("keeps semantic message coverage with locale-specific plural forms", () => {
     for (const [locale, messages] of Object.entries(localeMessages)) {
-      if (locale === "en") continue;
-      expect(flattenKeys(messages).sort(), locale).toEqual(englishKeys);
+      expect(validateLocaleMessages(messages, en, locale), locale).toEqual([]);
     }
   });
 
@@ -44,6 +43,14 @@ describe("locale sync", () => {
     expect(t("pages.timeline.runCount", { count: 5, defaultValue: "{{count}} runs" })).toBe("5 запусков");
   });
 
+  it("uses numeric counts for pipeline review actions", async () => {
+    await i18n.changeLanguage("ru");
+    for (const [count, word] of [[0, "элементов"], [1, "элемент"], [2, "элемента"], [5, "элементов"], [11, "элементов"], [21, "элемент"], [22, "элемента"], [25, "элементов"], [101, "элемент"], [1.5, "элемента"]] as const) {
+      const formattedCount = count.toLocaleString("ru");
+      expect(t("pages.pipelines.approveItems", { count, formattedCount })).toBe(`Одобрить ${formattedCount} ${word}`);
+    }
+  });
+
   it("keeps locale text when a catalog omits a CLDR plural category", async () => {
     await i18n.changeLanguage("ru");
     for (const count of [0, 1, 2, 5, 11, 21, 22, 25, 1.5]) {
@@ -51,7 +58,7 @@ describe("locale sync", () => {
     }
   });
 
-  it("exposes only locales with a completed native review", () => {
+  it("exposes only explicitly supported catalogs, not unfinished seed locales", () => {
     expect(supportedLocales).toEqual(["en", "ru"]);
     expect(Object.keys(localeMessages)).toEqual(["en", "ru"]);
   });

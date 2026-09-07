@@ -1,3 +1,5 @@
+import { t, useTranslation } from "@/i18n";
+import { Trans } from "react-i18next";
 import { Link } from "@/lib/router";
 import { AgentIcon } from "./AgentIconPicker";
 import { timeAgo } from "../lib/timeAgo";
@@ -34,6 +36,16 @@ function humanize(value: unknown): string {
   return typeof value === "string" ? value.replace(/_/g, " ") : String(value ?? "");
 }
 
+function approvalTypeLabel(type: string): string {
+  const labels: Record<string, string> = {
+    hire_agent: t("localizationActivityTail.approvalType_hire_agent"),
+    approve_ceo_strategy: t("localizationActivityTail.approvalType_approve_ceo_strategy"),
+    budget_override_required: t("localizationActivityTail.approvalType_budget_override_required"),
+    request_board_approval: t("localizationActivityTail.approvalType_request_board_approval"),
+  };
+  return labels[type] ?? humanize(type);
+}
+
 /** One verb per action. Pinned context (Tier 0) swaps a couple of verbs to
  *  emphasize that user action is needed. */
 function formatVerb(
@@ -43,85 +55,85 @@ function formatVerb(
 ): string {
   switch (action) {
     case "issue.created":
-      return "opened";
+      return t("localizationActivityTail.feed_opened");
     case "issue.updated": {
       const status = details?.status;
-      if (typeof status === "string") return `moved to ${humanize(status)}`;
+      if (typeof status === "string") return t("localizationActivityTail.feed_status", { status: t(`status.${status}`, { defaultValue: humanize(status) }) });
       const priority = details?.priority;
-      if (typeof priority === "string") return `set priority to ${humanize(priority)} on`;
-      return "updated";
+      if (typeof priority === "string") return t("localizationActivityTail.feed_priority", { priority: t(`priority.${priority}`, { defaultValue: humanize(priority) }) });
+      return t("localizationActivityTail.feed_updated");
     }
     case "issue.document_created":
-      return "wrote doc on";
+      return t("localizationActivityTail.feed_wrote_doc_on");
     case "issue.document_updated":
-      return "edited doc on";
+      return t("localizationActivityTail.feed_edited_doc_on");
     case "issue.document_deleted":
-      return "deleted doc from";
+      return t("localizationActivityTail.feed_deleted_doc_from");
     case "issue.work_product_created":
-      return "delivered work on";
+      return t("localizationActivityTail.feed_delivered_work_on");
     case "issue.work_product_updated":
-      return "updated work on";
+      return t("localizationActivityTail.feed_updated_work_on");
     case "issue.work_product_deleted":
-      return "removed work from";
+      return t("localizationActivityTail.feed_removed_work_from");
     case "issue.checked_out":
-      return "picked up";
+      return t("localizationActivityTail.feed_picked_up");
     case "issue.released":
-      return "released";
+      return t("localizationActivityTail.feed_released");
     case "issue.commented":
     case "issue.comment_added":
-      return "commented on";
+      return t("localizationActivityTail.feed_commented_on");
     case "issue.attachment_added":
-      return "attached a file to";
+      return t("localizationActivityTail.feed_attached_a_file_to");
     case "issue.attachment_removed":
-      return "removed attachment from";
+      return t("localizationActivityTail.feed_removed_attachment_from");
     case "issue.deleted":
-      return "deleted";
+      return t("localizationActivityTail.feed_deleted");
 
     case "approval.created":
-      return context === "pinned" ? "needs approval on" : "requested approval on";
+      return context === "pinned" ? t("localizationActivityTail.feed_needs_approval_on") : t("localizationActivityTail.feed_requested_approval_on");
     case "approval.approved":
-      return "approved";
+      return t("localizationActivityTail.feed_approved");
     case "approval.rejected":
-      return "rejected";
+      return t("localizationActivityTail.feed_rejected");
     case "approval.revision_requested":
-      return "requested changes on";
+      return t("localizationActivityTail.feed_requested_changes_on");
 
     case "agent.created":
-      return context === "pinned" ? "wants to hire" : "hired";
+      return context === "pinned" ? t("localizationActivityTail.feed_wants_to_hire") : t("localizationActivityTail.feed_hired");
     case "agent.paused":
-      return "paused";
+      return t("localizationActivityTail.feed_paused");
     case "agent.resumed":
-      return "resumed";
+      return t("localizationActivityTail.feed_resumed");
     case "agent.updated":
-      return "updated";
+      return t("localizationActivityTail.feed_updated");
     case "agent.terminated":
-      return "terminated";
+      return t("localizationActivityTail.feed_terminated");
 
     case "heartbeat.invoked":
-      return "started a run on";
+      return t("localizationActivityTail.feed_started_a_run_on");
     case "heartbeat.cancelled":
-      return "cancelled a run on";
+      return t("localizationActivityTail.feed_cancelled_a_run_on");
 
     case "project.created":
-      return "created project";
+      return t("localizationActivityTail.feed_created_project");
     case "project.updated":
-      return "updated project";
+      return t("localizationActivityTail.feed_updated_project");
     case "project.deleted":
-      return "deleted project";
+      return t("localizationActivityTail.feed_deleted_project");
     case "goal.created":
-      return "created goal";
+      return t("localizationActivityTail.feed_created_goal");
     case "goal.updated":
-      return "updated goal";
+      return t("localizationActivityTail.feed_updated_goal");
     case "goal.deleted":
-      return "deleted goal";
+      return t("localizationActivityTail.feed_deleted_goal");
     case "company.created":
-      return "created organization";
+      return t("localizationActivityTail.feed_created_organization");
     case "company.updated":
-      return "updated organization";
+      return t("localizationActivityTail.feed_updated_organization");
     case "company.archived":
-      return "archived organization";
+      return t("localizationActivityTail.feed_archived_organization");
     case "company.budget_updated":
-      return "updated organization budget";
+      return t("localizationActivityTail.feed_updated_organization_budget");
 
     default:
       return action.replace(/[._]/g, " ");
@@ -293,10 +305,10 @@ function resolveContent(
   const actorName =
     actor?.name ??
     (event.actorType === "system"
-      ? "System"
+      ? t("localizationActivityTail.system")
       : event.actorType === "user"
-        ? "Board"
-        : event.actorId || "Unknown");
+        ? t("localizationActivityTail.board")
+        : event.actorId || t("localizationActivityTail.unknown"));
 
   const entityTitle = entityTitleMap?.get(`${event.entityType}:${event.entityId}`) ?? null;
 
@@ -351,7 +363,7 @@ function resolveContent(
     if (approvalAgentName) {
       identifier = approvalAgentName;
     } else {
-      identifier = approvalType ? humanize(approvalType) : "approval";
+      identifier = approvalType ? approvalTypeLabel(approvalType) : t("localizationActivityTail.approval");
       identifierMono = false;
     }
     title = entityTitle;
@@ -410,7 +422,7 @@ interface FeedCardProps {
    *  timestamp retain their color; leading icon retains its color. */
   isMuted?: boolean;
   /** Tier 0 treatment: adds a trailing "Review →" affordance and swaps in
-   *  pinned-context verb phrasing ("needs approval on", "wants to hire"). */
+   *  pinned-context verb phrasing (t("localizationActivityTail.feed_needs_approval_on"), t("localizationActivityTail.feed_wants_to_hire")). */
   isPinned?: boolean;
   className?: string;
 }
@@ -425,6 +437,7 @@ export function FeedCard({
   isPinned = false,
   className,
 }: FeedCardProps) {
+  const { t } = useTranslation();
   const details = event.details as Record<string, unknown> | null;
   const content = resolveContent(event, agentMap, entityNameMap, entityTitleMap);
   const verb = formatVerb(event.action, details, isPinned ? "pinned" : "chronological");
@@ -446,29 +459,35 @@ export function FeedCard({
       <EntityIcon spec={iconSpec} />
       <ActorGlyph content={content} />
       <span className="flex min-w-0 flex-1 items-baseline gap-1 truncate">
-        <span data-fc="actor" className={cn("font-medium", mutedTextBase, mutedTextHover)}>
-          {content.actorName}
-        </span>
-        <span data-fc="verb" className={mutedTextBase}>{verb}</span>
-        {content.identifier && (
-          <span
-            data-fc="id"
-            className={cn(content.identifierMono && "font-mono", mutedTextBase, mutedTextHover)}
-          >
-            {content.identifier}
-          </span>
-        )}
-        {content.title && (
-          <span
-            data-fc="title"
-            className={cn("truncate", mutedTextBase, mutedTextHover)}
-          >
-            {content.title}
-          </span>
-        )}
+        <Trans
+          i18nKey={content.identifier || content.title ? "localizationActivityTail.feedSentence" : "localizationActivityTail.feedSentenceWithoutEntity"}
+          values={{ actor: content.actorName, verb }}
+          components={{
+            actor: <span data-fc="actor" className={cn("font-medium", mutedTextBase, mutedTextHover)} />,
+            verb: <span data-fc="verb" className={mutedTextBase} />,
+            entity: <span className="inline-flex min-w-0 items-baseline gap-1 truncate">
+              {content.identifier && (
+                <span
+                  data-fc="id"
+                  className={cn(content.identifierMono && "font-mono", mutedTextBase, mutedTextHover)}
+                >
+                  {content.identifier}
+                </span>
+              )}
+              {content.title && (
+                <span
+                  data-fc="title"
+                  className={cn("truncate", mutedTextBase, mutedTextHover)}
+                >
+                  {content.title}
+                </span>
+              )}
+            </span>,
+          }}
+        />
       </span>
       {isPinned && (
-        <span className="shrink-0 text-xs text-muted-foreground">Review →</span>
+        <span className="shrink-0 text-xs text-muted-foreground">{t("localizationActivityTail.review")}</span>
       )}
       <span data-fc="time" className="shrink-0 text-muted-foreground">
         {timeAgo(event.createdAt)}

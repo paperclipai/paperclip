@@ -1,8 +1,10 @@
+import { useTranslation } from "@/i18n";
+import { Trans } from "react-i18next";
 import { Clock, RotateCcw, AlertCircle, Loader2, CheckCircle2 } from "lucide-react";
 import { Link } from "@/lib/router";
 import { Button } from "@/components/ui/button";
 import { cn, formatDateTime } from "@/lib/utils";
-import { formatMonitorOffset } from "@/lib/issue-monitor";
+import { formatMonitorOffset, formatMonitorOffsetDisplay } from "@/lib/issue-monitor";
 import { formatRetryReason } from "@/lib/runRetryState";
 import type { IssueScheduledRetry } from "@paperclipai/shared";
 import { useRetryNowMutation, type RetryNowError } from "../hooks/useRetryNowMutation";
@@ -27,6 +29,7 @@ export function IssueScheduledRetryCard({
   issueId,
   scheduledRetry,
 }: IssueScheduledRetryCardProps) {
+  const { t } = useTranslation();
   const retryNow = useRetryNowMutation(issueId);
 
   if (!scheduledRetry || !issueId) return null;
@@ -48,21 +51,16 @@ export function IssueScheduledRetryCard({
       ? scheduledRetry.scheduledRetryAttempt
       : null;
 
-  const badgeLabel = continuation ? "Continuation scheduled" : "Retry scheduled";
-  const titleAction = continuation ? "Automatic continuation" : "Automatic retry";
-  let titleSuffix: string;
-  if (relative === "now") {
-    titleSuffix = "due now";
-  } else if (relative) {
-    titleSuffix = relative;
-  } else {
-    titleSuffix = "pending schedule";
-  }
-  const title = `${titleAction} ${titleSuffix}`;
+  const badgeLabel = continuation ? t("localizationIssuePanels.ui_Continuation_scheduled_gvik1x") : t("localizationIssuePanels.ui_Retry_scheduled_1bpbz02");
+  const title = relative === "now"
+    ? t(continuation ? "localizationIssuePanels.continuationDue" : "localizationIssuePanels.retryDue")
+    : relative && dueAtIso
+      ? t(continuation ? "localizationIssuePanels.continuationAt" : "localizationIssuePanels.retryAt", { time: formatMonitorOffsetDisplay(dueAtIso) })
+      : t(continuation ? "localizationIssuePanels.continuationPending" : "localizationIssuePanels.retryPending");
 
   const helperIdle = continuation
-    ? "Pulls continuation forward immediately"
-    : "Pulls retry forward immediately";
+    ? t("localizationIssuePanels.ui_Pulls_continuation_forward_immediately_1yk2qpp")
+    : t("localizationIssuePanels.ui_Pulls_retry_forward_immediately_gc4fau");
   const isError = retryNow.isError || retryNow.lastError !== null;
   const isSuccessTransient = retryNow.isSuccess
     && (retryNow.data?.outcome === "promoted" || retryNow.data?.outcome === "already_promoted");
@@ -80,7 +78,7 @@ export function IssueScheduledRetryCard({
               {badgeLabel}
             </Badge>
             {attempt !== null ? (
-              <span className="text-muted-foreground">Attempt {attempt}</span>
+              <span className="text-muted-foreground">{t("localizationIssuePanels.retryAttempt", { attempt })}</span>
             ) : null}
             {reason ? (
               <span className="text-muted-foreground">{reason}</span>
@@ -93,20 +91,14 @@ export function IssueScheduledRetryCard({
               {absolute && scheduledRetry.retryOfRunId ? <span>{" · "}</span> : null}
               {scheduledRetry.retryOfRunId ? (
                 <span>
-                  Replaces run{" "}
-                  <Link
-                    to={`/agents/${scheduledRetry.agentId}/runs/${scheduledRetry.retryOfRunId}`}
-                    className="font-mono text-foreground hover:underline"
-                  >
-                    {shortRunId(scheduledRetry.retryOfRunId)}
-                  </Link>
+                  <Trans i18nKey="localizationIssuePanels.retryReplaces" values={{ run: shortRunId(scheduledRetry.retryOfRunId) }} components={{ run: <Link to={`/agents/${scheduledRetry.agentId}/runs/${scheduledRetry.retryOfRunId}`} className="font-mono text-foreground hover:underline" /> }} />
                 </span>
               ) : null}
             </div>
           ) : null}
           {scheduledRetry.error ? (
             <div className="mt-1 text-xs text-muted-foreground">
-              Last attempt failed: {scheduledRetry.error}. Paperclip will retry automatically.
+              {t("localizationIssuePanels.retryFailure", { error: scheduledRetry.error })}
             </div>
           ) : null}
           {isError ? (
@@ -132,27 +124,27 @@ export function IssueScheduledRetryCard({
             {retryNow.isPending ? (
               <span className="inline-flex items-center gap-1.5">
                 <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
-                Retrying…
+                {t("localizationIssuePanels.ui_Retrying_1sds29f")}
               </span>
             ) : isSuccessTransient ? (
               <span className="inline-flex items-center gap-1.5">
                 <CheckCircle2 className="h-3.5 w-3.5" aria-hidden="true" />
-                {retryNow.data?.outcome === "already_promoted" ? "Already promoted" : "Promoted"}
+                {retryNow.data?.outcome === "already_promoted" ? t("localizationIssuePanels.ui_Already_promoted_56whj1") : t("localizationIssuePanels.ui_Promoted_12xvnn1")}
               </span>
             ) : (
               <span className="inline-flex items-center gap-1.5">
                 <RotateCcw className="h-3.5 w-3.5" aria-hidden="true" />
-                Retry now
+                {t("localizationIssuePanels.ui_Retry_now_8qevat")}
               </span>
             )}
           </Button>
           <span className="text-right text-xs text-muted-foreground sm:max-w-(--sz-12rem)">
             {retryNow.isPending
-              ? "Promoting scheduled retry"
+              ? t("localizationIssuePanels.ui_Promoting_scheduled_retry_hbvsl5")
               : isSuccessTransient
                 ? retryNow.data?.outcome === "already_promoted"
-                  ? "Already promoted — run starting"
-                  : "Promoted — run starting"
+                  ? t("localizationIssuePanels.ui_Already_promoted_run_starting_3f7rz4")
+                  : t("localizationIssuePanels.ui_Promoted_run_starting_1erkff4")
                 : helperIdle}
           </span>
         </div>
@@ -168,6 +160,7 @@ interface RetryErrorBandProps {
 }
 
 export function RetryErrorBand({ error, onRetry, className }: RetryErrorBandProps) {
+  const { t } = useTranslation();
   if (!error) return null;
   return (
     <div
@@ -180,7 +173,7 @@ export function RetryErrorBand({ error, onRetry, className }: RetryErrorBandProp
     >
       <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
       <div className="min-w-0 flex-1">
-        <div className="font-medium">Couldn't retry now</div>
+        <div className="font-medium">{t("localizationIssuePanels.ui_Couldn_t_retry_now_1xl5mux")}</div>
         <div className="mt-0.5 text-muted-foreground">{error.message}</div>
       </div>
       <button
@@ -188,7 +181,7 @@ export function RetryErrorBand({ error, onRetry, className }: RetryErrorBandProp
         onClick={onRetry}
         className="shrink-0 font-medium text-rose-700 hover:underline dark:text-rose-300"
       >
-        Try again
+        {t("localizationIssuePanels.ui_Try_again_982hh6")}
       </button>
     </div>
   );
