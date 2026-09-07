@@ -62,6 +62,43 @@ same `paperclip.native-execution-input.v3` contract as production, including
 the AgentCore HarnessSkill upload path, without borrowing any browser E2E
 setup.
 
+The direct CLI resolves native Codex from the pinned Codex ACP dependency, as
+the browser E2E launcher does; no globally installed `codex` is required.
+Its isolated fixture sessions explicitly use unattended ACPX `approve-all`
+permissions, matching the full-stack ACPX test profiles. OpenCode retains its
+existing semantic-only permission boundary.
+The seeded mock control plane still enforces tool grants, company boundaries,
+and governance checks. These test-only choices do not change production
+permission defaults and are not a qualification of interactive approval UI.
+
+AgentCore eval admission waits up to 125 seconds, capped by the configured
+whole-turn timeout. Its network worker already allows 120 seconds for cold
+invocation delivery; the generic 30-second facade wait must not cut that
+delivery short during parallel fleet startup. Other providers retain their
+existing admission timeout.
+
+The runtime instructions distinguish the fixture's `finish_task`/`block_task`
+state changes from native `paperclip_finish`/`paperclip_block` run-result
+reporting. This layer has no production server to apply a reported run result
+to a task. Its completion cases still require the actual semantic operation
+and durable mock-state change; reporting success alone does not pass them.
+The current turn request defines the requested work. Shared seed descriptions,
+old eval notes, or past accepted interactions are background state, not a
+replacement objective or proof that a newly requested action is already done.
+Finishing the provider turn does not authorize an unrequested mock task-state
+change or completion comment. These harness instructions keep single-operation
+cases bounded while leaving their operation and state-effect assertions intact.
+
+ACPX accounting uses the qualified server's billable token semantics: Claude
+and Codex already include reasoning in output, and Codex has no cache-write
+billing category. Other missing categories remain unknown. ACPX stores Codex's
+terminal prompt-response usage without streaming it, so the sidecar forwards
+the single newly persisted receipt bound to that exact turn before its terminal
+event. It never substitutes a previous turn's receipt or context occupancy for
+billable usage. These receipt corrections also apply to non-eval ACPX sessions.
+The durable redactor preserves these known numeric token-counter fields;
+string/object values under the same names remain redacted as sensitive data.
+
 `all` means the maintained enabled campaign, not every matching file in the
 roster directory. A missing campaign file fails closed. Within an enabled
 lane, a missing remote profile or unavailable provider is retained as an

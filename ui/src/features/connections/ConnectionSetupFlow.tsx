@@ -1845,14 +1845,12 @@ export function ConnectionSetupFlow({
       : linkAuthMode === "oauth"
         ? "oauth"
         : "api_key";
-  // The primary label names the next effect, so an OAuth handoff never arrives
-  // unannounced.
-  const accessMethodIsKnown = !entry
-    || Boolean(connectionMethodKey)
-    || credentialSourceMethods.length === 1;
-  const accessSubmitLabel = accessStepAuthKind === "oauth" && accessMethodIsKnown
+  // Name the actual next effect: multi-method apps and enrollment still have
+  // a local setup screen, even when OAuth is already the selected method.
+  const accessContinuesToProvider = Boolean(directOAuthEntry);
+  const accessSubmitLabel = accessContinuesToProvider
     ? entry ? t("localizationConnections.continueApp", { app: entry.name }) : t("localizationConnections.continueToSignInFallback")
-    : t("localizationConnections.saveAndContinue56");
+    : accessStepAuthKind === "oauth" ? t("localizationConnections.continue64") : t("localizationConnections.saveAndContinue56");
 
   const stepIndex = (zapierSource || entry) && step !== "gallery" && step !== "success"
     ? SELECTED_APP_STEP_INDEX[step]
@@ -2105,6 +2103,7 @@ export function ConnectionSetupFlow({
           capabilities={galleryQuery.data?.capabilities}
           githubIdentity={entry?.slug === "github"}
           submitLabel={accessSubmitLabel}
+          continuesToProvider={accessContinuesToProvider}
           identityLoading={Boolean(automaticOAuthEntry) && directOAuthLookupPending}
           preserveAgentAccess={Boolean(automaticOAuthEntry && (resumableOAuthConnection || reconnectConnection))}
           pending={connectMutation.isPending || oauthStartMutation.isPending}
@@ -3511,6 +3510,7 @@ export function AccessStep({
   capabilities,
   githubIdentity = false,
   submitLabel,
+  continuesToProvider = false,
   identityLoading = false,
   preserveAgentAccess = false,
   pending = false,
@@ -3535,6 +3535,8 @@ export function AccessStep({
   } | null;
   githubIdentity?: boolean;
   submitLabel: string;
+  /** Only show an external-handoff cue when this action starts provider OAuth. */
+  continuesToProvider?: boolean;
   /** Wait for a durable OAuth connection before showing a reconnect identity. */
   identityLoading?: boolean;
   /** Reconnect changes credentials only; existing install reach stays intact. */
@@ -3766,7 +3768,7 @@ export function AccessStep({
         >
           {pending ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : null}
           {submitLabel}
-          {!pending && authKind === "oauth" ? <ArrowUpRight className="h-4 w-4" aria-hidden="true" /> : null}
+          {!pending && continuesToProvider ? <ArrowUpRight className="h-4 w-4" aria-hidden="true" /> : null}
         </Button>
       </div>
     </div>

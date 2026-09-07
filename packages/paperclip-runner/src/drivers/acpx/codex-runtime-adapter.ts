@@ -1148,6 +1148,9 @@ async function persistedRuntimeStatus(
     acpxRecordId: record.acpxRecordId,
     backendSessionId: record.acpSessionId,
     agentSessionId: persistedAgentSessionId,
+    lastRequestId: record.lastRequestId,
+    requestTokenUsage: structuredClone(record.request_token_usage ?? {}),
+    usageCost: structuredClone(record.cumulative_cost),
     ...(currentModelId === undefined && !availableModelIds?.length
       ? {}
       : {

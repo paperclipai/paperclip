@@ -1135,6 +1135,12 @@ fn sensitive_key(key: &str, value: &Value) -> bool {
             | "outputtokens"
             | "cachereadtokens"
             | "cachewritetokens"
+            // The qualified ACPX sidecar uses these numeric billing aliases.
+            // Strings under the same names remain credentials, not counters.
+            | "cachedreadtokens"
+            | "cachedwritetokens"
+            | "thoughttokens"
+            | "totaltokens"
             | "pretokens"
             | "posttokens"
     ) {
@@ -1825,6 +1831,24 @@ mod tests {
             sanitize_value(&json!({"inputTokens": "plain-provider-secret"})),
             json!({"inputTokens": "[REDACTED]"})
         );
+        for key in [
+            "cachedReadTokens",
+            "cachedWriteTokens",
+            "thoughtTokens",
+            "totalTokens",
+        ] {
+            assert_eq!(sanitize_value(&json!({key: 12})), json!({key: 12}));
+            for value in [
+                json!("plain-provider-secret"),
+                json!({"value":"secret"}),
+                json!(["secret"]),
+            ] {
+                assert_eq!(
+                    sanitize_value(&json!({key: value})),
+                    json!({key: "[REDACTED]"})
+                );
+            }
+        }
     }
 
     #[test]

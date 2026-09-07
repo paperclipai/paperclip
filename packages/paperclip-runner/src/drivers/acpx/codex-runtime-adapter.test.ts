@@ -206,6 +206,9 @@ describe("Codex ACPX runtime adapter", () => {
       acpxRecordId: "record-1",
       acpSessionId: "backend-1",
       agentSessionId: "agent-1",
+      lastRequestId: "run:turn-1",
+      request_token_usage: { prompt: { input_tokens: 12, output_tokens: 30 } },
+      cumulative_cost: { amount: 0.1, currency: "USD" },
       acpx: {
         current_model_id: "gpt-5.6-sol",
         available_models: ["gpt-5.6-sol"],
@@ -225,6 +228,9 @@ describe("Codex ACPX runtime adapter", () => {
       acpxRecordId: "record-1",
       backendSessionId: "backend-1",
       agentSessionId: "agent-1",
+      lastRequestId: "run:turn-1",
+      requestTokenUsage: { prompt: { input_tokens: 12, output_tokens: 30 } },
+      usageCost: { amount: 0.1, currency: "USD" },
       models: {
         currentModelId: "gpt-5.6-sol",
         availableModelIds: ["gpt-5.6-sol"],
