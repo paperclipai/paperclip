@@ -12,3 +12,13 @@ packages:
   - server
   - ui
   - cli
+
+# Keep in sync with package.json#pnpm.patchedDependencies. Newer pnpm
+# versions read patch configuration only from the workspace manifest.
+patchedDependencies:
+  embedded-postgres@18.1.0-beta.16: patches/embedded-postgres@18.1.0-beta.16.patch
+  acpx@0.12.0: patches/acpx@0.12.0.patch
+  acpx@0.13.1: patches/acpx@0.13.1.patch
+  "@agentclientprotocol/claude-agent-acp@0.70.0": patches/@agentclientprotocol__claude-agent-acp@0.70.0.patch
+  "@agentclientprotocol/claude-agent-acp@0.73.0": patches/@agentclientprotocol__claude-agent-acp@0.73.0.patch
+  "@agentclientprotocol/codex-acp@1.6.2": patches/@agentclientprotocol__codex-acp@1.6.2.patch

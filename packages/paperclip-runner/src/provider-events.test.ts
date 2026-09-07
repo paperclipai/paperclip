@@ -11,64 +11,196 @@ import {
 } from "./provider-events.js";
 import { validatePrpEvent } from "./protocol/replay-contract.js";
 
-function envelope(event: ReturnType<typeof canonicalProviderEventsFromCodex>[number]) {
+function envelope(
+  event: ReturnType<typeof canonicalProviderEventsFromCodex>[number],
+) {
   return {
-    schema: "paperclip.prp.event.v1", sourceEventId: `source:${event.itemId}`, sourceSeq: 1,
-    sourceInstanceId: "runner-1", sourceKind: "runner", runId: "run-1",
-    normalizedSessionId: "session-1", turnId: "turn-1", itemId: event.itemId,
-    eventType: event.eventType, schemaVersion: 1, priority: 1,
-    emittedAt: "2026-08-21T12:00:00.000Z", payload: event.payload,
+    schema: "paperclip.prp.event.v1",
+    sourceEventId: `source:${event.itemId}`,
+    sourceSeq: 1,
+    sourceInstanceId: "runner-1",
+    sourceKind: "runner",
+    runId: "run-1",
+    normalizedSessionId: "session-1",
+    turnId: "turn-1",
+    itemId: event.itemId,
+    eventType: event.eventType,
+    schemaVersion: 1,
+    priority: 1,
+    emittedAt: "2026-08-21T12:00:00.000Z",
+    payload: event.payload,
   };
 }
 
 describe("provider-neutral events", () => {
   it("classifies the complete qualified 18-variant Codex ThreadItem inventory", () => {
     expect(Object.keys(CODEX_THREAD_ITEM_CLASSIFICATION)).toEqual([
-      "userMessage", "hookPrompt", "agentMessage", "plan", "reasoning",
-      "commandExecution", "fileChange", "mcpToolCall", "dynamicToolCall",
-      "collabAgentToolCall", "subAgentActivity", "webSearch", "imageView",
-      "sleep", "imageGeneration", "enteredReviewMode", "exitedReviewMode",
+      "userMessage",
+      "hookPrompt",
+      "agentMessage",
+      "plan",
+      "reasoning",
+      "commandExecution",
+      "fileChange",
+      "mcpToolCall",
+      "dynamicToolCall",
+      "collabAgentToolCall",
+      "subAgentActivity",
+      "webSearch",
+      "imageView",
+      "sleep",
+      "imageGeneration",
+      "enteredReviewMode",
+      "exitedReviewMode",
       "contextCompaction",
     ]);
-    expect(Object.values(CODEX_THREAD_ITEM_CLASSIFICATION)).not.toContain("unclassified");
+    expect(Object.values(CODEX_THREAD_ITEM_CLASSIFICATION)).not.toContain(
+      "unclassified",
+    );
     expect(CODEX_THREAD_ITEM_CLASSIFICATION.plan).toBe("existing_transcript");
   });
 
   it("negotiates every declared family and preserves explicit unsupported states", () => {
-    const capabilities = providerFamilyCapabilities({ plan: "available", artifact: "policy_disabled" });
+    const capabilities = providerFamilyCapabilities({
+      plan: "available",
+      artifact: "policy_disabled",
+    });
     expect(capabilities).toHaveLength(PROVIDER_EVENT_FAMILIES.length);
-    expect(capabilities.find((entry) => entry.family === "plan")?.detailLevel).toBe("structured");
-    expect(capabilities.find((entry) => entry.family === "artifact")?.availability).toBe("policy_disabled");
-    expect(capabilities.find((entry) => entry.family === "memory")?.availability).toBe("unsupported");
+    expect(
+      capabilities.find((entry) => entry.family === "plan")?.detailLevel,
+    ).toBe("structured");
+    expect(
+      capabilities.find((entry) => entry.family === "artifact")?.availability,
+    ).toBe("policy_disabled");
+    expect(
+      capabilities.find((entry) => entry.family === "memory")?.availability,
+    ).toBe("unsupported");
   });
 
   it("maps representative Codex variants across every canonical family to valid PRP", () => {
     const cases: Array<[string, Record<string, unknown>]> = [
-      ["turn/plan/updated", { turnId: "turn-1", plan: [{ step: "Ship it", status: "inProgress" }] }],
-      ["item/completed", { item: { id: "exec-1", type: "commandExecution", status: "completed", output: "ok" } }],
-      ["item/completed", { item: { id: "web-1", type: "webSearch", action: { type: "search", query: "PRP" }, results: [{ ref_id: "source-1", title: "Protocol notes", url: "https://example.com/prp", snippet: "Canonical event details" }] } }],
-      ["item/completed", { item: { id: "child-1", type: "collabAgentToolCall", tool: "spawnAgent" } }],
-      ["model/rerouted", { turnId: "turn-1", fromModel: "gpt-5", toModel: "gpt-5.1", reason: "capacity" }],
+      [
+        "turn/plan/updated",
+        { turnId: "turn-1", plan: [{ step: "Ship it", status: "inProgress" }] },
+      ],
+      [
+        "item/completed",
+        {
+          item: {
+            id: "exec-1",
+            type: "commandExecution",
+            status: "completed",
+            output: "ok",
+          },
+        },
+      ],
+      [
+        "item/completed",
+        {
+          item: {
+            id: "web-1",
+            type: "webSearch",
+            action: { type: "search", query: "PRP" },
+            results: [
+              {
+                ref_id: "source-1",
+                title: "Protocol notes",
+                url: "https://example.com/prp",
+                snippet: "Canonical event details",
+              },
+            ],
+          },
+        },
+      ],
+      [
+        "item/completed",
+        {
+          item: {
+            id: "child-1",
+            type: "collabAgentToolCall",
+            tool: "spawnAgent",
+          },
+        },
+      ],
+      [
+        "model/rerouted",
+        {
+          turnId: "turn-1",
+          fromModel: "gpt-5",
+          toModel: "gpt-5.1",
+          reason: "capacity",
+        },
+      ],
       ["thread/compacted", { itemId: "compact-1" }],
-      ["item/completed", { item: { id: "image-1", type: "imageView", path: "artifacts/a.png" } }],
-      ["item/completed", { item: { id: "review-1", type: "enteredReviewMode" } }],
-      ["hook/completed", { run: { id: "hook-1", eventName: "post-tool", scope: "workspace", status: "completed" } }],
-      ["item/completed", { item: { id: "message-1", type: "agentMessage", memoryCitation: { entries: [{ label: "Decision" }] } } }],
-      ["item/autoApprovalReview/completed", { reviewId: "safety-1", targetItemId: "exec-1" }],
-      ["item/commandExecution/terminalInteraction", { itemId: "exec-1", stdin: "secret input" }],
-      ["item/completed", { item: { id: "wait-1", type: "sleep", durationMs: 1000 } }],
+      [
+        "item/completed",
+        { item: { id: "image-1", type: "imageView", path: "artifacts/a.png" } },
+      ],
+      [
+        "item/completed",
+        { item: { id: "review-1", type: "enteredReviewMode" } },
+      ],
+      [
+        "hook/completed",
+        {
+          run: {
+            id: "hook-1",
+            eventName: "post-tool",
+            scope: "workspace",
+            status: "completed",
+          },
+        },
+      ],
+      [
+        "item/completed",
+        {
+          item: {
+            id: "message-1",
+            type: "agentMessage",
+            memoryCitation: { entries: [{ label: "Decision" }] },
+          },
+        },
+      ],
+      [
+        "item/autoApprovalReview/completed",
+        { reviewId: "safety-1", targetItemId: "exec-1" },
+      ],
+      [
+        "item/commandExecution/terminalInteraction",
+        { itemId: "exec-1", stdin: "secret input" },
+      ],
+      [
+        "item/completed",
+        { item: { id: "wait-1", type: "sleep", durationMs: 1000 } },
+      ],
       ["warning", { message: "Update the provider configuration" }],
     ];
-    const mapped = cases.flatMap(([method, params]) => canonicalProviderEventsFromCodex(method, params));
+    const mapped = cases.flatMap(([method, params]) =>
+      canonicalProviderEventsFromCodex(method, params),
+    );
     expect(mapped).toHaveLength(cases.length);
-    for (const event of mapped) expect(validatePrpEvent(envelope(event))).toEqual({ ok: true, event: expect.any(Object), issues: [] });
-    expect(JSON.stringify(mapped.find((entry) => entry.eventType === "terminal.input.sent"))).not.toContain("secret input");
-    expect(mapped.find((entry) => entry.eventType === "research.completed")?.payload.sources).toEqual([{
-      sourceId: "source-1",
-      title: "Protocol notes",
-      url: "https://example.com/prp",
-      snippet: "Canonical event details",
-    }]);
+    for (const event of mapped)
+      expect(validatePrpEvent(envelope(event))).toEqual({
+        ok: true,
+        event: expect.any(Object),
+        issues: [],
+      });
+    expect(
+      JSON.stringify(
+        mapped.find((entry) => entry.eventType === "terminal.input.sent"),
+      ),
+    ).not.toContain("secret input");
+    expect(
+      mapped.find((entry) => entry.eventType === "research.completed")?.payload
+        .sources,
+    ).toEqual([
+      {
+        sourceId: "source-1",
+        title: "Protocol notes",
+        url: "https://example.com/prp",
+        snippet: "Canonical event details",
+      },
+    ]);
   });
 
   it("bounds and filters Codex research sources before they enter PRP", () => {
@@ -77,13 +209,28 @@ describe("provider-neutral events", () => {
         id: "web-1",
         type: "webSearch",
         results: [
-          { ref_id: "good", title: "Good", url: "https://example.com/good", snippet: "x".repeat(5000) },
+          {
+            ref_id: "good",
+            title: "Good",
+            url: "https://example.com/good",
+            snippet: "x".repeat(5000),
+          },
           { ref_id: "unsafe", title: "Unsafe", url: "file:///etc/passwd" },
         ],
       },
     })[0]!;
-    expect(event.payload.sources).toEqual([expect.objectContaining({ sourceId: "good", url: "https://example.com/good", snippet: "x".repeat(4000) })]);
-    expect(validatePrpEvent(envelope(event))).toEqual({ ok: true, event: expect.any(Object), issues: [] });
+    expect(event.payload.sources).toEqual([
+      expect.objectContaining({
+        sourceId: "good",
+        url: "https://example.com/good",
+        snippet: "x".repeat(4000),
+      }),
+    ]);
+    expect(validatePrpEvent(envelope(event))).toEqual({
+      ok: true,
+      event: expect.any(Object),
+      issues: [],
+    });
   });
 
   it("bounds Codex plan explanations before they enter PRP", () => {
@@ -93,7 +240,11 @@ describe("provider-neutral events", () => {
       plan: [{ step: "Ship it", status: "inProgress" }],
     })[0]!;
     expect(event.payload.explanation).toBe("x".repeat(4000));
-    expect(validatePrpEvent(envelope(event))).toEqual({ ok: true, event: expect.any(Object), issues: [] });
+    expect(validatePrpEvent(envelope(event))).toEqual({
+      ok: true,
+      event: expect.any(Object),
+      issues: [],
+    });
   });
 
   it("normalizes malformed or non-positive Codex plan revisions", () => {
@@ -110,11 +261,13 @@ describe("provider-neutral events", () => {
         issues: [],
       });
     }
-    expect(canonicalProviderEventsFromCodex("turn/plan/updated", {
-      turnId: "turn-revision",
-      revision: 7,
-      plan: [],
-    })[0]?.payload.revision).toBe(7);
+    expect(
+      canonicalProviderEventsFromCodex("turn/plan/updated", {
+        turnId: "turn-revision",
+        revision: 7,
+        plan: [],
+      })[0]?.payload.revision,
+    ).toBe(7);
   });
 
   it("marks a turn plan complete when every native step is complete", () => {
@@ -138,9 +291,15 @@ describe("provider-neutral events", () => {
   });
 
   it("treats Codex proposed-plan text as transcript content, not a checklist", () => {
-    expect(canonicalProviderEventsFromCodex("item/completed", {
-      item: { id: "proposed-plan-1", type: "plan", text: "# Proposed implementation\n\nShip it." },
-    })).toEqual([]);
+    expect(
+      canonicalProviderEventsFromCodex("item/completed", {
+        item: {
+          id: "proposed-plan-1",
+          type: "plan",
+          text: "# Proposed implementation\n\nShip it.",
+        },
+      }),
+    ).toEqual([]);
   });
 
   it("uses an empty native plan as a stable clearing snapshot", () => {
@@ -173,15 +332,19 @@ describe("provider-neutral events", () => {
   });
 
   it("preserves every structured ACPX plan entry in a stable turn snapshot", () => {
-    const event = canonicalProviderEventsFromAcpxRuntimeEvent({
-      type: "plan",
-      tag: "plan",
-      entries: [
-        { content: "Inspect", status: "completed", priority: "high" },
-        { content: "Implement", status: "in_progress", priority: "medium" },
-        { content: "Verify", status: "pending", priority: "low" },
-      ],
-    } as never, "fallback", "turn-acp")[0]!;
+    const event = canonicalProviderEventsFromAcpxRuntimeEvent(
+      {
+        type: "plan",
+        tag: "plan",
+        entries: [
+          { content: "Inspect", status: "completed", priority: "high" },
+          { content: "Implement", status: "in_progress", priority: "medium" },
+          { content: "Verify", status: "pending", priority: "low" },
+        ],
+      } as never,
+      "fallback",
+      "turn-acp",
+    )[0]!;
 
     expect(event).toMatchObject({
       itemId: "turn-acp",
@@ -197,16 +360,26 @@ describe("provider-neutral events", () => {
         ],
       },
     });
-    expect(validatePrpEvent(envelope(event))).toEqual({ ok: true, event: expect.any(Object), issues: [] });
+    expect(validatePrpEvent(envelope(event))).toEqual({
+      ok: true,
+      event: expect.any(Object),
+      issues: [],
+    });
   });
 
   it("does not infer an ACPX checklist from legacy status text", () => {
-    const events = canonicalProviderEventsFromAcpxRuntimeEvent({
-      type: "status",
-      tag: "plan",
-      text: "Implement (in progress)",
-    } as never, "fallback", "turn-acp");
-    expect(events.some((event) => event.eventType === "plan.updated")).toBe(false);
+    const events = canonicalProviderEventsFromAcpxRuntimeEvent(
+      {
+        type: "status",
+        tag: "plan",
+        text: "Implement (in progress)",
+      } as never,
+      "fallback",
+      "turn-acp",
+    );
+    expect(events.some((event) => event.eventType === "plan.updated")).toBe(
+      false,
+    );
   });
 
   it("bounds and sanitizes structured ACPX plan snapshots", () => {
@@ -214,20 +387,41 @@ describe("provider-neutral events", () => {
       content: index === 3 ? "   " : `Step ${index} ${"x".repeat(5_000)}`,
       status: index === 0 ? "completed" : "pending",
     }));
-    const event = canonicalProviderEventsFromAcpxRuntimeEvent({
-      type: "plan",
-      tag: "plan",
-      entries,
-    } as never, "fallback", "turn-bounded")[0]!;
+    const event = canonicalProviderEventsFromAcpxRuntimeEvent(
+      {
+        type: "plan",
+        tag: "plan",
+        entries,
+      } as never,
+      "fallback",
+      "turn-bounded",
+    )[0]!;
     const steps = event.payload.steps as Array<{ body: string }>;
     expect(steps).toHaveLength(255);
     expect(steps.every((step) => step.body.length <= 4_000)).toBe(true);
-    expect(validatePrpEvent(envelope(event))).toEqual({ ok: true, event: expect.any(Object), issues: [] });
+    expect(validatePrpEvent(envelope(event))).toEqual({
+      ok: true,
+      event: expect.any(Object),
+      issues: [],
+    });
   });
 
   it("classifies only structured OpenCode parts and never assistant prose", () => {
-    expect(canonicalProviderEventsFromOpenCodePart({ id: "tool-1", type: "tool", tool: "read", state: { status: "completed", output: "done" } })[0]?.eventType).toBe("tool.execution.completed");
-    expect(canonicalProviderEventsFromOpenCodePart({ id: "text-1", type: "text", text: "I ran a command and delegated work" })).toEqual([]);
+    expect(
+      canonicalProviderEventsFromOpenCodePart({
+        id: "tool-1",
+        type: "tool",
+        tool: "read",
+        state: { status: "completed", output: "done" },
+      })[0]?.eventType,
+    ).toBe("tool.execution.completed");
+    expect(
+      canonicalProviderEventsFromOpenCodePart({
+        id: "text-1",
+        type: "text",
+        text: "I ran a command and delegated work",
+      }),
+    ).toEqual([]);
   });
 
   it("maps OpenCode pending dynamic tools to a valid builtin execution start", () => {
@@ -247,7 +441,11 @@ describe("provider-neutral events", () => {
         name: "paperclip_report_progress",
       },
     });
-    expect(validatePrpEvent(envelope(event))).toEqual({ ok: true, event: expect.any(Object), issues: [] });
+    expect(validatePrpEvent(envelope(event))).toEqual({
+      ok: true,
+      event: expect.any(Object),
+      issues: [],
+    });
   });
 
   it("preserves ACPX identity across title-less progress and completion updates", () => {
@@ -293,7 +491,8 @@ describe("provider-neutral events", () => {
     });
 
     const mapped = [started, progressed, completed].flatMap((event, index) =>
-      canonicalProviderEventsFromAcpxRuntimeEvent(event, `fallback-${index}`));
+      canonicalProviderEventsFromAcpxRuntimeEvent(event, `fallback-${index}`),
+    );
     expect(mapped.at(-1)).toMatchObject({
       eventType: "tool.execution.completed",
       payload: {
@@ -306,47 +505,166 @@ describe("provider-neutral events", () => {
       },
     });
     for (const event of mapped) {
-      expect(validatePrpEvent(envelope(event))).toEqual({ ok: true, event: expect.any(Object), issues: [] });
+      expect(validatePrpEvent(envelope(event))).toEqual({
+        ok: true,
+        event: expect.any(Object),
+        issues: [],
+      });
     }
+  });
+
+  it("bounds ACPX lifecycle identities and metadata before retaining them", () => {
+    const normalize = createAcpxToolEventNormalizer();
+    const providerId = `provider-tool-${"x".repeat(1_000)}`;
+    const started = normalize({
+      type: "tool_call",
+      toolCallId: providerId,
+      title: "t".repeat(8_000),
+      kind: "read",
+      status: "pending",
+      text: "p".repeat(8_000),
+      locations: [{ path: "a".repeat(8_000), line: 7 }],
+    } as never);
+    const progressed = normalize({
+      type: "tool_call",
+      toolCallId: providerId,
+      title: "tool call",
+      status: "in_progress",
+    } as never);
+
+    expect(started.toolCallId).toMatch(/^acpx-tool-[a-f0-9]{64}$/);
+    expect(progressed.toolCallId).toBe(started.toolCallId);
+    expect(Buffer.byteLength(String(progressed.title))).toBeLessThanOrEqual(
+      4_000,
+    );
+    expect(Buffer.byteLength(String(progressed.text))).toBeLessThanOrEqual(
+      4_000,
+    );
+    expect(
+      Buffer.byteLength(
+        String(
+          (progressed.locations?.[0] as { path?: unknown } | undefined)?.path,
+        ),
+      ),
+    ).toBeLessThanOrEqual(4_000);
+  });
+
+  it("evicts terminal and excess ACPX tool lifecycle metadata", () => {
+    const normalize = createAcpxToolEventNormalizer();
+    normalize({
+      type: "tool_call",
+      toolCallId: "terminal-tool",
+      title: "Completed title",
+      status: "pending",
+    } as never);
+    normalize({
+      type: "tool_call",
+      toolCallId: "terminal-tool",
+      title: "tool call",
+      status: "completed",
+    } as never);
+    expect(
+      normalize({
+        type: "tool_call",
+        toolCallId: "terminal-tool",
+        title: "tool call",
+        status: "pending",
+      } as never).title,
+    ).toBeUndefined();
+
+    for (let index = 0; index <= 512; index += 1) {
+      normalize({
+        type: "tool_call",
+        toolCallId: `bounded-tool-${index}`,
+        title: `Title ${index}`,
+        status: "pending",
+      } as never);
+    }
+    expect(
+      normalize({
+        type: "tool_call",
+        toolCallId: "bounded-tool-0",
+        title: "tool call",
+        status: "in_progress",
+      } as never).title,
+    ).toBeUndefined();
   });
 
   it("treats provider status metacharacters as literal progress text", () => {
     const normalize = createAcpxToolEventNormalizer();
-    expect(() => normalize({
-      type: "tool_call",
-      tag: "tool_call",
-      toolCallId: "tool-hostile-status",
-      title: "Read",
-      kind: "read",
-      status: "[",
-      text: "Read ([)",
-    } as never)).not.toThrow();
-    expect(normalize({
-      type: "tool_call",
-      tag: "tool_call_update",
-      toolCallId: "tool-hostile-status",
-      title: "Read",
-      status: "(",
-      text: "Meaningful progress",
-    } as never)).toMatchObject({ text: "Meaningful progress" });
+    expect(() =>
+      normalize({
+        type: "tool_call",
+        tag: "tool_call",
+        toolCallId: "tool-hostile-status",
+        title: "Read",
+        kind: "read",
+        status: "[",
+        text: "Read ([)",
+      } as never),
+    ).not.toThrow();
+    expect(
+      normalize({
+        type: "tool_call",
+        tag: "tool_call_update",
+        toolCallId: "tool-hostile-status",
+        title: "Read",
+        status: "(",
+        text: "Meaningful progress",
+      } as never),
+    ).toMatchObject({ text: "Meaningful progress" });
   });
 
   it("normalizes dotted MCP names, ToolSearch, and truly unnamed calls", () => {
-    const dotted = canonicalProviderEventsFromAcpxRuntimeEvent({
-      type: "tool_call", tag: "tool_call", toolCallId: "mcp-1", title: "mcp.paperclip.get_task_context",
-      kind: "other", status: "pending", text: "Starting",
-    } as never, "fallback")[0]!;
-    const toolSearch = canonicalProviderEventsFromAcpxRuntimeEvent({
-      type: "tool_call", tag: "tool_call", toolCallId: "search-1", title: "ToolSearch",
-      kind: "other", status: "pending", text: "Starting",
-    } as never, "fallback")[0]!;
-    const unnamed = canonicalProviderEventsFromAcpxRuntimeEvent({
-      type: "tool_call", tag: "tool_call", toolCallId: "unknown-1", title: "tool call",
-      kind: "other", status: "pending", text: "tool call (pending)",
-    } as never, "fallback")[0]!;
+    const dotted = canonicalProviderEventsFromAcpxRuntimeEvent(
+      {
+        type: "tool_call",
+        tag: "tool_call",
+        toolCallId: "mcp-1",
+        title: "mcp.paperclip.get_task_context",
+        kind: "other",
+        status: "pending",
+        text: "Starting",
+      } as never,
+      "fallback",
+    )[0]!;
+    const toolSearch = canonicalProviderEventsFromAcpxRuntimeEvent(
+      {
+        type: "tool_call",
+        tag: "tool_call",
+        toolCallId: "search-1",
+        title: "ToolSearch",
+        kind: "other",
+        status: "pending",
+        text: "Starting",
+      } as never,
+      "fallback",
+    )[0]!;
+    const unnamed = canonicalProviderEventsFromAcpxRuntimeEvent(
+      {
+        type: "tool_call",
+        tag: "tool_call",
+        toolCallId: "unknown-1",
+        title: "tool call",
+        kind: "other",
+        status: "pending",
+        text: "tool call (pending)",
+      } as never,
+      "fallback",
+    )[0]!;
 
-    expect(dotted.payload).toMatchObject({ transport: "mcp", namespace: "paperclip", name: "get_task_context", operation: "read" });
-    expect(toolSearch.payload).toMatchObject({ transport: "builtin", namespace: null, name: "ToolSearch", operation: "search" });
+    expect(dotted.payload).toMatchObject({
+      transport: "mcp",
+      namespace: "paperclip",
+      name: "get_task_context",
+      operation: "read",
+    });
+    expect(toolSearch.payload).toMatchObject({
+      transport: "builtin",
+      namespace: null,
+      name: "ToolSearch",
+      operation: "search",
+    });
     expect(unnamed.payload).toMatchObject({ name: null, operation: "unknown" });
   });
 
@@ -357,8 +675,15 @@ describe("provider-neutral events", () => {
       tool: "paperclip_paperclip_finish",
       state: { status: "running", input: {} },
     })[0]!;
-    expect(event.payload).toMatchObject({ name: "paperclip_finish", transport: "builtin" });
-    expect(validatePrpEvent(envelope(event))).toEqual({ ok: true, event: expect.any(Object), issues: [] });
+    expect(event.payload).toMatchObject({
+      name: "paperclip_finish",
+      transport: "builtin",
+    });
+    expect(validatePrpEvent(envelope(event))).toEqual({
+      ok: true,
+      event: expect.any(Object),
+      issues: [],
+    });
   });
 
   it("recovers an interrupted OpenCode function label and error from its structured call id", () => {
@@ -383,7 +708,11 @@ describe("provider-neutral events", () => {
         outputBytes: 22,
       },
     });
-    expect(validatePrpEvent(envelope(event))).toEqual({ ok: true, event: expect.any(Object), issues: [] });
+    expect(validatePrpEvent(envelope(event))).toEqual({
+      ok: true,
+      event: expect.any(Object),
+      issues: [],
+    });
   });
 
   it("does not infer a tool label from an opaque provider call id", () => {
@@ -394,16 +723,23 @@ describe("provider-neutral events", () => {
       callID: "call_f3d79e",
       state: { status: "error", error: "Unavailable" },
     })[0]!;
-    expect(event.payload).toMatchObject({ name: "unknown", output: "Unavailable" });
+    expect(event.payload).toMatchObject({
+      name: "unknown",
+      output: "Unavailable",
+    });
   });
 
   it("rejects a canonical event whose payload belongs to another family", () => {
     const plan = canonicalProviderEventsFromCodex("item/completed", {
       item: { id: "plan-1", type: "plan", text: "Ship it" },
     })[0]!;
-    expect(validatePrpEvent(envelope({
-      ...plan,
-      eventType: "tool.execution.completed",
-    }))).toMatchObject({ ok: false });
+    expect(
+      validatePrpEvent(
+        envelope({
+          ...plan,
+          eventType: "tool.execution.completed",
+        }),
+      ),
+    ).toMatchObject({ ok: false });
   });
 });

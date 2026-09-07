@@ -1,0 +1,111 @@
+diff --git a/package.json b/package.json
+--- a/package.json
++++ b/package.json
+@@ -65,7 +65,7 @@
+   },
+   "dependencies": {
+     "@agentclientprotocol/sdk": "^1.3.0",
+-    "@openai/codex": "^0.148.0",
++    "@openai/codex": "0.148.0",
+     "diff": "^9.0.0",
+     "open": "^11.0.0",
+     "vscode-jsonrpc": "^9.0.1",
+diff --git a/dist/index.js b/dist/index.js
+--- a/dist/index.js
++++ b/dist/index.js
+@@ -25341,7 +25341,7 @@
+   async handleElicitation(params) {
+     try {
+       const context = this.createMcpElicitationContext(params);
+-      if (this.shouldUseAcpElicitation(params)) {
++      if (!context.isToolApproval && this.shouldUseAcpElicitation(params)) {
+         const response2 = await this.connection.request(
+           methods.client.elicitation.create,
+           this.buildElicitationRequest(params, context),
+@@ -25563,7 +25563,7 @@
+             toolCall: {
+               toolCallId: context.correlatedCallId,
+               kind: "execute",
+-              status: "pending"
++              status: "pending",
++              rawInput: { serverName: params.serverName }
+               // content: [messageContent],   — omitted: already rendered via item/started
+-              // rawInput: { ... }            — omitted: same reason
+             },
+@@ -26988,4 +26988,13 @@
+ };
++function paperclipBaseInstructions(request) {
++  if (process.env.PAPERCLIP_ACPX_ISOLATED_CONTEXT !== "1") return void 0;
++  const prompt = request?._meta?.systemPrompt;
++  if (typeof prompt === "string") return prompt;
++  if (prompt && typeof prompt === "object" && typeof prompt.append === "string") {
++    return prompt.append;
++  }
++  return void 0;
++}
+ var CodexAcpClient = class {
+   codexClient;
+   config;
+@@ -27288,6 +27297,7 @@
+     const response = await this.codexClient.threadResume({
+       config: await this.createSessionConfig(request.cwd, additionalDirectories, request.mcpServers ?? []),
+       cwd: request.cwd,
++      baseInstructions: paperclipBaseInstructions(request),
+       modelProvider: await this.getResumeModelProvider(),
+       threadId: request.sessionId
+     });
+@@ -27310,6 +27320,7 @@
+     const response = await this.codexClient.threadResume({
+       config: await this.createSessionConfig(request.cwd, additionalDirectories, request.mcpServers ?? []),
+       cwd: request.cwd,
++      baseInstructions: paperclipBaseInstructions(request),
+       modelProvider: await this.getResumeModelProvider(),
+       threadId: request.sessionId
+     });
+@@ -27337,5 +27348,6 @@
+     const response = await this.codexClient.threadStart({
+       config: await this.createSessionConfig(request.cwd, additionalDirectories, request.mcpServers),
+       modelProvider: this.getModelProvider(),
++      baseInstructions: paperclipBaseInstructions(request),
+       cwd: request.cwd
+     });
+@@ -27437,5 +27449,12 @@
+     const mergedConfig = {
+       ...mergeGatewayConfig(this.config, this.gatewayConfig),
++      ...(process.env.PAPERCLIP_ACPX_ISOLATED_CONTEXT === "1" ? {
++        "include_apps_instructions": false,
++        "features.apps": false,
++        "features.memory_tool": false,
++        "skills.include_instructions": true,
++        "mcp_servers": {}
++      } : {}),
+       projects: Object.fromEntries(sessionRoots.map((root) => [root, {
+         trust_level: "trusted"
+       }]))
+@@ -27449,7 +27468,7 @@
+       server: mcp
+     }));
+     let serversToConfigure = requestedServers;
+-    if (shouldDeduplicateMcpConflicts()) {
++    if (process.env.PAPERCLIP_ACPX_ISOLATED_CONTEXT !== "1" && shouldDeduplicateMcpConflicts()) {
+       const existingNames = await this.getConfigMcpServerNames(projectPath);
+       serversToConfigure = requestedServers.filter((mcp) => !existingNames.has(mcp.name));
+     }
+@@ -27483,14 +27502,15 @@
+   async refreshSkills(cwd, additionalRoots) {
+     if (!cwd) {
+       return;
+     }
+-    const skillExtraRoots = additionalRoots.map((root) => path6.join(root, ".agents", "skills"));
++    const isolated = process.env.PAPERCLIP_ACPX_ISOLATED_CONTEXT === "1";
++    const skillExtraRoots = isolated ? [] : additionalRoots.map((root) => path6.join(root, ".agents", "skills"));
+     if (!arraysEqual(this.skillExtraRoots, skillExtraRoots)) {
+       await this.codexClient.skillsExtraRootsSet({ extraRoots: skillExtraRoots });
+       this.skillExtraRoots = skillExtraRoots;
+     }
+     await this.codexClient.listSkills({
+-      cwds: [cwd, ...additionalRoots],
++      cwds: isolated ? [process.env.CODEX_HOME] : [cwd, ...additionalRoots],
+       forceReload: true
+     });
+   }

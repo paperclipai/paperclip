@@ -32,7 +32,6 @@ import {
   ISSUE_THREAD_INTERACTION_RESOLVER_POLICY_PROVENANCES,
   ISSUE_THREAD_INTERACTION_STATUSES,
   ISSUE_WATCHDOG_DISCOVERY_KINDS,
-  MODEL_PROFILE_KEYS,
   REQUEST_CHECKBOX_CONFIRMATION_OPTION_LIMIT,
   REQUEST_ITEM_VERDICTS_ITEM_LIMIT,
 } from "../constants.js";
@@ -222,7 +221,6 @@ export const issueExecutionWorkspaceSettingsSchema = z
 
 export const issueAssigneeAdapterOverridesSchema = z
   .object({
-    modelProfile: z.enum(MODEL_PROFILE_KEYS).optional(),
     adapterConfig: z.record(z.string(), z.unknown()).optional(),
     useProjectWorkspace: z.boolean().optional(),
   })
@@ -862,7 +860,7 @@ export const suggestTasksResultCreatedTaskSchema = z.object({
 
 export const suggestTasksResultSchema = z.object({
   version: z.literal(1),
-  outcome: z.enum(["withdrawn", "issue_closed", "addressee_deleted"]).optional(),
+  outcome: z.enum(["skipped", "withdrawn", "issue_closed", "addressee_deleted"]).optional(),
   reason: z.string().trim().max(4000).nullable().optional(),
   createdTasks: z.array(suggestTasksResultCreatedTaskSchema).max(50).optional(),
   skippedClientKeys: z.array(z.string().trim().min(1).max(120)).max(50).optional(),
@@ -1024,7 +1022,7 @@ export const askUserQuestionsAnswerSchema = z.object({
 
 export const askUserQuestionsResultSchema = z.object({
   version: z.literal(1),
-  outcome: z.enum(["withdrawn", "issue_closed", "addressee_deleted"]).optional(),
+  outcome: z.enum(["skipped", "withdrawn", "issue_closed", "addressee_deleted"]).optional(),
   reason: z.string().trim().max(4000).nullable().optional(),
   answers: z.array(askUserQuestionsAnswerSchema).max(64),
   cancelled: z.literal(true).optional(),
@@ -1251,6 +1249,7 @@ export const requestConfirmationResultSchema = z.object({
     "superseded_by_comment",
     "superseded_by_newer_request",
     "stale_target",
+    "skipped",
     "withdrawn",
     "issue_closed",
     "addressee_deleted",
@@ -1395,7 +1394,7 @@ export const requestItemVerdictsResultItemSchema = z.object({
 
 export const requestItemVerdictsResultSchema = z.object({
   version: z.literal(1),
-  outcome: z.enum(["resolved", "superseded_by_comment", "stale_target", "cancelled", "withdrawn", "issue_closed", "addressee_deleted"]),
+  outcome: z.enum(["resolved", "superseded_by_comment", "stale_target", "cancelled", "skipped", "withdrawn", "issue_closed", "addressee_deleted"]),
   reason: z.string().trim().max(4000).nullable().optional(),
   complete: z.boolean(),
   items: z.array(requestItemVerdictsResultItemSchema)
@@ -1525,6 +1524,11 @@ export const cancelIssueThreadInteractionSchema = z.object({
   reason: z.string().trim().max(4000).optional(),
 });
 export type CancelIssueThreadInteraction = z.infer<typeof cancelIssueThreadInteractionSchema>;
+
+export const skipIssueThreadInteractionSchema = z.object({
+  reason: z.string().trim().max(4000).optional(),
+});
+export type SkipIssueThreadInteraction = z.infer<typeof skipIssueThreadInteractionSchema>;
 
 export const withdrawIssueThreadInteractionSchema = z.object({
   reason: z.string().trim().max(4000).optional(),

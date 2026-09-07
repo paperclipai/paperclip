@@ -25,8 +25,6 @@ export type {
   AdapterSkillContext,
   AdapterSessionCodec,
   AdapterModel,
-  AdapterModelProfileKey,
-  AdapterModelProfileDefinition,
   HireApprovedPayload,
   HireApprovedHookResult,
   ConfigFieldOption,
@@ -38,6 +36,10 @@ export type {
   QuotaWindow,
   ProviderQuotaResult,
   TranscriptEntry,
+  PaperclipQuestion,
+  PaperclipQuestionOption,
+  PaperclipQuestionResponse,
+  PaperclipQuestionSet,
   StdoutLineParser,
   CLIAdapterModule,
   CreateConfigValues,
@@ -110,6 +112,37 @@ export type {
   LoginRunnerDisposable,
   LoginRunnerRaceResult,
 } from "./login-runner-lifecycle.js";
+export {
+  PAPERCLIP_RUNNER_IDLE_TIMEOUT_DEFAULT_MS,
+  PAPERCLIP_RUNNER_IDLE_TIMEOUT_MAX_MS,
+  PAPERCLIP_RUNNER_DEFAULT_MODELS,
+  PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES,
+  isPaperclipRunnerProvider,
+  resolvePaperclipRunnerIdleTimeoutMs,
+  resolvePaperclipRunnerModel,
+  resolvePaperclipRunnerPermissionMode,
+} from "./paperclip-runner-permissions.js";
+export {
+  PAPERCLIP_RUNNER_INGRESS_PORT,
+  PAPERCLIP_RUNNER_CONNECT_PATH_PREFIX,
+  PaperclipRunnerTransportError,
+  buildDirectRunnerConnectUrl,
+  resolvePaperclipRunnerTransport,
+} from "./runner-connectivity.js";
+export type {
+  SecretHeader,
+  RunnerIngressEndpoint,
+  PaperclipRunnerTransport,
+} from "./runner-connectivity.js";
+export type {
+  AcpxPermissionMode,
+  CodexPermissionMode,
+  OpenCodePermissionMode,
+  PaperclipRunnerPermissionCapability,
+  PaperclipRunnerPermissionMode,
+  PaperclipRunnerPermissionOption,
+  PaperclipRunnerProvider,
+} from "./paperclip-runner-permissions.js";
 // Keep the root adapter-utils entry browser-safe because the UI imports it.
 // The sandbox callback bridge stays available via its dedicated subpath export.
 export type {

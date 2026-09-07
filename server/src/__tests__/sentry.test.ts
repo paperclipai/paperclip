@@ -21,7 +21,11 @@ import * as sentryModule from "../sentry.js";
  */
 
 const DSN_ENV = "SENTRY_DSN";
+const FRONTEND_DSN_ENV = "SENTRY_DSN_FRONTEND";
+const BACKEND_DSN_ENV = "SENTRY_DSN_BACKEND";
 const originalDsn = process.env[DSN_ENV];
+const originalFrontendDsn = process.env[FRONTEND_DSN_ENV];
+const originalBackendDsn = process.env[BACKEND_DSN_ENV];
 
 async function importFreshSentry() {
   vi.resetModules();
@@ -90,11 +94,17 @@ const DEFAULT_INTEGRATION_NAMES = [
 
 beforeEach(() => {
   delete process.env[DSN_ENV];
+  delete process.env[FRONTEND_DSN_ENV];
+  delete process.env[BACKEND_DSN_ENV];
 });
 
 afterEach(() => {
   if (originalDsn === undefined) delete process.env[DSN_ENV];
   else process.env[DSN_ENV] = originalDsn;
+  if (originalFrontendDsn === undefined) delete process.env[FRONTEND_DSN_ENV];
+  else process.env[FRONTEND_DSN_ENV] = originalFrontendDsn;
+  if (originalBackendDsn === undefined) delete process.env[BACKEND_DSN_ENV];
+  else process.env[BACKEND_DSN_ENV] = originalBackendDsn;
   vi.restoreAllMocks();
   vi.doUnmock("@sentry/node");
   vi.doUnmock("../peer-version-check.js");
@@ -255,7 +265,7 @@ describe("finalizeServerShutdown Sentry teardown", () => {
 
 describe("missing @sentry/node package", () => {
   it("logs one warning and resolves", async () => {
-    process.env[DSN_ENV] = "https://public@o0.ingest.sentry.io/1";
+    process.env[BACKEND_DSN_ENV] = "https://public@o0.ingest.sentry.io/1";
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 
     const { sentryReady } = await importFreshSentry();
@@ -274,7 +284,7 @@ describe("missing @sentry/node package", () => {
 
 describe("@sentry/node installed at an unsupported version", () => {
   it("logs one diagnostic and resolves without importing the package", async () => {
-    process.env[DSN_ENV] = "https://public@o0.ingest.sentry.io/1";
+    process.env[BACKEND_DSN_ENV] = "https://public@o0.ingest.sentry.io/1";
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     vi.doMock("../peer-version-check.js", () => ({
       checkExactPeerVersions: () => ({
@@ -300,6 +310,62 @@ describe("@sentry/node installed at an unsupported version", () => {
     );
 
     vi.doUnmock("../peer-version-check.js");
+  });
+});
+
+describe("split DSN gating", () => {
+  it("opens the gate and passes the backend DSN to Sentry.init when SENTRY_DSN_BACKEND alone is set", async () => {
+    process.env[BACKEND_DSN_ENV] = "https://public-backend@o0.ingest.sentry.io/2";
+    const mocks = mockSentryPackage();
+
+    const { sentryReady } = await importFreshSentry();
+    await sentryReady;
+
+    expect(mocks.init).toHaveBeenCalledTimes(1);
+    const initOptions = mocks.init.mock.calls[0][0] as { dsn: string };
+    expect(initOptions.dsn).toBe("https://public-backend@o0.ingest.sentry.io/2");
+  });
+
+  it("leaves the gate closed and loads no SDK when SENTRY_DSN_FRONTEND alone is set", async () => {
+    process.env[FRONTEND_DSN_ENV] = "https://public-frontend@o0.ingest.sentry.io/1";
+    const mocks = mockSentryPackage();
+
+    const { sentryReady } = await importFreshSentry();
+    await sentryReady;
+
+    expect(mocks.init).not.toHaveBeenCalled();
+  });
+
+  it("logs one warning that names the three variables and holds no DSN value when only SENTRY_DSN is set", async () => {
+    process.env[DSN_ENV] = "https://public-legacy@o0.ingest.sentry.io/3";
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    mockSentryPackage();
+
+    const { sentryReady } = await importFreshSentry();
+    await sentryReady;
+
+    expect(warn).toHaveBeenCalledTimes(1);
+    const [message] = warn.mock.calls[0]!;
+    expect(message).toEqual(expect.stringContaining("SENTRY_DSN_FRONTEND"));
+    expect(message).toEqual(expect.stringContaining("SENTRY_DSN_BACKEND"));
+    expect(message).toEqual(expect.stringContaining("SENTRY_DSN"));
+    for (const call of warn.mock.calls) {
+      for (const arg of call) {
+        expect(String(arg)).not.toContain("https://public-legacy@o0.ingest.sentry.io/3");
+      }
+    }
+  });
+
+  it("logs no warning when both specific variables are set", async () => {
+    process.env[FRONTEND_DSN_ENV] = "https://public-frontend@o0.ingest.sentry.io/1";
+    process.env[BACKEND_DSN_ENV] = "https://public-backend@o0.ingest.sentry.io/2";
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    mockSentryPackage();
+
+    const { sentryReady } = await importFreshSentry();
+    await sentryReady;
+
+    expect(warn).not.toHaveBeenCalled();
   });
 });
 

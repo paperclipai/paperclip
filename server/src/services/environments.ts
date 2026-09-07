@@ -1336,6 +1336,21 @@ export function environmentService(db: Db) {
       expiresAt?: Date | null;
       metadata?: Record<string, unknown> | null;
       /**
+       * Atomically retire the previous database ownership record when this
+       * acquisition reuses the same provider resource for a new run. The
+       * provider resume happens before this write, so a failed transaction
+       * leaves the prior retained row recoverable instead of publishing two
+       * reusable owners for one sandbox.
+       */
+      replacesReusableLeaseId?: string | null;
+      /**
+       * Reactivate the exact lease row already owned by this heartbeat run.
+       * Native same-run recovery re-enters environment startup after the
+       * provider process is interrupted; it must not manufacture a second
+       * database owner for the same run and provider resource.
+       */
+      reusesReusableLeaseId?: string | null;
+      /**
        * Re-check the environment company binding inside the lease insert
        * transaction. The login routes set this to close the check-to-lease
        * race: managed reconciliation can bind a sandbox to another company
@@ -1368,47 +1383,168 @@ export function environmentService(db: Db) {
         createdAt: now,
         updatedAt: now,
       };
-      const row = input.assertCompanyBinding
-        ? await db.transaction(async (tx) => {
-            // Lock the environment row first. Managed reconciliation locks the
-            // same sandbox environment rows with `for update` before it writes a
-            // company binding, so this lock serializes the two transactions on
-            // this row and closes the time-of-check to time-of-use window.
-            await tx
-              .select({ id: environments.id })
-              .from(environments)
-              .where(eq(environments.id, input.environmentId))
-              .for("update");
-            // Re-read the company binding inside the locked transaction. A
-            // binding a reconciliation committed after the route guard now
-            // appears here. Reject a foreign-company environment before the
-            // insert, so the login holds no lease.
-            const boundRows = await tx
-              .select({ companyId: builtInManagedResources.companyId })
-              .from(builtInManagedResources)
-              .where(
-                and(
-                  eq(builtInManagedResources.resourceKind, MANAGED_ENVIRONMENT_RESOURCE_KIND),
-                  eq(builtInManagedResources.resourceId, input.environmentId),
-                ),
-              );
-            const boundCompanyIds = Array.from(new Set(boundRows.map((boundRow) => boundRow.companyId)));
-            if (boundCompanyIds.length > 0 && !boundCompanyIds.includes(input.companyId)) {
-              throw forbidden("The selected environment belongs to another company.", {
-                code: "environment_company_mismatch",
-              });
-            }
-            return tx
+      if (
+        (input.replacesReusableLeaseId || input.reusesReusableLeaseId) &&
+        (!input.executionWorkspaceId || !input.providerLeaseId)
+      ) {
+        throw new Error(
+          "A reusable lease handoff requires an execution workspace and provider lease id.",
+        );
+      }
+      if (input.reusesReusableLeaseId && !input.heartbeatRunId) {
+        throw new Error(
+          "A same-run reusable lease reacquisition requires a heartbeat run id.",
+        );
+      }
+      if (input.replacesReusableLeaseId && input.reusesReusableLeaseId) {
+        throw new Error(
+          "A reusable lease cannot be replaced and reacquired in the same operation.",
+        );
+      }
+      const row =
+        input.assertCompanyBinding ||
+        input.replacesReusableLeaseId ||
+        input.reusesReusableLeaseId
+          ? await db.transaction(async (tx) => {
+              if (input.assertCompanyBinding) {
+                // Lock the environment row first. Managed reconciliation locks the
+                // same sandbox environment rows with `for update` before it writes a
+                // company binding, so this lock serializes the two transactions on
+                // this row and closes the time-of-check to time-of-use window.
+                await tx
+                  .select({ id: environments.id })
+                  .from(environments)
+                  .where(eq(environments.id, input.environmentId))
+                  .for("update");
+                // Re-read the company binding inside the locked transaction. A
+                // binding a reconciliation committed after the route guard now
+                // appears here. Reject a foreign-company environment before the
+                // insert, so the login holds no lease.
+                const boundRows = await tx
+                  .select({ companyId: builtInManagedResources.companyId })
+                  .from(builtInManagedResources)
+                  .where(
+                    and(
+                      eq(
+                        builtInManagedResources.resourceKind,
+                        MANAGED_ENVIRONMENT_RESOURCE_KIND,
+                      ),
+                      eq(
+                        builtInManagedResources.resourceId,
+                        input.environmentId,
+                      ),
+                    ),
+                  );
+                const boundCompanyIds = Array.from(
+                  new Set(boundRows.map((boundRow) => boundRow.companyId)),
+                );
+                if (
+                  boundCompanyIds.length > 0 &&
+                  !boundCompanyIds.includes(input.companyId)
+                ) {
+                  throw forbidden(
+                    "The selected environment belongs to another company.",
+                    {
+                      code: "environment_company_mismatch",
+                    },
+                  );
+                }
+              }
+              if (input.replacesReusableLeaseId) {
+                const retired = await tx
+                  .update(environmentLeases)
+                  .set({
+                    status: "expired",
+                    releasedAt: now,
+                    lastUsedAt: now,
+                    updatedAt: now,
+                    cleanupStatus: "success",
+                  })
+                  .where(
+                    and(
+                      eq(environmentLeases.id, input.replacesReusableLeaseId),
+                      eq(environmentLeases.companyId, input.companyId),
+                      eq(environmentLeases.environmentId, input.environmentId),
+                      eq(
+                        environmentLeases.executionWorkspaceId,
+                        input.executionWorkspaceId!,
+                      ),
+                      eq(environmentLeases.leasePolicy, "reuse_by_environment"),
+                      eq(
+                        environmentLeases.providerLeaseId,
+                        input.providerLeaseId!,
+                      ),
+                      inArray(environmentLeases.status, [
+                        "released",
+                        "retained",
+                      ]),
+                    ),
+                  )
+                  .returning({ id: environmentLeases.id });
+                if (retired.length !== 1) {
+                  throw conflict(
+                    "Reusable sandbox lease ownership changed during acquisition.",
+                  );
+                }
+              }
+              if (input.reusesReusableLeaseId) {
+                const reacquired = await tx
+                  .update(environmentLeases)
+                  .set({
+                    status: "active",
+                    releasedAt: null,
+                    lastUsedAt: now,
+                    expiresAt: input.expiresAt ?? null,
+                    failureReason: null,
+                    cleanupStatus: null,
+                    metadata: input.metadata ?? null,
+                    updatedAt: now,
+                  })
+                  .where(
+                    and(
+                      eq(environmentLeases.id, input.reusesReusableLeaseId),
+                      eq(environmentLeases.companyId, input.companyId),
+                      eq(environmentLeases.environmentId, input.environmentId),
+                      eq(
+                        environmentLeases.executionWorkspaceId,
+                        input.executionWorkspaceId!,
+                      ),
+                      eq(
+                        environmentLeases.heartbeatRunId,
+                        input.heartbeatRunId!,
+                      ),
+                      eq(environmentLeases.leasePolicy, "reuse_by_environment"),
+                      eq(
+                        environmentLeases.providerLeaseId,
+                        input.providerLeaseId!,
+                      ),
+                      inArray(environmentLeases.status, [
+                        "active",
+                        "released",
+                        "retained",
+                      ]),
+                    ),
+                  )
+                  .returning()
+                  .then((rows) => rows[0] ?? null);
+                if (!reacquired) {
+                  throw conflict(
+                    "Reusable sandbox lease ownership changed during reacquisition.",
+                  );
+                }
+                return reacquired;
+              }
+              return tx
+                .insert(environmentLeases)
+                .values(values)
+                .returning()
+                .then((rows) => rows[0] ?? null);
+            })
+          : await db
               .insert(environmentLeases)
               .values(values)
               .returning()
               .then((rows) => rows[0] ?? null);
-          })
-        : await db
-            .insert(environmentLeases)
-            .values(values)
-            .returning()
-            .then((rows) => rows[0] ?? null);
       if (!row) {
         throw new Error("Failed to acquire environment lease");
       }

@@ -1,0 +1,1125 @@
+import { createHash } from "node:crypto";
+import { createAgentSchema } from "../../packages/shared/src/validators/agent.js";
+import { createEnvironmentSchema } from "../../packages/shared/src/validators/environment.js";
+import { DEFAULT_CODEX_LOCAL_MODEL } from "../../packages/adapters/codex-local/src/index.js";
+import { models as claudeModels } from "../../packages/adapters/claude-local/src/index.js";
+import { QUALIFIED_ACPX_PROFILES } from "../../packages/paperclip-runner/src/drivers/acpx/qualified-profiles.js";
+import { QUALIFIED_OPENCODE_MODEL } from "../../packages/paperclip-runner/src/drivers/opencode/opencode-server-driver.js";
+import { CREDENTIAL_NAMES } from "./types.js";
+import {
+  openRouterProfileId,
+  openRouterRankingSnapshot,
+} from "./openrouter-ranking.js";
+import type {
+  AgentFixtureBuildInput,
+  EnvironmentFixture,
+  EnvironmentFixtureBuildInput,
+  MatrixExecution,
+  RunnerProfileFixture,
+  RunnerTaskFixture,
+  RunnerSuiteFixture,
+  SecretReference,
+} from "./types.js";
+
+const ENVIRONMENT_IDS = ["local", "daytona"] as const;
+const SELECTABLE_GROUPS = [
+  "legacy",
+  "native",
+  "local",
+  "daytona",
+  "warm",
+  "core",
+  "breadth",
+] as const;
+const SAMPLE_UUID = "11111111-1111-4111-8111-111111111111";
+
+export function isImmutableDaytonaImage(value: string | undefined) {
+  return /^.+@sha256:[0-9a-f]{64}$/i.test(value ?? "");
+}
+
+function requiredSecret(
+  input: AgentFixtureBuildInput,
+  name: RunnerProfileFixture["credential"],
+): SecretReference {
+  const value = input.secretRefs[name];
+  if (!value) throw new Error(`Missing fixture secret reference ${name}`);
+  return value;
+}
+
+function commonAgent(
+  input: AgentFixtureBuildInput,
+  fixtureId: string,
+  adapterType: string,
+  adapterConfig: Record<string, unknown>,
+) {
+  return {
+    name: `Runner E2E ${fixtureId} ${input.executionId}`,
+    role: "qa",
+    title: "Paid full-stack runner acceptance fixture",
+    capabilities:
+      "Completes deterministic standard, planning, and ask-mode runner acceptance tasks.",
+    adapterType,
+    adapterConfig,
+    defaultEnvironmentId: input.environmentId,
+    budgetMonthlyCents: 0,
+    instructionsBundle: {
+      entryFile: "AGENTS.md",
+      files: {
+        "AGENTS.md": [
+          "You are running a paid Paperclip end-to-end acceptance fixture.",
+          "Follow the assigned task and its Paperclip work mode literally.",
+          "For standard and ask tasks, publish the requested visible answer and mark the task done.",
+          "For planning tasks, publish or revise the canonical Plan document and its revision-bound request_confirmation, then wait. Only implement after that exact plan is accepted.",
+          "Invoke assigned tools only through the runtime's real tool-call channel. Never print XML, DSML, JSON, or other tool-call markup as assistant text.",
+          "Legacy adapters must use the public Paperclip API and the injected PAPERCLIP_API_URL, PAPERCLIP_API_KEY, PAPERCLIP_TASK_ID, and PAPERCLIP_RUN_ID values for comments, documents, interactions, and status changes.",
+          ...(adapterType === "paperclip_runner"
+            ? []
+            : [
+                'For a planning task, do not inspect the OpenAPI schema. PUT /api/issues/$PAPERCLIP_TASK_ID/documents/plan with {title:"Plan",format:"markdown",body,changeSummary}; read latestRevisionId and latestRevisionNumber from that response. Then POST /api/issues/$PAPERCLIP_TASK_ID/interactions with {kind:"request_confirmation",continuationPolicy:"wake_assignee",payload:{version:1,prompt,acceptLabel:"Approve",rejectLabel:"Reject",rejectRequiresReason:true,target:{type:"issue_document",key:"plan",revisionId,revisionNumber}}}, and PATCH the issue to {status:"in_review"}. Include Authorization and X-Paperclip-Run-Id on every write.',
+              ]),
+          "Never print, persist, or expose credential values, and never create unrelated work.",
+        ].join("\n"),
+      },
+    },
+    runtimeConfig: {},
+  };
+}
+
+function legacyProfile(input: {
+  id: string;
+  label: string;
+  adapterType: "codex_local" | "claude_local" | "opencode_local";
+  provider: string;
+  model: string;
+  credential: RunnerProfileFixture["credential"];
+  extraConfig?: Record<string, unknown>;
+}): RunnerProfileFixture {
+  return {
+    ...input,
+    modelQualification: {
+      source: "adapter_constant",
+      qualificationId: `${input.adapterType}:default-model`,
+    },
+    generation: "legacy",
+    groups: ["legacy"],
+    supportedEnvironments: ENVIRONMENT_IDS,
+    expectedRuntimeMode: "legacy",
+    expectedRuntimeMetadata: {
+      adapterType: input.adapterType,
+      provider: input.provider,
+    },
+    buildAgent(buildInput) {
+      return commonAgent(buildInput, input.id, input.adapterType, {
+        // Remote adapters must inherit the lease's provider-owned remoteCwd.
+        // A host path here would override that mapping inside the sandbox.
+        ...(buildInput.environmentFixtureId === "local"
+          ? { cwd: buildInput.workspacePath }
+          : {}),
+        model: input.model,
+        timeoutSec: buildInput.environmentFixtureId === "daytona" ? 780 : 360,
+        dangerouslySkipPermissions: true,
+        ...input.extraConfig,
+        env: {
+          [input.credential]: requiredSecret(buildInput, input.credential),
+        },
+      });
+    },
+  };
+}
+
+function nativeProfile(input: {
+  id: string;
+  label: string;
+  provider: "codex" | "opencode" | "acpx";
+  model: string;
+  credential: RunnerProfileFixture["credential"];
+  acpxAgent?: "claude" | "codex";
+  supportedEnvironments?: readonly (typeof ENVIRONMENT_IDS)[number][];
+  modelQualification?: RunnerProfileFixture["modelQualification"];
+  ranking?: RunnerProfileFixture["ranking"];
+}): RunnerProfileFixture {
+  return {
+    ...input,
+    adapterType: "paperclip_runner",
+    generation: "native",
+    groups: ["native"],
+    supportedEnvironments: input.supportedEnvironments ?? ENVIRONMENT_IDS,
+    expectedRuntimeMode: "native",
+    modelQualification: input.modelQualification ?? {
+      source:
+        input.provider === "acpx"
+          ? "qualified_runner_profile"
+          : "adapter_constant",
+      qualificationId:
+        input.provider === "acpx"
+          ? `acpx:${input.acpxAgent}`
+          : `${input.provider}:qualified-model`,
+    },
+    ...(input.ranking ? { ranking: input.ranking } : {}),
+    expectedRuntimeMetadata: {
+      adapterType: "paperclip_runner",
+      provider: input.provider,
+    },
+    buildAgent(buildInput) {
+      const credentialRef = requiredSecret(buildInput, input.credential);
+      const permissionConfig =
+        input.provider === "codex"
+          ? { codexPermissionMode: "never" }
+          : input.provider === "opencode"
+            ? { opencodePermissionMode: "allow" }
+            : { acpxPermissionMode: "approve-all", acpxAgent: input.acpxAgent };
+      return commonAgent(buildInput, input.id, "paperclip_runner", {
+        provider: input.provider,
+        model: input.model,
+        lifecycleMode: "per_turn",
+        idleTimeoutMs: 300_000,
+        ...permissionConfig,
+        env: {
+          [input.credential]: credentialRef,
+          // Codex's supported automation credential is CODEX_API_KEY. Keep
+          // OPENAI_API_KEY as the operator-facing fixture secret name and bind
+          // the same encrypted reference to the runtime-specific alias.
+          ...(input.provider === "codex"
+            ? { CODEX_API_KEY: credentialRef }
+            : {}),
+        },
+      });
+    },
+  };
+}
+
+const claudeLegacyModel = "claude-sonnet-4-6";
+if (!claudeModels.some((model) => model.id === claudeLegacyModel)) {
+  throw new Error(
+    `Claude adapter does not expose the qualified ${claudeLegacyModel} model`,
+  );
+}
+
+export const runnerProfiles: readonly RunnerProfileFixture[] = [
+  legacyProfile({
+    id: "legacy-codex",
+    label: "Legacy Codex",
+    adapterType: "codex_local",
+    provider: "codex",
+    model: DEFAULT_CODEX_LOCAL_MODEL,
+    credential: "OPENAI_API_KEY",
+    // Keep this fixture on the classic adapter/CLI lane. ACP execution is
+    // covered independently by the native runner ACPX profiles below.
+    extraConfig: { engine: "cli" },
+  }),
+  legacyProfile({
+    id: "legacy-claude",
+    label: "Legacy Claude",
+    adapterType: "claude_local",
+    provider: "claude",
+    model: claudeLegacyModel,
+    credential: "ANTHROPIC_API_KEY",
+    extraConfig: {
+      engine: "cli",
+      // Plan fixtures need enough tool turns to read the issue, write the
+      // canonical Plan document, and request confirmation. Four turns caused
+      // the Claude CLI to terminate correctly but prematurely with
+      // `max_turns_exhausted` during the revision flow.
+      maxTurnsPerRun: 24,
+    },
+  }),
+  legacyProfile({
+    id: "legacy-opencode",
+    label: "Legacy OpenCode",
+    adapterType: "opencode_local",
+    provider: "opencode",
+    model: QUALIFIED_OPENCODE_MODEL,
+    credential: "OPENROUTER_API_KEY",
+  }),
+  nativeProfile({
+    id: "runner-codex",
+    label: "Runner Codex",
+    provider: "codex",
+    model: DEFAULT_CODEX_LOCAL_MODEL,
+    credential: "OPENAI_API_KEY",
+  }),
+  nativeProfile({
+    id: "runner-opencode",
+    label: "Runner OpenCode",
+    provider: "opencode",
+    model: QUALIFIED_OPENCODE_MODEL,
+    credential: "OPENROUTER_API_KEY",
+  }),
+  nativeProfile({
+    id: "runner-acpx-claude",
+    label: "Runner ACPX Claude",
+    provider: "acpx",
+    acpxAgent: "claude",
+    model: QUALIFIED_ACPX_PROFILES.claude.qualificationModel,
+    credential: "ANTHROPIC_API_KEY",
+  }),
+  nativeProfile({
+    id: "runner-acpx-codex",
+    label: "Runner ACPX Codex",
+    provider: "acpx",
+    acpxAgent: "codex",
+    model: QUALIFIED_ACPX_PROFILES.codex.qualificationModel,
+    credential: "OPENAI_API_KEY",
+  }),
+] as const;
+
+export const openRouterBreadthExcludedModelIds = ["xiaomi/mimo-v2.5"] as const;
+export const openRouterBreadthExcludedExecutionIds = [
+  "openrouter-model-breadth.openrouter-deepseek-deepseek-v4-flash-0731.local.plan-approve-complete",
+  "openrouter-model-breadth.openrouter-tencent-hy3.local.plan-approve-complete",
+] as const;
+const openRouterBreadthExcludedModelIdSet = new Set<string>(
+  openRouterBreadthExcludedModelIds,
+);
+
+export const openRouterBreadthProfiles: readonly RunnerProfileFixture[] =
+  openRouterRankingSnapshot.models
+    .filter(
+      (rankedModel) => !openRouterBreadthExcludedModelIdSet.has(rankedModel.id),
+    )
+    .map((rankedModel) =>
+      nativeProfile({
+        id: openRouterProfileId(rankedModel.id),
+        label: `#${rankedModel.rank} ${rankedModel.name}`,
+        provider: "opencode",
+        model: `openrouter/${rankedModel.id}`,
+        credential: "OPENROUTER_API_KEY",
+        supportedEnvironments: ["local"],
+        modelQualification: {
+          source: "openrouter_rankings_snapshot",
+          qualificationId: `${openRouterRankingSnapshot.snapshotId}:${rankedModel.rank}`,
+        },
+        ranking: {
+          rank: rankedModel.rank,
+          canonicalModelId: rankedModel.id,
+          snapshotId: openRouterRankingSnapshot.snapshotId,
+          capturedAt: openRouterRankingSnapshot.capturedAt,
+          sourceUrl: openRouterRankingSnapshot.sourceUrl,
+        },
+      }),
+    );
+
+function requiredDaytonaSecret(input: EnvironmentFixtureBuildInput) {
+  const apiKey = input.secretRefs.DAYTONA_API_KEY;
+  if (!apiKey)
+    throw new Error("Missing fixture secret reference DAYTONA_API_KEY");
+  return apiKey;
+}
+
+export const runnerEnvironments: readonly EnvironmentFixture[] = [
+  {
+    id: "local",
+    label: "Isolated local",
+    groups: ["local"],
+    driver: "local",
+    provider: "local",
+    lifecycle: {
+      setup: "instance_managed",
+      probe: "run_context_via_api",
+      cleanup: "instance_shutdown",
+    },
+    expectedExecutionTarget: { kind: "local" },
+    buildEnvironment(input) {
+      return {
+        name: `Runner E2E local ${input.executionId}`,
+        description: "Ephemeral local runner E2E environment",
+        driver: "local",
+        config: {},
+        envVars: {},
+      };
+    },
+  },
+  {
+    id: "daytona",
+    label: "Daytona sandbox",
+    groups: ["daytona"],
+    driver: "sandbox",
+    provider: "daytona",
+    credential: "DAYTONA_API_KEY",
+    lifecycle: {
+      setup: "create_via_api",
+      probe: "run_context_via_api",
+      cleanup: "delete_via_api_and_destroy_leases",
+    },
+    expectedExecutionTarget: { kind: "remote", transport: "sandbox" },
+    buildEnvironment(input) {
+      if (!isImmutableDaytonaImage(input.daytonaImage)) {
+        throw new Error(
+          "PAPERCLIP_E2E_DAYTONA_IMAGE must be an immutable image digest",
+        );
+      }
+      return {
+        name: `Runner E2E Daytona ${input.executionId}`,
+        description: "Ephemeral Daytona runner E2E environment",
+        driver: "sandbox",
+        config: {
+          provider: "daytona",
+          apiKey: requiredDaytonaSecret(input),
+          image: input.daytonaImage,
+          // Pin the billable resource shape so per-test runtime list-price
+          // estimates remain reproducible when provider defaults change.
+          cpu: 4,
+          memory: 4,
+          disk: 10,
+          reuseLease: false,
+          runnerLifecycleMode: "per_turn",
+          autoStopInterval: 5,
+          autoArchiveInterval: 15,
+          autoDeleteInterval: 60,
+          timeoutMs: 300_000,
+          livenessTimeoutMs: 30_000,
+        },
+        envVars: {},
+      };
+    },
+  },
+] as const;
+
+export const daytonaWarmEnvironment: EnvironmentFixture = {
+  id: "daytona",
+  configurationKey: "warm-reuse-v1",
+  label: "Daytona warm reusable sandbox",
+  groups: ["daytona", "warm"],
+  driver: "sandbox",
+  provider: "daytona",
+  credential: "DAYTONA_API_KEY",
+  lifecycle: {
+    setup: "create_via_api",
+    probe: "run_context_via_api",
+    cleanup: "delete_via_api_and_destroy_leases",
+  },
+  expectedExecutionTarget: { kind: "remote", transport: "sandbox" },
+  buildEnvironment(input) {
+    if (!isImmutableDaytonaImage(input.daytonaImage)) {
+      throw new Error(
+        "PAPERCLIP_E2E_DAYTONA_IMAGE must be an immutable image digest",
+      );
+    }
+    return {
+      name: `Runner E2E Daytona warm ${input.executionId}`,
+      description: "Ephemeral reusable Daytona runner E2E environment",
+      driver: "sandbox",
+      config: {
+        provider: "daytona",
+        apiKey: requiredDaytonaSecret(input),
+        image: input.daytonaImage,
+        cpu: 4,
+        memory: 4,
+        disk: 10,
+        reuseLease: true,
+        runnerLifecycleMode: "warm",
+        autoStopInterval: 5,
+        autoArchiveInterval: 15,
+        autoDeleteInterval: 60,
+        timeoutMs: 300_000,
+        livenessTimeoutMs: 30_000,
+      },
+      envVars: {},
+    };
+  },
+};
+
+export const runnerTasks: readonly RunnerTaskFixture[] = [
+  {
+    id: "message-marker",
+    label: "Basic response",
+    groups: [],
+    workMode: "standard",
+    flow: "single_turn",
+    expectedRunCount: 1,
+    attemptTimeoutMs: {
+      local: 8 * 60_000,
+      daytona: 15 * 60_000,
+    },
+    expectedTerminalState: { issue: "done", run: "succeeded" },
+    buildTitle: (nonce) => `Runner E2E PAPERCLIP_E2E_OK_${nonce}`,
+    buildVisibleMarker: (nonce) => `PAPERCLIP_E2E_OK_${nonce}`,
+    buildPrompt: (nonce) =>
+      [
+        "Complete this task in a single run.",
+        `The exact marker also appears unescaped in the task title: PAPERCLIP_E2E_OK_${nonce}`,
+        `Your final visible task-thread response must be exactly this marker: PAPERCLIP_E2E_OK_${nonce}`,
+        `In a native runner, call paperclip_finish exactly once with {reportedWorkDisposition:"done",summary:"PAPERCLIP_E2E_OK_${nonce}",completionClaim:{contractRevision:"1",objectiveSatisfied:true,criteria:[{criterionId:"objective",status:"satisfied",evidenceRefs:[]}],remainingWork:[]},evidence:[],verification:[]}. Wait for that tool call to succeed, then emit exactly PAPERCLIP_E2E_OK_${nonce} once as the complete user-facing final response. Do not write a user-facing final response before paperclip_finish succeeds, and do not call another tool.`,
+        `In a legacy runner, make exactly one public-API write containing the marker: PATCH /api/issues/$PAPERCLIP_TASK_ID with {"status":"done","comment":"PAPERCLIP_E2E_OK_${nonce}"}. Do not POST to /comments, and do not include the marker in any other write.`,
+        "The visible task-thread response is asserted; hidden reasoning or provider terminal output alone does not count.",
+        "Use underscore characters exactly as shown and do not insert backslashes.",
+        "Do not create files, ask questions, start additional tasks, or include any credentials.",
+      ].join("\n"),
+    buildMatchers(nonce, execution) {
+      return [
+        { kind: "message_exact", expected: `PAPERCLIP_E2E_OK_${nonce}` },
+        {
+          kind: "message_occurrences",
+          expected: `PAPERCLIP_E2E_OK_${nonce}`,
+          count: 1,
+        },
+        {
+          kind: "issue_status",
+          expected: execution.task.expectedTerminalState.issue,
+        },
+        {
+          kind: "run_status",
+          expected: execution.task.expectedTerminalState.run,
+        },
+        {
+          kind: "runtime_mode",
+          expected: execution.profile.expectedRuntimeMode,
+        },
+        { kind: "environment", expected: execution.environment.id },
+      ];
+    },
+  },
+  {
+    id: "plan-revise-accept",
+    label: "Plan, revise, accept, implement",
+    groups: [],
+    workMode: "planning",
+    flow: "plan_revision_acceptance",
+    expectedRunCount: 3,
+    attemptTimeoutMs: {
+      local: 8 * 60_000,
+      daytona: 12 * 60_000,
+    },
+    expectedTerminalState: { issue: "done", run: "succeeded" },
+    buildTitle: (nonce) => `Runner E2E plan lifecycle ${nonce}`,
+    buildVisibleMarker: (nonce) => `PAPERCLIP_E2E_PLAN_DONE_${nonce}`,
+    buildPlanMarkers: (nonce) => ({
+      draft: `PAPERCLIP_E2E_PLAN_DRAFT_${nonce}`,
+      revised: `PAPERCLIP_E2E_PLAN_REVISED_${nonce}`,
+    }),
+    buildRevisionRequest: (nonce) =>
+      [
+        "Revise this same plan; do not implement it yet.",
+        `Remove PAPERCLIP_E2E_PLAN_DRAFT_${nonce} and include PAPERCLIP_E2E_PLAN_REVISED_${nonce}.`,
+        "Change the plan from two steps to exactly three numbered steps, with verification as step 3.",
+        "Publish the revised canonical Plan revision and request confirmation for that new revision.",
+        "In a native runner, call write_document for key `plan`, then call request_human_input exactly once with interactionKind `confirmation`, targetRevisionId set to the returned latest Plan revision, and continuationPolicy `wake_assignee`; do not call paperclip_finish while waiting. After write_document succeeds, request_human_input must be your immediate next action using that call's returned latestRevisionId; do not emit assistant text, end the response or heartbeat, or stop after write_document alone.",
+        "In a legacy runner, first GET the current `plan` issue document, then PUT the revised Plan with `baseRevisionId` set to that response's `latestRevisionId`; after the update succeeds, create the equivalent request_confirmation targeting the newly returned `latestRevisionId` through the public Paperclip API.",
+      ].join(" "),
+    buildPrompt: (nonce) =>
+      [
+        "This is a planning-mode lifecycle acceptance task.",
+        "First, create a small canonical Plan with exactly two numbered steps and request approval; do not implement it.",
+        `The initial Plan body must contain PAPERCLIP_E2E_PLAN_DRAFT_${nonce}.`,
+        "If the plan is sent back, revise that same Plan document according to the revision note, publish a new revision-bound confirmation, and still do not implement.",
+        `Before the revised Plan is accepted, do not spell, quote, repeat, announce, or include PAPERCLIP_E2E_PLAN_DONE_${nonce} in any visible response, comment, or tool payload; refer to it only as “the terminal marker.”`,
+        "Only after the revised plan is accepted, implement it by posting one final visible task-thread response containing exactly " +
+          `PAPERCLIP_E2E_PLAN_DONE_${nonce}` +
+          " and mark the task Done.",
+        `For a native runner, remain in the requested planning collaboration mode. Call write_document for key \`plan\`, then call request_human_input exactly once with interactionKind \`confirmation\`, targetRevisionId set to the returned latest Plan revision, and continuationPolicy \`wake_assignee\`. For both the initial Plan and the revised Plan, those two tool calls form one indivisible response sequence: immediately after write_document succeeds, request_human_input must be your next action using that call's returned latestRevisionId. Do not emit assistant text, end the response or heartbeat, or stop after write_document alone before the matching confirmation request succeeds. Do not call paperclip_finish while waiting for either Plan confirmation. When an acceptance wake arrives, first call get_task_context. Treat the wake as valid only when that control-plane result is for the current task and identifies the exact revised Plan revision used as the confirmation target as accepted; otherwise do not finish and continue waiting for the matching revision-bound confirmation. After that verification succeeds, your immediate next action must be the paperclip_finish tool call. Do not call list_documents or any other tool, and do not emit any assistant text, acknowledgement, progress note, or preamble between verification and paperclip_finish. Call paperclip_finish exactly once with {reportedWorkDisposition:"done",summary:"PAPERCLIP_E2E_PLAN_DONE_${nonce}",completionClaim:{contractRevision:"1",objectiveSatisfied:true,criteria:[{criterionId:"objective",status:"satisfied",evidenceRefs:[]}],remainingWork:[]},evidence:[],verification:[]}. Wait for that tool call to succeed, then emit only PAPERCLIP_E2E_PLAN_DONE_${nonce} as the complete final response. Do not write a user-facing final response before paperclip_finish succeeds, and do not call another tool.`,
+        `For a legacy runner, use the public Paperclip API. The first PUT of the \`plan\` issue document creates it. For every later PUT, first GET the current document and set \`baseRevisionId\` to its \`latestRevisionId\`; a 409 means you must GET again and retry with the new latest revision. Create a \`request_confirmation\` targeting the successful PUT response's \`latestRevisionId\` with \`continuationPolicy: wake_assignee\`, and move the issue to \`in_review\` while waiting. After the revised Plan is accepted, write PAPERCLIP_E2E_PLAN_DONE_${nonce} exactly once through one atomic issue PATCH with status \`done\` and that exact comment; do not POST a separate comment or perform a second write.`,
+        "Do not create files, child tasks, or unrelated work, and do not expose credentials.",
+      ].join("\n"),
+    buildMatchers(nonce, execution) {
+      return [
+        {
+          kind: "message_exact",
+          expected: `PAPERCLIP_E2E_PLAN_DONE_${nonce}`,
+        },
+        {
+          kind: "message_occurrences",
+          expected: `PAPERCLIP_E2E_PLAN_DONE_${nonce}`,
+          count: 1,
+        },
+        {
+          kind: "issue_status",
+          expected: execution.task.expectedTerminalState.issue,
+        },
+        {
+          kind: "run_status",
+          expected: execution.task.expectedTerminalState.run,
+        },
+        {
+          kind: "runtime_mode",
+          expected: execution.profile.expectedRuntimeMode,
+        },
+        { kind: "environment", expected: execution.environment.id },
+      ];
+    },
+  },
+  {
+    id: "ask-question",
+    label: "Ask mode question",
+    groups: [],
+    workMode: "ask",
+    flow: "single_turn",
+    expectedRunCount: 1,
+    attemptTimeoutMs: {
+      local: 8 * 60_000,
+      daytona: 15 * 60_000,
+    },
+    expectedTerminalState: { issue: "done", run: "succeeded" },
+    buildTitle: (nonce) => `Runner E2E ask mode ${nonce}`,
+    buildVisibleMarker: (nonce) => `E2E_ASK_12_${nonce}`,
+    buildPrompt: (nonce) =>
+      [
+        "Answer this question directly in Ask mode: what is seven plus five?",
+        `Your final visible task-thread answer must be exactly this complete marker, including its final suffix: E2E_ASK_12_${nonce}.`,
+        "Do not create or modify files, do not create a plan or additional work, and do not expose credentials.",
+        "After posting the direct answer, mark this task Done.",
+        `In a native runner, call paperclip_finish exactly once with {reportedWorkDisposition:"done",summary:"E2E_ASK_12_${nonce}",completionClaim:{contractRevision:"1",objectiveSatisfied:true,criteria:[{criterionId:"objective",status:"satisfied",evidenceRefs:[]}],remainingWork:[]},evidence:[],verification:[]}. For the entire run, paperclip_finish must be your only tool call: never call report_progress or any other tool before or after it. Wait for that tool call to succeed, then emit exactly E2E_ASK_12_${nonce} as the complete final response. Do not write a user-facing final response before paperclip_finish succeeds.`,
+        `In a legacy runner, make exactly one public-API write containing the marker: PATCH /api/issues/$PAPERCLIP_TASK_ID with {"status":"done","comment":"E2E_ASK_12_${nonce}"}. Do not POST to /comments, do not PATCH the status separately, and do not include the marker in any other API write.`,
+      ].join("\n"),
+    buildMatchers(nonce, execution) {
+      return [
+        {
+          kind: "message_exact",
+          expected: `E2E_ASK_12_${nonce}`,
+        },
+        {
+          kind: "message_occurrences",
+          expected: `E2E_ASK_12_${nonce}`,
+          count: 1,
+        },
+        {
+          kind: "issue_status",
+          expected: execution.task.expectedTerminalState.issue,
+        },
+        {
+          kind: "run_status",
+          expected: execution.task.expectedTerminalState.run,
+        },
+        {
+          kind: "runtime_mode",
+          expected: execution.profile.expectedRuntimeMode,
+        },
+        { kind: "environment", expected: execution.environment.id },
+      ];
+    },
+  },
+] as const;
+
+function terminalMatchers(
+  nonceMarker: string,
+  execution: MatrixExecution,
+): readonly ReturnType<RunnerTaskFixture["buildMatchers"]>[number][] {
+  return [
+    { kind: "message_exact", expected: nonceMarker },
+    { kind: "message_occurrences", expected: nonceMarker, count: 1 },
+    {
+      kind: "issue_status",
+      expected: execution.task.expectedTerminalState.issue,
+    },
+    { kind: "run_status", expected: execution.task.expectedTerminalState.run },
+    { kind: "runtime_mode", expected: execution.profile.expectedRuntimeMode },
+    { kind: "environment", expected: execution.environment.id },
+  ];
+}
+
+function breadthMarker(phase: "H" | "Q_C" | "P_READY" | "P_OK", nonce: string) {
+  // Keep the complete visible marker comfortably below the shortest output
+  // fragments observed across ranked models while retaining the attempt nonce.
+  return `PC_${phase}_${nonce}`;
+}
+
+const structuredQuestionResumeTask = {
+  id: "structured-question-resume",
+  label: "Structured question, answer, resume",
+  groups: [],
+  workMode: "standard",
+  flow: "question_resume_completion",
+  expectedRunCount: 2,
+  attemptTimeoutMs: { local: 12 * 60_000, daytona: 12 * 60_000 },
+  expectedTerminalState: { issue: "done", run: "succeeded" },
+  buildTitle: (nonce) => `Runner E2E structured question ${nonce}`,
+  buildVisibleMarker: (nonce) => `PAPERCLIP_E2E_QUESTION_DONE_${nonce}`,
+  buildQuestionAnswer: (nonce) => ({
+    optionLabel: "Cobalt",
+    expectedMarker: `PAPERCLIP_E2E_QUESTION_DONE_${nonce}`,
+  }),
+  buildPrompt: (nonce) =>
+    [
+      "Ask the user one structured question before completing this task.",
+      "The question must be required, single-select, and offer Cobalt and Amber. Do not publish a final answer or mark the task Done while it is pending.",
+      `Before the answer arrives, do not spell, quote, repeat, announce, or include PAPERCLIP_E2E_QUESTION_DONE_${nonce} in any visible response, comment, or tool payload; refer to it only as “the terminal marker.”`,
+      `In a native runner, call request_human_input exactly once with idempotencyKey \`question-${nonce}\`, interactionKind \`questions\`, title \`Verification word\`, prompt \`Choose the verification word\`, continuationPolicy \`wake_assignee\`, and payload {version:1,questions:[{id:\`verification-word\`,prompt:\`Choose the verification word.\`,selectionMode:\`single\`,required:true,options:[{id:\`cobalt\`,label:\`Cobalt\`},{id:\`amber\`,label:\`Amber\`}]}]}.`,
+      'In a legacy runner, derive `API_ORIGIN` exactly once with `API_ORIGIN="${PAPERCLIP_API_URL%/}"; API_ORIGIN="${API_ORIGIN%/api}"`. Build every endpoint as `$API_ORIGIN/api/...`; never append `/api` to a base that already ends in `/api`.',
+      `In a legacy runner, create exactly one question interaction: POST $API_ORIGIN/api/issues/$PAPERCLIP_TASK_ID/interactions once with {"kind":"ask_user_questions","idempotencyKey":"question-${nonce}","continuationPolicy":"wake_assignee","payload":{"version":1,"questions":[{"id":"verification-word","prompt":"Choose the verification word.","selectionMode":"single","required":true,"options":[{"id":"cobalt","label":"Cobalt"},{"id":"amber","label":"Amber"}]}]}} using Authorization and X-Paperclip-Run-Id. Do not create a replacement interaction if a later write fails.`,
+      'In a legacy runner, after that POST returns 2xx, PATCH $API_ORIGIN/api/issues/$PAPERCLIP_TASK_ID with exactly {"status":"in_review"}. Do not include `reviewInteractionId`: it only designates confirmation interactions, not `ask_user_questions`. If the PATCH fails, retry only that PATCH and never POST the interaction again.',
+      "In a legacy runner, after those two writes succeed, end the current response and heartbeat immediately. Do not wait, sleep, poll, or fetch the interaction; `wake_assignee` will start a new heartbeat after the user answers.",
+      `After the answer arrives, if it is Cobalt, publish exactly PAPERCLIP_E2E_QUESTION_DONE_${nonce} once as the complete visible response and mark the task Done.`,
+      `In a native runner, after the answer arrives, call paperclip_finish exactly once with {reportedWorkDisposition:"done",summary:"PAPERCLIP_E2E_QUESTION_DONE_${nonce}",completionClaim:{contractRevision:"1",objectiveSatisfied:true,criteria:[{criterionId:"objective",status:"satisfied",evidenceRefs:[]}],remainingWork:[]},evidence:[],verification:[]}. Wait for that tool call to succeed, then emit exactly PAPERCLIP_E2E_QUESTION_DONE_${nonce} as the complete final response. Do not write a user-facing final response before paperclip_finish succeeds, and do not call another tool.`,
+      `In a legacy runner, make exactly one completion write: PATCH $API_ORIGIN/api/issues/$PAPERCLIP_TASK_ID with {"status":"done","comment":"PAPERCLIP_E2E_QUESTION_DONE_${nonce}"}. Do not POST a separate comment or perform a second write containing the marker.`,
+      "Do not create files, plans, child tasks, or unrelated work, and do not expose credentials.",
+    ].join("\n"),
+  buildMatchers(nonce, execution) {
+    return [
+      {
+        kind: "message_exact",
+        expected: `PAPERCLIP_E2E_QUESTION_DONE_${nonce}`,
+      },
+      {
+        kind: "message_occurrences",
+        expected: `PAPERCLIP_E2E_QUESTION_DONE_${nonce}`,
+        count: 1,
+      },
+      {
+        kind: "issue_status",
+        expected: execution.task.expectedTerminalState.issue,
+      },
+      {
+        kind: "run_status",
+        expected: execution.task.expectedTerminalState.run,
+      },
+      {
+        kind: "runtime_mode",
+        expected: execution.profile.expectedRuntimeMode,
+      },
+      { kind: "environment", expected: execution.environment.id },
+    ];
+  },
+} satisfies RunnerTaskFixture;
+
+export const localIntegrityTasks: readonly RunnerTaskFixture[] = [
+  structuredQuestionResumeTask,
+  {
+    ...structuredQuestionResumeTask,
+    id: "structured-question-restart-resume",
+    label: "Structured question, server restart, answer, resume",
+    restartServerBeforeQuestionAnswer: true,
+    buildTitle: (nonce) => `Runner E2E restart question ${nonce}`,
+  },
+] as const;
+
+export const openRouterBreadthTasks: readonly RunnerTaskFixture[] = [
+  {
+    id: "hello-complete",
+    label: "Hello and complete",
+    groups: [],
+    workMode: "standard",
+    flow: "single_turn",
+    expectedRunCount: 1,
+    attemptTimeoutMs: { local: 8 * 60_000, daytona: 8 * 60_000 },
+    expectedTerminalState: { issue: "done", run: "succeeded" },
+    buildTitle: (nonce) => `OpenRouter breadth hello ${nonce}`,
+    buildVisibleMarker: (nonce) => breadthMarker("H", nonce),
+    buildPrompt: (nonce) =>
+      [
+        "Complete this deterministic hello task in one turn.",
+        "Your first response action must be the paperclip_finish tool call. Do not emit any assistant text, acknowledgement, or preamble before calling it.",
+        `Call paperclip_finish exactly once with {reportedWorkDisposition:"done",summary:"${breadthMarker("H", nonce)}",completionClaim:{contractRevision:"1",objectiveSatisfied:true,criteria:[{criterionId:"objective",status:"satisfied",evidenceRefs:[]}],remainingWork:[]},evidence:[],verification:[]}. Wait for that tool call to succeed, then emit exactly ${breadthMarker("H", nonce)} as the complete user-facing final response. Do not write a user-facing final response before paperclip_finish succeeds, and do not call another tool.`,
+        "Do not create files, plans, interactions, or additional work.",
+      ].join("\n"),
+    buildMatchers: (nonce, execution) =>
+      terminalMatchers(breadthMarker("H", nonce), execution),
+  },
+  {
+    id: "question-resume-complete",
+    label: "Ask, answer, resume",
+    groups: [],
+    workMode: "standard",
+    flow: "question_resume_completion",
+    expectedRunCount: 2,
+    attemptTimeoutMs: { local: 12 * 60_000, daytona: 12 * 60_000 },
+    expectedTerminalState: { issue: "done", run: "succeeded" },
+    buildTitle: (nonce) => `OpenRouter breadth question ${nonce}`,
+    buildVisibleMarker: (nonce) => breadthMarker("Q_C", nonce),
+    buildQuestionAnswer: (nonce) => ({
+      optionLabel: "Cobalt",
+      expectedMarker: breadthMarker("Q_C", nonce),
+    }),
+    buildPrompt: (nonce) =>
+      [
+        "Ask the user one structured question before completing this task.",
+        `Call request_human_input exactly once with idempotencyKey \`question-${nonce}\`, interactionKind \`questions\`, title \`Verification word\`, prompt \`Choose the verification word\`, continuationPolicy \`wake_assignee\`, and payload {version:1,questions:[{id:\`verification-word\`,prompt:\`Choose the verification word.\`,selectionMode:\`single\`,required:true,options:[{id:\`cobalt\`,label:\`Cobalt\`},{id:\`amber\`,label:\`Amber\`}]}]}.`,
+        `Before the answer arrives, do not spell, quote, repeat, announce, or include ${breadthMarker("Q_C", nonce)} in any visible response, comment, or tool payload; refer to it only as “the terminal marker.”`,
+        "Do not call paperclip_finish while the question is pending.",
+        `After the answer arrives, if it is Cobalt, call paperclip_finish exactly once with {reportedWorkDisposition:"done",summary:"${breadthMarker("Q_C", nonce)}",completionClaim:{contractRevision:"1",objectiveSatisfied:true,criteria:[{criterionId:"objective",status:"satisfied",evidenceRefs:[]}],remainingWork:[]},evidence:[],verification:[]}. Wait for that tool call to succeed, then emit exactly ${breadthMarker("Q_C", nonce)} as the complete user-facing final response. Do not write a user-facing final response before paperclip_finish succeeds, and do not call another tool.`,
+        "Do not create files, plans, or additional work.",
+      ].join("\n"),
+    buildMatchers: (nonce, execution) =>
+      terminalMatchers(breadthMarker("Q_C", nonce), execution),
+  },
+  {
+    id: "plan-approve-complete",
+    label: "Plan, approve, complete",
+    groups: [],
+    workMode: "planning",
+    flow: "plan_approval_completion",
+    expectedRunCount: 2,
+    attemptTimeoutMs: { local: 15 * 60_000, daytona: 15 * 60_000 },
+    expectedTerminalState: { issue: "done", run: "succeeded" },
+    buildTitle: (nonce) => `OpenRouter breadth plan ${nonce}`,
+    buildVisibleMarker: (nonce) => breadthMarker("P_OK", nonce),
+    buildPlanMarkers: (nonce) => ({
+      draft: breadthMarker("P_READY", nonce),
+      revised: breadthMarker("P_OK", nonce),
+    }),
+    buildPrompt: (nonce) =>
+      [
+        "Create a canonical Plan with exactly two numbered steps and request approval; do not implement before approval.",
+        `The Plan body must contain ${breadthMarker("P_READY", nonce)}.`,
+        "Call write_document for key `plan`, then call request_human_input exactly once with interactionKind `confirmation`, targetRevisionId set to the returned latest Plan revision, and continuationPolicy `wake_assignee`.",
+        `Before that exact Plan revision is accepted, do not spell, quote, repeat, announce, or include ${breadthMarker("P_OK", nonce)} in any visible response, comment, or tool payload; refer to it only as “the terminal marker.”`,
+        "Do not call paperclip_finish while confirmation is pending.",
+        `After that exact Plan revision is accepted, call paperclip_finish exactly once with {reportedWorkDisposition:"done",summary:"${breadthMarker("P_OK", nonce)}",completionClaim:{contractRevision:"1",objectiveSatisfied:true,criteria:[{criterionId:"objective",status:"satisfied",evidenceRefs:[]}],remainingWork:[]},evidence:[],verification:[]}. Wait for that tool call to succeed, then emit exactly ${breadthMarker("P_OK", nonce)} as the complete user-facing final response. Do not write a user-facing final response before paperclip_finish succeeds, and do not call another tool.`,
+        "Do not create files, child tasks, or unrelated work.",
+      ].join("\n"),
+    buildMatchers: (nonce, execution) =>
+      terminalMatchers(breadthMarker("P_OK", nonce), execution),
+  },
+] as const;
+
+const localEnvironment = runnerEnvironments.find(
+  (environment) => environment.id === "local",
+)!;
+
+function warmTurnMarker(turn: 1 | 2 | 3, nonce: string) {
+  return `PAPERCLIP_E2E_WARM_T${turn}_${nonce}`;
+}
+
+function warmWorkspaceLine(turn: 1 | 2 | 3, nonce: string) {
+  // Issue descriptions are rendered through the native prompt's Markdown
+  // boundary, which escapes underscores. Keep the byte-level workspace
+  // sentinel Markdown-inert so both legacy and native providers receive the
+  // same literal content.
+  return `T${turn}-${nonce}`;
+}
+
+function warmTurnInstructions(turn: 1 | 2 | 3, nonce: string) {
+  const file = `daytona-warm-${nonce}.txt`;
+  const lines = Array.from({ length: turn }, (_, index) =>
+    warmWorkspaceLine((index + 1) as 1 | 2 | 3, nonce),
+  );
+  const marker = warmTurnMarker(turn, nonce);
+  const finalTurn = turn === 3;
+  const legacyCompletion = finalTurn
+    ? `In a legacy runner, make exactly one public-API completion write after verification: PATCH /api/issues/$PAPERCLIP_TASK_ID with {"status":"done","comment":"${marker}"}. Include Authorization and X-Paperclip-Run-Id. Do not POST a separate comment.`
+    : `In a legacy runner, after verification POST exactly one request_confirmation to /api/issues/$PAPERCLIP_TASK_ID/interactions with {"kind":"request_confirmation","idempotencyKey":"daytona-warm-review-T${turn}-${nonce}","resolverPolicy":"human_only","title":"Warm continuity turn ${turn}","summary":"Review completed warm continuity turn ${turn}.","continuationPolicy":"wake_assignee","payload":{"version":1,"prompt":"Is this warm continuity task ready to complete after turn ${turn}?","acceptLabel":"Approve completion","rejectLabel":"Continue work","rejectRequiresReason":true,"allowDeclineReason":true,"supersedeOnUserComment":false,"target":{"type":"custom","key":"daytona_warm_turn_${turn}","revisionId":"${nonce}-T${turn}","label":"Warm continuity turn ${turn}"}}}. Capture the returned interaction id. Then make exactly one issue PATCH with {"status":"in_review","comment":"${marker}","reviewInteractionId":"<returned interaction id>"}. Include Authorization and X-Paperclip-Run-Id on both writes. If the issue PATCH fails, retry only that PATCH and never create another interaction. Do not POST a separate comment. After both writes succeed, end the response and heartbeat immediately; do not wait or poll because the reviewer action will start the next turn.`;
+  return [
+    `This is warm Daytona continuity turn ${turn} of 3. Work only in the current execution workspace.`,
+    turn === 1
+      ? `Create ${file} with exactly this one line followed by a newline: ${lines[0]}`
+      : `Before changing anything, read ${file} and verify its content is exactly ${lines.slice(0, -1).join("\\n")} followed by a newline. Then append exactly ${lines.at(-1)} followed by a newline.`,
+    `After the write, verify ${file} contains exactly these lines, once each and in order: ${lines.join(" | ")}.`,
+    `In a native runner, call paperclip_finish exactly once with {reportedWorkDisposition:"${finalTurn ? "done" : "needs_review"}",summary:"${marker}",completionClaim:{contractRevision:"1",objectiveSatisfied:true,criteria:[{criterionId:"objective",status:"satisfied",evidenceRefs:[]}],remainingWork:[]},evidence:[],verification:[{commandOrCheck:"read ${file}",status:"passed"}]}. Wait for that tool call to succeed, then emit exactly ${marker} once as the complete user-facing final response.`,
+    legacyCompletion,
+    `In a legacy runner, the PATCH comment is the complete visible response. After its 2xx response, finish silently: do not print, echo, or emit ${marker} again as assistant text.`,
+    `Do not include ${marker} in any other visible response or write. Do not recreate, truncate, reorder, or duplicate prior lines.`,
+  ].join("\n");
+}
+
+export const daytonaWarmContinuityTask: RunnerTaskFixture = {
+  id: "warm-three-turn",
+  label: "Warm three-turn workspace continuity",
+  groups: ["warm"],
+  workMode: "standard",
+  flow: "warm_three_turn",
+  expectedRunCount: 3,
+  attemptTimeoutMs: { local: 30 * 60_000, daytona: 30 * 60_000 },
+  turnTimeoutMs: 10 * 60_000,
+  expectedTerminalState: { issue: "done", run: "succeeded" },
+  buildTitle: (nonce) => `Runner E2E warm Daytona continuity ${nonce}`,
+  buildVisibleMarker: (nonce) => warmTurnMarker(3, nonce),
+  buildPrompt: (nonce) => warmTurnInstructions(1, nonce),
+  buildFollowupMessages: (nonce) => [
+    warmTurnInstructions(2, nonce),
+    warmTurnInstructions(3, nonce),
+  ],
+  buildMatchers(nonce, execution) {
+    const markers = ([1, 2, 3] as const).map((turn) =>
+      warmTurnMarker(turn, nonce),
+    );
+    return [
+      { kind: "message_exact", expected: markers[2] },
+      ...markers.map(
+        (expected) =>
+          ({ kind: "message_occurrences", expected, count: 1 }) as const,
+      ),
+      { kind: "message_ordered", expected: markers },
+      {
+        kind: "file_exact",
+        path: `daytona-warm-${nonce}.txt`,
+        expected: `${([1, 2, 3] as const)
+          .map((turn) => warmWorkspaceLine(turn, nonce))
+          .join("\n")}\n`,
+      },
+      { kind: "issue_status", expected: "done" },
+      { kind: "run_status", expected: "succeeded" },
+      { kind: "runtime_mode", expected: execution.profile.expectedRuntimeMode },
+      { kind: "environment", expected: "daytona" },
+    ];
+  },
+};
+
+const codexContinuityProfiles = runnerProfiles.filter((profile) =>
+  ["legacy-codex", "runner-codex"].includes(profile.id),
+);
+
+export const runnerSuites: readonly RunnerSuiteFixture[] = [
+  {
+    id: "core-compatibility",
+    label: "Core Runner Compatibility",
+    description:
+      "Major provider, runtime generation, and execution-environment compatibility.",
+    groups: ["core"],
+    profiles: runnerProfiles,
+    environments: runnerEnvironments,
+    tasks: runnerTasks,
+    expectedMatrixSize: 42,
+  },
+  {
+    id: "local-session-integrity",
+    label: "Local Session Integrity",
+    description:
+      "Structured interaction and continuation qualification for every supported local profile.",
+    groups: ["core"],
+    profiles: runnerProfiles,
+    environments: [localEnvironment],
+    tasks: localIntegrityTasks,
+    expectedMatrixSize: 14,
+  },
+  {
+    id: "openrouter-model-breadth",
+    label: "OpenRouter Model Breadth",
+    description:
+      "Weekly-ranked tool-capable OpenRouter models through native OpenCode on isolated local workspaces.",
+    groups: ["breadth"],
+    profiles: openRouterBreadthProfiles,
+    environments: [localEnvironment],
+    tasks: openRouterBreadthTasks,
+    excludedExecutionIds: openRouterBreadthExcludedExecutionIds,
+    expectedMatrixSize: 10,
+    definitionMetadata: {
+      rankingSnapshotId: openRouterRankingSnapshot.snapshotId,
+      rankingContentHash: openRouterRankingSnapshot.contentHash,
+      rankingCapturedAt: openRouterRankingSnapshot.capturedAt,
+      rankingSourceUrl: openRouterRankingSnapshot.sourceUrl,
+      excludedModelIds: openRouterBreadthExcludedModelIds,
+      excludedExecutionIds: openRouterBreadthExcludedExecutionIds,
+    },
+  },
+  {
+    id: "daytona-warm-continuity",
+    label: "Daytona Warm Continuity",
+    description:
+      "Three browser-driven turns on one reusable Daytona sandbox for legacy and native Codex.",
+    groups: ["daytona", "warm"],
+    profiles: codexContinuityProfiles,
+    environments: [daytonaWarmEnvironment],
+    tasks: [daytonaWarmContinuityTask],
+    expectedMatrixSize: 2,
+  },
+] as const;
+
+export function suiteDefinitionHash(suite: RunnerSuiteFixture) {
+  return createHash("sha256")
+    .update(
+      JSON.stringify({
+        id: suite.id,
+        profiles: suite.profiles.map((profile) => ({
+          id: profile.id,
+          model: profile.model,
+          qualification: profile.modelQualification,
+        })),
+        environments: suite.environments.map((environment) => ({
+          id: environment.id,
+          configurationKey: environment.configurationKey ?? "default",
+        })),
+        tasks: suite.tasks.map((task) => ({
+          id: task.id,
+          flow: task.flow,
+          expectedRunCount: task.expectedRunCount,
+          restartServerBeforeQuestionAnswer:
+            task.restartServerBeforeQuestionAnswer ?? false,
+        })),
+        excludedExecutionIds: [...(suite.excludedExecutionIds ?? [])].sort(),
+        metadata: suite.definitionMetadata ?? null,
+      }),
+    )
+    .digest("hex");
+}
+
+export function buildRunnerMatrix(
+  suites: readonly RunnerSuiteFixture[] = runnerSuites,
+): MatrixExecution[] {
+  return suites.flatMap((suite) => {
+    const excludedExecutionIds = new Set(suite.excludedExecutionIds ?? []);
+    return suite.profiles.flatMap((profile) =>
+      suite.environments
+        .filter((environment) =>
+          profile.supportedEnvironments.includes(environment.id),
+        )
+        .flatMap((environment) =>
+          suite.tasks
+            .map((task) => ({
+              id: `${suite.id}.${profile.id}.${environment.id}.${task.id}`,
+              suite,
+              suiteDefinitionHash: suiteDefinitionHash(suite),
+              profile,
+              environment,
+              task,
+              groups: [
+                ...new Set([
+                  ...suite.groups,
+                  ...profile.groups,
+                  ...environment.groups,
+                  ...task.groups,
+                ]),
+              ],
+              requiredCredentials: [
+                profile.credential,
+                ...(environment.credential ? [environment.credential] : []),
+              ],
+            }))
+            .filter((execution) => !excludedExecutionIds.has(execution.id)),
+        ),
+    );
+  });
+}
+
+function duplicateIds(values: readonly { id: string }[]) {
+  const seen = new Set<string>();
+  return values
+    .map((value) => value.id)
+    .filter((id) => {
+      if (seen.has(id)) return true;
+      seen.add(id);
+      return false;
+    });
+}
+
+function assertNoRawSecretValues(value: unknown, label: string) {
+  if (typeof value === "string") {
+    if (/\b(?:sk-(?:proj-)?|sk-ant-)[A-Za-z0-9_-]{12,}\b/.test(value)) {
+      throw new Error(`${label} contains a raw secret-looking value`);
+    }
+    return;
+  }
+  if (Array.isArray(value)) {
+    value.forEach((entry) => assertNoRawSecretValues(entry, label));
+    return;
+  }
+  if (value && typeof value === "object") {
+    Object.entries(value).forEach(([key, entry]) => {
+      if (
+        typeof entry === "string" &&
+        /(?:api.?key|access.?token|credential|secret)$/i.test(key) &&
+        entry.trim()
+      ) {
+        throw new Error(`${label} contains a raw credential at ${key}`);
+      }
+      assertNoRawSecretValues(entry, label);
+    });
+  }
+}
+
+export function validateRunnerCatalog(): MatrixExecution[] {
+  const allProfiles = [...runnerProfiles, ...openRouterBreadthProfiles];
+  const allTasks = [
+    ...runnerTasks,
+    ...localIntegrityTasks,
+    ...openRouterBreadthTasks,
+    daytonaWarmContinuityTask,
+  ];
+  for (const [label, values] of [
+    ["suite", runnerSuites],
+    ["profile", allProfiles],
+    ["environment", runnerEnvironments],
+    ["task", allTasks],
+  ] as const) {
+    const duplicates = duplicateIds(values);
+    if (duplicates.length > 0)
+      throw new Error(
+        `Duplicate ${label} fixture ids: ${duplicates.join(", ")}`,
+      );
+  }
+
+  const selectableGroups = new Set<string>(SELECTABLE_GROUPS);
+  for (const fixture of [
+    ...runnerSuites,
+    ...allProfiles,
+    ...runnerEnvironments,
+    daytonaWarmEnvironment,
+    ...allTasks,
+  ]) {
+    const unknownGroups = fixture.groups.filter(
+      (group) => !selectableGroups.has(group),
+    );
+    if (unknownGroups.length > 0) {
+      throw new Error(
+        `Fixture ${fixture.id} declares unknown groups: ${unknownGroups.join(", ")}`,
+      );
+    }
+  }
+
+  const sampleRefs = Object.fromEntries(
+    [
+      "OPENAI_API_KEY",
+      "ANTHROPIC_API_KEY",
+      "OPENROUTER_API_KEY",
+      "DAYTONA_API_KEY",
+    ].map((name, index) => [
+      name,
+      {
+        type: "secret_ref" as const,
+        secretId: `${String(index + 1).padStart(8, "0")}-1111-4111-8111-111111111111`,
+        version: "latest" as const,
+      },
+    ]),
+  );
+
+  for (const environment of [...runnerEnvironments, daytonaWarmEnvironment]) {
+    const payload = environment.buildEnvironment({
+      secretRefs: sampleRefs,
+      daytonaImage:
+        "ghcr.io/paperclipai/paperclip-daytona-runner@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      executionId: "schema-validation",
+    });
+    createEnvironmentSchema.parse(payload);
+    assertNoRawSecretValues(payload, `environment ${environment.id}`);
+  }
+  for (const profile of allProfiles) {
+    if (!CREDENTIAL_NAMES.includes(profile.credential)) {
+      throw new Error(
+        `Profile ${profile.id} declares unknown credential ${profile.credential}`,
+      );
+    }
+    const unsupportedEnvironmentIds = profile.supportedEnvironments.filter(
+      (environmentId) => !ENVIRONMENT_IDS.includes(environmentId),
+    );
+    if (unsupportedEnvironmentIds.length > 0) {
+      throw new Error(
+        `Profile ${profile.id} declares unknown environments: ${unsupportedEnvironmentIds.join(", ")}`,
+      );
+    }
+    const payload = profile.buildAgent({
+      environmentId: SAMPLE_UUID,
+      environmentFixtureId: "local",
+      workspacePath: "/tmp/paperclip-runner-e2e-schema",
+      secretRefs: sampleRefs,
+      executionId: "schema-validation",
+    });
+    createAgentSchema.parse(payload);
+    assertNoRawSecretValues(payload, `profile ${profile.id}`);
+  }
+
+  const matrix = buildRunnerMatrix();
+  const duplicateMatrixIds = duplicateIds(matrix);
+  if (duplicateMatrixIds.length > 0) {
+    throw new Error(
+      `Duplicate matrix execution ids: ${duplicateMatrixIds.join(", ")}`,
+    );
+  }
+  for (const suite of runnerSuites) {
+    const suiteSize = matrix.filter(
+      (execution) => execution.suite.id === suite.id,
+    ).length;
+    if (suiteSize !== suite.expectedMatrixSize) {
+      throw new Error(
+        `Expected ${suite.expectedMatrixSize} ${suite.id} executions; received ${suiteSize}`,
+      );
+    }
+  }
+  if (matrix.length !== 68)
+    throw new Error(`Expected 68 runner executions; received ${matrix.length}`);
+  return matrix;
+}
+
+export const runnerMatrix = validateRunnerCatalog();
+
+export function runnerExecutionById(id: string): MatrixExecution {
+  const execution = runnerMatrix.find((candidate) => candidate.id === id);
+  if (!execution) throw new Error(`Unknown runner E2E execution id: ${id}`);
+  return execution;
+}

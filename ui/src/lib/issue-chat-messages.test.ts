@@ -207,6 +207,31 @@ function createRequestConfirmation(
 }
 
 describe("buildAssistantPartsFromTranscript", () => {
+  it("keeps canonical provider activity structured for the task-thread widget", () => {
+    const result = buildAssistantPartsFromTranscript([{
+      kind: "provider_activity",
+      ts: "2026-08-21T12:00:00.000Z",
+      family: "plan",
+      eventType: "plan.updated",
+      status: "completed",
+      title: "Plan",
+      summary: "Plan synchronized",
+      payload: { steps: [{ stepId: "s1", body: "Validate schemas", status: "completed" }] },
+    }]);
+    expect(result.parts).toHaveLength(1);
+    expect(result.parts[0]).toMatchObject({
+      type: "tool-call",
+      toolName: "paperclip_provider_activity",
+      args: {
+        family: "plan",
+        eventType: "plan.updated",
+        payload: { steps: [{ body: "Validate schemas" }] },
+      },
+      result: { status: "completed" },
+    });
+    expect(JSON.stringify(result.parts)).not.toContain("reasoning");
+  });
+
   it("maps assistant text, reasoning, and tool activity while omitting noisy stderr", () => {
     const result = buildAssistantPartsFromTranscript([
       {
@@ -258,6 +283,19 @@ describe("buildAssistantPartsFromTranscript", () => {
       isError: false,
     });
     expect(result.notices).toEqual([]);
+  });
+
+  it("accumulates streamed tool output before the completed result", () => {
+    const result = buildAssistantPartsFromTranscript([
+      { kind: "tool_call", ts: "2026-04-06T12:00:00.000Z", name: "shell", toolUseId: "tool-1", input: {} },
+      { kind: "tool_result", ts: "2026-04-06T12:00:01.000Z", toolUseId: "tool-1", content: "first\n", delta: true },
+      { kind: "tool_result", ts: "2026-04-06T12:00:02.000Z", toolUseId: "tool-1", content: "second\n", delta: true },
+      { kind: "tool_result", ts: "2026-04-06T12:00:03.000Z", toolUseId: "tool-1", content: "", isError: false },
+    ]);
+
+    expect(result.parts).toMatchObject([
+      { type: "tool-call", toolCallId: "tool-1", result: "first\nsecond\n", isError: false },
+    ]);
   });
 
   it("preserves transcript ordering when text and tool activity are interleaved", () => {

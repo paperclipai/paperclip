@@ -1,5 +1,5 @@
 import { useEffect, useState, useMemo, useRef } from "react";
-import type { CSSProperties } from "react";
+import type { ComponentType, CSSProperties } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { MotionConfig, motion } from "motion/react";
 import type {
@@ -11,6 +11,39 @@ import type {
 } from "@paperclipai/shared";
 import { AGENT_ROLES, AGENT_ROLE_LABELS, ADAPTER_AUTH_MISSING_CHECK_CODE } from "@paperclipai/shared";
 import { AdapterLoginPanel } from "./AgentConfigForm";
+import {
+  CONNECT_SOURCE_NAMES,
+  OnboardingCardField,
+  OnboardingLoginCard,
+} from "./AdapterLoginChrome";
+import {
+  beatDelay,
+  CARD_ENTER,
+  CARD_EXIT,
+  CARD_EXIT_MS,
+  CONNECTED_HOLD_MS,
+  MAKE_ROOM,
+  MAKE_ROOM_MS,
+  SOURCE_COLLAPSE_MS,
+  SOURCE_LINK_EXIT,
+} from "./onboarding/onboarding-motion";
+
+/**
+ * Where the connect step's sign-in sequence is. Space and visibility land on
+ * different beats, which is why there are more of these than there are things
+ * on screen — see the derived state in the step itself.
+ */
+type ConnectPhase =
+  | "idle"
+  | "collapsing"
+  | "loading"
+  | "ready"
+  | "waiting"
+  | "connecting"
+  | "unwindCard"
+  | "unwindRoom"
+  | "unwindRow";
+import { secretsApi } from "../api/secrets";
 import { Label } from "./ui/label";
 import { Input } from "./ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./ui/select";
@@ -83,9 +116,19 @@ import {
 import { AsciiArtAnimation } from "./AsciiArtAnimation";
 import { FrontDoor } from "./FrontDoor";
 import { PillGuy } from "./onboarding/PillGuy";
-import { AGENT_ARC_WIZARD_STEPS, Stepper, agentArcStepFor } from "./onboarding/Stepper";
+import { SleepingZs } from "./onboarding/SleepingZs";
+import {
+  AGENT_ARC_WIZARD_STEPS,
+  ONBOARDING_STEP_LABELS,
+  ONBOARDING_WIZARD_STEPS,
+  Stepper,
+  agentArcStepFor,
+  onboardingStepPositionFor,
+} from "./onboarding/Stepper";
 import { AgentPreview } from "./onboarding/AgentPreview";
-import { FooterNav } from "./onboarding/FooterNav";
+import { ModelSourceTiles, type CredentialMode } from "./onboarding/ModelSourceTiles";
+import { CredentialModeLink } from "./onboarding/CredentialModeLink";
+import { FooterNav, type FooterPrimaryIcon } from "./onboarding/FooterNav";
 import { OnboardingHeading } from "./onboarding/OnboardingPrimitives";
 import { DEFAULT_AGENT_ROLE } from "../lib/onboarding-agent-role";
 import { capsuleHeroMotion } from "./onboarding/onboarding-motion";
@@ -100,7 +143,6 @@ import {
   Check,
   Loader2,
   ChevronDown,
-  X
 } from "lucide-react";
 
 type Step = 0 | 1 | 2 | 3 | 4 | 5;
@@ -113,6 +155,21 @@ const MISSION_PROMPT_CHIPS = [
   "Scale a content business",
   "Launch a marketplace"
 ];
+
+// First-run onboarding stays on the proven direct adapters even when an
+// instance administrator has opted into Paperclip Runner elsewhere. The
+// experimental flag only exposes the runner in explicit agent configuration.
+const ONBOARDING_EXCLUDED_ADAPTER_TYPES = new Set([
+  "process",
+  "http",
+  "paperclip_runner",
+]);
+
+function restoreOnboardingAdapterType(savedAdapterType: unknown): AdapterType {
+  return typeof savedAdapterType === "string" && savedAdapterType !== "paperclip_runner"
+    ? savedAdapterType
+    : "claude_local";
+}
 
 function buildMissionFromQuestionnaire(q1: string, q2: string, q3: string, q4: string): string {
   const parts: string[] = [];
@@ -159,6 +216,77 @@ function adapterConfigHasAnthropicApiKey(config: Record<string, unknown>): boole
     return typeof binding.value === "string" && binding.value.trim().length > 0;
   }
   return binding.type === "secret_ref" || binding.type === "user_secret_ref";
+}
+
+/**
+ * Full-colour brand marks for the sources this step offers.
+ *
+ * The registry's own icons are monochrome, drawn to sit in dense config UI
+ * where a row of saturated logos would be noise. This step is the opposite
+ * case: two large tiles carrying the whole choice, where the brand is the
+ * fastest thing to recognise.
+ *
+ * Keyed by adapter type with a fallback, so the row stays registry-driven. An
+ * adapter with no brand file here still renders — with its registry icon —
+ * rather than a gap where a tile should be.
+ */
+const MODEL_SOURCE_BRAND_MARKS: Record<string, string> = {
+  claude_local: "/brands/claude-color.svg",
+};
+
+
+/**
+ * OpenAI's blossom, inline rather than served from `/brands`.
+ *
+ * The supplied asset is a white fill, which was fine while this row only ever
+ * sat on a dark tile. It follows the reader's system setting now, and white on
+ * the light tile is invisible. Inlining lets the path take
+ * `currentColor` and be legible in both, which an `<img>` cannot do.
+ */
+function OpenAiBlossom({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 716 716" className={className} fill="none" aria-hidden>
+      <path
+        fill="currentColor"
+        d="M508.749 317.399C516.777 287.314 508.991 253.884 485.389 230.282C461.788 206.681 428.36 198.895 398.273 206.923C376.231 184.928 343.39 174.956 311.148 183.596C278.906 192.234 255.45 217.292 247.36 247.361C217.291 255.451 192.233 278.91 183.595 311.149C174.957 343.391 184.927 376.232 206.924 398.274C198.896 428.359 206.683 461.789 230.284 485.391C253.885 508.992 287.313 516.779 317.401 508.75C339.442 530.745 372.286 540.717 404.525 532.079C436.767 523.441 460.223 498.384 468.313 468.315C498.383 460.224 523.44 436.766 532.078 404.526C540.716 372.285 530.747 339.443 508.749 317.402V317.399ZM470.899 244.776C486.892 260.77 493.488 282.601 490.687 303.412L415.577 260.046C412.411 258.218 408.509 258.218 405.345 260.046L317.401 310.82V277.526C317.401 275.191 318.652 273.005 320.676 271.837L387.644 233.174C414.178 218.353 448.346 222.223 470.901 244.776H470.899ZM357.837 311.144L398.275 334.491V381.185L357.837 404.532L317.398 381.185V334.491L357.837 311.144ZM264.776 269.693C265.207 239.305 285.644 211.649 316.453 203.393C338.3 197.54 360.505 202.744 377.127 215.573L302.014 258.937C298.848 260.764 296.898 264.144 296.898 267.798V369.346L268.065 352.699C266.043 351.531 264.776 349.353 264.776 347.017V269.691V269.693ZM203.391 316.454C209.244 294.608 224.854 277.978 244.276 269.999V356.73C244.276 360.384 246.226 363.763 249.392 365.591L337.337 416.365L308.503 433.013C306.481 434.181 303.961 434.188 301.939 433.02L234.971 394.357C208.868 378.789 195.138 347.261 203.391 316.454ZM244.775 470.9C228.781 454.906 222.186 433.075 224.986 412.264L300.096 455.63C303.263 457.457 307.164 457.457 310.328 455.63L398.273 404.856V438.149C398.273 440.485 397.022 442.671 394.997 443.839L328.029 482.502C301.495 497.322 267.327 493.452 244.772 470.9H244.775ZM450.897 445.982C450.466 476.371 430.029 504.027 399.22 512.283C377.373 518.136 355.168 512.932 338.547 500.102L413.659 456.738C416.826 454.911 418.775 451.532 418.775 447.877V346.329L447.609 362.977C449.631 364.145 450.897 366.323 450.897 368.659V445.985V445.982ZM512.282 399.221C506.429 421.068 490.819 437.697 471.397 445.676V358.946C471.397 355.292 469.448 351.912 466.281 350.085L378.336 299.311L407.17 282.663C409.192 281.495 411.712 281.487 413.734 282.655L480.702 321.318C506.805 336.887 520.536 368.415 512.282 399.221Z"
+      />
+    </svg>
+  );
+}
+
+const MODEL_SOURCE_INLINE_MARKS: Record<string, ComponentType<{ className?: string }>> = {
+  codex_local: OpenAiBlossom,
+};
+
+/**
+ * The environment variable each source reads its key from.
+ *
+ * Named rather than described in the field above it, because the customer knows
+ * which key they are holding and does not know where this step will put it. The
+ * mapping already existed in this file as prose inside the environment-check
+ * hint; this is the same knowledge, in a form the key field can use.
+ */
+const API_KEY_ENV_KEYS: Record<string, string> = {
+  claude_local: ANTHROPIC_API_KEY_ENV_KEY,
+  codex_local: "OPENAI_API_KEY",
+};
+
+function apiKeyEnvKeyFor(adapterType: string): string {
+  return API_KEY_ENV_KEYS[adapterType] ?? "API_KEY";
+}
+
+function ModelSourceMark({
+  type,
+  Fallback,
+}: {
+  type: string;
+  Fallback: ComponentType<{ className?: string }>;
+}) {
+  const Inline = MODEL_SOURCE_INLINE_MARKS[type];
+  if (Inline) return <Inline className="size-full" />;
+  const brand = MODEL_SOURCE_BRAND_MARKS[type];
+  if (!brand) return <Fallback className="size-full" />;
+  return <img src={brand} alt="" className="size-full" />;
 }
 
 // Exported so tests write/read the exact key the component uses, instead of
@@ -260,6 +388,19 @@ export function OnboardingWizard() {
       return null; // malformed: treated as stale below
     }
   }, []);
+  // The ownership gate is closed after the initial validation succeeds, or
+  // when no validation is needed. A later company-list invalidation is
+  // ordinary background work. If it unmounted the inner wizard then, all of
+  // its live useState values would be reconstructed from `rawBlob` above —
+  // the value from page load, not the draft the customer just typed — and a
+  // successful organization submission would appear to do nothing.
+  //
+  // A failed validation must remain retryable. A later successful fetch needs
+  // to remount the wizard with the now-authorized draft, rather than keeping
+  // the defaults it showed while ownership was unknown.
+  const [initialDraftValidationComplete, setInitialDraftValidationComplete] = useState(
+    rawBlob === undefined || rawBlob === null,
+  );
 
   // Whether this account owns the company the draft names is an authorization
   // question, and the answer has to be about the account asking now.
@@ -332,10 +473,11 @@ export function OnboardingWizard() {
     onboardingDraftStorage.clear();
   }, [staleStateDetected]);
 
-  // A saved blob exists and the verification fetch is still in flight: wait,
-  // rather than mount the inner wizard with a premature and unrecoverable
-  // guess at the draft. Its ~20 `useState(saved?.x ?? default)` initializers
-  // only read `saved` once.
+  // A saved blob exists and its *initial* verification fetch is still in
+  // flight: wait, rather than mount the inner wizard with a premature and
+  // unrecoverable guess at the draft. Its ~20 `useState(saved?.x ?? default)`
+  // initializers only read `saved` once. After that first mount this is a
+  // background refetch, which must not tear down the customer's live state.
   //
   // `isFetching`, not `isLoading`. `isLoading` is false whenever the cache
   // holds retained data, so a refetch over a warm cache would mount the wizard
@@ -352,7 +494,20 @@ export function OnboardingWizard() {
   // it is itself gated on `effectiveOnboardingOpen`, so a mounted-but-closed
   // wizard writes nothing. If the wizard is open the customer is onboarding
   // right now, which supersedes the draft anyway.
-  if (rawBlob !== undefined && companiesQuery.isFetching) {
+  const waitForInitialDraftValidation =
+    !initialDraftValidationComplete && rawBlob !== undefined && companiesQuery.isFetching;
+
+  useEffect(() => {
+    if (
+      !initialDraftValidationComplete &&
+      ownershipDecidable &&
+      !companiesQuery.isFetching
+    ) {
+      setInitialDraftValidationComplete(true);
+    }
+  }, [initialDraftValidationComplete, ownershipDecidable, companiesQuery.isFetching]);
+
+  if (waitForInitialDraftValidation) {
     return null;
   }
 
@@ -473,12 +628,49 @@ function OnboardingWizardInner({
     // one.
     (saved?.agentRole as AgentRole) || DEFAULT_AGENT_ROLE,
   );
-  const [adapterType, setAdapterType] = useState<AdapterType>((saved?.adapterType as AdapterType) ?? "claude_local");
+  const [adapterType, setAdapterType] = useState<AdapterType>(() =>
+    restoreOnboardingAdapterType(saved?.adapterType),
+  );
+  /**
+   * Whether a model source has been chosen, as opposed to which one
+   * `adapterType` happens to hold.
+   *
+   * The two are not the same, and reading the second as the first is what made
+   * this step arrive with a tile already lit and its input already open: the
+   * hire needs an adapter, so `adapterType` always carries one, restored or
+   * defaulted. A customer who never touched the row could reach the end of the
+   * step having chosen nothing.
+   *
+   * Always false on arrival, including from a draft that names a source.
+   *
+   * It used to restore, on the reasoning that someone returning had already
+   * answered and asking again threw that answer away. Picking a source is what
+   * starts the sign-in now, so a restored selection is not an answer the step
+   * can act on — it is a lit tile with nothing behind it, and the sequence has
+   * no way to begin from there without either starting a server session
+   * unbidden or leaving the button to do a job the row is supposed to do.
+   *
+   * `adapterType` still restores; it is what the hire needs. This is only about
+   * whether the row has been *answered* on this visit.
+   */
+  const [sourcePicked, setSourcePicked] = useState(false);
+  const savedNativeRunnerDraft = saved?.adapterType === "paperclip_runner";
   const [cwd, setCwd] = useState((saved?.cwd as string) ?? "");
-  const [model, setModel] = useState((saved?.model as string) ?? "");
-  const [command, setCommand] = useState((saved?.command as string) ?? "");
-  const [args, setArgs] = useState((saved?.args as string) ?? "");
-  const [url, setUrl] = useState((saved?.url as string) ?? "");
+  // Native drafts may carry provider-specific configuration that is invalid
+  // for the legacy adapter selected above. Keep the portable working
+  // directory, but clear runner-specific execution fields while restoring.
+  const [model, setModel] = useState(
+    savedNativeRunnerDraft ? "" : (saved?.model as string) ?? "",
+  );
+  const [command, setCommand] = useState(
+    savedNativeRunnerDraft ? "" : (saved?.command as string) ?? "",
+  );
+  const [args, setArgs] = useState(
+    savedNativeRunnerDraft ? "" : (saved?.args as string) ?? "",
+  );
+  const [url, setUrl] = useState(
+    savedNativeRunnerDraft ? "" : (saved?.url as string) ?? "",
+  );
   const [adapterEnvResult, setAdapterEnvResult] =
     useState<AdapterEnvironmentTestResult | null>(null);
   const [adapterEnvError, setAdapterEnvError] = useState<string | null>(null);
@@ -487,6 +679,44 @@ function OnboardingWizardInner({
     useState(false);
   const [unsetAnthropicLoading, setUnsetAnthropicLoading] = useState(false);
   const [showMoreAdapters, setShowMoreAdapters] = useState(false);
+  /**
+   * Whether the connect step is asking for a subscription sign-in or an API key.
+   *
+   * Restored from the draft like everything else on this step: someone who
+   * picked keys, left, and came back should not be handed a sign-in panel they
+   * already said no to.
+   */
+  const [credentialMode, setCredentialMode] = useState<CredentialMode>(
+    (saved?.credentialMode as CredentialMode) ?? "subscription",
+  );
+  /**
+   * Where the connect step's sign-in sequence is.
+   *
+   * Picking a source starts it now, rather than a press of the footer button:
+   * the row collapses, the card opens, and the button becomes the sign-in. The
+   * beats are ordered rather than concurrent, and each waits for the animation
+   * before it — see `onboarding-motion`, where the durations these timers use
+   * live beside the transitions they mirror.
+   *
+   * Deliberately not in the draft. A login is a live server session with a
+   * deadline on it, and restoring a wizard an hour later into "waiting for a
+   * code" would describe a session that is long gone.
+   */
+  const [connectPhase, setConnectPhase] = useState<ConnectPhase>("idle");
+  /**
+   * The address the running login wants the customer to open.
+   *
+   * Reported up by the panel, because the step's own button is what opens it —
+   * the card shows the same link inline for anyone finishing in another
+   * browser. Its arrival is also what moves the step off its waiting beat.
+   */
+  const [connectAuthUrl, setConnectAuthUrl] = useState<string | null>(null);
+  /**
+   * The key itself, held only for as long as the wizard is open. It is written
+   * into the adapter config at hire time and never into the draft — a draft is
+   * `localStorage`, and a provider key does not belong there.
+   */
+  const [apiKey, setApiKey] = useState("");
   // The owner's stored Claude subscription login, read right before the hire
   // (see handleGiveHeartbeat). Onboarding applies it with no extra control,
   // so nothing else reads this state yet.
@@ -536,6 +766,13 @@ function OnboardingWizardInner({
   // the binding cannot answer for a config that now does — see the reuse
   // check in `handleGiveHeartbeat`.
   const adapterEnvResultAppliedStoredLoginRef = useRef(false);
+  /**
+   * The secret a key typed on this step was stored as, remembered for the key it
+   * holds. Connect can be pressed more than once — a hire that fails leaves the
+   * customer on the step to try again — and without this each press would store
+   * another copy of the same credential.
+   */
+  const apiKeySecretRef = useRef<{ key: string } | null>(null);
   createdCompanyIdRef.current = createdCompanyId;
 
   // The mission of the company actually in hand, which is not always the one
@@ -728,6 +965,8 @@ function OnboardingWizardInner({
     const state = {
       step, companyName, companyGoal, missionPath, missionConfirmed,
       q1, q2, q3, q4, agentName, agentRole, adapterType, cwd, model, command, args, url,
+      // The mode, never the key: this blob is localStorage.
+      credentialMode,
       createdCompanyId, createdCompanyPrefix, createdAgentId,
       createdCompanyGoalId, createdProjectId, createdIssueRef,
       onboardingPath, growWorkflows, growPainPoints, growAutomate,
@@ -736,6 +975,7 @@ function OnboardingWizardInner({
   }, [
     effectiveOnboardingOpen, step, companyName, companyGoal, missionPath, missionConfirmed,
     q1, q2, q3, q4, agentName, agentRole, adapterType, cwd, model, command, args, url,
+    credentialMode,
     createdCompanyId, createdCompanyPrefix, createdAgentId,
     createdCompanyGoalId, createdProjectId, createdIssueRef,
     onboardingPath, growWorkflows, growPainPoints, growAutomate,
@@ -777,10 +1017,13 @@ function OnboardingWizardInner({
     queryFn: () => instanceSettingsApi.get(),
     enabled: effectiveOnboardingOpen && step === 4,
   });
+  // Wanted across the whole arc, not just the connect step. The progress strip
+  // reads it too — see `enteredFromCloud` — and a value fetched only on step 4
+  // would let the strip change length as the customer walked through it.
   const { data: experimentalSettingsForLogin } = useQuery({
     queryKey: queryKeys.instance.experimentalSettings,
     queryFn: () => instanceSettingsApi.getExperimental(),
-    enabled: effectiveOnboardingOpen && step === 4,
+    enabled: effectiveOnboardingOpen && step >= 3 && step <= 5,
   });
   const resolvedLoginEnvironmentId = useMemo(() => {
     try {
@@ -863,6 +1106,57 @@ function OnboardingWizardInner({
   const authSignalStatus = authSignalQuery.data?.status ?? null;
   const showAdapterLoginPanel =
     canShowAdapterLogin && (authSignalStatus === "absent" || authSignalStatus === "unknown");
+  /**
+   * Restores the connect sequence after a reload.
+   *
+   * The panel resumes an active session on its own mount, but this step only
+   * mounts the panel once the sequence has moved off `idle` — and a reload
+   * starts the sequence at `idle` again, deliberately: `connectPhase` is not
+   * in the draft. Without this read, a reload during a login would leave the
+   * panel unmounted and the resumed session unreachable from this step. A 404
+   * means no active session for the caller.
+   */
+  const activeLoginSessionQuery = useQuery({
+    queryKey: createdCompanyId
+      ? queryKeys.agents.activeLoginSession(createdCompanyId, adapterType)
+      : ["agents", "none", "active-login-session", adapterType],
+    queryFn: async () => {
+      try {
+        return adapterCaps.login?.panelMode === "submitted_browser_code"
+          ? await agentsApi.getActiveClaudeSetupTokenLoginSession(createdCompanyId!)
+          : await agentsApi.getActiveAdapterAuthLoginSession(createdCompanyId!, adapterType);
+      } catch (error) {
+        if (error instanceof ApiError && error.status === 404) return null;
+        throw error;
+      }
+    },
+    enabled:
+      Boolean(createdCompanyId) && effectiveOnboardingOpen && step === 4 && canShowAdapterLogin,
+  });
+  useEffect(() => {
+    if (!activeLoginSessionQuery.data) return;
+    // Re-derive the row's answer along with the sequence: a resumed session
+    // implies a source was already picked, and the row stays a question
+    // otherwise (see `sourcePicked` above).
+    setSourcePicked(true);
+    // Skip straight past the collapsing beat — that animation is for a press
+    // landing on a step already on screen, not for a reload that should show
+    // the running login at once. The panel's own mount reports the resumed
+    // prompt through `onPromptReady`, below, which is what moves this beat
+    // from `loading` to `ready`, exactly as a fresh press would.
+    setConnectPhase((phase) => (phase === "idle" ? "loading" : phase));
+  }, [activeLoginSessionQuery.data]);
+  /**
+   * The signal is being fetched and has not answered yet.
+   *
+   * Worth its own state rather than folding into "no panel to show". Until it
+   * answers, `authSignalStatus` is null and every not-signed-in customer looks
+   * momentarily identical to a signed-in one — so the card would assert that
+   * they are already signed in, for exactly as long as the request takes, and
+   * then replace it with a sign-in prompt. A reassurance that is wrong and then
+   * withdrawn is worse than saying nothing for a beat.
+   */
+  const authSignalUndecided = canShowAdapterLogin && authSignalStatus === null;
 
   const isLocalAdapterCaps =
     adapterCaps.supportsInstructionsBundle ||
@@ -881,10 +1175,9 @@ function OnboardingWizardInner({
   // External/plugin adapters automatically appear with generic defaults, and
   // server-disabled types are filtered out.
   const { recommendedAdapters, moreAdapters } = useMemo(() => {
-    const SYSTEM_ADAPTER_TYPES = new Set(["process", "http"]);
     const all = listUIAdapters()
       .filter((a) =>
-        !SYSTEM_ADAPTER_TYPES.has(a.type) &&
+        !ONBOARDING_EXCLUDED_ADAPTER_TYPES.has(a.type) &&
         !disabledTypes.has(a.type) &&
         isVisualAdapterChoice(a.type)
       )
@@ -895,6 +1188,279 @@ function OnboardingWizardInner({
       moreAdapters: all.filter((a) => !a.recommended),
     };
   }, [disabledTypes]);
+
+  /**
+   * A source chosen from the visible row. Read off the row rather than off
+   * `adapterType` alone, because a restored draft can name an adapter this step
+   * no longer offers — a selection the customer cannot see.
+   */
+  const sourceSelected =
+    sourcePicked && recommendedAdapters.some((opt) => opt.type === adapterType);
+
+  /**
+   * Whether the connect step may advance.
+   *
+   * One predicate, because there are two ways to advance and they drifted. The
+   * button's condition and Cmd+Enter's were written out separately, so when the
+   * button gained `sourceSelected` and `adapterEnvLoading` the keyboard kept the
+   * older, shorter list — and hired against a source the row had never shown.
+   * The same defect the button was just fixed for, one path over.
+   *
+   * `loading` is deliberately not here. The keyboard handler returns on it
+   * before reaching any step, for a reason particular to keystrokes: a second
+   * Enter re-enters a handler whose guard is state the first has not written
+   * yet. That check belongs at the top of the handler, not per-step.
+   *
+   * Anything that gates this step belongs in here, so the next one is added
+   * once rather than twice.
+   */
+  const connectStepReady =
+    sourceSelected && !adapterEnvLoading && !missionUnresolvedForHire;
+
+  /**
+   * Whether this step has a sign-in to do before it can hire.
+   *
+   * The same four conditions the card itself renders on, named once so the
+   * footer button and the card cannot disagree about whether a login is
+   * happening. When it is false — an API key, a source already signed in on the
+   * sandbox, no sandbox to sign in against — Connect goes straight to the hire,
+   * exactly as it did before.
+   */
+  const connectStepNeedsLogin = Boolean(
+    credentialMode !== "api" &&
+      showAdapterLoginPanel &&
+      createdCompanyId &&
+      resolvedLoginEnvironmentId,
+  );
+
+  /**
+   * Whether the source's login ends by taking a code back from the customer.
+   *
+   * This is what splits the two waits, and it is a real difference rather than
+   * a cosmetic one. The browser-code login finishes here, in the field on the
+   * card, so the button is busy and says so. The displayed-code login finishes
+   * somewhere else entirely — another tab, possibly another device — so the
+   * button is not busy, it is waiting, and a spinner would be claiming work
+   * this screen is not doing.
+   */
+  const loginSubmitsBrowserCode =
+    adapterCaps.login?.panelMode === "submitted_browser_code";
+
+  /**
+   * The one thing that can be wrong here before anything is pressed: there is
+   * no sandbox to sign in against, so Connect cannot get anywhere. Worth saying
+   * on arrival rather than after a press that goes nowhere.
+   *
+   * Its two neighbours in the old canvas are not worth the same. "Checking this
+   * source's credentials…" narrated a request nothing was waiting on, and "this
+   * source is already signed in" answered a question the customer had not asked
+   * yet — both were written for a canvas that opened on selection, and the
+   * press is what opens it now.
+   */
+  const connectStepHasNoSandbox =
+    credentialMode !== "api" && !canShowAdapterLogin && !authSignalUndecided;
+
+  /*
+    The sequence's derived state. Space and visibility are separate throughout:
+    the credential link fades on the first beat but keeps its space until the
+    second, and the card takes its space on the second but only appears on the
+    third — so the column slides once, when there is a reason for it to.
+  */
+  const connectCollapsed =
+    connectPhase !== "idle" && connectPhase !== "unwindRow" && sourceSelected;
+  const connectHasCard = credentialMode === "api" || connectStepNeedsLogin || connectStepHasNoSandbox;
+  const connectCardLive =
+    connectHasCard &&
+    (connectPhase === "loading" ||
+    connectPhase === "ready" ||
+      connectPhase === "waiting" ||
+      connectPhase === "connecting");
+  const connectCardSpace = connectCardLive || (connectHasCard && connectPhase === "unwindCard");
+  /**
+   * Whether the card's contents are rendered at all.
+   *
+   * A beat longer than its space, and that beat matters. The height animates
+   * away over `unwindRoom`, and an element with nothing in it has no height to
+   * animate *from* — unmounting the contents when the space starts closing
+   * collapsed the column in a single frame instead, a 54px jump measured right
+   * after the fade. They stay until the room has finished closing.
+   *
+   * It cannot simply be "always", either: the panel starts a server session on
+   * mount, so rendering it at idle would open an OAuth session merely because
+   * the step was visited.
+   */
+  const connectCardMounted = connectCardSpace || connectPhase === "unwindRoom";
+  const connectLinkSpace =
+    connectPhase === "idle" ||
+    connectPhase === "collapsing" ||
+    connectPhase === "unwindRoom" ||
+    connectPhase === "unwindRow";
+  const connectLinkVisible = connectPhase === "idle" || connectPhase === "unwindRow";
+
+  /** A sign-in is running and has not succeeded. */
+  const connectStepLoggingIn =
+    connectStepNeedsLogin && connectPhase !== "idle" && connectPhase !== "connecting";
+
+  /**
+   * The beats, each waiting for the animation before it.
+   *
+   * `loading` is the exception: it ends when the server produces a prompt, not
+   * on a timer, so the card waits exactly as long as the login actually takes.
+   */
+  useEffect(() => {
+    if (step !== 4) return;
+    if (connectPhase === "collapsing") {
+      const t = setTimeout(
+        // A key has nothing to fetch — the field exists the moment the source
+        // is chosen — and a source already signed in has nothing to fetch
+        // either. Only a live sign-in spends a beat waiting for its prompt;
+        // sending the others through it would stall them on a card that never
+        // opens.
+        () =>
+          setConnectPhase(
+            credentialMode === "api" || !connectStepNeedsLogin ? "ready" : "loading",
+          ),
+        beatDelay(SOURCE_COLLAPSE_MS),
+      );
+      return () => clearTimeout(t);
+    }
+    if (connectPhase === "connecting") {
+      // No success state: the step advances. The hold is so "Connecting" is
+      // legible as a state rather than a flicker on the way out — a step that
+      // left the instant a paste landed would read as the paste having gone
+      // wrong.
+      //
+      // A beat rather than a bare timer because Back stays live through it. A
+      // dropped handle hired two seconds after the customer had backed out,
+      // landing them on Review having asked for the opposite; `handleGiveHeartbeat`
+      // has no notion of the phase and could not refuse it. Leaving the phase —
+      // Back, the step changing, unmount — now cancels the hire with it.
+      const t = setTimeout(() => void handleGiveHeartbeat(), CONNECTED_HOLD_MS);
+      return () => clearTimeout(t);
+    }
+    if (connectPhase === "unwindCard") {
+      const t = setTimeout(() => setConnectPhase("unwindRoom"), beatDelay(CARD_EXIT_MS));
+      return () => clearTimeout(t);
+    }
+    if (connectPhase === "unwindRoom") {
+      const t = setTimeout(() => setConnectPhase("unwindRow"), beatDelay(MAKE_ROOM_MS));
+      return () => clearTimeout(t);
+    }
+    if (connectPhase === "unwindRow") {
+      // Let the selection go as the row starts back, not once it has arrived.
+      // Held to the end, the tile changed colour with nothing else moving —
+      // a cut rather than a release. Released here it fades across the travel
+      // and settles into its default instead of snapping to it. The tiles take
+      // the slower duration while `settling`, so the fade lasts the journey.
+      setSourcePicked(false);
+      const t = setTimeout(() => setConnectPhase("idle"), beatDelay(SOURCE_COLLAPSE_MS));
+      return () => clearTimeout(t);
+    }
+    return;
+  }, [step, connectPhase, credentialMode, connectStepNeedsLogin]);
+
+  /**
+   * The button's four faces, and which of them can be pressed.
+   *
+   * It is only live where there is something for it to do: a sign-in to open, a
+   * key to submit, or a hire to run. Through the waits it is the step reporting
+   * rather than offering — see `FooterNav`, where the label cross-fades over an
+   * easing width so those changes read as one control rather than four.
+   */
+  const connectSourceLabel = CONNECT_SOURCE_NAMES[adapterType] ?? adapterType;
+  const connectCta: { label: string; icon: FooterPrimaryIcon; disabled: boolean } =
+    connectPhase === "waiting"
+      ? { label: "Waiting for code", icon: "spinner", disabled: true }
+      : connectPhase === "connecting"
+        ? { label: "Connecting", icon: "spinner", disabled: true }
+        : connectPhase === "ready"
+          ? connectStepNeedsLogin
+            ? {
+                label: `Sign in to ${connectSourceLabel}`,
+                icon: "none",
+                disabled: !connectAuthUrl,
+              }
+            : {
+                label: "Connect",
+                icon: "arrow",
+                disabled:
+                  !connectStepReady || (credentialMode === "api" && !apiKey.trim()),
+              }
+          : // Nothing is chosen on arrival, and the row is what chooses. Until
+            // it has been answered the button has nothing to do.
+            { label: "Next", icon: "arrow", disabled: true };
+
+  /**
+   * Back, on the connect step, unwinds the sign-in before it leaves the step.
+   *
+   * This hides the card; it does not cancel the login. Unmounting the panel
+   * does not release the server session — the session stays reachable for a
+   * later resume, the same read that restores it after a reload — so backing
+   * out and returning shows the sign-in still running, not a fresh one.
+   *
+   * Nothing releases it explicitly any more. The card carried a Cancel that
+   * did, sitting beside an instruction and directly above this step's own
+   * Back, and two ways out of one screen is one too many — the button went and
+   * the release went with it. What is left is the server deadline, which is
+   * the same thing that collects a session abandoned by closing the tab.
+   */
+  function unwindConnectStep() {
+    setConnectAuthUrl(null);
+    // Where the reverse starts depends on how far the sequence got. Backing out
+    // during the collapse has no card to close and no room to give back.
+    // With no card open, the row is the whole of the unwind.
+    setConnectPhase(connectCardLive ? "unwindCard" : "unwindRow");
+  }
+
+  /**
+   * What the step's primary action does, for both the button and Cmd+Enter.
+   *
+   * One function rather than the condition written twice. The keyboard path
+   * has drifted from the button here before — the comment on its `step === 4`
+   * branch is about exactly that — and the gap it left was a hire that skipped
+   * a check. This one would be worse: Cmd+Enter would hire before the sign-in
+   * it is meant to start, against a source with no credential.
+   */
+  function handleConnectStepPrimary() {
+    // Mid-sequence the button belongs to the sign-in, not to the step.
+    if (connectPhase === "ready" && connectStepNeedsLogin) {
+      if (connectAuthUrl) window.open(connectAuthUrl, "_blank", "noreferrer,noopener");
+      setConnectPhase("waiting");
+      return;
+    }
+    if (connectStepLoggingIn) return;
+    void handleGiveHeartbeat();
+  }
+
+  /**
+   * When the input canvas is open: exactly when a source has been chosen.
+   *
+   * The card is the answer to the tile that was just pressed, so an untouched
+   * row leaves nothing under it — a sign-in bar offered before the question was
+   * answered says the step already knows which provider is meant, which it does
+   * not.
+   *
+   * This used to open for a pending sign-in as well, `|| showAdapterLoginPanel`,
+   * so that a restored draft naming an adapter this step no longer offers still
+   * had something to press. That reasoning came from when the row arrived with a
+   * selection already made and an invisible one was a dead end. It is not one
+   * now: the row is a question, an unofferable saved adapter simply leaves it
+   * unanswered, and the visible tiles are the thing to press. `showAdapterLoginPanel`
+   * still decides what goes *inside* the canvas — only not whether it exists.
+   */
+
+  /**
+   * Open once there is something in it: a key field, a sign-in that has been
+   * started, or the news that no sign-in is possible.
+   *
+   * It no longer opens on selection alone. The card is the sign-in itself now,
+   * and a sign-in starts when Connect is pressed — so between picking a tile
+   * and pressing the button there is nothing to put here, and the step is the
+   * question and the button, which is what the design draws.
+   */
+  const canvasOpen =
+    sourceSelected &&
+    (credentialMode === "api" || connectCardSpace || connectStepHasNoSandbox);
 
   // The default (or a saved) adapterType can name an adapter the server has
   // since disabled — e.g. a cloud sandbox registry without claude_local. The
@@ -913,6 +1479,13 @@ function OnboardingWizardInner({
     if (visible.some((a) => a.type === adapterType)) return;
     const next = visible[0].type as AdapterType;
     setAdapterType(next);
+    // The snap is not a choice. It replaces a name the customer can no longer
+    // see with the first one they can, which is the right thing to hold — but
+    // holding it *as chosen* would put a filled tile and an open sign-in panel
+    // on a step nobody has answered, and re-create by the back door exactly the
+    // preselection this step was changed to stop doing. The saved answer was
+    // unofferable, so the question is open again.
+    setSourcePicked(false);
     if (next === "codex_local") return;
     if (next === "opencode_local") {
       setModel(DEFAULT_OPENCODE_LOCAL_MODEL);
@@ -942,12 +1515,45 @@ function OnboardingWizardInner({
     command.trim() ||
     (COMMAND_PLACEHOLDERS[adapterType] ?? adapterType.replace(/_local$/, ""));
 
+  // Throw the cached probe away whenever the thing it probed changes. Every
+  // input to `buildAdapterConfig` belongs in this list, `credentialMode` and
+  // `apiKey` included: the Connect handler reuses a passing result instead of
+  // re-probing, so a dependency missing here is a hire that skips the check.
+  //
+  // That is reachable rather than theoretical. The hire runs after the probe
+  // inside one try/catch, so a hire that fails — a network error, a server
+  // error — leaves the pass sitting in state. Switch to an API key, paste one,
+  // press Connect again, and without these two the wizard would hire against a
+  // key nothing ever tested.
   useEffect(() => {
     if (step !== 4) return;
     setAdapterEnvResult(null);
     adapterEnvResultAppliedStoredLoginRef.current = false;
     setAdapterEnvError(null);
-  }, [step, adapterType, model, command, args, url]);
+  }, [step, adapterType, model, command, args, url, credentialMode, apiKey]);
+
+  /**
+   * Leaving the step puts the row back to a question.
+   *
+   * Deliberately keyed on the step and nothing else. It used to reset on
+   * `adapterType` too, which made picking a source take two clicks: the first
+   * set the phase *and* the adapter, this effect saw the adapter change and put
+   * the phase straight back to idle, and only a second click — which changed no
+   * adapter, so woke no effect — was allowed to stand.
+   *
+   * Nothing else needs to reset it. A source can only change by being picked,
+   * and picking sets the phase itself; the credential mode can only change
+   * before the sequence starts, because its control is inert once the row has
+   * collapsed. Switching either no longer needs its own reset: the panel keeps
+   * its server session reachable for a later resume instead of releasing it on
+   * the remount, so there is nothing left here for that change to undo.
+   */
+  useEffect(() => {
+    if (step === 4) return;
+    setConnectPhase("idle");
+    setConnectAuthUrl(null);
+    setSourcePicked(false);
+  }, [step]);
 
   const selectedModel = (adapterModels ?? []).find((m) => m.id === model);
   const hasAnthropicApiKeyOverrideCheck =
@@ -1065,6 +1671,26 @@ function OnboardingWizardInner({
     return createdCompanyIdRef.current === companyIdAtStart;
   }
 
+  /**
+   * Whether a just-created company can still be committed to this wizard.
+   *
+   * Company-list refreshes can make the surrounding app adopt the POST result
+   * before the continuation runs. That is the same successful transition, not
+   * a takeover. A different id still means navigation moved the wizard to a
+   * different organization while the request was in flight.
+   */
+  function canCommitCreatedCompany(
+    companyIdAtStart: string | null,
+    returnedCompanyId: string,
+  ) {
+    const companyIdNow = createdCompanyIdRef.current;
+    if (companyIdNow === companyIdAtStart || companyIdNow === returnedCompanyId) {
+      return true;
+    }
+    setError("Organization created, but onboarding switched to another organization.");
+    return false;
+  }
+
   async function handleLaunchToDashboard() {
     if (!createdCompanyId || !createdAgentId) {
       setError(INCOMPLETE_ONBOARDING_STATE_MESSAGE);
@@ -1144,7 +1770,67 @@ function OnboardingWizardInner({
     }
   }
 
-  function buildAdapterConfig(): Record<string, unknown> {
+  /**
+   * Store the typed key as the customer's own user secret, and report whether it
+   * is in place.
+   *
+   * A user secret rather than a company one, to match the subscription half of
+   * this very step: signing in stores the Claude token as a user secret and
+   * binds a `user_secret_ref`. Two credential modes on one step that scoped
+   * their secrets differently would be hard to justify and easy to get wrong
+   * later. It also keeps the key to the person who typed it instead of exposing
+   * it to everyone with company secret access, and agent runs still resolve it
+   * through the company's responsible user.
+   *
+   * A user secret needs a definition to hang off. The Claude token's is fixed
+   * and server-owned; there is no such definition for API keys, so onboarding
+   * creates one on first use. That needs company owner or admin rights, which
+   * whoever just created this company in onboarding has.
+   *
+   * Returns false on failure, having set the error. Callers must treat false as
+   * a stop: there is deliberately no path that hands the raw key back, because
+   * the only thing left to do with it would be to embed it.
+   */
+  async function storeApiKeyUserSecret(companyId: string): Promise<boolean> {
+    const key = apiKey.trim();
+    const envKey = apiKeyEnvKeyFor(adapterType);
+    if (apiKeySecretRef.current?.key === key) return true;
+    try {
+      const entries = await secretsApi.listMyUserSecrets(companyId);
+      const existing = entries.find((entry) => entry.definition.key === envKey);
+      const definitionId =
+        existing?.definition.id ??
+        (
+          await secretsApi.createUserSecretDefinition(companyId, {
+            key: envKey,
+            name: `${envKey} for onboarding`,
+            description: "Created while connecting a model during onboarding.",
+          })
+        ).id;
+      // Rotate rather than create when a value is already stored, because
+      // creating a second value for one definition is what the server refuses.
+      if (existing?.secret) {
+        await secretsApi.rotateMyUserSecret(companyId, existing.secret.id, { value: key });
+      } else {
+        await secretsApi.createMyUserSecret(companyId, {
+          definitionId,
+          definitionKey: envKey,
+          value: key,
+        });
+      }
+      apiKeySecretRef.current = { key };
+      return true;
+    } catch (err) {
+      setError(
+        err instanceof Error
+          ? `Could not store the API key: ${err.message}`
+          : "Could not store the API key.",
+      );
+      return false;
+    }
+  }
+
+  function buildAdapterConfig(bindApiKey = false): Record<string, unknown> {
     const adapter = getUIAdapter(adapterType);
     const config = adapter.buildAdapterConfig({
       ...defaultCreateValues,
@@ -1177,6 +1863,35 @@ function OnboardingWizardInner({
           ? { ...(config.env as Record<string, unknown>) }
           : {};
       env.ANTHROPIC_API_KEY = { type: "plain", value: "" };
+      config.env = env;
+    }
+    // A key typed on this step is the credential the agent is being hired with,
+    // so it has to reach the configuration the hire sends — and the same one the
+    // environment test probes, or the test would pass on a config the hire does
+    // not use. Only when the mode asks for it: leaving a stale reference in the
+    // config after switching back to a subscription is what the server rejects
+    // alongside the Claude OAuth binding.
+    //
+    // A reference, never the key itself. The adapter configuration is
+    // persisted and revisioned, so a `{ type: "plain", value }` here would leave
+    // a live credential at rest in every copy of it. This mirrors
+    // `buildFixedClaudeOAuthBinding`, which holds a reference to the stored
+    // Claude token for the same reason.
+    //
+    // Guarded on the caller having stored the secret, not on the key being
+    // present. If storing failed this stays false, and the right outcome is a
+    // configuration with no credential — which the hire then blocks on — rather
+    // than one that quietly falls back to embedding the value.
+    if (credentialMode === "api" && bindApiKey) {
+      const env =
+        typeof config.env === "object" && config.env !== null && !Array.isArray(config.env)
+          ? { ...(config.env as Record<string, unknown>) }
+          : {};
+      env[apiKeyEnvKeyFor(adapterType)] = {
+        type: "user_secret_ref",
+        key: apiKeyEnvKeyFor(adapterType),
+        version: "latest",
+      };
       config.env = env;
     }
     return config;
@@ -1337,6 +2052,7 @@ function OnboardingWizardInner({
     }
     setLoading(true);
     setError(null);
+    const companyIdAtStart = createdCompanyIdRef.current;
     try {
       const company = await companiesApi.create({ name: companyName.trim() });
       queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
@@ -1345,7 +2061,7 @@ function OnboardingWizardInner({
       // a company while the request was open has taken over the wizard, and
       // adopting the company just created would fight it — and would leave the
       // customer on a company they never navigated to.
-      if (!stillTheSameCompany(null)) return;
+      if (!canCommitCreatedCompany(companyIdAtStart, company.id)) return;
       setCreatedCompanyId(company.id);
       // Keep the mirror current here rather than waiting for the next render.
       // The goal write below asks `stillTheSameCompany(company.id)`, and a ref
@@ -1401,6 +2117,7 @@ function OnboardingWizardInner({
     creatingCompanyRef.current = true;
     setLoading(true);
     setError(null);
+    const companyIdAtStart = createdCompanyIdRef.current;
     try {
       const company = await companiesApi.create({ name: companyName.trim() });
       queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
@@ -1409,7 +2126,7 @@ function OnboardingWizardInner({
       // taken over the wizard, and adopting the company just created would
       // fight it — and would leave the customer on a company they never
       // navigated to.
-      if (!stillTheSameCompany(null)) return;
+      if (!canCommitCreatedCompany(companyIdAtStart, company.id)) return;
       setCreatedCompanyId(company.id);
       // Keep the mirror current rather than waiting for the next render, for
       // the same reason the mission path does: anything downstream that asks
@@ -1432,6 +2149,15 @@ function OnboardingWizardInner({
   // doesn't hire a second agent.
   async function handleGiveHeartbeat() {
     if (!createdCompanyId) return;
+    // The grid and restore path both exclude native runner. Keep this final
+    // guard at the mutation boundary so a stale or modified client cannot use
+    // first-run onboarding to create a native agent.
+    if (adapterType === "paperclip_runner") {
+      setAdapterType("claude_local");
+      setModel("");
+      setError("Paperclip Runner is not available during onboarding. Choose a legacy adapter.");
+      return;
+    }
     // Guarded at the button and the Enter path too; repeated here because this
     // seeds the agent's instructions from `companyGoal`, and hiring with an
     // unhydrated mission fails silently - the agent exists, and simply never
@@ -1493,7 +2219,15 @@ function OnboardingWizardInner({
       // configuration the hire sends — a config without the binding can
       // report missing authentication for a user the binding would have
       // covered.
-      const baseAdapterConfig = buildAdapterConfig();
+      // Store the key before anything is built from it, so both the probe and the
+      // hire describe it the same way — as a reference. A failure here stops the
+      // hire rather than falling through to a configuration with no credential.
+      let apiKeyStored = false;
+      if (credentialMode === "api" && apiKey.trim()) {
+        apiKeyStored = await storeApiKeyUserSecret(createdCompanyId);
+        if (!apiKeyStored) return;
+      }
+      const baseAdapterConfig = buildAdapterConfig(apiKeyStored);
       let storedClaudeLogin: ClaudeOAuthTokenStatusResponse | null = null;
       if (
         adapterType === "claude_local" &&
@@ -1694,8 +2428,20 @@ function OnboardingWizardInner({
       }
       else if (step === 2 && companyName.trim() && companyGoal.trim()) handleConfirmMission();
       else if (step === 3 && agentName.trim()) setStep(4);
-      else if (step === 4 && agentName.trim() && !missionUnresolvedForHire)
-        handleGiveHeartbeat();
+      // `connectStepReady`, the same predicate the step's button uses. Spelling
+      // the condition out here again is what let this path hire against a
+      // source the tile row had never shown, after the button was gated and
+      // this was not.
+      // Also gated on `connectStepLoggingIn`, the way the button is: a sign-in
+      // that is already running has nothing for this to do, and re-entering it
+      // would start a second server session.
+      else if (
+        step === 4 &&
+        agentName.trim() &&
+        connectStepReady &&
+        !connectStepLoggingIn
+      )
+        handleConnectStepPrimary();
       else if (step === 5) handleLaunchToDashboard();
     }
   }
@@ -1724,7 +2470,21 @@ function OnboardingWizardInner({
   }
 
   const isAgentArcStep = agentArcStepFor(step) !== null;
-  const showsAgentArcStepper = isAgentArcStep && entryStep >= 3;
+  /**
+   * True when the organization was named in Cloud rather than here.
+   *
+   * `enableManagedSandboxOnly` is the cloud-tenant shape — the connect step
+   * already resolves its login environment through it. A tenant wearing it did
+   * not ask for the organization's name, because Cloud did, so the walk the
+   * customer is on is four steps and this is the second.
+   *
+   * A self-hosted run that enters at the agent step is a different case with
+   * the same `entryStep`: an existing company that has no agents yet. There was
+   * no naming screen before it, so its walk really is three, and it keeps the
+   * shorter strip.
+   */
+  const enteredFromCloud = experimentalSettingsForLogin?.enableManagedSandboxOnly === true;
+  const showsAgentArcStepper = isAgentArcStep && entryStep >= 3 && !enteredFromCloud;
 
   const launchStateIncomplete = step === 5 && (!createdCompanyId || !createdAgentId);
   const visibleError = error ?? (launchStateIncomplete ? INCOMPLETE_ONBOARDING_STATE_MESSAGE : null);
@@ -1743,16 +2503,19 @@ function OnboardingWizardInner({
             RemoveScroll which blocks wheel events on our custom (non-DialogContent)
             scroll container. A plain div preserves the background without scroll-locking. */}
         <div className="fixed inset-0 z-50 bg-background" />
-        <div className="fixed inset-0 z-50 flex" onKeyDown={handleKeyDown}>
-          {/* Close button */}
-          <button
-            onClick={handleClose}
-            className="absolute top-4 left-4 z-10 rounded-sm p-1.5 text-muted-foreground/60 hover:text-foreground transition-colors"
-          >
-            <X className="h-5 w-5" />
-            <span className="sr-only">Close</span>
-          </button>
+        {/* A deliberate hook for "the wizard mounted".
 
+            The tests that assert it opens used to prove it by finding any text
+            in the document — which, with the front door mocked to null in that
+            suite, was only ever the close button's screen-reader label. Removing
+            the button took the proof with it, and those tests would have gone on
+            passing indefinitely if it had stayed. A named anchor says what they
+            mean rather than depending on whatever happens to render. */}
+        <div
+          data-testid="onboarding-wizard"
+          className="fixed inset-0 z-50 flex"
+          onKeyDown={handleKeyDown}
+        >
           {/* Step 0: Front Door — full-screen choice */}
           {step === 0 && (
             <div className="w-full flex flex-col overflow-y-auto">
@@ -1773,13 +2536,39 @@ function OnboardingWizardInner({
           >
             <div
               className={cn(
+                // my-auto, not items-center on the column: they look identical
+                // until a step is taller than the window, where centring by
+                // alignment overflows in both directions and the top cannot be
+                // scrolled to. Auto margins collapse to zero with no free space.
                 "mx-auto my-auto shrink-0",
-                // The arc sits in the prototype's card frame; the earlier steps
-                // keep the split-panel layout they were designed for. One
-                // element styled two ways, not two wrappers, so the step
-                // content below renders exactly once.
-                isAgentArcStep
-                  ? "w-(--sz-560px) max-w-full rounded-xl border border-border bg-card px-8 py-10 sm:px-10 sm:py-11"
+                // No card. The steps sit on the page ground rather than in a
+                // bordered, filled frame — the frame was drawing a box around
+                // content that is already the only thing on screen, and its
+                // edge competed with the tiles' own strokes. The two branches
+                // now differ only in measure. One element styled two ways, not
+                // two wrappers, so the step content below renders exactly once.
+                // Step 1 takes the arc's measure too. Its footer is now the
+                // same pair, and a pair styled identically but sitting 96px
+                // narrower than the next screen's makes the whole frame jump on
+                // Continue — which is the thing that read as "off" to begin
+                // with, and is more obvious once the buttons match.
+                // 40px sides, so the column inside the 560px frame is 480px:
+                // the measure the connect sequence is drawn to. The arc shares
+                // one shell, so the other steps take that measure rather than
+                // sitting narrower than the step between them.
+                //
+                // It has been both ways, and the objection that moved it last
+                // time has not been retested since it moved back. A 64px inset
+                // (a 432px column) was chosen because at the wider measure the
+                // two model tiles stretch and the name field sits under a
+                // question far narrower than itself. The connect step is now
+                // drawn to 480px, so the shell followed it. If step 1 or step 3
+                // reads loose, that is the reason and this is the line — but
+                // narrowing the shell again would put the connect step back out
+                // of step with its own design, so the fix would belong in those
+                // steps' own content rather than here.
+                isAgentArcStep || step === 1
+                  ? "w-(--sz-560px) max-w-full px-8 py-10 sm:px-10 sm:py-11"
                   : "w-full max-w-md px-8 py-12",
               )}
             >
@@ -1794,31 +2583,21 @@ function OnboardingWizardInner({
                   a segment for it would be one the run can never fill, and the
                   count would visibly skip from 1 to 3. */}
               {!showsAgentArcStepper && (
-              <div className="flex items-center gap-1.5 mb-8">
-                {([1, 3, 4, 5] as const).map((s) => {
-                  const filled = step >= s;
-                  const canJump = canJumpToOnboardingStep({
-                    targetStep: s,
-                    currentStep: step,
-                    entryStep,
-                  });
-                  return (
-                    <button
-                      key={s}
-                      type="button"
-                      aria-label={`Step ${s}`}
-                      aria-current={s === step ? "step" : undefined}
-                      disabled={!canJump}
-                      onClick={() => canJump && setStep(s as Step)}
-                      className={cn(
-                        "h-1 flex-1 rounded-full transition-colors",
-                        filled ? "bg-foreground" : "bg-muted",
-                        canJump ? "cursor-pointer" : "cursor-default"
-                      )}
-                    />
-                  );
-                })}
-              </div>
+                <Stepper
+                  step={onboardingStepPositionFor(step)}
+                  total={ONBOARDING_WIZARD_STEPS.length}
+                  labels={ONBOARDING_STEP_LABELS}
+                  canJumpToStep={(target) =>
+                    canJumpToOnboardingStep({
+                      targetStep: ONBOARDING_WIZARD_STEPS[target - 1]!,
+                      currentStep: step,
+                      entryStep,
+                    })
+                  }
+                  onJumpToStep={(target) =>
+                    setStep(ONBOARDING_WIZARD_STEPS[target - 1]! as Step)
+                  }
+                />
               )}
 
               {/* The agent arc's progress strip. Numbered 1–3 over the wizard's
@@ -1850,7 +2629,14 @@ function OnboardingWizardInner({
                   {/* mb-6 continues the prototype's single rhythm past this
                       block: it groups the hero and heading, and the step's own
                       controls sit a step below on the same spacing. */}
-                  <div className="mb-6 space-y-6">
+                  {/* The gap under the agent — its name to the step's title —
+                      is tighter than the step's other rows on purpose. The name
+                      labels the character directly above it, so the two read as
+                      one object; at the full row rhythm the name floated between
+                      the character and the title and belonged to neither. 24px
+                      against the 36px used elsewhere, a little over a third
+                      less. `mb-9` still holds the block off the step content. */}
+                  <div className="mb-9 space-y-6">
                     <motion.div
                       initial={capsuleHeroMotion.initial}
                       animate={capsuleHeroMotion.animate}
@@ -1860,10 +2646,19 @@ function OnboardingWizardInner({
                       {/* Dormant until the agent is actually hired. Review is
                           the first step where one exists, so that is where it
                           wakes — the arc's payoff, not a flourish along it. */}
-                      <PillGuy
-                        state={step === 5 ? "alive" : "dormant"}
-                        className="size-(--sz-72px)"
-                      />
+                      {/* `relative` is load-bearing: the sleep marks anchor
+                          to this box and travel out past its top-right
+                          corner. */}
+                      <div className="relative size-(--sz-72px)">
+                        <PillGuy
+                          state={step === 5 ? "alive" : "dormant"}
+                          className="size-full"
+                        />
+                        {/* Only while it is actually asleep. A still grey
+                            silhouette reads as a placeholder that failed to
+                            load rather than as something waiting its turn. */}
+                        {step < 5 && <SleepingZs />}
+                      </div>
                       <AgentPreview agentName={agentName} agentRole="" />
                     </motion.div>
 
@@ -1881,7 +2676,7 @@ function OnboardingWizardInner({
                       // sentence restating it only pushes the fields down.
                       lede={
                         step === 3 ? undefined : step === 4 ? (
-                          <>Paperclip works with your existing subscription or API keys.</>
+                          <>Paperclip works with your subscription or API keys.</>
                         ) : (
                           <>{agentName.trim() || "Your first agent"} is ready to work!</>
                         )
@@ -1893,7 +2688,7 @@ function OnboardingWizardInner({
 
               {/* Step content */}
               {step === 2 && onboardingPath === "grow" && (
-                <div className="space-y-5">
+                <div className="space-y-8">
                   <div className="flex items-center gap-3 mb-1">
                     <div className="bg-muted/50 p-2">
                       <Sparkles className="h-5 w-5 text-muted-foreground" />
@@ -1978,18 +2773,29 @@ function OnboardingWizardInner({
                 </div>
               )}
 
-              {/* Step 1: name the organization (both paths). One question, one
-                  design: this mirrors the funnel's naming screen — same
-                  question, same sub, same left-aligned heading in a centered
-                  column — so a customer creating their second organization
-                  in-app is asked exactly what their first one asked them. */}
+              {/* Step 1: name the organization (both paths).
+                  Dressed as the arc steps that follow it — centred heading, no
+                  lede, and the same footer pair — because a customer walks
+                  straight from here into them, and one screen reading as a
+                  different product is more jarring than this one no longer
+                  matching the funnel's naming screen exactly. The question
+                  itself is still the funnel's, so the ask has not changed.
+
+                  The lede went because it said what the field already says: a
+                  labelled "Name" under "What is the name of your organization?"
+                  does not need a sentence explaining that it names the
+                  organization. */}
               {step === 1 && (
-                <div className="mx-auto w-full max-w-md space-y-6">
+                <div className="mx-auto w-full space-y-9">
                   <OnboardingHeading
+                    center
                     title="What is the name of your organization?"
-                    lede="This will be the name of your Paperclip organization — choose something your team will recognize."
                   />
-                  <div className="group">
+                  {/* The field takes the agent step's measure rather than the
+                      column's, so the two questions the wizard asks — name the
+                      organization, name the agent — present the same target.
+                      The heading stays full width above it, as it does there. */}
+                  <div className="group mx-auto w-full max-w-(--sz-320px)">
                     <label
                       className={cn(
                         "text-xs mb-1 block transition-colors",
@@ -2015,18 +2821,12 @@ function OnboardingWizardInner({
                       autoFocus
                     />
                   </div>
-                  <button
-                    className="text-(length:--text-micro) text-muted-foreground hover:text-foreground transition-colors"
-                    onClick={() => { setOnboardingPath(null); setStep(0); }}
-                  >
-                    ← Back to start
-                  </button>
                 </div>
               )}
 
               {/* Step 2: Define your mission */}
               {step === 2 && onboardingPath !== "grow" && (
-                <div className="space-y-5">
+                <div className="space-y-8">
                   <div className="flex items-center gap-3 mb-1">
                     <div className="bg-muted/50 p-2">
                       <Building2 className="h-5 w-5 text-muted-foreground" />
@@ -2222,12 +3022,22 @@ function OnboardingWizardInner({
                   `general` role; a specific one can be set later, where there
                   is context to choose it in. */}
               {step === 3 && (
-                <div className="mx-auto flex w-full max-w-(--sz-320px) flex-col gap-6">
+                <div className="mx-auto flex w-full flex-col gap-9">
                   <div className="flex flex-col gap-2">
-                    <Label htmlFor="onboarding-agent-name">Name</Label>
+                    <Label htmlFor="onboarding-agent-name">Agent name</Label>
+                    {/*
+                      Filled, not outlined, and the column's full width — the
+                      same field the naming step before the hand-off draws.
+                      `bg-muted` is the design's field surface; the default
+                      Input is a hairline border over `bg-input/30`, which on
+                      this ground reads as an empty outline rather than a place
+                      to type. The border is kept but made transparent so the
+                      focus ring, which colours the border, still has one.
+                    */}
                     <Input
                       id="onboarding-agent-name"
-                      placeholder="e.g. Chief of staff, Designer, Ron, Clippy..."
+                      className="h-(--sz-44px) rounded-lg border-transparent bg-muted shadow-none dark:bg-muted"
+                      placeholder="e.g. Chief of staff"
                       value={agentName}
                       onChange={(e) => setAgentName(e.target.value)}
                       autoFocus
@@ -2238,132 +3048,177 @@ function OnboardingWizardInner({
 
               {/* Step 4: Connect a model — adapter + model + env check (capsule above) */}
               {step === 4 && (
-                <div className="space-y-5">
-                  {/* The two cards are self-describing; an "Adapter type"
-                      eyebrow above them named the mechanism rather than the
-                      choice. */}
+                <div className="space-y-8">
                   <div>
-                    <div className="grid grid-cols-2 gap-2">
-                      {recommendedAdapters.map((opt) => (
-                        <button
-                          key={opt.type}
-                          className={cn(
-                            "flex flex-col items-center gap-1.5 rounded-md border p-3 text-xs transition-colors relative",
-                            adapterType === opt.type
-                              ? "border-foreground bg-accent"
-                              : "border-border hover:bg-accent/50"
-                          )}
-                          onClick={() => {
-                            const nextType = opt.type;
-                            setAdapterType(nextType);
-                            if (nextType === "codex_local") {
-                              return;
-                            }
-                            if (nextType === "opencode_local") {
-                              setModel(DEFAULT_OPENCODE_LOCAL_MODEL);
-                              return;
-                            }
-                            setModel("");
-                          }}
-                        >
-                          {/* No "Recommended" badge: it sat on both options,
-                              so it recommended nothing and only added the one
-                              saturated colour on the screen. */}
-                          <opt.icon className="h-4 w-4" />
-                          <span className="font-medium">{opt.label}</span>
-                          <span className="text-muted-foreground text-(length:--text-nano)">
-                            {opt.description}
-                          </span>
-                        </button>
-                      ))}
-                    </div>
+                    {/* Sources come from `recommendedAdapters`, not a list
+                        written here — that filter is `recommended` in the
+                        display registry, so a third tile appears the day
+                        someone marks one rather than the day someone
+                        remembers to edit this file.
 
-                    <button
-                      className="flex items-center gap-1.5 mt-3 text-xs text-muted-foreground hover:text-foreground transition-colors"
-                      onClick={() => setShowMoreAdapters((v) => !v)}
-                    >
-                      <ChevronDown
-                        className={cn(
-                          "h-3 w-3 transition-transform",
-                          showMoreAdapters ? "rotate-0" : "-rotate-90"
-                        )}
-                      />
-                      Advanced settings
-                    </button>
-
-                    {showMoreAdapters && (
-                      <div className="grid grid-cols-2 gap-2 mt-2">
-                        {moreAdapters.map((opt) => (
-                           <button
-                             key={opt.type}
-                             disabled={!!opt.comingSoon}
-                             className={cn(
-                               "flex flex-col items-center gap-1.5 rounded-md border p-3 text-xs transition-colors relative",
-                               opt.comingSoon
-                                 ? "border-border opacity-40 cursor-not-allowed"
-                                 : adapterType === opt.type
-                                 ? "border-foreground bg-accent"
-                                 : "border-border hover:bg-accent/50"
-                             )}
-                             onClick={() => {
-                               if (opt.comingSoon) return;
-                               const nextType = opt.type;
-                              setAdapterType(nextType);
-                              if (nextType === "gemini_local" && !model) {
-                                setModel(DEFAULT_GEMINI_LOCAL_MODEL);
-                                return;
-                              }
-                              if (nextType === "kimi_local" && !model) {
-                                setModel(DEFAULT_KIMI_LOCAL_MODEL);
-                                return;
-                              }
-                              if (nextType === "cursor" && !model) {
-                                setModel(DEFAULT_CURSOR_LOCAL_MODEL);
-                                return;
-                              }
-                              if (nextType === "opencode_local") {
-                                setModel(DEFAULT_OPENCODE_LOCAL_MODEL);
-                                return;
-                              }
-                              setModel("");
-                            }}
-                          >
-                            <opt.icon className="h-4 w-4" />
-                            <span className="font-medium">{opt.label}</span>
-                            <span className="text-muted-foreground text-(length:--text-nano)">
-                              {opt.comingSoon
-                                ? opt.disabledLabel ?? "Coming soon"
-                                : opt.description}
-                            </span>
-                          </button>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Shows as soon as the cheap auth signal reports no ready
-                      credential, well before any adapter environment test
-                      runs. Reuses the same panel the agent configuration form
-                      shows after a test — see AdapterLoginPanel in
-                      AgentConfigForm.tsx. No "Use saved login" control: the
-                      hire step already applies a stored login on its own. */}
-                  {showAdapterLoginPanel && createdCompanyId && resolvedLoginEnvironmentId && (
-                    <AdapterLoginPanel
-                      key={`${adapterType}:${resolvedLoginEnvironmentId}`}
-                      companyId={createdCompanyId}
-                      adapterType={adapterType}
-                      environmentId={resolvedLoginEnvironmentId}
-                      onStored={() => {
-                        queryClient.invalidateQueries({
-                          queryKey: queryKeys.agents.authSignal(
-                            createdCompanyId,
-                            adapterType,
-                            resolvedLoginEnvironmentId,
-                          ),
-                        });
+                        Picking one starts the sign-in now. The row is the
+                        question, and answering it is what opens the card. */}
+                    <ModelSourceTiles
+                      label="Model source"
+                      sources={recommendedAdapters.map((opt) => ({
+                        id: opt.type,
+                        label: CONNECT_SOURCE_NAMES[opt.type] ?? opt.label,
+                        icon: <ModelSourceMark type={opt.type} Fallback={opt.icon} />,
+                      }))}
+                      mode={credentialMode}
+                      selectedId={
+                        sourcePicked &&
+                        recommendedAdapters.some((opt) => opt.type === adapterType)
+                          ? adapterType
+                          : null
+                      }
+                      collapsed={connectCollapsed}
+                      settling={connectPhase === "unwindRow"}
+                      onSelect={(id) => {
+                        if (connectPhase !== "idle") return;
+                        setSourcePicked(true);
+                        setAdapterType(id);
+                        if (id === "opencode_local") setModel(DEFAULT_OPENCODE_LOCAL_MODEL);
+                        else if (id !== "codex_local") setModel("");
+                        setConnectPhase("collapsing");
                       }}
                     />
-                  )}
+
+                    {/* Fades on the first beat but keeps its space until the
+                        second, so pressing a tile moves nothing vertically.
+                        Once a sign-in is running there is no switching to keys
+                        without abandoning it, so it goes rather than sitting
+                        there inviting a press that cannot be honoured. */}
+                    <motion.div
+                      className="overflow-hidden"
+                      /*
+                        Inert once it has faded. It is clipped to nothing rather
+                        than unmounted, so without this it stays clickable and
+                        focusable — a control that has stopped applying, still
+                        answering to a keyboard and still able to change the
+                        credential mode out from under a running sign-in.
+                      */
+                      inert={!connectLinkVisible}
+                      initial={false}
+                      animate={{
+                        opacity: connectLinkVisible ? 1 : 0,
+                        height: connectLinkSpace ? "auto" : 0,
+                      }}
+                      transition={{ opacity: SOURCE_LINK_EXIT, height: MAKE_ROOM }}
+                    >
+                      <div className="-ml-3 mt-1">
+                        <CredentialModeLink mode={credentialMode} onChange={setCredentialMode} />
+                      </div>
+                    </motion.div>
+                  </div>
+
+                  {/*
+                    Room first, card second. `height` opens the space — which the
+                    link's collapse shares, so the column slides once — and the
+                    opacity only starts once that has finished. Reversed on the
+                    way out: fade, then give the room back.
+
+                    Nothing mounts to make that happen. A mount changes layout in
+                    one frame, and no easing can smooth a step that has already
+                    happened. Which means the card is always in the DOM, so it is
+                    `inert` while closed: a clipped element is still focusable and
+                    still announced, and the authorization field must not be
+                    reachable inside a card nobody can see.
+                  */}
+                  <motion.div
+                    className="overflow-hidden"
+                    inert={!connectCardLive}
+                    initial={false}
+                    animate={{
+                      height: connectCardSpace ? "auto" : 0,
+                      marginTop: connectCardSpace ? 20 : 0,
+                      opacity: connectCardLive ? 1 : 0,
+                    }}
+                    transition={{
+                      height: MAKE_ROOM,
+                      marginTop: MAKE_ROOM,
+                      opacity: connectCardLive
+                        ? { ...CARD_ENTER, delay: MAKE_ROOM.duration }
+                        : CARD_EXIT,
+                    }}
+                  >
+                    {/*
+                      The wrapper is always rendered — that is what lets its
+                      height animate rather than jump — but its contents are
+                      not, and they outlive the space by a beat. See
+                      `connectCardMounted`.
+                    */}
+                    {!connectCardMounted ? null : credentialMode === "api" ? (
+                      <OnboardingLoginCard
+                        instruction={`Provide your ${
+                          CONNECT_SOURCE_NAMES[adapterType] ?? adapterType
+                        } API key to connect`}
+                      >
+                        <OnboardingCardField
+                          label="API key"
+                          placeholder="Enter API key here"
+                          masked
+                          // The card is the answer to the tile just pressed, so
+                          // the field is unambiguously the next thing. Carried
+                          // over from the key field this card replaced.
+                          autoFocus
+                          value={apiKey}
+                          onChange={setApiKey}
+                          onSubmit={() => handleConnectStepPrimary()}
+                        />
+                      </OnboardingLoginCard>
+                    ) : connectStepNeedsLogin &&
+                      createdCompanyId &&
+                      resolvedLoginEnvironmentId ? (
+                      /* The same panel the agent configuration form shows after
+                         a test — see AdapterLoginPanel in AgentConfigForm.tsx —
+                         in the connect step's chrome. It owns the session; the
+                         step owns the sequence around it.
+
+                         Unmounting it is not the cancel: the session stays
+                         reachable for a later resume, so Back and a source
+                         switch only hide the card, and nothing here releases
+                         the session early — see `unwindConnectStep`.
+
+                         No "Use saved login" control: the hire step already
+                         applies a stored login on its own. */
+                      <AdapterLoginPanel
+                        key={`${adapterType}:${resolvedLoginEnvironmentId}`}
+                        companyId={createdCompanyId}
+                        adapterType={adapterType}
+                        environmentId={resolvedLoginEnvironmentId}
+                        chrome="onboarding"
+                        autoStart
+                        onPromptReady={(url) => {
+                          setConnectAuthUrl(url);
+                          // The prompt arriving is what ends the waiting beat.
+                          if (url) setConnectPhase((p) => (p === "loading" ? "ready" : p));
+                        }}
+                        onConnected={() => {
+                          // The hold before the step advances is the phase's own
+                          // beat, above, so that backing out during it cancels
+                          // the hire.
+                          setConnectPhase("connecting");
+                        }}
+                        onStored={() => {
+                          queryClient.invalidateQueries({
+                            queryKey: queryKeys.agents.authSignal(
+                              createdCompanyId,
+                              adapterType,
+                              resolvedLoginEnvironmentId,
+                            ),
+                          });
+                        }}
+                      />
+                    ) : connectStepHasNoSandbox ? (
+                      /* The one thing that can be wrong here before anything is
+                         pressed, and the one worth saying out loud: without a
+                         sandbox there is nothing to sign in against. */
+                      <p className="text-xs text-muted-foreground">
+                        No managed sandbox is available to sign in against yet.
+                      </p>
+                    ) : null}
+                  </motion.div>
 
                   {/* Conditional adapter fields */}
                   {/* No model picker. Every adapter this step offers resolves
@@ -2379,7 +3234,20 @@ function OnboardingWizardInner({
                       step, so this block renders only when a probe has actually
                       found something: the checks the blocking error tells the
                       customer to fix have to be visible somewhere. */}
-                  {isLocalAdapter && (adapterEnvError || (adapterEnvResult && adapterEnvResult.status !== "pass")) && (
+                  {/* Not while the hire is in flight. The probe's result lands
+                      before the hire it gates has finished, so a warn that does
+                      not block — the identity and target INFO checks, which
+                      every run reports — rendered a block of diagnostics for the
+                      moment between the probe returning and the step advancing.
+                      It read as an error thrown up by a sign-in that had just
+                      succeeded.
+
+                      `loading` is the right gate rather than the connect phase:
+                      it is false again by the time a blocking result has stopped
+                      the hire, because `handleGiveHeartbeat` clears it in its
+                      `finally` after the early return — so a genuine block still
+                      shows its checks, which is the whole reason this is here. */}
+                  {isLocalAdapter && !loading && (adapterEnvError || (adapterEnvResult && adapterEnvResult.status !== "pass")) && (
                     <div className="space-y-2 rounded-md border border-border p-3">
                       {adapterEnvError && (
                         <div className="rounded-md border border-destructive/30 bg-destructive/10 px-2.5 py-2 text-(length:--text-micro) text-destructive">
@@ -2531,37 +3399,82 @@ function OnboardingWizardInner({
                 </div>
               )}
 
-              {isAgentArcStep && (
+              {/* Step 1 shares the arc's footer so the pair keeps its shape and
+                  position from the first screen onward. Its Back is the only one
+                  that leaves the wizard's steps rather than walking them: step 1
+                  is where a company is named, and behind it is the path chooser,
+                  so `canGoBackFromOnboardingStep` — which bounds a run to the
+                  steps it entered on — does not decide this one. */}
+              {(isAgentArcStep || step === 1) && (
                 <FooterNav
                   onBack={
-                    canGoBackFromOnboardingStep({ currentStep: step, entryStep })
-                      ? () => setStep(backStepFrom(step))
-                      : undefined
+                    // On the connect step Back unwinds the sign-in first, and
+                    // only means "the previous step" once nothing is running.
+                    step === 4 && connectPhase !== "idle"
+                      ? unwindConnectStep
+                      : step === 1
+                      ? () => {
+                          setOnboardingPath(null);
+                          setStep(0);
+                        }
+                      : canGoBackFromOnboardingStep({ currentStep: step, entryStep })
+                        ? () => setStep(backStepFrom(step))
+                        : undefined
                   }
                   // The prototype's cloud flow hires on this step and calls the
                   // action "Create". Here the model step sits between, so this
                   // one advances — which is exactly the distinction the
                   // prototype's own local flow draws with "Next".
-                  primaryLabel={step === 3 ? "Next" : step === 4 ? "Connect" : "Get started"}
-                  loadingLabel={step === 4 ? "Connecting..." : "Launching..."}
-                  loading={step === 3 ? false : loading}
-                  primaryDisabled={
-                    step === 3
-                      ? !agentName.trim()
+                  primaryLabel={
+                    step === 1
+                      ? "Continue"
+                      : step === 5
+                        ? "Get started"
+                        : step === 4
+                          ? connectCta.label
+                          : "Next"
+                  }
+                  primaryIcon={step === 4 ? connectCta.icon : undefined}
+                  loadingLabel={
+                    step === 1
+                      ? "Creating..."
                       : step === 4
-                        ? loading || adapterEnvLoading || missionUnresolvedForHire
-                        : loading || launchStateIncomplete
+                        ? "Connecting"
+                        : "Launching..."
+                  }
+                  // The browser-code login is finished on this screen, so the
+                  // button is genuinely busy for its duration and shows it. The
+                  // displayed-code login is not — see `loginSubmitsBrowserCode`
+                  // — so it stays a still, disabled Next instead of spinning
+                  // against work happening in another tab.
+                  // Step 4 says what it is doing through `connectCta` instead:
+                  // it has four faces and only two of them are the step working.
+                  loading={step === 3 || step === 4 ? false : loading}
+                  primaryDisabled={
+                    step === 1
+                      ? !companyName.trim() || loading
+                      : step === 3
+                        ? !agentName.trim()
+                        : step === 4
+                          ? connectCta.disabled || loading
+                          : loading || launchStateIncomplete
                   }
                   onPrimary={() => {
-                    if (step === 3) setStep(4);
-                    else if (step === 4) handleGiveHeartbeat();
+                    if (step === 1) {
+                      if (skipsMissionStep) void handleCreateCompany();
+                      else setStep(2);
+                    } else if (step === 3) setStep(4);
+                    // One button, two jobs — start the sign-in, or hire — and
+                    // Cmd+Enter has to do the same thing. See
+                    // `handleConnectStepPrimary`.
+                    else if (step === 4) handleConnectStepPrimary();
                     else handleLaunchToDashboard();
                   }}
                 />
               )}
 
-              {/* Footer navigation */}
-              {!isAgentArcStep && (
+              {/* Footer navigation for the steps that still use the old pair. */}
+              {!isAgentArcStep && step !== 1 && (
               <div className="flex items-center justify-between mt-8">
                 <div>
                   {canGoBackFromOnboardingStep({ currentStep: step, entryStep }) && (
@@ -2577,22 +3490,6 @@ function OnboardingWizardInner({
                   )}
                 </div>
                 <div className="flex items-center gap-2">
-                  {step === 1 && (
-                    <Button
-                      size="sm"
-                      disabled={!companyName.trim() || loading}
-                      onClick={() => {
-                        if (skipsMissionStep) void handleCreateCompany();
-                        else setStep(2);
-                      }}
-                    >
-                      {loading ? (
-                        <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
-                      ) : null}
-                      Continue
-                      <ArrowRight className="h-3.5 w-3.5 ml-1" />
-                    </Button>
-                  )}
                   {step === 2 && (
                     <Button
                       size="sm"

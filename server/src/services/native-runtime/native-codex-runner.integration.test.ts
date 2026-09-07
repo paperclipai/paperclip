@@ -73,7 +73,10 @@ function ensureRunnerTestBinaries(): void {
   ], {
     cwd: runnerWorkspace,
     stdio: "inherit",
-    timeout: 180_000,
+    // A clean release build includes every qualified managed-provider SDK.
+    // Keep this below the CI job deadline while allowing that cold compile to
+    // finish on GitHub-hosted runners.
+    timeout: 600_000,
   });
 }
 
@@ -102,7 +105,7 @@ describeEmbeddedPostgres("native Codex server vertical slice", () => {
     setupRunnerPrpWebSocketServer(server, {
       apiUrl: `http://127.0.0.1:${address.port}`,
     });
-  }, 240_000);
+  }, 660_000);
 
   afterAll(async () => {
     runnerPrpWebSocketInternals.resetForTests();
@@ -201,6 +204,15 @@ describeEmbeddedPostgres("native Codex server vertical slice", () => {
           resolve(runtimeRoot, "fake-codex-state.json"),
           "--call-log",
           resolve(runtimeRoot, "fake-codex-calls.log"),
+          "--require-dynamic-tool",
+          "--emit-tool-call",
+          "--expected-canonical-task-context",
+          JSON.stringify({
+            companyId,
+            actorId: agentId,
+            taskId: issueId,
+            runId,
+          }),
         ],
         providerVersion: "fake-codex-v1",
       },
@@ -256,6 +268,8 @@ describeEmbeddedPostgres("native Codex server vertical slice", () => {
       .from(heartbeatRunEvents)
       .where(eq(heartbeatRunEvents.runId, runId));
     expect(eventTypes.map((event) => event.eventType)).toEqual(expect.arrayContaining([
+      "semantic_tool.input",
+      "semantic_tool.result",
       "turn.completed",
       "run.result.proposed",
       "run.terminal",

@@ -1,0 +1,681 @@
+name: Runner Direct Live Protocol Evals
+
+on:
+  schedule:
+    - cron: "23 9 * * 0"
+  workflow_dispatch:
+    inputs:
+      target_branch:
+        description: "Branch in paperclipai/paperclip to evaluate; trusted orchestration still runs from master"
+        type: string
+        required: false
+      evals_sha:
+        description: "Exact 40-character paperclipai/paperclip-evals commit to execute"
+        type: string
+        required: false
+      rosters:
+        description: "Comma-separated live roster IDs/files, or all for the maintained enabled direct suite"
+        type: string
+        default: "all"
+        required: false
+      max_infrastructure_retries:
+        description: "Automatic retries only for explicitly retryable infrastructure failures (0-3)"
+        type: number
+        default: 1
+
+permissions:
+  contents: read
+
+concurrency:
+  group: runner-protocol-live-evals-${{ github.event_name == 'workflow_dispatch' && inputs.target_branch != '' && inputs.target_branch != github.event.repository.default_branch && format('development-{0}', inputs.target_branch) || format('protected-{0}', github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'workflow_dispatch' && inputs.target_branch != '' && inputs.target_branch != github.event.repository.default_branch }}
+
+jobs:
+  authorize:
+    name: Authorize paid direct eval campaign
+    if: github.event_name != 'schedule' || vars.RUNNER_PROTOCOL_EVAL_NIGHTLY_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      test_runner: ${{ steps.runner.outputs.runner }}
+      max_parallel_default: ${{ steps.runner.outputs.max_parallel_default }}
+      max_parallel_limit: ${{ steps.runner.outputs.max_parallel_limit }}
+      target_sha: ${{ steps.target.outputs.sha }}
+      target_ref: ${{ steps.target.outputs.ref }}
+      evals_sha: ${{ steps.evals.outputs.sha }}
+    steps:
+      - name: Require default branch and allowlisted numeric actor IDs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          REF: ${{ github.ref }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          ACTOR: ${{ github.actor }}
+          ACTOR_ID: ${{ github.actor_id }}
+          TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+          ALLOWED_ACTOR_IDS: ${{ vars.RUNNER_E2E_ALLOWED_ACTOR_IDS }}
+        run: |
+          set -euo pipefail
+          if [ "$REF" != "refs/heads/$DEFAULT_BRANCH" ]; then
+            echo "Paid direct Runner eval campaigns may run only from the default branch." >&2
+            exit 1
+          fi
+          if ! jq -e 'type == "array" and length > 0 and all(.[]; type == "number" and . > 0 and floor == .)' <<< "${ALLOWED_ACTOR_IDS:-}" >/dev/null; then
+            echo "RUNNER_E2E_ALLOWED_ACTOR_IDS must be a non-empty JSON array of numeric GitHub user IDs." >&2
+            exit 1
+          fi
+          triggering_actor_id="$(gh api "users/$TRIGGERING_ACTOR" --jq .id)"
+          if [ "$triggering_actor_id" != "$ACTOR_ID" ] && [ "$TRIGGERING_ACTOR" = "$ACTOR" ]; then
+            echo "GitHub actor identity contexts disagree; refusing the paid run." >&2
+            exit 1
+          fi
+          for candidate in "$triggering_actor_id" "$ACTOR_ID"; do
+            if ! jq -e --argjson candidate "$candidate" 'index($candidate) != null' <<< "$ALLOWED_ACTOR_IDS" >/dev/null; then
+              echo "The initiating GitHub account is not authorized to run paid Runner eval campaigns." >&2
+              exit 1
+            fi
+          done
+
+      - name: Resolve requested Paperclip branch to an immutable commit
+        id: target
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          TARGET_BRANCH: ${{ inputs.target_branch || github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          if [ -z "$TARGET_BRANCH" ] || [[ "$TARGET_BRANCH" == refs/* ]]; then
+            echo "target_branch must name a branch in this repository without a refs/ prefix." >&2
+            exit 1
+          fi
+          encoded_branch="$(jq -rn --arg branch "$TARGET_BRANCH" '$branch | @uri')"
+          target_sha="$(gh api -X GET "repos/$REPOSITORY/branches/$encoded_branch" --jq .commit.sha)"
+          [[ "$target_sha" =~ ^[0-9a-f]{40}$ ]]
+          echo "sha=$target_sha" >> "$GITHUB_OUTPUT"
+          echo "ref=refs/heads/$TARGET_BRANCH" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Generate private eval-repository token
+        id: evals_token
+        env:
+          COMMITPERCLIP_KEY: ${{ secrets.COMMITPERCLIP_KEY }}
+          GH_REPO: paperclipai/paperclip-evals
+        run: |
+          set -euo pipefail
+          token="$(node .github/scripts/get-bot-token.mjs)"
+          echo "::add-mask::$token"
+          echo "value=$token" >> "$GITHUB_OUTPUT"
+
+      - name: Verify the private eval program is pinned to an exact commit
+        id: evals
+        env:
+          GH_TOKEN: ${{ steps.evals_token.outputs.value }}
+          EVALS_SHA: ${{ inputs.evals_sha || vars.RUNNER_PROTOCOL_EVALS_SHA }}
+        run: |
+          set -euo pipefail
+          if ! [[ "$EVALS_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "evals_sha (or RUNNER_PROTOCOL_EVALS_SHA for schedules) must be an exact 40-character commit." >&2
+            exit 1
+          fi
+          resolved="$(gh api -X GET "repos/paperclipai/paperclip-evals/commits/$EVALS_SHA" --jq .sha)"
+          test "$resolved" = "$EVALS_SHA"
+          echo "sha=$resolved" >> "$GITHUB_OUTPUT"
+
+      - name: Validate retry envelope
+        env:
+          RETRIES: ${{ github.event_name == 'schedule' && 1 || inputs.max_infrastructure_retries }}
+        run: |
+          set -euo pipefail
+          [[ "$RETRIES" =~ ^[0-3]$ ]]
+
+      - name: Select paid test runner
+        id: runner
+        env:
+          AWS_PAID_RUNNER_ENABLED: ${{ vars.RUNNER_E2E_AWS_ENABLED }}
+        run: |
+          set -euo pipefail
+          if [ "$AWS_PAID_RUNNER_ENABLED" = true ]; then
+            {
+              echo 'runner=runs-on/fleet=paperclip-public-pr-x64/env=public-ci'
+              echo 'max_parallel_default=100'
+              echo 'max_parallel_limit=100'
+            } >> "$GITHUB_OUTPUT"
+          else
+            {
+              echo 'runner=ubuntu-latest'
+              echo 'max_parallel_default=32'
+              echo 'max_parallel_limit=57'
+            } >> "$GITHUB_OUTPUT"
+          fi
+
+  catalog:
+    name: Pin and fan out the direct Evalbook roster
+    needs: authorize
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      matrix_0: ${{ steps.catalog.outputs.matrix_0 }}
+      matrix_1: ${{ steps.catalog.outputs.matrix_1 }}
+      matrix_1_present: ${{ steps.catalog.outputs.matrix_1_present }}
+      max_parallel_per_shard: ${{ steps.catalog.outputs.max_parallel_per_shard }}
+      selected: ${{ steps.catalog.outputs.selected }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Generate private eval-repository token
+        id: evals_token
+        env:
+          COMMITPERCLIP_KEY: ${{ secrets.COMMITPERCLIP_KEY }}
+          GH_REPO: paperclipai/paperclip-evals
+        run: |
+          set -euo pipefail
+          token="$(node .github/scripts/get-bot-token.mjs)"
+          echo "::add-mask::$token"
+          echo "value=$token" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: paperclipai/paperclip-evals
+          ref: ${{ needs.authorize.outputs.evals_sha }}
+          path: .paperclip-evals
+          token: ${{ steps.evals_token.outputs.value }}
+          persist-credentials: false
+
+      - name: Build the two bounded roster-plus-case matrices
+        id: catalog
+        env:
+          PAPERCLIP_PROTOCOL_EVAL_SOURCE_SHA: ${{ needs.authorize.outputs.target_sha }}
+          PAPERCLIP_PROTOCOL_EVALS_SHA: ${{ needs.authorize.outputs.evals_sha }}
+          MAX_PARALLEL: ${{ vars.RUNNER_E2E_MAX_PARALLEL || needs.authorize.outputs.max_parallel_default }}
+          MAX_PARALLEL_LIMIT: ${{ needs.authorize.outputs.max_parallel_limit }}
+          ROSTERS: ${{ inputs.rosters || 'all' }}
+        run: |
+          set -euo pipefail
+          if ! [[ "$MAX_PARALLEL" =~ ^[1-9][0-9]*$ ]] || [ "$MAX_PARALLEL" -lt 2 ] || [ "$MAX_PARALLEL" -gt "$MAX_PARALLEL_LIMIT" ]; then
+            echo "RUNNER_E2E_MAX_PARALLEL must be an integer from 2 through $MAX_PARALLEL_LIMIT for the two-shard direct suite." >&2
+            exit 1
+          fi
+          node packages/paperclip-runner/scripts/runner-protocol-eval-campaign.mjs catalog \
+            --evals-root .paperclip-evals \
+            --rosters "$ROSTERS" \
+            --campaign-id "gha-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            --max-parallel "$MAX_PARALLEL" \
+            --output runner-protocol-eval-catalog.json
+
+      - name: Upload immutable campaign catalog
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: runner-protocol-eval-catalog-${{ github.run_id }}-${{ github.run_attempt }}
+          path: runner-protocol-eval-catalog.json
+          retention-days: 30
+          if-no-files-found: error
+
+  build_runner:
+    name: Build portable direct-eval runner once
+    needs: [authorize, catalog]
+    runs-on: ${{ needs.authorize.outputs.test_runner }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.authorize.outputs.target_sha }}
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        env:
+          NPM_CONFIG_AUDIT: "false"
+          NPM_CONFIG_FUND: "false"
+          NPM_CONFIG_UPDATE_NOTIFIER: "false"
+        with:
+          version: 9.15.4
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Build runner CLI, daemon, and canonical attempt viewer
+        run: |
+          set -euo pipefail
+          pnpm --filter @paperclipai/paperclip-runner build:typescript
+          pnpm --filter @paperclipai/paperclip-runner build:runner-binaries
+          pnpm --filter @paperclipai/paperclip-runner build:issue-thread
+
+      - name: Package a portable provider runtime
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/runner-protocol-build/package" "$RUNNER_TEMP/runner-protocol-build/portable"
+          pnpm --dir packages/paperclip-runner pack \
+            --pack-destination "$RUNNER_TEMP/runner-protocol-build/package"
+          package="$(find "$RUNNER_TEMP/runner-protocol-build/package" -maxdepth 1 -type f -name '*.tgz' -print -quit)"
+          test -f "$package"
+          pnpm --filter @paperclipai/paperclip-runner deploy --prod \
+            "$RUNNER_TEMP/runner-protocol-build/portable"
+          cp "$package" "$RUNNER_TEMP/runner-protocol-build/paperclip-runner.tgz"
+          cp packages/paperclip-runner/runner/target/debug/paperclip-runnerd "$RUNNER_TEMP/runner-protocol-build/paperclip-runnerd"
+          cp -R packages/paperclip-runner/dist-issue-thread "$RUNNER_TEMP/runner-protocol-build/dist-issue-thread"
+          test -f "$RUNNER_TEMP/runner-protocol-build/portable/dist/cli/eval-session.js"
+          test -d "$RUNNER_TEMP/runner-protocol-build/portable/node_modules/.pnpm"
+          test -x "$RUNNER_TEMP/runner-protocol-build/paperclip-runnerd"
+          tar --create --gzip --file runner-protocol-build.tar.gz -C "$RUNNER_TEMP/runner-protocol-build" .
+          sha256sum runner-protocol-build.tar.gz > runner-protocol-build.tar.gz.sha256
+
+      - name: Upload immutable portable runner
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: runner-protocol-build-${{ needs.authorize.outputs.target_sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            runner-protocol-build.tar.gz
+            runner-protocol-build.tar.gz.sha256
+          retention-days: 1
+          compression-level: 0
+          if-no-files-found: error
+
+  eval_shard_0:
+    name: Direct eval ${{ matrix.rosterId }} / ${{ matrix.caseId }}
+    needs: [authorize, catalog, build_runner]
+    runs-on: ${{ needs.authorize.outputs.test_runner }}
+    timeout-minutes: 18
+    permissions:
+      contents: read
+      id-token: write
+    environment:
+      name: runner-e2e-paid
+    strategy:
+      fail-fast: false
+      max-parallel: ${{ fromJSON(needs.catalog.outputs.max_parallel_per_shard) }}
+      matrix: ${{ fromJSON(needs.catalog.outputs.matrix_0) }}
+    steps: &direct_eval_steps
+      - name: Reauthorize paid execution before provider access
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REF: ${{ github.ref }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          ACTOR: ${{ github.actor }}
+          ACTOR_ID: ${{ github.actor_id }}
+          TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+          ALLOWED_ACTOR_IDS: ${{ vars.RUNNER_E2E_ALLOWED_ACTOR_IDS }}
+        run: |
+          set -euo pipefail
+          test "$REF" = "refs/heads/$DEFAULT_BRANCH"
+          triggering_actor_id="$(gh api "users/$TRIGGERING_ACTOR" --jq .id)"
+          test "$triggering_actor_id" = "$ACTOR_ID" || test "$TRIGGERING_ACTOR" != "$ACTOR"
+          for candidate in "$triggering_actor_id" "$ACTOR_ID"; do
+            jq -e --argjson candidate "$candidate" 'type == "array" and index($candidate) != null' <<< "$ALLOWED_ACTOR_IDS" >/dev/null
+          done
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Generate private eval-repository token
+        id: evals_token
+        env:
+          COMMITPERCLIP_KEY: ${{ secrets.COMMITPERCLIP_KEY }}
+          GH_REPO: paperclipai/paperclip-evals
+        run: |
+          set -euo pipefail
+          token="$(node .github/scripts/get-bot-token.mjs)"
+          echo "::add-mask::$token"
+          echo "value=$token" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: paperclipai/paperclip-evals
+          ref: ${{ needs.authorize.outputs.evals_sha }}
+          path: .paperclip-evals
+          token: ${{ steps.evals_token.outputs.value }}
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+
+      - name: Download portable runner
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: runner-protocol-build-${{ needs.authorize.outputs.target_sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: runner-protocol-build
+
+      - name: Verify and extract portable runner
+        run: |
+          set -euo pipefail
+          cd runner-protocol-build
+          sha256sum --check runner-protocol-build.tar.gz.sha256
+          mkdir extracted
+          tar --extract --gzip --file runner-protocol-build.tar.gz --directory extracted
+          test -x extracted/paperclip-runnerd
+
+      - name: Prepare short-lived AgentCore web identity
+        if: matrix.credentialName == 'AWS_AGENTCORE_OIDC'
+        env:
+          AGENTCORE_ROLE_ARN: ${{ vars.PAPERCLIP_AWS_AGENTCORE_EXECUTION_ROLE_ARN }}
+        run: |
+          set -euo pipefail
+          test -n "$AGENTCORE_ROLE_ARN"
+          token="$(curl --fail --silent --show-error \
+            -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sts.amazonaws.com" | jq -r .value)"
+          test -n "$token"
+          echo "::add-mask::$token"
+          token_file="$RUNNER_TEMP/runner-protocol-agentcore-token"
+          printf '%s' "$token" > "$token_file"
+          chmod 600 "$token_file"
+          {
+            echo "AWS_WEB_IDENTITY_TOKEN_FILE=$token_file"
+            echo "AWS_ROLE_ARN=$AGENTCORE_ROLE_ARN"
+            echo "AWS_ROLE_SESSION_NAME=runner-protocol-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          } >> "$GITHUB_ENV"
+
+      - name: Run one immutable direct protocol cell
+        id: direct_eval
+        env:
+          CELL_ID: ${{ matrix.cellId }}
+          ROSTER_FILE: ${{ matrix.rosterFile }}
+          CASE_ID: ${{ matrix.caseId }}
+          CREDENTIAL_NAME: ${{ matrix.credentialName }}
+          PROVIDER: ${{ matrix.provider }}
+          MAX_INFRASTRUCTURE_RETRIES: ${{ github.event_name == 'schedule' && 1 || inputs.max_infrastructure_retries }}
+          OPENAI_API_KEY: ${{ matrix.credentialName == 'OPENAI_API_KEY' && secrets.OPENAI_API_KEY || '' }}
+          ANTHROPIC_API_KEY: ${{ matrix.credentialName == 'ANTHROPIC_API_KEY' && secrets.ANTHROPIC_API_KEY || '' }}
+          OPENROUTER_API_KEY: ${{ matrix.credentialName == 'OPENROUTER_API_KEY' && secrets.OPENROUTER_API_KEY || '' }}
+          PAPERCLIP_CLAUDE_MANAGED_PROFILE_ID: ${{ vars.PAPERCLIP_CLAUDE_MANAGED_PROFILE_ID }}
+          PAPERCLIP_CLAUDE_MANAGED_AGENT_ID: ${{ vars.PAPERCLIP_CLAUDE_MANAGED_AGENT_ID }}
+          PAPERCLIP_CLAUDE_MANAGED_AGENT_VERSION: ${{ vars.PAPERCLIP_CLAUDE_MANAGED_AGENT_VERSION }}
+          PAPERCLIP_CLAUDE_MANAGED_ENVIRONMENT_ID: ${{ vars.PAPERCLIP_CLAUDE_MANAGED_ENVIRONMENT_ID }}
+          AWS_REGION: ${{ vars.PAPERCLIP_AWS_AGENTCORE_REGION }}
+          AWS_DEFAULT_REGION: ${{ vars.PAPERCLIP_AWS_AGENTCORE_REGION }}
+          PAPERCLIP_AWS_AGENTCORE_PROFILE_ID: ${{ vars.PAPERCLIP_AWS_AGENTCORE_PROFILE_ID }}
+          PAPERCLIP_AWS_AGENTCORE_ACCOUNT_ID: ${{ vars.PAPERCLIP_AWS_AGENTCORE_ACCOUNT_ID }}
+          PAPERCLIP_AWS_AGENTCORE_HARNESS_ARN: ${{ vars.PAPERCLIP_AWS_AGENTCORE_HARNESS_ARN }}
+          PAPERCLIP_AWS_AGENTCORE_HARNESS_VERSION: ${{ vars.PAPERCLIP_AWS_AGENTCORE_HARNESS_VERSION }}
+          PAPERCLIP_AWS_AGENTCORE_ENDPOINT_ARN: ${{ vars.PAPERCLIP_AWS_AGENTCORE_ENDPOINT_ARN }}
+          PAPERCLIP_AWS_AGENTCORE_ENDPOINT_QUALIFIER: ${{ vars.PAPERCLIP_AWS_AGENTCORE_ENDPOINT_QUALIFIER }}
+          PAPERCLIP_AWS_AGENTCORE_RUNTIME_ARN: ${{ vars.PAPERCLIP_AWS_AGENTCORE_RUNTIME_ARN }}
+          PAPERCLIP_AWS_AGENTCORE_MEMORY_ARN: ${{ vars.PAPERCLIP_AWS_AGENTCORE_MEMORY_ARN }}
+          PAPERCLIP_AWS_AGENTCORE_MEMORY_ID: ${{ vars.PAPERCLIP_AWS_AGENTCORE_MEMORY_ID }}
+          PAPERCLIP_AWS_AGENTCORE_INVOCATION_ROLE_ARN: ${{ vars.PAPERCLIP_AWS_AGENTCORE_INVOCATION_ROLE_ARN }}
+          PAPERCLIP_AWS_AGENTCORE_CONTEXT_BUCKET: ${{ vars.PAPERCLIP_AWS_AGENTCORE_CONTEXT_BUCKET }}
+          PAPERCLIP_AWS_AGENTCORE_CONTEXT_PREFIX: ${{ vars.PAPERCLIP_AWS_AGENTCORE_CONTEXT_PREFIX }}
+          PAPERCLIP_AWS_AGENTCORE_CONTEXT_KMS_KEY_ARN: ${{ vars.PAPERCLIP_AWS_AGENTCORE_CONTEXT_KMS_KEY_ARN }}
+          PAPERCLIP_AWS_AGENTCORE_QUALIFICATION_REVISION: ${{ vars.PAPERCLIP_AWS_AGENTCORE_QUALIFICATION_REVISION }}
+        run: |
+          set -euo pipefail
+          mkdir -p cell-output/runs
+          if [ "$CREDENTIAL_NAME" != "AWS_AGENTCORE_OIDC" ]; then
+            test -n "${!CREDENTIAL_NAME:-}"
+          fi
+          if [ "$PROVIDER" = "claude_managed" ]; then
+            test -n "$PAPERCLIP_CLAUDE_MANAGED_PROFILE_ID"
+            test -n "$PAPERCLIP_CLAUDE_MANAGED_AGENT_ID"
+            test -n "$PAPERCLIP_CLAUDE_MANAGED_AGENT_VERSION"
+            test -n "$PAPERCLIP_CLAUDE_MANAGED_ENVIRONMENT_ID"
+          fi
+          set +e
+          python3 .paperclip-evals/evals/paperclip-runner/tools/run_live_roster.py run \
+            --roster ".paperclip-evals/evals/paperclip-runner/rosters/$ROSTER_FILE" \
+            --case "$CASE_ID" \
+            --runner-cli runner-protocol-build/extracted/portable/dist/cli/eval-session.js \
+            --runner-package runner-protocol-build/extracted/paperclip-runner.tgz \
+            --runnerd runner-protocol-build/extracted/paperclip-runnerd \
+            --runs-root cell-output/runs \
+            --max-infrastructure-retries "$MAX_INFRASTRUCTURE_RETRIES" \
+            --run-id "gha-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${CELL_ID}"
+          status=$?
+          set -e
+          CELL_EXIT_CODE="$status" node --input-type=module <<'NODE'
+          import { writeFileSync } from "node:fs";
+          writeFileSync("cell-output/cell.json", `${JSON.stringify({
+            schema: "paperclip.runner-protocol-eval.cell/v1",
+            cellId: process.env.CELL_ID,
+            rosterFile: process.env.ROSTER_FILE,
+            caseId: process.env.CASE_ID,
+            exitCode: Number(process.env.CELL_EXIT_CODE),
+          }, null, 2)}\n`, { mode: 0o600 });
+          NODE
+          exit "$status"
+
+      - name: Upload access-controlled cell attempt
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: runner-protocol-eval-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.cellId }}
+          path: cell-output/
+          retention-days: 30
+          if-no-files-found: error
+
+  eval_shard_1:
+    name: Direct eval ${{ matrix.rosterId }} / ${{ matrix.caseId }}
+    if: needs.catalog.outputs.matrix_1_present == 'true'
+    needs: [authorize, catalog, build_runner]
+    runs-on: ${{ needs.authorize.outputs.test_runner }}
+    timeout-minutes: 18
+    permissions:
+      contents: read
+      id-token: write
+    environment:
+      name: runner-e2e-paid
+    strategy:
+      fail-fast: false
+      max-parallel: ${{ fromJSON(needs.catalog.outputs.max_parallel_per_shard) }}
+      matrix: ${{ fromJSON(needs.catalog.outputs.matrix_1) }}
+    steps: *direct_eval_steps
+
+  report:
+    name: Merge attempts and render canonical Evalbook
+    if: always() && !cancelled() && needs.catalog.result == 'success' && needs.build_runner.result == 'success'
+    needs: [authorize, catalog, build_runner, eval_shard_0, eval_shard_1]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      public_report_ready: ${{ steps.public_report.outputs.ready }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Generate private eval-repository token
+        id: evals_token
+        env:
+          COMMITPERCLIP_KEY: ${{ secrets.COMMITPERCLIP_KEY }}
+          GH_REPO: paperclipai/paperclip-evals
+        run: |
+          set -euo pipefail
+          token="$(node .github/scripts/get-bot-token.mjs)"
+          echo "::add-mask::$token"
+          echo "value=$token" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: paperclipai/paperclip-evals
+          ref: ${{ needs.authorize.outputs.evals_sha }}
+          path: .paperclip-evals
+          token: ${{ steps.evals_token.outputs.value }}
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+
+      - name: Download immutable campaign catalog
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: runner-protocol-eval-catalog-${{ github.run_id }}-${{ github.run_attempt }}
+          path: runner-protocol-catalog
+
+      - name: Download portable runner and viewer
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: runner-protocol-build-${{ needs.authorize.outputs.target_sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: runner-protocol-build
+
+      - name: Download every access-controlled cell
+        id: download_cells
+        continue-on-error: true
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          pattern: runner-protocol-eval-${{ github.run_id }}-${{ github.run_attempt }}-*
+          path: downloaded-runner-protocol-evals
+          merge-multiple: false
+
+      - name: Retry cell download after artifact transport failure
+        if: steps.download_cells.outcome == 'failure'
+        continue-on-error: true
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          pattern: runner-protocol-eval-${{ github.run_id }}-${{ github.run_attempt }}-*
+          path: downloaded-runner-protocol-evals
+          merge-multiple: false
+
+      - name: Materialize an empty download root when every cell failed early
+        run: mkdir -p downloaded-runner-protocol-evals
+
+      - name: Verify portable viewer
+        run: |
+          set -euo pipefail
+          cd runner-protocol-build
+          sha256sum --check runner-protocol-build.tar.gz.sha256
+          mkdir extracted
+          tar --extract --gzip --file runner-protocol-build.tar.gz --directory extracted
+          test -f extracted/dist-issue-thread/index.html
+
+      - name: Aggregate every expected cell, including missing infrastructure cells
+        env:
+          PAPERCLIP_PROTOCOL_EVAL_SOURCE_SHA: ${{ needs.authorize.outputs.target_sha }}
+          PAPERCLIP_PROTOCOL_EVAL_SOURCE_REF: ${{ needs.authorize.outputs.target_ref }}
+          PAPERCLIP_PROTOCOL_EVALS_SHA: ${{ needs.authorize.outputs.evals_sha }}
+          PAPERCLIP_PROTOCOL_EVAL_WORKFLOW_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          node packages/paperclip-runner/scripts/runner-protocol-eval-campaign.mjs aggregate \
+            --catalog runner-protocol-catalog/runner-protocol-eval-catalog.json \
+            --downloads downloaded-runner-protocol-evals \
+            --evals-root .paperclip-evals \
+            --runs-out runner-protocol-merged/runs \
+            --campaign-out runner-protocol-merged/campaign.json
+
+      - name: Render the access-controlled canonical Evalbook report
+        run: |
+          python3 .paperclip-evals/evals/paperclip-runner/tools/eval_program.py report \
+            --runs-root runner-protocol-merged/runs \
+            --output runner-protocol-merged/report \
+            --viewer-root runner-protocol-build/extracted/dist-issue-thread \
+            --inventory .paperclip-evals/evals/paperclip-runner/inventory.json \
+            --coverage-matrix .paperclip-evals/evals/paperclip-runner/coverage-matrix.json
+          cp runner-protocol-merged/campaign.json runner-protocol-merged/report/campaign.json
+
+      - name: Render the same canonical grid from a public-safe evidence projection
+        run: |
+          node packages/paperclip-runner/scripts/runner-protocol-eval-campaign.mjs sanitize \
+            --runs-root runner-protocol-merged/runs \
+            --output runner-protocol-merged/public-runs
+          python3 .paperclip-evals/evals/paperclip-runner/tools/eval_program.py report \
+            --runs-root runner-protocol-merged/public-runs \
+            --output runner-protocol-merged/public-report \
+            --inventory .paperclip-evals/evals/paperclip-runner/inventory.json \
+            --coverage-matrix .paperclip-evals/evals/paperclip-runner/coverage-matrix.json
+          cp runner-protocol-merged/campaign.json runner-protocol-merged/public-report/campaign.json
+
+      - name: Enforce the static public allowlist
+        id: public_report
+        run: |
+          node --input-type=module -e 'import { validatePublicProtocolEvalReport } from "./packages/paperclip-runner/scripts/publish-runner-protocol-eval-history.mjs"; await validatePublicProtocolEvalReport("runner-protocol-merged/public-report");'
+          echo "ready=true" >> "$GITHUB_OUTPUT"
+
+      - name: Add campaign result to the workflow summary
+        run: |
+          {
+            echo '## Runner direct live protocol evals'
+            echo
+            jq -r '"- Cells: \(.totals.passed)/\(.totals.selected) passed\n- Behavior failures: \(.totals.behaviorFailures)\n- Infrastructure failures: \(.totals.infrastructureFailures)\n- Paperclip: `\(.source.paperclip.sha)`\n- Evals: `\(.source.evals.sha)`"' runner-protocol-merged/campaign.json
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload access-controlled canonical Evalbook and raw attempts
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: runner-protocol-eval-report-${{ github.run_id }}-${{ github.run_attempt }}
+          path: runner-protocol-merged/
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Upload publisher-only sanitized Evalbook
+        if: steps.public_report.outputs.ready == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: runner-protocol-eval-public-${{ github.run_id }}-${{ github.run_attempt }}
+          path: runner-protocol-merged/public-report/
+          retention-days: 1
+          if-no-files-found: error
+
+      - name: Enforce complete green campaign
+        if: always()
+        run: jq -e '.complete == true and .allPassed == true' runner-protocol-merged/campaign.json >/dev/null
+
+  publish_history:
+    name: Publish immutable Evalbook and mutable campaign index
+    needs: [authorize, catalog, report]
+    if: always() && needs.report.outputs.public_report_ready == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    concurrency:
+      group: runner-protocol-eval-history-publish
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write
+    environment:
+      name: runner-e2e-history
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # AWS credentials can execute only the publisher from the trusted workflow revision.
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+
+      - name: Download only the sanitized canonical Evalbook
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: runner-protocol-eval-public-${{ github.run_id }}-${{ github.run_attempt }}
+          path: runner-protocol-public-report
+
+      - name: Exchange GitHub OIDC identity for scoped AWS credentials
+        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6
+        with:
+          role-to-assume: ${{ vars.RUNNER_PROTOCOL_EVAL_HISTORY_AWS_ROLE_ARN || vars.RUNNER_E2E_HISTORY_AWS_ROLE_ARN }}
+          aws-region: ${{ vars.RUNNER_PROTOCOL_EVAL_HISTORY_AWS_REGION || vars.RUNNER_E2E_HISTORY_AWS_REGION }}
+
+      - name: Publish versioned report and refresh the root index
+        env:
+          PAPERCLIP_RUNNER_PROTOCOL_EVAL_PUBLIC_REPORT_DIR: ${{ github.workspace }}/runner-protocol-public-report
+          RUNNER_PROTOCOL_EVAL_HISTORY_S3_BUCKET: ${{ vars.RUNNER_PROTOCOL_EVAL_HISTORY_S3_BUCKET || vars.RUNNER_E2E_HISTORY_S3_BUCKET }}
+          RUNNER_PROTOCOL_EVAL_HISTORY_PREFIX: ${{ vars.RUNNER_PROTOCOL_EVAL_HISTORY_PREFIX || 'runner-protocol-evals' }}
+          RUNNER_PROTOCOL_EVAL_HISTORY_PUBLIC_BASE_URL: ${{ vars.RUNNER_PROTOCOL_EVAL_HISTORY_PUBLIC_BASE_URL || vars.RUNNER_E2E_HISTORY_PUBLIC_BASE_URL }}
+        run: node packages/paperclip-runner/scripts/publish-runner-protocol-eval-history.mjs

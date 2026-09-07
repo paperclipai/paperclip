@@ -1,0 +1,258 @@
+{
+  "schema": "paperclip-runner/native-execution/v1",
+  "provenance": "seeded",
+  "identity": {
+    "runId": "run_evals_seeded",
+    "caseId": "case_semantic_denial",
+    "configId": "config_deterministic_v1",
+    "attemptId": "attempt_semantic_denial_0001"
+  },
+  "input": {
+    "caseSha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "configSha256": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "deterministicSeed": "paperclip-evals-v1-seed"
+  },
+  "runner": {
+    "package": {
+      "name": "@paperclipai/paperclip-runner",
+      "version": "0.0.0"
+    },
+    "binary": {
+      "name": "paperclip-runnerd",
+      "sha256": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    },
+    "prpVersion": 1,
+    "nativeExecutionVersion": 1,
+    "catalogVersion": 1,
+    "catalogSha256": "sha256:e5a90079e1641e50f2f07a320856bbef622c04810384ffdd1895576cc16c4c5c",
+    "driverContractVersion": 1,
+    "driverKind": "paperclip-deterministic",
+    "driverVersion": "1.0.0"
+  },
+  "events": [
+    {
+      "schema": "paperclip.prp.event.v1",
+      "sourceEventId": "evals_seeded_01",
+      "sourceSeq": 1,
+      "sourceInstanceId": "runner_evals_seeded",
+      "sourceKind": "runner",
+      "runId": "run_evals_seeded",
+      "normalizedSessionId": "session_evals_seeded",
+      "turnId": "turn_evals_seeded",
+      "itemId": "item_evals_seeded",
+      "eventType": "mcp_app.tool_input",
+      "schemaVersion": 1,
+      "priority": 1,
+      "emittedAt": "2026-08-11T12:00:00.000Z",
+      "payload": {
+        "semantic_tool": {
+          "schema": "paperclip.prp.semantic_tool.v1",
+          "schemaVersion": 1,
+          "phase": "input",
+          "operationId": "decide_approval",
+          "callId": "call_evals_seeded",
+          "correlation": {
+            "runId": "run_evals_seeded",
+            "normalizedSessionId": "session_evals_seeded",
+            "turnId": "turn_evals_seeded",
+            "itemId": "item_evals_seeded"
+          },
+          "idempotencyKey": "decide_evals_seeded",
+          "content": {
+            "digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "redactionDisposition": "redacted",
+            "references": []
+          }
+        }
+      }
+    },
+    {
+      "schema": "paperclip.prp.event.v1",
+      "sourceEventId": "evals_seeded_02",
+      "sourceSeq": 2,
+      "sourceInstanceId": "runner_evals_seeded",
+      "sourceKind": "runner",
+      "runId": "run_evals_seeded",
+      "normalizedSessionId": "session_evals_seeded",
+      "turnId": "turn_evals_seeded",
+      "itemId": "item_evals_seeded",
+      "eventType": "mcp_app.tool_result",
+      "schemaVersion": 1,
+      "priority": 1,
+      "emittedAt": "2026-08-11T12:00:00.010Z",
+      "payload": {
+        "semantic_tool": {
+          "schema": "paperclip.prp.semantic_tool.v1",
+          "schemaVersion": 1,
+          "phase": "result",
+          "operationId": "decide_approval",
+          "callId": "call_evals_seeded",
+          "correlation": {
+            "runId": "run_evals_seeded",
+            "normalizedSessionId": "session_evals_seeded",
+            "turnId": "turn_evals_seeded",
+            "itemId": "item_evals_seeded"
+          },
+          "idempotencyKey": "decide_evals_seeded",
+          "content": {
+            "digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+            "redactionDisposition": "redacted",
+            "references": []
+          },
+          "outcome": "denied",
+          "code": "required_claim_missing",
+          "retryable": false,
+          "authorizationBoundary": "grant",
+          "operationReceiptId": "receipt_evals_seeded",
+          "auditReceiptId": "audit_evals_seeded"
+        }
+      }
+    },
+    {
+      "schema": "paperclip.prp.event.v1",
+      "sourceEventId": "evals_seeded_03",
+      "sourceSeq": 3,
+      "sourceInstanceId": "runner_evals_seeded",
+      "sourceKind": "runner",
+      "runId": "run_evals_seeded",
+      "normalizedSessionId": "session_evals_seeded",
+      "turnId": "turn_evals_seeded",
+      "eventType": "run.result.proposed",
+      "schemaVersion": 1,
+      "priority": 0,
+      "emittedAt": "2026-08-11T12:00:00.020Z",
+      "payload": {
+        "schema": "paperclip.run_result.v1",
+        "reportedWorkDisposition": "needs_review",
+        "summary": "The governed tool effect was rejected and preserved as a denial.",
+        "completionClaim": {
+          "contractRevision": "evals-native-execution-v1",
+          "objectiveSatisfied": false,
+          "criteria": [],
+          "remainingWork": [
+            {
+              "description": "An authorized approver must decide.",
+              "blocksCompletion": true
+            }
+          ]
+        },
+        "evidence": [{ "receiptId": "receipt_evals_seeded" }],
+        "verification": [
+          {
+            "commandOrCheck": "rejected tool effect stays denied",
+            "status": "passed"
+          }
+        ],
+        "attentionRequests": [],
+        "artifacts": []
+      }
+    },
+    {
+      "schema": "paperclip.prp.event.v1",
+      "sourceEventId": "evals_seeded_04",
+      "sourceSeq": 4,
+      "sourceInstanceId": "runner_evals_seeded",
+      "sourceKind": "runner",
+      "runId": "run_evals_seeded",
+      "normalizedSessionId": "session_evals_seeded",
+      "turnId": "turn_evals_seeded",
+      "eventType": "run.terminal",
+      "schemaVersion": 1,
+      "priority": 0,
+      "emittedAt": "2026-08-11T12:00:00.030Z",
+      "payload": {
+        "schema": "paperclip.prp.terminal.v1",
+        "turnTerminalState": "completed",
+        "runTerminalState": "succeeded",
+        "reportedWorkDisposition": "needs_review",
+        "workAssessmentId": "assessment_evals_seeded",
+        "statusDecisionId": "decision_evals_seeded"
+      }
+    }
+  ],
+  "semanticTools": {
+    "definitions": [
+      {
+        "operationId": "decide_approval",
+        "schemaVersion": 1,
+        "availability": "denied"
+      }
+    ],
+    "calls": [
+      {
+        "callId": "call_evals_seeded",
+        "operationId": "decide_approval",
+        "eventId": "evals_seeded_01"
+      }
+    ],
+    "results": [
+      {
+        "callId": "call_evals_seeded",
+        "operationId": "decide_approval",
+        "eventId": "evals_seeded_02",
+        "outcome": "denied"
+      }
+    ],
+    "denials": [
+      {
+        "callId": "call_evals_seeded",
+        "code": "required_claim_missing",
+        "authorizationBoundary": "grant",
+        "retryable": false
+      }
+    ]
+  },
+  "terminal": {
+    "schema": "paperclip.prp.terminal.v1",
+    "turnTerminalState": "completed",
+    "runTerminalState": "succeeded",
+    "reportedWorkDisposition": "needs_review",
+    "workAssessmentId": "assessment_evals_seeded",
+    "statusDecisionId": "decision_evals_seeded"
+  },
+  "observations": {
+    "checks": [
+      {
+        "id": "tool-effect-denied",
+        "passed": true,
+        "receiptId": "receipt_evals_seeded"
+      }
+    ]
+  },
+  "usage": {
+    "inputTokens": 12,
+    "outputTokens": 8,
+    "totalTokens": 20,
+    "requestCount": 1,
+    "durationMs": 30,
+    "cost": {
+      "currency": "USD",
+      "amountMicros": 0
+    }
+  },
+  "transcript": {
+    "uri": "artifact://native/attempt_semantic_denial_0001/transcript.jsonl",
+    "sha256": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+    "byteSize": 2048,
+    "mediaType": "application/x-ndjson",
+    "complete": true,
+    "eventCount": 4,
+    "omissionReason": null
+  },
+  "artifactRoot": {
+    "uri": "artifact://native/attempt_semantic_denial_0001/",
+    "sha256": "sha256:1212121212121212121212121212121212121212121212121212121212121212",
+    "byteSize": 4096,
+    "mediaType": "application/vnd.paperclip.runner-artifact-root+json"
+  },
+  "artifacts": [
+    {
+      "uri": "artifact://native/attempt_semantic_denial_0001/denial-receipt.json",
+      "sha256": "sha256:1313131313131313131313131313131313131313131313131313131313131313",
+      "byteSize": 512,
+      "mediaType": "application/json"
+    }
+  ],
+  "failure": null,
+  "x_fixturePurpose": "Proves seeded provenance, denied effects, and additive field preservation."
+}

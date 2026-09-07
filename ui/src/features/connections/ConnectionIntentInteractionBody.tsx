@@ -43,6 +43,7 @@ export function ConnectionIntentInteractionBody({
     currentUserId && interaction.addresseeUserId === currentUserId,
   );
   const isPending = interaction.status === "pending";
+  const focusTargetId = `connection-intent-focus-target-${interaction.id}`;
 
   const invalidateTask = async (
     updatedInteraction?: ConnectionIntentInteraction,
@@ -67,7 +68,21 @@ export function ConnectionIntentInteractionBody({
     ]);
   };
   const returnFocusToCard = () => {
-    window.requestAnimationFrame(() => focusTargetRef.current?.focus());
+    // Completing an intent can move it from the composer takeover to the
+    // durable timeline. That replaces this component instance, so its ref can
+    // be cleared before focus restoration runs. Retry for a few paint frames
+    // and resolve the stable interaction-specific target from the new host.
+    const focusCurrentTarget = (remainingAttempts: number) => {
+      window.requestAnimationFrame(() => {
+        const target =
+          document.getElementById(focusTargetId) ?? focusTargetRef.current;
+        target?.focus();
+        if (remainingAttempts > 1) {
+          focusCurrentTarget(remainingAttempts - 1);
+        }
+      });
+    };
+    focusCurrentTarget(3);
   };
 
   const setupQuery = useQuery({
@@ -148,6 +163,7 @@ export function ConnectionIntentInteractionBody({
   if (status && StatusIcon) {
     return (
       <div
+        id={focusTargetId}
         ref={focusTargetRef}
         tabIndex={-1}
         data-testid="connection-intent-focus-target"
@@ -169,6 +185,7 @@ export function ConnectionIntentInteractionBody({
   if (!isAddressee) {
     return (
       <div
+        id={focusTargetId}
         ref={focusTargetRef}
         tabIndex={-1}
         data-testid="connection-intent-focus-target"
@@ -197,6 +214,7 @@ export function ConnectionIntentInteractionBody({
 
   return (
     <div
+      id={focusTargetId}
       ref={focusTargetRef}
       tabIndex={-1}
       data-testid="connection-intent-focus-target"

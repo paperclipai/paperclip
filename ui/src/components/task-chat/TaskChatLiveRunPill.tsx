@@ -62,7 +62,9 @@ export function TaskChatLiveRunPill({
 
   const elapsedMs =
     startedAtMs == null ? null : (active ? Date.now() : finishedAtMs ?? Date.now()) - startedAtMs;
-  const elapsed = elapsedMs != null ? formatDurationWords(elapsedMs) : null;
+  const elapsed = elapsedMs != null
+    ? formatDurationWords(elapsedMs)
+    : null;
   const verb = active ? "Working" : "Worked";
   const suffix = elapsed ? `for ${elapsed}` : null;
 

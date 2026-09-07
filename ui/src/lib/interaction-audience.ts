@@ -191,7 +191,7 @@ export function describeResolverAudience({
   const summary = isUserAddressee
     ? `Only ${addressee} can respond.`
     : policy === "human_only"
-    ? "Only a person on the board can respond — agents cannot resolve this card."
+    ? `${hasAddressee ? `Assigned to ${addressee}. ` : ""}Only a person on the board can respond — agents cannot resolve this card.`
     : hasAddressee
       ? `Only ${addressee} or a person on the board can respond.`
       : policy === "not_creator"
@@ -203,7 +203,9 @@ export function describeResolverAudience({
   const shortSummary = isUserAddressee
     ? `Only ${addressee} can respond`
     : policy === "human_only"
-    ? "Only the board can respond"
+    ? hasAddressee
+      ? `Assigned to ${addressee} · board only`
+      : "Only the board can respond"
     : hasAddressee
       ? `Only ${addressee} or the board can respond`
       : policy === "not_creator"

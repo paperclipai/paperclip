@@ -1866,7 +1866,8 @@ export const semanticToolSchema = {
     "phase": {
       "enum": [
         "input",
-        "result"
+        "result",
+        "reconciled"
       ]
     },
     "operationId": {
@@ -2002,9 +2003,15 @@ export const semanticToolSchema = {
       "if": {
         "properties": {
           "phase": {
-            "const": "result"
+            "enum": [
+              "result",
+              "reconciled"
+            ]
           }
-        }
+        },
+        "required": [
+          "phase"
+        ]
       },
       "then": {
         "required": [
@@ -2432,6 +2439,9 @@ export const questionSetSchema = {
         "description": {
           "type": "string",
           "maxLength": 4000
+        },
+        "recommended": {
+          "type": "boolean"
         }
       },
       "additionalProperties": false
@@ -2754,12 +2764,12 @@ export const requestSchema = {
         "turnId": {
           "type": "string",
           "minLength": 1,
-          "maxLength": 160
+          "maxLength": 240
         },
         "itemId": {
           "type": "string",
           "minLength": 1,
-          "maxLength": 160
+          "maxLength": 240
         }
       },
       "additionalProperties": false
@@ -3248,12 +3258,12 @@ export const eventSchema = {
     "turnId": {
       "type": "string",
       "minLength": 1,
-      "maxLength": 160
+      "maxLength": 240
     },
     "itemId": {
       "type": "string",
       "minLength": 1,
-      "maxLength": 160
+      "maxLength": 240
     },
     "eventType": {
       "enum": [

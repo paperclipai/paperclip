@@ -1,0 +1,304 @@
+diff --git a/dist/live-checkpoint-BSIrfgVo.js b/dist/live-checkpoint-BSIrfgVo.js
+index d454fd7c5bf742b469be75eb8c3988b694a0ffaa..f5775e731d6a4808c7bd59b4228da766f46ce3db 100644
+--- a/dist/live-checkpoint-BSIrfgVo.js
++++ b/dist/live-checkpoint-BSIrfgVo.js
+@@ -1661,7 +1661,7 @@ const ZED_TAG_KEYS = /* @__PURE__ */ new Set([
+ 	"RedactedThinking",
+ 	"ToolUse"
+ ]);
+-const MAP_OBJECT_PATHS = /* @__PURE__ */ new Set(["request_token_usage", "messages.Agent.tool_results"]);
++const MAP_OBJECT_PATHS = /* @__PURE__ */ new Set(["request_token_usage", "messages.Agent.tool_results", "acpx.session_options.env"]);
+ const OPAQUE_VALUE_PATHS = /* @__PURE__ */ new Set([
+ 	"agent_capabilities",
+ 	"messages.Agent.content.ToolUse.input",
+@@ -3135,8 +3135,18 @@ function promotePrefixedAuthEnvironment(env) {
+ 	}
+ 	return protectedKeys;
+ }
+-function buildAgentEnvironment(authCredentials, sessionEnv) {
+-	const env = { ...process.env };
++function isPlainStringEnvironment(value) {
++	if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
++	const prototype = Object.getPrototypeOf(value);
++	return (prototype === Object.prototype || prototype === null) && Object.values(value).every((entry) => typeof entry === "string");
++}
++function buildAgentEnvironment(authCredentials, sessionEnv, spawnEnvironment) {
++	let sourceEnvironment = process.env;
++	if (spawnEnvironment !== void 0) {
++		sourceEnvironment = spawnEnvironment();
++		if (!isPlainStringEnvironment(sourceEnvironment)) throw new TypeError("ACPX spawn environment must be a plain record of string values");
++	}
++	const env = { ...sourceEnvironment };
+ 	const protectedAuthEnvKeys = promotePrefixedAuthEnvironment(env);
+ 	if (authCredentials) for (const [methodId, credential] of Object.entries(authCredentials)) {
+ 		addAuthCredentialEnvKeys(protectedAuthEnvKeys, methodId, credential);
+@@ -3178,10 +3188,10 @@ function resolveConfiguredAuthCredential(methodId, authCredentials) {
+ 	const configCredentials = authCredentials ?? {};
+ 	return configCredentials[methodId] ?? configCredentials[toEnvToken(methodId)];
+ }
+-function buildAgentSpawnOptions(cwd, authCredentials, sessionEnv) {
++function buildAgentSpawnOptions(cwd, authCredentials, sessionEnv, spawnEnvironment) {
+ 	return {
+ 		cwd,
+-		env: buildAgentEnvironment(authCredentials, sessionEnv),
++		env: buildAgentEnvironment(authCredentials, sessionEnv, spawnEnvironment),
+ 		stdio: [
+ 			"pipe",
+ 			"pipe",
+@@ -4216,9 +4226,21 @@ var AcpClient = class {
+ 		this.lastAgentExit = void 0;
+ 		this.lastKnownPid = child.pid ?? void 0;
+ 		this.attachAgentLifecycleObservers(child);
++		if (this.options.onAgentSpawn) {
++			try {
++				if (!child.pid) throw new Error("ACPX agent spawn did not expose a valid process id.");
++				await this.options.onAgentSpawn({ pid: child.pid, startedAt: this.agentStartedAt });
++			} catch (error) {
++				try {
++					child.kill("SIGKILL");
++				} catch {}
++				throw error;
++			}
++		}
+ 		const startupStderr = [];
+ 		child.stderr.on("data", (chunk) => {
+ 			this.captureStartupStderr(startupStderr, chunk);
++			this.options.onAgentStderr?.(String(chunk));
+ 			if (!this.options.verbose) return;
+ 			process.stderr.write(chunk);
+ 		});
+@@ -4253,7 +4275,12 @@ var AcpClient = class {
+ 			geminiAcp: isGeminiAcpCommand(spawnCommand, args),
+ 			copilotAcp: isCopilotAcpCommand(spawnCommand, args),
+ 			claudeAcp: isClaudeAcpCommand(spawnCommand, args),
+-			spawnOptions: buildAgentSpawnOptions(this.options.cwd, this.options.authCredentials, this.options.sessionOptions?.env)
++			spawnOptions: buildAgentSpawnOptions(
++				this.options.spawnCwd ?? this.options.cwd,
++				this.options.authCredentials,
++				this.options.sessionOptions?.env,
++				this.options.spawnEnvironment
++			)
+ 		};
+ 	}
+ 	logAgentLaunch(plan) {
+@@ -4279,10 +4306,17 @@ var AcpClient = class {
+ 	}
+ 	async spawnAgentProcess(plan) {
+ 		const spawnCommand = buildAgentSpawnCommand(plan.spawnCommand, plan.args, process.platform, plan.spawnOptions.env);
+-		const spawnedChild = spawn(spawnCommand.command, spawnCommand.args, {
++		const options = {
+ 			...plan.spawnOptions,
+ 			windowsVerbatimArguments: spawnCommand.windowsVerbatimArguments
+-		});
++		};
++		const spawnedChild = this.options.spawnAgent
++			? this.options.spawnAgent({
++				command: spawnCommand.command,
++				args: spawnCommand.args,
++				options
++			})
++			: spawn(spawnCommand.command, spawnCommand.args, options);
+ 		try {
+ 			await waitForSpawn$1(spawnedChild);
+ 		} catch (error) {
+@@ -5028,6 +5062,12 @@ var AcpClient = class {
+ 	attachAgentLifecycleObservers(child) {
+ 		child.once("exit", (exitCode, signal) => {
+ 			this.recordAgentExit("process_exit", exitCode, signal);
++			this.options.onAgentExit?.({
++				pid: child.pid ?? this.lastKnownPid,
++				exitCode,
++				signal,
++				exitedAt: isoNow$1()
++			});
+ 		});
+ 		child.once("close", (exitCode, signal) => {
+ 			this.recordAgentExit("process_close", exitCode, signal);
+diff --git a/dist/runtime.d.ts b/dist/runtime.d.ts
+index e8102acb03c4c38830ad5ec22f356125eb0423b7..fcb1a1906f587b33ad818389c035f90362b0617e 100644
+--- a/dist/runtime.d.ts
++++ b/dist/runtime.d.ts
+@@ -1,7 +1,8 @@
+ import { _ as SessionRecord, a as AcpElicitationHandler, c as AcpElicitationResponse, f as McpServer$1, h as PermissionPolicy, i as AcpElicitationContext, l as AcpPermissionDecision, m as PermissionMode, n as SystemPromptOption, o as AcpElicitationMode, p as NonInteractivePermissionPolicy, s as AcpElicitationRequest, t as SessionAgentOptions, u as AcpPermissionRequest } from "./session-options-DwRDODlr.js";
+ import { a as RequestedModelUnsupportedErrorCode, i as RequestedModelUnsupportedError, n as REQUESTED_MODEL_UNSUPPORTED_ERROR_CODE, o as RequestedModelUnsupportedReason, r as REQUESTED_MODEL_UNSUPPORTED_REASONS, s as isRequestedModelUnsupportedError, t as AcpClient } from "./client-CxNllqui.js";
++import { ChildProcess, SpawnOptionsWithoutStdio } from "node:child_process";
+ import fs from "node:fs";
+-import { ToolCallContent, ToolCallLocation, ToolKind } from "@agentclientprotocol/sdk";
++import { SessionNotification, ToolCallContent, ToolCallLocation, ToolKind } from "@agentclientprotocol/sdk";
+ //#region src/agent-registry.d.ts
+ declare const DEFAULT_AGENT_NAME = "codex";
+ //#endregion
+@@ -141,6 +142,11 @@ type AcpTextDeltaOriginMeta = {
+   kind?: string;
+   source?: string;
+ };
++type AcpRuntimePlanEntry = {
++  content: string;
++  priority?: string;
++  status: "pending" | "in_progress" | "completed";
++};
+ type AcpRuntimeEvent = {
+   type: "text_delta";
+   text: string;
+@@ -186,6 +192,10 @@ type AcpRuntimeEvent = {
+    * non-null `input` schema.
+    */
+   availableCommands?: AcpRuntimeAvailableCommand[];
++} | {
++  type: "plan";
++  tag: "plan";
++  entries: AcpRuntimePlanEntry[];
+ } | {
+   type: "tool_call";
+   text: string;
+@@ -313,6 +323,35 @@ type AcpRuntimeOptions = {
+   onPermissionRequest?: (req: AcpPermissionRequest, ctx: {
+     signal: AbortSignal;
+   }) => Promise<AcpPermissionDecision | undefined>;
++  /** Ephemeral allowlisted environment evaluated immediately before child spawn. */
++  spawnEnvironment?: () => Record<string, string>;
++  /** Host-only spawn cwd; does not change the cwd advertised in session/new. */
++  spawnCwd?: string;
++  /** Host-owned verified executable launch. */
++  spawnAgent?: (input: {
++    command: string;
++    args: readonly string[];
++    options: SpawnOptionsWithoutStdio;
++  }) => ChildProcess;
++  onAgentSpawn?: (meta: { pid: number; startedAt: string }) => Promise<void> | void;
++  onAgentStderr?: (chunk: string) => void;
++  onAgentExit?: (meta: {
++    pid?: number;
++    exitCode: number | null;
++    signal: NodeJS.Signals | null;
++    exitedAt: string;
++  }) => void;
++  onAcpMessage?: (direction: "inbound" | "outbound", message: unknown) => void;
++  /** Ephemeral full ACP notification callback; never written to session records. */
++  onSessionNotification?: (notification: SessionNotification) => void;
++  /** Ephemeral normalized ACP client filesystem/terminal operation callback. */
++  onClientOperation?: (operation: {
++    method: string;
++    status: string;
++    summary: string;
++    details?: string;
++    timestamp: string;
++  }) => void;
+ };
+ type AcpFileSessionStoreOptions = {
+   stateDir: string;
+diff --git a/dist/runtime.js b/dist/runtime.js
+index a1f4a70a003792c6eacf68b6b038f37bfec1db53..50029e881c07a7228ddd978bb03d040629cf776b 100644
+--- a/dist/runtime.js
++++ b/dist/runtime.js
+@@ -371,7 +371,7 @@ const PROMPT_EVENT_PARSERS = {
+ 	current_mode_update: (payload) => statusUpdateEvent("current_mode_update", payload),
+ 	config_option_update: (payload) => statusUpdateEvent("config_option_update", payload),
+ 	session_info_update: (payload) => statusUpdateEvent("session_info_update", payload),
+-	plan: (payload) => statusUpdateEvent("plan", payload),
++	plan: planUpdateEvent,
+ 	client_operation: clientOperationEvent,
+ 	update: updateStatusEvent,
+ 	done: () => null,
+@@ -424,6 +424,20 @@ function availableCommandsUpdateEvent(payload) {
+ 		availableCommands
+ 	};
+ }
++function planUpdateEvent(payload) {
++	const raw = Array.isArray(payload.entries) ? payload.entries : [];
++	const entries = [];
++	for (const entry of raw) {
++		if (!isRecord(entry)) continue;
++		const content = asTrimmedString(entry.content);
++		if (!content) continue;
++		const status = asTrimmedString(entry.status);
++		if (status !== "pending" && status !== "in_progress" && status !== "completed") continue;
++		const priority = asTrimmedString(entry.priority);
++		entries.push({ content, status, ...priority ? { priority } : {} });
++	}
++	return { type: "plan", tag: "plan", entries };
++}
+ function normalizeUsageCost(value) {
+ 	if (!isRecord(value)) return;
+ 	const amount = asOptionalFiniteNumber(value.amount);
+@@ -812,7 +826,17 @@ var AcpRuntimeManager = class {
+ 		this.deps = deps;
+ 	}
+ 	createClient(options) {
+-		return this.deps.clientFactory?.(options) ?? new AcpClient(options);
++		const patchedOptions = {
++			...options,
++			spawnCwd: this.options.spawnCwd,
++			spawnEnvironment: this.options.spawnEnvironment,
++			spawnAgent: this.options.spawnAgent,
++			onAgentSpawn: this.options.onAgentSpawn,
++			onAgentStderr: this.options.onAgentStderr,
++			onAgentExit: this.options.onAgentExit,
++			onAcpMessage: this.options.onAcpMessage
++		};
++		return this.deps.clientFactory?.(patchedOptions) ?? new AcpClient(patchedOptions);
+ 	}
+ 	createSessionOwner(input) {
+ 		const owner = {
+@@ -821,12 +845,16 @@ var AcpRuntimeManager = class {
+ 			pendingSessionUpdates: []
+ 		};
+ 		input.client.setEventHandlers({
++			onAcpMessage: this.options.onAcpMessage,
+ 			onSessionUpdate: (notification) => this.routeOwnedSessionUpdate(owner, notification),
+ 			onClientOperation: (operation) => this.routeOwnedClientOperation(owner, operation)
+ 		});
+ 		return owner;
+ 	}
+ 	routeOwnedSessionUpdate(owner, notification) {
++		try {
++			this.options.onSessionNotification?.(notification);
++		} catch {}
+ 		const active = owner.activeTurn;
+ 		if (active) {
+ 			const { task, turn } = active;
+@@ -863,6 +891,9 @@ var AcpRuntimeManager = class {
+ 		projection.checkpoint.request();
+ 	}
+ 	routeOwnedClientOperation(owner, operation) {
++		try {
++			this.options.onClientOperation?.(operation);
++		} catch {}
+ 		const active = owner.activeTurn;
+ 		if (!active) return;
+ 		const { task, turn } = active;
+diff --git a/dist/session-options-DwRDODlr.d.ts b/dist/session-options-DwRDODlr.d.ts
+index c3da1645235bbea22de3f8484149051cd7dca56b..ad1f2f6c6a7f477e83dc0061e4168c00c23382da 100644
+--- a/dist/session-options-DwRDODlr.d.ts
++++ b/dist/session-options-DwRDODlr.d.ts
+@@ -1,4 +1,5 @@
+ import { AgentCapabilities, AnyMessage, ContentBlock, CreateElicitationRequest, ElicitationContentValue, JsonRpcId, McpServer, McpServer as McpServer$1, RequestPermissionRequest, SessionConfigOption, SessionNotification, SetSessionConfigOptionResponse, ToolKind } from "@agentclientprotocol/sdk";
++import { ChildProcess, SpawnOptionsWithoutStdio } from "node:child_process";
+ //#region src/prompt-content.d.ts
+ type PromptInput = ContentBlock[];
+ //#endregion
+@@ -116,6 +117,24 @@ type AcpClientOptions = {
+     };
+     env?: Record<string, string>;
+   };
++  /** Ephemeral child environment factory; its return value is never persisted. */
++  spawnEnvironment?: () => Record<string, string>;
++  /** Host-only child cwd, separate from the cwd advertised to ACP. */
++  spawnCwd?: string;
++  /** Host-owned verified executable launch. */
++  spawnAgent?: (input: {
++    command: string;
++    args: readonly string[];
++    options: SpawnOptionsWithoutStdio;
++  }) => ChildProcess;
++  onAgentSpawn?: (meta: { pid: number; startedAt: string }) => Promise<void> | void;
++  onAgentStderr?: (chunk: string) => void;
++  onAgentExit?: (meta: {
++    pid?: number;
++    exitCode: number | null;
++    signal: NodeJS.Signals | null;
++    exitedAt: string;
++  }) => void;
+   onAcpMessage?: (direction: AcpMessageDirection, message: AcpJsonRpcMessage) => void;
+   onAcpOutputMessage?: (direction: AcpMessageDirection, message: AcpJsonRpcMessage) => void;
+   onSessionUpdate?: (notification: SessionNotification) => void;

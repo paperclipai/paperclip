@@ -35,6 +35,17 @@ const STRANDED_RECOVERY_NOTICE_TITLES_BY_CAUSE: Record<string, string> = {
   execution_review_participant_recovery: "Review recovery stalled",
 };
 
+// Titles keyed by the source run's classified error code. The raw failure text
+// never reaches the issue thread (summarizeRunFailureForIssueComment withholds
+// it), so the classified code is the only safe, specific cause the collapsed
+// notice row can lead with. A mapped code outranks the seed titles because the
+// seeds describe the recovery family ("No live execution path"), not the cause.
+const STRANDED_RECOVERY_NOTICE_TITLES_BY_RUN_ERROR_CODE: Record<string, string> = {
+  provider_quota: "Error: usage limit reached",
+  claude_auth_required: "Error: not logged in to Claude",
+  acpx_auth_required: "Error: agent login required",
+};
+
 export function buildImmediateExecutionPathRecoveryNoticeSeed(input: {
   status: "todo" | "in_progress";
 }): StrandedRecoveryNoticeSeed {
@@ -112,7 +123,9 @@ export function buildStrandedRecoveryEscalationNotice(input: {
 }): StrandedRecoveryEscalationNotice {
   const fallbackBody = input.fallbackBody?.trim();
   const body = input.seed?.body ?? (fallbackBody || DEFAULT_STRANDED_RECOVERY_NOTICE_BODY);
-  const title = input.seed?.title ??
+  const title =
+    STRANDED_RECOVERY_NOTICE_TITLES_BY_RUN_ERROR_CODE[input.sourceRun?.errorCode?.trim() ?? ""] ??
+    input.seed?.title ??
     STRANDED_RECOVERY_NOTICE_TITLES_BY_CAUSE[input.recoveryCause ?? ""] ??
     DEFAULT_STRANDED_RECOVERY_NOTICE_TITLE;
 

@@ -871,9 +871,7 @@ export const ConnectionIntentSetupDialogMobile: Story = {
       <OpenConnectionIntentDialogStory />
     </StoryFrame>
   ),
-  parameters: {
-    viewport: { defaultViewport: "mobile" },
-  },
+  globals: { viewport: { value: "mobile" } },
 };
 
 // ---------------------------------------------------------------------------
@@ -1301,9 +1299,7 @@ export const ToolActionMobile: Story = {
       </ScenarioCard>
     </StoryFrame>
   ),
-  parameters: {
-    viewport: { defaultViewport: "mobile1" },
-  },
+  globals: { viewport: { value: "mobile1" } },
 };
 
 export const CheckboxConfirmationPending: Story = {

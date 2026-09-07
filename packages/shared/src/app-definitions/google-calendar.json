@@ -33,7 +33,7 @@
       "label": "Connect with Paperclip",
       "transport": "mcp_remote",
       "auth": "oauth",
-      "oauthStrategy": "paperclip_id_connector",
+      "oauthStrategy": "paperclip_cloud_connector",
       "connectorProfile": "calendar.read",
       "capabilityProfile": {
         "key": "read",
@@ -41,7 +41,8 @@
         "description": "Read calendars, events, and availability."
       },
       "grantKinds": [
-        "user"
+        "user",
+        "organization"
       ],
       "ownershipModes": [
         "platform_shared"
@@ -72,7 +73,8 @@
         "description": "Read calendars, events, and availability."
       },
       "grantKinds": [
-        "user"
+        "user",
+        "organization"
       ],
       "ownershipModes": [
         "customer"
@@ -108,7 +110,7 @@
       "label": "Connect with Paperclip",
       "transport": "mcp_remote",
       "auth": "oauth",
-      "oauthStrategy": "paperclip_id_connector",
+      "oauthStrategy": "paperclip_cloud_connector",
       "connectorProfile": "calendar.write",
       "capabilityProfile": {
         "key": "write",
@@ -116,7 +118,8 @@
         "description": "Create, update, respond to, and delete events."
       },
       "grantKinds": [
-        "user"
+        "user",
+        "organization"
       ],
       "ownershipModes": [
         "platform_shared"
@@ -148,7 +151,8 @@
         "description": "Create, update, respond to, and delete events."
       },
       "grantKinds": [
-        "user"
+        "user",
+        "organization"
       ],
       "ownershipModes": [
         "customer"

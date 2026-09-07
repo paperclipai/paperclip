@@ -11,6 +11,7 @@ import {
   issueQuestionResponseDeliveries,
   issueThreadInteractions,
   issues,
+  nativeRunFinalizations,
 } from "@paperclipai/db";
 import type { PrpEvent } from "@paperclipai/paperclip-runner";
 
@@ -18,6 +19,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "../../__tests__/helpers/embedded-postgres.js";
+import { drainHeartbeatRunsToQuiescence } from "../../__tests__/helpers/drain-heartbeat-runs.js";
 import { issueThreadInteractionService } from "../issue-thread-interactions.js";
 import {
   deliverNativeQuestionResponse,
@@ -48,6 +50,7 @@ if (!embeddedPostgresSupport.supported) {
 describeEmbeddedPostgres("native question bridge", () => {
   let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
   let db: ReturnType<typeof createDb>;
+  let heartbeat: ReturnType<typeof heartbeatService>;
   let companyId: string;
   let issueId: string;
   let agentId: string;
@@ -58,9 +61,17 @@ describeEmbeddedPostgres("native question bridge", () => {
   beforeAll(async () => {
     temporary = await startEmbeddedPostgresTestDatabase("paperclip-native-question-");
     db = createDb(temporary.connectionString);
+    heartbeat = heartbeatService(db);
   }, 20_000);
 
   afterEach(async () => {
+    // A cancelled or reaped run can promote and dispatch its agent's next
+    // queued run fire-and-forget (see startNextQueuedRunForAgent in
+    // heartbeat.ts), so that dispatch can still be writing heartbeat_runs,
+    // issues, or activity_log rows when this hook starts. Drain every
+    // in-flight run to quiescence first, or its late write races the
+    // TRUNCATE below and can deadlock.
+    await drainHeartbeatRunsToQuiescence(db, heartbeat);
     nativeQuestionBridgeInternals.resetForTests();
     await db.execute(sql.raw(`
       TRUNCATE TABLE
@@ -105,6 +116,7 @@ describeEmbeddedPostgres("native question bridge", () => {
       title: "Answer a native question",
       status: "in_progress",
       assigneeAgentId: agentId,
+      responsibleUserId: "operator-1",
     });
     await db.insert(heartbeatRuns).values({
       id: runId,
@@ -118,6 +130,12 @@ describeEmbeddedPostgres("native question bridge", () => {
       runnerInstanceId,
       driverKind: "codex",
       contextSnapshot: { issueId },
+    });
+    await db.insert(nativeRunFinalizations).values({
+      runId,
+      companyId,
+      issueId,
+      phase: "observed",
     });
   }
 
@@ -374,7 +392,7 @@ describeEmbeddedPostgres("native question bridge", () => {
     });
 
     // Simulate process exit before executeIssuePostCommitActions can run.
-    await heartbeatService(db).reapOrphanedRuns();
+    await heartbeat.reapOrphanedRuns();
 
     const [persistedRun] = await db.select({
       status: heartbeatRuns.status,
@@ -423,7 +441,7 @@ describeEmbeddedPostgres("native question bridge", () => {
       },
     });
 
-    await heartbeatService(db).reapOrphanedRuns();
+    await heartbeat.reapOrphanedRuns();
 
     const [cancelledRun] = await db.select({
       status: heartbeatRuns.status,

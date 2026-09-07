@@ -50,11 +50,19 @@ describe("redactSensitive", () => {
     expect(JSON.stringify(out)).not.toContain("\\u001b");
   });
 
-  it("does not redact a bare `token` field — pagination cursors and CSRF tokens are not credentials", () => {
-    const out = redactSensitive({ token: "next-page-cursor", limit: 20 }) as Record<string, unknown>;
+  it("redacts bare value and token fields recursively", () => {
+    const out = redactSensitive({
+      token: "secret-token",
+      nested: { value: "secret-value" },
+      entries: [{ value: "array-secret" }],
+      limit: 20,
+    }) as Record<string, unknown>;
 
-    expect(out.token).toBe("next-page-cursor");
+    expect(out.token).toBe("[REDACTED]");
+    expect((out.nested as Record<string, unknown>).value).toBe("[REDACTED]");
+    expect((out.entries as Array<Record<string, unknown>>)[0].value).toBe("[REDACTED]");
     expect(out.limit).toBe(20);
+    expect(JSON.stringify(out)).not.toMatch(/secret-token|secret-value|array-secret/);
   });
 
   it("strips secret-bearing query and fragment values from source URLs", () => {

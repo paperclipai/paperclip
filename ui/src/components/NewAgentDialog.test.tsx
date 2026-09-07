@@ -60,7 +60,11 @@ vi.mock("../api/adapters", () => ({
 }));
 
 vi.mock("../adapters", () => ({
-  listUIAdapters: () => [{ type: "claude_local" }, { type: "openclaw_gateway" }],
+  listUIAdapters: () => [
+    { type: "claude_local" },
+    { type: "paperclip_runner" },
+    { type: "openclaw_gateway" },
+  ],
 }));
 
 vi.mock("../adapters/metadata", () => ({
@@ -202,6 +206,75 @@ describe("NewAgentDialog", () => {
 
     expect(container.textContent).toContain("Optional message for the agent");
     expect(container.textContent).toContain("Generate onboarding prompt");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("hides Paperclip Runner configuration until the server enables it", async () => {
+    listAdaptersMock.mockResolvedValue([
+      { type: "claude_local", disabled: false },
+      { type: "paperclip_runner", disabled: true },
+    ]);
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <NewAgentDialog />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    const configureButton = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent?.includes("Configure a runtime manually"),
+    );
+    await act(async () => {
+      configureButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(container.textContent).toContain("Claude Code");
+    expect(container.textContent).not.toContain("Paperclip Runner");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("shows Paperclip Runner configuration after the server enables it", async () => {
+    listAdaptersMock.mockResolvedValue([
+      { type: "claude_local", disabled: false },
+      { type: "paperclip_runner", disabled: false },
+    ]);
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <NewAgentDialog />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    const configureButton = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent?.includes("Configure a runtime manually"),
+    );
+    await act(async () => {
+      configureButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(container.textContent).toContain("Paperclip Runner");
 
     await act(async () => {
       root.unmount();

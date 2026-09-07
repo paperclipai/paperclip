@@ -168,6 +168,7 @@ export const sandboxProviderCapabilitiesSchema = z.object({
   incrementalSessionOutput: z.boolean().optional(),
   concurrentSyncOperations: z.boolean().optional(),
   duplexCommandStream: z.boolean().optional(),
+  runnerWebSocketIngress: z.boolean().optional(),
 }).strict();
 
 export type SandboxProviderCapabilitiesInput = z.infer<typeof sandboxProviderCapabilitiesSchema>;

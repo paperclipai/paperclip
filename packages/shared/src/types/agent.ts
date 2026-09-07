@@ -1,6 +1,5 @@
 import type {
   AgentAdapterType,
-  ModelProfileKey,
   PauseReason,
   AgentRole,
   AgentStatus,
@@ -23,15 +22,7 @@ export interface AgentPermissions extends Record<string, unknown> {
   authorizationPolicy?: TrustAuthorizationPolicy;
 }
 
-export interface AgentModelProfileConfig {
-  enabled?: boolean;
-  label?: string;
-  adapterConfig: Record<string, unknown>;
-}
-
-export interface AgentRuntimeConfig extends Record<string, unknown> {
-  modelProfiles?: Partial<Record<ModelProfileKey, AgentModelProfileConfig>>;
-}
+export type AgentRuntimeConfig = Record<string, unknown>;
 
 export type AgentInstructionsBundleMode = "managed" | "external";
 

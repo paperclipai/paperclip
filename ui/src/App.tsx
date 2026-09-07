@@ -1,18 +1,22 @@
-import { lazy, Suspense } from "react";
+import { lazy, Suspense, type ReactNode } from "react";
 import type { ToolConnectionCredentialSource } from "@paperclipai/shared";
 import { Navigate, Outlet, Route, Routes, useActiveCompanyPrefix, useLocation, useParams } from "@/lib/router";
 import { Button } from "@/components/ui/button";
 import { useTranslation } from "@/i18n";
 import { Layout } from "./components/Layout";
+import { Layout as ProductionLayout } from "./components/Layout.production";
 import { ConferenceRoomChatGate } from "./components/ConferenceRoomChatGate";
 import { TaskChatLab } from "./pages/TaskChatLab";
 import { PipelinesExperimentalGate } from "./components/PipelinesExperimentalGate";
 import { CasesExperimentalGate } from "./components/CasesExperimentalGate";
 import { StatusCardsExperimentalGate } from "./components/StatusCardsExperimentalGate";
-import { AppsExperimentalGate } from "./components/AppsExperimentalGate";
 import { CloudManagedPageGate } from "./components/CloudManagedPageGate";
 import { HiddenSettingsPageGate } from "./components/HiddenSettingsPageGate";
 import { IsolatedWorkspacesRouteGate } from "./components/IsolatedWorkspacesRouteGate";
+import {
+  ExecutionWorkspaceCompanyGate,
+  UnprefixedExecutionWorkspaceRedirect,
+} from "./components/UnprefixedExecutionWorkspaceRedirect";
 import { useHiddenSettings } from "./hooks/useHiddenSettings";
 import { Cases } from "./pages/Cases";
 import { CaseDetail } from "./pages/CaseDetail";
@@ -45,8 +49,8 @@ import { Artifacts } from "./pages/Artifacts";
 import { GoalDetail } from "./pages/GoalDetail";
 import { Approvals } from "./pages/Approvals";
 import { ApprovalDetail } from "./pages/ApprovalDetail";
-import { Costs } from "./pages/Costs";
 import { CompanyActivity } from "./pages/audit/CompanyActivity";
+import { AuditHub } from "./pages/audit/AuditHub";
 import { Inbox } from "./pages/Inbox";
 import { WhatNeedsMe } from "./pages/WhatNeedsMe";
 import { DecisionQueuePage } from "./pages/DecisionQueuePage";
@@ -61,13 +65,13 @@ import { CompanyAccess, CompanyAccessLegacyRoute } from "./pages/CompanyAccess";
 import { AdvancedToolsRoute } from "./pages/tools/AdvancedToolsRoute";
 import { ProfileWizardRoute } from "./pages/tools/profiles/ProfileWizardRoute";
 import { ProfileDetailRoute } from "./pages/tools/profiles/ProfileDetailRoute";
-import { Connections } from "./pages/apps/Connections";
 import { Browse } from "./pages/apps/Browse";
 import { AppsConnect } from "./pages/apps/AppsConnect";
 import { canEnterAppsConnect } from "./pages/apps/app-connect-policy";
 import { AppsReview } from "./pages/apps/AppsReview";
 import { AppDetail } from "./pages/apps/AppDetail";
 import { AppNotConnected } from "./pages/apps/AppNotConnected";
+import { PaperclipCloudOAuthHandoffPage } from "./pages/apps/PaperclipCloudOAuthHandoff";
 import { GatewaysList } from "./pages/apps/gateways/GatewaysList";
 import { GatewayDetail } from "./pages/apps/gateways/GatewayDetail";
 import { CompanySkills } from "./pages/CompanySkills";
@@ -82,7 +86,6 @@ import { PluginManager } from "./pages/PluginManager";
 import { PluginSettings } from "./pages/PluginSettings";
 import { AdapterManager } from "./pages/AdapterManager";
 import { PluginPage } from "./pages/PluginPage";
-import { OrgChart } from "./pages/OrgChart";
 import { NewAgent } from "./pages/NewAgent";
 import { AuthPage } from "./pages/Auth";
 import { BoardClaimPage } from "./pages/BoardClaim";
@@ -100,6 +103,7 @@ import {
 } from "./lib/onboarding-route";
 import { filterHiddenInstanceSettingsPath, normalizeRememberedInstanceSettingsPath } from "./lib/instance-settings";
 import { useCloudInstance } from "./hooks/useCloudInstance";
+import { useStreamlinedUiEnabled } from "./hooks/useStreamlinedUiEnabled";
 import { cloudStackCreateUrl } from "./lib/cloudLinks";
 import { navigateTopLevel } from "@/lib/browserNavigation";
 
@@ -107,13 +111,45 @@ const CompanyExport = lazy(() =>
   import("./pages/CompanyExport").then((module) => ({ default: module.CompanyExport })),
 );
 
-function boardRoutes() {
+const ProductionAgents = lazy(() =>
+  import("./pages/Agents.production").then((module) => ({ default: module.Agents })),
+);
+const ProductionAgentDetail = lazy(() =>
+  import("./pages/AgentDetail.production").then((module) => ({ default: module.AgentDetail })),
+);
+const ProductionRoutines = lazy(() =>
+  import("./pages/Routines.production").then((module) => ({ default: module.Routines })),
+);
+const ProductionRoutineDetail = lazy(() =>
+  import("./pages/RoutineDetail.production").then((module) => ({ default: module.RoutineDetail })),
+);
+const ProductionCompanySkills = lazy(() =>
+  import("./pages/CompanySkills.production").then((module) => ({ default: module.CompanySkills })),
+);
+const ProductionCompanyActivity = lazy(() =>
+  import("./pages/audit/CompanyActivity.production").then((module) => ({ default: module.CompanyActivity })),
+);
+const ProductionCosts = lazy(() =>
+  import("./pages/Costs.production").then((module) => ({ default: module.Costs })),
+);
+const ProductionOrgChart = lazy(() =>
+  import("./pages/OrgChart.production").then((module) => ({ default: module.OrgChart })),
+);
+
+function ProductionSurface({ children }: { children: ReactNode }) {
+  return <Suspense fallback={<PaperclipLoading />}>{children}</Suspense>;
+}
+
+function boardRoutes(streamlinedUiEnabled: boolean) {
   return (
     <>
       <Route index element={<Navigate to="dashboard" replace />} />
       <Route path="dashboard" element={<Dashboard />} />
       <Route path="dashboard/live" element={<DashboardLive />} />
-      <Route path="timeline" element={<Timeline />} />
+      <Route
+        path="timeline"
+        element={streamlinedUiEnabled ? <AuditCompatibilityRedirect to="/activity/timeline" /> : <Timeline />}
+      />
       <Route path="onboarding" element={<OnboardingRoutePage />} />
       <Route path="companies" element={<Companies />} />
       <Route path="company/settings" element={<CompanySettings />} />
@@ -153,35 +189,35 @@ function boardRoutes() {
       <Route path="company/settings/tools/:tab" element={<LegacyToolsSettingsRedirect />} />
       <Route path="tools" element={<LegacyToolsRedirect />} />
       <Route path="tools/:tab" element={<LegacyToolsRedirect />} />
-      <Route element={<AppsExperimentalGate />}>
-        <Route path="apps" element={<Browse />} />
-        <Route path="apps/browse" element={<Navigate to="/apps" replace />} />
-        <Route path="apps/connections" element={<Connections />} />
-        <Route path="apps/byo" element={<AppsConnect byoOnly />} />
-        <Route
-          path="apps/vercel-connect"
-          element={<AppsConnectEntryRoute credentialSource="vercel_connect" />}
-        />
-        <Route path="apps/connect" element={<AppsConnectEntryRoute />} />
-        <Route path="apps/connect/:appKey" element={<Navigate to="/apps" replace />} />
-        <Route path="apps/connect/:appKey/:stage" element={<Navigate to="/apps" replace />} />
-        <Route path="apps/review" element={<AppsReview />} />
-        {/* Needs attention folded into Connections (PAP-13254); keep legacy links working. */}
-        <Route path="apps/attention" element={<Navigate to="/apps/connections" replace />} />
-        <Route path="apps/gateways" element={<GatewaysList />} />
-        <Route path="apps/gateways/:gatewayId" element={<Navigate to="overview" replace />} />
-        <Route path="apps/gateways/:gatewayId/:tab" element={<GatewayDetail />} />
-        <Route path="apps/advanced" element={<AdvancedToolsRoute />} />
-        <Route path="apps/advanced/gateways" element={<GatewaysList />} />
-        <Route path="apps/advanced/profiles/new" element={<ProfileWizardRoute mode="new" />} />
-        <Route path="apps/advanced/profiles/:profileId/edit" element={<ProfileWizardRoute mode="edit" />} />
-        <Route path="apps/advanced/profiles/:profileId" element={<ProfileDetailRoute />} />
-        <Route path="apps/advanced/:tab" element={<AdvancedToolsRoute />} />
-        <Route path="apps/app/:applicationId" element={<AppNotConnected />} />
-        <Route path="apps/app/:applicationId/:tab" element={<AppNotConnected />} />
-        <Route path="apps/:connectionId" element={<Navigate to="setup" replace />} />
-        <Route path="apps/:connectionId/:tab" element={<AppDetail />} />
-      </Route>
+      <Route path="apps" element={<Browse />} />
+      <Route path="apps/browse" element={<Navigate to="/apps" replace />} />
+      <Route path="apps/connections" element={<Navigate to="/apps" replace />} />
+      <Route path="apps/byo" element={<AppsConnect byoOnly />} />
+      <Route
+        path="apps/vercel-connect"
+        element={<AppsConnectEntryRoute credentialSource="vercel_connect" />}
+      />
+      <Route path="apps/connect" element={<AppsConnectEntryRoute />} />
+      <Route path="apps/connect/:appKey" element={<Navigate to="/apps" replace />} />
+      <Route path="apps/connect/:appKey/:stage" element={<Navigate to="/apps" replace />} />
+      <Route path="apps/review" element={<AppsReview />} />
+      {/* Connector health is inline on the Apps landing page; keep legacy links working. */}
+      <Route path="apps/attention" element={<Navigate to="/apps" replace />} />
+      <Route path="apps/gateways" element={<GatewaysList />} />
+      <Route path="apps/gateways/:gatewayId" element={<Navigate to="overview" replace />} />
+      <Route path="apps/gateways/:gatewayId/:tab" element={<GatewayDetail />} />
+      <Route path="apps/advanced" element={<AdvancedToolsRoute />} />
+      <Route path="apps/advanced/gateways" element={<GatewaysList />} />
+      <Route path="apps/advanced/profiles/new" element={<ProfileWizardRoute mode="new" />} />
+      <Route path="apps/advanced/profiles/:profileId/edit" element={<ProfileWizardRoute mode="edit" />} />
+      <Route path="apps/advanced/profiles/:profileId" element={<ProfileDetailRoute />} />
+      <Route path="apps/advanced/audit" element={<Navigate to="/apps" replace />} />
+      <Route path="apps/advanced/run-your-own" element={<Navigate to="/apps" replace />} />
+      <Route path="apps/advanced/:tab" element={<AdvancedToolsRoute />} />
+      <Route path="apps/app/:applicationId" element={<AppNotConnected />} />
+      <Route path="apps/app/:applicationId/:tab" element={<AppNotConnected />} />
+      <Route path="apps/:connectionId" element={<Navigate to="permissions" replace />} />
+      <Route path="apps/:connectionId/:tab" element={<AppDetail />} />
       <Route path="company/settings/instance" element={<Navigate to="/company/settings" replace />} />
       <Route element={<HiddenSettingsPageGate pageKey="instance.profile" />}>
         <Route path="company/settings/instance/profile" element={<ProfileSettings />} />
@@ -211,19 +247,29 @@ function boardRoutes() {
       <Route path="skills/studio/new" element={<SkillStudio />} />
       <Route path="skills/studio/:skillId" element={<SkillStudio />} />
       <Route path="skills/:skillId/studio" element={<LegacySkillStudioRedirect />} />
-      <Route path="skills/*" element={<CompanySkills />} />
+      <Route
+        path="skills/*"
+        element={streamlinedUiEnabled ? <CompanySkills /> : <ProductionSurface><ProductionCompanySkills /></ProductionSurface>}
+      />
       <Route path="settings" element={<LegacySettingsRedirect />} />
       <Route path="settings/*" element={<LegacySettingsRedirect />} />
       <Route path="plugins/:pluginId" element={<PluginPage />} />
-      <Route path="org" element={<OrgChart />} />
+      <Route
+        path="org"
+        element={streamlinedUiEnabled ? <Navigate to="/agents/all" replace /> : <ProductionSurface><ProductionOrgChart /></ProductionSurface>}
+      />
       <Route path="agents" element={<Navigate to="/agents/all" replace />} />
       {AGENT_FILTER_TABS.map((tab) => (
-        <Route key={tab} path={`agents/${tab}`} element={<Agents />} />
+        <Route
+          key={tab}
+          path={`agents/${tab}`}
+          element={streamlinedUiEnabled ? <Agents /> : <ProductionSurface><ProductionAgents /></ProductionSurface>}
+        />
       ))}
       <Route path="agents/new" element={<NewAgent />} />
-      <Route path="agents/:agentId" element={<AgentDetail />} />
-      <Route path="agents/:agentId/:tab" element={<AgentDetail />} />
-      <Route path="agents/:agentId/runs/:runId" element={<AgentDetail />} />
+      <Route path="agents/:agentId" element={streamlinedUiEnabled ? <AgentDetail /> : <ProductionSurface><ProductionAgentDetail /></ProductionSurface>} />
+      <Route path="agents/:agentId/:tab" element={streamlinedUiEnabled ? <AgentDetail /> : <ProductionSurface><ProductionAgentDetail /></ProductionSurface>} />
+      <Route path="agents/:agentId/runs/:runId" element={streamlinedUiEnabled ? <AgentDetail /> : <ProductionSurface><ProductionAgentDetail /></ProductionSurface>} />
       <Route path="projects" element={<Projects />} />
       <Route path="projects/:projectId" element={<ProjectDetail />} />
       <Route path="projects/:projectId/overview" element={<ProjectDetail />} />
@@ -239,6 +285,7 @@ function boardRoutes() {
         <Route path="workspaces" element={<Workspaces />} />
       </Route>
       <Route path="issues" element={<Issues />} />
+      <Route path="tasks" element={<Navigate to="/issues" replace />} />
       <Route path="search" element={<Search />} />
       <Route path="issues/all" element={<Navigate to="/issues" replace />} />
       <Route path="issues/active" element={<Navigate to="/issues" replace />} />
@@ -249,7 +296,7 @@ function boardRoutes() {
       {import.meta.env.DEV ? (
         <Route path="tests/perf/long-thread" element={<IssueChatLongThreadPerf />} />
       ) : null}
-      <Route path="routines" element={<Routines />} />
+      <Route path="routines" element={streamlinedUiEnabled ? <Routines /> : <ProductionSurface><ProductionRoutines /></ProductionSurface>} />
       <Route
         path="cases"
         element={<CasesExperimentalGate><Cases /></CasesExperimentalGate>}
@@ -301,15 +348,17 @@ function boardRoutes() {
         path="pipelines/:pipelineId/cases/:caseId"
         element={<PipelinesExperimentalGate><PipelineItemLegacyRedirect /></PipelinesExperimentalGate>}
       />
-      <Route path="routines/:routineId" element={<RoutineDetail />} />
-      <Route path="routines/:routineId/:section" element={<RoutineDetail />} />
+      <Route path="routines/:routineId" element={streamlinedUiEnabled ? <RoutineDetail /> : <ProductionSurface><ProductionRoutineDetail /></ProductionSurface>} />
+      <Route path="routines/:routineId/:section" element={streamlinedUiEnabled ? <RoutineDetail /> : <ProductionSurface><ProductionRoutineDetail /></ProductionSurface>} />
       <Route element={<IsolatedWorkspacesRouteGate />}>
-        <Route path="execution-workspaces/:workspaceId" element={<ExecutionWorkspaceDetail />} />
-        <Route path="execution-workspaces/:workspaceId/services" element={<ExecutionWorkspaceDetail />} />
-        <Route path="execution-workspaces/:workspaceId/configuration" element={<ExecutionWorkspaceDetail />} />
-        <Route path="execution-workspaces/:workspaceId/runtime-logs" element={<ExecutionWorkspaceDetail />} />
-        <Route path="execution-workspaces/:workspaceId/issues" element={<ExecutionWorkspaceDetail />} />
-        <Route path="execution-workspaces/:workspaceId/routines" element={<ExecutionWorkspaceDetail />} />
+        <Route element={<ExecutionWorkspaceCompanyGate />}>
+          <Route path="execution-workspaces/:workspaceId" element={<ExecutionWorkspaceDetail />} />
+          <Route path="execution-workspaces/:workspaceId/services" element={<ExecutionWorkspaceDetail />} />
+          <Route path="execution-workspaces/:workspaceId/configuration" element={<ExecutionWorkspaceDetail />} />
+          <Route path="execution-workspaces/:workspaceId/runtime-logs" element={<ExecutionWorkspaceDetail />} />
+          <Route path="execution-workspaces/:workspaceId/issues" element={<ExecutionWorkspaceDetail />} />
+          <Route path="execution-workspaces/:workspaceId/routines" element={<ExecutionWorkspaceDetail />} />
+        </Route>
       </Route>
       <Route path="goals" element={<Goals />} />
       <Route path="goals/:goalId" element={<GoalDetail />} />
@@ -318,11 +367,29 @@ function boardRoutes() {
       <Route path="approvals/pending" element={<Approvals />} />
       <Route path="approvals/all" element={<Approvals />} />
       <Route path="approvals/:approvalId" element={<ApprovalDetail />} />
-      <Route path="costs" element={<Costs />} />
-      <Route path="activity" element={<CompanyActivity />} />
-      {/* `/audit` merged into the single Activity page (PAP-16302). Existing deep
-          links keep working, preset to the agent-actions scope. */}
-      <Route path="audit" element={<Navigate to="/activity?mode=agents" replace />} />
+      <Route path="activity" element={streamlinedUiEnabled ? <CompanyActivity /> : <ProductionSurface><ProductionCompanyActivity /></ProductionSurface>} />
+      {streamlinedUiEnabled ? (
+        <>
+          <Route path="activity/runs" element={<AuditHub section="runs" />} />
+          <Route path="activity/costs" element={<AuditHub section="costs" />} />
+          <Route path="activity/budgets" element={<AuditHub section="budgets" />} />
+          <Route path="activity/timeline" element={<AuditHub section="timeline" />} />
+          <Route path="audit" element={<AuditCompatibilityRedirect to="/activity" forceAgentMode />} />
+          <Route path="audit/activity" element={<AuditCompatibilityRedirect to="/activity" />} />
+          <Route path="audit/runs" element={<AuditCompatibilityRedirect to="/activity/runs" />} />
+          <Route path="audit/costs" element={<AuditCompatibilityRedirect to="/activity/costs" />} />
+          <Route path="audit/budgets" element={<AuditCompatibilityRedirect to="/activity/budgets" />} />
+          <Route path="audit/timeline" element={<AuditCompatibilityRedirect to="/activity/timeline" />} />
+          <Route path="runs" element={<AuditCompatibilityRedirect to="/activity/runs" />} />
+          <Route path="costs" element={<AuditCompatibilityRedirect to="/activity/costs" />} />
+          <Route path="budgets" element={<AuditCompatibilityRedirect to="/activity/budgets" />} />
+        </>
+      ) : (
+        <>
+          <Route path="costs" element={<ProductionSurface><ProductionCosts /></ProductionSurface>} />
+          <Route path="audit" element={<Navigate to="/activity?mode=agents" replace />} />
+        </>
+      )}
       {/* Conference Room Chat surfaces (PAP-136/PAP-137): routes stay
           registered but redirect to the company home while the experimental
           flag is off. The board-level `artifacts` mount below is the new
@@ -457,8 +524,8 @@ function LegacyToolsRedirect() {
 
 function legacyToolsRedirectTarget(tab?: string) {
   if (!tab) return "/apps/advanced/profiles";
-  if (tab === "applications" || tab === "connections" || tab === "overview" || tab === "examples") return "/apps/connections";
-  if (tab === "runtime") return "/apps/connections";
+  if (tab === "applications" || tab === "connections" || tab === "overview" || tab === "examples") return "/apps";
+  if (tab === "runtime" || tab === "audit") return "/apps";
   if (tab === "policies") return "/apps/advanced/profiles";
   return `/apps/advanced/${tab}`;
 }
@@ -570,6 +637,20 @@ function StatusCardsLegacyRedirect() {
   return <Navigate to={`${base}/status${cardId ? `/${cardId}` : ""}`} replace />;
 }
 
+function AuditCompatibilityRedirect({
+  to,
+  forceAgentMode = false,
+}: {
+  to: string;
+  forceAgentMode?: boolean;
+}) {
+  const location = useLocation();
+  const searchParams = new URLSearchParams(location.search);
+  if (forceAgentMode) searchParams.set("mode", "agents");
+  const search = searchParams.toString();
+  return <Navigate to={`${to}${search ? `?${search}` : ""}${location.hash}`} replace />;
+}
+
 function UnprefixedBoardRedirect() {
   const location = useLocation();
   const { companies, selectedCompany, loading } = useCompany();
@@ -644,9 +725,12 @@ function NoCompaniesStartPage() {
 }
 
 export function App() {
+  const { enabled: streamlinedUiEnabled, loaded: streamlinedUiLoaded } = useStreamlinedUiEnabled();
+
   return (
     <>
       <Routes>
+        <Route path="oauth-handoff" element={<PaperclipCloudOAuthHandoffPage />} />
         <Route path="auth" element={<AuthPage />} />
         <Route path="board-claim/:token" element={<BoardClaimPage />} />
         <Route path="cli-auth/:id" element={<CliAuthPage />} />
@@ -656,7 +740,7 @@ export function App() {
         <Route path="ux-lab/responsible-user-denial" element={<ResponsibleUserDenialUxLab />} />
         <Route path="ux-lab/cross-issue-collaboration" element={<CrossIssueCollaborationUxLab />} />
 
-        <Route element={<CloudAccessGate />}>
+        <Route element={streamlinedUiLoaded ? <CloudAccessGate /> : <PaperclipLoading />}>
           <Route index element={<CompanyRootRedirect />} />
           <Route path="onboarding" element={<OnboardingRoutePage />} />
           <Route path="instance" element={<LegacySettingsRedirect />} />
@@ -664,6 +748,7 @@ export function App() {
           <Route path="instance/settings/*" element={<LegacySettingsRedirect />} />
           <Route path="companies" element={<UnprefixedBoardRedirect />} />
           <Route path="issues" element={<UnprefixedBoardRedirect />} />
+          <Route path="tasks" element={<UnprefixedBoardRedirect />} />
           <Route path="issues/:issueId" element={<UnprefixedBoardRedirect />} />
           <Route path="routines" element={<UnprefixedBoardRedirect />} />
           <Route path="routines/:routineId" element={<UnprefixedBoardRedirect />} />
@@ -683,6 +768,16 @@ export function App() {
           <Route path="pipelines/:pipelineId/cases/:caseId" element={<UnprefixedBoardRedirect />} />
           <Route path="artifacts" element={<UnprefixedBoardRedirect />} />
           <Route path="audit" element={<UnprefixedBoardRedirect />} />
+          {streamlinedUiEnabled ? (
+            <>
+              <Route path="audit/*" element={<UnprefixedBoardRedirect />} />
+              <Route path="activity" element={<UnprefixedBoardRedirect />} />
+              <Route path="activity/*" element={<UnprefixedBoardRedirect />} />
+              <Route path="runs" element={<UnprefixedBoardRedirect />} />
+              <Route path="costs" element={<UnprefixedBoardRedirect />} />
+              <Route path="budgets" element={<UnprefixedBoardRedirect />} />
+            </>
+          ) : null}
           <Route path="decisions" element={<UnprefixedBoardRedirect />} />
           <Route path="u/:userSlug" element={<UnprefixedBoardRedirect />} />
           <Route path="skills/studio" element={<UnprefixedBoardRedirect />} />
@@ -709,14 +804,14 @@ export function App() {
           <Route path="projects/:projectId/workspaces/:workspaceId" element={<UnprefixedBoardRedirect />} />
           <Route path="projects/:projectId/configuration" element={<UnprefixedBoardRedirect />} />
           <Route path="workspaces" element={<UnprefixedBoardRedirect />} />
-          <Route path="execution-workspaces/:workspaceId" element={<UnprefixedBoardRedirect />} />
-          <Route path="execution-workspaces/:workspaceId/services" element={<UnprefixedBoardRedirect />} />
-          <Route path="execution-workspaces/:workspaceId/configuration" element={<UnprefixedBoardRedirect />} />
-          <Route path="execution-workspaces/:workspaceId/runtime-logs" element={<UnprefixedBoardRedirect />} />
-          <Route path="execution-workspaces/:workspaceId/issues" element={<UnprefixedBoardRedirect />} />
-          <Route path="execution-workspaces/:workspaceId/routines" element={<UnprefixedBoardRedirect />} />
-          <Route path=":companyPrefix" element={<Layout />}>
-            {boardRoutes()}
+          <Route path="execution-workspaces/:workspaceId" element={<UnprefixedExecutionWorkspaceRedirect />} />
+          <Route path="execution-workspaces/:workspaceId/services" element={<UnprefixedExecutionWorkspaceRedirect />} />
+          <Route path="execution-workspaces/:workspaceId/configuration" element={<UnprefixedExecutionWorkspaceRedirect />} />
+          <Route path="execution-workspaces/:workspaceId/runtime-logs" element={<UnprefixedExecutionWorkspaceRedirect />} />
+          <Route path="execution-workspaces/:workspaceId/issues" element={<UnprefixedExecutionWorkspaceRedirect />} />
+          <Route path="execution-workspaces/:workspaceId/routines" element={<UnprefixedExecutionWorkspaceRedirect />} />
+          <Route path=":companyPrefix" element={streamlinedUiEnabled ? <Layout /> : <ProductionLayout />}>
+            {boardRoutes(streamlinedUiEnabled)}
           </Route>
           <Route path="*" element={<NotFoundPage scope="global" />} />
         </Route>

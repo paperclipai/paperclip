@@ -23,6 +23,7 @@ import {
   SETUP_TOKEN_CAP_EXCEEDED,
   SETUP_TOKEN_TOKEN_UNAVAILABLE,
   SETUP_TOKEN_STORAGE_FAILED,
+  SETUP_TOKEN_CANCELLABLE_STATES,
   type SetupTokenCleanupIdentity,
   type SetupTokenCleanupRecord,
   type SetupTokenCleanupStore,
@@ -36,6 +37,7 @@ import {
   type SetupTokenRateLimiter,
   type SetupTokenSecretWriter,
   type SetupTokenSessionScope,
+  type SetupTokenSessionState,
 } from "./setup-token-session.js";
 import { redactSensitive } from "../middleware/redact-sensitive.js";
 import { sanitizeRecord } from "../redaction.js";
@@ -216,6 +218,34 @@ class FakeStore implements SetupTokenCleanupStore {
     }
     row.boundAt = Date.now();
     return { ...row };
+  }
+  async cancelDurable(
+    identity: SetupTokenCleanupIdentity,
+    cancellableStates: readonly SetupTokenSessionState[],
+  ): Promise<SetupTokenCleanupRecord | null> {
+    const row = this.rows.get(identity.sessionId);
+    if (!row || !identityMatchesRow(row, identity) || !cancellableStates.includes(row.state)) {
+      return null;
+    }
+    row.state = "cancelled";
+    return { ...row };
+  }
+  async findActiveDurable(
+    key: Pick<SetupTokenCleanupIdentity, "companyId" | "ownerUserId" | "adapterType">,
+    now: number,
+  ): Promise<SetupTokenCleanupRecord | null> {
+    for (const row of this.rows.values()) {
+      if (
+        row.companyId === key.companyId &&
+        row.ownerUserId === key.ownerUserId &&
+        row.adapterType === key.adapterType &&
+        !isTerminalSessionState(row.state) &&
+        row.deadline > now
+      ) {
+        return { ...row };
+      }
+    }
+    return null;
   }
 }
 
@@ -651,6 +681,141 @@ describe("SetupTokenSessionService durable reaper", () => {
     const summary = await service.reap(5_000);
     expect(summary.failed).toBe(1);
     expect(store.rows.has("orphan-2")).toBe(true);
+  });
+});
+
+describe("SetupTokenSessionService.cancelByScope", () => {
+  it("cancels the live in-memory session the normal way when one exists", async () => {
+    const { service, store } = buildService();
+    const { sessionId } = await service.start(OWNER_SCOPE);
+    const result = await service.cancelByScope(sessionId, OWNER_SCOPE);
+    expect(result.state).toBe("cancelled");
+    expect(store.rows.has(sessionId)).toBe(false);
+  });
+
+  it("releases the durable row when no live session exists (a restart dropped it)", async () => {
+    const store = new FakeStore();
+    // Simulate a durable row a prior process created. No `service.start()` ever
+    // ran for it in THIS service instance, so `sessions` holds nothing for it —
+    // the shape a restart leaves behind.
+    await store.record({
+      sessionId: "durable-only-1",
+      companyId: OWNER_SCOPE.companyId,
+      ownerUserId: OWNER_SCOPE.ownerUserId,
+      adapterType: OWNER_SCOPE.adapterType,
+      environmentId: OWNER_SCOPE.environmentId,
+      leaseId: "lease-durable-only-1",
+      deadline: Date.now() + 60_000,
+      state: "awaiting_code",
+      boundAt: null,
+    });
+    const { service } = buildService({ store });
+
+    const result = await service.cancelByScope("durable-only-1", OWNER_SCOPE);
+    expect(result.state).toBe("cancelled");
+    expect(store.rows.get("durable-only-1")?.state).toBe("cancelled");
+  });
+
+  it("cancels only the caller's row: a foreign scope leaves a same-id row untouched and throws not-found", async () => {
+    const store = new FakeStore();
+    await store.record({
+      sessionId: "durable-only-2",
+      companyId: OWNER_SCOPE.companyId,
+      ownerUserId: OWNER_SCOPE.ownerUserId,
+      adapterType: OWNER_SCOPE.adapterType,
+      environmentId: OWNER_SCOPE.environmentId,
+      leaseId: "lease-durable-only-2",
+      deadline: Date.now() + 60_000,
+      state: "awaiting_code",
+      boundAt: null,
+    });
+    const { service } = buildService({ store });
+
+    const foreignKey = { ...OWNER_SCOPE, ownerUserId: "user-2" };
+    await expect(service.cancelByScope("durable-only-2", foreignKey)).rejects.toThrow(
+      SETUP_TOKEN_SESSION_NOT_FOUND,
+    );
+    // The foreign-scope attempt never touched the real owner's row.
+    expect(store.rows.get("durable-only-2")?.state).toBe("awaiting_code");
+  });
+
+  it("does not interrupt a session in the submitting (credential-write) state", async () => {
+    const store = new FakeStore();
+    await store.record({
+      sessionId: "durable-only-3",
+      companyId: OWNER_SCOPE.companyId,
+      ownerUserId: OWNER_SCOPE.ownerUserId,
+      adapterType: OWNER_SCOPE.adapterType,
+      environmentId: OWNER_SCOPE.environmentId,
+      leaseId: "lease-durable-only-3",
+      deadline: Date.now() + 60_000,
+      state: "submitting",
+      boundAt: null,
+    });
+    const { service } = buildService({ store });
+
+    await expect(service.cancelByScope("durable-only-3", OWNER_SCOPE)).rejects.toThrow(
+      SETUP_TOKEN_SESSION_NOT_FOUND,
+    );
+    // The row stays in `submitting`: the durable-only cancel never interrupts
+    // the credential write in progress.
+    expect(store.rows.get("durable-only-3")?.state).toBe("submitting");
+  });
+
+  it("throws the fixed not-found error when nothing matches at all", async () => {
+    const { service } = buildService();
+    await expect(service.cancelByScope("never-existed", OWNER_SCOPE)).rejects.toThrow(
+      SETUP_TOKEN_SESSION_NOT_FOUND,
+    );
+  });
+});
+
+describe("SetupTokenSessionService.findActiveByScope", () => {
+  it("finds the caller's live active session with no session id", async () => {
+    const { service } = buildService();
+    const { sessionId } = await service.start(OWNER_SCOPE);
+    const found = await service.findActiveByScope(OWNER_SCOPE);
+    expect(found?.sessionId).toBe(sessionId);
+  });
+
+  it("returns null for another owner and for a terminal session", async () => {
+    const { service } = buildService();
+    const { sessionId } = await service.start(OWNER_SCOPE);
+    expect(
+      await service.findActiveByScope({ ...OWNER_SCOPE, ownerUserId: "user-2" }),
+    ).toBeNull();
+
+    await service.cancel(sessionId, OWNER_SCOPE);
+    expect(await service.findActiveByScope(OWNER_SCOPE)).toBeNull();
+  });
+
+  it("finds the durable active row after a restart drops the in-memory session", async () => {
+    const store = new FakeStore();
+    const { service: before } = buildService({ store });
+    const { sessionId } = await before.start(OWNER_SCOPE);
+
+    // Simulate a restart: a fresh service shares the durable store but starts
+    // with an empty in-memory session map.
+    const { service: after } = buildService({ store });
+    const found = await after.findActiveByScope(OWNER_SCOPE);
+    expect(found?.sessionId).toBe(sessionId);
+    // The full login URL lives only in memory (SR-5), so a restart-recovered
+    // descriptor never carries one.
+    expect(found?.loginUrl).toBeNull();
+  });
+
+  it("does not find a foreign-scope or an expired durable row after a restart", async () => {
+    const store = new FakeStore();
+    const { service: before } = buildService({ store, ttlMs: 1_000 });
+    await before.start(OWNER_SCOPE);
+
+    const { service: after } = buildService({ store });
+    expect(
+      await after.findActiveByScope({ ...OWNER_SCOPE, ownerUserId: "user-2" }),
+    ).toBeNull();
+
+    const { service: expiredAfter } = buildService({ store, now: () => Date.now() + 60_000 });
+    expect(await expiredAfter.findActiveByScope(OWNER_SCOPE)).toBeNull();
   });
 });
 

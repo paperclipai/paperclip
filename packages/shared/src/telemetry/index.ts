@@ -14,6 +14,7 @@ export {
   trackSkillImported,
   trackAgentFirstHeartbeat,
   trackAgentTaskCompleted,
+  trackAgentTaskRun,
   trackErrorHandlerCrash,
   trackInteractionCreated,
   trackInteractionResolved,

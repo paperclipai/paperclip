@@ -51,7 +51,9 @@ describe("buildPaperclipTaskMarkdown", () => {
       },
     });
 
-    expect(acceptedConfirmation).toContain("Create child issues from the approved plan only");
+    expect(acceptedConfirmation).toContain(
+      "Implement the accepted plan on this issue when the work is small and cohesive.",
+    );
     expect(acceptedConfirmation).not.toContain("Make the plan only.");
   });
 
@@ -68,7 +70,9 @@ describe("buildPaperclipTaskMarkdown", () => {
     });
 
     expect(acceptedConfirmation).toContain("Accepted plan directive:");
-    expect(acceptedConfirmation).toContain("Create child issues from the approved plan only");
+    expect(acceptedConfirmation).toContain(
+      "Implement the accepted plan on this issue when the work is small and cohesive.",
+    );
     expect(acceptedConfirmation).not.toContain("- Work mode: \"planning\"");
   });
 
@@ -131,6 +135,26 @@ describe("buildPaperclipTaskMarkdown", () => {
     expect(compact).not.toContain("Full multi-paragraph brief");
     expect(compact).toContain("- Issue: \"PAP-3404\"");
     expect(compact).toContain("Please also update the changelog.");
+  });
+
+  it("makes the latest wake comment the immediate follow-up request", () => {
+    const commentWake = buildPaperclipTaskMarkdown({
+      issue: {
+        id: "issue-follow-up",
+        identifier: "PAP-418",
+        title: "Original task",
+        workMode: "standard",
+        description: "Reply with the original answer.",
+      },
+      wakeComment: {
+        id: "comment-follow-up",
+        body: "Reply with the new answer instead.",
+      },
+    });
+
+    expect(commentWake).toContain("The latest wake comment is the immediate request for this run.");
+    expect(commentWake).toContain("Do not repeat an earlier requested output from the issue description");
+    expect(commentWake).toContain("Reply with the new answer instead.");
   });
 
   it("prefers ordinary comment planning guidance over stale accepted confirmation state", () => {
@@ -219,6 +243,61 @@ describe("mergeCoalescedContextSnapshot", () => {
       selectedOptionIds: ["file-b"],
       selectedOptions: [{ id: "file-b", label: "b.txt", description: "Generated build output" }],
     });
+  });
+
+  it("preserves a deferred interaction when a later comment joins its successor wake", () => {
+    const merged = mergeCoalescedContextSnapshot(
+      {
+        issueId: "issue-1",
+        interactionId: "interaction-1",
+        interactionKind: "request_confirmation",
+        interactionStatus: "accepted",
+        continuationPolicy: "wake_assignee_on_accept",
+        wakeReason: "issue_commented",
+      },
+      {
+        issueId: "issue-1",
+        commentId: "comment-1",
+        wakeCommentId: "comment-1",
+        wakeReason: "issue_commented",
+      },
+      { preserveExistingInteractionContinuation: true },
+    );
+
+    expect(merged.interactionId).toBe("interaction-1");
+    expect(merged.interactionKind).toBe("request_confirmation");
+    expect(merged.interactionStatus).toBe("accepted");
+    expect(merged.continuationPolicy).toBe("wake_assignee_on_accept");
+    expect(merged.commentId).toBe("comment-1");
+    expect(merged.wakeCommentId).toBe("comment-1");
+  });
+
+  it("keeps a queued comment when an interaction joins its successor wake", () => {
+    const merged = mergeCoalescedContextSnapshot(
+      {
+        issueId: "issue-1",
+        commentId: "comment-1",
+        wakeCommentId: "comment-1",
+        wakeCommentIds: ["comment-1"],
+        wakeReason: "issue_commented",
+      },
+      {
+        issueId: "issue-1",
+        interactionId: "interaction-1",
+        interactionKind: "ask_user_questions",
+        interactionStatus: "answered",
+        continuationPolicy: "wake_assignee_on_accept",
+        wakeReason: "issue_commented",
+      },
+      { preserveExistingInteractionContinuation: true },
+    );
+
+    expect(merged.interactionId).toBe("interaction-1");
+    expect(merged.interactionKind).toBe("ask_user_questions");
+    expect(merged.interactionStatus).toBe("answered");
+    expect(merged.commentId).toBe("comment-1");
+    expect(merged.wakeCommentId).toBe("comment-1");
+    expect(merged.wakeCommentIds).toEqual(["comment-1"]);
   });
 });
 

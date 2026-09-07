@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildAnsweredQuestionsDeliveryText,
   buildIssueThreadInteractionSummary,
   buildSuggestedTaskTree,
   collectSuggestedTaskClientKeys,
@@ -8,6 +9,7 @@ import {
   getItemVerdictProgress,
   getRequestConfirmationTargetHref,
   getQuestionAnswerLabels,
+  interactionReplacesComposerSkip,
   isDegenerateAskUserQuestions,
   isSupersededByNewerSiblingInteraction,
   shouldHideInteractionCard,
@@ -59,6 +61,91 @@ describe("buildSuggestedTaskTree", () => {
 });
 
 describe("issue thread interaction helpers", () => {
+  it("replaces composer Skip only when the durable form has its own alternative path", () => {
+    const base = {
+      id: "interaction-1",
+      companyId: "company-1",
+      issueId: "issue-1",
+      status: "pending",
+      continuationPolicy: "wake_assignee",
+      ...resolverPolicyFields,
+      createdAt: "2026-04-06T12:00:00.000Z",
+      updatedAt: "2026-04-06T12:00:00.000Z",
+      result: null,
+    } as const;
+    expect(interactionReplacesComposerSkip({
+      ...base,
+      kind: "request_confirmation",
+      payload: { version: 1, prompt: "Proceed?" },
+    } as IssueThreadInteraction)).toBe(true);
+    expect(interactionReplacesComposerSkip({
+      ...base,
+      kind: "request_checkbox_confirmation",
+      payload: { version: 1, prompt: "Select", options: [] },
+    } as IssueThreadInteraction)).toBe(true);
+    expect(interactionReplacesComposerSkip({
+      ...base,
+      kind: "suggest_tasks",
+      payload: { version: 1, tasks: [] },
+    } as IssueThreadInteraction)).toBe(true);
+    expect(interactionReplacesComposerSkip({
+      ...base,
+      kind: "ask_user_questions",
+      payload: { version: 1, questions: [] },
+    } as IssueThreadInteraction)).toBe(false);
+    expect(interactionReplacesComposerSkip({
+      ...base,
+      kind: "request_item_verdicts",
+      payload: { version: 1, prompt: "Review", items: [] },
+    } as IssueThreadInteraction)).toBe(false);
+  });
+
+  it("formats successor-turn answer delivery with canonical prompts and labels", () => {
+    const interaction = {
+      id: "interaction-answers",
+      companyId: "company-1",
+      issueId: "issue-1",
+      kind: "ask_user_questions",
+      status: "answered",
+      continuationPolicy: "wake_assignee",
+      ...resolverPolicyFields,
+      createdAt: "2026-04-06T12:00:00.000Z",
+      updatedAt: "2026-04-06T12:01:00.000Z",
+      payload: {
+        version: 1,
+        questions: [
+          { id: "purpose", prompt: "What is it for?", selectionMode: "single", options: [] },
+          { id: "runtime", prompt: "Which runtime?", selectionMode: "single", options: [{ id: "node", label: "Node.js" }] },
+          { id: "features", prompt: "Which features?", selectionMode: "multi", options: [{ id: "logs", label: "Request logs" }] },
+        ],
+        questionSet: {
+          schema: "paperclip.question_set.v1",
+          questions: [
+            { id: "purpose", header: "Purpose", prompt: "What is it for?", required: true, answerMode: "text" },
+            { id: "runtime", header: "Runtime", prompt: "Which runtime?", required: true, answerMode: "single_select", options: [{ id: "node", label: "Node.js" }] },
+            { id: "features", header: "Features", prompt: "Which features?", required: false, answerMode: "multi_select", options: [{ id: "logs", label: "Request logs" }], customAnswer: { enabled: true, label: "Other" } },
+          ],
+        },
+      },
+      result: {
+        version: 1,
+        answers: [
+          { questionId: "purpose", optionIds: [], otherText: "Internal API" },
+          { questionId: "runtime", optionIds: ["node"] },
+          { questionId: "features", optionIds: ["logs"], otherText: "Metrics" },
+        ],
+      },
+    } satisfies AskUserQuestionsInteraction;
+
+    expect(buildAnsweredQuestionsDeliveryText(interaction)).toBe([
+      "Answered questions",
+      "",
+      "- Purpose — What is it for?: Internal API",
+      "- Runtime — Which runtime?: Node.js",
+      "- Features — Which features?: Request logs, Metrics",
+    ].join("\n"));
+  });
+
   it("summarizes task and question interactions", () => {
     expect(buildIssueThreadInteractionSummary({
       id: "interaction-1",
@@ -224,6 +311,38 @@ describe("issue thread interaction helpers", () => {
       status: "expired",
       result: { version: 1, outcome: "stale_target" },
     })).toBe("Selection expired after target changed");
+  });
+
+  it("uses a confirmation's explicit rejection action in its receipt", () => {
+    const base = {
+      id: "interaction-confirmation",
+      companyId: "company-1",
+      issueId: "issue-1",
+      kind: "request_confirmation" as const,
+      status: "rejected" as const,
+      continuationPolicy: "wake_assignee" as const,
+      ...resolverPolicyFields,
+      createdAt: "2026-04-06T12:00:00.000Z",
+      updatedAt: "2026-04-06T12:01:00.000Z",
+      result: { version: 1 as const, outcome: "rejected" as const },
+    };
+
+    expect(buildIssueThreadInteractionSummary({
+      ...base,
+      payload: {
+        version: 1 as const,
+        prompt: "Is this task ready to complete?",
+        rejectLabel: "Continue work",
+      },
+    })).toBe("Selected “Continue work”");
+
+    expect(buildIssueThreadInteractionSummary({
+      ...base,
+      payload: {
+        version: 1 as const,
+        prompt: "Proceed?",
+      },
+    })).toBe("Declined request");
   });
 
   it("maps selected checkbox option ids back to labels", () => {

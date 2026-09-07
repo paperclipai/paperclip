@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { act as reactAct, type ReactNode } from "react";
+import { act as reactAct, useState, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type {
@@ -111,11 +111,7 @@ function terminal(
   } as ConnectionIntentInteraction;
 }
 
-function renderBody(
-  interaction: ConnectionIntentInteraction = pendingConnectionIntentInteraction,
-  currentUserId:
-    string | null = issueThreadInteractionFixtureMeta.currentUserId,
-) {
+function renderNode(node: ReactNode) {
   host = document.createElement("div");
   document.body.appendChild(host);
   root = createRoot(host);
@@ -125,15 +121,25 @@ function renderBody(
   void act(() => {
     root?.render(
       <QueryClientProvider client={queryClient}>
-        <ConnectionIntentInteractionBody
-          interaction={interaction}
-          currentUserId={currentUserId}
-          addresseeLabel="Carol"
-        />
+        {node}
       </QueryClientProvider>,
     );
   });
   return host;
+}
+
+function renderBody(
+  interaction: ConnectionIntentInteraction = pendingConnectionIntentInteraction,
+  currentUserId:
+    string | null = issueThreadInteractionFixtureMeta.currentUserId,
+) {
+  return renderNode(
+    <ConnectionIntentInteractionBody
+      interaction={interaction}
+      currentUserId={currentUserId}
+      addresseeLabel="Carol"
+    />,
+  );
 }
 
 function button(label: string) {
@@ -292,6 +298,57 @@ describe("ConnectionIntentInteractionBody dialog behavior", () => {
     });
     expect(invalidation).toHaveBeenCalledWith({
       queryKey: ["issues", "detail"],
+    });
+  });
+
+  it("restores focus when completion remounts the intent in a different task host", async () => {
+    setupOptionsMock.mockResolvedValue({
+      requestedAgentId: "agent-requesting",
+      existingConnections: [{ id: "connection-one", name: "Carol's Notion" }],
+    });
+    const acceptedInteraction = {
+      ...pendingConnectionIntentInteraction,
+      status: "accepted",
+      resolvedAt: new Date("2026-08-26T12:00:00.000Z"),
+      result: {
+        version: 1,
+        outcome: "connected",
+        connectionId: "connection-one",
+      },
+    } as ConnectionIntentInteraction;
+    let showAcceptedInteraction!: () => void;
+
+    function RemountingTaskHost() {
+      const [interaction, setInteraction] = useState(
+        pendingConnectionIntentInteraction,
+      );
+      showAcceptedInteraction = () => setInteraction(acceptedInteraction);
+      return (
+        <ConnectionIntentInteractionBody
+          key={interaction.status}
+          interaction={interaction}
+          currentUserId={issueThreadInteractionFixtureMeta.currentUserId}
+          addresseeLabel="Carol"
+        />
+      );
+    }
+
+    completeMock.mockImplementation(async () => {
+      showAcceptedInteraction();
+      return acceptedInteraction;
+    });
+    renderNode(<RemountingTaskHost />);
+
+    await act(() => button("Connect / Use existing")?.click());
+    await flush();
+    await act(() => button("Use Carol's Notion")?.click());
+
+    await waitForAssertion(() => {
+      const target = document.getElementById(
+        `connection-intent-focus-target-${acceptedInteraction.id}`,
+      );
+      expect(document.body.textContent).toContain("Notion connected");
+      expect(document.activeElement).toBe(target);
     });
   });
 

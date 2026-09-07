@@ -40,6 +40,7 @@ const mockInteractionService = vi.hoisted(() => ({
   answerQuestions: vi.fn(),
   submitItemVerdicts: vi.fn(),
   cancelQuestions: vi.fn(),
+  skipInteraction: vi.fn(),
   withdrawInteraction: vi.fn(),
   recordSecretProposalExecutionResult: vi.fn(),
 }));
@@ -311,13 +312,26 @@ describe.sequential("issue thread interaction routes", () => {
     vi.doUnmock("../middleware/index.js");
     vi.doUnmock("../services/index.js");
     registerModuleMocks();
-    vi.clearAllMocks();
-    mockInteractionService.getForIssue.mockReset();
+    // Every mock here is a vi.hoisted() singleton. All 70+ tests share it.
+    // A queued mockResolvedValueOnce() value can outlive its own test and
+    // leak into a later, unrelated test. vi.resetAllMocks() drains that
+    // queue for every mock in one call. It also keeps each mock's
+    // constructor-provided vi.fn(impl) default. So the code below only
+    // sets values that must differ from that default.
+    // vi.clearAllMocks() clears call history only. It does not drain the
+    // queue. That gap once let a leftover queued value deny an unrelated
+    // later test.
+    vi.resetAllMocks();
+    // mockRunAttribution.value is a plain object, not a vi.fn().
+    // resetAllMocks() does not reset it. createApp() overwrites it for an
+    // agent actor. A board actor leaves whatever value a prior test set here.
+    mockRunAttribution.value = {
+      companyId: "company-1",
+      agentId: CREATED_AGENT_ID,
+      responsibleUserId: null,
+    };
     mockQuestionResponseDeliveries.deliver.mockResolvedValue(null);
     mockRequestNativeQuestionRunCancellation.mockResolvedValue(null);
-    mockResolveTaskWatchdogMutationScope.mockReset();
-    mockResolveCoreTrustPreset.mockReset();
-    mockAccessDecide.mockReset();
     mockResolveTaskWatchdogMutationScope.mockResolvedValue({ kind: "none" });
     mockResolveCoreTrustPreset.mockReturnValue({ kind: "standard" });
     mockAccessDecide.mockImplementation(async (input: { action?: string }) => ({
@@ -802,6 +816,30 @@ describe.sequential("issue thread interaction routes", () => {
         action: "issue.thread_interaction_answered",
       }),
     );
+  });
+
+  it("routes wake-on-accept question answers through the same causal delivery service", async () => {
+    mockInteractionService.answerQuestions.mockResolvedValueOnce({
+      id: "interaction-2",
+      companyId: "company-1",
+      issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      kind: "ask_user_questions",
+      status: "answered",
+      continuationPolicy: "wake_assignee_on_accept",
+      sourceCommentId: "comment-2",
+      sourceRunId: RUN_2,
+      payload: { version: 1, questions: [] },
+      result: { version: 1, answers: [{ questionId: "scope", optionIds: ["phase-1"] }] },
+    });
+    const app = await createApp();
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-2/respond")
+      .send({ answers: [{ questionId: "scope", optionIds: ["phase-1"] }] });
+
+    expect(res.status).toBe(200);
+    expect(mockQuestionResponseDeliveries.deliver).toHaveBeenCalledWith("interaction-2");
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 
   it("submits item verdicts and emits one continuation wake with resolved item ids", async () => {
@@ -1674,6 +1712,13 @@ describe.sequential("issue thread interaction routes", () => {
         resolvedAt: "2026-04-20T12:05:00.000Z",
       },
       createdIssues: [],
+      continuationIssue: {
+        id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        assigneeAgentId: ASSIGNEE_AGENT_ID,
+        assigneeUserId: null,
+        status: "todo",
+        workMode: "standard",
+      },
     });
     const app = await createApp();
 
@@ -1709,6 +1754,17 @@ describe.sequential("issue thread interaction routes", () => {
           }),
           forceFreshSession: true,
           workspaceRefreshReason: "accepted_plan_confirmation",
+        }),
+      }),
+    );
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "issue.updated",
+        details: expect.objectContaining({
+          source: "request_confirmation_accept",
+          workMode: "standard",
+          _previous: expect.objectContaining({ workMode: "planning" }),
         }),
       }),
     );
@@ -1879,6 +1935,175 @@ describe.sequential("issue thread interaction routes", () => {
 
     expect(res.status).toBe(200);
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
+  it("wakes the assignee to revise a rejected plan even when its policy is accept-only", async () => {
+    mockInteractionService.rejectInteraction.mockResolvedValueOnce({
+      id: "interaction-rejected-plan",
+      companyId: "company-1",
+      issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      kind: "request_confirmation",
+      status: "rejected",
+      continuationPolicy: "wake_assignee_on_accept",
+      idempotencyKey: "confirmation:issue:plan:revision-2",
+      sourceCommentId: null,
+      sourceRunId: RUN_3,
+      payload: {
+        version: 1,
+        prompt: "Approve this plan?",
+        target: {
+          type: "issue_document",
+          issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          documentId: "document-plan",
+          key: "plan",
+          revisionId: "revision-2",
+          revisionNumber: 2,
+        },
+      },
+      result: {
+        version: 1,
+        outcome: "rejected",
+        reason: "Keep the API smaller and add a Unicode test.",
+      },
+      createdAt: "2026-04-20T12:00:00.000Z",
+      updatedAt: "2026-04-20T12:05:00.000Z",
+      resolvedAt: "2026-04-20T12:05:00.000Z",
+    });
+
+    const res = await request(await createApp())
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-rejected-plan/reject")
+      .send({ reason: "Keep the API smaller and add a Unicode test." });
+
+    expect(res.status).toBe(200);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      ASSIGNEE_AGENT_ID,
+      expect.objectContaining({
+        payload: expect.objectContaining({
+          planReviewInteraction: expect.objectContaining({
+            id: "interaction-rejected-plan",
+            status: "rejected",
+            target: expect.objectContaining({
+              key: "plan",
+              revisionId: "revision-2",
+            }),
+            result: expect.objectContaining({
+              outcome: "rejected",
+              reason: "Keep the API smaller and add a Unicode test.",
+            }),
+          }),
+        }),
+        contextSnapshot: expect.objectContaining({
+          planReviewInteraction: expect.objectContaining({ status: "rejected" }),
+        }),
+      }),
+    );
+  });
+
+  it("delivers generic confirmation rejection feedback as the next turn message", async () => {
+    mockInteractionService.rejectInteraction.mockResolvedValueOnce({
+      id: "interaction-warm-turn",
+      companyId: "company-1",
+      issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      kind: "request_confirmation",
+      status: "rejected",
+      continuationPolicy: "wake_assignee",
+      idempotencyKey: "warm-turn-1",
+      sourceCommentId: null,
+      sourceRunId: RUN_3,
+      payload: {
+        version: 1,
+        prompt: "Continue to turn two?",
+        target: {
+          type: "custom",
+          key: "warm_turn_1",
+          revisionId: "turn-1",
+        },
+      },
+      result: {
+        version: 1,
+        outcome: "rejected",
+        reason: "Read T1, append T2, and verify both lines.",
+      },
+      createdAt: "2026-04-20T12:00:00.000Z",
+      updatedAt: "2026-04-20T12:05:00.000Z",
+      resolvedAt: "2026-04-20T12:05:00.000Z",
+    });
+
+    const res = await request(await createApp())
+      .post(
+        "/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-warm-turn/reject",
+      )
+      .send({ reason: "Read T1, append T2, and verify both lines." });
+
+    expect(res.status).toBe(200);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      ASSIGNEE_AGENT_ID,
+      expect.objectContaining({
+        payload: expect.objectContaining({
+          paperclipAgentMessage: {
+            text: "Read T1, append T2, and verify both lines.",
+            source: "interaction_rejection",
+            sessionId: "interaction-warm-turn",
+          },
+        }),
+        contextSnapshot: expect.objectContaining({
+          paperclipAgentMessage: expect.objectContaining({
+            text: "Read T1, append T2, and verify both lines.",
+          }),
+        }),
+      }),
+    );
+  });
+
+  it("returns a rejected native completion review with a narrow reviewer-reason continuation", async () => {
+    const issue = createIssue({ status: "in_review" });
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockInteractionService.rejectInteraction.mockResolvedValueOnce({
+      id: "interaction-native-completion-review",
+      companyId: "company-1",
+      issueId: issue.id,
+      kind: "request_confirmation",
+      status: "rejected",
+      continuationPolicy: "wake_assignee",
+      idempotencyKey: null,
+      sourceCommentId: null,
+      sourceRunId: RUN_3,
+      payload: {
+        version: 1,
+        prompt: "Approve completion?",
+        target: { type: "custom", key: "native_completion_review", revisionId: "decision-29" },
+      },
+      result: {
+        version: 1,
+        outcome: "rejected",
+        reason: "Run the external verification and report only that result.",
+      },
+      createdAt: "2026-04-20T12:00:00.000Z",
+      updatedAt: "2026-04-20T12:05:00.000Z",
+      resolvedAt: "2026-04-20T12:05:00.000Z",
+    });
+
+    const res = await request(await createApp())
+      .post(`/api/issues/${issue.id}/interactions/interaction-native-completion-review/reject`)
+      .send({ reason: "Run the external verification and report only that result." });
+
+    expect(res.status).toBe(200);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      ASSIGNEE_AGENT_ID,
+      expect.objectContaining({
+        payload: expect.objectContaining({
+          nativeCompletionReview: expect.objectContaining({
+            decisionId: "decision-29",
+            outcome: "rejected",
+            reviewerReason: "Run the external verification and report only that result.",
+            instruction: expect.stringContaining("do not redo completed implementation"),
+          }),
+        }),
+        contextSnapshot: expect.objectContaining({
+          nativeCompletionReview: expect.objectContaining({ reviewerReason: expect.any(String) }),
+        }),
+      }),
+    );
   });
 
   it("overrides accept-only continuation when rejection consumes the last review path", async () => {

@@ -29,7 +29,6 @@ describe("managedFeatureKeySet", () => {
     // Server-managed bookkeeping fields are not overlayable features.
     expect(keys.has("worktreeRunExecutionActivatedAt")).toBe(false);
     expect(keys.has("worktreeRunExecutionActivationInstanceId")).toBe(false);
-    expect(keys.has("issueGraphLivenessAutoRecoveryLookbackHours")).toBe(false);
   });
 });
 
@@ -55,6 +54,14 @@ describe("parseManagedConfigEnv", () => {
       plugins: { autoInstall: ["daytona", "kubernetes"] },
       environments: [],
     });
+  });
+
+  it("accepts the deprecated runner ingress key for managed-config compatibility", () => {
+    const config = parseManagedConfigEnv(
+      envWith(validDoc({ features: { enableRunnerPreviewIngress: true } })),
+    );
+
+    expect(config?.features).toEqual({ enableRunnerPreviewIngress: true });
   });
 
   it("accepts empty features {} and autoInstall [] sections", () => {

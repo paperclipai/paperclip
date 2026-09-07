@@ -1,5 +1,40 @@
 import { describe, expect, it } from "vitest";
-import { connectionIntentOAuthOutcomeHtml } from "./tool-access.js";
+import {
+  cloudConnectorEnrollmentReturnPath,
+  connectionIntentOAuthOutcomeHtml,
+} from "./tool-access.js";
+
+describe("Cloud connector enrollment return path", () => {
+  it("returns to the company-prefixed Connections page", () => {
+    expect(cloudConnectorEnrollmentReturnPath("APP")).toBe(
+      "/APP/apps/connections?cloud_connector=enrolled",
+    );
+  });
+
+  it("encodes the company prefix as one path segment", () => {
+    expect(cloudConnectorEnrollmentReturnPath("QA / Apps")).toBe(
+      "/QA%20%2F%20Apps/apps/connections?cloud_connector=enrolled",
+    );
+  });
+
+  it("returns to the connector setup that started enrollment", () => {
+    expect(cloudConnectorEnrollmentReturnPath(
+      "APP",
+      "/apps/connect?source=google-drive&stage=setup",
+    )).toBe(
+      "/APP/apps/connect?source=google-drive&stage=setup&cloud_connector=enrolled",
+    );
+  });
+
+  it("rejects external and unrelated enrollment return paths", () => {
+    expect(cloudConnectorEnrollmentReturnPath("APP", "https://evil.example/apps/connect")).toBe(
+      "/APP/apps/connections?cloud_connector=enrolled",
+    );
+    expect(cloudConnectorEnrollmentReturnPath("APP", "/settings")).toBe(
+      "/APP/apps/connections?cloud_connector=enrolled",
+    );
+  });
+});
 
 describe("connection intent OAuth callback document", () => {
   it.each(["connected", "declined", "failed"] as const)(

@@ -21,6 +21,11 @@ const SENSITIVE_KEYS = new Set<string>([
   "password_confirm",
   "confirmpassword",
   "confirm_password",
+  // Secret creation/update bodies use a generic `value` field. Failure logs
+  // must prefer losing that diagnostic value over persisting credential
+  // material. `token` is likewise ambiguous but frequently credential-bearing.
+  "value",
+  "token",
   "secret",
   "client_secret",
   "clientsecret",
@@ -39,6 +44,7 @@ const SENSITIVE_KEYS = new Set<string>([
   "sessiontoken",
   "private_key",
   "privatekey",
+  "paperclip_capability",
   // The Claude setup-token login fields. `browserCode` carries the one-time
   // sign-in code and `authorization_code` carries the OAuth code; neither may
   // reach a log line.

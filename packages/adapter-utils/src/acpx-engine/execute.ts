@@ -505,6 +505,118 @@ export function buildSessionKey(identity: SessionKeyIdentity, fingerprint: strin
   return `paperclip:${identity.companyId}:${identity.agentId}:${identity.taskKey}:${fingerprint}`;
 }
 
+// ACPX runs inside the long-lived Paperclip server process. A local child needs
+// a small amount of host context (PATH, locale, certificate/proxy settings, and
+// provider authentication), but it must not inherit the server's complete
+// environment. A runner-backed remote sandbox inherits no ambient host context
+// at all. In particular, native-runner bootstrap and MCP credentials are host
+// authority, not provider credentials.
+const ACPX_INHERITED_HOST_ENV_KEYS = new Set([
+  "PATH",
+  "PATHEXT",
+  "SYSTEMROOT",
+  "WINDIR",
+  "COMSPEC",
+  "HOME",
+  "USERPROFILE",
+  "HOMEDRIVE",
+  "HOMEPATH",
+  "USER",
+  "USERNAME",
+  "LOGNAME",
+  "SHELL",
+  "LANG",
+  "LANGUAGE",
+  "TZ",
+  "TMPDIR",
+  "TEMP",
+  "TMP",
+  "XDG_CONFIG_HOME",
+  "XDG_CACHE_HOME",
+  "XDG_DATA_HOME",
+  "SSL_CERT_FILE",
+  "SSL_CERT_DIR",
+  "NODE_EXTRA_CA_CERTS",
+  "HTTP_PROXY",
+  "HTTPS_PROXY",
+  "NO_PROXY",
+  "ALL_PROXY",
+]);
+
+const ACPX_INHERITED_PROVIDER_ENV_KEYS: Readonly<Record<string, ReadonlySet<string>>> = {
+  codex: new Set([
+    "OPENAI_API_KEY",
+    "CODEX_API_KEY",
+  ]),
+  claude: new Set([
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "ANTHROPIC_BASE_URL",
+    "ANTHROPIC_MODEL",
+    "ANTHROPIC_SMALL_FAST_MODEL",
+    "CLAUDE_CONFIG_DIR",
+    "CLAUDE_CODE_USE_BEDROCK",
+    "ANTHROPIC_BEDROCK_BASE_URL",
+    "AWS_BEARER_TOKEN_BEDROCK",
+    "AWS_ACCESS_KEY_ID",
+    "AWS_SECRET_ACCESS_KEY",
+    "AWS_SESSION_TOKEN",
+    "AWS_REGION",
+    "AWS_DEFAULT_REGION",
+    "AWS_PROFILE",
+    "AWS_CONFIG_FILE",
+    "AWS_SHARED_CREDENTIALS_FILE",
+  ]),
+  pi: new Set(["OPENROUTER_API_KEY"]),
+  gemini: new Set([
+    "GEMINI_API_KEY",
+    "GOOGLE_API_KEY",
+    "GOOGLE_APPLICATION_CREDENTIALS",
+    "GOOGLE_GENAI_USE_GCA",
+  ]),
+  kimi: new Set([
+    "KIMI_API_KEY",
+    "MOONSHOT_API_KEY",
+    "KIMI_MODEL_NAME",
+    "KIMI_MODEL_API_KEY",
+    "KIMI_MODEL_BASE_URL",
+    "KIMI_MODEL_PROVIDER_TYPE",
+    "KIMI_CODE_HOME",
+  ]),
+  grok: new Set(["XAI_API_KEY"]),
+};
+
+/**
+ * Project the server environment onto the closed set a host ACPX provider may
+ * inherit. A runner-backed remote sandbox passes `false` and projects nothing.
+ * Explicit adapter/runtime env is merged later and is intentionally not
+ * restricted by this host projection.
+ */
+export function projectAcpxInheritedHostEnvironment(
+  inheritedEnv: NodeJS.ProcessEnv,
+  acpxAgent: string,
+  inheritHostEnvironment: boolean,
+): Record<string, string> {
+  // A runner-backed remote sandbox crosses a serialization boundary. Ambient
+  // server state is never part of that contract: provider auth/config must be
+  // supplied through adapter config, resolved runtime env, or a contribution.
+  if (!inheritHostEnvironment) return {};
+
+  const providerKeys = ACPX_INHERITED_PROVIDER_ENV_KEYS[acpxAgent];
+  const projected: Record<string, string> = {};
+  for (const [key, value] of Object.entries(inheritedEnv)) {
+    if (typeof value !== "string") continue;
+    const normalizedKey = key.toUpperCase();
+    const allowed =
+      ACPX_INHERITED_HOST_ENV_KEYS.has(normalizedKey) ||
+      /^LC_[A-Z0-9_]{1,32}$/.test(normalizedKey) ||
+      providerKeys?.has(normalizedKey) === true;
+    if (allowed) projected[key] = value;
+  }
+  return projected;
+}
+
 /**
  * Build the single branded launch environment for a run. This is the sole
  * constructor of `LaunchEnvironment`. It applies each contribution into the base
@@ -519,11 +631,19 @@ export function buildSessionKey(identity: SessionKeyIdentity, fingerprint: strin
 export function finalizeLaunchEnvironment(
   baseEnv: Record<string, string>,
   contributions: readonly LaunchEnvironmentContribution[],
+  options: {
+    acpxAgent: string;
+    inheritHostEnvironment: boolean;
+    inheritedEnv?: NodeJS.ProcessEnv;
+    platform?: typeof process.platform;
+  },
 ): LaunchEnvironment {
   for (const contribution of contributions) {
     Object.assign(baseEnv, contribution.env);
   }
-  const env = Object.freeze(resolveRuntimeEnv(baseEnv));
+  const env = Object.freeze(
+    resolveRuntimeEnv(baseEnv, options.acpxAgent, options),
+  );
   return { env } as unknown as LaunchEnvironment;
 }
 
@@ -1890,10 +2010,20 @@ async function buildRuntime(input: {
   });
   let agentCommand = configuredCommand || builtInCommand?.command || null;
   let agentCommandShell = configuredCommand || builtInCommand?.shellCommand || "";
+  // A runner-backed remote sandbox is the only lane that crosses the staging
+  // and serialized-launch-env seam. Runner-less ACP→CLI fallback, SSH, and
+  // local runs keep their historical host-provider compatibility behavior.
+  const useRemoteProcessSession =
+    executionTarget?.kind === "remote" &&
+    executionTarget.transport === "sandbox" &&
+    Boolean(executionTarget.runner) &&
+    Boolean(agentCommandShell);
   if (acpxAgent === "gemini" && agentCommandShell) {
     const normalized = await normalizeGeminiAcpCommandShell(
       agentCommandShell,
-      ensurePathInEnv({ ...process.env, ...env }),
+      resolveRuntimeEnv(env, acpxAgent, {
+        inheritHostEnvironment: !useRemoteProcessSession,
+      }),
     );
     if (normalized !== agentCommandShell) {
       agentCommandShell = normalized;
@@ -1902,15 +2032,6 @@ async function buildRuntime(input: {
   }
   const childStderrDir = path.join(stateDir, "run-stderr");
   const childStderrLogPath = agentCommand ? path.join(childStderrDir, `${runId}.log`) : null;
-  // A runner-backed remote sandbox is the only lane that crosses the staging
-  // seam: the runner-less ACP→CLI fallback (no `runner`) and local runs keep
-  // their historical behavior untouched. This is the single gate shared by the
-  // workspace stage and both sandbox bridges.
-  const useRemoteProcessSession =
-    executionTarget?.kind === "remote" &&
-    executionTarget.transport === "sandbox" &&
-    Boolean(executionTarget.runner) &&
-    Boolean(agentCommandShell);
   // Stream the agent output through the persistent session log stream instead of
   // the host output-file poll. The decision comes from the effective capability
   // snapshot alone: the provider must declare and verify incremental session
@@ -2158,7 +2279,11 @@ async function buildRuntime(input: {
         }),
       measureBridgeStep: (step, run) =>
         measureStartupStep(input.ctx, nowMs, step, run, concurrentBridgeStepMetrics),
-      finalizeLaunchEnv: (contributions) => finalizeLaunchEnvironment(env, contributions).env,
+      finalizeLaunchEnv: (contributions) =>
+        finalizeLaunchEnvironment(env, contributions, {
+          acpxAgent,
+          inheritHostEnvironment: !useRemoteProcessSession,
+        }).env,
       onPaperclipBridgeLog: () =>
         input.ctx.onLog("stdout", "[paperclip] Sandbox ACP API callback bridge enabled for this run.\n"),
       stopBridges: async ({ controlBridge, agentBridge }) => {
@@ -2207,7 +2332,10 @@ async function buildRuntime(input: {
       // Local / runner-less lanes never start a bridge, so they add no
       // contribution. `finalizeLaunchEnvironment` still produces the one branded
       // launch env the prepared runtime and the log builder read.
-      runtimeEnv = finalizeLaunchEnvironment(env, []).env;
+      runtimeEnv = finalizeLaunchEnvironment(env, [], {
+        acpxAgent,
+        inheritHostEnvironment: !useRemoteProcessSession,
+      }).env;
     }
   } catch (err) {
     // On a partial concurrent bring-up failure, ONE bridge may have started while
@@ -2270,7 +2398,7 @@ async function buildRuntime(input: {
     workspaceId,
     workspaceRepoUrl,
     workspaceRepoRef,
-    env,
+    env: runtimeEnv,
     loggedEnv,
     stateDir,
     permissionMode,
@@ -2360,17 +2488,70 @@ async function applySessionConfigOptions(input: {
 }
 
 /**
- * Build the process-session launch env: the host env overlaid with the run's
- * `env` (so the merged paperclip bridge vars win) and a guaranteed `PATH`,
- * narrowed to string values. Shared by the remote concurrent bring-up and the
- * local / runner-less lane so both resolve the runtime env identically.
+ * Build the process-session launch env: the target-specific host projection
+ * overlaid with the run's explicit `env` (so adapter config, runtime variables,
+ * and bridge contributions win), narrowed to string values. Host-side launches
+ * get the closed projection plus a default `PATH` when the host did not provide
+ * one. Runner-backed remote sandbox launches get no ambient host state or
+ * synthesized host `PATH`; omitting `PATH` preserves the sandbox-native value.
  */
-function resolveRuntimeEnv(env: Record<string, string>): Record<string, string> {
+function resolveRuntimeEnv(
+  env: Record<string, string>,
+  acpxAgent: string,
+  options: {
+    inheritHostEnvironment: boolean;
+    inheritedEnv?: NodeJS.ProcessEnv;
+    platform?: typeof process.platform;
+  },
+): Record<string, string> {
+  const inheritedEnv = options.inheritedEnv ?? process.env;
+  const projectedHostEnv = projectAcpxInheritedHostEnvironment(
+    inheritedEnv,
+    acpxAgent,
+    options.inheritHostEnvironment,
+  );
+  const inheritedLaunchEnv = options.inheritHostEnvironment
+    ? ensurePathInEnv(projectedHostEnv)
+    : projectedHostEnv;
+  const mergedEnv = mergeRuntimeEnvironment(
+    inheritedLaunchEnv,
+    env,
+    (options.platform ?? process.platform) === "win32",
+  );
   return Object.fromEntries(
-    Object.entries(ensurePathInEnv({ ...process.env, ...env })).filter(
+    Object.entries(mergedEnv).filter(
       (entry): entry is [string, string] => typeof entry[1] === "string",
     ),
   );
+}
+
+function mergeRuntimeEnvironment(
+  inheritedEnv: NodeJS.ProcessEnv,
+  explicitEnv: Record<string, string>,
+  caseInsensitiveKeys: boolean,
+): NodeJS.ProcessEnv {
+  if (!caseInsensitiveKeys) {
+    return { ...inheritedEnv, ...explicitEnv };
+  }
+
+  const merged: NodeJS.ProcessEnv = {};
+  const keyByCanonicalName = new Map<string, string>();
+  const apply = (source: NodeJS.ProcessEnv): void => {
+    for (const [key, value] of Object.entries(source)) {
+      if (typeof value !== "string") continue;
+      const canonicalName = key.toUpperCase();
+      const previousKey = keyByCanonicalName.get(canonicalName);
+      if (previousKey !== undefined && previousKey !== key) {
+        delete merged[previousKey];
+      }
+      merged[key] = value;
+      keyByCanonicalName.set(canonicalName, key);
+    }
+  };
+
+  apply(inheritedEnv);
+  apply(explicitEnv);
+  return merged;
 }
 
 // Stop both host-side bridges in one `allSettled`. This is the settlement
@@ -3857,6 +4038,10 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           // and custom agents already emit their own per-tool output and don't
           // benefit from doubling the log volume.
           verbose: prepared.acpxAgent === "claude",
+          // The engine passes a complete, sanitized launch environment. ACPX
+          // must not merge the Paperclip server's ambient environment back in
+          // when it spawns the provider child.
+          inheritProcessEnv: false,
           onAgentStderr: prepared.childStderrLogPath
             ? (chunk) => routeChildStderr(childStderrState, chunk)
             : undefined,

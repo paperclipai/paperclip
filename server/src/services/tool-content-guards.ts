@@ -54,6 +54,11 @@ export class ToolActionSigningSecretMissingError extends Error {
   }
 }
 
+// Creating an approval is a two-step insert/sign operation. Readers must allow
+// a short window for the creator to attach the signature before treating a null
+// signature as an abandoned, unapprovable request.
+export const TOOL_ACTION_REQUEST_SIGNING_GRACE_MS = 2 * 60 * 1000;
+
 export function resolveToolActionSigningSecret(env: ToolActionSigningSecretEnv = process.env as ToolActionSigningSecretEnv) {
   const secret = env.PAPERCLIP_TOOL_ACTION_SIGNING_SECRET?.trim();
   if (!secret) {

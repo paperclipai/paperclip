@@ -22,6 +22,10 @@ import { AGENT_ADAPTER_TYPES } from "@paperclipai/shared";
 import { teamCatalogApi } from "../api/teamCatalog";
 import { agentsApi } from "../api/agents";
 import { getAdapterLabel } from "../adapters/adapter-display-registry";
+import {
+  useAdapterRegistryLoaded,
+  useDisabledAdaptersSync,
+} from "../adapters/use-disabled-adapters";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useToastActions } from "../context/ToastContext";
@@ -112,6 +116,31 @@ import { GithubIcon } from "../components/icons/github-icon";
 // Matches design §11 breakpoints. Module-level so stories and the page agree.
 const DESKTOP_MIN = 1024;
 const MOBILE_MAX = 767;
+const TEAM_INSTALL_FALLBACK_ADAPTER_TYPE = "claude_local";
+const TEAM_INSTALL_FORBIDDEN_ADAPTER_TYPES = new Set(["process", "http"]);
+
+export function listTeamInstallAdapterTypes(
+  disabledTypes: Set<string>,
+  adapterRegistryLoaded: boolean,
+) {
+  return AGENT_ADAPTER_TYPES.filter(
+    (type) =>
+      !TEAM_INSTALL_FORBIDDEN_ADAPTER_TYPES.has(type) &&
+      !disabledTypes.has(type) &&
+      (type !== "paperclip_runner" || adapterRegistryLoaded),
+  );
+}
+
+export function resolveTeamInstallAdapterType(
+  requestedType: string,
+  selectableAdapterTypes: readonly string[],
+) {
+  if (selectableAdapterTypes.includes(requestedType)) return requestedType;
+  if (selectableAdapterTypes.includes(TEAM_INSTALL_FALLBACK_ADAPTER_TYPE)) {
+    return TEAM_INSTALL_FALLBACK_ADAPTER_TYPE;
+  }
+  return selectableAdapterTypes[0] ?? null;
+}
 
 function useMediaQuery(query: string): boolean {
   const [matches, setMatches] = useState(() =>
@@ -1051,6 +1080,12 @@ function TeamInstallerDialog({
   const steps = useMemo(() => computeSteps(team), [team]);
   const [stepIndex, setStepIndex] = useState(0);
   const [phase, setPhase] = useState<ApplyPhase>("form");
+  const disabledAdapterTypes = useDisabledAdaptersSync({ enabled: open });
+  const adapterRegistryLoaded = useAdapterRegistryLoaded({ enabled: open });
+  const selectableAdapterTypes = useMemo(
+    () => listTeamInstallAdapterTypes(disabledAdapterTypes, adapterRegistryLoaded),
+    [adapterRegistryLoaded, disabledAdapterTypes],
+  );
 
   // Step 1 — target manager
   const [targetManagerAgentId, setTargetManagerAgentId] = useState<string | null>(null);
@@ -1117,7 +1152,31 @@ function TeamInstallerDialog({
   const buildInstallOptions = () => {
     const overrides: Record<string, CompanyPortabilityAdapterOverride> = {};
     for (const [slug, adapterType] of Object.entries(adapterOverrides)) {
-      if (adapterType) overrides[slug] = { adapterType };
+      if (adapterType) {
+        const resolvedAdapterType = resolveTeamInstallAdapterType(
+          adapterType,
+          selectableAdapterTypes,
+        );
+        if (!resolvedAdapterType) {
+          throw new Error("Enable a legacy adapter before installing this team.");
+        }
+        overrides[slug] = {
+          adapterType: resolvedAdapterType,
+        };
+      }
+    }
+    for (const agent of previewResult?.portabilityPreview.manifest.agents ?? []) {
+      if (overrides[agent.slug]) continue;
+      const adapterType = resolveTeamInstallAdapterType(
+        agent.adapterType,
+        selectableAdapterTypes,
+      );
+      if (!adapterType) {
+        throw new Error("Enable a legacy adapter before installing this team.");
+      }
+      if (adapterType !== agent.adapterType) {
+        overrides[agent.slug] = { adapterType };
+      }
     }
     const enteredSecretValues = Object.fromEntries(
       Object.entries(secretValues).filter(([, value]) => value.trim().length > 0),
@@ -1186,7 +1245,16 @@ function TeamInstallerDialog({
   const missingRequiredSecretInputs = (previewResult?.portabilityPreview.envInputs ?? [])
     .filter((input) => input.requirement === "required" && (secretValues[envInputFormKey(input)] ?? "").trim().length === 0);
   const missingRequiredSecretCount = missingRequiredSecretInputs.length;
-  const installBlocked = hasErrors || missingRequiredSecretCount > 0;
+  const missingEnabledAdapter = Boolean(
+    previewResult?.portabilityPreview.manifest.agents.some(
+      (agent) =>
+        !resolveTeamInstallAdapterType(
+          adapterOverrides[agent.slug] ?? agent.adapterType,
+          selectableAdapterTypes,
+        ),
+    ),
+  );
+  const installBlocked = hasErrors || missingRequiredSecretCount > 0 || missingEnabledAdapter;
   const needsScriptsConfirm = team.trustLevel === "scripts_executables";
 
   function goNext() {
@@ -1278,6 +1346,7 @@ function TeamInstallerDialog({
                 nameOverrides={nameOverrides}
                 onRename={(slug, name) => setNameOverrides((cur) => ({ ...cur, [slug]: name }))}
                 adapterOverrides={adapterOverrides}
+                selectableAdapterTypes={selectableAdapterTypes}
                 onAdapterChange={(slug, adapterType) => setAdapterOverrides((cur) => ({ ...cur, [slug]: adapterType }))}
                 secretValues={secretValues}
                 visibleSecretKeys={visibleSecretKeys}
@@ -1327,6 +1396,11 @@ function TeamInstallerDialog({
           {currentStep === "preview" && !hasErrors && missingRequiredSecretCount > 0 && (
             <span className="text-xs text-rose-600 dark:text-rose-300">
               Required secrets missing: {missingRequiredSecretCount}
+            </span>
+          )}
+          {currentStep === "preview" && !hasErrors && missingRequiredSecretCount === 0 && missingEnabledAdapter && (
+            <span className="text-xs text-rose-600 dark:text-rose-300">
+              Enable a legacy adapter to install this team
             </span>
           )}
           {currentStep === "preview" ? (
@@ -1696,6 +1770,7 @@ export function StepPreview({
   nameOverrides,
   onRename,
   adapterOverrides,
+  selectableAdapterTypes,
   onAdapterChange,
   secretValues = {},
   visibleSecretKeys = {},
@@ -1712,6 +1787,7 @@ export function StepPreview({
   nameOverrides: Record<string, string>;
   onRename: (slug: string, name: string) => void;
   adapterOverrides: Record<string, string>;
+  selectableAdapterTypes: readonly string[];
   onAdapterChange: (slug: string, adapterType: string) => void;
   secretValues?: Record<string, string>;
   visibleSecretKeys?: Record<string, boolean>;
@@ -1839,22 +1915,31 @@ export function StepPreview({
       {manifestAgents.length > 0 && (
         <PreviewSection title={`Adapter selection · ${manifestAgents.length}`}>
           {manifestAgents.map((agent) => {
-            const selected = adapterOverrides[agent.slug] ?? agent.adapterType;
+            const selected = resolveTeamInstallAdapterType(
+              adapterOverrides[agent.slug] ?? agent.adapterType,
+              selectableAdapterTypes,
+            );
             return (
               <li key={agent.slug} className="flex items-center gap-2 px-3 py-2 text-sm">
                 <Cpu className="h-3.5 w-3.5 text-muted-foreground" />
                 <span className="min-w-0 truncate">{agent.name}</span>
                 <span className="font-mono text-(length:--text-micro) text-muted-foreground">{agent.slug}</span>
-                <Select value={selected} onValueChange={(v) => onAdapterChange(agent.slug, v)}>
-                  <SelectTrigger className="ml-auto h-8 w-48">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {AGENT_ADAPTER_TYPES.map((type) => (
-                      <SelectItem key={type} value={type}>{getAdapterLabel(type)}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                {selected ? (
+                  <Select value={selected} onValueChange={(v) => onAdapterChange(agent.slug, v)}>
+                    <SelectTrigger className="ml-auto h-8 w-48">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {selectableAdapterTypes.map((type) => (
+                        <SelectItem key={type} value={type}>{getAdapterLabel(type)}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                ) : (
+                  <span className="ml-auto text-xs text-rose-600 dark:text-rose-300">
+                    No enabled legacy adapter
+                  </span>
+                )}
               </li>
             );
           })}

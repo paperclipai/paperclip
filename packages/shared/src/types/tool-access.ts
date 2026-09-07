@@ -73,9 +73,9 @@ export type ToolConnectionOwnership = "platform_shared" | "platform_provisioned"
 export type ToolConnectionCredentialSource = "paperclip_vault" | "vercel_connect";
 export type ToolConnectionStatus = "draft" | "active" | "disabled" | "archived";
 export type ToolConnectionInstallTargetType = "company" | "agent";
-export type ConnectionGrantKind = "organization" | "user";
+export type ConnectionGrantKind = "organization" | "user" | "agent";
 export type ConnectionGrantStatus = "active" | "revoked" | "expired" | "needs_reauthorization";
-export type ToolConnectionCredentialPolicy = "shared" | "per_user" | "per_user_with_fallback";
+export type ToolConnectionCredentialPolicy = "shared" | "per_user" | "per_user_with_fallback" | "per_agent";
 export type ConnectionGrantMemberSubjectType = "user";
 export type ToolCredentialPlacement = "header" | "env" | "url";
 
@@ -199,19 +199,37 @@ export interface ConnectionGrant {
   connectionId: string;
   kind: ConnectionGrantKind;
   subjectUserId: string | null;
+  subjectAgentId?: string | null;
   providerTenant: {
     name?: string;
     externalId?: string;
     oauth?: {
       strategy?: string;
-      accessTokenExpiresAt?: string;
+      accessTokenExpiresAt?: string | null;
       scopes?: string[];
       tokenType?: string;
+      refreshTokenExpiresAt?: string;
       refreshedAt?: string;
       refreshLease?: {
         id?: string;
         expiresAt?: string;
       };
+    };
+    github?: {
+      userId: string;
+      login: string;
+      avatarUrl?: string;
+      installationCount: number;
+      repositoryCount: number;
+      repositorySelection: "all" | "selected" | "mixed" | "none";
+      installationIds: string[];
+      installationOwnerLogins: string[];
+      installationUrl?: string;
+      managementUrl?: string;
+      appSlug?: string;
+      lastAccessRefreshAt?: string;
+      lastWebhookAt?: string;
+      webhookHealth?: "pending" | "healthy" | "unhealthy";
     };
   } | null;
   credentialSecretRefs: ToolCredentialSecretRef[];
@@ -263,6 +281,8 @@ export interface ToolConnectionCapabilities {
  * authorization from membership roles or wait for a connection id.
  */
 export interface ToolConnectionCreateCapabilities {
+  canCreateOrganizationGrant: boolean;
+  organizationGrantReason: string | null;
   canSetCompanyInstall: boolean;
   companyInstallReason: string | null;
 }
@@ -374,6 +394,7 @@ export type ConnectionTokenSubject = { type: "app" } | { type: "user"; userId: s
 
 export const CONNECTION_RECOVERABLE_ERROR_CODES = [
   "user_authorization_required",
+  "agent_authorization_required",
   "organization_authorization_required",
   "grant_audience_denied",
   "grant_revoked",
@@ -1101,6 +1122,12 @@ export interface ToolAppConnectionActionSummary {
  */
 export type ToolOAuthClientRegistrationSource = "preconfigured" | "cimd" | "dcr" | "manual";
 
+/** Opaque managed-Cloud exchange; clients never treat the session as a URL. */
+export interface ToolOAuthHandoff {
+  kind: "paperclip_cloud";
+  session: string;
+}
+
 /**
  * What an unknown remote MCP endpoint told Paperclip it needs, so the wizard can
  * branch without re-probing. `manualClientRequired` means discovery succeeded but
@@ -1110,6 +1137,7 @@ export type ToolOAuthClientRegistrationSource = "preconfigured" | "cimd" | "dcr"
 export interface ConnectToolAppAuthChallenge {
   kind: "oauth";
   startUrl: string | null;
+  handoff?: ToolOAuthHandoff;
   issuer?: string | null;
   resource?: string | null;
   registrationSource?: ToolOAuthClientRegistrationSource | null;
@@ -1157,6 +1185,11 @@ export interface ToolOAuthStartResult {
   provider: string;
   authorizationUrl: string;
   expiresAt: string;
+  /**
+   * Opaque Paperclip Cloud authorization handoff. The board submits this only
+   * to its fixed same-origin Cloud endpoint; it is never treated as a URL.
+   */
+  handoff?: ToolOAuthHandoff;
   /** Canonical authorization-server issuer this run is bound to, when discovered. */
   issuer?: string | null;
   /** RFC 8707 resource indicator sent with the request. */
@@ -1573,11 +1606,15 @@ export interface ToolConnectionTestAgent {
   status: string;
   /** Zero-based depth in the company reporting tree; roots are highest-ranked. */
   orgDepth: number;
-  effectiveAccess: ToolConnectionAccessSummary;
 }
 
 export interface ToolConnectionTestAgentsResponse {
   agents: ToolConnectionTestAgent[];
+}
+
+/** Display summary for one selected Test-tab agent. */
+export interface ToolConnectionTestAgentAccessResponse {
+  access: ToolConnectionAccessSummary;
 }
 
 /** Result of `POST /tool-connections/:id/test-calls`. */
