@@ -71,6 +71,9 @@ preview tokens into this image. They remain per-run secret material.
 Provider CLI updates are manifest-only changes: repository CI owns the root
 lockfile. The image build resolves the complete workspace manifest graph before
 its frozen install, matching CI when a source commit precedes the lockfile bot.
+The complete resolved lockfile must match `PAPERCLIP_RUNNER_LOCK_SHA256` before
+package installation or lifecycle execution. Review and refresh that digest
+with source dependency changes; registry-time resolution drift fails closed.
 Keep one latest stable CLI installation per provider; refresh exact runtime
 versions and qualification digests together, never install a private older copy
 or download dependencies when a task starts.
