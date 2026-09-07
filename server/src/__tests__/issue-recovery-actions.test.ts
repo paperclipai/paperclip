@@ -1402,6 +1402,78 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     ))).toHaveLength(0);
   });
 
+
+  it("does not treat an existing receipt as success for a stale owner delivery", async () => {
+    const { companyId, sourceIssue } = await seedCompany();
+    const transitionAt = new Date(Date.now() + 120_000);
+    const actionA = "Repair the adapter startup configuration, then explicitly retry or reassign this issue.";
+    const actionB = "Review the recovery evidence, then explicitly retry, reassign, or resolve this issue.";
+    await db.update(issues).set({
+      status: "blocked",
+      responsibleUserId: "user-a",
+      unblockDescriptor: { owner: { userId: "user-a" }, action: actionA },
+      blockedTransitionAt: transitionAt,
+      blockedOwnerNotifiedAt: null,
+    }).where(eq(issues.id, sourceIssue.id));
+
+    const { blockedOwnerNotificationIdempotencyKey, deliverBlockedOwnerNotification } = await import("../services/routable-blocked.js");
+    const { deliverBlockedOwnerUserNotification } = await import("../services/recovery/service.js");
+    const issuesSvc = issueService(db);
+    const idempotencyKey = blockedOwnerNotificationIdempotencyKey({
+      issueId: sourceIssue.id,
+      blockedTransitionAt: transitionAt,
+    });
+
+    await deliverBlockedOwnerUserNotification({
+      db,
+      issuesSvc,
+      issue: { id: sourceIssue.id, companyId },
+      delivery: { userId: "user-a", action: actionA, idempotencyKey },
+      notifiedAt: new Date(),
+    });
+
+    await db.update(issues).set({
+      responsibleUserId: "user-b",
+      unblockDescriptor: { owner: { userId: "user-b" }, action: actionB },
+      blockedOwnerNotifiedAt: null,
+    }).where(eq(issues.id, sourceIssue.id));
+
+    await expect(deliverBlockedOwnerNotification({
+      issue: {
+        id: sourceIssue.id,
+        companyId,
+        status: "blocked",
+        unblockDescriptor: { owner: { userId: "user-a" }, action: actionA },
+        blockedTransitionAt: transitionAt,
+        blockedOwnerNotifiedAt: null,
+      },
+      deliverToUser: (delivery) => deliverBlockedOwnerUserNotification({
+        db,
+        issuesSvc,
+        issue: { id: sourceIssue.id, companyId },
+        delivery,
+        notifiedAt: new Date(),
+      }),
+      markNotified: async () => undefined,
+    })).resolves.toEqual({ delivered: false, reason: "delivery_failed" });
+
+    await expect(deliverBlockedOwnerUserNotification({
+      db,
+      issuesSvc,
+      issue: { id: sourceIssue.id, companyId },
+      delivery: { userId: "user-b", action: actionB, idempotencyKey },
+      notifiedAt: new Date(),
+    })).resolves.toMatchObject({ receiptId: expect.any(String) });
+
+    const receipts = await db.select().from(activityLog).where(and(
+      eq(activityLog.companyId, companyId),
+      eq(activityLog.entityId, sourceIssue.id),
+      eq(activityLog.action, "issue.blocked_owner_notification_delivered"),
+    ));
+    expect(receipts).toHaveLength(2);
+    expect(receipts.map((row) => (row.details as { recipientUserId?: string }).recipientUserId).sort()).toEqual(["user-a", "user-b"]);
+  });
+
   it("clears stale unblock ownership when an ownerless startup fault supersedes recovery on a blocked issue", async () => {
     const { companyId, coderId, sourceIssue } = await seedCompany();
     await db.update(issues).set({ responsibleUserId: "responsible-user" }).where(eq(issues.id, sourceIssue.id));

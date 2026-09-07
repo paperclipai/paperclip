@@ -317,7 +317,7 @@ export async function deliverBlockedOwnerUserNotification(input: {
     };
 
     const existingReceipt = await tx
-      .select({ id: activityLog.id })
+      .select({ id: activityLog.id, details: activityLog.details })
       .from(activityLog)
       .where(and(
         eq(activityLog.companyId, input.issue.companyId),
@@ -329,16 +329,19 @@ export async function deliverBlockedOwnerUserNotification(input: {
       .limit(1)
       .then((rows) => rows[0] ?? null);
     if (existingReceipt) {
-      if (
-        blockedOwnerDeliveryMatchesIssue({ issue: lockedDeliveryIssue, delivery: input.delivery }) &&
-        !lockedIssue.blockedOwnerNotifiedAt
-      ) {
-        await tx
-          .update(issues)
-          .set({ blockedOwnerNotifiedAt: input.notifiedAt, updatedAt: new Date() })
-          .where(eq(issues.id, input.issue.id));
+      if (!blockedOwnerDeliveryMatchesIssue({ issue: lockedDeliveryIssue, delivery: input.delivery })) {
+        throw new Error("blocked owner notification state no longer matches delivery target");
       }
-      return { receiptId: existingReceipt.id };
+      const receiptRecipientUserId = readNonEmptyString(parseObject(existingReceipt.details).recipientUserId);
+      if (receiptRecipientUserId === input.delivery.userId) {
+        if (!lockedIssue.blockedOwnerNotifiedAt) {
+          await tx
+            .update(issues)
+            .set({ blockedOwnerNotifiedAt: input.notifiedAt, updatedAt: new Date() })
+            .where(eq(issues.id, input.issue.id));
+        }
+        return { receiptId: existingReceipt.id };
+      }
     }
 
     if (lockedIssue.blockedOwnerNotifiedAt) {
