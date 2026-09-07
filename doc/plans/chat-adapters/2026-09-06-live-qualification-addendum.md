@@ -149,3 +149,125 @@ Do not describe any of the five providers as production-qualified until a fresh
 provider event reaches the persistent isolated instance and its provider UI,
 Paperclip task/comment/run, outbox state, reactions/actions, and terminal reply
 have all been checked together.
+
+## Resumed qualification — 2026-09-07 UTC
+
+This checkpoint supersedes the setup gates above without changing the historical
+observations or claiming a completed provider conversation.
+
+### GitHub
+
+- The App now has two registered private-key fingerprints. Neither private PEM
+  was available in the local Downloads directory, and GitHub's settings page
+  offered no download for the registered keys. No replacement key was generated
+  or existing key deleted by the agent in this resumed pass. The operator must
+  recover the original browser download or deliberately generate and retain a
+  replacement; the PEM must stay out of chat and logs.
+- The old temporary callback hostname no longer resolved. GitHub's delivery
+  detail explicitly reported a failure to connect to the host. The webhook-only
+  tunnel was replaced, the App callback was updated, and the setup ping was
+  redelivered once. Paperclip verified its signature at
+  `2026-09-07T01:33:42.242Z`. Delivery ID:
+  `193f08a6-aa5b-11f1-8d07-d6d11e41dcde`.
+- The public tunnel forwards only provider webhook POSTs; a public request to
+  `/api/health` returned 404. The local-trusted board API was not exposed.
+- The provider UI was checked directly: Issues and Pull requests are read/write,
+  Metadata is read-only, and only Issue comment and Pull request review comment
+  are selected. GitHub's automatic installation events need no checkbox.
+  A new integration regression accepts `/app.events` containing only the two
+  selectable events.
+- The App remains uninstalled. A signed ping proves webhook delivery and
+  signature verification only, not repository reach or an issue/PR round trip.
+
+### Discord
+
+- The user completed App creation. `Paperclip Maya E2E` now exists under
+  `eigenjoy` with App ID `1546330979860221952`, and its Bot settings are reachable.
+- Paperclip's draft has that Application ID and the requested Clawd server ID.
+  The generated bot-only installation link locks the server selection to
+  `1457808928258658549`; no unrelated server is targeted.
+- The installation flow requires a separate main-Discord login despite the
+  Developer Portal session. That login is open for the operator. Message Content
+  Intent, deliberate token generation, and server installation still require
+  completion. No native Discord message has been qualified in this pass.
+
+### Telegram credential incident and containment
+
+- The signed-in Telegram browser reached the official BotFather conversation
+  for the existing test bot `@MayaPaperclipQA0905Bot`.
+- The agent incorrectly copied a message's concatenated DOM text, appending two
+  timestamp digits to the token. Paperclip rejected the resulting setup request.
+  The HTTP failure logger then recorded the raw submitted credential object.
+  This was both an agent copy error and a real product credential-redaction bug.
+- The isolated live server was stopped, the form and in-memory copied value
+  cleared, and the credential object removed from the local test log. A
+  metadata-only scan of the relevant local logs found no remaining raw
+  credential objects or Telegram-token-shaped strings. This local cleanup does
+  not revoke the token or erase previously emitted diagnostic output.
+- The affected bot token must be rotated in BotFather before further live use.
+  No new token should be sent through chat or printed during qualification.
+- The fix redacts whole credential envelopes plus provider-specific camel/snake
+  case fields. It also redacts Telegram's reusable webhook-secret header on
+  successful requests. Secret-sensitive setup errors are replaced before local
+  logging, telemetry, and crash reporting; provider-controlled error names are
+  not trusted. Synthetic serialized HTTP regressions cover mounted API routes,
+  422/500 failures, setup-secret failures, and successful webhook headers.
+- The failure revealed another usability defect: the toast disappeared and left
+  no explanation in the form. Setup errors are now persistent, redact submitted
+  values, preserve masked inputs, and clear on successful retry. The deterministic
+  browser suite exercises this fail/retry path, not a real Telegram credential.
+- The safety fix was committed and pushed as `80eaf11ad`, then the isolated
+  instance was restarted on that commit. A deliberately invalid synthetic token
+  was submitted through the actual in-app browser form. Telegram rejected it,
+  the persistent error remained visible, and the input stayed masked. A
+  metadata-only check of the new server log confirmed the canary was absent and
+  the credential envelope was redacted. The synthetic value was then cleared.
+  This verifies the real failure path, not bot authentication or a conversation.
+
+### Cross-provider quality work
+
+- Long structured Telegram replies now preserve Markdown as a native `.md`
+  attachment when splitting would damage fences, lists, links, or other block
+  structure. Plain prose still uses readable, lossless chunks. Replacement of a
+  progress message and the attachment send use separate durable publication rows
+  with ordered handoff. This was committed and pushed as `0ebb90145`.
+- The Teams manifest now includes the required `webApplicationInfo` association
+  for resource-specific consent. This does not add SSO, delegated Graph access,
+  or a requirement to register an Entra Application ID URI. Live Teams still
+  needs an eligible Microsoft 365 tenant and administrative setup.
+- Slack still needs its existing app credentials connected to the persistent
+  draft and a fresh completed conversation. Historical generic completion text
+  is still treated as a failed quality observation, not release proof.
+
+### Final automated checkpoint for this resumed pass
+
+- Full chat integration: **242/242 passed**, no skips, on the fresh migrated
+  database `chat_adapters_test_20260907_synchronized_final`. This includes the
+  manually-created GitHub App fixture and structured Telegram reply transport.
+- An intermediate run passed 241 tests and failed one lifecycle-recovery
+  assertion. The fixture observed a processed row before its background drain
+  had released the conversation lease. It now waits for that actual lease
+  boundary before injecting the next transaction failure. Exact attempt/state
+  assertions and timeouts are unchanged; no production behavior was altered to
+  make the fixture pass. The final full run above includes that correction.
+- Focused publication, adapter, setup UI, error handling, and privacy checks:
+  **120 passed, 0 failed**. Four existing real-Sentry-SDK checks were skipped
+  because the SDK could not be loaded in this checkout. Mocked crash-sink input
+  and actual serialized HTTP canary tests ran and passed.
+- Deterministic provider browser flows: **5/5 passed**, including persistent
+  failure feedback, credential-safe retry, and the Teams consent manifest.
+  These mock provider success; they are not live provider qualification.
+- Shared, server, and UI TypeScript checks passed. UI production build passed
+  with the existing bundling warnings. Token gates and `git diff --check` passed;
+  `pnpm-lock.yaml` remains untouched.
+- Independent read-only privacy review confirmed the concrete credential
+  envelope, Telegram header, provider error-name, and HTTP response leaks were
+  covered. Review used synthetic canaries and inspected no real credential
+  stores. A pre-existing arbitrary credential absent from a submitted request
+  cannot be identified by exact-value matching in curated 4xx errors; provider
+  service error redaction remains the upstream boundary for those values.
+
+No provider is promoted to production-qualified by this checkpoint. The signed
+GitHub ping and real invalid-token error path are useful live evidence, but all
+five channels still need fresh completed, provider-visible conversations on the
+persistent fixture once the remaining credential and tenant gates are resolved.

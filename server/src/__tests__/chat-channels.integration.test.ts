@@ -2711,6 +2711,117 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     ]);
   });
 
+  it("accepts a manually created GitHub App when /app lists only selectable webhook events", async () => {
+    const fixture = await seedCompany();
+    const privateKey = generateKeyPairSync("rsa", { modulusLength: 2048 })
+      .privateKey.export({ type: "pkcs8", format: "pem" })
+      .toString();
+    const providerFetch = vi.fn(async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url === "https://api.github.com/app") {
+        return new Response(
+          JSON.stringify({
+            id: 991124,
+            slug: "maya-selectable-events",
+            name: "Maya Selectable Events",
+            owner: { login: "paperclipai" },
+            permissions: {
+              issues: "write",
+              metadata: "read",
+              pull_requests: "write",
+            },
+            events: ["issue_comment", "pull_request_review_comment"],
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      if (url === "https://api.github.com/app/installations?per_page=100") {
+        return new Response(
+          JSON.stringify([
+            {
+              id: 2468,
+              account: {
+                id: 1357,
+                login: "paperclipai",
+                type: "Organization",
+              },
+              permissions: {
+                issues: "write",
+                metadata: "read",
+                pull_requests: "write",
+              },
+              suspended_at: null,
+            },
+          ]),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      if (
+        url === "https://api.github.com/app/installations/2468/access_tokens"
+      ) {
+        return new Response(
+          JSON.stringify({ token: "selectable-events-installation-token" }),
+          { status: 201, headers: { "content-type": "application/json" } },
+        );
+      }
+      if (
+        url ===
+        "https://api.github.com/installation/repositories?per_page=100&page=1"
+      ) {
+        return new Response(
+          JSON.stringify({
+            repositories: [
+              {
+                id: 97531,
+                full_name: "paperclipai/paperclip",
+                html_url: "https://github.com/paperclipai/paperclip",
+                owner: { id: 1357, login: "paperclipai" },
+                private: false,
+              },
+            ],
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      throw new Error(`Unexpected provider request: ${url}`);
+    }) as typeof globalThis.fetch;
+    const { service } = createService(new FakeChatSdkRuntime(), providerFetch);
+    const endpoint = await service.create(
+      fixture.companyId,
+      { provider: "github", assignedAgentId: fixture.assignedAgentId },
+      "owner-user",
+    );
+    const { webhookSecret } = await service.generateSetupSecret(
+      endpoint.id,
+      "owner-user",
+    );
+    await recordGitHubWebhookVerification(
+      service,
+      endpoint.publicId,
+      webhookSecret,
+    );
+
+    await expect(
+      service.configure(
+        endpoint.id,
+        { action: "configure", credentials: { appId: "991124", privateKey } },
+        "owner-user",
+      ),
+    ).resolves.toMatchObject({
+      status: "verifying",
+      providerAccountId: "paperclipai",
+      botExternalId: "991124",
+      botUsername: "maya-selectable-events[bot]",
+    });
+    await expect(service.listResources(endpoint.id)).resolves.toEqual([
+      expect.objectContaining({
+        providerResourceId: "paperclipai/paperclip",
+        availability: "available",
+      }),
+    ]);
+    await service.shutdown();
+  });
+
   it("rejects over-scoped GitHub Apps while tolerating unavoidable lifecycle events", async () => {
     const fixture = await seedCompany();
     const privateKey = generateKeyPairSync("rsa", { modulusLength: 2048 })
@@ -28201,6 +28312,23 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
             ),
           ),
       ).resolves.toEqual([{ state: "processed" }]);
+    });
+    // The row becomes processed inside the mutation transaction, just before
+    // the conversation drain releases its endpoint/thread lease. Synchronize
+    // on that lease boundary so the one-shot transaction fault below belongs
+    // to this lifecycle attempt instead of racing the prior background drain.
+    await vi.waitFor(async () => {
+      await expect(
+        db
+          .select({ id: chatEndpointLeases.id })
+          .from(chatEndpointLeases)
+          .where(
+            and(
+              eq(chatEndpointLeases.endpointId, first.endpoint.id),
+              like(chatEndpointLeases.leaseKey, "inbound:%"),
+            ),
+          ),
+      ).resolves.toEqual([]);
     });
     if (!first.callbacks.onMessageUpdated)
       throw new Error("Slack lifecycle callback was not registered");
