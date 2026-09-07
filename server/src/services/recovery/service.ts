@@ -86,7 +86,7 @@ import {
   withRecoveryModelProfileHint,
 } from "./model-profile-hint.js";
 import { isAutomaticRecoverySuppressedByPauseHold } from "./pause-hold-guard.js";
-import { deliverBlockedOwnerNotification } from "../routable-blocked.js";
+import { blockedOwnerNotificationIdempotencyKey, deliverBlockedOwnerNotification } from "../routable-blocked.js";
 import {
   collectDispositionRepairSourceState,
   dispositionRepairDelayMs,
@@ -2666,7 +2666,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       // (for example the unresolved workspace base ref). A different ref is a
       // distinct blocker, so it must get a new recovery action and notify the
       // operator, not overwrite the active action of the prior ref.
-      supersedeOnIdentityChange: recoveryCause === "configuration_incomplete",
+      supersedeOnIdentityChange: recoveryCause === "configuration_incomplete" || recoveryCause === "startup_fault",
       preserveExistingOwner: true,
       kind: strandedRecoveryActionKind(recoveryCause),
       ownerType: isProviderQuotaWait ? "system" : "board",
@@ -3775,15 +3775,21 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     }
     const blockerIds = await existingUnresolvedBlockerIssueIds(input.issue.companyId, input.issue.id);
     const boardEscalation = recoveryCause !== "provider_quota";
+    const responsibleUserId = readNonEmptyString(input.issue.responsibleUserId);
     const unblockDescriptor = boardEscalation
-      ? {
-          owner: readNonEmptyString(input.issue.responsibleUserId)
-            ? { userId: readNonEmptyString(input.issue.responsibleUserId)! }
-            : "board" as const,
-          action: recoveryCause === "startup_fault"
-            ? "Repair the adapter startup configuration, then explicitly retry or reassign this issue."
-            : "Review the recovery evidence, then explicitly retry, reassign, or resolve this issue.",
-        }
+      ? responsibleUserId
+        ? {
+            owner: { userId: responsibleUserId },
+            action: recoveryCause === "startup_fault"
+              ? "Repair the adapter startup configuration, then explicitly retry or reassign this issue."
+              : "Review the recovery evidence, then explicitly retry, reassign, or resolve this issue.",
+          }
+        : recoveryCause === "startup_fault"
+          ? null
+          : {
+              owner: "board" as const,
+              action: "Review the recovery evidence, then explicitly retry, reassign, or resolve this issue.",
+            }
       : null;
     const updated = await issuesSvc.update(input.issue.id, {
       status: "blocked",
@@ -3795,10 +3801,41 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       await deliverBlockedOwnerNotification({
         issue: {
           ...updated,
+          companyId: updated.companyId,
           unblockDescriptor,
           blockedTransitionAt: updated.blockedTransitionAt ?? new Date(),
           blockedOwnerNotifiedAt: updated.blockedOwnerNotifiedAt ?? null,
           responsibleUserId: updated.responsibleUserId,
+        },
+        deliverToUser: async (delivery) => {
+          const existing = await db
+            .select({ id: activityLog.id })
+            .from(activityLog)
+            .where(and(
+              eq(activityLog.companyId, updated.companyId),
+              eq(activityLog.entityType, "issue"),
+              eq(activityLog.entityId, updated.id),
+              eq(activityLog.action, "issue.blocked_owner_notification_delivered"),
+              sql`${activityLog.details}->>'idempotencyKey' = ${delivery.idempotencyKey}`,
+            ))
+            .limit(1)
+            .then((rows) => rows[0] ?? null);
+          if (existing) return { receiptId: existing.id };
+          const activity = await logActivity(db, {
+            companyId: updated.companyId,
+            actorType: "system",
+            actorId: "blocked-owner-notification",
+            action: "issue.blocked_owner_notification_delivered",
+            entityType: "issue",
+            entityId: updated.id,
+            responsibleUserIdOverride: delivery.userId,
+            details: {
+              idempotencyKey: delivery.idempotencyKey,
+              recipientUserId: delivery.userId,
+              action: delivery.action,
+            },
+          });
+          return { receiptId: activity.id };
         },
         markNotified: async (blockedOwnerNotifiedAt) => {
           await issuesSvc.update(input.issue.id, { blockedOwnerNotifiedAt });

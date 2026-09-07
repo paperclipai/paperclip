@@ -16,6 +16,8 @@ describe("classifyAdapterStartupOutput", () => {
       exitCode: 0,
       timedOut: false,
       worktreeMode: true,
+      adapterType: "hermes",
+      effectiveConfigFingerprint: "cfg-a",
     });
     expect(result).toMatchObject({
       kind: "worktree_requires_git_repository",
@@ -35,6 +37,65 @@ describe("classifyAdapterStartupOutput", () => {
         response: "Here is the completed review summary.",
       }),
     ).toBeNull();
+  });
+
+  it("treats a short completed response as successful agent output", () => {
+    expect(
+      classifyAdapterStartupOutput({
+        stdout: "[hermes] Starting Hermes Agent (model=gpt-5)\nDone.",
+        stderr: "",
+        exitCode: 0,
+        timedOut: false,
+        response: "Done.",
+      }),
+    ).toBeNull();
+  });
+
+  it("does not classify agent prose that mentions a worktree diagnostic", () => {
+    expect(
+      classifyAdapterStartupOutput({
+        stdout: "I fixed the --worktree requires being inside a git repository error.",
+        stderr: "",
+        exitCode: 0,
+        timedOut: false,
+        sessionId: "valid-session",
+        response: "Fixed it.",
+      }),
+    ).toBeNull();
+  });
+
+  it("does not classify a genuine worktree diagnostic when agent output completed", () => {
+    expect(
+      classifyAdapterStartupOutput({
+        stdout: "x --worktree requires being inside a git repository",
+        stderr: "",
+        exitCode: 0,
+        timedOut: false,
+        sessionId: "valid-session",
+        response: "Recovered after fixing the repo checkout.",
+      }),
+    ).toBeNull();
+  });
+
+  it("changes the fingerprint when adapter or effective config identity changes", () => {
+    const diagnostic = "x --worktree requires being inside a git repository";
+    const first = classifyAdapterStartupOutput({
+      stdout: diagnostic,
+      stderr: "",
+      exitCode: 0,
+      timedOut: false,
+      adapterType: "hermes",
+      effectiveConfigFingerprint: "cfg-a",
+    });
+    const second = classifyAdapterStartupOutput({
+      stdout: diagnostic,
+      stderr: "",
+      exitCode: 0,
+      timedOut: false,
+      adapterType: "hermes",
+      effectiveConfigFingerprint: "cfg-b",
+    });
+    expect(first?.fingerprint).not.toBe(second?.fingerprint);
   });
 
   it("ignores warning-only stderr without treating it as a startup fault", () => {

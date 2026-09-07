@@ -27,6 +27,7 @@ import type {
   UsageSummary,
 } from "@paperclipai/adapter-utils";
 
+import { createHash } from "node:crypto";
 import {
   ADAPTER_STARTUP_FAULT_ERROR_CODE,
   classifyAdapterStartupOutput,
@@ -579,6 +580,15 @@ export async function execute(
     executionResult.costUsd = parsed.costUsd;
   }
 
+  const effectiveConfigFingerprint = createHash("sha256")
+    .update([
+      ctx.agent.adapterType,
+      cfgString(config.cwd) ?? "",
+      cfgString(config.model) ?? "",
+      worktreeMode ? "worktree" : "direct",
+    ].join("\0"))
+    .digest("hex")
+    .slice(0, 24);
   const startupFault = classifyAdapterStartupOutput({
     stdout: result.stdout || "",
     stderr: result.stderr || "",
@@ -587,6 +597,8 @@ export async function execute(
     sessionId: parsed.sessionId,
     response: parsed.response,
     worktreeMode,
+    adapterType: ctx.agent.adapterType,
+    effectiveConfigFingerprint,
   });
   if (startupFault) {
     executionResult.errorCode = ADAPTER_STARTUP_FAULT_ERROR_CODE;

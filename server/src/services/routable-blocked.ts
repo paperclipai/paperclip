@@ -2,8 +2,13 @@ import type { IssueUnblockDescriptor } from "@paperclipai/shared";
 
 export const ROUTABLE_BLOCKED_ROLLOUT_AT = new Date("2026-07-23T18:13:03.000Z");
 
+export type BlockedOwnerNotificationDeliveryResult =
+  | { delivered: true; reason: "user_notification_delivered"; receiptId: string }
+  | { delivered: false; reason: "not_applicable" | "owner_unresolved" | "agent_owner_requires_wakeup" | "delivery_failed" };
+
 type RoutableBlockedIssue = {
   id: string;
+  companyId?: string;
   status: string;
   unblockDescriptor?: IssueUnblockDescriptor | null;
   blockedTransitionAt?: Date | null;
@@ -15,6 +20,13 @@ type ProspectiveBlockedIssue = RoutableBlockedIssue & {
   blockedTransitionAt: Date;
 };
 
+export function blockedOwnerNotificationIdempotencyKey(input: {
+  issueId: string;
+  blockedTransitionAt: Date;
+}) {
+  return `blocked-owner-notification:${input.issueId}:${input.blockedTransitionAt.toISOString()}`;
+}
+
 export function isProspectiveBlockedTransition(issue: RoutableBlockedIssue): issue is ProspectiveBlockedIssue {
   return issue.status === "blocked" &&
     Boolean(issue.blockedTransitionAt && issue.blockedTransitionAt >= ROUTABLE_BLOCKED_ROLLOUT_AT);
@@ -25,20 +37,45 @@ export async function deliverBlockedOwnerNotification(input: {
     responsibleUserId?: string | null;
   };
   markNotified: (notifiedAt: Date) => Promise<unknown>;
+  deliverToUser?: (delivery: {
+    userId: string;
+    action: string;
+    idempotencyKey: string;
+  }) => Promise<{ receiptId: string }>;
   now?: () => Date;
-}) {
+}): Promise<BlockedOwnerNotificationDeliveryResult> {
   const { issue } = input;
   if (!isProspectiveBlockedTransition(issue) || !issue.unblockDescriptor || issue.blockedOwnerNotifiedAt) {
-    return { delivered: false as const, reason: "not_applicable" as const };
+    return { delivered: false, reason: "not_applicable" };
   }
 
   const owner = issue.unblockDescriptor.owner;
-  if (owner === "board" || (typeof owner === "object" && owner !== null && "userId" in owner)) {
-    await input.markNotified((input.now ?? (() => new Date()))());
-    return { delivered: true as const, reason: "board_or_user_descriptor_recorded" as const };
+  if (owner === "board") {
+    return { delivered: false, reason: "owner_unresolved" };
   }
 
-  return { delivered: false as const, reason: "agent_owner_requires_wakeup" as const };
+  if (typeof owner === "object" && owner !== null && "userId" in owner) {
+    if (!input.deliverToUser) {
+      return { delivered: false, reason: "delivery_failed" };
+    }
+    const idempotencyKey = blockedOwnerNotificationIdempotencyKey({
+      issueId: issue.id,
+      blockedTransitionAt: issue.blockedTransitionAt,
+    });
+    try {
+      const { receiptId } = await input.deliverToUser({
+        userId: owner.userId,
+        action: issue.unblockDescriptor.action,
+        idempotencyKey,
+      });
+      await input.markNotified((input.now ?? (() => new Date()))());
+      return { delivered: true, reason: "user_notification_delivered", receiptId };
+    } catch {
+      return { delivered: false, reason: "delivery_failed" };
+    }
+  }
+
+  return { delivered: false, reason: "agent_owner_requires_wakeup" };
 }
 
 export async function deliverAgentUnblockNotification(input: {

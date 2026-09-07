@@ -136,6 +136,7 @@ import {
 } from "../services/hot-restart.ts";
 import { secretService } from "../services/secrets.ts";
 import {
+  recoveryService,
   SUCCESSFUL_RUN_HANDOFF_EXHAUSTED_NOTICE_BODY,
   SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY,
   SUCCESSFUL_RUN_MISSING_STATE_REASON,
@@ -7940,6 +7941,122 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         noticeMetadataReferencesRecoveryAction(comment.metadata, recoveryAction!.id),
       ),
     ).toHaveLength(1);
+
+    const notificationReceipts = await db
+      .select()
+      .from(activityLog)
+      .where(and(
+        eq(activityLog.companyId, companyId),
+        eq(activityLog.entityId, issueId),
+        eq(activityLog.action, "issue.blocked_owner_notification_delivered"),
+      ));
+    expect(notificationReceipts).toHaveLength(1);
+
+    await Promise.all([
+      heartbeat.reconcileStrandedAssignedIssues(),
+      heartbeat.reconcileStrandedAssignedIssues(),
+      heartbeat.resumeQueuedRuns(),
+      heartbeat.resumeQueuedRuns(),
+    ]);
+
+    const restartedHeartbeat = heartbeatService(db);
+    for (let tick = 0; tick < 20; tick += 1) {
+      await restartedHeartbeat.reconcileStrandedAssignedIssues();
+      await restartedHeartbeat.resumeQueuedRuns();
+    }
+
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId))).toHaveLength(runsAfterTicks.length);
+    expect(await db.select().from(activityLog).where(and(
+      eq(activityLog.companyId, companyId),
+      eq(activityLog.entityId, issueId),
+      eq(activityLog.action, "issue.blocked_owner_notification_delivered"),
+    ))).toHaveLength(1);
   });
+
+  it("scopes startup-fault recovery actions by adapter/effective-config fingerprint", async () => {
+    const { companyId, agentId, issueId } = await seedQueuedIssueRunFixture();
+    const otherCompanyId = randomUUID();
+    const otherAgentId = randomUUID();
+    const otherIssueId = randomUUID();
+    await db.insert(companies).values({
+      id: otherCompanyId,
+      name: "Other Co",
+      issuePrefix: "OTH",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: otherAgentId,
+      companyId: otherCompanyId,
+      name: "Other Agent",
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: otherIssueId,
+      companyId: otherCompanyId,
+      title: "Unrelated issue",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: otherAgentId,
+      responsibleUserId: "other-user",
+      issueNumber: 1,
+      identifier: "OTH-1",
+    });
+
+    const fingerprintA = "startup_fault:v1:worktree_requires_git_repository:aaaaaaaaaaaaaaaaaaaaaaaa";
+    const fingerprintB = "startup_fault:v1:worktree_requires_git_repository:bbbbbbbbbbbbbbbbbbbbbbbb";
+    const makeRun = (fingerprint: string) => ({
+      id: randomUUID(),
+      agentId,
+      status: "failed",
+      errorCode: "adapter_startup_fault",
+      error: "x --worktree requires being inside a git repository",
+      contextSnapshot: { retryReason: "startup_fault_retry" },
+      livenessState: "failed",
+      resultJson: {
+        startupFault: {
+          kind: "worktree_requires_git_repository",
+          fingerprint,
+          diagnostic: "x --worktree requires being inside a git repository",
+        },
+      },
+    });
+
+    const recovery = recoveryService(db, { enqueueWakeup: vi.fn(async () => null) });
+    const [issueRow] = await db.select().from(issues).where(eq(issues.id, issueId));
+    await recovery.escalateStrandedAssignedIssue({
+      issue: issueRow!,
+      previousStatus: "in_progress",
+      latestRun: makeRun(fingerprintA) as any,
+      recoveryCause: "startup_fault",
+    });
+    await recovery.escalateStrandedAssignedIssue({
+      issue: issueRow!,
+      previousStatus: "in_progress",
+      latestRun: makeRun(fingerprintB) as any,
+      recoveryCause: "startup_fault",
+    });
+
+    const sourceActions = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(and(eq(issueRecoveryActions.companyId, companyId), eq(issueRecoveryActions.sourceIssueId, issueId)));
+    expect(sourceActions).toHaveLength(2);
+    expect(sourceActions.map((row) => row.fingerprint).sort()).toEqual([
+      expect.stringContaining(fingerprintA),
+      expect.stringContaining(fingerprintB),
+    ].sort());
+
+    const otherActions = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, otherIssueId));
+    expect(otherActions).toHaveLength(0);
+  });
+
 
 });

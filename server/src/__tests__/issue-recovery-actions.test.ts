@@ -1276,6 +1276,8 @@ describeEmbeddedPostgres("issue recovery actions", () => {
 
   it("deduplicates startup-fault recovery actions by the typed startup fingerprint", async () => {
     const { companyId, coderId, sourceIssue } = await seedCompany();
+    await db.update(issues).set({ responsibleUserId: "responsible-user" }).where(eq(issues.id, sourceIssue.id));
+    const [issueWithOwner] = await db.select().from(issues).where(eq(issues.id, sourceIssue.id));
     const enqueueWakeup = vi.fn(async () => null);
     const recovery = recoveryService(db, { enqueueWakeup });
     const startupFault = {
@@ -1296,13 +1298,13 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     const secondLatestRun = { ...firstLatestRun, id: randomUUID() };
 
     await recovery.escalateStrandedAssignedIssue({
-      issue: sourceIssue,
+      issue: issueWithOwner!,
       previousStatus: "in_progress",
       latestRun: firstLatestRun,
       recoveryCause: "startup_fault",
     });
     await recovery.escalateStrandedAssignedIssue({
-      issue: sourceIssue,
+      issue: issueWithOwner!,
       previousStatus: "in_progress",
       latestRun: secondLatestRun,
       recoveryCause: "startup_fault",
@@ -1322,10 +1324,21 @@ describeEmbeddedPostgres("issue recovery actions", () => {
 
     const updatedIssue = await db.select().from(issues).where(eq(issues.id, sourceIssue.id)).then((rows) => rows[0] ?? null);
     expect(updatedIssue?.unblockDescriptor).toMatchObject({
-      owner: "board",
+      owner: { userId: "responsible-user" },
       action: expect.stringContaining("adapter startup"),
     });
     expect(updatedIssue?.blockedOwnerNotifiedAt).toBeTruthy();
+
+    const notificationReceipts = await db
+      .select()
+      .from(activityLog)
+      .where(and(
+        eq(activityLog.companyId, companyId),
+        eq(activityLog.entityId, sourceIssue.id),
+        eq(activityLog.action, "issue.blocked_owner_notification_delivered"),
+      ));
+    expect(notificationReceipts).toHaveLength(1);
+    expect(notificationReceipts[0]?.responsibleUserId).toBe("responsible-user");
 
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, sourceIssue.id));
     const escalationComments = comments.filter((comment) =>
