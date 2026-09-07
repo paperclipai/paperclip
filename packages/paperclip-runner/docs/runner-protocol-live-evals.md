@@ -1,5 +1,84 @@
 # Direct live Runner protocol evals
 
+## One Evalbook presentation
+
+Every new report uses the canonical Evalbook grid and the existing Runner Lab
+chat viewer for attempt drill-downs. There is no plain-HTML attempt fallback.
+The grid, Latest, test-design, inventory and server-gate pages load the same
+built stylesheet and fonts as the chat viewer. The long-term S3 history index
+references that stylesheet inside an immutable campaign, so every page keeps
+the same dark theme. Static site styles live in
+`devtools/issue-thread/src/evalbook-site.css`, scoped to `.evalbook-site`;
+colors and typography come from the Runner Lab token layer.
+Missing recordings show a notice in the same viewer; missing viewer builds
+fail generation. Build with
+`pnpm --filter @paperclipai/paperclip-runner build:issue-thread` and provide
+`--viewer-root` or `PAPERCLIP_EVAL_VIEWER_ROOT` to the canonical Python renderer.
+
+The Actions artifact contains full evidence. S3 uses the same viewer with a
+closed public DTO: only isolated mock-run conversation text, scrubbed private
+references, named tool outcomes, and checks. Tool arguments/results, reasoning,
+provider identities, and company snapshots stay private. The public notice
+explains these redactions. An unverified isolation boundary yields no public
+conversation, not a guessed reconstruction.
+
+Public attempts use inert JSON and one shared viewer asset directory. The
+publisher verifies each shell and asset against the exact same-run viewer build,
+checks the public payload contract and local links, and rejects other scripts.
+The CSP prohibits network calls, forms and external resources. Supply
+`PAPERCLIP_RUNNER_PROTOCOL_EVAL_VIEWER_DIR` to the publisher. The workflow sends
+a viewer-only artifact to that job; raw attempts and provider secrets stay out.
+After publication succeeds, the publishing job writes **Open this run's
+Evalbook** and **All eval runs** links to the Actions summary. Its deployment
+URL also points to the exact immutable report, not to the downloadable ZIP.
+Failed publication does not advertise a successful deployment.
+
+Before uploading, the report job runs the actual built application in Chromium
+against representative passing, failing and missing-recording pages in both
+reports. It checks initial rendering, tool expansion, read-only controls,
+navigation, reload, a narrow viewport and the public no-API-request boundary.
+In full-evidence reports, a tool's **View in Evidence** link selects the Evidence
+tab and highlights its record, including when reopening that same record after
+switching tabs. The browser check exercises this cross-link too.
+Run the same check locally with
+`node packages/paperclip-runner/scripts/verify-runner-evalbook-viewer.mjs --report-root /path/to/report`.
+Add `--screenshots /path/to/proof` for visual evidence. Public screenshots are
+retained in the aggregate Actions artifact, not added to the public report's
+closed file allowlist.
+
+These screenshots are generated acceptance-test evidence from the scrubbed
+completed campaign, not a separate report design:
+
+![Passing chat replay with expanded tool evidence](images/evalbook-chat/passed.png)
+![Failed chat replay with visible assertions](images/evalbook-chat/failed.png)
+![Missing recording shown in the same viewer](images/evalbook-chat/missing-recording.png)
+
+### Refresh a completed report without calling models
+
+Download the aggregate Actions artifact, then:
+
+```sh
+node packages/paperclip-runner/scripts/refresh-runner-protocol-eval-report.mjs \
+  --source /path/to/downloaded-aggregate \
+  --evals-root /path/to/paperclip-evals \
+  --viewer-root packages/paperclip-runner/dist-issue-thread \
+  --output /path/to/new-refresh-directory \
+  --revision chat-v1
+```
+
+Publish the returned `reportRoot` with the normal history publisher. The new ID
+is `gha-RUN-ATTEMPT-report-chat-v1`. Original reports remain immutable; history
+adds a labeled refresh and retains the source campaign, original measurement
+timestamp, renderer digest, and `providerCalls: 0`. Scores and evaluated source
+revisions do not change. This is not a new model qualification run. Future live
+runs create chat reports automatically.
+Refreshes are ordered by their render time in the history list, but keep the
+original measurement timestamp and never replace the latest or latest-green
+qualification identities. The HTML history links each measurement to its newest
+presentation, while retaining every original bundle and listing refreshes separately.
+Refreshes also recover retry-inclusive estimated and provider-list costs from the
+retained attempt records. They never add another model-cost measurement.
+
 This is the provider-backed, one-turn protocol qualification layer in
 `paperclipai/paperclip-evals/evals/paperclip-runner`. It is intentionally
 separate from both the browser full-stack model E2E and the stress-derived
@@ -149,11 +228,11 @@ read-only Runner issue-thread attempt pages, and raw immutable run records.
 
 Public publishing uses a separate projection and a separate trusted OIDC job.
 The projection retains model/config identity, status, usage totals, and check
-outcomes but removes provider session identifiers, transcripts, semantic-tool
+outcomes and scrubbed mock conversation, but removes provider session identifiers, semantic-tool
 payloads, state revisions, traces, remote profile identities, and raw failure
 text. The same Evalbook `report` command renders that projection, so the public
-grid and test pages have the standard Evalbook layout. The publisher rejects
-scripts, remote resources, symlinks, unknown paths, broken links, raw session
+grid, test pages and chat viewer have the standard Evalbook layout. The publisher rejects
+untrusted scripts, remote resources, symlinks, unknown paths, broken links, raw session
 fields, and credential-shaped values.
 
 S3 publication is additive:
@@ -178,9 +257,27 @@ runner-protocol-evals/
 Campaign files use immutable cache headers and a digest manifest. Reusing a
 campaign ID with different bytes fails closed. Only the root history and
 pointer files are mutable, and the publisher never deletes objects. The root
-history retains at most 200 records, reserving one record for the latest green
-campaign when it would otherwise fall outside that window so its pointer stays
-valid.
+history retains **all** run records; it no longer drops entries after 200 campaigns.
+
+The history index includes:
+
+- Pass-rate and cost timelines, grouped by identical cell/model/driver membership
+  and eval-suite SHA. Different suites and subsets cannot silently share a baseline.
+- Regression and recovery lists against the previous matching run, linking to the
+  affected tests. Infrastructure failures stay distinct from behavior failures.
+- Estimated cost and provider-reported list cost, shown separately, never added.
+  New campaigns include all retained attempts (including retries). Backfilled old
+  campaigns with only final-cell usage are labeled **historical final attempts only**.
+  Missing usage is unknown, not zero; partial totals use `≥` and display coverage.
+- Exact Paperclip and eval-suite commit links (full SHA on hover), the source ref,
+  and the GitHub Actions run. These identify the code **evaluated**, not merely
+  the commit used to render an old report.
+- A separate report-refresh list, excluded from trend points and model-spend totals.
+
+`history.json` stores a versioned, derived `analytics` projection separately from
+immutable campaign records. The publisher backfills missing analytics from each
+original `campaign.json`; a refresh may enrich costs using retained raw attempts
+only when its source metadata and scores still match the original record.
 
 The publishing job uses dedicated `RUNNER_PROTOCOL_EVAL_HISTORY_*` variables
 when present and falls back to the existing Runner E2E history role, region,
