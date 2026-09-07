@@ -1,0 +1,6 @@
+title: Guides
+description: "Task-oriented \"how / where do I change X\" walkthroughs. Uses the `guide-page` template: goal, steps, relevant code, gotchas. Populated at `depth: standard` and rich at `exhaustive`; thin or empty at `tour`. Link the modules and flows each guide touches."
+tags:
+  - wiki
+  - guide
+  - how-to

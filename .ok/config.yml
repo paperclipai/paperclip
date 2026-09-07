@@ -1,0 +1,59 @@
+# yaml-language-server: $schema=https://unpkg.com/@inkeep/open-knowledge@latest/dist/schemas/v0/config.project.schema.json
+# OpenKnowledge — project configuration
+#
+# This file overrides built-in defaults for this project. Every key below
+# is commented out and shows its current default value. Uncomment any key
+# to override it.
+#
+# Precedence (lowest -> highest):
+#   Built-in defaults
+#     -> ~/.ok/global.yml         (user defaults)
+#     -> ./.ok/config.yml         (this file)
+#
+# Schema reference: packages/core/src/config/schema.ts
+
+
+# --- Content ---------------------------------------------------------------
+# dir: where the CRDT editor reads/writes documents. Relative to the project
+# root (the directory containing .ok/), NOT to this file.
+#
+# Path exclusions live in .okignore (gitignore syntax) at the project root,
+# with nested .okignore files honored at any folder depth.
+#
+content:
+  dir: knowledge
+
+
+# --- Suggested lifecycle (optional pattern) --------------------------------
+# Projects that want an explicit knowledge-maturation flow can organize as
+# three tiers *relative to the content directory* — create the subfolders
+# only when you need them:
+#
+#   1. external-sources/  — raw content fetched from URLs, PDFs. No analysis,
+#                           just preservation. Use the `ingest` MCP tool.
+#   2. research/          — analysis and synthesis. Provisional findings,
+#                           trade-offs, open questions. Use the `research`
+#                           MCP tool.
+#   3. articles/          — canonical knowledge. Use the `consolidate` MCP
+#                           tool to promote research -> articles once
+#                           decisions are made.
+#
+# This is a pattern, not a requirement. Projects with existing layouts
+# (`specs/`, `reports/`, `docs/`, etc.) should use those; the lifecycle
+# exists as mental scaffolding, not as enforced filesystem structure.
+
+
+# --- Server ----------------------------------------------------------------
+# Bind host: `--bind` flag, `HOST` env var, or the `server.bind` config key
+# (default: 127.0.0.1; `0.0.0.0` binds LAN-visible and also needs
+# `server.allowExternal`). Port: `--port` flag, `PORT` env var, or
+# `server.port` (auto-allocated if unset). See the Configuration reference.
+
+
+# --- Appearance ------------------------------------------------------------
+# Theme for the chrome. Defaults UNSET so the existing localStorage cache
+# (`ok-theme-v1`) keeps powering FOUC-free first paint until you
+# explicitly write here.
+#
+# appearance:
+#   theme: system            # 'light' | 'dark' | 'system'

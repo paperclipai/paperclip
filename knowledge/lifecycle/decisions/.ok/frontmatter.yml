@@ -1,0 +1,6 @@
+title: Decisions
+description: "Architecture Decision Records (MADR / Nygard shape), frozen once accepted. One file per decision (`NNNN-title.md`); a new decision links back via `Supersedes:` to the one it replaces."
+tags:
+  - decision
+  - adr
+  - frozen

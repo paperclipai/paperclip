@@ -1,0 +1,6 @@
+title: External Sources
+description: Raw sources saved verbatim — the fetched text of URLs, extracted PDFs, and copied files, each with the original URL and access date in frontmatter. Produced by `ingest`. Immutable after capture; no analysis here (that goes in `research/`).
+tags:
+  - source
+  - immutable
+  - layer-ingest

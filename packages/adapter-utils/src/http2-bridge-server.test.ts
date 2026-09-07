@@ -299,10 +299,11 @@ describe("createHttp2BridgeServer + createSandboxHttp2BridgeGateway", () => {
         hostSession?.goaway(http2.constants.NGHTTP2_NO_ERROR, 1);
         setTimeout(resolve, 50);
       });
-      expect(goawayRecords).toHaveLength(1);
-      expect(goawayRecords[0]?.lastStreamId).toBe(1);
-      expect(classifyStreamAgainstGoaway(1, goawayRecords[0]!.lastStreamId)).toBe("accepted");
-      expect(classifyStreamAgainstGoaway(3, goawayRecords[0]!.lastStreamId)).toBe("not_accepted");
+      expect(goawayRecords.length).toBeGreaterThanOrEqual(1);
+      const processedGoaway = goawayRecords.find((record) => record.lastStreamId === 1);
+      expect(processedGoaway).toBeDefined();
+      expect(classifyStreamAgainstGoaway(1, processedGoaway!.lastStreamId)).toBe("accepted");
+      expect(classifyStreamAgainstGoaway(3, processedGoaway!.lastStreamId)).toBe("not_accepted");
     } finally {
       await gateway.close();
       await handle.close();

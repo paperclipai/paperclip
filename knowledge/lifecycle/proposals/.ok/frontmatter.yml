@@ -1,0 +1,6 @@
+title: Proposals
+description: In-flight design proposals (RFC-shape), one file per proposal (`0001-feature-name.md`). Status flows `draft → fcp → accepted/rejected`; accepted proposals graduate to a record in `decisions/`.
+tags:
+  - proposal
+  - design
+  - in-flight

@@ -1,0 +1,12 @@
+# .okignore — paths to exclude from the OpenKnowledge document index.
+# Uses gitignore syntax (parsed by the `ignore` npm library), evaluated
+# alongside .gitignore in a single ignore-lib instance.
+#
+# Patterns combine with .gitignore: an entry here adds to exclusions, and
+# a leading `!` re-includes a file that .gitignore excluded.
+# Nested .okignore files at any folder depth are honored (mirrors .gitignore).
+#
+# Examples:
+#   drafts/        # exclude a directory
+#   *.draft.md     # exclude files matching a pattern
+#   !keep.md       # re-include a file .gitignore excluded

@@ -1,0 +1,6 @@
+title: Articles
+description: "Canonical knowledge, committed after a team decision and stored as OKF `status: stable`. The source of truth for the domain; carries a `supersedes:` chain back to the `research/` docs it replaces."
+tags:
+  - article
+  - canonical
+  - layer-consolidate

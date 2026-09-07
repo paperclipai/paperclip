@@ -1,0 +1,65 @@
+{
+  "schema": 1,
+  "skills": {
+    "knowledge-base": {
+      "source": "inkeep/open-knowledge-skills",
+      "skill": "knowledge-base",
+      "contentHash": "1a005dbc883ba8ba4df37e43ea307bcb95b6db7eede014cb4786aa500d6f24d1",
+      "importedAt": "2026-09-05T15:46:15.386Z"
+    },
+    "consolidate-notes": {
+      "source": "inkeep/open-knowledge-skills",
+      "skill": "consolidate-notes",
+      "contentHash": "2992aacb38e8862685c2d9eeb00431823c6c23cd3fff328d484e5775eeec50cc",
+      "importedAt": "2026-09-05T15:46:15.388Z"
+    },
+    "research-with-sources": {
+      "source": "inkeep/open-knowledge-skills",
+      "skill": "research-with-sources",
+      "contentHash": "38c5b06ccae312ad25527eda5bc76efd7cc23cf9f66019dc6ee832adbff9f813",
+      "importedAt": "2026-09-05T15:46:15.390Z"
+    },
+    "software-lifecycle": {
+      "source": "inkeep/open-knowledge-skills",
+      "skill": "software-lifecycle",
+      "contentHash": "22097a0badd9b1f7667052a94f7f4026c52d053aed825d88cc6e848255bc4595",
+      "importedAt": "2026-09-05T15:46:16.083Z"
+    },
+    "frame-a-proposal": {
+      "source": "inkeep/open-knowledge-skills",
+      "skill": "frame-a-proposal",
+      "contentHash": "71a7ed9c0e3d1af2444ca2e1f39189f4f424df56a142ff6089d57717fb2dd30a",
+      "importedAt": "2026-09-05T15:46:16.085Z"
+    },
+    "record-a-decision": {
+      "source": "inkeep/open-knowledge-skills",
+      "skill": "record-a-decision",
+      "contentHash": "4f8f0be019d229f587cfb033b350a81b0ea0231f6843855fa325394397e688ac",
+      "importedAt": "2026-09-05T15:46:16.087Z"
+    },
+    "review-a-design": {
+      "source": "inkeep/open-knowledge-skills",
+      "skill": "review-a-design",
+      "contentHash": "531c8049756994232abe8dff50cc1387e9a0246098cbebde124f217d21af7996",
+      "importedAt": "2026-09-05T15:46:16.088Z"
+    },
+    "write-a-postmortem": {
+      "source": "inkeep/open-knowledge-skills",
+      "skill": "write-a-postmortem",
+      "contentHash": "d37a3b36284e140de6696ab58b25dfd6e705688a1676d645e3cf26ca6e7e3cd0",
+      "importedAt": "2026-09-05T15:46:16.089Z"
+    },
+    "write-a-spec": {
+      "source": "inkeep/open-knowledge-skills",
+      "skill": "write-a-spec",
+      "contentHash": "aed65be402b22ef57c4a8ef0be0b2eafe51c5eebaf4dc3f93f6dd9303e03ad38",
+      "importedAt": "2026-09-05T15:46:16.091Z"
+    },
+    "codebase-wiki": {
+      "source": "inkeep/open-knowledge-skills",
+      "skill": "codebase-wiki",
+      "contentHash": "7c6ce1a797a95b0d74b0964fec9ca1e31961be5bd2544ea153dd320990c4906e",
+      "importedAt": "2026-09-05T15:46:16.857Z"
+    }
+  }
+}
