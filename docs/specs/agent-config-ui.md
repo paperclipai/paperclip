@@ -1,5 +1,17 @@
 # Agent Configuration & Activity UI
 
+## Current implementation (2026-09-07)
+
+The shipped new-agent flow starts from **Agents → New Agent**. A small dialog collects a name and an enabled adapter, then opens a setup page with numbered navigation. Claude and Codex have a subscription/API-key connection step. Configuration provides a searchable, free-text model selector and an environment selector; additional settings remain on the full agent page. **Finish setup** submits the existing governed hire request. Confirmation links to configuration and opens a new task with the created agent assigned; agents awaiting approval cannot be assigned work yet.
+
+Paperclip Runner offers native Codex (app server), Claude via ACPX, and OpenCode. The selected provider is passed through the existing runner configuration builder. Codex's default is the adapter catalog default. OpenCode and Pi require a provider/model ID; OpenRouter uses `openrouter/<provider>/<model>` and `OPENROUTER_API_KEY`. Keys entered in setup are saved through the user-secret API, and an existing organization secret can also be bound. Agent configuration and revisions contain references, never the entered key.
+
+**Run test** uses the chosen environment and current configuration. For Claude/Codex readiness checks that do not make a model request, setup also invokes the adapter's existing CLI hello probe with the same environment and credentials. Runtime failures, provider failures, warnings, and in-progress tests use the same compact result card in setup and full configuration. Warnings remain distinguishable from blocking failures.
+
+The full configuration page retains the contextual navigation and existing instruction-file editor, skills, tools, permissions, API keys, and revision behavior. **Secrets & variables** groups environment bindings with API secret-access grants. Its page-level Save/Discard actions include editor-local environment drafts. Activity, runs, costs, and budgets link to the company audit views scoped to the agent.
+
+The sections below are the original design reference; the implementation summary above supersedes their creation-dialog layout.
+
 ## Context
 
 Agents are the employees of a Paperclip company. Each agent has an adapter type (`claude_local`, `codex_local`, `process`, `http`) that determines how it runs, a position in the org chart (who it reports to), a heartbeat policy (how/when it wakes up), and a budget. The UI at `/agents` needs to support creating and configuring agents, viewing their org hierarchy, and inspecting what they've been doing -- their run history, live logs, and accumulated costs.
@@ -284,3 +296,8 @@ All endpoints already exist. No new server work needed for V1.
 9. **Properties panel updates** -- session ID, last error
 
 Steps 1-5 are the core. Steps 6-9 are polish.
+
+Native ACPX connection tests reject unsupported local platforms before a host CLI
+login can incorrectly mark the runner connected. The existing verified Claude
+ACPX runtime requires Linux x64; remote environments are evaluated independently
+of the control-plane host platform.

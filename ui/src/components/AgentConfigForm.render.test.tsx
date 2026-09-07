@@ -262,6 +262,11 @@ async function renderForm(
   options: {
     showAdapterTestEnvironmentButton?: boolean;
     content?: "configuration" | "secrets";
+    environmentVariablesPlacement?: "configuration" | "secrets";
+    hideInlineSave?: boolean;
+    onDirtyChange?: (dirty: boolean) => void;
+    onSaveActionChange?: (save: (() => void) | null) => void;
+    onCancelActionChange?: (cancel: (() => void) | null) => void;
   } = {},
 ) {
   mockEnvironmentsApi.list.mockResolvedValue(environments);
@@ -288,6 +293,11 @@ async function renderForm(
               onSave={onSave}
               hidePromptTemplate
               content={options.content}
+              environmentVariablesPlacement={options.environmentVariablesPlacement}
+              hideInlineSave={options.hideInlineSave}
+              onDirtyChange={options.onDirtyChange}
+              onSaveActionChange={options.onSaveActionChange}
+              onCancelActionChange={options.onCancelActionChange}
               showAdapterTypeField={false}
               showAdapterTestEnvironmentButton={options.showAdapterTestEnvironmentButton ?? false}
             />
@@ -727,6 +737,51 @@ describe("AgentConfigForm environment selector", () => {
     roots = [];
     document.body.innerHTML = "";
     vi.clearAllMocks();
+  });
+
+  it("promotes environment drafts through the page Save action and discards them through the page Discard action", async () => {
+    const dirty = vi.fn();
+    let save: (() => void) | null = null;
+    let discard: (() => void) | null = null;
+    const result = await renderForm([], {}, {
+      content: "secrets", environmentVariablesPlacement: "secrets", hideInlineSave: true,
+      onDirtyChange: dirty,
+      onSaveActionChange: action => { save = action; },
+      onCancelActionChange: action => { discard = action; },
+    });
+    roots.push(result.root);
+    const add = [...result.container.querySelectorAll("button")].find(button => button.textContent?.trim() === "Add variable")!;
+    await act(async () => add.click());
+    await act(async () => {
+      setInputValue(result.container.querySelector<HTMLInputElement>('input[aria-label="Variable name"]')!, "ONBOARDING_SMOKE");
+      setInputValue(result.container.querySelector<HTMLInputElement>('input[aria-label="Variable value"]')!, "true");
+    });
+    await flushReact();
+    expect(dirty).toHaveBeenLastCalledWith(true);
+    expect([...result.container.querySelectorAll("button")].some(button => button.textContent?.trim() === "Save")).toBe(false);
+    await act(async () => { await save?.(); });
+    expect(result.onSave).toHaveBeenCalledWith(expect.objectContaining({ adapterConfig: expect.objectContaining({ env: { ONBOARDING_SMOKE: { type: "plain", value: "true" } } }) }));
+    await act(async () => discard?.());
+    await flushReact();
+    expect(dirty).toHaveBeenLastCalledWith(false);
+    expect(result.container.querySelector('input[aria-label="Variable name"]')).toBeNull();
+  });
+
+  it("reads and saves Pi thinking effort using the Pi runtime key", async () => {
+    const result = await renderForm([], { adapterType: "pi_local", adapterConfig: { model: "openrouter/anthropic/claude-sonnet-4.6", thinking: "high" } });
+    roots.push(result.root);
+    const effort = [...result.container.querySelectorAll("button")].find(button => button.textContent?.trim() === "high")!;
+    expect(effort).toBeTruthy();
+    await act(async () => effort.click());
+    await flushReact();
+    const low = [...document.querySelectorAll("button")].find(button => button.textContent?.trim() === "lowlow")!;
+    expect(low).toBeTruthy();
+    await act(async () => low.click());
+    await flushReact();
+    const save = [...result.container.querySelectorAll("button")].find(button => button.textContent?.trim() === "Save")!;
+    await act(async () => save.click());
+    expect(result.onSave).toHaveBeenCalledWith(expect.objectContaining({ adapterConfig: expect.objectContaining({ thinking: "low" }) }));
+    expect(result.onSave.mock.calls[0][0].adapterConfig.effort).toBeUndefined();
   });
 
   it("hides the environment override when Local is the only configured environment", async () => {

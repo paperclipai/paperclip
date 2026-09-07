@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { assertValidAdapterLoginCapability } from "@paperclipai/adapter-utils";
 import { listServerAdapters, requireServerAdapter } from "./registry.js";
 import { BUILTIN_ADAPTER_TYPES } from "./builtin-adapter-types.js";
@@ -77,5 +77,42 @@ describe("built-in runtime connection tool delivery", () => {
 
   it.each([...expectedStrategies])("delivers %s runtime tools through %s", (type, strategy) => {
     expect(requireServerAdapter(type).runtimeToolDelivery).toBe(strategy);
+  });
+});
+
+
+describe("native ACPX environment checks", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  const context = {
+    companyId: "company-test",
+    adapterType: "paperclip_runner",
+    config: { provider: "acpx", acpxAgent: "claude", model: "claude-sonnet-5" },
+  };
+
+  it("reports unsupported local platforms before a successful CLI login can mask them", async () => {
+    vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    const result = await requireServerAdapter("paperclip_runner").testEnvironment!(context);
+    expect(result.status).toBe("fail");
+    expect(result.checks).toEqual([expect.objectContaining({
+      code: "acpx_runtime_platform_unsupported",
+      level: "error",
+    })]);
+  });
+
+  it("keeps the qualified Linux x64 profile available", async () => {
+    vi.spyOn(process, "platform", "get").mockReturnValue("linux");
+    vi.spyOn(process, "arch", "get").mockReturnValue("x64");
+    const result = await requireServerAdapter("paperclip_runner").testEnvironment!(context);
+    expect(result.status).toBe("pass");
+  });
+
+  it("does not use the host platform to reject a remote environment", async () => {
+    vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    const result = await requireServerAdapter("paperclip_runner").testEnvironment!({
+      ...context,
+      executionTarget: { kind: "remote", transport: "sandbox", remoteCwd: "/workspace" },
+    });
+    expect(result.status).toBe("pass");
   });
 });

@@ -403,6 +403,24 @@ const paperclipRunnerAdapter: ServerAdapterModule = {
       };
     }
     if (profile.provider === "acpx") {
+      // The pinned ACPX executables are qualified for Linux x64. A host CLI
+      // login probe can succeed on macOS even though runner admission cannot.
+      if (
+        context.executionTarget?.kind !== "remote" &&
+        (process.platform !== "linux" || process.arch !== "x64")
+      ) {
+        return {
+          adapterType: "paperclip_runner",
+          status: "fail" as const,
+          testedAt: new Date().toISOString(),
+          checks: [{
+            code: "acpx_runtime_platform_unsupported",
+            level: "error" as const,
+            message: `The native ACPX ${profile.acpxAgent} runner requires a Linux x64 environment.`,
+            hint: `Select a Linux x64 environment, or use the regular ${profile.acpxAgent === "claude" ? "Claude Code" : "Codex"} adapter on this machine.`,
+          }],
+        };
+      }
       return {
         adapterType: "paperclip_runner",
         status: "pass" as const,
