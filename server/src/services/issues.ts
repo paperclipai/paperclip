@@ -1531,8 +1531,17 @@ async function getWorkspaceInheritanceLentProjectId(
  * reparent does in `lockIssueAncestryForAuthorization`; the retry re-resolves
  * and re-authorizes against P.
  *
- * A source that still lends nothing is not a disagreement: that is the whole
- * resolve-to-none case, where the pinned project came from inference.
+ * A source that lends nothing now is not a disagreement, whichever way the
+ * route reached the pin. There is no current answer to adopt and none to
+ * outrank, and the pinned project is one this request's assignment-scope and
+ * source-trust decisions already evaluated — so keeping it stamps nothing
+ * unauthorized, and a child holding a project its source has since dropped is
+ * an ordinary state anyway: an issue's project does not cascade to its
+ * children when it changes. Aborting here would also abort the resolve-to-none
+ * case this whole change exists for, because the two arrive identical:
+ * `pinnedProjectResolvedFromSource` records only that the request named no
+ * project of its own, so an inferred pin and a source-read pin whose source
+ * has since been cleared are the same input.
  */
 function assertPinnedSourceProjectUnchanged(
   pinnedProjectId: string | null,

@@ -1337,6 +1337,36 @@ describeEmbeddedPostgres("issue create project inference", () => {
     expect(issue.projectId).toBe(inferred.id);
   });
 
+  it("keeps a pinned resolution the source dropped after the route decided", async () => {
+    // The mirror of the aborts above, and deliberately not one of them. A
+    // source that lends nothing has no current answer to adopt and none to
+    // outrank, and the pinned project is the one this request's
+    // assignment-scope and source-trust decisions were made against — keeping
+    // it stamps nothing unauthorized, and a child whose source has since
+    // dropped its project is an ordinary state regardless (a project change
+    // does not cascade to children). The service also cannot tell this apart
+    // from an inferred pin: the input here is identical to the resolve-to-none
+    // case above, so aborting it would abort that one too.
+    const companyId = await seedCompany();
+    const project = await seedProject(companyId, "actual", {
+      repoUrl: "https://github.com/zannis/actual",
+      cwd: "/repos/actual",
+    });
+    const parent = await seedIssue(companyId, null, "Parent whose project was cleared");
+
+    const issue = await issueService(db).create(companyId, {
+      title: "Child pinned against the project the parent held",
+      status: "todo",
+      priority: "medium",
+      parentId: parent.id,
+      projectId: project.id,
+      pinProjectId: true,
+      pinnedProjectResolvedFromSource: true,
+    });
+
+    expect(issue.projectId).toBe(project.id);
+  });
+
   it("keeps a cross-project child whose project the request named itself", async () => {
     // A request carrying its own `projectId` never read the parent, so a
     // parent in another project is a deliberate cross-project create rather
