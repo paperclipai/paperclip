@@ -639,10 +639,25 @@ describe("refreshRemoteTrackingBaseRef git auth", () => {
       env: { GIT_TERMINAL_PROMPT: "0" },
       source: "company_secret",
       secretName: "GH_TOKEN",
+      providerLabel: "GitHub",
     }));
     expect(warnings).toHaveLength(1);
     expect(warnings[0]).toContain("Could not refresh base ref origin/master");
     expect(warnings[0]).toContain("the GH_TOKEN company-secret GitHub credential");
+  });
+
+  it("attributes a failed authenticated fetch to a GitLab credential when that provider was used", async () => {
+    const { repoRoot } = await createClonedRepoWithRemote();
+    await runGit(repoRoot, ["remote", "set-url", "origin", path.join(os.tmpdir(), "paperclip-missing-remote", "repo.git")]);
+    const warnings = await refreshRemoteTrackingBaseRef(repoRoot, "origin/master", async () => ({
+      configArgs: [],
+      env: { GIT_TERMINAL_PROMPT: "0" },
+      source: "company_secret",
+      secretName: "GITLAB_TOKEN",
+      providerLabel: "GitLab",
+    }));
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("the GITLAB_TOKEN company-secret GitLab credential");
   });
 
   it("keeps the unauthenticated failure warning credential-free without a provider", async () => {

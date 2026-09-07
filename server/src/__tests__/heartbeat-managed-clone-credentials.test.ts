@@ -82,6 +82,8 @@ describe("ensureManagedProjectWorkspace clone credentials", () => {
       env: { [GIT_CREDENTIAL_TOKEN_ENV_KEY]: "token", GIT_TERMINAL_PROMPT: "0" },
       source: "company_secret" as const,
       secretName: "GH_TOKEN",
+      providerId: "github" as const,
+      providerLabel: "GitHub",
     }));
     const error = await ensureManagedProjectWorkspace({
       companyId: "company-authfail",
@@ -184,6 +186,7 @@ describe("ensureManagedProjectWorkspace clone credentials", () => {
       token: "tok",
       source: "company_secret",
       secretName: "GITHUB_TOKEN",
+      providerId: "github",
     });
     const cloneEnv = {
       ...sanitizeRuntimeServiceBaseEnv({ ...process.env, [GIT_CREDENTIAL_TOKEN_ENV_KEY]: "stale" }),

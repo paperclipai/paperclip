@@ -142,6 +142,8 @@ export type GitRemoteAuthInvocation = {
   env: Record<string, string>;
   source?: string;
   secretName?: string | null;
+  /** Human-readable host name for auth-failure warnings, e.g. "GitHub" or "GitLab". */
+  providerLabel?: string | null;
 };
 
 export type GitRemoteAuthProvider = (remoteUrl: string) => Promise<GitRemoteAuthInvocation | null>;
@@ -991,8 +993,9 @@ export async function refreshRemoteTrackingBaseRef(
     const message = rawMessage
       .replace(/([a-z][a-z0-9+.-]*:\/\/)[^/@\s]+@/gi, "$1***@")
       .replace(/([a-z][a-z0-9+.-]*:\/\/[^\s"'?]*)\?[^\s"']*/gi, "$1?***");
+    const providerLabel = auth?.providerLabel ?? "git";
     const authNote = auth
-      ? ` The fetch authenticated with ${auth.secretName ? `the ${auth.secretName} company-secret GitHub credential` : "the server-environment GitHub credential"}, which may have been rejected.`
+      ? ` The fetch authenticated with ${auth.secretName ? `the ${auth.secretName} company-secret ${providerLabel} credential` : `the server-environment ${providerLabel} credential`}, which may have been rejected.`
       : "";
     return [`Could not refresh base ref ${baseRef} before preparing the execution workspace: ${message}${authNote}`];
   }
