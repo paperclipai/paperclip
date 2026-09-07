@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { and, desc, eq, inArray, isNull, lte, ne, or, sql } from "drizzle-orm";
+import { and, desc, eq, gt, inArray, isNotNull, isNull, lte, ne, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -866,6 +866,8 @@ export function createToolGatewayService(
     beforeManagedArgumentDriftExpiry?: () => Promise<void>;
     /** Test seam for pausing a legacy approved request before its execution claim. */
     beforeLegacyApprovedActionClaim?: () => Promise<void>;
+    /** Test seam for racing direct approval against action-request expiry. */
+    beforeActionRequestApproval?: () => Promise<void>;
     mcpGatewayProtocolLimits?: Partial<{
       authFailures: Partial<McpGatewayRateLimitConfig>;
       gatewayRequests: Partial<McpGatewayRateLimitConfig>;
@@ -5270,6 +5272,85 @@ export function createToolGatewayService(
     };
   }
 
+  async function expireDueActionRequest(input: {
+    actionRequestId: string;
+    invocation: typeof toolInvocations.$inferSelect;
+    fromStatuses: Array<"pending" | "approved">;
+    actor?: { agentId?: string | null; userId?: string | null };
+  }) {
+    const expired = await db.transaction(async (tx) => {
+      const [updated] = await tx
+        .update(toolActionRequests)
+        .set({
+          status: "expired",
+          resolvedAt: sql`clock_timestamp()`,
+          updatedAt: sql`clock_timestamp()`,
+        })
+        .where(and(
+          eq(toolActionRequests.id, input.actionRequestId),
+          inArray(toolActionRequests.status, input.fromStatuses),
+          isNotNull(toolActionRequests.expiresAt),
+          lte(toolActionRequests.expiresAt, sql`clock_timestamp()`),
+        ))
+        .returning();
+      if (!updated) return null;
+
+      await tx
+        .update(toolInvocations)
+        .set({
+          approvalState: "expired",
+          idempotencyKey: null,
+          updatedAt: updated.resolvedAt ?? new Date(),
+        })
+        .where(eq(toolInvocations.id, input.invocation.id));
+
+      const actorType = input.actor?.userId
+        ? "user"
+        : input.actor?.agentId
+          ? "agent"
+          : "system";
+      const actorId = input.actor?.userId
+        ?? input.actor?.agentId
+        ?? input.invocation.agentId
+        ?? input.invocation.companyId;
+      await tx.insert(toolCallEvents).values({
+        companyId: input.invocation.companyId,
+        eventType: "approval_resolved",
+        actorType,
+        actorId,
+        agentId: input.invocation.agentId,
+        runId: input.invocation.runId,
+        issueId: input.invocation.issueId,
+        gatewayId: input.invocation.gatewayId,
+        gatewayTokenId: input.invocation.gatewayTokenId,
+        gatewayPublicId: input.invocation.gatewayPublicId,
+        clientSubjectType: input.invocation.clientSubjectType,
+        clientSubjectId: input.invocation.clientSubjectId,
+        clientName: input.invocation.clientName,
+        mcpSessionId: input.invocation.mcpSessionId,
+        correlationId: input.invocation.correlationId,
+        applicationId: input.invocation.applicationId,
+        connectionId: input.invocation.connectionId,
+        catalogEntryId: input.invocation.catalogEntryId,
+        invocationId: input.invocation.id,
+        actionRequestId: updated.id,
+        toolName: input.invocation.toolName,
+        decision: "require_approval",
+        outcome: "timeout",
+        reasonCode: "action_expired",
+        metadata: {
+          expiresAt: updated.expiresAt?.toISOString() ?? null,
+          expiredAt: updated.resolvedAt?.toISOString() ?? null,
+        },
+      });
+      return updated;
+    });
+    if (expired) {
+      await reflectToolActionInteractionLifecycle({ actionRequestId: expired.id, status: "expired" });
+    }
+    return expired;
+  }
+
   async function markApprovedActionFailed(input: {
     actionRequestId: string;
     invocationId: string;
@@ -5432,9 +5513,33 @@ export function createToolGatewayService(
     const [claimed] = await db
       .update(toolActionRequests)
       .set({ status: "executing", updatedAt: new Date() })
-      .where(and(eq(toolActionRequests.id, actionRequest.id), eq(toolActionRequests.status, "approved")))
+      .where(and(
+        eq(toolActionRequests.id, actionRequest.id),
+        eq(toolActionRequests.status, "approved"),
+        or(
+          isNull(toolActionRequests.expiresAt),
+          gt(toolActionRequests.expiresAt, sql`clock_timestamp()`),
+        ),
+      ))
       .returning();
     if (!claimed) {
+      const expired = await expireDueActionRequest({
+        actionRequestId: actionRequest.id,
+        invocation,
+        fromStatuses: ["approved"],
+        actor: {
+          agentId: actionRequest.resolvedByAgentId,
+          userId: actionRequest.resolvedByUserId,
+        },
+      });
+      if (expired) {
+        throw new ToolGatewayHttpError(
+          409,
+          "Tool action request approval has expired",
+          "action_expired",
+          { actionRequestId: actionRequest.id, invocationId: invocation.id },
+        );
+      }
       const settled = await waitForActionRequestExecution(actionRequest.id);
       const [settledInvocation] = await db
         .select()
@@ -5449,6 +5554,14 @@ export function createToolGatewayService(
           502,
           settledInvocation?.errorMessage ?? "Approved tool action failed",
           settledInvocation?.errorCode ?? "tool_execution_failed",
+          { actionRequestId: actionRequest.id, invocationId: invocation.id },
+        );
+      }
+      if (settled?.status === "expired") {
+        throw new ToolGatewayHttpError(
+          409,
+          "Tool action request approval has expired",
+          "action_expired",
           { actionRequestId: actionRequest.id, invocationId: invocation.id },
         );
       }
@@ -5718,7 +5831,7 @@ export function createToolGatewayService(
       pendingRequest.status === "pending"
       && pendingRequest.expiresAt !== null
       && pendingRequest.expiresAt.getTime() <= Date.now();
-    if (pendingUnsigned || pendingExpired) {
+    if (pendingUnsigned) {
       const now = new Date();
       await db.update(toolActionRequests).set({ status: "expired", resolvedAt: now, updatedAt: now }).where(and(
         eq(toolActionRequests.id, match.actionRequest.id),
@@ -5731,6 +5844,26 @@ export function createToolGatewayService(
       }).where(eq(toolInvocations.id, match.invocation.id));
       await reflectToolActionInteractionLifecycle({ actionRequestId: match.actionRequest.id, status: "expired" });
       return null;
+    }
+    if (pendingExpired) {
+      const expired = await expireDueActionRequest({
+        actionRequestId: pendingRequest.id,
+        invocation: match.invocation,
+        fromStatuses: ["pending"],
+        actor: { agentId: input.session.agentId },
+      });
+      if (expired) return null;
+
+      // The Date.now() precheck above is only a fast path. The database clock
+      // and the compare-and-set are authoritative, so if expiry lost to an
+      // approval race, replay the winner instead of creating a second request.
+      const [settled] = await db
+        .select({ actionRequest: toolActionRequests, invocation: toolInvocations })
+        .from(toolActionRequests)
+        .innerJoin(toolInvocations, eq(toolInvocations.id, toolActionRequests.invocationId))
+        .where(eq(toolActionRequests.id, pendingRequest.id))
+        .limit(1);
+      return settled ?? null;
     }
     return match;
   }
@@ -6608,6 +6741,13 @@ export function createToolGatewayService(
       if (actionRequest.status !== "pending" && actionRequest.status !== "approved") {
         throw new ToolGatewayHttpError(409, "Tool action request is no longer pending", "action_not_pending");
       }
+      const alreadyExpired = await expireDueActionRequest({
+        actionRequestId: actionRequest.id,
+        invocation,
+        fromStatuses: [actionRequest.status],
+        actor: input.actor,
+      });
+      if (alreadyExpired) return actionRequestResolution(alreadyExpired);
       let signedPayload: ReturnType<typeof readSignedToolArgumentsPayload> = null;
       try {
         signedPayload = readSignedToolArgumentsPayload({
@@ -6664,28 +6804,50 @@ export function createToolGatewayService(
         }
         return actionRequest;
       }
-      const now = new Date();
-      const [updated] = await db
-        .update(toolActionRequests)
-        .set({
-          status: "approved",
-          resolvedByAgentId: input.actor.agentId ?? null,
-          resolvedByUserId: input.actor.userId ?? null,
-          decidedByAgentId: input.actor.agentId ?? null,
-          decidedByUserId: input.actor.userId ?? null,
-          decidedAt: now,
-          resolvedAt: now,
-          updatedAt: now,
-        })
-        .where(and(eq(toolActionRequests.id, actionRequest.id), eq(toolActionRequests.status, "pending")))
-        .returning();
+      await options.beforeActionRequestApproval?.();
+      const updated = await db.transaction(async (tx) => {
+        const [approved] = await tx
+          .update(toolActionRequests)
+          .set({
+            status: "approved",
+            resolvedByAgentId: input.actor.agentId ?? null,
+            resolvedByUserId: input.actor.userId ?? null,
+            decidedByAgentId: input.actor.agentId ?? null,
+            decidedByUserId: input.actor.userId ?? null,
+            decidedAt: sql`clock_timestamp()`,
+            resolvedAt: sql`clock_timestamp()`,
+            updatedAt: sql`clock_timestamp()`,
+          })
+          .where(and(
+            eq(toolActionRequests.id, actionRequest.id),
+            eq(toolActionRequests.status, "pending"),
+            isNotNull(toolActionRequests.expiresAt),
+            gt(toolActionRequests.expiresAt, sql`clock_timestamp()`),
+          ))
+          .returning();
+        if (!approved) return null;
+        await tx
+          .update(toolInvocations)
+          .set({ approvalState: "approved", updatedAt: approved.resolvedAt ?? new Date() })
+          .where(eq(toolInvocations.id, invocation.id));
+        return approved;
+      });
       if (!updated) {
+        const expired = await expireDueActionRequest({
+          actionRequestId: actionRequest.id,
+          invocation,
+          fromStatuses: ["pending"],
+          actor: input.actor,
+        });
+        if (expired) return actionRequestResolution(expired);
+        const [settled] = await db
+          .select()
+          .from(toolActionRequests)
+          .where(eq(toolActionRequests.id, actionRequest.id))
+          .limit(1);
+        if (settled?.status === "expired") return actionRequestResolution(settled);
         throw new ToolGatewayHttpError(409, "Tool action request has already been resolved", "action_already_resolved");
       }
-      await db
-        .update(toolInvocations)
-        .set({ approvalState: "approved", updatedAt: now })
-        .where(eq(toolInvocations.id, invocation.id));
       await reflectToolActionInteractionLifecycle({ actionRequestId: updated.id, status: "approved" });
       // A test-tab ask-first request has no agent run to carry out the parked
       // call, so approving it is what runs it. Execute against the signed
