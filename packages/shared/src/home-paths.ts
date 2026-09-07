@@ -1,3 +1,5 @@
+import fs from "node:fs";
+import crypto from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 
@@ -90,3 +92,45 @@ export function resolveDefaultBackupDir(input: {
 export function resolveHomeAwarePath(value: string): string {
   return path.resolve(expandHomePrefix(value));
 }
+
+export const HEALTH_PROBE_TOKEN_HEADER = "x-paperclip-health-token";
+
+export function resolveDefaultHealthTokenPath(input: {
+  homeDir?: string;
+  instanceId?: string;
+} = {}): string {
+  return path.resolve(resolvePaperclipInstanceRoot(input), ".health-token");
+}
+
+export function resolveInstanceHealthToken(options: {
+  instanceId?: string;
+  homeDir?: string;
+  env?: NodeJS.ProcessEnv;
+} = {}): string | null {
+  const env = options.env ?? process.env;
+  const fromEnv = env.PAPERCLIP_HEALTH_TOKEN?.trim();
+  if (fromEnv) return fromEnv;
+
+  try {
+    const tokenPath = resolveDefaultHealthTokenPath(options);
+    if (fs.existsSync(tokenPath)) {
+      const token = fs.readFileSync(tokenPath, "utf8").trim();
+      if (token.length > 0) return token;
+    }
+    const instanceRoot = resolvePaperclipInstanceRoot(options);
+    fs.mkdirSync(instanceRoot, { recursive: true, mode: 0o700 });
+    const newToken = crypto.randomBytes(32).toString("hex");
+    const tempPath = `${tokenPath}.tmp-${process.pid}-${Date.now()}`;
+    fs.writeFileSync(tempPath, `${newToken}\n`, { mode: 0o600 });
+    try {
+      fs.renameSync(tempPath, tokenPath);
+      return newToken;
+    } catch {
+      fs.rmSync(tempPath, { force: true });
+      return fs.readFileSync(tokenPath, "utf8").trim() || null;
+    }
+  } catch {
+    return null;
+  }
+}
+

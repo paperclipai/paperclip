@@ -1,7 +1,11 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { PaperclipConfig } from "../config/schema.js";
-import { resolvePaperclipInstanceId } from "../config/home.js";
+import {
+  HEALTH_PROBE_TOKEN_HEADER,
+  resolveInstanceHealthToken,
+  resolvePaperclipInstanceId,
+} from "../config/home.js";
 import { readInstallManifest, resolveInstallStorePaths } from "../install-store.js";
 import {
   detectServiceManager,
@@ -21,8 +25,14 @@ type ServiceCheckDependencies = {
 
 async function probeHealth(config: PaperclipConfig): Promise<HealthResult> {
   try {
+    const token = resolveInstanceHealthToken();
+    const headers: Record<string, string> = {};
+    if (token) {
+      headers[HEALTH_PROBE_TOKEN_HEADER] = token;
+    }
     const response = await fetch(buildLocalHealthUrl(config.server.host, config.server.port), {
       signal: AbortSignal.timeout(2_000),
+      headers,
     });
     const body = (await response.json()) as {
       status?: unknown;
