@@ -4,6 +4,10 @@ import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { NewAgentDialog } from "./NewAgentDialog";
+const invites = vi.hoisted(() => ({ createCompanyInvite: vi.fn(), getInviteOnboarding: vi.fn(), copy: vi.fn() }));
+vi.mock("../api/access", () => ({ accessApi: invites }));
+vi.mock("../lib/clipboard", () => ({ copyTextToClipboard: invites.copy }));
+vi.mock("../context/CompanyContext", () => ({ useCompany: () => ({ selectedCompanyId: "company-1" }) }));
 const state = vi.hoisted(() => ({
   adapters: [] as object[],
   navigate: vi.fn(),
@@ -30,6 +34,9 @@ async function click(label: string) {
 }
 beforeEach(async () => {
   vi.clearAllMocks();
+  invites.createCompanyInvite.mockResolvedValue({ token: "one-time-token", onboardingTextPath: "/api/invites/one-time-token/onboarding.txt" });
+  invites.getInviteOnboarding.mockResolvedValue({ onboarding: { connectivity: {} } });
+  invites.copy.mockResolvedValue(undefined);
   state.adapters = [
     { type: "codex_local", loaded: true },
     { type: "paperclip_runner", loaded: true },
@@ -101,4 +108,31 @@ it("offers native Codex, Claude ACPX, and OpenCode runners", async () => {
   expect(options).toContain("Claude (ACPX)");
   expect(options).toContain("OpenCode");
   expect(options.join(" ")).not.toContain("ACPX Codex");
+});
+
+it("keeps agent-only invitations reachable from the new-agent flow", async () => {
+  await click("Invite an external agent");
+  const message = document.querySelector("textarea")!;
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(message, "Help with research");
+    message.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await click("Generate onboarding prompt");
+  await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
+  expect(invites.createCompanyInvite).toHaveBeenCalledWith("company-1", {
+    allowedJoinTypes: "agent", humanRole: null, agentMessage: "Help with research",
+  });
+  expect(document.querySelector<HTMLTextAreaElement>('textarea[readonly]')?.value).toContain("/api/invites/one-time-token/onboarding.txt");
+  expect(invites.copy).toHaveBeenCalled();
+  expect(state.navigate).not.toHaveBeenCalled();
+});
+
+it("keeps the generated invitation readable when clipboard access fails", async () => {
+  invites.copy.mockRejectedValue(new Error("Clipboard unavailable"));
+  invites.getInviteOnboarding.mockRejectedValue(new Error("Manifest unavailable"));
+  await click("Invite an external agent");
+  await click("Generate onboarding prompt");
+  await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
+  expect(document.body.textContent).toContain("Copy the prompt manually");
+  expect(document.querySelector<HTMLTextAreaElement>('textarea[readonly]')?.value).toContain("/api/invites/one-time-token/onboarding.txt");
 });

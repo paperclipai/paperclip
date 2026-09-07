@@ -265,6 +265,7 @@ describe("New agent setup", () => {
       await fill("Model", "openrouter/anthropic/claude-sonnet-4.6");
       await fill("OPENROUTER_API_KEY", "example-test-secret");
       await click("Run test");
+      expect(secrets.rotateMyUserSecret).not.toHaveBeenCalled();
       expect(secrets.createMyUserSecret).toHaveBeenCalledWith(
         "company-1",
         expect.objectContaining({ value: "example-test-secret" }),
@@ -272,7 +273,7 @@ describe("New agent setup", () => {
       const testedConfig = api.testEnvironment.mock.calls[0][2].adapterConfig;
       expect(testedConfig.env.OPENROUTER_API_KEY).toEqual({
         type: "user_secret_ref",
-        key: "OPENROUTER_API_KEY",
+        key: expect.stringMatching(/^OPENROUTER_API_KEY\.setup\./),
         version: "latest",
       });
       await click("Finish setup");
@@ -311,6 +312,19 @@ describe("New agent setup", () => {
     await click("Retry test");
     await click("Finish setup");
     expect(api.hire).toHaveBeenCalledTimes(1);
+  });
+  it("does not rotate a working provider credential when a new key fails its test", async () => {
+    secrets.listMyUserSecrets.mockResolvedValue([{ definition: { id: "existing-definition", key: "OPENROUTER_API_KEY" }, secret: { id: "working-secret" } }]);
+    await render();
+    await fill("Model", "openrouter/anthropic/claude-sonnet-4.6");
+    await fill("OPENROUTER_API_KEY", "invalid-replacement");
+    api.testEnvironment.mockResolvedValueOnce({ ...pass, status: "fail" });
+    await click("Run test");
+    expect(secrets.rotateMyUserSecret).not.toHaveBeenCalled();
+    expect(secrets.createUserSecretDefinition.mock.calls[0][1].key).not.toBe("OPENROUTER_API_KEY");
+    expect(api.testEnvironment.mock.calls[0][2].adapterConfig.env.OPENROUTER_API_KEY.key).toMatch(/^OPENROUTER_API_KEY\.setup\./);
+    await click("Finish setup");
+    expect(api.hire).not.toHaveBeenCalled();
   });
   it("requires an explicit provider/model for Pi", async () => {
     await render();

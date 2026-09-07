@@ -10,45 +10,27 @@ export const PROVIDER_ENV_KEYS: Record<string, string> = {
   opencode: "OPENCODE_API_KEY",
 };
 
-/** Store only through the secret API; agent configs and revisions get references. */
+/** Store an isolated setup credential. Never rotate a key used by other agents,
+ * including when a later connection test fails or the user leaves the wizard. */
 export async function storeProviderApiKey(
   companyId: string,
   envKey: string,
   value: string,
 ) {
-  let entries = await secretsApi.listMyUserSecrets(companyId);
-  let existing = entries.find((entry) => entry.definition.key === envKey);
-  let definitionId = existing?.definition.id;
-  if (!definitionId) {
-    try {
-      definitionId = (
-        await secretsApi.createUserSecretDefinition(companyId, {
-          key: envKey,
-          name: envKey,
-          description: "Model provider credential.",
-        })
-      ).id;
-    } catch (error) {
-      // Another setup tab may have created the same definition in the meantime.
-      entries = await secretsApi.listMyUserSecrets(companyId);
-      existing = entries.find((entry) => entry.definition.key === envKey);
-      definitionId = existing?.definition.id;
-      if (!definitionId) throw error;
-    }
-  }
-  if (existing?.secret)
-    await secretsApi.rotateMyUserSecret(companyId, existing.secret.id, {
-      value: value.trim(),
-    });
-  else
-    await secretsApi.createMyUserSecret(companyId, {
-      definitionId,
-      definitionKey: envKey,
-      value: value.trim(),
-    });
+  const key = `${envKey}.setup.${crypto.randomUUID()}`;
+  const definition = await secretsApi.createUserSecretDefinition(companyId, {
+    key,
+    name: `${envKey} · agent setup`,
+    description: "Model provider credential for a new agent setup.",
+  });
+  await secretsApi.createMyUserSecret(companyId, {
+    definitionId: definition.id,
+    definitionKey: key,
+    value: value.trim(),
+  });
   return {
     type: "user_secret_ref" as const,
-    key: envKey,
+    key,
     version: "latest" as const,
   };
 }
