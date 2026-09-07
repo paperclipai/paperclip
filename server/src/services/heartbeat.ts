@@ -22711,6 +22711,24 @@ export function heartbeatService(
           "heartbeat execution setup failed",
         );
         const setupFailureAgent = await getAgent(run.agentId).catch(() => null);
+        // The structured failure payload drives the recovery notice and next
+        // action, so it is persisted even when the agent lookup failed and the
+        // agent-scoped stop metadata cannot be merged in.
+        const setupFailureResultJson =
+          workspaceValidationSetupFailure?.resultJson ??
+          configurationIncompleteSetupFailure?.resultJson ??
+          (unresolvedBaseRefSetupFailure
+            ? buildUnresolvedWorkspaceBaseRefResultJson(
+                run,
+                unresolvedBaseRefSetupFailure,
+              )
+            : null) ??
+          (sandboxProviderPluginNotReadySetupFailure
+            ? buildSandboxProviderPluginNotReadyResultJson(
+                run,
+                sandboxProviderPluginNotReadySetupFailure,
+              )
+            : null);
         const setupFailureWrite = await setRunStatusIfRunning(runId, "failed", {
           error: message,
           errorCode: setupFailureErrorCode,
@@ -22723,25 +22741,13 @@ export function heartbeatService(
                   {
                     errorCode: setupFailureErrorCode,
                     errorMessage: message,
-                    resultJson:
-                      workspaceValidationSetupFailure?.resultJson ??
-                      configurationIncompleteSetupFailure?.resultJson ??
-                      (unresolvedBaseRefSetupFailure
-                        ? buildUnresolvedWorkspaceBaseRefResultJson(
-                            run,
-                            unresolvedBaseRefSetupFailure,
-                          )
-                        : null) ??
-                      (sandboxProviderPluginNotReadySetupFailure
-                        ? buildSandboxProviderPluginNotReadyResultJson(
-                            run,
-                            sandboxProviderPluginNotReadySetupFailure,
-                          )
-                        : null),
+                    resultJson: setupFailureResultJson,
                   },
                 ),
               }
-            : {}),
+            : setupFailureResultJson
+              ? { resultJson: setupFailureResultJson }
+              : {}),
         }).catch(() => ({ run: null, updated: false as const }));
         if (!setupFailureWrite.updated) {
           logger.info(

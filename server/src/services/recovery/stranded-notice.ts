@@ -79,6 +79,23 @@ function readNonEmptyStringField(payload: Record<string, unknown> | null | undef
 }
 
 /**
+ * What the operator must do to bring a sandbox provider plugin back to
+ * `ready`, by the status the run observed. Enabling an `upgrade_pending`
+ * plugin also approves the capabilities the upgrade added, so that case asks
+ * for a review first.
+ */
+export function sandboxProviderPluginRemedy(pluginStatus: string): string {
+  switch (pluginStatus) {
+    case "upgrade_pending":
+      return "review and approve the upgraded plugin's capabilities, then enable it (Plugins → Enable)";
+    case "disabled":
+      return "enable the plugin again (Plugins → Enable); an operator disabled it";
+    default:
+      return "enable the plugin (Plugins → Enable); a server restart also re-activates a bundled plugin";
+  }
+}
+
+/**
  * Seed for a `configuration_incomplete` escalation. `configurationIncomplete`
  * is the structured payload the failed run recorded in `resultJson`; the body
  * names the specific gap for the reasons this notice knows, and falls back to
@@ -94,8 +111,8 @@ export function buildConfigurationIncompleteRecoveryNoticeSeed(
       body:
         `Paperclip stopped before dispatching the adapter because the sandbox provider plugin \`${pluginKey}\` ` +
         `is in status \`${pluginStatus}\` and cannot lease a sandbox. Runs will keep failing the same way until the ` +
-        "plugin is enabled again. Moving it to `blocked` so an operator can enable the plugin " +
-        "(Plugins → Enable) before resuming.",
+        `plugin is \`ready\` again. Moving it to \`blocked\` so an operator can ${sandboxProviderPluginRemedy(pluginStatus)} ` +
+        "before resuming.",
       title: "Configuration incomplete",
       tone: "danger",
     };

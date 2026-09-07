@@ -3787,9 +3787,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       status: "active",
       ownerType: "board",
     });
-    expect(recoveryAction?.nextAction).toContain(
-      "enable the sandbox provider plugin",
-    );
+    expect(recoveryAction?.nextAction).toContain("sandbox provider plugin");
+    expect(recoveryAction?.nextAction).toContain("enable the plugin");
 
     const notice = await waitForValue(async () => {
       const rows = await db

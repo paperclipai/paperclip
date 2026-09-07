@@ -203,6 +203,7 @@ export interface BundledPluginProvisionerDeps {
       id: string,
       data: { version?: string; manifest?: PaperclipPluginManifestV1 },
     ): Promise<unknown>;
+    updateStatus(id: string, input: { status: "ready"; lastError: string | null }): Promise<unknown>;
   };
   loader: {
     installPlugin(options: { localPath: string }): Promise<{
@@ -212,8 +213,6 @@ export interface BundledPluginProvisionerDeps {
   };
   lifecycle: {
     load(pluginId: string): Promise<unknown>;
-    /** Transitions an `error` (or `disabled` / `upgrade_pending`) plugin back to `ready`. */
-    enable(pluginId: string): Promise<unknown>;
   };
   logger: {
     info(obj: unknown, msg?: string): void;
@@ -282,13 +281,19 @@ async function reconcileBundledPluginManifest(
  * across restarts until an operator enables it by hand, and every run that
  * needs its provider fails with "that plugin is currently error". The bundle
  * ships with the release image and is expected to work, so one fresh attempt
- * per boot is the right default: `enable` moves the row back to `ready`, and
- * the startup `loadAll()` activates it. If activation fails again the loader
- * marks `error` again and nothing retries until the next boot, so this
- * cannot loop within one process.
+ * per boot is the right default: the row goes back to `ready` (with its
+ * `lastError` cleared), and the startup `loadAll()` activates it. If
+ * activation fails again the loader marks `error` again and nothing retries
+ * until the next boot, so this cannot loop within one process.
  *
- * Fail-safe like the rest of the provisioner: a failed `enable` is logged and
- * boot continues with the plugin unavailable.
+ * This is a plain registry status reset, not `lifecycle.enable()`: the
+ * lifecycle call would emit `plugin.enabled` before `loadAll()` has started
+ * the worker, and a consumer of that event (the dev watcher, activity
+ * listeners) would act on a plugin that may still fail to activate.
+ * Activation, and its own events, stay with `loadAll()`.
+ *
+ * Fail-safe like the rest of the provisioner: a failed status reset is
+ * logged and boot continues with the plugin unavailable.
  */
 async function reenableErroredBundledPlugin(
   existing: RegistryPluginRow,
@@ -304,10 +309,10 @@ async function reenableErroredBundledPlugin(
     "bundled plugin is in error status from a previous activation; re-enabling it for this boot",
   );
   try {
-    await deps.lifecycle.enable(existing.id);
+    await deps.registry.updateStatus(existing.id, { status: "ready", lastError: null });
     deps.logger.info(
       { pluginId: existing.id, pluginKey: install.pluginKey },
-      "bundled plugin re-enabled; the startup loader will activate it",
+      "bundled plugin reset to ready; the startup loader will activate it",
     );
   } catch (err) {
     deps.logger.error(

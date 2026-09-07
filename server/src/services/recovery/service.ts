@@ -61,6 +61,7 @@ import {
 } from "./successful-run-handoff.js";
 import {
   SANDBOX_PROVIDER_PLUGIN_NOT_READY_REASON,
+  sandboxProviderPluginRemedy,
   buildExecutionReviewParticipantRecoveryNoticeSeed,
   buildExecutionReviewParticipantUnavailableNoticeSeed,
   buildStrandedRecoveryEscalationNotice,
@@ -1485,7 +1486,9 @@ export function recoveryService(
               : "Board operator: repair the source task workspace link, project workspace cwd, or git checkout, then explicitly retry or reassign."
         : recoveryCause === "configuration_incomplete"
           ? readConfigurationIncompletePayload(input.latestRun)?.reason === SANDBOX_PROVIDER_PLUGIN_NOT_READY_REASON
-            ? "Board operator: enable the sandbox provider plugin named in the run failure (or repair its worker), then explicitly retry the original owner or reassign."
+            ? `Board operator: the sandbox provider plugin named in the run failure is not ready; ${sandboxProviderPluginRemedy(
+              readNonEmptyString(readConfigurationIncompletePayload(input.latestRun)?.pluginStatus) ?? "error",
+            )}, then explicitly retry the original owner or reassign.`
             : "Board operator: bind the missing secret(s) named in the run failure, then explicitly retry the original owner or reassign."
         : recoveryCause === "execution_review_participant_recovery"
           ? "Board operator: repair the failed review participant path, restore a live reviewer, explicitly reassign, or record an intentional resolution."
