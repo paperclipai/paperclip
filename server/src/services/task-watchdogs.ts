@@ -1422,6 +1422,11 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
         originKind: TASK_WATCHDOG_ORIGIN_KIND,
         originId: input.sourceIssue.id,
         originFingerprint: input.classification.stopFingerprint,
+        // Stamp the run that created this child so the staleness-guard exemption
+        // in revalidateMutationScope can tell liveness THIS run caused from
+        // external liveness. Without it that exemption is an ALL-quantifier over
+        // a column nothing writes, so it can never fire. (HAU-725)
+        originRunId: input.runId ?? null,
         billingCode: input.sourceIssue.billingCode,
         inheritExecutionWorkspaceFromIssueId: input.sourceIssue.id,
       })
