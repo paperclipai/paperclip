@@ -39,7 +39,7 @@ Focused coverage lives in `run-identity.test.ts`, `github-operation-credentials.
 ### Release procedure
 
 1. Back up the instance database using the normal deployment procedure.
-2. Build and deploy one revision containing migrations 0240–0244, the server broker, managed launchers, and the runner artifacts. Run the standard pending-migration check before admitting new runs. These additive migrations are safe to replay and do not infer authorship for historical runs.
+2. Build and deploy one revision containing migrations 0240–0245, the server broker, managed launchers, and the runner artifacts. Run the standard pending-migration check before admitting new runs. These additive migrations are safe to replay and do not infer authorship for historical runs.
 3. Let pre-rollout executions finish with their original runtime contract. New executions must have an active identity context and the managed launcher capability before provider startup.
 4. Check one ordinary run without a GitHub connection, then an authenticated GitHub operation. Inspect the run details for the responsible person and credential outcome. Verify a queued continuation on the same conversation.
 5. If rollback is needed, finish or explicitly stop executions using the new broker before removing its endpoint. Keep the additive schema and identity history. Do not drop identity columns or tables to roll back application code.
@@ -47,7 +47,7 @@ Focused coverage lives in `run-identity.test.ts`, `github-operation-credentials.
 Remote acceptance uses the existing paid runner workflow with a narrow selection. Run it against the same immutable revision as the release; a successful local test does not qualify a different remote runner artifact.
 
 Identity history survives deletion of the originating agent or run, so surviving
-subtasks and approvals retain their responsible person. Company deletion removes
-these company-scoped records. Completed runs remove their managed launcher files
+subtasks and approvals retain their responsible person. The company foreign key and company-deletion service remove
+these company-scoped records when their company is deleted. Completed runs remove their managed launcher files
 before releasing a remote environment; same-run recovery retains them until the
 terminal boundary. Cleanup failures are logged and do not change the run result.

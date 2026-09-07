@@ -4,7 +4,7 @@ import { companies } from "./companies.js";
 /** Immutable attribution records. Only acceptance state and redacted diagnostics advance. */
 export const runIdentityContexts = pgTable("run_identity_contexts", {
   id: uuid("id").primaryKey().defaultRandom(),
-  companyId: uuid("company_id").notNull().references(() => companies.id),
+  companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
   // Retain attribution after an agent and its runs are deleted: surviving tasks
   // and approvals still reference these contexts. The original run UUID is archival.
   runId: uuid("run_id").notNull(),

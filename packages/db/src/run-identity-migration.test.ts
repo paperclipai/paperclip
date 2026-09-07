@@ -7,7 +7,7 @@ import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } fro
 const support = await getEmbeddedPostgresTestSupport();
 const migrations = [
   "0240_pink_fantastic_four.sql", "0241_conscious_adam_destine.sql",
-  "0242_wide_lightspeed.sql", "0243_sleepy_metal_master.sql", "0244_organic_meltdown.sql",
+  "0242_wide_lightspeed.sql", "0243_sleepy_metal_master.sql", "0244_organic_meltdown.sql", "0245_misty_nightshade.sql",
 ].map((name) => readFileSync(new URL(`./migrations/${name}`, import.meta.url), "utf8"));
 
 (support.supported ? describe : describe.skip)("execution identity migration", () => {
@@ -46,6 +46,10 @@ const migrations = [
       }
       const [retained] = await sql`SELECT run_id, responsible_user_id FROM run_identity_contexts WHERE id = ${contextId}`;
       expect(retained).toEqual({ run_id: runId, responsible_user_id: 'person-a' });
+      await sql`DELETE FROM heartbeat_runs WHERE company_id = ${companyId}`;
+      await sql`DELETE FROM agents WHERE company_id = ${companyId}`;
+      await sql`DELETE FROM companies WHERE id = ${companyId}`;
+      expect(await sql`SELECT id FROM run_identity_contexts WHERE id = ${contextId}`).toHaveLength(0);
     } finally {
       await sql.end();
       await database.cleanup();
