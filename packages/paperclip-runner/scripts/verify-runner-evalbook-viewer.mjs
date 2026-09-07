@@ -76,6 +76,7 @@ try {
     page.on("request", (request) => requests.push(request.url()));
     await page.goto(`${origin}/${route}`, { waitUntil: "networkidle" });
     await page.locator(".pit-thread").waitFor({ state: "visible" });
+    const chatBackground = await page.evaluate(() => getComputedStyle(document.body).backgroundColor);
     assert.equal(
       await page.locator("h1").textContent(),
       payload.view.issue.title,
@@ -149,6 +150,23 @@ try {
       .getByRole("link", { name: "← All results", exact: true })
       .click();
     assert.equal(new URL(page.url()).pathname, "/index.html");
+    await expect(page.locator("body")).toHaveClass("evalbook-site");
+    const assertSiteTheme = async () => {
+      assert.equal(await page.evaluate(() => getComputedStyle(document.body).backgroundColor), chatBackground);
+      assert.equal(await page.evaluate(() => getComputedStyle(document.documentElement).colorScheme), "dark");
+    };
+    await assertSiteTheme();
+    if (screenshots) await page.screenshot({ path: join(screenshots, "index.png"), fullPage: true });
+    await page.locator(".matrix tbody th a").first().click();
+    await expect(page.getByText("Test design", { exact: true })).toBeVisible();
+    await assertSiteTheme();
+    await page.getByText("Full authored test definition", { exact: true }).click();
+    if (screenshots) await page.screenshot({ path: join(screenshots, "test-design.png"), fullPage: true });
+    await page.getByRole("link", { name: "← All results", exact: true }).click();
+    await page.getByRole("link", { name: "Latest", exact: true }).click();
+    await assertSiteTheme();
+    await page.getByRole("link", { name: "Overview", exact: true }).click();
+    await assertSiteTheme();
     await page.goto(`${origin}/${route}`, { waitUntil: "networkidle" });
     await page.reload({ waitUntil: "networkidle" });
     await page.locator(".pit-thread").waitFor({ state: "visible" });

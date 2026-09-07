@@ -4,6 +4,12 @@
 
 Every new report uses the canonical Evalbook grid and the existing Runner Lab
 chat viewer for attempt drill-downs. There is no plain-HTML attempt fallback.
+The grid, Latest, test-design, inventory and server-gate pages load the same
+built stylesheet and fonts as the chat viewer. The long-term S3 history index
+references that stylesheet inside an immutable campaign, so every page keeps
+the same dark theme. Static site styles live in
+`devtools/issue-thread/src/evalbook-site.css`, scoped to `.evalbook-site`;
+colors and typography come from the Runner Lab token layer.
 Missing recordings show a notice in the same viewer; missing viewer builds
 fail generation. Build with
 `pnpm --filter @paperclipai/paperclip-runner build:issue-thread` and provide
@@ -22,6 +28,10 @@ checks the public payload contract and local links, and rejects other scripts.
 The CSP prohibits network calls, forms and external resources. Supply
 `PAPERCLIP_RUNNER_PROTOCOL_EVAL_VIEWER_DIR` to the publisher. The workflow sends
 a viewer-only artifact to that job; raw attempts and provider secrets stay out.
+After publication succeeds, the publishing job writes **Open this run's
+Evalbook** and **All eval runs** links to the Actions summary. Its deployment
+URL also points to the exact immutable report, not to the downloadable ZIP.
+Failed publication does not advertise a successful deployment.
 
 Before uploading, the report job runs the actual built application in Chromium
 against representative passing, failing and missing-recording pages in both

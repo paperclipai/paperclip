@@ -158,6 +158,8 @@ test("publishes only the separately sanitized Evalbook through trusted OIDC code
   assert.match(publisher, /runner-protocol-evals/u);
   assert.match(publisher, /runner-protocol-viewer-/u);
   assert.match(publisher, /PAPERCLIP_RUNNER_PROTOCOL_EVAL_VIEWER_DIR/u);
+  assert.match(publisher, /url: \$\{\{ steps\.publish\.outputs\.report_url \}\}/u);
+  assert.match(publisher, /Publish versioned report and refresh the root index\n\s+id: publish/u);
   assert.doesNotMatch(publisher, /(?:OPENAI|ANTHROPIC|OPENROUTER)_API_KEY/u);
   assert.doesNotMatch(publisher, /paperclipai\/paperclip-evals/u);
   assert.doesNotMatch(publisher, /downloaded-runner-protocol-evals/u);

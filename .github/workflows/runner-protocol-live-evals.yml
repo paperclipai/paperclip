@@ -266,6 +266,7 @@ jobs:
           pnpm --filter @paperclipai/paperclip-runner build:issue-thread
           # Older target refs must fail before paid cells, not publish an empty viewer.
           grep -q 'paperclip-eval-report' packages/paperclip-runner/dist-issue-thread/assets/*.js
+          grep -q 'evalbook-site' packages/paperclip-runner/dist-issue-thread/assets/*.css
 
       - name: Package a portable provider runtime
         run: |
@@ -678,6 +679,7 @@ jobs:
       id-token: write
     environment:
       name: runner-e2e-history
+      url: ${{ steps.publish.outputs.report_url }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -708,6 +710,7 @@ jobs:
           aws-region: ${{ vars.RUNNER_PROTOCOL_EVAL_HISTORY_AWS_REGION || vars.RUNNER_E2E_HISTORY_AWS_REGION }}
 
       - name: Publish versioned report and refresh the root index
+        id: publish
         env:
           PAPERCLIP_RUNNER_PROTOCOL_EVAL_PUBLIC_REPORT_DIR: ${{ github.workspace }}/runner-protocol-public-report
           PAPERCLIP_RUNNER_PROTOCOL_EVAL_VIEWER_DIR: ${{ github.workspace }}/runner-protocol-trusted-viewer

@@ -2,6 +2,7 @@
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import {
+  appendFile,
   lstat,
   mkdtemp,
   mkdir,
@@ -390,7 +391,9 @@ function date(value) {
   }).format(new Date(value));
 }
 
-export function renderProtocolEvalHistoryIndex(history) {
+export function renderProtocolEvalHistoryIndex(history, stylesheetHref) {
+  if (!/^campaigns\/gha-[a-z0-9-]+\/viewer\/assets\/[A-Za-z0-9._-]+\.css$/.test(stylesheetHref ?? ""))
+    throw new Error("History requires an immutable campaign's Runner Lab stylesheet");
   const rows = history.campaigns.length
     ? history.campaigns
         .map((campaign) => {
@@ -413,9 +416,9 @@ export function renderProtocolEvalHistoryIndex(history) {
     (campaign) => campaign.campaignId === history.latestGreenCampaignId,
   );
   return `<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><meta name="color-scheme" content="light dark"><title>Runner protocol eval campaigns · Paperclip</title>
-<style>:root{color-scheme:light dark;--bg:#fff;--fg:#172019;--muted:#667069;--line:#dfe3dc;--raised:#f8f9f6;--pass:#17603a;--pass-bg:#e5f3e9;--fail:#942f2b;--fail-bg:#f9e5e3} @media(prefers-color-scheme:dark){:root{--bg:#141413;--fg:#fafafa;--muted:#aaa;--line:#ffffff1f;--raised:#1c1c1b;--pass:#65d58c;--pass-bg:#22c55e1f;--fail:#ff7770;--fail-bg:#dc26262e}} *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 ui-sans-serif,system-ui,sans-serif}main{width:min(1560px,calc(100% - 48px));margin:48px auto 72px}h1{margin:0;font-size:clamp(34px,4vw,56px);line-height:1.05;letter-spacing:-.04em}p{max-width:760px;color:var(--muted);font-size:16px}a{color:inherit;text-underline-offset:3px}.pointers{display:flex;gap:10px;margin:28px 0 18px}.pointers a{padding:8px 11px;border:1px solid var(--line);border-radius:8px;background:var(--raised);text-decoration:none}.table{overflow:auto;border:1px solid var(--line);border-radius:12px}table{width:100%;border-collapse:collapse}th,td{padding:13px 14px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}th{background:var(--raised);color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:.06em}tr:last-child td{border:0}small{display:block;margin-top:4px;color:var(--muted);font-size:10px}.status{display:inline-block;padding:3px 8px;border-radius:99px;font-size:10px;font-weight:750;text-transform:uppercase}.passed{color:var(--pass);background:var(--pass-bg)}.failed{color:var(--fail);background:var(--fail-bg)}.empty{padding:48px;text-align:center;color:var(--muted)}footer{margin-top:18px;color:var(--muted);font-size:11px}@media(max-width:700px){main{width:calc(100% - 28px);margin-top:28px}}</style></head>
-<body><main><div><small>Paperclip quality engineering</small><h1>Runner protocol eval campaigns</h1><p>Versioned direct live-runner Evalbook reports. Full provider transcripts, session identifiers, state, and raw tool evidence remain in access-controlled workflow artifacts.</p></div>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Runner protocol eval campaigns · Paperclip</title>
+<link rel="stylesheet" href="${html(stylesheetHref)}"></head>
+<body class="evalbook-site"><main><header class="top"><a href="index.html">paperclip-runner evals</a><span class="badge">Run history</span></header><h1>Runner protocol eval campaigns</h1><p class="muted">Versioned live-runner reports. Full provider evidence remains in access-controlled workflow artifacts.</p>
 <nav class="pointers">${latest ? `<a href="${html(latest.publicUrl)}">Latest · ${html(latest.campaignId)}</a>` : ""}${latestGreen ? `<a href="${html(latestGreen.publicUrl)}">Latest green · ${html(latestGreen.campaignId)}</a>` : ""}</nav>
 <div class="table"><table><thead><tr><th>Campaign</th><th>Status</th><th>Cells</th><th>Models / rosters</th><th>Source</th><th></th></tr></thead><tbody>${rows}</tbody></table></div><footer>Updated ${html(date(history.updatedAt))} UTC · Immutable campaign bundles · Canonical Evalbook layout with public-safe evidence projections</footer></main></body></html>`;
 }
@@ -504,6 +507,11 @@ export async function publishProtocolEvalHistory({
   const { campaign } = await validatePublicProtocolEvalReport(reportRoot, {
     viewerRoot,
   });
+  const viewer = await trustedViewerFiles(viewerRoot);
+  const stylesheet = viewer.index.match(/<link rel="stylesheet" crossorigin href="\.\/(assets\/[A-Za-z0-9._-]+\.css)">/)?.[1];
+  if (!stylesheet || !viewer.files.get(`viewer/${stylesheet}`)?.includes(".evalbook-site"))
+    throw new Error("Published history requires the same-run Runner Lab site theme");
+  const stylesheetHref = `campaigns/${campaign.campaignId}/viewer/${stylesheet}`;
   const manifest = await createProtocolEvalBundleManifest(
     reportRoot,
     campaign.campaignId,
@@ -568,7 +576,7 @@ export async function publishProtocolEvalHistory({
     );
   }
   const index = join(temporary, "index.html");
-  await writeFile(index, renderProtocolEvalHistoryIndex(history));
+  await writeFile(index, renderProtocolEvalHistoryIndex(history, stylesheetHref));
   await uploadFile(
     validatedDestination.bucket,
     `${validatedDestination.prefix}/index.html`,
@@ -579,7 +587,26 @@ export async function publishProtocolEvalHistory({
     campaignId: campaign.campaignId,
     bundleDigest: manifest.bundleDigest,
     historySize: history.campaigns.length,
+    reportUrl: `${validatedDestination.publicBaseUrl}/${campaignPrefix}/index.html`,
+    historyUrl: `${validatedDestination.publicBaseUrl}/${validatedDestination.prefix}/index.html`,
   };
+}
+
+export async function writeProtocolEvalPublicationLinks(result, environment = process.env) {
+  const { campaignId, reportUrl, historyUrl } = result;
+  if (!SAFE_CAMPAIGN.test(campaignId)) throw new Error("Invalid published campaign ID");
+  const safeUrl = (value) => {
+    const url = new URL(value);
+    if (url.protocol !== "https:" || url.username || url.password || /[\r\n<>]/.test(value))
+      throw new Error("Invalid published report URL");
+    return url.href;
+  };
+  const report = safeUrl(reportUrl);
+  const history = safeUrl(historyUrl);
+  if (environment.GITHUB_OUTPUT)
+    await appendFile(environment.GITHUB_OUTPUT, `report_url=${report}\nhistory_url=${history}\n`);
+  if (environment.GITHUB_STEP_SUMMARY)
+    await appendFile(environment.GITHUB_STEP_SUMMARY, `## Published Runner Evalbook\n\n[Open this run's Evalbook](<${report}>) · [All eval runs](<${history}>)\n\nCampaign: \`${campaignId}\`\n\nPublic replay uses the Runner Lab theme; full evidence is in the workflow artifact.\n`);
 }
 
 async function main() {
@@ -598,9 +625,11 @@ async function main() {
         process.env.RUNNER_PROTOCOL_EVAL_HISTORY_PUBLIC_BASE_URL ?? "",
     },
   });
+  await writeProtocolEvalPublicationLinks(result);
   console.log(
     `Published immutable protocol eval campaign ${result.campaignId} (${result.bundleDigest}) and ${result.historySize} history record(s)`,
   );
+  console.log(`Evalbook: ${result.reportUrl}\nRun history: ${result.historyUrl}`);
 }
 
 if (

@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 
 import { App } from "./App";
 import "./issue-thread.css";
+import "./evalbook-site.css";
 
 // Hosted Evalbooks use inert JSON plus the same trusted viewer bundle. No
 // inline executable script or network fetch is needed to load an attempt.

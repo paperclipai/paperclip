@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -14,9 +14,28 @@ import {
   renderProtocolEvalHistoryIndex,
   validateProtocolEvalHistoryDestination,
   validatePublicProtocolEvalReport,
+  writeProtocolEvalPublicationLinks,
 } from "./publish-runner-protocol-eval-history.mjs";
 
 const roots = [];
+test("successful publication exposes exact report and history links to Actions", async () => {
+  const root = await mkdtemp(join(tmpdir(), "evalbook-publication-links-"));
+  roots.push(root);
+  const environment = { GITHUB_OUTPUT: join(root, "outputs"), GITHUB_STEP_SUMMARY: join(root, "summary") };
+  const result = {
+    campaignId: "gha-42-2",
+    reportUrl: "https://reports.example/runner-protocol-evals/campaigns/gha-42-2/index.html",
+    historyUrl: "https://reports.example/runner-protocol-evals/index.html",
+  };
+  await writeProtocolEvalPublicationLinks(result, environment);
+  assert.equal(await readFile(environment.GITHUB_OUTPUT, "utf8"), `report_url=${result.reportUrl}\nhistory_url=${result.historyUrl}\n`);
+  const summary = await readFile(environment.GITHUB_STEP_SUMMARY, "utf8");
+  assert.ok(summary.includes(`[Open this run's Evalbook](<${result.reportUrl}>)`));
+  assert.ok(summary.includes(`[All eval runs](<${result.historyUrl}>)`));
+  await assert.rejects(writeProtocolEvalPublicationLinks({ ...result, reportUrl: "https://example.test/\nreport_url=bad" }, environment));
+  assert.throws(() => renderProtocolEvalHistoryIndex(emptyProtocolEvalHistory(), "https://untrusted.example/style.css"));
+});
+
 test.afterEach(async () => {
   await Promise.all(
     roots.splice(0).map((root) => rm(root, { recursive: true, force: true })),
@@ -178,7 +197,10 @@ test("retains immutable history and independent latest-green pointers", () => {
   const pointers = buildProtocolEvalPointers(history);
   assert.equal(pointers.latest.campaign.campaignId, "gha-43-1");
   assert.equal(pointers.latestGreen.campaign.campaignId, "gha-42-1");
-  const index = renderProtocolEvalHistoryIndex(history);
+  const index = renderProtocolEvalHistoryIndex(history, "campaigns/gha-43-1/viewer/assets/index.css");
+  assert.match(index, /class="evalbook-site"/);
+  assert.match(index, /href="campaigns\/gha-43-1\/viewer\/assets\/index.css"/);
+  assert.doesNotMatch(index, /<style>|color-scheme:light/);
   assert.match(index, /Runner protocol eval campaigns/);
   assert.match(index, /Open Evalbook/);
   assert.match(index, /34\/35/);
@@ -238,7 +260,7 @@ test("report refreshes never replace qualification pointers, including after ret
   );
   assert.equal(history.campaigns.length, 200);
   assert.match(
-    renderProtocolEvalHistoryIndex(history),
+    renderProtocolEvalHistoryIndex(history, "campaigns/gha-42-1-report-chat-v1/viewer/assets/index.css"),
     /Report refresh · no new model calls/,
   );
 });
