@@ -720,6 +720,19 @@ type IssueCreateInput = Omit<typeof issues.$inferInsert, "companyId"> & {
    * decisions never evaluated.
    */
   pinProjectId?: boolean;
+  /**
+   * The pinned resolution was read out of the source issue (the request named
+   * no `projectId` of its own), so it is only as fresh as the snapshot the
+   * caller resolved it from. `create` re-reads that source inside the insert
+   * transaction and refuses the create when it now lends a different project:
+   * the pin cannot adopt the new one — no decision on this request evaluated
+   * it — and must not silently outrank it either.
+   *
+   * A request that named its own `projectId` sets this false: a cross-project
+   * child legitimately disagrees with its parent, and nothing about it went
+   * stale.
+   */
+  pinnedProjectResolvedFromSource?: boolean;
   actorRunId?: string | null;
   actorResponsibleUserId?: string | null;
   /**
@@ -1449,6 +1462,15 @@ async function getWorkspaceInheritanceIssue(
  * to. `resolveExplicitProjectSelection` walks the same slots in the same order
  * when it answers the create routes, so the project a route pins and the
  * project this source lends are one answer rather than two.
+ *
+ * `suppressedSlots` names the workspace slots the request took over for
+ * itself. The gate reads each slot as `request ?? source`, so a slot the
+ * request filled is one the source never contributes through — asking what
+ * the source lends there would answer with a workspace the create is not
+ * inheriting. The slots are only suppressed for callers comparing against the
+ * gate's answer; workspace inheritance itself still asks the unsuppressed
+ * question, because a source whose project the child does share lends its
+ * linkage regardless of which slots the request also named.
  */
 async function getWorkspaceInheritanceLentProjectId(
   db: DbReader,
@@ -1459,9 +1481,13 @@ async function getWorkspaceInheritanceLentProjectId(
     executionWorkspaceId: string | null;
   },
   isolatedWorkspacesEnabled: boolean,
+  suppressedSlots: { projectWorkspace: boolean; executionWorkspace: boolean } = {
+    projectWorkspace: false,
+    executionWorkspace: false,
+  },
 ): Promise<string | null> {
   if (source.projectId) return source.projectId;
-  if (source.projectWorkspaceId) {
+  if (!suppressedSlots.projectWorkspace && source.projectWorkspaceId) {
     const projectId = await db
       .select({ projectId: projectWorkspaces.projectId })
       .from(projectWorkspaces)
@@ -1474,7 +1500,7 @@ async function getWorkspaceInheritanceLentProjectId(
   }
   // With isolated workspaces off the execution workspace is never forwarded,
   // so it lends nothing here either.
-  if (isolatedWorkspacesEnabled && source.executionWorkspaceId) {
+  if (isolatedWorkspacesEnabled && !suppressedSlots.executionWorkspace && source.executionWorkspaceId) {
     const projectId = await db
       .select({ projectId: executionWorkspaces.projectId })
       .from(executionWorkspaces)
@@ -1486,6 +1512,34 @@ async function getWorkspaceInheritanceLentProjectId(
     if (projectId) return projectId;
   }
   return null;
+}
+
+/**
+ * A project pinned out of a source issue is only as fresh as the snapshot the
+ * route resolved it from, and the route resolved it before deciding assignment
+ * scope and source trust. The unpinned path has no such gap — it reads the
+ * source inside the insert transaction, so a parent that gained a project
+ * after the route's read is still seen. Under a pin that correction is off by
+ * design, which leaves the create free to persist a stale answer: a
+ * project-less parent that just gained P hands its child the route's guess (or
+ * its null) instead of P.
+ *
+ * Neither answer can simply win. Adopting P would stamp a project no decision
+ * on this request ever evaluated — the exact hole the pin exists to close —
+ * and keeping the guess silently outranks a parent signal that now resolves.
+ * So the disagreement aborts the create retryably, the same way a concurrent
+ * reparent does in `lockIssueAncestryForAuthorization`; the retry re-resolves
+ * and re-authorizes against P.
+ *
+ * A source that still lends nothing is not a disagreement: that is the whole
+ * resolve-to-none case, where the pinned project came from inference.
+ */
+function assertPinnedSourceProjectUnchanged(
+  pinnedProjectId: string | null,
+  sourceLentProjectId: string | null,
+): void {
+  if (sourceLentProjectId == null || sourceLentProjectId === pinnedProjectId) return;
+  throw conflict("Issue source project changed concurrently during authorization; retry the request");
 }
 
 // Mine participation fails closed. Add new user-authored issue mutation actions
@@ -7247,6 +7301,7 @@ export function issueService(db: Db) {
         watchdog,
         watchdogActorRunId,
         pinProjectId,
+        pinnedProjectResolvedFromSource,
         actorRunId,
         actorResponsibleUserId,
         actorAuthorization,
@@ -7357,6 +7412,41 @@ export function issueService(db: Db) {
           issueData.executionWorkspaceId !== undefined ||
           issueData.executionWorkspacePreference !== undefined ||
           issueData.executionWorkspaceSettings !== undefined;
+        // The source a pinned resolution was read from is the one signal
+        // `resolveExplicitProjectSelection` consults, whether or not this
+        // create also inherits workspace linkage from it: a `strategy_only`
+        // child skips the inheritance below but was still pinned against its
+        // parent, so its staleness has to be checked on its own read.
+        const pinnedSourceIssueId = pinProjectId && pinnedProjectResolvedFromSource
+          ? inheritExecutionWorkspaceFromIssueId ?? issueData.parentId ?? null
+          : null;
+        // Only the slots the request left to the source can have fed the
+        // pinned answer, so only those may unmake it.
+        const pinnedSourceSuppressedSlots = {
+          projectWorkspace: issueData.projectWorkspaceId != null,
+          executionWorkspace: hasExplicitExecutionWorkspaceOverride,
+        };
+        const assertPinnedSourceStillCurrent = async (source: {
+          projectId: string | null;
+          projectWorkspaceId: string | null;
+          executionWorkspaceId: string | null;
+        }) => {
+          assertPinnedSourceProjectUnchanged(
+            issueData.projectId ?? null,
+            await getWorkspaceInheritanceLentProjectId(
+              tx,
+              companyId,
+              source,
+              isolatedWorkspacesEnabled,
+              pinnedSourceSuppressedSlots,
+            ),
+          );
+        };
+        if (pinnedSourceIssueId && pinnedSourceIssueId !== workspaceInheritanceIssueId) {
+          await assertPinnedSourceStillCurrent(
+            await getWorkspaceInheritanceIssue(tx, companyId, pinnedSourceIssueId),
+          );
+        }
         if (workspaceInheritanceIssueId) {
           const workspaceSource = await getWorkspaceInheritanceIssue(tx, companyId, workspaceInheritanceIssueId);
           if (!pinProjectId && issueData.projectId == null && workspaceSource.projectId) {
@@ -7387,6 +7477,9 @@ export function issueService(db: Db) {
               isolatedWorkspacesEnabled,
             )
             : workspaceSource.projectId ?? null;
+          if (pinnedSourceIssueId === workspaceInheritanceIssueId) {
+            await assertPinnedSourceStillCurrent(workspaceSource);
+          }
           const inheritsSourceProject = pinProjectId
             ? (issueData.projectId ?? null) === sourceLentProjectId
             : issueData.projectId == null || issueData.projectId === workspaceSource.projectId;

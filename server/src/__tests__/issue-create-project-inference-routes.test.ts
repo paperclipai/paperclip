@@ -13,6 +13,7 @@ import {
   executionWorkspaces,
   goals,
   heartbeatRuns,
+  instanceSettings,
   issues,
   projects,
   projectWorkspaces,
@@ -25,6 +26,7 @@ import { actorMiddleware } from "../middleware/auth.js";
 import { errorHandler } from "../middleware/index.js";
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { issueRoutes } from "../routes/issues.js";
+import { instanceSettingsService } from "../services/instance-settings.js";
 import { issueService } from "../services/issues.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -51,6 +53,7 @@ describeEmbeddedPostgres("issue create project inference", () => {
 
   afterEach(async () => {
     await db.delete(activityLog);
+    await db.delete(instanceSettings);
     await db.delete(executionWorkspaces);
     await db.delete(issues);
     await db.delete(heartbeatRuns);
@@ -1187,41 +1190,224 @@ describeEmbeddedPostgres("issue create project inference", () => {
     expect(issue.projectId).toBe(projectId);
   });
 
-  it("pinProjectId keeps a pinned null resolution over the parent's in-transaction project", async () => {
-    // The routes decide assignment scope and source trust against the project
-    // resolution they computed — including a null one. Pinning null must stop
-    // `create` from re-deriving a project (and its workspace linkage) from the
-    // parent inside the insert transaction, where a concurrent parent move
-    // could otherwise attach a project those decisions never evaluated.
-    const companyId = await seedCompany();
-    const project = await seedProject(companyId, "actual", {
-      repoUrl: "https://github.com/zannis/actual",
-      cwd: "/repos/actual",
-    });
-    const [workspace] = await db
-      .select()
+  /**
+   * A parent as the routes see it after a concurrent move: project-less when
+   * the route resolved and authorized the create, holding `projectId` (and its
+   * workspace) by the time the insert transaction reads it.
+   */
+  async function seedParentThatGainedAProject(companyId: string, projectId: string) {
+    const workspace = await db
+      .select({ id: projectWorkspaces.id })
       .from(projectWorkspaces)
-      .where(eq(projectWorkspaces.projectId, project.id));
+      .where(eq(projectWorkspaces.projectId, projectId))
+      .then((rows) => rows[0]!);
     const [parent] = await db.insert(issues).values({
       companyId,
       title: "Parent that just gained a project",
       status: "in_progress",
       priority: "medium",
-      projectId: project.id,
-      projectWorkspaceId: workspace!.id,
+      projectId,
+      projectWorkspaceId: workspace.id,
     }).returning();
+    return parent!;
+  }
 
-    const issue = await issueService(db).create(companyId, {
+  it("aborts a pinned null resolution when the parent gained a project after the route decided", async () => {
+    // The route decided assignment scope and source trust against a
+    // project-less parent, so the pin must not re-derive that parent's new
+    // project inside the transaction — nothing on this request evaluated it.
+    // But persisting the stale null would let a snapshot outrank a parent
+    // signal that now resolves, which is the guarantee this whole change
+    // rests on. The create aborts retryably instead; the retry re-resolves
+    // and re-authorizes against the project the parent now holds.
+    const companyId = await seedCompany();
+    const project = await seedProject(companyId, "actual", {
+      repoUrl: "https://github.com/zannis/actual",
+      cwd: "/repos/actual",
+    });
+    const parent = await seedParentThatGainedAProject(companyId, project.id);
+
+    await expect(issueService(db).create(companyId, {
       title: "Child created against a null resolution",
       status: "todo",
       priority: "medium",
-      parentId: parent!.id,
+      parentId: parent.id,
       projectId: null,
       pinProjectId: true,
+      pinnedProjectResolvedFromSource: true,
+    })).rejects.toThrow(/changed concurrently/);
+  });
+
+  it("aborts an inferred pin when the parent gained a project after the route decided", async () => {
+    const companyId = await seedCompany();
+    const parentProject = await seedProject(companyId, "actual", {
+      repoUrl: "https://github.com/zannis/actual",
+      cwd: "/repos/actual",
+    });
+    const inferred = await seedProject(companyId, "shove", {
+      repoUrl: "https://github.com/zannis/shove",
+      cwd: "/repos/shove",
+    });
+    const creator = await seedAgent(companyId);
+    const parent = await seedParentThatGainedAProject(companyId, parentProject.id);
+
+    await expect(issueService(db).create(companyId, {
+      title: "Child the route guessed a project for",
+      description: "Reproduce it in https://github.com/zannis/shove first.",
+      status: "todo",
+      priority: "medium",
+      parentId: parent.id,
+      createdByAgentId: creator.id,
+      projectId: inferred.id,
+      pinProjectId: true,
+      pinnedProjectResolvedFromSource: true,
+    })).rejects.toThrow(/changed concurrently/);
+  });
+
+  it("aborts a pinned resolution the parent outgrew even when the child skips workspace inheritance", async () => {
+    // A `strategy_only` child never reads its parent for workspace linkage, so
+    // the staleness check cannot ride along on that read — the parent is still
+    // the source the route pinned against.
+    const companyId = await seedCompany();
+    const project = await seedProject(companyId, "actual", {
+      repoUrl: "https://github.com/zannis/actual",
+      cwd: "/repos/actual",
+    });
+    const parent = await seedParentThatGainedAProject(companyId, project.id);
+
+    await expect(issueService(db).create(companyId, {
+      title: "Strategy-only child",
+      status: "todo",
+      priority: "medium",
+      parentId: parent.id,
+      projectId: null,
+      pinProjectId: true,
+      pinnedProjectResolvedFromSource: true,
+      skipExecutionWorkspaceInheritance: true,
+    })).rejects.toThrow(/changed concurrently/);
+  });
+
+  it("keeps a pinned resolution the parent still lends", async () => {
+    // The ordinary resolving-parent create: the pin agrees with what the
+    // parent lends, so nothing moved and the workspace linkage still crosses.
+    const companyId = await seedCompany();
+    const project = await seedProject(companyId, "actual", {
+      repoUrl: "https://github.com/zannis/actual",
+      cwd: "/repos/actual",
+    });
+    const parent = await seedParentThatGainedAProject(companyId, project.id);
+
+    const issue = await issueService(db).create(companyId, {
+      title: "Child of a parent that never moved",
+      status: "todo",
+      priority: "medium",
+      parentId: parent.id,
+      projectId: project.id,
+      pinProjectId: true,
+      pinnedProjectResolvedFromSource: true,
     });
 
-    expect(issue.projectId).toBeNull();
-    expect(issue.projectWorkspaceId).toBeNull();
+    expect(issue.projectId).toBe(project.id);
+    expect(issue.projectWorkspaceId).toBe(parent.projectWorkspaceId);
+  });
+
+  it("keeps an inferred pin when the parent still lends nothing", async () => {
+    // The case the whole change exists for: a source that resolves to none is
+    // not a disagreement, so inference's answer stands.
+    const companyId = await seedCompany();
+    const inferred = await seedProject(companyId, "shove", {
+      repoUrl: "https://github.com/zannis/shove",
+      cwd: "/repos/shove",
+    });
+    const creator = await seedAgent(companyId);
+    const parent = await seedIssue(companyId, null, "Project-less parent");
+
+    const issue = await issueService(db).create(companyId, {
+      title: "Child of a project-less parent",
+      description: "Reproduce it in https://github.com/zannis/shove first.",
+      status: "todo",
+      priority: "medium",
+      parentId: parent.id,
+      createdByAgentId: creator.id,
+      projectId: inferred.id,
+      pinProjectId: true,
+      pinnedProjectResolvedFromSource: true,
+    });
+
+    expect(issue.projectId).toBe(inferred.id);
+  });
+
+  it("keeps a cross-project child whose project the request named itself", async () => {
+    // A request carrying its own `projectId` never read the parent, so a
+    // parent in another project is a deliberate cross-project create rather
+    // than a stale answer — the routes leave the premise flag off for it.
+    const companyId = await seedCompany();
+    const parentProject = await seedProject(companyId, "actual", {
+      repoUrl: "https://github.com/zannis/actual",
+      cwd: "/repos/actual",
+    });
+    const chosen = await seedProject(companyId, "shove", {
+      repoUrl: "https://github.com/zannis/shove",
+      cwd: "/repos/shove",
+    });
+    const parent = await seedParentThatGainedAProject(companyId, parentProject.id);
+
+    const issue = await issueService(db).create(companyId, {
+      title: "Child that targets another project",
+      status: "todo",
+      priority: "medium",
+      parentId: parent.id,
+      projectId: chosen.id,
+      pinProjectId: true,
+      pinnedProjectResolvedFromSource: false,
+    });
+
+    expect(issue.projectId).toBe(chosen.id);
+  });
+
+  it("does not read a project out of an execution workspace the request suppressed", async () => {
+    // The parent lends its project only through an execution workspace, and
+    // the request names an execution-workspace field — which keeps that
+    // linkage out entirely. A source lends no project through a slot it never
+    // forwards, so the gate answered null, inference supplied the project, and
+    // the two still agree.
+    const companyId = await seedCompany();
+    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: true });
+    const workspaceProject = await seedProject(companyId, "actual", {
+      repoUrl: "https://github.com/zannis/actual",
+      cwd: "/repos/actual",
+    });
+    const inferred = await seedProject(companyId, "shove", {
+      repoUrl: "https://github.com/zannis/shove",
+      cwd: "/repos/shove",
+    });
+    const creator = await seedAgent(companyId);
+    const parent = await seedIssue(companyId, null, "Project-less parent");
+    const [executionWorkspace] = await db.insert(executionWorkspaces).values({
+      companyId,
+      projectId: workspaceProject.id,
+      mode: "worktree",
+      strategyType: "worktree",
+      name: "actual worktree",
+    }).returning();
+    await db.update(issues)
+      .set({ executionWorkspaceId: executionWorkspace!.id })
+      .where(eq(issues.id, parent.id));
+
+    const issue = await issueService(db).create(companyId, {
+      title: "Child that wants its own workspace",
+      description: "Reproduce it in https://github.com/zannis/shove first.",
+      status: "todo",
+      priority: "medium",
+      parentId: parent.id,
+      createdByAgentId: creator.id,
+      projectId: inferred.id,
+      pinProjectId: true,
+      pinnedProjectResolvedFromSource: true,
+      executionWorkspacePreference: "new_workspace",
+    });
+
+    expect(issue.projectId).toBe(inferred.id);
   });
 
   it("pinProjectId stops createChild from re-deriving the parent's project", async () => {

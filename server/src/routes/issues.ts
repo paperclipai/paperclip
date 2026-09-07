@@ -9318,6 +9318,12 @@ export function issueRoutes(
       // never had this request's authorization applied.
       projectId: effectiveProjectId,
       pinProjectId: true,
+      // Where that resolution came from: with no `projectId` on the request it
+      // was read out of the source issue, so the service re-reads that source
+      // inside its transaction and refuses the create if it has since started
+      // lending a different project — the pin may not adopt one no decision
+      // here evaluated, and may not silently outrank it either.
+      pinnedProjectResolvedFromSource: createBody.projectId == null,
       id: issueId,
       originRunId: createBody.originRunId ?? actor.runId,
       originIdentityContextId: req.actor.identityContextId ?? null,
@@ -9603,6 +9609,11 @@ export function issueRoutes(
       // the service re-derives later.
       projectId: childProjectId,
       pinProjectId: true,
+      // Same premise as the create route: with no `projectId` on the request
+      // the pinned answer was read out of the parent, so a parent that gains a
+      // project before the insert commits aborts the create retryably instead
+      // of chaining this route's stale answer to the child.
+      pinnedProjectResolvedFromSource: createBody.projectId == null,
       id: issueId,
       executionPolicy,
       ...(currentSerializedChild

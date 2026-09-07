@@ -78,6 +78,16 @@ by a user are left untouched. The same rule applies to children created via
 arrive through these routes (plan decomposition, runner task tools, accepted
 suggested tasks).
 
+The resolution is decided before the create is authorized, and it is what gets
+persisted — so it has to still hold when the issue is written. If the request
+named no `projectId` of its own and the parent (or inheritance source) it was
+resolved from starts lending a different project in the meantime, the create
+fails with `409 Conflict` instead of persisting either answer: adopting the new
+project would skip the authorization the request was granted against the old
+one, and keeping the old answer would let a stale read outrank a parent that
+now resolves. Retry the request; the retry resolves and authorizes against the
+project the source now holds.
+
 ## Update Issue
 
 ```
