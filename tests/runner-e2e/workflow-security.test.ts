@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 
 const repositoryRoot = path.resolve(import.meta.dirname, "../..");
 const ordinaryPrTrustedWorkflowRevision =
-  "03609aa6ecc9a047ed53d6b6469d8be554fbc46d";
+  "a0a78ee60946a5f79f85b2bd0584fc766fae43bb";
 const fullStackTestNeeds =
   /needs:\s*\[\s*authorize,\s*target_lock,\s*catalog,\s*daytona_image,\s*build_runner_artifacts,\s*build_remote_provider_pack,?\s*\]/u;
 const buildRunnerNeeds =
@@ -121,18 +121,15 @@ describe("public repository paid workflow security", () => {
 
   it("gates every provider-secret job with stable actor IDs", async () => {
     const workflows = await Promise.all(
-      [
-        "runner-full-stack-e2e.yml",
-        "runner-live-evals.yml",
-        "runner-protocol-live-evals.yml",
-        "e2e.yml",
-      ].map(async (name) => ({
-        name,
-        contents: await readFile(
-          path.join(repositoryRoot, ".github/workflows", name),
-          "utf8",
-        ),
-      })),
+      ["runner-full-stack-e2e.yml", "runner-live-evals.yml", "e2e.yml"].map(
+        async (name) => ({
+          name,
+          contents: await readFile(
+            path.join(repositoryRoot, ".github/workflows", name),
+            "utf8",
+          ),
+        }),
+      ),
     );
 
     for (const { name, contents } of workflows) {
@@ -355,30 +352,6 @@ describe("public repository paid workflow security", () => {
     );
     expect(daytonaImageJob).toContain('echo "source_revision="');
     expect(daytonaImageJob).toContain('echo "content_id="');
-    expect(daytonaImageJob).toContain(
-      "IMAGE_CACHE: ghcr.io/paperclipai/paperclip-daytona-runner:e2e-buildcache-amd64",
-    );
-    expect(daytonaImageJob).toContain(
-      "TARGET_REF: ${{ needs.authorize.outputs.target_ref }}",
-    );
-    expect(daytonaImageJob).toContain(
-      "DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}",
-    );
-    const cacheRead = daytonaImageJob.indexOf(
-      '--cache-from "type=registry,ref=${IMAGE_CACHE}"',
-    );
-    const trustedTargetCheck = daytonaImageJob.indexOf(
-      'if [ "$TARGET_REF" = "refs/heads/$DEFAULT_BRANCH" ]; then',
-    );
-    const cacheWrite = daytonaImageJob.indexOf(
-      '--cache-to "type=registry,ref=${IMAGE_CACHE},mode=max"',
-    );
-    expect(cacheRead).toBeGreaterThan(0);
-    expect(trustedTargetCheck).toBeGreaterThan(cacheRead);
-    expect(cacheWrite).toBeGreaterThan(trustedTargetCheck);
-    expect(daytonaImageJob.slice(trustedTargetCheck, cacheWrite)).not.toContain(
-      "secrets.",
-    );
     const targetCodeJobs = [
       fullStack.slice(
         fullStack.indexOf("  catalog:"),
@@ -485,7 +458,6 @@ describe("public repository paid workflow security", () => {
       "e2e.yml",
       "runner-full-stack-e2e.yml",
       "runner-live-evals.yml",
-      "runner-protocol-live-evals.yml",
     ]);
     const names = (await readdir(workflowDirectory)).filter((name) =>
       /\.ya?ml$/.test(name),
@@ -512,11 +484,7 @@ describe("public repository paid workflow security", () => {
 
   it("runs paid scheduled campaigns only on Sundays", async () => {
     const workflows = await Promise.all(
-      [
-        "runner-full-stack-e2e.yml",
-        "runner-live-evals.yml",
-        "runner-protocol-live-evals.yml",
-      ].map((name) =>
+      ["runner-full-stack-e2e.yml", "runner-live-evals.yml"].map((name) =>
         readFile(path.join(repositoryRoot, ".github/workflows", name), "utf8"),
       ),
     );
@@ -671,15 +639,15 @@ describe("public repository paid workflow security", () => {
     expect(report).toContain(
       "PAPERCLIP_RUNNER_E2E_REPORT_ROOT: ${{ github.workspace }}/selected-runner-e2e",
     );
-    expect(report).toContain(
-      "PAPERCLIP_RUNNER_E2E_HISTORY_PUBLIC_BASE_URL: ${{ vars.RUNNER_E2E_HISTORY_PUBLIC_BASE_URL }}",
-    );
-    expect(report).toContain(
-      "PAPERCLIP_RUNNER_E2E_HISTORY_PREFIX: ${{ vars.RUNNER_E2E_HISTORY_PREFIX || 'runner-e2e' }}",
-    );
     expect(
       report.indexOf("Select latest workflow attempt per cell"),
     ).toBeLessThan(report.indexOf("Collect blob reports"));
+    expect(report).toContain(
+      "runner-e2e-public-history-source-${{ github.run_id }}-${{ github.run_attempt }}",
+    );
+    expect(publisher).toContain(
+      "runner-e2e-public-history-source-${{ github.run_id }}-${{ github.run_attempt }}",
+    );
     expect(publisher).toContain(
       'echo "name=github-pages-${{ github.run_id }}-${{ github.run_attempt }}"',
     );
@@ -699,6 +667,16 @@ describe("public repository paid workflow security", () => {
       path.join(repositoryRoot, ".github/workflows/runner-full-stack-e2e.yml"),
       "utf8",
     );
+    const report = workflow.slice(
+      workflow.indexOf("  report:"),
+      workflow.indexOf("  publish_history:"),
+    );
+    const sanitizer = report.slice(
+      report.indexOf("      - name: Qualify public preview raster sanitizer"),
+      report.indexOf(
+        "      - name: Prepare public history bundle with redacted layout previews",
+      ),
+    );
     const publisher = workflow.slice(workflow.indexOf("  publish_history:"));
     expect(publisher).toContain("id-token: write");
     expect(publisher).toContain("name: runner-e2e-history");
@@ -708,24 +686,101 @@ describe("public repository paid workflow security", () => {
     expect(publisher).not.toMatch(/AWS_(?:ACCESS|SECRET)_KEY/);
     expect(publisher).not.toMatch(/aws s3 (?:rm|sync .*--delete)/);
     expect(workflow).toContain("history_source_ready");
-    expect(workflow).toContain("Verify normalized history source report");
-    expect(workflow).not.toContain("sanitized_screenshot=");
     expect(workflow).toContain(
-      "Publish S3 history and Pages bundle with declared screenshots",
+      "Prepare public history bundle with redacted layout previews",
     );
     expect(workflow).toContain(
-      "Publish trusted summary and declared screenshots to public bundles",
+      "Verify prepared history source and public layout previews",
     );
-    expect(publisher).toContain(
-      "pnpm exec playwright install --with-deps --only-shell chromium",
+    expect(workflow).toContain("public_preview=");
+    expect(workflow).toContain("unexpected_png=");
+    expect(workflow).toContain("passed_count=");
+    expect(workflow).toContain("pnpm test:e2e:runner:history:prepare");
+    expect(report).toContain("runs-on: ubuntu-24.04");
+    const sanitizerPackages = [
+      [
+        "imagemagick-6.q16_6.9.12.98+dfsg1-5.2build2_amd64.deb",
+        "5dd63a2b9343783caa918c6d74d0dfb708ff7b6ebf5b5d4a22ef9c8adbc73f2f",
+        "https://archive.ubuntu.com/ubuntu/pool/universe/i/imagemagick/imagemagick-6.q16_6.9.12.98+dfsg1-5.2build2_amd64.deb",
+      ],
+      [
+        "imagemagick_6.9.12.98+dfsg1-5.2build2_amd64.deb",
+        "8b072461337a6ed7f03feef46c9b68f7668ba7d625332c590785431676864c17",
+        "https://archive.ubuntu.com/ubuntu/pool/universe/i/imagemagick/imagemagick_6.9.12.98+dfsg1-5.2build2_amd64.deb",
+      ],
+      [
+        "libgif7_5.2.2-1ubuntu1.2_amd64.deb",
+        "8137945ac9167f26d0264f403ffb48a45974f096e8acab5479e33fdba6c28a36",
+        "https://security.ubuntu.com/ubuntu/pool/main/g/giflib/libgif7_5.2.2-1ubuntu1.2_amd64.deb",
+      ],
+      [
+        "liblept5_1.82.0-3build4_amd64.deb",
+        "c2bb81d58f032b09917c0d50994cce905287a1596304a4e99681a03601456ea8",
+        "https://archive.ubuntu.com/ubuntu/pool/universe/l/leptonlib/liblept5_1.82.0-3build4_amd64.deb",
+      ],
+      [
+        "libtesseract5_5.3.4-1build5_amd64.deb",
+        "a38438115dc203b5abc1e6a6b24eb5273ba82161a11faa2f619bf5f7622efb14",
+        "https://archive.ubuntu.com/ubuntu/pool/universe/t/tesseract/libtesseract5_5.3.4-1build5_amd64.deb",
+      ],
+      [
+        "tesseract-ocr_5.3.4-1build5_amd64.deb",
+        "2dfac382d77215aee0c3de4a2a2205505d5f2195e72e79b54ad32154fc08da77",
+        "https://archive.ubuntu.com/ubuntu/pool/universe/t/tesseract/tesseract-ocr_5.3.4-1build5_amd64.deb",
+      ],
+      [
+        "tesseract-ocr-eng_4.1.0-2_all.deb",
+        "b1996b3113c78663f4dd16cf18aa1f288b07e9624f8d4a0ddbd7d9b52a234ba7",
+        "https://archive.ubuntu.com/ubuntu/pool/universe/t/tesseract-lang/tesseract-ocr-eng_4.1.0-2_all.deb",
+      ],
+      [
+        "tesseract-ocr-osd_4.1.0-2_all.deb",
+        "a266496b3268134493808c1595c9d16ac92c7e1c28e3e0bf46fdb322df95ca68",
+        "https://archive.ubuntu.com/ubuntu/pool/universe/t/tesseract-lang/tesseract-ocr-osd_4.1.0-2_all.deb",
+      ],
+    ];
+    const verifiedDownloads = [
+      ...sanitizer.matchAll(
+        /download_verified_package \\\n\s+"([^"]+)" \\\n\s+"([a-f0-9]{64})" \\\n\s+"(https:\/\/[^"]+)"/gu,
+      ),
+    ].map((match) => match.slice(1));
+    expect(verifiedDownloads).toEqual(sanitizerPackages);
+    expect(sanitizer).not.toContain("apt-get");
+    expect(sanitizer).toContain("--proto '=https' --tlsv1.2");
+    expect(sanitizer).toContain("sha256sum --check --strict");
+    expect(sanitizer).toContain('sudo dpkg --install "$tool_root"/*.deb');
+    const sanitizerPackagePins = [
+      "imagemagick=8:6.9.12.98+dfsg1-5.2build2",
+      "imagemagick-6.q16=8:6.9.12.98+dfsg1-5.2build2",
+      "libgif7=5.2.2-1ubuntu1.2",
+      "liblept5=1.82.0-3build4",
+      "libtesseract5=5.3.4-1build5",
+      "tesseract-ocr=5.3.4-1build5",
+      "tesseract-ocr-eng=1:4.1.0-2",
+      "tesseract-ocr-osd=1:4.1.0-2",
+    ];
+    for (const packagePin of sanitizerPackagePins) {
+      const separator = packagePin.indexOf("=");
+      expect(sanitizer).toContain(
+        `verify_package_version ${packagePin.slice(0, separator)} "${packagePin.slice(separator + 1)}"`,
+      );
+    }
+    expect(sanitizer).toContain('[ "${VERSION_CODENAME:-}" != "noble" ]');
+    expect(sanitizer).toContain("dpkg-query --show --showformat='${Version}'");
+    expect(sanitizer).toContain(
+      '[[ "$imagemagick_version" != "Version: ImageMagick 6.9.12-98 "* ]]',
     );
-    expect(workflow).toContain(
-      "Package pruned dashboard with declared screenshots for GitHub Pages",
+    expect(sanitizer).toContain(
+      '[ "$tesseract_version" != "tesseract 5.3.4" ]',
     );
-    expect(workflow).toContain("path: runner-e2e-merged-report/pages");
-    expect(workflow).toContain(
-      "Publish latest dashboard with declared screenshots",
+    expect(report).not.toContain("id-token: write");
+    expect(report).not.toMatch(
+      /(?:OPENAI|ANTHROPIC|OPENROUTER|DAYTONA)_API_KEY/,
     );
+    expect(publisher).not.toContain("Qualify public preview raster sanitizer");
+    expect(publisher).not.toContain("runner-e2e-report-${{ github.run_id }}");
+    expect(workflow).toContain("Publish pruned immutable history");
+    expect(workflow).toContain("Publish latest structured dashboard");
     expect(workflow).not.toContain("dashboard_ready");
     expect(workflow).not.toContain("Publish latest screenshot dashboard");
     expect(
