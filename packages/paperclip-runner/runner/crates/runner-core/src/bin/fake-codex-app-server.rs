@@ -116,7 +116,13 @@ fn matches_task_context_result(result: &Value, expected_canonical: Option<&Value
     };
     if result.get("ok") != Some(&json!(true))
         || result.get("operationId").and_then(Value::as_str) != Some("get_task_context")
-        || result.get("callId").and_then(Value::as_str) != Some("semantic-call-1")
+        || result.get("callId").and_then(Value::as_str)
+            != Some(
+                expected
+                    .get("callId")
+                    .and_then(Value::as_str)
+                    .unwrap_or("semantic-call-1"),
+            )
     {
         return false;
     }
@@ -533,6 +539,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .iter()
         .any(|value| value == "--require-codex-home-auth");
     let durable_turn_ids = args.iter().any(|value| value == "--durable-turn-ids");
+    let durable_tool_ids = args.iter().any(|value| value == "--durable-tool-ids");
+    let expected_canonical_task_context_file =
+        argument(&args, "--expected-canonical-task-context-file");
     let emit_tool_call = args.iter().any(|value| value == "--emit-tool-call");
     let replay_completed_tool_call = args
         .iter()
@@ -782,7 +791,19 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 .and_then(Value::as_str)
                 .ok_or("semantic tool response omitted content text")?;
             let result: Value = serde_json::from_str(text)?;
-            if !matches_task_context_result(&result, expected_canonical_task_context.as_ref()) {
+            let expected_from_file = if let Some(path) = &expected_canonical_task_context_file {
+                Some(serde_json::from_str::<Value>(&std::fs::read_to_string(
+                    path,
+                )?)?)
+            } else {
+                None
+            };
+            if !matches_task_context_result(
+                &result,
+                expected_from_file
+                    .as_ref()
+                    .or(expected_canonical_task_context.as_ref()),
+            ) {
                 return Err("semantic tool response changed the operation result".into());
             }
             log_call(call_log.as_deref(), &format!("tool-response:{text}"))?;
@@ -1175,7 +1196,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         "params": {
                             "threadId": state.thread_id,
                             "turnId": provider_turn_id,
-                            "callId": "semantic-call-1",
+                            "callId": if durable_tool_ids { format!("semantic-call-{}", state.next_turn) } else { "semantic-call-1".to_owned() },
                             "tool": "get_task_context",
                             "arguments": {}
                         }

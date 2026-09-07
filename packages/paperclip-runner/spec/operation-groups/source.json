@@ -99,6 +99,14 @@
       "id": "test_escape_hatch",
       "description": "Controlled skill-test transport only; never product coverage.",
       "operationIds": ["generic_api_request"]
+    },
+    {
+      "id": "api_fallback",
+      "description": "Discover and invoke HTTP API operations unsupported by available dedicated tools. Production authority and route authorization remain required.",
+      "operationIds": [
+        "search_api",
+        "call_api"
+      ]
     }
   ],
   "behaviorGroups": [
@@ -251,12 +259,12 @@
       "legacyGroup": 13,
       "name": "Reference files",
       "owner": "optional domain tools + test-only escape hatch",
-      "operationIds": ["list_cases", "upsert_case", "list_routines", "manage_routine", "list_company_skills", "sync_company_skills", "list_secret_metadata", "read_secret_value", "export_company", "administer_company", "generic_api_request"],
+      "operationIds": ["list_cases", "upsert_case", "list_routines", "manage_routine", "list_company_skills", "sync_company_skills", "list_secret_metadata", "read_secret_value", "export_company", "administer_company", "generic_api_request", "search_api", "call_api"],
       "controlPlaneOperationIds": ["append_audit_record"],
       "realSurface": "case, routine, company-skill, secret, portability, and administration services",
       "mockStateDomains": ["company", "cases", "routines", "skills", "secrets", "audit", "fault"],
       "prpEvidence": "bounded domain projections, redacted broker receipts, company diffs, and audit references",
-      "gap": "These operations are scenario-only except generic_api_request, which is test-only; broad administer_company is deferred and cannot claim product coverage."
+      "gap": "These operations are scenario-only except generic_api_request, which is test-only; broad administer_company is deferred and cannot claim product coverage. Production escape-hatch and paired dedicated-tool regressions are recorded separately in paperclip-evals/evals/runner-api-tools; the legacy scenario count is not evidence of that coverage."
     },
     {
       "id": "mh",
