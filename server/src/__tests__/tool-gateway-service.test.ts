@@ -6,6 +6,7 @@ import {
   agents,
   approvals,
   companies,
+  companyMemberships,
   companySecretBindings,
   companySecrets,
   connectionGrants,
@@ -182,6 +183,7 @@ describeEmbeddedPostgres("tool gateway service", () => {
     await db.delete(toolPolicies);
     await db.delete(heartbeatRuns);
     await db.delete(issues);
+    await db.delete(companyMemberships);
     await db.delete(agents);
     await db.delete(companies);
   });
@@ -360,16 +362,22 @@ describeEmbeddedPostgres("tool gateway service", () => {
       parameters,
     })).rejects.toMatchObject({ reasonCode: "approval_required" });
     const [actionRequest] = await db.select().from(toolActionRequests);
+    const now = Date.now();
     await db
       .update(toolActionRequests)
-      .set({ expiresAt: new Date(Date.now() - 1_000) })
+      .set({ expiresAt: new Date(now - 1_000) })
       .where(eq(toolActionRequests.id, actionRequest.id));
 
-    await expect(gateway.approveActionRequest({
-      companyId: company.id,
-      actionRequestId: actionRequest.id,
-      actor: { userId: "board-user" },
-    })).resolves.toMatchObject({ status: "expired" });
+    const applicationClock = vi.spyOn(Date, "now").mockReturnValue(now - 5_000);
+    try {
+      await expect(gateway.approveActionRequest({
+        companyId: company.id,
+        actionRequestId: actionRequest.id,
+        actor: { userId: "board-user" },
+      })).resolves.toMatchObject({ status: "expired" });
+    } finally {
+      applicationClock.mockRestore();
+    }
 
     const [expired] = await db.select().from(toolActionRequests).where(eq(toolActionRequests.id, actionRequest.id));
     expect(expired).toMatchObject({
@@ -461,6 +469,152 @@ describeEmbeddedPostgres("tool gateway service", () => {
       eq(toolCallEvents.reasonCode, "approved_action_executed"),
     ));
     expect(dispatchEvents).toHaveLength(0);
+  });
+
+  it("rejects an expired explicit action request using the database clock and clears replay state", async () => {
+    const { company, agent, run } = await createRunFixture(db);
+    await db.insert(toolPolicies).values({
+      companyId: company.id,
+      name: "Review explicit expiry",
+      policyType: "require_approval",
+      selectors: { toolName: "mcp-remote-fixture:update_note" },
+    });
+    const gateway = createTestToolGatewayService(db);
+    const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+    const parameters = { noteId: "n1", body: "must remain inert" };
+
+    await expect(gateway.executeTool({
+      sessionToken: session.token,
+      tool: "mcp-remote-fixture:update_note",
+      parameters,
+      idempotencyKey: "explicit-expiry-key",
+    })).rejects.toMatchObject({ reasonCode: "approval_required" });
+    const [actionRequest] = await db.select().from(toolActionRequests);
+    const now = Date.now();
+    await db
+      .update(issueThreadInteractions)
+      .set({
+        status: "accepted",
+        resolvedByUserId: "board-user",
+        resolvedAt: new Date(now - 10_000),
+      })
+      .where(eq(issueThreadInteractions.id, actionRequest.interactionId!));
+    await db
+      .update(toolActionRequests)
+      .set({ expiresAt: new Date(now - 1_000) })
+      .where(eq(toolActionRequests.id, actionRequest.id));
+
+    const applicationClock = vi.spyOn(Date, "now").mockReturnValue(now - 5_000);
+    try {
+      await expect(gateway.executeTool({
+        sessionToken: session.token,
+        tool: "mcp-remote-fixture:update_note",
+        parameters,
+        approvedActionRequestId: actionRequest.id,
+      })).rejects.toMatchObject({ reasonCode: "action_expired" });
+    } finally {
+      applicationClock.mockRestore();
+    }
+
+    const [expired] = await db
+      .select()
+      .from(toolActionRequests)
+      .where(eq(toolActionRequests.id, actionRequest.id));
+    const [invocation] = await db
+      .select()
+      .from(toolInvocations)
+      .where(eq(toolInvocations.id, actionRequest.invocationId));
+    const expiryEvents = await db.select().from(toolCallEvents).where(and(
+      eq(toolCallEvents.actionRequestId, actionRequest.id),
+      eq(toolCallEvents.reasonCode, "action_expired"),
+    ));
+    expect(expired.status).toBe("expired");
+    expect(invocation).toMatchObject({
+      status: "awaiting_approval",
+      approvalState: "expired",
+      idempotencyKey: null,
+    });
+    expect(expiryEvents).toHaveLength(1);
+  });
+
+  it("keeps test-origin dispatch inert when expiry wins after approval commits", async () => {
+    const { company, agent } = await createRunFixture(db);
+    const { connection } = await createRemoteMcpToolFixture(db, company.id);
+    await db.insert(toolPolicies).values({
+      companyId: company.id,
+      name: "Review test expiry",
+      policyType: "require_approval",
+      selectors: { connectionId: connection.id },
+    });
+    await db.insert(companyMemberships).values({
+      companyId: company.id,
+      principalType: "user",
+      principalId: "board-user",
+      status: "active",
+      membershipRole: "owner",
+    });
+    const provider = vi.fn(async (_url: string, init: RequestInit) => {
+      const payload = JSON.parse(String(init.body)) as { id: string };
+      return new Response(JSON.stringify({
+        jsonrpc: "2.0",
+        id: payload.id,
+        result: { content: [{ type: "text", text: "provider executed" }] },
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    });
+    const expiryGateway = createTestToolGatewayService(db, { remoteHttpRequest: provider });
+    const pending = await expiryGateway.executeTestCall({
+      companyId: company.id,
+      agentId: agent.id,
+      userId: "board-user",
+      connectionId: connection.id,
+      toolName: "needs_input",
+      parameters: {},
+    });
+    expect(pending).toMatchObject({ decision: "ask_first" });
+    const [actionRequest] = await db.select().from(toolActionRequests);
+    let expiredDuringPause = false;
+    const pausedDb = new Proxy(db, {
+      get(target, property, receiver) {
+        if (property !== "transaction") return Reflect.get(target, property, receiver);
+        return async (...args: any[]) => {
+          const result = await (target.transaction as any)(...args);
+          if (result?.status === "approved") {
+            await db
+              .update(toolActionRequests)
+              .set({ expiresAt: new Date(Date.now() - 1_000) })
+              .where(eq(toolActionRequests.id, actionRequest.id));
+            const expired = await expiryGateway.approveActionRequest({
+              companyId: company.id,
+              actionRequestId: actionRequest.id,
+              actor: { userId: "second-board-user" },
+            });
+            expect(expired).toMatchObject({ status: "expired" });
+            expiredDuringPause = true;
+          }
+          return result;
+        };
+      },
+    });
+    const gateway = createTestToolGatewayService(pausedDb, { remoteHttpRequest: provider });
+
+    await expect(gateway.approveActionRequest({
+      companyId: company.id,
+      actionRequestId: actionRequest.id,
+      actor: { userId: "board-user" },
+    })).resolves.toMatchObject({ status: "expired" });
+
+    expect(expiredDuringPause).toBe(true);
+    const [settled] = await db
+      .select()
+      .from(toolActionRequests)
+      .where(eq(toolActionRequests.id, actionRequest.id));
+    const [invocation] = await db
+      .select()
+      .from(toolInvocations)
+      .where(eq(toolInvocations.id, actionRequest.invocationId));
+    expect(settled.status).toBe("expired");
+    expect(invocation.status).not.toBe("succeeded");
+    expect(provider).not.toHaveBeenCalled();
   });
 
   it("refuses to approve an action request through a different interaction", async () => {

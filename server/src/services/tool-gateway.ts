@@ -5128,6 +5128,32 @@ export function createToolGatewayService(
     const agentId = invocation.agentId;
     if (!invocation.connectionId || !agentId) return;
     const userId = invocation.actorId ?? "board";
+    // Linearize provider execution against expiry before doing any outbound
+    // work. Once this approved -> executing claim wins, a concurrent expiry
+    // can no longer revoke the request; if expiry wins first, this path stays
+    // completely inert.
+    const [claimed] = await db
+      .update(toolActionRequests)
+      .set({ status: "executing", updatedAt: sql`clock_timestamp()` })
+      .where(and(
+        eq(toolActionRequests.id, actionRequestId),
+        eq(toolActionRequests.status, "approved"),
+        or(
+          isNull(toolActionRequests.expiresAt),
+          gt(toolActionRequests.expiresAt, sql`clock_timestamp()`),
+        ),
+      ))
+      .returning();
+    if (!claimed) {
+      await expireDueActionRequest({
+        actionRequestId,
+        invocation,
+        fromStatuses: ["approved"],
+        actor: { userId },
+      });
+      return;
+    }
+    await reflectToolActionInteractionLifecycle({ actionRequestId, status: "executing" });
     const session: ToolGatewaySession = {
       id: "test-call",
       token: "test-call",
@@ -5152,16 +5178,24 @@ export function createToolGatewayService(
       tool = undefined;
     }
     if (!tool) {
+      const failedAt = new Date();
       await db
         .update(toolInvocations)
         .set({
           status: "failed",
           errorCode: "tool_not_found",
           errorMessage: `Tool "${invocation.toolName}" is no longer connected`,
-          completedAt: new Date(),
-          updatedAt: new Date(),
+          completedAt: failedAt,
+          updatedAt: failedAt,
         })
         .where(eq(toolInvocations.id, invocation.id));
+      await db
+        .update(toolActionRequests)
+        .set({ status: "failed", resolvedAt: failedAt, updatedAt: failedAt })
+        .where(and(
+          eq(toolActionRequests.id, actionRequestId),
+          eq(toolActionRequests.status, "executing"),
+        ));
       await reflectToolActionInteractionLifecycle({
         actionRequestId,
         status: "failed",
@@ -5177,7 +5211,7 @@ export function createToolGatewayService(
       promptInjectionMode: "ignore",
     }).summary;
     try {
-      await runTestToolInvocation({
+      const result = await runTestToolInvocation({
         session,
         tool,
         parameters,
@@ -5189,19 +5223,51 @@ export function createToolGatewayService(
         reasonCode: "approval_granted",
         matchedPolicyIds: invocation.matchedPolicyIds ?? [],
       });
-      await reflectToolActionInteractionLifecycle({ actionRequestId, status: "executed" });
+      const settledAt = new Date();
+      if ("error" in result) {
+        await db
+          .update(toolActionRequests)
+          .set({ status: "failed", resolvedAt: settledAt, updatedAt: settledAt })
+          .where(and(
+            eq(toolActionRequests.id, actionRequestId),
+            eq(toolActionRequests.status, "executing"),
+          ));
+        await reflectToolActionInteractionLifecycle({
+          actionRequestId,
+          status: "failed",
+          errorCode: result.error.reasonCode,
+          errorMessage: result.error.message,
+        });
+      } else {
+        await db
+          .update(toolActionRequests)
+          .set({ status: "executed", resolvedAt: settledAt, updatedAt: settledAt })
+          .where(and(
+            eq(toolActionRequests.id, actionRequestId),
+            eq(toolActionRequests.status, "executing"),
+          ));
+        await reflectToolActionInteractionLifecycle({ actionRequestId, status: "executed" });
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
+      const failedAt = new Date();
       await db
         .update(toolInvocations)
         .set({
           status: "failed",
           errorCode: "tool_execution_failed",
           errorMessage: message,
-          completedAt: new Date(),
-          updatedAt: new Date(),
+          completedAt: failedAt,
+          updatedAt: failedAt,
         })
         .where(eq(toolInvocations.id, invocation.id));
+      await db
+        .update(toolActionRequests)
+        .set({ status: "failed", resolvedAt: failedAt, updatedAt: failedAt })
+        .where(and(
+          eq(toolActionRequests.id, actionRequestId),
+          eq(toolActionRequests.status, "executing"),
+        ));
       await reflectToolActionInteractionLifecycle({
         actionRequestId,
         status: "failed",
@@ -7109,20 +7175,19 @@ export function createToolGatewayService(
         if (storedInvocation.toolName !== tool.name) {
           throw new ToolGatewayHttpError(409, "Approved action request is for a different tool", "action_tool_mismatch");
         }
-        if (actionRequest.expiresAt && actionRequest.expiresAt.getTime() <= Date.now()) {
-          const expiredAt = new Date();
-          const [expired] = await db
-            .update(toolActionRequests)
-            .set({ status: "expired", resolvedAt: expiredAt, updatedAt: expiredAt })
-            .where(and(
-              eq(toolActionRequests.id, actionRequest.id),
-              inArray(toolActionRequests.status, ["pending", "approved"]),
-            ))
-            .returning({ id: toolActionRequests.id });
-          if (expired) {
-            await reflectToolActionInteractionLifecycle({ actionRequestId: expired.id, status: "expired" });
-          }
+        if (actionRequest.status === "expired") {
           throw new ToolGatewayHttpError(409, "Tool action request approval has expired", "action_expired");
+        }
+        if (actionRequest.status === "pending" || actionRequest.status === "approved") {
+          const expiredBeforeApproval = await expireDueActionRequest({
+            actionRequestId: actionRequest.id,
+            invocation: storedInvocation,
+            fromStatuses: [actionRequest.status],
+            actor: { agentId: session.agentId },
+          });
+          if (expiredBeforeApproval) {
+            throw new ToolGatewayHttpError(409, "Tool action request approval has expired", "action_expired");
+          }
         }
         if (actionRequest.status === "pending" && actionRequest.interactionId) {
           const [interaction] = await db
@@ -7141,21 +7206,54 @@ export function createToolGatewayService(
             ))
             .limit(1);
           if (interaction?.kind === "request_confirmation" && interaction.status === "accepted") {
-            const [approved] = await db
-              .update(toolActionRequests)
-              .set({
-                status: "approved",
-                resolvedByAgentId: interaction.resolvedByAgentId ?? null,
-                resolvedByUserId: interaction.resolvedByUserId ?? null,
-                decidedByAgentId: interaction.resolvedByAgentId ?? null,
-                decidedByUserId: interaction.resolvedByUserId ?? null,
-                decidedAt: interaction.resolvedAt ?? new Date(),
-                resolvedAt: interaction.resolvedAt ?? new Date(),
-                updatedAt: new Date(),
-              })
-              .where(and(eq(toolActionRequests.id, actionRequest.id), eq(toolActionRequests.status, "pending")))
-              .returning();
+            const approved = await db.transaction(async (tx) => {
+              const [updated] = await tx
+                .update(toolActionRequests)
+                .set({
+                  status: "approved",
+                  resolvedByAgentId: interaction.resolvedByAgentId ?? null,
+                  resolvedByUserId: interaction.resolvedByUserId ?? null,
+                  decidedByAgentId: interaction.resolvedByAgentId ?? null,
+                  decidedByUserId: interaction.resolvedByUserId ?? null,
+                  decidedAt: sql`clock_timestamp()`,
+                  resolvedAt: sql`clock_timestamp()`,
+                  updatedAt: sql`clock_timestamp()`,
+                })
+                .where(and(
+                  eq(toolActionRequests.id, actionRequest.id),
+                  eq(toolActionRequests.status, "pending"),
+                  isNotNull(toolActionRequests.expiresAt),
+                  gt(toolActionRequests.expiresAt, sql`clock_timestamp()`),
+                ))
+                .returning();
+              if (!updated) return null;
+              await tx
+                .update(toolInvocations)
+                .set({ approvalState: "approved", updatedAt: updated.resolvedAt ?? new Date() })
+                .where(eq(toolInvocations.id, storedInvocation.id));
+              return updated;
+            });
             if (!approved) {
+              const expired = await expireDueActionRequest({
+                actionRequestId: actionRequest.id,
+                invocation: storedInvocation,
+                fromStatuses: ["pending"],
+                actor: {
+                  agentId: interaction.resolvedByAgentId,
+                  userId: interaction.resolvedByUserId,
+                },
+              });
+              if (expired) {
+                throw new ToolGatewayHttpError(409, "Tool action request approval has expired", "action_expired");
+              }
+              const [settled] = await db
+                .select({ status: toolActionRequests.status })
+                .from(toolActionRequests)
+                .where(eq(toolActionRequests.id, actionRequest.id))
+                .limit(1);
+              if (settled?.status === "expired") {
+                throw new ToolGatewayHttpError(409, "Tool action request approval has expired", "action_expired");
+              }
               throw new ToolGatewayHttpError(409, "Tool action request has already been resolved", "action_already_resolved");
             }
             actionRequest = approved;
@@ -7222,9 +7320,38 @@ export function createToolGatewayService(
             .where(and(
               eq(toolActionRequests.id, actionRequest.id),
               eq(toolActionRequests.status, "approved"),
+              or(
+                isNull(toolActionRequests.expiresAt),
+                gt(toolActionRequests.expiresAt, sql`clock_timestamp()`),
+              ),
             ))
             .returning();
           if (!claimed) {
+            const expired = await expireDueActionRequest({
+              actionRequestId: actionRequest.id,
+              invocation: storedInvocation,
+              fromStatuses: ["approved"],
+              actor: { agentId: session.agentId },
+            });
+            if (expired) {
+              throw new ToolGatewayHttpError(
+                409,
+                "Tool action request approval has expired",
+                "action_expired",
+              );
+            }
+            const [settled] = await db
+              .select({ status: toolActionRequests.status })
+              .from(toolActionRequests)
+              .where(eq(toolActionRequests.id, actionRequest.id))
+              .limit(1);
+            if (settled?.status === "expired") {
+              throw new ToolGatewayHttpError(
+                409,
+                "Tool action request approval has expired",
+                "action_expired",
+              );
+            }
             throw new ToolGatewayHttpError(
               409,
               "Tool action request was already consumed",
@@ -7291,9 +7418,41 @@ export function createToolGatewayService(
             resolvedByAgentId: session.agentId,
             updatedAt: claimedAt,
           })
-          .where(and(eq(toolActionRequests.id, actionRequest.id), eq(toolActionRequests.status, "approved")))
+          .where(and(
+            eq(toolActionRequests.id, actionRequest.id),
+            eq(toolActionRequests.status, "approved"),
+            or(
+              isNull(toolActionRequests.expiresAt),
+              gt(toolActionRequests.expiresAt, sql`clock_timestamp()`),
+            ),
+          ))
           .returning();
         if (!claimed) {
+          const expired = await expireDueActionRequest({
+            actionRequestId: actionRequest.id,
+            invocation: storedInvocation,
+            fromStatuses: ["approved"],
+            actor: { agentId: session.agentId },
+          });
+          if (expired) {
+            throw new ToolGatewayHttpError(
+              409,
+              "Tool action request approval has expired",
+              "action_expired",
+            );
+          }
+          const [settled] = await db
+            .select({ status: toolActionRequests.status })
+            .from(toolActionRequests)
+            .where(eq(toolActionRequests.id, actionRequest.id))
+            .limit(1);
+          if (settled?.status === "expired") {
+            throw new ToolGatewayHttpError(
+              409,
+              "Tool action request approval has expired",
+              "action_expired",
+            );
+          }
           throw new ToolGatewayHttpError(409, "Tool action request was already consumed", "action_already_consumed");
         }
         await reflectToolActionInteractionLifecycle({ actionRequestId: claimed.id, status: "executing" });
