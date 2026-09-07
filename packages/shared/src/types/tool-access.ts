@@ -224,6 +224,8 @@ export interface ConnectionGrant {
       repositorySelection: "all" | "selected" | "mixed" | "none";
       installationIds: string[];
       installationOwnerLogins: string[];
+      /** Repository metadata visible to this credential; refreshed from GitHub. */
+      repositories?: Array<{ id: string; fullName: string; installationId: string }>;
       installationUrl?: string;
       managementUrl?: string;
       appSlug?: string;

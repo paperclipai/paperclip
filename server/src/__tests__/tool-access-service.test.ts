@@ -5128,7 +5128,7 @@ describeEmbeddedPostgres("tool access service", () => {
         }] });
       }
       if (href.includes("https://api.github.com/user/installations/101/repositories?")) {
-        return mcpHttpResponse({ total_count: 3, repositories: [{ full_name: "paperclipai/do-not-store" }] });
+        return mcpHttpResponse({ total_count: 3, repositories: [1, 2, 3].map((id) => ({ id, full_name: `paperclipai/repo-${id}`, description: "do-not-store" })) });
       }
       if (href === GITHUB_CONNECTOR_PROFILES["github.code"].serverUrl) {
         return mcpHttpResponse({
@@ -5261,7 +5261,7 @@ describeEmbeddedPostgres("tool access service", () => {
         }] });
       }
       if (href.includes("https://api.github.com/user/installations/101/repositories?")) {
-        return mcpHttpResponse({ total_count: 1, repositories: [] });
+        return mcpHttpResponse({ total_count: 1, repositories: [{ id: 1, full_name: "paperclipai/repo-1" }] });
       }
       if (href === GITHUB_CONNECTOR_PROFILES["github.code"].serverUrl) {
         return mcpHttpResponse({

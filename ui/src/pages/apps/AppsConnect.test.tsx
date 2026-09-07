@@ -852,7 +852,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(container.textContent).not.toContain("Connect with Paperclip");
   });
 
-  it("uses GitHub's advertised PAT fallback when an enrolled Cloud omits the managed profile", async () => {
+  it("explains unavailable GitHub sign-in without silently switching to a PAT", async () => {
     mockSearch.value = "source=github&stage=setup&cloud_connector=enrolled";
     listGalleryMock.mockResolvedValueOnce({
       apps: [{
@@ -864,19 +864,19 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
 
     await render();
 
-    expect(container.textContent).toContain("Your GitHub key");
-    expect(container.textContent).not.toContain("Connect with Paperclip");
-    expect(container.textContent).not.toContain("Continue to GitHub");
-    const connect = buttonByText("Connect");
-    expect(connect?.disabled).toBe(true);
-    const tokenInput = container.querySelector<HTMLInputElement>('input[type="password"]');
-    expect(tokenInput).toBeTruthy();
-    await act(async () => setInputValue(tokenInput!, "github_pat_test"));
+    expect(container.textContent).toContain("GitHub sign-in is unavailable");
+    expect(container.textContent).not.toContain("Your GitHub key");
+    expect(container.querySelector('input[type="password"]')).toBeNull();
+    expect(buttonByText("Try again")?.disabled).toBe(false);
+
+    listGalleryMock.mockResolvedValue({ apps: [GITHUB_MANAGED] });
+    await act(async () => buttonByText("Try again")!.click());
     await flushReact();
-    expect(connect?.disabled).toBe(false);
+    expect(container.textContent).toContain("Continue to GitHub");
+    expect(container.textContent).not.toContain("GitHub sign-in is unavailable");
   });
 
-  it("replaces a hidden managed method after enrollment recovery reveals an advertised PAT fallback", async () => {
+  it("keeps GitHub sign-in intent when enrollment recovery reveals an unavailable profile", async () => {
     mockSearch.value = "source=github&stage=setup&cloud_connector=enrolled";
     listGalleryMock.mockResolvedValueOnce({
       apps: [{
@@ -907,10 +907,9 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     });
     await flushReact();
 
-    expect(container.textContent).toContain("Your GitHub key");
-    expect(container.textContent).not.toContain("Connect with Paperclip");
-    expect(container.textContent).not.toContain("Continue to GitHub");
-    expect(buttonByText("Connect")?.disabled).toBe(true);
+    expect(container.textContent).toContain("GitHub sign-in is unavailable");
+    expect(container.textContent).not.toContain("Your GitHub key");
+    expect(buttonByText("Try again")?.disabled).toBe(false);
   });
 
   it("preserves a dedicated agent identity across the full-page enrollment callback", async () => {

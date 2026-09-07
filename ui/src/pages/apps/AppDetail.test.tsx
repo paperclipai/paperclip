@@ -281,6 +281,7 @@ function dedicatedGitHubGrant(
         repositorySelection: "selected",
         installationIds: ["456"],
         installationOwnerLogins: ["paperclipai"],
+        repositories: [{ id: "789", fullName: "paperclipai/test-repo", installationId: "456" }],
         managementUrl: "https://github.com/settings/installations/456",
         webhookHealth: "pending",
         lastWebhookAt: null,
@@ -1455,6 +1456,28 @@ describe("AppDetail", () => {
     expect(findButton("Revoke")).toBeUndefined();
   });
 
+  it("shows the personal GitHub username and every accessible repository", async () => {
+    mockParams.tab = "permissions";
+    getConnectionMock.mockResolvedValue(perUserConnection());
+    listConnectionGrantsMock.mockResolvedValue({
+      connection: { id: "conn-1", uid: "conn-1" },
+      grants: [dedicatedGitHubGrant({ kind: "user", subjectAgentId: null, subjectUserId: "user-1" }, {
+        repositoryCount: 2,
+        repositories: [
+          { id: "1", fullName: "paperclipai/first", installationId: "456" },
+          { id: "2", fullName: "paperclipai/second", installationId: "456" },
+        ],
+      })],
+      capabilities: fullCapabilities(), currentUserId: "user-1", members: [],
+    });
+    await renderAppDetail();
+    expect(container.textContent).toContain("@dottabot");
+    expect(container.textContent).toContain("2 selected repositories");
+    expect(container.querySelectorAll('ul[aria-label="Accessible GitHub repositories"] li')).toHaveLength(2);
+    expect(container.textContent).toContain("paperclipai/first");
+    expect(container.textContent).toContain("paperclipai/second");
+  });
+
   it("shows dedicated GitHub access as compact action rows and links to the agent", async () => {
     mockParams.tab = "permissions";
     getConnectionMock.mockResolvedValue(connection({
@@ -1473,7 +1496,9 @@ describe("AppDetail", () => {
 
     expect(container.querySelector('a[href="/agents/coder"]')?.textContent).toContain("Used only by Coder");
     expect(container.textContent).toContain("Repositories");
-    expect(container.textContent).toContain("1 selected repositories");
+    expect(container.textContent).toContain("1 selected repository");
+    expect(container.querySelector('a[href="https://github.com/dottabot"]')?.textContent).toBe("@dottabot");
+    expect(container.querySelector('a[href="https://github.com/paperclipai/test-repo"]')?.textContent).toBe("paperclipai/test-repo");
     expect(container.querySelector(
       'a[href="https://github.com/settings/installations/456"]',
     )?.textContent).toBe("Manage repositories on GitHub");

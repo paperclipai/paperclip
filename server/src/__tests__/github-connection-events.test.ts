@@ -92,6 +92,7 @@ describeEmbeddedPostgres.sequential("GitHub connection event delivery", () => {
           repositorySelection: "selected",
           installationIds: ["101"],
           installationOwnerLogins: ["paperclipai"],
+          repositories: [{ id: "203", fullName: "paperclipai/removed", installationId: "101" }],
           webhookHealth: "pending",
         },
       },
@@ -252,6 +253,7 @@ describeEmbeddedPostgres.sequential("GitHub connection event delivery", () => {
           repositorySelection: "selected",
           installationIds: ["101"],
           installationOwnerLogins: ["paperclipai"],
+          repositories: [{ id: "203", fullName: "paperclipai/removed", installationId: "101" }],
           webhookHealth: "pending",
         },
       },
@@ -293,6 +295,7 @@ describeEmbeddedPostgres.sequential("GitHub connection event delivery", () => {
     unsubscribe();
     let [grant] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, grantId));
     expect(grant?.providerTenant?.github).toMatchObject({ repositoryCount: 4, webhookHealth: "healthy" });
+    expect(grant?.providerTenant?.github?.repositories).toBeUndefined();
 
     currentTime = new Date(currentTime.getTime() + 6_000);
     await expect(service.pollOnce()).resolves.toMatchObject({ processed: 0, duplicate: 1, failed: 0 });

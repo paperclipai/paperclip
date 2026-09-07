@@ -288,6 +288,9 @@ export function githubConnectionEventService(
       ...binding.providerTenant,
       github: {
         ...github,
+        // Lifecycle webhooks carry IDs, not the user token’s complete repository view.
+        // Discard the snapshot until Refresh access verifies it again.
+        repositories: undefined,
         installationIds,
         installationCount: installationIds.length,
         repositoryCount,
