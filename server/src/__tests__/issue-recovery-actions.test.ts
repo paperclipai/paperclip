@@ -1457,13 +1457,23 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       markNotified: async () => undefined,
     })).resolves.toEqual({ delivered: false, reason: "delivery_failed" });
 
-    await expect(deliverBlockedOwnerUserNotification({
+    const firstDelivery = await deliverBlockedOwnerUserNotification({
       db,
       issuesSvc,
       issue: { id: sourceIssue.id, companyId },
       delivery: { userId: "user-b", action: actionB, idempotencyKey },
       notifiedAt: new Date(),
-    })).resolves.toMatchObject({ receiptId: expect.any(String) });
+    });
+    expect(firstDelivery).toMatchObject({ receiptId: expect.any(String) });
+
+    const redelivered = await deliverBlockedOwnerUserNotification({
+      db,
+      issuesSvc,
+      issue: { id: sourceIssue.id, companyId },
+      delivery: { userId: "user-b", action: actionB, idempotencyKey },
+      notifiedAt: new Date(),
+    });
+    expect(redelivered.receiptId).toBe(firstDelivery.receiptId);
 
     const receipts = await db.select().from(activityLog).where(and(
       eq(activityLog.companyId, companyId),
