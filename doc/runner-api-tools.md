@@ -86,7 +86,11 @@ no-symlink file opens covering every path component, and bounded descriptor read
 Local uploads require Linux or macOS; authorized artifacts work on other hosts.
 Lifecycle-sensitive endpoints require an inline JSON object, so a raw uploaded
 JSON file cannot hide protected fields from policy checks. Artifacts must belong
-to the bound company. Agent credentials are never returned to the model. Streaming, WebSocket, MCP and authentication
+to the bound company. Secret-value access, credential management, secret proposals
+and company exports require their existing secure clients. Search describes these
+operations as restricted. `call_api` rejects them before creating a replay receipt
+or making an HTTP request. Safe secret metadata listing remains available.
+Agent credentials are never returned to the model. Streaming, WebSocket, MCP and authentication
 handshakes are documented as protocol operations requiring their existing clients.
 
 ## Catalog maintenance

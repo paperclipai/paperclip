@@ -1,3 +1,16 @@
+/** Ordinary API results and replay receipts are not a secret-value channel. */
+export function runnerApiRestriction(method: string, path: string): string | null {
+  const metadataRead = method === "GET" && [
+    "/api/agents/me/secrets",
+    "/api/companies/{companyId}/secrets/catalog",
+  ].includes(path);
+  if (!metadataRead && (/\/(secrets|secret-proposals|secret-provider-configs|user-secrets|user-secret-definitions|keys|board-api-keys|credentials|setup-token-login-sessions|board-claim|invites|join-requests|gateway-tokens|tokens|token|rotate-secret|terminal-session-token|claim-api-key)(\/|$)/.test(path)
+    || /^\/api\/companies\/\{companyId\}\/exports?(\/|$)/.test(path))) {
+    return "Use the existing credential broker or secure management client: call_api cannot return secret values, manage credentials, or export company credential configuration.";
+  }
+  return ["GET", "HEAD", "OPTIONS"].includes(method) ? null : runnerApiMutationRestriction(path);
+}
+
 /** Runner-owned transitions cannot be reached by the generic HTTP escape hatch. */
 export function runnerApiMutationRestriction(path: string): string | null {
   const issueRoute = /^\/api\/issues\/\{[^}]+\}/.test(path);

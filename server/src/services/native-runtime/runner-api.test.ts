@@ -41,6 +41,26 @@ describe("runner API catalog", () => {
 });
 
 describe("runner API request boundary", () => {
+  it.each([
+    "POST /api/agents/me/secrets/{key}/value",
+    "POST /api/agents/{id}/keys",
+    "DELETE /api/agents/{id}/keys/{keyId}",
+    "POST /api/companies/{companyId}/secret-proposals/{id}/approve",
+    "POST /api/agents/me/secret-proposals",
+    "PATCH /api/secrets/{id}",
+    "POST /api/companies/{companyId}/exports",
+    "GET /api/secret-provider-configs/{id}",
+  ])("keeps sensitive operation %s out of model results and receipts", async operationId => {
+    const request = vi.fn<typeof fetch>();
+    await expect(executeRunnerApi({ operationId }, context, io(request))).rejects.toThrow("credential broker");
+    expect(request).not.toHaveBeenCalled();
+    expect(searchRunnerApi({ query: operationId }).results[0]).toMatchObject({ callPolicy: "restricted" });
+  });
+  it("retains safe secret metadata discovery", () => {
+    for (const operationId of ["GET /api/agents/me/secrets", "GET /api/companies/{companyId}/secrets/catalog"]) {
+      expect(validateRunnerApiCall({ operationId }, context).operation.callPolicy).toBe("rest");
+    }
+  });
   it("binds the company and encodes query scalars", () => {
     const input = { operationId: projects, query: { q: "hello & goodbye", limit: 2, active: false } };
     const url = runnerApiUrl(runnerApiOperation(projects), input, context, "https://paperclip.test/api");

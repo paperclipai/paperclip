@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { badRequest, forbidden, unprocessable } from "../../errors.js";
 import { runnerApiOperation, type RunnerApiOperation } from "./runner-api-catalog.js";
-import { runnerApiMutationRestriction } from "./runner-api-policy.js";
+import { runnerApiRestriction } from "./runner-api-policy.js";
 
 export const RUNNER_API_MAX_BYTES = 10 * 1024 * 1024;
 export const RUNNER_API_INLINE_BYTES = 24 * 1024;
@@ -44,6 +44,8 @@ export function validateRunnerApiCall(value: unknown, context: RunnerApiContext)
   const input = parsed.data;
   const operation = runnerApiOperation(input.operationId);
   if (operation.transport !== "rest") throw unprocessable("This endpoint requires its existing protocol client; call_api supports REST only");
+  const restriction = runnerApiRestriction(operation.method, operation.path);
+  if (restriction) throw forbidden(restriction);
   if (!operation.allowedModes.includes(context.workMode)) throw forbidden("call_api permits only reads in Ask and Plan modes; use the permitted dedicated tools");
   if (input.pathParams?.companyId && input.pathParams.companyId !== context.companyId) throw forbidden("API call belongs to another company");
   const mutation = !["GET", "HEAD", "OPTIONS"].includes(operation.method);
@@ -60,8 +62,6 @@ export function validateRunnerApiCall(value: unknown, context: RunnerApiContext)
     if (/^\/api\/agents\/\{[^}]+\}$/.test(operation.path) && ["status", "runtimeState"].some(key => Object.hasOwn(body, key))) {
       throw forbidden("API agent updates cannot bypass runner execution-control authority");
     }
-    const restriction = runnerApiMutationRestriction(operation.path);
-    if (restriction) throw forbidden(restriction);
     if (issueRoute && /\/comments$/.test(operation.path) && ["reopen", "resume", "interrupt"].some(key => body[key] === true)) {
       throw forbidden("API comments cannot change runner execution state");
     }

@@ -64,6 +64,16 @@ else if(m.id!==undefined) send({id:m.id,result:{}});
     } finally { await bundle.transport.close(); }
   }, 30_000);
 
+  it("rejects credential calls before any durable receipt or secret result exists", async () => {
+    const fixture = await server.fixture();
+    for (const operationId of ["POST /api/agents/me/secrets/{key}/value", "POST /api/agents/{id}/keys"]) {
+      await expect(fixture.authority.execute({ tool: "call_api", callId: operationId, arguments: { operationId, pathParams: operationId.includes("{key}") ? { key: "EXAMPLE_SECRET" } : { id: fixture.agentId } } })).rejects.toThrow("credential broker");
+    }
+    const [run] = await server.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId));
+    expect((run.resultJson as Record<string, unknown> | null)?.apiToolReceipts).toBeUndefined();
+    expect((await fixture.snapshot()).activity.filter(row => row.action === "runner.api_called")).toEqual([]);
+  });
+
   it("preserves route validation, authorization and audit; replays mutations once", async () => {
     const fixture = await server.fixture();
     const call = (callId: string, args: unknown) => fixture.authority.execute({ tool: "call_api", callId, arguments: args });

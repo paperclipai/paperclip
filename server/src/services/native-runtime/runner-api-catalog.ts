@@ -3,7 +3,7 @@ import { z } from "zod";
 import { buildOpenApiDocument } from "../../routes/openapi.js";
 import { badRequest, notFound } from "../../errors.js";
 import { runnerApiReference } from "./runner-api-reference.js";
-import { runnerApiMutationRestriction } from "./runner-api-policy.js";
+import { runnerApiRestriction } from "./runner-api-policy.js";
 import { CAPABILITY_SEMANTIC_TOOL_CATALOG } from "../../vendor/paperclip-runner/index.js";
 
 type Json = Record<string, any>;
@@ -72,6 +72,7 @@ export function buildRunnerApiCatalog(document: Json = buildOpenApiDocument()): 
     for (const [verb, operation] of Object.entries<Json>(item)) {
       if (!METHODS.has(verb)) continue;
       const method = verb.toUpperCase();
+      const restriction = runnerApiRestriction(method, path);
       const skillReference = runnerApiReference[`${method} ${path.replace(/\{[^}]+\}/g, "{}")}`];
       const protocol = !path.startsWith("/api/") || /\/(oauth|auth|runtime-tools|mcp|ws)(\/|$)/.test(path)
         || /event-stream|websocket/i.test(JSON.stringify(operation.responses));
@@ -84,13 +85,13 @@ export function buildRunnerApiCatalog(document: Json = buildOpenApiDocument()): 
         responses: dereference(operation.responses ?? {}),
         authorization: operation["x-paperclip-authorization"] ?? { actor: "board_or_agent" },
         transport: protocol ? "protocol" : "rest",
-        callPolicy: protocol ? "protocol" : !["GET", "HEAD", "OPTIONS"].includes(method) && runnerApiMutationRestriction(path) ? "restricted" : "rest",
+        callPolicy: protocol ? "protocol" : restriction ? "restricted" : "rest",
         dedicatedTools: dedicatedTools(method, path),
         dedicatedToolCapabilities: dedicatedTools(method, path).flatMap(name => {
           const descriptor = CAPABILITY_SEMANTIC_TOOL_CATALOG.find(tool => tool.operationId === name);
           return descriptor ? [{ name, description: descriptor.description, supportedParameters: Object.keys((descriptor.inputSchema as Json).properties ?? {}) }] : [];
         }),
-        runnerRestrictions: ["Active run and assignment must remain authorized.", "Cannot replace checkout, completion, task status/ownership changes, approval decisions, or runner execution control. Dedicated tools retain their existing permissions."],
+        runnerRestrictions: [...(restriction ? [restriction] : []), "Active run and assignment must remain authorized.", "Cannot replace checkout, completion, task status/ownership changes, approval decisions, or runner execution control. Dedicated tools retain their existing permissions."],
         dedicatedToolGuidance: "Use an available dedicated tool for its supported fields. Inspect that tool's advertised schema; call_api may be used for additional API fields, subject to lifecycle restrictions.",
         allowedModes: method === "GET" || method === "HEAD" ? ["standard", "ask", "planning", "skill_test"] : ["standard", "skill_test"],
         ...(skillReference ? { skillReference } : {}),
