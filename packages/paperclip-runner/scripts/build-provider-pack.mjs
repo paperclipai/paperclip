@@ -132,17 +132,10 @@ try {
   // Fail the image build if a bridge silently brings back an older/private
   // provider CLI. A direct dependency alone does not deduplicate pnpm's graph.
   const packRequire = createRequire(join(temporaryRoot, "package.json"));
-  for (const [bridge, runtime] of [
-    ["@agentclientprotocol/codex-acp", "@openai/codex"],
-    ["@agentclientprotocol/claude-agent-acp", "@anthropic-ai/claude-agent-sdk"],
-  ]) {
-    const bridgeRequire = createRequire(packRequire.resolve(`${bridge}/package.json`));
-    // Claude SDK exports its entrypoint but intentionally hides package.json.
-    const entrypoint = runtime === "@openai/codex" ? `${runtime}/package.json` : runtime;
-    if (realpathSync(bridgeRequire.resolve(entrypoint)) !==
-        realpathSync(packRequire.resolve(entrypoint))) {
-      throw new Error(`${bridge} must share the image's ${runtime} installation`);
-    }
+  const codexAcpRequire = createRequire(packRequire.resolve("@agentclientprotocol/codex-acp/package.json"));
+  if (realpathSync(codexAcpRequire.resolve("@openai/codex/package.json")) !==
+      realpathSync(packRequire.resolve("@openai/codex/package.json"))) {
+    throw new Error("Codex ACP must share the image's Codex installation");
   }
 
   // Reuse the already-qualified build interpreter instead of introducing a
@@ -180,15 +173,18 @@ try {
   // separate global/runner-only CLI version; refresh these packages and their
   // qualification digests together to the latest stable releases.
   writePortableNodeShim("codex", "@openai/codex/bin/codex.js");
-  const sdkRequire = createRequire(
-    realpathSync(join(temporaryRoot, "node_modules/@anthropic-ai/claude-agent-sdk/package.json")),
+  const claudeAcpRequire = createRequire(
+    packRequire.resolve("@agentclientprotocol/claude-agent-acp/package.json"),
   );
+  // Use the ACP bridge's SDK dependency directly, avoiding a second peer-
+  // resolved SDK installation just to expose its CLI on the global PATH.
+  const sdkRequire = createRequire(claudeAcpRequire.resolve("@anthropic-ai/claude-agent-sdk"));
   const claudeExecutable = sdkRequire.resolve(
     `@anthropic-ai/claude-agent-sdk-${process.platform}-${process.arch}/claude`,
   );
   writePortableExecutableShim(
     "claude",
-    relative(join(temporaryRoot, "node_modules"), realpathSync(claudeExecutable)),
+    relative(realpathSync(join(temporaryRoot, "node_modules")), realpathSync(claudeExecutable)),
   );
   writePortableExecutableShim("node", "node/bin/node");
   writePortableExecutableShim("opencode", "opencode-ai/bin/opencode.exe");
