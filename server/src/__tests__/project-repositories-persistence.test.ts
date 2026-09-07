@@ -44,6 +44,15 @@ const support = await getEmbeddedPostgresTestSupport();
     const repeated = await svc.replaceRepositories(created.id, [repo("4"), repo("6")]);
     expect(repeated?.workspaces).toHaveLength(updated!.workspaces.length);
   });
+  it("handles a repo recreated at the same URL with a new GitHub identity", async () => {
+    const svc = projectService(db);
+    const original = repo("20");
+    const created = await svc.createWithRepositories(companyId, { name: "Recreated" }, [original]);
+    const updated = await svc.replaceRepositories(created.id, [{ ...original, id: "21" }]);
+    expect(updated?.workspaces).toHaveLength(1);
+    expect(updated?.workspaces[0]?.metadata?.githubRepositoryId).toBe("21");
+  });
+
   it("loads only usable connection grants, deduplicates repos, and reports partial provider failures", async () => {
     await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "alice", membershipRole: "admin" });
     const [otherCompany] = await db.insert(companies).values({ name: "Other", issuePrefix: "OTHER" }).returning();

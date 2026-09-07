@@ -483,7 +483,7 @@ export function ProjectProperties({ project, repositories, onUpdate, onFieldUpda
       <Separator className="my-4" />
 
       <div className="space-y-1 py-4">
-        {!hideHostPaths && <div className="space-y-2">
+        {(!hideHostPaths || (primaryCodebaseWorkspace?.runtimeServices?.length ?? 0) > 0) && <div className="space-y-2">
           <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
             <span>Codebase</span>
             <Tooltip>
