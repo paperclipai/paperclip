@@ -3,6 +3,7 @@ import { noticeMetadataReferencesRecoveryAction } from "./successful-run-handoff
 import {
   DEFAULT_STRANDED_RECOVERY_NOTICE_BODY,
   buildConfigurationIncompleteRecoveryNoticeSeed,
+  buildDeterministicTerminalRecoveryNoticeSeed,
   buildExecutionReviewParticipantRecoveryNoticeSeed,
   buildExecutionReviewParticipantUnavailableNoticeSeed,
   buildImmediateExecutionPathRecoveryNoticeSeed,
@@ -20,6 +21,8 @@ describe("stranded recovery notice seeds", () => {
     ["in_progress continuation", buildImmediateExecutionPathRecoveryNoticeSeed({ status: "in_progress" }), "No live execution path"],
     ["workspace validation", buildWorkspaceValidationRecoveryNoticeSeed(), "Workspace validation failed"],
     ["configuration incomplete", buildConfigurationIncompleteRecoveryNoticeSeed(), "Configuration incomplete"],
+    ["unsupported model", buildDeterministicTerminalRecoveryNoticeSeed("model_not_found"), "Unsupported model configuration"],
+    ["context exhausted", buildDeterministicTerminalRecoveryNoticeSeed("context_window_exhausted"), "Context window exhausted"],
     ["review participant recovery", buildExecutionReviewParticipantRecoveryNoticeSeed(), "Review recovery stalled"],
     ["review participant unavailable", buildExecutionReviewParticipantUnavailableNoticeSeed(), "Review recovery stalled"],
   ])("%s seed has a short body plus title and tone", (_label, seed, expectedTitle) => {
@@ -36,6 +39,12 @@ describe("stranded recovery notice seeds", () => {
     expect(buildImmediateExecutionPathRecoveryNoticeSeed({ status: "in_progress" }).body).toContain(
       "retried continuation",
     );
+  });
+
+  it("gives deterministic terminal failures actionable, cause-specific guidance", () => {
+    expect(buildDeterministicTerminalRecoveryNoticeSeed("model_not_found").body).toContain("model advertised by that adapter");
+    expect(buildDeterministicTerminalRecoveryNoticeSeed("context_window_exhausted").body).toContain("input can be reduced");
+    expect(buildDeterministicTerminalRecoveryNoticeSeed("context_window_exhausted").body).not.toContain("secret");
   });
 });
 

@@ -81,6 +81,21 @@ export function buildConfigurationIncompleteRecoveryNoticeSeed(): StrandedRecove
   };
 }
 
+export function buildDeterministicTerminalRecoveryNoticeSeed(
+  errorCode: string | null | undefined,
+): StrandedRecoveryNoticeSeed {
+  const contextExhausted = errorCode === "context_window_exhausted";
+  return {
+    body: contextExhausted
+      ? "Paperclip stopped automatic recovery because the model context window was exhausted. " +
+        "Moving it to `blocked` so the input can be reduced or a model with a suitable context window can be selected before resuming."
+      : "Paperclip stopped automatic recovery because the selected model is unavailable or incompatible with the configured adapter. " +
+        "Moving it to `blocked` so a model advertised by that adapter can be selected before resuming.",
+    title: contextExhausted ? "Context window exhausted" : "Unsupported model configuration",
+    tone: "danger",
+  };
+}
+
 export function buildExecutionReviewParticipantRecoveryNoticeSeed(): StrandedRecoveryNoticeSeed {
   return {
     body:
