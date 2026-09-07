@@ -67,3 +67,10 @@ full Git SHA as `PAPERCLIP_RUNNER_SOURCE_REVISION`.
 
 Do not bake provider credentials, Paperclip bootstrap tickets, or Daytona
 preview tokens into this image. They remain per-run secret material.
+
+Provider CLI updates are manifest-only changes: repository CI owns the root
+lockfile. The image build resolves the complete workspace manifest graph before
+its frozen install, matching CI when a source commit precedes the lockfile bot.
+Keep one latest stable CLI installation per provider; refresh exact runtime
+versions and qualification digests together, never install a private older copy
+or download dependencies when a task starts.

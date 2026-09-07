@@ -18,22 +18,15 @@ WORKDIR /workspace
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc tsconfig.base.json ./
 COPY patches ./patches
 COPY scripts/link-plugin-dev-sdk.mjs ./scripts/link-plugin-dev-sdk.mjs
-COPY packages/paperclip-eval-kernel/package.json ./packages/paperclip-eval-kernel/package.json
-COPY packages/paperclip-runner/package.json ./packages/paperclip-runner/package.json
-RUN pnpm install --frozen-lockfile --filter '@paperclipai/paperclip-runner...'
-COPY packages/paperclip-eval-kernel/tsconfig.json ./packages/paperclip-eval-kernel/tsconfig.json
-COPY packages/paperclip-eval-kernel/src ./packages/paperclip-eval-kernel/src
-COPY packages/paperclip-runner/styles.css packages/paperclip-runner/tsconfig.json packages/paperclip-runner/tsconfig.surfaces.json ./packages/paperclip-runner/
-COPY packages/paperclip-runner/protocol ./packages/paperclip-runner/protocol
-COPY packages/paperclip-runner/runner/crates/runner-core/src/generated_acpx_sidecar_contract.rs ./packages/paperclip-runner/runner/crates/runner-core/src/generated_acpx_sidecar_contract.rs
-COPY \
-    packages/paperclip-runner/scripts/acpx-sidecar-contract.mjs \
-    packages/paperclip-runner/scripts/build-provider-pack.mjs \
-    packages/paperclip-runner/scripts/build-verified-provider-entrypoints.mjs \
-    packages/paperclip-runner/scripts/generate-acpx-sidecar-contract.mjs \
-    packages/paperclip-runner/scripts/generate-protocol-schema-module.mjs \
-    ./packages/paperclip-runner/scripts/
-COPY packages/paperclip-runner/src ./packages/paperclip-runner/src
+# CI owns pnpm-lock.yaml and regenerates it for manifest-only PRs. Include the
+# complete workspace manifest graph so all source-owned patches apply, then
+# resolve before the frozen install. This happens only during image creation.
+COPY packages ./packages
+COPY server/package.json ./server/package.json
+COPY ui/package.json ./ui/package.json
+COPY cli/package.json ./cli/package.json
+RUN pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile \
+    && pnpm install --frozen-lockfile --filter '@paperclipai/paperclip-runner...'
 ARG PAPERCLIP_RUNNER_SOURCE_REVISION
 RUN test -n "${PAPERCLIP_RUNNER_SOURCE_REVISION}"
 RUN pnpm --filter @paperclipai/paperclip-runner build:typescript \
