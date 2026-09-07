@@ -21,3 +21,5 @@ export { sidebarPreferencesApi } from "./sidebarPreferences";
 export { resourceMembershipsApi } from "./resourceMemberships";
 export { inboxDismissalsApi } from "./inboxDismissals";
 export { companySkillsApi } from "./companySkills";
+export { trashApi } from "./trash";
+export type { TrashItem, TrashEntityType } from "./trash";

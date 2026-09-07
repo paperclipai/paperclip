@@ -686,6 +686,9 @@ export const queryKeys = {
   skills: {
     available: ["skills", "available"] as const,
   },
+  trash: {
+    list: (companyId: string, entityType?: string) => ["trash", companyId, entityType ?? "all"] as const,
+  },
   plugins: {
     all: ["plugins"] as const,
     examples: ["plugins", "examples"] as const,

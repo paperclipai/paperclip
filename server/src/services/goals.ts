@@ -14,6 +14,7 @@ export async function getDefaultCompanyGoal(db: GoalReader, companyId: string) {
         eq(goals.level, "company"),
         eq(goals.status, "active"),
         isNull(goals.parentId),
+        isNull(goals.deletedAt),
       ),
     )
     .orderBy(asc(goals.createdAt))
@@ -28,6 +29,7 @@ export async function getDefaultCompanyGoal(db: GoalReader, companyId: string) {
         eq(goals.companyId, companyId),
         eq(goals.level, "company"),
         isNull(goals.parentId),
+        isNull(goals.deletedAt),
       ),
     )
     .orderBy(asc(goals.createdAt))
@@ -37,14 +39,20 @@ export async function getDefaultCompanyGoal(db: GoalReader, companyId: string) {
   return db
     .select()
     .from(goals)
-    .where(and(eq(goals.companyId, companyId), eq(goals.level, "company")))
+    .where(and(eq(goals.companyId, companyId), eq(goals.level, "company"), isNull(goals.deletedAt)))
     .orderBy(asc(goals.createdAt))
     .then((rows) => rows[0] ?? null);
 }
 
 export function goalService(db: Db) {
   return {
-    list: (companyId: string) => db.select().from(goals).where(eq(goals.companyId, companyId)),
+    list: (companyId: string, options?: { includeDeleted?: boolean }) => {
+      const conditions = [eq(goals.companyId, companyId)];
+      if (!options?.includeDeleted) {
+        conditions.push(isNull(goals.deletedAt));
+      }
+      return db.select().from(goals).where(and(...conditions));
+    },
 
     getById: (id: string) =>
       db
@@ -69,6 +77,26 @@ export function goalService(db: Db) {
         .where(eq(goals.id, id))
         .returning()
         .then((rows) => rows[0] ?? null),
+
+    softDelete: async (id: string) => {
+      const updated = await db
+        .update(goals)
+        .set({ deletedAt: new Date(), updatedAt: new Date() })
+        .where(and(eq(goals.id, id), isNull(goals.deletedAt)))
+        .returning()
+        .then((rows) => rows[0] ?? null);
+      return updated;
+    },
+
+    restore: async (id: string) => {
+      const updated = await db
+        .update(goals)
+        .set({ deletedAt: null, updatedAt: new Date() })
+        .where(eq(goals.id, id))
+        .returning()
+        .then((rows) => rows[0] ?? null);
+      return updated;
+    },
 
     remove: (id: string) =>
       db

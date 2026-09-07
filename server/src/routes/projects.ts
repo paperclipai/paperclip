@@ -710,24 +710,44 @@ export function projectRoutes(db: Db) {
     const id = req.params.id as string;
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Project not found");
     if (!existing) return;
-    const project = await svc.remove(id);
-    if (!project) {
-      res.status(404).json({ error: "Project not found" });
-      return;
+
+    const permanent = req.query.permanent === "true";
+
+    if (permanent) {
+      const project = await svc.remove(id);
+      if (!project) {
+        res.status(404).json({ error: "Project not found" });
+        return;
+      }
+      const actor = getActorInfo(req);
+      await logActivity(db, {
+        companyId: project.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        action: "project.permanently_deleted",
+        entityType: "project",
+        entityId: project.id,
+      });
+      res.json(project);
+    } else {
+      const project = await svc.softDelete(id);
+      if (!project) {
+        res.status(404).json({ error: "Project not found" });
+        return;
+      }
+      const actor = getActorInfo(req);
+      await logActivity(db, {
+        companyId: project.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        action: "project.trashed",
+        entityType: "project",
+        entityId: project.id,
+      });
+      res.json(project);
     }
-
-    const actor = getActorInfo(req);
-    await logActivity(db, {
-      companyId: project.companyId,
-      actorType: actor.actorType,
-      actorId: actor.actorId,
-      agentId: actor.agentId,
-      action: "project.deleted",
-      entityType: "project",
-      entityId: project.id,
-    });
-
-    res.json(project);
   });
 
   return router;

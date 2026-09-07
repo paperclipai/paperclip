@@ -21,6 +21,7 @@ import {
   GanttChartSquare,
   LayoutGrid,
   Users,
+  Trash2,
 } from "lucide-react";
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
@@ -260,6 +261,7 @@ export function Sidebar() {
               <SidebarNavItem to="/costs" label="Costs" icon={DollarSign} />
               <SidebarNavItem to="/activity" label="Activity" icon={History} />
               <SidebarNavItem to="/company/settings" label="Settings" icon={Settings} />
+              <SidebarNavItem to="/trash" label="Trash" icon={Trash2} />
             </SidebarSection>
           </>
         )}

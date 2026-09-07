@@ -8254,6 +8254,30 @@ export function issueService(db: Db) {
       return cleared;
     },
 
+    softDelete: async (id: string) => {
+      const updated = await db
+        .update(issues)
+        .set({ hiddenAt: new Date(), updatedAt: new Date() })
+        .where(and(eq(issues.id, id), isNull(issues.hiddenAt)))
+        .returning()
+        .then((rows) => rows[0] ?? null);
+      if (!updated) return null;
+      const [enriched] = await withIssueLabels(db, [updated]);
+      return enriched;
+    },
+
+    restore: async (id: string) => {
+      const updated = await db
+        .update(issues)
+        .set({ hiddenAt: null, updatedAt: new Date() })
+        .where(eq(issues.id, id))
+        .returning()
+        .then((rows) => rows[0] ?? null);
+      if (!updated) return null;
+      const [enriched] = await withIssueLabels(db, [updated]);
+      return enriched;
+    },
+
     remove: (id: string) =>
       db.transaction(async (tx) => {
         const attachmentAssetIds = await tx

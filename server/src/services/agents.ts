@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { and, desc, eq, gte, inArray, lt, ne, or, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNull, lt, ne, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -777,10 +777,13 @@ export function agentService(db: Db) {
   }
 
   return {
-    list: async (companyId: string, options?: { includeTerminated?: boolean }) => {
+    list: async (companyId: string, options?: { includeTerminated?: boolean; includeDeleted?: boolean }) => {
       const conditions = [eq(agents.companyId, companyId)];
       if (!options?.includeTerminated) {
         conditions.push(ne(agents.status, "terminated"));
+      }
+      if (!options?.includeDeleted) {
+        conditions.push(isNull(agents.deletedAt));
       }
       const [rows, allCompanyRows] = await Promise.all([
         db.select().from(agents).where(and(...conditions)),
@@ -950,6 +953,28 @@ export function agentService(db: Db) {
         .where(eq(agentApiKeys.agentId, id));
 
       return getById(id);
+    },
+
+    softDelete: async (id: string) => {
+      const existing = await getById(id);
+      if (!existing) return null;
+      const updated = await db
+        .update(agents)
+        .set({ deletedAt: new Date(), updatedAt: new Date() })
+        .where(and(eq(agents.id, id), isNull(agents.deletedAt)))
+        .returning()
+        .then((rows) => rows[0] ?? null);
+      return updated ? normalizeAgentRow(updated) : null;
+    },
+
+    restore: async (id: string) => {
+      const updated = await db
+        .update(agents)
+        .set({ deletedAt: null, updatedAt: new Date() })
+        .where(eq(agents.id, id))
+        .returning()
+        .then((rows) => rows[0] ?? null);
+      return updated ? normalizeAgentRow(updated) : null;
     },
 
     remove: async (id: string) => {
