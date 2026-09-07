@@ -41,6 +41,11 @@ describe("runner API catalog", () => {
 });
 
 describe("runner API request boundary", () => {
+  it.each(["reopen", "resume", "interrupt"])("cannot hide lifecycle intent %s in an ordinary issue patch", async field => {
+    const request = vi.fn<typeof fetch>();
+    await expect(executeRunnerApi({ operationId: "PATCH /api/issues/{id}", pathParams: { id: "other-issue" }, body: { [field]: true, billingCode: "safe-extra-field" } }, context, io(request))).rejects.toThrow("lifecycle changes");
+    expect(request).not.toHaveBeenCalled();
+  });
   it.each([
     "POST /api/agents/me/secrets/{key}/value",
     "POST /api/agents/{id}/keys",

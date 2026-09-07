@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { chmod, writeFile, symlink } from "node:fs/promises";
 import { join } from "node:path";
@@ -21,7 +22,7 @@ describe("runner API against real HTTP routes", () => {
     else process.env.PAPERCLIP_AGENT_JWT_SECRET = oldSecret;
   });
 
-  it("runs runnerd → PRP → authority → actual authenticated HTTP", async () => {
+  it.skipIf(!process.env.PAPERCLIP_REQUIRE_RUNNER_API_INTEGRATION && !existsSync(defaultCapabilityRunnerdBinary()))("runs runnerd → PRP → authority → actual authenticated HTTP", async () => {
     const fixture = await server.fixture();
     const provider = join(server.root, "scripted-api-provider.mjs");
     await writeFile(provider, `#!${process.execPath}
@@ -72,6 +73,16 @@ else if(m.id!==undefined) send({id:m.id,result:{}});
     const [run] = await server.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId));
     expect((run.resultJson as Record<string, unknown> | null)?.apiToolReceipts).toBeUndefined();
     expect((await fixture.snapshot()).activity.filter(row => row.action === "runner.api_called")).toEqual([]);
+  });
+
+  it("rejects issue lifecycle intents before dispatch or receipt creation", async () => {
+    const fixture = await server.fixture();
+    for (const field of ["reopen", "resume", "interrupt"]) {
+      await expect(fixture.authority.execute({ tool: "call_api", callId: field, arguments: { operationId: "PATCH /api/issues/{id}", pathParams: { id: fixture.blockerId }, body: { [field]: true } } })).rejects.toThrow("lifecycle changes");
+    }
+    const [run] = await server.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId));
+    expect((run.resultJson as Record<string, unknown> | null)?.apiToolReceipts).toBeUndefined();
+    expect((await fixture.snapshot()).issues.find(row => row.id === fixture.blockerId)?.status).toBe("todo");
   });
 
   it("preserves route validation, authorization and audit; replays mutations once", async () => {

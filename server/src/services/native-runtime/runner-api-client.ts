@@ -66,7 +66,7 @@ export function validateRunnerApiCall(value: unknown, context: RunnerApiContext)
       throw forbidden("API comments cannot change runner execution state");
     }
     if (issueRoute && /\/issues\/\{[^}]+\}$/.test(operation.path)) {
-      const lifecycle = ["status", "workMode", "executionRunId", "checkoutRunId", "executionState", "executionPolicy", "executionAgentNameKey", "executionLockedAt", "completedAt", "cancelledAt", "startedAt", "assigneeAgentId", "assigneeUserId", "blockedByIssueIds"];
+      const lifecycle = ["status", "workMode", "executionRunId", "checkoutRunId", "executionState", "executionPolicy", "executionAgentNameKey", "executionLockedAt", "completedAt", "cancelledAt", "startedAt", "assigneeAgentId", "assigneeUserId", "blockedByIssueIds", "reopen", "resume", "interrupt"];
       if (lifecycle.some((key) => Object.hasOwn(body, key))) throw forbidden("Use dedicated completion, review, delegation or dependency tools for task lifecycle changes");
       // The real issue router normalizes identifiers and PostgreSQL accepts
       // uppercase UUIDs. Apply the same identity comparison before dispatch.

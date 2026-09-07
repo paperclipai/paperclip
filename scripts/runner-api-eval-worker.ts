@@ -22,16 +22,11 @@ if (!process.argv.includes("--jsonl")) throw new Error("Use --catalog or --jsonl
 process.env.PAPERCLIP_AGENT_JWT_SECRET = randomUUID() + randomUUID();
 const output = (value: unknown) => process.stdout.write("RUNNER_API_EVAL " + JSON.stringify(value) + "\n");
 const OPENROUTER_MODELS = new Set(["openrouter/anthropic/claude-sonnet-5", "openrouter/deepseek/deepseek-v4-flash-0731", "openrouter/google/gemini-3.8-flash"]);
-// Read a single dotenv value as data. Never evaluate a shell file or log its contents.
-async function openRouterEnvironment() {
-  let key = process.env.OPENROUTER_API_KEY;
-  if (!key) {
-    const secrets = await readFile(join(homedir(), ".secrets"), "utf8");
-    const line = secrets.split(/\r?\n/).find(line => /^(?:export\s+)?OPENROUTER_API_KEY\s*=/.test(line.trim()));
-    key = line?.trim().replace(/^(?:export\s+)?OPENROUTER_API_KEY\s*=\s*/, "").trim();
-    if (key && ((key.startsWith('"') && key.endsWith('"')) || (key.startsWith("'") && key.endsWith("'")))) key = key.slice(1, -1);
-  }
-  if (!key || /[\s`$]/.test(key)) throw new Error("OPENROUTER_API_KEY is missing or not a literal dotenv value");
+// The controller selects and injects one provider credential. The worker never
+// reads ambient home credential files or desktop keychains.
+function openRouterEnvironment() {
+  const key = process.env.OPENROUTER_API_KEY;
+  if (!key || /\s/.test(key)) throw new Error("Controller must inject OPENROUTER_API_KEY");
   return { PATH: process.env.PATH, OPENROUTER_API_KEY: key };
 }
 const server = await startRunnerApiTestServer();
@@ -103,11 +98,10 @@ try {
           providerVersion = execFileSync(resolve("packages/paperclip-runner/node_modules/opencode-ai/bin/opencode.exe"), ["--version"], { encoding: "utf8" }).trim();
           if (providerVersion !== "1.18.29") throw new Error("OpenCode profile requires version 1.18.29");
         }
-        const providerEnvironment = isOpenRouter ? await openRouterEnvironment() : request.model === "claude-sonnet-5" ? (() => {
-            if (process.env.CLAUDE_CODE_OAUTH_TOKEN) return { PATH: process.env.PATH, CLAUDE_CODE_OAUTH_TOKEN: process.env.CLAUDE_CODE_OAUTH_TOKEN };
-            const credential = JSON.parse(execFileSync("/usr/bin/security", ["find-generic-password", "-s", "Claude Code-credentials", "-w"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] })).claudeAiOauth;
-            if (!credential?.accessToken || credential.expiresAt <= Date.now()) throw new Error("Claude login expired; run claude auth login before paid Sonnet attempts");
-            return { PATH: process.env.PATH, HOME: homedir(), CLAUDE_CODE_OAUTH_TOKEN: credential.accessToken };
+        const providerEnvironment = isOpenRouter ? openRouterEnvironment() : request.model === "claude-sonnet-5" ? (() => {
+            const token = process.env.CLAUDE_CODE_OAUTH_TOKEN;
+            if (!token) throw new Error("Controller must inject CLAUDE_CODE_OAUTH_TOKEN");
+            return { PATH: process.env.PATH, CLAUDE_CODE_OAUTH_TOKEN: token };
           })() : undefined;
         bundle = createRunnerdCodexTransport({
           provider, acpxAgent: "claude", acpxPermissionMode: "approve-reads",
@@ -217,7 +211,7 @@ try {
     // The controller supplies a unique retained attempt directory; never overwrite evidence.
     journal.append({ kind: "attempt_finished", error, usage, terminalSeen, at: new Date().toISOString() });
     journal.close();
-    await writeFile(join(directory, "artifact.json"), JSON.stringify(artifact, null, 2), { flag: "wx" });
+    await writeFile(join(directory, "artifact.json"), JSON.stringify(artifact, null, 2), { flag: "wx", mode: 0o600 });
     output({ attemptId: request.attemptId, artifactPath: join(directory, "artifact.json"), error, usage });
   }
 } finally { await server.close(); }
