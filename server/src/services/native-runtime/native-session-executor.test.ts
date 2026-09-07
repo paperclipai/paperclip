@@ -6011,82 +6011,86 @@ describe("runnerd provider runtime wiring", () => {
     );
   });
 
-  it.each([false, true])(
-    "stages the controller artifact when the sandbox has no runner (explicit: %s)",
-    async (explicit) => {
-      const packagedBinary = join(isolatedStateDirectory, "packaged-runnerd");
-      const explicitBinary = join(isolatedStateDirectory, "remote-runnerd");
-      await writeFile(packagedBinary, "packaged runner");
-      await writeFile(explicitBinary, "explicit remote runner");
-      state.resolveRunnerBinary.mockReturnValueOnce(packagedBinary);
-      const sourceBinary = explicit ? explicitBinary : packagedBinary;
-      const syncIn = vi.fn(async () => undefined);
-      const remoteExecute = vi.fn(
-        async (command: { command: string; args?: string[] }) => {
-          if (command.args?.[0] === "--build-metadata") {
-            // Stop at the first verification boundary after upload. This test
-            // exercises real artifact preparation without opening a PRP socket.
-            throw new Error("reached-remote-verification");
+  it("uses the image's isolated Codex without uploading or installing artifacts", async () => {
+    const syncIn = vi.fn(async () => undefined);
+    const remoteExecute = vi.fn(
+      async (command: { command: string; args?: string[] }) => {
+        let stdout = "";
+        const script = command.args?.[1] ?? "";
+        if (command.args?.[0] === "--build-metadata") {
+          stdout = JSON.stringify({
+            schema: "paperclip-runner/runnerd-build-metadata/v1",
+            binaryName: "paperclip-runnerd",
+            packageName: "@paperclipai/paperclip-runner",
+            binaryContractVersion: 2,
+            prpTransportModes: ["listen_ws"],
+          });
+        } else if (command.args?.[0] === "--version") {
+          if (
+            command.command.endsWith(
+              "/.paperclip-runtime/paperclip-runner/bin/codex",
+            )
+          ) {
+            throw new Error("reached-preinstalled-codex-verification");
           }
-          const platform = command.args?.[1] === "uname -s; uname -m";
-          return {
-            exitCode: 0,
-            signal: null,
-            timedOut: false,
-            stderr: "",
-            stdout: platform
-              ? `${process.platform === "darwin" ? "Darwin" : "Linux"}\n${process.arch === "arm64" ? "aarch64" : "x86_64"}\n`
-              : "",
-          };
-        },
-      );
-      try {
-        await createRunnerdBackend({
-          db: leaseDb(execution),
-          execution,
-          runnerInstanceId: "runner-packaged-fallback",
-          runnerIngressAuthorized: true,
-          ...(explicit ? { runnerRemoteBinaryPath: explicitBinary } : {}),
-          runnerExecutionTarget: {
-            kind: "remote",
-            transport: "sandbox",
-            remoteCwd: "/workspace",
-            environmentId: "environment",
-            leaseId: "lease",
-            providerKey: "daytona",
-            effectiveCapabilities: { runnerWebSocketIngress: true },
-            runner: { execute: remoteExecute, syncIn },
-          } as never,
-        });
-        state.createTransport.mockClear();
-        state.createBackend.mock.calls.at(-1)![1].codexTransportFactory!();
-        const transport = state.createTransport.mock
-          .calls[0]![0] as RunnerTransportOptions & {
-          controlPlaneRegistration: (authority: unknown) => Promise<unknown>;
+          stdout =
+            command.command === "/opt/paperclip-runner/bin/codex"
+              ? "codex-cli 0.148.0"
+              : "codex-cli 0.128.0";
+        } else if (script.includes("command -v paperclip-runnerd")) {
+          stdout = "/usr/local/bin/paperclip-runnerd\n";
+        } else if (script.includes("command -v codex")) {
+          stdout = script.includes("/opt/paperclip-runner/bin/codex")
+            ? "/opt/paperclip-runner/bin/codex\n"
+            : "/usr/local/bin/codex\n";
+        } else if (!script.includes("ln -sfn")) {
+          throw new Error(`unexpected command: ${command.command}`);
+        }
+        return {
+          exitCode: 0,
+          signal: null,
+          timedOut: false,
+          stderr: "",
+          stdout,
         };
-        expect(transport.runnerBinary).toBe(sourceBinary);
-        await expect(transport.controlPlaneRegistration({})).rejects.toThrow(
-          "reached-remote-verification",
-        );
-        expect(syncIn).toHaveBeenCalledWith([
-          expect.objectContaining({
-            files: [
-              expect.objectContaining({
-                sourcePath: sourceBinary,
-                targetPath:
-                  "/workspace/.paperclip-runtime/paperclip-runner/bin/paperclip-runnerd",
-                mode: 0o700,
-              }),
-            ],
-          }),
-        ]);
-      } finally {
-        state.resolveRunnerBinary
-          .mockReset()
-          .mockReturnValue("/tmp/paperclip-runnerd");
-      }
-    },
-  );
+      },
+    );
+    await createRunnerdBackend({
+      db: leaseDb(execution),
+      execution,
+      runnerInstanceId: "runner-image-runtime",
+      runnerIngressAuthorized: true,
+      runnerExecutionTarget: {
+        kind: "remote",
+        transport: "sandbox",
+        remoteCwd: "/workspace",
+        environmentId: "environment",
+        leaseId: "lease",
+        providerKey: "daytona",
+        effectiveCapabilities: { runnerWebSocketIngress: true },
+        runner: { execute: remoteExecute, syncIn },
+      } as never,
+    });
+    state.createTransport.mockClear();
+    state.createBackend.mock.calls.at(-1)![1].codexTransportFactory!();
+    const transport = state.createTransport.mock
+      .calls[0]![0] as RunnerTransportOptions & {
+      controlPlaneRegistration: (authority: unknown) => Promise<unknown>;
+    };
+    await expect(transport.controlPlaneRegistration({})).rejects.toThrow(
+      "reached-preinstalled-codex-verification",
+    );
+    expect(syncIn).not.toHaveBeenCalled();
+    expect(remoteExecute).toHaveBeenCalledWith(
+      expect.objectContaining({
+        command: "/opt/paperclip-runner/bin/codex",
+        args: ["--version"],
+      }),
+    );
+    expect(
+      remoteExecute.mock.calls.some(([call]) => call.command === "npm"),
+    ).toBe(false);
+  });
 
   it("binds a remote launch to the configured controller-owned runner artifact", async () => {
     const remoteCwd = "/home/daytona/paperclip-workspace";

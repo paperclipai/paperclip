@@ -40,6 +40,7 @@ import {
   acpxRuntimeSessionDirectoryName,
   createNativeSessionBackend,
   createRunnerdCodexTransport,
+  defaultCapabilityRunnerdBinary,
   executeNativeSession,
   parseNativeExecutionInput,
   parsePaperclipQuestionSet,
@@ -6470,9 +6471,9 @@ async function createRunnerdBackendWithinSessionClaim(
       command: "sh",
       args: [
         "-c",
-        `candidate="$HOME/.local/bin/${name}"; ` +
-          `if [ -x "$candidate" ]; then printf '%s\\n' "$candidate"; ` +
-          `else command -v ${name} 2>/dev/null || true; fi`,
+        `for candidate in /opt/paperclip-runner/bin/${name} "$HOME/.local/bin/${name}"; do ` +
+          `if [ -x "$candidate" ]; then printf '%s\\n' "$candidate"; exit 0; fi; done; ` +
+          `command -v ${name} 2>/dev/null || true`,
       ],
       cwd: remoteTarget.remoteCwd,
       bypassSession: true,
@@ -6548,10 +6549,8 @@ async function createRunnerdBackendWithinSessionClaim(
       }
     }
     if (!usedPreinstalledRunner) {
-      // Use the same packaged artifact that the controller hashes for PRP.
-      // The vendored module cannot resolve workspace dist/ or Cargo target/
-      // paths in a released server.
-      const sourceBinary = controllerRunnerBinary;
+      const sourceBinary =
+        explicitRemoteBinary ?? defaultCapabilityRunnerdBinary();
       if (!existsSync(sourceBinary)) {
         throw new Error("runner_remote_artifact_unavailable");
       }
