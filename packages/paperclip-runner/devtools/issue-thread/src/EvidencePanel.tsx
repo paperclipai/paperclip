@@ -395,7 +395,7 @@ export function EvidencePanel(props: EvidencePanelProps) {
       {devtools !== undefined ? (
         <>
           {devtools === null ? (
-            evalReport ? <>
+            evalReport ? <section className="pit-devtools">
               <div className="pit-devtools-tabs" role="tablist" aria-label="Developer tools">
                 {(["eval", "evidence"] as const).map((tab) => <button
                   key={tab}
@@ -407,7 +407,7 @@ export function EvidencePanel(props: EvidencePanelProps) {
                 ><span className="pit-tab-glyph"><Icon name="evidence" /></span><span>{tab === "eval" ? "Eval" : "Evidence"}</span></button>)}
               </div>
               {devtoolsTab === "eval" ? <EvalReportInspector evalReport={evalReport} /> : null}
-            </> : <p className="pit-muted pit-devtools-loading">Loading company state…</p>
+            </section> : <p className="pit-muted pit-devtools-loading">Loading company state…</p>
           ) : (
             <DevtoolsInspector snapshot={devtools} onFork={onForkRevision} tab={devtoolsTab} onTabChange={onDevtoolsTabChange} evalReport={evalReport} />
           )}
