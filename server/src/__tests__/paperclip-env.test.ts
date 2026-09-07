@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { buildPaperclipEnv } from "../adapters/utils.js";
 
@@ -73,7 +74,7 @@ describe("buildPaperclipEnv", () => {
     expect(env.PAPERCLIP_API_URL).toBe("http://localhost:4100");
   });
 
-  it("does not inject a discovered interface candidate for direct launches", () => {
+  it("removes discovered interface candidates from direct launches", () => {
     process.env.PAPERCLIP_RUNTIME_API_URL = "http://localhost:3100";
     process.env.PAPERCLIP_LISTEN_HOST = "0.0.0.0";
     process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = JSON.stringify([
@@ -85,7 +86,39 @@ describe("buildPaperclipEnv", () => {
 
     expect(env.PAPERCLIP_API_URL).toBe("http://localhost:3100");
     expect(env.PAPERCLIP_RUNTIME_API_URL).toBe("http://localhost:3100");
-    expect(env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON).toBeUndefined();
+    expect(env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON).toBe("[]");
+  });
+
+  it.each([
+    ["localhost", JSON.stringify(["http://localhost:3100"])],
+    ["IPv4 loopback lower bound", JSON.stringify(["http://127.0.0.1:3100"])],
+    ["IPv4 loopback interior", JSON.stringify(["http://127.42.0.9:3100"])],
+    ["IPv4 loopback upper bound", JSON.stringify(["http://127.255.255.255:3100"])],
+    ["bracketed IPv6 loopback", JSON.stringify(["http://[::1]:3100"])],
+    ["unbracketed IPv6 loopback", JSON.stringify(["::1"])],
+    ["IPv4 wildcard", JSON.stringify(["http://0.0.0.0:3100"])],
+    ["bracketed IPv6 wildcard", JSON.stringify(["http://[::]:3100"])],
+    ["unbracketed IPv6 wildcard", JSON.stringify(["::"])],
+    ["malformed URL", JSON.stringify(["not a URL"])],
+    ["malformed JSON", "not JSON"],
+    ["non-array JSON", JSON.stringify({ candidate: "http://127.0.0.1:3100" })],
+  ])("does not pass %s runtime candidates to a direct child", (_description, candidateHint) => {
+    process.env.PAPERCLIP_RUNTIME_API_URL = "http://localhost:3100";
+    process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = candidateHint;
+
+    const env = {
+      ...process.env,
+      ...buildPaperclipEnv({ id: "agent-1", companyId: "company-1" }),
+    };
+    const child = spawnSync(
+      process.execPath,
+      ["-e", "process.stdout.write(process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON ?? '<missing>')"],
+      { env, encoding: "utf8" },
+    );
+
+    expect(child.error).toBeUndefined();
+    expect(child.status).toBe(0);
+    expect(child.stdout).toBe("[]");
   });
 
   it("uses runtime listen host/port when explicit URL is not set", () => {

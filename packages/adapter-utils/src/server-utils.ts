@@ -2165,6 +2165,10 @@ export function buildPaperclipEnv(agent: { id: string; companyId: string }): Rec
     `http://${runtimeHost}:${runtimePort}`;
   vars.PAPERCLIP_API_URL = apiUrl;
   vars.PAPERCLIP_RUNTIME_API_URL = apiUrl;
+  // Some direct adapters merge the server process environment after this
+  // helper returns. Override the discovery hint so no host candidate reaches
+  // the child. Remote bridge launches replace this with their scoped URL.
+  vars.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = "[]";
   return vars;
 }
 
