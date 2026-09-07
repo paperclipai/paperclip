@@ -97,6 +97,8 @@ for persistent local error state when it must retranslate without retrying.
 
 Use `Trans` for complete sentences containing links or emphasis. Preserve the
 component names, attributes, destinations, and interpolation variables. Do not
+use HTML void-element names such as `link` for named components; use a name
+such as `githubLink` and test the rendered link text in both locales. Do not
 translate a raw enum before comparing it, selecting an icon, or submitting it.
 Map known enum values to labels at the rendering boundary; preserve unknown
 values. The same applies to bundled app metadata: localize recognized built-in

@@ -73,7 +73,7 @@ import { nativeMcpLaunchBinding } from "../native-mcp.js";
 import { materializeNativeRuntimeSkills } from "../runtime-context-materializer.js";
 
 export const OPENCODE_SERVER_DRIVER_KIND = "opencode_server" as const;
-export const QUALIFIED_OPENCODE_VERSION = "1.18.17" as const;
+export const QUALIFIED_OPENCODE_VERSION = "1.18.29" as const;
 export const QUALIFIED_OPENCODE_MODEL =
   "openrouter/deepseek/deepseek-v4-flash-0731" as const;
 

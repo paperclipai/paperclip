@@ -5103,7 +5103,7 @@ describeEmbeddedPostgres("tool access service", () => {
     }
   }, 15_000);
 
-  it("binds a non-expiring managed GitHub identity and installation to one agent", async () => {
+  it.each(["none", "event", "same-time-refresh"])("binds a managed GitHub identity and protects refresh from concurrent access changes (%s)", async (concurrentChange) => {
     const company = await createCompany(db);
     const userId = `github-manager-${randomUUID()}`;
     await grantBoardUser(db, company.id, userId, [], "owner");
@@ -5114,6 +5114,7 @@ describeEmbeddedPostgres("tool access service", () => {
     const githubDefinition = getConnectableAppDefinition("github")!;
     const previousOwnershipAvailability = githubDefinition.ownershipAvailability;
     githubDefinition.ownershipAvailability = { ...previousOwnershipAvailability, platform_shared: true };
+    let beforeRepositoryResponse = async () => {};
     vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
       const href = String(url);
       if (href === "https://api.github.com/user") {
@@ -5128,7 +5129,8 @@ describeEmbeddedPostgres("tool access service", () => {
         }] });
       }
       if (href.includes("https://api.github.com/user/installations/101/repositories?")) {
-        return mcpHttpResponse({ total_count: 3, repositories: [{ full_name: "paperclipai/do-not-store" }] });
+        await beforeRepositoryResponse();
+        return mcpHttpResponse({ total_count: 3, repositories: [1, 2, 3].map((id) => ({ id, full_name: `paperclipai/repo-${id}`, description: "do-not-store" })) });
       }
       if (href === GITHUB_CONNECTOR_PROFILES["github.code"].serverUrl) {
         return mcpHttpResponse({
@@ -5226,6 +5228,33 @@ describeEmbeddedPostgres("tool access service", () => {
         eq(toolConnectionInstalls.targetType, "agent"),
         eq(toolConnectionInstalls.targetId, agent.id),
       ))).resolves.toHaveLength(1);
+      vi.mocked(connector.setWebhookBinding).mockClear();
+      if (concurrentChange !== "none") {
+        beforeRepositoryResponse = async () => {
+          const [latest] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, grant!.id));
+          await db.update(connectionGrants).set({ providerTenant: {
+            ...latest!.providerTenant,
+            github: {
+              ...latest!.providerTenant!.github!,
+              accessRevision: randomUUID(),
+              // Simulate a refresh with identical timestamps, so only the unique
+              // access revision can distinguish its newer access snapshot.
+              ...(concurrentChange === "event" ? { lastWebhookAt: new Date().toISOString() } : {}),
+              installationIds: [], installationCount: 0, repositoryCount: 0,
+              repositorySelection: "none", repositories: undefined, webhookHealth: "unhealthy",
+            },
+          } }).where(eq(connectionGrants.id, grant!.id));
+        };
+        await expect(service.checkHealth(connected.connectionId, actor))
+          .rejects.toThrow("GitHub access changed during refresh. Try again.");
+        const [latest] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, grant!.id));
+        expect(latest?.providerTenant?.github).toMatchObject({ installationIds: [], repositoryCount: 0, webhookHealth: "unhealthy" });
+        expect(latest?.providerTenant?.github?.repositories).toBeUndefined();
+        expect(connector.setWebhookBinding).not.toHaveBeenCalled();
+      } else {
+        await expect(service.checkHealth(connected.connectionId, actor)).resolves.toMatchObject({ connection: { healthStatus: "ok" } });
+        expect(connector.setWebhookBinding).toHaveBeenCalled();
+      }
     } finally {
       githubDefinition.ownershipAvailability = previousOwnershipAvailability;
     }
@@ -5261,7 +5290,7 @@ describeEmbeddedPostgres("tool access service", () => {
         }] });
       }
       if (href.includes("https://api.github.com/user/installations/101/repositories?")) {
-        return mcpHttpResponse({ total_count: 1, repositories: [] });
+        return mcpHttpResponse({ total_count: 1, repositories: [{ id: 1, full_name: "paperclipai/repo-1" }] });
       }
       if (href === GITHUB_CONNECTOR_PROFILES["github.code"].serverUrl) {
         return mcpHttpResponse({

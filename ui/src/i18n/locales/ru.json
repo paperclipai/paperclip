@@ -8301,6 +8301,8 @@
     "requestTokens_other": "{{tokens}} токена в событиях отдельных запросов"
   },
   "localizationConnections": {
+    "managedSignInUnavailableTitle": "Вход в {{app}} недоступен",
+    "managedSignInUnavailableDescription": "Этот экземпляр подключён к Paperclip, но вход в {{app}} сейчас недоступен. Повторите попытку чуть позже или обратитесь к администратору экземпляра.",
     "authorizationWasCancelledOrDeclinedYourSavedC1": "Авторизация отменена или отклонена. Сохранённое подключение не изменено.",
     "gitHubAccessIsRequiredInstallPaperclipAndGran2": "Нужен доступ к GitHub. Установите Paperclip и предоставьте доступ хотя бы к одному репозиторию, затем повторите попытку.",
     "authorizationDidNotCompleteYourSavedConnectio3": "Авторизация не завершена. Сохранённое подключение осталось на месте — можно повторить попытку.",
@@ -8754,6 +8756,19 @@
     "metric_billed_cents": "Начисленные расходы"
   },
   "localizationApps": {
+    "githubAccount": "Аккаунт GitHub",
+    "configureOnGitHub": "Настроить на GitHub",
+    "loadGitHubConfiguration": "Загрузить настройки GitHub",
+    "filterRepositoriesByOwner": "Фильтр репозиториев по аккаунту или организации",
+    "allRepositoryAccounts": "Все аккаунты",
+    "searchGitHubRepositories": "Поиск репозиториев GitHub",
+    "searchRepositories": "Поиск репозиториев",
+    "accessibleGitHubRepositories": "Доступные репозитории GitHub",
+    "privateRepository": "Закрытый репозиторий",
+    "noMatchingRepositories": "По запросу не найдено репозиториев.",
+    "noAccessibleRepositoriesForOwner": "У этого аккаунта или организации нет доступных репозиториев.",
+    "refreshRepositoryList": "Обновите доступ, чтобы загрузить актуальный список репозиториев.",
+    "missingRepositoryHint": "Не видите нужную организацию или репозиторий? <githubLink>Настройте доступ на GitHub</githubLink> и обновите список.",
     "services1": "Сервисы",
     "checkingWhoCanReconnectThisIdentity3": "Проверяем, кто может повторно подключить эту учётную запись…",
     "weCouldnTVerifyWhoCanReconnectThisIdentityRel4": "Не удалось проверить, кто может повторно подключить эту учётную запись. Перезагрузите страницу и повторите попытку.",

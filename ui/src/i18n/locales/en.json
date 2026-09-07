@@ -8169,6 +8169,8 @@
     "requestTokens_other": "{{tokens}} tokens across request-scoped events"
   },
   "localizationConnections": {
+    "managedSignInUnavailableTitle": "{{app}} sign-in is unavailable",
+    "managedSignInUnavailableDescription": "This instance is connected to Paperclip, but {{app}} sign-in is not currently available. Try again shortly or contact your instance administrator.",
     "authorizationWasCancelledOrDeclinedYourSavedC1": "Authorization was cancelled or declined. Your saved connection was not changed.",
     "gitHubAccessIsRequiredInstallPaperclipAndGran2": "GitHub access is required. Install Paperclip and grant at least one repository, then try again.",
     "authorizationDidNotCompleteYourSavedConnectio3": "Authorization did not complete. Your saved connection is still here, so you can try again.",
@@ -8622,6 +8624,19 @@
     "metric_billed_cents": "Billed costs"
   },
   "localizationApps": {
+    "githubAccount": "GitHub account",
+    "configureOnGitHub": "Configure on GitHub",
+    "loadGitHubConfiguration": "Load GitHub configuration",
+    "filterRepositoriesByOwner": "Filter repositories by account or organization",
+    "allRepositoryAccounts": "All accounts",
+    "searchGitHubRepositories": "Search GitHub repositories",
+    "searchRepositories": "Search repositories",
+    "accessibleGitHubRepositories": "Accessible GitHub repositories",
+    "privateRepository": "Private repository",
+    "noMatchingRepositories": "No repositories match your search.",
+    "noAccessibleRepositoriesForOwner": "No accessible repositories for this account or organization.",
+    "refreshRepositoryList": "Refresh access to load the current repository list.",
+    "missingRepositoryHint": "Missing an organization or repository? <githubLink>Configure access on GitHub</githubLink>, then refresh this list.",
     "services1": "Services",
     "checkingWhoCanReconnectThisIdentity3": "Checking who can reconnect this identity…",
     "weCouldnTVerifyWhoCanReconnectThisIdentityRel4": "We couldn't verify who can reconnect this identity. Reload the page to try again.",
@@ -9110,7 +9125,7 @@
     "deleteServiceCredentialsWarning_few": "Deletes credentials for {{app}} and {{count}} connected services.",
     "deleteServiceCredentialsWarning_many": "Deletes credentials for {{app}} and {{count}} connected services.",
     "deleteServiceCredentialsWarning_other": "Deletes credentials for {{app}} and {{count}} connected services.",
-    "selectedRepositories_one": "{{count}} selected repositories",
+    "selectedRepositories_one": "{{count}} selected repository",
     "selectedRepositories_few": "{{count}} selected repositories",
     "selectedRepositories_many": "{{count}} selected repositories",
     "selectedRepositories_other": "{{count}} selected repositories",

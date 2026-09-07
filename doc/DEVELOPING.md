@@ -807,6 +807,22 @@ agent workspace. The host `HOME` itself, a directory that contains it, a
 filesystem root, a `CODEX_HOME` overlap, or a canonical path outside the
 assigned workspace is rejected before provider startup.
 
+### Preinstalled remote runner runtime
+
+For fast sandbox startup, bake `paperclip-runnerd` and the latest stable agent
+CLIs into the sandbox image. Keep one version of each CLI shared by native and
+local adapters; never retain an older global CLI beside a newer private copy.
+Pin the resolved releases at image build time for reproducibility and refresh
+the runner's qualification versions and binary digests together with those pins.
+The ACP bridges remain separately qualified protocol dependencies.
+
+Native discovery checks `/opt/paperclip-runner/bin`, then `$HOME/.local/bin`,
+then PATH. Any preferred-directory entry must launch the same shared CLI that
+normal adapters use. Discovery picks the first executable; it does not compare
+versions across directories. With these artifacts preinstalled, startup links
+and verifies them without uploading a binary or installing packages. Deploy
+the updated sandbox image with the matching runner qualification changes.
+
 ### Native runner restart recovery
 
 Paperclip Runner keeps its heartbeat run, native session, logical runner, and

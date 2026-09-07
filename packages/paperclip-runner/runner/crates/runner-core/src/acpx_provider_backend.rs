@@ -146,7 +146,7 @@ impl AcpxProviderDescriptor {
                 "@agentclientprotocol/claude-agent-acp",
                 "0.70.0",
                 Some("@anthropic-ai/claude-agent-sdk"),
-                Some("0.3.232"),
+                Some("0.3.263"),
                 "sha256:9d73d1f0f121fb96cc8badb28c22d5bff02d8582eb2e40360a81c189e1b9422a",
             ),
             "codex" => (
@@ -154,7 +154,7 @@ impl AcpxProviderDescriptor {
                 "@agentclientprotocol/codex-acp",
                 "1.6.2",
                 Some("@openai/codex"),
-                Some("0.148.0"),
+                Some("0.153.4"),
                 "sha256:7a923b3829884d3cabcc9659d22cace3f86813e7bfffc90974b10140a45bc400",
             ),
             "pi" => return Err(DurableRunnerError::invalid(
@@ -1601,7 +1601,7 @@ mod tests {
                     "@agentclientprotocol/claude-agent-acp",
                     "0.70.0",
                     json!("@anthropic-ai/claude-agent-sdk"),
-                    json!("0.3.232"),
+                    json!("0.3.263"),
                     "sha256:9d73d1f0f121fb96cc8badb28c22d5bff02d8582eb2e40360a81c189e1b9422a",
                 )
             } else {
@@ -1610,7 +1610,7 @@ mod tests {
                     "@agentclientprotocol/codex-acp",
                     "1.6.2",
                     json!("@openai/codex"),
-                    json!("0.148.0"),
+                    json!("0.153.4"),
                     "sha256:7a923b3829884d3cabcc9659d22cace3f86813e7bfffc90974b10140a45bc400",
                 )
             };

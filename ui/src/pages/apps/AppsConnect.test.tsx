@@ -898,7 +898,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(container.textContent).not.toContain("Connect with Paperclip");
   });
 
-  it("uses GitHub's advertised PAT fallback when an enrolled Cloud omits the managed profile", async () => {
+  it("explains unavailable GitHub sign-in without silently switching to a PAT", async () => {
     mockSearch.value = "source=github&stage=setup&cloud_connector=enrolled";
     listGalleryMock.mockResolvedValueOnce({
       apps: [{
@@ -910,19 +910,118 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
 
     await render();
 
-    expect(container.textContent).toContain("Your GitHub key");
-    expect(container.textContent).not.toContain("Connect with Paperclip");
-    expect(container.textContent).not.toContain("Continue to GitHub");
-    const connect = buttonByText("Connect");
-    expect(connect?.disabled).toBe(true);
-    const tokenInput = container.querySelector<HTMLInputElement>('input[type="password"]');
-    expect(tokenInput).toBeTruthy();
-    await act(async () => setInputValue(tokenInput!, "github_pat_test"));
+    expect(container.textContent).toContain("GitHub sign-in is unavailable");
+    expect(container.textContent).not.toContain("Your GitHub key");
+    expect(container.querySelector('input[type="password"]')).toBeNull();
+    expect(buttonByText("Try again")?.disabled).toBe(false);
+
+    listGalleryMock.mockResolvedValue({ apps: [GITHUB_MANAGED] });
+    await act(async () => buttonByText("Try again")!.click());
     await flushReact();
-    expect(connect?.disabled).toBe(false);
+    expect(container.textContent).toContain("Continue to GitHub");
+    expect(container.textContent).not.toContain("GitHub sign-in is unavailable");
   });
 
-  it("replaces a hidden managed method after enrollment recovery reveals an advertised PAT fallback", async () => {
+  it("localizes unavailable GitHub sign-in and its pending retry without losing the dedicated identity", async () => {
+    await i18n.changeLanguage("en");
+    mockSearch.value = "source=github&stage=setup&cloud_connector=enrolled";
+    const storageKey = "paperclip.connector-enrollment-access:github";
+    const accessIntent = {
+      companyId: "company-1", grantKind: "agent", installChoice: "specific", agentIds: ["agent-1"],
+    };
+    window.sessionStorage.setItem(storageKey, JSON.stringify(accessIntent));
+    const unavailableGallery = {
+      apps: [{
+        ...GITHUB,
+        methods: GITHUB.methods.filter((method) => !method.oauthStrategy),
+        ownershipAvailability: { platform_shared: false, customer: true, dcr: true },
+      }],
+    };
+    const canonicalGallery = JSON.stringify(unavailableGallery);
+    listGalleryMock.mockResolvedValue(unavailableGallery);
+    await render();
+
+    const heading = [...container.querySelectorAll("h2")].find((node) => node.textContent === "GitHub sign-in is unavailable")!;
+    expect(heading).toBeTruthy();
+    const description = heading.nextElementSibling!;
+    const retry = buttonByText("Try again")!;
+    const back = buttonByText("Back")!;
+    expect(retry).toBeTruthy();
+    expect(back).toBeTruthy();
+    const reads = [listGalleryMock, listApplicationsMock, listConnectionsMock, listAgentsMock, getCloudConnectorEnrollmentMock];
+    const readCounts = reads.map((mock) => mock.mock.calls.length);
+    for (const language of ["en", "ru", "en"] as const) {
+      await act(async () => { await i18n.changeLanguage(language); });
+      await flushReact();
+      expect(container.contains(heading)).toBe(true);
+      expect(heading.textContent).toBe(language === "ru" ? "Вход в GitHub недоступен" : "GitHub sign-in is unavailable");
+      expect(description.textContent).toBe(language === "ru"
+        ? "Этот экземпляр подключён к Paperclip, но вход в GitHub сейчас недоступен. Повторите попытку чуть позже или обратитесь к администратору экземпляра."
+        : "This instance is connected to Paperclip, but GitHub sign-in is not currently available. Try again shortly or contact your instance administrator.");
+      expect(container.contains(retry)).toBe(true);
+      expect(retry.textContent).toBe(language === "ru" ? "Повторить попытку" : "Try again");
+      expect(retry.disabled).toBe(false);
+      expect(container.contains(back)).toBe(true);
+      expect(back.textContent).toBe(language === "ru" ? "Назад" : "Back");
+      expect(container.querySelector('input[type="password"]')).toBeNull();
+      expect(container.textContent).not.toContain("Your GitHub key");
+      expect(window.sessionStorage.getItem(storageKey)).toBeNull();
+      expect(reads.map((mock) => mock.mock.calls.length)).toEqual(readCounts);
+      expect(JSON.stringify(unavailableGallery)).toBe(canonicalGallery);
+      for (const mutation of [connectAppMock, startOAuthMock, finishAppMock, putConnectionInstallsMock, startCloudConnectorEnrollmentMock]) {
+        expect(mutation).not.toHaveBeenCalled();
+      }
+      expect(mockNavigate).not.toHaveBeenCalled();
+      expect(navigateTopLevelMock).not.toHaveBeenCalled();
+    }
+
+    let resolveGallery!: (value: { apps: typeof GITHUB_MANAGED[] }) => void;
+    const refreshedGallery = new Promise<{ apps: typeof GITHUB_MANAGED[] }>((resolve) => { resolveGallery = resolve; });
+    listGalleryMock.mockReturnValueOnce(refreshedGallery);
+    await act(async () => { await i18n.changeLanguage("ru"); });
+    await flushReact();
+    await act(async () => { retry.click(); });
+    await flushReact();
+    expect(listGalleryMock).toHaveBeenCalledTimes(readCounts[0] + 1);
+    expect(listGalleryMock).toHaveBeenLastCalledWith("company-1");
+    const retryReadCounts = reads.map((mock) => mock.mock.calls.length);
+    for (const language of ["en", "ru", "en"] as const) {
+      await act(async () => { await i18n.changeLanguage(language); });
+      await flushReact();
+      expect(container.contains(heading)).toBe(true);
+      expect(heading.textContent).toBe(language === "ru" ? "Вход в GitHub недоступен" : "GitHub sign-in is unavailable");
+      expect(container.contains(retry)).toBe(true);
+      expect(retry.textContent).toBe(language === "ru" ? "Повторить попытку" : "Try again");
+      expect(retry.disabled).toBe(true);
+      expect(reads.map((mock) => mock.mock.calls.length)).toEqual(retryReadCounts);
+      expect(connectAppMock).not.toHaveBeenCalled();
+      expect(startOAuthMock).not.toHaveBeenCalled();
+      expect(window.sessionStorage.getItem(storageKey)).toBeNull();
+    }
+    await act(async () => { resolveGallery({ apps: [GITHUB_MANAGED] }); });
+    await flushReact();
+    expect(container.contains(heading)).toBe(false);
+    expect(buttonByText("Continue to GitHub")?.disabled).toBe(false);
+    expect(container.querySelector('input[type="password"]')).toBeNull();
+    await act(async () => { await i18n.changeLanguage("ru"); });
+    await flushReact();
+    const continueToGitHub = buttonByText("Перейти в GitHub")!;
+    expect(continueToGitHub).toBeTruthy();
+    expect(connectAppMock).not.toHaveBeenCalled();
+    await act(async () => { continueToGitHub.click(); });
+    await flushReact();
+    expect(connectAppMock).toHaveBeenCalledTimes(1);
+    expect(connectAppMock).toHaveBeenCalledWith("company-1", expect.objectContaining({
+      galleryKey: "github", grantKind: "agent", subjectAgentId: "agent-1",
+    }));
+    expect(accessIntent).toEqual({
+      companyId: "company-1", grantKind: "agent", installChoice: "specific", agentIds: ["agent-1"],
+    });
+    expect(JSON.stringify(unavailableGallery)).toBe(canonicalGallery);
+    expect(startCloudConnectorEnrollmentMock).not.toHaveBeenCalled();
+  });
+
+  it("keeps GitHub sign-in intent when enrollment recovery reveals an unavailable profile", async () => {
     mockSearch.value = "source=github&stage=setup&cloud_connector=enrolled";
     listGalleryMock.mockResolvedValueOnce({
       apps: [{
@@ -953,10 +1052,9 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     });
     await flushReact();
 
-    expect(container.textContent).toContain("Your GitHub key");
-    expect(container.textContent).not.toContain("Connect with Paperclip");
-    expect(container.textContent).not.toContain("Continue to GitHub");
-    expect(buttonByText("Connect")?.disabled).toBe(true);
+    expect(container.textContent).toContain("GitHub sign-in is unavailable");
+    expect(container.textContent).not.toContain("Your GitHub key");
+    expect(buttonByText("Try again")?.disabled).toBe(false);
   });
 
   it("preserves a dedicated agent identity across the full-page enrollment callback", async () => {
@@ -1689,6 +1787,26 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(navigateTopLevelMock).toHaveBeenCalledWith(
       "https://mcp.notion.com/authorize?state=resumed",
     );
+  });
+
+  it("shows installation recovery for GitHub even when an advanced PAT method is available", async () => {
+    const connectionId = "22222222-2222-4222-8222-222222222222";
+    mockSearch.value = `source=github&resume=${connectionId}&oauth=failed&code=github_installation_required&installation_url=https%3A%2F%2Fgithub.com%2Fapps%2Fpaperclip-for-github%2Finstallations%2Fnew`;
+    listGalleryMock.mockResolvedValue({ apps: [GITHUB_MANAGED] });
+    listApplicationsMock.mockResolvedValue({ applications: [{ id: "app-github", status: "draft", metadata: { sourceTemplateKey: "github" } }] });
+    listConnectionsMock.mockResolvedValue({ connections: [{
+      id: connectionId, applicationId: "app-github", authKind: "oauth", credentialPolicy: "per_user", status: "draft",
+      config: { sourceTemplateKey: "github", connectionMethodKey: "managed" }, transportConfig: {},
+    }] });
+    await render();
+    await flushReact();
+    expect(container.textContent).toContain("Install Paperclip and grant at least one repository");
+    expect(container.querySelector('a[href="https://github.com/apps/paperclip-for-github/installations/new"]')?.textContent).toBe("Install Paperclip on GitHub");
+    expect(container.textContent).not.toContain("Your GitHub key");
+    await act(async () => buttonByText("Try again")!.click());
+    await flushReact();
+    expect(startOAuthMock).toHaveBeenCalledWith(connectionId, { asCurrentUser: true });
+    expect(connectAppMock).not.toHaveBeenCalled();
   });
 
   it("returns a declined OAuth draft to the same one-action resume checkpoint", async () => {

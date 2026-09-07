@@ -1942,13 +1942,17 @@ export async function loadGitHubGrantMetadata(
   repositorySelection: "all" | "selected" | "mixed" | "none";
   installationIds: string[];
   installationOwnerLogins: string[];
+  repositories: Array<{ id: string; fullName: string; installationId: string; private?: boolean }>;
   installationUrl: string;
   managementUrl: string;
   appSlug?: string;
+  accessRevision: string;
   lastAccessRefreshAt: string;
   webhookHealth: "pending";
 }> {
-  const github = async (path: string): Promise<Record<string, unknown>> => {
+  let resolvedAppSlug = appSlug;
+  const accessRefreshStartedAt = new Date().toISOString();
+  const github = async (path: string): Promise<{ data: Record<string, unknown>; hasNext: boolean }> => {
     const response = await request(`https://api.github.com${path}`, {
       headers: {
         accept: "application/vnd.github+json",
@@ -1965,25 +1969,40 @@ export async function loadGitHubGrantMetadata(
     }
     const value = await response.json() as unknown;
     if (!recordValue(value)) throw unprocessable("GitHub returned invalid account metadata", { code: "github_bad_response" });
-    return value;
+    return { data: value, hasNext: /;\s*rel="next"/.test(response.headers.get("link") ?? "") };
   };
-  const user = await github("/user");
+  const list = async (path: string, key: string): Promise<Record<string, unknown>[]> => {
+    const items: Record<string, unknown>[] = [];
+    for (let page = 1; ; page += 1) {
+      const { data, hasNext } = await github(`${path}?per_page=100&page=${page}`);
+      const batch = data[key];
+      if (!Array.isArray(batch) || !batch.every(recordValue) || (hasNext && batch.length === 0)) {
+        throw unprocessable("GitHub returned invalid access metadata", { code: "github_bad_response" });
+      }
+      items.push(...batch);
+      if (!hasNext) return items;
+    }
+  };
+  const { data: user } = await github("/user");
   const userId = githubId(user.id);
   const login = typeof user.login === "string" ? user.login : null;
   if (!userId || !login) throw unprocessable("GitHub returned invalid account metadata", { code: "github_bad_response" });
-  const installationsResponse = await github("/user/installations?per_page=100");
-  const installations = Array.isArray(installationsResponse.installations)
-    ? installationsResponse.installations.filter(recordValue).slice(0, 100)
-    : [];
+  const installations = await list("/user/installations", "installations");
   const installationIds: string[] = [];
   const owners = new Set<string>();
   const selections = new Set<"all" | "selected">();
   const managementUrls = new Set<string>();
-  let repositoryCount = 0;
+  const repositories = new Map<string, { id: string; fullName: string; installationId: string; private?: boolean }>();
   for (const installation of installations) {
     const installationId = githubId(installation.id);
     if (!installationId) continue;
     installationIds.push(installationId);
+    // Older grants predate the broker's appSlug field. GitHub's installation
+    // response identifies this token's app without choosing an environment.
+    if (!resolvedAppSlug && typeof installation.app_slug === "string"
+      && /^[a-z0-9-]{1,100}$/.test(installation.app_slug)) {
+      resolvedAppSlug = installation.app_slug;
+    }
     if (installation.repository_selection === "all" || installation.repository_selection === "selected") {
       selections.add(installation.repository_selection);
     }
@@ -1991,14 +2010,22 @@ export async function loadGitHubGrantMetadata(
     if (typeof account?.login === "string") owners.add(account.login);
     const managementUrl = githubInstallationManagementUrl(installation.html_url);
     if (managementUrl) managementUrls.add(managementUrl);
-    const repositories = await github(`/user/installations/${installationId}/repositories?per_page=1`);
-    if (typeof repositories.total_count === "number" && Number.isSafeInteger(repositories.total_count) && repositories.total_count >= 0) {
-      repositoryCount += repositories.total_count;
+    for (const repository of await list(`/user/installations/${installationId}/repositories`, "repositories")) {
+      const id = githubId(repository.id);
+      const fullName = typeof repository.full_name === "string" ? repository.full_name : "";
+      if (!id || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(fullName)) {
+        throw unprocessable("GitHub returned invalid repository metadata", { code: "github_bad_response" });
+      }
+      repositories.set(id, {
+        id, fullName, installationId,
+        ...(typeof repository.private === "boolean" ? { private: repository.private } : {}),
+      });
     }
   }
+  const repositoryCount = repositories.size;
   if (installationIds.length === 0 || repositoryCount === 0) {
-    const installationUrl = appSlug
-      ? `https://github.com/apps/${appSlug}/installations/new`
+    const installationUrl = resolvedAppSlug
+      ? `https://github.com/apps/${resolvedAppSlug}/installations/new`
       : "https://github.com/settings/installations";
     throw unprocessable("GitHub access is required. Install Paperclip and grant at least one repository before refreshing access.", {
       code: "github_installation_required",
@@ -2006,8 +2033,8 @@ export async function loadGitHubGrantMetadata(
       managementUrl: "https://github.com/settings/installations",
     });
   }
-  const installationUrl = appSlug
-    ? `https://github.com/apps/${appSlug}/installations/new`
+  const installationUrl = resolvedAppSlug
+    ? `https://github.com/apps/${resolvedAppSlug}/installations/new`
     : "https://github.com/settings/installations";
   return {
     userId,
@@ -2018,12 +2045,14 @@ export async function loadGitHubGrantMetadata(
     repositorySelection: selections.size > 1 ? "mixed" : selections.values().next().value ?? "none",
     installationIds,
     installationOwnerLogins: [...owners],
+    repositories: [...repositories.values()].sort((a, b) => a.fullName.localeCompare(b.fullName)),
     installationUrl,
     managementUrl: managementUrls.size === 1
       ? managementUrls.values().next().value!
       : "https://github.com/settings/installations",
-    ...(appSlug ? { appSlug } : {}),
-    lastAccessRefreshAt: new Date().toISOString(),
+    ...(resolvedAppSlug ? { appSlug: resolvedAppSlug } : {}),
+    accessRevision: randomUUID(),
+    lastAccessRefreshAt: accessRefreshStartedAt,
     webhookHealth: "pending",
   };
 }
@@ -8584,21 +8613,36 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         throw retryError;
       }
     }
-    const previousGitHub = grant.providerTenant?.github;
-    const providerTenant = {
-      ...(grant.providerTenant ?? {}),
-      github: {
-        ...metadata,
-        ...(previousGitHub?.lastWebhookAt ? { lastWebhookAt: previousGitHub.lastWebhookAt } : {}),
-        webhookHealth: previousGitHub?.webhookHealth ?? metadata.webhookHealth,
-      },
-    };
-    const [updated] = await db.update(connectionGrants).set({
-      providerTenant,
-      status: "active",
-      updatedAt: now(),
-    }).where(and(eq(connectionGrants.id, grant.id), eq(connectionGrants.companyId, grant.companyId))).returning();
-    if (!updated) throw notFound("GitHub authorization not found");
+    const { updated, previousGitHub } = await db.transaction(async (tx) => {
+      const [currentGrant] = await tx.select().from(connectionGrants).where(and(
+        eq(connectionGrants.id, grant.id), eq(connectionGrants.companyId, grant.companyId),
+      )).for("update").limit(1);
+      if (!currentGrant || currentGrant.status === "revoked") throw notFound("GitHub authorization not found");
+      const previousGitHub = currentGrant.providerTenant?.github;
+      const initialGitHub = grant.providerTenant?.github;
+      // No lock is held during provider requests. Reject a snapshot if another
+      // refresh or webhook changed access while those requests were in flight.
+      if (previousGitHub?.accessRevision !== initialGitHub?.accessRevision
+        || previousGitHub?.lastWebhookAt !== initialGitHub?.lastWebhookAt
+        || previousGitHub?.lastAccessRefreshAt !== initialGitHub?.lastAccessRefreshAt) {
+        throw conflict("GitHub access changed during refresh. Try again.", { code: "github_access_changed" });
+      }
+      const providerTenant = {
+        ...(currentGrant.providerTenant ?? {}),
+        github: {
+          ...metadata,
+          ...(previousGitHub?.lastWebhookAt ? { lastWebhookAt: previousGitHub.lastWebhookAt } : {}),
+          webhookHealth: previousGitHub?.webhookHealth ?? metadata.webhookHealth,
+        },
+      };
+      const [updated] = await tx.update(connectionGrants).set({
+        providerTenant,
+        status: "active",
+        updatedAt: now(),
+      }).where(and(eq(connectionGrants.id, grant.id), eq(connectionGrants.companyId, grant.companyId))).returning();
+      if (!updated) throw notFound("GitHub authorization not found");
+      return { updated, previousGitHub };
+    });
 
     const cloudConnector = currentCloudConnector();
     const subject = updated.kind === "agent" && updated.subjectAgentId

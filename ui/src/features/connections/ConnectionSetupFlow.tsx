@@ -968,7 +968,12 @@ export function ConnectionSetupFlow({
     [entry, galleryQuery.data, linkUrl],
   );
 
-  const entryAutomaticOAuthMethod = automaticOAuthMethod(entry);
+  const selectedSetupMethod = entry ? getAvailableConnectionMethod(entry, connectionMethodKey || null) : null;
+  // Apps with an advanced PAT option still need OAuth progress and recovery
+  // screens when their selected method is managed sign-in.
+  const entryAutomaticOAuthMethod = selectedSetupMethod && connectionMethodSupportsAutomaticOAuth(selectedSetupMethod)
+    ? selectedSetupMethod
+    : automaticOAuthMethod(entry);
   const automaticOAuthEntry = credentialSource === "paperclip_vault" && entryAutomaticOAuthMethod ? entry : null;
   const directOAuthEntry = credentialSource === "paperclip_vault" && canUseAutomaticOAuthFastPath(entry) ? entry : null;
   const directOAuthLookupPending = Boolean(directOAuthSource) && (
@@ -1229,9 +1234,8 @@ export function ConnectionSetupFlow({
     );
     // The enrollment lookup decides whether a hidden managed method means
     // "enroll this instance" or "that Cloud profile is unavailable here".
-    // Do not choose a method until that distinction is known: retaining the
-    // hidden method key after an active enrollment produces an empty setup
-    // screen with a permanently disabled generic Connect button.
+    // Preserve managed sign-in intent in both cases; the setup screen explains
+    // unavailable profiles rather than downgrading to a credential form.
     if (
       requestedDefinitionUsesManagedConnector
       && !requestedEntryAdvertisesManagedConnector
@@ -1241,7 +1245,6 @@ export function ConnectionSetupFlow({
     const initialMethod = (
       requestedDefinitionUsesManagedConnector
         && !requestedEntryAdvertisesManagedConnector
-        && connectorEnrollmentQuery.data?.configured !== true
         ? recommendedManagedConnectorMethod(fullRequestedDefinition)
         : null
     ) ?? recommendedSetupConnectionMethod(methods);
@@ -1319,14 +1322,10 @@ export function ConnectionSetupFlow({
         hasPrefilledLink: Boolean(prefill.link),
         zapierSource,
       }));
-    } else if (
-      connectorEnrollmentQuery.data?.configured === true
-      && connectionMethodKey
-      && !methods.some((candidate) => candidate.key === connectionMethodKey)
-    ) {
-      // A failed enrollment lookup can select the hidden pre-enrollment
-      // method. Replace it after a successful refetch proves that the instance
-      // is enrolled and the current Cloud gallery does not advertise it.
+    } else if (entryAdvertisesManagedConnector !== requestedEntryAdvertisesManagedConnector) {
+      // A capability refresh must replace the stale gallery entry as well as
+      // its method, while preserving the chosen audience and wizard step.
+      setEntry(requestedEntry);
       setConnectionMethodKey(initialMethod?.key ?? "");
       setConfigValues(defaultMethodConfig(initialMethod));
     }
@@ -1353,6 +1352,7 @@ export function ConnectionSetupFlow({
     connectionMethodKey,
     credentialSource,
     entry?.slug,
+    entryAdvertisesManagedConnector,
     galleryQuery.data,
     galleryQuery.isLoading,
     navigate,
@@ -1670,6 +1670,14 @@ export function ConnectionSetupFlow({
     && (directOAuthEntry || oauthPhase !== "entry"),
   );
 
+  const managedConnectorUnavailable = Boolean(
+    step === "key"
+    && entry
+    && requestedDefinitionUsesManagedConnector
+    && !entryAdvertisesManagedConnector
+    && connectorEnrollmentQuery.data?.configured === true
+  );
+
   const showConnectorEnrollmentStep = Boolean(
     step === "key"
     && entry
@@ -1919,7 +1927,21 @@ export function ConnectionSetupFlow({
         />
       )}
 
-      {step === "key" && entry && showConnectorEnrollmentStep ? (
+      {managedConnectorUnavailable && entry ? (
+        <div className="mx-auto max-w-xl rounded-xl border border-border bg-card p-6">
+          <h2 className="text-lg font-semibold text-foreground">{t("localizationConnections.managedSignInUnavailableTitle", { app: entry.name })}</h2>
+          <p className="mt-2 text-sm text-muted-foreground">
+            {t("localizationConnections.managedSignInUnavailableDescription", { app: entry.name })}
+          </p>
+          <div className="mt-6 flex items-center justify-between gap-3">
+            <Button type="button" variant="ghost" onClick={() => setAppStep("access")}>{t("localizationConnections.back63")}</Button>
+            <Button type="button" disabled={galleryQuery.isFetching} onClick={() => void galleryQuery.refetch()}>
+              {galleryQuery.isFetching ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+              {t("localizationConnections.tryAgain32")}
+            </Button>
+          </div>
+        </div>
+      ) : step === "key" && entry && showConnectorEnrollmentStep ? (
         <div className="mx-auto max-w-xl">
           <div className="rounded-xl border border-border bg-card p-6">
             <div className="flex items-start gap-3">

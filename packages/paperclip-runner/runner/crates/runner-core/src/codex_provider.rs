@@ -24,7 +24,7 @@ use crate::qualified_launch::verify_launch_artifact;
 use crate::question_response::validate_question_response;
 
 pub const CODEX_APP_SERVER_MAX_FRAME_BYTES: usize = 4 * 1024 * 1024;
-const QUALIFIED_OPENCODE_VERSION: &str = "1.18.17";
+const QUALIFIED_OPENCODE_VERSION: &str = "1.18.29";
 const DEFAULT_PROVIDER_TRACE_MAX_BYTES: usize = 64 * 1024 * 1024;
 const MAX_BUFFERED_MESSAGES: usize = 1_024;
 const MAX_BUFFERED_MESSAGE_BYTES: usize = 16 * 1024 * 1024;
