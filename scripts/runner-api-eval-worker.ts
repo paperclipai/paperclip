@@ -101,7 +101,7 @@ try {
         if (!request.reservationId || request.maxCostUsd !== 0.5 || !["gpt-5.6-luna", "claude-sonnet-5", ...OPENROUTER_MODELS].includes(request.model)) throw new Error("Paid attempt requires ledger reservation and qualified model");
         if (isOpenRouter) {
           providerVersion = execFileSync(resolve("packages/paperclip-runner/node_modules/opencode-ai/bin/opencode.exe"), ["--version"], { encoding: "utf8" }).trim();
-          if (providerVersion !== "1.18.17") throw new Error("OpenCode profile requires version 1.18.17");
+          if (providerVersion !== "1.18.29") throw new Error("OpenCode profile requires version 1.18.29");
         }
         const providerEnvironment = isOpenRouter ? await openRouterEnvironment() : request.model === "claude-sonnet-5" ? (() => {
             if (process.env.CLAUDE_CODE_OAUTH_TOKEN) return { PATH: process.env.PATH, CLAUDE_CODE_OAUTH_TOKEN: process.env.CLAUDE_CODE_OAUTH_TOKEN };
