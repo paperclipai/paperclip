@@ -14,7 +14,8 @@ export function runnerApiRestriction(method: string, path: string): string | nul
 /** Runner-owned transitions cannot be reached by the generic HTTP escape hatch. */
 export function runnerApiMutationRestriction(path: string): string | null {
   const issueRoute = /^\/api\/issues\/\{[^}]+\}/.test(path);
-  if (/^\/api\/heartbeat-runs\//.test(path)
+  if (/\/(routines|routine-triggers)(\/|$)/.test(path)
+    || /^\/api\/heartbeat-runs\//.test(path)
     || /^\/api\/agents\/\{[^}]+\}\/(heartbeat|wakeup|pause|resume|terminate|approve|clear-error|runtime-state)(\/|$)/.test(path)
     || /^\/api\/(approvals|decisions)\/\{[^}]+\}\/(approve|reject|decide|cancel|dismiss|request-revision|resubmit)$/.test(path)
     || (issueRoute && /\/queued-comments\/\{[^}]+\}\/steer$/.test(path))

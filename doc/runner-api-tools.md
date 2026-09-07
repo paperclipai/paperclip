@@ -72,7 +72,9 @@ a stopped run cannot dispatch an upload prepared under its earlier binding.
 Ask and pre-acceptance Plan permit reads through the escape hatch. Existing
 dedicated-tool exceptions are unchanged. Runner-owned checkout, completion,
 status/assignment transitions, approval decisions and execution-control actions
-cannot be bypassed through generic calls. API-only ordinary fields, such as a
+cannot be bypassed through generic calls. Routine creation, schedule/trigger
+changes and manual/public routine execution require the existing scheduling
+clients. Routine metadata remains readable. API-only ordinary fields, such as a
 task's `billingCode`, remain accessible even when a dedicated tool covers other
 fields on that endpoint.
 

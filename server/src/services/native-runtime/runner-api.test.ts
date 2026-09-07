@@ -41,6 +41,15 @@ describe("runner API catalog", () => {
 });
 
 describe("runner API request boundary", () => {
+  it.each(runnerApiCatalog().filter(operation => !["GET", "HEAD", "OPTIONS"].includes(operation.method) && /\/(routines|routine-triggers)(\/|$)/.test(operation.path)))("keeps scheduled execution $operationId behind its existing client", async operation => {
+    const request = vi.fn<typeof fetch>();
+    await expect(executeRunnerApi({ operationId: operation.operationId }, context, io(request))).rejects.toThrow(/cannot bypass|credential broker/);
+    expect(request).not.toHaveBeenCalled();
+    expect(operation.callPolicy).toBe("restricted");
+  });
+  it("keeps routine metadata readable", () => {
+    expect(validateRunnerApiCall({ operationId: "GET /api/companies/{companyId}/routines" }, context).operation.callPolicy).toBe("rest");
+  });
   it.each(["reopen", "resume", "interrupt"])("cannot hide lifecycle intent %s in an ordinary issue patch", async field => {
     const request = vi.fn<typeof fetch>();
     await expect(executeRunnerApi({ operationId: "PATCH /api/issues/{id}", pathParams: { id: "other-issue" }, body: { [field]: true, billingCode: "safe-extra-field" } }, context, io(request))).rejects.toThrow("lifecycle changes");

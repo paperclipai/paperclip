@@ -7,6 +7,7 @@ import { heartbeatRuns, issues } from "@paperclipai/db";
 import { beforeAll, afterAll, describe, expect, it, vi } from "vitest";
 import { startRunnerApiTestServer } from "../../__tests__/helpers/runner-api-server.js";
 import { createRunnerdCodexTransport, defaultCapabilityRunnerdBinary } from "../../vendor/paperclip-runner/index.js";
+import { runnerApiCatalog } from "./runner-api-catalog.js";
 import { registerRunnerPrpAuthority } from "../../realtime/runner-prp-ws.js";
 
 describe("runner API against real HTTP routes", () => {
@@ -99,6 +100,17 @@ else if(m.id!==undefined) send({id:m.id,result:{}});
     const [run] = await server.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId));
     expect((run.resultJson as Record<string, unknown> | null)?.apiToolReceipts).toBeUndefined();
     expect((await fixture.snapshot()).issues.find(row => row.id === fixture.blockerId)?.status).toBe("todo");
+  });
+
+  it("rejects scheduled execution controls before dispatch or durable receipt", async () => {
+    const fixture = await server.fixture();
+    const operations = runnerApiCatalog().filter(operation => !["GET", "HEAD", "OPTIONS"].includes(operation.method) && /\/(routines|routine-triggers)(\/|$)/.test(operation.path));
+    expect(operations.length).toBeGreaterThan(5);
+    for (const operation of operations) {
+      await expect(fixture.authority.execute({ tool: "call_api", callId: operation.operationId, arguments: { operationId: operation.operationId } })).rejects.toThrow(/cannot bypass|credential broker/);
+    }
+    const [run] = await server.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId));
+    expect((run.resultJson as Record<string, unknown> | null)?.apiToolReceipts).toBeUndefined();
   });
 
   it("preserves route validation, authorization and audit; replays mutations once", async () => {
