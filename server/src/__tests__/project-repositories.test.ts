@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { canBrowseProjectRepositoryGrant, mergeProjectRepository } from "../services/project-repositories.js";
+import { canBrowseProjectRepositoryGrant, mergeProjectRepository, resolveProjectRepositorySelection } from "../services/project-repositories.js";
 import { loadGitHubTokenRepositories } from "../services/tool-access.js";
 import type { ProjectRepository } from "@paperclipai/shared";
 
@@ -30,6 +30,13 @@ describe("project repository access", () => {
     mergeProjectRepository(repos, { id: "10", fullName: "org/renamed", private: true }, "Company");
     mergeProjectRepository(repos, { id: "10", fullName: "org/renamed", private: true }, "Company");
     expect([...repos.values()]).toEqual([{ id: "10", fullName: "org/renamed", url: "https://github.com/org/renamed", private: true, connections: ["Personal", "Company"] }]);
+  });
+  it("refreshes retained selections from discovery, falls back only for unavailable existing IDs, and rejects new unavailable IDs", () => {
+    const existing = [{ name: "old/name", repoUrl: "https://github.com/old/name", metadata: { githubRepositoryId: "1" } }];
+    const renamed = { id: "1", fullName: "new/name", url: "https://github.com/new/name", connections: ["Personal"] };
+    expect(resolveProjectRepositorySelection(["1", "1"], [renamed], existing)).toEqual([renamed]);
+    expect(resolveProjectRepositorySelection(["1"], [], existing)).toEqual([{ id: "1", fullName: "old/name", url: existing[0].repoUrl, connections: [] }]);
+    expect(() => resolveProjectRepositorySelection(["2"], [], existing)).toThrow("no longer available");
   });
   it("loads every PAT repository page and never follows provider-supplied URLs", async () => {
     const request = vi.fn<typeof fetch>().mockResolvedValueOnce(new Response(JSON.stringify([{ id: 1, full_name: "org/a" }]), { headers: { link: '<https://evil.test/steal>; rel="next"' } }))

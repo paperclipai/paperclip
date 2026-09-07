@@ -1,4 +1,5 @@
-import type { ProjectRepository } from "@paperclipai/shared";
+import type { ProjectRepository, ProjectWorkspace } from "@paperclipai/shared";
+import { unprocessable } from "../errors.js";
 import { isConnectionGrantAudienceAllowed } from "./tool-gateway.js";
 
 export function canBrowseProjectRepositoryGrant(input: {
@@ -22,5 +23,20 @@ export function mergeProjectRepository(
   repositories.set(repo.id, {
     ...repo, url: `https://github.com/${repo.fullName}`,
     connections: [...new Set([...(previous?.connections ?? []), connectionName])],
+  });
+}
+
+/** Prefer current provider metadata; unavailable existing selections can remain. */
+export function resolveProjectRepositorySelection(
+  ids: string[],
+  available: ProjectRepository[],
+  existing: Pick<ProjectWorkspace, "name" | "repoUrl" | "metadata">[] = [],
+): ProjectRepository[] {
+  return [...new Set(ids)].map((id) => {
+    const current = available.find((repo) => repo.id === id);
+    if (current) return current;
+    const retained = existing.find((workspace) => workspace.metadata?.githubRepositoryId === id && workspace.repoUrl);
+    if (retained) return { id, fullName: retained.name, url: retained.repoUrl!, connections: [] };
+    throw unprocessable("A selected GitHub repository is no longer available. Refresh repositories and try again.");
   });
 }

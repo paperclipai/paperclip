@@ -18,6 +18,8 @@ Old Overview URLs and saved Overview preferences redirect to Configuration.
   The existing `workspace` input remains supported; it cannot be combined with
   `repositoryIds`.
 - `PUT /api/projects/:id/repositories` accepts the selected `repositoryIds` array.
+  Accessible retained IDs refresh their canonical name and URL after renames or
+  transfers; unavailable retained IDs keep their saved metadata.
   Replacement is transactional. Existing selections may be retained or removed even
   if their GitHub connection becomes unavailable. New identities require current
   access. Legacy URL workspaces are preserved, and matching legacy URLs are adopted

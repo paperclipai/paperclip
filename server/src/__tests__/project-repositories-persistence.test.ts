@@ -53,6 +53,18 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(updated?.workspaces[0]?.metadata?.githubRepositoryId).toBe("21");
   });
 
+  it("refreshes renamed and transferred repositories without replacing workspace identity or configuration", async () => {
+    const svc = projectService(db);
+    const created = await svc.createWithRepositories(companyId, { name: "Renamed" }, [repo("22")]);
+    const workspace = created.workspaces[0];
+    await svc.updateWorkspace(created.id, workspace.id, { cwd: "/tmp/renamed-project", repoRef: "release", metadata: { ...workspace.metadata, retained: true } });
+    const renamed = { ...repo("22"), fullName: "new-owner/new-name", url: "https://github.com/new-owner/new-name" };
+    const updated = await svc.replaceRepositories(created.id, [renamed]);
+    expect(updated?.workspaces).toHaveLength(1);
+    expect(updated?.workspaces[0]).toMatchObject({ id: workspace.id, name: renamed.fullName, repoUrl: renamed.url, cwd: "/tmp/renamed-project", repoRef: "release", isPrimary: true, metadata: { githubRepositoryId: "22", retained: true } });
+    expect(updated?.codebase.repoUrl).toBe(renamed.url);
+  });
+
   it("loads only usable connection grants, deduplicates repos, and reports partial provider failures", async () => {
     await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "alice", membershipRole: "admin" });
     const [otherCompany] = await db.insert(companies).values({ name: "Other", issuePrefix: "OTHER" }).returning();

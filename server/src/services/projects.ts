@@ -840,7 +840,13 @@ export function projectService(db: Db) {
           }
         }
         for (const repo of repositories) {
-          if (existing.some((workspace) => workspace.metadata?.githubRepositoryId === repo.id)) continue;
+          const retained = existing.find((workspace) => workspace.metadata?.githubRepositoryId === repo.id);
+          if (retained) {
+            if (retained.repoUrl !== repo.url || retained.name !== repo.fullName) {
+              await service.updateWorkspace(projectId, retained.id, { name: repo.fullName, repoUrl: repo.url });
+            }
+            continue;
+          }
           const legacy = existing.find((workspace) => !workspace.metadata?.githubRepositoryId && workspace.repoUrl?.replace(/\.git$/, "").replace(/\/$/, "").toLowerCase() === repo.url.toLowerCase());
           if (legacy) {
             await service.updateWorkspace(projectId, legacy.id, { metadata: { ...legacy.metadata, githubRepositoryId: repo.id } });

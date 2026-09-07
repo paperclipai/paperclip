@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { resolveProjectRepositorySelection } from "../services/project-repositories.js";
 import { toolAccessService } from "../services/tool-access.js";
 import { Router, type Request, type Response } from "express";
 import type { Db } from "@paperclipai/db";
@@ -49,16 +50,8 @@ export function projectRoutes(db: Db) {
   async function selectedRepositories(req: Request, companyId: string, ids: string[], existing: import("@paperclipai/shared").ProjectWorkspace[] = []) {
     assertBoard(req);
     if (!ids.length) return [];
-    const retained = existing.filter((workspace) => typeof workspace.metadata?.githubRepositoryId === "string" && workspace.repoUrl);
-    const newIds = ids.filter((id) => !retained.some((workspace) => workspace.metadata?.githubRepositoryId === id));
-    const available = newIds.length ? await toolAccessService(db).listProjectRepositories(companyId, req.actor.userId ?? null, req.actor.source === "local_implicit") : { repositories: [] };
-    return [...new Set(ids)].map((id) => {
-      const old = retained.find((workspace) => workspace.metadata?.githubRepositoryId === id);
-      if (old) return { id, fullName: old.name, url: old.repoUrl!, connections: [] };
-      const repo = available.repositories.find((repo) => repo.id === id);
-      if (!repo) throw unprocessable("A selected GitHub repository is no longer available. Refresh repositories and try again.");
-      return repo;
-    });
+    const available = await toolAccessService(db).listProjectRepositories(companyId, req.actor.userId ?? null, req.actor.source === "local_implicit");
+    return resolveProjectRepositorySelection(ids, available.repositories, existing);
   }
   const access = accessService(db);
   const secretsSvc = secretService(db);
