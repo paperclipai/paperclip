@@ -5103,7 +5103,7 @@ describeEmbeddedPostgres("tool access service", () => {
     }
   }, 15_000);
 
-  it.each([false, true])("binds a managed GitHub identity and protects refresh from concurrent access changes (event: %s)", async (eventDuringRefresh) => {
+  it.each(["none", "event", "same-time-refresh"])("binds a managed GitHub identity and protects refresh from concurrent access changes (%s)", async (concurrentChange) => {
     const company = await createCompany(db);
     const userId = `github-manager-${randomUUID()}`;
     await grantBoardUser(db, company.id, userId, [], "owner");
@@ -5229,14 +5229,17 @@ describeEmbeddedPostgres("tool access service", () => {
         eq(toolConnectionInstalls.targetId, agent.id),
       ))).resolves.toHaveLength(1);
       vi.mocked(connector.setWebhookBinding).mockClear();
-      if (eventDuringRefresh) {
+      if (concurrentChange !== "none") {
         beforeRepositoryResponse = async () => {
           const [latest] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, grant!.id));
           await db.update(connectionGrants).set({ providerTenant: {
             ...latest!.providerTenant,
             github: {
               ...latest!.providerTenant!.github!,
-              lastWebhookAt: new Date().toISOString(),
+              accessRevision: randomUUID(),
+              // Simulate a refresh with identical timestamps, so only the unique
+              // access revision can distinguish its newer access snapshot.
+              ...(concurrentChange === "event" ? { lastWebhookAt: new Date().toISOString() } : {}),
               installationIds: [], installationCount: 0, repositoryCount: 0,
               repositorySelection: "none", repositories: undefined, webhookHealth: "unhealthy",
             },

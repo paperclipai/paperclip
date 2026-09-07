@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import {
   connectionEventDeliveries,
   connectionGrants,
@@ -311,6 +312,7 @@ export function githubConnectionEventService(
         ...github,
         // Lifecycle webhooks carry IDs, not the user token’s complete repository view.
         // Discard the snapshot until Refresh access verifies it again.
+        accessRevision: randomUUID(),
         repositories: undefined,
         installationIds,
         installationCount: installationIds.length,

@@ -1946,6 +1946,7 @@ export async function loadGitHubGrantMetadata(
   installationUrl: string;
   managementUrl: string;
   appSlug?: string;
+  accessRevision: string;
   lastAccessRefreshAt: string;
   webhookHealth: "pending";
 }> {
@@ -2040,6 +2041,7 @@ export async function loadGitHubGrantMetadata(
       ? managementUrls.values().next().value!
       : "https://github.com/settings/installations",
     ...(appSlug ? { appSlug } : {}),
+    accessRevision: randomUUID(),
     lastAccessRefreshAt: accessRefreshStartedAt,
     webhookHealth: "pending",
   };
@@ -8610,7 +8612,8 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       const initialGitHub = grant.providerTenant?.github;
       // No lock is held during provider requests. Reject a snapshot if another
       // refresh or webhook changed access while those requests were in flight.
-      if (previousGitHub?.lastWebhookAt !== initialGitHub?.lastWebhookAt
+      if (previousGitHub?.accessRevision !== initialGitHub?.accessRevision
+        || previousGitHub?.lastWebhookAt !== initialGitHub?.lastWebhookAt
         || previousGitHub?.lastAccessRefreshAt !== initialGitHub?.lastAccessRefreshAt) {
         throw conflict("GitHub access changed during refresh. Try again.", { code: "github_access_changed" });
       }

@@ -229,6 +229,7 @@ export interface ConnectionGrant {
       installationUrl?: string;
       managementUrl?: string;
       appSlug?: string;
+      accessRevision?: string;
       lastAccessRefreshAt?: string;
       lastWebhookAt?: string;
       webhookHealth?: "pending" | "healthy" | "unhealthy";
