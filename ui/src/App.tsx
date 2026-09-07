@@ -46,6 +46,7 @@ import { InviteLandingPage } from "./pages/InviteLanding";
 import { NotFoundPage } from "./pages/NotFound";
 import { Supplements } from "./pages/Supplements";
 import { Estate } from "./pages/Estate";
+import { Health } from "./pages/Health";
 import { queryKeys } from "./lib/queryKeys";
 import { useCompany } from "./context/CompanyContext";
 import { useDialog } from "./context/DialogContext";
@@ -165,6 +166,7 @@ function boardRoutes() {
       <Route path="goals" element={<Goals />} />
       <Route path="goals/:goalId" element={<GoalDetail />} />
       <Route path="supplements" element={<Supplements />} />
+      <Route path="health/environmental-score" element={<Health />} />
       <Route path="estate" element={<Estate />} />
       <Route path="approvals" element={<Navigate to="/approvals/pending" replace />} />
       <Route path="approvals/pending" element={<Approvals />} />

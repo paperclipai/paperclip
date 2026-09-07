@@ -1,6 +1,60 @@
 import { useMemo, useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
 
+export type ColorTier = "green" | "yellow" | "orange" | "red";
+
+export interface PersonalScoreComponents {
+  aqi: number | null;
+  uv: number | null;
+  heatStress: number | null;
+  greenspace: number | null;
+}
+
+export interface PersonalScoreToday {
+  score: number;
+  colorTier: ColorTier;
+  scoredAt: string;
+  confidenceFlag: string | null;
+  partialSignals: string[];
+  components: PersonalScoreComponents;
+}
+
+export interface PersonalScoreHistoryEntry {
+  score: number;
+  colorTier: ColorTier;
+  scoredAt: string;
+  confidenceFlag: string | null;
+}
+
+export interface PersonalEnvironmentalScoreResult {
+  disclaimer: string;
+  today: PersonalScoreToday | null;
+  history: PersonalScoreHistoryEntry[];
+}
+
+async function fetchPersonalEnvironmentalScore(companyId: string): Promise<PersonalEnvironmentalScoreResult> {
+  const url = new URL("/api/health/environmental-score", window.location.origin);
+  url.searchParams.set("companyId", companyId);
+  const res = await fetch(url.toString(), {
+    credentials: "include",
+    headers: { Accept: "application/json" },
+  });
+  if (!res.ok) {
+    const payload = await res.json().catch(() => null) as { error?: string } | null;
+    throw new Error(payload?.error ?? `Failed to load environmental score (${res.status})`);
+  }
+  return res.json() as Promise<PersonalEnvironmentalScoreResult>;
+}
+
+export function usePersonalEnvironmentalScore(companyId: string | null) {
+  return useQuery({
+    queryKey: ["personal-environmental-score", companyId],
+    queryFn: () => fetchPersonalEnvironmentalScore(companyId!),
+    enabled: !!companyId,
+    staleTime: 5 * 60 * 1000,
+  });
+}
+
 export type BBox = [number, number, number, number]; // [minLat, minLng, maxLat, maxLng]
 
 export interface HealthScoreBreakdown {

@@ -13,6 +13,7 @@ import {
   Settings,
   Pill,
   Landmark,
+  Activity,
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { SidebarSection } from "./SidebarSection";
@@ -115,6 +116,7 @@ export function Sidebar() {
 
         <SidebarSection label="Health">
           <SidebarNavItem to="/supplements" label="Supplements" icon={Pill} />
+          <SidebarNavItem to="/health/environmental-score" label="Env. Score" icon={Activity} />
         </SidebarSection>
 
         <SidebarSection label="Company">
