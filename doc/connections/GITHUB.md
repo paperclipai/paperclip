@@ -5,6 +5,21 @@ compatibility method. Cloud owns the fixed public OAuth callback and signed
 webhook inbox; provider tokens are sealed to the enrolled instance and stored
 only in its existing encrypted secret system.
 
+## Self-hosted setup
+
+The Access step uses **Continue** to open the local setup screen.
+**Continue to GitHub** on that screen starts the provider handoff. The first
+button does not imply that the browser is leaving Paperclip yet.
+
+A self-hosted instance needs one Paperclip Cloud approval before its first
+managed connection. After approval, setup returns to step 2 and continues to
+GitHub without another instance approval or a service restart.
+
+If an unapproved enrollment link expires, return to setup and select
+**Continue**. Paperclip asks the server for a valid link. The server reuses a
+live pending enrollment or replaces an expired one; this does not revoke or
+repeat an existing instance approval.
+
 ## Identity resolution
 
 Every MCP call, `gh` invocation, native Git operation, checkout, health check,

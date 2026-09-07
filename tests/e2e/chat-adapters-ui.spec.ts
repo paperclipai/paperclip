@@ -1006,6 +1006,14 @@ test.describe.serial("native chat adapter UI", () => {
         expect(new URL(page.url()).searchParams.get("source")).toBe(
           provider.provider,
         );
+        if (provider.provider === "github") {
+          await expect(
+            page.getByRole("heading", { name: "Connect GitHub as" }),
+          ).toBeVisible();
+          await expect(
+            page.getByText("Chat with an agent", { exact: true }),
+          ).toHaveCount(0);
+        }
         await page.goto(chatSetupUrl);
         await expect(
           page.getByRole("heading", { name: "Choose how to connect" }),

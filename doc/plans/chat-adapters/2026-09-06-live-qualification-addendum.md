@@ -55,21 +55,28 @@ not counted as a successful end-to-end conversation.
 - Provider-confirmed Slack admissions on paused or attention endpoints remain
   parked without occupying the active worker page. They become eligible again
   after the endpoint is repaired or resumed; active endpoints can keep moving.
+- Dual-purpose connectors keep their chat setup separate from tool credentials.
+  The tool connection flow excludes chat-only methods from selection,
+  recommendations, and submission. GitHub's personal-token fallback therefore
+  does not ask for chat App credentials or strand the user on another chooser.
 
-## Automated evidence available so far
+## Automated checkpoint
 
 - Full chat integration suite: 240/240 passed on a newly created PostgreSQL
-  database (`chat_adapters_test_20260906_full2470`), with all five provider
-  fixtures in one run. Provider transport is simulated in this suite.
-- Focused server/API/UI checks: 247/247 passed.
-- Focused non-database chat service units: 171/171 passed across 13 files.
-- Slack slash-command race/recovery checks: 3/3 passed across the two fresh
-  isolated runs. This includes provider-confirmed recovery, restart recovery,
-  and proof that authorization row locks are released before Slack transport.
-- Deterministic chat-adapter browser checks: 5/5 passed.
-- Server TypeScript and `git diff --check` passed after the Slack fixes.
-- The latest deterministic browser run passed all five provider journeys;
-  provider API responses are mocked, so this is UI regression evidence only.
+  database both before and after merging `origin/master` at `856813ba3`.
+  The post-merge database is `chat_adapters_test_20260906_full2480`; the run
+  includes all five provider fixtures. Provider transport is simulated.
+- Focused server/API/UI checks: 247/247 passed across 21 files. Post-merge safe
+  publication/projection checks also passed 22/22.
+- The upstream runner slice passed 85/85. Tool-setup/catalog/shared-definition
+  regression checks passed 127/127 (106 UI and 21 shared assertions).
+- Deterministic chat-adapter browser checks: 5/5 passed after the merge.
+  Provider API responses are mocked, so this is UI regression evidence only.
+- Direct shared, server, and UI TypeScript checks passed after the merge.
+- The post-merge UI production build passed, with existing CSS/font and
+  chunk-size warnings.
+- `git diff --check` and UI token gates passed. The lockfile is the exact
+  upstream CI-owned artifact; no hand-authored lockfile changes are included.
 - Earlier full-suite hangs were traced to synthetic 90-second test leases left
   behind by fault-injection cases; those fixtures now clean up only after
   verifying the ownership fence. Another run was interrupted by macOS sleep.
@@ -78,6 +85,10 @@ not counted as a successful end-to-end conversation.
 - The repository-wide `pnpm test:run` previously failed on unrelated runtime
   and test-harness issues. Repository-wide tests, typecheck, and build are not
   claimed green; the evidence here is the named focused verification.
+
+The post-merge review also identified the same tool/channel method distinction
+missing from agent-facing connection-intent responses. That narrow API follow-up
+is not covered by the UI-only fix or its passing counts above.
 
 ## Live provider evidence and remaining gates
 

@@ -307,6 +307,7 @@ function SeededAccessStep({
           setInstallAgentIds={setIds}
           capabilities={capabilities}
           submitLabel={authKind === "oauth" ? "Continue to Gmail" : "Save and continue"}
+          continuesToProvider={authKind === "oauth"}
           onBack={() => {}}
           onContinue={() => {}}
         />

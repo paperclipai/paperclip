@@ -157,6 +157,7 @@ async function passAccessStep() {
   }
   const submit = Array.from(document.body.querySelectorAll("button")).find(
     (b) => b.textContent?.trim() === "Save and continue"
+      || b.textContent?.trim() === "Continue"
       || b.textContent?.trim().startsWith("Continue to"),
   );
   await act(async () => {
@@ -733,6 +734,79 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     );
   });
 
+  it.each(["2020-01-01T00:00:00.000Z", "2099-01-01T00:00:00.000Z"])(
+    "revalidates a cached pending enrollment before continuing (expiry %s)",
+    async (expiresAt) => {
+      mockSearch.value = "source=github&stage=setup";
+      listGalleryMock.mockResolvedValue({
+        apps: [{
+          ...GITHUB,
+          methods: GITHUB.methods.filter((method) => !method.oauthStrategy),
+          ownershipAvailability: { platform_shared: false, customer: true, dcr: true },
+        }],
+      });
+      getCloudConnectorEnrollmentMock.mockResolvedValue({
+        configured: false,
+        status: "pending",
+        brokerBaseUrl: "https://my-staging.paperclip.app",
+        instanceId: "inst-test",
+        environment: "staging",
+        origins: [],
+        verificationUrl: "https://my-staging.paperclip.app/connections/enroll?id=cached",
+        expiresAt,
+      });
+
+      await render();
+      expect(container.textContent).toContain("Step 2 of 2");
+      await act(async () => {
+        buttonByText("Continue")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      await flushReact();
+
+      expect(startCloudConnectorEnrollmentMock).toHaveBeenCalledWith(
+        "company-1", "Paperclip", "/apps/connect?source=github&stage=setup",
+      );
+      expect(navigateTopLevelMock).toHaveBeenCalledWith(
+        "https://my-staging.paperclip.app/connections/enroll?id=enroll-test",
+      );
+      expect(navigateTopLevelMock).not.toHaveBeenCalledWith(
+        "https://my-staging.paperclip.app/connections/enroll?id=cached",
+      );
+    },
+  );
+
+  it("labels GitHub's local setup transition without promising a provider handoff", async () => {
+    mockSearch.value = "source=github";
+    listGalleryMock.mockResolvedValue({ apps: [GITHUB_MANAGED] });
+
+    await render();
+
+    const continueButton = buttonByText("Continue");
+    expect(continueButton).toBeDefined();
+    expect(continueButton?.disabled).toBe(false);
+    expect(continueButton?.querySelector(".lucide-arrow-up-right")).toBeNull();
+    expect(buttonByText("Continue to GitHub")).toBeUndefined();
+
+    await passAccessStep();
+
+    expect(container.textContent).toContain("Step 2 of 2");
+    expect(container.textContent).toContain("How do you want to connect?");
+    expect(buttonByText("Continue to GitHub")).toBeDefined();
+    expect(startOAuthMock).not.toHaveBeenCalled();
+    expect(connectAppMock).not.toHaveBeenCalled();
+  });
+
+  it("keeps provider-specific wording and the handoff cue for direct OAuth", async () => {
+    mockSearch.value = "source=notion";
+    listGalleryMock.mockResolvedValue({ apps: [NOTION] });
+
+    await render();
+
+    const continueButton = buttonByText("Continue to Notion");
+    expect(continueButton).toBeDefined();
+    expect(continueButton?.querySelector(".lucide-arrow-up-right")).not.toBeNull();
+  });
+
   it("keeps GitHub's personal identity defaults while its managed method awaits enrollment", async () => {
     mockParams.appKey = "github";
     listGalleryMock.mockResolvedValue({
@@ -757,6 +831,8 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(radioContaining("My GitHub account")?.getAttribute("aria-checked")).toBe("true");
     expect(radioContaining("Any agent")?.getAttribute("aria-checked")).toBe("true");
     expect(container.textContent).toContain("Which agents may use your GitHub when you’re responsible?");
+    expect(buttonByText("Continue")).toBeDefined();
+    expect(buttonByText("Continue to GitHub")).toBeUndefined();
 
     await passAccessStep();
 
@@ -789,6 +865,8 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     await render();
 
     expect(container.textContent).toContain("Your GitHub key");
+    expect(container.textContent).not.toContain("Chat with an agent");
+    expect(container.textContent).not.toContain("GitHub App ID");
     expect(container.textContent).not.toContain("Connect with Paperclip");
     expect(container.textContent).not.toContain("Continue to GitHub");
     const connect = buttonByText("Connect");
@@ -875,7 +953,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
         ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flushReact();
-    const accessContinue = buttonByText("Save and continue") ?? buttonByText("Continue to GitHub");
+    const accessContinue = buttonByText("Continue");
     expect(accessContinue?.disabled).toBe(false);
     await act(async () => {
       accessContinue?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -1075,7 +1153,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     ).find((r) => r.textContent?.includes("Just agents I pick"));
     expect(pick?.disabled).toBe(false);
     // Continue refuses the forbidden choice even though it is the current one.
-    expect(buttonByText("Save and continue")?.disabled).toBe(true);
+    expect(buttonByText("Continue")?.disabled).toBe(true);
   });
 
   it("opens the selected app directly on its setup route", async () => {
@@ -1288,7 +1366,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     ));
     expect(container.textContent).toContain("This task grants access only to Ada");
     const continueButton = Array.from(container.querySelectorAll("button")).find(
-      (button) => button.textContent?.trim() === "Save and continue",
+      (button) => button.textContent?.trim() === "Continue",
     );
     expect(continueButton).toBeTruthy();
     expect(continueButton?.disabled).toBe(false);
