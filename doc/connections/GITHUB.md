@@ -69,15 +69,26 @@ installation-health failure, not as token expiry.
 
 ## Repository access
 
-OAuth completion verifies `/user`, `/user/installations`, and each
-installation's accessible repository count. Setup remains incomplete until at
-least one installation and repository are available. Paperclip stores user and
-installation summaries, not a repository-name cache. GitHub stays authoritative:
-removed repository access fails immediately even if a displayed count is stale.
+OAuth completion verifies `/user`, every page of `/user/installations`, and every
+page of each installation's accessible repositories. Setup remains incomplete
+until at least one installation and repository are available. Paperclip stores
+the authenticated username and a grant-scoped display snapshot containing only
+repository IDs, full names, and installation IDs. GitHub stays authoritative:
+this snapshot never authorizes repository access.
 
-The Apps UI links to GitHub's installation management page and offers
-**Refresh access**. Selected repositories are recommended. Choosing all
-repositories requires an explicit warning in setup.
+The permissions page shows the authenticated GitHub account and the complete
+accessible repository list. **Refresh access** reloads it from GitHub. Older
+grants and grants invalidated by newer installation lifecycle events prompt for a
+refresh instead of presenting a stale list. The page links to GitHub's
+installation management page. Selected repositories are recommended; all-
+repository access retains its warning.
+
+Fresh local test-drives use production Paperclip Cloud. Instance enrollment
+and provider enablement are separate: enrollment alone does not enable GitHub
+OAuth. Production must advertise the `github.code` profile (see Cloud's
+`docs/github-connector-deploy-bootstrap.md`). If it is unavailable, setup
+preserves the sign-in intent and offers a retry instead of silently switching
+to a personal access token. A successful retry preserves the chosen audience.
 
 ## Webhooks
 

@@ -300,9 +300,15 @@ function GitHubConnectionSummary({
       : null;
   const repositorySummary = github.repositorySelection === "none"
     ? "No repositories selected"
-    : `${github.repositoryCount} selected repositories`;
+    : `${github.repositoryCount} selected ${github.repositoryCount === 1 ? "repository" : "repositories"}`;
   return (
     <div className="divide-y divide-border border-y border-border">
+      <div className="py-3">
+        <div className="text-sm font-medium text-foreground">GitHub account</div>
+        <a className="text-sm text-muted-foreground hover:underline" href={`https://github.com/${encodeURIComponent(github.login)}`} target="_blank" rel="noreferrer">
+          @{github.login}
+        </a>
+      </div>
       <div className="flex flex-wrap items-center justify-between gap-3 py-3">
         <div className="min-w-0">
           <div className="text-sm font-medium text-foreground">Repositories</div>
@@ -326,6 +332,21 @@ function GitHubConnectionSummary({
             <a href={github.managementUrl} target="_blank" rel="noreferrer">Manage repositories on GitHub</a>
           </Button>
         ) : null}
+      </div>
+      <div className="py-3">
+        {github.repositories ? (
+          <ul aria-label="Accessible GitHub repositories" className="space-y-2 text-sm">
+            {github.repositories.map((repository) => (
+              <li key={repository.id}>
+                <a className="break-all text-muted-foreground hover:underline" href={`https://github.com/${repository.fullName.split("/").map(encodeURIComponent).join("/")}`} target="_blank" rel="noreferrer">
+                  {repository.fullName}
+                </a>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="text-sm text-muted-foreground">Refresh access to load the current repository list.</p>
+        )}
       </div>
       <div className="flex flex-wrap items-center justify-between gap-3 py-3">
         <div className="min-w-0">
