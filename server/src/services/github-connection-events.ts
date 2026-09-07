@@ -270,6 +270,18 @@ export function githubConnectionEventService(
 
   async function applyInstallationEvent(database: Db, binding: GitHubBinding, event: LeasedEvent) {
     const github = binding.providerTenant.github!;
+    // A newly bound instance can receive installation events from before OAuth
+    // verified its repository list. Those events must not erase newer access.
+    if (Date.parse(github.lastAccessRefreshAt ?? "") > Date.parse(event.createdAt)) {
+      await database.update(connectionGrants).set({
+        providerTenant: {
+          ...binding.providerTenant,
+          github: { ...github, lastWebhookAt: now().toISOString(), webhookHealth: "healthy" },
+        },
+        updatedAt: now(),
+      }).where(and(eq(connectionGrants.id, binding.grantId), eq(connectionGrants.companyId, binding.companyId)));
+      return;
+    }
     const unavailable = event.event === "installation" && (event.action === "deleted" || event.action === "suspend");
     const installationIds = unavailable
       ? github.installationIds.filter((id) => id !== binding.installationId)

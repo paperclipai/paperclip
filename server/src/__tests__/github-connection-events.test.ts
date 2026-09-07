@@ -207,7 +207,7 @@ describeEmbeddedPostgres.sequential("GitHub connection event delivery", () => {
     expect(connector.acknowledgeEvents).toHaveBeenCalledTimes(2);
   });
 
-  it("applies installation repository deltas transactionally and never reapplies a processed delivery", async () => {
+  it.each([false, true])("applies installation events once without discarding newer verified access (refreshed: %s)", async (refreshed) => {
     const companyId = randomUUID();
     const applicationId = randomUUID();
     const connectionId = randomUUID();
@@ -253,6 +253,7 @@ describeEmbeddedPostgres.sequential("GitHub connection event delivery", () => {
           repositorySelection: "selected",
           installationIds: ["101"],
           installationOwnerLogins: ["paperclipai"],
+          lastAccessRefreshAt: refreshed ? "2026-09-04T12:00:02.000Z" : undefined,
           repositories: [{ id: "203", fullName: "paperclipai/removed", installationId: "101" }],
           webhookHealth: "pending",
         },
@@ -294,13 +295,17 @@ describeEmbeddedPostgres.sequential("GitHub connection event delivery", () => {
     await expect(service.pollOnce()).resolves.toMatchObject({ processed: 1, duplicate: 0, failed: 0 });
     unsubscribe();
     let [grant] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, grantId));
-    expect(grant?.providerTenant?.github).toMatchObject({ repositoryCount: 4, webhookHealth: "healthy" });
-    expect(grant?.providerTenant?.github?.repositories).toBeUndefined();
+    expect(grant?.providerTenant?.github).toMatchObject({ repositoryCount: refreshed ? 3 : 4, webhookHealth: "healthy" });
+    if (refreshed) {
+      expect(grant?.providerTenant?.github?.repositories).toHaveLength(1);
+    } else {
+      expect(grant?.providerTenant?.github?.repositories).toBeUndefined();
+    }
 
     currentTime = new Date(currentTime.getTime() + 6_000);
     await expect(service.pollOnce()).resolves.toMatchObject({ processed: 0, duplicate: 1, failed: 0 });
     [grant] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, grantId));
-    expect(grant?.providerTenant?.github?.repositoryCount).toBe(4);
+    expect(grant?.providerTenant?.github?.repositoryCount).toBe(refreshed ? 3 : 4);
     const [receipt] = await db.select().from(connectionEventDeliveries).where(eq(
       connectionEventDeliveries.providerDeliveryId,
       leasedEvent.id,

@@ -78,7 +78,7 @@ this snapshot never authorizes repository access.
 
 The permissions page shows the authenticated GitHub account and the complete
 accessible repository list. **Refresh access** reloads it from GitHub. Older
-grants and grants invalidated by installation lifecycle events prompt for a
+grants and grants invalidated by newer installation lifecycle events prompt for a
 refresh instead of presenting a stale list. The page links to GitHub's
 installation management page. Selected repositories are recommended; all-
 repository access retains its warning.
