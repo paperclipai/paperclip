@@ -436,7 +436,7 @@ function Setup({
     } finally {
       if (!hired) {
         try { await Promise.all(staged.map((secret) => secret.remove())); }
-        catch { setError("Could not remove an unused setup credential. Remove it from My Secrets before retrying."); }
+        catch { setError((original) => `${original ? `${original} ` : ""}Could not remove an unused setup credential. Remove it from My Secrets before retrying.`); }
       }
       void cache.invalidateQueries({ queryKey: queryKeys.secrets.myUserSecrets(companyId) });
       savingRef.current = false;

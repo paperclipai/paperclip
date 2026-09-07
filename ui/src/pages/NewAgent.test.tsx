@@ -361,6 +361,16 @@ describe("New agent setup", () => {
     expect(secrets.removeUserSecretDefinition).toHaveBeenCalledWith("company-1", "definition-1");
     expect(container.textContent).toContain("Creation rejected");
   });
+  it("preserves the creation error when credential cleanup also fails", async () => {
+    await render();
+    await fill("Model", "openrouter/anthropic/claude-sonnet-4.6");
+    await fill("OPENROUTER_API_KEY", "new-key");
+    api.hire.mockRejectedValueOnce(new Error("Agent quota exceeded"));
+    secrets.removeUserSecretDefinition.mockRejectedValueOnce(new Error("Cleanup unavailable"));
+    await click("Finish setup");
+    expect(container.textContent).toContain("Agent quota exceeded");
+    expect(container.textContent).toContain("Could not remove an unused setup credential");
+  });
   it("requires an explicit provider/model for Pi", async () => {
     await render();
     await click("Run test");
