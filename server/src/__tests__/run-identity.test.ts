@@ -127,6 +127,31 @@ const support = await getEmbeddedPostgresTestSupport();
       expect(continued.parentContextId).toBe(origin.id);
     }
   });
+  it("retains continuation and approval attribution after deleting the originating agent and runs", async () => {
+    const input = await seed();
+    const origin = await initializeRunIdentity(db, { ...input, messageIds: [], responsibleUserId: "A", cause: "instruction" });
+    const interactionId = randomUUID();
+    await db.insert(issueThreadInteractions).values({ id: interactionId, companyId: input.companyId,
+      issueId: input.issueId, kind: "request_confirmation", sourceRunId: input.runId,
+      sourceIdentityContextId: origin.id, payload: { prompt: "Continue?" } as never,
+    });
+    await db.update(issues).set({ originIdentityContextId: origin.id }).where(eq(issues.id, input.issueId));
+    await db.delete(heartbeatRuns).where(eq(heartbeatRuns.agentId, input.agentId));
+    await db.delete(agents).where(eq(agents.id, input.agentId));
+    const agentId = randomUUID();
+    await db.insert(agents).values({ id: agentId, companyId: input.companyId, name: "Replacement", role: "engineer", adapterType: "codex_local" });
+    const [task] = await db.select().from(issues).where(eq(issues.id, input.issueId));
+    expect(task.continuationIdentityContextId).toBe(origin.id);
+    for (const source of [{ parentContextId: task.originIdentityContextId }, { parentContextId: task.continuationIdentityContextId }, { interactionId }]) {
+      const runId = randomUUID();
+      await db.insert(heartbeatRuns).values({ id: runId, companyId: input.companyId, agentId, status: "running" });
+      const continued = await initializeRunIdentity(db, { companyId: input.companyId, runId,
+        issueId: input.issueId, ...source, responsibleUserId: "B", cause: "continuation" });
+      expect(continued.responsibleUserId).toBe("A");
+      expect(continued.parentContextId).toBe(origin.id);
+    }
+  });
+
   it("does not deadlock identity initialization against a task mutation that also updates the run", async () => {
     const input = await seed();
     let initialization!: ReturnType<typeof initializeRunIdentity>;

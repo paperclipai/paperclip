@@ -7,7 +7,7 @@ import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } fro
 const support = await getEmbeddedPostgresTestSupport();
 const migrations = [
   "0240_pink_fantastic_four.sql", "0241_conscious_adam_destine.sql",
-  "0242_wide_lightspeed.sql", "0243_sleepy_metal_master.sql",
+  "0242_wide_lightspeed.sql", "0243_sleepy_metal_master.sql", "0244_organic_meltdown.sql",
 ].map((name) => readFileSync(new URL(`./migrations/${name}`, import.meta.url), "utf8"));
 
 (support.supported ? describe : describe.skip)("execution identity migration", () => {
@@ -36,6 +36,16 @@ const migrations = [
       expect(contexts).toEqual([{ id: contextId, responsible_user_id: 'person-a' }]);
       const [active] = await sql`SELECT active_identity_context_id FROM heartbeat_runs WHERE id = ${runId}`;
       expect(active.active_identity_context_id).toBe(contextId);
+      // Agent removal deletes its run rows, but surviving task continuations
+      // must retain attribution. Even replaying the migration set must be safe.
+      await sql`DELETE FROM heartbeat_runs WHERE id = ${runId}`;
+      for (const migration of migrations) {
+        for (const statement of migration.split('--> statement-breakpoint')) {
+          if (statement.trim()) await sql.unsafe(statement);
+        }
+      }
+      const [retained] = await sql`SELECT run_id, responsible_user_id FROM run_identity_contexts WHERE id = ${contextId}`;
+      expect(retained).toEqual({ run_id: runId, responsible_user_id: 'person-a' });
     } finally {
       await sql.end();
       await database.cleanup();

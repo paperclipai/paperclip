@@ -1,6 +1,6 @@
 import { initializeRunIdentity } from "./run-identity.js";
 import { githubBrokerEnvironment } from "@paperclipai/adapter-utils/github-launcher";
-import { prepareGitHubOperationLaunchers, startAdapterExecutionTargetPaperclipBridge } from "@paperclipai/adapter-utils/execution-target";
+import { cleanupGitHubOperationLaunchers, prepareGitHubOperationLaunchers, startAdapterExecutionTargetPaperclipBridge } from "@paperclipai/adapter-utils/execution-target";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
@@ -18072,6 +18072,7 @@ export function heartbeatService(
 
     activeRunExecutions.add(run.id);
     let runScratch: HeartbeatRunScratch | null = null;
+    let githubLauncherLocation: Parameters<typeof cleanupGitHubOperationLaunchers>[0] | null = null;
     let nativeSessionResumeScheduled = false;
     let nativeWorkspaceFinalizeScheduled = false;
     let nativeWorkspaceSync: Awaited<
@@ -19877,6 +19878,7 @@ export function heartbeatService(
       const githubBrokerEnv = githubBrokerEnvironment(parseObject(runtimeConfig.env), {
         url: configuredPaperclipApiBaseUrl() ?? "", token: githubBrokerToken?.token ?? "",
       });
+      githubLauncherLocation = { runId: run.id, target: executionTarget };
       runtimeConfig = { ...runtimeConfig, env: await prepareGitHubOperationLaunchers({
         runId: run.id, target: executionTarget, cwd: executionWorkspace.cwd,
         env: githubBrokerEnv,
@@ -22862,6 +22864,13 @@ export function heartbeatService(
           latestRun?.status,
         );
       if (!nativeSessionResumeScheduled && !nativeWorkspaceFinalizeScheduled) {
+        // Keep launchers during same-run recovery. At a terminal boundary all
+        // operations have settled; clean before the remote lease can be stopped.
+        if (githubLauncherLocation && latestRun && isHeartbeatRunTerminalStatus(latestRun.status)) {
+          await cleanupGitHubOperationLaunchers(githubLauncherLocation).catch((err) => {
+            logger.warn({ err, runId: run.id }, "failed to clean managed GitHub launchers");
+          });
+        }
         await releaseEnvironmentLeasesForRun({
           runId: run.id,
           companyId: run.companyId,

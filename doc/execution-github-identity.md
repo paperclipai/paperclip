@@ -45,3 +45,9 @@ Focused coverage lives in `run-identity.test.ts`, `github-operation-credentials.
 5. If rollback is needed, finish or explicitly stop executions using the new broker before removing its endpoint. Keep the additive schema and identity history. Do not drop identity columns or tables to roll back application code.
 
 Remote acceptance uses the existing paid runner workflow with a narrow selection. Run it against the same immutable revision as the release; a successful local test does not qualify a different remote runner artifact.
+
+Identity history survives deletion of the originating agent or run, so surviving
+subtasks and approvals retain their responsible person. Company deletion removes
+these company-scoped records. Completed runs remove their managed launcher files
+before releasing a remote environment; same-run recovery retains them until the
+terminal boundary. Cleanup failures are logged and do not change the run result.

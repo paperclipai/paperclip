@@ -1,12 +1,13 @@
 import { pgTable, uuid, text, integer, timestamp, jsonb, uniqueIndex, index } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
-import { heartbeatRuns } from "./heartbeat_runs.js";
 
 /** Immutable attribution records. Only acceptance state and redacted diagnostics advance. */
 export const runIdentityContexts = pgTable("run_identity_contexts", {
   id: uuid("id").primaryKey().defaultRandom(),
   companyId: uuid("company_id").notNull().references(() => companies.id),
-  runId: uuid("run_id").notNull().references(() => heartbeatRuns.id, { onDelete: "cascade" }),
+  // Retain attribution after an agent and its runs are deleted: surviving tasks
+  // and approvals still reference these contexts. The original run UUID is archival.
+  runId: uuid("run_id").notNull(),
   revision: integer("revision").notNull(),
   responsibleUserId: text("responsible_user_id"),
   messageId: uuid("message_id"),

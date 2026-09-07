@@ -20,11 +20,6 @@ DO $$ BEGIN
   ALTER TABLE "run_identity_contexts" ADD CONSTRAINT "run_identity_contexts_company_id_companies_id_fk" FOREIGN KEY ("company_id") REFERENCES "public"."companies"("id") ON DELETE no action ON UPDATE no action;
  END IF;
 END $$;--> statement-breakpoint
-DO $$ BEGIN
- IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'run_identity_contexts_run_id_heartbeat_runs_id_fk' AND conrelid = 'public.run_identity_contexts'::regclass) THEN
-  ALTER TABLE "run_identity_contexts" ADD CONSTRAINT "run_identity_contexts_run_id_heartbeat_runs_id_fk" FOREIGN KEY ("run_id") REFERENCES "public"."heartbeat_runs"("id") ON DELETE cascade ON UPDATE no action;
- END IF;
-END $$;--> statement-breakpoint
 CREATE UNIQUE INDEX IF NOT EXISTS "run_identity_contexts_run_revision_idx" ON "run_identity_contexts" USING btree ("run_id","revision");--> statement-breakpoint
 CREATE UNIQUE INDEX IF NOT EXISTS "run_identity_contexts_run_correlation_idx" ON "run_identity_contexts" USING btree ("run_id","correlation_id");--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "run_identity_contexts_company_run_idx" ON "run_identity_contexts" USING btree ("company_id","run_id");
