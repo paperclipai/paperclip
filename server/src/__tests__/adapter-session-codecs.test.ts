@@ -13,6 +13,10 @@ import {
   sessionCodec as opencodeSessionCodec,
   isOpenCodeUnknownSessionError,
 } from "@paperclipai/adapter-opencode-local/server";
+import {
+  sessionCodec as antigravitySessionCodec,
+  isAntigravitySessionUnrecoverableError,
+} from "@paperclipai/adapter-antigravity-local/server";
 import { sessionCodec as acpxSessionCodec } from "@paperclipai/adapter-utils/acpx-engine/session-codec";
 
 describe("adapter session codecs", () => {
@@ -161,6 +165,24 @@ describe("adapter session codecs", () => {
       cwd: "/tmp/gemini",
     });
     expect(geminiSessionCodec.getDisplayId?.(serialized ?? null)).toBe("gemini-session-1");
+  });
+
+  it("normalizes antigravity session params with cwd", () => {
+    const parsed = antigravitySessionCodec.deserialize({
+      conversation_id: "conv-123",
+      cwd: "/tmp/antigravity",
+    });
+    expect(parsed).toEqual({
+      sessionId: "conv-123",
+      cwd: "/tmp/antigravity",
+    });
+
+    const serialized = antigravitySessionCodec.serialize(parsed);
+    expect(serialized).toEqual({
+      sessionId: "conv-123",
+      cwd: "/tmp/antigravity",
+    });
+    expect(antigravitySessionCodec.getDisplayId?.(serialized ?? null)).toBe("conv-123");
   });
 
   it("preserves gemini ACP session params for ACP lane resumes", () => {
@@ -315,6 +337,63 @@ describe("gemini resume recovery detection", () => {
     expect(
       isGeminiSessionUnrecoverableError(
         "{\"type\":\"result\",\"subtype\":\"success\"}",
+        "",
+      ),
+    ).toBe(false);
+  });
+});
+
+describe("antigravity session codec", () => {
+  it("normalizes antigravity session params with cwd, repo details, and remote execution", () => {
+    const parsed = antigravitySessionCodec.deserialize({
+      conversation_id: "agy-conv-777",
+      folder: "/tmp/workspace",
+      workspace_id: "ws-1",
+      repo_url: "https://github.com/example/repo",
+      repo_ref: "feat/test",
+      remoteExecution: {
+        environmentId: "env-1",
+        leaseId: "lease-1",
+        host: "remote-host",
+      },
+    });
+
+    expect(parsed).toEqual({
+      sessionId: "agy-conv-777",
+      cwd: "/tmp/workspace",
+      workspaceId: "ws-1",
+      repoUrl: "https://github.com/example/repo",
+      repoRef: "feat/test",
+      remoteExecution: {
+        environmentId: "env-1",
+        leaseId: "lease-1",
+        host: "remote-host",
+      },
+    });
+
+    const serialized = antigravitySessionCodec.serialize(parsed);
+    expect(serialized).toEqual(parsed);
+    expect(antigravitySessionCodec.getDisplayId?.(serialized ?? null)).toBe("agy-conv-777");
+  });
+});
+
+describe("antigravity resume recovery detection", () => {
+  it("detects unknown conversation errors from antigravity output", () => {
+    expect(
+      isAntigravitySessionUnrecoverableError(
+        'warning: conversation "c1" not found',
+        "",
+      ),
+    ).toBe(true);
+    expect(
+      isAntigravitySessionUnrecoverableError(
+        "",
+        "Error: conversation c1 not found",
+      ),
+    ).toBe(true);
+    expect(
+      isAntigravitySessionUnrecoverableError(
+        '{"event":"result"}',
         "",
       ),
     ).toBe(false);

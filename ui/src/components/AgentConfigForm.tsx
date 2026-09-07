@@ -23,6 +23,7 @@ import {
   DEFAULT_CODEX_LOCAL_MODEL,
 } from "@paperclipai/adapter-codex-local";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
+import { DEFAULT_ANTIGRAVITY_LOCAL_MODEL } from "@paperclipai/adapter-antigravity-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
 import { DEFAULT_KIMI_LOCAL_MODEL } from "@paperclipai/adapter-kimi-local";
 import { DEFAULT_OPENCODE_LOCAL_MODEL } from "@paperclipai/adapter-opencode-local";
@@ -1387,6 +1388,8 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                     if (t === "codex_local") {
                       nextValues.dangerouslyBypassSandbox =
                         DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX;
+                    } else if (t === "antigravity_local") {
+                      nextValues.model = DEFAULT_ANTIGRAVITY_LOCAL_MODEL;
                     } else if (t === "gemini_local") {
                       nextValues.model = DEFAULT_GEMINI_LOCAL_MODEL;
                     } else if (t === "kimi_local") {
@@ -1407,7 +1410,9 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                       adapterType: t,
                       adapterConfig: {
                         model:
-                          t === "gemini_local"
+                          t === "antigravity_local"
+                            ? DEFAULT_ANTIGRAVITY_LOCAL_MODEL
+                            : t === "gemini_local"
                             ? DEFAULT_GEMINI_LOCAL_MODEL
                             : t === "kimi_local"
                               ? DEFAULT_KIMI_LOCAL_MODEL
@@ -1545,6 +1550,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                       ({
                         claude_local: "claude",
                         codex_local: "codex",
+                        antigravity_local: "agy",
                         gemini_local: "gemini",
                         kimi_local: "kimi",
                         pi_local: "pi",
