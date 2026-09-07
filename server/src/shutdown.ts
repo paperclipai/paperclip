@@ -36,6 +36,58 @@ export async function drainRunExecutionFinalizersForShutdown(input: {
   }
 }
 
+type ShutdownHttpListener = {
+  listening: boolean;
+  close(callback?: (err?: Error) => void): unknown;
+  closeIdleConnections?: () => void;
+  closeAllConnections?: () => void;
+};
+
+/**
+ * Stops the HTTP listener from accepting new requests and waits, for at most
+ * `timeoutMs`, for the open connections to finish. Idle keep-alive sockets
+ * close at once; whatever is still open when the grace period ends is closed
+ * forcibly, so the teardown never hangs on a long-lived client. Call this
+ * before the database pool ends, so no request can reach a route after
+ * `sql.end()` and fail with a connection-ended error.
+ */
+export async function closeHttpListenerForShutdown(input: {
+  server: ShutdownHttpListener;
+  signal: "SIGINT" | "SIGTERM";
+  timeoutMs?: number;
+  log: ShutdownLogger;
+}): Promise<"closed" | "timed_out" | "not_listening"> {
+  if (!input.server.listening) return "not_listening";
+  const timeoutMs = input.timeoutMs ?? 5_000;
+  let timer: NodeJS.Timeout | null = null;
+  try {
+    return await Promise.race([
+      new Promise<"closed">((resolve) => {
+        input.server.close((err) => {
+          if (err && (err as NodeJS.ErrnoException).code !== "ERR_SERVER_NOT_RUNNING") {
+            input.log.error({ err, signal: input.signal }, "HTTP listener close failed");
+          }
+          resolve("closed");
+        });
+        input.server.closeIdleConnections?.();
+      }),
+      new Promise<"timed_out">((resolve) => {
+        timer = setTimeout(() => {
+          input.log.info(
+            { signal: input.signal, timeoutMs },
+            "HTTP listener drain timed out; closing the remaining connections",
+          );
+          input.server.closeAllConnections?.();
+          resolve("timed_out");
+        }, timeoutMs);
+        timer.unref?.();
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 /**
  * Runs the final, ordered teardown of the server. It awaits the application
  * service cleanup first, so a live setup-token login session stops and releases
@@ -52,6 +104,20 @@ export async function drainRunExecutionFinalizersForShutdown(input: {
 export async function finalizeServerShutdown(input: {
   signal: "SIGINT" | "SIGTERM";
   shutdownAppServices: (() => Promise<void>) | undefined;
+  /**
+   * Stops the HTTP listener and drains its connections (see
+   * `closeHttpListenerForShutdown`). Runs after the application services and
+   * before the database pool ends, so no request reaches a route once the
+   * pool is gone.
+   */
+  closeHttpListener?: (() => Promise<unknown>) | null;
+  /**
+   * Ends the server's PostgreSQL client pools. Runs after the application
+   * services (which still need the database) and the listener close, and
+   * before the embedded provider stops, so the backends close in order and
+   * none outlive the process.
+   */
+  closeDatabase?: (() => Promise<void>) | null;
   stopEmbeddedPostgres: (() => Promise<void>) | null;
   shutdownInstrumentation: () => Promise<void>;
   shutdownSentry: () => Promise<void>;
@@ -66,6 +132,26 @@ export async function finalizeServerShutdown(input: {
     await input.shutdownAppServices?.();
   } catch (err) {
     input.log.error({ err, signal }, "Application service shutdown failed");
+  }
+
+  if (input.closeHttpListener) {
+    try {
+      await input.closeHttpListener();
+    } catch (err) {
+      input.log.error({ err, signal }, "HTTP listener shutdown failed");
+    }
+  }
+
+  // End the client pools once nothing needs them any more. Without this the
+  // process exit leaves the pooled backends to PostgreSQL's own TCP keepalive
+  // reaping, and a restart loop can pile up enough of them to hit
+  // `max_connections` before the next boot gets a connection.
+  if (input.closeDatabase) {
+    try {
+      await input.closeDatabase();
+    } catch (err) {
+      input.log.error({ err, signal }, "Database client shutdown failed");
+    }
   }
 
   if (input.stopEmbeddedPostgres) {

@@ -104,6 +104,7 @@ import { conflict } from "./errors.js";
 import { ensureDecisionSigningSecret } from "./services/decision-signing.js";
 import { createDecisionRetentionNotifyOriginAgent, createDecisionWakeOriginAgent } from "./services/decision-wakeup.js";
 import {
+  closeHttpListenerForShutdown,
   coordinateHeartbeatSchedulerShutdown,
   drainRunExecutionFinalizersForShutdown,
   finalizeServerShutdown,
@@ -158,7 +159,40 @@ export interface StartedServer {
   shutdown: (signal?: "SIGINT" | "SIGTERM") => Promise<void>;
 }
 
+// Set by the boot sequence once the primary pool exists. A boot that fails
+// after that point (a bootstrap query that throws, for example) must end the
+// pool before the caller exits: the driver keeps idle connections open until
+// the process dies, and in a restart loop the leftover backends of every
+// failed generation can exhaust `max_connections` before the next boot even
+// gets a connection.
+type StartupDatabaseTeardown = { close: (() => Promise<void>) | null };
+
+// Ends the pool behind a drizzle client. Tolerates a client without `$client`
+// (test doubles) and never throws, so it is safe on every exit path.
+async function endDatabaseClient(client: unknown, timeoutSeconds: number): Promise<void> {
+  const sql = (client as { $client?: { end?: (options?: { timeout?: number }) => Promise<void> } } | null)
+    ?.$client;
+  if (typeof sql?.end !== "function") return;
+  await sql.end({ timeout: timeoutSeconds });
+}
+
 export async function startServer(): Promise<StartedServer> {
+  const startupDatabase: StartupDatabaseTeardown = { close: null };
+  try {
+    return await startServerWithDatabaseTeardown(startupDatabase);
+  } catch (error) {
+    if (startupDatabase.close) {
+      await startupDatabase.close().catch((closeError) => {
+        logger.error({ err: closeError }, "failed to close database clients after startup failure");
+      });
+    }
+    throw error;
+  }
+}
+
+async function startServerWithDatabaseTeardown(
+  startupDatabase: StartupDatabaseTeardown,
+): Promise<StartedServer> {
   setStartupRecoveryPhase("starting");
   warnIfUnsupportedNodeVersion(process.versions.node, (message) => logger.warn(message));
 
@@ -586,6 +620,15 @@ export async function startServer(): Promise<StartedServer> {
     resolvedEmbeddedPostgresPort = port;
     startupDbInfo = { mode: "embedded-postgres", dataDir, port };
   }
+
+  // Ends every pool this process opened. Used by the orderly shutdown path
+  // (after the application services, before the embedded provider stops) and
+  // by the fail-loud startup path, so no exit leaves pooled backends behind.
+  const closeDatabaseClients = async () => {
+    const clients = pluginMigrationDb === db ? [db] : [db, pluginMigrationDb];
+    await Promise.all(clients.map((client) => endDatabaseClient(client, 5)));
+  };
+  startupDatabase.close = closeDatabaseClients;
   
   // A claimed warm-pool stack may restart while its provider environment still
   // names the pool host. Restore the signed, durable identity before Better
@@ -1883,9 +1926,15 @@ export async function startServer(): Promise<StartedServer> {
     // setup-token login session must stop and release its sandbox lease before
     // the database and the provider stop, so an orderly shutdown never leaves a
     // sandbox lease or confidential login state alive past the process exit.
+    // The HTTP listener closes before the pool ends, so no request reaches a
+    // route once the pool is gone; the programmatic close below then finds
+    // the listener already closed and skips.
     await finalizeServerShutdown({
       signal,
       shutdownAppServices: appShutdown,
+      closeHttpListener: () =>
+        closeHttpListenerForShutdown({ server, signal, log: logger }),
+      closeDatabase: closeDatabaseClients,
       stopEmbeddedPostgres,
       shutdownInstrumentation,
       shutdownSentry,

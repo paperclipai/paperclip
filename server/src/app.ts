@@ -980,6 +980,9 @@ export async function createApp(
     if (appServicesShutdown) return appServicesShutdown;
     appServicesShutdown = (async () => {
       disableFeedbackExportFlushes();
+      // The scheduler tick queries the database. Stop it here, inside the
+      // awaited teardown, so no tick runs after the caller ends the pool.
+      scheduler.stop();
       if (importTransferSweepTimer) {
         clearInterval(importTransferSweepTimer);
         importTransferSweepTimer = null;
