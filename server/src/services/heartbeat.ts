@@ -1213,14 +1213,19 @@ const LOW_TRUST_SENSITIVE_ENV_KEY_RE =
 // 3. Any other PAPERCLIP_*-named binding is user data and flows through to
 //    the run env like any non-prefixed binding.
 const FORBIDDEN_ENV_BINDING_KEYS = new Set(["PAPERCLIP_API_KEY"]);
+const MANAGED_GITHUB_TOKEN_KEYS = new Set([
+  "GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN", "PAPERCLIP_GIT_TOKEN",
+]);
 
 function stripForbiddenEnvBindings(
   envValue: unknown,
+  managedGitHubCredentials = false,
 ): Record<string, unknown> | null {
   const record = parseObject(envValue);
   const filtered = Object.fromEntries(
     Object.entries(record).filter(
-      ([key]) => !FORBIDDEN_ENV_BINDING_KEYS.has(key),
+      ([key]) => !FORBIDDEN_ENV_BINDING_KEYS.has(key)
+        && !(managedGitHubCredentials && MANAGED_GITHUB_TOKEN_KEYS.has(key)),
     ),
   );
   return Object.keys(filtered).length > 0 ? filtered : null;
@@ -1228,11 +1233,12 @@ function stripForbiddenEnvBindings(
 
 function stripForbiddenEnvFromAdapterConfig(
   config: Record<string, unknown>,
+  managedGitHubCredentials = false,
 ): Record<string, unknown> {
   if (!Object.prototype.hasOwnProperty.call(config, "env")) return config;
   return {
     ...config,
-    env: stripForbiddenEnvBindings(config.env) ?? {},
+    env: stripForbiddenEnvBindings(config.env, managedGitHubCredentials) ?? {},
   };
 }
 
@@ -1283,16 +1289,18 @@ export async function resolveExecutionRunAdapterConfig(input: {
     reason: string;
     remediation: string;
   };
+  /** Managed GitHub tokens are resolved only when operations start. */
+  managedGitHubCredentials?: boolean;
   /** Audited class-3 values resolved by an internal credential broker. */
   trustedEnvProjection?: Record<string, string>;
   trustedEnvSecretKeys?: string[];
 }) {
   const executionRunConfig = stripForbiddenEnvFromAdapterConfig(
-    input.executionRunConfig,
+    input.executionRunConfig, input.managedGitHubCredentials,
   );
-  const environmentEnv = stripForbiddenEnvBindings(input.environmentEnv);
-  const projectEnv = stripForbiddenEnvBindings(input.projectEnv);
-  const routineEnv = stripForbiddenEnvBindings(input.routineEnv);
+  const environmentEnv = stripForbiddenEnvBindings(input.environmentEnv, input.managedGitHubCredentials);
+  const projectEnv = stripForbiddenEnvBindings(input.projectEnv, input.managedGitHubCredentials);
+  const routineEnv = stripForbiddenEnvBindings(input.routineEnv, input.managedGitHubCredentials);
   const agentEnv = parseObject(executionRunConfig.env);
   const lowTrustAllowedBindingIds =
     input.trustPreset?.kind === "low_trust_review"
@@ -18875,6 +18883,7 @@ export function heartbeatService(
           : runScopedMentionedSkillKeys;
       const { resolvedConfig, secretKeys, secretManifest } =
         await resolveExecutionRunAdapterConfig({
+          managedGitHubCredentials: true,
           companyId: agent.companyId,
           agentId: agent.id,
           adapterType: agent.adapterType,
