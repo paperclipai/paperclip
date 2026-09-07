@@ -312,8 +312,11 @@ function GitHubConnectionSummary({
     (selectedOwner === "*" || repository.fullName.split("/")[0] === selectedOwner)
     && repository.fullName.toLowerCase().includes(search)
   ));
-  const configurationUrl = github.installationUrl
-    ?? (github.appSlug ? `https://github.com/apps/${encodeURIComponent(github.appSlug)}/installations/new` : github.managementUrl);
+  const configurationUrl = github.appSlug
+    ? `https://github.com/apps/${encodeURIComponent(github.appSlug)}/installations/new`
+    : /^https:\/\/github\.com\/apps\/[a-z0-9-]+\/installations\/new$/.test(github.installationUrl ?? "")
+      ? github.installationUrl
+      : null;
   const repositoryWarning = github.repositorySelection === "all"
     ? "All current and future repositories"
     : github.repositorySelection === "mixed"
@@ -350,7 +353,7 @@ function GitHubConnectionSummary({
             )}
           </div>
           <div className="flex items-center gap-2">
-            {onRefreshAccess ? (
+            {onRefreshAccess && configurationUrl ? (
               <Button size="icon-sm" variant="outline" aria-label="Refresh access" title="Refresh access" disabled={refreshPending} onClick={onRefreshAccess}>
                 {refreshPending ? <Loader2 className="animate-spin" aria-hidden="true" /> : <RefreshCw aria-hidden="true" />}
               </Button>
@@ -358,6 +361,11 @@ function GitHubConnectionSummary({
             {configurationUrl ? (
               <Button asChild size="sm" variant="outline">
                 <a href={configurationUrl} target="_blank" rel="noreferrer">Configure on GitHub</a>
+              </Button>
+            ) : onRefreshAccess ? (
+              <Button size="sm" variant="outline" disabled={refreshPending} onClick={onRefreshAccess}>
+                {refreshPending ? <Loader2 className="animate-spin" aria-hidden="true" /> : <RefreshCw aria-hidden="true" />}
+                Load GitHub configuration
               </Button>
             ) : null}
           </div>

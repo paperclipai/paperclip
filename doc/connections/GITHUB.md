@@ -81,7 +81,10 @@ Use the account filter and search to narrow the list. The list scrolls after
 about ten rows and marks known private repositories with a lock. Configure on
 GitHub opens the app account chooser so users can add or update organization
 access. Refresh access after changing the selection. Older snapshots omit the
-private flag until refreshed.
+private flag until refreshed. If a legacy grant lacks its app chooser URL,
+**Load GitHub configuration** refreshes access and recovers the app slug from
+GitHub installation metadata. The page does not substitute a single-installation
+settings URL for the account chooser.
 
 The permissions page shows the authenticated GitHub account and the complete
 accessible repository list. **Refresh access** reloads it from GitHub. Older

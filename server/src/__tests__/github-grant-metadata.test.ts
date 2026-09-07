@@ -62,6 +62,17 @@ describe("GitHub grant metadata", () => {
     }
   });
 
+  it("recovers a legacy grant's app chooser from GitHub installation metadata", async () => {
+    const request = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(json({ id: 42, login: "octocat" }))
+      .mockResolvedValueOnce(json({ installations: [{ id: 101, app_slug: "paperclip-staging", repository_selection: "selected" }] }))
+      .mockResolvedValueOnce(json({ repositories: [{ id: 1, full_name: "octocat/a" }] }));
+    await expect(loadGitHubGrantMetadata("ghu_secret", request)).resolves.toMatchObject({
+      appSlug: "paperclip-staging",
+      installationUrl: "https://github.com/apps/paperclip-staging/installations/new",
+    });
+  });
+
   it("requires at least one installation with an accessible repository", async () => {
     const request = vi.fn<typeof fetch>(async (input) => String(input).endsWith("/user")
       ? json({ id: 42, login: "octocat" })

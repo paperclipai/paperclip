@@ -1950,6 +1950,7 @@ export async function loadGitHubGrantMetadata(
   lastAccessRefreshAt: string;
   webhookHealth: "pending";
 }> {
+  let resolvedAppSlug = appSlug;
   const accessRefreshStartedAt = new Date().toISOString();
   const github = async (path: string): Promise<{ data: Record<string, unknown>; hasNext: boolean }> => {
     const response = await request(`https://api.github.com${path}`, {
@@ -1996,6 +1997,12 @@ export async function loadGitHubGrantMetadata(
     const installationId = githubId(installation.id);
     if (!installationId) continue;
     installationIds.push(installationId);
+    // Older grants predate the broker's appSlug field. GitHub's installation
+    // response identifies this token's app without choosing an environment.
+    if (!resolvedAppSlug && typeof installation.app_slug === "string"
+      && /^[a-z0-9-]{1,100}$/.test(installation.app_slug)) {
+      resolvedAppSlug = installation.app_slug;
+    }
     if (installation.repository_selection === "all" || installation.repository_selection === "selected") {
       selections.add(installation.repository_selection);
     }
@@ -2017,8 +2024,8 @@ export async function loadGitHubGrantMetadata(
   }
   const repositoryCount = repositories.size;
   if (installationIds.length === 0 || repositoryCount === 0) {
-    const installationUrl = appSlug
-      ? `https://github.com/apps/${appSlug}/installations/new`
+    const installationUrl = resolvedAppSlug
+      ? `https://github.com/apps/${resolvedAppSlug}/installations/new`
       : "https://github.com/settings/installations";
     throw unprocessable("GitHub access is required. Install Paperclip and grant at least one repository before refreshing access.", {
       code: "github_installation_required",
@@ -2026,8 +2033,8 @@ export async function loadGitHubGrantMetadata(
       managementUrl: "https://github.com/settings/installations",
     });
   }
-  const installationUrl = appSlug
-    ? `https://github.com/apps/${appSlug}/installations/new`
+  const installationUrl = resolvedAppSlug
+    ? `https://github.com/apps/${resolvedAppSlug}/installations/new`
     : "https://github.com/settings/installations";
   return {
     userId,
@@ -2043,7 +2050,7 @@ export async function loadGitHubGrantMetadata(
     managementUrl: managementUrls.size === 1
       ? managementUrls.values().next().value!
       : "https://github.com/settings/installations",
-    ...(appSlug ? { appSlug } : {}),
+    ...(resolvedAppSlug ? { appSlug: resolvedAppSlug } : {}),
     accessRevision: randomUUID(),
     lastAccessRefreshAt: accessRefreshStartedAt,
     webhookHealth: "pending",

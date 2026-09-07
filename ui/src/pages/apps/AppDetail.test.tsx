@@ -25,6 +25,7 @@ const finishAppMock = vi.hoisted(() => vi.fn());
 const finalizeOAuthAccessMock = vi.hoisted(() => vi.fn());
 const putConnectionInstallsMock = vi.hoisted(() => vi.fn());
 const refreshCatalogMock = vi.hoisted(() => vi.fn());
+const checkConnectionHealthMock = vi.hoisted(() => vi.fn());
 const startOAuthMock = vi.hoisted(() => vi.fn());
 const listConnectionGrantsMock = vi.hoisted(() => vi.fn());
 const revokeConnectionGrantMock = vi.hoisted(() => vi.fn());
@@ -67,6 +68,7 @@ vi.mock("@/api/tools", () => ({
       putConnectionInstallsMock(connectionId, installs),
     archiveConnection: vi.fn(),
     refreshCatalog: (connectionId: string) => refreshCatalogMock(connectionId),
+    checkConnectionHealth: (connectionId: string) => checkConnectionHealthMock(connectionId),
     startOAuth: (connectionId: string, input?: unknown) => input === undefined
       ? startOAuthMock(connectionId)
       : startOAuthMock(connectionId, input),
@@ -410,6 +412,7 @@ describe("AppDetail", () => {
     finishAppMock.mockResolvedValue({});
     finalizeOAuthAccessMock.mockResolvedValue({});
     putConnectionInstallsMock.mockResolvedValue({ connectionId: "conn-1", installs: [] });
+    checkConnectionHealthMock.mockResolvedValue({ connection: connection(), healthStatus: "ok" });
     refreshCatalogMock.mockResolvedValue({ discoveredCount: 0, quarantinedCount: 0, catalog: [] });
     startOAuthMock.mockResolvedValue({
       connectionId: "conn-1",
@@ -1481,6 +1484,32 @@ describe("AppDetail", () => {
     expect(container.querySelector('a[href="https://github.com/paperclipai/second"] [aria-label="Private repository"]')).toBeNull();
     const configureHint = [...container.querySelectorAll("p a")].find((link) => link.textContent === "Configure access on GitHub");
     expect(configureHint?.getAttribute("href")).toBe("https://github.com/apps/paperclip-test/installations/new");
+  });
+
+  it.each([undefined, "https://github.com/settings/installations"])("loads missing GitHub app configuration instead of linking legacy settings (%s)", async (installationUrl) => {
+    mockParams.tab = "permissions";
+    getConnectionMock.mockResolvedValue(perUserConnection());
+    listConnectionGrantsMock.mockResolvedValue({
+      connection: { id: "conn-1", uid: "conn-1" },
+      grants: [dedicatedGitHubGrant({ kind: "user", subjectAgentId: null, subjectUserId: "user-1" }, { installationUrl })],
+      capabilities: fullCapabilities(), currentUserId: "user-1", members: [],
+    });
+    await renderAppDetail();
+    expect(findButton("Load GitHub configuration")).toBeTruthy();
+    expect(container.querySelector('a[href="https://github.com/settings/installations/456"]')).toBeNull();
+    expect(container.querySelector('a[href="https://github.com/settings/installations"]')).toBeNull();
+    listConnectionGrantsMock.mockResolvedValue({
+      connection: { id: "conn-1", uid: "conn-1" },
+      grants: [dedicatedGitHubGrant({ kind: "user", subjectAgentId: null, subjectUserId: "user-1" }, {
+        appSlug: "paperclip-staging", installationUrl: "https://github.com/apps/paperclip-staging/installations/new",
+      })],
+      capabilities: fullCapabilities(), currentUserId: "user-1", members: [],
+    });
+    await act(async () => { findButton("Load GitHub configuration")!.click(); });
+    await flushReact();
+    expect(checkConnectionHealthMock).toHaveBeenCalledWith("conn-1");
+    expect(container.querySelector('a[href="https://github.com/apps/paperclip-staging/installations/new"]')?.textContent).toBe("Configure on GitHub");
+    expect(findButton("Load GitHub configuration")).toBeUndefined();
   });
 
   it("filters the combined GitHub repository list by owner and search without changing access", async () => {
