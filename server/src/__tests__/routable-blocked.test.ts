@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  blockedOwnerDeliveryMatchesIssue,
   blockedOwnerNotificationIdempotencyKey,
   deliverAgentUnblockNotification,
   deliverBlockedOwnerNotification,
@@ -32,6 +33,38 @@ function blockedIssue(input: {
 }
 
 describe("routable blocked notifications", () => {
+  it("matches blocked-owner delivery only when descriptor, recipient, and transition align", () => {
+    const transitionAt = new Date(ROUTABLE_BLOCKED_ROLLOUT_AT.getTime() + 5);
+    const issue = blockedIssue({
+      transitionAt,
+      owner: { userId },
+      action: "Repair the adapter startup configuration, then explicitly retry or reassign this issue.",
+    });
+    const delivery = {
+      userId,
+      action: issue.unblockDescriptor.action,
+      idempotencyKey: blockedOwnerNotificationIdempotencyKey({
+        issueId: issue.id,
+        blockedTransitionAt: transitionAt,
+      }),
+    };
+
+    expect(blockedOwnerDeliveryMatchesIssue({ issue, delivery })).toBe(true);
+    expect(blockedOwnerDeliveryMatchesIssue({
+      issue: blockedIssue({ transitionAt, owner: { userId: "00000000-0000-4000-8000-000000000098" } }),
+      delivery,
+    })).toBe(false);
+    expect(blockedOwnerDeliveryMatchesIssue({
+      issue: blockedIssue({ transitionAt, owner: { userId }, action: "Different action" }),
+      delivery,
+    })).toBe(false);
+    expect(blockedOwnerDeliveryMatchesIssue({
+      issue: { ...issue, status: "in_progress" },
+      delivery,
+    })).toBe(false);
+  });
+
+
   it("wakes the named agent and records delivery on a prospective transition", async () => {
     const wakeup = vi.fn(async () => undefined);
     const markNotified = vi.fn(async () => undefined);

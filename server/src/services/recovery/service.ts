@@ -37,7 +37,7 @@ import { isPidAlive, isProcessGroupAlive, terminateLocalService } from "../local
 import { redactCurrentUserText } from "../../log-redaction.js";
 import { redactSensitiveText } from "../../redaction.js";
 import { isUniqueViolation } from "../../db-errors.js";
-import { logActivity } from "../activity-log.js";
+import { logActivity, publishActivity, type ActivityPublication } from "../activity-log.js";
 import { budgetService } from "../budgets.js";
 import { instanceSettingsService } from "../instance-settings.js";
 import { issueRecoveryActionService } from "../issue-recovery-actions.js";
@@ -86,7 +86,7 @@ import {
   withRecoveryModelProfileHint,
 } from "./model-profile-hint.js";
 import { isAutomaticRecoverySuppressedByPauseHold } from "./pause-hold-guard.js";
-import { blockedOwnerNotificationIdempotencyKey, deliverBlockedOwnerNotification } from "../routable-blocked.js";
+import { blockedOwnerDeliveryMatchesIssue, blockedOwnerNotificationIdempotencyKey, deliverBlockedOwnerNotification } from "../routable-blocked.js";
 import {
   collectDispositionRepairSourceState,
   dispositionRepairDelayMs,
@@ -283,19 +283,38 @@ function blockedOwnerNotificationCommentMetadata(input: {
   };
 }
 
-async function deliverBlockedOwnerUserNotification(input: {
+export async function deliverBlockedOwnerUserNotification(input: {
   db: Db;
   issuesSvc: ReturnType<typeof issueService>;
   issue: Pick<typeof issues.$inferSelect, "id" | "companyId">;
   delivery: { userId: string; action: string; idempotencyKey: string };
   notifiedAt: Date;
 }) {
-  return input.db.transaction(async (tx) => {
+  const postCommitPublications: ActivityPublication[] = [];
+  const result = await input.db.transaction(async (tx) => {
     const [lockedIssue] = await tx
-      .select({ blockedOwnerNotifiedAt: issues.blockedOwnerNotifiedAt })
+      .select({
+        status: issues.status,
+        blockedTransitionAt: issues.blockedTransitionAt,
+        blockedOwnerNotifiedAt: issues.blockedOwnerNotifiedAt,
+        unblockDescriptor: issues.unblockDescriptor,
+      })
       .from(issues)
       .where(eq(issues.id, input.issue.id))
       .for("update");
+
+    if (!lockedIssue) {
+      throw new Error("blocked owner notification issue missing under lock");
+    }
+
+    const lockedDeliveryIssue = {
+      id: input.issue.id,
+      companyId: input.issue.companyId,
+      status: lockedIssue.status,
+      blockedTransitionAt: lockedIssue.blockedTransitionAt,
+      blockedOwnerNotifiedAt: lockedIssue.blockedOwnerNotifiedAt,
+      unblockDescriptor: lockedIssue.unblockDescriptor,
+    };
 
     const existingReceipt = await tx
       .select({ id: activityLog.id })
@@ -310,7 +329,10 @@ async function deliverBlockedOwnerUserNotification(input: {
       .limit(1)
       .then((rows) => rows[0] ?? null);
     if (existingReceipt) {
-      if (!lockedIssue?.blockedOwnerNotifiedAt) {
+      if (
+        blockedOwnerDeliveryMatchesIssue({ issue: lockedDeliveryIssue, delivery: input.delivery }) &&
+        !lockedIssue.blockedOwnerNotifiedAt
+      ) {
         await tx
           .update(issues)
           .set({ blockedOwnerNotifiedAt: input.notifiedAt, updatedAt: new Date() })
@@ -319,8 +341,12 @@ async function deliverBlockedOwnerUserNotification(input: {
       return { receiptId: existingReceipt.id };
     }
 
-    if (lockedIssue?.blockedOwnerNotifiedAt) {
+    if (lockedIssue.blockedOwnerNotifiedAt) {
       throw new Error("blocked owner notification receipt missing for marked issue");
+    }
+
+    if (!blockedOwnerDeliveryMatchesIssue({ issue: lockedDeliveryIssue, delivery: input.delivery })) {
+      throw new Error("blocked owner notification state no longer matches delivery target");
     }
 
     await input.issuesSvc.addComment(
@@ -355,7 +381,7 @@ async function deliverBlockedOwnerUserNotification(input: {
         recipientUserId: input.delivery.userId,
         action: input.delivery.action,
       },
-    });
+    }, postCommitPublications);
 
     await tx
       .update(issues)
@@ -364,6 +390,12 @@ async function deliverBlockedOwnerUserNotification(input: {
 
     return { receiptId: activity.id };
   });
+
+  for (const publication of postCommitPublications) {
+    publishActivity(publication);
+  }
+
+  return result;
 }
 
 function readRecoveryRunErrorFamily(latestRun: LatestIssueRun) {

@@ -32,6 +32,25 @@ export function isProspectiveBlockedTransition(issue: RoutableBlockedIssue): iss
     Boolean(issue.blockedTransitionAt && issue.blockedTransitionAt >= ROUTABLE_BLOCKED_ROLLOUT_AT);
 }
 
+export function blockedOwnerDeliveryMatchesIssue(input: {
+  issue: RoutableBlockedIssue;
+  delivery: { userId: string; action: string; idempotencyKey: string };
+}) {
+  if (!isProspectiveBlockedTransition(input.issue) || !input.issue.unblockDescriptor) {
+    return false;
+  }
+  const owner = input.issue.unblockDescriptor.owner;
+  if (owner === "board" || typeof owner !== "object" || !("userId" in owner)) {
+    return false;
+  }
+  if (owner.userId !== input.delivery.userId) return false;
+  if (input.issue.unblockDescriptor.action !== input.delivery.action) return false;
+  return blockedOwnerNotificationIdempotencyKey({
+    issueId: input.issue.id,
+    blockedTransitionAt: input.issue.blockedTransitionAt,
+  }) === input.delivery.idempotencyKey;
+}
+
 export async function deliverBlockedOwnerNotification(input: {
   issue: RoutableBlockedIssue & {
     responsibleUserId?: string | null;

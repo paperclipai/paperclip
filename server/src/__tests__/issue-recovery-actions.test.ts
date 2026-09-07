@@ -26,6 +26,7 @@ import { errorHandler } from "../middleware/index.js";
 import { issueRoutes } from "../routes/issues.js";
 import { buildPaperclipWakePayload } from "../services/heartbeat.js";
 import { issueRecoveryActionService } from "../services/issue-recovery-actions.js";
+import { issueService } from "../services/issues.js";
 import { recoveryService } from "../services/recovery/service.js";
 import { noticeMetadataReferencesRecoveryAction } from "../services/recovery/successful-run-handoff.js";
 
@@ -1350,6 +1351,55 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     );
     expect(ownerNotificationComments).toHaveLength(1);
     expect(enqueueWakeup).not.toHaveBeenCalled();
+  });
+
+  it("does not deliver blocked-owner notification to a stale owner after descriptor changes", async () => {
+    const { companyId, sourceIssue } = await seedCompany();
+    const transitionAt = new Date(Date.now() + 60_000);
+    await db.update(issues).set({
+      status: "blocked",
+      responsibleUserId: "user-a",
+      unblockDescriptor: {
+        owner: { userId: "user-a" },
+        action: "Repair the adapter startup configuration, then explicitly retry or reassign this issue.",
+      },
+      blockedTransitionAt: transitionAt,
+      blockedOwnerNotifiedAt: null,
+    }).where(eq(issues.id, sourceIssue.id));
+
+    await db.update(issues).set({
+      unblockDescriptor: {
+        owner: { userId: "user-b" },
+        action: "Review the recovery evidence, then explicitly retry, reassign, or resolve this issue.",
+      },
+    }).where(eq(issues.id, sourceIssue.id));
+
+    const { blockedOwnerNotificationIdempotencyKey } = await import("../services/routable-blocked.js");
+    const { deliverBlockedOwnerUserNotification } = await import("../services/recovery/service.js");
+    const issuesSvc = issueService(db);
+
+    await expect(deliverBlockedOwnerUserNotification({
+      db,
+      issuesSvc,
+      issue: { id: sourceIssue.id, companyId },
+      delivery: {
+        userId: "user-a",
+        action: "Repair the adapter startup configuration, then explicitly retry or reassign this issue.",
+        idempotencyKey: blockedOwnerNotificationIdempotencyKey({
+          issueId: sourceIssue.id,
+          blockedTransitionAt: transitionAt,
+        }),
+      },
+      notifiedAt: new Date(),
+    })).rejects.toThrow("blocked owner notification state no longer matches delivery target");
+
+    const updatedIssue = await db.select().from(issues).where(eq(issues.id, sourceIssue.id)).then((rows) => rows[0] ?? null);
+    expect(updatedIssue?.blockedOwnerNotifiedAt).toBeNull();
+    expect(await db.select().from(activityLog).where(and(
+      eq(activityLog.companyId, companyId),
+      eq(activityLog.entityId, sourceIssue.id),
+      eq(activityLog.action, "issue.blocked_owner_notification_delivered"),
+    ))).toHaveLength(0);
   });
 
   it("clears stale unblock ownership when an ownerless startup fault supersedes recovery on a blocked issue", async () => {
