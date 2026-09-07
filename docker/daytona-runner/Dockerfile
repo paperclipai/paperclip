@@ -63,10 +63,8 @@ RUN npm uninstall -g @anthropic-ai/claude-code @openai/codex opencode-ai \
 # Hermes requires Python >=3.11,<3.14; the image's default Python is newer.
 # Use the distro interpreter in a dedicated environment without changing PATH
 # or keeping an older Hermes CLI. Everything is installed before sandbox boot.
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends python3-venv \
-    && rm -rf /var/lib/apt/lists/* \
-    && /usr/bin/python3 -m venv /opt/hermes \
+# Debian 13 in the sandbox base already includes Python 3.13 and python3-venv.
+RUN /usr/bin/python3 -m venv /opt/hermes \
     && /opt/hermes/bin/pip install --no-cache-dir hermes-agent==0.19.0 \
     && ln -sf /opt/hermes/bin/hermes /usr/local/bin/hermes
 
