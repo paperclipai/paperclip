@@ -2613,6 +2613,37 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       await act(async () => root.unmount());
     });
 
+    it("starts the other source's login after backing out of the first", async () => {
+      // The abandonment case, raised in review against removing the card's
+      // Cancel: with no explicit release, does a source switch still get a
+      // login? It does. The server's lease is keyed on the adapter type as
+      // well as the company and environment, so the abandoned Claude session
+      // does not stand in the way of a Codex one — and it is collected on its
+      // own five-minute timer regardless (DEVICE_LOGIN_TIMEOUT_MS), with the
+      // reaper as the restart-safe backstop.
+      mockAgentsApi.getAdapterAuthSignal.mockResolvedValue({ status: "absent" });
+      const { root } = await openStep4({ adapterType: "claude_local" });
+
+      await pickSource(/Claude/);
+      expect(mockAgentsApi.startClaudeSetupTokenLogin).toHaveBeenCalledTimes(1);
+
+      const back = [...document.body.querySelectorAll("button")].find((b) =>
+        b.textContent?.trim().startsWith("Back"),
+      );
+      await act(async () => {
+        back!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      for (let i = 0; i < 12; i++) await flushReact();
+
+      await pickSource(/OpenAI/);
+      for (let i = 0; i < 8; i++) await flushReact();
+
+      expect(mockAgentsApi.startAdapterAuthLogin).toHaveBeenCalledTimes(1);
+      expect(mockAgentsApi.startClaudeSetupTokenLogin).toHaveBeenCalledTimes(1);
+
+      await act(async () => root.unmount());
+    });
+
     it("hires on Connect, with no sign-in, when the signal reports a ready credential", async () => {
       mockAgentsApi.getAdapterAuthSignal.mockResolvedValue({ status: "present" });
       const { root } = await openStep4({ adapterType: "claude_local" });
