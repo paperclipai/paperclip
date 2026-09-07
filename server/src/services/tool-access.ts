@@ -1949,6 +1949,7 @@ export async function loadGitHubGrantMetadata(
   lastAccessRefreshAt: string;
   webhookHealth: "pending";
 }> {
+  const accessRefreshStartedAt = new Date().toISOString();
   const github = async (path: string): Promise<{ data: Record<string, unknown>; hasNext: boolean }> => {
     const response = await request(`https://api.github.com${path}`, {
       headers: {
@@ -2039,7 +2040,7 @@ export async function loadGitHubGrantMetadata(
       ? managementUrls.values().next().value!
       : "https://github.com/settings/installations",
     ...(appSlug ? { appSlug } : {}),
-    lastAccessRefreshAt: new Date().toISOString(),
+    lastAccessRefreshAt: accessRefreshStartedAt,
     webhookHealth: "pending",
   };
 }
@@ -8606,6 +8607,13 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       )).for("update").limit(1);
       if (!currentGrant || currentGrant.status === "revoked") throw notFound("GitHub authorization not found");
       const previousGitHub = currentGrant.providerTenant?.github;
+      const initialGitHub = grant.providerTenant?.github;
+      // No lock is held during provider requests. Reject a snapshot if another
+      // refresh or webhook changed access while those requests were in flight.
+      if (previousGitHub?.lastWebhookAt !== initialGitHub?.lastWebhookAt
+        || previousGitHub?.lastAccessRefreshAt !== initialGitHub?.lastAccessRefreshAt) {
+        throw conflict("GitHub access changed during refresh. Try again.", { code: "github_access_changed" });
+      }
       const providerTenant = {
         ...(currentGrant.providerTenant ?? {}),
         github: {
