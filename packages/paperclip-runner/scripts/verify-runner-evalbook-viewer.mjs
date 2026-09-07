@@ -111,7 +111,7 @@ try {
             })
             .count(),
         );
-      else if (payload.devtools) {
+      if (payload.devtools || payload.publication) {
         const evidenceLink = page
           .locator('[data-thread-item="tool_activity"][open]')
           .first()
@@ -120,6 +120,7 @@ try {
         await evidenceLink.click();
         await expect(evidenceTab).toHaveAttribute("aria-selected", "true");
         await expect(page.locator('[data-highlighted="true"]').first()).toBeVisible();
+        await expect(page.getByRole("heading", { name: "Assertions", exact: true })).toHaveCount(0);
         // Reopening the same record after selecting another tab must work too.
         await page.getByRole("tab", { name: "Eval", exact: true }).click();
         await evidenceLink.click();
