@@ -4168,6 +4168,83 @@ describeEmbeddedPostgres("tool access service", () => {
       .toBe(requests.filter(({ method }) => method === "initialize").length);
   });
 
+  it("initializes servers that answer 404 for a session-less tools/list", async () => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+    const requests: Array<{ method: string; sessionId: string | null }> = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
+      const payload = JSON.parse(String(init?.body ?? "{}")) as { method?: string; id?: string };
+      const requestHeaders = new Headers(init?.headers);
+      requests.push({ method: payload.method ?? "", sessionId: requestHeaders.get("mcp-session-id") });
+      if (payload.method === "initialize") {
+        return new Response(JSON.stringify({
+          jsonrpc: "2.0",
+          id: payload.id,
+          result: {
+            protocolVersion: "2025-06-18",
+            capabilities: { tools: {} },
+            serverInfo: { name: "stateful-404", version: "1" },
+          },
+        }), {
+          status: 200,
+          headers: {
+            "content-type": "application/json",
+            "mcp-session-id": "session-404",
+          },
+        });
+      }
+      if (payload.method === "notifications/initialized") {
+        expect(requestHeaders.get("mcp-session-id")).toBeTruthy();
+        return new Response(null, { status: 202 });
+      }
+      if (payload.method === "tools/list" && !requestHeaders.get("mcp-session-id")) {
+        // Session-required servers following the Streamable HTTP spec answer
+        // 404 (session missing or expired) instead of 400 (#12697).
+        return new Response(JSON.stringify({ message: "Unknown session" }), {
+          status: 404,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return mcpHttpResponse({
+        jsonrpc: "2.0",
+        id: payload.id,
+        result: { tools: [{ name: "list_state", annotations: { readOnlyHint: true } }] },
+      });
+    });
+
+    const result = await service.connectGalleryApp(company.id, {
+      link: "https://stateful-404.example/mcp",
+      name: "Stateful 404 MCP",
+    }, { actorType: "user", actorId: "board" });
+
+    expect(result.connection.config).toMatchObject({ mcpSessionRequired: true });
+    expect(result.actions.readOnly).toEqual([
+      expect.objectContaining({ toolName: "list_state", riskLevel: "read" }),
+    ]);
+    expect(requests[0]).toEqual({ method: "tools/list", sessionId: null });
+    expect(requests.filter(({ method }) => method === "initialize").length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("does not treat a 404 that survives the handshake as a session requirement", async () => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+    const methods: string[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
+      const payload = JSON.parse(String(init?.body ?? "{}")) as { method?: string };
+      methods.push(payload.method ?? "");
+      // A wrong endpoint 404s everything, the handshake included, so the
+      // original failure must survive rather than being retried forever.
+      return new Response("Not Found", { status: 404, headers: { "content-type": "text/plain" } });
+    });
+
+    await expect(service.connectGalleryApp(company.id, {
+      link: "https://missing.example/mcp",
+      name: "Missing MCP",
+    }, { actorType: "user", actorId: "board" })).rejects.toThrow();
+
+    expect(methods.filter((method) => method === "tools/list").length).toBe(1);
+  });
+
   it("serves persisted MCP actions until the cache expires and then refreshes them", async () => {
     const company = await createCompany(db);
     let currentTime = new Date("2026-08-20T12:00:00.000Z");

@@ -4937,10 +4937,13 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       response = await sendToolsList(sessionHeaders);
     } else {
       response = await sendToolsList(headers);
-      // `tools/list` is read-only, so a 400 can safely be retried after the MCP
-      // initialize handshake. Stateful servers such as Supabase require the
-      // returned Mcp-Session-Id on every non-initialization request.
-      if (response.status === 400) {
+      // `tools/list` is read-only, so a client-error status that can mean
+      // "missing session" can safely be retried after the MCP initialize
+      // handshake. Stateful servers such as Supabase answer 400, while
+      // session-expired or session-required servers following the Streamable
+      // HTTP spec answer 404 (see #12697). Both require the returned
+      // Mcp-Session-Id on every non-initialization request.
+      if (response.status === 400 || response.status === 404) {
         try {
           const sessionHeaders = await initializeMcpHttpSession({
             send: sendRemote,
