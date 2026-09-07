@@ -52,6 +52,12 @@ export async function drainRunExecutionFinalizersForShutdown(input: {
 export async function finalizeServerShutdown(input: {
   signal: "SIGINT" | "SIGTERM";
   shutdownAppServices: (() => Promise<void>) | undefined;
+  /**
+   * Ends the server's PostgreSQL client pools. Runs after the application
+   * services (which still need the database) and before the embedded provider
+   * stops, so the backends close in order and none outlive the process.
+   */
+  closeDatabase?: (() => Promise<void>) | null;
   stopEmbeddedPostgres: (() => Promise<void>) | null;
   shutdownInstrumentation: () => Promise<void>;
   shutdownSentry: () => Promise<void>;
@@ -66,6 +72,18 @@ export async function finalizeServerShutdown(input: {
     await input.shutdownAppServices?.();
   } catch (err) {
     input.log.error({ err, signal }, "Application service shutdown failed");
+  }
+
+  // End the client pools once nothing needs them any more. Without this the
+  // process exit leaves the pooled backends to PostgreSQL's own TCP keepalive
+  // reaping, and a restart loop can pile up enough of them to hit
+  // `max_connections` before the next boot gets a connection.
+  if (input.closeDatabase) {
+    try {
+      await input.closeDatabase();
+    } catch (err) {
+      input.log.error({ err, signal }, "Database client shutdown failed");
+    }
   }
 
   if (input.stopEmbeddedPostgres) {

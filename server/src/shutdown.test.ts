@@ -32,6 +32,9 @@ describe("finalizeServerShutdown", () => {
       await release.promise;
       order.push("appServices:settled");
     });
+    const closeDatabase = vi.fn(async () => {
+      order.push("database:close");
+    });
     const stopEmbeddedPostgres = vi.fn(async () => {
       order.push("postgres:stop");
     });
@@ -46,6 +49,7 @@ describe("finalizeServerShutdown", () => {
     const finalize = finalizeServerShutdown({
       signal: "SIGTERM",
       shutdownAppServices,
+      closeDatabase,
       stopEmbeddedPostgres,
       shutdownInstrumentation,
       shutdownSentry,
@@ -59,6 +63,7 @@ describe("finalizeServerShutdown", () => {
     // The cleanup is in flight. The database stop, the instrumentation flush,
     // and the process exit continuation must all wait for it to settle.
     await vi.waitFor(() => expect(shutdownAppServices).toHaveBeenCalledOnce());
+    expect(closeDatabase).not.toHaveBeenCalled();
     expect(stopEmbeddedPostgres).not.toHaveBeenCalled();
     expect(shutdownInstrumentation).not.toHaveBeenCalled();
     expect(exited).toBe(false);
@@ -70,6 +75,7 @@ describe("finalizeServerShutdown", () => {
     expect(order).toEqual([
       "appServices:start",
       "appServices:settled",
+      "database:close",
       "postgres:stop",
       "instrumentation:flush",
       "sentry:flush",
@@ -123,6 +129,35 @@ describe("finalizeServerShutdown", () => {
     );
     expect(order).toEqual(["postgres:stop", "instrumentation:flush"]);
     expect(exited).toBe(true);
+  });
+
+  it("logs a failed database close and still stops the provider and exits", async () => {
+    const order: string[] = [];
+    const closeError = new Error("pool end timed out");
+    const closeDatabase = vi.fn(async () => {
+      order.push("database:close");
+      throw closeError;
+    });
+    const stopEmbeddedPostgres = vi.fn(async () => {
+      order.push("postgres:stop");
+    });
+    const log = stubLogger();
+
+    await finalizeServerShutdown({
+      signal: "SIGTERM",
+      shutdownAppServices: vi.fn(async () => undefined),
+      closeDatabase,
+      stopEmbeddedPostgres,
+      shutdownInstrumentation: vi.fn(async () => undefined),
+      shutdownSentry: vi.fn(async () => undefined),
+      log,
+    });
+
+    expect(order).toEqual(["database:close", "postgres:stop"]);
+    expect(log.error).toHaveBeenCalledWith(
+      expect.objectContaining({ err: closeError, signal: "SIGTERM" }),
+      "Database client shutdown failed",
+    );
   });
 
   it("skips the database stop when no embedded PostgreSQL runs in this process", async () => {
