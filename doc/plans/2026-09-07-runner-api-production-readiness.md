@@ -1,56 +1,59 @@
 # Runner API production readiness — 2026-09-07
 
-The feature is not ready for a general release. The first stage showed useful
-API access and no unnecessary fallback calls in 69 valid Luna regression runs.
-Coverage, complete accounting, and final release checks remain incomplete.
+The implementation is ready for final review and an opt-in rollout after the
+remaining release checks pass. General release is not yet approved. The tools
+are disabled by default and can be enabled for selected companies.
 
-## Latest evidence
+## Implemented safeguards
 
-- OpenCode 1.18.17 starts with the existing Sonnet 5 and DeepSeek V4 Flash 0731
-  OpenRouter profiles. These startup checks make no model request.
-- One paid Sonnet task used `get_task_context`, `search_api`, then `call_api`.
-  The real project-list route returned HTTP 200.
-- The overall attempt failed. The harness omitted the runner completion contract.
-  The worker now supplies it, but has no paid retest of the fix.
-- The runner failure interrupted final usage capture. The ledger contains about
-  $0.96 in known estimated/provider-reported charges across both stages, but the
-  final request's cost is unknown. Further paid calls remain blocked.
-- DeepSeek has no paid capability result. Gemini has not been attempted.
-- Focused checks pass: 19 runner tests, 16 harness tests, and runner typecheck.
-  Full-repository tests were not rerun in this follow-up. Earlier full-suite
-  failures remain recorded in the first-stage verification report.
+- The catalog covers mounted REST routes and identifies non-REST protocols.
+- Calls use run-bound agent credentials and the real HTTP authorization path.
+- Active-run and work-mode checks run again after file preparation.
+- File opens reject symlinks at every path component.
+- Runner lifecycle changes and active-task deletion aliases are blocked.
+- Mutation receipts prevent automatic replay after an uncertain outcome.
+- HTTP errors that may follow a committed write retain an unknown outcome.
+- Dedicated child creation now records its agent and run in the activity log.
+- Eval journals and bounded provider traces survive disposable server cleanup.
+- The shared ledger blocks new paid work if accounting is incomplete.
 
-## Recommended order
+## Qualification evidence
 
-1. Make usage records survive runner failure and disposable server cleanup.
-   Retain provider request IDs and final usage in the immutable attempt directory.
-   Recover the missing failed-request billing record before further paid calls.
-   Test interruption before, during, and after a provider response without spend.
-2. Repeat one Sonnet read. Require correct HTTP output, a valid runner completion,
-   and complete usage. Then run read, write, and denial cases on Sonnet and
-   DeepSeek. Preserve exact model, runtime, routing, pricing, and effective
-   reasoning settings. Keep the profiles separate in the report.
-3. Run three paired ordinary workflows on each model with identical fixtures and
-   settings. Check success, unnecessary API fallback, call counts, total cost,
-   and elapsed time. Investigate changes over 20%; a small sample is not proof
-   of a regression. Recheck Luna child creation and agent listing, where earlier
-   samples showed cost increases. Resolve the child-creation audit gap shared by
-   both arms before counting that workflow as correct.
-4. Fix known discovery and fixture failures. Build from one case to three, then
-   ten. Add operation families in batches of at most 25. Prioritize permissions,
-   lifecycle restrictions, files, uncertain mutation outcomes, and API options
-   absent from dedicated tools. Generated scenarios need valid fixtures and
-   explicit persisted-state assertions before they establish coverage.
-5. Verify the final source on the actual Linux production runtime. Run the
-   required contract checks, typecheck, tests, and build. Resolve or isolate each
-   existing full-suite failure with evidence. Test stale runs, company boundaries,
-   Ask/Plan restrictions, file containment, replay, and terminal completion.
-6. Prepare a small opt-in rollout with an operator-controlled disable switch.
-   Observe task correctness, fallback rate, cost, latency, permission denials,
-   and unknown mutation outcomes. Use existing local run logs where possible.
-   Expand only after the small rollout passes the same acceptance checks.
+Sonnet 5 through OpenCode 1.18.17 and OpenRouter passed the read, mutation and
+cross-company denial smoke cases after fixes. It also passed eight additional
+cases covering files, Ask/Plan modes, API-only options and a mixed workflow.
+The initial malformed-JSON failure remains in the report. The corrected tool
+schema tells models to pass structured JSON directly, and invalid string-encoded
+objects receive an actionable error before HTTP dispatch.
 
-The original $300 ceiling covers all attempts and retries. Keep the same ledger.
-About 61 of the original 90 active campaign minutes have been used. Do not spend
-on the full suite until the accounting and small-case gates pass. The operator
-rollout switch and production rollout are proposed work, not completed features.
+Sonnet passed all 60 common-task regression runs: ten workflows, three repetitions
+per arm. It used no unnecessary API fallback. Per-workflow average cost changes
+ranged from -1.4% to +5.5%. No cost or latency increase crossed the 20% investigation
+threshold. These are small samples, not a guarantee for all workloads.
+
+Gemini 3.8 Flash passed read, mutation and denial smoke cases. DeepSeek V4 Flash
+0731 completed the API read but did not finish within 120 seconds. It remains
+unqualified under this limit. Both interrupted attempts have retained billing
+reconciliation evidence. No missing charge was discarded or treated as zero.
+
+The full Luna comparison is still running. Its corrected child-creation tests
+now retain the required audit event. The companion report will separate this
+source revision from earlier audit failures and incomplete attempts.
+
+The rebased branch passed the full Linux build and typecheck. The full test suite
+is running. Focused Linux verification also passed the real runnerd/PRP/HTTP
+integration, resumed-session binding, platform file checks and runtime exposure.
+
+## Release gates
+
+1. Complete the selected Luna comparison and investigate any threshold flags.
+2. Record final costs, latency, source revisions, failures and unrun operations.
+3. Finish the full Linux test run and the PR review/check loops on current master.
+4. Keep API tools disabled until an operator selects the first rollout companies.
+5. Inspect task correctness, fallback frequency, cost, latency, denials and unknown
+   mutation outcomes before expanding access.
+
+The catalog-wide operation cases are authored, but most have not had paid model
+execution. Generated cases that need additional fixtures do not establish working
+coverage. The coverage matrix must continue to show those gaps. The original $300
+budget and 90-minute active paid-campaign limit apply to all stages and retries.

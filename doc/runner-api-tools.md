@@ -123,10 +123,9 @@ Provider-free integration tests exercise real runnerd → PRP → authority → 
 route validation and audit, stale bindings, Ask/Plan restrictions, identity
 spoofing, file containment, uncertain mutation receipts and fixture isolation.
 
-The Evalbook viewer additionally needs the shared `.evalbook-site` stylesheet
-from the existing Evalbook migration (Paperclip PR #12952). The stylesheet is
-included unchanged here, and the runner's Vite version is aligned with the UI's
-Vite 8 to satisfy its existing React plugin dependency.
+The Evalbook viewer uses the existing shared viewer and stylesheet on master.
+The report retains actual persisted-state summaries for private local inspection;
+public replay continues to withhold company-state details.
 
 The ACPX sidecar includes the upstream terminal-usage accounting correction from
 `origin/codex/evalbook-default-chat-sept6`. Its qualified Claude executable requires

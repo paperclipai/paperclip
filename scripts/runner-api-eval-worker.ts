@@ -1,6 +1,6 @@
 /** JSONL worker for the companion paperclip-evals API suite. Never selects cases or retries. */
-import { randomUUID } from "node:crypto";
-import { realpathSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
+import { createReadStream, realpathSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { mkdir, writeFile, readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
@@ -35,6 +35,24 @@ async function openRouterEnvironment() {
   return { PATH: process.env.PATH, OPENROUTER_API_KEY: key };
 }
 const server = await startRunnerApiTestServer();
+const fileDigests = new Map<string, Promise<string | null>>();
+function fileDigest(path: string): Promise<string | null> {
+  let digest = fileDigests.get(path);
+  if (!digest) {
+    digest = (async () => {
+      const hash = createHash("sha256");
+      for await (const chunk of createReadStream(path)) hash.update(chunk);
+      return hash.digest("hex");
+    })().catch(() => null);
+    fileDigests.set(path, digest);
+  }
+  return digest;
+}
+const runtimeBuild = {
+  runnerBinarySha256: await fileDigest(defaultCapabilityRunnerdBinary()),
+  workerSourceSha256: await fileDigest(resolve("scripts/runner-api-eval-worker.ts")),
+  lockfileSha256: await fileDigest(resolve("pnpm-lock.yaml")),
+};
 output({ ready: true });
 const record = (value: unknown): Record<string, any> => value && typeof value === "object" ? value as Record<string, any> : {};
 
@@ -190,6 +208,7 @@ try {
       providerSessionId: record(thread.thread).id ?? null, effectiveModel: record(thread.thread).model ?? null,
       providerVersion: request.model === "gpt-5.6-luna" ? execFileSync("codex", ["--version"], { encoding: "utf8" }).trim() : providerVersion ?? record(evidence).providerVersion ?? null,
       runtimeVersions: { node: process.versions.node, acpx: record(evidence).providerVersion, agentServer: record(evidence).agentServerVersion, agentRuntime: record(evidence).agentRuntimeVersion },
+      runtimeBuild,
       timing: { startedAt, finishedAt: new Date().toISOString(), durationMs: performance.now() - started },
       usage, accountingComplete: Boolean(request.calls) || !providerTurnStarted || terminalSeen, providerTurnStarted, observedProviderToolCalls: observedToolCallIds.size, diagnosticTail, error, calls, notifications, evidence, thread, prompt, arm: request.arm ?? "treatment",
       fixture: substitutions, state: await fixture.snapshot(),
