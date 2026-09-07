@@ -6011,6 +6011,83 @@ describe("runnerd provider runtime wiring", () => {
     );
   });
 
+  it.each([false, true])(
+    "stages the controller artifact when the sandbox has no runner (explicit: %s)",
+    async (explicit) => {
+      const packagedBinary = join(isolatedStateDirectory, "packaged-runnerd");
+      const explicitBinary = join(isolatedStateDirectory, "remote-runnerd");
+      await writeFile(packagedBinary, "packaged runner");
+      await writeFile(explicitBinary, "explicit remote runner");
+      state.resolveRunnerBinary.mockReturnValueOnce(packagedBinary);
+      const sourceBinary = explicit ? explicitBinary : packagedBinary;
+      const syncIn = vi.fn(async () => undefined);
+      const remoteExecute = vi.fn(
+        async (command: { command: string; args?: string[] }) => {
+          if (command.args?.[0] === "--build-metadata") {
+            // Stop at the first verification boundary after upload. This test
+            // exercises real artifact preparation without opening a PRP socket.
+            throw new Error("reached-remote-verification");
+          }
+          const platform = command.args?.[1] === "uname -s; uname -m";
+          return {
+            exitCode: 0,
+            signal: null,
+            timedOut: false,
+            stderr: "",
+            stdout: platform
+              ? `${process.platform === "darwin" ? "Darwin" : "Linux"}\n${process.arch === "arm64" ? "aarch64" : "x86_64"}\n`
+              : "",
+          };
+        },
+      );
+      try {
+        await createRunnerdBackend({
+          db: leaseDb(execution),
+          execution,
+          runnerInstanceId: "runner-packaged-fallback",
+          runnerIngressAuthorized: true,
+          ...(explicit ? { runnerRemoteBinaryPath: explicitBinary } : {}),
+          runnerExecutionTarget: {
+            kind: "remote",
+            transport: "sandbox",
+            remoteCwd: "/workspace",
+            environmentId: "environment",
+            leaseId: "lease",
+            providerKey: "daytona",
+            effectiveCapabilities: { runnerWebSocketIngress: true },
+            runner: { execute: remoteExecute, syncIn },
+          } as never,
+        });
+        state.createTransport.mockClear();
+        state.createBackend.mock.calls.at(-1)![1].codexTransportFactory!();
+        const transport = state.createTransport.mock
+          .calls[0]![0] as RunnerTransportOptions & {
+          controlPlaneRegistration: (authority: unknown) => Promise<unknown>;
+        };
+        expect(transport.runnerBinary).toBe(sourceBinary);
+        await expect(transport.controlPlaneRegistration({})).rejects.toThrow(
+          "reached-remote-verification",
+        );
+        expect(syncIn).toHaveBeenCalledWith([
+          expect.objectContaining({
+            files: [
+              expect.objectContaining({
+                sourcePath: sourceBinary,
+                targetPath:
+                  "/workspace/.paperclip-runtime/paperclip-runner/bin/paperclip-runnerd",
+                mode: 0o700,
+              }),
+            ],
+          }),
+        ]);
+      } finally {
+        state.resolveRunnerBinary
+          .mockReset()
+          .mockReturnValue("/tmp/paperclip-runnerd");
+      }
+    },
+  );
+
   it("binds a remote launch to the configured controller-owned runner artifact", async () => {
     const remoteCwd = "/home/daytona/paperclip-workspace";
     const controllerArtifact = "/controller/artifacts/paperclip-runnerd";

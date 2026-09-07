@@ -40,7 +40,6 @@ import {
   acpxRuntimeSessionDirectoryName,
   createNativeSessionBackend,
   createRunnerdCodexTransport,
-  defaultCapabilityRunnerdBinary,
   executeNativeSession,
   parseNativeExecutionInput,
   parsePaperclipQuestionSet,
@@ -6549,8 +6548,10 @@ async function createRunnerdBackendWithinSessionClaim(
       }
     }
     if (!usedPreinstalledRunner) {
-      const sourceBinary =
-        explicitRemoteBinary ?? defaultCapabilityRunnerdBinary();
+      // Use the same packaged artifact that the controller hashes for PRP.
+      // The vendored module cannot resolve workspace dist/ or Cargo target/
+      // paths in a released server.
+      const sourceBinary = controllerRunnerBinary;
       if (!existsSync(sourceBinary)) {
         throw new Error("runner_remote_artifact_unavailable");
       }

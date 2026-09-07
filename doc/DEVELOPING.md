@@ -807,6 +807,17 @@ agent workspace. The host `HOME` itself, a directory that contains it, a
 filesystem root, a `CODEX_HOME` overlap, or a canonical path outside the
 assigned workspace is rejected before provider startup.
 
+### Remote runner artifacts
+
+Paperclip Runner uses a compatible `paperclip-runnerd` already installed in a
+sandbox when available. Otherwise it uploads the server's packaged runner
+binary, the same artifact used for the controller's PRP identity. Released
+servers do not require a Cargo `target/` directory. The fallback requires the
+same OS and architecture; use `PAPERCLIP_RUNNER_REMOTE_BINARY_PATH` to supply an
+artifact built for a different remote platform. The sandbox still needs the
+pinned Codex version, or `PAPERCLIP_RUNNER_REMOTE_CODEX_NPM_SPEC` configured for
+installation. A CLI-only sandbox image is not a complete native runner image.
+
 ### Native runner restart recovery
 
 Paperclip Runner keeps its heartbeat run, native session, logical runner, and
