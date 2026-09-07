@@ -342,6 +342,43 @@ describeEmbeddedPostgres("connectionIntentService", () => {
     });
   });
 
+  it("only advertises GitHub tool methods in search and setup options", async () => {
+    const service = connectionIntentService(db);
+    const search = await service.search(claims, "github");
+    const github = search.results.find((result) => result.service === "github");
+    expect(github).toEqual(
+      expect.objectContaining({
+        methods: [
+          expect.objectContaining({
+            key: "mcp-key",
+            label: "Personal access token (advanced)",
+            auth: "api_key",
+          }),
+        ],
+      }),
+    );
+    expect(github?.methods.map((method) => method.key)).not.toContain(
+      "chat-agent",
+    );
+
+    await expect(service.request(claims, "discord")).rejects.toThrow(
+      "is not available",
+    );
+
+    const request = await service.request(claims, "github");
+    const setup = await service.setupOptions(request.interactionId!);
+    expect(setup.service.methods).toEqual([
+      expect.objectContaining({
+        key: "mcp-key",
+        label: "Personal access token (advanced)",
+        auth: "api_key",
+      }),
+    ]);
+    expect(setup.service.methods.map((method) => method.key)).not.toContain(
+      "chat-agent",
+    );
+  });
+
   it("serializes OAuth intent completion behind addressed-user membership revocation", async () => {
     const raceCompanyId = randomUUID();
     const raceAgentId = randomUUID();

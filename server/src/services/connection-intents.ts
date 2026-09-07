@@ -56,6 +56,14 @@ function displayDescription(app: (typeof CONNECTABLE_APP_DEFINITIONS)[number]) {
   return text(app.description) ?? null;
 }
 
+function availableToolConnectionMethods(
+  app: (typeof CONNECTABLE_APP_DEFINITIONS)[number],
+) {
+  return getAvailableConnectionMethods(app).filter(
+    (method) => (method.purpose ?? "tool") === "tool",
+  );
+}
+
 export function connectionIntentService(db: Db) {
   const interactions = issueThreadInteractionService(db);
   const access = toolAccessService(db);
@@ -255,7 +263,7 @@ export function connectionIntentService(db: Db) {
         || app.name.toLocaleLowerCase().includes(normalized)
         || displayDescription(app)?.toLocaleLowerCase().includes(normalized))
       .map(async (app) => {
-        const methods = getAvailableConnectionMethods(app);
+        const methods = availableToolConnectionMethods(app);
         const matching = inventory.connections.filter((connection) =>
           sourceSlugForConnection(connection, inventory.applicationsById) === app.slug
           && connection.status !== "archived"
@@ -296,7 +304,7 @@ export function connectionIntentService(db: Db) {
   ): Promise<ConnectionRequestResult> {
     const context = await loadRunContext(claims);
     const app = getAppStoreDefinition(serviceSlug);
-    if (!app || app.availability?.available === false || getAvailableConnectionMethods(app).length === 0) {
+    if (!app || app.availability?.available === false || availableToolConnectionMethods(app).length === 0) {
       throw unprocessable(`Connection service ${serviceSlug} is not available`);
     }
     const ready = await usableConnectionForAgent({
@@ -382,7 +390,7 @@ export function connectionIntentService(db: Db) {
         name: app.name,
         description: displayDescription(app),
         logoUrl: app.branding.logoUrl ?? null,
-        methods: getAvailableConnectionMethods(app).map((method) => ({
+        methods: availableToolConnectionMethods(app).map((method) => ({
           key: method.key,
           label: method.label ?? method.key,
           auth: method.auth,

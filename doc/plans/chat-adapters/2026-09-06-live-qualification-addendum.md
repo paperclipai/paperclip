@@ -57,8 +57,10 @@ not counted as a successful end-to-end conversation.
   after the endpoint is repaired or resumed; active endpoints can keep moving.
 - Dual-purpose connectors keep their chat setup separate from tool credentials.
   The tool connection flow excludes chat-only methods from selection,
-  recommendations, and submission. GitHub's personal-token fallback therefore
-  does not ask for chat App credentials or strand the user on another chooser.
+  recommendations, and submission, and agent-facing connection intents expose
+  only tool methods. GitHub's personal-token fallback therefore does not ask
+  for chat App credentials or strand the user on another chooser. A tool-access
+  request for a chat-only provider is rejected.
 
 ## Automated checkpoint
 
@@ -70,6 +72,8 @@ not counted as a successful end-to-end conversation.
   publication/projection checks also passed 22/22.
 - The upstream runner slice passed 85/85. Tool-setup/catalog/shared-definition
   regression checks passed 127/127 (106 UI and 21 shared assertions).
+- The connection-intent service suite passed 8/8, with all seven
+  embedded-PostgreSQL cases executed rather than skipped.
 - Deterministic chat-adapter browser checks: 5/5 passed after the merge.
   Provider API responses are mocked, so this is UI regression evidence only.
 - Direct shared, server, and UI TypeScript checks passed after the merge.
@@ -85,10 +89,6 @@ not counted as a successful end-to-end conversation.
 - The repository-wide `pnpm test:run` previously failed on unrelated runtime
   and test-harness issues. Repository-wide tests, typecheck, and build are not
   claimed green; the evidence here is the named focused verification.
-
-The post-merge review also identified the same tool/channel method distinction
-missing from agent-facing connection-intent responses. That narrow API follow-up
-is not covered by the UI-only fix or its passing counts above.
 
 ## Live provider evidence and remaining gates
 
