@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   REDACTED_COMMAND_TEXT_VALUE,
+  redactCommandText,
   redactDiagnosticText,
 } from "./command-redaction.js";
 
@@ -91,5 +92,78 @@ second-line\" status=401`;
     const output = redactDiagnosticText(input);
     expect(output).not.toContain("MARKERBACKSLASH_B");
     expect(output).toContain(REDACTED_COMMAND_TEXT_VALUE);
+  });
+});
+
+const BOARD_TOKEN = `pcp_board_${"a1b2c3d4".repeat(6)}`;
+const CLI_AUTH_TOKEN = `pcp_cli_auth_${"f0e1d2c3".repeat(6)}`;
+
+describe("redactCommandText - Paperclip bearer credentials", () => {
+  it("redacts a bare board token with no surrounding secret-name hint", () => {
+    expect(redactCommandText(BOARD_TOKEN)).toBe(REDACTED_COMMAND_TEXT_VALUE);
+  });
+
+  it("redacts a board token inside a serialized header dump", () => {
+    expect(redactCommandText(`{"headers":{"x-api-key":"${BOARD_TOKEN}"}}`)).not.toContain(BOARD_TOKEN);
+  });
+
+  it("redacts a board token in a curl invocation", () => {
+    const output = redactCommandText(
+      `curl -sS -H 'x-api-key: ${BOARD_TOKEN}' http://localhost:3100/api/agents/me`,
+    );
+    expect(output).not.toContain(BOARD_TOKEN);
+  });
+
+  it("redacts CLI auth secrets", () => {
+    expect(redactCommandText(`stored credential ${CLI_AUTH_TOKEN} for localhost`)).not.toContain(CLI_AUTH_TOKEN);
+  });
+
+  it("covers future pcp credential prefixes generically", () => {
+    const future = `pcp_runner_${"0f1e2d3c".repeat(6)}`;
+    expect(redactCommandText(future)).not.toContain(future);
+  });
+
+  it("leaves non-credential pcp identifiers alone", () => {
+    const notASecret = "pcp_run_12";
+    expect(redactCommandText(notASecret)).toContain(notASecret);
+  });
+});
+
+describe("redactCommandText - Slack tokens", () => {
+  it("redacts bot tokens", () => {
+    const token = `xoxb-${"1234567890-9876543210-AbCdEfGhIjKlMnOpQrStUvWx"}`;
+    expect(redactCommandText(token)).not.toContain(token);
+  });
+
+  it("redacts app-level tokens", () => {
+    const token = `xapp-${"1-A012BCDEFGH-1234567890123-abcdef0123456789"}`;
+    expect(redactCommandText(token)).not.toContain(token);
+  });
+
+  it("redacts a bot token inside a postMessage command", () => {
+    const token = `xoxb-${"1111111111-2222222222-ZzYyXxWwVvUuTtSsRrQqPpOo"}`;
+    const output = redactCommandText(
+      `curl -X POST https://slack.com/api/chat.postMessage -H "Authorization: Bearer ${token}"`,
+    );
+    expect(output).not.toContain(token);
+  });
+});
+
+describe("redactCommandText - existing behavior is preserved", () => {
+  it("still redacts OpenAI-style and Anthropic keys", () => {
+    const openai = `sk-${"proj-abcdefghijklmnop123456"}`;
+    const anthropic = `sk-${"ant-api03-abcdefghijklmnopqrstuvwx"}`;
+    expect(redactCommandText(openai)).not.toContain(openai);
+    expect(redactCommandText(anthropic)).not.toContain(anthropic);
+  });
+
+  it("still redacts GitHub tokens", () => {
+    const token = `ghp_${"abcdefghijklmnopqrstuvwxyz0123456789"}`;
+    expect(redactCommandText(token)).not.toContain(token);
+  });
+
+  it("leaves ordinary command text untouched", () => {
+    const plain = "pnpm vitest run packages/adapter-utils";
+    expect(redactCommandText(plain)).toBe(plain);
   });
 });
