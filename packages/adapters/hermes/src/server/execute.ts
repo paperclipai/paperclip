@@ -28,6 +28,10 @@ import type {
 } from "@paperclipai/adapter-utils";
 
 import {
+  ADAPTER_STARTUP_FAULT_ERROR_CODE,
+  classifyAdapterStartupOutput,
+} from "@paperclipai/adapter-utils";
+import {
   runChildProcess,
   buildPaperclipEnv,
   renderTemplate,
@@ -575,17 +579,30 @@ export async function execute(
     executionResult.costUsd = parsed.costUsd;
   }
 
-  // Summary from agent response
-  if (parsed.response) {
+  const startupFault = classifyAdapterStartupOutput({
+    stdout: result.stdout || "",
+    stderr: result.stderr || "",
+    exitCode: result.exitCode,
+    timedOut: result.timedOut,
+    sessionId: parsed.sessionId,
+    response: parsed.response,
+    worktreeMode,
+  });
+  if (startupFault) {
+    executionResult.errorCode = ADAPTER_STARTUP_FAULT_ERROR_CODE;
+    executionResult.errorMessage = startupFault.diagnostic;
+    executionResult.errorFamily = "adapter_startup";
+    delete executionResult.summary;
+  } else if (parsed.response) {
     executionResult.summary = parsed.response.slice(0, 2000);
   }
 
-  // Set resultJson so Paperclip can persist run metadata (used for UI display + auto-comments)
   executionResult.resultJson = {
-    result: parsed.response || "",
+    result: startupFault ? "" : (parsed.response || ""),
     session_id: parsed.sessionId || null,
     usage: parsed.usage || null,
     cost_usd: parsed.costUsd ?? null,
+    ...(startupFault ? { startupFault } : {}),
   };
 
   // Store session ID for next run

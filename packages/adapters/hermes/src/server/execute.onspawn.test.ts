@@ -187,6 +187,51 @@ describe("hermes-local adapter onSpawn forwarding", () => {
     expect(result.errorMessage).toBeUndefined();
   });
 
+
+  it("classifies a worktree diagnostic on stdout with exit 0 as an adapter startup fault", async () => {
+    vi.mocked(serverUtils.runChildProcess).mockResolvedValueOnce({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      stdout: "x --worktree requires being inside a git repository\ncd into your project repo first, then run hermes -w\n",
+      stderr: "Warning: Unknown toolsets: mcp-codegraph\n",
+      pid: null,
+      startedAt: null,
+    });
+
+    const { ctx } = makeCtx({ worktreeMode: true });
+    const result = await execute(ctx as any);
+
+    expect(result.errorCode).toBe("adapter_startup_fault");
+    expect(result.errorMessage).toContain("worktree requires being inside a git repository");
+    expect(result.summary).toBeUndefined();
+    expect(result.resultJson).toMatchObject({
+      startupFault: {
+        kind: "worktree_requires_git_repository",
+        fingerprint: expect.stringMatching(/^startup_fault:v1:/),
+      },
+      result: "",
+    });
+  });
+
+  it("keeps a genuine successful hermes response when a session id is present", async () => {
+    vi.mocked(serverUtils.runChildProcess).mockResolvedValueOnce({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      stdout: "Completed the productivity review with concrete findings.\nsession_id: sess-123\n",
+      stderr: "",
+      pid: null,
+      startedAt: null,
+    });
+
+    const { ctx } = makeCtx();
+    const result = await execute(ctx as any);
+
+    expect(result.errorCode).toBeUndefined();
+    expect(result.summary).toContain("Completed the productivity review");
+    expect(result.resultJson).toMatchObject({ session_id: "sess-123" });
+  });
   it("does not inherit PAPERCLIP_API_KEY without a harness token", async () => {
     const previousApiKey = process.env.PAPERCLIP_API_KEY;
     process.env.PAPERCLIP_API_KEY = "parent-process-key";

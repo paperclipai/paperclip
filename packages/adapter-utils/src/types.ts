@@ -66,6 +66,7 @@ export interface AdapterRuntimeServiceReport {
 }
 
 export type AdapterExecutionErrorFamily =
+  | "adapter_startup"
   | "transient_upstream"
   | "provider_quota"
   | "model_refusal"

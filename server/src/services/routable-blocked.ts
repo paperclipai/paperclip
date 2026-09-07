@@ -20,6 +20,27 @@ export function isProspectiveBlockedTransition(issue: RoutableBlockedIssue): iss
     Boolean(issue.blockedTransitionAt && issue.blockedTransitionAt >= ROUTABLE_BLOCKED_ROLLOUT_AT);
 }
 
+export async function deliverBlockedOwnerNotification(input: {
+  issue: RoutableBlockedIssue & {
+    responsibleUserId?: string | null;
+  };
+  markNotified: (notifiedAt: Date) => Promise<unknown>;
+  now?: () => Date;
+}) {
+  const { issue } = input;
+  if (!isProspectiveBlockedTransition(issue) || !issue.unblockDescriptor || issue.blockedOwnerNotifiedAt) {
+    return { delivered: false as const, reason: "not_applicable" as const };
+  }
+
+  const owner = issue.unblockDescriptor.owner;
+  if (owner === "board" || (typeof owner === "object" && owner !== null && "userId" in owner)) {
+    await input.markNotified((input.now ?? (() => new Date()))());
+    return { delivered: true as const, reason: "board_or_user_descriptor_recorded" as const };
+  }
+
+  return { delivered: false as const, reason: "agent_owner_requires_wakeup" as const };
+}
+
 export async function deliverAgentUnblockNotification(input: {
   issue: RoutableBlockedIssue;
   wakeup: (agentId: string, options: {

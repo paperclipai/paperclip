@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   deliverAgentUnblockNotification,
+  deliverBlockedOwnerNotification,
   ROUTABLE_BLOCKED_ROLLOUT_AT,
 } from "../services/routable-blocked.js";
 
@@ -72,5 +73,30 @@ describe("routable blocked notifications", () => {
     expect(wakeup.mock.calls[0]?.[1]).toMatchObject({
       idempotencyKey: expect.stringContaining(secondTransition.toISOString()),
     });
+  });
+
+  it("records a board-owned unblock descriptor without attempting an agent wake", async () => {
+    const markNotified = vi.fn(async () => undefined);
+    const now = new Date("2026-07-23T18:31:00.000Z");
+    const issue = {
+      ...blockedIssue({ transitionAt: new Date(ROUTABLE_BLOCKED_ROLLOUT_AT.getTime() + 3) }),
+      unblockDescriptor: {
+        owner: "board" as const,
+        action: "Repair the adapter startup configuration, then explicitly retry or reassign this issue.",
+      },
+    };
+
+    await expect(deliverBlockedOwnerNotification({ issue, markNotified, now: () => now }))
+      .resolves.toEqual({ delivered: true, reason: "board_or_user_descriptor_recorded" });
+    expect(markNotified).toHaveBeenCalledWith(now);
+  });
+
+  it("does not set a success timestamp when board notification delivery is not applicable", async () => {
+    const markNotified = vi.fn(async () => undefined);
+    const issue = blockedIssue({ transitionAt: new Date(ROUTABLE_BLOCKED_ROLLOUT_AT.getTime() - 1) });
+
+    await expect(deliverBlockedOwnerNotification({ issue, markNotified }))
+      .resolves.toEqual({ delivered: false, reason: "not_applicable" });
+    expect(markNotified).not.toHaveBeenCalled();
   });
 });

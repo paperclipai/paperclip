@@ -71,6 +71,12 @@ export {
   parseEnvBindings,
   parseEnvVars,
 } from "./env-bindings.js";
+export {
+  ADAPTER_STARTUP_FAULT_ERROR_CODE,
+  classifyAdapterStartupOutput,
+  type StartupFaultEvidence,
+  type StartupFaultKind,
+} from "./startup-fault.js";
 export { createRuntimeProgressReporter } from "./runtime-progress.js";
 export type {
   RuntimeProgressSink,

@@ -86,6 +86,7 @@ import {
   withRecoveryModelProfileHint,
 } from "./model-profile-hint.js";
 import { isAutomaticRecoverySuppressedByPauseHold } from "./pause-hold-guard.js";
+import { deliverBlockedOwnerNotification } from "../routable-blocked.js";
 import {
   collectDispositionRepairSourceState,
   dispositionRepairDelayMs,
@@ -180,6 +181,7 @@ type StrandedRecoveryCause =
   | "codex_output_inactivity_monitor"
   | "workspace_validation_failed"
   | "configuration_incomplete"
+  | "startup_fault"
   | "execution_review_participant_recovery"
   | typeof SUCCESSFUL_RUN_MISSING_STATE_REASON;
 
@@ -214,6 +216,8 @@ function recoveryCauseTitle(cause: StrandedRecoveryCause) {
       return "workspace validation failed";
     case "configuration_incomplete":
       return "configuration incomplete";
+    case "startup_fault":
+      return "adapter startup failed";
     case "execution_review_participant_recovery":
       return "reviewer recovery failed";
     case "provider_quota":
@@ -285,6 +289,9 @@ function resolveStrandedRecoveryCause(
   if (latestRun?.errorCode === "codex_output_inactivity_monitor") {
     return "codex_output_inactivity_monitor";
   }
+  if (latestRun?.errorCode === "adapter_startup_fault") {
+    return "startup_fault";
+  }
   return "stranded_assigned_issue";
 }
 
@@ -300,6 +307,11 @@ function readWorkspaceValidationFingerprint(latestRun: LatestIssueRun): string |
 
 function readConfigurationIncompleteFingerprint(latestRun: LatestIssueRun): string | null {
   const payload = parseObject(parseObject(latestRun?.resultJson).configurationIncomplete);
+  return readNonEmptyString(payload?.fingerprint);
+}
+
+function readStartupFaultFingerprint(latestRun: LatestIssueRun): string | null {
+  const payload = parseObject(parseObject(latestRun?.resultJson).startupFault);
   return readNonEmptyString(payload?.fingerprint);
 }
 
@@ -2583,6 +2595,18 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         ].join(":");
       }
     }
+    if (input.recoveryCause === "startup_fault") {
+      const startupFingerprint = readStartupFaultFingerprint(input.latestRun);
+      if (startupFingerprint) {
+        return [
+          "source_scoped_recovery",
+          input.issue.companyId,
+          input.issue.id,
+          input.recoveryCause,
+          startupFingerprint,
+        ].join(":");
+      }
+    }
     return [
       "source_scoped_recovery",
       input.issue.companyId,
@@ -3750,11 +3774,42 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       });
     }
     const blockerIds = await existingUnresolvedBlockerIssueIds(input.issue.companyId, input.issue.id);
+    const boardEscalation = recoveryCause !== "provider_quota";
+    const unblockDescriptor = boardEscalation
+      ? {
+          owner: readNonEmptyString(input.issue.responsibleUserId)
+            ? { userId: readNonEmptyString(input.issue.responsibleUserId)! }
+            : "board" as const,
+          action: recoveryCause === "startup_fault"
+            ? "Repair the adapter startup configuration, then explicitly retry or reassign this issue."
+            : "Review the recovery evidence, then explicitly retry, reassign, or resolve this issue.",
+        }
+      : null;
     const updated = await issuesSvc.update(input.issue.id, {
       status: "blocked",
       blockedByIssueIds: blockerIds,
+      ...(unblockDescriptor ? { unblockDescriptor } : {}),
     });
     if (!updated) return null;
+    if (unblockDescriptor) {
+      await deliverBlockedOwnerNotification({
+        issue: {
+          ...updated,
+          unblockDescriptor,
+          blockedTransitionAt: updated.blockedTransitionAt ?? new Date(),
+          blockedOwnerNotifiedAt: updated.blockedOwnerNotifiedAt ?? null,
+          responsibleUserId: updated.responsibleUserId,
+        },
+        markNotified: async (blockedOwnerNotifiedAt) => {
+          await issuesSvc.update(input.issue.id, { blockedOwnerNotifiedAt });
+        },
+      }).catch((notificationError) => {
+        logger.warn(
+          { err: notificationError, issueId: input.issue.id, recoveryCause },
+          "failed to deliver blocked-owner notification for stranded recovery escalation",
+        );
+      });
+    }
     if (isProviderQuotaWait) return updated;
     const sourceAssigneePreserved =
       updated.assigneeAgentId === input.issue.assigneeAgentId &&
@@ -3815,7 +3870,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     const shouldPostEscalationComment =
       recoveryAction.attemptCount === 1 ||
       input.recoveryCause === "workspace_validation_failed" ||
-      input.recoveryCause === "configuration_incomplete";
+      input.recoveryCause === "configuration_incomplete" ||
+      input.recoveryCause === "startup_fault";
     if (shouldPostEscalationComment) {
       const escalationCommentMarker = `Recovery action: \`${recoveryAction.id}\``;
 

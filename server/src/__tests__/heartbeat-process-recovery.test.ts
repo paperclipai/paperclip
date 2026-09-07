@@ -51,6 +51,28 @@ import { runningProcesses } from "../adapters/index.ts";
 const mockTelemetryClient = vi.hoisted(() => ({ track: vi.fn() }));
 const mockTrackAgentFirstHeartbeat = vi.hoisted(() => vi.fn());
 const mockTerminateLocalService = vi.hoisted(() => vi.fn());
+
+function startupFaultAdapterResult() {
+  return {
+    exitCode: 0,
+    signal: null,
+    timedOut: false,
+    errorCode: "adapter_startup_fault",
+    errorFamily: "adapter_startup",
+    errorMessage: "x --worktree requires being inside a git repository",
+    provider: "test",
+    model: "test-model",
+    resultJson: {
+      startupFault: {
+        kind: "worktree_requires_git_repository",
+        fingerprint: "startup_fault:v1:worktree_requires_git_repository:deadbeefdeadbeefdeadbeef",
+        diagnostic: "x --worktree requires being inside a git repository",
+      },
+      result: "",
+    },
+  };
+}
+
 const mockAdapterExecute = vi.hoisted(() =>
   vi.fn(async (_input?: unknown) => ({
     exitCode: 0,
@@ -7845,4 +7867,79 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
     expect(runs).toHaveLength(1);
   });
+
+  it("bounds startup-fault recovery to one corrective retry before board escalation", async () => {
+    mockAdapterExecute
+      .mockResolvedValueOnce(startupFaultAdapterResult())
+      .mockResolvedValueOnce(startupFaultAdapterResult());
+
+    const { companyId, agentId, runId, issueId } = await seedQueuedIssueRunFixture();
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId);
+
+    const runsAfterFirstFailure = await waitForValue(async () => {
+      const rows = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+      return rows.length >= 2 ? rows : null;
+    });
+    expect(runsAfterFirstFailure).toHaveLength(2);
+    const retryRun = runsAfterFirstFailure?.find((row) => row.id !== runId);
+    expect(retryRun?.status).toBe("scheduled_retry");
+    expect(retryRun?.scheduledRetryReason).toBe("startup_fault_retry");
+
+    await heartbeat.promoteDueScheduledRetries(new Date(Date.now() + 60_000));
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, retryRun!.id);
+
+    const allRuns = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+    expect(allRuns.length).toBeLessThanOrEqual(2);
+
+    const issue = await waitForValue(async () =>
+      db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => {
+        const row = rows[0] ?? null;
+        return row?.status === "blocked" ? row : null;
+      }),
+    );
+    expect(issue?.unblockDescriptor).toMatchObject({
+      owner: { userId: "responsible-user" },
+      action: expect.stringContaining("adapter startup"),
+    });
+    expect(issue?.blockedOwnerNotifiedAt).toBeTruthy();
+
+    const recoveryAction = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(and(eq(issueRecoveryActions.companyId, companyId), eq(issueRecoveryActions.sourceIssueId, issueId)))
+      .then((rows) => rows[0] ?? null);
+    expect(recoveryAction).toMatchObject({
+      cause: "startup_fault",
+      status: "active",
+    });
+
+    const escalationComments = await db
+      .select()
+      .from(issueComments)
+      .where(eq(issueComments.issueId, issueId));
+    expect(
+      escalationComments.filter((comment) =>
+        noticeMetadataReferencesRecoveryAction(comment.metadata, recoveryAction!.id),
+      ),
+    ).toHaveLength(1);
+
+    for (let tick = 0; tick < 100; tick += 1) {
+      await heartbeat.reconcileStrandedAssignedIssues();
+      await heartbeat.resumeQueuedRuns();
+    }
+
+    const runsAfterTicks = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+    expect(runsAfterTicks.length).toBeLessThanOrEqual(2);
+    const commentsAfterTicks = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(
+      commentsAfterTicks.filter((comment) =>
+        noticeMetadataReferencesRecoveryAction(comment.metadata, recoveryAction!.id),
+      ),
+    ).toHaveLength(1);
+  });
+
 });

@@ -1273,6 +1273,67 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     expect(enqueueWakeup).not.toHaveBeenCalled();
   });
 
+
+  it("deduplicates startup-fault recovery actions by the typed startup fingerprint", async () => {
+    const { companyId, coderId, sourceIssue } = await seedCompany();
+    const enqueueWakeup = vi.fn(async () => null);
+    const recovery = recoveryService(db, { enqueueWakeup });
+    const startupFault = {
+      kind: "worktree_requires_git_repository",
+      fingerprint: "startup_fault:v1:worktree_requires_git_repository:deadbeefdeadbeefdeadbeef",
+      diagnostic: "x --worktree requires being inside a git repository",
+    };
+    const firstLatestRun = {
+      id: randomUUID(),
+      agentId: coderId,
+      status: "failed",
+      error: startupFault.diagnostic,
+      errorCode: "adapter_startup_fault",
+      contextSnapshot: { retryReason: "startup_fault_retry" },
+      livenessState: "failed",
+      resultJson: { startupFault },
+    } as const;
+    const secondLatestRun = { ...firstLatestRun, id: randomUUID() };
+
+    await recovery.escalateStrandedAssignedIssue({
+      issue: sourceIssue,
+      previousStatus: "in_progress",
+      latestRun: firstLatestRun,
+      recoveryCause: "startup_fault",
+    });
+    await recovery.escalateStrandedAssignedIssue({
+      issue: sourceIssue,
+      previousStatus: "in_progress",
+      latestRun: secondLatestRun,
+      recoveryCause: "startup_fault",
+    });
+
+    const actionRows = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, sourceIssue.id));
+    expect(actionRows).toHaveLength(1);
+    expect(actionRows[0]).toMatchObject({
+      cause: "startup_fault",
+      attemptCount: 2,
+      fingerprint: expect.stringContaining(startupFault.fingerprint),
+      wakePolicy: expect.objectContaining({ type: "board_escalation", reason: "startup_fault" }),
+    });
+
+    const updatedIssue = await db.select().from(issues).where(eq(issues.id, sourceIssue.id)).then((rows) => rows[0] ?? null);
+    expect(updatedIssue?.unblockDescriptor).toMatchObject({
+      owner: "board",
+      action: expect.stringContaining("adapter startup"),
+    });
+    expect(updatedIssue?.blockedOwnerNotifiedAt).toBeTruthy();
+
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, sourceIssue.id));
+    const escalationComments = comments.filter((comment) =>
+      noticeMetadataReferencesRecoveryAction(comment.metadata, actionRows[0]!.id),
+    );
+    expect(escalationComments).toHaveLength(1);
+    expect(enqueueWakeup).not.toHaveBeenCalled();
+  });
   it("deduplicates workspace-incoherence recovery actions by the typed workspace fingerprint", async () => {
     const { companyId, coderId, sourceIssue } = await seedCompany();
     const enqueueWakeup = vi.fn(async () => null);

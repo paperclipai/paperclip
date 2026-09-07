@@ -74,6 +74,7 @@ import { conflict, HttpError, notFound } from "../errors.js";
 import { getStartupTraceContext, getStartupTracer } from "../instrumentation.js";
 import { createHostDuplexObservabilityRecorder } from "./duplex-observability-recorder.js";
 import type { DuplexAggregateByteLedger } from "@paperclipai/adapter-utils/duplex-aggregate-byte-ledger";
+import { ADAPTER_STARTUP_FAULT_ERROR_CODE } from "@paperclipai/adapter-utils";
 import { incrementToolRuntimeMetricCounter } from "./tool-runtime-metrics.js";
 import { logger } from "../middleware/logger.js";
 import {
@@ -486,10 +487,16 @@ const CONFIGURATION_INCOMPLETE_RECOVERY_CAUSE = "configuration_incomplete";
 // Error codes that mark a pre-dispatch setup failure. The adapter process never
 // started, so no agent could post an issue comment. The setup catch writes one
 // of these codes when a failure happens before `adapter.execute`.
+const ADAPTER_STARTUP_FAULT_FAILURE_CODE = ADAPTER_STARTUP_FAULT_ERROR_CODE;
+const STARTUP_FAULT_RETRY_REASON = "startup_fault_retry";
+const STARTUP_FAULT_RETRY_WAKE_REASON = "startup_fault_retry";
+const STARTUP_FAULT_RECOVERY_CAUSE = "startup_fault";
+const STARTUP_FAULT_RETRY_MAX_ATTEMPTS = 1;
 const PRE_ADAPTER_SETUP_FAILURE_CODES = new Set<string>([
   "setup_failed",
   CONFIGURATION_INCOMPLETE_FAILURE_CODE,
   WORKSPACE_VALIDATION_FAILURE_CODE,
+  ADAPTER_STARTUP_FAULT_FAILURE_CODE,
 ]);
 const EXECUTION_REVIEW_PARTICIPANT_RECOVERY_RETRY_REASON = "execution_review_participant_recovery";
 const EXECUTION_REVIEW_PARTICIPANT_RECOVERY_WAKE_REASON = "execution_review_participant_recovery";
@@ -1974,6 +1981,56 @@ export function isConfigurationIncompleteFailedRun(
   run: Pick<typeof heartbeatRuns.$inferSelect, "errorCode"> | null | undefined,
 ) {
   return run?.errorCode === CONFIGURATION_INCOMPLETE_FAILURE_CODE || run?.errorCode === "model_not_found";
+}
+
+function isAdapterStartupFaultRun(
+  run: Pick<typeof heartbeatRuns.$inferSelect, "errorCode"> | null | undefined,
+) {
+  return run?.errorCode === ADAPTER_STARTUP_FAULT_FAILURE_CODE;
+}
+
+function readStartupFaultPayloadFromRun(
+  run: Pick<typeof heartbeatRuns.$inferSelect, "resultJson"> | null | undefined,
+) {
+  const payload = parseObject(parseObject(run?.resultJson).startupFault);
+  return Object.keys(payload).length > 0 ? payload : null;
+}
+
+function readStartupFaultFingerprint(
+  run: Pick<typeof heartbeatRuns.$inferSelect, "resultJson"> | null | undefined,
+) {
+  const payload = readStartupFaultPayloadFromRun(run);
+  return readNonEmptyString(payload?.fingerprint);
+}
+
+async function hasLiveStartupFaultRetryForRun(
+  dbConn: Db,
+  run: Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId">,
+) {
+  const retry = await dbConn
+    .select({ id: heartbeatRuns.id })
+    .from(heartbeatRuns)
+    .where(
+      and(
+        eq(heartbeatRuns.companyId, run.companyId),
+        eq(heartbeatRuns.retryOfRunId, run.id),
+        eq(heartbeatRuns.scheduledRetryReason, STARTUP_FAULT_RETRY_REASON),
+        inArray(heartbeatRuns.status, ["scheduled_retry", "queued", "running"]),
+      ),
+    )
+    .limit(1)
+    .then((rows) => rows[0] ?? null);
+  return retry != null;
+}
+
+function buildStartupFaultRecoveryNoticeSeed() {
+  return {
+    title: "Adapter startup failed",
+    tone: "danger" as const,
+    body:
+      "Paperclip detected an adapter startup failure before any agent turn completed. " +
+      "Repair the adapter workspace/configuration, then explicitly retry or reassign.",
+  };
 }
 
 async function hasGitMetadata(cwd: string | null | undefined) {
@@ -16697,6 +16754,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               },
             });
           }
+        } else if (outcome === "failed" && isAdapterStartupFaultRun(livenessRun)) {
+          await scheduleBoundedRetryForRun(livenessRun, agent, {
+            retryReason: STARTUP_FAULT_RETRY_REASON,
+            wakeReason: STARTUP_FAULT_RETRY_WAKE_REASON,
+            maxAttempts: STARTUP_FAULT_RETRY_MAX_ATTEMPTS,
+            delayMs: 0,
+          });
         } else if (outcome === "failed" && readTransientRecoveryContractFromRun(livenessRun)) {
           await scheduleBoundedRetryForRun(livenessRun, agent);
         }
@@ -17730,19 +17794,30 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         };
       }
 
+      if (isAdapterStartupFaultRun(run) && await hasLiveStartupFaultRetryForRun(db, run)) {
+        return { kind: "released" as const };
+      }
+
       const shouldBlockImmediately =
         !recoveryAgentInvokable ||
         !recoveryAgent ||
         isWorkspaceValidationFailedRun(run) ||
         isConfigurationIncompleteFailedRun(run) ||
+        (
+          isAdapterStartupFaultRun(run) &&
+          readNonEmptyString(parseObject(run.contextSnapshot).retryReason) === STARTUP_FAULT_RETRY_REASON
+        ) ||
         didAutomaticRecoveryFail(run, issue.status === "todo" ? "assignment_recovery" : "issue_continuation_needed");
       if (shouldBlockImmediately) {
         const workspaceValidationFailure = isWorkspaceValidationFailedRun(run);
         const configurationIncompleteFailure = isConfigurationIncompleteFailedRun(run);
+        const startupFaultFailure = isAdapterStartupFaultRun(run);
         const notice = workspaceValidationFailure
           ? buildWorkspaceValidationRecoveryNoticeSeed()
           : configurationIncompleteFailure
             ? buildConfigurationIncompleteRecoveryNoticeSeed()
+            : startupFaultFailure
+              ? buildStartupFaultRecoveryNoticeSeed()
             : buildImmediateExecutionPathRecoveryNoticeSeed({
                 status: issue.status as "todo" | "in_progress",
               });
@@ -17755,6 +17830,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             ? WORKSPACE_VALIDATION_RECOVERY_CAUSE
             : configurationIncompleteFailure
               ? CONFIGURATION_INCOMPLETE_RECOVERY_CAUSE
+              : startupFaultFailure
+                ? STARTUP_FAULT_RECOVERY_CAUSE
               : undefined,
         };
       }
@@ -17866,6 +17943,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             ? WORKSPACE_VALIDATION_RECOVERY_CAUSE
             : promotionResult.recoveryCause === CONFIGURATION_INCOMPLETE_RECOVERY_CAUSE
               ? CONFIGURATION_INCOMPLETE_RECOVERY_CAUSE
+              : promotionResult.recoveryCause === STARTUP_FAULT_RECOVERY_CAUSE
+                ? STARTUP_FAULT_RECOVERY_CAUSE
               : promotionResult.recoveryCause === EXECUTION_REVIEW_PARTICIPANT_RECOVERY_CAUSE
                 ? EXECUTION_REVIEW_PARTICIPANT_RECOVERY_CAUSE
               : undefined,
