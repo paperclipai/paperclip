@@ -555,6 +555,40 @@ describeEmbeddedPostgres("issue create project inference", () => {
     expect(created.body.projectId).toBe(chosen.id);
   });
 
+  it("still forwards the workspace a project-less parent lends, not the project's default", async () => {
+    const companyId = await seedCompany();
+    const linked = await seedProject(companyId, "shove", {
+      repoUrl: "https://github.com/zannis/shove",
+      cwd: "/repos/shove",
+    });
+    // A second, non-primary workspace in the same project: the one the parent
+    // lends. The project's default resolves to the primary one, so inheriting
+    // and defaulting are distinguishable here — with a single-workspace project
+    // both answers coincide and the drop is invisible.
+    const [lent] = await db.insert(projectWorkspaces).values({
+      companyId,
+      projectId: linked.id,
+      name: "shove-docs",
+      sourceType: "git_repo",
+      repoUrl: "https://github.com/zannis/shove",
+      cwd: "/repos/shove-docs",
+      isPrimary: false,
+    }).returning();
+    const parent = await seedIssue(companyId, null, "Imported project-less root");
+    await db.update(issues).set({ projectWorkspaceId: lent!.id }).where(eq(issues.id, parent.id));
+    const { token, runId } = await agentContext(companyId, null);
+
+    const created = await agentPost(createApp(), companyId, token, runId)
+      .send({ title: "Harden the retry loop", parentId: parent.id })
+      .expect(201);
+
+    // Pinning the project the parent's workspace resolves to must not cost the
+    // child that workspace: the service compares the pinned project against the
+    // project the source lends, so the linkage still crosses.
+    expect(created.body.projectId).toBe(linked.id);
+    expect(created.body.projectWorkspaceId).toBe(lent!.id);
+  });
+
   it("infers for a child created via the children route when the parent is project-less", async () => {
     const companyId = await seedCompany();
     const actual = await seedProject(companyId, "actual", {

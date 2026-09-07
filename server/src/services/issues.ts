@@ -1443,6 +1443,51 @@ async function getWorkspaceInheritanceIssue(
   return issue;
 }
 
+/**
+ * The project a workspace-inheritance source lends its child: its own, or —
+ * when it holds none — the project the workspace linkage it forwards belongs
+ * to. `resolveExplicitProjectSelection` walks the same slots in the same order
+ * when it answers the create routes, so the project a route pins and the
+ * project this source lends are one answer rather than two.
+ */
+async function getWorkspaceInheritanceLentProjectId(
+  db: DbReader,
+  companyId: string,
+  source: {
+    projectId: string | null;
+    projectWorkspaceId: string | null;
+    executionWorkspaceId: string | null;
+  },
+  isolatedWorkspacesEnabled: boolean,
+): Promise<string | null> {
+  if (source.projectId) return source.projectId;
+  if (source.projectWorkspaceId) {
+    const projectId = await db
+      .select({ projectId: projectWorkspaces.projectId })
+      .from(projectWorkspaces)
+      .where(and(
+        eq(projectWorkspaces.id, source.projectWorkspaceId),
+        eq(projectWorkspaces.companyId, companyId),
+      ))
+      .then((rows) => rows[0]?.projectId ?? null);
+    if (projectId) return projectId;
+  }
+  // With isolated workspaces off the execution workspace is never forwarded,
+  // so it lends nothing here either.
+  if (isolatedWorkspacesEnabled && source.executionWorkspaceId) {
+    const projectId = await db
+      .select({ projectId: executionWorkspaces.projectId })
+      .from(executionWorkspaces)
+      .where(and(
+        eq(executionWorkspaces.id, source.executionWorkspaceId),
+        eq(executionWorkspaces.companyId, companyId),
+      ))
+      .then((rows) => rows[0]?.projectId ?? null);
+    if (projectId) return projectId;
+  }
+  return null;
+}
+
 // Mine participation fails closed. Add new user-authored issue mutation actions
 // here instead of admitting every issue activity, because reads, previews, and
 // denied resource requests are audited too.
@@ -7324,10 +7369,26 @@ export function issueService(db: Db) {
           // project-match assertions below and the create is impossible without
           // the caller naming the target workspaces explicitly. A pinned
           // resolution compares strictly: pinned null against a source that
-          // holds a project is the concurrent-move race, and forwarding the
+          // lends a project is the concurrent-move race, and forwarding the
           // source's workspace there would smuggle in linkage the pin refused.
+          //
+          // What the source lends is not always its own `projectId`: a source
+          // holding no project still forwards its workspace linkage, and the
+          // route resolves *that* project before pinning it. Comparing the pin
+          // against the bare `projectId` would read the route's own answer as a
+          // cross-project create and drop the linkage the answer came from —
+          // leaving the child on its project's default workspace instead of the
+          // one it inherited, and losing execution-workspace reuse with it.
+          const sourceLentProjectId = pinProjectId
+            ? await getWorkspaceInheritanceLentProjectId(
+              tx,
+              companyId,
+              workspaceSource,
+              isolatedWorkspacesEnabled,
+            )
+            : workspaceSource.projectId ?? null;
           const inheritsSourceProject = pinProjectId
-            ? (issueData.projectId ?? null) === (workspaceSource.projectId ?? null)
+            ? (issueData.projectId ?? null) === sourceLentProjectId
             : issueData.projectId == null || issueData.projectId === workspaceSource.projectId;
           if (inheritsSourceProject && projectWorkspaceId == null && workspaceSource.projectWorkspaceId) {
             projectWorkspaceId = workspaceSource.projectWorkspaceId;
