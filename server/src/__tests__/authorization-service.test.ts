@@ -1270,6 +1270,122 @@ describeEmbeddedPostgres("authorization service", () => {
     });
   });
 
+  it("accepts the board UI trust-policy shape in authorizationPolicy for assignment", async () => {
+    // `trustPreset`, `reviewPreset`, and `trustBoundary` are written by
+    // ui/src/lib/trust-policy-ui.ts into the same authorizationPolicy object;
+    // they scope how broadly an agent may act, not task-assignment gating. The
+    // evaluator must treat them as known keys so a low-trust agent is still
+    // assignable instead of every assignment landing as deny_policy_restricted.
+    const company = await createCompany(db, "TrustPolicyShape");
+    const actorAgent = await createAgent(db, company.id, { role: "engineer" });
+    const targetAgent = await createAgent(db, company.id, {
+      role: "engineer",
+      permissions: {
+        trustPreset: "low_trust_review",
+        authorizationPolicy: {
+          trustPreset: "low_trust_review",
+          reviewPreset: {
+            id: "low_trust_review",
+            version: "1",
+            rawOutputDisposition: "queue_review",
+          },
+          trustBoundary: {
+            mode: "low_trust_review",
+            companyId: company.id,
+            projectIds: [],
+            rootIssueId: null,
+          },
+        },
+      },
+    });
+
+    await grantAgentPermission(db, company.id, actorAgent.id, "tasks:assign");
+
+    const decision = await authorizationService(db).decide({
+      actor: { type: "agent", agentId: actorAgent.id, companyId: company.id, source: "agent_key" },
+      action: "tasks:assign",
+      resource: { type: "issue", companyId: company.id, assigneeAgentId: targetAgent.id },
+      scope: { assigneeAgentId: targetAgent.id },
+    });
+
+    expect(decision).toMatchObject({
+      allowed: true,
+    });
+    // The trust-policy keys must not route assignment into deny_policy_restricted.
+    expect(decision.reason).not.toBe("deny_policy_restricted");
+  });
+
+  it("still applies protected-agent blocking when the UI trust shape is present", async () => {
+    const company = await createCompany(db, "TrustShapeProtected");
+    const actorAgent = await createAgent(db, company.id, { role: "engineer" });
+    const targetAgent = await createAgent(db, company.id, {
+      role: "engineer",
+      permissions: {
+        trustPreset: "low_trust_review",
+        authorizationPolicy: {
+          trustPreset: "low_trust_review",
+          reviewPreset: {
+            id: "low_trust_review",
+            version: "1",
+            rawOutputDisposition: "queue_review",
+          },
+          trustBoundary: {
+            mode: "low_trust_review",
+            companyId: company.id,
+          },
+          protectedAgent: {
+            blockAssignment: true,
+          },
+        },
+      },
+    });
+
+    await grantAgentPermission(db, company.id, actorAgent.id, "tasks:assign");
+
+    const decision = await authorizationService(db).decide({
+      actor: { type: "agent", agentId: actorAgent.id, companyId: company.id, source: "agent_key" },
+      action: "tasks:assign",
+      resource: { type: "issue", companyId: company.id, assigneeAgentId: targetAgent.id },
+      scope: { assigneeAgentId: targetAgent.id },
+    });
+
+    expect(decision).toMatchObject({
+      allowed: false,
+      reason: "deny_policy_restricted",
+    });
+    expect(decision.explanation).toContain("blocked by protected-agent policy");
+  });
+
+  it("still refuses an authorizationPolicy with a genuinely unknown top-level key", async () => {
+    const company = await createCompany(db, "UnknownPolicyKey");
+    const actorAgent = await createAgent(db, company.id, { role: "engineer" });
+    const targetAgent = await createAgent(db, company.id, {
+      role: "engineer",
+      permissions: {
+        authorizationPolicy: {
+          agentVisibility: { mode: "discoverable" },
+          assignmentPolicy: { mode: "company_default" },
+          someUnknownFutureKey: { anything: true },
+        },
+      },
+    });
+
+    await grantAgentPermission(db, company.id, actorAgent.id, "tasks:assign");
+
+    const decision = await authorizationService(db).decide({
+      actor: { type: "agent", agentId: actorAgent.id, companyId: company.id, source: "agent_key" },
+      action: "tasks:assign",
+      resource: { type: "issue", companyId: company.id, assigneeAgentId: targetAgent.id },
+      scope: { assigneeAgentId: targetAgent.id },
+    });
+
+    expect(decision).toMatchObject({
+      allowed: false,
+      reason: "deny_policy_restricted",
+    });
+    expect(decision.explanation).toContain("cannot evaluate for task assignment");
+  });
+
   it("allows simple-mode task assignment for active same-company board operators without explicit grants", async () => {
     const company = await createCompany(db, "BoardAssignmentDefault");
     const userId = `user-${randomUUID()}`;

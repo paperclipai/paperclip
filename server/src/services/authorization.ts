@@ -267,14 +267,29 @@ function evaluateAuthorizationPolicyForAssignment(
   const agentVisibility = readPolicyObject(policy, "agentVisibility");
   const assignmentPolicy = readPolicyObject(policy, "assignmentPolicy");
   const protectedAgent = readPolicyObject(policy, "protectedAgent");
+  const trustPreset = readPolicyObject(policy, "trustPreset");
+  const reviewPreset = readPolicyObject(policy, "reviewPreset");
+  const trustBoundary = readPolicyObject(policy, "trustBoundary");
+  // `trustPreset`, `reviewPreset`, and `trustBoundary` are the trust-scope
+  // contract the board UI writes into the same `permissions.authorizationPolicy`
+  // object (see ui/src/lib/trust-policy-ui.ts). They configure how broadly an
+  // agent can read and act on work objects, not task-assignment gating, so the
+  // assignment evaluator must accept them as known keys instead of refusing the
+  // whole policy as unevaluable and blocking every assignment with
+  // deny_policy_restricted.
   const knownTopLevelKeys = new Set([
     "agentVisibility",
     "assignmentPolicy",
     "protectedAgent",
     "managedBy",
+    "trustPreset",
+    "reviewPreset",
+    "trustBoundary",
   ]);
   const hasUnknownTopLevelKey = Object.keys(policy).some((key) => !knownTopLevelKeys.has(key));
-  const hasKnownPolicySection = Boolean(agentVisibility || assignmentPolicy || protectedAgent);
+  const hasKnownPolicySection = Boolean(
+    agentVisibility || assignmentPolicy || protectedAgent || trustPreset || reviewPreset || trustBoundary,
+  );
   if (hasUnknownTopLevelKey || !hasKnownPolicySection) {
     return {
       kind: "unknown",
