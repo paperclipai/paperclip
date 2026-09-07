@@ -35,7 +35,7 @@ import {
 } from "../lib/issue-filters";
 import { collectLiveIssueIds, collectSubtreeLiveCounts } from "../lib/liveIssueIds";
 import { formatAssigneeUserDisplayLabel as formatAssigneeUserLabel } from "../lib/assignees";
-import { buildCompanyUserLabelMap, buildCompanyUserProfileMap } from "../lib/company-members";
+import { buildCompanyUserLabelMap, buildCompanyUserProfileMap, companyUserProfileDisplayLabel } from "../lib/company-members";
 import {
   armIssueDetailInboxQuickArchive,
   createIssueDetailLocationState,
@@ -2780,7 +2780,7 @@ export function Inbox() {
                             assigneeName={agentName(issue.assigneeAgentId)}
                             assigneeUserName={
                               formatAssigneeUserLabel(issue.assigneeUserId, currentUserId, companyUserLabelMap)
-                              ?? assigneeUserProfile?.label
+                              ?? companyUserProfileDisplayLabel(assigneeUserProfile)
                               ?? null
                             }
                             assigneeUserAvatarUrl={assigneeUserProfile?.image ?? null}

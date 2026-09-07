@@ -18,7 +18,7 @@ import { issuesApi } from "../api/issues";
 import { useAutosaveIndicator } from "../hooks/useAutosaveIndicator";
 import { copyTextToClipboard } from "../lib/clipboard";
 import { deriveDocumentRevisionState } from "../lib/document-revisions";
-import type { CompanyUserProfile } from "../lib/company-members";
+import { companyUserProfileDisplayLabel, type CompanyUserProfile } from "../lib/company-members";
 import { queryKeys } from "../lib/queryKeys";
 import { cn, relativeTime } from "../lib/utils";
 import { FoldCurtain } from "./FoldCurtain";
@@ -166,7 +166,7 @@ function getRevisionActor(
     const profile = maps.userProfileMap?.get(revision.createdByUserId);
     return {
       kind: "user",
-      name: profile?.label ?? (revision.createdByUserId === "local-board" ? t("localizationTaskRuntime.ui_Board_1hpelzf") : revision.createdByUserId.slice(0, 8)),
+      name: companyUserProfileDisplayLabel(profile) ?? (revision.createdByUserId === "local-board" ? t("localizationTaskRuntime.ui_Board_1hpelzf") : revision.createdByUserId.slice(0, 8)),
       imageUrl: profile?.image ?? null,
     };
   }

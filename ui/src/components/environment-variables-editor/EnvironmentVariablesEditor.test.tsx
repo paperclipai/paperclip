@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { useState } from "react";
+import { act as reactAct, useState } from "react";
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -229,6 +229,32 @@ describe("EnvironmentVariablesEditor", () => {
     saveButton().click();
     await flush();
     expect(onChange).toHaveBeenLastCalledWith({ FOO: { type: "plain", value: "bar" } });
+  });
+
+  it("translates the value placeholder EN → RU → EN without changing the raw variable draft or committing it", async () => {
+    const value = { CUSTOM_RUNTIME_NAME: { type: "plain" as const, value: "" } };
+    const original = JSON.stringify(value);
+    const onChange = vi.fn();
+    await reactAct(async () => render(<EnvironmentVariablesEditor value={value} secrets={secrets} onChange={onChange} onCreateSecret={async () => secrets[0]} />));
+    const input = container.querySelector<HTMLInputElement>('input[aria-label="Variable value"]')!;
+    const name = nameInputs()[0];
+    const draft = "Raw runtime text {{value}} / <name>";
+    await reactAct(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, draft);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    for (const [locale, placeholder] of [["en", "value"], ["ru", "значение"], ["en", "value"]] as const) {
+      await reactAct(async () => { await i18n.changeLanguage(locale); });
+      expect(input.isConnected).toBe(true);
+      expect(input.placeholder).toBe(placeholder);
+      expect(input.value).toBe(draft);
+      expect(name.isConnected).toBe(true);
+      expect(name.value).toBe("CUSTOM_RUNTIME_NAME");
+      expect(onChange).not.toHaveBeenCalled();
+      expect(JSON.stringify(value)).toBe(original);
+    }
+    await reactAct(async () => saveButton().click());
+    expect(onChange).toHaveBeenCalledExactlyOnceWith({ CUSTOM_RUNTIME_NAME: { type: "plain", value: draft } });
   });
 
   it("flushes unsaved editor changes before an enclosing form submits", async () => {

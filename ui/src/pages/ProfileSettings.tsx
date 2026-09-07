@@ -246,7 +246,7 @@ export function ProfileSettings() {
               value={name}
               onChange={(event) => setName(event.target.value)}
               maxLength={120}
-              placeholder="Board"
+              placeholder={t("pages.cliAuth.board")}
             />
             <p className="text-xs text-muted-foreground">
               {t("pages.profile.displayNameHint")}

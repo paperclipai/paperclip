@@ -291,8 +291,8 @@ describe("OrgChart mobile gestures", () => {
     await act(async () => { await i18n.changeLanguage("ru"); });
     await flushReact();
     expect(layer.style.transform).toBe(transform);
-    expect(container.textContent).toContain("Импортировать компанию");
-    expect(container.textContent).toContain("Экспортировать компанию");
+    expect(container.textContent).toContain("Импортировать организацию");
+    expect(container.textContent).toContain("Экспортировать организацию");
     expect(Array.from(container.querySelectorAll("a")).map((link) => link.getAttribute("href"))).toEqual(hrefs);
     expect(navigateMock).not.toHaveBeenCalled();
   });

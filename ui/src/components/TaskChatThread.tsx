@@ -1991,7 +1991,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     () => (tailRunId ? toolCountSummaryFromEntries(tailEntries) : null),
     // tailEntries is a fresh array each render; tailContentKey tracks its content.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [tailRunId, tailContentKey],
+    [tailRunId, tailContentKey, t],
   );
 
   // The tail's clean rows (PAP-463 C1): the streaming transcript parsed through

@@ -246,4 +246,3 @@ describe("auxiliary issue localization", () => {
     expect(annotationMutationErrorDisplay("Server says raw_problem")).toBe("Server says raw_problem");
   });
 });
-

@@ -6,6 +6,8 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { sanitizeAssetNamespace } from "@paperclipai/shared";
 import { ProfileSettings } from "./ProfileSettings";
+import { i18n } from "@/i18n";
+import { queryKeys } from "@/lib/queryKeys";
 
 const mockAuthApi = vi.hoisted(() => ({
   getSession: vi.fn(),
@@ -187,5 +189,43 @@ describe("ProfileSettings", () => {
     await act(async () => {
       root.unmount();
     });
+  });
+
+  it("localizes only the empty-name placeholder while preserving and submitting the user's draft", async () => {
+    const root = createRoot(container);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+    const session = { session: { id: "raw-session", userId: "raw-user" }, user: { id: "raw-user", name: "", email: "raw@example.test", image: null } };
+    client.setQueryData(queryKeys.auth.session, session);
+    client.setQueryData(queryKeys.agents.list("company-1"), []);
+    client.setQueryData(queryKeys.inboxAgentPolicy.mine("company-1"), { mode: "disabled", allowedAgentIds: [] });
+    try {
+      await act(async () => { await i18n.changeLanguage("en"); root.render(<QueryClientProvider client={client}><ProfileSettings /></QueryClientProvider>); });
+      const input = container.querySelector<HTMLInputElement>("#profile-name")!;
+      const email = container.querySelector<HTMLInputElement>("#profile-email")!;
+      expect(input.value).toBe("");
+      expect(input.placeholder).toBe("Board");
+      await act(async () => { await i18n.changeLanguage("ru"); });
+      expect(input.placeholder).toBe("Руководство");
+      expect(input.value).toBe("");
+      const draft = "Board — customer-owned name";
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, draft);
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+      for (const [locale, placeholder] of [["en", "Board"], ["ru", "Руководство"], ["en", "Board"]] as const) {
+        await act(async () => { await i18n.changeLanguage(locale); });
+        expect(container.querySelector("#profile-name")).toBe(input);
+        expect(input.placeholder).toBe(placeholder);
+        expect(input.value).toBe(draft);
+        expect(email.value).toBe("raw@example.test");
+        expect(client.getQueryData(queryKeys.auth.session)).toEqual(session);
+        expect(mockAuthApi.updateProfile).not.toHaveBeenCalled();
+        expect(mockAssetsApi.uploadImage).not.toHaveBeenCalled();
+      }
+      await act(async () => input.closest("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
+      expect(mockAuthApi.updateProfile).toHaveBeenCalledExactlyOnceWith({ name: draft, image: null });
+    } finally {
+      await act(async () => root.unmount()); client.clear(); await i18n.changeLanguage("en");
+    }
   });
 });

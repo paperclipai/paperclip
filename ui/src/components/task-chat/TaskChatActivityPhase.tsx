@@ -6,6 +6,7 @@ import { MarkdownBody } from "@/components/MarkdownBody";
 import type { TaskChatActivityPhaseItem } from "./task-chat-model";
 import { protocolActivityPresentation } from "./task-chat-activity-presentation";
 import { toolTaxonomy, type ToolIcon } from "./tool-taxonomy";
+import { taskChatPhaseSummaryDisplay } from "./task-chat-phase-summary-display";
 
 function representativeIcon(item: TaskChatActivityPhaseItem): ToolIcon {
   // Prefer a concrete operation over bookkeeping/reasoning. A phase can own
@@ -46,6 +47,9 @@ export function TaskChatActivityPhase({
   appearance?: "classic" | "runner";
 }) {
   useTranslation();
+  const markerSummary = item.items.every((child) => child.kind === "marker" || child.kind === "usage") &&
+    item.items.some((child) => child.kind === "marker" && child.variant === "interrupted" && child.label === item.summary);
+  const summary = taskChatPhaseSummaryDisplay(item.summary, markerSummary ? "marker" : "generated");
   const shouldAutoOpen =
     defaultOpen ||
     (autoOpen &&
@@ -93,7 +97,7 @@ export function TaskChatActivityPhase({
         <button
           type="button"
           aria-expanded={open}
-          aria-label={t(open ? "localizationTaskRuntime.collapseActivity" : "localizationTaskRuntime.expandActivity", { summary: item.summary })}
+          aria-label={t(open ? "localizationTaskRuntime.collapseActivity" : "localizationTaskRuntime.expandActivity", { summary })}
           onClick={() => setOpen((value) => !value)}
           className={cn(
             runnerAppearance
@@ -123,7 +127,7 @@ export function TaskChatActivityPhase({
               aria-hidden
             />
           )}
-          <span className="min-w-0 break-words">{item.summary}</span>
+          <span className="min-w-0 break-words">{summary}</span>
           {runnerAppearance ? (
             <ChevronRight
               className={cn(

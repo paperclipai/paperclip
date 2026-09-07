@@ -1,4 +1,5 @@
 import { i18n, t, useTranslation } from "@/i18n";
+import { companyUserLabelDisplayLabel } from "@/lib/company-members";
 import {
   useEffect,
   useMemo,
@@ -1903,14 +1904,14 @@ export function TaskChatCompactInteractionCard({
     : interaction.createdByUserId
       ? interaction.createdByUserId === currentUserId
         ? t("localizationActivity.you")
-        : userLabelMap?.get(interaction.createdByUserId)
+        : companyUserLabelDisplayLabel(interaction.createdByUserId, userLabelMap)
       : null;
   const addresseeLabel = interaction.addresseeAgentId
     ? agentMap?.get(interaction.addresseeAgentId)?.name
     : interaction.addresseeUserId
       ? interaction.addresseeUserId === currentUserId
         ? t("localizationActivity.you")
-        : (userLabelMap?.get(interaction.addresseeUserId) ??
+        : (companyUserLabelDisplayLabel(interaction.addresseeUserId, userLabelMap) ??
           interaction.addresseeUserId)
       : null;
   const audience = describeInteractionAudience({

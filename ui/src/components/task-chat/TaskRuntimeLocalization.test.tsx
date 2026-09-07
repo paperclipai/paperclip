@@ -64,7 +64,7 @@ describe("task runtime live localization", () => {
       expect(button.getAttribute("aria-expanded")).toBe("true");
       expect(host.contains(details)).toBe(true);
       expect(host.querySelector('a[href="/agents/agent-raw"]')).toBe(link);
-      expect(host.textContent).toContain(language === "ru" ? "Нет активного пути выполнения" : "No live execution path");
+      expect(host.textContent).toContain(language === "ru" ? "Нет активного запуска или запланированного продолжения" : "No live execution path");
       expect(host.textContent).toContain(language === "ru" ? "Ответственный за восстановление" : "Recovery owner");
       expect(host.textContent).toContain(language === "ru" ? "Скрыть подробности" : "Hide details");
       expect(host.textContent).toContain("Keep stored English body.");
@@ -162,7 +162,7 @@ describe("task runtime live localization", () => {
       expect(formatFileSize(1536)).toBe("1.5 KB");
       expect(formatFileSizeDisplay(1536)).toBe(language === "ru" ? "1,5 КБ" : "1.5 KB");
       expect(taskChatDurationLabel("1.5s")).toBe(language === "ru" ? "1,5 с" : "1.5s");
-      expect(issueChatRunLabelDisplay("Interrupted by board after 1 minute", taskChatDurationLabel)).toBe(language === "ru" ? "Прервано советом через 1 мин" : "Interrupted by board after 1 minute");
+      expect(issueChatRunLabelDisplay("Interrupted by board after 1 minute", taskChatDurationLabel)).toBe(language === "ru" ? "Прервано руководством через 1 мин" : "Interrupted by board after 1 minute");
       expect(taskChatTokenLabel("12.3k tokens")).toContain(language === "ru" ? "токенов" : "tokens");
       for (const count of [1, 2, 5, 21]) {
         const summary = turnSummaryText({ toolCount: count, added: 0, removed: 0 });

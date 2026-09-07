@@ -68,6 +68,7 @@ import {
   buildCompanyUserInlineOptions,
   buildCompanyUserLabelMap,
   buildCompanyUserProfileMap,
+  companyUserProfileDisplayLabel,
   buildMarkdownMentionOptions,
   isAgentTaskTarget,
 } from "../lib/company-members";
@@ -702,7 +703,7 @@ function ActorIdentity({
     const profile = userProfileMap?.get(id);
     return (
       <Identity
-        name={profile?.label ?? t("pages.cliAuth.board")}
+        name={companyUserProfileDisplayLabel(profile) ?? t("pages.cliAuth.board")}
         avatarUrl={profile?.image}
         size="sm"
       />
@@ -822,7 +823,7 @@ function IssueAttributionByline({
           id: issue.assigneeUserId,
           name:
             formatUserLabel(issue.assigneeUserId, userLabelMap) ??
-            userProfileMap.get(issue.assigneeUserId)?.label ??
+            companyUserProfileDisplayLabel(userProfileMap.get(issue.assigneeUserId)) ??
             t("localizationFilters.user"),
           avatarUrl: userProfileMap.get(issue.assigneeUserId)?.image ?? null,
         }
@@ -842,7 +843,7 @@ function IssueAttributionByline({
           id: originatingActor.id,
           name:
             formatUserLabel(originatingActor.id, userLabelMap) ??
-            userProfileMap.get(originatingActor.id)?.label ??
+            companyUserProfileDisplayLabel(userProfileMap.get(originatingActor.id)) ??
             t("localizationFilters.user"),
           avatarUrl: userProfileMap.get(originatingActor.id)?.image ?? null,
         }
@@ -2669,7 +2670,7 @@ function IssueDetailActivityTab({
           hasLiveRuns={hasLiveRuns}
           activityEvents={activity ?? []}
           resolveUserLabel={(userId) =>
-            userProfileMap.get(userId)?.label ?? null
+            companyUserProfileDisplayLabel(userProfileMap.get(userId)) ?? null
           }
           renderActivityEvent={(evt) => {
             const tone = successfulRunHandoffActivityTone(evt.action);
@@ -2713,7 +2714,7 @@ function IssueDetailActivityTab({
                     agentMap.get(agentId)?.name ?? null
                   }
                   resolveUserLabel={(userId) =>
-                    userProfileMap.get(userId)?.label ?? null
+                    companyUserProfileDisplayLabel(userProfileMap.get(userId)) ?? null
                   }
                 />
                 {/* A refused write explains itself here, not just in the API error. */}
@@ -2726,7 +2727,7 @@ function IssueDetailActivityTab({
                         ? (agentMap.get(evt.agentId)?.name ?? null)
                         : null,
                       responsibleUserName: evt.responsibleUserId
-                        ? (userProfileMap.get(evt.responsibleUserId)?.label ??
+                        ? (companyUserProfileDisplayLabel(userProfileMap.get(evt.responsibleUserId)) ??
                           null)
                         : null,
                     },

@@ -53,6 +53,12 @@ Use these UI terms consistently:
 Do not translate API fields, route segments, environment variable names,
 adapter names, model names, command examples, or agent prompt content.
 
+Translate `board` by context. Use «руководство» for the built-in actor label
+and «доска» for a board layout. In access rules, `board` can mean any human
+user, not a management role. Check the permission code before translating it
+as a restricted role. Never translate a person's actual name, even if that
+name is `Board`, `You`, or `Me`.
+
 GitHub user [@DrMaks22](https://github.com/DrMaks22) has volunteered to review
 new Russian strings and maintain `locales/ru.json`. Tag this user when a change
 adds or changes English UI keys. Add a `CODEOWNERS` rule only after repository

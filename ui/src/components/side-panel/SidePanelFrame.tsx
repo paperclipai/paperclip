@@ -34,17 +34,17 @@ export function SidePanelFrame({
   open = true,
   maximized = false,
   resizing = false,
-  label = "Side panel",
+  label,
   headerSize = "default",
   className,
   bodyClassName,
   style,
 }: SidePanelFrameProps) {
-  useTranslation();
+  const { t } = useTranslation();
   const handleScroll = useScrollbarWhileScrolling();
   return (
     <section
-      aria-label={label}
+      aria-label={label ?? t("localizationCommonChrome.panelLabel")}
       aria-hidden={!open}
       data-presentation={presentation}
       data-open={open ? "true" : "false"}

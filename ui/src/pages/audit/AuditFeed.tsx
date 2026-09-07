@@ -21,7 +21,7 @@ import { AgentIcon } from "@/components/AgentIconPicker";
 import { cn, relativeTime, formatDateTime } from "@/lib/utils";
 import { queryKeys } from "@/lib/queryKeys";
 import { formatActivityVerb } from "@/lib/activity-format";
-import { buildCompanyUserProfileMap, type CompanyUserProfile } from "@/lib/company-members";
+import { buildCompanyUserProfileMap, companyUserProfileDisplayLabel, type CompanyUserProfile } from "@/lib/company-members";
 import { auditApi, type AuditActionRecord, type AuditActionFilters } from "@/api/audit";
 import { agentsApi } from "@/api/agents";
 import { accessApi } from "@/api/access";
@@ -135,7 +135,7 @@ function AuditActor({
     const profile = userProfileMap.get(record.actorId);
     return (
       <Identity
-        name={profile?.label ?? t("localizationActivity.user")}
+        name={companyUserProfileDisplayLabel(profile) ?? t("localizationActivity.user")}
         avatarUrl={profile?.image ?? null}
         size="sm"
         className="font-medium text-foreground"
@@ -210,7 +210,7 @@ function AuditRow({
     record.responsibleUserId
       && !(record.actorType === "user" && record.actorId === record.responsibleUserId),
   );
-  const responsibleLabel = responsible?.label ?? (record.responsibleUserId ? t("localizationActivity.aUser") : null);
+  const responsibleLabel = companyUserProfileDisplayLabel(responsible) ?? (record.responsibleUserId ? t("localizationActivity.aUser") : null);
   const excerpt = record.entity.comment?.excerpt?.trim();
   // Show the document key only when it isn't already the linked entity node.
   const documentKey = record.entity.issue && record.entity.document ? record.entity.document.key : null;

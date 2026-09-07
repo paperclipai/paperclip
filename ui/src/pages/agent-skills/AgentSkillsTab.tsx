@@ -9,7 +9,7 @@ import { agentsApi } from "../../api/agents";
 import { companySkillsApi } from "../../api/companySkills";
 import { instanceSettingsApi } from "../../api/instanceSettings";
 import { queryKeys } from "../../lib/queryKeys";
-import { resolveSkillSummaryText } from "../../lib/company-skill-summary";
+import { bundledSkillSummaryDisplay as resolveSkillSummaryText } from "../../lib/bundled-skill-display";
 import { adapterLabels } from "../../components/agent-config-primitives";
 import { cn } from "../../lib/utils";
 import { Badge } from "@/components/ui/badge";

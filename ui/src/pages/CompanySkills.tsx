@@ -69,7 +69,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { buildLineDiff, type DiffRow } from "../lib/line-diff";
 import { cn, formatNumber, relativeTime } from "../lib/utils";
-import { resolveSkillSummaryText } from "../lib/company-skill-summary";
+import { bundledSkillDescriptionDisplay, bundledSkillSourceDisplay, bundledSkillSummaryDisplay } from "../lib/bundled-skill-display";
 import {
   parseSkillRoute,
   skillRoute,
@@ -281,7 +281,7 @@ function sourceMeta(sourceBadge: CompanySkillSourceBadge, sourceLabel: string | 
     case "local":
       return { icon: Folder, label: sourceLabel ?? t("localizationSkills.folder7"), managedLabel: t("localizationSkills.folderManaged8") };
     case "paperclip":
-      return { icon: Paperclip, label: sourceLabel ?? "Paperclip", managedLabel: t("localizationSkills.paperclipManaged10") };
+      return { icon: Paperclip, label: bundledSkillSourceDisplay(sourceBadge, sourceLabel ?? "Paperclip"), managedLabel: t("localizationSkills.paperclipManaged10") };
     default:
       return { icon: Boxes, label: sourceLabel ?? t("localizationSkills.catalog11"), managedLabel: t("localizationSkills.catalogManaged12") };
   }
@@ -795,6 +795,7 @@ function discoveryMatchesSearch(card: DiscoveryCard, query: string): boolean {
     card.author,
     card.tagline ?? "",
     card.description ?? "",
+    bundledSkillSummaryDisplay(card) ?? "",
     card.categories.join(" "),
   ].join(" ").toLowerCase();
   return haystack.includes(query.toLowerCase());
@@ -887,7 +888,7 @@ function SkillCard({
         <div className="min-w-0 flex-1">
           <div className="truncate font-mono text-sm font-medium text-foreground">{card.name}</div>
           <div className="truncate text-xs text-muted-foreground">
-            {t("localizationSkills.authorBy", { author: card.author })}{card.version ? ` · ${card.version}` : ""}
+            {t("localizationSkills.authorBy", { author: card.author === card.sourceLabel ? bundledSkillSourceDisplay(card.sourceBadge, card.author, "author") : card.author })}{card.version ? ` · ${card.version}` : ""}
           </div>
           {badgeFolder !== undefined ? (
             <div className="mt-1 flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
@@ -935,12 +936,7 @@ function SkillCard({
 
       {/* Always reserve two lines so cards line up even without a description. */}
       <p className="mt-2 line-clamp-2 min-h-8 text-xs text-muted-foreground">
-        {resolveSkillSummaryText({
-          tagline: card.tagline,
-          description: card.description,
-          key: card.key,
-          name: card.name,
-        }) ?? ""}
+        {bundledSkillSummaryDisplay(card) ?? ""}
       </p>
 
       <div className="mt-auto pt-3">
@@ -1918,7 +1914,7 @@ function CatalogDetailPane({
               <Boxes className={cn("h-5 w-5 shrink-0 text-muted-foreground", skill.kind === "optional" && "opacity-70")} aria-hidden="true" />
               {skill.name}
             </h1>
-            <p className="mt-2 max-w-3xl text-sm text-muted-foreground">{skill.description}</p>
+            <p className="mt-2 max-w-3xl text-sm text-muted-foreground">{bundledSkillDescriptionDisplay(skill, skill.description)}</p>
             <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
               <span className="rounded border border-border bg-muted/40 px-1.5 py-0.5 uppercase tracking-wide">{t(`localizationSkills.kind_${skill.kind}`, { defaultValue: skill.kind })}</span>
               <span>·</span>
@@ -2118,7 +2114,7 @@ export function InstallPreviewDialog({
               <div className="text-muted-foreground">{t("localizationSkills.requires170")}</div>
               <div className="text-foreground">{skill.requires.length === 0 ? t("pages.caseDetail.markdownNone") : skill.requires.join(", ")}</div>
               <div className="text-muted-foreground">{t("localizationSkills.roles171")}</div>
-              <div className="text-foreground">{skill.recommendedForRoles.length === 0 ? "any" : skill.recommendedForRoles.join(" · ")}</div>
+              <div className="text-foreground">{skill.recommendedForRoles.length === 0 ? t("localizationFinalAuditExtras.anyRoles") : skill.recommendedForRoles.join(" · ")}</div>
               <div className="text-muted-foreground">{t("localizationSkills.provenance172")}</div>
               <div className="min-w-0">
                 <div className="truncate">{packageName ?? "—"}{packageVersion ? ` v${packageVersion}` : ""}</div>
@@ -2953,7 +2949,7 @@ export function SkillDetailPage({
   const currentPin = shortRef(skill.sourceRef);
   const latestPin = shortRef(updateStatus?.latestRef);
   const selectedVersion = versions.find((version) => version.id === currentVersionSelection(skill)) ?? null;
-  const subtitleText = resolveSkillSummaryText(skill) ?? source.label;
+  const subtitleText = bundledSkillSummaryDisplay(skill) ?? source.label;
   const settingsCategories = splitCategoryDraft(settingsCategoryDraft);
   const settingsCategoriesDirty = categorySetKey(settingsCategories) !== categorySetKey(skill.categories);
   const settingsSharingDirty = settingsSharingScope !== (skill.sharingScope === "public_link" ? "company" : skill.sharingScope);
@@ -3083,9 +3079,9 @@ export function SkillDetailPage({
           {fileLoading ? (
             <PageSkeleton variant="detail" />
           ) : file?.markdown ? (
-            <MarkdownBody softBreaks={false} linkIssueReferences={false}>{body || skill.description || t("localizationSkills.noOverviewYet228")}</MarkdownBody>
+            <MarkdownBody softBreaks={false} linkIssueReferences={false}>{body || bundledSkillDescriptionDisplay(skill, skill.description) || t("localizationSkills.noOverviewYet228")}</MarkdownBody>
           ) : (
-            <p className="text-sm text-muted-foreground">{skill.description ?? t("localizationSkills.noOverviewYet228")}</p>
+            <p className="text-sm text-muted-foreground">{bundledSkillDescriptionDisplay(skill, skill.description) ?? t("localizationSkills.noOverviewYet228")}</p>
           )}
         </section>
         <section className="grid min-w-0 gap-3 text-sm sm:grid-cols-2">
@@ -3314,8 +3310,7 @@ export function SkillDetailPage({
                 <TooltipTrigger asChild>
                   <span className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs text-muted-foreground">
                     <Download className="h-3.5 w-3.5" aria-hidden="true" />
-                    <span className="font-medium text-foreground">{detail.attachedAgentCount}</span>
-                    <span className="hidden sm:inline">{detail.attachedAgentCount === 1 ? "install" : "installs"}</span>
+                    <Trans t={t} i18nKey="localizationFinalAuditExtras.installs" count={detail.attachedAgentCount} components={{ count: <span className="font-medium text-foreground" />, label: <span className="hidden sm:inline" /> }} />
                   </span>
                 </TooltipTrigger>
                 <TooltipContent>{t("localizationSkills.agentsInThisOrganizationThatCurrentlyHave245")}</TooltipContent>
@@ -3708,7 +3703,7 @@ function SkillPane({
               {detail.name}
             </h1>
             {detail.description && (
-              <p className="mt-2 max-w-3xl text-sm text-muted-foreground">{detail.description}</p>
+              <p className="mt-2 max-w-3xl text-sm text-muted-foreground">{bundledSkillDescriptionDisplay(detail, detail.description)}</p>
             )}
           </div>
           <div className="flex flex-wrap items-center justify-end gap-2">

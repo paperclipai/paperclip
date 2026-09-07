@@ -263,7 +263,7 @@ describe("BoardChat staged typing intro", () => {
     await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="Отправить сообщение"]')!.click());
     expect(fetchSpy).toHaveBeenCalledTimes(1);
     expect(JSON.parse(fetchSpy.mock.calls[0][1].body)).toEqual({ companyId: "company-1", message: "Мой вопрос / raw command", taskId: "issue-board" });
-    expect(container.querySelector('[role="alert"]')?.textContent).toContain("Ассистент совета директоров сейчас недоступен");
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain("Ассистент руководства сейчас недоступен");
     await act(async () => setLocale("en"));
     expect(container.querySelector('[role="alert"]')?.textContent).toContain("The board assistant is unavailable right now");
     expect(fetchSpy).toHaveBeenCalledTimes(1);

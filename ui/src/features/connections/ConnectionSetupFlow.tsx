@@ -298,7 +298,9 @@ type AppAccessSelection = "all_agents" | { agentIds: string[] };
 
 // Access comes before credentials so the reader knows what identity and reach
 // the secret is about to get before they share it (PAP-17835).
-const STEP_LABELS = [t("localizationConnections.pickApp4"), t("localizationConnections.access5"), t("localizationConnections.addYourKey6")];
+function stepLabelsForCurrentLanguage() {
+  return [t("localizationConnections.pickApp4"), t("localizationConnections.access5"), t("localizationConnections.addYourKey6")];
+}
 const STEP_INDEX: Record<Exclude<Step, "success">, number> = {
   gallery: 0,
   access: 1,
@@ -308,7 +310,9 @@ const SELECTED_APP_STEP_INDEX: Record<Exclude<Step, "gallery" | "success">, numb
   access: 0,
   key: 1,
 };
-const ZAPIER_STEP_LABELS = [t("localizationConnections.access5"), t("localizationConnections.addMCPURL7")];
+function zapierStepLabelsForCurrentLanguage() {
+  return [t("localizationConnections.access5"), t("localizationConnections.addMCPURL7")];
+}
 
 /**
  * Which identity a fresh connection should default to (PAP-17835).
@@ -1821,7 +1825,7 @@ export function ConnectionSetupFlow({
     ? galleryQuery.data?.apps.find((app) => app.slug === "zapier") ?? null
     : null;
   const stepLabels = zapierSource
-    ? ZAPIER_STEP_LABELS
+    ? zapierStepLabelsForCurrentLanguage()
     : entry && setupCredentialSourceMethods.length > 1
       ? [t("localizationConnections.access5"), t("localizationConnections.chooseConnection52")]
     : entry && setupCredentialSourceMethods[0]?.auth === "oauth"
@@ -1830,7 +1834,7 @@ export function ConnectionSetupFlow({
       ? [t("localizationConnections.access5"), t("localizationConnections.shareSheet54")]
       : entry
         ? [t("localizationConnections.access5"), t("localizationConnections.addYourKey6")]
-      : STEP_LABELS;
+      : stepLabelsForCurrentLanguage();
   // The Access step's identity question only makes sense when there *is* a
   // credential, so it reads the selected method's auth kind.
   const accessStepMethod = entry

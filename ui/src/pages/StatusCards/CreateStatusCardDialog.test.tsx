@@ -72,7 +72,7 @@ describe("CreateStatusCardDialog locale boundary", () => {
   it("localizes example labels without rewriting the bundled execution prompt", async () => {
     await i18n.changeLanguage("ru");
     await render();
-    const example = [...document.querySelectorAll("button")].find((item) => item.textContent?.trim() === "задачи об оценке качества");
+    const example = [...document.querySelectorAll("button")].find((item) => item.textContent?.trim() === "задачи по оценке качества");
     expect(example).toBeDefined();
     await act(async () => { example!.click(); });
     expect(document.querySelector<HTMLTextAreaElement>("#status-card-prompt")?.value).toBe("issues about evals");

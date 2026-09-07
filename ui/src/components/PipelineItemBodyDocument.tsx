@@ -11,7 +11,7 @@ import { FilePenLine, FileText, Loader2 } from "lucide-react";
 import { ApiError } from "../api/client";
 import { issuesApi } from "../api/issues";
 import { pipelinesApi } from "../api/pipelines";
-import type { CompanyUserProfile } from "../lib/company-members";
+import { companyUserProfileDisplayLabel, type CompanyUserProfile } from "../lib/company-members";
 import { queryKeys } from "../lib/queryKeys";
 import { useToastActions } from "../context/ToastContext";
 import { DocumentAnnotationLayer, type PendingAnchor } from "./DocumentAnnotationLayer";
@@ -56,7 +56,7 @@ function getPipelineRevisionActor(
     const profile = maps.userProfileMap?.get(revision.createdByUserId);
     return {
       kind: "user",
-      name: profile?.label ?? (revision.createdByUserId === "local-board" ? t("localizationDocuments.board") : revision.createdByUserId.slice(0, 8)),
+      name: companyUserProfileDisplayLabel(profile) ?? (revision.createdByUserId === "local-board" ? t("localizationDocuments.board") : revision.createdByUserId.slice(0, 8)),
       imageUrl: profile?.image ?? null,
     };
   }

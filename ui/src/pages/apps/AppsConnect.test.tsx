@@ -6,6 +6,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { CONNECTABLE_APP_DEFINITIONS } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "@/api/client";
+import { i18n } from "@/i18n";
 import { queryKeys } from "@/lib/queryKeys";
 import { ConnectionSetupFlow } from "@/features/connections/ConnectionSetupFlow";
 import { AppsConnect } from "./AppsConnect";
@@ -273,6 +274,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     document.body.innerHTML = "";
     vi.restoreAllMocks();
     vi.clearAllMocks();
+    await i18n.changeLanguage("en");
   });
 
   async function render(queryClient?: QueryClient, byoOnly = false, content?: ReactNode) {
@@ -290,6 +292,50 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     await flushReact();
     return root;
   }
+
+  it.each([
+    ["generic", "Pick app   ·   Access   ·   Add your key", "Выбор приложения   ·   Доступ   ·   Добавление ключа", "Step 2 of 3", "Шаг 2 из 3"],
+    ["zapier", "Access   ·   Add MCP URL", "Доступ   ·   Добавление URL MCP", "Step 1 of 2", "Шаг 1 из 2"],
+  ] as const)("refreshes %s step labels without resetting access choices or starting connections", async (flow, englishLabels, russianLabels, englishStep, russianStep) => {
+    await i18n.changeLanguage("en");
+    mockSearch.value = flow === "zapier" ? "source=zapier" : "";
+    await render();
+    if (flow === "generic") {
+      const link = container.querySelector<HTMLInputElement>('input[placeholder^="https://"]')!;
+      expect(link).toBeTruthy();
+      await act(async () => setInputValue(link, "https://mcp.example.test/original-path"));
+      await act(async () => buttonByText("Continue")!.click());
+      await flushReact();
+    }
+    const onlyAgents = radioContaining("Just agents I pick")!;
+    expect(onlyAgents).toBeTruthy();
+    await act(async () => onlyAgents.click());
+    await flushReact();
+    const next = buttonByText("Save and continue") ?? buttonByText("Continue");
+    expect(next).toBeTruthy();
+    expect(next!.disabled).toBe(true);
+    const labels = Array.from(container.querySelectorAll("div")).find((node) => node.textContent === englishLabels)!;
+    expect(labels).toBeTruthy();
+    const reads = [listGalleryMock, listApplicationsMock, listConnectionsMock, listAgentsMock, getCloudConnectorEnrollmentMock];
+    const readCounts = reads.map((mock) => mock.mock.calls.length);
+    for (const language of ["en", "ru", "en"] as const) {
+      await act(async () => { await i18n.changeLanguage(language); });
+      await flushReact();
+      expect(labels.textContent).toBe(language === "ru" ? russianLabels : englishLabels);
+      expect(container.textContent).toContain(language === "ru" ? russianStep : englishStep);
+      expect(container.contains(labels)).toBe(true);
+      expect(container.contains(onlyAgents)).toBe(true);
+      expect(onlyAgents.getAttribute("aria-checked")).toBe("true");
+      expect(container.contains(next!)).toBe(true);
+      expect(next!.disabled).toBe(true);
+      expect(reads.map((mock) => mock.mock.calls.length)).toEqual(readCounts);
+      for (const mutation of [connectAppMock, startOAuthMock, finishAppMock, putConnectionInstallsMock, startCloudConnectorEnrollmentMock]) {
+        expect(mutation).not.toHaveBeenCalled();
+      }
+      expect(mockNavigate).not.toHaveBeenCalled();
+      expect(navigateTopLevelMock).not.toHaveBeenCalled();
+    }
+  });
 
   it("shows only MCP URL setup on the BYO page", async () => {
     await render(undefined, true);

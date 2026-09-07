@@ -1,6 +1,6 @@
 import { i18n, t } from "@/i18n";
 import type { Agent } from "@paperclipai/shared";
-import type { CompanyUserProfile } from "./company-members";
+import { companyUserProfileDisplayLabel, type CompanyUserProfile } from "./company-members";
 import { formatReviewPolicyValue } from "./review-policy";
 
 type ActivityDetails = Record<string, unknown> | null | undefined;
@@ -747,10 +747,11 @@ function readIssueReferences(details: ActivityDetails, key: string): ActivityIss
 }
 
 function formatUserLabel(userId: string | null | undefined, options: ActivityFormatOptions = {}): string {
-  if (!userId || userId === "local-board") return t("localizationActivity.board");
-  if (options.currentUserId && userId === options.currentUserId) return t("localizationActivity.you");
+  if (!userId) return t("localizationActivity.board");
   const profile = options.userProfileMap?.get(userId);
-  if (profile) return profile.label;
+  if (userId === "local-board") return companyUserProfileDisplayLabel(profile) ?? t("localizationAssigneeChrome.board");
+  if (options.currentUserId && userId === options.currentUserId) return t("localizationActivity.you");
+  if (profile) return companyUserProfileDisplayLabel(profile)!;
   return t("localizationActivity.userId", { id: userId.slice(0, 5) });
 }
 

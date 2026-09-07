@@ -48,9 +48,9 @@ describe("Handoff localization", () => {
   it("keeps wake and interruption distinctions visible when the locale changes", async () => {
     await mount(<><HandoffWakeRow to={{ agentId: "agent-raw", userId: null }} resolvers={resolvers} interruptedRunAttached /><HandoffWakeRow to={{ agentId: null, userId: "user-raw" }} resolvers={resolvers} /><RunStatusBadge status="cancelled" operatorInterrupted /><RunStatusBadge status="cancelled" /></>);
     await locale("ru");
-    expect(host?.textContent).toContain("в очереди; агент — RAW_AGENT (приложен прерванный запуск)");
-    expect(host?.textContent).toContain("не создан — задача передана пользователю совета директоров");
-    expect(host?.querySelector('[data-interrupted="true"]')?.textContent).toContain("прерван комментарием совета директоров");
+    expect(host?.textContent).toContain("в очереди; агент — RAW_AGENT (связан с прерванным запуском)");
+    expect(host?.textContent).toContain("не создан — задача передана пользователю панели управления");
+    expect(host?.querySelector('[data-interrupted="true"]')?.textContent).toContain("прерван комментарием руководства");
     expect(host?.querySelector('[data-interrupted="false"]')?.textContent).toBe("отменён");
     expect(host?.querySelector('[data-interrupted="true"]')?.className).toContain("amber");
   });

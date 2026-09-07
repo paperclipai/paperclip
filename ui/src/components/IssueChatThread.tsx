@@ -83,7 +83,7 @@ import { buildIssueThreadInteractionSummary, isIssueThreadInteraction } from "..
 import { isLiveIssueRun } from "../lib/liveIssueIds";
 import { resolveIssueChatTranscriptRuns } from "../lib/issueChatTranscriptRuns";
 import {
-  formatTimelineWorkspaceLabel,
+  timelineWorkspaceLabelDisplay as formatTimelineWorkspaceLabel,
   type IssueTimelineAssignee,
   type IssueTimelineEvent,
   type IssueTimelineWorkspace,
@@ -148,7 +148,7 @@ import {
   shouldPreserveComposerViewport,
 } from "../lib/issue-chat-scroll";
 import { formatAssigneeUserDisplayLabel as formatAssigneeUserLabel, formatAssigneeUserLabel as canonicalAssigneeUserLabel } from "../lib/assignees";
-import type { CompanyUserProfile } from "../lib/company-members";
+import { companyUserLabelDisplayLabel, companyUserProfileDisplayLabel, type CompanyUserProfile } from "../lib/company-members";
 import { timeAgo } from "../lib/timeAgo";
 import {
   isSuccessfulRunHandoffComment,
@@ -987,7 +987,7 @@ function formatInteractionActorLabel(args: {
   const { agentId, userId, agentMap, currentUserId, userLabelMap } = args;
   if (agentId) return agentMap?.get(agentId)?.name ?? agentId.slice(0, 8);
   if (userId) {
-    return userLabelMap?.get(userId)
+    return companyUserLabelDisplayLabel(userId, userLabelMap)
       ?? formatAssigneeUserLabel(userId, currentUserId, userLabelMap)
       ?? t("localizationTaskRuntime.ui_Board_1hpelzf");
   }
@@ -1004,9 +1004,11 @@ export function resolveIssueChatHumanAuthor(args: {
   const { authorName, authorUserId, currentUserId, userProfileMap, userLabelMap } = args;
   const profile = authorUserId ? userProfileMap?.get(authorUserId) ?? null : null;
   const isCurrentUser = Boolean(authorUserId && currentUserId && authorUserId === currentUserId);
-  const explicitLabel = profile?.label?.trim() || (authorUserId ? userLabelMap?.get(authorUserId)?.trim() : null);
+  const explicitLabel = companyUserProfileDisplayLabel(profile)?.trim()
+    || companyUserLabelDisplayLabel(authorUserId, userLabelMap)?.trim();
   // The message assembler stores canonical fallback labels for stable metadata.
-  // Translate only that fallback at render time, never a directory/profile name.
+  // Directory accessors translate only proven generated fallbacks; real names
+  // (even "Board", "You" or "Me") remain untouched.
   const canonicalFallback = canonicalAssigneeUserLabel(authorUserId, currentUserId) ?? "You";
   const displayAuthorName = !explicitLabel && authorName === canonicalFallback
     ? formatAssigneeUserLabel(authorUserId, currentUserId) ?? t("localizationTaskRuntime.ui_You_1efd4xo")
@@ -1922,7 +1924,7 @@ function IssueChatAssistantMessage({
     authorAgentId,
     onBehalfOfUserId: typeof custom.onBehalfOfUserId === "string" ? custom.onBehalfOfUserId : null,
     issueAssigneeAgentId,
-    resolveUserLabel: (userId) => userLabelMap?.get(userId),
+    resolveUserLabel: (userId) => companyUserLabelDisplayLabel(userId, userLabelMap),
   });
   const notices = Array.isArray(custom.notices)
     ? custom.notices.filter((notice): notice is string => typeof notice === "string" && notice.length > 0)
@@ -3254,7 +3256,7 @@ function IssueChatSystemMessage({ message }: { message: ThreadMessage }) {
           <Link to={`/agents/${runAgentId}`} className="font-medium text-foreground transition-colors hover:underline">
             {displayedRunAgentName}
           </Link>
-          <span className="text-muted-foreground">run</span>
+          <span className="text-muted-foreground">{t("localizationActivity.run")}</span>
           <Link
             to={`/agents/${runAgentId}/runs/${runId}`}
             className="inline-flex items-center rounded-md border border-border bg-accent/40 px-1.5 py-0.5 font-mono text-(length:--text-nano) text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground"

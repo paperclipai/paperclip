@@ -5,6 +5,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { BreadcrumbProvider, useBreadcrumbs } from "../context/BreadcrumbContext";
 import { BreadcrumbBar } from "./BreadcrumbBar";
+import { i18n } from "@/i18n";
 
 vi.mock("@/lib/router", () => ({
   Link: ({ children, className, to }: { children: ReactNode; className?: string; to: string }) => (
@@ -102,9 +103,32 @@ describe("BreadcrumbBar", () => {
     root = createRoot(container);
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     act(() => root.unmount());
     container.remove();
+    await i18n.changeLanguage("en");
+  });
+
+  it.each([true, false])("retranslates the controlled properties action (open=%s) without toggling it", async (open) => {
+    const onToggle = vi.fn();
+    await act(async () => {
+      await i18n.changeLanguage("en");
+      root.render(<BreadcrumbProvider><TaskBreadcrumbs taskDetailLayout panelControl={{ open, onToggle }} /></BreadcrumbProvider>);
+    });
+    const english = open ? "Hide properties" : "Show properties";
+    const russian = open ? "Скрыть свойства" : "Показать свойства";
+    const button = container.querySelector<HTMLButtonElement>(`button[aria-label="${english}"]`)!;
+    expect(button).not.toBeNull();
+    for (const language of ["ru", "en", "ru"]) {
+      await act(async () => { await i18n.changeLanguage(language); });
+      const label = language === "ru" ? russian : english;
+      expect(container.querySelector(`button[aria-label="${label}"]`)).toBe(button);
+      expect(button.title).toBe(label);
+      expect(container.textContent).toContain("PAP-16679");
+      expect(onToggle).not.toHaveBeenCalled();
+    }
+    await act(async () => button.click());
+    expect(onToggle).toHaveBeenCalledOnce();
   });
 
   it("renders a page toolbar in the same persistent row as the task breadcrumb", async () => {

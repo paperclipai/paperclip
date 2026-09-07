@@ -77,8 +77,8 @@ describe("interaction audience display localization", () => {
     for (const language of ["ru", "en", "ru"]) {
       await locale(language);
       expect(host.querySelector('[data-testid="interaction-audience"]')).toBe(element);
-      expect(element.textContent).toContain(language === "ru" ? "Ответить может только совет" : "Only the board can respond");
-      expect(element.getAttribute("title")).toContain(language === "ru" ? "с «Любой участник» до «Только человек»" : "from Anyone to Human only");
+      expect(element.textContent).toContain(language === "ru" ? "Ответить может только человек" : "Only the board can respond");
+      expect(element.getAttribute("title")).toContain(language === "ru" ? "вместо «Любой участник» действует «Только человек»" : "from Anyone to Human only");
       expect(element.getAttribute("data-audience-policy")).toBe("human_only");
       expect(element.getAttribute("data-audience-open")).toBe("false");
       expect(audience.narrowedBy).toBe(original.narrowedBy);
@@ -110,7 +110,7 @@ describe("interaction audience display localization", () => {
       await locale(language);
       expect(self.summary).toBe(language === "ru" ? "Ответить можете только вы." : "Only you can respond.");
       expect(namedYou.summary).toBe(language === "ru"
-        ? "Ответить может только агент-адресат (You) или человек из совета."
+        ? "Ответить может только агент-адресат (You) или человек."
         : "Only You or a person on the board can respond.");
       expect(namedCyrillic.summary).toContain(language === "ru" ? "Автор карточки (Иван)" : "except Иван");
     }
@@ -132,7 +132,7 @@ describe("interaction audience display localization", () => {
             expect(display.summary).not.toContain("localizationInteractionAudience");
             if (language === "en") expect(display).toEqual(raw);
             if (addressee === "user") expect(display.shortSummary).toBe(language === "ru"
-              ? "Ответить может только пользователь-адресат" : "Only the addressed user can respond");
+              ? "Ответить может только пользователь, которому адресована карточка" : "Only the addressed user can respond");
           }
         }
       }
@@ -191,7 +191,7 @@ describe("interaction audience display localization", () => {
       expect(envelope.resolutionCause).toBe(cause);
       expect(envelope.message).toBe(original.message);
       expect(envelope.displayMessage).toBe(language === "ru"
-        ? "На эту карточку в обсуждении задачи может ответить только человек. Ответить может только совет."
+        ? "На эту карточку в обсуждении задачи может ответить только человек. Ответить может только человек."
         : "This issue-thread interaction is human-only. Only the board can respond.");
       const display = describeInteractionResolutionFailureDisplay(cause, audience);
       expect(display.kind).toBe(original.kind);
@@ -220,7 +220,7 @@ describe("interaction audience display localization", () => {
     for (const language of ["ru", "en", "ru"]) {
       await locale(language);
       expect(host.querySelector('[data-testid="interaction-action-error"]')).toBe(error);
-      expect(error.textContent).toContain(language === "ru" ? "Ответить может только совет." : "Only the board can respond.");
+      expect(error.textContent).toContain(language === "ru" ? "Ответить может только человек." : "Only the board can respond.");
       expect(host.contains(accept)).toBe(true);
       expect(accept.disabled).toBe(false);
       expect(submit).toHaveBeenCalledTimes(1);

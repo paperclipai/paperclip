@@ -18,7 +18,7 @@ import {
   shouldBlurPageSearchOnEscape,
 } from "../lib/keyboardShortcuts";
 import { formatAssigneeUserDisplayLabel as formatAssigneeUserLabel } from "../lib/assignees";
-import { buildCompanyUserLabelMap, buildCompanyUserProfileMap } from "../lib/company-members";
+import { buildCompanyUserLabelMap, buildCompanyUserProfileMap, companyUserProfileDisplayLabel } from "../lib/company-members";
 import { createIssueDetailPath, rememberIssueDetailLocationState, withIssueDetailHeaderSeed } from "../lib/issueDetailBreadcrumb";
 import { prefetchIssueDetailForNavigation } from "../lib/issueDetailCache";
 import {
@@ -2017,7 +2017,7 @@ export function IssuesList({
                     issue.assigneeUserId,
                     currentUserId,
                     companyUserLabelMap,
-                  ) ?? assigneeUserProfile?.label ?? null;
+                  ) ?? companyUserProfileDisplayLabel(assigneeUserProfile) ?? null;
                   const originatingActor = deriveOriginatingActor(issue);
                   const originatingUserId = originatingActor?.kind === "user" ? originatingActor.id : null;
                   const originatingViaAgentId =

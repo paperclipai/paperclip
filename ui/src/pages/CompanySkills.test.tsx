@@ -3,7 +3,8 @@
 import { act as reactAct, type ComponentProps, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import type { CatalogSkill, CompanySkillDetail, CompanySkillListItem, CompanySkillVersion, FolderListResult } from "@paperclipai/shared";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { i18n } from "@/i18n";
 import {
   DiscoveryGrid,
   InstallPreviewDialog,
@@ -15,6 +16,7 @@ import {
   withDiscoveryTab,
   skillDetailBreadcrumbs,
 } from "./CompanySkills";
+import { InstallPreviewDialog as ProductionInstallPreviewDialog, SkillDetailPage as ProductionSkillDetailPage } from "./CompanySkills.production";
 import { skillStudioNewRoute } from "../lib/company-skill-routes";
 
 vi.mock("@/lib/router", () => ({
@@ -108,11 +110,14 @@ async function act(callback: () => void | Promise<void>) {
   });
 }
 
-afterEach(() => {
-  root?.unmount();
+beforeEach(async () => { await i18n.changeLanguage("en"); });
+
+afterEach(async () => {
+  await reactAct(async () => root?.unmount());
   root = null;
   container?.remove();
   container = null;
+  await i18n.changeLanguage("en");
 });
 
 function makeVersion(revisionNumber: number, content: string): CompanySkillVersion {
@@ -187,6 +192,7 @@ function makeDetail(currentVersion: CompanySkillVersion, overrides: Partial<Comp
 async function renderSkillDetail(
   versions: CompanySkillVersion[],
   props: Partial<ComponentProps<typeof SkillDetailPage>> = {},
+  DetailComponent = SkillDetailPage,
 ) {
   container = document.createElement("div");
   document.body.appendChild(container);
@@ -195,7 +201,7 @@ async function renderSkillDetail(
 
   await act(async () => {
     root?.render(
-      <SkillDetailPage
+      <DetailComponent
         detail={detail}
         loading={false}
         activeTab={props.activeTab ?? "versions"}
@@ -758,6 +764,34 @@ describe("skillStudioNewRoute", () => {
   });
 });
 
+describe.each([
+  ["standard", SkillDetailPage], ["production", ProductionSkillDetailPage],
+] as const)("%s SkillDetailPage installation localization", (_name, DetailComponent) => {
+  it.each([[1, "установка"], [2, "установки"], [5, "установок"], [21, "установка"]] as const)("renders %i installs as a whole plural without changing the count, mobile styling or detail state", async (count, noun) => {
+    const version = makeVersion(1, "# Raw skill content");
+    const detail = makeDetail(version, { attachedAgentCount: count });
+    const original = JSON.stringify(detail);
+    const onToggleStar = vi.fn();
+    const node = await renderSkillDetail([version], { detail, onToggleStar }, DetailComponent);
+    const summary = node.querySelector("svg.lucide-download")?.parentElement!;
+    expect(summary).not.toBeNull();
+    const countSpan = summary.querySelector("span.font-medium")!;
+    const wordSpan = summary.querySelector("span.hidden")!;
+    for (const locale of ["en", "ru", "en"] as const) {
+      await act(async () => { await i18n.changeLanguage(locale); });
+      expect(summary.isConnected).toBe(true);
+      expect(summary.textContent?.trim()).toBe(locale === "ru" ? `${count} ${noun}` : `${count} ${count === 1 ? "install" : "installs"}`);
+      expect(summary.querySelector("span.font-medium")).toBe(countSpan);
+      expect(countSpan.textContent).toBe(String(count));
+      expect(summary.querySelector("span.hidden")).toBe(wordSpan);
+      expect(wordSpan.classList.contains("sm:inline")).toBe(true);
+      expect(node.textContent).toContain("Demo Skill");
+      expect(JSON.stringify(detail)).toBe(original);
+      expect(onToggleStar).not.toHaveBeenCalled();
+    }
+  });
+});
+
 describe("SkillDetailPage versions tab", () => {
   it("opens per-row version diffs for newest and oldest revisions", async () => {
     const v1 = makeVersion(1, "# Demo Skill\n\nFirst line");
@@ -1013,6 +1047,45 @@ describe("install-time agent enablement", () => {
 
   it("defaults to every skills-capable, non-required agent", () => {
     expect(defaultInstallAgentSelection(agentOptions)).toEqual(new Set(["agent-ceo", "agent-designer"]));
+  });
+
+  describe.each([
+    ["standard", InstallPreviewDialog], ["production", ProductionInstallPreviewDialog],
+  ] as const)("%s install-preview roles localization", (_name, PreviewComponent) => {
+    it.each([false, true])("translates only the empty-roles fallback (has roles: %s) and retains the slug draft and install payload", async (hasRoles) => {
+      const skill = { ...makeCatalogSkill(), recommendedForRoles: hasRoles ? ["CEO", "raw_custom_role"] : [] };
+      const original = JSON.stringify(skill);
+      const onConfirm = vi.fn();
+      const onOpenChange = vi.fn();
+      container = document.createElement("div");
+      document.body.appendChild(container);
+      root = createRoot(container);
+      await act(async () => root?.render(<PreviewComponent
+        open onOpenChange={onOpenChange} skill={skill} packageName={null} packageVersion={null}
+        conflict={null} defaultSlug="wireframe" defaultForce={false} defaultAction="install"
+        agents={agentOptions} isPending={false} error={null} onConfirm={onConfirm}
+      />));
+      const dialog = container.querySelector('[role="dialog"]')!;
+      const roles = [...dialog.querySelectorAll("div")].find((element) => element.textContent === "Roles")!.nextElementSibling!;
+      await click(buttonsNamed(dialog, "Advanced")[0] as HTMLButtonElement);
+      const input = dialog.querySelector<HTMLInputElement>('input[placeholder="wireframe"]')!;
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "raw-custom-slug");
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+      for (const locale of ["en", "ru", "en"] as const) {
+        await act(async () => { await i18n.changeLanguage(locale); });
+        expect(container!.querySelector('[role="dialog"]')).toBe(dialog);
+        expect(roles.textContent).toBe(hasRoles ? "CEO · raw_custom_role" : locale === "ru" ? "любые" : "any");
+        expect(input.isConnected).toBe(true);
+        expect(input.value).toBe("raw-custom-slug");
+        expect(JSON.stringify(skill)).toBe(original);
+        expect(onConfirm).not.toHaveBeenCalled();
+        expect(onOpenChange).not.toHaveBeenCalled();
+      }
+      await click(buttonsNamed(dialog, "Install skill")[0] as HTMLButtonElement);
+      expect(onConfirm).toHaveBeenCalledExactlyOnceWith({ slug: "raw-custom-slug", force: false, agentIds: ["agent-ceo", "agent-designer"] });
+    });
   });
 
   it("passes the default agent selection through onConfirm for fresh installs", async () => {

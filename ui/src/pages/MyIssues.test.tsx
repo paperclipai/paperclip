@@ -46,7 +46,7 @@ describe("MyIssues localization", () => {
     expect(container.textContent).toContain(`Select a${streamlined ? "n organization" : " company"} to view your tasks.`);
     expect(state.setBreadcrumbs).toHaveBeenLastCalledWith([{ label: "My Tasks" }]);
     await act(async () => { await i18n.changeLanguage("ru"); });
-    expect(container.textContent).toContain(`Выберите ${streamlined ? "организацию" : "компанию"}, чтобы просмотреть свои задачи.`);
+    expect(container.textContent).toContain("Выберите организацию, чтобы просмотреть свои задачи.");
     expect(state.setBreadcrumbs).toHaveBeenLastCalledWith([{ label: "Мои задачи" }]);
     expect(state.list).not.toHaveBeenCalled();
   });

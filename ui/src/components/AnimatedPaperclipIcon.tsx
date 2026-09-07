@@ -1,4 +1,5 @@
 import type { SVGProps } from "react";
+import { useTranslation } from "@/i18n";
 import { cn } from "../lib/utils";
 
 export function AnimatedPaperclipIcon({ className, ...props }: SVGProps<SVGSVGElement>) {
@@ -24,13 +25,14 @@ export function AnimatedPaperclipIcon({ className, ...props }: SVGProps<SVGSVGEl
 
 /** Full-page loading state: a large, centered, gray animated paperclip. */
 export function PaperclipLoading({ className }: { className?: string }) {
+  const { t } = useTranslation();
   return (
     <div
       role="status"
       className={cn("flex min-h-dvh w-full items-center justify-center", className)}
     >
       <AnimatedPaperclipIcon className="h-24 w-24 text-muted-foreground" />
-      <span className="sr-only">Loading…</span>
+      <span className="sr-only">{t("localizationCommonChrome.loading")}</span>
     </div>
   );
 }

@@ -19,7 +19,7 @@ import { MarkdownBody } from "../components/MarkdownBody";
 import { useTranslation } from "@/i18n";
 
 export function ApprovalDetail() {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const { approvalId } = useParams<{ approvalId: string }>();
   const { selectedCompanyId, setSelectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
@@ -344,10 +344,10 @@ export function ApprovalDetail() {
                     />
                   </Link>
                 ) : (
-                  <Identity name="Board" size="sm" />
+                  <Identity name={t("pages.cliAuth.board")} size="sm" />
                 )}
                 <span className="text-xs text-muted-foreground">
-                  {new Date(comment.createdAt).toLocaleString()}
+                  {new Date(comment.createdAt).toLocaleString(i18n.resolvedLanguage ?? i18n.language)}
                 </span>
               </div>
               <MarkdownBody className="text-sm">{comment.body}</MarkdownBody>

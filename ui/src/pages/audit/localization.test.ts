@@ -42,7 +42,7 @@ describe("Russian activity and finance localization", () => {
     expect(describeRunRetryState(run)).toMatchObject({
       badgeLabel: "Повторная попытка запланирована",
       detail: "Попытка 2 · Временный сбой",
-      secondary: "Ожидается назначение времени повторной попытки",
+      secondary: "Время повторной попытки ещё не назначено",
       retryOfRunId: "run-original",
     });
     await i18n.changeLanguage("en");

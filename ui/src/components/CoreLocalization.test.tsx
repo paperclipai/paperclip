@@ -100,7 +100,7 @@ describe("core localized UI", () => {
     expect(container.textContent).toContain("Начисленные расходы");
     expect(container.textContent).toContain(payload.guidance);
     expect(container.textContent).toContain(payload.scopeName);
-    expect(approvalLabel("request_board_approval", { title: "Raw title" })).toBe("Одобрение совета директоров: Raw title");
+    expect(approvalLabel("request_board_approval", { title: "Raw title" })).toBe("Одобрение руководства: Raw title");
     expect(payload.metric).toBe("billed_cents");
     await act(async () => setLocale("en"));
     expect(container.textContent).toContain("Calendar month (UTC)");

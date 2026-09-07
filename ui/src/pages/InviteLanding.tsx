@@ -138,6 +138,7 @@ function isApprovedHumanJoinPayload(payload: unknown, showsAgentForm: boolean) {
 }
 
 type AwaitingJoinApprovalPanelProps = {
+  companyName: string | null;
   companyDisplayName: string;
   companyLogoUrl: string | null;
   invitedByUserName: string | null;
@@ -166,6 +167,7 @@ function InviteCompanyLogo({
 }
 
 function AwaitingJoinApprovalPanel({
+  companyName,
   companyDisplayName,
   companyLogoUrl,
   invitedByUserName,
@@ -186,7 +188,9 @@ function AwaitingJoinApprovalPanel({
             className="h-12 w-12 border border-zinc-800 rounded-none"
           />
           <h1 className="text-lg font-semibold">
-            {t("pages.inviteLanding.pendingApproval.title", { organization: companyDisplayName })}
+            {companyName
+              ? t("pages.inviteLanding.pendingApproval.title", { organization: companyName })
+              : t("pages.inviteLanding.pendingApproval.titleUnnamed")}
           </h1>
         </div>
         <div className="mt-4 space-y-3">
@@ -491,6 +495,7 @@ export function InviteLandingPage() {
   if (inviteJoinRequestStatus === "pending_approval" && !canCompleteAcceptedHumanInvite) {
     return (
       <AwaitingJoinApprovalPanel
+        companyName={companyName}
         companyDisplayName={companyDisplayName}
         companyLogoUrl={companyLogoUrl}
         invitedByUserName={invitedByUserName}
@@ -560,6 +565,7 @@ export function InviteLandingPage() {
         </div>
       ) : (
         <AwaitingJoinApprovalPanel
+          companyName={companyName}
           companyDisplayName={companyDisplayName}
           companyLogoUrl={companyLogoUrl}
           invitedByUserName={invitedByUserName}
@@ -589,7 +595,9 @@ export function InviteLandingPage() {
                 <h1 className="mt-2 text-2xl font-semibold">
                   {invite.inviteType === "bootstrap_ceo"
                     ? t("pages.inviteLanding.header.setupPaperclip")
-                    : t("pages.inviteLanding.header.joinOrganization", { organization: companyDisplayName })}
+                    : companyName
+                      ? t("pages.inviteLanding.header.joinOrganization", { organization: companyName })
+                      : t("pages.inviteLanding.header.joinOrganizationUnnamed")}
                 </h1>
                 <p className="mt-2 max-w-2xl text-sm leading-6 text-zinc-300">
                   {showsAgentForm
@@ -647,7 +655,9 @@ export function InviteLandingPage() {
                 <div>
                   <h2 className="text-lg font-semibold">{t("pages.inviteLanding.agentForm.title")}</h2>
                   <p className="mt-1 text-sm text-zinc-400">
-                    {t("pages.inviteLanding.agentForm.description", { organization: companyDisplayName })}
+                    {companyName
+                      ? t("pages.inviteLanding.agentForm.description", { organization: companyName })
+                      : t("pages.inviteLanding.agentForm.descriptionUnnamed")}
                   </p>
                 </div>
                 <label className="block text-sm">
@@ -702,7 +712,9 @@ export function InviteLandingPage() {
                   </h2>
                   <p className="mt-1 text-sm text-zinc-400">
                     {authMode === "sign_up"
-                      ? t("pages.inviteLanding.auth.createDescription", { organization: companyDisplayName })
+                      ? companyName
+                        ? t("pages.inviteLanding.auth.createDescription", { organization: companyName })
+                        : t("pages.inviteLanding.auth.createDescriptionUnnamed")
                       : t("pages.inviteLanding.auth.signInDescription")}
                   </p>
                 </div>
@@ -861,12 +873,18 @@ export function InviteLandingPage() {
                   </h2>
                   <p className="mt-1 text-sm text-zinc-400">
                     {shouldAutoAcceptHumanInvite
-                      ? t("pages.inviteLanding.acceptance.grantingAccess", { organization: companyDisplayName })
+                      ? companyName
+                        ? t("pages.inviteLanding.acceptance.grantingAccess", { organization: companyName })
+                        : t("pages.inviteLanding.acceptance.grantingAccessUnnamed")
                       : isCurrentMember
-                      ? t("pages.inviteLanding.acceptance.alreadyBelongs", { organization: companyDisplayName })
+                      ? companyName
+                        ? t("pages.inviteLanding.acceptance.alreadyBelongs", { organization: companyName })
+                        : t("pages.inviteLanding.acceptance.alreadyBelongsUnnamed")
                       : invite.inviteType === "bootstrap_ceo"
                         ? t("pages.inviteLanding.acceptance.bootstrapDescription")
-                        : t("pages.inviteLanding.acceptance.organizationDescription", { organization: companyDisplayName })}
+                        : companyName
+                          ? t("pages.inviteLanding.acceptance.organizationDescription", { organization: companyName })
+                          : t("pages.inviteLanding.acceptance.organizationDescriptionUnnamed")}
                   </p>
                 </div>
                 {error ? <p className="text-xs text-red-400">{error}</p> : null}

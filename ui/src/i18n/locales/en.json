@@ -2625,7 +2625,8 @@
         "signInAndContinue": "Sign in and continue",
         "createAndContinue": "Create account and continue",
         "existingHint": "Already signed up before? Use the existing-account option instead so the invite lands on the right Paperclip user.",
-        "noAccountHint": "No account yet? Switch back to create account so you can accept the invite with a new login."
+        "noAccountHint": "No account yet? Switch back to create account so you can accept the invite with a new login.",
+        "createDescriptionUnnamed": "Start with a Paperclip account. After that, you'll come right back here to accept the invite for this Paperclip organization."
       },
       "pendingApproval": {
         "adminFallback": "An organization admin",
@@ -2637,7 +2638,8 @@
         "askApproverSuffix": "to approve your request.",
         "refreshAfterApproval": "Refresh this page after you've been approved — you'll be redirected automatically.",
         "claimSecret": "Claim secret",
-        "onboarding": "Onboarding"
+        "onboarding": "Onboarding",
+        "titleUnnamed": "Request to join this Paperclip organization"
       },
       "errors": {
         "inviteNotFound": "Invite not found",
@@ -2675,7 +2677,8 @@
         "joinOrganization": "Join {{organization}}",
         "agentDescription": "Review the invite details, then submit the agent information below to start the join request.",
         "accountDescription": "Create your Paperclip account first. If you already have one, switch to sign in and continue the invite with the same email.",
-        "readyDescription": "Your account is ready. Review the invite details, then accept it to continue."
+        "readyDescription": "Your account is ready. Review the invite details, then accept it to continue.",
+        "joinOrganizationUnnamed": "Join this Paperclip organization"
       },
       "details": {
         "organization": "Organization",
@@ -2693,7 +2696,8 @@
         "agentName": "Agent name",
         "adapterType": "Adapter type",
         "comingSoonSuffix": " (Coming soon)",
-        "capabilities": "Capabilities"
+        "capabilities": "Capabilities",
+        "descriptionUnnamed": "This invite will create an approval request for a new agent in this Paperclip organization."
       },
       "acceptance": {
         "alreadyMemberTitle": "Already in this organization",
@@ -2703,7 +2707,10 @@
         "grantingAccess": "Granting your access to {{organization}}.",
         "alreadyBelongs": "This account already belongs to {{organization}}.",
         "bootstrapDescription": "This will finish setting up Paperclip.",
-        "organizationDescription": "This will grant or complete your access to {{organization}}."
+        "organizationDescription": "This will grant or complete your access to {{organization}}.",
+        "grantingAccessUnnamed": "Granting your access to this Paperclip organization.",
+        "alreadyBelongsUnnamed": "This account already belongs to this Paperclip organization.",
+        "organizationDescriptionUnnamed": "This will grant or complete your access to this Paperclip organization."
       }
     },
     "issues": {
@@ -14172,7 +14179,10 @@
     "requester": "Requester",
     "starNamed": "Star {{name}}",
     "unstarNamed": "Unstar {{name}}",
-    "saveRetry": "Couldn't save — retry"
+    "saveRetry": "Couldn't save — retry",
+    "hideProperties": "Hide properties",
+    "panelLabel": "Side panel",
+    "closeTab": "Close {{label}}"
   },
   "localizationActivityChrome": {
     "defaultNamedWorkspace": "{{name}} (default)",
@@ -15672,5 +15682,105 @@
     "leaving": "Leaving...",
     "joinNamed": "Join {{name}}",
     "leaveNamed": "Leave {{name}}"
+  },
+  "localizationBundledSkillDescriptions": {
+    "doc_maintenance": "Keep project docs aligned with recent code and feature changes — detect drift, update affected pages, and add release-relevant notes without rewriting unchanged sections.",
+    "issue_triage": "Triage Paperclip inbox issues that are stale, blocked, in-review, or assigned-but-not-progressing, and decide a single next action per issue (resume, reassign, unblock, escalate, or close).",
+    "reflection_coach": "Reflect on another agent's recent execution record and propose the smallest durable instruction, skill, or tool-description change. Use for evidence-backed coaching proposals, never hot-swaps.",
+    "status_card_query": "Create and maintain agent-authored Paperclip status cards, or compile a prose interest prompt into bounded CompanySearchQuery objects and write the first summary from the assigned Summarizer run.",
+    "summarize_status": "Write a short, colloquial summary for a Paperclip summary slot: open with the 1–3 specific, concrete actions the reader needs to take right now to unblock the work, then a brief plain-language status, streaming progress as it works.",
+    "task_planning": "Turn a Paperclip issue or request into a structured implementation plan with child task graph, blockers, owners, and acceptance criteria, then save it as the issue `plan` document.",
+    "paperclip_capsules": "Generate, implement, or review Paperclip capsule visuals. Use for capsule art, agent capsules, heartbeat status capsules, identicons, capsule banks, or brand-usage validation.",
+    "wireframe": "Produce low-fidelity black-and-white UI wireframes as SVGs or viewer pages. Use when asked to wireframe, sketch a screen, draft a layout, make a low-fi mockup, or publish wireframes.",
+    "qa_acceptance": "Produce QA acceptance criteria and a manual validation plan for a feature change — golden path, edge cases, error states, performance limits, and explicit pass/fail evidence.",
+    "github_pr_workflow": "Prepare a GitHub pull request from a feature branch — branch hygiene, commit shape, title/body, verification notes, screenshots for UI work, and replies to review comments.",
+    "agent_browser": "Drive a real browser to inspect or interact with a web page or app — navigate, take screenshots, read console and network, fill simple forms — for verification tasks, not unattended automation.",
+    "release_announcement": "Write a release announcement — changelog, blog post, in-app note, or social post — that leads with user impact, names the audience, and includes upgrade/migration steps without filler.",
+    "simplified_english": "Write user-facing comments, plans, and documents in ASD-STE100 Simplified Technical English — short, unambiguous sentences with approved words and one meaning each — so readers understand them the first time.",
+    "ramp": "Fetch and follow Ramp's published agent playbooks inside Paperclip, with mandatory approval gates for spend, incorporation, cards, account setup, and other financial actions.",
+    "design_critique": "Give a structured product design critique — user job clarity, hierarchy, affordance, error states, accessibility, and consistency — focused on what to change, in what order, and why.",
+    "last30days": "Research what people actually say about any topic in the last 30 days. Pulls posts and engagement from Reddit, X, YouTube, TikTok, Hacker News, Polymarket, GitHub, and the web.",
+    "prepare_mcp_integration": "Prepare MCP/vendor integrations through cited research, a content PR, exact-revision human approval, and one governed Paperclip connector PR per approved connection. Use for new integration research and delivery; not for ad hoc connector coding that bypasses the playbooks.",
+    "paperclip": "Interact with the Paperclip control plane API for task coordination and governance. Use when checking assignments, updating issue status, posting comments, delegating work, managing routines, or calling Paperclip API endpoints.",
+    "paperclip_board": "Manage a Paperclip company as a board member via chat. Use when the user wants onboarding, company or agent management, approvals, task monitoring, cost oversight, or work product review in the Paperclip control plane.",
+    "paperclip_converting_plans_to_tasks": "Convert Paperclip plans into executable issue graphs. Use when asked to plan, scope, or break down Paperclip company work into assigned tasks with specialty fit, dependencies, blockers, and parallelization.",
+    "paperclip_create_agent": "Create new agents in Paperclip with governance-aware hiring. Use when you need to inspect adapter configuration options, compare existing agent configs, draft a new agent prompt/config, and submit a hire request.",
+    "para_memory_files": "Use a file-based PARA memory system to store, retrieve, and organize durable knowledge across sessions. Trigger on saving facts, daily notes, entity records, weekly synthesis, recall, tacit user patterns, or plan memory.",
+    "bundledSource": "Paperclip bundled",
+    "bundledAuthor": "Paperclip bundled"
+  },
+  "localizationPhaseSummary": {
+    "readFiles_one": "Read {{count}} file",
+    "readFiles_other": "Read {{count}} files",
+    "editedFiles_one": "Edited {{count}} file",
+    "editedFiles_other": "Edited {{count}} files",
+    "commands_one": "Ran {{count}} command",
+    "commands_other": "Ran {{count}} commands",
+    "searches_one": "Searched {{count}} time",
+    "searches_other": "Searched {{count}} times",
+    "tools_one": "Used {{count}} tool",
+    "tools_other": "Used {{count}} tools",
+    "plans_one": "Updated {{count}} plan",
+    "plans_other": "Updated {{count}} plans",
+    "subagents_one": "Used {{count}} subagent",
+    "subagents_other": "Used {{count}} subagents",
+    "modelUpdates_one": "Updated the model {{count}} time",
+    "modelUpdates_other": "Updated the model {{count}} times",
+    "contextCompactions_one": "Compacted context {{count}} time",
+    "contextCompactions_other": "Compacted context {{count}} times",
+    "artifacts_one": "Handled {{count}} artifact",
+    "artifacts_other": "Handled {{count}} artifacts",
+    "reviewChanges_one": "Changed review mode {{count}} time",
+    "reviewChanges_other": "Changed review mode {{count}} times",
+    "hooks_one": "Ran {{count}} hook",
+    "hooks_other": "Ran {{count}} hooks",
+    "memoryLookups_one": "Referenced memory {{count}} time",
+    "memoryLookups_other": "Referenced memory {{count}} times",
+    "safetyReviews_one": "Ran {{count}} safety review",
+    "safetyReviews_other": "Ran {{count}} safety reviews",
+    "terminalInputs_one": "Sent terminal input {{count}} time",
+    "terminalInputs_other": "Sent terminal input {{count}} times",
+    "waits_one": "Waited {{count}} time",
+    "waits_other": "Waited {{count}} times",
+    "providerNotices_one": "Received {{count}} provider notice",
+    "providerNotices_other": "Received {{count}} provider notices",
+    "toolSearches_one": "Searched available tools {{count}} time",
+    "toolSearches_other": "Searched available tools {{count}} times",
+    "paperclipReads_one": "Read from Paperclip {{count}} time",
+    "paperclipReads_other": "Read from Paperclip {{count}} times",
+    "paperclipUses_one": "Used Paperclip {{count}} time",
+    "paperclipUses_other": "Used Paperclip {{count}} times",
+    "changedFiles_one": "Changed {{count}} file",
+    "changedFiles_other": "Changed {{count}} files",
+    "runnerUpdates_one": "{{count}} runner update",
+    "runnerUpdates_other": "{{count}} runner updates",
+    "more_one": "+{{count}} more",
+    "more_other": "+{{count}} more",
+    "runnerActivity": "Runner activity",
+    "noToolActivity": "No tool activity"
+  },
+  "localizationFinalAudit": {
+    "breadcrumb": "breadcrumb",
+    "loadingDecision": "Loading decision…",
+    "decisionUnavailable": "This decision is no longer available — it may have been resolved elsewhere.",
+    "modeLocalTrusted": "Local trusted",
+    "modeAuthenticated_private": "Authenticated private",
+    "modeAuthenticated_public": "Authenticated public",
+    "companyLogo": "{{name}} logo",
+    "payloadTemplateJson": "Payload template JSON",
+    "smokeTitle": "Integration smoke",
+    "smokeHealth_green": "All paths passing",
+    "smokeHealth_amber": "Needs a run",
+    "smokeHealth_red": "Failing paths",
+    "smokeStartHint": "Run one from the Smoke Lab tab",
+    "renameTaskIdsWarning": "Renaming can change this company's task ID prefix. Existing task IDs are renumbered and old task links stop resolving.",
+    "selectCompanyTasks": "Select a company to view tasks."
+  },
+  "localizationFinalAuditExtras": {
+    "customValue": "Use \"{{filter}}\" as custom value (press Enter)",
+    "anyRoles": "any",
+    "authorization": "Authorization",
+    "installs_one": "<count>{{count}}</count> <label>install</label>",
+    "installs_other": "<count>{{count}}</count> <label>installs</label>"
   }
 }

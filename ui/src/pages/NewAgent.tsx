@@ -8,7 +8,7 @@ import { companySkillsApi } from "../api/companySkills";
 import { issuesApi } from "../api/issues";
 import { projectsApi } from "../api/projects";
 import { queryKeys } from "../lib/queryKeys";
-import { resolveSkillSummaryText } from "../lib/company-skill-summary";
+import { bundledSkillSummaryDisplay as resolveSkillSummaryText } from "../lib/bundled-skill-display";
 import { AGENT_ROLES, type AdapterEnvironmentTestResult, type AgentPermissions } from "@paperclipai/shared";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";

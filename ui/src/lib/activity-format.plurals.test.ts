@@ -36,9 +36,14 @@ describe("structured activity participant counts", () => {
           await i18n.changeLanguage("ru");
           const verb = change === "added" ? "добавление" : "удаление";
           const singular = count % 10 === 1 && count % 100 !== 11;
-          const expected = count === 1
+          let expected = count === 1
             ? `${verb} ${nounOne[entity]}: ${rawName}`
             : `${verb} ${count} ${singular ? nounOne[entity] : nounMany[entity]}`;
+          if (entity === "blocker" && change === "removed") {
+            expected = count === 1
+              ? `снятие зависимости от блокирующей задачи: ${rawName}`
+              : `исключение ${count} ${singular ? nounOne.blocker : nounMany.blocker} из списка зависимостей`;
+          }
           expect(format(action, details, { agentMap })).toBe(expected);
           if (count > 1) {
             expect(format(action, details, { agentMap })).toContain(String(count));
@@ -63,7 +68,10 @@ describe("structured activity participant counts", () => {
         const verb = change === "added" ? "добавление" : "удаление";
         for (const count of [0, 1, 1.5, 2, 5, 21, 101, 111]) {
           const singular = count === 1.5 || (count % 10 === 1 && count % 100 !== 11);
-          expect(t(key, { count })).toBe(`${verb} ${count} ${singular ? nounOne[entity] : nounMany[entity]}`);
+          const expected = entity === "blocker" && change === "removed"
+            ? `исключение ${count} ${singular ? nounOne.blocker : nounMany.blocker} из списка зависимостей`
+            : `${verb} ${count} ${singular ? nounOne[entity] : nounMany[entity]}`;
+          expect(t(key, { count })).toBe(expected);
         }
       }
     }
@@ -82,4 +90,3 @@ describe("structured activity participant counts", () => {
     }
   });
 });
-

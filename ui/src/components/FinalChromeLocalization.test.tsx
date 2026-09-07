@@ -62,7 +62,7 @@ describe("final agent chrome localization", () => {
     expect(badges[0].title).toBe("Waiting on board hire approval before the feature can run");
     await russian();
     expect(badges.map((badge) => badge.textContent)).toEqual(["Ожидает одобрения", "Одобрение", "Нужна настройка", "Настройка"]);
-    expect(badges[0].title).toContain("одобрения найма советом директоров");
+    expect(badges[0].title).toContain("одобрения найма руководством");
     expect(badges[2].title).toContain("настроить адаптер и модель");
     expect(container.querySelectorAll("[title]")).toHaveLength(4);
   });
@@ -116,7 +116,7 @@ describe("final agent chrome localization", () => {
     await render(<SourceTrustBadge sourceTrust={sourceTrust} />);
     expect(container.textContent).toContain(`Promoted from low-trust on ${new Date(sourceTrust.promotedAt!).toLocaleString("en")}.`);
     await russian();
-    expect(container.querySelector('[role="tooltip"]')?.textContent).toBe(`Материал с низким доверием допущен к использованию ${new Date(sourceTrust.promotedAt!).toLocaleString("ru")}.`);
+    expect(container.querySelector('[role="tooltip"]')?.textContent).toBe(`Материал с низким уровнем доверия допущен к использованию ${new Date(sourceTrust.promotedAt!).toLocaleString("ru")}.`);
     expect(sourceTrust).toEqual(original);
   });
 

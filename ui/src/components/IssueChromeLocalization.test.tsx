@@ -76,7 +76,7 @@ describe("issue chrome runtime localization", () => {
     const toggle = host.querySelector('[aria-expanded="false"]')!;
     await click(toggle);
     const body = host.querySelector("[data-raw-markdown]")!;
-    await click([...host.querySelectorAll("button")].find((b) => b.textContent === "Копировать"));
+    await click([...host.querySelectorAll("button")].find((b) => b.textContent === "Скопировать"));
     expect(mocks.copy).toHaveBeenCalledWith(document.body);
     await locale("en");
     expect(host.textContent).toContain("Copied");
@@ -122,7 +122,7 @@ describe("issue chrome runtime localization", () => {
     expect(note.value).toBe("  Keep original **note**  ");
     expect(note.placeholder).toContain("required to request changes");
     await locale("ru");
-    expect(note.placeholder).toContain("обязателен при запросе изменений");
+    expect(note.placeholder).toContain("При запросе изменений он обязателен");
     await click(request);
     await locale("en");
     expect(request.disabled).toBe(true);
@@ -163,7 +163,7 @@ describe("issue chrome runtime localization", () => {
     const notices = Array.from(host.querySelectorAll("[data-denial-code]"));
     expect(host.textContent).toContain("Кто может выполнить действие:");
     expect(host.textContent).toContain("создайте подзадачу");
-    expect(host.textContent).toContain("номер этой попытки — 21");
+    expect(host.textContent).toContain("Номер этой попытки — 21");
     expect(host.textContent).toContain("X-Paperclip-Run-Id");
     expect(host.textContent).toContain("$PAPERCLIP_RUN_ID");
     expect(host.textContent).toContain("onBehalfOfUserId");
@@ -206,7 +206,7 @@ describe("issue chrome runtime localization", () => {
     await click(trigger);
     expect(resume).toHaveBeenCalledOnce();
     expect(host.querySelector('[title="Original custom title"]')).toBeTruthy();
-    expect(host.textContent).toContain("Исходная задача решена");
+    expect(host.textContent).toContain("Исходная задача завершена или отменена");
     await render(<IssueAssignedBacklogNotice issueStatus="todo" assigneeAgent={null} assigneeUserId="user-raw" />);
     expect(host.querySelector("[data-issue-status]")).toBeNull();
   });

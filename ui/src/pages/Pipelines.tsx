@@ -34,7 +34,7 @@ import {
 } from "@dnd-kit/core";
 import { SortableContext, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { t, useTranslation } from "@/i18n";
+import { i18n, t, useTranslation } from "@/i18n";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -598,7 +598,7 @@ function formatPipelineActivity(value: string | Date | null) {
   if (diffDays < 7) return t("pages.pipelines.activityDaysAgo", { defaultValue: "{{count}} days ago", count: diffDays });
   if (diffDays < 14) return t("pages.pipelines.activityLastWeek", { defaultValue: "last week" });
   if (diffDays < 30) return t("pages.pipelines.activityWeeksAgo", { defaultValue: "{{count}} weeks ago", count: Math.round(diffDays / 7) });
-  return new Date(value).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+  return new Date(value).toLocaleDateString(i18n.resolvedLanguage ?? i18n.language, { month: "short", day: "numeric" });
 }
 
 function PipelineStatusChip({ archivedAt }: { archivedAt: Date | string | null }) {
@@ -4296,7 +4296,7 @@ function BuiltFromTree({
 }
 
 function formatShortDate(value: Date | string) {
-  return new Intl.DateTimeFormat(undefined, {
+  return new Intl.DateTimeFormat(i18n.resolvedLanguage ?? i18n.language, {
     month: "short",
     day: "numeric",
     hour: "numeric",
@@ -5409,7 +5409,7 @@ export function Learnings() {
                         forcedMove && "border-l-2 border-l-amber-400 bg-amber-50/50 dark:bg-amber-400/10",
                       )}
                     >
-                      <span className="text-xs text-muted-foreground" title={new Date(event.createdAt).toLocaleString()}>
+                      <span className="text-xs text-muted-foreground" title={new Date(event.createdAt).toLocaleString(i18n.resolvedLanguage ?? i18n.language)}>
                         {relativeTime(event.createdAt)}
                       </span>
                       <div className="min-w-0">

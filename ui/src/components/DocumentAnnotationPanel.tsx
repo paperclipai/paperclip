@@ -29,7 +29,7 @@ import { deriveInitials } from "./Identity";
 import { MarkdownBody } from "./MarkdownBody";
 import type { PendingAnchor } from "./DocumentAnnotationLayer";
 import type { Agent } from "@paperclipai/shared";
-import type { CompanyUserProfile } from "@/lib/company-members";
+import { companyUserProfileDisplayLabel, type CompanyUserProfile } from "@/lib/company-members";
 import { useDocumentAnnotationMutations } from "@/hooks/useDocumentAnnotationMutations";
 
 export interface AnnotationPanelProps {
@@ -528,7 +528,7 @@ function resolveAuthor(
   if (comment.authorUserId) {
     const profile = maps.userProfileMap?.get(comment.authorUserId);
     return {
-      name: profile?.label ?? comment.authorUserId.slice(0, 8),
+      name: companyUserProfileDisplayLabel(profile) ?? comment.authorUserId.slice(0, 8),
       role: "board",
       imageUrl: profile?.image ?? null,
     };

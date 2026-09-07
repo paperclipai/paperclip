@@ -51,7 +51,7 @@ export function AppsToolsPanel({
                       ) : null}
                     </td>
                     <td className="px-4 py-3 text-muted-foreground">
-                      {app.toolCount} {app.toolCount === 1 ? "tool" : "tools"}
+                      {t("localizationApps.toolCount", { count: app.toolCount })}
                     </td>
                     <td className="px-4 py-3">
                       <span

@@ -51,7 +51,7 @@ describe("live notification localization", () => {
 
   it.each([
     ["failed", "error", "Agent Raw: запуск завершился с ошибкой"],
-    ["timed_out", "error", "Agent Raw: время ожидания запуска истекло"],
+    ["timed_out", "error", "Agent Raw: время выполнения истекло"],
     ["cancelled", "warn", "Agent Raw: запуск отменён"],
   ])("preserves the %s lifecycle, tone, raw diagnostics, and navigation", async (status, tone, title) => {
     await i18n.changeLanguage("ru");

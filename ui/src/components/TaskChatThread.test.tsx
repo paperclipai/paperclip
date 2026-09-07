@@ -2941,6 +2941,57 @@ describe("TaskChatThread live transcript", () => {
 describe("TaskChatThread live localization invariants", () => {
   async function locale(language: "ru" | "en") { await act(async () => { await i18n.changeLanguage(language); }); }
 
+  it.each([
+    [1, "called 1 tool", "вызван 1 инструмент"],
+    [2, "called 2 tools", "вызваны 2 инструмента"],
+    [5, "called 5 tools", "вызвано 5 инструментов"],
+    [21, "called 21 tools", "вызван 21 инструмент"],
+  ] as const)("refreshes %i live tool counts across en → ru → en without new entries or resetting the draft", async (count, englishTools, russianTools) => {
+    await locale("en");
+    const fetch = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("Unexpected localization fetch"));
+    const add = vi.fn();
+    const draftKey = "thread-live-count-draft";
+    localStorage.setItem(draftKey, "Keep original **live draft**");
+    const entries = [
+      { kind: "tool_call", ts: "2026-08-25T18:00:01Z", name: "bash", toolUseId: "command-raw-1", input: { command: "ls" } },
+      { kind: "tool_call", ts: "2026-08-25T18:00:02Z", name: "bash", toolUseId: "command-raw-2", input: { command: "pwd" } },
+      ...Array.from({ length: count }, (_, index) => ({
+        kind: "tool_call", ts: "2026-08-25T18:00:03Z", name: "read_file", toolUseId: `tool-raw-${index}`, input: { path: `src/raw-${index}.ts` },
+      })),
+    ];
+    const originalEntries = structuredClone(entries);
+    transcriptState.transcriptByRun.set("run-live-counts", entries);
+    render(<TaskChatThread comments={[]} onAdd={add} issueStatus="in_progress" draftKey={draftKey}
+      activeRun={{ id: "run-live-counts", runtimeMode: "legacy", status: "running", invocationSource: "issue", triggerDetail: null,
+        startedAt: "2026-08-25T18:00:00Z", finishedAt: null, createdAt: "2026-08-25T18:00:00Z", agentId: "agent-raw", agentName: "Original agent", adapterType: "codex_local" }}
+    />);
+    const pill = container.querySelector('[data-testid="task-chat-live-run-pill"]')!;
+    const tail = container.querySelector('[data-testid="task-chat-live-transcript"]')!;
+    const editor = container.querySelector('[data-testid="mock-editor"]')!;
+    const legacyRuns = transcriptHookRuns.legacy.at(-1);
+    const nativeRuns = transcriptHookRuns.native.at(-1);
+    expect(pill).toBeTruthy();
+    expect(tail).toBeTruthy();
+    expect(editor).toBeTruthy();
+    for (const language of ["en", "ru", "en"] as const) {
+      await locale(language);
+      const expected = language === "ru" ? `выполнены 2 команды, ${russianTools}` : `ran 2 commands, ${englishTools}`;
+      expect(pill.textContent).toContain(expected);
+      expect(pill.textContent).not.toContain(language === "ru" ? "called " : "вызван");
+      expect(container.querySelector('[data-testid="task-chat-live-run-pill"]')).toBe(pill);
+      expect(container.querySelector('[data-testid="task-chat-live-transcript"]')).toBe(tail);
+      expect(container.querySelector('[data-testid="mock-editor"]')).toBe(editor);
+      expect(editor.textContent).toBe("Keep original **live draft**");
+      expect(localStorage.getItem(draftKey)).toBe("Keep original **live draft**");
+      expect(transcriptState.transcriptByRun.get("run-live-counts")).toBe(entries);
+      expect(entries).toEqual(originalEntries);
+      expect(transcriptHookRuns.legacy.at(-1)).toBe(legacyRuns);
+      expect(transcriptHookRuns.native.at(-1)).toBe(nativeRuns);
+      expect(fetch).not.toHaveBeenCalled();
+      expect(add).not.toHaveBeenCalled();
+    }
+  });
+
   it("keeps an open failed-run disclosure, draft and retry eligibility across ru → en → ru", async () => {
     await locale("ru");
     localStorage.setItem("thread-original-draft", "Keep original **draft**");

@@ -1,4 +1,5 @@
 import { t } from "../i18n";
+import { isGeneratedCompanyUserLabel } from "./company-members";
 
 export interface AssigneeSelection {
   assigneeAgentId: string | null;
@@ -125,7 +126,7 @@ export function formatUserDisplayLabel(
   const customLabel = userId && userLabels
     ? userLabels instanceof Map ? userLabels.get(userId) : (userLabels as Record<string, string>)[userId]
     : null;
-  if (userId === "local-board" && !(typeof customLabel === "string" && customLabel.trim())) {
+  if (userId === "local-board" && (isGeneratedCompanyUserLabel(userId, userLabels) || !(typeof customLabel === "string" && customLabel.trim()))) {
     return t("localizationAssigneeChrome.board");
   }
   return label;

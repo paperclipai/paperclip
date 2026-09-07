@@ -74,7 +74,7 @@ export function AgentsUsingSkillBadge({
         )}
       >
         <Users className="h-3.5 w-3.5" aria-hidden="true" />
-        {count} {count === 1 ? t("localizationSettings.joinType_agent") : "agents"}
+        {t("localizationProjects.agents", { count })}
       </button>
       <AgentsUsingSkillDialog
         open={open}

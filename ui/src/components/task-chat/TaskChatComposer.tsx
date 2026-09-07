@@ -10,6 +10,7 @@ import {
   type ReactNode,
 } from "react";
 import { cn } from "@/lib/utils";
+import { companyUserProfileDisplayLabel } from "@/lib/company-members";
 import { useStreamlinedTaskChatPresentation } from "./presentation-mode";
 import {
   DRAFT_DEBOUNCE_MS,
@@ -184,7 +185,7 @@ function AssigneeIdentityAvatar({
   if (assigneeValue.startsWith("user:")) {
     const userId = assigneeValue.slice("user:".length);
     const profile = userProfileMap?.get(userId);
-    const resolvedLabel = profile?.label ?? label;
+    const resolvedLabel = companyUserProfileDisplayLabel(profile) ?? label;
     return (
       <Avatar
         size="xs"
