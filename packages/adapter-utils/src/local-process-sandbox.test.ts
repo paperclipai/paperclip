@@ -96,6 +96,60 @@ describe("local process sandbox", () => {
     expect(target.args.slice(-3)).toEqual([process.execPath, "-e", "console.log('ok')"]);
   });
 
+  it("launches the resolved target of an executable below a moving symlink", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-fs-executable-link-"));
+    cleanup.push(root);
+    const workspace = path.join(root, "workspace");
+    const release = path.join(root, "releases", "2026.824.0");
+    const packageRoot = path.join(release, "node_modules", "example-tool");
+    const executable = path.join(packageRoot, "bin", "tool.js");
+    const current = path.join(root, "current");
+    await fs.mkdir(workspace, { recursive: true });
+    await fs.mkdir(path.dirname(executable), { recursive: true });
+    await fs.writeFile(path.join(packageRoot, "package.json"), '{"name":"example-tool"}\n', "utf8");
+    await fs.writeFile(executable, "#!/usr/bin/env node\n", { mode: 0o755 });
+    await fs.symlink(release, current, "dir");
+    const linkedExecutable = path.join(current, "node_modules", "example-tool", "bin", "tool.js");
+
+    const directTarget = await buildLocalProcessSandboxSpawnTarget({
+      executable: linkedExecutable,
+      args: ["--version"],
+      cwd: workspace,
+      options: {
+        workspaceDir: workspace,
+        filesystemScope: "workspace",
+      },
+    });
+
+    expect(directTarget.args.slice(-2)).toEqual([executable, "--version"]);
+    expect(directTarget.args).toEqual(expect.arrayContaining(["--ro-bind", packageRoot, packageRoot]));
+
+    const bridgedTarget = await buildLocalProcessSandboxSpawnTarget({
+      executable: linkedExecutable,
+      args: ["--version"],
+      cwd: workspace,
+      options: {
+        workspaceDir: workspace,
+        filesystemScope: "workspace",
+        networkScope: "allowlist",
+        networkAllowlist: ["api.example.com"],
+      },
+    });
+
+    try {
+      const delimiterIndex = bridgedTarget.args.indexOf("--");
+      expect(bridgedTarget.args.slice(delimiterIndex + 1)).toEqual([
+        process.execPath,
+        expect.stringMatching(/bridge\.cjs$/),
+        expect.stringMatching(/proxy\.sock$/),
+        executable,
+        "--version",
+      ]);
+    } finally {
+      await bridgedTarget.cleanup?.();
+    }
+  });
+
   it("binds a confined absolute alias to the synchronized workspace", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-fs-alias-"));
     cleanup.push(root);
