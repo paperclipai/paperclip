@@ -31,6 +31,27 @@ describe("stranded recovery notice seeds", () => {
     expect(seed.body).not.toContain("Recovery action:");
   });
 
+  it("names the sandbox provider plugin and its status when that is the configuration gap", () => {
+    const seed = buildConfigurationIncompleteRecoveryNoticeSeed({
+      reason: "sandbox_provider_plugin_not_ready",
+      pluginKey: "paperclip.kubernetes-sandbox-provider",
+      pluginStatus: "error",
+    });
+    expect(seed.title).toBe("Configuration incomplete");
+    expect(seed.tone).toBe("danger");
+    expect(seed.body).toContain("`paperclip.kubernetes-sandbox-provider`");
+    expect(seed.body).toContain("`error`");
+    expect(seed.body).toContain("enable the plugin");
+    expect(seed.body).not.toContain("secret/env bindings");
+  });
+
+  it("keeps the secret-binding copy for other configuration gaps", () => {
+    expect(buildConfigurationIncompleteRecoveryNoticeSeed({ reason: "secret_binding_missing" }).body).toContain(
+      "secret/env bindings",
+    );
+    expect(buildConfigurationIncompleteRecoveryNoticeSeed(null).body).toContain("secret/env bindings");
+  });
+
   it("distinguishes todo dispatch from in_progress continuation copy", () => {
     expect(buildImmediateExecutionPathRecoveryNoticeSeed({ status: "todo" }).body).toContain("retried dispatch");
     expect(buildImmediateExecutionPathRecoveryNoticeSeed({ status: "in_progress" }).body).toContain(
