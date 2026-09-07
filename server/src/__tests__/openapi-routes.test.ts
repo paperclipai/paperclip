@@ -280,6 +280,18 @@ describe("openapi routes", () => {
     });
   });
 
+  it("documents board-only repository discovery and selection", () => {
+    const { spec } = loadSpecRoutes();
+    const discovery = spec.paths["/api/companies/{companyId}/project-repositories"].get;
+    const replacement = spec.paths["/api/projects/{id}/repositories"].put;
+    for (const operation of [discovery, replacement]) {
+      expect(operation["x-paperclip-authorization"]).toEqual({ actor: "board" });
+      expect(operation.security).toEqual([{ BoardSessionAuth: [] }, { BoardApiKeyAuth: [] }]);
+    }
+    expect(replacement.requestBody.content["application/json"].schema.required).toContain("repositoryIds");
+    expect(replacement.responses["422"]).toBeDefined();
+  });
+
   it("documents auth and reviewed response-code invariants", () => {
     const { spec } = loadSpecRoutes();
 
