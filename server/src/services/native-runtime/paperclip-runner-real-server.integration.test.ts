@@ -91,7 +91,7 @@ describe("paperclip-runner real server vertical slice", () => {
     const bundle = createRunnerdCodexTransport({
       runnerBinary: defaultCapabilityRunnerdBinary(),
       codexCommand: fakeCodexAppServer,
-      codexArgs: [],
+      codexArgs: ["--state-file", resolve(stateDirectory, "fake-codex-state.json"), "--emit-tool-call", "--durable-turn-ids"],
       stateDirectory,
       lifecyclePolicy: { mode: "per_turn", idleTimeoutMs: null },
       prpIdentity: {
@@ -115,7 +115,7 @@ describe("paperclip-runner real server vertical slice", () => {
       observedResults.push(result);
       return {
         success: true,
-        contentItems: [{ type: "inputText", text: JSON.stringify({ ok: true, result }) }],
+        contentItems: [{ type: "inputText", text: JSON.stringify({ ok: true, task: { id: "task-1" } }) }],
       };
     });
 
@@ -161,7 +161,7 @@ describe("paperclip-runner real server vertical slice", () => {
       const restored = createRunnerdCodexTransport({
         runnerBinary: defaultCapabilityRunnerdBinary(),
         codexCommand: fakeCodexAppServer,
-        codexArgs: [],
+        codexArgs: ["--state-file", resolve(stateDirectory, "fake-codex-state.json"), "--emit-tool-call", "--durable-turn-ids"],
         stateDirectory,
         lifecyclePolicy: { mode: "per_turn", idleTimeoutMs: null },
         resumeDynamicTools: await resumedAuthority.definitions(),
@@ -189,7 +189,7 @@ describe("paperclip-runner real server vertical slice", () => {
         observedResults.push(result);
         return {
           success: true,
-          contentItems: [{ type: "inputText", text: JSON.stringify({ ok: true, result }) }],
+          contentItems: [{ type: "inputText", text: JSON.stringify({ ok: true, task: { id: "task-1" } }) }],
         };
       });
       try {
@@ -206,7 +206,7 @@ describe("paperclip-runner real server vertical slice", () => {
           run: { id: resumedRunId },
         });
         expect(restored.evidence().diagnostics).toContain(
-          "runnerd restored its durable PRP session and provider thread",
+          "runnerd attached the durable provider session to a fresh PRP run authority",
         );
       } finally {
         await restored.transport.close();

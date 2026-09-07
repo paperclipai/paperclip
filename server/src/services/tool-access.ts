@@ -1,3 +1,4 @@
+import { captureRunIdentity } from "./run-identity.js";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, lt, max, ne, sql } from "drizzle-orm";
@@ -2832,7 +2833,8 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
   }
 
   async function loadBrokerRunContext(input: { companyId: string; agentId: string; runId: string }) {
-    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, input.runId));
+    const [initialRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, input.runId));
+    const run = initialRun?.activeIdentityContextId ? (await captureRunIdentity(db, input)).run : initialRun;
     if (!run || run.companyId !== input.companyId || run.agentId !== input.agentId) {
       throw forbidden("Agent run context does not match the authenticated actor");
     }
@@ -2841,7 +2843,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     }
     const snapshot = asRecord(run.contextSnapshot);
     const paperclipIssue = asRecord(snapshot.paperclipIssue);
-    const responsibleUserId = runSnapshotString(snapshot, "responsibleUserId", "responsible_user_id")
+    const responsibleUserId = run.activeIdentityContextId ? run.responsibleUserId : runSnapshotString(snapshot, "responsibleUserId", "responsible_user_id")
       ?? runSnapshotString(paperclipIssue, "responsibleUserId", "responsible_user_id")
       ?? run.responsibleUserId;
     if (!responsibleUserId) {
@@ -4195,6 +4197,14 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
           eq(companySecretBindings.targetId, connection.id),
         ),
       );
+    // A metadata edit or pause/resume must retain declarations for every
+    // active personal/dedicated grant, not just connection-owned credentials.
+    const activeGrants = await dbClient.select({ refs: connectionGrants.credentialSecretRefs })
+      .from(connectionGrants).where(and(
+        eq(connectionGrants.companyId, connection.companyId),
+        eq(connectionGrants.connectionId, connection.id),
+        eq(connectionGrants.status, "active"),
+      ));
     const rawBindings = [
       ...connection.credentialRefs.map((ref) => ({
         secretId: ref.secretId,
@@ -4204,7 +4214,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         required: true,
         label: null,
       })),
-      ...[...connection.credentialSecretRefs, ...grantSecretRefs].map((ref) => ({
+      ...[...connection.credentialSecretRefs, ...grantSecretRefs, ...activeGrants.flatMap((grant) => grant.refs)].map((ref) => ({
         secretId: ref.secretId,
         configPath: ref.configPath,
         projectionClass: ref.projectionClass ?? "unclassified",
@@ -13880,6 +13890,11 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         );
       }
 
+      if (runContext.run.activeIdentityContextId && (
+        connection.config.sourceTemplateKey === "github" || connection.transportConfig?.sourceTemplateKey === "github"
+      )) {
+        await fail(409, "Use managed git, gh, or GitHub tools for this run", "denied", "managed_github_invocation_required");
+      }
       const requestedSubject = input.body.subject;
       if (requestedSubject?.type === "user" && requestedSubject.userId !== runContext.responsibleUserId) {
         await fail(403, "The agent run cannot act as the requested user", "denied", "subject_not_permitted", {

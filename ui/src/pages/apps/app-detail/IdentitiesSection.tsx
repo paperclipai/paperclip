@@ -179,6 +179,7 @@ export function IdentitiesSection({
     return (
       <section className="space-y-5">
         <h2 className="text-sm font-semibold text-foreground">GitHub identity</h2>
+        <p className="text-sm text-muted-foreground">This agent uses this GitHub account for everyone’s work, instead of the person giving instructions.</p>
         <IdentityRow
           title={github ? `@${github.login}` : "Dedicated GitHub account"}
           status={agentGrant?.status ?? null}

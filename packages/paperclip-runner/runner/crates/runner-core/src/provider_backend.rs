@@ -1726,6 +1726,36 @@ impl CodexCommandExecutor {
             .ok_or_else(|| DurableRunnerError::invalid("Codex provider is unavailable"))
     }
 
+    // Only the authenticated controller can rebind these run-scoped launch
+    // settings. Executable, model, instructions, approval mode, and all other
+    // flags remain part of the immutable durable provider profile.
+    fn stable_launch_args(args: &[String]) -> Vec<String> {
+        let mut stable = Vec::new();
+        let mut index = 0;
+        while index < args.len() {
+            if args[index] == "-c" && index + 1 < args.len() {
+                let key = args[index + 1].split('=').next().unwrap_or("");
+                if matches!(
+                    key,
+                    "permissions.paperclip-runner-workspace-only.filesystem"
+                        | "permissions.paperclip-runner-workspace-read-only.filesystem"
+                        | "permissions.paperclip-runner-workspace-only.network.enabled"
+                        | "permissions.paperclip-runner-workspace-read-only.network.enabled"
+                        | "shell_environment_policy.inherit"
+                        | "shell_environment_policy.ignore_default_excludes"
+                        | "shell_environment_policy.include_only"
+                        | "shell_environment_policy.set"
+                ) {
+                    index += 2;
+                    continue;
+                }
+            }
+            stable.push(args[index].clone());
+            index += 1;
+        }
+        stable
+    }
+
     fn attach_run(&mut self, payload: &Value) -> Result<(), DurableRunnerError> {
         let mut next_state = self
             .state
@@ -1752,20 +1782,53 @@ impl CodexCommandExecutor {
                 "run.attach requires a settled Codex provider session with no pending events",
             ));
         }
+        let runtime_launch_args: Option<Vec<String>> = payload
+            .get("runtimeLaunchArgs")
+            .map(|value| serde_json::from_value(value.clone()))
+            .transpose()
+            .map_err(|_| {
+                DurableRunnerError::invalid("run.attach runtime launch arguments are invalid")
+            })?;
         if let Some(provider) = payload.get("provider") {
-            let config: CodexProviderConfig =
-                serde_json::from_value(provider.clone()).map_err(|error| {
+            let mut config: CodexProviderConfig = serde_json::from_value(provider.clone())
+                .map_err(|error| {
                     DurableRunnerError::invalid(format!("run.attach provider is invalid: {error}"))
                 })?;
             config
                 .validate()
                 .map_err(|error| DurableRunnerError::invalid(error.to_string()))?;
+            if runtime_launch_args.is_some()
+                && config.provider == "codex"
+                && Self::stable_launch_args(&config.args)
+                    == Self::stable_launch_args(&next_state.config.args)
+            {
+                config.args = next_state.config.args.clone();
+            }
             if config != next_state.config {
                 return Err(DurableRunnerError::invalid(
                     "run.attach cannot change the durable Codex provider profile",
                 ));
             }
         }
+        let runtime_launch_changed = if let Some(args) = runtime_launch_args {
+            if next_state.config.provider != "codex"
+                || Self::stable_launch_args(&args)
+                    != Self::stable_launch_args(&next_state.config.args)
+            {
+                return Err(DurableRunnerError::invalid(
+                    "run.attach cannot change protected launch arguments",
+                ));
+            }
+            let changed = args != next_state.config.args;
+            next_state.config.args = args;
+            next_state
+                .config
+                .validate()
+                .map_err(|error| DurableRunnerError::invalid(error.to_string()))?;
+            changed
+        } else {
+            false
+        };
         let completion_contract = completion_contract(payload)?;
         let tool_set = authorized_tool_set(payload)?;
         next_state
@@ -1791,21 +1854,22 @@ impl CodexCommandExecutor {
         let provider = self.provider.as_mut().ok_or_else(|| {
             DurableRunnerError::invalid("run.attach requires the restored Codex provider process")
         })?;
-        let retained_provider = provider
-            .attach_run_in_place(
-                next_state.tool_bridge.authorized_tools().cloned(),
-                next_state.completion_contract.as_ref().map(|contract| {
-                    (
-                        contract.revision.as_str(),
-                        contract.criterion_ids.as_slice(),
-                    )
-                }),
-            )
-            .map_err(|error| {
-                DurableRunnerError::invalid(format!(
-                    "failed to retain Codex for warm run attachment: {error}"
-                ))
-            })?;
+        let retained_provider = !runtime_launch_changed
+            && provider
+                .attach_run_in_place(
+                    next_state.tool_bridge.authorized_tools().cloned(),
+                    next_state.completion_contract.as_ref().map(|contract| {
+                        (
+                            contract.revision.as_str(),
+                            contract.criterion_ids.as_slice(),
+                        )
+                    }),
+                )
+                .map_err(|error| {
+                    DurableRunnerError::invalid(format!(
+                        "failed to retain Codex for warm run attachment: {error}"
+                    ))
+                })?;
         if !retained_provider {
             provider.shutdown().map_err(|error| {
                 DurableRunnerError::invalid(format!(
@@ -3260,6 +3324,46 @@ impl CommandExecutor for CodexCommandExecutor {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn runtime_launch_rebinding_preserves_protected_arguments() {
+        let before: Vec<String> = vec![
+            "-c",
+            "default_permissions=\"paperclip-runner-workspace-only\"",
+            "-c",
+            "shell_environment_policy.set={PATH=\"/run/a\"}",
+            "--disable",
+            "image_generation",
+            "app-server",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+        let after: Vec<String> = vec![
+            "-c",
+            "default_permissions=\"paperclip-runner-workspace-only\"",
+            "-c",
+            "shell_environment_policy.set={PATH=\"/run/b\"}",
+            "-c",
+            "shell_environment_policy.include_only=[\"PAPERCLIP_GITHUB_BROKER_TOKEN\"]",
+            "--disable",
+            "image_generation",
+            "app-server",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+        assert_eq!(
+            CodexCommandExecutor::stable_launch_args(&before),
+            CodexCommandExecutor::stable_launch_args(&after)
+        );
+        let mut unsafe_args = after;
+        unsafe_args.push("--dangerously-bypass-approvals-and-sandbox".to_owned());
+        assert_ne!(
+            CodexCommandExecutor::stable_launch_args(&before),
+            CodexCommandExecutor::stable_launch_args(&unsafe_args)
+        );
+    }
     use super::*;
 
     fn opencode_result_state() -> CodexProviderState {

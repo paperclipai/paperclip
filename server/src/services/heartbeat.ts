@@ -1,3 +1,6 @@
+import { initializeRunIdentity } from "./run-identity.js";
+import { githubBrokerEnvironment } from "@paperclipai/adapter-utils/github-launcher";
+import { prepareGitHubOperationLaunchers, startAdapterExecutionTargetPaperclipBridge } from "@paperclipai/adapter-utils/execution-target";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
@@ -103,7 +106,6 @@ import {
   createGitRemoteAuthProvider,
   describeGitAuthFailure,
   filterResolvedGitHubConnectionsForRun,
-  GIT_CREDENTIAL_TOKEN_ENV_KEY,
   scrubGitCredentialText,
   type GitRemoteAuthProvider,
 } from "./git-credentials.js";
@@ -4089,7 +4091,7 @@ export async function buildPaperclipRuntimeMcpServers(input: {
     input.agent.id,
   );
   const [runIdentity] = await input.db
-    .select({ responsibleUserId: heartbeatRuns.responsibleUserId })
+    .select({ responsibleUserId: heartbeatRuns.responsibleUserId, activeIdentityContextId: heartbeatRuns.activeIdentityContextId })
     .from(heartbeatRuns)
     .where(
       and(
@@ -4099,8 +4101,8 @@ export async function buildPaperclipRuntimeMcpServers(input: {
       ),
     )
     .limit(1);
-  const resolvedInstalledConnections =
-    await filterResolvedGitHubConnectionsForRun({
+  const resolvedInstalledConnections = runIdentity?.activeIdentityContextId
+    ? effective.installedConnections : await filterResolvedGitHubConnectionsForRun({
       db: input.db,
       companyId: input.agent.companyId,
       agentId: input.agent.id,
@@ -4146,7 +4148,8 @@ export async function buildPaperclipRuntimeMcpServers(input: {
       permittedConnectionIds.has(connection.id) &&
       connection.status === "active" &&
       connection.enabled &&
-      !isToolConnectionAttentionHealth(connection.healthStatus) &&
+      (Boolean(runIdentity?.activeIdentityContextId) && (connection.config?.sourceTemplateKey === "github" || connection.transportConfig?.sourceTemplateKey === "github")
+        || !isToolConnectionAttentionHealth(connection.healthStatus)) &&
       (connection.transport === "mcp_remote" ||
         connection.transport === "local_stdio"),
   );
@@ -4226,7 +4229,7 @@ export async function buildPaperclipRuntimeMcpServers(input: {
   if (!profile) {
     const fullConnectionIds = new Set(
       effective.entries
-        .filter((entry) => entry.effect === "include" && entry.connectionId)
+        .filter((entry) => entry.effect === "include" && entry.selectorType === "connection" && entry.connectionId)
         .map((entry) => entry.connectionId!),
     );
     const entries = [
@@ -4575,7 +4578,7 @@ export async function createManagedMcpRunConfig(input: {
       ),
     );
   const [runIdentity] = await input.db
-    .select({ responsibleUserId: heartbeatRuns.responsibleUserId })
+    .select({ responsibleUserId: heartbeatRuns.responsibleUserId, activeIdentityContextId: heartbeatRuns.activeIdentityContextId })
     .from(heartbeatRuns)
     .where(
       and(
@@ -4585,7 +4588,9 @@ export async function createManagedMcpRunConfig(input: {
       ),
     )
     .limit(1);
-  const resolvedAvailableInstalls = await filterResolvedGitHubConnectionsForRun(
+  const resolvedAvailableInstalls = runIdentity?.activeIdentityContextId
+    ? installRows.filter((install) => install.enabled && install.status === "active").map((install) => ({ id: install.connectionId }))
+    : await filterResolvedGitHubConnectionsForRun(
     {
       db: input.db,
       companyId: input.agent.companyId,
@@ -8995,6 +9000,8 @@ export function heartbeatService(
         originKind: issues.originKind,
         originId: issues.originId,
         originRunId: issues.originRunId,
+        originIdentityContextId: issues.originIdentityContextId,
+        continuationIdentityContextId: issues.continuationIdentityContextId,
         updatedAt: issues.updatedAt,
       })
       .from(issues)
@@ -9109,6 +9116,7 @@ export function heartbeatService(
           routineId: issueContext.originId,
           env: snapshot.routine.env ?? null,
           responsibleUserId:
+            routineRun?.responsibleUserId ??
             revision?.responsibleUserId ??
             snapshot.routine.responsibleUserId ??
             null,
@@ -9229,6 +9237,27 @@ export function heartbeatService(
       input.requestedByActorType === "user"
         ? readNonEmptyString(input.requestedByActorId)
         : null;
+    const messageIds = Array.isArray(input.contextSnapshot.wakeCommentIds)
+      ? input.contextSnapshot.wakeCommentIds.filter((id): id is string => typeof id === "string")
+      : readNonEmptyString(input.contextSnapshot.wakeCommentId) ? [String(input.contextSnapshot.wakeCommentId)] : [];
+    if (input.issueContext && messageIds.length && !input.contextSnapshot.retryOfRunId) {
+      const messages = await db.select({ id: issueComments.id, authorUserId: issueComments.authorUserId })
+        .from(issueComments).where(and(eq(issueComments.companyId, input.companyId),
+          eq(issueComments.issueId, input.issueContext.id), inArray(issueComments.id, messageIds)));
+      for (const id of [...messageIds].reverse()) {
+        const author = messages.find((message) => message.id === id)?.authorUserId;
+        if (author) {
+          delete input.contextSnapshot.executionIdentityCause;
+          return author;
+        }
+      }
+    }
+    const retryOfRunId = readNonEmptyString(input.contextSnapshot.retryOfRunId);
+    if (retryOfRunId) {
+      const [origin] = await db.select({ responsibleUserId: heartbeatRuns.responsibleUserId })
+        .from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.id, retryOfRunId)));
+      if (origin?.responsibleUserId) return origin.responsibleUserId;
+    }
     if (contextResponsibleUserId) return contextResponsibleUserId;
     if (input.existingRunResponsibleUserId)
       return input.existingRunResponsibleUserId;
@@ -9242,9 +9271,8 @@ export function heartbeatService(
       input.issueContext?.parentId,
     );
     if (parentResponsibleUserId) return parentResponsibleUserId;
-    if (input.issueContext)
-      return resolveCompanyDefaultResponsibleUserId(input.companyId);
-    if (requestedUserId) return requestedUserId;
+    if (!input.issueContext && requestedUserId) return requestedUserId;
+    input.contextSnapshot.executionIdentityCause = "company_default";
     return resolveCompanyDefaultResponsibleUserId(input.companyId);
   }
 
@@ -10483,6 +10511,7 @@ export function heartbeatService(
       readNonEmptyString(context.issueId) ?? readNonEmptyString(context.taskId);
     const resolveGitAuth = createGitRemoteAuthProvider(db, agent.companyId, {
       issueId,
+      heartbeatRunId: readNonEmptyString(context.executionIdentityRunId),
       responsibleUserId:
         readNonEmptyString(context.responsibleUserId) ??
         readNonEmptyString(context.responsible_user_id),
@@ -10744,6 +10773,7 @@ export function heartbeatService(
       readNonEmptyString(context.issueId) ?? readNonEmptyString(context.taskId);
     const resolveGitAuth = createGitRemoteAuthProvider(db, agent.companyId, {
       issueId,
+      heartbeatRunId: readNonEmptyString(context.executionIdentityRunId),
       responsibleUserId:
         readNonEmptyString(context.responsibleUserId) ??
         readNonEmptyString(context.responsible_user_id),
@@ -11266,7 +11296,7 @@ export function heartbeatService(
       triggerDetail: "system",
       reason: RUN_LIVENESS_CONTINUATION_REASON,
       payload: decision.payload,
-      contextSnapshot: decision.contextSnapshot,
+      contextSnapshot: { ...decision.contextSnapshot, originIdentityContextId: null, parentRunId: run.id },
       idempotencyKey: decision.idempotencyKey,
       requestedByActorType: "system",
       requestedByActorId: "heartbeat",
@@ -11638,7 +11668,7 @@ export function heartbeatService(
       triggerDetail: "system",
       reason: FINISH_SUCCESSFUL_RUN_HANDOFF_REASON,
       payload: decision.payload,
-      contextSnapshot: decision.contextSnapshot,
+      contextSnapshot: { ...decision.contextSnapshot, originIdentityContextId: null, parentRunId: run.id },
       idempotencyKey: decision.idempotencyKey,
       requestedByActorType: "system",
       requestedByActorId: "heartbeat",
@@ -18306,19 +18336,30 @@ export function heartbeatService(
         agent.companyId,
         issueContext,
       );
-      const responsibleUserId = await resolveResponsibleUserIdForRun({
+      let responsibleUserId: string | null = await resolveResponsibleUserIdForRun({
         run,
         contextSnapshot: context,
         issueContext,
         routineEnvContext,
       });
-      if (responsibleUserId && run.responsibleUserId !== responsibleUserId) {
-        await db
-          .update(heartbeatRuns)
-          .set({ responsibleUserId, updatedAt: new Date() })
-          .where(eq(heartbeatRuns.id, run.id));
-        run = { ...run, responsibleUserId };
-      }
+      const identityContext = await initializeRunIdentity(db, {
+        companyId: agent.companyId, runId: run.id, responsibleUserId,
+        interactionId: readNonEmptyString(context.interactionId),
+        issueId, messageIds: run.retryOfRunId || context.retryOfRunId ? [] : queuedCommentIdsFromRunContext(context).length
+          ? queuedCommentIdsFromRunContext(context)
+          : Array.isArray(context.wakeCommentIds) ? context.wakeCommentIds.filter((id): id is string => typeof id === "string")
+          : wakeCommentId ? [wakeCommentId] : [],
+        parentContextId: run.retryOfRunId || context.retryOfRunId ? null
+          : readNonEmptyString(context.originIdentityContextId)
+            ?? (run.triggerDetail === "manual" || context.parentRunId ? null : issueContext?.continuationIdentityContextId ?? issueContext?.originIdentityContextId),
+        parentRunId: run.retryOfRunId ?? readNonEmptyString(context.retryOfRunId) ?? readNonEmptyString(context.parentRunId),
+        cause: readNonEmptyString(context.executionIdentityCause) ?? readNonEmptyString(context.wakeReason) ?? "dispatch",
+      });
+      // Initialization has persisted the active context, including an explicit
+      // absence of identity inherited from an automatic continuation.
+      responsibleUserId = identityContext.responsibleUserId;
+      run = { ...run, activeIdentityContextId: identityContext.id, responsibleUserId };
+      context.executionIdentityRunId = run.id;
       if (
         responsibleUserId &&
         issueContext &&
@@ -18832,21 +18873,6 @@ export function heartbeatService(
         !acceptedPlanWakeRoutingDecision?.suppressAcceptedContinuation
           ? [...runScopedMentionedSkillKeys, ACCEPTED_PLAN_CONVERSION_SKILL_KEY]
           : runScopedMentionedSkillKeys;
-      const pushCapabilityPreflightRequired = requiresPushCapabilityPreflight({
-        adapterType: agent.adapterType,
-        issueId,
-        explicitRunScopedSkillKeys: runScopedMentionedSkillKeys,
-      });
-      const githubRunAuth = await createGitRemoteAuthProvider(
-        db,
-        agent.companyId,
-        {
-          issueId,
-          heartbeatRunId: run.id,
-          responsibleUserId,
-          agentId: agent.id,
-        },
-      )("https://github.com/paperclipai/credential-probe.git");
       const { resolvedConfig, secretKeys, secretManifest } =
         await resolveExecutionRunAdapterConfig({
           companyId: agent.companyId,
@@ -18865,25 +18891,6 @@ export function heartbeatService(
           routineEnv: routineEnvContext.env,
           secretsSvc,
           trustPreset,
-          ...(githubRunAuth
-            ? {
-                trustedEnvProjection: githubRunAuth.env,
-                trustedEnvSecretKeys: [
-                  "GH_TOKEN",
-                  "GITHUB_TOKEN",
-                  GIT_CREDENTIAL_TOKEN_ENV_KEY,
-                ],
-              }
-            : {}),
-          requiredScopedEnvBinding: pushCapabilityPreflightRequired
-            ? {
-                keys: [...PUSH_CAPABILITY_ENV_KEYS],
-                consumerScopes: ["agent", "project"],
-                reason: "push_write_credential_missing",
-                remediation:
-                  "GitHub PR workflow requires GH_TOKEN or GITHUB_TOKEN bound at project or agent scope.",
-              }
-            : undefined,
         });
       if (secretManifest.length > 0) {
         context.paperclipSecrets = {
@@ -19187,9 +19194,8 @@ export function heartbeatService(
             : null,
         issueId,
       });
-      // One credential provider per run: base-ref refreshes during workspace realization and
-      // restore authenticate against private GitHub remotes with the same company-secret token
-      // the managed clone uses.
+      // The run-scoped provider resolves the active identity at each Git operation,
+      // including base-ref refreshes, workspace realization, and restore.
       const workspaceGitAuthProvider = createGitRemoteAuthProvider(
         db,
         agent.companyId,
@@ -19855,6 +19861,18 @@ export function heartbeatService(
       } else {
         delete context.paperclipScratch;
       }
+      const githubBrokerToken = createRuntimeToolsToken({
+        agentId: agent.id, companyId: agent.companyId, runId: run.id,
+        responsibleUserId: responsibleUserId ?? "", scope: "github_credentials",
+      });
+      const githubBrokerEnv = githubBrokerEnvironment(parseObject(runtimeConfig.env), {
+        url: configuredPaperclipApiBaseUrl() ?? "", token: githubBrokerToken?.token ?? "",
+      });
+      runtimeConfig = { ...runtimeConfig, env: await prepareGitHubOperationLaunchers({
+        runId: run.id, target: executionTarget, cwd: executionWorkspace.cwd,
+        env: githubBrokerEnv,
+      }) };
+      secretKeys.add("PAPERCLIP_GITHUB_BROKER_TOKEN");
       context.paperclipEnvironment = {
         id: selectedEnvironment.id,
         name: selectedEnvironment.name,
@@ -20336,20 +20354,8 @@ export function heartbeatService(
           environmentDriver: selectedEnvironment.driver,
           leaseMetadata: activeEnvironmentLease.lease.metadata,
         });
-        await assertPushCapabilityCheckoutValid({
-          enabled:
-            pushCapabilityPreflightRequired &&
-            executionTarget?.kind === "local",
-          issue: issueRef
-            ? {
-                id: issueRef.id,
-                identifier: issueRef.identifier,
-              }
-            : null,
-          cwd: executionWorkspace.cwd,
-        });
         const adapterEnv = Object.fromEntries(
-          Object.entries(parseObject(resolvedConfig.env)).filter(
+          Object.entries(parseObject(runtimeConfig.env)).filter(
             (entry): entry is [string, string] =>
               typeof entry[0] === "string" && typeof entry[1] === "string",
           ),
@@ -21355,77 +21361,104 @@ export function heartbeatService(
                 endedAtMs: nativeDispatchAtMs,
               },
             );
-            const guardedDispatch =
-              await dispatchResolvedInteractionContinuationWithAtomicGate(
-                (markDispatchStarted) =>
-                  executePaperclipNativeSession({
-                    db,
-                    execution: nativeExecution,
-                    runnerInstanceId: nativeRunnerInstanceId,
-                    leaseOwner: runOptions.nativeLeaseOwner,
-                    restartRecovery: runOptions.nativeRestartRecovery,
-                    backend:
-                      options.nativeSessionBackendFactory?.(nativeExecution),
-                    useRunnerd: agent.adapterType === "paperclip_runner",
-                    onLog,
-                    onEvent: onAdapterEvent,
-                    preparationSpans: nativeRunnerPreparationSpans,
-                    // Bootstrap with executable/home discovery while keeping
-                    // configured provider values and the server-selected
-                    // workspace boundary authoritative.
-                    runnerEnvironment: {
-                      ...buildNativeProviderEnvironment(
-                        adapterEnv,
-                        process.env,
-                        executionWorkspace.cwd,
+            // Native Git/gh uses the same authenticated remote callback
+            // transport as managed adapters. A bridge failure must not make
+            // GitHub a prerequisite for otherwise unrelated native work.
+            let nativeGitHubBridge: Awaited<ReturnType<typeof startAdapterExecutionTargetPaperclipBridge>> = null;
+            if (executionTarget?.kind === "remote" && adapterEnv.PAPERCLIP_GITHUB_BROKER_TOKEN) {
+              try {
+                nativeGitHubBridge = await startAdapterExecutionTargetPaperclipBridge({
+                  runId: run.id,
+                  target: executionTarget,
+                  runtimeRootDir: path.posix.join(executionTarget.remoteCwd, ".paperclip-runtime", "github", run.id),
+                  adapterKey: "native-github",
+                  hostApiToken: adapterEnv.PAPERCLIP_GITHUB_BROKER_TOKEN,
+                  hostApiUrl: adapterEnv.PAPERCLIP_GITHUB_BROKER_URL,
+                  onLog,
+                });
+              } catch {
+                await onLog("stderr", "[paperclip] GitHub runtime transport unavailable; continuing without managed GitHub access.\n");
+              }
+            }
+            try {
+              const guardedDispatch =
+                await dispatchResolvedInteractionContinuationWithAtomicGate(
+                  (markDispatchStarted) =>
+                    executePaperclipNativeSession({
+                      db,
+                      execution: nativeExecution,
+                      runnerInstanceId: nativeRunnerInstanceId,
+                      leaseOwner: runOptions.nativeLeaseOwner,
+                      restartRecovery: runOptions.nativeRestartRecovery,
+                      backend:
+                        options.nativeSessionBackendFactory?.(nativeExecution),
+                      useRunnerd: agent.adapterType === "paperclip_runner",
+                      onLog,
+                      onEvent: onAdapterEvent,
+                      preparationSpans: nativeRunnerPreparationSpans,
+                      // Bootstrap with executable/home discovery while keeping
+                      // configured provider values and the server-selected
+                      // workspace boundary authoritative.
+                      runnerEnvironment: {
+                        ...buildNativeProviderEnvironment(
+                          adapterEnv,
+                          process.env,
+                          executionWorkspace.cwd,
+                        ),
+                        ...(nativeGitHubBridge ? {
+                          PAPERCLIP_GITHUB_BROKER_URL: nativeGitHubBridge.env.PAPERCLIP_API_URL,
+                          PAPERCLIP_GITHUB_BRIDGE_TOKEN: nativeGitHubBridge.env.PAPERCLIP_API_KEY,
+                        } : {}),
+                        ...(nativeMcpServer
+                          ? {
+                              PAPERCLIP_NATIVE_MCP_NAME: nativeMcpServer.name,
+                              PAPERCLIP_NATIVE_MCP_URL: nativeMcpServer.url,
+                              PAPERCLIP_NATIVE_MCP_TOKEN: nativeMcpServer.token,
+                            }
+                          : {}),
+                        ...(providerTraceCapture
+                          ? {
+                              PAPERCLIP_PROVIDER_TRACE_PATH:
+                                providerTraceCapture.path,
+                              PAPERCLIP_PROVIDER_TRACE_MAX_BYTES: String(
+                                PROVIDER_TRACE_MAX_BYTES,
+                              ),
+                            }
+                          : {}),
+                      },
+                      runnerExecutionTarget: executionTarget,
+                      runnerIngressAuthorized: isRunnerIngressAuthorized(
+                        nativeRuntimeResolution,
                       ),
-                      ...(nativeMcpServer
-                        ? {
-                            PAPERCLIP_NATIVE_MCP_NAME: nativeMcpServer.name,
-                            PAPERCLIP_NATIVE_MCP_URL: nativeMcpServer.url,
-                            PAPERCLIP_NATIVE_MCP_TOKEN: nativeMcpServer.token,
-                          }
-                        : {}),
-                      ...(providerTraceCapture
-                        ? {
-                            PAPERCLIP_PROVIDER_TRACE_PATH:
-                              providerTraceCapture.path,
-                            PAPERCLIP_PROVIDER_TRACE_MAX_BYTES: String(
-                              PROVIDER_TRACE_MAX_BYTES,
-                            ),
-                          }
-                        : {}),
-                    },
-                    runnerExecutionTarget: executionTarget,
-                    runnerIngressAuthorized: isRunnerIngressAuthorized(
-                      nativeRuntimeResolution,
-                    ),
-                    runnerPublicUrl:
-                      runtimeEnv.PAPERCLIP_RUNNER_PUBLIC_URL?.trim() || null,
-                    runnerCaBundlePath:
-                      runtimeEnv.PAPERCLIP_RUNNER_CA_BUNDLE_PATH?.trim() ||
-                      null,
-                    runnerRemoteBinaryPath:
-                      runtimeEnv.PAPERCLIP_RUNNER_REMOTE_BINARY_PATH?.trim() ||
-                      null,
-                    runnerRemoteCodexPath:
-                      runtimeEnv.PAPERCLIP_RUNNER_REMOTE_CODEX_PATH?.trim() ||
-                      null,
-                    runnerRemoteCodexNpmSpec:
-                      runtimeEnv.PAPERCLIP_RUNNER_REMOTE_CODEX_NPM_SPEC?.trim() ||
-                      null,
-                    runnerRemoteProviderPackPath:
-                      runtimeEnv.PAPERCLIP_RUNNER_REMOTE_PROVIDER_PACK_PATH?.trim() ||
-                      null,
-                    enqueueWakeup,
-                    onSpawn: async (meta) => {
-                      markDispatchStarted();
-                      await persistRunProcessMetadata(run.id, meta);
-                    },
-                  }),
-              );
-            if (!guardedDispatch.dispatched) return;
-            adapterResult = await guardedDispatch.resultPromise;
+                      runnerPublicUrl:
+                        runtimeEnv.PAPERCLIP_RUNNER_PUBLIC_URL?.trim() || null,
+                      runnerCaBundlePath:
+                        runtimeEnv.PAPERCLIP_RUNNER_CA_BUNDLE_PATH?.trim() ||
+                        null,
+                      runnerRemoteBinaryPath:
+                        runtimeEnv.PAPERCLIP_RUNNER_REMOTE_BINARY_PATH?.trim() ||
+                        null,
+                      runnerRemoteCodexPath:
+                        runtimeEnv.PAPERCLIP_RUNNER_REMOTE_CODEX_PATH?.trim() ||
+                        null,
+                      runnerRemoteCodexNpmSpec:
+                        runtimeEnv.PAPERCLIP_RUNNER_REMOTE_CODEX_NPM_SPEC?.trim() ||
+                        null,
+                      runnerRemoteProviderPackPath:
+                        runtimeEnv.PAPERCLIP_RUNNER_REMOTE_PROVIDER_PACK_PATH?.trim() ||
+                        null,
+                      enqueueWakeup,
+                      onSpawn: async (meta) => {
+                        markDispatchStarted();
+                        await persistRunProcessMetadata(run.id, meta);
+                      },
+                    }),
+                );
+              if (!guardedDispatch.dispatched) return;
+              adapterResult = await guardedDispatch.resultPromise;
+            } finally {
+              await nativeGitHubBridge?.stop();
+            }
           } else {
             const interactionId = readNonEmptyString(context.interactionId);
             const legacyQuestionResponse =

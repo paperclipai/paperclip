@@ -79,6 +79,29 @@ describe("Codex security configuration", () => {
     expect(serialized).not.toContain("!trusted-helper");
   });
 
+  it("isolates managed launcher profiles and never serializes broker capabilities or host API credentials", () => {
+    const serialized = createIsolatedCodexAppServerArgs({
+      HOME: "/isolated/provider", CODEX_HOME: "/isolated/provider",
+      PATH: "/runtime/run-B:/safe/bin",
+      PAPERCLIP_GITHUB_LAUNCHER_DIR: "/runtime/run-B",
+      PAPERCLIP_GITHUB_BROKER_TOKEN: "private-run-capability",
+      PAPERCLIP_GITHUB_BRIDGE_TOKEN: "private-bridge-capability",
+      PAPERCLIP_API_KEY: "forbidden-agent-token",
+      GH_CONFIG_DIR: "/runtime/run-B/gh-config",
+    }).join("\n");
+    expect(serialized).toContain('"/isolated/provider"="none"');
+    expect(serialized).toContain('"/runtime/run-B"="read"');
+    expect(serialized).toContain('"/runtime/run-B/gh-config"="write"');
+    expect(serialized).toContain('HOME="/runtime/run-B"');
+    expect(serialized).toContain('ZDOTDIR="/runtime/run-B"');
+    expect(serialized).toContain('BASH_ENV="/runtime/run-B/.bashrc"');
+    expect(serialized).toContain('"PAPERCLIP_GITHUB_BRIDGE_TOKEN"');
+    expect(serialized).not.toContain("PAPERCLIP_API_KEY");
+    expect(serialized).not.toContain("private-run-capability");
+    expect(serialized).not.toContain("private-bridge-capability");
+    expect(serialized).not.toContain("forbidden-agent-token");
+  });
+
   it("uses a read-only permission profile for plan mode", () => {
     expect(createSecuredCodexThreadParams("/workspace", "plan")).toMatchObject({
       cwd: "/workspace",

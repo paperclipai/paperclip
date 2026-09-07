@@ -819,6 +819,7 @@ const RUNTIME_TOOLS_SECURITY: Array<Record<string, string[]>> = [
 ];
 
 const RUNTIME_TOOLS_OPERATIONS = new Set([
+  "POST /runtime-tools/github/credentials",
   "GET /mcp/runtime-tools",
   "POST /mcp/runtime-tools",
   "POST /runtime-tools/connections/search",
@@ -1146,7 +1147,7 @@ function applyDocumentFixups(document: any): any {
       scheme: "bearer",
       bearerFormat: "Heartbeat-bound runtime tools token",
       description:
-        "Short-lived token bound to an active heartbeat run and presented in the Authorization bearer header.",
+        "Scoped token bound to an active heartbeat run and presented in the Authorization bearer header. The GitHub credential endpoint requires the distinct github_credentials scope.",
     },
   };
   document.security = AUTHENTICATED_SECURITY;
@@ -7431,6 +7432,14 @@ for (const route of [
 }
 
 // --- Connection intents ------------------------------------------------------
+
+registerCurrentRoute({
+  method: "post",
+  path: "/runtime-tools/github/credentials",
+  tags: ["connection-intents"],
+  summary: "Resolve operation credentials using a run capability with github_credentials scope; browser sessions are rejected",
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 409: r.conflict },
+});
 
 registerCurrentRoute({
   method: "get",

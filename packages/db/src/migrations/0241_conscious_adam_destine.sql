@@ -1,0 +1,1 @@
+ALTER TABLE "issues" ADD COLUMN "origin_identity_context_id" uuid;

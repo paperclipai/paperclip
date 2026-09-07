@@ -811,6 +811,8 @@ export interface Issue {
   originKind?: IssueOriginKind;
   originId?: string | null;
   originRunId?: string | null;
+  originIdentityContextId?: string | null;
+  continuationIdentityContextId?: string | null;
   originFingerprint?: string | null;
   requestDepth: number;
   billingCode: string | null;
@@ -1058,6 +1060,7 @@ export interface IssueCommentMetadataSection {
 export interface IssueCommentMetadata {
   version: 1;
   sourceRunId?: string | null;
+  sourceIdentityContextId?: string | null;
   authorizationReason?: string | null;
   sections: IssueCommentMetadataSection[];
 }
@@ -1471,6 +1474,7 @@ export interface IssueThreadInteractionBase extends IssueThreadInteractionActorF
   idempotencyKey?: string | null;
   sourceCommentId?: string | null;
   sourceRunId?: string | null;
+  sourceIdentityContextId?: string | null;
   addresseeAgentId?: string | null;
   addresseeUserId?: string | null;
   title?: string | null;

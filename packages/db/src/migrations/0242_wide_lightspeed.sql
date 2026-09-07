@@ -1,0 +1,1 @@
+ALTER TABLE "issue_thread_interactions" ADD COLUMN "source_identity_context_id" uuid;

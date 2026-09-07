@@ -1260,3 +1260,7 @@ Networking behavior for this smoke script:
 - auto-detects and prints a Paperclip host URL reachable from inside OpenClaw Docker
 - default container-side host alias is `host.docker.internal` (override with `PAPERCLIP_HOST_FROM_CONTAINER` / `PAPERCLIP_HOST_PORT`)
 - if Paperclip rejects container hostnames in authenticated/private mode, allow `host.docker.internal` via `npx paperclipai allowed-hostname host.docker.internal` and restart Paperclip
+
+### GitHub identity for shared agents
+
+See [execution GitHub identity](execution-github-identity.md) for the operation-time credential contract, continuation rules, runtime rollout, and acceptance-test requirements.

@@ -5205,12 +5205,16 @@ export function agentRoutes(
       source: opts.source,
       triggerDetail: req.body.triggerDetail ?? "manual",
       reason: req.body.reason ?? null,
-      payload: req.body.payload ?? null,
+      payload: req.actor.type === "agent" && req.body.payload
+        ? { ...req.body.payload, commentId: undefined, wakeCommentId: undefined, wakeCommentIds: undefined }
+        : req.body.payload ?? null,
       idempotencyKey: req.body.idempotencyKey ?? null,
       requestedByActorType: req.actor.type === "agent" ? "agent" : "user",
       requestedByActorId: req.actor.type === "agent" ? req.actor.agentId ?? null : req.actor.userId ?? null,
       contextSnapshot: {
         triggeredBy: req.actor.type,
+        originIdentityContextId: req.actor.identityContextId ?? null,
+        responsibleUserId: req.actor.type === "agent" ? req.actor.onBehalfOfUserId ?? null : req.actor.userId ?? null,
         actorId: req.actor.type === "agent" ? req.actor.agentId : req.actor.userId,
         forceFreshSession: req.body.forceFreshSession === true,
         ...(req.body.reason === "rerun_with_provider_trace" &&
@@ -5312,6 +5316,8 @@ export function agentRoutes(
     }>;
     const contextSnapshot: Record<string, unknown> = {
       triggeredBy: req.actor.type,
+      originIdentityContextId: req.actor.identityContextId ?? null,
+      responsibleUserId: req.actor.type === "agent" ? req.actor.onBehalfOfUserId ?? null : req.actor.userId ?? null,
       actorId: req.actor.type === "agent" ? req.actor.agentId : req.actor.userId,
     };
     if (body.forceFreshSession === true) {
@@ -5336,7 +5342,9 @@ export function agentRoutes(
       wakeOpts.reason = body.reason;
     }
     if (body.payload && typeof body.payload === "object" && !Array.isArray(body.payload)) {
-      wakeOpts.payload = body.payload as Record<string, unknown>;
+      wakeOpts.payload = req.actor.type === "agent"
+        ? { ...body.payload, commentId: undefined, wakeCommentId: undefined, wakeCommentIds: undefined }
+        : body.payload as Record<string, unknown>;
     }
     if (typeof body.idempotencyKey === "string" && body.idempotencyKey.length > 0) {
       wakeOpts.idempotencyKey = body.idempotencyKey;
@@ -6036,7 +6044,7 @@ export function agentRoutes(
       run.companyId,
       run.id,
       redactCurrentUserValue(
-        { ...decoratedRun, retryExhaustedReason, outputSilence: await heartbeat.buildRunOutputSilence(run) },
+        { ...decoratedRun, identityHistory: await listRunIdentityContexts(db, run.companyId, run.id), retryExhaustedReason, outputSilence: await heartbeat.buildRunOutputSilence(run) },
         await getCurrentUserRedactionOptions(),
       ),
     ));
@@ -6673,3 +6681,4 @@ export function agentRoutes(
 
   return router;
 }
+import { listRunIdentityContexts } from "../services/run-identity.js";

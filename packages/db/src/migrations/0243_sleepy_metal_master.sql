@@ -1,0 +1,1 @@
+ALTER TABLE "issues" ADD COLUMN "continuation_identity_context_id" uuid;

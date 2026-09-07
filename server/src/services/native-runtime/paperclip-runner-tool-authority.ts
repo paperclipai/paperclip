@@ -18,6 +18,7 @@ import { documentService } from "../documents.js";
 import { issueService } from "../issues.js";
 import { issueThreadInteractionService } from "../issue-thread-interactions.js";
 import { persistActivity, publishActivity } from "../activity-log.js";
+import { captureRunIdentity } from "../run-identity.js";
 
 const IMPLEMENTED_OPERATIONS = new Set([
   "get_task_context", "get_task_history", "search_tasks", "report_progress",
@@ -168,8 +169,10 @@ export class PaperclipRunnerToolAuthority {
         return { approval, tasks: tasks.map((row) => row.issue) };
       }
       case "report_progress": return this.#reportProgress(input);
-      case "request_human_input": return this.#requestHumanInput(input);
-      case "create_task": return this.#createTask(input);
+      case "request_human_input": return this.#requestHumanInput(input,
+        (await captureRunIdentity(this.db, this.binding)).context?.id ?? null);
+      case "create_task": return this.#createTask(input,
+        (await captureRunIdentity(this.db, this.binding)).context?.id ?? null);
       case "set_dependencies": return this.#setDependencies(input);
       default: throw new Error("paperclip_runner_tool_not_bound");
     }
@@ -300,7 +303,7 @@ export class PaperclipRunnerToolAuthority {
     return result;
   }
 
-  async #createTask(input: Record<string, unknown>): Promise<unknown> {
+  async #createTask(input: Record<string, unknown>, identityContextId: string | null): Promise<unknown> {
     const idempotencyKey = requiredString(input.idempotencyKey);
     const assigneeAgentId = input.assigneeActorId === null || input.assigneeActorId === undefined
       ? this.binding.agentId
@@ -361,6 +364,9 @@ export class PaperclipRunnerToolAuthority {
         createdByAgentId: this.binding.agentId,
         originKind: "manual",
         originId: durableIdempotencyKey,
+        originRunId: this.binding.runId,
+        originIdentityContextId: identityContextId,
+        continuationIdentityContextId: identityContextId,
         originFingerprint: inputFingerprint,
         actorAgentId: this.binding.agentId,
         actorRunId: this.binding.runId,
@@ -554,6 +560,10 @@ export class PaperclipRunnerToolAuthority {
     issue: typeof issues.$inferSelect;
     actor: typeof agents.$inferSelect;
   }> {
+    // Match identity activation and queue mutations before locking the run.
+    await tx.select({ id: issues.id }).from(issues).where(and(
+      eq(issues.id, this.binding.issueId), eq(issues.companyId, this.binding.companyId),
+    )).for("update");
     // Authorization for writes is intentionally re-read only after the
     // transaction starts. Locking the run and issue in the same statement
     // closes the gap between the discovery-time check and the mutation: a
@@ -594,7 +604,7 @@ export class PaperclipRunnerToolAuthority {
     return context;
   }
 
-  async #requestHumanInput(input: Record<string, unknown>): Promise<unknown> {
+  async #requestHumanInput(input: Record<string, unknown>, identityContextId: string | null): Promise<unknown> {
     const interactionKind = requiredString(input.interactionKind);
     const interactionKinds = {
       confirmation: "request_confirmation",
@@ -663,7 +673,7 @@ export class PaperclipRunnerToolAuthority {
               supersedeOnUserComment: normalizedPayload.supersedeOnUserComment ?? true,
             } : {}),
           },
-        } as never, { agentId: this.binding.agentId, userId: null });
+        } as never, { agentId: this.binding.agentId, userId: null, identityContextId });
         const activity = await persistActivity(tx, {
           companyId: this.binding.companyId,
           actorType: "agent",

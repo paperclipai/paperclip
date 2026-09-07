@@ -7,6 +7,7 @@ import {
   companies,
   documents,
   heartbeatRuns,
+  runIdentityContexts,
   issueComments,
   issueDocuments,
   issueQuestionResponseDeliveries,
@@ -101,6 +102,7 @@ export { extractGitHubPullRequestReferences } from "./github-pull-request-merge.
 export type { GitHubPullRequestReference } from "./github-pull-request-merge.js";
 
 type InteractionActor = {
+  identityContextId?: string | null;
   agentId?: string | null;
   runId?: string | null;
   userId?: string | null;
@@ -2707,16 +2709,26 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
         }
       }
 
+      let sourceIdentityContextId: string | null = null;
       if (data.sourceRunId) {
         const sourceRun = await db
           .select({
             companyId: heartbeatRuns.companyId,
+            activeIdentityContextId: heartbeatRuns.activeIdentityContextId,
           })
           .from(heartbeatRuns)
           .where(eq(heartbeatRuns.id, data.sourceRunId))
           .then((rows) => rows[0] ?? null);
         if (!sourceRun || sourceRun.companyId !== issue.companyId) {
           throw unprocessable("sourceRunId must belong to the same company");
+        }
+        sourceIdentityContextId = actor.identityContextId ?? sourceRun.activeIdentityContextId;
+        if (sourceIdentityContextId) {
+          const [origin] = await db.select({id: runIdentityContexts.id}).from(runIdentityContexts).where(and(
+            eq(runIdentityContexts.id, sourceIdentityContextId), eq(runIdentityContexts.companyId, issue.companyId),
+            eq(runIdentityContexts.runId, data.sourceRunId), eq(runIdentityContexts.status, "accepted"),
+          ));
+          if (!origin) throw unprocessable("Interaction execution identity is unavailable");
         }
       }
 
@@ -2770,6 +2782,7 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
               idempotencyKey: data.idempotencyKey ?? null,
               sourceCommentId: data.sourceCommentId ?? null,
               sourceRunId: data.sourceRunId ?? null,
+              sourceIdentityContextId,
               title: data.title ?? null,
               summary: data.summary ?? null,
               createdByAgentId: actor.agentId ?? null,
@@ -3018,6 +3031,8 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
             billingCode: task.billingCode ?? null,
             createdByAgentId: actor.agentId ?? null,
             createdByUserId: actor.userId ?? null,
+            originIdentityContextId: interaction.sourceIdentityContextId ?? null,
+            originRunId: interaction.sourceRunId ?? null,
             actorAgentId: actor.agentId ?? null,
             actorUserId: actor.userId ?? null,
           } as Parameters<ReturnType<typeof issueService>["createChild"]>[1]);
