@@ -1036,7 +1036,14 @@ export function redactAgentAdapterConfig(
   adapterConfig: Record<string, unknown>,
 ): Record<string, unknown> {
   if (!isPlainObject(adapterConfig)) return adapterConfig;
-  if (!isPlainObject(adapterConfig.env)) return redactEventPayload(adapterConfig) ?? {};
+  // A missing/invalid `env` shape must still deny-by-default through
+  // redactConfigurationPayload, not the legacy redactEventPayload/
+  // sanitizeRecord path, which preserves scalars under neutral/unrecognized
+  // keys and would reintroduce the neutral-key credential exposure this
+  // function exists to close.
+  if (!isPlainObject(adapterConfig.env)) {
+    return redactConfigurationPayload(adapterConfig, "adapter") ?? {};
+  }
 
   // Redact `env` here and sanitize the remaining keys separately, so bindings
   // are never processed twice. `redactAgentEnvBinding` is authoritative for
@@ -1054,14 +1061,23 @@ function redactConfigurationValue(
   value: unknown,
   path: string[] = [],
   surface: ConfigurationRedactionSurface = "generic",
+  insideArray = false,
 ): unknown {
   if (value === null || value === undefined) return value;
-  if (Array.isArray(value)) return value.map((entry) => redactConfigurationValue(entry, path, surface));
+  if (Array.isArray(value)) {
+    return value.map((entry) => redactConfigurationValue(entry, path, surface, true));
+  }
   if (isSecretRefBinding(value)) return redactSecretRefBinding(value);
   if (isUserSecretRefBinding(value)) return redactUserSecretRefBinding(value);
   if (isPlainBinding(value)) return { type: value.type, value: REDACTED_EVENT_VALUE };
   if (!isPlainObject(value)) {
-    return isPublicConfigurationScalar(path, surface) ? value : REDACTED_EVENT_VALUE;
+    // No currently allowlisted path names an array — they all describe a
+    // scalar at that path. A malformed/attacker-influenced array occupying
+    // an otherwise-scalar allowlisted path (e.g. `adapter.model`) must not
+    // let its elements inherit the parent path's public-scalar status.
+    return !insideArray && isPublicConfigurationScalar(path, surface)
+      ? value
+      : REDACTED_EVENT_VALUE;
   }
   return Object.fromEntries(Object.entries(value).map(([childKey, child]) => [
     childKey,

@@ -2835,16 +2835,23 @@ export function agentRoutes(
     agent: T,
   ): T {
     if (!agent || typeof agent !== "object") return agent;
-    if (!agent.adapterConfig || typeof agent.adapterConfig !== "object") return agent;
+    // adapterConfig/runtimeConfig are redacted independently of one another's
+    // presence or shape: a missing/null/non-object value must still fail
+    // closed through the deny-by-default redactors below rather than bypass
+    // redaction entirely.
+    const adapterConfig =
+      agent.adapterConfig && typeof agent.adapterConfig === "object"
+        ? (agent.adapterConfig as Record<string, unknown>)
+        : {};
+    const rawRuntimeConfig = (agent as { runtimeConfig?: unknown }).runtimeConfig;
+    const runtimeConfig =
+      rawRuntimeConfig && typeof rawRuntimeConfig === "object"
+        ? (rawRuntimeConfig as Record<string, unknown>)
+        : {};
     return {
       ...agent,
-      adapterConfig: redactAgentAdapterConfig(
-        agent.adapterConfig as Record<string, unknown>,
-      ),
-      runtimeConfig: redactConfigurationPayload(
-        (agent as { runtimeConfig?: unknown }).runtimeConfig as Record<string, unknown>,
-        "runtime",
-      ),
+      adapterConfig: redactAgentAdapterConfig(adapterConfig),
+      runtimeConfig: redactConfigurationPayload(runtimeConfig, "runtime"),
     };
   }
 

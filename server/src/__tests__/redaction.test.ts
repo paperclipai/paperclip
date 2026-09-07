@@ -103,6 +103,32 @@ describe("redaction", () => {
     });
   });
 
+  it("redacts every element of a malformed array occupying an allowlisted scalar path", () => {
+    const secretValue = "must-not-survive-in-array";
+
+    const adapterResult = redactConfigurationPayload({
+      model: [secretValue, "another-neutral-string"],
+    }, "adapter");
+    expect(adapterResult).toEqual({
+      model: [REDACTED_EVENT_VALUE, REDACTED_EVENT_VALUE],
+    });
+    expect(JSON.stringify(adapterResult)).not.toContain(secretValue);
+
+    const runtimeResult = redactConfigurationPayload({
+      heartbeat: { enabled: [secretValue] },
+    }, "runtime");
+    expect(runtimeResult).toEqual({
+      heartbeat: { enabled: [REDACTED_EVENT_VALUE] },
+    });
+    expect(JSON.stringify(runtimeResult)).not.toContain(secretValue);
+
+    // A scalar (non-array) value at the same allowlisted paths still passes
+    // through untouched — only arrays lose the implicit public-scalar status.
+    expect(redactConfigurationPayload({ model: "public-model-id" }, "adapter")).toEqual({
+      model: "public-model-id",
+    });
+  });
+
   it("restores round-tripped redaction markers without discarding intentional edits", () => {
     const existing = {
       model: "old-model",
@@ -821,6 +847,42 @@ second-line\" status=401`,
     expect(redactAgentAdapterConfig({ command: REDACTED_EVENT_VALUE, apiKey: "secret" })).toEqual({
       command: REDACTED_EVENT_VALUE,
       apiKey: REDACTED_EVENT_VALUE,
+    });
+  });
+
+  // SEC-1790: a missing/invalid `env` shape must deny-by-default through
+  // redactConfigurationPayload rather than fall back to the legacy
+  // sanitizeRecord heuristics, which preserve scalar values under
+  // neutral/unrecognized keys unless they look secret-shaped.
+  it("denies unrecognized adapter keys by default when env is missing or invalid", () => {
+    const neutralValue = "us-east-1";
+
+    expect(redactAgentAdapterConfig({
+      model: "public-model-id",
+      region: neutralValue,
+    })).toEqual({
+      model: "public-model-id",
+      region: REDACTED_EVENT_VALUE,
+    });
+
+    expect(redactAgentAdapterConfig({
+      model: "public-model-id",
+      region: neutralValue,
+      env: "not-a-plain-object",
+    })).toEqual({
+      model: "public-model-id",
+      region: REDACTED_EVENT_VALUE,
+      env: REDACTED_EVENT_VALUE,
+    });
+
+    expect(redactAgentAdapterConfig({
+      model: "public-model-id",
+      region: neutralValue,
+      env: null,
+    })).toEqual({
+      model: "public-model-id",
+      region: REDACTED_EVENT_VALUE,
+      env: null,
     });
   });
 });
