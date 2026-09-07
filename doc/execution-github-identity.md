@@ -35,3 +35,13 @@ Run details show identity revisions and redacted GitHub results: responsible per
 Deploy the schema, server broker, launcher staging, and runtime environment contract together. Already-running processes retain their original environment; only newly dispatched processes receive the broker contract. Run-scoped capabilities remain valid only while their bound run is active.
 
 Focused coverage lives in `run-identity.test.ts`, `github-operation-credentials.test.ts`, and `github-launcher.test.ts`, alongside the native steering, gateway, routine, and callback-bridge suites. Live acceptance additionally requires two authenticated Paperclip users, two authorized GitHub accounts, and a designated disposable repository for push verification. Local commit metadata and mocked API results do not replace that live push test.
+
+### Release procedure
+
+1. Back up the instance database using the normal deployment procedure.
+2. Build and deploy one revision containing migrations 0240–0243, the server broker, managed launchers, and the runner artifacts. Run the standard pending-migration check before admitting new runs. These additive migrations are safe to replay and do not infer authorship for historical runs.
+3. Let pre-rollout executions finish with their original runtime contract. New executions must have an active identity context and the managed launcher capability before provider startup.
+4. Check one ordinary run without a GitHub connection, then an authenticated GitHub operation. Inspect the run details for the responsible person and credential outcome. Verify a queued continuation on the same conversation.
+5. If rollback is needed, finish or explicitly stop executions using the new broker before removing its endpoint. Keep the additive schema and identity history. Do not drop identity columns or tables to roll back application code.
+
+Remote acceptance uses the existing paid runner workflow with a narrow selection. Run it against the same immutable revision as the release; a successful local test does not qualify a different remote runner artifact.
