@@ -817,6 +817,17 @@ describe("AgentConfigForm environment selector", () => {
     });
   });
 
+  it("names the Claude default for new and existing agents without pinning it", async () => {
+    const environments = [makeEnvironment({ id: "local-1", name: "Local", driver: "local" })];
+    const existing = await renderForm(environments, { adapterType: "claude_local", adapterConfig: {} });
+    roots.push(existing.root);
+    const created = await renderCreateForm(environments, { adapterType: "claude_local", model: "" });
+    roots.push(created.root);
+    expect(existing.container.textContent).toContain("Default (claude-opus-5)");
+    expect(created.container.textContent).toContain("Default (claude-opus-5)");
+    expect(existing.onSave).not.toHaveBeenCalled();
+  });
+
   it("keeps secret access out of the main Configuration content", async () => {
     const result = await renderForm([
       makeEnvironment({ id: "local-1", name: "Local", driver: "local" }),
