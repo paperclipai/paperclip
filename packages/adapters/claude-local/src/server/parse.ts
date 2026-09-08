@@ -54,6 +54,40 @@ export function claudeModelUsageTotals(modelUsage: unknown): UsageSummary | null
   return { inputTokens, outputTokens, cachedInputTokens };
 }
 
+/**
+ * Whether a Claude CLI `result` event closes a turn the adapter asked for.
+ *
+ * When a session resumes, the CLI first drains the background-task
+ * notifications it queued while the previous process was gone, and it emits a
+ * synthetic result event for that drain: `num_turns: 0`, an empty `result`
+ * and `origin.kind: "task-notification"`. It is bookkeeping, not the end of
+ * the run's turn — the real turn has not even started yet.
+ */
+export function isClaudeTaskNotificationResult(event: Record<string, unknown>): boolean {
+  return asString(parseObject(event.origin).kind, "") === "task-notification";
+}
+
+/**
+ * Whether stdout already contains the result event of a real turn.
+ *
+ * `terminalResultCleanup` uses this to decide that the CLI is done and only
+ * an unmanaged background task keeps the process alive. Scanning for any
+ * non-notification result (rather than reading the last result event) keeps a
+ * notification that lands after the turn from hiding the real result.
+ */
+export function hasClaudeTurnResult(stdout: string): boolean {
+  for (const rawLine of stdout.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    const event = parseJson(line);
+    if (!event) continue;
+    if (asString(event.type, "") !== "result") continue;
+    if (isClaudeTaskNotificationResult(event)) continue;
+    return true;
+  }
+  return false;
+}
+
 export function parseClaudeStreamJson(stdout: string) {
   let sessionId: string | null = null;
   let model = "";
