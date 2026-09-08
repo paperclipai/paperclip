@@ -248,13 +248,16 @@ Chatuebergreifende Aufgabenliste. Was hier steht, ist noch offen.
       Quelldateien stehen unveraendert darunter). Nichts verschlechtert, aber
       auch nichts aufgeholt. *(2026-09-07, Chat: Kontext-Bedarf und MLX-Autofit)*
 
-- [ ] **10+ Commits nicht gepusht** — `git log fork/master..HEAD` zeigt auf
-      `master` mindestens zehn unveroeffentlichte Commits, aelteste reichen bis
-      `ca9e6179d` zurueck (u. a. Chatverlauf 05.09., Clara-R9-Instruktionen,
-      Heartbeat-Tagesstatistik, Link-Detektor-Fix). Upstream ist `fork/master`
-      (whitestagai) — **nicht** `origin` (paperclipai, fremd). Push ist
-      ansagepflichtig und wurde am 07.09. bewusst nicht ausgefuehrt.
-      *(2026-09-07, Chat: Kontext-Bedarf und MLX-Autofit)*
+- [ ] **1 Commit nicht gepusht** — `9f3845eb5` (der ToDo-Stand vom 07.09.).
+      Push ist ansagepflichtig und wurde bewusst nicht ausgefuehrt.
+      **Korrektur zur ersten Fassung dieses Eintrags:** dort standen „10+
+      Commits", gemessen gegen `origin/master`. Das ist der **falsche
+      Massstab** — `origin` ist paperclipai (fremd) und liegt bauartbedingt
+      **672** Commits zurueck; dorthin wird nie gepusht. Das echte Push-Ziel ist
+      `fork/master` (whitestagai), und dagegen war und ist nur der eine
+      Doku-Commit offen. Merksatz: **immer `git log fork/master..HEAD` fahren
+      oder `@{u}` aufloesen — nie `origin` als Referenz nehmen.**
+      *(2026-09-07, korrigiert 2026-09-08, Chat: Kontext-Bedarf und MLX-Autofit)*
 
 - [ ] **7 uncommittete Dateien im Worktree `agent-learning-tree`** — liegt unter
       `~/.paperclip/scripts/agent-learning-tree`, Branch
