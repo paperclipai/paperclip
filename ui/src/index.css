@@ -2779,3 +2779,60 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
    * allow ui/src/pages/Projects.test.tsx — mock project color fixture
    * allow ui/src/pages/Routines.test.tsx — mock routine/label color fixtures
    ── end allowlist ── */
+
+/* Agent settings composition, shared with Storybook. */
+.agent-settings-form > .relative {
+  @apply flex flex-col gap-8;
+}
+.agent-settings-form [data-config-section] {
+  @apply my-0;
+}
+.agent-settings-form [data-config-section] > .rounded-lg {
+  @apply bg-card p-5;
+}
+.agent-settings-form [data-config-section] h3 {
+  @apply text-sm font-semibold;
+}
+.agent-settings-form [data-config-section="identity"] > .rounded-lg {
+  @apply grid gap-5 sm:grid-cols-2;
+}
+.agent-settings-form [data-config-section="identity"] > .rounded-lg > * {
+  @apply m-0;
+}
+.agent-settings-form
+  [data-config-section="identity"]
+  > .rounded-lg
+  > :nth-child(n + 3) {
+  @apply sm:col-span-2;
+}
+.agent-settings-overview section,
+.agent-settings-permissions .rounded-lg,
+.agent-settings-api-keys .rounded-lg,
+.agent-settings-revisions .rounded-md {
+  @apply bg-card;
+}
+.agent-settings-content > .max-w-3xl {
+  @apply max-w-none;
+}
+
+.agent-settings-form [data-config-section="permissions"] > .rounded-lg {
+  @apply grid items-start gap-5 sm:grid-cols-2;
+}
+.agent-settings-form [data-config-section="permissions"] > .rounded-lg > * {
+  @apply m-0 min-w-0;
+}
+.agent-settings-form
+  [data-config-section="permissions"]
+  > .rounded-lg
+  > [data-config-field],
+.agent-settings-form [data-config-section="permissions"] > .rounded-lg > p,
+.agent-settings-form
+  [data-config-section="permissions"]
+  > .rounded-lg
+  > div:has(textarea),
+.agent-settings-form
+  [data-config-section="permissions"]
+  > .rounded-lg
+  > div:has([role="switch"]) {
+  @apply sm:col-span-2;
+}

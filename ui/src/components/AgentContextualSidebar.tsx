@@ -49,10 +49,12 @@ export function AgentContextualSidebar({
   agentRef,
   agentId,
   agentName,
+  labels = { secrets: "Secrets & variables" },
 }: {
   agentRef: string;
   agentId?: string;
   agentName?: string;
+  labels?: Partial<Record<AgentLocalDetailView, string>>;
 }) {
   const { selectedCompanyId } = useCompany();
   const shouldResolveAgent = !agentId || !agentName;
@@ -96,7 +98,7 @@ export function AgentContextualSidebar({
                   <SidebarNavItem
                     key={item.value}
                     to={href}
-                    label={item.label}
+                    label={labels?.[item.value] ?? item.label}
                     icon={localIcons[item.value]}
                   />
                 );

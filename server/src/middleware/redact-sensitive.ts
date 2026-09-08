@@ -37,6 +37,9 @@ const SENSITIVE_KEYS = new Set<string>([
   "idtoken",
   "api_key",
   "apikey",
+  // Probe keys are transient, including rejected or future provider names.
+  // Redact the whole container instead of maintaining a second key allowlist.
+  "testcredentials",
   "authorization",
   "auth_token",
   "authtoken",
