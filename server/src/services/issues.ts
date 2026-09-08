@@ -8014,6 +8014,10 @@ export function issueService(db: Db) {
               });
             }
           }
+          if (updated.assigneeAgentId !== existing.assigneeAgentId || updated.assigneeUserId !== existing.assigneeUserId) {
+            const { issueThreadInteractionService } = await import("./issue-thread-interactions.js");
+            await issueThreadInteractionService(tx).expireConnectionIntentsForOwnershipChange(updated);
+          }
           if (updated.status === "done" || updated.status === "cancelled") {
             await finalizeSummarySlotsForTerminalIssue(tx, updated);
             // Every terminal transition funnels through here, including direct

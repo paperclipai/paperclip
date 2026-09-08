@@ -9,6 +9,8 @@ export type ConnectionAvailabilityState =
 
 export interface ConnectionSearchResultItem {
   service: string;
+  source?: "catalog" | "configured";
+  reason?: string;
   name: string;
   description: string | null;
   logoUrl: string | null;

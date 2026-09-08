@@ -8789,13 +8789,14 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
 
     let existingApplication: typeof toolApplications.$inferSelect | null = null;
     let requestedResumeConnection: typeof toolConnections.$inferSelect | null = null;
-    if (input.resumeConnectionId) {
+    const requestedConnectionId = input.resumeConnectionId ?? input.reconnectConnectionId;
+    if (requestedConnectionId) {
       const [connection] = await db.select().from(toolConnections).where(and(
-        eq(toolConnections.id, input.resumeConnectionId),
+        eq(toolConnections.id, requestedConnectionId),
         eq(toolConnections.companyId, companyId),
       ));
       if (!connection) throw notFound("Incomplete app connection not found");
-      if (connection.status !== "draft") {
+      if (input.resumeConnectionId && connection.status !== "draft") {
         throw conflict("Only an incomplete app connection can resume setup", {
           code: "connection_setup_not_incomplete",
         });
@@ -8808,6 +8809,10 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         eq(toolApplications.companyId, companyId),
       ));
       if (!application) throw notFound("App not found");
+      const source = asRecord(connection.config).sourceTemplateKey ?? asRecord(connection.transportConfig).sourceTemplateKey ?? asRecord(application.metadata).sourceTemplateKey ?? asRecord(application.metadata).source;
+      if (input.reconnectConnectionId && ((galleryEntry && source !== galleryEntry.slug) || (!galleryEntry && typeof source === "string" && getConnectableAppDefinition(source)))) {
+        throw badRequest("Reconnect must preserve the configured provider");
+      }
       requestedResumeConnection = connection;
       existingApplication = application;
     } else if (input.applicationId) {
@@ -9923,6 +9928,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
           metadata: { source: "app_gallery_finish" },
         }));
     const transactionResult = await db.transaction(async (tx) => {
+      await tx.select({ id: toolConnections.id }).from(toolConnections).where(and(eq(toolConnections.id, connectionId), eq(toolConnections.companyId, companyId))).for("update");
       const [existingProfile] = await tx
         .select()
         .from(toolProfiles)
@@ -9930,6 +9936,12 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         .limit(1);
       let profileId: string;
       if (existingProfile) {
+        if (input.preserveExistingAccess) {
+          const priorBindings = await tx.select().from(toolProfileBindings).where(eq(toolProfileBindings.profileId, existingProfile.id));
+          for (const prior of priorBindings) if (!bindingInputs.some((binding) => binding.targetType === prior.targetType && binding.targetId === prior.targetId)) bindingInputs.push({ targetType: prior.targetType, targetId: prior.targetId, priority: prior.priority, metadata: prior.metadata });
+          const priorEntries = await tx.select().from(toolProfileEntries).where(eq(toolProfileEntries.profileId, existingProfile.id));
+          for (const prior of priorEntries) if (!entries.some((entry) => entry.catalogEntryId && entry.catalogEntryId === prior.catalogEntryId)) entries.push({ selectorType: prior.selectorType, effect: prior.effect, applicationId: prior.applicationId, connectionId: prior.connectionId, catalogEntryId: prior.catalogEntryId, toolName: prior.toolName, riskLevel: prior.riskLevel, conditions: prior.conditions });
+        }
         await tx
           .delete(toolProfileBindings)
           .where(and(eq(toolProfileBindings.companyId, companyId), eq(toolProfileBindings.profileId, existingProfile.id)));
@@ -10048,6 +10060,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         companyId,
         connection,
         askFirstEntries: askFirstRows,
+        disableStale: !input.preserveExistingAccess,
         actor,
       }, tx);
       const [updatedConnection] = await tx

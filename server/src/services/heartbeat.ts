@@ -17462,11 +17462,12 @@ export function heartbeatService(
         isResolvedInteractionContinuationWakeContext(context)
       ) {
         try {
-          // Claim the issue under the same in_progress predicate used by the
+          // Claim the issue under the same active-status predicate used by the
           // queued-run staleness gate. This is the final atomic guard before
           // dispatch: an operator parking the issue after claim but before this
           // checkout must not be overwritten by the continuation.
-          await issuesSvc.checkout(issueId, agent.id, ["in_progress"], run.id);
+          await issuesSvc.checkout(issueId, agent.id, context.interactionKind === "connection_intent"
+            ? ["in_progress", "in_review"] : ["in_progress"], run.id);
           context[PAPERCLIP_HARNESS_CHECKOUT_KEY] = true;
         } catch (error) {
           if (!isCheckoutConflictError(error)) throw error;

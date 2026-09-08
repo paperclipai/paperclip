@@ -29,6 +29,7 @@ export interface StrictCompletionContractInput {
 export interface NativeInteractionResponseEnvelope {
   interactionId: string;
   kind:
+    | "connection_intent"
     | "suggest_tasks"
     | "ask_user_questions"
     | "request_confirmation"
@@ -620,6 +621,7 @@ export function parseNativeExecutionInput(value: unknown): NativeExecutionInput 
     const response = record(entry, `input.interactionResponses[${index}]`);
     exactKeys(response, ["interactionId", "kind", "response"], `input.interactionResponses[${index}]`);
     if (![
+      "connection_intent",
       "suggest_tasks",
       "ask_user_questions",
       "request_confirmation",

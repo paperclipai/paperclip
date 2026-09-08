@@ -4629,6 +4629,27 @@ describeEmbeddedPostgres("tool access service", () => {
       .resolves.toHaveLength(1);
   });
 
+  it("reconnects an exact active custom MCP connection without duplicating its identity", async () => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+    mockToolsList([{ name: "archive_read", annotations: { readOnlyHint: true } }]);
+    const first = await service.connectGalleryApp(company.id, { link: "https://fixture.example/mcp", authMode: "none", name: "Archive" }, { actorType: "user", actorId: "board" });
+    await db.update(toolConnections).set({ status: "active", healthStatus: "error" }).where(eq(toolConnections.id, first.connectionId));
+    mockToolsList([{ name: "archive_read", annotations: { readOnlyHint: true } }]);
+    const reconnected = await service.connectGalleryApp(company.id, { link: "https://fixture.example/mcp", authMode: "none", reconnectConnectionId: first.connectionId }, { actorType: "user", actorId: "board" });
+    expect(reconnected.connectionId).toBe(first.connectionId);
+    const originalAgent = await createAgent(db, company.id);
+    const requester = await createAgent(db, company.id);
+    const ids = reconnected.actions.readOnly.map((action) => action.catalogEntryId);
+    await service.finishGalleryAppConnection(company.id, first.connectionId, { enabledCatalogEntryIds: ids, askFirstCatalogEntryIds: [], access: { agentIds: [originalAgent.id] } });
+    const additive = await service.finishGalleryAppConnection(company.id, first.connectionId, { enabledCatalogEntryIds: ids, askFirstCatalogEntryIds: [], access: { agentIds: [requester.id] }, preserveExistingAccess: true });
+    expect(additive.profileBindings.map((binding) => binding.targetId)).toEqual(expect.arrayContaining([originalAgent.id, requester.id]));
+    expect(await db.select().from(toolConnections).where(eq(toolConnections.companyId, company.id))).toHaveLength(1);
+    await expect(service.connectGalleryApp(company.id, { galleryKey: "notion", reconnectConnectionId: first.connectionId }, { actorType: "user", actorId: "board" })).rejects.toThrow("preserve the configured provider");
+    const other = await createCompany(db);
+    await expect(service.connectGalleryApp(other.id, { link: "https://fixture.example/mcp", reconnectConnectionId: first.connectionId }, { actorType: "user", actorId: "board" })).rejects.toThrow("not found");
+  });
+
   it("refuses a personal identity when no named user is making the request", async () => {
     const company = await createCompany(db);
     const service = createTestToolAccessService(db);
@@ -6934,16 +6955,22 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(location.searchParams.get("code")).toBe("oauth_authorization_denied");
   });
 
-  it("starts and completes OAuth app sign-in with PKCE state and secret-backed tokens", async () => {
+  it.each([
+    "https://paperclip-public.example",
+    "http://127.0.0.1:3200",
+    "http://localhost:3200",
+  ])("starts and completes OAuth with the same redirect URI at %s", async (origin) => {
     vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_ID", "slack-client-id");
     vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_SECRET", "slack-client-secret");
-    vi.stubEnv("PAPERCLIP_PUBLIC_URL", "https://paperclip-public.example");
+    vi.stubEnv("PAPERCLIP_PUBLIC_URL", origin.startsWith("https:") ? origin : "");
     const company = await createCompany(db);
     await grantBoardUser(db, company.id, "board-user", ["tools:manage_connections"]);
     const app = createRouteApp(db);
 
     const connectRes = await request(app)
       .post(`/api/companies/${company.id}/tools/apps/connect`)
+      .set("Host", new URL(origin).host)
+      .set("Origin", origin)
       .send({ galleryKey: "slack", name: "Slack workspace" });
 
     expect(connectRes.status).toBe(201);
@@ -6958,7 +6985,7 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(startUrl.searchParams.get("client_id")).toBe("slack-client-id");
     expect(startUrl.searchParams.get("code_challenge_method")).toBe("S256");
     expect(startUrl.searchParams.get("code_challenge")).toMatch(/^[A-Za-z0-9_-]{43}$/);
-    expect(startUrl.searchParams.get("redirect_uri")).toBe("https://paperclip-public.example/api/tools/oauth/callback");
+    expect(startUrl.searchParams.get("redirect_uri")).toBe(`${origin}/api/tools/oauth/callback`);
     const state = startUrl.searchParams.get("state");
     expect(state).toBeTruthy();
     await expect(db.select().from(toolOauthStates)).resolves.toEqual([
@@ -6980,7 +7007,7 @@ describeEmbeddedPostgres("tool access service", () => {
         expect(body.get("code")).toBe("oauth-code");
         expect(body.get("client_secret")).toBe("slack-client-secret");
         expect(body.get("code_verifier")).toBeTruthy();
-        expect(body.get("redirect_uri")).toBe("https://paperclip-public.example/api/tools/oauth/callback");
+        expect(body.get("redirect_uri")).toBe(`${origin}/api/tools/oauth/callback`);
         return {
           ok: true,
           json: async () => ({
@@ -7011,6 +7038,7 @@ describeEmbeddedPostgres("tool access service", () => {
 
     const callbackRes = await request(app)
       .get("/api/tools/oauth/callback")
+      .set("Host", new URL(origin).host)
       .query({ state, code: "oauth-code" });
 
     expect(callbackRes.status).toBe(200);
@@ -7033,12 +7061,15 @@ describeEmbeddedPostgres("tool access service", () => {
 
     const redirectConnectRes = await request(app)
       .post(`/api/companies/${company.id}/tools/apps/connect`)
+      .set("Host", new URL(origin).host)
+      .set("Origin", origin)
       .send({ galleryKey: "slack", name: "Slack redirect" })
       .expect(201);
     const redirectState = new URL(redirectConnectRes.body.auth.startUrl).searchParams.get("state");
     expect(redirectState).toBeTruthy();
     const redirectCallbackRes = await request(app)
       .get("/api/tools/oauth/callback")
+      .set("Host", new URL(origin).host)
       .set("Accept", "text/html")
       .query({ state: redirectState, code: "oauth-code" });
 

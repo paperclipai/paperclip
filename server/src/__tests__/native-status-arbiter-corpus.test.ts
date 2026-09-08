@@ -2190,6 +2190,23 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
     ]);
   });
 
+  it("binds a tools-refresh continuation to its existing durable wake without a duplicate", async () => {
+    const template = corpus.fixtures.find((candidate) => candidate.mode === "native")!;
+    const fixture = { ...template, id: "in-feed-tools-refresh", given: { ...template.given, priorIssueStatus: "in_progress" } };
+    const seeded = await seedFixture(fixture);
+    const key = `connection-intent:tools:${seeded.runId}:fixture-digest`;
+    const [wake] = await db.insert(agentWakeupRequests).values({ companyId, agentId, source: "assignment", status: "queued", idempotencyKey: key,
+      payload: { issueId: seeded.issueId, mutation: "connection_tools_refreshed" } }).returning();
+    const decision: NativeStatusDecision = { policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION, statusAction: "in_progress", toStatus: "in_progress",
+      reasonCode: "live_continuation_registered", unblockDescriptor: null,
+      effects: [{ kind: "enqueue_continuation", continuationKind: "same_agent", summary: "Use updated tools", idempotencyKey: key, agentId }] };
+    await commitNativeStatusDecision({ db, companyId, issueId: seeded.issueId, runId: seeded.runId, assessmentId: seeded.assessmentId,
+      priorStatus: "in_progress", priorStatusVersion: 0, priorDecisionId: null, decision });
+    const effects = await db.select().from(statusDecisionEffects).where(eq(statusDecisionEffects.issueId, seeded.issueId));
+    expect(effects.filter((effect) => effect.effectKind === "enqueue_continuation")).toEqual([expect.objectContaining({ targetId: wake!.id, targetType: "agent_wakeup_request" })]);
+    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.idempotencyKey, key))).toHaveLength(1);
+  });
+
   it("fails the transaction closed for an unknown status effect", async () => {
     const fixture = corpus.fixtures.find((candidate) => candidate.mode === "native");
     if (!fixture) throw new Error("native corpus fixture missing");

@@ -56,8 +56,9 @@ import {
   type PaperclipRunnerTransport,
 } from "@paperclipai/adapter-utils/runner-connectivity";
 import type { Db } from "@paperclipai/db";
-import { and, desc, eq, gt, inArray, or, sql } from "drizzle-orm";
+import { and, desc, eq, gt, inArray, like, notInArray, or, sql } from "drizzle-orm";
 import {
+  agentWakeupRequests,
   documentRevisions,
   environmentLeases,
   heartbeatRunEvents,
@@ -882,6 +883,22 @@ export function createGovernedWaitEventObservation(
       }
       return current.result;
     },
+  };
+}
+
+export function nativeToolsRefreshWaitResult(input: {
+  wakeId: string; key: string;
+  completionContract: NativeExecutionInput["completionContract"]["contract"];
+}): PrpStructuredRunResult {
+  const ref = `wakeup:${input.wakeId}`;
+  return {
+    schema: "paperclip.run_result.v1", reportedWorkDisposition: "yielded",
+    summary: "Continuing with the newly installed connection tools.",
+    completionClaim: { contractRevision: input.completionContract.revision, objectiveSatisfied: false,
+      criteria: input.completionContract.criteria.map((criterion) => ({ criterionId: criterion.id, status: "unknown", evidenceRefs: [ref] })),
+      remainingWork: [{ description: "Continue in the queued session with updated tools.", blocksCompletion: true }] },
+    evidence: [{ ref }], verification: [], attentionRequests: [], artifacts: [],
+    continuation: { kind: "same_agent", summary: "Use the updated connection tools in a fresh session.", idempotencyKey: input.key },
   };
 }
 
@@ -4343,6 +4360,10 @@ async function executePaperclipNativeSessionWithinScope(
               issueThreadInteractions.sourceRunId,
               input.execution.binding.runId,
             ),
+            and(
+              eq(issueThreadInteractions.kind, "connection_intent"),
+              eq(issueThreadInteractions.createdByAgentId, input.execution.binding.agentId),
+            ),
             ...(continuingInteractionIds.length > 0
               ? [inArray(issueThreadInteractions.id, continuingInteractionIds)]
               : []),
@@ -4356,12 +4377,20 @@ async function executePaperclipNativeSessionWithinScope(
       )
       .limit(1)
       .then((rows) => rows[0] ?? null);
-    return interaction
-      ? nativeGovernedWaitResult({
-          interaction,
-          completionContract: input.execution.completionContract.contract,
-        })
-      : null;
+    if (interaction) return nativeGovernedWaitResult({
+      interaction, completionContract: input.execution.completionContract.contract,
+    });
+    // A ready connection can become installed after the provider snapshot was
+    // pinned. Its already-durable wake is also a valid reason to end this turn.
+    const [refresh] = await input.db.select({ id: agentWakeupRequests.id, key: agentWakeupRequests.idempotencyKey })
+      .from(agentWakeupRequests).where(and(
+        eq(agentWakeupRequests.companyId, input.execution.binding.companyId),
+        eq(agentWakeupRequests.agentId, input.execution.binding.agentId),
+        like(agentWakeupRequests.idempotencyKey, `connection-intent:tools:${input.execution.binding.runId}:%`),
+        notInArray(agentWakeupRequests.status, ["skipped", "failed", "cancelled"]),
+      )).limit(1);
+    return refresh?.key ? nativeToolsRefreshWaitResult({ wakeId: refresh.id, key: refresh.key,
+      completionContract: input.execution.completionContract.contract }) : null;
   }
   const runnerExecution =
     input.useRunnerd && input.runnerExecutionTarget?.kind === "remote"
@@ -6203,6 +6232,7 @@ async function createRunnerdBackendWithinSessionClaim(
     runId: input.execution.binding.runId,
     agentId: input.execution.binding.agentId,
     normalizedSessionId: nativeSessionKey(input.execution),
+    pinnedMcpDigest: "runtimeContext" in input.execution ? input.execution.runtimeContext.mcp.digest : undefined,
     workMode: input.execution.task.workMode,
     enqueueWakeup: input.enqueueWakeup,
   });

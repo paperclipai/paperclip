@@ -1402,6 +1402,13 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         });
       }
       if (entries.length === 0) {
+        // A queued continuation cancelled after the task was completed or parked
+        // never produced a provider turn. Keep its record in the run log without
+        // presenting it as a completed chat response.
+        if (source.status === "cancelled" && meta?.errorCode === "issue_not_in_progress") {
+          settledRunIds.add(source.id);
+          continue;
+        }
         if (sourceIsPaperclipRunner && sourceYielded) {
           settledRunIds.add(source.id);
           continue;
@@ -2081,6 +2088,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
       .filter(
         (interaction) =>
           interaction.status === "pending" &&
+          interaction.kind !== "connection_intent" &&
           !shouldHideInteractionCard(interaction),
       )
       .sort((left, right) => toMs(right.createdAt) - toMs(left.createdAt));

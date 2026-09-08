@@ -1530,4 +1530,15 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     expect(countExecuteCallsForRun(runId)).toBe(0);
   });
 
+  it.each(["accepted", "rejected"])("resumes a %s connection outcome after native waiting moves the task to review", async (interactionStatus) => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const issueId = randomUUID();
+    await db.insert(issues).values({ id: issueId, companyId, title: "Waiting for connection", status: "in_review", priority: "medium", assigneeAgentId: agentId });
+    const { runId } = await seedQueuedRun({ companyId, agentId, issueId, wakeReason: "issue_commented", invocationSource: "automation",
+      contextExtras: { interactionId: randomUUID(), interactionKind: "connection_intent", interactionStatus,
+        interactionResolvedAt: new Date().toISOString(), mutation: "interaction", source: "connection_intent.resolved", forceFreshSession: true } });
+    await heartbeat.resumeQueuedRuns();
+    await waitForCondition(async () => (await db.select({ status: heartbeatRuns.status }).from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)))[0]?.status === "succeeded");
+    expect(countExecuteCallsForRun(runId)).toBe(1);
+  });
 });

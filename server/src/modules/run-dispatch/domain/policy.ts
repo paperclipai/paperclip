@@ -130,6 +130,8 @@ export type QueuedRunFacts = {
   issueExecutionRunId: string | null;
 
   isResolvedInteractionContinuation: boolean;
+  /** A connection resolution or tool refresh can resume an agent waiting in review. */
+  isConnectionContinuation?: boolean;
   isInteractionWake: boolean;
   isAuthorizedSourceScopedRecovery: boolean;
   isNonAssigneeWorkspaceBusyRetry: boolean;
@@ -458,10 +460,10 @@ export function decideQueuedRunStaleness(
     };
   }
 
-  if (facts.isResolvedInteractionContinuation) {
+  if (facts.isResolvedInteractionContinuation || facts.isConnectionContinuation) {
     const earlyStatus = decideIssueStatus({
       status: facts.issueStatus,
-      requiresInProgress: true,
+      requiresInProgress: !(facts.isConnectionContinuation && facts.issueStatus === "in_review"),
       terminalBypass: true,
     });
     if (earlyStatus === "not_in_progress") {

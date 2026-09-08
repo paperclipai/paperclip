@@ -1491,9 +1491,13 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     await flushReact();
     await flushReact();
 
-    expect(container.textContent).toContain("Allow popups for this site and try again");
+    expect(container.textContent).toContain("Open sign-in in a new tab to continue");
     expect(container.textContent).toContain("Try again");
     expect(onPhaseChange).toHaveBeenCalledWith("needs_retry");
+    const fallback = container.querySelector<HTMLAnchorElement>('a[target="_blank"]');
+    expect(fallback?.textContent).toBe("Open sign-in in a new tab");
+    expect(fallback?.href).toContain("https://mcp.notion.com/authorize");
+    expect(fallback?.rel).toBe("noopener noreferrer");
 
     openSpy.mockRestore();
     await act(async () => dialogRoot.unmount());
