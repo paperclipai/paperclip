@@ -11313,6 +11313,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     const method = connectionMethodForConnection(galleryEntry, connection);
     const refresh = await refreshCatalog(connection.id, input.actor, {
       enableAllByDefault: true,
+      skipDefaultProfileSync: true,
       credentialHeaders: {
         ...projectedConnectionHeaders(connection),
         [credential.headerName]: `${credential.headerPrefix ?? ""}${token.token}`,
@@ -11572,6 +11573,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       // Activate and discover with the just-issued token before returning.
       const refresh = await refreshCatalog(connection.id, input.actor, {
         enableAllByDefault: true,
+      skipDefaultProfileSync: true,
         credentialHeaders: { Authorization: `Bearer ${token.accessToken}` },
       });
       const [application] = await db.select().from(toolApplications).where(eq(toolApplications.id, connection.applicationId));
@@ -11726,7 +11728,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     });
 
     await checkConnectionHealth(connection.id, input.actor);
-    const refresh = await refreshCatalog(connection.id, input.actor, { enableAllByDefault: true });
+    const refresh = await refreshCatalog(connection.id, input.actor, { enableAllByDefault: true, skipDefaultProfileSync: true });
     const [application] = await db.select().from(toolApplications).where(eq(toolApplications.id, connection.applicationId));
     const suggestedDefaults = galleryEntry ? recommendedDefaultsForApp(
       galleryEntry,
