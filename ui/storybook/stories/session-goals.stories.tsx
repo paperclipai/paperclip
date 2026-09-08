@@ -1,4 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
+import { useState } from "react";
 import type {
   RunnerGoalCapability,
   RunnerGoalPendingAction,
@@ -57,12 +58,19 @@ function projection(input: {
   };
 }
 
-function Preview({ value }: { value: RunnerGoalProjection }) {
+function Preview({ value, initialDialog = null }: {
+  value: RunnerGoalProjection;
+  initialDialog?: RunnerGoalControl["dialog"];
+}) {
+  const [dialog, setDialog] = useState(initialDialog);
   const control = {
     data: value,
     expanded: true,
     setExpanded: () => undefined,
-    edit: async () => undefined,
+    dialog,
+    setDialog,
+    submitDialog: async () => setDialog(null),
+    edit: async () => setDialog({ action: "edit", objective: value.goal?.objective ?? "", revision: value.revision }),
     executeAction: async () => undefined,
   } as unknown as RunnerGoalControl;
   return <RunnerGoalWidget control={control} />;
@@ -166,3 +174,13 @@ const meta = {
 export default meta;
 type Story = StoryObj<typeof meta>;
 export const AllStates: Story = {};
+export const EditGoal: Story = {
+  render: () => <Preview value={projection({ status: "paused" })} initialDialog={{
+    action: "edit", objective: "Ship end-to-end session goals with durable recovery.", revision: 7,
+  }} />,
+};
+export const ReplaceGoal: Story = {
+  render: () => <Preview value={projection({ status: "active" })} initialDialog={{
+    action: "replace", objective: "Pursue the revised acceptance criteria.", revision: 7,
+  }} />,
+};

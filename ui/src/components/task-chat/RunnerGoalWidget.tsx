@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Flag, Loader2, Pause, Play, Pencil, Trash2 } from "lucide-react";
 import type {
@@ -11,6 +11,8 @@ import { useCompanyLiveEvent } from "@/context/LiveUpdatesProvider";
 import { queryKeys } from "@/lib/queryKeys";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Textarea } from "@/components/ui/textarea";
 import type { RunnerGoalComposerCommand } from "./TaskChatComposer";
 
 const PENDING_LABELS: Record<string, string> = {
@@ -44,6 +46,16 @@ function formatTokens(tokens: number) {
 export function useRunnerGoalControl(issueId: string | null, agentId: string | null) {
   const queryClient = useQueryClient();
   const [expanded, setExpanded] = useState(false);
+  const [dialog, setDialog] = useState<{
+    action: "edit" | "replace";
+    objective: string;
+    revision: number;
+  } | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  useEffect(() => {
+    setDialog(null);
+    setActionError(null);
+  }, [issueId, agentId]);
   const key = queryKeys.issues.runnerGoal(issueId ?? "__none__", agentId);
   const query = useQuery({
     queryKey: key,
@@ -77,29 +89,36 @@ export function useRunnerGoalControl(issueId: string | null, agentId: string | n
     action: RunnerGoalAction,
     objective?: string,
     confirmReplace = false,
+    expectedRevision?: number,
   ) => {
-    const current = query.data ?? (await query.refetch()).data;
-    if (!current?.agentId) throw new Error(current?.capability.reason ?? "Select an agent to use /goal.");
-    if (current.capability.availability !== "available") {
-      throw new Error(current.capability.reason ?? "Session goals are unsupported by this agent.");
+    setActionError(null);
+    try {
+      const current = query.data ?? (await query.refetch()).data;
+      if (!current?.agentId) throw new Error(current?.capability.reason ?? "Select an agent to use /goal.");
+      if (current.capability.availability !== "available") {
+        throw new Error(current.capability.reason ?? "Session goals are unsupported by this agent.");
+      }
+      await mutation.mutateAsync({
+        requestId: requestId(),
+        agentId: current.agentId,
+        expectedRevision: expectedRevision ?? current.revision,
+        action,
+        ...(objective ? { objective } : {}),
+        ...(action === "replace" ? { confirmReplace } : {}),
+      });
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : "The goal action could not be applied.");
+      throw error;
     }
-    await mutation.mutateAsync({
-      requestId: requestId(),
-      agentId: current.agentId,
-      expectedRevision: current.revision,
-      action,
-      ...(objective ? { objective } : {}),
-      ...(action === "replace" ? { confirmReplace } : {}),
-    });
   }, [mutation, query]);
 
   const edit = useCallback(async () => {
     const current = query.data ?? (await query.refetch()).data;
     if (!current?.goal) throw new Error("There is no current session goal to edit.");
-    const objective = window.prompt("Edit the session goal", current.goal.objective)?.trim();
-    if (!objective || objective === current.goal.objective) return;
-    await executeAction("edit", objective);
-  }, [executeAction, query]);
+    setActionError(null);
+    setExpanded(true);
+    setDialog({ action: "edit", objective: current.goal.objective, revision: current.revision });
+  }, [query]);
 
   const executeComposerCommand = useCallback(async (command: RunnerGoalComposerCommand) => {
     if (command.action === "focus") {
@@ -114,9 +133,9 @@ export function useRunnerGoalControl(issueId: string | null, agentId: string | n
       const current = query.data ?? (await query.refetch()).data;
       const unfinished = current?.goal && current.goal.status !== "complete";
       if (unfinished) {
-        const confirmed = window.confirm("Replace the unfinished session goal with this new objective?");
-        if (!confirmed) return;
-        await executeAction("replace", command.objective, true);
+        setActionError(null);
+        setExpanded(true);
+        setDialog({ action: "replace", objective: command.objective, revision: current.revision });
       } else {
         await executeAction("create", command.objective);
       }
@@ -125,10 +144,26 @@ export function useRunnerGoalControl(issueId: string | null, agentId: string | n
     await executeAction(command.action);
   }, [edit, executeAction, query]);
 
+  const submitDialog = async () => {
+    if (!dialog || mutation.isPending) return;
+    const objective = dialog.objective.trim();
+    if (!objective || objective.length > 4_000) return;
+    try {
+      await executeAction(dialog.action, objective, dialog.action === "replace", dialog.revision);
+      setDialog(null);
+    } catch {
+      // Keep the objective and the inline error available for correction.
+    }
+  };
+
   return {
     ...query,
     expanded,
     setExpanded,
+    dialog,
+    setDialog,
+    submitDialog,
+    actionError,
     mutation,
     executeAction,
     edit,
@@ -141,18 +176,18 @@ export type RunnerGoalControl = ReturnType<typeof useRunnerGoalControl>;
 export function RunnerGoalWidget({ control }: { control: RunnerGoalControl }) {
   const projection = control.data;
   const goal = projection?.goal ?? null;
-  if (!control.expanded && !goal && !projection?.pendingAction) return null;
+  if (!control.expanded && !goal && !projection?.pendingAction && !control.dialog) return null;
 
   const capability = projection?.capability;
   const can = (action: "set" | "pause" | "resume" | "clear") =>
     capability?.availability === "available" && capability.actions.includes(action);
   const resumable = goal && ["paused", "blocked", "limited", "usage_limited"].includes(goal.status);
   const pendingLabel = projection?.pendingAction ? PENDING_LABELS[projection.pendingAction] : null;
-  const mutationError = control.mutation?.error instanceof Error
+  const mutationError = control.actionError ?? (control.mutation?.error instanceof Error
     ? control.mutation.error.message
     : control.mutation?.error
       ? "The goal action could not be applied."
-      : null;
+      : null);
 
   return (
     <section
@@ -182,7 +217,7 @@ export function RunnerGoalWidget({ control }: { control: RunnerGoalControl }) {
             ) : null}
           </div>
           {goal ? (
-            <p className="mt-1 line-clamp-2 text-sm leading-snug">{goal.objective}</p>
+            <p className={cn("mt-1 text-sm leading-snug", control.expanded ? "max-h-40 overflow-auto" : "line-clamp-2")}>{goal.objective}</p>
           ) : (
             <p className="mt-1 text-xs text-muted-foreground">
               {capability?.reason ?? "Type /goal followed by an objective to pursue work across turns."}
@@ -204,22 +239,22 @@ export function RunnerGoalWidget({ control }: { control: RunnerGoalControl }) {
         </div>
         <div className="flex shrink-0 items-center gap-1">
           {goal && can("set") ? (
-            <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => void control.edit()} aria-label="Edit goal">
+            <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => void control.edit().catch(() => {})} aria-label="Edit goal">
               <Pencil className="h-3.5 w-3.5" aria-hidden />
             </Button>
           ) : null}
           {goal?.status === "active" && can("pause") ? (
-            <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => void control.executeAction("pause")} aria-label="Pause goal">
+            <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => void control.executeAction("pause").catch(() => {})} aria-label="Pause goal">
               <Pause className="h-3.5 w-3.5" aria-hidden />
             </Button>
           ) : null}
           {resumable && can("resume") ? (
-            <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => void control.executeAction("resume")} aria-label="Resume goal">
+            <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => void control.executeAction("resume").catch(() => {})} aria-label="Resume goal">
               <Play className="h-3.5 w-3.5" aria-hidden />
             </Button>
           ) : null}
           {goal && can("clear") ? (
-            <Button size="icon" variant="ghost" className={cn("h-7 w-7", "text-muted-foreground hover:text-destructive")} onClick={() => void control.executeAction("clear")} aria-label="Clear goal">
+            <Button size="icon" variant="ghost" className={cn("h-7 w-7", "text-muted-foreground hover:text-destructive")} onClick={() => void control.executeAction("clear").catch(() => {})} aria-label="Clear goal">
               <Trash2 className="h-3.5 w-3.5" aria-hidden />
             </Button>
           ) : null}
@@ -228,6 +263,51 @@ export function RunnerGoalWidget({ control }: { control: RunnerGoalControl }) {
       {mutationError ? (
         <p className="mt-1 text-xs text-destructive" role="alert">{mutationError}</p>
       ) : null}
+      <Dialog open={Boolean(control.dialog)} onOpenChange={(open) => {
+        if (!open && !control.mutation?.isPending) control.setDialog(null);
+      }}>
+        <DialogContent showCloseButton={!control.mutation?.isPending}>
+          <form className="space-y-4" onSubmit={(event) => {
+            event.preventDefault();
+            void control.submitDialog();
+          }}>
+            <DialogHeader>
+              <DialogTitle>{control.dialog?.action === "replace" ? "Replace session goal?" : "Edit session goal"}</DialogTitle>
+              <DialogDescription>
+                {control.dialog?.action === "replace"
+                  ? "This clears the unfinished goal and starts a new goal with the objective below."
+                  : "Update the objective without clearing the goal's progress."}
+              </DialogDescription>
+            </DialogHeader>
+            <label className="block space-y-2">
+              <span className="text-sm font-medium">Goal objective</span>
+              <Textarea
+                value={control.dialog?.objective ?? ""}
+                maxLength={4_000}
+                required
+                disabled={control.mutation?.isPending}
+                onChange={(event) => {
+                  const objective = event.target.value;
+                  control.setDialog((current) => current ? { ...current, objective } : null);
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+                    event.preventDefault();
+                    event.currentTarget.form?.requestSubmit();
+                  }
+                }}
+              />
+            </label>
+            {mutationError ? <p className="text-sm text-destructive" role="alert">{mutationError}</p> : null}
+            <DialogFooter>
+              <Button type="button" variant="outline" disabled={control.mutation?.isPending} onClick={() => control.setDialog(null)}>Cancel</Button>
+              <Button type="submit" disabled={!control.dialog?.objective.trim() || control.mutation?.isPending}>
+                {control.mutation?.isPending ? "Saving…" : control.dialog?.action === "replace" ? "Replace goal" : "Save goal"}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
     </section>
   );
 }
