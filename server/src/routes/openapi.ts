@@ -142,12 +142,6 @@ import {
   createIssueTreeHoldSchema,
   previewIssueTreeControlSchema,
   releaseIssueTreeHoldSchema,
-  // Delivery tracking
-  deliveryAcceptSchema,
-  deliveryEnrollSchema,
-  deliveryEvidenceIngestSchema,
-  deliverySubmitSchema,
-  deliveryVerdictSchema,
   // Issue interactions
   createIssueThreadInteractionSchema,
   createChildIssueSchema,
@@ -5238,86 +5232,6 @@ registry.registerPath({
     body: jsonBody(releaseIssueTreeHoldSchema),
   },
   responses: { 200: r.ok(), 401: r.unauthorized },
-});
-
-// ─── Delivery tracking (opt-in, per issue) ───────────────────────────────────
-
-registry.registerPath({
-  method: "get",
-  path: "/api/issues/{id}/delivery",
-  tags: ["issues"],
-  summary: "Get the issue's delivery-tracking state",
-  request: { params: z.object({ id: z.string() }) },
-  responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound },
-});
-
-registry.registerPath({
-  method: "post",
-  path: "/api/issues/{id}/delivery/enroll",
-  tags: ["issues"],
-  summary: "Opt an issue into delivery tracking",
-  request: {
-    params: z.object({ id: z.string() }),
-    body: jsonBody(deliveryEnrollSchema),
-  },
-  responses: { 201: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
-});
-
-registry.registerPath({
-  method: "post",
-  path: "/api/issues/{id}/delivery/close",
-  tags: ["issues"],
-  summary: "Stop delivery tracking for an issue (board only)",
-  request: { params: z.object({ id: z.string() }) },
-  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
-});
-
-registry.registerPath({
-  method: "post",
-  path: "/api/issues/{id}/delivery/submit",
-  tags: ["issues"],
-  summary: "Record a delivery candidate for the issue",
-  request: {
-    params: z.object({ id: z.string() }),
-    body: jsonBody(deliverySubmitSchema),
-  },
-  responses: { 201: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 409: r.conflict },
-});
-
-registry.registerPath({
-  method: "post",
-  path: "/api/issues/{id}/delivery/verdict",
-  tags: ["issues"],
-  summary: "Record an independent review verdict for the current candidate",
-  request: {
-    params: z.object({ id: z.string() }),
-    body: jsonBody(deliveryVerdictSchema),
-  },
-  responses: { 201: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 409: r.conflict },
-});
-
-registry.registerPath({
-  method: "post",
-  path: "/api/issues/{id}/delivery/accept",
-  tags: ["issues"],
-  summary: "Accept the current candidate (board/evaluator only)",
-  request: {
-    params: z.object({ id: z.string() }),
-    body: jsonBody(deliveryAcceptSchema),
-  },
-  responses: { 201: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 409: r.conflict },
-});
-
-registry.registerPath({
-  method: "post",
-  path: "/api/issues/{id}/delivery/evidence",
-  tags: ["issues"],
-  summary: "Register trusted verification evidence (board/evaluator only)",
-  request: {
-    params: z.object({ id: z.string() }),
-    body: jsonBody(deliveryEvidenceIngestSchema),
-  },
-  responses: { 201: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 409: r.conflict },
 });
 
 // ─── Attachments ──────────────────────────────────────────────────────────────

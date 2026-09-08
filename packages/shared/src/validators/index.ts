@@ -549,25 +549,6 @@ export {
 } from "./issue-tree-control.js";
 
 export {
-  deliveryAcceptSchema,
-  deliveryCandidateSchema,
-  deliveryDigestSchema,
-  deliveryEnrollSchema,
-  deliveryEvidenceIngestSchema,
-  deliveryEvidenceSummarySchema,
-  deliveryRepositoryUrlSchema,
-  deliveryShaSchema,
-  deliverySubmitSchema,
-  deliveryVerdictFindingSchema,
-  deliveryVerdictSchema,
-  type DeliveryAcceptInput,
-  type DeliveryEnrollInput,
-  type DeliveryEvidenceIngestInput,
-  type DeliverySubmitInput,
-  type DeliveryVerdictInput,
-} from "./delivery.js";
-
-export {
   createIssueWorkProductSchema,
   issueWorkProductMetadataSchema,
   updateIssueWorkProductSchema,

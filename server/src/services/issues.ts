@@ -88,7 +88,6 @@ import {
   type ParsedExecutionWorkspaceMode,
 } from "./execution-workspace-policy.js";
 import { mergeExecutionWorkspaceConfig } from "./execution-workspaces.js";
-import { assertDeliveryCompletionAllowed } from "./delivery-tracking.js";
 import { buildInitialIssueMonitorFields, normalizeIssueExecutionPolicy } from "./issue-execution-policy.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { redactCurrentUserText } from "../log-redaction.js";
@@ -7948,17 +7947,6 @@ export function issueService(db: Db) {
           .for("update")
           .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
         if (!receiptExisting) return null;
-        // Opt-in delivery tracking: an issue with no active track is not
-        // inspected, so ordinary completion behavior is unchanged. An enrolled
-        // issue must have a live acceptance for its current candidate, checked
-        // here under the same row lock as the status write so a plan edit or a
-        // newer candidate cannot slip past acceptance.
-        if (issueData.status === "done" && receiptExisting.status !== "done") {
-          await assertDeliveryCompletionAllowed(tx, {
-            id: receiptExisting.id,
-            companyId: receiptExisting.companyId,
-          });
-        }
         const [previousLabelsByIssueId, previousRelationSummaries] = await Promise.all([
           nextLabelIds !== undefined
             ? labelMapForIssues(tx, [id])
