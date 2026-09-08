@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildSkipUrl, buildSupplementsIntakeUrl, buildSupplementsUrl, buildSupplementUrl, buildTakeUrl, buildUndoUrl, formatIntakeDate } from "./useSupplements";
+import { buildSkipUrl, buildSupplementHistoryUrl, buildSupplementsIntakeUrl, buildSupplementsUrl, buildSupplementUrl, buildTakeUrl, buildUndoUrl, formatIntakeDate } from "./useSupplements";
 
 // Tests for URL construction — no React/DOM required.
 // Regression guard: the hook must call /supplements/intake/:date,
@@ -59,5 +59,40 @@ describe("buildSupplementUrl", () => {
   it("builds single supplement URL for PATCH / DELETE", () => {
     const url = buildSupplementUrl("https://api.example.com", "sup-456");
     expect(url).toBe("https://api.example.com/supplements/sup-456");
+  });
+});
+
+describe("buildSupplementHistoryUrl", () => {
+  it("builds history URL with companyId, from, and to", () => {
+    const url = buildSupplementHistoryUrl(
+      "https://api.example.com",
+      "company-abc",
+      "2026-09-01",
+      "2026-09-14",
+    );
+    expect(url).toBe(
+      "https://api.example.com/supplements/intake/history?companyId=company-abc&from=2026-09-01&to=2026-09-14",
+    );
+  });
+
+  it("percent-encodes special characters in companyId", () => {
+    const url = buildSupplementHistoryUrl(
+      "https://api.example.com",
+      "company with spaces",
+      "2026-09-01",
+      "2026-09-14",
+    );
+    expect(url).toContain("companyId=company%20with%20spaces");
+  });
+
+  it("uses the /supplements/intake/history path (not /supplements/history)", () => {
+    const url = buildSupplementHistoryUrl(
+      "https://api.example.com",
+      "company-abc",
+      "2026-09-01",
+      "2026-09-14",
+    );
+    expect(url).toContain("/supplements/intake/history");
+    expect(url).not.toContain("/supplements/history");
   });
 });
