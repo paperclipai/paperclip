@@ -299,6 +299,7 @@ export type {
   AdapterAuthSessionResponse,
   AdapterAuthSessionPrompt,
   AdapterAuthSessionOwnerResponse,
+  CodexAccountBindingClaim,
   StartAdapterAuthSessionRequest,
   AdapterAuthPanelMode,
   ClaudeSetupTokenSessionPrompt,
