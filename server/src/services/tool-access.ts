@@ -8757,6 +8757,26 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     return `${base.slice(0, 151).trimEnd()} (${randomUUID().slice(0, 6)})`;
   }
 
+  async function createAppCredential(
+    companyId: string,
+    input: { name: string; key: string; provider: "local_encrypted"; value: string; description: string },
+    ownerUserId: string | null,
+    actor?: ActorInfo,
+  ) {
+    if (!ownerUserId) return secrets.create(companyId, input, actorForSecret(actor));
+    const definition = await secrets.createUserSecretDefinition(companyId, {
+      key: input.key,
+      name: input.name,
+      description: input.description,
+      provider: input.provider,
+      managedMode: "paperclip_managed",
+    }, actorForSecret(actor));
+    return secrets.createCurrentUserSecretValue(companyId, ownerUserId, {
+      definitionId: definition.id,
+      value: input.value,
+    }, actorForSecret(actor));
+  }
+
   async function connectGalleryApp(
     companyId: string,
     input: ConnectToolApp,
@@ -9213,13 +9233,13 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
           throw badRequest(`Missing credential value for ${field.configPath}`);
         }
         if (!value) continue;
-        const secret = await secrets.create(companyId, {
+        const secret = await createAppCredential(companyId, {
           name: `${name} ${field.label} ${randomUUID().slice(0, 8)}`,
           key: `tool_app.${randomUUID()}.${field.configPath.replace(/[^a-z0-9_:-]+/gi, "_")}`,
           provider: "local_encrypted",
           value,
           description: `Credential for ${name} (${field.configPath}).`,
-        }, actorForSecret(actor));
+        }, personalIdentityUserId, actor);
         createdSecretIds.push(secret.id);
         credentialSecretRefs.push({
           secretId: secret.id,
@@ -10171,13 +10191,13 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         await secrets.rotate(existing.secretId, { value }, actorForSecret(actor));
         continue;
       }
-      const secret = await secrets.create(companyId, {
+      const secret = await createAppCredential(companyId, {
         name: `${connection.name} ${field.label} ${randomUUID().slice(0, 8)}`,
         key: `tool_app.${randomUUID()}.${field.configPath.replace(/[^a-z0-9_:-]+/gi, "_")}`,
         provider: "local_encrypted",
         value,
         description: `Credential for ${connection.name} (${field.configPath}).`,
-      }, actorForSecret(actor));
+      }, personalIdentity?.subjectUserId ?? null, actor);
       credentialSecretRefs.push({
         secretId: secret.id,
         versionSelector: "latest",

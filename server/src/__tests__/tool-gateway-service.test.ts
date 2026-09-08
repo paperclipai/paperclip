@@ -26,12 +26,12 @@ import {
   toolGatewaySessions,
   toolInvocations,
   toolPolicies,
-  userSecretDeclarations,
 } from "@paperclipai/db";
 import type { PluginToolDispatcher } from "../services/plugin-tool-dispatcher.js";
 import type { VercelConnectClient } from "../services/vercel-connect.js";
 import { initializeRunIdentity, reserveSteeredIdentity, reconcileSteeredIdentity } from "../services/run-identity.js";
 import { secretService } from "../services/secrets.js";
+import { toolAccessService } from "../services/tool-access.js";
 import {
   createToolGatewayService,
   ToolGatewayHttpError,
@@ -1256,26 +1256,31 @@ describeEmbeddedPostgres("tool gateway service", () => {
     expect(resolvedGrants).toHaveLength(3);
   });
 
-  it("dispatches a personal token using its declared credential path", async () => {
+  it("dispatches a gallery-created personal token using its declared credential path", async () => {
     const { company, agent, issue, run } = await createRunFixture(db);
-    const { connection } = await createRemoteMcpToolFixture(db, company.id);
     const owner = `gateway-owner-${randomUUID()}`;
     const credential = `personal-token-${randomUUID()}`;
-    const secrets = secretService(db);
-    const definition = await secrets.createUserSecretDefinition(company.id, { key: `github.${randomUUID()}`, name: "Personal GitHub token", provider: "local_encrypted" });
-    const secret = await secrets.createCurrentUserSecretValue(company.id, owner, { definitionId: definition.id, value: credential });
-    await db.insert(userSecretDeclarations).values({ companyId: company.id, userSecretDefinitionId: definition.id, targetType: "tool_connection", targetId: connection.id, configPath: "credentials.authorization", envKey: "authorization" });
-    await db.update(toolConnections).set({
-      authKind: "api_key", credentialSource: "paperclip_vault",
-      credentialRefs: [{ name: "credentials.authorization", placement: "header", key: "Authorization", prefix: "Bearer ", secretId: secret.id, version: "latest" }],
-      config: { ...connection.config, sourceTemplateKey: "github" },
-    }).where(eq(toolConnections.id, connection.id));
-    await db.update(connectionGrants).set({
-      kind: "user", subjectUserId: owner, isDefault: false,
-      credentialSecretRefs: [{ secretId: secret.id, configPath: "credentials.authorization", versionSelector: "latest", required: true }],
-    }).where(eq(connectionGrants.connectionId, connection.id));
-    await db.insert(toolConnectionInstalls).values({ companyId: company.id, connectionId: connection.id, targetType: "agent", targetId: agent.id });
     await db.insert(companyMemberships).values({ companyId: company.id, principalType: "user", principalId: owner, status: "active", membershipRole: "member" });
+    const access = toolAccessService(db, {
+      remoteHttpEndpointLookup: async () => [{ address: "8.8.8.8", family: 4 }],
+      remoteHttpRequest: async () => new Response(JSON.stringify({
+        jsonrpc: "2.0", id: "catalog", result: {
+          tools: [{ name: "get_me", inputSchema: { type: "object", properties: {} }, annotations: { readOnlyHint: true } }],
+        },
+      }), { status: 200, headers: { "content-type": "application/json" } }),
+    });
+    const connected = await access.connectGalleryApp(company.id, {
+      galleryKey: "github", connectionMethodKey: "mcp-key", grantKind: "user",
+      credentialValues: { "credentials.authorization": credential },
+    }, { actorType: "user", actorId: owner });
+    await db.update(toolConnections).set({
+      config: { ...connected.connection.config, url: "https://8.8.8.8/mcp" },
+    }).where(eq(toolConnections.id, connected.connectionId));
+    await db.insert(toolConnectionInstalls).values({ companyId: company.id, connectionId: connected.connectionId, targetType: "agent", targetId: agent.id });
+    await access.finishGalleryAppConnection(company.id, connected.connectionId, {
+      enabledCatalogEntryIds: connected.catalog.map(entry => entry.id), askFirstCatalogEntryIds: [],
+      access: { agentIds: [agent.id] },
+    }, { actorType: "user", actorId: owner });
     await initializeRunIdentity(db, { companyId: company.id, runId: run.id, issueId: issue.id, responsibleUserId: owner, cause: "instruction" });
     await db.insert(toolPolicies).values({ companyId: company.id, name: "Allow authenticated read", policyType: "allow", selectors: { riskLevel: "read" } });
     const gateway = createTestToolGatewayService(db, {
