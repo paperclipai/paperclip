@@ -988,6 +988,20 @@ export function ConnectionSetupFlow({
       : null,
     [connectionsQuery.data, reconnectConnectionId],
   );
+  const seededReconnectEndpoint = useRef<string | null>(null);
+  useEffect(() => {
+    // Task choices contain selection metadata only. Load the endpoint through
+    // the existing authorized connection query, once, without overwriting edits.
+    if (!configuredConnection || !connectionsQuery.isFetchedAfterMount || !reconnectConnection
+      || seededReconnectEndpoint.current === reconnectConnection.id) return;
+    const endpoint = reconnectConnection.config?.url
+      ?? reconnectConnection.transportConfig?.url
+      ?? reconnectConnection.transportConfig?.serverUrl
+      ?? reconnectConnection.config?.serverUrl;
+    if (typeof endpoint !== "string" || !/^https?:\/\//i.test(endpoint)) return;
+    seededReconnectEndpoint.current = reconnectConnection.id;
+    setLinkUrl((current) => current || endpoint);
+  }, [configuredConnection, connectionsQuery.isFetchedAfterMount, reconnectConnection]);
   const reconnectApplication = useMemo(
     () => reconnectConnection
       ? (applicationsQuery.data?.applications ?? []).find(
@@ -2009,6 +2023,7 @@ export function ConnectionSetupFlow({
       {step === "gallery" && (
         <GalleryStep
           loading={galleryQuery.isLoading}
+          initialLink={linkUrl}
           apps={credentialSourceApps}
           vercelConnect={vercelConnectMode}
           vercelConnectAvailability={galleryQuery.data?.credentialSources?.vercelConnect ?? null}
@@ -2527,6 +2542,7 @@ function ZapierConnectStep({
 
 function GalleryStep({
   loading,
+  initialLink = "",
   apps,
   byo = false,
   byoOnly = false,
@@ -2537,6 +2553,7 @@ function GalleryStep({
   onUseLink,
 }: {
   loading: boolean;
+  initialLink?: string;
   apps: AppDefinition[];
   /** Entered via the "Connect your own MCP server" card (PAP-12371, Finding C): focus the link path. */
   byo?: boolean;
@@ -2554,7 +2571,11 @@ function GalleryStep({
   onUseLink: (link: string) => void;
 }) {
   const [search, setSearch] = useState("");
-  const [linkInput, setLinkInput] = useState("");
+  const [linkInput, setLinkInput] = useState(initialLink);
+  const linkInputEdited = useRef(false);
+  useEffect(() => {
+    if (!linkInputEdited.current) setLinkInput(initialLink);
+  }, [initialLink]);
   const [linkError, setLinkError] = useState<string | null>(null);
   const linkSectionRef = useRef<HTMLDivElement>(null);
   const linkInputRef = useRef<HTMLInputElement>(null);
@@ -2754,6 +2775,7 @@ function GalleryStep({
               aria-label="MCP server URL"
               value={linkInput}
               onChange={(e) => {
+                linkInputEdited.current = true;
                 setLinkInput(e.target.value);
                 setLinkError(null);
               }}
