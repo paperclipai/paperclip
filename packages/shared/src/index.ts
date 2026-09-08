@@ -956,6 +956,10 @@ export type {
   CompanySearchUpdatedWithinOption,
   CompanySearchZeroResults,
   CompanySearchZeroResultsLoosenSuggestion,
+  RunRecallActivityMatch,
+  RunRecallResponse,
+  RunRecallRunMatch,
+  RunRecallRunMatchedField,
   ExecutionWorkspace,
   ExecutionWorkspaceSummary,
   ExecutionWorkspaceConfig,
@@ -1598,6 +1602,11 @@ export {
   COMPANY_SEARCH_SCOPES,
   COMPANY_SEARCH_SORTS,
   COMPANY_SEARCH_UPDATED_WITHIN_OPTIONS,
+  RUN_RECALL_DEFAULT_LIMIT,
+  RUN_RECALL_MAX_LIMIT,
+  RUN_RECALL_MAX_QUERY_LENGTH,
+  RUN_RECALL_MAX_TOKENS,
+  RUN_RECALL_SNIPPET_MAX_CHARS,
 } from "./types/index.js";
 export {
   ADAPTER_AUTH_SESSION_STATUSES,

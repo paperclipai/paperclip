@@ -100,6 +100,8 @@ export const queryKeys = {
   audit: {
     runs: (companyId: string, agentId?: string | null) =>
       ["audit", companyId, "runs", agentId ?? "__all"] as const,
+    runRecall: (companyId: string, params: { q: string; agentId?: string | null; status?: string | null }) =>
+      ["audit", companyId, "run-recall", params.q, params.agentId ?? "__all", params.status ?? "__all"] as const,
     agentActions: (
       companyId: string,
       filters: {

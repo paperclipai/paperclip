@@ -1,6 +1,7 @@
 import type {
   HeartbeatRun,
   HeartbeatRunEvent,
+  RunRecallResponse,
   WorkspaceOperation,
   ProviderTraceFrame,
   ProviderTraceMetadata,
@@ -124,6 +125,19 @@ export const heartbeatsApi = {
     );
   },
   get: (runId: string) => api.get<HeartbeatRun>(`/heartbeat-runs/${runId}`),
+  searchRuns: (
+    companyId: string,
+    params: { q: string; agentId?: string; status?: string; limit?: number },
+  ) => {
+    const searchParams = new URLSearchParams();
+    searchParams.set("q", params.q);
+    if (params.agentId) searchParams.set("agentId", params.agentId);
+    if (params.status) searchParams.set("status", params.status);
+    if (params.limit) searchParams.set("limit", String(params.limit));
+    return api.get<RunRecallResponse>(
+      `/companies/${companyId}/heartbeat-runs/search?${searchParams.toString()}`,
+    );
+  },
   events: (runId: string, afterSeq = 0, limit = 200) =>
     api.get<HeartbeatRunEvent[]>(
       `/heartbeat-runs/${runId}/events?afterSeq=${encodeURIComponent(String(afterSeq))}&limit=${encodeURIComponent(String(limit))}`,
