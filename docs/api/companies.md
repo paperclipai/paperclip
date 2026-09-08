@@ -20,6 +20,9 @@ including for instance administrators. Instance administrator status alone does
 not grant access to a company's contents. The local trusted board can still
 enter all companies. The board UI uses this scope for its company list, so it
 does not select companies the user cannot open.
+The Instance Access screen uses the unscoped directory so administrators can
+manage membership for all companies. A supplied `scope` must be a single
+`accessible` value; empty, unknown, or repeated values return `400`.
 
 ## Get Company
 

@@ -253,6 +253,15 @@ describe.sequential("company route cross-company authorization", () => {
     expect(res.body).toEqual([]);
   });
 
+  it.each(["scope=accessible&scope=accessible", "scope=accessible&scope=all", "scope=all", "scope="])(
+    "rejects malformed list scope without loading the directory: %s",
+    async (query) => {
+      const app = await createApp(boardActor({ userId: "admin", isInstanceAdmin: true }));
+      await request(app).get(`/api/companies?${query}`).expect(400);
+      expect(mockCompanyService.list).not.toHaveBeenCalled();
+    },
+  );
+
   it("includes additional companies where a cloud user has membership", async () => {
     mockCompanyService.list.mockResolvedValue([createCompany(companyAId), createCompany(companyBId)]);
     const app = await createApp(boardActor({

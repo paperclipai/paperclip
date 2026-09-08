@@ -197,6 +197,7 @@ describe("openapi routes", () => {
       schema: { type: "string", enum: ["accessible"] },
     });
     expect(res.body.paths["/api/companies"].get.responses["403"]).toBeDefined();
+    expect(res.body.paths["/api/companies"].get.responses["400"]).toBeDefined();
     expect(res.body.paths["/api/companies"].post.responses["201"]).toBeDefined();
     expect(res.body.paths["/api/companies"].post.requestBody.content["application/json"].schema).toMatchObject({
       type: "object",

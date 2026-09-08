@@ -1346,7 +1346,7 @@ registry.registerPath({
   request: {
     query: z.object({ scope: z.enum(["accessible"]).optional() }),
   },
-  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
 });
 
 registry.registerPath({
