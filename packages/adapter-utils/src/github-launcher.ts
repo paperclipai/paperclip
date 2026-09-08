@@ -56,6 +56,12 @@ async function main() {
       }
       if (!response.ok) throw new Error('GitHub credential context unavailable; retry this operation');
       const result = await response.json();
+      if (result.status === 'unavailable') {
+        const reason = typeof result.reason === 'string'
+          ? result.reason.replace(/[\x00-\x1f\x7f]/g, ' ').slice(0, 500)
+          : 'Check the GitHub connection in Paperclip';
+        process.stderr.write('Paperclip: GitHub access unavailable: ' + reason + '. Continuing without GitHub credentials.\n');
+      }
       if (result.status === 'available') {
         for (const [key, value] of Object.entries(result.env || {})) {
           if (/^(GH_TOKEN|GITHUB_TOKEN|PAPERCLIP_GIT_TOKEN|GIT_TERMINAL_PROMPT|GIT_AUTHOR_(NAME|EMAIL)|GIT_COMMITTER_(NAME|EMAIL)|GIT_CONFIG_COUNT|GIT_CONFIG_(KEY|VALUE)_\d+)$/.test(key) && typeof value === 'string') env[key] = value;

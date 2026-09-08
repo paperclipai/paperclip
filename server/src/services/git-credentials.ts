@@ -354,7 +354,14 @@ export async function resolveManagedGitHubIdentitySelection(
     : [];
   const candidates = dedicated.length > 0 ? dedicated : personal.length > 0 ? personal : delegated;
   const identitySource = dedicated.length > 0 ? "dedicated" as const : "personal" as const;
-  if (candidates.length !== 1) {
+  // Reconnecting can create another connection/grant for the same GitHub
+  // account. Ambiguity is about provider identities, not the number of rows.
+  // Only trust GitHub's stable account ID; equal logins or missing metadata
+  // cannot establish that two grants belong to the same person.
+  const githubUserIds = candidates.map((candidate) => candidate.providerTenant?.github?.userId?.trim());
+  if (candidates.length === 0 || (candidates.length > 1 && (
+    githubUserIds.some((id) => !id) || new Set(githubUserIds).size !== 1
+  ))) {
     return {
       configured: true, identitySource,
       error: candidates.length === 0
@@ -362,7 +369,18 @@ export async function resolveManagedGitHubIdentitySelection(
         : "More than one managed GitHub identity matches this run",
     };
   }
-  const grant = candidates[0]!;
+  const isAvailable = (grant: typeof connectionGrants.$inferSelect) =>
+    grant.status === "active" && githubConnections.some((connection) =>
+      connection.id === grant.connectionId && connection.enabled && connection.status === "active",
+    );
+  // Prefer an available authorization for this same account, then the newest
+  // connection grant. Do not rank by updatedAt: refreshes/webhooks change it.
+  // Select one grant, preserving its credential and connection policy intact.
+  const grant = [...candidates].sort((a, b) =>
+    Number(isAvailable(b)) - Number(isAvailable(a))
+    || b.createdAt.getTime() - a.createdAt.getTime()
+    || a.id.localeCompare(b.id),
+  )[0]!;
   const connection = githubConnections.find((candidate) => candidate.id === grant.connectionId);
   if (!connection?.enabled || connection.status !== "active") {
     return { configured: true, identitySource, error: "The managed GitHub connection is unavailable" };

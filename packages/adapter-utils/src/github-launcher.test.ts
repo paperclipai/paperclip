@@ -11,6 +11,25 @@ const cleanups: Array<() => Promise<unknown>> = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
 
 describe("managed GitHub launchers", () => {
+  it("explains unavailable access while allowing local work without credentials", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-github-diagnostic-"));
+    cleanups.push(() => rm(root, {recursive:true,force:true}));
+    const bin = path.join(root,"managed"), realBin = path.join(root,"real");
+    await mkdir(bin); await mkdir(realBin);
+    await writeFile(path.join(bin,"gh"), githubLauncherSource(), {mode:0o700});
+    await writeFile(path.join(realBin,"gh"), '#!/usr/bin/env node\nprocess.stdout.write(JSON.stringify({token:process.env.GH_TOKEN ?? null}));', {mode:0o700});
+    const server = createServer((_req,res) => {
+      res.setHeader("content-type","application/json");
+      res.end(JSON.stringify({status:"unavailable",reason:"More than one managed GitHub identity matches this run",env:{GH_TOKEN:"must-not-be-used"}}));
+    });
+    await new Promise<void>(resolve => server.listen(0,"127.0.0.1",resolve));
+    cleanups.push(() => new Promise<void>((resolve,reject) => server.close(error => error ? reject(error) : resolve())));
+    const {port} = server.address() as {port:number};
+    const result = await exec(path.join(bin,"gh"), [], {env:{...process.env,...githubBrokerEnvironment({GH_TOKEN:"host-token"},{url:`http://127.0.0.1:${port}`,token:"run-capability"}),PATH:`${bin}:${realBin}:${process.env.PATH}`}});
+    expect(JSON.parse(result.stdout)).toEqual({token:null});
+    expect(result.stderr).toContain("More than one managed GitHub identity matches this run");
+    expect(result.stderr).not.toMatch(/host-token|must-not-be-used|run-capability/);
+  });
   it("captures each command's identity and clears host credentials when the next person has none", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-github-launcher-test-"));
     cleanups.push(() => rm(root, { recursive: true, force: true }));

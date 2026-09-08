@@ -28,6 +28,15 @@ An explicit dedicated-agent grant overrides personal selection. Revoked, disable
 
 Connection setup and permissions display: “This agent uses this GitHub account for everyone's work, instead of the person giving instructions.”
 
+Multiple eligible connections for the same GitHub account are treated as one
+identity, using GitHub's stable account ID rather than its login. The resolver
+selects an available grant, preferring the newest authorization with a stable
+ID tie-breaker. It keeps that grant's credential and connection policy together;
+it does not combine repository access or bypass connection audiences. Distinct
+accounts or unidentifiable duplicate grants remain ambiguous. Managed commands
+print the redacted reason when GitHub access is unavailable, while unrelated
+local operations can still proceed without credentials.
+
 Run details show identity revisions and redacted GitHub results: responsible person, selected login when available, personal/dedicated source, and an unavailable reason. Tasks do not receive an additional identity indicator or takeover action.
 
 ## Deployment and verification
