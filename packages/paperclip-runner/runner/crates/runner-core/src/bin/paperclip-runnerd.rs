@@ -367,6 +367,28 @@ fn run(args: &[String]) -> Result<(), LocalRunnerError> {
     })
 }
 
+fn run_main(args: Vec<String>) -> ExitCode {
+    let diagnostics_directory = diagnostic_directory(&args);
+    install_diagnostic_panic_hook(diagnostics_directory.clone());
+    install_crypto_provider();
+    match run(&args) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            let message = format!("paperclip-runnerd: {error}");
+            if let Some(directory) = diagnostics_directory {
+                if let Err(persist_error) = persist_runner_diagnostic(&directory, &message) {
+                    eprintln!(
+                        "paperclip-runnerd: failed to persist bounded diagnostic: {persist_error}"
+                    );
+                }
+            } else {
+                eprintln!("{message}");
+            }
+            ExitCode::FAILURE
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -383,13 +405,13 @@ mod tests {
     }
 
     #[test]
-    fn installs_a_crypto_provider_before_tls_initialization() {
-        install_crypto_provider();
+    fn startup_installs_a_crypto_provider_before_tls_initialization() {
+        let _ = run_main(vec!["--build-metadata".to_owned()]);
         assert!(rustls::crypto::CryptoProvider::get_default().is_some());
 
-        // Installation is process-global. A repeated startup call must remain
+        // Startup is process-global. A repeated startup call must remain
         // safe when a provider was selected earlier in the process lifetime.
-        install_crypto_provider();
+        let _ = run_main(vec!["--build-metadata".to_owned()]);
         let _ = rustls::ClientConfig::builder();
     }
 
@@ -441,24 +463,5 @@ mod tests {
 }
 
 fn main() -> ExitCode {
-    let args = std::env::args().skip(1).collect::<Vec<_>>();
-    let diagnostics_directory = diagnostic_directory(&args);
-    install_diagnostic_panic_hook(diagnostics_directory.clone());
-    install_crypto_provider();
-    match run(&args) {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(error) => {
-            let message = format!("paperclip-runnerd: {error}");
-            if let Some(directory) = diagnostics_directory {
-                if let Err(persist_error) = persist_runner_diagnostic(&directory, &message) {
-                    eprintln!(
-                        "paperclip-runnerd: failed to persist bounded diagnostic: {persist_error}"
-                    );
-                }
-            } else {
-                eprintln!("{message}");
-            }
-            ExitCode::FAILURE
-        }
-    }
+    run_main(std::env::args().skip(1).collect())
 }
