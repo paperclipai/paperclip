@@ -13,6 +13,23 @@ Tool action approvals require `PAPERCLIP_TOOL_ACTION_SIGNING_SECRET` to be set i
 | `remote_http` | Supported | Supported | Preferred production path. Paperclip proxies calls through the gateway with policy, audit, timeout, and redaction controls. |
 | `local_stdio` | Supported through approved templates and supervised runtime slots | Supported only when an explicitly trusted MCP runtime worker/host is configured | Set `PAPERCLIP_TRUSTED_MCP_RUNTIME_HOST` or `PAPERCLIP_TOOL_RUNTIME_TRUSTED_HOST` only for a worker that is allowed to supervise local processes. Do not enable arbitrary agent-supplied commands. |
 
+## Runtime Assignment Profiles
+
+Paperclip gives each runtime assignment a separate gateway profile. Exact tool
+selections and connection grants with exclusions use the permitted catalogue
+entries. An explicit connection grant from a profile with no exclusions can
+still expose the whole connection before its catalogue is populated.
+
+The generated profile and gateway use a versioned projection identity. New runs
+do not reuse older, broader projections. Cache reuse checks the stored profile,
+gateway and gateway bindings before issuing a token. This does not revoke tokens
+already issued to running tasks; their existing expiry and run lifecycle apply.
+
+Conditional profile entries cannot yet be preserved by this projection. When an
+effective source entry has nonempty conditions, Paperclip omits this optional MCP
+delivery and logs the reason. It does not convert the condition into an
+unconditional grant. The native runtime assignment digest remains unchanged.
+
 ## Metrics
 
 The board runtime health API summarizes one-hour event windows plus current durable slot state:

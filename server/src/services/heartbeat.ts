@@ -90,6 +90,7 @@ import {
   toolCatalogEntries,
   toolConnectionInstalls,
   toolConnections,
+  toolProfileBindings,
   toolProfileEntries,
   toolProfiles,
   workspaceOperations,
@@ -4205,6 +4206,14 @@ export async function buildPaperclipRuntimeMcpServers(input: {
     });
     return [];
   }
+  // gateway_only replaces source profiles, so it cannot drop their conditions.
+  if (effective.entries.some((entry) => entry.conditions && Object.keys(entry.conditions).length > 0)) {
+    logger.warn(
+      { companyId: input.agent.companyId, agentId: input.agent.id, runId: input.runId },
+      "runtime MCP delivery omitted because conditional tool profiles cannot be projected",
+    );
+    return [];
+  }
   const assignment = {
     version: 1,
     agentId: input.agent.id,
@@ -4222,7 +4231,49 @@ export async function buildPaperclipRuntimeMcpServers(input: {
   ) {
     return [];
   }
-  const profileKey = `native:${input.agent.id}:${assignmentDigest}`;
+  const fullConnectionIds = new Set(
+    effective.profiles
+      .filter((profile) => profile.entries.every((entry) => entry.effect !== "exclude"))
+      .flatMap((profile) => profile.entries)
+      .filter((entry) => entry.effect === "include" && entry.selectorType === "connection" && entry.connectionId)
+      .map((entry) => entry.connectionId!),
+  );
+  const entries = [
+    ...assignedConnections
+      .filter((connection) => fullConnectionIds.has(connection.id))
+      .map((connection) => ({
+        selectorType: "connection" as const,
+        effect: "include" as const,
+        applicationId: connection.applicationId,
+        connectionId: connection.id,
+      })),
+    ...assignedTools
+      .filter((tool) => !fullConnectionIds.has(tool.connectionId))
+      .map((tool) => ({
+        selectorType: "catalog_entry" as const,
+        effect: "include" as const,
+        applicationId: tool.applicationId,
+        connectionId: tool.connectionId,
+        catalogEntryId: tool.id,
+      })),
+  ].map((entry) => ({
+    catalogEntryId: null,
+    toolName: null,
+    riskLevel: null,
+    conditions: null,
+    ...entry,
+  }));
+  if (entries.length > 250) {
+    throw new Error(
+      "native MCP assignment exceeds the 250-entry gateway profile limit",
+    );
+  }
+  const projectedEntryKeys = entries.map(stableStringifyForFingerprint).sort();
+  // Keep the native snapshot digest stable; cache the realised projection separately.
+  const projectionDigest = createHash("sha256")
+    .update(JSON.stringify({ version: 2, assignmentDigest, entries: projectedEntryKeys }))
+    .digest("hex");
+  const profileKey = `native:${input.agent.id}:${projectionDigest}`;
   let [profile] = await input.db
     .select()
     .from(toolProfiles)
@@ -4235,39 +4286,10 @@ export async function buildPaperclipRuntimeMcpServers(input: {
     .limit(1);
 
   if (!profile) {
-    const fullConnectionIds = new Set(
-      effective.entries
-        .filter((entry) => entry.effect === "include" && entry.selectorType === "connection" && entry.connectionId)
-        .map((entry) => entry.connectionId!),
-    );
-    const entries = [
-      ...assignedConnections
-        .filter((connection) => fullConnectionIds.has(connection.id))
-        .map((connection) => ({
-          selectorType: "connection" as const,
-          effect: "include" as const,
-          applicationId: connection.applicationId,
-          connectionId: connection.id,
-        })),
-      ...assignedTools
-        .filter((tool) => !fullConnectionIds.has(tool.connectionId))
-        .map((tool) => ({
-          selectorType: "catalog_entry" as const,
-          effect: "include" as const,
-          applicationId: tool.applicationId,
-          connectionId: tool.connectionId,
-          catalogEntryId: tool.id,
-        })),
-    ];
-    if (entries.length > 250) {
-      throw new Error(
-        "native MCP assignment exceeds the 250-entry gateway profile limit",
-      );
-    }
     try {
       const created = await access.createProfile(input.agent.companyId, {
         profileKey,
-        name: `Native ${input.agent.id.slice(0, 8)} ${assignmentDigest.slice(0, 12)}`,
+        name: `Native ${input.agent.id.slice(0, 8)} ${projectionDigest.slice(0, 12)}`,
         description: "Immutable Paperclip Runner MCP assignment profile.",
         status: "active",
         defaultAction: "deny",
@@ -4275,6 +4297,7 @@ export async function buildPaperclipRuntimeMcpServers(input: {
           source: "paperclip_runner",
           agentId: input.agent.id,
           assignmentDigest,
+          projectionDigest,
         },
         entries,
       });
@@ -4298,6 +4321,34 @@ export async function buildPaperclipRuntimeMcpServers(input: {
     }
   }
 
+  const cachedEntries = await input.db
+    .select({
+      selectorType: toolProfileEntries.selectorType,
+      effect: toolProfileEntries.effect,
+      applicationId: toolProfileEntries.applicationId,
+      connectionId: toolProfileEntries.connectionId,
+      catalogEntryId: toolProfileEntries.catalogEntryId,
+      toolName: toolProfileEntries.toolName,
+      riskLevel: toolProfileEntries.riskLevel,
+      conditions: toolProfileEntries.conditions,
+    })
+    .from(toolProfileEntries)
+    .where(and(
+      eq(toolProfileEntries.companyId, input.agent.companyId),
+      eq(toolProfileEntries.profileId, profile!.id),
+    ));
+  if (
+    profile!.status !== "active" || profile!.defaultAction !== "deny" ||
+    JSON.stringify(cachedEntries.map(stableStringifyForFingerprint).sort()) !== JSON.stringify(projectedEntryKeys)
+  ) {
+    throw new Error("cached runtime MCP profile does not match the assignment projection");
+  }
+  const matchesProjection = (candidate: typeof toolMcpGateways.$inferSelect) =>
+    candidate.status === "active" && candidate.archivedAt === null &&
+    candidate.profileId === profile!.id && candidate.defaultProfileMode === "gateway_only" &&
+    candidate.metadata?.nativeRuntimeAssignmentDigest === assignmentDigest &&
+    candidate.metadata?.nativeRuntimeProjectionDigest === projectionDigest;
+
   let [gateway] = (
     await input.db
       .select()
@@ -4309,23 +4360,21 @@ export async function buildPaperclipRuntimeMcpServers(input: {
           isNull(toolMcpGateways.archivedAt),
         ),
       )
-  ).filter(
-    (candidate) =>
-      candidate.metadata?.nativeRuntimeAssignmentDigest === assignmentDigest,
-  );
+  ).filter(matchesProjection);
   if (!gateway) {
-    const slug = `native-${input.agent.id.replaceAll("-", "").slice(0, 12)}-${assignmentDigest.slice(0, 16)}`;
+    const slug = `native-${input.agent.id.replaceAll("-", "").slice(0, 12)}-${projectionDigest.slice(0, 16)}`;
     try {
       const created = await service.createNamedGateway({
         companyId: input.agent.companyId,
         body: {
-          name: `Native ${input.agent.name} ${assignmentDigest.slice(0, 8)}`,
+          name: `Native ${input.agent.name} ${projectionDigest.slice(0, 8)}`,
           slug,
           description: "Run-scoped Paperclip Runner MCP gateway.",
           profileId: profile!.id,
           defaultProfileMode: "gateway_only",
           metadata: {
             nativeRuntimeAssignmentDigest: assignmentDigest,
+            nativeRuntimeProjectionDigest: projectionDigest,
             agentId: input.agent.id,
           },
         },
@@ -4351,6 +4400,23 @@ export async function buildPaperclipRuntimeMcpServers(input: {
     }
   }
 
+  if (!gateway || !matchesProjection(gateway)) {
+    throw new Error("cached runtime MCP gateway does not match the assignment projection");
+  }
+  const gatewayBindings = await input.db
+    .select({ profileId: toolProfileBindings.profileId })
+    .from(toolProfileBindings)
+    .where(and(
+      eq(toolProfileBindings.companyId, input.agent.companyId),
+      eq(toolProfileBindings.targetType, "gateway"),
+      eq(toolProfileBindings.targetId, gateway.id),
+    ));
+  if (
+    gatewayBindings.length === 0 ||
+    gatewayBindings.some((binding) => binding.profileId !== profile!.id)
+  ) {
+    throw new Error("cached runtime MCP gateway bindings do not match the assignment projection");
+  }
   const token = await service.createNamedGatewayToken({
     companyId: input.agent.companyId,
     gatewayId: gateway!.id,
