@@ -7268,6 +7268,14 @@ export function createToolGatewayService(
         await policyService.writeAudit(decisionInput, accessDecision);
         invocationId = recorded.invocation.id;
         if (recorded.replayed) {
+          if (recorded.invocation.status !== "succeeded") {
+            throw new ToolGatewayHttpError(
+              409,
+              "The previous invocation did not succeed; inspect its outcome before retrying.",
+              recorded.invocation.errorCode ?? "idempotent_invocation_not_succeeded",
+              { invocationId, status: recorded.invocation.status },
+            );
+          }
           await writeAudit({
             session,
             companyId: session.companyId,

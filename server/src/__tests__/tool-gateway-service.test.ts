@@ -684,6 +684,7 @@ describeEmbeddedPostgres("tool gateway service", () => {
       sessionToken: session.token,
       tool: "mcp-remote-fixture:update_note",
       parameters: { noteId: "n1", body: "reviewed body" },
+      idempotencyKey: "unsigned-approval-retry",
     })).rejects.toMatchObject({ reasonCode: "signing_secret_unconfigured" });
 
     const [actionRequest] = await db.select().from(toolActionRequests);
@@ -696,6 +697,13 @@ describeEmbeddedPostgres("tool gateway service", () => {
       status: "failed",
       errorCode: "signing_secret_unconfigured",
     });
+    // A retry must not report successful replay of a call that never dispatched.
+    await expect(gateway.executeTool({
+      sessionToken: session.token,
+      tool: "mcp-remote-fixture:update_note",
+      parameters: { noteId: "n1", body: "reviewed body" },
+      idempotencyKey: "unsigned-approval-retry",
+    })).rejects.toMatchObject({ reasonCode: "signing_secret_unconfigured" });
   });
 
   it("explains how to recover when an approval-required session has no task", async () => {
