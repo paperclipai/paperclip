@@ -3,7 +3,7 @@ import { z } from "zod";
 import type { Db } from "@paperclipai/db";
 import { normalizeIssueIdentifier } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
-import { activityService, normalizeActivityLimit } from "../services/activity.js";
+import { activityService, normalizeActivityLimit, normalizeActivityOffset } from "../services/activity.js";
 import { assertAuthenticated, assertBoard, assertCompanyAccess, getAccessibleResource, hasCompanyAccess } from "./authz.js";
 import { accessService, heartbeatService, issueService } from "../services/index.js";
 import { sanitizeRecord } from "../redaction.js";
@@ -97,6 +97,62 @@ const createActivitySchema = z.object({
   entityId: z.string().min(1),
   agentId: z.string().guid().optional().nullable(),
   details: z.record(z.string(), z.unknown()).optional().nullable(),
+});
+
+// Inclusive `createdAt` bounds. These were previously accepted from callers
+// but never read, so a date-windowed query silently returned the most-recent
+// page instead of the requested range. Malformed dates are rejected rather
+// than dropped — silently widening a bounded query back to "everything" is
+// the exact failure this endpoint just had.
+//
+// Parsing is restricted to real ISO-8601 forms rather than `z.coerce.date()`.
+// Coercion delegates to `new Date(string)`, which also accepts host-specific
+// formats such as `"Aug 10 2026"` and `"2026/08/10"`. Those parse against the
+// server's local timezone, so the same request would select a different
+// window depending on where it ran. A date-only bound is widened to that whole
+// UTC day, which keeps `?since=2026-08-10&until=2026-08-16` meaning the seven
+// full days a reader expects.
+const isoDateOnly = /^\d{4}-\d{2}-\d{2}$/;
+const isoDateTime = z.string().datetime({ offset: true });
+const calendarDate = /^(\d{4})-(\d{2})-(\d{2})/;
+
+// Both checks above validate shape, not whether the day exists, and
+// `new Date()` rolls an impossible date forward — "2026-02-31" becomes March 3.
+// A rolled-over bound reads as valid and quietly selects a different window
+// than the caller asked for, so verify the civil date itself. This is
+// deliberately independent of any UTC offset on the string: "2026-02-31" is not
+// a date in any zone.
+function hasRealCalendarDate(value: string) {
+  const match = calendarDate.exec(value);
+  if (!match) return false;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  if (month < 1 || month > 12 || day < 1) return false;
+  // Day 0 of the following month is the last day of this one, so this stays
+  // correct for February in a leap year without a special case.
+  return day <= new Date(Date.UTC(year, month, 0)).getUTCDate();
+}
+
+function isoBound(edge: "start" | "end") {
+  const dayEdge = edge === "start" ? "T00:00:00.000Z" : "T23:59:59.999Z";
+  return z
+    .string()
+    .refine(
+      (value) =>
+        (isoDateOnly.test(value) || isoDateTime.safeParse(value).success) && hasRealCalendarDate(value),
+      { message: "Expected an ISO-8601 date (YYYY-MM-DD) or date-time (YYYY-MM-DDTHH:mm:ssZ)" },
+    )
+    .transform((value) => new Date(isoDateOnly.test(value) ? `${value}${dayEdge}` : value))
+    .optional();
+}
+
+// `limit`/`offset` stay deliberately lenient (coerced then clamped, never
+// 400) to preserve the endpoint's existing contract for callers that pass
+// oversized values and rely on capping.
+const companyActivityQuerySchema = z.object({
+  since: isoBound("start"),
+  until: isoBound("end"),
 });
 
 const agentActionAuditActorScopeSchema = z.enum(["agents", "all"]);
@@ -224,12 +280,20 @@ export function activityRoutes(db: Db) {
     assertCompanyAccess(req, companyId);
     if (!(await assertCompanyScopeReadAllowed(req, res, companyId))) return;
 
+    const parsedQuery = companyActivityQuerySchema.safeParse(req.query);
+    if (!parsedQuery.success) {
+      throw badRequest("Invalid activity query", parsedQuery.error.issues);
+    }
+
     const filters = {
       companyId,
       agentId: req.query.agentId as string | undefined,
       entityType: req.query.entityType as string | undefined,
       entityId: req.query.entityId as string | undefined,
+      since: parsedQuery.data.since,
+      until: parsedQuery.data.until,
       limit: normalizeActivityLimit(Number(req.query.limit)),
+      offset: normalizeActivityOffset(Number(req.query.offset)),
     };
     const result = await svc.list(filters);
     res.json(result);

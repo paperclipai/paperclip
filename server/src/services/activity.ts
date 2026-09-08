@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNull, lte, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,
@@ -24,15 +24,25 @@ export interface ActivityFilters {
   agentId?: string;
   entityType?: string;
   entityId?: string;
+  /** Inclusive lower bound on `createdAt`. */
+  since?: Date;
+  /** Inclusive upper bound on `createdAt`. */
+  until?: Date;
   limit?: number;
+  offset?: number;
 }
 
 const DEFAULT_ACTIVITY_LIMIT = 100;
-const MAX_ACTIVITY_LIMIT = 500;
+export const MAX_ACTIVITY_LIMIT = 1000;
 
 export function normalizeActivityLimit(limit: number | undefined) {
   if (!Number.isFinite(limit)) return DEFAULT_ACTIVITY_LIMIT;
   return Math.max(1, Math.min(MAX_ACTIVITY_LIMIT, Math.floor(limit ?? DEFAULT_ACTIVITY_LIMIT)));
+}
+
+export function normalizeActivityOffset(offset: number | undefined) {
+  if (!Number.isFinite(offset)) return 0;
+  return Math.max(0, Math.floor(offset ?? 0));
 }
 
 export function activityService(db: Db) {
@@ -329,6 +339,7 @@ export function activityService(db: Db) {
     list: (filters: ActivityFilters) => {
       const conditions = [eq(activityLog.companyId, filters.companyId)];
       const limit = normalizeActivityLimit(filters.limit);
+      const offset = normalizeActivityOffset(filters.offset);
 
       if (filters.agentId) {
         conditions.push(eq(activityLog.agentId, filters.agentId));
@@ -338,6 +349,14 @@ export function activityService(db: Db) {
       }
       if (filters.entityId) {
         conditions.push(eq(activityLog.entityId, filters.entityId));
+      }
+      // Date bounds are inclusive on both ends, matching the sibling
+      // agent-action audit query. Backed by activity_log_company_created_idx.
+      if (filters.since) {
+        conditions.push(gte(activityLog.createdAt, filters.since));
+      }
+      if (filters.until) {
+        conditions.push(lte(activityLog.createdAt, filters.until));
       }
 
       return db
@@ -359,8 +378,12 @@ export function activityService(db: Db) {
             ),
           ),
         )
-        .orderBy(desc(activityLog.createdAt))
+        // `id` breaks ties so a given (limit, offset) pair addresses a stable
+        // row; ordering by createdAt alone lets same-timestamp rows shuffle
+        // between pages and silently drop records from a paginated sweep.
+        .orderBy(desc(activityLog.createdAt), desc(activityLog.id))
         .limit(limit)
+        .offset(offset)
         .then((rows) => rows.map((r) => r.activityLog));
     },
 
