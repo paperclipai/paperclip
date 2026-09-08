@@ -210,6 +210,7 @@ export const BOARD_KEY_ROUTE_INVENTORY: readonly string[] = [
   "board_key_denied | deny | /api/companies/{id}/adapters/{id}/auth-signal",
   "board_key_denied | deny | /api/companies/{id}/adapters/{id}/detect-model",
   "board_key_denied | deny | /api/companies/{id}/adapters/{id}/login-sessions",
+  "board_key_denied | deny | /api/companies/{id}/adapters/{id}/login-sessions/active",
   "board_key_denied | deny | /api/companies/{id}/adapters/{id}/login-sessions/{id}",
   "board_key_denied | deny | /api/companies/{id}/adapters/{id}/login-sessions/{id}/cancel",
   "board_key_denied | deny | /api/companies/{id}/adapters/{id}/models",
