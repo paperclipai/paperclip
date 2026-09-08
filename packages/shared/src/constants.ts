@@ -926,6 +926,27 @@ export const HEARTBEAT_RUN_STATUSES = [
 ] as const;
 export type HeartbeatRunStatus = (typeof HEARTBEAT_RUN_STATUSES)[number];
 
+/**
+ * Statuses a run never leaves. Everything else ("queued", "scheduled_retry",
+ * "running") is still in flight and may still produce output, which is the
+ * distinction callers need when they decide whether to keep polling a run or
+ * to treat its current state as final.
+ */
+export const HEARTBEAT_RUN_TERMINAL_STATUSES = [
+  "succeeded",
+  "interrupted",
+  "failed",
+  "cancelled",
+  "timed_out",
+] as const;
+export type HeartbeatRunTerminalStatus = (typeof HEARTBEAT_RUN_TERMINAL_STATUSES)[number];
+
+export function isHeartbeatRunTerminalStatus(
+  status: string | null | undefined,
+): status is HeartbeatRunTerminalStatus {
+  return HEARTBEAT_RUN_TERMINAL_STATUSES.includes(status as HeartbeatRunTerminalStatus);
+}
+
 export const RUN_LIVENESS_STATES = [
   "completed",
   "advanced",

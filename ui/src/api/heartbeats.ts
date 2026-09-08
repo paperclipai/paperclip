@@ -128,11 +128,13 @@ export const heartbeatsApi = {
     api.get<HeartbeatRunEvent[]>(
       `/heartbeat-runs/${runId}/events?afterSeq=${encodeURIComponent(String(afterSeq))}&limit=${encodeURIComponent(String(limit))}`,
     ),
+  // store/logRef are null while an active run has not opened its log file yet
+  // (the server answers an empty log rather than 404ing an existing run).
   log: (runId: string, offset = 0, limitBytes = 256000) =>
     api.get<{
       runId: string;
-      store: string;
-      logRef: string;
+      store: string | null;
+      logRef: string | null;
       content: string;
       nextOffset?: number;
     }>(
