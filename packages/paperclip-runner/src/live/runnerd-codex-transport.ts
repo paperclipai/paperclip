@@ -2138,6 +2138,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   #pump: NodeJS.Timeout | null = null;
   #eventSourceSeq = 0;
   #deferredTurnStartEvents: DurableRecoveryCommittedEvent[] = [];
+  #recoveryTurnBindingPending = false;
   #threadId = "";
   #sessionId: string | null = null;
   #providerIdentity: Record<string, unknown> | null = null;
@@ -2308,7 +2309,10 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       return {};
     }
     if (method === "thread/read") {
-      if (this.#core === null) await this.#resume();
+      if (this.#core === null) {
+        this.#recoveryTurnBindingPending = true;
+        await this.#resume();
+      }
       // Ask the authenticated runner for its live provider snapshot rather
       // than reading its filesystem. This both supports remote process owners
       // and proves any identity restored after PRP event compaction before the
@@ -2370,6 +2374,8 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           });
         }
       }
+      this.#recoveryTurnBindingPending = false;
+      this.#pumpEvents();
       return {
         thread: {
           id: this.#threadId,
@@ -4121,7 +4127,8 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     const events = this.#core?.store.state.committedEvents ?? [];
     for (;;) {
       const deferredEvent =
-        !this.#turnStartResponsePending || this.#expectedProviderTurnId !== null
+        !this.#recoveryTurnBindingPending &&
+        (!this.#turnStartResponsePending || this.#expectedProviderTurnId !== null)
           ? this.#deferredTurnStartEvents[0]
           : undefined;
       const event =
@@ -4133,6 +4140,21 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         throw new Error(
           `PRP provider event window advanced past source sequence ${this.#eventSourceSeq + 1}`,
         );
+      }
+      if (this.#recoveryTurnBindingPending && ![
+        "harness.ready", "session.started", "session.resumed",
+      ].includes(event.eventType)) {
+        // Reconnection can deliver mid-turn items before thread/read obtains
+        // the authenticated active provider turn. Retain canonical events,
+        // not notifications rehydrated with an empty/stale turn identity.
+        // Identity events still advance startup; command results are consumed
+        // independently, so session.snapshot cannot deadlock behind this gate.
+        if (this.#deferredTurnStartEvents.length >= 4_096) {
+          throw new Error("recovery produced too many events before its turn binding");
+        }
+        this.#eventSourceSeq = event.sourceSeq;
+        this.#deferredTurnStartEvents.push(structuredClone(event));
+        continue;
       }
       const eventPayload = record(event.envelope.payload).payload;
       const turnStartWhileCommandResultPending =

@@ -17,6 +17,7 @@ import {
 } from "../__tests__/helpers/embedded-postgres.js";
 import {
   applyRunnerGoalPrpEvent,
+  isRunnerGoalActionCompleted,
   blockRunnerGoalRecovery,
   failRunnerGoalAction,
   RunnerGoalConflictError,
@@ -144,6 +145,7 @@ describeEmbeddedPostgres("runner goal service", () => {
     });
     expect(accepted.status).toBe("accepted");
     expect(accepted.projection.pendingAction).toBe("starting");
+    expect(await isRunnerGoalActionCompleted(db, binding, requestId)).toBe(false);
 
     const repeated = await service.act(binding.companyId, binding.issueId, {
       requestId,
@@ -219,6 +221,10 @@ describeEmbeddedPostgres("runner goal service", () => {
       goal: { status: "active", workingNow: true },
       pendingAction: null,
     });
+    expect(await isRunnerGoalActionCompleted(db, binding, requestId)).toBe(true);
+    expect(await isRunnerGoalActionCompleted(db, { ...binding, issueId: randomUUID() }, requestId)).toBe(false);
+    expect(await isRunnerGoalActionCompleted(db, { ...binding, agentId: randomUUID() }, requestId)).toBe(false);
+    expect(await isRunnerGoalActionCompleted(db, { ...binding, companyId: randomUUID() }, requestId)).toBe(false);
 
     const failedClear = await applyRunnerGoalPrpEvent(db, {
       ...binding,

@@ -3350,7 +3350,7 @@ it("cold-restores a suspended provider session under its durable run binding", a
   }
 }, 30_000);
 
-async function verifyLiveRunnerAdoption(mismatchedCheckpoint: boolean) {
+async function verifyLiveRunnerAdoption(mismatchedCheckpoint: boolean, goalMidTurn = false) {
   const stateDirectory = await mkdtemp(join(tmpdir(), "runnerd-live-adopt-"));
   const server = createServer();
   let authority: DurablePrpControlPlane | null = null;
@@ -3387,7 +3387,7 @@ async function verifyLiveRunnerAdoption(mismatchedCheckpoint: boolean) {
   const sharedOptions = {
     runnerBinary: defaultCapabilityRunnerdBinary(),
     codexCommand: fakeCodex,
-    codexArgs: fakeCodexArgs(stateDirectory),
+    codexArgs: fakeCodexArgs(stateDirectory, ...(goalMidTurn ? ["--goal-autostart", "--goal-item-trigger", join(stateDirectory, "emit-goal-item")] : [])),
     stateDirectory,
     prpIdentity: identity,
     lifecyclePolicy: { mode: "warm" as const, idleTimeoutMs: 60_000 },
@@ -3416,8 +3416,21 @@ async function verifyLiveRunnerAdoption(mismatchedCheckpoint: boolean) {
     runnerPid = first.evidence().runnerPid;
     expect(runnerPid).toEqual(expect.any(Number));
 
+    if (goalMidTurn) {
+      await first.transport.request("thread/goal/set", { objective: "Recover a live goal", status: "active" });
+      for await (const event of first.transport.notifications()) {
+        if (event.method === "turn/started") break;
+      }
+    }
+
     await first.detachControllerForRestart();
     expect(() => process.kill(runnerPid!, 0)).not.toThrow();
+    if (goalMidTurn) {
+      await writeFile(join(stateDirectory, "emit-goal-item"), "emit");
+      await vi.waitFor(async () => {
+        expect(await readFile(join(stateDirectory, "runner", "runner-state.json"), "utf8")).toContain("mid-recovery-item");
+      }, { timeout: 5_000 });
+    }
 
     const controlPlaneStatePath = join(
       stateDirectory,
@@ -3485,6 +3498,18 @@ async function verifyLiveRunnerAdoption(mismatchedCheckpoint: boolean) {
       }),
     );
     expect(adopted.evidence().runnerPid).toBe(runnerPid);
+    if (goalMidTurn) {
+      const observed = await Promise.race([
+        (async () => {
+          for await (const notification of adopted!.transport.notifications()) {
+            if (notification.method === "item/started") return notification;
+          }
+          throw new Error("recovered goal item was lost");
+        })(),
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error("recovered item timed out")), 5_000)),
+      ]);
+      expect(observed.params).toMatchObject({ threadId: "codex-thread-1", turnId: "provider-goal-turn-1" });
+    }
     expect(duplicateLauncher).not.toHaveBeenCalled();
     expect(adopted.evidence().diagnostics).toContain(
       `adopted runner ${runnerPid} authenticated to its durable PRP authority`,
@@ -3525,6 +3550,8 @@ it(
   () => verifyLiveRunnerAdoption(true),
   30_000,
 );
+
+it("binds buffered mid-goal items only after the authenticated recovery snapshot", () => verifyLiveRunnerAdoption(false, true), 30_000);
 
 it("surfaces a runner exit while provider-ingress readiness is still pending", async () => {
   const neverReady = new Promise<void>(() => undefined);

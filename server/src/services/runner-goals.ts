@@ -609,11 +609,26 @@ function normalizedPrpGoal(value: unknown, workingNow: boolean): RunnerGoalSnaps
   };
 }
 
-/**
- * Commits the goal portion of a PRP event into the issue-scoped projection.
- * The provider source sequence is the resurrection fence for clear events and
- * makes replayed runner events harmless.
- */
+/** The durable outbox acknowledgement is authoritative across controller loss. */
+export async function isRunnerGoalActionCompleted(
+  db: Db,
+  binding: { companyId: string; agentId: string; issueId: string },
+  requestId: string,
+): Promise<boolean> {
+  const [action] = await db.select({ id: agentSessionGoalActions.id })
+    .from(agentSessionGoalActions)
+    .innerJoin(agentTaskSessions, eq(agentTaskSessions.id, agentSessionGoalActions.sessionId))
+    .where(and(
+      eq(agentTaskSessions.companyId, binding.companyId),
+      eq(agentTaskSessions.agentId, binding.agentId),
+      eq(agentTaskSessions.taskKey, binding.issueId),
+      eq(agentSessionGoalActions.requestId, requestId),
+      eq(agentSessionGoalActions.status, "completed"),
+    )).limit(1);
+  return action !== undefined;
+}
+
+/** Commits a PRP goal projection with source-epoch and sequence resurrection fences. */
 export async function applyRunnerGoalPrpEvent(
   db: Db,
   binding: {

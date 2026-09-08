@@ -489,11 +489,16 @@ describe("executeNativeSession recovery", () => {
     });
   });
 
-  it.each([false, true])("applies recovered goal control and suspends its checkpoint (warm=%s)", async (keepSessionOpen) => {
+  it.each([
+    { keepSessionOpen: false, recoveryOnly: false },
+    { keepSessionOpen: true, recoveryOnly: false },
+    { keepSessionOpen: false, recoveryOnly: true },
+    { keepSessionOpen: true, recoveryOnly: true },
+  ])("reconciles goal recovery without replaying completed controls ($keepSessionOpen, $recoveryOnly)", async ({ keepSessionOpen, recoveryOnly }) => {
     const pausedGoal = {
       threadId: "provider-recovery",
       objective: "Verify recovered goal control",
-      status: "paused" as const,
+      status: recoveryOnly ? "complete" as const : "paused" as const,
       tokenBudget: null,
       tokensUsed: 250,
       timeUsedSeconds: 2,
@@ -517,7 +522,7 @@ describe("executeNativeSession recovery", () => {
       },
       async *events() {
         yield runnerEvent(1, "session.goal.updated", {
-          requestId: "goal-pause",
+          requestId: recoveryOnly ? `recovery_${input.binding.runId}` : "goal-pause",
           goal: {
             objective: pausedGoal.objective,
             status: pausedGoal.status,
@@ -525,7 +530,7 @@ describe("executeNativeSession recovery", () => {
             tokensUsed: pausedGoal.tokensUsed,
             elapsedSeconds: pausedGoal.timeUsedSeconds,
           },
-          workingNow: true,
+          workingNow: !recoveryOnly,
         });
         yield runnerEvent(2, "turn.completed");
         yield runnerEvent(3, "session.goal.snapshot", {
@@ -552,7 +557,7 @@ describe("executeNativeSession recovery", () => {
           identity,
           providerSessionId: "provider-recovery",
           cursor: null,
-          activeTurnId: snapshotCount === 1 ? "turn-recovery" : null,
+          activeTurnId: !recoveryOnly && snapshotCount === 1 ? "turn-recovery" : null,
           pendingRuntimeRequests: [],
           goal: pausedGoal,
           lineage: [],
@@ -618,7 +623,8 @@ describe("executeNativeSession recovery", () => {
       persistedSession,
       keepSessionOpen,
       requireSessionCloseBeforeReturn: true,
-      sessionGoalControl: {
+      resumeSessionGoalHeartbeat: recoveryOnly,
+      sessionGoalControl: recoveryOnly ? null : {
         requestId: "goal-pause",
         action: "pause",
       },
@@ -626,14 +632,14 @@ describe("executeNativeSession recovery", () => {
 
     expect(startTurn).not.toHaveBeenCalled();
     expect(goal).toHaveBeenNthCalledWith(1, {
-      action: "pause",
-      requestId: "goal-pause",
+      action: recoveryOnly ? "get" : "pause",
+      requestId: recoveryOnly ? `recovery_${input.binding.runId}` : "goal-pause",
     });
     expect(goal).toHaveBeenCalledTimes(1);
     expect(close).toHaveBeenCalledTimes(1);
     expect(completed.result).toMatchObject({
-      reportedWorkDisposition: "yielded",
-      completionClaim: { objectiveSatisfied: false },
+      reportedWorkDisposition: recoveryOnly ? "done" : "yielded",
+      completionClaim: { objectiveSatisfied: recoveryOnly },
     });
   });
 

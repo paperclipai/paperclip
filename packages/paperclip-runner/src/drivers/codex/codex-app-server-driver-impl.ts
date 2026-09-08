@@ -449,7 +449,33 @@ export class CodexAppServerDriver implements HarnessDriver {
         snapshot.dispositionOnlyRecoveryTurnId ?? null;
       let reconcileUncheckpointedDispositionTurn = false;
       let providerTurnIds: Set<string> | null = null;
+      const goal = await cancellation.wait(
+        this.#discoverGoal(transport, opened.threadId),
+      );
+      const recoveringAutonomousGoal = snapshot.goal?.status === "active"
+        && goal != null
+        && goal.createdAt === snapshot.goal.createdAt;
+      if (recoveringAutonomousGoal) {
+        // Goal activation and continuation have no turn/start response. The
+        // provider can advance beyond the last controller checkpoint while
+        // disconnected, so bind the single live turn from the authenticated,
+        // identity-checked thread read before draining its notifications.
+        // Never infer a turn from an arbitrary notification or another goal.
+        const turns = Array.isArray(existingThread.turns)
+          ? existingThread.turns.map(record)
+          : null;
+        const active = turns?.filter((turn) => text(turn.status) === "inProgress");
+        if (!active || active.length > 1 || (active.length === 1 && (
+          !text(active[0]?.id)
+          || (snapshot.terminalTurns ?? []).some((turn) => turn.turnId === text(active[0]?.id))
+        ))) {
+          await cancellation.wait(cancellation.close());
+          return { recovered: false, reason: "provider exposed ambiguous autonomous goal turn history" };
+        }
+        recoveredActiveTurnId = active.length === 1 ? text(active[0]?.id) : recoveredActiveTurnId;
+      }
       if (
+        !recoveringAutonomousGoal &&
         !this.#direct() &&
         snapshot.semanticResult == null &&
         recoveredActiveTurnId === null &&
@@ -540,9 +566,6 @@ export class CodexAppServerDriver implements HarnessDriver {
         dispositionOnlyRecoveryConsumed = false;
         dispositionOnlyRecoveryTurnId = null;
       }
-      const goal = await cancellation.wait(
-        this.#discoverGoal(transport, opened.threadId),
-      );
       if (opened.context.liveConsole)
         opened.context.liveConsole.goals = this.#caps.goals;
       const session = this.#session({

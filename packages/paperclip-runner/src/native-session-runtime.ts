@@ -2170,10 +2170,16 @@ export async function executeNativeSession(
           await applyNativeSessionGoalControl(session, options.sessionGoalControl);
           await checkpoint();
         } else if (options.resumeSessionGoalHeartbeat && shouldStartFreshTurn) {
-          await applyNativeSessionGoalControl(session, {
-            requestId: `recovery_${input.binding.runId}`,
-            action: "resume",
-          });
+          const requestId = `recovery_${input.binding.runId}`;
+          if (recoveredSnapshot.goal?.status === "active") {
+            await applyNativeSessionGoalControl(session, { requestId, action: "resume" });
+          } else {
+            // Reconcile completed/paused/cleared state without changing it.
+            // An already-delivered outbox control must not be replayed as a
+            // new resume just because the old heartbeat is being recovered.
+            if (!session.goal) throw new Error("native_session_goal_unavailable");
+            await session.goal({ action: "get", requestId });
+          }
           await checkpoint();
         } else if (shouldStartFreshTurn) {
           const modelEnvelope = buildNativeModelEnvelope(input);

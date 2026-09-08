@@ -697,6 +697,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let goal_policy_disabled = args.iter().any(|value| value == "--goal-policy-disabled");
     let goal_autostart = args.iter().any(|value| value == "--goal-autostart");
     let goal_autocontinue = args.iter().any(|value| value == "--goal-autocontinue");
+    let goal_item_trigger = argument(&args, "--goal-item-trigger");
     let reject_goal_set = args.iter().any(|value| value == "--reject-goal-set");
     let agent_created_goal = args
         .iter()
@@ -1038,6 +1039,21 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         "method": "turn/started",
                         "params": {"turn": {"id": "provider-goal-turn-1"}}
                     }))?;
+                    if let Some(trigger) = goal_item_trigger.clone() {
+                        let thread_id = state.thread_id.clone();
+                        thread::spawn(move || {
+                            for _ in 0..3_000 {
+                                if PathBuf::from(&trigger).is_file() {
+                                    let _ = send(json!({"method":"item/started", "params":{
+                                        "threadId":thread_id, "turnId":"provider-goal-turn-1",
+                                        "item":{"id":"mid-recovery-item", "type":"agentMessage", "text":"Continuing after disconnect"}
+                                    }}));
+                                    break;
+                                }
+                                thread::sleep(Duration::from_millis(10));
+                            }
+                        });
+                    }
                     if goal_autocontinue {
                         send(json!({"method":"turn/completed", "params":{
                             "threadId":state.thread_id,

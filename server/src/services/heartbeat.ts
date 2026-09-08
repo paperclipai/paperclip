@@ -266,6 +266,7 @@ import { issueService } from "./issues.js";
 import {
   blockRunnerGoalRecovery,
   failRunnerGoalAction,
+  isRunnerGoalActionCompleted,
   runnerGoalService,
   settleLiveRunnerGoalBeforeInterrupt,
 } from "./runner-goals.js";
@@ -21556,12 +21557,20 @@ export function heartbeatService(
               }
             }
             const nativeMcpServer = nativeMcpServers[0] ?? null;
-            const sessionGoalControl = parseNativeSessionGoalControl(
+            let sessionGoalControl = parseNativeSessionGoalControl(
               context.runnerGoalControl,
             );
             if (runGoalControlRequestId && !sessionGoalControl) {
               throw new Error("session_goal_control_payload_invalid");
             }
+            // A hard restart replays the heartbeat context, not a new user
+            // action. Do not repeat a completed create/replace/edit (which
+            // could reactivate or clear a goal that finished while detached).
+            const completedGoalControl = sessionGoalControl !== null && taskKey !== null
+              && await isRunnerGoalActionCompleted(db, {
+                companyId: agent.companyId, agentId: agent.id, issueId: taskKey,
+              }, sessionGoalControl.requestId);
+            if (completedGoalControl) sessionGoalControl = null;
             const nativeDispatchAtMs = Date.now();
             const runCreatedAtMs = run.createdAt.getTime();
             const runStartedAtMs = (run.startedAt ?? run.createdAt).getTime();
@@ -21647,7 +21656,7 @@ export function heartbeatService(
                       adapterType: agent.adapterType,
                       sessionGoalControl,
                       resumeSessionGoalHeartbeat:
-                        context.resumeSessionGoalHeartbeat === true,
+                        context.resumeSessionGoalHeartbeat === true || completedGoalControl,
                       onGoalCheckpoint: async (snapshot) => {
                         if (!taskKey) return;
                         const params = attachPaperclipSessionMetadataToSessionParams({
