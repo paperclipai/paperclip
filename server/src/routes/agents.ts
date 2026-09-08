@@ -68,6 +68,12 @@ import {
 import { badRequest, conflict, forbidden, HttpError, notFound, unprocessable } from "../errors.js";
 import { PAPERCLIP_CORE_SKILL_KEYS } from "../services/company-skills.js";
 import { createRunSecretRedactionRegistry } from "../services/run-secret-redaction.js";
+import {
+  buildRunLogArchiveFiles,
+  collectRunLogExport,
+  runLogExportFilename,
+} from "../services/run-log-export.js";
+import { createDeflatedZipArchive } from "@paperclipai/shared/zip-writer";
 import { assertAuthenticated, assertBoard, assertCompanyAccess, assertInstanceAdmin, buildActorSecretContext, getAccessibleResource, getActorInfo, hasCompanyAccess } from "./authz.js";
 import { runAdapterLoginStartSpine } from "./adapter-login-route-spine.js";
 import { isLoginCommandSupportedAdapterType } from "../services/login-command.js";
@@ -6541,6 +6547,75 @@ export function agentRoutes(
 
     res.set("Cache-Control", "no-cache, no-store");
     res.json(await runRedactions.redactForRun(run.companyId, run.id, result));
+  });
+
+  router.get("/heartbeat-runs/:runId/export.zip", async (req, res, next) => {
+    const runId = req.params.runId as string;
+    const run = await getAccessibleResource(req, res, heartbeat.getRun(runId), "Heartbeat run not found");
+    if (!run) return;
+    if (!(await assertRunTelemetryReadAllowed(req, res, run.companyId))) return;
+
+    try {
+      const collected = await collectRunLogExport(
+        {
+          listEvents: (id, afterSeq, limit) => heartbeat.listEvents(id, afterSeq, limit),
+          readLog: (target, opts) => heartbeat.readLog(target, opts),
+        },
+        run,
+      );
+      const currentUserRedactionOptions = await getCurrentUserRedactionOptions();
+      const redactedRun = await runRedactions.redactForRun(
+        run.companyId,
+        run.id,
+        redactCurrentUserValue(collected.run, currentUserRedactionOptions),
+      );
+      const redactedEvents = await runRedactions.redactForRun(
+        run.companyId,
+        run.id,
+        collected.events.map((event) =>
+          redactCurrentUserValue(
+            { ...event, payload: redactEventPayload(event.payload) },
+            currentUserRedactionOptions,
+          ),
+        ),
+      );
+      const redactedLog = collected.logContent === null
+        ? null
+        : await runRedactions.redactForRun(run.companyId, run.id, collected.logContent);
+      const files = buildRunLogArchiveFiles({
+        run: redactedRun,
+        events: redactedEvents,
+        logContent: redactedLog,
+        eventsTruncated: collected.eventsTruncated,
+        logTruncated: collected.logTruncated,
+        logAbsent: collected.logAbsent,
+      });
+      const archive = createDeflatedZipArchive(files);
+      const actor = getActorInfo(req);
+      await logActivity(db, {
+        companyId: run.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        action: "run.log_exported",
+        entityType: "heartbeat_run",
+        entityId: run.id,
+        details: {
+          eventCount: collected.events.length,
+          eventsTruncated: collected.eventsTruncated,
+          logTruncated: collected.logTruncated,
+          logAbsent: collected.logAbsent,
+          archiveBytes: archive.length,
+        },
+      });
+      res.set("Content-Type", "application/zip");
+      res.set("Content-Length", String(archive.length));
+      res.set("Cache-Control", "no-cache, no-store");
+      res.set("Content-Disposition", `attachment; filename="${runLogExportFilename(run.id)}"`);
+      res.send(Buffer.from(archive));
+    } catch (err) {
+      next(err);
+    }
   });
 
   router.get("/heartbeat-runs/:runId/workspace-operations", async (req, res) => {

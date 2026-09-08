@@ -236,4 +236,22 @@ export const heartbeatsApi = {
       `/companies/${companyId}/live-runs${qs ? `?${qs}` : ""}`,
     );
   },
+  /**
+   * Download the run session log as a ZIP blob. Uses raw fetch like the
+   * audit CSV export because the shared JSON client cannot carry blobs.
+   */
+  exportRunLog: async (runId: string): Promise<Blob> => {
+    const res = await fetch(`/api/heartbeat-runs/${encodeURIComponent(runId)}/export.zip`, {
+      credentials: "include",
+      headers: { Accept: "application/zip" },
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => null);
+      const recovery = tenantSessionRecovery.recoverIfNeeded(res.status, body);
+      if (recovery) return recovery;
+      const message = (body as { error?: string } | null)?.error ?? `Export failed: ${res.status}`;
+      throw new Error(message);
+    }
+    return res.blob();
+  },
 };

@@ -79,6 +79,7 @@ import {
   ChevronRight,
   ChevronDown,
   ArrowLeft,
+  Download,
   HelpCircle,
   FolderOpen,
   AlertTriangle,
@@ -3880,6 +3881,8 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
   const [isFollowing, setIsFollowing] = useState(false);
   const [isStreamingConnected, setIsStreamingConnected] = useState(false);
   const [transcriptMode, setTranscriptMode] = useState<TranscriptMode>("nice");
+  const [exportingLog, setExportingLog] = useState(false);
+  const { pushToast } = useToastActions();
   const logEndRef = useRef<HTMLDivElement>(null);
   const pendingLogLineRef = useRef("");
   const seenProgressLogLineKeysRef = useRef<Set<string>>(new Set());
@@ -4293,6 +4296,31 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
     setTranscriptMode("nice");
   }, [run.id]);
 
+  const handleExportLog = async () => {
+    if (exportingLog) return;
+    setExportingLog(true);
+    try {
+      const blob = await heartbeatsApi.exportRunLog(run.id);
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `paperclip-run-${run.id.slice(0, 8)}.zip`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+      pushToast({ title: "Session log exported", body: "Your ZIP download has started.", tone: "success" });
+    } catch (err) {
+      pushToast({
+        title: "Export failed",
+        body: err instanceof Error ? err.message : "Could not export the session log.",
+        tone: "error",
+      });
+    } finally {
+      setExportingLog(false);
+    }
+  };
+
   if (loading && logLoading) {
     return <p className="text-xs text-muted-foreground">Loading run logs...</p>;
   }
@@ -4345,6 +4373,17 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
               </button>
             ))}
           </div>
+          <Button
+            variant="ghost"
+            size="xs"
+            onClick={() => void handleExportLog()}
+            disabled={exportingLog}
+            title="Download this run's session log as a ZIP file"
+            aria-label="Download session log as ZIP"
+          >
+            <Download className="h-3.5 w-3.5" />
+            {exportingLog ? "Exporting…" : "Export ZIP"}
+          </Button>
           {isLive && !isFollowing && (
             <Button
               variant="ghost"

@@ -81,3 +81,29 @@ describe("heartbeatsApi.downloadProviderTrace", () => {
     expect(settled).toBe(false);
   });
 });
+
+describe("heartbeatsApi.exportRunLog", () => {
+  it("downloads the session ZIP blob from the export endpoint", async () => {
+    const blob = new Blob(["PK"], { type: "application/zip" });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(blob, { status: 200 })));
+
+    const result = await heartbeatsApi.exportRunLog("run-1");
+
+    expect(fetch).toHaveBeenCalledWith("/api/heartbeat-runs/run-1/export.zip", {
+      credentials: "include",
+      headers: { Accept: "application/zip" },
+    });
+    expect(result).toBeInstanceOf(Blob);
+  });
+
+  it("throws the server error message on failure", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ error: "Heartbeat run not found" }), {
+        status: 404,
+        headers: { "Content-Type": "application/json" },
+      }),
+    ));
+
+    await expect(heartbeatsApi.exportRunLog("missing")).rejects.toThrow("Heartbeat run not found");
+  });
+});
