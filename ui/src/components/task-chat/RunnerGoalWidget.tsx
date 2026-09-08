@@ -115,10 +115,11 @@ export function useRunnerGoalControl(issueId: string | null, agentId: string | n
   const edit = useCallback(async () => {
     const current = query.data ?? (await query.refetch()).data;
     if (!current?.goal) throw new Error("There is no current session goal to edit.");
+    mutation.reset();
     setActionError(null);
     setExpanded(true);
     setDialog({ action: "edit", objective: current.goal.objective, revision: current.revision });
-  }, [query]);
+  }, [query, mutation]);
 
   const executeComposerCommand = useCallback(async (command: RunnerGoalComposerCommand) => {
     if (command.action === "focus") {
@@ -133,6 +134,7 @@ export function useRunnerGoalControl(issueId: string | null, agentId: string | n
       const current = query.data ?? (await query.refetch()).data;
       const unfinished = current?.goal && current.goal.status !== "complete";
       if (unfinished) {
+        mutation.reset();
         setActionError(null);
         setExpanded(true);
         setDialog({ action: "replace", objective: command.objective, revision: current.revision });
@@ -142,7 +144,7 @@ export function useRunnerGoalControl(issueId: string | null, agentId: string | n
       return;
     }
     await executeAction(command.action);
-  }, [edit, executeAction, query]);
+  }, [edit, executeAction, query, mutation]);
 
   const submitDialog = async () => {
     if (!dialog || mutation.isPending) return;

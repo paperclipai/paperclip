@@ -105,6 +105,12 @@ describe("session goal dialogs", () => {
     await click("Save goal");
     await vi.waitFor(() => expect(document.querySelector('[role="dialog"]')?.textContent).toContain("Goal changed"));
     expect(document.querySelector("textarea")?.value).toBe("Keep my draft");
+    await click("Cancel");
+    await click("Edit goal");
+    expect(document.querySelector('[role="dialog"]')?.textContent).not.toContain("Goal changed");
+    await click("Cancel");
+    await click("Request replacement");
+    expect(document.querySelector('[role="dialog"]')?.textContent).not.toContain("Goal changed");
   });
 
   it("dismisses an editor when the selected agent changes", async () => {

@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agentSessionGoalActions,
@@ -6,6 +7,7 @@ import {
   agents,
   companies,
   createDb,
+  heartbeatRuns,
   issues,
 } from "@paperclipai/db";
 
@@ -37,6 +39,7 @@ describeEmbeddedPostgres("runner goal service", () => {
     await db.delete(agentSessionGoalActions);
     await db.delete(agentTaskSessions);
     await db.delete(issues);
+    await db.delete(heartbeatRuns);
     await db.delete(agents);
     await db.delete(companies);
   });
@@ -283,13 +286,21 @@ describeEmbeddedPostgres("runner goal service", () => {
 
   it("accepts a reset source sequence from a successor run of the same durable runner", async () => {
     const binding = await seed();
+    const runnerId = randomUUID();
+    const nativeSessionId = randomUUID();
+    const priorRunId = randomUUID();
+    const nextRunId = randomUUID();
+    await db.insert(heartbeatRuns).values([
+      { id: priorRunId, companyId: binding.companyId, agentId: binding.agentId, nativeIssueId: binding.issueId, status: "succeeded", invocationSource: "on_demand", runnerInstanceId: runnerId, nativeSessionId },
+      { id: nextRunId, companyId: binding.companyId, agentId: binding.agentId, nativeIssueId: binding.issueId, status: "running", invocationSource: "on_demand", runnerInstanceId: runnerId, nativeSessionId },
+    ]);
     const first = await applyRunnerGoalPrpEvent(db, {
       ...binding,
       adapterType: "paperclip_runner",
     }, {
       eventType: "session.goal.updated",
-      sourceInstanceId: "durable-runner",
-      sourceRunId: "heartbeat-run-a",
+      sourceInstanceId: runnerId,
+      sourceRunId: priorRunId,
       sourceSeq: 9,
       payload: {
         goal: {
@@ -304,8 +315,8 @@ describeEmbeddedPostgres("runner goal service", () => {
       adapterType: "paperclip_runner",
     }, {
       eventType: "session.goal.snapshot",
-      sourceInstanceId: "durable-runner",
-      sourceRunId: "heartbeat-run-a",
+      sourceInstanceId: runnerId,
+      sourceRunId: priorRunId,
       sourceSeq: 10,
       payload: { goal: null },
     })).resolves.toBeNull();
@@ -315,13 +326,10 @@ describeEmbeddedPostgres("runner goal service", () => {
       binding.agentId,
     )).resolves.toMatchObject({ revision: 1, goal: { status: "complete" } });
 
-    const successor = await applyRunnerGoalPrpEvent(db, {
-      ...binding,
-      adapterType: "paperclip_runner",
-    }, {
+    const successorEvent = {
       eventType: "session.goal.updated",
-      sourceInstanceId: "durable-runner",
-      sourceRunId: "heartbeat-run-b",
+      sourceInstanceId: runnerId,
+      sourceRunId: nextRunId,
       sourceSeq: 1,
       payload: {
         goal: {
@@ -329,7 +337,24 @@ describeEmbeddedPostgres("runner goal service", () => {
           status: "active",
         },
       },
-    });
+    };
+    const eventBinding = { ...binding, adapterType: "paperclip_runner" };
+    // Merely changing the source namespace is not proof of succession.
+    for (const invalidOwner of [
+      { nativeSessionId: randomUUID() },
+      { nativeIssueId: randomUUID() },
+      { runnerInstanceId: randomUUID() },
+      { status: "succeeded" },
+    ]) {
+      await db.update(heartbeatRuns).set(invalidOwner).where(eq(heartbeatRuns.id, nextRunId));
+      await expect(applyRunnerGoalPrpEvent(db, eventBinding, successorEvent)).resolves.toBeNull();
+      await db.update(heartbeatRuns).set({ nativeSessionId, nativeIssueId: binding.issueId, runnerInstanceId: runnerId, status: "running" })
+        .where(eq(heartbeatRuns.id, nextRunId));
+    }
+    await db.update(heartbeatRuns).set({ status: "running" }).where(eq(heartbeatRuns.id, priorRunId));
+    await expect(applyRunnerGoalPrpEvent(db, eventBinding, successorEvent)).resolves.toBeNull();
+    await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, priorRunId));
+    const successor = await applyRunnerGoalPrpEvent(db, eventBinding, successorEvent);
     expect(successor).toMatchObject({
       goal: { objective: "Successor heartbeat objective", status: "active" },
     });
@@ -339,12 +364,33 @@ describeEmbeddedPostgres("runner goal service", () => {
       adapterType: "paperclip_runner",
     }, {
       eventType: "session.goal.cleared",
-      sourceInstanceId: "durable-runner",
-      sourceRunId: "heartbeat-run-b",
+      sourceInstanceId: runnerId,
+      sourceRunId: nextRunId,
       sourceSeq: 1,
       payload: { goal: null },
     });
     expect(duplicate).toBeNull();
+    const delayed = (eventType: string, sourceSeq: number) => ({
+      eventType, sourceInstanceId: runnerId, sourceRunId: priorRunId, sourceSeq,
+      payload: { goal: { objective: "Stale predecessor", status: "active" } },
+    });
+    // The predecessor cannot erase the successor's active goal.
+    await expect(applyRunnerGoalPrpEvent(db, eventBinding, delayed("session.goal.cleared", 100))).resolves.toBeNull();
+    await expect(runnerGoalService(db).projection(binding.companyId, binding.issueId)).resolves.toMatchObject({
+      revision: 2, goal: { objective: "Successor heartbeat objective" },
+    });
+    await applyRunnerGoalPrpEvent(db, eventBinding, {
+      eventType: "session.goal.cleared", sourceInstanceId: runnerId, sourceRunId: nextRunId, sourceSeq: 2, payload: { goal: null },
+    });
+    // Nor can it resurrect the cleared goal, even once the successor settles.
+    await db.update(heartbeatRuns).set({ status: "succeeded" });
+    await expect(applyRunnerGoalPrpEvent(db, eventBinding, delayed("session.goal.updated", 101))).resolves.toBeNull();
+    await expect(applyRunnerGoalPrpEvent(db, eventBinding, {
+      eventType: "session.goal.updated", sourceSeq: 102, payload: delayed("", 0).payload,
+    })).resolves.toBeNull();
+    await expect(runnerGoalService(db).projection(binding.companyId, binding.issueId)).resolves.toMatchObject({ revision: 3, goal: null });
+    const [session] = await db.select().from(agentTaskSessions);
+    expect(session).toMatchObject({ goalSourceId: `${runnerId}:${nextRunId}`, goalSourceCursor: 2 });
   });
 
   it("keeps a missing resumed goal blocked across restored empty snapshots", async () => {

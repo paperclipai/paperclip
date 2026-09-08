@@ -665,6 +665,36 @@ export async function applyRunnerGoalPrpEvent(
         : event.sourceInstanceId
       : undefined;
     const sameSource = !sourceId || session?.goalSourceId === sourceId;
+    if (session?.goalSourceId && sourceId !== session.goalSourceId) {
+      // goalSourceId is the persisted run epoch, not just a sequence namespace.
+      // Only a running, authenticated successor of the same native session may
+      // replace it. A delayed terminal predecessor must never reclaim the epoch
+      // or resurrect a clear tombstone, even with a higher source sequence.
+      const priorRunId = session.goalSourceId.split(":").at(-1);
+      const nextRunId = event.sourceRunId;
+      const isUuid = (value: string | undefined): value is string =>
+        Boolean(value && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value));
+      if (!sourceId || !isUuid(priorRunId) || !isUuid(nextRunId)) return false;
+      const owners = await tx.select({
+        id: heartbeatRuns.id,
+        status: heartbeatRuns.status,
+        nativeSessionId: heartbeatRuns.nativeSessionId,
+        runnerInstanceId: heartbeatRuns.runnerInstanceId,
+      }).from(heartbeatRuns).where(and(
+        inArray(heartbeatRuns.id, [priorRunId, nextRunId]),
+        eq(heartbeatRuns.companyId, binding.companyId),
+        eq(heartbeatRuns.agentId, binding.agentId),
+        eq(heartbeatRuns.nativeIssueId, binding.issueId),
+      ));
+      const prior = owners.find((run) => run.id === priorRunId);
+      const next = owners.find((run) => run.id === nextRunId);
+      if (
+        !prior || !next || next.status !== "running" ||
+        next.runnerInstanceId !== event.sourceInstanceId ||
+        !next.nativeSessionId || next.nativeSessionId !== prior.nativeSessionId ||
+        (prior.id !== next.id && !["succeeded", "failed", "cancelled", "timed_out"].includes(prior.status))
+      ) return false;
+    }
     if (
       !session ||
       (sameSource && session.goalSourceCursor !== null && event.sourceSeq <= session.goalSourceCursor)
