@@ -5,6 +5,17 @@ export const SANDBOX_INSTALL_COMMAND = "npm install -g @earendil-works/pi-coding
 
 export const models: Array<{ id: string; label: string }> = [];
 
+// Pi model ids use provider/model form (e.g. "anthropic/claude-sonnet-5" or
+// "ai-gw-anthropic-200k/anthropic/claude-sonnet-5"). Mirrors the OpenCode
+// adapter's isValidOpenCodeModelId shape check: require a non-empty string
+// with a "/" that is neither the first nor the last character.
+export function isValidPiModelId(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+  const trimmed = value.trim();
+  const slashIndex = trimmed.indexOf("/");
+  return Boolean(trimmed) && slashIndex > 0 && slashIndex !== trimmed.length - 1;
+}
+
 export const agentConfigurationDoc = `# pi_local agent configuration
 
 Adapter: pi_local
