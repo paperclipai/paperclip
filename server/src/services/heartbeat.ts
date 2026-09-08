@@ -2003,6 +2003,30 @@ function readStartupFaultFingerprint(
   return readNonEmptyString(payload?.fingerprint);
 }
 
+async function hasConsumedStartupFaultRetryForIssue(
+  dbConn: Db,
+  run: Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId" | "contextSnapshot" | "resultJson">,
+) {
+  const issueId = readNonEmptyString(parseObject(run.contextSnapshot).issueId);
+  const fingerprint = readStartupFaultFingerprint(run);
+  if (!issueId || !fingerprint) return false;
+  const retry = await dbConn
+    .select({ id: heartbeatRuns.id })
+    .from(heartbeatRuns)
+    .where(
+      and(
+        eq(heartbeatRuns.companyId, run.companyId),
+        ne(heartbeatRuns.id, run.id),
+        eq(heartbeatRuns.scheduledRetryReason, STARTUP_FAULT_RETRY_REASON),
+        sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issueId}`,
+        sql`${heartbeatRuns.resultJson}->'startupFault'->>'fingerprint' = ${fingerprint}`,
+      ),
+    )
+    .limit(1)
+    .then((rows) => rows[0] ?? null);
+  return retry != null;
+}
+
 async function hasLiveStartupFaultRetryForRun(
   dbConn: Db,
   run: Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId">,
@@ -16755,12 +16779,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             });
           }
         } else if (outcome === "failed" && isAdapterStartupFaultRun(livenessRun)) {
-          await scheduleBoundedRetryForRun(livenessRun, agent, {
-            retryReason: STARTUP_FAULT_RETRY_REASON,
-            wakeReason: STARTUP_FAULT_RETRY_WAKE_REASON,
-            maxAttempts: STARTUP_FAULT_RETRY_MAX_ATTEMPTS,
-            delayMs: 0,
-          });
+          if (!await hasConsumedStartupFaultRetryForIssue(db, livenessRun)) {
+            await scheduleBoundedRetryForRun(livenessRun, agent, {
+              retryReason: STARTUP_FAULT_RETRY_REASON,
+              wakeReason: STARTUP_FAULT_RETRY_WAKE_REASON,
+              maxAttempts: STARTUP_FAULT_RETRY_MAX_ATTEMPTS,
+              delayMs: 0,
+            });
+          }
         } else if (outcome === "failed" && readTransientRecoveryContractFromRun(livenessRun)) {
           await scheduleBoundedRetryForRun(livenessRun, agent);
         }
@@ -17805,7 +17831,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         isConfigurationIncompleteFailedRun(run) ||
         (
           isAdapterStartupFaultRun(run) &&
-          readNonEmptyString(parseObject(run.contextSnapshot).retryReason) === STARTUP_FAULT_RETRY_REASON
+          (
+            readNonEmptyString(parseObject(run.contextSnapshot).retryReason) === STARTUP_FAULT_RETRY_REASON ||
+            await hasConsumedStartupFaultRetryForIssue(db, run)
+          )
         ) ||
         didAutomaticRecoveryFail(run, issue.status === "todo" ? "assignment_recovery" : "issue_continuation_needed");
       if (shouldBlockImmediately) {

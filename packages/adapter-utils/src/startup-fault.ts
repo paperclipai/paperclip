@@ -105,6 +105,19 @@ function fingerprintStartupFault(
   return `startup_fault:v1:${kind}:${digest}`;
 }
 
+export function hashStartupFaultConfigIdentity(input: {
+  adapterType?: string | null;
+  adapterConfig?: unknown;
+}) {
+  return createHash("sha256")
+    .update(JSON.stringify({
+      adapterType: readNonEmpty(input.adapterType) ?? "",
+      adapterConfig: input.adapterConfig ?? {},
+    }))
+    .digest("hex")
+    .slice(0, 24);
+}
+
 export function classifyAdapterStartupOutput(input: {
   stdout: string;
   stderr: string;

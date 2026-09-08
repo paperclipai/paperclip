@@ -74,6 +74,7 @@ export {
 export {
   ADAPTER_STARTUP_FAULT_ERROR_CODE,
   classifyAdapterStartupOutput,
+  hashStartupFaultConfigIdentity,
   type StartupFaultEvidence,
   type StartupFaultKind,
 } from "./startup-fault.js";

@@ -8209,17 +8209,13 @@ async function escalateStartupFaultIssueToBlocked(
 
   it("re-escalates startup-fault when authorized retry resumes without material configuration change", async () => {
     const fingerprint = "startup_fault:v1:worktree_requires_git_repository:deadbeefdeadbeefdeadbeef";
-    const { agentId, issueId, recoveryAction, heartbeat } = await escalateStartupFaultIssueToBlocked(fingerprint);
+    const { companyId, agentId, issueId, recoveryAction, heartbeat } = await escalateStartupFaultIssueToBlocked(fingerprint);
     const app = createIssueRoutesApp(
       { type: "board", source: "local_implicit" },
       { recoveryActionEnqueueWakeup: heartbeat.wakeup.bind(heartbeat) },
     );
 
-    mockAdapterExecute
-      .mockResolvedValueOnce(startupFaultAdapterResult(fingerprint))
-      .mockResolvedValueOnce(startupFaultAdapterResult(fingerprint));
-
-    await request(app)
+    const unchanged = await request(app)
       .post(`/api/issues/${issueId}/recovery-actions/resolve`)
       .send({
         actionId: recoveryAction!.id,
@@ -8227,36 +8223,46 @@ async function escalateStartupFaultIssueToBlocked(
         sourceIssueStatus: "todo",
         resolutionNote: "Retry without repairing adapter configuration.",
       })
-      .expect(200);
+      .expect(422);
+    expect(unchanged.body.error).toContain("Startup-fault retry bound is exhausted");
 
-    const recoveryRun = await waitForRecoveryRestoreRun(agentId);
-    expect(recoveryRun).toBeTruthy();
-    await waitForRunToSettle(heartbeat, recoveryRun!.id);
+    await request(app)
+      .post(`/api/issues/${issueId}/recovery-actions/resolve`)
+      .send({
+        actionId: recoveryAction!.id,
+        outcome: "restored",
+        sourceIssueStatus: "todo",
+        resolutionNote: "Repeat unchanged-config resolve.",
+      })
+      .expect(422);
 
-    const retryRun = await waitForValue(async () => {
-      const rows = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
-      return rows.find((row) => row.status === "scheduled_retry") ?? null;
-    });
-    await heartbeat.promoteDueScheduledRetries(new Date(Date.now() + 60_000));
-    await heartbeat.resumeQueuedRuns();
-    await waitForRunToSettle(heartbeat, retryRun!.id);
-
-    const blockedAgain = await waitForValue(async () =>
-      db.select().from(issues).where(eq(issues.id, issueId)).then((rows) =>
-        rows[0]?.status === "blocked" && rows[0].blockedOwnerNotifiedAt ? rows[0] : null,
-      ),
-    );
-    expect(blockedAgain?.blockedOwnerNotifiedAt).toBeTruthy();
+    const stillBlocked = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(stillBlocked?.status).toBe("blocked");
+    expect(stillBlocked?.blockedOwnerNotifiedAt).toBeTruthy();
 
     const allActions = await db
       .select()
       .from(issueRecoveryActions)
       .where(eq(issueRecoveryActions.sourceIssueId, issueId));
-    expect(allActions.filter((row) => row.cause === "startup_fault")).toHaveLength(2);
-    expect(allActions.filter((row) => row.status === "resolved")).toHaveLength(1);
+    expect(allActions.filter((row) => row.cause === "startup_fault")).toHaveLength(1);
     expect(allActions.filter((row) => row.status === "active")).toHaveLength(1);
-    expect(allActions.some((row) => row.id === recoveryAction!.id && row.status === "resolved")).toBe(true);
-    expect(mockAdapterExecute).toHaveBeenCalledTimes(4);
+    expect(allActions.some((row) => row.id === recoveryAction!.id && row.status === "active")).toBe(true);
+    expect(mockAdapterExecute).toHaveBeenCalledTimes(2);
+
+    for (let tick = 0; tick < 100; tick += 1) {
+      await Promise.all([
+        heartbeat.reconcileStrandedAssignedIssues(),
+        heartbeat.reconcileStrandedAssignedIssues(),
+      ]);
+      await heartbeat.resumeQueuedRuns();
+    }
+
+    expect(mockAdapterExecute).toHaveBeenCalledTimes(2);
+    expect(await db.select().from(activityLog).where(and(
+      eq(activityLog.companyId, companyId),
+      eq(activityLog.entityId, issueId),
+      eq(activityLog.action, "issue.blocked_owner_notification_delivered"),
+    ))).toHaveLength(1);
   });
 
   it("supersedes startup-fault recovery actions when effective configuration identity changes", async () => {

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   ADAPTER_STARTUP_FAULT_ERROR_CODE,
   classifyAdapterStartupOutput,
+  hashStartupFaultConfigIdentity,
 } from "./startup-fault.js";
 
 describe("classifyAdapterStartupOutput", () => {
@@ -152,5 +153,24 @@ describe("classifyAdapterStartupOutput", () => {
 
   it("exports the adapter startup fault error code", () => {
     expect(ADAPTER_STARTUP_FAULT_ERROR_CODE).toBe("adapter_startup_fault");
+  });
+});
+
+describe("hashStartupFaultConfigIdentity", () => {
+  it("changes when adapter config changes and stays stable for the same config", () => {
+    const before = hashStartupFaultConfigIdentity({
+      adapterType: "codex_local",
+      adapterConfig: {},
+    });
+    const unchanged = hashStartupFaultConfigIdentity({
+      adapterType: "codex_local",
+      adapterConfig: {},
+    });
+    const after = hashStartupFaultConfigIdentity({
+      adapterType: "codex_local",
+      adapterConfig: { cwd: "/repaired/project-workspace" },
+    });
+    expect(before).toBe(unchanged);
+    expect(after).not.toBe(before);
   });
 });

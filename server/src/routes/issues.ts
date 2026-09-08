@@ -157,6 +157,7 @@ import {
 } from "../services/task-watchdog-scope.js";
 import type { TaskWatchdogServiceDeps, taskWatchdogService } from "../services/task-watchdogs.js";
 import { logger } from "../middleware/logger.js";
+import { hashStartupFaultConfigIdentity } from "@paperclipai/adapter-utils";
 import { badRequest, conflict, forbidden, HttpError, notFound, unauthorized, unprocessable } from "../errors.js";
 import { privateJsonEtag } from "../middleware/private-json-etag.js";
 import { createRequestPromiseMemo } from "../lib/request-promise-memo.js";
@@ -6881,6 +6882,33 @@ export function issueRoutes(
         activeRecoveryAction,
         { source: "recovery_action_resolution" },
       );
+
+      if (
+        outcome === "restored" &&
+        sourceIssueStatus === "todo" &&
+        activeRecoveryAction.cause === "startup_fault" &&
+        lockedIssue.assigneeAgentId
+      ) {
+        const evidence = activeRecoveryAction.evidence as Record<string, unknown> | null;
+        const storedIdentity = typeof evidence?.startupFaultConfigIdentity === "string"
+          ? evidence.startupFaultConfigIdentity
+          : null;
+        if (storedIdentity) {
+          const [assignee] = await tx
+            .select({
+              adapterType: agents.adapterType,
+              adapterConfig: agents.adapterConfig,
+            })
+            .from(agents)
+            .where(eq(agents.id, lockedIssue.assigneeAgentId))
+            .limit(1);
+          if (assignee && hashStartupFaultConfigIdentity(assignee) === storedIdentity) {
+            throw unprocessable(
+              "Startup-fault retry bound is exhausted until adapter or effective configuration changes",
+            );
+          }
+        }
+      }
 
       let issue = lockedIssue;
       const sourceStatusChanged = sourceIssueStatus !== lockedIssue.status;

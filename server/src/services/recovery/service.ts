@@ -86,6 +86,7 @@ import {
   withRecoveryModelProfileHint,
 } from "./model-profile-hint.js";
 import { isAutomaticRecoverySuppressedByPauseHold } from "./pause-hold-guard.js";
+import { hashStartupFaultConfigIdentity } from "@paperclipai/adapter-utils";
 import { blockedOwnerDeliveryMatchesIssue, blockedOwnerNotificationIdempotencyKey, deliverBlockedOwnerNotification } from "../routable-blocked.js";
 import {
   collectDispositionRepairSourceState,
@@ -2777,6 +2778,25 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     };
   }
 
+  async function startupFaultConfigIdentityEvidence(
+    issue: typeof issues.$inferSelect,
+    recoveryCause: StrandedRecoveryCause,
+  ) {
+    if (recoveryCause !== "startup_fault" || !issue.assigneeAgentId) return {};
+    const [agent] = await db
+      .select({
+        adapterType: agents.adapterType,
+        adapterConfig: agents.adapterConfig,
+      })
+      .from(agents)
+      .where(eq(agents.id, issue.assigneeAgentId))
+      .limit(1);
+    if (!agent) return {};
+    return {
+      startupFaultConfigIdentity: hashStartupFaultConfigIdentity(agent),
+    };
+  }
+
   async function ensureSourceScopedStrandedRecoveryAction(input: {
     issue: typeof issues.$inferSelect;
     latestRun: LatestIssueRun;
@@ -2821,6 +2841,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           successfulRunHandoffEvidence: input.successfulRunHandoffEvidence,
         }),
         failureSummary: summarizeRunFailureForIssueComment(input.latestRun)?.trim() ?? null,
+        ...(await startupFaultConfigIdentityEvidence(input.issue, recoveryCause)),
       },
       evidenceOnCreate: isProviderQuotaWait
         ? {}
