@@ -7,6 +7,7 @@ import {
   type ScaffoldPluginOptions,
 } from "../../../../packages/plugins/create-paperclip-plugin/src/index.js";
 import pc from "picocolors";
+import { parseNpmPackageSpec } from "@paperclipai/shared";
 import {
   addCommonClientOptions,
   handleCommandError,
@@ -167,9 +168,13 @@ export function buildPluginInstallRequest(
     throw new Error("--version is only supported for npm package installs, not local plugin paths.");
   }
 
+  const npmSpec = isLocal
+    ? { packageName: packageArg, version: undefined }
+    : parseNpmPackageSpec(packageArg, opts.version);
+
   return {
-    packageName: resolvePackageArg(packageArg, Boolean(isLocal), cwd),
-    version: opts.version,
+    packageName: resolvePackageArg(npmSpec.packageName, Boolean(isLocal), cwd),
+    version: npmSpec.version,
     isLocalPath: Boolean(isLocal),
   };
 }
@@ -434,7 +439,7 @@ export function registerPluginCommands(program: Command): void {
               pc.dim(
                 installRequest.isLocalPath
                   ? `Installing plugin from local path: ${installRequest.packageName}`
-                  : `Installing plugin: ${installRequest.packageName}${opts.version ? `@${opts.version}` : ""}`,
+                  : `Installing plugin: ${installRequest.packageName}${installRequest.version ? `@${installRequest.version}` : ""}`,
               ),
             );
           }

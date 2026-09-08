@@ -234,6 +234,51 @@ describe.sequential("plugin install and upgrade authz", () => {
     expect(mockLifecycle.load).toHaveBeenCalledWith(pluginId);
   }, 20_000);
 
+  it("splits a scoped package with an inline exact version", async () => {
+    const pluginKey = "kujolang.paperclip";
+    const discovered = { manifest: { id: pluginKey } };
+    mockRegistry.getByKey.mockResolvedValue({
+      id: pluginId,
+      pluginKey,
+      packageName: "@kujolang/paperclip",
+      version: "0.1.5",
+    });
+    mockRegistry.getById.mockResolvedValue({
+      id: pluginId,
+      pluginKey,
+      packageName: "@kujolang/paperclip",
+      version: "0.1.5",
+    });
+    mockLifecycle.load.mockResolvedValue(undefined);
+
+    const { app, loader } = await createApp(
+      boardActor({ isInstanceAdmin: true }),
+      { installPlugin: vi.fn().mockResolvedValue(discovered) },
+    );
+
+    const res = await request(app)
+      .post("/api/plugins/install")
+      .send({ packageName: "@kujolang/paperclip@0.1.5" });
+
+    expect(res.status).toBe(200);
+    expect(loader.installPlugin).toHaveBeenCalledWith({
+      packageName: "@kujolang/paperclip",
+      version: "0.1.5",
+    });
+  }, 20_000);
+
+  it("rejects conflicting inline and body versions", async () => {
+    const { app, loader } = await createApp(boardActor({ isInstanceAdmin: true }));
+
+    const res = await request(app)
+      .post("/api/plugins/install")
+      .send({ packageName: "@kujolang/paperclip@0.1.5", version: "0.1.4" });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("conflicts with --version 0.1.4");
+    expect(loader.installPlugin).not.toHaveBeenCalled();
+  }, 20_000);
+
   it("rejects plugin upgrades for non-admin board users", async () => {
     const pluginId = "11111111-1111-4111-8111-111111111111";
     const { app } = await createApp({
