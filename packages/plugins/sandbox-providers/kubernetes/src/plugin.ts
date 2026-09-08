@@ -36,7 +36,12 @@ import {
   sandboxCrOrchestrator,
   SandboxCrTimeoutError,
 } from "./sandbox-cr-orchestrator.js";
-import { execInPod, execInPodStreaming, wrapCommandWithEnv } from "./pod-exec.js";
+import {
+  ExecInPodTimeoutError,
+  execInPod,
+  execInPodStreaming,
+  wrapCommandWithEnv,
+} from "./pod-exec.js";
 import { performSyncIn, performSyncOut, type PodStreamExec } from "./file-sync.js";
 import { checkLeaseResumable, destroyLeaseResources } from "./lease-lifecycle.js";
 import {
@@ -110,6 +115,45 @@ function getOrCreateUploadInterceptor(leaseId: string): FastUploadInterceptor {
 // On worker restart this resets, which is fine: the first exec on each
 // lease then re-confirms readiness from scratch.
 const readySandboxesByLease = new Set<string>();
+
+function getKubernetesExecStatusCode(error: unknown): number | null {
+  if (!error || typeof error !== "object") return null;
+  const record = error as { statusCode?: unknown; response?: { statusCode?: unknown } };
+  const statusCode = record.statusCode ?? record.response?.statusCode;
+  return typeof statusCode === "number" && Number.isInteger(statusCode) && statusCode >= 100 && statusCode <= 599
+    ? statusCode
+    : null;
+}
+
+export function mapKubernetesExecError(
+  error: unknown,
+  metadata: Record<string, unknown> = {},
+): PluginEnvironmentExecuteResult {
+  if (error instanceof ExecInPodTimeoutError) {
+    return {
+      exitCode: null,
+      timedOut: true,
+      stdout: "",
+      stderr: error.message,
+      metadata: { ...metadata, execFailure: "timeout" },
+    };
+  }
+
+  const statusCode = getKubernetesExecStatusCode(error);
+  return {
+    exitCode: 1,
+    timedOut: false,
+    stdout: "",
+    stderr: statusCode === null
+      ? "Kubernetes exec failed before command completion."
+      : `Kubernetes exec failed during setup with HTTP ${statusCode}.`,
+    metadata: {
+      ...metadata,
+      execFailure: "setup_or_transport",
+      ...(statusCode === null ? {} : { statusCode }),
+    },
+  };
+}
 
 // How long onEnvironmentResumeLease waits for an existing Sandbox pod to
 // report Ready before declaring the lease non-resumable. Deliberately short:
@@ -832,20 +876,11 @@ const plugin = definePlugin({
               flushTimeoutMs,
             );
           } catch (err) {
-            return {
-              exitCode: null,
-              timedOut: true,
-              stdout: "",
-              stderr: `fast-upload flush failed: ${err instanceof Error ? err.message : String(err)}`,
-              metadata: {
-                provider: "kubernetes",
-                backend: "sandbox-cr",
-                namespace,
-                sandboxName: lease.providerLeaseId,
-                podName,
-                fastUpload: "flush",
-              },
-            };
+            return mapKubernetesExecError(err, {
+              provider: "kubernetes",
+              backend: "sandbox-cr",
+              fastUpload: "flush",
+            });
           }
           return {
             exitCode: flushResult.exitCode,
@@ -900,21 +935,10 @@ const plugin = definePlugin({
           remainingTimeoutMs,
         );
       } catch (err) {
-        // Watchdog-fired or WebSocket-setup error. Surface as a timeout so
-        // the caller can retry instead of hanging forever.
-        return {
-          exitCode: null,
-          timedOut: true,
-          stdout: "",
-          stderr: appendNetworkEgressDenyHint(err instanceof Error ? err.message : String(err), scopedNetworkEgress),
-          metadata: {
-            provider: "kubernetes",
-            backend: "sandbox-cr",
-            namespace,
-            sandboxName: lease.providerLeaseId,
-            podName,
-          },
-        };
+        return mapKubernetesExecError(err, {
+          provider: "kubernetes",
+          backend: "sandbox-cr",
+        });
       }
 
       return {
