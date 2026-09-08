@@ -11,6 +11,11 @@ export type StartupFaultScope = {
   effectiveConfigFingerprint?: string | null;
 };
 
+export const STARTUP_FAULT_DIAGNOSTIC: Record<StartupFaultKind, string> = {
+  worktree_requires_git_repository: "--worktree requires being inside a git repository",
+  startup_diagnostic_without_agent_output: "startup diagnostic without agent output",
+};
+
 export type StartupFaultEvidence = {
   kind: StartupFaultKind;
   fingerprint: string;
@@ -169,18 +174,19 @@ export function classifyAdapterStartupOutput(input: {
   const worktreeLine = findWorktreeStartupDiagnosticLine(input);
   if (worktreeLine) {
     const kind: StartupFaultKind = "worktree_requires_git_repository";
+    const diagnostic = STARTUP_FAULT_DIAGNOSTIC[kind];
     return {
       kind,
-      diagnostic: worktreeLine,
-      fingerprint: fingerprintStartupFault(kind, worktreeLine, scope),
+      diagnostic,
+      fingerprint: fingerprintStartupFault(kind, diagnostic, scope),
     };
   }
 
   const diagnosticLines = collectDiagnosticLines(input.stdout, input.stderr);
   if (diagnosticLines.length === 0) return null;
 
-  const diagnostic = diagnosticLines.slice(0, 5).join("\n");
   const kind: StartupFaultKind = "startup_diagnostic_without_agent_output";
+  const diagnostic = STARTUP_FAULT_DIAGNOSTIC[kind];
   return {
     kind,
     diagnostic,

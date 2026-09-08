@@ -40,6 +40,12 @@ vi.mock("node:fs/promises", () => ({
 
 import { execute } from "./execute.js";
 import * as serverUtils from "@paperclipai/adapter-utils/server-utils";
+import { STARTUP_FAULT_DIAGNOSTIC } from "@paperclipai/adapter-utils";
+
+const SENTINEL_BEARER = "Authorization: Bearer sk-test-sentinel-aaaaaaaa";
+const SENTINEL_KEY_VALUE = "OPENAI_API_KEY=sk-test-sentinel-bbbbbbbb";
+const SENTINEL_URL_CREDENTIAL = "https://user:p4ssw0rd@example.invalid/repo.git";
+const SENTINELS = [SENTINEL_BEARER, SENTINEL_KEY_VALUE, SENTINEL_URL_CREDENTIAL];
 
 function makeCtx(overrides: Record<string, unknown> = {}) {
   const onSpawn = vi.fn(async () => undefined);
@@ -203,7 +209,7 @@ describe("hermes-local adapter onSpawn forwarding", () => {
     const result = await execute(ctx as any);
 
     expect(result.errorCode).toBe("adapter_startup_fault");
-    expect(result.errorMessage).toContain("worktree requires being inside a git repository");
+    expect(result.errorMessage).toBe(STARTUP_FAULT_DIAGNOSTIC.worktree_requires_git_repository);
     expect(result.summary).toBeUndefined();
     expect(result.resultJson).toMatchObject({
       startupFault: {
@@ -234,8 +240,57 @@ describe("hermes-local adapter onSpawn forwarding", () => {
     const result = await execute(ctx as any);
 
     expect(result.errorCode).toBe("adapter_startup_fault");
-    expect(result.errorMessage).toContain("worktree requires being inside a git repository");
+    expect(result.errorMessage).toBe(STARTUP_FAULT_DIAGNOSTIC.worktree_requires_git_repository);
     expect(result.summary).toBeUndefined();
+  });
+
+  it("does not persist bearer, key=value, or URL-credential sentinels in startup-fault output", async () => {
+    vi.mocked(serverUtils.runChildProcess).mockResolvedValueOnce({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      stdout: [
+        `x --worktree requires being inside a git repository ${SENTINEL_BEARER}`,
+        `cd into your project repo first, then run hermes -w ${SENTINEL_KEY_VALUE}`,
+      ].join("\n"),
+      stderr: `${SENTINEL_URL_CREDENTIAL}\n`,
+      pid: null,
+      startedAt: null,
+    });
+
+    const { ctx } = makeCtx({ worktreeMode: true });
+    const result = await execute(ctx as any);
+    expect(result.errorCode).toBe("adapter_startup_fault");
+    expect(result.errorMessage).toBe(STARTUP_FAULT_DIAGNOSTIC.worktree_requires_git_repository);
+    const persisted = JSON.stringify({
+      errorMessage: result.errorMessage,
+      resultJson: result.resultJson,
+    });
+    for (const sentinel of SENTINELS) {
+      expect(persisted).not.toContain(sentinel);
+    }
+  });
+
+  it("keeps genuine agent output that mentions credential sentinels", async () => {
+    vi.mocked(serverUtils.runChildProcess).mockResolvedValueOnce({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      stdout: [
+        SENTINEL_BEARER,
+        "Completed the productivity review with concrete findings.",
+        "session_id: sess-safe",
+      ].join("\n"),
+      stderr: SENTINEL_URL_CREDENTIAL,
+      pid: null,
+      startedAt: null,
+    });
+
+    const { ctx } = makeCtx();
+    const result = await execute(ctx as any);
+    expect(result.errorCode).toBeUndefined();
+    expect(result.summary).toContain("Completed the productivity review");
+    expect(result.errorMessage).toBeUndefined();
   });
 
   it("keeps a genuine successful hermes response when a session id is present", async () => {

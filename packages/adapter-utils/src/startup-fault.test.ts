@@ -1,11 +1,17 @@
 import { describe, expect, it } from "vitest";
 import {
   ADAPTER_STARTUP_FAULT_ERROR_CODE,
+  STARTUP_FAULT_DIAGNOSTIC,
   classifyAdapterStartupOutput,
   hashStartupFaultConfigIdentity,
   readStartupFaultIssueAdapterConfig,
   readStartupFaultModelProfileAdapterConfig,
 } from "./startup-fault.js";
+
+const SENTINEL_BEARER = "Authorization: Bearer sk-test-sentinel-aaaaaaaa";
+const SENTINEL_KEY_VALUE = "OPENAI_API_KEY=sk-test-sentinel-bbbbbbbb";
+const SENTINEL_URL_CREDENTIAL = "https://user:p4ssw0rd@example.invalid/repo.git";
+const SENTINELS = [SENTINEL_BEARER, SENTINEL_KEY_VALUE, SENTINEL_URL_CREDENTIAL];
 
 describe("classifyAdapterStartupOutput", () => {
   it("classifies a worktree diagnostic on stdout with exit 0 as a startup fault", () => {
@@ -24,7 +30,7 @@ describe("classifyAdapterStartupOutput", () => {
     });
     expect(result).toMatchObject({
       kind: "worktree_requires_git_repository",
-      diagnostic: expect.stringContaining("worktree requires being inside a git repository"),
+      diagnostic: STARTUP_FAULT_DIAGNOSTIC.worktree_requires_git_repository,
       fingerprint: expect.stringMatching(/^startup_fault:v1:worktree_requires_git_repository:/),
     });
   });
@@ -121,7 +127,7 @@ describe("classifyAdapterStartupOutput", () => {
       }),
     ).toMatchObject({
       kind: "worktree_requires_git_repository",
-      diagnostic: expect.stringContaining("worktree requires being inside a git repository"),
+      diagnostic: STARTUP_FAULT_DIAGNOSTIC.worktree_requires_git_repository,
     });
   });
 
@@ -155,6 +161,71 @@ describe("classifyAdapterStartupOutput", () => {
 
   it("exports the adapter startup fault error code", () => {
     expect(ADAPTER_STARTUP_FAULT_ERROR_CODE).toBe("adapter_startup_fault");
+  });
+
+  it("does not persist bearer, key=value, or URL-credential sentinels in worktree diagnostics", () => {
+    const result = classifyAdapterStartupOutput({
+      stdout: [
+        SENTINEL_BEARER,
+        "x --worktree requires being inside a git repository",
+        SENTINEL_KEY_VALUE,
+        SENTINEL_URL_CREDENTIAL,
+      ].join("\n"),
+      stderr: `${SENTINEL_BEARER}\n`,
+      exitCode: 0,
+      timedOut: false,
+      worktreeMode: true,
+      adapterType: "hermes",
+      effectiveConfigFingerprint: "cfg-a",
+    });
+    expect(result).toMatchObject({
+      kind: "worktree_requires_git_repository",
+      diagnostic: STARTUP_FAULT_DIAGNOSTIC.worktree_requires_git_repository,
+    });
+    const persisted = JSON.stringify(result);
+    for (const sentinel of SENTINELS) {
+      expect(persisted).not.toContain(sentinel);
+    }
+  });
+
+  it("does not persist sentinels in generic startup diagnostics and keeps a typed reason", () => {
+    const result = classifyAdapterStartupOutput({
+      stdout: [
+        SENTINEL_BEARER,
+        SENTINEL_KEY_VALUE,
+        SENTINEL_URL_CREDENTIAL,
+        "adapter failed before producing a session",
+      ].join("\n"),
+      stderr: "",
+      exitCode: 0,
+      timedOut: false,
+      adapterType: "hermes",
+      effectiveConfigFingerprint: "cfg-a",
+    });
+    expect(result).toMatchObject({
+      kind: "startup_diagnostic_without_agent_output",
+      diagnostic: STARTUP_FAULT_DIAGNOSTIC.startup_diagnostic_without_agent_output,
+    });
+    const persisted = JSON.stringify(result);
+    for (const sentinel of SENTINELS) {
+      expect(persisted).not.toContain(sentinel);
+    }
+  });
+
+  it("does not misclassify genuine agent output that mentions credential sentinels", () => {
+    expect(
+      classifyAdapterStartupOutput({
+        stdout: [
+          SENTINEL_BEARER,
+          "Completed the review after rotating the local secret.",
+        ].join("\n"),
+        stderr: SENTINEL_URL_CREDENTIAL,
+        exitCode: 0,
+        timedOut: false,
+        sessionId: "sess-safe",
+        response: `Rotated ${SENTINEL_KEY_VALUE} and finished.`,
+      }),
+    ).toBeNull();
   });
 });
 

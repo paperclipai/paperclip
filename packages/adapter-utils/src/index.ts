@@ -73,6 +73,7 @@ export {
 } from "./env-bindings.js";
 export {
   ADAPTER_STARTUP_FAULT_ERROR_CODE,
+  STARTUP_FAULT_DIAGNOSTIC,
   classifyAdapterStartupOutput,
   hashStartupFaultConfigIdentity,
   readStartupFaultIssueAdapterConfig,
