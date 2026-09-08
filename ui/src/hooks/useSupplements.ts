@@ -1,5 +1,17 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
+export interface Supplement {
+  id: string;
+  companyId: string;
+  userId: string;
+  name: string;
+  dose: string;
+  unit: string;
+  scheduledTime: string;
+  notes: string | null;
+  active: boolean;
+}
+
 export interface SupplementIntake {
   id: string;
   supplementId: string;
@@ -18,6 +30,14 @@ export interface SupplementsIntakeResult {
 
 export function formatIntakeDate(d: Date): string {
   return d.toISOString().slice(0, 10);
+}
+
+export function buildSupplementsUrl(apiUrl: string, companyId: string): string {
+  return `${apiUrl}/supplements?companyId=${companyId}`;
+}
+
+export function buildSupplementUrl(apiUrl: string, id: string): string {
+  return `${apiUrl}/supplements/${id}`;
 }
 
 export function buildSupplementsIntakeUrl(apiUrl: string, date: string): string {
@@ -132,6 +152,114 @@ export function useUndoSupplement(date?: string) {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["supplements-intake", targetDate] });
+    },
+  });
+}
+
+export function useSupplementsList(companyId: string | undefined) {
+  return useQuery<Supplement[]>({
+    queryKey: ["supplements-list", companyId],
+    queryFn: async () => {
+      if (!apiUrl || !companyId) return [];
+      const res = await fetch(buildSupplementsUrl(apiUrl, companyId), {
+        credentials: "include",
+        headers: { Accept: "application/json" },
+      });
+      if (!res.ok) {
+        const payload = await res.json().catch(() => null) as { error?: string } | null;
+        throw new Error(payload?.error ?? `Failed to load supplements (${res.status})`);
+      }
+      const data = await res.json() as { supplements: Supplement[] };
+      return data.supplements;
+    },
+    enabled: !!companyId,
+    staleTime: 2 * 60 * 1000,
+  });
+}
+
+export interface AddSupplementInput {
+  companyId: string;
+  name: string;
+  dose: string;
+  unit?: string;
+  scheduledTime?: string;
+  notes?: string;
+}
+
+export function useAddSupplement() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: AddSupplementInput): Promise<Supplement> => {
+      if (!apiUrl) throw new Error("VITE_API_URL not configured");
+      const res = await fetch(`${apiUrl}/supplements`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify(input),
+      });
+      if (!res.ok) {
+        const payload = await res.json().catch(() => null) as { error?: string } | null;
+        throw new Error(payload?.error ?? `Failed to create supplement (${res.status})`);
+      }
+      return res.json() as Promise<Supplement>;
+    },
+    onSuccess: (_data, input) => {
+      queryClient.invalidateQueries({ queryKey: ["supplements-list", input.companyId] });
+    },
+  });
+}
+
+export interface EditSupplementInput {
+  id: string;
+  companyId: string;
+  name?: string;
+  dose?: string;
+  unit?: string;
+  scheduledTime?: string;
+  notes?: string;
+  active?: boolean;
+}
+
+export function useEditSupplement() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: EditSupplementInput): Promise<Supplement> => {
+      if (!apiUrl) throw new Error("VITE_API_URL not configured");
+      const { id, companyId: _cid, ...patch } = input;
+      const res = await fetch(buildSupplementUrl(apiUrl, id), {
+        method: "PATCH",
+        credentials: "include",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify(patch),
+      });
+      if (!res.ok) {
+        const payload = await res.json().catch(() => null) as { error?: string } | null;
+        throw new Error(payload?.error ?? `Failed to update supplement (${res.status})`);
+      }
+      return res.json() as Promise<Supplement>;
+    },
+    onSuccess: (_data, input) => {
+      queryClient.invalidateQueries({ queryKey: ["supplements-list", input.companyId] });
+    },
+  });
+}
+
+export function useDeleteSupplement() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ id, companyId }: { id: string; companyId: string }): Promise<void> => {
+      if (!apiUrl) throw new Error("VITE_API_URL not configured");
+      const res = await fetch(buildSupplementUrl(apiUrl, id), {
+        method: "DELETE",
+        credentials: "include",
+      });
+      if (!res.ok) {
+        const payload = await res.json().catch(() => null) as { error?: string } | null;
+        throw new Error(payload?.error ?? `Failed to delete supplement (${res.status})`);
+      }
+    },
+    onSuccess: (_data, { companyId }) => {
+      queryClient.invalidateQueries({ queryKey: ["supplements-list", companyId] });
     },
   });
 }

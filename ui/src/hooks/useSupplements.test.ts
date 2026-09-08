@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildSkipUrl, buildSupplementsIntakeUrl, buildTakeUrl, buildUndoUrl, formatIntakeDate } from "./useSupplements";
+import { buildSkipUrl, buildSupplementsIntakeUrl, buildSupplementsUrl, buildSupplementUrl, buildTakeUrl, buildUndoUrl, formatIntakeDate } from "./useSupplements";
 
 // Tests for URL construction — no React/DOM required.
 // Regression guard: the hook must call /supplements/intake/:date,
@@ -45,5 +45,19 @@ describe("formatIntakeDate", () => {
 
   it("zero-pads single-digit months and days", () => {
     expect(formatIntakeDate(new Date("2026-01-05T00:00:00.000Z"))).toBe("2026-01-05");
+  });
+});
+
+describe("buildSupplementsUrl", () => {
+  it("builds list URL with companyId query param", () => {
+    const url = buildSupplementsUrl("https://api.example.com", "company-abc");
+    expect(url).toBe("https://api.example.com/supplements?companyId=company-abc");
+  });
+});
+
+describe("buildSupplementUrl", () => {
+  it("builds single supplement URL for PATCH / DELETE", () => {
+    const url = buildSupplementUrl("https://api.example.com", "sup-456");
+    expect(url).toBe("https://api.example.com/supplements/sup-456");
   });
 });
