@@ -102,6 +102,20 @@ export function resolveDefaultHealthTokenPath(input: {
   return path.resolve(resolvePaperclipInstanceRoot(input), ".health-token");
 }
 
+function readExistingToken(tokenPath: string): string | null {
+  for (let attempt = 0; attempt < 10; attempt++) {
+    try {
+      if (fs.existsSync(tokenPath)) {
+        const token = fs.readFileSync(tokenPath, "utf8").trim();
+        if (token.length > 0) return token;
+      }
+    } catch {
+      // transient read error; retry
+    }
+  }
+  return null;
+}
+
 export function resolveInstanceHealthToken(options: {
   instanceId?: string;
   homeDir?: string;
@@ -109,25 +123,56 @@ export function resolveInstanceHealthToken(options: {
 } = {}): string | null {
   const env = options.env ?? process.env;
   const fromEnv = env.PAPERCLIP_HEALTH_TOKEN?.trim();
-  if (fromEnv) return fromEnv;
 
   try {
     const tokenPath = resolveDefaultHealthTokenPath(options);
-    if (fs.existsSync(tokenPath)) {
-      const token = fs.readFileSync(tokenPath, "utf8").trim();
-      if (token.length > 0) return token;
-    }
+    // For file-backed managed instances, the persisted token on disk is the
+    // canonical source of truth. Preferring an existing token on disk prevents
+    // a caller-local environment variable from diverging from the running service.
+    const existingToken = readExistingToken(tokenPath);
+    if (existingToken) return existingToken;
+
     const instanceRoot = resolvePaperclipInstanceRoot(options);
     fs.mkdirSync(instanceRoot, { recursive: true, mode: 0o700 });
-    const newToken = crypto.randomBytes(32).toString("hex");
-    const tempPath = `${tokenPath}.tmp-${process.pid}-${Date.now()}`;
+
+    const newToken = fromEnv || crypto.randomBytes(32).toString("hex");
+    const tempPath = path.join(
+      instanceRoot,
+      `.health-token.tmp-${process.pid}-${crypto.randomBytes(8).toString("hex")}`,
+    );
+
     fs.writeFileSync(tempPath, `${newToken}\n`, { mode: 0o600 });
+
     try {
-      fs.renameSync(tempPath, tokenPath);
+      // Atomic hard link: fails with EEXIST if tokenPath already exists,
+      // guaranteeing that an existing token is NEVER replaced.
+      fs.linkSync(tempPath, tokenPath);
+      try {
+        fs.unlinkSync(tempPath);
+      } catch {
+        // ignore cleanup error
+      }
       return newToken;
-    } catch {
-      fs.rmSync(tempPath, { force: true });
-      return fs.readFileSync(tokenPath, "utf8").trim() || null;
+    } catch (linkError) {
+      try {
+        fs.unlinkSync(tempPath);
+      } catch {
+        // ignore cleanup error
+      }
+
+      const code = (linkError as NodeJS.ErrnoException)?.code;
+      if (code === "EEXIST") {
+        return readExistingToken(tokenPath);
+      }
+
+      // Fallback for filesystems that do not support hard links:
+      // wx flag guarantees exclusive file creation (O_CREAT | O_EXCL)
+      try {
+        fs.writeFileSync(tokenPath, `${newToken}\n`, { mode: 0o600, flag: "wx" });
+        return newToken;
+      } catch {
+        return readExistingToken(tokenPath);
+      }
     }
   } catch {
     return null;

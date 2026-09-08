@@ -493,6 +493,9 @@ describe("GET /health", () => {
   });
 
   it("exposes full health details when valid health probe token is provided in authenticated mode", async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-server-health-"));
+    process.env.PAPERCLIP_HOME = home;
+    delete process.env.PAPERCLIP_INSTANCE_ID;
     process.env.PAPERCLIP_HEALTH_TOKEN = "test-health-probe-token";
     const devServerStatus = await import("../dev-server-status.js");
     vi.spyOn(devServerStatus, "readPersistedDevServerStatus").mockReturnValue(undefined);

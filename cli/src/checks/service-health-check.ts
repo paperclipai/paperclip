@@ -17,15 +17,47 @@ import { buildLocalHealthUrl } from "../utils/health-url.js";
 import type { CheckResult } from "./index.js";
 
 type HealthResult = { ok: boolean; version: string | null; error?: string };
-type ServiceCheckDependencies = {
+export type ServiceCheckDependencies = {
   detect: (instanceId: string) => Promise<ServiceManagerDetection>;
-  probe: (config: PaperclipConfig) => Promise<HealthResult>;
+  probe: (config: PaperclipConfig, instanceId?: string) => Promise<HealthResult>;
   shimPresent: (executablePath: string) => Promise<boolean>;
+  instanceId?: string;
+  configPath?: string;
 };
 
-async function probeHealth(config: PaperclipConfig): Promise<HealthResult> {
+export function resolveInstanceIdFromConfigPath(configPath?: string): string | null {
+  if (!configPath) return null;
+  const normalized = path.resolve(configPath);
+  const parent = path.dirname(normalized);
+  const grandParent = path.dirname(parent);
+  if (path.basename(grandParent) === "instances") {
+    const candidate = path.basename(parent);
+    if (/^[a-zA-Z0-9_-]+$/.test(candidate)) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
+export function resolveSelectedServiceInstanceId(
+  dependencies: Partial<ServiceCheckDependencies> = {},
+): string {
+  if (dependencies.instanceId?.trim()) {
+    return dependencies.instanceId.trim();
+  }
+  if (process.env.PAPERCLIP_INSTANCE_ID?.trim()) {
+    return process.env.PAPERCLIP_INSTANCE_ID.trim();
+  }
+  const fromConfig = resolveInstanceIdFromConfigPath(dependencies.configPath);
+  if (fromConfig) {
+    return fromConfig;
+  }
+  return resolvePaperclipInstanceId();
+}
+
+async function probeHealth(config: PaperclipConfig, instanceId?: string): Promise<HealthResult> {
   try {
-    const token = resolveInstanceHealthToken();
+    const token = resolveInstanceHealthToken(instanceId);
     const headers: Record<string, string> = {};
     if (token) {
       headers[HEALTH_PROBE_TOKEN_HEADER] = token;
@@ -56,13 +88,13 @@ export async function serviceHealthChecks(
 ): Promise<CheckResult[]> {
   if (process.env.PAPERCLIP_SERVICE_MANAGED === "1") return [];
 
+  const instanceId = resolveSelectedServiceInstanceId(dependencies);
   const deps: ServiceCheckDependencies = {
-    detect: (instanceId) => detectServiceManager({ instanceId }),
-    probe: probeHealth,
+    detect: (id) => detectServiceManager({ instanceId: id }),
+    probe: (cfg, id) => probeHealth(cfg, id ?? instanceId),
     shimPresent: (executablePath) => isExecutableFile(executablePath),
     ...dependencies,
   };
-  const instanceId = resolvePaperclipInstanceId();
   const detection = await deps.detect(instanceId);
   if (!detection.supported) {
     return [{ name: "Background service", status: "pass", message: detection.reason }];
@@ -98,7 +130,7 @@ export async function serviceHealthChecks(
         },
   );
 
-  const health = await deps.probe(config);
+  const health = await deps.probe(config, instanceId);
   // The installed definition is the truth about what the service executes;
   // fall back to the environment-derived path only when it is unreadable.
   const serviceExecutable = (await manager.installedExecutablePath()) ?? resolveServiceShimPath();

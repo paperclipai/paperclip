@@ -2,7 +2,11 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { serviceHealthChecks } from "../checks/service-health-check.js";
+import {
+  serviceHealthChecks,
+  resolveInstanceIdFromConfigPath,
+  resolveSelectedServiceInstanceId,
+} from "../checks/service-health-check.js";
 import {
   extractExecutableFromLaunchdPlist,
   extractExecutableFromSystemdUnit,
@@ -232,6 +236,25 @@ describe("service runtime shim awareness", () => {
     expect(healthResult?.message).toContain("but not from ing.paperclip.paperclipai");
     const runtime = results.find((r) => r.name === "Service runtime");
     expect(runtime?.message).toContain("serving another Paperclip process");
+  });
+
+  it("resolves instance ID and passes it to detect and probe when configPath is supplied", async () => {
+    expect(resolveInstanceIdFromConfigPath("/home/user/.paperclip/instances/foo/config.json")).toBe("foo");
+    expect(resolveInstanceIdFromConfigPath("/var/paperclip/instances/worktree-123/config.json")).toBe("worktree-123");
+    expect(resolveInstanceIdFromConfigPath("/etc/paperclip/config.json")).toBe(null);
+    expect(resolveInstanceIdFromConfigPath(undefined)).toBe(null);
+
+    const detect = vi.fn(async () => ({ supported: true as const, manager: inactiveManager() as never }));
+    const probe = vi.fn(async () => ({ ok: true, version: "1.0.0" }));
+
+    await serviceHealthChecks(config, {
+      configPath: "/home/user/.paperclip/instances/foo/config.json",
+      detect,
+      probe,
+    });
+
+    expect(detect).toHaveBeenCalledWith("foo");
+    expect(probe).toHaveBeenCalledWith(config, "foo");
   });
 });
 
