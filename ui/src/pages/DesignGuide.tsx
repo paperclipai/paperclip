@@ -1,3 +1,4 @@
+import { RepositoryEditor } from "@/components/RepositoryEditor";
 import { useState } from "react";
 import { ServicesList } from "./apps/app-detail/ServicesPanel";
 import { ComposioProvenanceChip } from "./apps/ComposioProvenanceChip";
@@ -2113,6 +2114,18 @@ export function DesignGuide() {
             />
           </div>
         </SubSection>
+      </Section>
+
+      <Section title="Source Repositories">
+        <SubSection title="Empty and disconnected">
+          <RepositoryEditor selected={[]} onChange={() => {}} state="disconnected" onConnect={() => {}} onRetry={() => {}} />
+        </SubSection>
+        <SubSection title="Selected and searchable">
+          <RepositoryEditor selected={[{ id: "1", fullName: "paperclipai/paperclip", url: "https://github.com/paperclipai/paperclip", connections: ["Your GitHub"] }]}
+            available={[{ id: "2", fullName: "paperclipai/docs", url: "https://github.com/paperclipai/docs", connections: ["Company GitHub"] }]}
+            onChange={() => {}} onConnect={() => {}} onRetry={() => {}} />
+        </SubSection>
+        <p className="text-sm text-muted-foreground">Loading, errors, empty search, mobile, and short viewports are covered in the Project repos Storybook stories.</p>
       </Section>
 
       <Section title="Environment Variables Editor">
