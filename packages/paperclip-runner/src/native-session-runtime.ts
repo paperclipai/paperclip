@@ -1977,7 +1977,9 @@ export async function executeNativeSession(
     return activeClose;
   };
   let executionSucceeded = false;
-  let goalCheckpointRequiresSuspension = false;
+  let goalCheckpointRequiresSuspension = Boolean(
+    options.sessionGoalControl || options.resumeSessionGoalHeartbeat || persistedSession?.goal,
+  );
   try {
     // Ownership publication is part of the execution-owned lifetime. If the
     // callback fails, the finally block below still quarantines and closes the
@@ -2446,9 +2448,11 @@ export async function executeNativeSession(
           // A settled goal remains resumable after this controller exits. A
           // merely idle warm runner is owned only by the in-memory supervisor;
           // master correctly refuses that authority after a server restart.
-          // Suspend at this quiescent boundary, including active-goal rollover,
-          // before returning the heartbeat result to the host.
-          goalCheckpointRequiresSuspension = snapshot.goal != null;
+          // Suspend at this quiescent boundary, including active-goal rollover
+          // and clear, before returning the heartbeat result to the host. Clear
+          // deliberately leaves no goal snapshot, but its session still needs
+          // a durable handoff before the next run can create a new goal.
+          goalCheckpointRequiresSuspension ||= snapshot.goal != null;
           const completedSnapshot = {
             ...snapshot,
             semanticResult: durableExecutionResult.result,

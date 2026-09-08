@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act } from "react";
+import { act, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -23,8 +23,11 @@ const projection: RunnerGoalProjection = {
 
 function Harness({ agentId = "agent-goal" }: { agentId?: string }) {
   const control = useRunnerGoalControl("issue-goal", agentId);
+  const [commandError, setCommandError] = useState<string | null>(null);
   return <>
-    <button onClick={() => void control.executeComposerCommand({ action: "create", objective: "Replacement objective" })}>Request replacement</button>
+    <button onClick={() => void control.executeComposerCommand({ action: "create", objective: "Replacement objective" }).catch((error) => setCommandError(error.message))}>Request replacement</button>
+    <button onClick={() => void control.executeComposerCommand({ action: "focus" }).catch((error) => setCommandError(error.message))}>Focus goal</button>
+    {commandError ? <p role="alert">{commandError}</p> : null}
     <RunnerGoalWidget control={control} />
   </>;
 }
@@ -70,6 +73,45 @@ afterEach(async () => {
 });
 
 describe("session goal dialogs", () => {
+  it("hides the widget after an expanded goal is cleared", async () => {
+    await click("Focus goal");
+    vi.mocked(issuesApi.actOnRunnerGoal).mockResolvedValue({
+      accepted: true, projection: { ...projection, goal: null, revision: 8 },
+    } as never);
+    await click("Clear goal");
+    await vi.waitFor(() => expect(document.querySelector('[data-testid="runner-goal-widget"]')).toBeNull());
+  });
+
+  it("does not show an empty card when /goal has no current goal to focus", async () => {
+    await act(async () => {
+      client.setQueryData(queryKeys.issues.runnerGoal("issue-goal", "agent-goal"), { ...projection, goal: null });
+    });
+    await vi.waitFor(() => expect(document.querySelector('[data-testid="runner-goal-widget"]')).toBeNull());
+    await click("Focus goal");
+    expect(document.querySelector('[data-testid="runner-goal-widget"]')).toBeNull();
+    expect(document.querySelector('[role="alert"]')?.textContent).toContain("Add an objective after /goal");
+    expect(issuesApi.actOnRunnerGoal).not.toHaveBeenCalled();
+  });
+
+  it("keeps a pending goal action visible without a goal snapshot", async () => {
+    await act(async () => {
+      client.setQueryData(queryKeys.issues.runnerGoal("issue-goal", "agent-goal"), {
+        ...projection, goal: null, pendingAction: "starting",
+      });
+    });
+    await vi.waitFor(() => expect(document.querySelector('[data-testid="runner-goal-widget"]')?.textContent).toContain("Starting"));
+  });
+
+  it("shows action errors without leaving behind an empty informational card", async () => {
+    await act(async () => {
+      client.setQueryData(queryKeys.issues.runnerGoal("issue-goal", "agent-goal"), { ...projection, goal: null });
+    });
+    await vi.waitFor(() => expect(document.querySelector('[data-testid="runner-goal-widget"]')).toBeNull());
+    vi.mocked(issuesApi.actOnRunnerGoal).mockRejectedValue(new Error("Session is unavailable."));
+    await click("Request replacement");
+    await vi.waitFor(() => expect(document.querySelector('[data-testid="runner-goal-widget"]')?.textContent).toContain("Session is unavailable."));
+  });
+
   it("opens a prefilled in-app editor and saves with the reviewed revision", async () => {
     await click("Edit goal");
     expect(document.querySelector('[role="dialog"]')?.textContent).toContain("Edit session goal");

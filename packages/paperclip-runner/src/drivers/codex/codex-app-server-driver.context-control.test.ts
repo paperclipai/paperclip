@@ -603,6 +603,14 @@ describe("Codex app-server Codex driver", () => {
       await expect(
         unsupported.goal?.({ action: "get" }),
       ).rejects.toBeInstanceOf(HarnessCapabilityUnavailableError);
+      for (const action of ["set", "pause", "resume", "clear"] as const) {
+        await expect(
+          unsupported.goal?.({ action, ...(action === "set" ? { objective: "Must not reach the provider" } : {}) }),
+        ).rejects.toBeInstanceOf(HarnessCapabilityUnavailableError);
+      }
+      expect(unsupportedTransport.calls.filter(({ method }) =>
+        method === "thread/goal/set" || method === "thread/goal/clear",
+      )).toEqual([]);
       await unsupported.close({ reason: "fixture complete" });
     }
     await session.close({ reason: "fixture complete" });

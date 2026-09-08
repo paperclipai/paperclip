@@ -494,7 +494,7 @@ describe("executeNativeSession recovery", () => {
     { keepSessionOpen: true, recoveryOnly: false },
     { keepSessionOpen: false, recoveryOnly: true },
     { keepSessionOpen: true, recoveryOnly: true },
-  ])("reconciles goal recovery without replaying completed controls ($keepSessionOpen, $recoveryOnly)", async ({ keepSessionOpen, recoveryOnly }) => {
+  ].flatMap((options) => [false, true].map((cleared) => ({ ...options, cleared }))))("reconciles goal recovery without replaying completed controls (warm=$keepSessionOpen, recovery=$recoveryOnly, cleared=$cleared)", async ({ keepSessionOpen, recoveryOnly, cleared }) => {
     const pausedGoal = {
       threadId: "provider-recovery",
       objective: "Verify recovered goal control",
@@ -506,7 +506,8 @@ describe("executeNativeSession recovery", () => {
       updatedAt: Date.parse("2026-08-09T00:00:02.000Z"),
     };
     const startTurn = vi.fn(async () => ({ turnId: "turn-recovery" }));
-    const goal = vi.fn(async () => pausedGoal);
+    const goal = vi.fn(async () => cleared ? null : pausedGoal);
+    const requestId = recoveryOnly ? `recovery_${input.binding.runId}` : cleared ? "goal-clear" : "goal-pause";
     const close = vi.fn(async () => {});
     let snapshotCount = 0;
     const session: NativeSession = {
@@ -521,9 +522,9 @@ describe("executeNativeSession recovery", () => {
         };
       },
       async *events() {
-        yield runnerEvent(1, "session.goal.updated", {
-          requestId: recoveryOnly ? `recovery_${input.binding.runId}` : "goal-pause",
-          goal: {
+        yield runnerEvent(1, cleared ? "session.goal.cleared" : "session.goal.updated", {
+          requestId,
+          goal: cleared ? null : {
             objective: pausedGoal.objective,
             status: pausedGoal.status,
             tokenBudget: pausedGoal.tokenBudget,
@@ -534,7 +535,7 @@ describe("executeNativeSession recovery", () => {
         });
         yield runnerEvent(2, "turn.completed");
         yield runnerEvent(3, "session.goal.snapshot", {
-          goal: {
+          goal: cleared ? null : {
             objective: pausedGoal.objective,
             status: pausedGoal.status,
             tokenBudget: pausedGoal.tokenBudget,
@@ -559,7 +560,7 @@ describe("executeNativeSession recovery", () => {
           cursor: null,
           activeTurnId: !recoveryOnly && snapshotCount === 1 ? "turn-recovery" : null,
           pendingRuntimeRequests: [],
-          goal: pausedGoal,
+          goal: cleared ? null : pausedGoal,
           lineage: [],
         };
       },
@@ -625,21 +626,24 @@ describe("executeNativeSession recovery", () => {
       requireSessionCloseBeforeReturn: true,
       resumeSessionGoalHeartbeat: recoveryOnly,
       sessionGoalControl: recoveryOnly ? null : {
-        requestId: "goal-pause",
-        action: "pause",
+        requestId,
+        action: cleared ? "clear" : "pause",
       },
     });
 
     expect(startTurn).not.toHaveBeenCalled();
     expect(goal).toHaveBeenNthCalledWith(1, {
-      action: recoveryOnly ? "get" : "pause",
-      requestId: recoveryOnly ? `recovery_${input.binding.runId}` : "goal-pause",
+      action: recoveryOnly ? "get" : cleared ? "clear" : "pause",
+      requestId,
     });
-    expect(goal).toHaveBeenCalledTimes(1);
+    expect(goal).toHaveBeenCalledTimes(cleared && !recoveryOnly ? 2 : 1);
+    if (cleared && !recoveryOnly) {
+      expect(goal).toHaveBeenNthCalledWith(2, { action: "get" });
+    }
     expect(close).toHaveBeenCalledTimes(1);
     expect(completed.result).toMatchObject({
-      reportedWorkDisposition: recoveryOnly ? "done" : "yielded",
-      completionClaim: { objectiveSatisfied: recoveryOnly },
+      reportedWorkDisposition: recoveryOnly && !cleared ? "done" : "yielded",
+      completionClaim: { objectiveSatisfied: recoveryOnly && !cleared },
     });
   });
 

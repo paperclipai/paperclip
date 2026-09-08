@@ -53,6 +53,7 @@ export function useRunnerGoalControl(issueId: string | null, agentId: string | n
   } | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   useEffect(() => {
+    setExpanded(false);
     setDialog(null);
     setActionError(null);
   }, [issueId, agentId]);
@@ -69,7 +70,7 @@ export function useRunnerGoalControl(issueId: string | null, agentId: string | n
     mutationFn: (request: RunnerGoalActionRequest) => issuesApi.actOnRunnerGoal(issueId!, request),
     onSuccess: (accepted) => {
       queryClient.setQueryData(key, accepted.projection);
-      setExpanded(true);
+      setExpanded(accepted.projection.goal != null);
     },
   });
 
@@ -123,6 +124,10 @@ export function useRunnerGoalControl(issueId: string | null, agentId: string | n
 
   const executeComposerCommand = useCallback(async (command: RunnerGoalComposerCommand) => {
     if (command.action === "focus") {
+      const current = query.data ?? (await query.refetch()).data;
+      if (!current?.goal && !current?.pendingAction) {
+        throw new Error("Add an objective after /goal to start a goal.");
+      }
       setExpanded(true);
       return;
     }
@@ -178,8 +183,6 @@ export type RunnerGoalControl = ReturnType<typeof useRunnerGoalControl>;
 export function RunnerGoalWidget({ control }: { control: RunnerGoalControl }) {
   const projection = control.data;
   const goal = projection?.goal ?? null;
-  if (!control.expanded && !goal && !projection?.pendingAction && !control.dialog) return null;
-
   const capability = projection?.capability;
   const can = (action: "set" | "pause" | "resume" | "clear") =>
     capability?.availability === "available" && capability.actions.includes(action);
@@ -190,6 +193,9 @@ export function RunnerGoalWidget({ control }: { control: RunnerGoalControl }) {
     : control.mutation?.error
       ? "The goal action could not be applied."
       : null);
+  // Expansion controls the objective's detail, not whether an empty card exists.
+  // In particular, a cleared goal must disappear even after it was expanded.
+  if (!goal && !projection?.pendingAction && !control.dialog && !mutationError) return null;
 
   return (
     <section
