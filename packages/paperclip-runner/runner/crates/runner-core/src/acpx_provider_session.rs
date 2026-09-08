@@ -79,7 +79,7 @@ impl AcpxProviderSessionConfig {
                 ))
             }
         };
-        if self.model != qualified_model {
+        if self.agent != "claude" && self.model != qualified_model {
             return Err(LocalRunnerError::invalid(format!(
                 "ACPX {} profile requires exact model {qualified_model}",
                 self.agent

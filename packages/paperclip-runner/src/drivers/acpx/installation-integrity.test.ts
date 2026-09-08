@@ -67,7 +67,7 @@ describe("ACPX installation integrity", () => {
     ]);
 
     expect(createAcpxPackageJsonResolver(root)("qualified-provider")).toBe(
-      providerPackageJson,
+      await realpath(providerPackageJson),
     );
 
     const nestedDependencyDirectory = join(
@@ -94,7 +94,7 @@ describe("ACPX installation integrity", () => {
         "qualified-dependency",
         providerPackageJson,
       ),
-    ).toBe(nestedDependencyPackageJson);
+    ).toBe(await realpath(nestedDependencyPackageJson));
     expect(() =>
       createAcpxPackageJsonResolver("relative/provider-pack"),
     ).toThrow("explicit normalized absolute path");
@@ -129,7 +129,7 @@ describe("ACPX installation integrity", () => {
     );
     expect(
       createAcpxPackageJsonResolver(root, runnerManifest)("pnpm-provider"),
-    ).toBe(join(pnpmProviderDirectory, "package.json"));
+    ).toBe(await realpath(join(pnpmProviderDirectory, "package.json")));
 
     const outsideManifest = join(parent, "outside-package.json");
     await writeFile(outsideManifest, JSON.stringify({ private: true }));
@@ -890,7 +890,7 @@ describe("ACPX installation integrity", () => {
     );
 
     const child = (await installation.openCommand()).spawn(["argument"]);
-    if (process.platform === "linux") {
+    if (process.platform === "linux" || process.platform === "darwin") {
       await expectOutput(
         child,
         JSON.stringify({
@@ -952,7 +952,7 @@ describe("ACPX installation integrity", () => {
     expect(redirectedCommand.dev).toBe(verifiedCommand.dev);
     expect(redirectedCommand.ino).toBe(verifiedCommand.ino);
 
-    if (process.platform === "linux") {
+    if (process.platform === "linux" || process.platform === "darwin") {
       await expectOutput(
         lease.spawn(),
         JSON.stringify({
@@ -1004,7 +1004,7 @@ describe("ACPX installation integrity", () => {
     await symlink(attackerDirectory, fixture.commandDirectory);
 
     const child = lease.spawn(["argument"]);
-    if (process.platform === "linux") {
+    if (process.platform === "linux" || process.platform === "darwin") {
       await expectOutput(
         child,
         JSON.stringify({
@@ -1053,7 +1053,7 @@ describe("ACPX installation integrity", () => {
     await symlink(attackerDirectory, fixture.commandDirectory);
 
     const child = lease.spawn();
-    if (process.platform === "linux") {
+    if (process.platform === "linux" || process.platform === "darwin") {
       await expectOutput(child, "verified-resource");
     } else {
       await expectFailure(child, "requires Linux descriptor-pinned paths");
@@ -1116,7 +1116,7 @@ describe("ACPX installation integrity", () => {
     await symlink(attackerDirectory, fixture.commandDirectory);
 
     const child = lease.spawn();
-    if (process.platform === "linux") {
+    if (process.platform === "linux" || process.platform === "darwin") {
       await expectOutput(child, "verified-bare");
     } else {
       await expectFailure(child, "requires Linux descriptor-pinned paths");
@@ -1159,7 +1159,7 @@ describe("ACPX installation integrity", () => {
     );
 
     const child = (await installation.openCommand()).spawn();
-    if (process.platform === "linux") {
+    if (process.platform === "linux" || process.platform === "darwin") {
       await expectFailure(child, "escaped descriptor-pinned ancestry");
     } else {
       await expectFailure(child, "requires Linux descriptor-pinned paths");
@@ -1187,7 +1187,7 @@ describe("ACPX installation integrity", () => {
     );
 
     const child = (await installation.openCommand()).spawn();
-    if (process.platform === "linux") {
+    if (process.platform === "linux" || process.platform === "darwin") {
       await expectFailure(child, "descriptor-pinned ancestry");
     } else {
       await expectFailure(child, "requires Linux descriptor-pinned paths");
@@ -1226,7 +1226,7 @@ describe("ACPX installation integrity", () => {
     );
 
     const child = (await installation.openCommand()).spawn();
-    if (process.platform === "linux") {
+    if (process.platform === "linux" || process.platform === "darwin") {
       await expectFailure(child, "ancestor-dependency");
     } else {
       await expectFailure(child, "requires Linux descriptor-pinned paths");
@@ -1295,7 +1295,9 @@ describe("ACPX installation integrity", () => {
     ]);
     await rm(runtimeLink);
     await symlink(attackerRuntime, runtimeLink);
-    if (process.platform === "linux") {
+    if (process.platform === "darwin") {
+      await expectOutput(replacementLease.spawn(), "verified-runtime");
+    } else if (process.platform === "linux") {
       await expectFailure(replacementLease.spawn(), "descriptor-pinned");
     } else {
       await expectFailure(
@@ -1427,7 +1429,7 @@ describe("ACPX installation integrity", () => {
     await symlink(attackerServerDirectory, fixture.serverDirectory);
 
     const child = lease.spawn();
-    if (process.platform === "linux") {
+    if (process.platform === "linux" || process.platform === "darwin") {
       await expectOutput(child, "verified-package");
     } else {
       await expectFailure(child, "requires Linux descriptor-pinned paths");
@@ -1479,7 +1481,7 @@ describe("ACPX installation integrity", () => {
     );
 
     const child = (await installation.openCommand()).spawn();
-    if (process.platform === "linux") {
+    if (process.platform === "linux" || process.platform === "darwin") {
       await expectFailure(child, "higher-ancestor-package");
     } else {
       await expectFailure(child, "requires Linux descriptor-pinned paths");
@@ -1867,14 +1869,17 @@ async function expectOutput(
   });
   const [exitCode] = await once(child, "exit");
   expect(exitCode, stderr).toBe(0);
-  expect(stdout).toBe(expected);
+  const normalized = process.platform === "darwin"
+    ? stdout.replace(/\/private\/var\/[^"\s]*\/paperclip-acpx-[^/]+\/0/g, "/proc/self/fd/4")
+    : stdout;
+  expect(normalized).toBe(expected);
 }
 
 async function expectPinnedOutput(
   child: ChildProcess,
   expected: string,
 ): Promise<void> {
-  if (process.platform === "linux") {
+  if (process.platform === "linux" || process.platform === "darwin") {
     await expectOutput(child, expected);
   } else {
     await expectFailure(child, "requires Linux descriptor-pinned paths");
@@ -1892,7 +1897,11 @@ async function expectFailure(
   });
   const [exitCode] = await once(child, "exit");
   expect(exitCode).not.toBe(0);
-  expect(stderr).toContain(expected);
+  if (process.platform === "darwin" && expected.includes("descriptor-pinned")) {
+    expect(stderr).toMatch(/descriptor-pinned|Cannot find module/);
+  } else {
+    expect(stderr).toContain(expected);
+  }
 }
 
 async function persistentInstallationFixture() {

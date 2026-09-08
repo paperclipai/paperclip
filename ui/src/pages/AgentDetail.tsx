@@ -1953,12 +1953,13 @@ export function ConfigurationTab({
   const [awaitingRefreshAfterSave, setAwaitingRefreshAfterSave] = useState(false);
   const lastAgentRef = useRef(agent);
 
+  const catalogProvider = agent.adapterType === "paperclip_runner" ? String(agent.adapterConfig.provider ?? "codex") : undefined;
   const { data: adapterModels } = useQuery({
     queryKey:
       companyId
-        ? queryKeys.agents.adapterModels(companyId, agent.adapterType)
+        ? queryKeys.agents.adapterModels(companyId, agent.adapterType, null, catalogProvider)
         : ["agents", "none", "adapter-models", agent.adapterType],
-    queryFn: () => agentsApi.adapterModels(companyId!, agent.adapterType),
+    queryFn: () => agentsApi.adapterModels(companyId!, agent.adapterType, { provider: catalogProvider }),
     enabled: Boolean(companyId) && content === "runtime",
   });
 
@@ -2057,7 +2058,7 @@ export function ConfigurationTab({
         sectionLayout="cards"
         environmentVariablesPlacement="secrets"
         compactTestFeedback
-        sectionOrder={["adapter", "permissions", "environment", "run-policy", "identity"]}
+        sectionOrder={["adapter", "configuration", "environment", "environment-variables", "run-policy", "identity"]}
         sectionTitles={{ adapter: "Harness", permissions: "Model & execution", identity: "Agent identity" }}
         canConfigureProviderTrace={canConfigureProviderTrace}
       /> : null}

@@ -794,12 +794,32 @@ When a workspace service runs Paperclip for browser OAuth QA, configure its `exp
 
 ## Paperclip Runner Adapter Conversion
 
-The experimental Paperclip Runner currently qualifies four local profiles:
-Codex, OpenCode, ACPX Claude, and ACPX Codex. Changing an existing agent to
-`paperclip_runner` remains supported only from `codex_local`; create the other
-profiles explicitly after enabling the single **Paperclip Runner** experimental
-setting. Onboarding continues to create legacy adapters. Disabling the setting
-blocks fresh native starts without hiding or corrupting persisted native runs.
+The experimental Paperclip Runner offers native Codex, OpenCode, and **ACPX
+Claude**. Converting an existing Claude, Codex, or OpenCode agent selects its
+corresponding provider, preserves compatible models, credentials, workspace,
+and instructions, and resets execution sessions while retaining run history.
+Other adapters require an explicit provider choice. Legacy ACPX Codex agent
+settings normalize to native Codex on configuration updates and before fresh
+runs; immutable run descriptors remain readable. The **Paperclip Runner**
+experimental setting and company access checks still apply.
+
+Agent configuration uses the same section layout across adapters: model and
+provider belong to **Adapter**, environment variables have their own section,
+and command/extra arguments are folded under **Configuration → Advanced**.
+Lifecycle, timeout, and interrupt grace settings live under **Advanced Run
+Policy**. Permission selectors with a single valid mode are hidden; a saved
+unsupported mode still exposes remediation.
+
+Model catalogs and refresh follow the selected provider. ACPX Claude uses the
+normal Claude catalog and accepts custom model IDs; the exact ID is sent to
+Claude, which can reject unavailable models. Package/version verification is
+independent of model selection. Environment tests verify runtime installation;
+a successful provider run additionally verifies credentials and model access.
+
+ACPX Claude supports Linux x64 and macOS ARM64/x64 with pinned SDK executables.
+On macOS the launcher uses private verified module/executable snapshots instead
+of Linux `/proc` descriptors. Dependency isolation, process ownership, and
+cancellation remain enforced; the snapshot is removed when the provider exits.
 
 Native Codex is qualified only with `codexPermissionMode: "never"`. The create
 and edit surfaces do not offer `on-request` or `untrusted`, and a persisted

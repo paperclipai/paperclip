@@ -2905,6 +2905,7 @@ export function nativeSessionFailureDisposition(
   sourceFailureCode?: ReturnType<typeof nativeSessionFailureSourceCode>,
 ) {
   const permanentFailure =
+    sourceFailureCode === "native_provider_model_rejected" ||
     sourceFailureCode === "native_event_replay_conflict" ||
     sourceFailureCode === "runner_remote_provider_artifact_incompatible";
   const exhausted = permanentFailure || attempt >= 3;
@@ -2959,8 +2960,10 @@ export function nativeSessionFailureSourceCode(
   | "native_runner_process_exited"
   | "planning_mode_unsupported"
   | "native_event_replay_conflict"
+  | "native_provider_model_rejected"
   | "native_session_interrupted" {
   const message = error instanceof Error ? error.message : String(error);
+  if (/native_provider_model_rejected/i.test(message)) return "native_provider_model_rejected";
   if (/runner_remote_provider_artifact_incompatible/i.test(message)) {
     return "runner_remote_provider_artifact_incompatible";
   }

@@ -1406,6 +1406,8 @@ export function TaskChatThread(props: TaskChatThreadProps) {
             ? `The run was cancelled ${responseBoundary}.`
             : source.status === "interrupted"
               ? `The run was interrupted ${responseBoundary}.`
+              : code === "native_provider_model_rejected"
+                ? "The provider rejected the selected model. Check the model ID and your account's access, save the agent configuration, then retry. View the run for the provider's full error."
               : code === "provider_frame_too_large"
                 ? "Provider output exceeded the safe limit."
                 : source.status === "timed_out"

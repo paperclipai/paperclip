@@ -172,7 +172,9 @@ impl AcpxProviderDescriptor {
             || self.driver != "acpx_runtime"
             || self.provider_version != "0.13.1"
             || self.acpx_version != "0.13.1"
-            || self.model != expected.0
+            || (self.agent != "claude" && self.model != expected.0)
+            || self.model.trim().is_empty()
+            || self.model.len() > 1024
             || self.agent_server_package != expected.1
             || self.agent_server_version != expected.2
             || self.agent_runtime_package.as_deref() != expected.3

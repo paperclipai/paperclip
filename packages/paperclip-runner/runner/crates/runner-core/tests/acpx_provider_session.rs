@@ -148,8 +148,13 @@ fn validates_qualified_policy_and_tool_catalog_before_spawning() {
 }
 
 #[test]
-fn admits_each_exact_qualified_agent_model_pair() {
-    for (agent, model) in [("codex", "gpt-5.6-sol"), ("claude", "claude-sonnet-5")] {
+fn admits_custom_claude_models_and_legacy_codex_profile() {
+    for (agent, model) in [
+        ("codex", "gpt-5.6-sol"),
+        ("claude", "claude-sonnet-5"),
+        ("claude", "claude-opus-5"),
+        ("claude", "custom-provider-model"),
+    ] {
         let mut qualified = config("bootstrap");
         qualified.agent = agent.to_owned();
         qualified.model = model.to_owned();
@@ -157,7 +162,7 @@ fn admits_each_exact_qualified_agent_model_pair() {
     }
 
     let mut drifted = config("bootstrap");
-    drifted.agent = "claude".to_owned();
+    drifted.model = "custom-codex-model".to_owned();
     assert!(drifted
         .validate()
         .unwrap_err()

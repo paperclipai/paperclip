@@ -1,3 +1,4 @@
+import { probeAcpxClaudeInstallation } from "@paperclipai/paperclip-runner/live";
 import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
 import { buildSandboxNpmInstallCommand } from "@paperclipai/adapter-utils";
 import type { ServerAdapterModule } from "../adapters/index.js";
@@ -15,6 +16,8 @@ import {
   resolveExternalAdapterRegistration,
   setOverridePaused,
 } from "../adapters/registry.js";
+
+vi.mock("@paperclipai/paperclip-runner/live", () => ({ probeAcpxClaudeInstallation: vi.fn(async () => undefined) }));
 
 const externalAdapter: ServerAdapterModule = {
   type: "external_test",
@@ -276,8 +279,7 @@ describe("server adapter registry", () => {
 
   it.each([
     ["claude", "claude-sonnet-5"],
-    ["codex", "gpt-5.6-sol"],
-  ] as const)("accepts the qualified remote ACPX %s environment profile", async (acpxAgent, model) => {
+  ] as const)("does not claim runtime readiness from the remote ACPX %s platform alone", async (acpxAgent, model) => {
     const result = await requireServerAdapter("paperclip_runner").testEnvironment({
       companyId: "company-1",
       adapterType: "paperclip_runner",
@@ -293,31 +295,24 @@ describe("server adapter registry", () => {
 
     expect(result).toMatchObject({
       adapterType: "paperclip_runner",
-      status: "pass",
-      checks: [{ code: "acpx_profile_qualified", level: "info" }],
+      status: "warn",
+      checks: [{ code: "acpx_remote_runtime_unverified", level: "warn" }],
     });
   });
 
-  it.each([
-    ["linux", "x64", "pass", "acpx_profile_qualified"],
-    ["darwin", "arm64", "fail", "acpx_runtime_platform_unsupported"],
-    ["linux", "arm64", "fail", "acpx_runtime_platform_unsupported"],
-  ])("checks local ACPX support on %s %s", async (platform, arch, status, code) => {
-    const platformDescriptor = Object.getOwnPropertyDescriptor(process, "platform")!;
-    const archDescriptor = Object.getOwnPropertyDescriptor(process, "arch")!;
-    try {
-      Object.defineProperty(process, "platform", { ...platformDescriptor, value: platform });
-      Object.defineProperty(process, "arch", { ...archDescriptor, value: arch });
-      const result = await requireServerAdapter("paperclip_runner").testEnvironment({
-        companyId: "company-1",
-        adapterType: "paperclip_runner",
-        config: { provider: "acpx", acpxAgent: "claude", model: "claude-sonnet-5" },
-      });
-      expect(result).toMatchObject({ status, checks: [expect.objectContaining({ code })] });
-    } finally {
-      Object.defineProperty(process, "platform", platformDescriptor);
-      Object.defineProperty(process, "arch", archDescriptor);
-    }
+  it.each([true, false])("checks actual local ACPX installation readiness (%s)", async (ready) => {
+    const probe = vi.mocked(probeAcpxClaudeInstallation);
+    if (ready) probe.mockResolvedValueOnce(undefined);
+    else probe.mockRejectedValueOnce(new Error("Runtime package integrity verification failed"));
+    const result = await requireServerAdapter("paperclip_runner").testEnvironment({
+      companyId: "company-1", adapterType: "paperclip_runner",
+      config: { provider: "acpx", acpxAgent: "claude", model: "custom-claude-model" },
+    });
+    expect(probe).toHaveBeenLastCalledWith("custom-claude-model");
+    expect(result).toMatchObject({
+      status: ready ? "pass" : "fail",
+      checks: [expect.objectContaining({ code: ready ? "acpx_runtime_ready" : "acpx_runtime_unavailable" })],
+    });
   });
 
   it("keeps the ACPX Pi profile unavailable", async () => {

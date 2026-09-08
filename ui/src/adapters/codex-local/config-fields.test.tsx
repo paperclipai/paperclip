@@ -31,7 +31,7 @@ describe("Paperclip Runner Codex configuration", () => {
     expect(html).toContain('<option value="codex" selected="">Codex</option>');
     expect(html).toContain("OpenCode 1.18.29");
     expect(html).toContain("ACPX");
-    expect(html).toContain("Automatic (isolated)");
+    expect(html).not.toContain("Permission mode");
     expect(html).not.toContain("Ask when requested");
     expect(html).not.toContain("Ask for untrusted operations");
     expect(html).toContain("Claude Managed");
@@ -56,18 +56,17 @@ describe("Paperclip Runner Codex configuration", () => {
     expect(html).not.toContain("Ask for untrusted operations");
   });
 
-  it("renders only the qualified ACPX Claude and Codex profiles", () => {
+  it("offers ACPX Claude without a redundant agent selector", () => {
     const html = renderRunner({
       provider: "acpx",
       acpxAgent: "claude",
       acpxPermissionMode: "approve-reads",
     });
 
-    expect(html).toContain('<option value="acpx" selected="">ACPX</option>');
-    expect(html).toContain(
-      '<option value="claude" selected="">Claude via ACPX</option>',
-    );
-    expect(html).toContain("Codex via ACPX");
+    expect(html).toContain('<option value="acpx" selected="">ACPX Claude</option>');
+    expect(html).not.toContain("ACP agent");
+    expect(html).not.toContain("Codex via ACPX");
+    expect(html).not.toContain("ACPX Codex");
     expect(html).not.toContain("Pi via ACPX");
     expect(html).toContain(
       '<option value="approve-reads" selected="">Conservative (fail closed)</option>',

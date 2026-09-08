@@ -218,8 +218,8 @@ pnpm --filter @paperclipai/paperclip-runner test:runner-workflow-evals
 pnpm --filter @paperclipai/paperclip-runner report:runner-chaos-evals
 ```
 
-`report:runner-live-evals` is a paid, provider-backed command. Native Codex and
-the ACPX Codex profile require `OPENAI_API_KEY`; ACPX Claude requires
+`report:runner-live-evals` is a paid, provider-backed command. Native Codex
+requires `OPENAI_API_KEY`; ACPX Claude requires
 `ANTHROPIC_API_KEY`; OpenCode candidates require `OPENROUTER_API_KEY`. The live
 matrix admits no Pi profile and does not persist credential values. Set
 `PAPERCLIP_EVAL_MAX_CAMPAIGN_COST_USD` to a positive finite number to bound

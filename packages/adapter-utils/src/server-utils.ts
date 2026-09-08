@@ -14,6 +14,7 @@ import { redactCommandText } from "./command-redaction.js";
 import {
   PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES,
   resolvePaperclipRunnerModel,
+  normalizeLegacyRunnerProvider,
 } from "./paperclip-runner-permissions.js";
 import type {
   AdapterRuntimeToolAccess,
@@ -3091,6 +3092,7 @@ export function normalizePaperclipRunnerAdapterConfig(
   config: Record<string, unknown>,
 ): Record<string, unknown> {
   if (adapterType !== "paperclip_runner") return config;
+  config = normalizeLegacyRunnerProvider(config);
   const next: Record<string, unknown> = {
     provider: "codex",
     codexPermissionMode: PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES.codex.defaultMode,
@@ -3099,6 +3101,10 @@ export function normalizePaperclipRunnerAdapterConfig(
   };
   if (next.provider === "codex") {
     next.model = resolvePaperclipRunnerModel("codex", config.model);
+  }
+  if (next.provider === "acpx") {
+    next.acpxAgent ??= "claude";
+    next.model = resolvePaperclipRunnerModel("acpx", config.model);
   }
   return normalizePaperclipOperationalSkillPreference(adapterType, next);
 }

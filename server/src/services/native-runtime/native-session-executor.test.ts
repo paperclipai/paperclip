@@ -3844,6 +3844,10 @@ describe("native session bounded recovery", () => {
 
   it("retries the same run twice and stops at the third failed attempt", () => {
     const now = new Date("2026-08-09T00:00:00.000Z");
+    expect(nativeSessionFailureSourceCode(new Error("native_provider_model_rejected: unknown model"))).toBe("native_provider_model_rejected");
+    expect(nativeSessionFailureDisposition(1, now, "native_provider_model_rejected")).toEqual({
+      phase: "terminal_failure", failureCode: "native_provider_model_rejected", nextAttemptAt: null,
+    });
     expect(nativeSessionFailureDisposition(1, now)).toEqual({
       phase: "retryable_failure",
       failureCode: "native_session_interrupted",

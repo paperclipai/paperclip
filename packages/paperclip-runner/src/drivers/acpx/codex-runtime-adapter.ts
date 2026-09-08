@@ -269,7 +269,11 @@ export async function openQualifiedAcpxRuntime(
     cwd: options.cwd,
     sessionStore,
     agentRegistry: createRegistry({
-      overrides: { [options.profile.agent]: [VERIFIED_COMMAND_SENTINEL] },
+      // Preserve Claude's ACP capability identity. This is metadata only: the
+      // spawn callback below always launches the verified command lease.
+      overrides: { [options.profile.agent]: [options.profile.agent === "claude"
+        ? "/paperclip-verified/claude-agent-acp"
+        : VERIFIED_COMMAND_SENTINEL] },
     }),
     permissionMode: options.permissionMode,
     elicitationModes: ["form"],
@@ -346,10 +350,8 @@ export async function openQualifiedAcpxRuntime(
         mode: "persistent",
         cwd: options.cwd,
         sessionOptions: {
-          // ACP session construction receives the provider-native selector.
-          // The caller-facing canonical model was already pinned when the
-          // qualified profile was resolved and is restored at the status
-          // boundary after the provider reports this selector.
+          // Forward the requested model unchanged; verify the provider's
+          // reported selection before admitting a billable prompt.
           model: options.profile.reportedModelId,
           ...(options.systemInstructions
             ? { systemPrompt: { append: options.systemInstructions } }

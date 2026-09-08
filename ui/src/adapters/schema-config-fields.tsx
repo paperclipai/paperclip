@@ -1,3 +1,4 @@
+import { schemaFieldSection } from "./config-sections";
 import { useState, useEffect, useRef, useCallback } from "react";
 
 import type { AdapterConfigSchema, ConfigFieldSchema, CreateConfigValues } from "@paperclipai/adapter-utils";
@@ -246,7 +247,7 @@ export function invalidateConfigSchemaCache(adapterType: string): void {
 // Hook
 // ---------------------------------------------------------------------------
 
-function useConfigSchema(adapterType: string): AdapterConfigSchema | null {
+export function useConfigSchema(adapterType: string): AdapterConfigSchema | null {
   const [schema, setSchema] = useState<AdapterConfigSchema | null>(
     schemaCache.get(adapterType) ?? null,
   );
@@ -320,6 +321,8 @@ export function fieldMatchesVisibleWhen(
 // ---------------------------------------------------------------------------
 
 export function SchemaConfigFields({
+  section,
+  hideModel,
   adapterType,
   isCreate,
   values,
@@ -332,7 +335,7 @@ export function SchemaConfigFields({
 
   const [defaultsApplied, setDefaultsApplied] = useState(false);
   useEffect(() => {
-    if (!schema || !isCreate || defaultsApplied) return;
+    if (!schema || !isCreate || defaultsApplied || (section && section !== "configuration")) return;
     const defaults: Record<string, unknown> = {};
     for (const field of schema.fields) {
       const def = getDefaultValue(field);
@@ -346,7 +349,7 @@ export function SchemaConfigFields({
       });
     }
     setDefaultsApplied(true);
-  }, [schema, isCreate, defaultsApplied, set, values?.adapterSchemaValues]);
+  }, [schema, isCreate, defaultsApplied, set, values?.adapterSchemaValues, section]);
 
   if (!schema || schema.fields.length === 0) return null;
 
@@ -402,6 +405,9 @@ export function SchemaConfigFields({
   return (
     <>
       {schema.fields
+        .filter((field) => !hideModel || field.key !== "model")
+        .filter((field) => !section || schemaFieldSection(field.key) === section)
+        .filter((field) => !(field.type === "select" && /permissionMode/i.test(field.key) && (field.options?.length ?? 0) <= 1))
         .filter((field) => fieldMatchesVisibleWhen(field, readValue, schema))
         .map((field) => {
           switch (field.type) {

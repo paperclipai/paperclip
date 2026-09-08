@@ -1,6 +1,9 @@
 import { testAgentSetup } from "@/lib/test-agent-setup";
 import { RuntimeTestCard } from "./RuntimeTestCard";
 import { useState, useEffect, useRef, useMemo, useCallback, Children, isValidElement, type ReactNode } from "react";
+import type { AdapterConfigSection } from "../adapters/types";
+import { useConfigSchema } from "../adapters/schema-config-fields";
+import { schemaFieldSection } from "../adapters/config-sections";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
   Agent,
@@ -95,6 +98,7 @@ import { codexReasoningEffortOptions } from "../lib/codex-reasoning-effort";
 export type { CreateConfigValues } from "@paperclipai/adapter-utils";
 import {
   PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES,
+  paperclipRunnerTransitionConfig,
   type CreateConfigValues,
 } from "@paperclipai/adapter-utils";
 import { Badge } from "@/components/ui/badge";
@@ -165,18 +169,14 @@ const emptyOverlay: AgentConfigOverlay = {
 const EMPTY_ENV: Record<string, EnvBinding> = {};
 
 export function supportsAdapterModelRefresh(adapterType: string): boolean {
-  return adapterType === "claude_local" || adapterType === "codex_local";
+  return adapterType === "claude_local" || adapterType === "codex_local" || adapterType === "paperclip_runner" || adapterType === "opencode_local";
 }
 
 export function resolvePaperclipRunnerTransitionModel(
   previousAdapterType: string,
   previousModel: unknown,
 ): string {
-  return previousAdapterType === "codex_local"
-    && typeof previousModel === "string"
-    && previousModel.trim().length > 0
-    ? previousModel.trim()
-    : DEFAULT_CODEX_LOCAL_MODEL;
+  return paperclipRunnerTransitionConfig(previousAdapterType, previousModel).model as string;
 }
 
 function isOverlayDirty(o: AgentConfigOverlay): boolean {
@@ -758,9 +758,13 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       ? "Paperclip Computer"
       : "Local";
 
-  // Fetch adapter models for the effective adapter type
+  const runnerProvider = adapterType === "paperclip_runner"
+    ? String(isCreate ? props.values.adapterSchemaValues?.provider ?? "codex"
+      : eff("adapterConfig", "provider", config.provider === "acpx" && config.acpxAgent === "codex" ? "codex" : config.provider ?? "codex"))
+    : undefined;
+  // Fetch adapter models for the effective provider, including unsaved changes.
   const modelQueryKey = selectedCompanyId
-    ? queryKeys.agents.adapterModels(selectedCompanyId, adapterType, currentDefaultEnvironmentId || null)
+    ? queryKeys.agents.adapterModels(selectedCompanyId, adapterType, currentDefaultEnvironmentId || null, runnerProvider)
     : ["agents", "none", "adapter-models", adapterType];
   const {
     data: fetchedModels,
@@ -769,6 +773,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     queryKey: modelQueryKey,
     queryFn: () => agentsApi.adapterModels(selectedCompanyId!, adapterType, {
       environmentId: currentDefaultEnvironmentId || null,
+      provider: runnerProvider,
     }),
     enabled: Boolean(selectedCompanyId),
   });
@@ -789,7 +794,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       }
       return agentsApi.detectModel(selectedCompanyId, adapterType);
     },
-    enabled: Boolean(selectedCompanyId && isLocal && adapterType !== "opencode_local"),
+    enabled: Boolean(selectedCompanyId && isLocal && adapterType !== "opencode_local" && adapterType !== "paperclip_runner"),
   });
   const detectedModel = detectedModelData?.model ?? null;
   const detectedModelCandidates = detectedModelData?.candidates ?? [];
@@ -820,6 +825,14 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
 
   // Section toggle state — advanced always starts collapsed
   const [runPolicyAdvancedOpen, setRunPolicyAdvancedOpen] = useState(false);
+  const [configurationAdvancedOpen, setConfigurationAdvancedOpen] = useState(false);
+  const configSchema = useConfigSchema(adapterType);
+  const renderAdapterFields = (section: AdapterConfigSection) => (
+    <>
+      {adapterType === "claude_local" && <ClaudeLocalAdvancedFields {...adapterFieldProps} section={section} />}
+      <uiAdapter.ConfigFields {...adapterFieldProps} section={section} hideModel={isLocal} />
+    </>
+  );
   // Popover states
   const [modelOpen, setModelOpen] = useState(false);
   const [thinkingEffortOpen, setThinkingEffortOpen] = useState(false);
@@ -1103,7 +1116,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     setRefreshingModels(true);
     setRefreshModelsError(null);
     try {
-      const refreshed = await agentsApi.adapterModels(selectedCompanyId, adapterType, { refresh: true });
+      const refreshed = await agentsApi.adapterModels(selectedCompanyId, adapterType, { refresh: true, environmentId: currentDefaultEnvironmentId || null, provider: runnerProvider });
       queryClient.setQueryData(modelQueryKey, refreshed);
     } catch (error) {
       setRefreshModelsError(error instanceof Error ? error.message : "Failed to refresh adapter models.");
@@ -1219,13 +1232,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       }
     />
   );
-  const environmentVariablesField = (
-    <div data-config-field="environment-variables">
-      <Field label="Environment variables" hint={help.envVars}>
-        {environmentVariablesEditor}
-      </Field>
-    </div>
-  );
+
 
   if (!isCreate && props.content === "secrets") {
     return (
@@ -1511,10 +1518,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                             }
                           : t === "paperclip_runner"
                             ? {
-                                provider: "codex",
-                                codexPermissionMode:
-                                  PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES.codex.defaultMode,
-                                lifecycleMode: "per_turn",
+                                ...paperclipRunnerTransitionConfig(adapterType, eff("adapterConfig", "model", config.model)),
                               }
                           : {}),
                       },
@@ -1576,70 +1580,8 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             </Field>
           )}
 
-          {!isLocal && <uiAdapter.ConfigFields {...adapterFieldProps} />}
-
-          {/* Local adapter-specific fields are rendered inside Permissions & Configuration */}
-        </div>
-
-      </div>
-
-      {/* ---- Permissions & Configuration ---- */}
-      {isLocal && (
-        <div data-config-section="permissions" className={cn(!cards && "border-b border-border")}>
-          {cards
-            ? <h3 className="text-sm font-medium mb-3">{props.sectionTitles?.["permissions"] ?? "Permissions & Configuration"}</h3>
-            : <div className="px-4 py-2 text-xs font-medium text-muted-foreground">Permissions &amp; Configuration</div>
-          }
-          <div className={cn(cards ? "border border-border rounded-lg p-4 space-y-3" : "px-4 pb-3 space-y-3")}>
-              {/*
-                The command names a binary on the execution host, so the
-                managed-sandbox-only policy hides it: the platform-managed image
-                owns the binary. Hiding is presentation only. A stored
-                `adapterConfig.command` stays as it is and the server does not
-                reject one, because an import carries adapter configuration
-                written on another instance; rejecting it would break that flow.
-                The value is inert while the policy is on. The field also stays
-                hidden until the policy is known, so a stored command never
-                flashes on a managed instance.
-              */}
-              {!hideHostPaths && (
-                <div data-config-field="command">
-                  <Field label="Command" hint={help.localCommand}>
-                    <DraftInput
-                      value={
-                        isCreate
-                          ? val!.command
-                          : eff(
-                              "adapterConfig",
-                              adapterCommandField,
-                              String(
-                                config.command ?? "",
-                              ),
-                            )
-                      }
-                      onCommit={(v) =>
-                        isCreate
-                          ? set!({ command: v })
-                          : mark("adapterConfig", adapterCommandField, v || null)
-                      }
-                      immediate
-                      className={inputClass}
-                      placeholder={
-                        ({
-                          claude_local: "claude",
-                          codex_local: "codex",
-                          gemini_local: "gemini",
-                          kimi_local: "kimi",
-                          pi_local: "pi",
-                          cursor: "agent",
-                          opencode_local: "opencode",
-                        } as Record<string, string>)[adapterType] ?? adapterType.replace(/_local$/, "")
-                      }
-                    />
-                  </Field>
-                </div>
-              )}
-
+          {renderAdapterFields("adapter")}
+          {isLocal && (<>
               <ModelDropdown
                 models={models}
                 value={currentModelId}
@@ -1664,13 +1606,13 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 open={modelOpen}
                 onOpenChange={setModelOpen}
                 defaultLabel={adapterType === "claude_local" ? `Default (${DEFAULT_CLAUDE_LOCAL_MODEL})` : undefined}
-                allowDefault={adapterType !== "opencode_local" && adapterType !== "pi_local"}
+                allowDefault={adapterType !== "opencode_local" && adapterType !== "pi_local" && adapterType !== "paperclip_runner"}
                 required={adapterType === "opencode_local" || adapterType === "pi_local"}
                 groupByProvider={adapterType === "opencode_local" || adapterType === "pi_local"}
                 creatable
                 detectedModel={detectedModel}
                 detectedModelCandidates={[]}
-                onDetectModel={adapterType === "opencode_local"
+                onDetectModel={adapterType === "opencode_local" || adapterType === "paperclip_runner"
                   ? undefined
                   : async () => {
                       const result = await refetchDetectedModel();
@@ -1723,6 +1665,19 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                     )}
                 </>
               )}
+          </>)}
+        </div>
+
+      </div>
+
+      {/* ---- Configuration ---- */}
+      {(
+        <div data-config-section="configuration" className={cn(!cards && "border-b border-border")}>
+          {cards
+            ? <h3 className="text-sm font-medium mb-3">Configuration</h3>
+            : <div className="px-4 py-2 text-xs font-medium text-muted-foreground">Configuration</div>
+          }
+          <div className={cn(cards ? "border border-border rounded-lg p-4 space-y-3" : "px-4 pb-3 space-y-3")}>
               {!isCreate && typeof config.bootstrapPromptTemplate === "string" && config.bootstrapPromptTemplate && (
                 <>
                   <Field label="Bootstrap prompt (legacy)" hint={help.bootstrapPrompt}>
@@ -1749,10 +1704,60 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                   </div>
                 </>
               )}
-              {adapterType === "claude_local" && (
-                <ClaudeLocalAdvancedFields {...adapterFieldProps} />
+              {renderAdapterFields("configuration")}
+              {(isLocal || adapterType === "process" || configSchema?.fields.some((field) => schemaFieldSection(field.key) === "advanced")) && (
+              <CollapsibleSection
+                title="Advanced"
+                open={configurationAdvancedOpen}
+                onToggle={() => setConfigurationAdvancedOpen(!configurationAdvancedOpen)}
+              >
+                <div className="space-y-3">
+                  {isLocal && (<>              {/*
+                The command names a binary on the execution host, so the
+                managed-sandbox-only policy hides it: the platform-managed image
+                owns the binary. Hiding is presentation only. A stored
+                `adapterConfig.command` stays as it is and the server does not
+                reject one, because an import carries adapter configuration
+                written on another instance; rejecting it would break that flow.
+                The value is inert while the policy is on. The field also stays
+                hidden until the policy is known, so a stored command never
+                flashes on a managed instance.
+              */}
+              {!hideHostPaths && (
+                <Field label="Command" hint={help.localCommand}>
+                  <DraftInput
+                    value={
+                      isCreate
+                        ? val!.command
+                        : eff(
+                            "adapterConfig",
+                            adapterCommandField,
+                            String(
+                              config.command ?? "",
+                            ),
+                          )
+                    }
+                    onCommit={(v) =>
+                      isCreate
+                        ? set!({ command: v })
+                        : mark("adapterConfig", adapterCommandField, v || null)
+                    }
+                    immediate
+                    className={inputClass}
+                    placeholder={
+                      ({
+                        claude_local: "claude",
+                        codex_local: "codex",
+                        gemini_local: "gemini",
+                        kimi_local: "kimi",
+                        pi_local: "pi",
+                        cursor: "agent",
+                        opencode_local: "opencode",
+                      } as Record<string, string>)[adapterType] ?? adapterType.replace(/_local$/, "")
+                    }
+                  />
+                </Field>
               )}
-              <uiAdapter.ConfigFields {...adapterFieldProps} />
 
               <Field label="Extra args (comma-separated)" hint={help.extraArgs}>
                 <DraftInput
@@ -1771,37 +1776,24 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 />
               </Field>
 
-              {props.environmentVariablesPlacement !== "secrets" && environmentVariablesField}
-
-              {/* Edit-only: timeout + grace period */}
-              {!isCreate && (
-                <>
-                  <Field label="Timeout (sec)" hint={help.timeoutSec}>
-                    <DraftNumberInput
-                      value={eff(
-                        "adapterConfig",
-                        "timeoutSec",
-                        Number(config.timeoutSec ?? 0),
-                      )}
-                      onCommit={(v) => mark("adapterConfig", "timeoutSec", v)}
-                      immediate
-                      className={inputClass}
-                    />
-                  </Field>
-                  <Field label="Interrupt grace period (sec)" hint={help.graceSec}>
-                    <DraftNumberInput
-                      value={eff(
-                        "adapterConfig",
-                        "graceSec",
-                        Number(config.graceSec ?? 15),
-                      )}
-                      onCommit={(v) => mark("adapterConfig", "graceSec", v)}
-                      immediate
-                      className={inputClass}
-                    />
-                  </Field>
-                </>
+                  </>)}
+                  {renderAdapterFields("advanced")}
+                </div>
+              </CollapsibleSection>
               )}
+
+          </div>
+        </div>
+      )}
+
+      {props.environmentVariablesPlacement !== "secrets" && (isLocal || configSchema?.fields.some((field) => schemaFieldSection(field.key) === "environment")) && (
+        <div data-config-section="environment-variables" className={cn(!cards && "border-b border-border")}>
+          {cards
+            ? <h3 className="text-sm font-medium mb-3">Environment variables</h3>
+            : <div className="px-4 py-2 text-xs font-medium text-muted-foreground">Environment variables</div>
+          }
+          <div className={cn(cards ? "border border-border rounded-lg p-4 space-y-3" : "px-4 pb-3 space-y-3")}>
+            {isLocal ? environmentVariablesEditor : renderAdapterFields("environment")}
           </div>
         </div>
       )}
@@ -1826,6 +1818,9 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
               numberHint={help.intervalSec}
               showNumber={val!.heartbeatEnabled}
             />
+            <CollapsibleSection title="Advanced Run Policy" open={runPolicyAdvancedOpen} onToggle={() => setRunPolicyAdvancedOpen(!runPolicyAdvancedOpen)}>
+              <div className="space-y-3">{renderAdapterFields("runPolicy")}</div>
+            </CollapsibleSection>
           </div>
         </div>
       ) : !isCreate ? (
@@ -1856,6 +1851,42 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
               onToggle={() => setRunPolicyAdvancedOpen(!runPolicyAdvancedOpen)}
             >
             <div className="space-y-3">
+              {renderAdapterFields("runPolicy")}
+              {isLocal && (<>
+              {/* Edit-only: timeout + grace period */}
+              {!isCreate && (
+                <>
+                  {!configSchema?.fields.some((field) => field.key === "timeoutSec") && (
+                  <Field label="Timeout (sec)" hint={help.timeoutSec}>
+                    <DraftNumberInput
+                      value={eff(
+                        "adapterConfig",
+                        "timeoutSec",
+                        Number(config.timeoutSec ?? 0),
+                      )}
+                      onCommit={(v) => mark("adapterConfig", "timeoutSec", v)}
+                      immediate
+                      className={inputClass}
+                    />
+                  </Field>
+                  )}
+                  {!configSchema?.fields.some((field) => field.key === "graceSec") && (
+                  <Field label="Interrupt grace period (sec)" hint={help.graceSec}>
+                    <DraftNumberInput
+                      value={eff(
+                        "adapterConfig",
+                        "graceSec",
+                        Number(config.graceSec ?? 15),
+                      )}
+                      onCommit={(v) => mark("adapterConfig", "graceSec", v)}
+                      immediate
+                      className={inputClass}
+                    />
+                  </Field>
+                  )}
+                </>
+              )}
+              </>)}
               <ToggleField
                 label="Wake on demand"
                 hint={help.wakeOnDemand}

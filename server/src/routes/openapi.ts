@@ -2221,8 +2221,11 @@ registry.registerPath({
   method: "get",
   path: "/api/companies/{companyId}/adapters/{type}/models",
   tags: ["adapters"],
-  summary: "List models for an adapter type",
-  request: { params: z.object({ companyId: z.string(), type: z.string() }) },
+  summary: "List models for an adapter type and runner provider",
+  request: {
+    params: z.object({ companyId: z.string(), type: z.string() }),
+    query: z.object({ provider: z.enum(["codex", "acpx", "opencode", "claude_managed", "aws_agentcore"]).optional(), environmentId: z.string().optional(), refresh: z.string().optional() }),
+  },
   responses: { 200: r.ok(), 401: r.unauthorized },
 });
 

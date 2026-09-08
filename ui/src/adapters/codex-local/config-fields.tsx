@@ -1,3 +1,4 @@
+import { configFieldsForSection } from "../config-sections";
 import type { AdapterConfigFieldsProps } from "../types";
 import {
   Field,
@@ -30,14 +31,12 @@ const inputClass =
 const instructionsFileHint =
   "Absolute path to a markdown file (e.g. AGENTS.md) that defines this agent's behavior. Injected into the system prompt at runtime. Note: Codex may still auto-apply repo-scoped AGENTS.md files from the workspace.";
 const defaultOpenCodeRunnerModel = "openrouter/deepseek/deepseek-v4-flash-0731";
-const acpxRunnerModels = {
-  claude: "claude-sonnet-5",
-  codex: "gpt-5.6-sol",
-} as const;
+const defaultAcpxClaudeModel = "claude-sonnet-5";
 const defaultClaudeManagedModel = "claude-sonnet-5";
 const defaultAwsAgentCoreModel = "global.anthropic.claude-sonnet-4-6";
 
 export function CodexLocalConfigFields({
+  section,
   mode,
   isCreate,
   adapterType,
@@ -59,7 +58,7 @@ export function CodexLocalConfigFields({
   const configuredRunnerProvider = runnerManaged
     ? isCreate
       ? values!.adapterSchemaValues?.provider
-      : eff("adapterConfig", "provider", config.provider ?? "codex")
+      : eff("adapterConfig", "provider", config.provider === "acpx" && config.acpxAgent === "codex" ? "codex" : config.provider ?? "codex")
     : "codex";
   const runnerProvider: PaperclipRunnerProvider = isPaperclipRunnerProvider(
     configuredRunnerProvider,
@@ -113,13 +112,6 @@ export function CodexLocalConfigFields({
       mark("adapterConfig", key, value);
     }
   };
-  const configuredAcpxAgent =
-    runnerManaged && runnerProvider === "acpx"
-      ? isCreate
-        ? values!.adapterSchemaValues?.acpxAgent
-        : eff("adapterConfig", "acpxAgent", config.acpxAgent ?? "claude")
-      : "claude";
-  const acpxAgent = configuredAcpxAgent === "codex" ? "codex" : "claude";
   const runnerLifecycleMode = runnerManaged
     ? isCreate
       ? (values!.paperclipRunnerLifecycleMode ?? "per_turn")
@@ -163,7 +155,7 @@ export function CodexLocalConfigFields({
       ? "Fast mode consumes credits/tokens much faster than standard Codex runs."
       : `Fast mode currently only works on ${supportedModelsLabel} or manual model IDs. Paperclip will ignore this toggle until the model is switched.`;
 
-  return (
+  return configFieldsForSection(section, (
     <>
       {!hideEngineChoice && (
         <Field
@@ -196,7 +188,7 @@ export function CodexLocalConfigFields({
         </Field>
       )}
       {runnerManaged && (
-        <Field
+        <Field configSection="adapter"
           label="Provider"
           hint="The runner persists this provider with each run so recovery cannot drift after configuration changes."
         >
@@ -215,7 +207,7 @@ export function CodexLocalConfigFields({
                     : provider === "aws_agentcore"
                       ? defaultAwsAgentCoreModel
                       : provider === "acpx"
-                        ? acpxRunnerModels.claude
+                        ? defaultAcpxClaudeModel
                         : DEFAULT_CODEX_LOCAL_MODEL;
               if (isCreate) {
                 set!({
@@ -239,18 +231,8 @@ export function CodexLocalConfigFields({
             <option value="opencode">OpenCode 1.18.29</option>
             <option value="claude_managed">Claude Managed</option>
             <option value="aws_agentcore">AWS AgentCore</option>
-            <option value="acpx">ACPX</option>
+            <option value="acpx">ACPX Claude</option>
           </select>
-        </Field>
-      )}
-      {runnerManaged && !runnerPermissionCapability.configurable && (
-        <Field
-          label="Permission mode"
-          hint={runnerPermissionCapability.description}
-        >
-          <div className={`${inputClass} text-muted-foreground`}>
-            Provider-managed
-          </div>
         </Field>
       )}
       {runnerManaged && runnerProvider === "claude_managed" && (
@@ -359,7 +341,7 @@ export function CodexLocalConfigFields({
               className={inputClass}
             />
           </Field>
-          <Field
+          <Field configSection="runPolicy"
             label="Invocation timeout (seconds)"
             hint="Qualified range is 1–300 seconds."
           >
@@ -387,37 +369,7 @@ export function CodexLocalConfigFields({
           />
         </>
       )}
-      {runnerManaged && runnerProvider === "acpx" && (
-        <Field
-          label="ACP agent"
-          hint="Only the pinned Claude and Codex profiles are qualified; Pi is unavailable."
-        >
-          <select
-            className={inputClass}
-            value={acpxAgent}
-            onChange={(event) => {
-              const agent = event.target.value === "codex" ? "codex" : "claude";
-              const model = acpxRunnerModels[agent];
-              if (isCreate) {
-                set!({
-                  model,
-                  adapterSchemaValues: {
-                    ...values!.adapterSchemaValues,
-                    acpxAgent: agent,
-                  },
-                });
-              } else {
-                mark("adapterConfig", "acpxAgent", agent);
-                mark("adapterConfig", "model", model);
-              }
-            }}
-          >
-            <option value="claude">Claude via ACPX</option>
-            <option value="codex">Codex via ACPX</option>
-          </select>
-        </Field>
-      )}
-      {runnerManaged && runnerPermissionCapability.configurable && (
+      {runnerManaged && runnerPermissionCapability.configurable && (runnerPermissionCapability.options.length > 1 || runnerPermissionModeUnsupported) && (
         <Field
           label="Permission mode"
           hint={`${runnerPermissionCapability.description} The selected mode does not widen Paperclip's workspace, network, credential, or planning boundaries.`}
@@ -470,7 +422,7 @@ export function CodexLocalConfigFields({
         </Field>
       )}
       {runnerManaged && (
-        <Field
+        <Field configSection="runPolicy"
           label="Runner lifecycle"
           hint="Turn by turn suspends after each run. Warm keeps the same provider process available between governed runs."
         >
@@ -490,7 +442,7 @@ export function CodexLocalConfigFields({
         </Field>
       )}
       {runnerManaged && runnerLifecycleMode === "warm" && (
-        <Field
+        <Field configSection="runPolicy"
           label="Warm idle timeout (ms)"
           hint="After this much inactivity, runnerd checkpoints and suspends the provider session. The maximum is 24 hours."
         >
@@ -531,7 +483,7 @@ export function CodexLocalConfigFields({
       {acpSelected && (
         <>
           {!managedSandboxOnly && (
-            <Field
+            <Field configSection="advanced"
               label="ACP server command"
               hint="Optional override for the Codex ACP server command. Defaults to the package-local codex-acp binary."
             >
@@ -556,7 +508,7 @@ export function CodexLocalConfigFields({
               />
             </Field>
           )}
-          <Field
+          <Field configSection="runPolicy"
             label="ACP session mode"
             hint="Persistent keeps ACP session state between runs. One-shot starts fresh each run."
           >
@@ -638,7 +590,7 @@ export function CodexLocalConfigFields({
               </div>
             </Field>
           )}
-          <Field
+          <Field configSection="runPolicy"
             label="ACP warm process idle ms"
             hint="Defaults to 0, which closes the ACP process after each run while retaining persistent session state."
           >
@@ -765,5 +717,5 @@ export function CodexLocalConfigFields({
         models={models}
       />
     </>
-  );
+  ));
 }

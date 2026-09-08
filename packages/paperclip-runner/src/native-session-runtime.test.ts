@@ -751,6 +751,32 @@ describe("executeNativeSession recovery", () => {
     });
   });
 
+  it("surfaces the provider's model rejection instead of missing semantic completion", async () => {
+    const capabilities = { resume: true, typedEvents: true, steering: false, interruption: false, structuredResult: true };
+    const close = vi.fn(async () => {});
+    const session: NativeSession = {
+      identity: () => identity,
+      async capabilities() { return capabilities; },
+      async *events() { yield runnerEvent(1, "turn.failed", { error: { code: "RUNTIME", message: "There's an issue with the selected model (custom-model). It may not exist or you may not have access to it." } }); },
+      async startTurn() { return { turnId: "turn-recovery" }; },
+      async result() { return null; },
+      async snapshot() { return { backendKind: "mock", sessionId: "driver-recovery", identity, providerSessionId: "provider-recovery", cursor: null, activeTurnId: null, pendingRuntimeRequests: [], lineage: [] }; },
+      close,
+    };
+    const backend: NativeSessionBackend = {
+      async descriptor() { return { kind: "mock", name: "model-rejection", version: "1", capabilities }; },
+      async openSession() { return session; },
+    };
+    const port: ControlPlanePort = {
+      async openRun() {}, async checkpointSession() {},
+      async appendEvent() { return { cursor: 1, highestContiguousSourceSeq: 1, disposition: "committed" }; },
+      async replayEvents() { return { events: [], highestContiguousSourceSeq: 0 }; },
+      async completeRun() {},
+    };
+    await expect(executeNativeSession({ input, backend, controlPlane: port, runnerInstanceId: "runner-recovery", controlPlaneInstanceId: "control-recovery" })).rejects.toThrow("native_provider_model_rejected: There's an issue with the selected model (custom-model)");
+    expect(close).toHaveBeenCalled();
+  });
+
   it("keeps governed-wait discovery synchronous", () => {
     type GovernedWaitResolver = NonNullable<
       ExecuteNativeSessionOptions["resolveGovernedWait"]
