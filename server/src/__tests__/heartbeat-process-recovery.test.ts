@@ -180,6 +180,18 @@ function commentMetadataRows(comment: { metadata?: unknown } | null | undefined)
   return (metadata?.sections ?? []).flatMap((section) => section.rows ?? []) as Array<Record<string, unknown>>;
 }
 
+function isBlockedOwnerNotificationComment(comment: { body?: string | null } | null | undefined) {
+  return Boolean(comment?.body?.includes("This blocked issue is waiting on your decision."));
+}
+
+function recoveryEscalationComment<T extends { body?: string | null; metadata?: unknown }>(comments: T[]) {
+  const ownerNotice = comments.filter((comment) => isBlockedOwnerNotificationComment(comment));
+  const recovery = comments.filter((comment) => !isBlockedOwnerNotificationComment(comment));
+  expect(ownerNotice).toHaveLength(1);
+  expect(recovery).toHaveLength(1);
+  return recovery[0]!;
+}
+
 function spawnAliveProcess() {
   return spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
     stdio: "ignore",
@@ -2639,11 +2651,11 @@ async function escalateStartupFaultIssueToBlocked(
       const rows = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
       return rows.length > 0 ? rows : null;
     });
-    expect(comments).toHaveLength(1);
-    expect(comments[0]?.body).toContain("retried continuation");
-    expect(comments[0]?.presentation).toMatchObject({ kind: "system_notice", tone: "danger" });
-    expect(noticeMetadataReferencesRecoveryAction(comments[0]?.metadata, recoveryAction.id)).toBe(true);
-    expect(commentMetadataRows(comments[0]).some((row) =>
+    const comment = recoveryEscalationComment(comments);
+    expect(comment.body).toContain("retried continuation");
+    expect(comment.presentation).toMatchObject({ kind: "system_notice", tone: "danger" });
+    expect(noticeMetadataReferencesRecoveryAction(comment.metadata, recoveryAction.id)).toBe(true);
+    expect(commentMetadataRows(comment).some((row) =>
       row.type === "key_value" && row.label === "Recovery owner" && row.value === "Board decision required",
     )).toBe(true);
   });
@@ -3326,8 +3338,7 @@ async function escalateStartupFaultIssueToBlocked(
     });
 
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
-    expect(comments).toHaveLength(1);
-    expect(comments[0]).toMatchObject({
+    expect(recoveryEscalationComment(comments)).toMatchObject({
       authorType: "system",
       body: expect.stringContaining("Agent failed to resume after approval: `adapter_failed` — needs attention"),
     });
@@ -3417,12 +3428,12 @@ async function escalateStartupFaultIssueToBlocked(
     });
 
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
-    expect(comments).toHaveLength(1);
-    expect(comments[0]).toMatchObject({
+    const comment = recoveryEscalationComment(comments);
+    expect(comment).toMatchObject({
       authorType: "system",
       body: expect.stringContaining("Agent failed to resume after approval: `adapter_failed` — needs attention"),
     });
-    expect(commentMetadataRows(comments[0]).some((row) => row.label === "Recovery action")).toBe(true);
+    expect(commentMetadataRows(comment).some((row) => row.label === "Recovery action")).toBe(true);
 
     const interaction = await db
       .select({ result: issueThreadInteractions.result })
@@ -4160,15 +4171,16 @@ async function escalateStartupFaultIssueToBlocked(
     await expect(sourceBlockerIssueIds(companyId, issueId)).resolves.toEqual([]);
 
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
-    expect(comments[0]?.body).toBe(SUCCESSFUL_RUN_HANDOFF_EXHAUSTED_NOTICE_BODY);
-    expect(comments[0]?.authorType).toBe("system");
-    expect(comments[0]?.presentation).toMatchObject({
+    const comment = recoveryEscalationComment(comments);
+    expect(comment.body).toBe(SUCCESSFUL_RUN_HANDOFF_EXHAUSTED_NOTICE_BODY);
+    expect(comment.authorType).toBe("system");
+    expect(comment.presentation).toMatchObject({
       kind: "system_notice",
       tone: "danger",
       detailsDefaultOpen: false,
     });
-    expect(comments[0]?.presentation).not.toHaveProperty("density");
-    expect(comments[0]?.metadata).toMatchObject({
+    expect(comment.presentation).not.toHaveProperty("density");
+    expect(comment.metadata).toMatchObject({
       version: 1,
       sections: expect.arrayContaining([
         expect.objectContaining({
@@ -4187,8 +4199,8 @@ async function escalateStartupFaultIssueToBlocked(
         }),
       ]),
     });
-    expect(comments[0]?.body).not.toContain("sk-test-successful-handoff-secret");
-    expect(JSON.stringify(comments[0]?.metadata ?? {})).not.toContain("sk-test-successful-handoff-secret");
+    expect(comment.body).not.toContain("sk-test-successful-handoff-secret");
+    expect(JSON.stringify(comment.metadata ?? {})).not.toContain("sk-test-successful-handoff-secret");
 
     const activity = await db.select().from(activityLog).where(eq(activityLog.entityId, issueId));
     expect(activity.some((event) => event.action === "issue.successful_run_handoff_escalated")).toBe(true);
@@ -5784,11 +5796,13 @@ async function escalateStartupFaultIssueToBlocked(
       recoveryCause: "execution_review_participant_recovery",
     });
 
-    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
-    const recoveryComment = comments.find((comment) =>
-      comment.body.includes("pending execution-review participant once") &&
-        noticeMetadataReferencesRecoveryAction(comment.metadata, recoveryAction.id),
-    );
+    const recoveryComment = await waitForValue(async () => {
+      const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+      return comments.find((comment) =>
+        comment.body.includes("pending execution-review participant once") &&
+          noticeMetadataReferencesRecoveryAction(comment.metadata, recoveryAction.id),
+      ) ?? null;
+    });
     expect(recoveryComment).toBeTruthy();
 
     const activity = await db.select().from(activityLog).where(eq(activityLog.entityId, issueId));
@@ -6622,18 +6636,18 @@ async function escalateStartupFaultIssueToBlocked(
     expect(JSON.stringify(recoveryAction.evidence)).not.toContain("sk-test-recovery-secret");
 
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
-    expect(comments).toHaveLength(1);
-    expect(comments[0]?.body).toContain("retried dispatch");
-    expect(comments[0]?.body).not.toContain("sk-test-recovery-secret");
-    expect(JSON.stringify(comments[0]?.metadata)).not.toContain("sk-test-recovery-secret");
-    const failureSummary = commentMetadataRows(comments[0]).find((row) =>
+    const comment = recoveryEscalationComment(comments);
+    expect(comment.body).toContain("retried dispatch");
+    expect(comment.body).not.toContain("sk-test-recovery-secret");
+    expect(JSON.stringify(comment.metadata)).not.toContain("sk-test-recovery-secret");
+    const failureSummary = commentMetadataRows(comment).find((row) =>
       row.type === "key_value" && row.label === "Failure summary"
     );
     expect(failureSummary).toMatchObject({ type: "key_value", label: "Failure summary" });
     expect(failureSummary?.type === "key_value" ? failureSummary.value : "").toContain("Authorization");
-    expect(comments[0]?.presentation).toMatchObject({ kind: "system_notice", tone: "danger" });
-    expect(noticeMetadataReferencesRecoveryAction(comments[0]?.metadata, recoveryAction.id)).toBe(true);
-    expect(commentMetadataRows(comments[0]).some((row) =>
+    expect(comment.presentation).toMatchObject({ kind: "system_notice", tone: "danger" });
+    expect(noticeMetadataReferencesRecoveryAction(comment.metadata, recoveryAction.id)).toBe(true);
+    expect(commentMetadataRows(comment).some((row) =>
       row.type === "key_value" && row.label === "Recovery owner" && row.value === "Board decision required",
     )).toBe(true);
   });
@@ -7037,11 +7051,11 @@ async function escalateStartupFaultIssueToBlocked(
     });
 
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
-    expect(comments).toHaveLength(1);
-    expect(comments[0]?.body).toContain("retried continuation");
-    expect(comments[0]?.presentation).toMatchObject({ kind: "system_notice", tone: "danger" });
-    expect(noticeMetadataReferencesRecoveryAction(comments[0]?.metadata, recoveryAction.id)).toBe(true);
-    expect(commentMetadataRows(comments[0]).some((row) =>
+    const comment = recoveryEscalationComment(comments);
+    expect(comment.body).toContain("retried continuation");
+    expect(comment.presentation).toMatchObject({ kind: "system_notice", tone: "danger" });
+    expect(noticeMetadataReferencesRecoveryAction(comment.metadata, recoveryAction.id)).toBe(true);
+    expect(commentMetadataRows(comment).some((row) =>
       row.type === "key_value" && row.label === "Recovery owner" && row.value === "Board decision required",
     )).toBe(true);
   });
@@ -7073,12 +7087,10 @@ async function escalateStartupFaultIssueToBlocked(
     expect(JSON.stringify(recoveryAction.evidence)).not.toContain("- Failure: none recorded");
 
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
-    expect(comments).toHaveLength(1);
-    // The short structured body carries no failure details; the normalized
-    // failure code surfaces only as a metadata row.
-    expect(comments[0]?.body).not.toContain("adapter_exit_code");
-    expect(comments[0]?.body).not.toContain("- Failure: none recorded");
-    expect(commentMetadataRows(comments[0])).toContainEqual({
+    const comment = recoveryEscalationComment(comments);
+    expect(comment.body).not.toContain("adapter_exit_code");
+    expect(comment.body).not.toContain("- Failure: none recorded");
+    expect(commentMetadataRows(comment)).toContainEqual({
       type: "key_value",
       label: "Failure code",
       value: "adapter_exit_code",
@@ -7172,10 +7184,10 @@ async function escalateStartupFaultIssueToBlocked(
     });
 
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
-    expect(comments).toHaveLength(1);
-    expect(comments[0]?.body).toContain("retried continuation");
-    expect(comments[0]?.body).toContain("3× attempts");
-    expect(commentMetadataRows(comments[0])).toContainEqual({
+    const comment = recoveryEscalationComment(comments);
+    expect(comment.body).toContain("retried continuation");
+    expect(comment.body).toContain("3× attempts");
+    expect(commentMetadataRows(comment)).toContainEqual({
       type: "key_value",
       label: "Failure code",
       value: "adapter_failed",
@@ -7313,9 +7325,9 @@ async function escalateStartupFaultIssueToBlocked(
     });
 
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
-    expect(comments).toHaveLength(1);
-    expect(comments[0]?.body).toContain("non-retryable failure");
-    expect(comments[0]?.body).toContain("`budget_blocked`");
+    const comment = recoveryEscalationComment(comments);
+    expect(comment.body).toContain("non-retryable failure");
+    expect(comment.body).toContain("`budget_blocked`");
 
     const followupRuns = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
     const continuationRetryRun = followupRuns.find((row) => {
@@ -7803,11 +7815,11 @@ async function escalateStartupFaultIssueToBlocked(
     });
 
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
-    expect(comments).toHaveLength(1);
-    expect(comments[0]?.body).toContain("automatically retried continuation");
-    expect(comments[0]?.body).toContain("still has no live execution path");
-    expect(noticeMetadataReferencesRecoveryAction(comments[0]?.metadata, recoveryAction.id)).toBe(true);
-    expect(commentMetadataRows(comments[0]).some((row) =>
+    const comment = recoveryEscalationComment(comments);
+    expect(comment.body).toContain("automatically retried continuation");
+    expect(comment.body).toContain("still has no live execution path");
+    expect(noticeMetadataReferencesRecoveryAction(comment.metadata, recoveryAction.id)).toBe(true);
+    expect(commentMetadataRows(comment).some((row) =>
       row.type === "key_value" && row.label === "Recovery owner" && row.value === "Board decision required",
     )).toBe(true);
   });
@@ -8231,7 +8243,7 @@ async function escalateStartupFaultIssueToBlocked(
 
     const blockedAgain = await waitForValue(async () =>
       db.select().from(issues).where(eq(issues.id, issueId)).then((rows) =>
-        rows[0]?.status === "blocked" ? rows[0] : null,
+        rows[0]?.status === "blocked" && rows[0].blockedOwnerNotifiedAt ? rows[0] : null,
       ),
     );
     expect(blockedAgain?.blockedOwnerNotifiedAt).toBeTruthy();
