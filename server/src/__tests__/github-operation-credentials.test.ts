@@ -40,7 +40,7 @@ const support = await getEmbeddedPostgresTestSupport();
     if (!dedicated) await db.insert(userSecretDefinitions).values({id:definitionId,companyId:input.companyId,key:definitionId,name:"Test GitHub"});
     await db.insert(companySecrets).values({id:secretId,companyId:input.companyId,key:secretId,name:`Test token ${secretId}`,scope:dedicated?"company":"user",ownerUserId:dedicated?null:user,userSecretDefinitionId:dedicated?null:definitionId});
     await db.insert(connectionGrants).values({id,companyId:input.companyId,connectionId,kind:dedicated?"agent":"user",subjectUserId:dedicated?null:user,subjectAgentId:dedicated?input.agentId:null,status:"active",credentialSecretRefs:[{secretId,configPath:"oauth.access_token",versionSelector:"latest"}],providerTenant:{github:{userId:user,login:user,installationCount:1,repositoryCount:1,repositorySelection:"selected",installationIds:["1"],installationOwnerLogins:[user]}}});
-    return {id,connectionId};
+    return {id,connectionId,secretId,definitionId};
   }
   async function switchTo(input: Awaited<ReturnType<typeof seed>>, user:string) {
     const id=randomUUID();
@@ -103,6 +103,25 @@ const support = await getEmbeddedPostgresTestSupport();
     await switchTo(input,"B");
     expect((await resolveGitHubOperationCredentials(db,input)).env).toEqual({});
   });
+  it.each(["missing-ref", "disabled-secret", "missing-secret", "wrong-owner", "disabled-definition", "no-repositories"])(
+    "ignores an incomplete newer duplicate when the same account has an eligible grant (%s)", async (problem) => {
+      const input = await seed();
+      const first = await grant(input,"A");
+      const second = await grant(input,"A");
+      await db.update(connectionGrants).set({createdAt:new Date("2026-01-01")}).where(eq(connectionGrants.id,first.id));
+      await db.update(connectionGrants).set({createdAt:new Date("2026-02-01")}).where(eq(connectionGrants.id,second.id));
+      if (problem === "missing-ref") await db.update(connectionGrants).set({credentialSecretRefs:[]}).where(eq(connectionGrants.id,second.id));
+      if (problem === "disabled-secret") await db.update(companySecrets).set({status:"disabled"}).where(eq(companySecrets.id,second.secretId));
+      if (problem === "disabled-definition") await db.update(userSecretDefinitions).set({status:"disabled"}).where(eq(userSecretDefinitions.id,second.definitionId));
+      if (problem === "missing-secret") await db.delete(companySecrets).where(eq(companySecrets.id,second.secretId));
+      if (problem === "wrong-owner") await db.update(companySecrets).set({ownerUserId:"B"}).where(eq(companySecrets.id,second.secretId));
+      if (problem === "no-repositories") await db.update(connectionGrants).set({providerTenant:{github:{userId:"A",login:"A",installationCount:0,repositoryCount:0,repositorySelection:"none",installationIds:[],installationOwnerLogins:[]}}}).where(eq(connectionGrants.id,second.id));
+      expect((await resolveManagedGitHubIdentitySelection(db,input.companyId,{...input,responsibleUserId:"A"})).grant?.id).toBe(first.id);
+      expect(await resolveGitHubOperationCredentials(db,input)).toMatchObject({status:"available",login:"A"});
+      const connections = [first,second].map(row => ({id:row.connectionId,config:{sourceTemplateKey:"github"}}));
+      expect(await filterResolvedGitHubConnectionsForRun({db,...input,responsibleUserId:"A",connections})).toEqual([connections[0]]);
+    },
+  );
   it("retains dedicated override semantics when the dedicated account has duplicate grants", async () => {
     const input = await seed();
     await grant(input,"A");

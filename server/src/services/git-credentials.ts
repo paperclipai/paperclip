@@ -6,6 +6,7 @@ import {
   connectionGrants,
   toolConnectionInstalls,
   toolConnections,
+  userSecretDefinitions,
   type Db,
 } from "@paperclipai/db";
 import { and, eq, inArray, or } from "drizzle-orm";
@@ -369,8 +370,34 @@ export async function resolveManagedGitHubIdentitySelection(
         : "More than one managed GitHub identity matches this run",
     };
   }
+  const credentialIds = candidates.flatMap((grant) => grant.credentialSecretRefs
+    .filter((ref) => ref.configPath === "oauth.access_token").map((ref) => ref.secretId));
+  const credentialRecords = candidates.length > 1 && credentialIds.length > 0
+    ? await db.select({
+        id: companySecrets.id, status: companySecrets.status, deletedAt: companySecrets.deletedAt,
+        scope: companySecrets.scope, ownerUserId: companySecrets.ownerUserId,
+        definitionStatus: userSecretDefinitions.status, definitionDeletedAt: userSecretDefinitions.deletedAt,
+      }).from(companySecrets).leftJoin(userSecretDefinitions, and(
+        eq(userSecretDefinitions.id, companySecrets.userSecretDefinitionId),
+        eq(userSecretDefinitions.companyId, companyId),
+      )).where(and(
+        eq(companySecrets.companyId, companyId), inArray(companySecrets.id, credentialIds),
+      ))
+    : [];
+  const hasCredentialRecord = (grant: typeof connectionGrants.$inferSelect) => {
+    if (candidates.length === 1) return true;
+    const github = grant.providerTenant?.github;
+    const ref = grant.credentialSecretRefs.find((ref) => ref.configPath === "oauth.access_token");
+    return Boolean(github && github.installationCount > 0 && github.repositoryCount > 0 && ref
+      && credentialRecords.some((secret) => secret.id === ref.secretId
+        && secret.status === "active" && !secret.deletedAt
+        && (grant.kind === "user"
+          ? secret.scope === "user" && secret.ownerUserId === grant.subjectUserId
+            && secret.definitionStatus === "active" && !secret.definitionDeletedAt
+          : secret.scope === "company")));
+  };
   const isAvailable = (grant: typeof connectionGrants.$inferSelect) =>
-    grant.status === "active" && githubConnections.some((connection) =>
+    grant.status === "active" && hasCredentialRecord(grant) && githubConnections.some((connection) =>
       connection.id === grant.connectionId && connection.enabled && connection.status === "active",
     );
   // Prefer an available authorization for this same account, then the newest

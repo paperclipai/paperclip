@@ -31,7 +31,9 @@ Connection setup and permissions display: “This agent uses this GitHub account
 Multiple eligible connections for the same GitHub account are treated as one
 identity, using GitHub's stable account ID rather than its login. The resolver
 selects an available grant, preferring the newest authorization with a stable
-ID tie-breaker. It keeps that grant's credential and connection policy together;
+ID tie-breaker. Duplicate eligibility includes an active credential record with
+the correct owner, the OAuth access-token reference, and repository access
+metadata. It keeps that grant's credential and connection policy together;
 it does not combine repository access or bypass connection audiences. Distinct
 accounts or unidentifiable duplicate grants remain ambiguous. Managed commands
 print the redacted reason when GitHub access is unavailable, while unrelated
