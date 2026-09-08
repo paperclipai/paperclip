@@ -47,8 +47,6 @@ describe("buildOnboardingFirstTaskOpeningQuestion", () => {
     const payload = await buildOnboardingFirstTaskOpeningQuestion();
     expect(payload.version).toBe(1);
     expect(payload.supersedeOnUserComment).toBe(true);
-    // Picking an option must not start the agent: the user presses Continue.
-    expect(payload.explicitSubmit).toBe(true);
     expect(payload.submitLabel).toBe("Continue");
     expect(payload.questions).toHaveLength(1);
     const [question] = payload.questions;

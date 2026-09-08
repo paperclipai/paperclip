@@ -901,6 +901,7 @@ export function TaskChatComposer({
                   takeoverSkipButton
                     ? takeoverSkipButton
                     : null,
+                dismiss: takeover.onDismiss,
                 headerSlot: takeoverHeaderSlot,
                 controlsSlot: takeoverControlsSlot,
                 setHeaderClaimed: setTakeoverHeaderClaimed,

@@ -1,7 +1,6 @@
 {
   "prompt": "What would you like to do?",
   "submitLabel": "Continue",
-  "explicitSubmit": true,
   "options": [
     {
       "id": "interview",

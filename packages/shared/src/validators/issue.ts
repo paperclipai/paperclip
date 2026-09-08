@@ -973,11 +973,6 @@ export const askUserQuestionsPayloadSchema = z.object({
   version: z.literal(1),
   title: z.string().trim().max(240).nullable().optional(),
   submitLabel: z.string().trim().max(120).nullable().optional(),
-  /**
-   * When true, picking an option never submits the card on its own: the user
-   * has to press the submit button. For answers that start work.
-   */
-  explicitSubmit: z.boolean().optional(),
   supersedeOnUserComment: z.boolean().optional(),
   questions: z.array(askUserQuestionsQuestionSchema).min(1).max(64),
   /** Exact canonical presentation retained for a recovered harness request. */

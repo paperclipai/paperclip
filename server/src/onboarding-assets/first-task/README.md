@@ -22,10 +22,10 @@ organization's first task and when it hires the first agent.
 
 `opening-question.json` is one single-select question. Its `prompt`, optional
 `helpText`, optional `submitLabel`, and the two options' `label`/`description`
-are free to edit. `explicitSubmit` (default `true`) means picking an option
-only selects it; nothing happens until the user presses the submit button
-(`submitLabel`, "Continue"). Set it to `false` to submit on the first click
-the way ordinary single-select cards do. The server validates the file when it creates a first task
+are free to edit. Picking an option only selects it; nothing happens until the
+user presses the primary button (`submitLabel`, "Continue"). That is how every
+question card behaves: Next / Submit answers, Skip (optional questions only),
+and Cancel, which returns the plain composer and leaves the card pending. The server validates the file when it creates a first task
 and refuses (logging a warning, the task is still created) if either option id
 changes or the `task` option loses `freeText: true`. When the user answers, the
 answer reaches the agent in its wake payload and `brief.md` step 1 tells it

@@ -30,9 +30,6 @@ const openingQuestionFileSchema = z.object({
   prompt: z.string().trim().min(1).max(4000),
   helpText: z.string().trim().max(4000).nullable().optional(),
   submitLabel: z.string().trim().max(120).nullable().optional(),
-  // Picking an option must not start the agent by itself: the user presses the
-  // submit button. Defaults on; the board can turn it off in the file.
-  explicitSubmit: z.boolean().optional(),
   options: z.array(askUserQuestionsQuestionOptionSchema).length(2),
 }).superRefine((value, ctx) => {
   const ids = value.options.map((option) => option.id);
@@ -107,7 +104,6 @@ export async function buildOnboardingFirstTaskOpeningQuestion(): Promise<AskUser
   return askUserQuestionsPayloadSchema.parse({
     version: 1,
     submitLabel: file.submitLabel ?? null,
-    explicitSubmit: file.explicitSubmit ?? true,
     // A typed message instead of an answer still counts as the user's choice:
     // the card expires and the comment wakes the agent through the normal path.
     supersedeOnUserComment: true,

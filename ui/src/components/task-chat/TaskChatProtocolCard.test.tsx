@@ -604,14 +604,23 @@ describe("TaskChatProtocolCard", () => {
       (button) => button.textContent?.includes("Production"),
     );
     await act(async () => production?.click());
+    // Picking only selects; the primary button reads Next until the last
+    // question, where it takes the set's submit label.
+    const nextButton = () =>
+      Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find(
+        (button) => button.textContent?.trim() === "Next",
+      );
+    expect(container.textContent).toContain("Where should we deploy?");
+    await act(async () => nextButton()?.click());
     expect(container.textContent).toContain(
       "Which regions should receive the release?",
     );
-    const progress = Array.from(
-      container.querySelectorAll<HTMLButtonElement>("button"),
-    ).find((button) => button.textContent?.trim() === "Continue");
-    expect(progress).not.toBeUndefined();
-    await act(async () => progress?.click());
+    expect(
+      Array.from(container.querySelectorAll("button")).find(
+        (button) => button.textContent?.trim() === "Continue",
+      ),
+    ).toBeUndefined();
+    await act(async () => nextButton()?.click());
     expect(container.textContent).toContain("Anything else we should know?");
     const submit = Array.from(container.querySelectorAll("button")).find(
       (button) => button.textContent?.trim() === "Continue",
