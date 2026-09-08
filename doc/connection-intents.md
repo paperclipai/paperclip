@@ -65,7 +65,7 @@ and data-read coverage.
 
 ## Custom targets, readiness and recovery
 
-Catalog slugs remain stable. Search also returns `connection:<uuid>` for configured custom connections whose active identity grants authorize the responsible person, their company, or the requesting agent. Identifiers are never interpreted as URLs. Configured metadata and tool descriptions, including catalog-provider descriptions, are read only after the company and identity audience checks. Discovery reads the stored index without refreshing providers. Search is ranked with exact provider matches first and capped at 20 results.
+Catalog slugs remain stable. Search also returns `connection:<uuid>` for configured custom connections whose active identity grants authorize the responsible person, their company, or the requesting agent. Identifiers are never interpreted as URLs. Configured metadata and tool descriptions, including catalog-provider descriptions, are read only after the company and identity audience checks. Setup choices expose only display and selection metadata; they never include connection configuration, transport settings, or credential fields. Discovery reads the stored index without refreshing providers. Search is ranked with exact provider matches first and capped at 20 results.
 
 `ready` requires an installed, enabled, healthy executable connection, permitted catalog tools, and a usable runtime identity. An installed connection with denied actions is administrative denial rather than a request to reauthenticate. Runtime calls continue enforcing access after a historical card resolves. If access is ready but the native provider's pinned tool snapshot is older, `connection_request` queues a fresh session without another authorization card.
 

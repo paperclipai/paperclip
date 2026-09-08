@@ -20,6 +20,7 @@ import type {
   Agent,
   AppDefinition,
   ConnectionGrantKind,
+  ConnectionIntentSetupConnection,
   ConnectionMethodDef,
   ConnectToolAppResult,
   FieldDef,
@@ -477,8 +478,8 @@ export interface ConnectionSetupFlowProps {
   requestedAgentId?: string;
   interactionId?: string;
   forceNewConnection?: boolean;
-  existingConnections?: ToolConnection[];
-  configuredConnection?: ToolConnection;
+  existingConnections?: ConnectionIntentSetupConnection[];
+  configuredConnection?: ConnectionIntentSetupConnection;
   onUseExisting?: (connectionId: string) => Promise<void>;
   onComplete?: (result: ConnectionSetupCompletion) => void;
   onOAuthDeclined?: () => void;
@@ -561,8 +562,7 @@ export function ConnectionSetupFlow({
   // Prefill arrives from the app page for reconnects; read once so later
   // wizard navigation doesn't fight the URL.
   const [prefill] = useState(() => {
-    const configuredUrl = configuredConnection?.config?.url ?? configuredConnection?.transportConfig?.url ?? configuredConnection?.transportConfig?.serverUrl;
-    const rawLink = typeof configuredUrl === "string" ? configuredUrl : searchParams.get("link")?.trim() ?? "";
+    const rawLink = searchParams.get("link")?.trim() ?? "";
     return {
       link: /^https?:\/\//i.test(rawLink) ? rawLink : "",
       name: configuredConnection?.name ?? searchParams.get("name")?.trim() ?? "",

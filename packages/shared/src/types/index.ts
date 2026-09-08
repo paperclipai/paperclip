@@ -13,6 +13,7 @@ export type {
   ConnectionsSearchResult,
   ConnectionRequestResult,
   ConnectionIntentSetupOptions,
+  ConnectionIntentSetupConnection,
   CompleteConnectionIntentInput,
   DeclineConnectionIntentInput,
 } from "./connection-intent.js";

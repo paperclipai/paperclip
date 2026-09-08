@@ -670,6 +670,27 @@ describeEmbeddedPostgres("connectionIntentService", () => {
     expect((await service.search(claims, "heliotrope")).results[0]).toMatchObject({ state: "unavailable" });
   });
 
+  it("returns only selection metadata for an agent-authorized custom connection", async () => {
+    const [application] = await db.insert(toolApplications).values({ companyId: claims.company_id, applicationKey: randomUUID(), name: "Private archive", type: "mcp_http", status: "active" }).returning();
+    const [connection] = await db.insert(toolConnections).values({
+      companyId: claims.company_id, applicationId: application!.id, uid: randomUUID(),
+      name: "Archive identity", transport: "mcp_remote", authKind: "none", enabled: true, status: "active", healthStatus: "ok",
+      config: { oauth: { accessToken: "private-access", refreshToken: "private-refresh", clientSecret: "private-client" } },
+      transportConfig: { url: "https://private.invalid/mcp?token=private-url", headers: { Authorization: "private-header" } },
+    }).returning();
+    await db.insert(connectionGrants).values({ companyId: claims.company_id, connectionId: connection!.id,
+      kind: "agent", subjectAgentId: claims.sub, status: "active" });
+    const service = connectionIntentService(db);
+    const requested = await service.request(claims, `connection:${connection!.id}`);
+    const setup = await service.setupOptions(requested.interactionId!);
+    expect(setup.existingConnections).toEqual([{
+      id: connection!.id, applicationId: application!.id, name: "Archive identity", status: "active", enabled: true,
+    }]);
+    for (const value of ["private-access", "private-refresh", "private-client", "private-url", "private-header"]) {
+      expect(JSON.stringify(setup)).not.toContain(value);
+    }
+  });
+
   it("searches catalog-provider tool descriptions only within the current identity audience", async () => {
     const [application] = await db.insert(toolApplications).values({ companyId: claims.company_id, applicationKey: randomUUID(), name: "Indexed Notion", type: "mcp_http", status: "active", metadata: { sourceTemplateKey: "notion" } }).returning();
     const [connection] = await db.insert(toolConnections).values({ companyId: claims.company_id, applicationId: application!.id, uid: randomUUID(), name: "Private Notion", transport: "mcp_remote", authKind: "none", enabled: true, status: "active", healthStatus: "ok", config: { sourceTemplateKey: "notion" } }).returning();
