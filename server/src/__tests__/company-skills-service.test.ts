@@ -186,6 +186,11 @@ describeEmbeddedPostgres("companySkillService.list", () => {
       expect(next.source).not.toBe(old.source);
       expect(await fs.readFile(path.join(next.source, "reference.md"), "utf8")).toBe("new supporting file");
       expect(await fs.readFile(path.join(old.source, "reference.md"), "utf8")).toBe("old supporting file");
+      const lockFailure = vi.spyOn(fs, "link").mockRejectedValueOnce(new Error("Publication lock unavailable"));
+      try {
+        await expect(svc.deleteSkill(companyId, skill.id)).rejects.toThrow("Publication lock unavailable");
+        expect(await svc.getById(companyId, skill.id)).not.toBeNull();
+      } finally { lockFailure.mockRestore(); }
       await svc.deleteSkill(companyId, skill.id);
       await expect(fs.stat(path.dirname(path.dirname(next.source)))).rejects.toMatchObject({ code: "ENOENT" });
     } finally { vi.unstubAllGlobals(); }

@@ -209,14 +209,19 @@ export async function resolveRuntimeSkillCache(
   try { return await build; } finally { if (inFlight.get(spec.entry) === build) inFlight.delete(spec.entry); }
 }
 
-export async function removeRuntimeSkillCache(managedRoot: string, skillId: string): Promise<void> {
+export async function removeRuntimeSkillCache(
+  managedRoot: string, skillId: string, afterRemove?: () => Promise<void>,
+): Promise<void> {
   const root = runtimeSkillCacheRoot(managedRoot, skillId);
   const namespace = path.dirname(root);
-  try { await assertDirectories(namespace, managedRoot); }
-  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return; throw error; }
+  try { await assertDirectories(namespace, managedRoot, Boolean(afterRemove)); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT" && !afterRemove) return; throw error; }
   await publishLocked(namespace, skillId, async () => {
-    try { await assertDirectories(root, managedRoot); }
-    catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return; throw error; }
-    await removeTree(root);
+    try {
+      await assertDirectories(root, managedRoot);
+      await removeTree(root);
+    } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+    // Commit deletion while builders remain excluded. Lock/cleanup failures leave the row intact.
+    await afterRemove?.();
   });
 }

@@ -1,3 +1,4 @@
+import { logger } from "../middleware/logger.js";
 import { removeRuntimeSkillCache, resolveRuntimeSkillCache, runtimeSkillCacheSpec } from "./runtime-skill-cache.js";
 import { createHash, randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
@@ -3150,11 +3151,10 @@ export function companySkillService(db: Db) {
         continue;
       }
 
-      await db
-        .delete(companySkills)
-        .where(eq(companySkills.id, skill.id));
-      await fs.rm(resolveRuntimeSkillMaterializedPath(companyId, skill), { recursive: true, force: true });
-      await removeRuntimeSkillCache(resolveManagedSkillsRoot(companyId), skill.id);
+      await removeRuntimeSkillCache(resolveManagedSkillsRoot(companyId), skill.id, async () => {
+        await fs.rm(resolveRuntimeSkillMaterializedPath(companyId, skill), { recursive: true, force: true });
+        await db.delete(companySkills).where(eq(companySkills.id, skill.id));
+      });
     }
   }
 
@@ -4154,14 +4154,14 @@ export function companySkillService(db: Db) {
       throw error;
     }
 
-    // Remove the stale runtime materialization so runtime sync recreates it
-    // under the new key/slug.
-    await fs.rm(
-      path.resolve(managedRoot, "__runtime__", buildSkillRuntimeName(previousKey, previousSlug)),
-      { recursive: true, force: true },
-    );
-
-    await removeRuntimeSkillCache(managedRoot, skill.id);
+    // The rename has committed. Cache cleanup must not make a successful rename appear to fail.
+    try {
+      await fs.rm(path.resolve(managedRoot, "__runtime__", buildSkillRuntimeName(previousKey, previousSlug)),
+        { recursive: true, force: true });
+      await removeRuntimeSkillCache(managedRoot, skill.id);
+    } catch (error) {
+      logger.warn({ err: error, companyId, skillId: skill.id }, "Skill renamed; obsolete runtime cache cleanup failed");
+    }
 
     const renamed = await getById(companyId, skill.id);
     if (!renamed) throw notFound("Renamed skill not found");
@@ -6965,14 +6965,12 @@ export function companySkillService(db: Db) {
       );
     }
 
-    // Delete DB row
-    await db
-      .delete(companySkills)
-      .where(eq(companySkills.id, skillId));
-
-    // Clean up materialized runtime files
-    await fs.rm(resolveRuntimeSkillMaterializedPath(companyId, skill), { recursive: true, force: true });
-    await removeRuntimeSkillCache(resolveManagedSkillsRoot(companyId), skill.id);
+    // Take the cache lifecycle lock before deleting the row. A busy publisher must not
+    // turn a committed deletion into an apparent API failure, nor recreate its cache.
+    await removeRuntimeSkillCache(resolveManagedSkillsRoot(companyId), skill.id, async () => {
+      await fs.rm(resolveRuntimeSkillMaterializedPath(companyId, skill), { recursive: true, force: true });
+      await db.delete(companySkills).where(eq(companySkills.id, skillId));
+    });
 
     return skill;
   }
