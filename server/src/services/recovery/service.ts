@@ -489,6 +489,11 @@ const MAX_CONSECUTIVE_INFRA_DEFERRALS = Math.max(
   INFRA_TRANSIENT_MAX_CONSECUTIVE_DEFERRALS,
   FLEET_PAUSE_MAX_CONSECUTIVE_DEFERRALS,
 );
+// The tail is counted per cause, and failures of the *other* infra cause sit inside it without
+// counting, so the read window has to be wider than the largest bound or an interleaved history
+// would stop the scan before the bound is reachable. Five times the largest bound is still one
+// cheap indexed read and covers any interleaving this system realistically produces.
+const CONSECUTIVE_INFRA_DEFERRAL_SCAN_LIMIT = MAX_CONSECUTIVE_INFRA_DEFERRALS * 5;
 
 const PROVIDER_QUOTA_ERROR_RE =
   /(?:you(?:'|’)ve hit your (?:\w+ )?limit|usage limit(?: reached| exceeded)?|provider quota|quota (?:limit )?exceeded|model (?:is )?at capacity)/i;
@@ -3689,10 +3694,15 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     | { outcome: "exhausted" | "unavailable" }
   > {
     if (input.classification.kind === "infra_transient") {
+      // The bound is cause-specific, so the tail has to be counted for that same cause. Counting
+      // every infra failure together would charge a fleet hold's deferrals to the crash bound: two
+      // `issue_paused` holds followed by a single `process_lost` would read as three strikes and
+      // escalate a crash that happened once.
       const consecutive = await countConsecutiveInfraFailedRuns(
         input.issue.companyId,
         input.issue.id,
         input.now,
+        input.classification.cause,
       );
       const maxDeferrals = input.classification.cause === "fleet_pause"
         ? FLEET_PAUSE_MAX_CONSECUTIVE_DEFERRALS
@@ -3707,10 +3717,22 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return monitored ? { outcome: "deferred", issue: monitored } : { outcome: "unavailable" };
   }
 
-  // Counts the unbroken tail of infra-classed failures on the issue. Derived from the runs' own
-  // error codes rather than persisted state, so it stays correct even when a deferral wrote nothing
-  // back onto the run.
-  async function countConsecutiveInfraFailedRuns(companyId: string, issueId: string, now: Date) {
+  // Counts, inside the unbroken tail of infra-classed failures, the ones that share `cause` with the
+  // failure being evaluated. Derived from the runs' own error codes rather than persisted state, so
+  // it stays correct even when a deferral wrote nothing back onto the run.
+  //
+  // Two rules, and they are not the same rule:
+  //   - a *non-infra* outcome (a success, or a business failure) ends the tail — the execution path
+  //     demonstrably recovered, so nothing before it counts against the current run of trouble;
+  //   - an infra failure of a *different* cause is skipped, not counted and not a terminator. A
+  //     fleet hold sitting between two crashes neither charges the crash bound nor absolves the
+  //     crashes, which is what makes each bound mean what its constant says it means.
+  async function countConsecutiveInfraFailedRuns(
+    companyId: string,
+    issueId: string,
+    now: Date,
+    cause: "engine" | "fleet_pause",
+  ) {
     const rows = await db
       .select({
         status: heartbeatRuns.status,
@@ -3726,9 +3748,9 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         ),
       )
       .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id))
-      // Read enough tail to satisfy the largest bound any caller applies, otherwise a fleet-pause
-      // hold would look exhausted at the crash bound simply because the query stopped there.
-      .limit(MAX_CONSECUTIVE_INFRA_DEFERRALS + 1);
+      // Read past the largest bound rather than up to it: skipped rows of another cause sit inside
+      // the same tail, so a window sized to the bound alone would stop short and under-count.
+      .limit(CONSECUTIVE_INFRA_DEFERRAL_SCAN_LIMIT);
 
     let count = 0;
     for (const row of rows) {
@@ -3737,7 +3759,15 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       )) {
         break;
       }
-      if (classifyRunFailureClass(row, now) !== "infra") break;
+      const classification = classifyAdapterFailureForRecovery(row, now);
+      const rowClass: RunFailureClass =
+        classification?.kind === "provider_quota" || classification?.kind === "infra_transient"
+          ? "infra"
+          : "business";
+      if (rowClass !== "infra") break;
+      // Provider quota is infra but carries no bound of its own (it retries at a parsed reset
+      // instant), so it never counts against either cause's rope.
+      if (classification?.kind !== "infra_transient" || classification.cause !== cause) continue;
       count += 1;
     }
     return count;
@@ -3791,16 +3821,29 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
   // legitimate business block and is left exactly as it is — mass-unblocking those would both
   // lose real state and spawn a wave of runs.
   let lastUnroutableBlockedRepairAt: number | null = null;
+  // Where the next pass resumes its candidate scan. Without it the scan starves: the candidate
+  // predicate cannot express the two conditions that actually decide a repair (the issue's
+  // unresolved blockers, and whether its own latest run caused the block), so permanently
+  // skip-worthy rows — legitimate business blocks, dependency waits, blocks that predate their run —
+  // stay in the candidate set forever and, being the oldest, occupy the whole page on every pass. A
+  // repairable issue sorting behind more than a page of those is never reached at all.
+  let unroutableBlockedRepairCursor: { blockedTransitionAt: Date; id: string } | null = null;
 
-  async function repairUnroutableBlockedIssues(opts?: { now?: Date; limit?: number; throttle?: boolean }) {
+  async function repairUnroutableBlockedIssues(
+    opts?: { now?: Date; limit?: number; scanLimit?: number; throttle?: boolean },
+  ) {
     const now = opts?.now ?? new Date();
     const limit = opts?.limit ?? UNROUTABLE_BLOCKED_REPAIR_DEFAULT_LIMIT;
+    const scanLimit = opts?.scanLimit ?? UNROUTABLE_BLOCKED_REPAIR_SCAN_LIMIT;
     const result = {
       inspected: 0,
       repaired: 0,
       skipped: 0,
       unevaluated: 0,
       throttled: false,
+      // True when this pass reached the end of the candidate set and the next one restarts from the
+      // oldest row. Lets a caller (and the tests) tell "swept everything" from "still walking".
+      scanWrapped: false,
       issueIds: [] as string[],
     };
 
@@ -3818,6 +3861,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     }
     lastUnroutableBlockedRepairAt = now.getTime();
 
+    const cursor = unroutableBlockedRepairCursor;
     const candidates = await db
       .select()
       .from(issues)
@@ -3826,12 +3870,25 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         isNull(issues.unblockDescriptor),
         isNull(issues.hiddenAt),
         sql`${issues.assigneeAgentId} is not null`,
+        // A repair needs a transition stamp to prove causality, so a row without one can never be
+        // repaired. Excluding it here keeps rows written before migration 0198 (2026-08-11) out of
+        // the page entirely instead of letting them consume it, and makes the cursor tuple total.
+        sql`${issues.blockedTransitionAt} is not null`,
+        // Bound as an ISO string with an explicit cast: the driver refuses a raw `Date` in a
+        // hand-written tuple comparison.
+        ...(cursor
+          ? [sql`(${issues.blockedTransitionAt}, ${issues.id}) > (${cursor.blockedTransitionAt.toISOString()}::timestamptz, ${cursor.id}::uuid)`]
+          : []),
       ))
-      // Oldest stuck first, so successive bounded sweeps make guaranteed forward progress instead of
-      // re-reading whatever page Postgres happens to return.
+      // Oldest stuck first, and the same order the cursor advances along, so successive bounded
+      // sweeps walk the whole set instead of re-reading the same page.
       .orderBy(asc(issues.blockedTransitionAt), asc(issues.id))
       // Startup waits on this query, so scan a bounded page rather than every historical row.
-      .limit(UNROUTABLE_BLOCKED_REPAIR_SCAN_LIMIT);
+      .limit(scanLimit);
+
+    // Advanced past every row this pass actually looked at, repaired or skipped. Rows left
+    // unevaluated at the repair limit stay behind the cursor so the next pass starts on them.
+    let nextCursor = cursor;
 
     for (const issue of candidates) {
       if (result.repaired >= limit) {
@@ -3841,6 +3898,9 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         continue;
       }
       result.inspected += 1;
+      if (issue.blockedTransitionAt) {
+        nextCursor = { blockedTransitionAt: issue.blockedTransitionAt, id: issue.id };
+      }
 
       // A dependency-blocked issue is routable already: resolving the blocker wakes it.
       const blockerIds = await existingUnresolvedBlockerIssueIds(issue.companyId, issue.id);
@@ -3943,15 +4003,28 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       result.issueIds.push(issue.id);
     }
 
-    if (result.unevaluated > 0 || result.inspected >= UNROUTABLE_BLOCKED_REPAIR_SCAN_LIMIT) {
+    // The set is exhausted only when the page came back short *and* nothing was left unevaluated.
+    // Restarting from the oldest row then is deliberate: a row skipped last time can have become
+    // repairable since (its blocker resolved, a fresh run failed on it), so the sweep is a loop, not
+    // a one-way drain.
+    if (candidates.length < scanLimit && result.unevaluated === 0) {
+      unroutableBlockedRepairCursor = null;
+      result.scanWrapped = true;
+    } else {
+      unroutableBlockedRepairCursor = nextCursor;
+    }
+
+    if (result.unevaluated > 0 || result.inspected >= scanLimit) {
       // Never let a bounded pass read as "everything was covered". The remainder is picked up by the
       // throttled periodic backstop, not only by the next restart.
       logger.warn(
         {
           ...result,
           limit,
-          scanLimit: UNROUTABLE_BLOCKED_REPAIR_SCAN_LIMIT,
+          scanLimit,
           nextPassNotBeforeMs: UNROUTABLE_BLOCKED_REPAIR_MIN_INTERVAL_MS,
+          // Where the next pass picks up, so a stalled sweep is diagnosable from the logs alone.
+          nextScanResumesAfter: unroutableBlockedRepairCursor?.blockedTransitionAt.toISOString() ?? null,
         },
         "repairUnroutableBlockedIssues stopped at its bound; the remainder waits for the next pass",
       );

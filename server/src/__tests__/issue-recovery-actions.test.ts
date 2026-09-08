@@ -1082,6 +1082,79 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       expect(untouched?.status).toBe("blocked");
     });
 
+    // Review feedback on this PR: the candidate predicate cannot express the two conditions that
+    // actually decide a repair (unresolved blockers, and whether the issue's own latest run caused
+    // the block), so rows that can never be repaired stay in the candidate set forever. Being the
+    // oldest, they sit at the head of every page. Without a cursor the scan re-reads them on every
+    // pass and an issue sorting behind a full page of them is never reached at all.
+    it("walks past permanently skip-worthy rows instead of rescanning the same page", async () => {
+      const { companyId, coderId, prefix, sourceIssueId } = await seedCompany();
+      const now = new Date("2026-07-15T20:05:00.000Z");
+
+      // Two business blocks: their latest run succeeded, so no pass will ever repair them. They are
+      // blocked earlier than the real candidate, so they own the head of the ordering.
+      for (let index = 0; index < 2; index += 1) {
+        const decoyId = randomUUID();
+        await db.insert(issues).values({
+          id: decoyId,
+          companyId,
+          title: `Waiting on a real decision ${index}`,
+          status: "blocked",
+          priority: "medium",
+          assigneeAgentId: coderId,
+          issueNumber: 10 + index,
+          identifier: `${prefix}-${10 + index}`,
+          unblockDescriptor: null,
+          blockedTransitionAt: new Date(`2026-07-15T18:0${index}:00.000Z`),
+        });
+        await db.insert(heartbeatRuns).values({
+          id: randomUUID(),
+          companyId,
+          agentId: coderId,
+          invocationSource: "manual",
+          status: "succeeded",
+          startedAt: new Date("2026-07-15T17:00:00.000Z"),
+          finishedAt: new Date("2026-07-15T17:01:00.000Z"),
+          contextSnapshot: { issueId: decoyId },
+        });
+      }
+
+      // The genuinely repairable issue sorts behind both of them.
+      await db.insert(heartbeatRuns).values({
+        id: randomUUID(),
+        companyId,
+        agentId: coderId,
+        invocationSource: "manual",
+        status: "failed",
+        error: "Run process was lost before it reported a terminal status",
+        errorCode: "process_lost",
+        startedAt: new Date("2026-07-15T20:00:00.000Z"),
+        finishedAt: new Date("2026-07-15T20:01:00.000Z"),
+        contextSnapshot: { issueId: sourceIssueId },
+      });
+      await db.update(issues)
+        .set({ status: "blocked", unblockDescriptor: null, blockedTransitionAt: BLOCKED_JUST_AFTER_FAILURE })
+        .where(eq(issues.id, sourceIssueId));
+
+      const recovery = recoveryService(db, { enqueueWakeup: vi.fn(async () => null) });
+
+      // A page exactly the size of the dead rows: the whole first pass is spent on them.
+      const first = await recovery.repairUnroutableBlockedIssues({ now, scanLimit: 2 });
+      expect(first).toMatchObject({ inspected: 2, repaired: 0, skipped: 2, scanWrapped: false });
+
+      // Before the cursor this second pass returned the same two rows again, forever.
+      const second = await recovery.repairUnroutableBlockedIssues({ now, scanLimit: 2 });
+      expect(second).toMatchObject({ repaired: 1, scanWrapped: true, issueIds: [sourceIssueId] });
+      const [repaired] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+      expect(repaired).toMatchObject({ status: "in_progress", assigneeAgentId: coderId });
+      expect(repaired?.monitorNextCheckAt).toBeInstanceOf(Date);
+
+      // And the sweep is a loop: having wrapped, the next pass re-reads the head of the set, so a
+      // row that becomes repairable later is not stranded behind a cursor that only ever advances.
+      const third = await recovery.repairUnroutableBlockedIssues({ now, scanLimit: 2 });
+      expect(third).toMatchObject({ inspected: 2, repaired: 0 });
+    });
+
     // Review feedback: startup is not the only moment an issue can land here, so the pass also runs
     // from the periodic sweep — throttled, because it must not re-scan on every scheduler tick.
     it("throttles the periodic backstop but still runs once the interval has passed", async () => {
@@ -1152,6 +1225,97 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     // The real error code is preserved on the run — recovery must not relabel a crash as quota.
     const [untouchedRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
     expect(untouchedRun?.errorCode).toBe("process_lost");
+  });
+
+  // Review feedback on this PR: the deferral bound is cause-specific (12 for a fleet hold, 3 for a
+  // crash) but the tail used to be counted across every infra cause at once, so two `issue_paused`
+  // holds followed by one `process_lost` read as three strikes and escalated a crash that had
+  // happened exactly once. Driven through `escalateStrandedAssignedIssue` because that is the seam
+  // where the bound is applied — the reconcile sweep retries dispatch long before it gets there.
+  const seedIssueFailure = async (input: {
+    companyId: string;
+    agentId: string;
+    issueId: string;
+    at: string;
+    errorCode: string;
+    error: string;
+  }) => {
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId: input.companyId,
+      agentId: input.agentId,
+      invocationSource: "manual",
+      status: "failed",
+      error: input.error,
+      errorCode: input.errorCode,
+      createdAt: new Date(input.at),
+      startedAt: new Date(input.at),
+      finishedAt: new Date(input.at),
+      contextSnapshot: { issueId: input.issueId },
+    });
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    return run!;
+  };
+  const FLEET_PAUSE_FAILURE = {
+    errorCode: "issue_paused",
+    error: "Run suppressed by an active subtree pause hold",
+  };
+  const CRASH_FAILURE = {
+    errorCode: "process_lost",
+    error: "Run process was lost before it reported a terminal status",
+  };
+
+  it("counts the deferral bound per infra cause, so a fleet hold cannot exhaust the crash rope", async () => {
+    const { companyId, coderId, sourceIssueId, sourceIssue } = await seedCompany();
+    await seedIssueFailure({
+      companyId, agentId: coderId, issueId: sourceIssueId, at: "2026-07-15T18:00:00.000Z", ...FLEET_PAUSE_FAILURE,
+    });
+    await seedIssueFailure({
+      companyId, agentId: coderId, issueId: sourceIssueId, at: "2026-07-15T19:00:00.000Z", ...FLEET_PAUSE_FAILURE,
+    });
+    const crash = await seedIssueFailure({
+      companyId, agentId: coderId, issueId: sourceIssueId, at: "2026-07-15T20:01:00.000Z", ...CRASH_FAILURE,
+    });
+
+    const recovery = recoveryService(db, { enqueueWakeup: vi.fn(async () => null) });
+    await recovery.escalateStrandedAssignedIssue({
+      issue: sourceIssue,
+      previousStatus: "in_progress",
+      latestRun: crash,
+    });
+
+    // One crash, so the crash rope is nowhere near spent: status preserved, wake armed.
+    const [deferred] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+    expect(deferred).toMatchObject({ status: "in_progress", assigneeAgentId: coderId });
+    expect(deferred?.monitorNextCheckAt).toBeInstanceOf(Date);
+  });
+
+  // The other half of the same rule: a genuinely repeating crash must still exhaust and escalate,
+  // otherwise the issue ping-pongs on the monitor forever with nobody ever told.
+  it("still escalates once the crash bound is reached by crashes alone", async () => {
+    const { companyId, coderId, sourceIssueId, sourceIssue } = await seedCompany();
+    await seedIssueFailure({
+      companyId, agentId: coderId, issueId: sourceIssueId, at: "2026-07-15T18:00:00.000Z", ...CRASH_FAILURE,
+    });
+    await seedIssueFailure({
+      companyId, agentId: coderId, issueId: sourceIssueId, at: "2026-07-15T19:00:00.000Z", ...CRASH_FAILURE,
+    });
+    const crash = await seedIssueFailure({
+      companyId, agentId: coderId, issueId: sourceIssueId, at: "2026-07-15T20:01:00.000Z", ...CRASH_FAILURE,
+    });
+
+    const recovery = recoveryService(db, { enqueueWakeup: vi.fn(async () => null) });
+    await recovery.escalateStrandedAssignedIssue({
+      issue: sourceIssue,
+      previousStatus: "in_progress",
+      latestRun: crash,
+    });
+
+    const [escalated] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+    expect(escalated?.status).toBe("blocked");
+    // AC3 still holds on the way out: the escalation names who can lift it.
+    expect(escalated?.unblockDescriptor).not.toBeNull();
   });
 
   it("schedules a provider-quota monitor for the original assignee without creating recovery work", async () => {
