@@ -39,8 +39,18 @@ async function sandbox(layout: string) {
         env: { HOME: root, PATH: remotePath, ...input.env },
         timeout: input.timeoutMs ?? 15_000,
       });
-      execution.child.stdin?.end(input.stdin ?? "");
-      const result = await execution;
+      const inputComplete = new Promise<void>((resolve, reject) => {
+        const stdin = execution.child.stdin;
+        if (!stdin) return resolve();
+        // Hash-skip staging can exit before reading the supplied file body.
+        // Its exit result still determines success; other input errors fail.
+        stdin.on("error", (error: NodeJS.ErrnoException) => {
+          if (error.code === "EPIPE") resolve();
+          else reject(error);
+        });
+        stdin.end(input.stdin ?? "", resolve);
+      });
+      const [result] = await Promise.all([execution, inputComplete]);
       return { ...result, exitCode: 0, signal: null, timedOut: false, pid: null, startedAt };
     } catch (error) {
       const result = error as Error & { code?: number; killed?: boolean; stdout?: string; stderr?: string };
