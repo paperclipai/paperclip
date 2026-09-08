@@ -31,6 +31,7 @@ import {
 } from "react";
 import * as ReactModule from "react";
 import * as ReactDOMModule from "react-dom";
+import * as ReactDOMClientModule from "react-dom/client";
 import { useQuery } from "@tanstack/react-query";
 import type {
   PluginLauncherDeclaration,
@@ -303,7 +304,10 @@ ${namedExports}
       `;
 }
 
-function createReactDomShimSource(reactDomModule: object): string {
+function createReactDomShimSource(
+  reactDomModule: object,
+  bridgeKey: "reactDom" | "reactDomClient" = "reactDom",
+): string {
   const exportNames = Object.keys(reactDomModule)
     .filter((name) => name !== "default" && /^[A-Za-z_$][\w$]*$/.test(name))
     .sort();
@@ -312,7 +316,7 @@ function createReactDomShimSource(reactDomModule: object): string {
     .join("\n");
 
   return `
-        const RD = globalThis.__paperclipPluginBridge__?.reactDom;
+        const RD = globalThis.__paperclipPluginBridge__?.${bridgeKey};
         if (!RD) {
           throw new Error("Paperclip plugin ReactDOM runtime is not initialized.");
         }
@@ -346,8 +350,10 @@ function getShimBlobUrl(specifier: "react" | "react-dom" | "react-dom/client" | 
       `;
       break;
     case "react-dom":
-    case "react-dom/client":
       source = createReactDomShimSource(ReactDOMModule);
+      break;
+    case "react-dom/client":
+      source = createReactDomShimSource(ReactDOMClientModule, "reactDomClient");
       break;
     case "sdk-ui":
       source = `

@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import * as React from "react";
 import * as ReactDOM from "react-dom";
+import * as ReactDOMClient from "react-dom/client";
 import * as ReactJsxRuntime from "react/jsx-runtime";
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
@@ -355,6 +356,20 @@ describe("plugin ReactDOM shim", () => {
     expect(source).toContain("export const createPortal = RD.createPortal;");
     expect(source).toContain("export const flushSync = RD.flushSync;");
     expect(source).toContain("export const unstable_batchedUpdates = RD.unstable_batchedUpdates;");
+  });
+
+  it("keeps the react-dom/client entry point on its own export surface", () => {
+    const source = _createReactDomShimSourceForTests(ReactDOMClient, "reactDomClient");
+
+    for (const name of Object.keys(ReactDOMClient).sort()) {
+      if (name === "default") continue;
+      if (!/^[A-Za-z_$][\w$]*$/.test(name)) continue;
+      expect(source).toContain(`export const ${name} = RD.${name};`);
+    }
+
+    expect(source).toContain("globalThis.__paperclipPluginBridge__?.reactDomClient");
+    expect(source).toContain("export const createRoot = RD.createRoot;");
+    expect(source).toContain("export const hydrateRoot = RD.hydrateRoot;");
   });
 });
 
