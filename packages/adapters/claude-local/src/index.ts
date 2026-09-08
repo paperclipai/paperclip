@@ -1,3 +1,26 @@
+export const DEFAULT_CLAUDE_LOCAL_MODEL = "claude-opus-5";
+
+/** Resolve Paperclip's default without replacing an explicit provider model. */
+export function resolveClaudeModel(
+  model: unknown,
+  env: Record<string, unknown> = {},
+): string {
+  const configured = typeof model === "string" ? model.trim() : "";
+  if (configured) return configured;
+  const environmentModel = typeof env.ANTHROPIC_MODEL === "string" ? env.ANTHROPIC_MODEL.trim() : "";
+  if (environmentModel) return environmentModel;
+  // These providers use their own model IDs and region-specific defaults.
+  const providerFlag = (value: unknown) => value === "1" || value === "true";
+  if (
+    providerFlag(env.CLAUDE_CODE_USE_BEDROCK)
+    || providerFlag(env.CLAUDE_CODE_USE_VERTEX)
+    || (typeof env.ANTHROPIC_BEDROCK_BASE_URL === "string" && env.ANTHROPIC_BEDROCK_BASE_URL.trim())
+  ) {
+    return "";
+  }
+  return DEFAULT_CLAUDE_LOCAL_MODEL;
+}
+
 export const type = "claude_local";
 export const label = "Claude Code";
 
@@ -25,7 +48,7 @@ Core fields:
 - engine (string, optional): execution engine. Leave unset/auto to use ACP when prerequisites pass and fall back to the Claude Code CLI with diagnostics. Use "cli" to pin the CLI lane or "acp" to require ACP.
 - cwd (string, optional): default absolute working directory fallback for the agent process (created if missing when possible)
 - instructionsFilePath (string, optional): absolute path to a markdown instructions file injected at runtime
-- model (string, optional): Claude model id
+- model (string, optional): Claude model id. Missing or blank defaults to ${DEFAULT_CLAUDE_LOCAL_MODEL} in both CLI and ACP, including existing agents. Explicit model IDs and ANTHROPIC_MODEL overrides are preserved. Bedrock/Vertex without an explicit model retain their provider default.
 - effort (string, optional): reasoning effort passed via --effort (low|medium|high)
 - chrome (boolean, optional): pass --chrome when running Claude
 - promptTemplate (string, optional): run prompt template

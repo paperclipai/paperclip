@@ -678,6 +678,9 @@ export async function ensureAdapterExecutionTargetCommandResolvable(
     await ensureSandboxCommandResolvable(
       command,
       target,
+      sanitizeRemoteExecutionEnv(Object.fromEntries(
+        Object.entries(env).filter((entry): entry is [string, string] => typeof entry[1] === "string"),
+      )),
       options.installCommand?.trim() || null,
       options.timeoutSec,
     );
@@ -691,6 +694,7 @@ export async function ensureAdapterExecutionTargetCommandResolvable(
 async function probeSandboxCommandResolvable(
   command: string,
   target: AdapterSandboxExecutionTarget,
+  env: Record<string, string>,
 ): Promise<{ resolved: boolean; timedOut: boolean; stderr: string }> {
   const runner = requireSandboxRunner(target);
   const probeScript = `command -v ${shellQuote(command)}`;
@@ -698,6 +702,7 @@ async function probeSandboxCommandResolvable(
     command: "sh",
     args: ["-c", probeScript],
     cwd: target.remoteCwd,
+    env,
     timeoutMs: target.timeoutMs ?? 15_000,
   });
   return {
@@ -710,6 +715,7 @@ async function probeSandboxCommandResolvable(
 async function ensureSandboxCommandResolvable(
   command: string,
   target: AdapterSandboxExecutionTarget,
+  env: Record<string, string>,
   installCommand: string | null,
   timeoutSec?: number | null,
 ): Promise<void> {
@@ -720,7 +726,7 @@ async function ensureSandboxCommandResolvable(
   // the first step honestly reflects whether the binary is on PATH. The
   // sandbox provider is responsible for sourcing login profiles (e2b mirrors
   // SSH's buildSshSpawnTarget) so this and the hello probe agree on PATH.
-  let probe = await probeSandboxCommandResolvable(command, target);
+  let probe = await probeSandboxCommandResolvable(command, target, env);
   if (probe.resolved) return;
   if (probe.timedOut) {
     throw new Error(`Timed out checking command "${command}" on sandbox target.`);
@@ -742,6 +748,7 @@ async function ensureSandboxCommandResolvable(
         command: "sh",
         args: shellCommandArgs(installCommand),
         cwd: target.remoteCwd,
+        env,
         timeoutMs: installTimeoutMs,
       });
       if (installResult.timedOut) {
@@ -755,7 +762,7 @@ async function ensureSandboxCommandResolvable(
     } catch (err) {
       installFailureDetail = `install command threw: ${err instanceof Error ? err.message : String(err)}`;
     }
-    probe = await probeSandboxCommandResolvable(command, target);
+    probe = await probeSandboxCommandResolvable(command, target, env);
     if (probe.resolved) return;
     if (probe.timedOut) {
       throw new Error(`Timed out checking command "${command}" on sandbox target.`);
@@ -1521,6 +1528,31 @@ export async function cleanupGitHubOperationLaunchers(input: GitHubLauncherLocat
   }
 }
 
+async function githubOperationLauncherBasePath(
+  target: AdapterCommandCapableExecutionTarget | null,
+  env: Record<string, string>,
+): Promise<string> {
+  if (!target) return env.PATH || process.env.PATH || "/usr/bin:/bin";
+  const configuredPath = sanitizeRemoteExecutionEnv(env).PATH;
+  if (configuredPath !== undefined) return configuredPath;
+
+  // The provider owns login/profile setup. Query its effective PATH before
+  // staging BASH_ENV, rather than substituting the controller's toolchain or
+  // a minimal PATH that hides legacy NVM/user-local agent installations.
+  const result = await adapterExecutionTargetCommandRunner(target).execute({
+    command: "sh",
+    args: ["-c", "printf '\\000%s\\000' \"$PATH\""],
+    cwd: target.remoteCwd,
+    timeoutMs: 15_000,
+  });
+  // Frame the value so login banners cannot become executable search paths.
+  const remotePath = result.stdout.match(/\0([^\0]+)\0/)?.[1];
+  if (result.timedOut || result.exitCode !== 0 || !remotePath) {
+    throw new Error("Could not resolve remote PATH for managed GitHub launchers");
+  }
+  return remotePath;
+}
+
 /** Stage token-free launchers next to the execution, not in shared global Git config. */
 export async function prepareGitHubOperationLaunchers(input: {
   runId: string; target: AdapterExecutionTarget | null | undefined; cwd: string; env: Record<string, string>;
@@ -1528,8 +1560,8 @@ export async function prepareGitHubOperationLaunchers(input: {
   const remote = input.target?.kind === "remote" ? input.target : null;
   const directory = githubOperationLauncherDirectory(input);
   const configDirectory = path.posix.join(directory, "gh-config");
-  const basePath = input.env.PATH || (remote ? "/usr/local/bin:/usr/bin:/bin" : process.env.PATH) || "/usr/bin:/bin";
-  const managedPath = `${directory}:${basePath}`;
+  const basePath = await githubOperationLauncherBasePath(remote, input.env);
+  const managedPath = basePath ? `${directory}:${basePath}` : directory;
   // Login shells may reorder PATH through /etc/profile or path_helper. Restore
   // the managed launchers after startup without loading a host user's profile.
   const profile = `export PATH=${shellQuote(managedPath)}\n`;

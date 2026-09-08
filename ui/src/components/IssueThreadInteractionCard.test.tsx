@@ -132,10 +132,10 @@ describe("IssueThreadInteractionCard", () => {
     });
 
     expect(host.querySelector('[data-testid="connection-intent-actions"]')).toBeTruthy();
-    expect(host.textContent).toContain("Connect / Use existing");
+    expect(host.textContent).toContain("Connect");
     expect(host.textContent).toContain("Not now");
     const loadButton = Array.from(host.querySelectorAll("button")).find((button) =>
-      button.textContent?.includes("Connect / Use existing"),
+      button.textContent?.trim() === "Connect",
     );
     await act(async () => {
       loadButton?.click();
@@ -159,7 +159,7 @@ describe("IssueThreadInteractionCard", () => {
     });
 
     expect(host.querySelector('[data-testid="connection-intent-waiting"]')).toBeTruthy();
-    expect(host.textContent).not.toContain("Connect / Use existing");
+    expect(Array.from(host.querySelectorAll("button")).map((button) => button.textContent?.trim())).not.toContain("Connect");
     expect(host.textContent).not.toContain("Not now");
   });
 
@@ -1438,7 +1438,7 @@ describe("IssueThreadInteractionCard connection-intent card", () => {
     });
     expect(host.querySelector('[data-testid="connection-intent-actions"]')).not.toBeNull();
     const labels = Array.from(host.querySelectorAll("button")).map((button) => button.textContent?.trim());
-    expect(labels).toContain("Connect / Use existing");
+    expect(labels).toContain("Connect");
     expect(labels).toContain("Not now");
     expect(host.textContent).toContain("Access is added only for this agent");
   });

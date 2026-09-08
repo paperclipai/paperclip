@@ -1,5 +1,5 @@
 {
-  "id": "45dd8319-69ff-4618-8729-3533dab4bb4f",
+  "id": "783697c3-158d-42c2-a958-942061519e58",
   "prevId": "79a857e0-0d4a-45a0-a0f0-d4cd485cf4fe",
   "version": "7",
   "dialect": "postgresql",
@@ -1156,198 +1156,6 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
-    "public.agent_session_goal_actions": {
-      "name": "agent_session_goal_actions",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "company_id": {
-          "name": "company_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "session_id": {
-          "name": "session_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "request_id": {
-          "name": "request_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "action": {
-          "name": "action",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "payload_json": {
-          "name": "payload_json",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "status": {
-          "name": "status",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'pending'"
-        },
-        "result_json": {
-          "name": "result_json",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "error": {
-          "name": "error",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "delivered_at": {
-          "name": "delivered_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "completed_at": {
-          "name": "completed_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "agent_session_goal_actions_session_request_uniq": {
-          "name": "agent_session_goal_actions_session_request_uniq",
-          "columns": [
-            {
-              "expression": "session_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "request_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "agent_session_goal_actions_company_status_created_idx": {
-          "name": "agent_session_goal_actions_company_status_created_idx",
-          "columns": [
-            {
-              "expression": "company_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "status",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "created_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "agent_session_goal_actions_session_created_idx": {
-          "name": "agent_session_goal_actions_session_created_idx",
-          "columns": [
-            {
-              "expression": "session_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "created_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "agent_session_goal_actions_company_id_companies_id_fk": {
-          "name": "agent_session_goal_actions_company_id_companies_id_fk",
-          "tableFrom": "agent_session_goal_actions",
-          "tableTo": "companies",
-          "columnsFrom": [
-            "company_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "agent_session_goal_actions_session_id_agent_task_sessions_id_fk": {
-          "name": "agent_session_goal_actions_session_id_agent_task_sessions_id_fk",
-          "tableFrom": "agent_session_goal_actions",
-          "tableTo": "agent_task_sessions",
-          "columnsFrom": [
-            "session_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
     "public.agent_task_sessions": {
       "name": "agent_task_sessions",
       "schema": "",
@@ -1404,55 +1212,6 @@
         "last_error": {
           "name": "last_error",
           "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "goal_capability_json": {
-          "name": "goal_capability_json",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "goal_json": {
-          "name": "goal_json",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "goal_status": {
-          "name": "goal_status",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "goal_desired_state": {
-          "name": "goal_desired_state",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "goal_source_id": {
-          "name": "goal_source_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "goal_source_cursor": {
-          "name": "goal_source_cursor",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "goal_revision": {
-          "name": "goal_revision",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 0
-        },
-        "goal_observed_at": {
-          "name": "goal_observed_at",
-          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false
         },
@@ -9495,6 +9254,100 @@
         "connection_event_deliveries_company_id_companies_id_fk": {
           "name": "connection_event_deliveries_company_id_companies_id_fk",
           "tableFrom": "connection_event_deliveries",
+          "tableTo": "companies",
+          "columnsFrom": [
+            "company_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.connection_intent_deliveries": {
+      "name": "connection_intent_deliveries",
+      "schema": "",
+      "columns": {
+        "interaction_id": {
+          "name": "interaction_id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "company_id": {
+          "name": "company_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "next_attempt_at": {
+          "name": "next_attempt_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "delivered_at": {
+          "name": "delivered_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "connection_intent_deliveries_pending_idx": {
+          "name": "connection_intent_deliveries_pending_idx",
+          "columns": [
+            {
+              "expression": "delivered_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "next_attempt_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "connection_intent_deliveries_interaction_id_issue_thread_interactions_id_fk": {
+          "name": "connection_intent_deliveries_interaction_id_issue_thread_interactions_id_fk",
+          "tableFrom": "connection_intent_deliveries",
+          "tableTo": "issue_thread_interactions",
+          "columnsFrom": [
+            "interaction_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "connection_intent_deliveries_company_id_companies_id_fk": {
+          "name": "connection_intent_deliveries_company_id_companies_id_fk",
+          "tableFrom": "connection_intent_deliveries",
           "tableTo": "companies",
           "columnsFrom": [
             "company_id"

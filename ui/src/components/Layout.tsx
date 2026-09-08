@@ -200,7 +200,7 @@ export function Layout() {
       />
     )
   ) : null;
-  const secondarySidebar = streamlinedUiEnabled && shellRoute.builtInContextualSurface === "agent" && agentId ? (
+  const secondarySidebar = shellRoute.builtInContextualSurface === "agent" && agentId ? (
     <AgentContextualSidebar agentRef={agentId} />
   ) : streamlinedUiEnabled && shellRoute.builtInContextualSurface === "routine" && routineId ? (
     <RoutineContextualSidebar routineId={routineId} />

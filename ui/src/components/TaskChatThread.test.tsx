@@ -1106,6 +1106,16 @@ describe("TaskChatThread runtime transcript selection", () => {
     },
   );
 
+  it("does not show a completed-response notice for a redundant cancelled continuation", () => {
+    render(<TaskChatThread comments={[]} onAdd={async () => {}} linkedRuns={[{
+      runId: "connection-continuation-skipped", status: "cancelled", errorCode: "issue_not_in_progress", startedAt: null,
+      agentId: "agent-1", agentName: "Runner", adapterType: "paperclip_runner",
+      createdAt: "2026-09-07T18:00:00.000Z", finishedAt: "2026-09-07T18:00:01.000Z",
+    }]} />);
+    expect(container.textContent).not.toContain("The runner returned no user-facing response.");
+    expect(container.textContent).not.toContain("Run completed");
+  });
+
   it("does not treat a progress comment as the final response of a failed native run", () => {
     nativeTranscriptState.transcriptByRun.set("native-progress-failed", [
       {

@@ -181,6 +181,7 @@ import {
   nativeSessionFailureSourceCode,
   nativeSessionRecoveryProjection,
   nativeGovernedWaitResult,
+  nativeToolsRefreshWaitResult,
   parseRemoteExecutableCandidate,
   buildRemoteCodexLauncherCommand,
   mayUsePreinstalledRunnerArtifact,
@@ -2177,6 +2178,15 @@ describe("provider plan synchronization", () => {
 });
 
 describe("native governed waits", () => {
+  it("yields to an existing tools-refresh wake without claiming completion or a human interaction", () => {
+    const result = nativeToolsRefreshWaitResult({ wakeId: "wake-1", key: "connection-intent:tools:run-1:digest",
+      completionContract: { revision: "4", objective: "Read the archive", criteria: [{ id: "read", requirement: "Read the archive" }] } });
+    expect(result.completionClaim).toMatchObject({ contractRevision: "4", objectiveSatisfied: false });
+    expect(result.artifacts).toEqual([]);
+    expect(result.continuation).toMatchObject({ kind: "same_agent", idempotencyKey: "connection-intent:tools:run-1:digest" });
+    expect(result.evidence).toEqual([{ ref: "wakeup:wake-1" }]);
+  });
+
   it("turns a durable pending interaction into a response-wake result", () => {
     expect(
       nativeGovernedWaitResult({

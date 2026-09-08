@@ -92,7 +92,7 @@ import { resolveClaudeDesiredSkillNames } from "./skills.js";
 import { isBedrockModelId } from "./models.js";
 import { prepareClaudePromptBundle } from "./prompt-cache.js";
 import { buildClaudeExecutionPermissionArgs } from "./permissions.js";
-import { SANDBOX_INSTALL_COMMAND } from "../index.js";
+import { resolveClaudeModel, SANDBOX_INSTALL_COMMAND } from "../index.js";
 import {
   createClaudeAcpExecutor,
   formatClaudeAcpFallbackMessage,
@@ -431,7 +431,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     config.promptTemplate,
     DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   );
-  const model = asString(config.model, "");
   const effort = asString(config.effort, "");
   const chrome = asBoolean(config.chrome, false);
   const maxTurns = asNumber(config.maxTurnsPerRun, 0);
@@ -490,6 +489,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       (entry): entry is [string, string] => typeof entry[1] === "string",
     ),
   );
+  const modelEnv = executionTargetIsRemote ? env : effectiveEnv;
+  const model = resolveClaudeModel(config.model, modelEnv);
   const billingType = resolveClaudeBillingType(effectiveEnv);
   const claudeSkillEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
   const desiredSkillNames = new Set(resolveClaudeDesiredSkillNames(config, claudeSkillEntries));
@@ -870,7 +871,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     heartbeatPromptChars: renderedPrompt.length,
   };
   const passesConfiguredModel = Boolean(
-    model && (!isBedrockAuth(effectiveEnv) || isBedrockModelId(model)),
+    model && (!isBedrockAuth(modelEnv) || isBedrockModelId(model)),
   );
 
   const buildClaudeArgs = (

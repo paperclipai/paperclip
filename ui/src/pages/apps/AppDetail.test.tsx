@@ -1508,19 +1508,19 @@ describe("AppDetail", () => {
     await act(async () => { findButton("Load GitHub configuration")!.click(); });
     await flushReact();
     expect(checkConnectionHealthMock).toHaveBeenCalledWith("conn-1");
-    expect(container.querySelector('a[href="https://github.com/apps/paperclip-staging/installations/new"]')?.textContent).toBe("Configure on GitHub");
+    expect(container.querySelector('a[href="https://github.com/apps/paperclip-staging/installations/new"]')?.textContent).toBe("Add More Repos on GitHub");
     expect(findButton("Load GitHub configuration")).toBeUndefined();
   });
 
-  it("filters the combined GitHub repository list by owner and search without changing access", async () => {
+  it.each([false, true])("shows repositories across accounts without filter controls (empty: %s)", async (empty) => {
     mockParams.tab = "permissions";
     getConnectionMock.mockResolvedValue(perUserConnection());
     listConnectionGrantsMock.mockResolvedValue({
       connection: { id: "conn-1", uid: "conn-1" },
       grants: [dedicatedGitHubGrant({ kind: "user", subjectAgentId: null, subjectUserId: "user-1" }, {
-        repositoryCount: 3,
+        repositoryCount: empty ? 0 : 3,
         installationOwnerLogins: ["paperclipai", "dottabot", "empty-org"],
-        repositories: [
+        repositories: empty ? [] : [
           { id: "1", fullName: "paperclipai/first", installationId: "456" },
           { id: "2", fullName: "paperclipai/second", installationId: "456" },
           { id: "3", fullName: "dottabot/first", installationId: "789" },
@@ -1530,31 +1530,14 @@ describe("AppDetail", () => {
     });
     await renderAppDetail();
     const repositoryNames = () => [...container.querySelectorAll('ul[aria-label="Accessible GitHub repositories"] a')].map((link) => link.textContent);
-    const selectOwner = async (label: string) => {
-      await act(async () => {
-        container.querySelector('[role="combobox"][aria-label="Filter repositories by account or organization"]')!
-          .dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
-      });
-      const option = [...document.querySelectorAll('[role="option"]')].find((item) => item.textContent === label);
-      expect(option).toBeTruthy();
-      await act(async () => {
-        option!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
-      });
-    };
-    expect(repositoryNames()).toEqual(["paperclipai/first", "paperclipai/second", "dottabot/first"]);
-    await selectOwner("paperclipai");
-    expect(repositoryNames()).toEqual(["paperclipai/first", "paperclipai/second"]);
-    const search = container.querySelector<HTMLInputElement>('input[aria-label="Search GitHub repositories"]')!;
-    await act(async () => { setInputValue(search, "FIRST"); });
-    expect(repositoryNames()).toEqual(["paperclipai/first"]);
-    await selectOwner("All accounts");
-    expect(repositoryNames()).toEqual(["paperclipai/first", "dottabot/first"]);
-    await act(async () => { setInputValue(search, "missing"); });
-    expect(container.textContent).toContain("No repositories match your search.");
-    await act(async () => { setInputValue(search, ""); });
-    await selectOwner("empty-org");
-    expect(container.textContent).toContain("No accessible repositories for this account or organization.");
-    expect(container.querySelector('a[href="https://github.com/apps/paperclip-test/installations/new"]')?.textContent).toBe("Configure on GitHub");
+    expect(repositoryNames()).toEqual(empty ? [] : ["paperclipai/first", "paperclipai/second", "dottabot/first"]);
+    if (empty) {
+      expect(container.querySelector('p[role="status"]')?.textContent?.trim()).toBe("No accessible repositories.");
+      expect(container.textContent).not.toContain("Refresh access to load the current repository list.");
+    }
+    expect(container.querySelector('[aria-label="Filter repositories by account or organization"]')).toBeNull();
+    expect(container.querySelector('input[aria-label="Search GitHub repositories"]')).toBeNull();
+    expect(container.querySelector('a[href="https://github.com/apps/paperclip-test/installations/new"]')?.textContent).toBe("Add More Repos on GitHub");
     expect(updateConnectionMock).not.toHaveBeenCalled();
   });
 
@@ -1581,7 +1564,7 @@ describe("AppDetail", () => {
     expect(container.querySelector('a[href="https://github.com/paperclipai/test-repo"]')?.textContent).toBe("paperclipai/test-repo");
     expect(container.querySelector(
       'a[href="https://github.com/apps/paperclip-test/installations/new"]',
-    )?.textContent).toBe("Configure on GitHub");
+    )?.textContent).toBe("Add More Repos on GitHub");
     expect(container.querySelector('button[aria-label="Refresh access"]')).toBeTruthy();
     expect(container.textContent).not.toContain("Installation");
     expect(container.textContent).not.toContain("Token continuity");

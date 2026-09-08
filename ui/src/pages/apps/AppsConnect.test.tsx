@@ -310,6 +310,44 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(document.activeElement).toBe(urlInput);
   });
 
+  it.each(["config-url", "transport-url", "transport-serverUrl"] as const)("reloads a generic task reconnect endpoint from %s with selection-only card metadata", async (source) => {
+    const endpoint = "https://archive.example.test/mcp";
+    const choice = { id: "conn-archive", applicationId: "app-archive", name: "Archive", status: "active" as const, enabled: true };
+    listApplicationsMock.mockResolvedValue({ applications: [{ id: choice.applicationId, name: "Archive", applicationKey: "archive", type: "mcp_http" }] });
+    listConnectionsMock.mockResolvedValue({ connections: [{
+      ...choice, companyId: "company-1", transport: "mcp_remote", authKind: "none", credentialPolicy: "shared", credentialSource: "paperclip_vault",
+      config: source === "config-url" ? { url: endpoint } : {},
+      transportConfig: source === "transport-url" ? { url: endpoint } : source === "transport-serverUrl" ? { serverUrl: endpoint } : {},
+    }] });
+    await render(undefined, false, <ConnectionSetupFlow host="dialog" configuredConnection={choice} requestedAgentId="agent-1" />);
+    const input = container.querySelector<HTMLInputElement>('input[aria-label="MCP server URL"]');
+    expect(input?.value).toBe(endpoint);
+    expect(listConnectionsMock).toHaveBeenCalledWith("company-1");
+    await act(async () => { buttonByText("Continue")?.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+    await flushReact();
+    await passAccessStep();
+    await act(async () => { buttonByText("Check link")?.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+    await flushReact();
+    expect(connectAppMock).toHaveBeenCalledWith("company-1", expect.objectContaining({
+      link: endpoint, reconnectConnectionId: choice.id,
+    }));
+  });
+
+  it("preserves an edited task reconnect endpoint after refreshing connection data", async () => {
+    const choice = { id: "conn-archive", applicationId: "app-archive", name: "Archive", status: "active" as const, enabled: true };
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    listApplicationsMock.mockResolvedValue({ applications: [{ id: choice.applicationId, name: "Archive", applicationKey: "archive", type: "mcp_http" }] });
+    listConnectionsMock.mockResolvedValue({ connections: [{ ...choice, companyId: "company-1", transport: "mcp_remote", authKind: "none", credentialPolicy: "shared", credentialSource: "paperclip_vault", config: { url: "https://archive.example.test/mcp" } }] });
+    await render(client, false, <ConnectionSetupFlow host="dialog" configuredConnection={choice} requestedAgentId="agent-1" />);
+    const input = container.querySelector<HTMLInputElement>('input[aria-label="MCP server URL"]');
+    expect(input?.value).toBe("https://archive.example.test/mcp");
+    await act(async () => setInputValue(input!, "https://edited.example.test/mcp"));
+    listConnectionsMock.mockResolvedValue({ connections: [{ ...choice, companyId: "company-1", transport: "mcp_remote", authKind: "none", credentialPolicy: "shared", credentialSource: "paperclip_vault", config: { url: "https://refreshed.example.test/mcp" } }] });
+    await act(async () => { await client.invalidateQueries(); });
+    await flushReact();
+    expect(container.querySelector<HTMLInputElement>('input[aria-label="MCP server URL"]')?.value).toBe("https://edited.example.test/mcp");
+  });
+
   it("an unrecognized URL routes to a minimal frame with the URL and key choice", async () => {
     await render();
     await gotoLinkFrame(container, "https://www.example.com/actions");
@@ -1491,9 +1529,13 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     await flushReact();
     await flushReact();
 
-    expect(container.textContent).toContain("Allow popups for this site and try again");
+    expect(container.textContent).toContain("Open sign-in in a new tab to continue");
     expect(container.textContent).toContain("Try again");
     expect(onPhaseChange).toHaveBeenCalledWith("needs_retry");
+    const fallback = container.querySelector<HTMLAnchorElement>('a[target="_blank"]');
+    expect(fallback?.textContent).toBe("Open sign-in in a new tab");
+    expect(fallback?.href).toContain("https://mcp.notion.com/authorize");
+    expect(fallback?.rel).toBe("noopener noreferrer");
 
     openSpy.mockRestore();
     await act(async () => dialogRoot.unmount());

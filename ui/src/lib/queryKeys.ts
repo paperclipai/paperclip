@@ -16,6 +16,8 @@ export const queryKeys = {
      */
     list: (userId: string | null) =>
       ["companies", "list", userId ?? "anonymous"] as const,
+    directory: (userId: string | null) =>
+      ["companies", "directory", userId ?? "anonymous"] as const,
     detail: (id: string) => ["companies", id] as const,
     stats: ["companies", "stats"] as const,
     exportFidelity: (companyId: string) =>

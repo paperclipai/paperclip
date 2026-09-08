@@ -77,7 +77,7 @@ import { isLoopbackHost } from "../url-utils.js";
 import { trustedBoardMutationOrigin } from "../middleware/board-mutation-guard.js";
 import { connectionIntentService } from "../services/connection-intents.js";
 import { redactRemoteUrlCredential } from "../services/remote-url-credentials.js";
-import { wakeConnectionIntentAfterResolution } from "./connection-intents.js";
+import { connectionIntentDeliveryService } from "../services/connection-intent-delivery.js";
 import type { heartbeatService } from "../services/heartbeat.js";
 
 const COMPANY_INSTALL_DENIAL_REASON =
@@ -268,22 +268,11 @@ export function toolAccessRoutes(
           canManageOrganizationGrant: input.canManageOrganizationGrant,
           bypassCurrentMembershipCheck: input.bypassCurrentMembershipCheck,
         })
-      : input.outcome === "declined"
-        ? await connectionIntents.decline(
-            input.interactionId,
-            input.userId,
-            "Authorization was declined in the provider window",
-            { bypassCurrentMembershipCheck: input.bypassCurrentMembershipCheck },
-          )
-        : await connectionIntents.updatePhase(input.interactionId, "needs_retry", input.userId, {
+      : await connectionIntents.updatePhase(input.interactionId, "needs_retry", input.userId, {
             bypassCurrentMembershipCheck: input.bypassCurrentMembershipCheck,
           });
-    if (input.outcome !== "failed" && options.connectionIntentHeartbeat) {
-      await wakeConnectionIntentAfterResolution(options.connectionIntentHeartbeat, {
-        loaded,
-        status: interaction.status,
-        actorId: input.userId,
-      });
+    if (interaction.status === "accepted" && options.connectionIntentHeartbeat) {
+      await connectionIntentDeliveryService(db, options.connectionIntentHeartbeat).tryDeliver(input.interactionId);
     }
     return interaction;
   }
@@ -338,12 +327,17 @@ export function toolAccessRoutes(
       // interoperable spelling and retain the browser's exact origin as OAuth
       // state for popup postMessage below.
       if (
-        (options.deploymentMode ?? "local_trusted") === "local_trusted"
+        req.method !== "GET"
+        && req.method !== "HEAD"
+        && (options.deploymentMode ?? "local_trusted") === "local_trusted"
         && parsed.protocol === "http:"
         && parsed.hostname !== "localhost"
       ) {
         parsed.hostname = "localhost";
       }
+      // A provider callback has no initiating browser Origin. Preserve its
+      // actual host: rewriting 127.0.0.1 here changes the redirect_uri used at
+      // authorization and causes the token endpoint to reject the code.
       return parsed.origin;
     } catch {
       return null;
@@ -862,8 +856,9 @@ function connectorEnrollmentPrincipal(req: Request): string {
     // On resume, the persisted connection identity is authoritative: accepting
     // a contradictory `grantKind: "user"` here could otherwise let a creator
     // replace the credential behind an existing organization grant.
-    const resumedConnection = req.body.resumeConnectionId
-      ? await svc.getConnection(req.body.resumeConnectionId, companyId)
+    const retainedConnectionId = req.body.resumeConnectionId ?? req.body.reconnectConnectionId;
+    const resumedConnection = retainedConnectionId
+      ? await svc.getConnection(retainedConnectionId, companyId)
       : null;
     const effectiveGrantKind = resumedConnection
       ? resumedConnection.credentialPolicy === "per_user"

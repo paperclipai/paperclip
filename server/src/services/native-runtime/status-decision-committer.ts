@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import type { CreateIssueThreadInteraction } from "@paperclipai/shared";
 import {
@@ -459,6 +459,15 @@ async function materializeDecisionEffect(input: {
   }
   if (effect.kind === "enqueue_continuation") {
     failAt("continuation_materialization", input.failpoint);
+    if (effect.idempotencyKey.startsWith(`connection-intent:tools:${input.runId}:`)) {
+      const [refresh] = await input.tx.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests).where(and(
+        eq(agentWakeupRequests.companyId, input.companyId), eq(agentWakeupRequests.agentId, effect.agentId),
+        eq(agentWakeupRequests.idempotencyKey, effect.idempotencyKey),
+        notInArray(agentWakeupRequests.status, ["skipped", "failed", "cancelled"]),
+      )).limit(1);
+      if (refresh) return { effectKind: effect.kind, targetType: "agent_wakeup_request", targetId: refresh.id,
+        payload: { continuationKind: effect.continuationKind, summary: effect.summary } };
+    }
     const wakeId = await enqueueWake({
       tx: input.tx,
       companyId: input.companyId,

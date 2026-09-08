@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./test-embedded-postgres.js";
 
 const support = await getEmbeddedPostgresTestSupport();
-const migration = readFileSync(new URL("./migrations/0246_concerned_black_crow.sql", import.meta.url), "utf8");
+const migration = readFileSync(new URL("./migrations/0248_small_manta.sql", import.meta.url), "utf8");
 
 (support.supported ? describe : describe.skip)("session goal migration", () => {
   it("preserves preview goals, tombstone revisions, and pending actions on replay", async () => {

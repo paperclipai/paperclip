@@ -277,11 +277,18 @@ describe("server adapter registry", () => {
   it.each([
     ["claude", "claude-sonnet-5"],
     ["codex", "gpt-5.6-sol"],
-  ] as const)("accepts the qualified ACPX %s environment profile", async (acpxAgent, model) => {
+  ] as const)("accepts the qualified remote ACPX %s environment profile", async (acpxAgent, model) => {
     const result = await requireServerAdapter("paperclip_runner").testEnvironment({
       companyId: "company-1",
       adapterType: "paperclip_runner",
       config: { provider: "acpx", acpxAgent, model },
+      executionTarget: {
+        kind: "remote",
+        transport: "sandbox",
+        remoteCwd: "/workspace",
+        providerKey: "test-provider",
+        runner: { execute: vi.fn().mockResolvedValue({ exitCode: 0, timedOut: false, stdout: "Linux\nx86_64\n" }) },
+      },
     });
 
     expect(result).toMatchObject({
@@ -289,6 +296,28 @@ describe("server adapter registry", () => {
       status: "pass",
       checks: [{ code: "acpx_profile_qualified", level: "info" }],
     });
+  });
+
+  it.each([
+    ["linux", "x64", "pass", "acpx_profile_qualified"],
+    ["darwin", "arm64", "fail", "acpx_runtime_platform_unsupported"],
+    ["linux", "arm64", "fail", "acpx_runtime_platform_unsupported"],
+  ])("checks local ACPX support on %s %s", async (platform, arch, status, code) => {
+    const platformDescriptor = Object.getOwnPropertyDescriptor(process, "platform")!;
+    const archDescriptor = Object.getOwnPropertyDescriptor(process, "arch")!;
+    try {
+      Object.defineProperty(process, "platform", { ...platformDescriptor, value: platform });
+      Object.defineProperty(process, "arch", { ...archDescriptor, value: arch });
+      const result = await requireServerAdapter("paperclip_runner").testEnvironment({
+        companyId: "company-1",
+        adapterType: "paperclip_runner",
+        config: { provider: "acpx", acpxAgent: "claude", model: "claude-sonnet-5" },
+      });
+      expect(result).toMatchObject({ status, checks: [expect.objectContaining({ code })] });
+    } finally {
+      Object.defineProperty(process, "platform", platformDescriptor);
+      Object.defineProperty(process, "arch", archDescriptor);
+    }
   });
 
   it("keeps the ACPX Pi profile unavailable", async () => {

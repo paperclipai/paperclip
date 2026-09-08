@@ -2144,6 +2144,9 @@ export function DesignGuide() {
           The task card is the dialog host for the shared connection setup flow. Provider forms,
           validation, OAuth, access selection, and completion come from the same feature module as
           the full-page Apps setup; this card owns only audience, dialog, and task refresh behavior.
+          Pending connections stay in the timeline beside a usable composer. The independently
+          addressable Connections/In-task connections stories cover access, OAuth recovery, narrow
+          layouts, completion, and historical outcomes.
         </p>
         <div className="grid gap-4 xl:grid-cols-3">
           <IssueThreadInteractionCard

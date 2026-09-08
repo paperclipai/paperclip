@@ -1,4 +1,6 @@
-import { useState, useEffect, useRef, useMemo, useCallback } from "react";
+import { testAgentSetup } from "@/lib/test-agent-setup";
+import { RuntimeTestCard } from "./RuntimeTestCard";
+import { useState, useEffect, useRef, useMemo, useCallback, Children, isValidElement, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
   Agent,
@@ -22,6 +24,7 @@ import {
   DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX,
   DEFAULT_CODEX_LOCAL_MODEL,
 } from "@paperclipai/adapter-codex-local";
+import { DEFAULT_CLAUDE_LOCAL_MODEL } from "@paperclipai/adapter-claude-local";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
 import { DEFAULT_KIMI_LOCAL_MODEL } from "@paperclipai/adapter-kimi-local";
@@ -118,6 +121,7 @@ type AgentConfigFormProps = {
   hideInlineSave?: boolean;
   showAdapterTypeField?: boolean;
   showAdapterTestEnvironmentButton?: boolean;
+  compactTestFeedback?: boolean;
   showCreateRunPolicySection?: boolean;
   hideInstructionsFile?: boolean;
   /** Allow instance administrators to configure short-lived raw provider capture. */
@@ -126,8 +130,13 @@ type AgentConfigFormProps = {
   hidePromptTemplate?: boolean;
   /** Render the main configuration sections or the dedicated edit-only Secrets surface. */
   content?: "configuration" | "secrets";
+  /** Keep variable bindings beside secret access in a unified edit surface. */
+  environmentVariablesPlacement?: "configuration" | "secrets";
   /** "cards" renders each section as heading + bordered card (for settings pages). Default: "inline" (border-b dividers). */
   sectionLayout?: "inline" | "cards";
+  /** Optional settings composition; sorting changes DOM order as well as visual order. */
+  sectionOrder?: readonly string[];
+  sectionTitles?: Record<string, string>;
 } & (
   | {
       mode: "create";
@@ -246,6 +255,23 @@ function clampDelayMsFromSeconds(value: number) {
   return clampInteger(value, 0, MAX_TURN_CONTINUATION_MAX_DELAY_SEC) * 1000;
 }
 
+function ConfigSections({ order, className, children }: {
+  order?: readonly string[];
+  className: string;
+  children: ReactNode;
+}) {
+  if (!order) return <div className={className}>{children}</div>;
+  const rank = (child: ReactNode) => {
+    const key = isValidElement<{ "data-config-section"?: string }>(child)
+      ? child.props["data-config-section"]
+      : undefined;
+    const index = key ? order.indexOf(key) : -1;
+    return index < 0 ? order.length : index;
+  };
+  const sections = Children.toArray(children).sort((a, b) => rank(a) - rank(b));
+  return <div className={className}>{sections}</div>;
+}
+
 /* ---- Form ---- */
 
 export function AgentConfigForm(props: AgentConfigFormProps) {
@@ -255,7 +281,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const showAdapterTypeField = props.showAdapterTypeField ?? true;
   const showAdapterTestEnvironmentButton = props.showAdapterTestEnvironmentButton ?? true;
   const showInlineAdapterTestEnvironmentButton =
-    showAdapterTestEnvironmentButton && !props.onTestActionChange;
+    showAdapterTestEnvironmentButton && !props.onTestActionChange && !props.compactTestFeedback;
   const showInlineAdapterTestEnvironmentFeedback = !props.onTestFeedbackChange;
   const showCreateRunPolicySection = props.showCreateRunPolicySection ?? true;
   const hideInstructionsFile = props.hideInstructionsFile ?? false;
@@ -380,6 +406,8 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
 
   // ---- Edit mode: overlay for dirty tracking ----
   const [overlay, setOverlay] = useState<AgentConfigOverlay>(emptyOverlay);
+  const [environmentDraftDirty, setEnvironmentDraftDirty] = useState(false);
+  const [environmentEditorKey, setEnvironmentEditorKey] = useState(0);
   const agentRef = useRef<Agent | null>(null);
 
   // Clear overlay when agent data refreshes (after save)
@@ -392,7 +420,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     }
   }, [isCreate, !isCreate ? props.agent : undefined]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const isDirty = !isCreate && isOverlayDirty(overlay);
+  const isDirty = !isCreate && (isOverlayDirty(overlay) || environmentDraftDirty);
 
   type RecordOverlayGroup = "identity" | "adapterConfig" | "heartbeat" | "debug" | "runtime";
 
@@ -441,6 +469,8 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   /** Build accumulated patch and send to parent */
   const handleCancel = useCallback(() => {
     setOverlay({ ...emptyOverlay });
+    setEnvironmentDraftDirty(false);
+    setEnvironmentEditorKey(key => key + 1);
   }, []);
 
   const handleSave = useCallback(async () => {
@@ -884,10 +914,16 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
         // managed sandbox instead of sending the hidden local id to the server.
         visibleEnvironmentIds: environmentList.map((environment) => environment.id),
       });
-      return agentsApi.testEnvironment(selectedCompanyId, adapterType, {
-        adapterConfig: buildAdapterConfigForTest(adapterConfigPatch),
-        environmentId,
-      });
+      const adapterConfig = buildAdapterConfigForTest(adapterConfigPatch);
+      if (props.compactTestFeedback) {
+        const providerAdapter = adapterType === "paperclip_runner"
+          ? adapterConfig.provider === "codex" ? "codex_local"
+            : adapterConfig.provider === "acpx" && adapterConfig.acpxAgent === "claude" ? "claude_local"
+              : adapterType
+          : adapterType;
+        return testAgentSetup({ companyId: selectedCompanyId, adapterType, providerAdapter, adapterConfig, environmentId });
+      }
+      return agentsApi.testEnvironment(selectedCompanyId, adapterType, { adapterConfig, environmentId });
     },
   });
   const [testActionPending, setTestActionPending] = useState(false);
@@ -1083,7 +1119,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
         ? "mode"
         : adapterType === "opencode_local"
           ? "variant"
-          : "effort";
+          : adapterType === "pi_local" ? "thinking" : "effort";
   const thinkingEffortOptions =
     adapterType === "codex_local"
       ? codexReasoningEffortOptions(currentModelId, "Auto").map((option) => ({
@@ -1096,7 +1132,9 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
           ? openCodeThinkingEffortOptions
           : adapterType === "kimi_local"
             ? kimiThinkingEffortOptions
-            : claudeThinkingEffortOptions;
+            : adapterType === "pi_local"
+              ? [{ id: "", label: "Auto" }, ...["off", "minimal", "low", "medium", "high", "xhigh"].map(id => ({ id, label: id }))]
+              : claudeThinkingEffortOptions;
   const currentThinkingEffort = isCreate
     ? val!.thinkingEffort
     : adapterType === "codex_local"
@@ -1109,7 +1147,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
         ? eff("adapterConfig", "mode", String(config.mode ?? ""))
         : adapterType === "opencode_local"
           ? eff("adapterConfig", "variant", String(config.variant ?? ""))
-          : eff("adapterConfig", "effort", String(config.effort ?? ""));
+          : eff("adapterConfig", thinkingEffortKey, String(config[thinkingEffortKey] ?? ""));
   const showThinkingEffort = adapterType !== "gemini_local"
     && adapterType !== "cursor_cloud"
     && adapterType !== "paperclip_runner";
@@ -1157,6 +1195,38 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     });
   }
 
+  const environmentVariablesEditor = (
+    <EnvironmentVariablesEditor
+      ref={environmentVariablesEditorRef}
+      key={environmentEditorKey}
+      onDirtyChange={setEnvironmentDraftDirty}
+      hideDraftActions={!isCreate && props.hideInlineSave}
+      value={
+        isCreate
+          ? ((val!.envBindings ?? EMPTY_ENV) as Record<string, EnvBinding>)
+          : (eff("adapterConfig", "env", (config.env ?? EMPTY_ENV) as Record<string, EnvBinding>))
+      }
+      secrets={availableSecrets}
+      userSecretDefinitions={userSecretDefinitions}
+      onCreateSecret={async (name, value) => {
+        const created = await createSecret.mutateAsync({ name, value });
+        return created;
+      }}
+      onChange={(env) =>
+        isCreate
+          ? set!({ envBindings: env ?? {}, envVars: "" })
+          : mark("adapterConfig", "env", env)
+      }
+    />
+  );
+  const environmentVariablesField = (
+    <div data-config-field="environment-variables">
+      <Field label="Environment variables" hint={help.envVars}>
+        {environmentVariablesEditor}
+      </Field>
+    </div>
+  );
+
   if (!isCreate && props.content === "secrets") {
     return (
       <div className={cn("relative", cards && "space-y-6")}>
@@ -1171,7 +1241,19 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
           </div>
         )}
 
-        <div className={cn(!cards && "border-b border-border")}>
+        {props.environmentVariablesPlacement === "secrets" && (
+          <div data-config-section="environment-variables" className={cn(!cards && "border-b border-border")}>
+            {cards
+              ? <h3 className="mb-3 text-sm font-medium">Environment variables</h3>
+              : <div className="px-4 py-2 text-xs font-medium text-muted-foreground">Environment variables</div>
+            }
+            <div className={cn(cards ? "rounded-lg border border-border p-4" : "px-4 pb-3")}>
+              {environmentVariablesEditor}
+            </div>
+          </div>
+        )}
+
+        <div data-config-section="secrets" className={cn(!cards && "border-b border-border")}>
           {cards
             ? <h3 className="mb-3 text-sm font-medium">Secret access</h3>
             : <div className="px-4 py-2 text-xs font-medium text-muted-foreground">Secret access</div>
@@ -1195,7 +1277,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   }
 
   return (
-    <div className={cn("relative", cards && "space-y-6")}>
+    <ConfigSections order={props.sectionOrder} className={cn("relative", cards && "space-y-6")}>
       {/* ---- Floating Save button (edit mode, when dirty) ---- */}
       {isDirty && !props.hideInlineSave && (
         <div className="sticky top-0 z-10 flex items-center justify-end px-4 py-2 bg-background/90 backdrop-blur-sm border-b border-primary/20">
@@ -1214,9 +1296,9 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
 
       {/* ---- Identity (edit only) ---- */}
       {!isCreate && (
-        <div className={cn(!cards && "border-b border-border")}>
+        <div data-config-section="identity" className={cn(!cards && "border-b border-border")}>
           {cards
-            ? <h3 className="text-sm font-medium mb-3">Identity</h3>
+            ? <h3 className="text-sm font-medium mb-3">{props.sectionTitles?.["identity"] ?? "Identity"}</h3>
             : <div className="px-4 py-2 text-xs font-medium text-muted-foreground">Identity</div>
           }
           <div className={cn(cards ? "border border-border rounded-lg p-4 space-y-3" : "px-4 pb-3 space-y-3")}>
@@ -1295,7 +1377,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
         // Instance execution policy forces the managed Kubernetes sandbox
         // (executionMode=kubernetes): never offer local / non-Kubernetes targets.
         // Render the environment read-only instead of the selectable picker.
-        <div className={cn(!cards && (isCreate ? "border-t border-border" : "border-b border-border"))}>
+        <div data-config-section="environment" className={cn(!cards && (isCreate ? "border-t border-border" : "border-b border-border"))}>
           {cards
             ? <h3 className="text-sm font-medium mb-3">Environment</h3>
             : <div className="px-4 py-2 text-xs font-medium text-muted-foreground">Environment</div>
@@ -1320,7 +1402,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
           </div>
         </div>
       ) : showEnvironmentOverrideControl ? (
-        <div className={cn(!cards && (isCreate ? "border-t border-border" : "border-b border-border"))}>
+        <div data-config-section="environment" className={cn(!cards && (isCreate ? "border-t border-border" : "border-b border-border"))}>
           {cards
             ? <h3 className="text-sm font-medium mb-3">Environment</h3>
             : <div className="px-4 py-2 text-xs font-medium text-muted-foreground">Environment</div>
@@ -1354,10 +1436,10 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       ) : null}
 
       {/* ---- Adapter ---- */}
-      <div className={cn(!cards && (isCreate ? "border-t border-border" : "border-b border-border"))}>
+      <div data-config-section="adapter" className={cn(!cards && (isCreate ? "border-t border-border" : "border-b border-border"))}>
         <div className={cn(cards ? "flex items-center justify-between mb-3" : "px-4 py-2 flex items-center justify-between gap-2")}>
           {cards
-            ? <h3 className="text-sm font-medium">Adapter</h3>
+            ? <h3 className="text-sm font-medium">{props.sectionTitles?.["adapter"] ?? "Adapter"}</h3>
             : <span className="text-xs font-medium text-muted-foreground">Adapter</span>
           }
           {showInlineAdapterTestEnvironmentButton && (
@@ -1443,7 +1525,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             </Field>
           )}
 
-          {showInlineAdapterTestEnvironmentFeedback && (testActionError || testEnvironment.error) && (
+          {showInlineAdapterTestEnvironmentFeedback && !props.compactTestFeedback && (testActionError || testEnvironment.error) && (
             <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
               {testActionError
                 ?? (testEnvironment.error instanceof Error
@@ -1452,7 +1534,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             </div>
           )}
 
-          {showInlineAdapterTestEnvironmentFeedback && testEnvironment.data && (
+          {showInlineAdapterTestEnvironmentFeedback && !props.compactTestFeedback && testEnvironment.data && (
             <AdapterEnvironmentResult result={testEnvironment.data} />
           )}
 
@@ -1503,9 +1585,9 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
 
       {/* ---- Permissions & Configuration ---- */}
       {isLocal && (
-        <div className={cn(!cards && "border-b border-border")}>
+        <div data-config-section="permissions" className={cn(!cards && "border-b border-border")}>
           {cards
-            ? <h3 className="text-sm font-medium mb-3">Permissions &amp; Configuration</h3>
+            ? <h3 className="text-sm font-medium mb-3">{props.sectionTitles?.["permissions"] ?? "Permissions & Configuration"}</h3>
             : <div className="px-4 py-2 text-xs font-medium text-muted-foreground">Permissions &amp; Configuration</div>
           }
           <div className={cn(cards ? "border border-border rounded-lg p-4 space-y-3" : "px-4 pb-3 space-y-3")}>
@@ -1521,39 +1603,41 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 flashes on a managed instance.
               */}
               {!hideHostPaths && (
-                <Field label="Command" hint={help.localCommand}>
-                  <DraftInput
-                    value={
-                      isCreate
-                        ? val!.command
-                        : eff(
-                            "adapterConfig",
-                            adapterCommandField,
-                            String(
-                              config.command ?? "",
-                            ),
-                          )
-                    }
-                    onCommit={(v) =>
-                      isCreate
-                        ? set!({ command: v })
-                        : mark("adapterConfig", adapterCommandField, v || null)
-                    }
-                    immediate
-                    className={inputClass}
-                    placeholder={
-                      ({
-                        claude_local: "claude",
-                        codex_local: "codex",
-                        gemini_local: "gemini",
-                        kimi_local: "kimi",
-                        pi_local: "pi",
-                        cursor: "agent",
-                        opencode_local: "opencode",
-                      } as Record<string, string>)[adapterType] ?? adapterType.replace(/_local$/, "")
-                    }
-                  />
-                </Field>
+                <div data-config-field="command">
+                  <Field label="Command" hint={help.localCommand}>
+                    <DraftInput
+                      value={
+                        isCreate
+                          ? val!.command
+                          : eff(
+                              "adapterConfig",
+                              adapterCommandField,
+                              String(
+                                config.command ?? "",
+                              ),
+                            )
+                      }
+                      onCommit={(v) =>
+                        isCreate
+                          ? set!({ command: v })
+                          : mark("adapterConfig", adapterCommandField, v || null)
+                      }
+                      immediate
+                      className={inputClass}
+                      placeholder={
+                        ({
+                          claude_local: "claude",
+                          codex_local: "codex",
+                          gemini_local: "gemini",
+                          kimi_local: "kimi",
+                          pi_local: "pi",
+                          cursor: "agent",
+                          opencode_local: "opencode",
+                        } as Record<string, string>)[adapterType] ?? adapterType.replace(/_local$/, "")
+                      }
+                    />
+                  </Field>
+                </div>
               )}
 
               <ModelDropdown
@@ -1579,9 +1663,10 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 }}
                 open={modelOpen}
                 onOpenChange={setModelOpen}
-                allowDefault={adapterType !== "opencode_local"}
-                required={adapterType === "opencode_local"}
-                groupByProvider={adapterType === "opencode_local"}
+                defaultLabel={adapterType === "claude_local" ? `Default (${DEFAULT_CLAUDE_LOCAL_MODEL})` : undefined}
+                allowDefault={adapterType !== "opencode_local" && adapterType !== "pi_local"}
+                required={adapterType === "opencode_local" || adapterType === "pi_local"}
+                groupByProvider={adapterType === "opencode_local" || adapterType === "pi_local"}
                 creatable
                 detectedModel={detectedModel}
                 detectedModelCandidates={[]}
@@ -1686,27 +1771,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 />
               </Field>
 
-              <Field label="Environment variables" hint={help.envVars}>
-                <EnvironmentVariablesEditor
-                  ref={environmentVariablesEditorRef}
-                  value={
-                    isCreate
-                      ? ((val!.envBindings ?? EMPTY_ENV) as Record<string, EnvBinding>)
-                      : (eff("adapterConfig", "env", (config.env ?? EMPTY_ENV) as Record<string, EnvBinding>))
-                  }
-                  secrets={availableSecrets}
-                  userSecretDefinitions={userSecretDefinitions}
-                  onCreateSecret={async (name, value) => {
-                    const created = await createSecret.mutateAsync({ name, value });
-                    return created;
-                  }}
-                  onChange={(env) =>
-                    isCreate
-                      ? set!({ envBindings: env ?? {}, envVars: "" })
-                      : mark("adapterConfig", "env", env)
-                  }
-                />
-              </Field>
+              {props.environmentVariablesPlacement !== "secrets" && environmentVariablesField}
 
               {/* Edit-only: timeout + grace period */}
               {!isCreate && (
@@ -1743,7 +1808,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
 
       {/* ---- Run Policy ---- */}
       {isCreate && showCreateRunPolicySection ? (
-        <div className={cn(!cards && "border-b border-border")}>
+        <div data-config-section="run-policy" className={cn(!cards && "border-b border-border")}>
           {cards
             ? <h3 className="text-sm font-medium flex items-center gap-2 mb-3"><Heart className="h-3 w-3" /> Run Policy</h3>
             : <div className="px-4 py-2 text-xs font-medium text-muted-foreground flex items-center gap-2"><Heart className="h-3 w-3" /> Run Policy</div>
@@ -1764,7 +1829,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
           </div>
         </div>
       ) : !isCreate ? (
-        <div className={cn(!cards && "border-b border-border")}>
+        <div data-config-section="run-policy" className={cn(!cards && "border-b border-border")}>
           {cards
             ? <h3 className="text-sm font-medium flex items-center gap-2 mb-3"><Heart className="h-3 w-3" /> Run Policy</h3>
             : <div className="px-4 py-2 text-xs font-medium text-muted-foreground flex items-center gap-2"><Heart className="h-3 w-3" /> Run Policy</div>
@@ -1905,7 +1970,16 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
         </div>
       ) : null}
 
-    </div>
+      {props.compactTestFeedback && showInlineAdapterTestEnvironmentFeedback && showAdapterTestEnvironmentButton && (
+        <RuntimeTestCard
+          state={testActionPending ? "running" : testActionError || testEnvironment.error ? "fail" : testResult?.status ?? "idle"}
+          result={testResult ?? null}
+          error={testActionError ?? (testEnvironment.error instanceof Error ? testEnvironment.error.message : null)}
+          onTest={triggerTestEnvironment}
+          disabled={testEnvironmentDisabled}
+        />
+      )}
+    </ConfigSections>
   );
 }
 
