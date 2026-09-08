@@ -61,6 +61,8 @@ import {
   type SuccessfulRunHandoffNotice,
 } from "./successful-run-handoff.js";
 import {
+  SANDBOX_PROVIDER_PLUGIN_NOT_READY_REASON,
+  sandboxProviderPluginRemedy,
   buildExecutionReviewParticipantRecoveryNoticeSeed,
   buildExecutionReviewParticipantUnavailableNoticeSeed,
   buildStrandedRecoveryEscalationNotice,
@@ -298,9 +300,13 @@ function readWorkspaceValidationFingerprint(latestRun: LatestIssueRun): string |
   return readNonEmptyString(payload?.fingerprint);
 }
 
-function readConfigurationIncompleteFingerprint(latestRun: LatestIssueRun): string | null {
+function readConfigurationIncompletePayload(latestRun: LatestIssueRun): Record<string, unknown> | null {
   const payload = parseObject(parseObject(latestRun?.resultJson).configurationIncomplete);
-  return readNonEmptyString(payload?.fingerprint);
+  return Object.keys(payload).length > 0 ? payload : null;
+}
+
+function readConfigurationIncompleteFingerprint(latestRun: LatestIssueRun): string | null {
+  return readNonEmptyString(readConfigurationIncompletePayload(latestRun)?.fingerprint);
 }
 
 export type { RunOutputSilenceSummary, WatchdogDecisionActor };
@@ -1480,7 +1486,11 @@ export function recoveryService(
               ? "Board operator: repair the project workspace repository URL or clone access, or configure a local checkout cwd, then explicitly retry or reassign."
               : "Board operator: repair the source task workspace link, project workspace cwd, or git checkout, then explicitly retry or reassign."
         : recoveryCause === "configuration_incomplete"
-          ? "Board operator: bind the missing secret(s) named in the run failure, then explicitly retry the original owner or reassign."
+          ? readConfigurationIncompletePayload(input.latestRun)?.reason === SANDBOX_PROVIDER_PLUGIN_NOT_READY_REASON
+            ? `Board operator: the sandbox provider plugin named in the run failure is not ready; ${sandboxProviderPluginRemedy(
+              readNonEmptyString(readConfigurationIncompletePayload(input.latestRun)?.pluginStatus) ?? "error",
+            )}, then explicitly retry the original owner or reassign.`
+            : "Board operator: bind the missing secret(s) named in the run failure, then explicitly retry the original owner or reassign."
         : recoveryCause === "execution_review_participant_recovery"
           ? "Board operator: repair the failed review participant path, restore a live reviewer, explicitly reassign, or record an intentional resolution."
         : "Board operator: inspect the evidence, repair the runtime if appropriate, then explicitly retry the original owner, reassign, or intentionally resolve the task.",
