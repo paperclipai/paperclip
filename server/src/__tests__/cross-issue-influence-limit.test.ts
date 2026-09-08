@@ -25,10 +25,12 @@ function counterDb(
             };
           }
           if (Object.keys(selection).includes("checkoutRunId")) {
-            // Issue checkout-ownership query (no .for() — plain .then())
+            // Issue checkout-ownership query (.for("update").then())
             return {
-              then: (resolve: (rows: unknown[]) => unknown) =>
-                resolve(issueCheckedOutByRun ? [{ checkoutRunId: issueCheckedOutByRun }] : []),
+              for: () => ({
+                then: (resolve: (rows: unknown[]) => unknown) =>
+                  resolve(issueCheckedOutByRun ? [{ checkoutRunId: issueCheckedOutByRun }] : []),
+              }),
             };
           }
           // heartbeatRuns lock query (.for("update").then())

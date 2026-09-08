@@ -122,6 +122,7 @@ export async function observeCrossIssueInfluence(
           eq(issues.id, input.targetIssueId),
           eq(issues.checkoutRunId, input.runId),
         ))
+        .for("update")
         .then((rows) => rows.length > 0);
       if (checkedOut) return null;
       throw crossIssueInfluenceRunContextError();
