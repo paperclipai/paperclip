@@ -29,7 +29,7 @@ describe("Paperclip Runner Codex configuration", () => {
     const html = renderRunner({ provider: "codex" });
 
     expect(html).toContain('<option value="codex" selected="">Codex</option>');
-    expect(html).toContain("OpenCode 1.18.17");
+    expect(html).toContain("OpenCode 1.18.29");
     expect(html).toContain("ACPX");
     expect(html).toContain("Automatic (isolated)");
     expect(html).not.toContain("Ask when requested");
@@ -46,7 +46,7 @@ describe("Paperclip Runner Codex configuration", () => {
     });
 
     expect(html).toContain(
-      '<option value="opencode" selected="">OpenCode 1.18.17</option>',
+      '<option value="opencode" selected="">OpenCode 1.18.29</option>',
     );
     expect(html).toContain(
       '<option value="allow" selected="">Full auto (allow)</option>',

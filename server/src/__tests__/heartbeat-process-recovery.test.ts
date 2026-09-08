@@ -46,6 +46,7 @@ import {
   issueTreeHolds,
   issueWorkProducts,
   issues,
+  nativeRunFinalizations,
   plugins,
   projects,
   projectWorkspaces,
@@ -116,8 +117,10 @@ import {
   redactDetectedSuccessfulRunProgressSummaryForBoard,
   redactSuccessfulRunHandoffEvidence,
 } from "../services/heartbeat.ts";
+import { currentNativeControllerIdentity } from "../services/native-runtime/native-restart-recovery.ts";
 import {
   readHotRestartIntent,
+  readProcessStartedAt,
   resolveLegacyHotRestartIntentPath,
   resolveHotRestartReportPath,
   writeHotRestartIntent,
@@ -433,6 +436,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     await db.delete(issueRecoveryActions);
     await db.delete(issueTreeHoldMembers);
     await db.delete(issueTreeHolds);
+    await db.delete(nativeRunFinalizations);
     for (let attempt = 0; attempt < 5; attempt += 1) {
       await db.delete(issueComments);
       await db.delete(issueDocuments);
@@ -1442,6 +1446,95 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(wakeup?.status).toBe("claimed");
   });
 
+  it("keeps a live native run owned by the current controller out of ambiguous recovery", async () => {
+    const child = spawnAliveProcess();
+    childProcesses.add(child);
+    expect(child.pid).toBeTypeOf("number");
+
+    const { companyId, runId, issueId } = await seedRunFixture({
+      adapterType: "paperclip_runner",
+      runtimeMode: "native",
+      processPid: child.pid ?? null,
+    });
+    const controller = await currentNativeControllerIdentity();
+    await db
+      .update(heartbeatRuns)
+      .set({ nativeIssueId: issueId, nativePhase: "observed" })
+      .where(eq(heartbeatRuns.id, runId));
+    await db.insert(nativeRunFinalizations).values({
+      runId,
+      companyId,
+      issueId,
+      phase: "observed",
+      attempt: 1,
+      leaseOwner: "current-controller:test",
+      leaseExpiresAt: new Date(Date.now() + 60_000),
+      controllerBootId: controller.bootId,
+      controllerPid: controller.pid,
+      controllerProcessStartedAt: controller.processStartedAt,
+      controllerGeneration: 1,
+    });
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reapOrphanedRuns();
+
+    expect(result).toEqual({ reaped: 0, runIds: [] });
+    expect(await heartbeat.getRun(runId)).toMatchObject({
+      status: "running",
+      error: null,
+      errorCode: null,
+      processPid: child.pid,
+    });
+    expect(mockTerminateLocalService).not.toHaveBeenCalled();
+  });
+
+  it("does not reap a retryable native run while its same-run recovery path owns it", async () => {
+    const { companyId, agentId, runId, issueId, wakeupRequestId } =
+      await seedRunFixture({
+        adapterType: "paperclip_runner",
+        runtimeMode: "native",
+      });
+    const nextAttemptAt = new Date(Date.now() + 60_000);
+    await db
+      .update(heartbeatRuns)
+      .set({ nativeIssueId: issueId, nativePhase: "retryable_failure" })
+      .where(eq(heartbeatRuns.id, runId));
+    await db.insert(nativeRunFinalizations).values({
+      runId,
+      companyId,
+      issueId,
+      phase: "retryable_failure",
+      attempt: 1,
+      nextAttemptAt,
+      recoveryState: "resuming_session",
+    });
+
+    const result = await heartbeatService(db).reapOrphanedRuns();
+
+    expect(result).toEqual({ reaped: 0, runIds: [] });
+    expect(await heartbeatService(db).getRun(runId)).toMatchObject({
+      status: "running",
+      nativePhase: "retryable_failure",
+    });
+    await expect(
+      db
+        .select({ id: heartbeatRuns.id })
+        .from(heartbeatRuns)
+        .where(
+          and(
+            eq(heartbeatRuns.agentId, agentId),
+            eq(heartbeatRuns.retryOfRunId, runId),
+          ),
+        ),
+    ).resolves.toHaveLength(0);
+    await expect(
+      db
+        .select({ status: agentWakeupRequests.status })
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, wakeupRequestId)),
+    ).resolves.toEqual([{ status: "claimed" }]);
+  });
+
   it("does not grant a dead native run legacy retry authority after adapter reassignment", async () => {
     const { agentId, runId } = await seedRunFixture({
       adapterType: "paperclip_runner",
@@ -2268,12 +2361,14 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
           return row?.status === "running" && row.processPid ? row : null;
         }),
     );
+    const observedProcessStartedAt = await readProcessStartedAt(spawnedPid!);
+    expect(observedProcessStartedAt).not.toBeNull();
     expect(running).toMatchObject({
       id: runId,
       status: "running",
       processPid: spawnedPid,
       processGroupId: null,
-      processStartedAt: new Date("2026-07-30T07:00:00.000Z"),
+      processStartedAt: new Date(observedProcessStartedAt!),
     });
 
     await withTempPaperclipHome(async (home) => {
@@ -2522,6 +2617,63 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .then((rows) => rows[0] ?? null);
     expect(issue?.checkoutRunId).toBeNull();
     expect(issue?.executionRunId).toBe(retryRun?.id);
+  });
+
+  it("suspends native Paperclip Runner ownership on graceful restart without cancelling or creating a retry run", async () => {
+    const { agentId, runId, issueId, wakeupRequestId } = await seedRunFixture({
+      adapterType: "paperclip_runner",
+      agentStatus: "running",
+      runtimeMode: "native",
+    });
+    await db
+      .update(heartbeatRuns)
+      .set({ nativeIssueId: issueId })
+      .where(eq(heartbeatRuns.id, runId));
+    await db.insert(nativeRunFinalizations).values({
+      runId,
+      companyId: (await heartbeatService(db).getRun(runId))!.companyId,
+      issueId,
+      phase: "observed",
+    });
+
+    const result = await heartbeatService(db).drainRunningRunsForShutdown(
+      "SIGTERM",
+      new Date("2026-09-04T12:00:00.000Z"),
+    );
+
+    expect(result).toMatchObject({
+      interrupted: 0,
+      interruptedRunIds: [],
+      retryRunIds: [],
+      restartSuspendedRunIds: [runId],
+    });
+    await expect(
+      db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId)),
+    ).resolves.toEqual([
+      expect.objectContaining({
+        id: runId,
+        status: "running",
+        retryOfRunId: null,
+      }),
+    ]);
+    await expect(
+      db
+        .select({ recoveryState: nativeRunFinalizations.recoveryState })
+        .from(nativeRunFinalizations)
+        .where(eq(nativeRunFinalizations.runId, runId)),
+    ).resolves.toEqual([{ recoveryState: "awaiting_runner_reattach" }]);
+    await expect(
+      db
+        .select({ status: agentWakeupRequests.status })
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, wakeupRequestId)),
+    ).resolves.toEqual([{ status: "claimed" }]);
+    await expect(
+      db
+        .select({ executionRunId: issues.executionRunId })
+        .from(issues)
+        .where(eq(issues.id, issueId)),
+    ).resolves.toEqual([{ executionRunId: runId }]);
   });
 
   it("does not overwrite a run that is no longer running during graceful shutdown drain", async () => {

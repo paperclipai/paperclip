@@ -1,3 +1,4 @@
+import { storedSteeringAcknowledgement, reconcileSteeredIdentity, reserveSteeredIdentity, acceptSteeredIdentity, rejectSteeredIdentity } from "../services/run-identity.js";
 import { createHash, randomUUID } from "node:crypto";
 import { Router, type Request, type Response } from "express";
 import multer from "multer";
@@ -2231,55 +2232,85 @@ async function queueResolvedInteractionContinuationWakeup(input: {
           result: interactionResult,
         }
       : null;
-  void input.heartbeat.wakeup(input.issue.assigneeAgentId, {
-    source: "automation",
-    triggerDetail: "system",
-    reason: "issue_commented",
-    payload: {
-      issueId: input.issue.id,
-      interactionId: input.interaction.id,
-      interactionKind: input.interaction.kind,
-      interactionStatus: input.interaction.status,
-      sourceCommentId: input.interaction.sourceCommentId ?? null,
-      sourceRunId: input.interaction.sourceRunId ?? null,
-      ...(planReviewInteraction ? { planReviewInteraction } : {}),
-      ...(nativeCompletionReview ? { nativeCompletionReview } : {}),
-      ...(checkboxSelection ? { checkboxSelection } : {}),
-      ...(toolAction ? { toolAction } : {}),
-      ...(secretProposal ? { secretProposal } : {}),
-      ...(itemVerdicts ? { itemVerdicts, newlyResolvedItemIds } : {}),
-      ...(reviewPathContext ?? {}),
-      mutation: "interaction",
-    },
-    idempotencyKey: input.idempotencyKey ?? `interaction:${input.interaction.id}:${input.interaction.status}`,
-    requestedByActorType: input.actor.actorType,
-    requestedByActorId: input.actor.actorId,
-    contextSnapshot: {
-      issueId: input.issue.id,
-      taskId: input.issue.id,
-      interactionId: input.interaction.id,
-      interactionKind: input.interaction.kind,
-      interactionStatus: input.interaction.status,
-      sourceCommentId: input.interaction.sourceCommentId ?? null,
-      sourceRunId: input.interaction.sourceRunId ?? null,
-      ...(planReviewInteraction ? { planReviewInteraction } : {}),
-      ...(nativeCompletionReview ? { nativeCompletionReview } : {}),
-      ...(checkboxSelection ? { checkboxSelection } : {}),
-      ...(toolAction ? { toolAction } : {}),
-      ...(secretProposal ? { secretProposal } : {}),
-      ...(itemVerdicts ? { itemVerdicts, newlyResolvedItemIds } : {}),
-      ...(reviewPathContext ?? {}),
-      wakeReason: "issue_commented",
-      source: input.source,
-      ...(forceFreshSession ? { forceFreshSession: true } : {}),
-      ...(workspaceRefreshReason ? { workspaceRefreshReason } : {}),
-    },
-  }).catch((err) => logger.warn({
-    err,
-    issueId: input.issue.id,
-    interactionId: input.interaction.id,
-    agentId: input.issue.assigneeAgentId,
-  }, "failed to wake assignee on issue interaction resolution"));
+  const genericRejectionReason =
+    !planReviewInteraction &&
+    !nativeCompletionReview &&
+    input.interaction.status === "rejected" &&
+    (input.interaction.kind === "request_confirmation" ||
+      input.interaction.kind === "request_checkbox_confirmation")
+      ? readNonEmptyString(readObject(input.interaction.result).reason)
+      : null;
+  const rejectionAgentMessage = genericRejectionReason
+    ? {
+        text: genericRejectionReason,
+        source: "interaction_rejection",
+        sessionId: input.interaction.id,
+      }
+    : null;
+  void input.heartbeat
+    .wakeup(input.issue.assigneeAgentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_commented",
+      payload: {
+        issueId: input.issue.id,
+        interactionId: input.interaction.id,
+        interactionKind: input.interaction.kind,
+        interactionStatus: input.interaction.status,
+        sourceCommentId: input.interaction.sourceCommentId ?? null,
+        sourceRunId: input.interaction.sourceRunId ?? null,
+        ...(planReviewInteraction ? { planReviewInteraction } : {}),
+        ...(nativeCompletionReview ? { nativeCompletionReview } : {}),
+        ...(checkboxSelection ? { checkboxSelection } : {}),
+        ...(toolAction ? { toolAction } : {}),
+        ...(secretProposal ? { secretProposal } : {}),
+        ...(itemVerdicts ? { itemVerdicts, newlyResolvedItemIds } : {}),
+        ...(rejectionAgentMessage
+          ? { paperclipAgentMessage: rejectionAgentMessage }
+          : {}),
+        ...(reviewPathContext ?? {}),
+        mutation: "interaction",
+      },
+      idempotencyKey:
+        input.idempotencyKey ??
+        `interaction:${input.interaction.id}:${input.interaction.status}`,
+      requestedByActorType: input.actor.actorType,
+      requestedByActorId: input.actor.actorId,
+      contextSnapshot: {
+        issueId: input.issue.id,
+        taskId: input.issue.id,
+        interactionId: input.interaction.id,
+        interactionKind: input.interaction.kind,
+        interactionStatus: input.interaction.status,
+        sourceCommentId: input.interaction.sourceCommentId ?? null,
+        sourceRunId: input.interaction.sourceRunId ?? null,
+        ...(planReviewInteraction ? { planReviewInteraction } : {}),
+        ...(nativeCompletionReview ? { nativeCompletionReview } : {}),
+        ...(checkboxSelection ? { checkboxSelection } : {}),
+        ...(toolAction ? { toolAction } : {}),
+        ...(secretProposal ? { secretProposal } : {}),
+        ...(itemVerdicts ? { itemVerdicts, newlyResolvedItemIds } : {}),
+        ...(rejectionAgentMessage
+          ? { paperclipAgentMessage: rejectionAgentMessage }
+          : {}),
+        ...(reviewPathContext ?? {}),
+        wakeReason: "issue_commented",
+        source: input.source,
+        ...(forceFreshSession ? { forceFreshSession: true } : {}),
+        ...(workspaceRefreshReason ? { workspaceRefreshReason } : {}),
+      },
+    })
+    .catch((err) =>
+      logger.warn(
+        {
+          err,
+          issueId: input.issue.id,
+          interactionId: input.interaction.id,
+          agentId: input.issue.assigneeAgentId,
+        },
+        "failed to wake assignee on issue interaction resolution",
+      ),
+    );
 }
 
 function readCheckboxSelectionForWake(input: {
@@ -9197,6 +9228,7 @@ export function issueRoutes(
       ...(taskBridgeOriginForActor(req) ?? {}),
       id: issueId,
       originRunId: createBody.originRunId ?? actor.runId,
+      originIdentityContextId: req.actor.identityContextId ?? null,
       executionPolicy,
       ...(sourceTrust ? { sourceTrust } : {}),
       createdByAgentId: actor.agentId,
@@ -11933,6 +11965,10 @@ export function issueRoutes(
       const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
       if (!issue) return;
       const actor = getActorInfo(req);
+      const steeringIdentity = await reserveSteeredIdentity(db, {
+        companyId: issue.companyId, runId: req.body.targetRunId, issueId: issue.id, messageId: commentId,
+      });
+      let steeringDeliveryAttempted = false;
       let acknowledgedTurnId: string | null = null;
       let duplicate = false;
       let queue: IssueQueuedCommentQueue;
@@ -12045,11 +12081,14 @@ export function issueRoutes(
             });
           }
 
-          const acknowledgement = await steerNativeSession({
+          steeringDeliveryAttempted = true;
+          const acknowledgement = (steeringIdentity ? await storedSteeringAcknowledgement(tx, steeringIdentity) : null) ?? await steerNativeSession({
             runId: locked.activeRun.id,
             message: entry.comment.body,
             correlationId: commentId,
+            onAcknowledged: steeringIdentity ? () => reconcileSteeredIdentity(db, steeringIdentity) : undefined,
           });
+          if (steeringIdentity) await acceptSteeredIdentity(tx, steeringIdentity);
           acknowledgedTurnId = acknowledgement.turnId;
           const remainingIds = locked.queue.entries
             .map((candidate) => candidate.comment.id)
@@ -12100,6 +12139,10 @@ export function issueRoutes(
           });
         });
       } catch (error) {
+        const uncertain = steeringDeliveryAttempted && (!(error instanceof NativeSessionSteeringError)
+          || error.code === "steering_timeout");
+        if (steeringIdentity && !uncertain) await rejectSteeredIdentity(db, steeringIdentity);
+
         if (error instanceof NativeSessionSteeringError) {
           throw conflict(error.message, { code: error.code, retryable: true });
         }
@@ -12196,6 +12239,7 @@ export function issueRoutes(
       ...req.body,
       sourceRunId: req.actor.type === "agent" ? agentSourceRunId : req.body.sourceRunId ?? null,
     }, {
+      identityContextId: req.actor.identityContextId,
       agentId: actor.agentId,
       userId: actor.actorType === "user" ? actor.actorId : null,
     });

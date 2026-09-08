@@ -275,6 +275,15 @@ These browser suites are intended for targeted local verification and CI, not th
 
 For normal issue work, start with the smallest targeted check that proves the change. Reserve repo-wide typecheck/build/test runs for PR-ready handoff or changes broad enough that narrow checks do not cover the risk.
 
+### Recent task ordering
+
+The streamlined sidebar keeps five recent tasks per company and account in browser
+storage. It sorts by the newest observed task or comment activity, not by live-run
+state. Older detail responses cannot move the stored activity time backward.
+Activity-only reorderings wait for one second without further activity changes;
+new and removed tasks appear immediately. Titles, status, and live indicators stay
+current during that delay.
+
 ## One-Command Local Run
 
 For a first-time local install, you can bootstrap and run in one command:
@@ -304,6 +313,50 @@ pnpm paperclipai run
 1. auto-onboard if config is missing
 2. `paperclipai doctor` with repair enabled
 3. starts the server when checks pass
+
+### One-command isolated manual test drive
+
+Use `test-drive` when you want to exercise the UI from a fresh checkout or SHA
+without completing onboarding by hand:
+
+```sh
+ANTHROPIC_API_KEY=... node cli/node_modules/tsx/dist/cli.mjs cli/src/index.ts test-drive
+OPENAI_API_KEY=... node cli/node_modules/tsx/dist/cli.mjs cli/src/index.ts test-drive --harness codex --model gpt-5.4
+OPENROUTER_API_KEY=... node cli/node_modules/tsx/dist/cli.mjs cli/src/index.ts test-drive \
+  --harness opencode \
+  --model openrouter/anthropic/claude-sonnet-4.5
+```
+
+The command creates a trusted-loopback instance in a unique OS temporary data
+directory, prints the absolute directory, runs onboarding and doctor
+non-interactively, creates `Test Company` with a `CEO` agent, then opens the
+browser. It runs in the foreground, does not install a background service, and
+does not create a goal, project, issue, task, or first heartbeat. Temporary
+directories are retained for inspection. Use `--data-dir <path>` to reuse one
+or `--no-browser` to suppress browser opening. Reused directories must use the
+embedded database: the command rejects database URL environment overrides and
+configs with `database.mode: postgres`, suppresses the invocation directory's
+`.env` when the server starts, and keeps the normal managed-service collision
+guard. The selected instance's own environment file still loads. The command
+selects the first available loopback port at or above `3100`.
+
+Claude uses `ANTHROPIC_API_KEY`; Codex uses `OPENAI_API_KEY`; OpenCode uses
+`OPENROUTER_API_KEY` and requires an `openrouter/...` model. `--api-key-env`
+can name a different source variable while the agent still receives the
+canonical variable. `--api-key <value>` is also supported and is mutually
+exclusive with `--api-key-env`; Paperclip redacts it from its own output, but
+also removes it from the JavaScript argument view before telemetry, diagnostics,
+or server startup. Wrappers, operating-system process listings, and shell
+history may still expose argument values. This is an explicit local test-drive
+tradeoff; use an environment-backed input when that exposure is not acceptable. In a
+linked Git worktree the command sets worktree runtime mode and safely arms
+**Run tasks in this worktree** for the current isolated instance. Primary
+checkouts and non-Git directories leave that experimental setting unchanged.
+
+If the selected data directory already contains any company, `test-drive`
+preserves all companies, agents, and secrets and ignores the bootstrap flags.
+The worktree execution setting is the only value it may reconcile in that
+case.
 
 ## Docker Quickstart (No local Node install)
 
@@ -763,6 +816,63 @@ agent workspace. The host `HOME` itself, a directory that contains it, a
 filesystem root, a `CODEX_HOME` overlap, or a canonical path outside the
 assigned workspace is rejected before provider startup.
 
+### Preinstalled remote runner runtime
+
+For fast sandbox startup, bake `paperclip-runnerd` and the latest stable agent
+CLIs into the sandbox image. Keep one version of each CLI shared by native and
+local adapters; never retain an older global CLI beside a newer private copy.
+Pin the resolved releases at image build time for reproducibility and refresh
+the runner's qualification versions and binary digests together with those pins.
+The ACP bridges remain separately qualified protocol dependencies.
+
+Native discovery checks `/opt/paperclip-runner/bin`, then `$HOME/.local/bin`,
+then PATH. Any preferred-directory entry must launch the same shared CLI that
+normal adapters use. Discovery picks the first executable; it does not compare
+versions across directories. With these artifacts preinstalled, startup links
+and verifies them without uploading a binary or installing packages. Deploy
+the updated sandbox image with the matching runner qualification changes.
+
+### Native runner restart recovery
+
+Paperclip Runner keeps its heartbeat run, native session, logical runner, and
+provider session identities across server restarts. A coordinated hot restart
+registers a correlated recovery request before it signals the dev supervisor.
+An uncoordinated server restart uses the same durable recovery classifier
+without trusting a handoff marker.
+
+Startup binds the HTTP and PRP listener before it classifies native runs. Public
+health reports a startup state until every candidate is reattached, dispatched
+for same-run resume, finalized from durable evidence, or held for explicit
+ownership evidence. Scheduling and generic orphan recovery start only after
+that classification finishes.
+
+- A verified live runner re-registers its existing PRP authority and reconnects
+  with the same operating-system PID. Paperclip does not spawn a competing
+  runner.
+- A verified dead runner starts a replacement from the same durable root and
+  resumes the same provider checkpoint. Only the operating-system PID changes.
+- A runner that died before its first authenticated connection can restart on
+  the same run only when its durable root proves that no provider authority or
+  checkpoint exists. Paperclip quarantines the incomplete root first.
+- A live but mismatched or unverifiable process fails closed. Paperclip does not
+  signal it or spawn a replacement.
+- A persisted proposed or terminal result is reconciled before any runner or
+  provider work starts, so restart recovery cannot submit a duplicate turn.
+
+Run the credential-free real-process restart suite with:
+
+```sh
+pnpm --filter @paperclipai/paperclip-runner build:runner-binaries
+pnpm exec vitest run server/src/services/native-runtime/native-runner-restart-recovery.integration.test.ts
+pnpm --filter @paperclipai/paperclip-runner exec vitest run src/live/runnerd-codex-transport.test.ts -t 'adopts a live runner'
+```
+
+The suite uses isolated PostgreSQL state, isolated `PAPERCLIP_HOME` roots, real
+`runnerd` processes, and a deterministic fake Codex app server. It covers hot
+and hard restarts with live and dead runners, the result-finalization race,
+incomplete bootstrap, repeated crashes with steering, and fail-closed process
+identity mismatches.
+
 ## App-Shipped Skills Catalog
 
 The Paperclip app ships a curated catalog of company skills out of the box. The
@@ -1159,3 +1269,7 @@ Networking behavior for this smoke script:
 - auto-detects and prints a Paperclip host URL reachable from inside OpenClaw Docker
 - default container-side host alias is `host.docker.internal` (override with `PAPERCLIP_HOST_FROM_CONTAINER` / `PAPERCLIP_HOST_PORT`)
 - if Paperclip rejects container hostnames in authenticated/private mode, allow `host.docker.internal` via `npx paperclipai allowed-hostname host.docker.internal` and restart Paperclip
+
+### GitHub identity for shared agents
+
+See [execution GitHub identity](execution-github-identity.md) for the operation-time credential contract, continuation rules, runtime rollout, and acceptance-test requirements.

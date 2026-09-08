@@ -88,6 +88,11 @@ The state contains:
 - lifecycle, reconnect, backpressure, harness generation, and recovery facts;
 - bounded, redacted diagnostics.
 
+Raw runner stdout and stderr are never redirected to durable files. The runner
+itself redacts and bounds a terminal diagnostic before publishing it through an
+atomic private-file replacement, so neither an output burst nor controller
+restart can create a transient unbounded or unredacted diagnostic file.
+
 Authentication capabilities and arbitrary command bodies are not stored. A
 recent command is represented by a SHA-256 comparison digest from the vetted
 RustCrypto implementation, its stable ID and controller sequence, the redacted

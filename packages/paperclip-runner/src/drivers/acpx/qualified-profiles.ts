@@ -64,7 +64,7 @@ export const QUALIFIED_ACPX_PROFILES: Readonly<
     agentServerPackage: "@agentclientprotocol/claude-agent-acp",
     agentServerVersion: "0.70.0",
     agentRuntimePackage: "@anthropic-ai/claude-agent-sdk",
-    agentRuntimeVersion: "0.3.232",
+    agentRuntimeVersion: "0.3.263",
     commandDigest:
       "sha256:9d73d1f0f121fb96cc8badb28c22d5bff02d8582eb2e40360a81c189e1b9422a",
     qualificationModel: "claude-sonnet-5",
@@ -80,7 +80,7 @@ export const QUALIFIED_ACPX_PROFILES: Readonly<
     agentServerPackage: "@agentclientprotocol/codex-acp",
     agentServerVersion: "1.6.2",
     agentRuntimePackage: "@openai/codex",
-    agentRuntimeVersion: "0.148.0",
+    agentRuntimeVersion: "0.153.4",
     commandDigest:
       "sha256:7a923b3829884d3cabcc9659d22cace3f86813e7bfffc90974b10140a45bc400",
     qualificationModel: "gpt-5.6-sol",

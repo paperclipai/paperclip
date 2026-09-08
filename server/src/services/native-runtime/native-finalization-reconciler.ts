@@ -24,6 +24,11 @@ import { issueRecoveryActionService } from "../issue-recovery-actions.js";
 import { issueService } from "../issues.js";
 import { emitAgentTaskRun } from "../agent-task-run-telemetry.js";
 import { resumeNativeWorkspaceFinalization } from "./native-workspace-finalizer.js";
+import {
+  cleanupNativeWorkspaceSync,
+  readNativeWorkspaceSyncReference,
+} from "./native-workspace-sync.js";
+import type { EnvironmentRuntimeService } from "../environment-runtime.js";
 import { classifyNativeEvidence } from "./evidence-classifier.js";
 import { recordNativeWorkAssessment } from "./work-assessments.js";
 import {
@@ -373,19 +378,33 @@ export async function claimNativeSessionResumptions(input: {
 }
 
 /** Recovery is keyed only by persisted mode/coordinator state, never the live flag. */
-export async function reconcileNativeFinalizations(db: Db, runIds?: string[]) {
-  const rows = await db.select({
-    runId: heartbeatRuns.id,
-    companyId: heartbeatRuns.companyId,
-    agentId: heartbeatRuns.agentId,
-    issueId: nativeRunFinalizations.issueId,
-    issueStatus: issues.status,
-    issueStatusVersion: issues.statusVersion,
-    issueDecisionId: issues.lastStatusDecisionId,
-    coordinatorPhase: nativeRunFinalizations.phase,
-    assessmentId: nativeRunFinalizations.assessmentId,
-    decisionId: nativeRunFinalizations.decisionId,
-  })
+export async function reconcileNativeFinalizations(
+  db: Db,
+  runIds?: string[],
+  options: {
+    environmentRuntime?: EnvironmentRuntimeService;
+    onWorkspaceSettled?: (input: {
+      runId: string;
+      companyId: string;
+      agentId: string;
+      succeeded: boolean;
+    }) => Promise<void>;
+  } = {},
+) {
+  const rows = await db
+    .select({
+      runId: heartbeatRuns.id,
+      companyId: heartbeatRuns.companyId,
+      agentId: heartbeatRuns.agentId,
+      issueId: nativeRunFinalizations.issueId,
+      issueStatus: issues.status,
+      issueStatusVersion: issues.statusVersion,
+      issueDecisionId: issues.lastStatusDecisionId,
+      coordinatorPhase: nativeRunFinalizations.phase,
+      assessmentId: nativeRunFinalizations.assessmentId,
+      decisionId: nativeRunFinalizations.decisionId,
+      runnerProfileJson: heartbeatRuns.runnerProfileJson,
+    })
     .from(heartbeatRuns)
     .innerJoin(nativeRunFinalizations, eq(nativeRunFinalizations.runId, heartbeatRuns.id))
     .innerJoin(issues, and(
@@ -617,14 +636,59 @@ export async function reconcileNativeFinalizations(db: Db, runIds?: string[]) {
       if (!recoveryDecision.effects.some((effect) => effect.kind === "resume_workspace_operation")) {
         throw new Error("native_reconciliation_workspace_resume_policy_missing");
       }
-      const operation = await resumeNativeWorkspaceFinalization({ db, runId: row.runId });
-      const workspaceFinalizeStatus = operation.status === "succeeded" ? "succeeded" : "failed";
+      const operation = await resumeNativeWorkspaceFinalization({
+        db,
+        runId: row.runId,
+        environmentRuntime: options.environmentRuntime,
+      });
+      const workspaceFinalizeStatus =
+        operation.status === "succeeded" ? "succeeded" : "failed";
+      if (workspaceFinalizeStatus === "failed") {
+        const unrecoverable = operation.stderrExcerpt?.includes(
+          "workspace_sync_out_unrecoverable",
+        );
+        const failure = await recordNativeFinalizationFailure({
+          db,
+          runId: row.runId,
+          error: new Error(
+            unrecoverable
+              ? "native_workspace_sync_out_unrecoverable"
+              : "native_workspace_sync_out_failed",
+          ),
+          projectRunStatus: true,
+          failureScope: "workspace",
+          permanent: unrecoverable,
+        });
+        results.push({
+          ...failure,
+          reconciliationAction: "resume_workspace_operation" as const,
+          workspaceOperationId: operation.id,
+          workspaceFinalizeStatus,
+          reconciliationDecision: recoveryDecision,
+        });
+        if (failure.phase === "terminal_failure") {
+          await options
+            .onWorkspaceSettled?.({
+              runId: row.runId,
+              companyId: row.companyId,
+              agentId: row.agentId,
+              succeeded: false,
+            })
+            .catch(() => undefined);
+        }
+        continue;
+      }
       try {
         const finalized = await finalizeNativeRun({
           db,
           runId: row.runId,
           workspaceFinalizeStatus,
           projectRunStatus: true,
+          preserveProviderAttempt: Boolean(
+            readNativeWorkspaceSyncReference(
+              record(row.runnerProfileJson).nativeWorkspaceSync,
+            ),
+          ),
         });
         results.push({
           ...finalized,
@@ -633,6 +697,20 @@ export async function reconcileNativeFinalizations(db: Db, runIds?: string[]) {
           workspaceFinalizeStatus,
           reconciliationDecision: recoveryDecision,
         });
+        if (
+          workspaceFinalizeStatus === "succeeded" &&
+          finalized.phase === "committed"
+        ) {
+          await cleanupNativeWorkspaceSync(row.runId).catch(() => undefined);
+          await options
+            .onWorkspaceSettled?.({
+              runId: row.runId,
+              companyId: row.companyId,
+              agentId: row.agentId,
+              succeeded: true,
+            })
+            .catch(() => undefined);
+        }
       } catch (error) {
         const failure = await recordNativeFinalizationFailure({
           db,
@@ -659,12 +737,29 @@ export async function reconcileNativeFinalizations(db: Db, runIds?: string[]) {
       throw new Error("native_reconciliation_replay_policy_invalid");
     }
     try {
-      results.push(await finalizeNativeRun({
+      const finalized = await finalizeNativeRun({
         db,
         runId: row.runId,
         workspaceFinalizeStatus: barrier.status as "succeeded" | "failed",
         projectRunStatus: true,
-      }));
+        preserveProviderAttempt: Boolean(
+          readNativeWorkspaceSyncReference(
+            record(row.runnerProfileJson).nativeWorkspaceSync,
+          ),
+        ),
+      });
+      results.push(finalized);
+      if (finalized.phase === "committed") {
+        await cleanupNativeWorkspaceSync(row.runId).catch(() => undefined);
+        await options
+          .onWorkspaceSettled?.({
+            runId: row.runId,
+            companyId: row.companyId,
+            agentId: row.agentId,
+            succeeded: true,
+          })
+          .catch(() => undefined);
+      }
     } catch (error) {
       results.push(await recordNativeFinalizationFailure({
         db,

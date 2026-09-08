@@ -169,7 +169,7 @@ describe("sandbox callback bridge", () => {
       client: createFileSystemSandboxCallbackBridgeQueueClient(),
       queueDir,
       authorizeRequest: async (request) =>
-        request.path === "/api/agents/me" ? null : `Route not allowed: ${request.method} ${request.path}`,
+        ["/api/agents/me", "/runtime-tools/github/credentials"].includes(request.path) ? null : `Route not allowed: ${request.method} ${request.path}`,
       handleRequest: async (request) => {
         seenRequests.push({
           method: request.method,
@@ -264,6 +264,23 @@ describe("sandbox callback bridge", () => {
     });
     expect(seenRequests[0]?.headers.authorization).toBeUndefined();
     expect(seenRequests[0]?.headers["x-paperclip-run-id"]).toBeUndefined();
+
+    const githubResponse = await fetch(`${bridge.baseUrl}/runtime-tools/github/credentials`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${bridgeToken}`,
+        "content-type": "application/json",
+        "x-paperclip-github-capability": "test-run-scoped-capability",
+      },
+      body: "{}",
+    });
+    expect(githubResponse.status).toBe(200);
+    await githubResponse.arrayBuffer();
+    expect(seenRequests[1]).toMatchObject({
+      method: "POST", path: "/runtime-tools/github/credentials", body: "{}",
+      headers: { "x-paperclip-github-capability": "test-run-scoped-capability" },
+    });
+    expect(seenRequests[1]?.headers.authorization).toBeUndefined();
 
   });
 
@@ -1301,6 +1318,7 @@ describe("sandbox callback bridge", () => {
 
   it("permits the documented heartbeat surface and denies unrelated routes", () => {
     const allowed: Array<{ method: string; path: string }> = [
+      { method: "POST", path: "/runtime-tools/github/credentials" },
       { method: "GET", path: "/api/agents/me" },
       { method: "GET", path: "/api/agents/me/inbox-lite" },
       { method: "GET", path: "/api/agents/me/inbox/mine" },

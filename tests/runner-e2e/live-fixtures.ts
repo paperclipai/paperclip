@@ -32,12 +32,21 @@ interface AgentRecord {
   name: string;
   companyId: string;
 }
+interface ProjectRecord {
+  id: string;
+  name: string;
+  primaryWorkspace?: {
+    id: string;
+    cwd?: string | null;
+  } | null;
+}
 
 export interface LiveFixtureValues {
   company: CompanyRecord;
   secretRefs: SecretReferenceMap;
   environment: EnvironmentRecord;
   agent: AgentRecord;
+  project?: ProjectRecord;
   teardown(): Promise<void>;
 }
 
@@ -210,12 +219,51 @@ export async function setupLiveFixtures(input: {
     },
   });
 
+  if (execution.environment.configurationKey === "warm-reuse-v1") {
+    registry.register<ProjectRecord>({
+      id: "project",
+      dependencies: ["company", "environment"],
+      async setup(resolved) {
+        const company = value<CompanyRecord>(resolved, "company");
+        const environment = value<EnvironmentRecord>(resolved, "environment");
+        return api.post<ProjectRecord>(
+          `/api/companies/${company.id}/projects`,
+          {
+            name: `Runner E2E warm project ${input.executionNonce}`,
+            description:
+              "Ephemeral project anchoring a reusable Daytona execution workspace",
+            executionWorkspacePolicy: {
+              enabled: true,
+              defaultMode: "shared_workspace",
+              sharedWorkspaceConcurrency: "serialize",
+              allowIssueOverride: false,
+              environmentId: environment.id,
+              workspaceStrategy: { type: "project_primary" },
+            },
+            workspace: {
+              name: "Primary",
+              sourceType: "local_path",
+              cwd: input.workspacePath,
+              isPrimary: true,
+            },
+          },
+        );
+      },
+      async teardown() {
+        // The isolated instance is deleted after provider resources are gone.
+      },
+    });
+  }
+
   const setup = await registry.setupAll();
   return {
     company: value<CompanyRecord>(setup.values, "company"),
     secretRefs: value<SecretReferenceMap>(setup.values, "secrets"),
     environment: value<EnvironmentRecord>(setup.values, "environment"),
     agent: value<AgentRecord>(setup.values, "agent"),
+    ...(setup.values.has("project")
+      ? { project: value<ProjectRecord>(setup.values, "project") }
+      : {}),
     teardown: setup.teardown,
   };
 }

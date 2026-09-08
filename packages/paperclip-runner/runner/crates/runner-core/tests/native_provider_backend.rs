@@ -10,7 +10,7 @@ use paperclip_runner_core::durable::{
     QualifiedLaunchArtifact,
 };
 use paperclip_runner_core::native_provider_backend::NativeProviderCommandExecutor;
-use paperclip_runner_core::provider_bridge::authorized_tool_catalog_digest;
+use paperclip_runner_core::provider_bridge::{authorized_tool_catalog_digest, AuthorizedTool};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
@@ -144,7 +144,7 @@ fn prepare_payload(directory: &Path, agent: &str) -> Value {
 fn prepare_payload_with_mode(directory: &Path, agent: &str, mode: &str) -> Value {
     let operations = Vec::new();
     let (runtime_package, runtime_version) = if agent == "codex" {
-        (json!("@openai/codex"), json!("0.148.0"))
+        (json!("@openai/codex"), json!("0.153.4"))
     } else {
         (Value::Null, Value::Null)
     };
@@ -204,7 +204,11 @@ fn preserves_acpx_semantic_disposition_in_the_run_terminal() {
         .execute(&command(2, "session.open", json!({})))
         .unwrap();
     executor
-        .execute(&command(3, "turn.start", json!({"text": "Wait."})))
+        .execute(&command(
+            3,
+            "turn.start",
+            json!({"text": "Wait.", "turnId": "provider-turn-blocked"}),
+        ))
         .unwrap();
 
     let events = executor.poll_events().unwrap();
@@ -236,7 +240,7 @@ fn opencode_prepare_payload(directory: &Path) -> Value {
             "kind": "opencode",
             "provider": "opencode",
             "driver": "opencode_server",
-            "providerVersion": "1.18.17",
+            "providerVersion": "1.18.29",
             "command": directory.join("qualified-opencode-proxy-command"),
             "args": [directory.join("qualified-opencode-proxy-script")],
             "cwd": directory,
@@ -279,7 +283,7 @@ fn managed_prepare_payload(kind: &str) -> Value {
             "contextBucket": "context-bucket",
             "contextPrefix": "companies/company/profiles/profile",
             "contextKmsKeyArn": "arn:aws:kms:us-east-1:123456789012:key/test",
-            "qualificationRevision": "aws-agentcore-harness-v1",
+            "qualificationRevision": "aws-agentcore-harness-context-v2",
             "eventExpiryDays": 90,
             "maxEstimatedSessionCostUsd": 1.0,
             "maxIterations": 8,
@@ -341,7 +345,7 @@ fn executes_a_qualified_acpx_profile_through_the_native_selector() {
         .execute(&command(
             3,
             "turn.start",
-            json!({"text": "Finish the task."}),
+            json!({"text": "Finish the task.", "turnId": "provider-turn-first"}),
         ))
         .unwrap();
     assert_eq!(started.events[0].0, "turn.started");
@@ -360,6 +364,111 @@ fn executes_a_qualified_acpx_profile_through_the_native_selector() {
     executor
         .execute(&command(4, "session.close", json!({})))
         .unwrap();
+    executor.shutdown().unwrap();
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn keeps_native_acpx_semantic_events_on_the_durable_controller_turn() {
+    let directory = temporary_directory("acpx-durable-turn-correlation");
+    let config = acpx_config(&directory, "turns-tool");
+    let mut executor = NativeProviderCommandExecutor::with_runner_config(&directory, &config);
+    let operations = vec![AuthorizedTool {
+        operation_id: "issues.read".to_owned(),
+        version: 1,
+        description: "Read an issue.".to_owned(),
+        input_schema: json!({"type":"object"}),
+        response_schema: json!({"type":"object"}),
+    }];
+    let mut prepare = prepare_payload_with_mode(&directory, "codex", "turns-tool");
+    prepare["authorizedTools"] = json!({
+        "schema": "paperclip.runner.authorized-tools.v1",
+        "schemaVersion": 1,
+        "catalogDigest": authorized_tool_catalog_digest(&operations).unwrap(),
+        "operations": operations,
+    });
+
+    executor
+        .execute(&command(1, "run.prepare", prepare))
+        .unwrap();
+    executor
+        .execute(&command(2, "session.open", json!({})))
+        .unwrap();
+    let started = executor
+        .execute(&command(
+            3,
+            "turn.start",
+            json!({"text": "Read the issue.", "turnId": "provider-turn-fresh"}),
+        ))
+        .unwrap();
+    assert_eq!(started.result["providerTurnId"], "provider-turn-fresh");
+
+    let events = executor.poll_events().unwrap();
+    let semantic = events
+        .iter()
+        .find(|event| event.event_type == "semantic_tool.input")
+        .expect("ACPX tool call must cross the native provider boundary");
+    assert_eq!(
+        semantic.payload["semantic_tool"]["correlation"]["turnId"],
+        "turn-1"
+    );
+
+    executor.shutdown().unwrap();
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn starts_a_distinct_acpx_provider_turn_for_same_run_recovery() {
+    let directory = temporary_directory("acpx-same-run-recovery");
+    let config = acpx_config(&directory, "turns-reserved-result-terminal");
+    let mut executor = NativeProviderCommandExecutor::with_runner_config(&directory, &config);
+
+    executor
+        .execute(&command(
+            1,
+            "run.prepare",
+            prepare_payload(&directory, "codex"),
+        ))
+        .unwrap();
+    executor
+        .execute(&command(2, "session.open", json!({})))
+        .unwrap();
+    let first = executor
+        .execute(&command(
+            3,
+            "turn.start",
+            json!({"text": "First attempt.", "turnId": "provider-turn-first"}),
+        ))
+        .unwrap();
+    assert_eq!(first.result["providerTurnId"], "provider-turn-first");
+
+    let first_events = executor.poll_events().unwrap();
+    assert!(first_events
+        .iter()
+        .any(|event| event.event_type == "turn.completed"));
+    executor.acknowledge_events(first_events.len()).unwrap();
+
+    let recovered = executor
+        .execute(&command(
+            4,
+            "turn.start",
+            json!({
+                "text": "Recover the missing disposition.",
+                "turnId": "provider-turn-recovery",
+            }),
+        ))
+        .unwrap();
+    assert_eq!(recovered.result["providerTurnId"], "provider-turn-recovery");
+    assert!(recovered.events.iter().any(|(event_type, _, payload)| {
+        event_type == "turn.started" && payload["providerTurnId"] == "provider-turn-recovery"
+    }));
+    let recovered_events = executor.poll_events().unwrap();
+    assert!(recovered_events.iter().any(|event| {
+        event.event_type == "turn.completed"
+            && event.payload["providerTurnId"] == "provider-turn-recovery"
+    }));
+    executor.acknowledge_events(recovered_events.len()).unwrap();
+
     executor.shutdown().unwrap();
     fs::remove_dir_all(directory).unwrap();
 }

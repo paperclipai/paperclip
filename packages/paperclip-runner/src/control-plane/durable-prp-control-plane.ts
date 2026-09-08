@@ -28,6 +28,7 @@ import { dirname, resolve } from "node:path";
 import type { Duplex } from "node:stream";
 import { fileURLToPath } from "node:url";
 
+import { githubCredentialEnvironment } from "../github-credential-environment.js";
 import {
   validatePrpEvent,
   type PrpEvent,
@@ -47,7 +48,10 @@ const coreStateSchema = "paperclip.runner.durable.control-plane-state.v1";
 const maxFrameBytes = 1024 * 1024;
 const maxCommandBytes = maxFrameBytes - 4 * 1024;
 const maxCommands = 500;
-const maxCommittedEventWindow = 64;
+// A provider can emit several 100-event runner batches before the transport's
+// polling turn regains the event loop. Match the transport's explicit deferred
+// event bound so a valid burst is not compacted before it can be observed.
+const maxCommittedEventWindow = 4_096;
 const maxStateBytes = 192 * 1024 * 1024;
 const authChallengeTtlMs = 5_000;
 const stableIdPattern = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,239}$/;
@@ -116,6 +120,13 @@ interface ConnectionLeaseRecord {
 interface StoredCoreState {
   schema: typeof coreStateSchema;
   identity: DurableRecoveryIdentity;
+  /**
+   * Connection-free provider attachment payload retained across authority
+   * epochs. Commands are intentionally reset when a reusable runner changes
+   * run identity, so the next controller cannot rely on command history to
+   * reconstruct another warm attachment.
+   */
+  runAttachTemplate?: Record<string, unknown> | null;
   tickets: Record<string, BootstrapTicketRecord>;
   leases: Record<string, ConnectionLeaseRecord>;
   commands: DurableRecoveryCoreCommand[];
@@ -226,6 +237,8 @@ export interface RunnerProcessHandle {
     kill(signal?: NodeJS.Signals | number): boolean;
   };
   completion: Promise<RunnerProcessResult>;
+  processGroupId?: number | null;
+  startedAt?: string;
   /** Relaunches the same immutable process specification with a fresh ticket. */
   restart?(ticket: string): RunnerProcessHandle;
 }
@@ -376,6 +389,13 @@ function isStoredCoreState(
     !Number.isSafeInteger(value.connectionCount) ||
     (value.connectionCount as number) < 0 ||
     !isRecord(value.commandDeliveryCounts)
+  ) {
+    return false;
+  }
+  if (
+    value.runAttachTemplate !== undefined &&
+    value.runAttachTemplate !== null &&
+    !isRecord(value.runAttachTemplate)
   ) {
     return false;
   }
@@ -557,6 +577,7 @@ function initialCoreState(identity: DurableRecoveryIdentity): StoredCoreState {
   return {
     schema: coreStateSchema,
     identity,
+    runAttachTemplate: null,
     tickets: {},
     leases: {},
     commands: [],
@@ -896,6 +917,7 @@ class AuthorityConnection {
   secureChannel: SecureChannel | null = null;
   lease: ConnectionLeaseRecord | null = null;
   connectionId: string | null = null;
+  terminalLifecycleCommandId: string | null = null;
   readonly wire: PrpWireConnection;
   #closed = false;
   #onClose: () => void;
@@ -936,7 +958,7 @@ class AuthorityConnection {
 
 /** Authenticated, replay-safe PRP transport authority. Business operations are caller supplied. */
 export class DurablePrpControlPlane {
-  readonly #identity: DurableRecoveryIdentity;
+  #identity: DurableRecoveryIdentity;
   readonly #store: DurableCoreStore;
   #expectedRunnerVersion: string;
   #expectedRunnerDigest: string;
@@ -1036,6 +1058,69 @@ export class DurablePrpControlPlane {
     return [...this.#connections].filter(
       (connection) => connection.secureChannel !== null,
     ).length;
+  }
+
+  /**
+   * Atomically advances a settled reusable runner to a new run authority while
+   * retaining its existing connection lease secret. The runner performs the
+   * matching state transition only after acknowledging `run.attach`.
+   */
+  rotateRunIdentity(
+    identity: DurableRecoveryIdentity,
+    runAttachTemplate?: Record<string, unknown>,
+  ): void {
+    if (
+      !Object.values(identity).every(
+        (value) => typeof value === "string" && stableIdPattern.test(value),
+      ) ||
+      identity.runnerInstanceId !== this.#identity.runnerInstanceId ||
+      identity.environmentLeaseId !== this.#identity.environmentLeaseId ||
+      identity.normalizedSessionId !== this.#identity.normalizedSessionId ||
+      identity.runId === this.#identity.runId ||
+      this.#store.state.commands.some((command) => command.status === "pending")
+    ) {
+      throw new Error("Durable PRP run identity rotation is invalid.");
+    }
+    this.disconnectActiveRunner();
+    const leases = Object.fromEntries(
+      Object.entries(this.#store.state.leases).map(([key, lease]) => [
+        key,
+        { ...lease, identity: structuredClone(identity) },
+      ]),
+    );
+    Object.assign(this.#store.state, initialCoreState(identity), {
+      leases,
+      runAttachTemplate:
+        runAttachTemplate === undefined
+          ? null
+          : structuredClone(runAttachTemplate),
+    });
+    this.#identity = structuredClone(identity);
+    this.#store.save();
+  }
+
+  /**
+   * Retain the connection-free provider preparation payload before the first
+   * runner bootstrap. Completed command history is bounded and may be
+   * compacted before a warm continuation arrives, so it cannot be the sole
+   * source for a later run.attach. Repeating the same write is idempotent;
+   * changing an established seed fails closed.
+   */
+  persistRunAttachTemplate(runAttachTemplate: Record<string, unknown>): void {
+    if (!isRecord(runAttachTemplate.provider)) {
+      throw new Error("Durable PRP run attachment template is invalid.");
+    }
+    const existing = this.#store.state.runAttachTemplate;
+    if (
+      existing !== undefined &&
+      existing !== null &&
+      canonicalJson(existing) !== canonicalJson(runAttachTemplate)
+    ) {
+      throw new Error("Durable PRP run attachment template conflicts.");
+    }
+    if (existing !== undefined && existing !== null) return;
+    this.#store.state.runAttachTemplate = structuredClone(runAttachTemplate);
+    this.#store.save();
   }
 
   issueBootstrapTicket(ttlMs = 5_000): string {
@@ -1535,6 +1620,11 @@ export class DurablePrpControlPlane {
     this.#store.state.lastLeaseExpiresAt = lease.expiresAt;
 
     const pending = this.#nextPendingCommand();
+    const [pendingCommand] = pending;
+    connection.terminalLifecycleCommandId =
+      pendingCommand && this.#isTerminalLifecycleCommand(pendingCommand)
+        ? pendingCommand.commandId
+        : null;
     for (const command of pending) {
       this.#store.state.commandDeliveryCounts[command.commandId] =
         (this.#store.state.commandDeliveryCounts[command.commandId] ?? 0) + 1;
@@ -1621,8 +1711,12 @@ export class DurablePrpControlPlane {
   }
 
   #sendNextCommand(connection: AuthorityConnection): void {
+    if (connection.terminalLifecycleCommandId !== null) return;
     const [command] = this.#nextPendingCommand();
     if (command === undefined) return;
+    if (this.#isTerminalLifecycleCommand(command)) {
+      connection.terminalLifecycleCommandId = command.commandId;
+    }
     this.#store.state.commandDeliveryCounts[command.commandId] =
       (this.#store.state.commandDeliveryCounts[command.commandId] ?? 0) + 1;
     this.#store.save();
@@ -1653,6 +1747,9 @@ export class DurablePrpControlPlane {
       connection.close();
       return;
     }
+    if (this.#isTerminalLifecycleCommand(command)) {
+      connection.terminalLifecycleCommandId = command.commandId;
+    }
     const status = result.status;
     // `indeterminate` is terminal too: a runner that crashed between journaling
     // a command and confirming its effect reports it on recovery and will not
@@ -1676,24 +1773,31 @@ export class DurablePrpControlPlane {
       this.#store.state.duplicateCommandResults += 1;
       this.#store.save();
       this.#ackTerminalCommandResult(connection, command);
-      this.#sendNextCommand(connection);
+      if (!this.#isTerminalLifecycleCommand(command)) {
+        this.#sendNextCommand(connection);
+      }
       return;
     }
     command.status = status;
     command.result = structuredClone(result);
     this.#store.save();
     this.#ackTerminalCommandResult(connection, command);
-    this.#sendNextCommand(connection);
+    if (!this.#isTerminalLifecycleCommand(command)) {
+      this.#sendNextCommand(connection);
+    }
+  }
+
+  #isTerminalLifecycleCommand(command: DurableRecoveryCoreCommand): boolean {
+    return (
+      command.type === "runner.suspend" || command.type === "runner.shutdown"
+    );
   }
 
   #ackTerminalCommandResult(
     connection: AuthorityConnection,
     command: DurableRecoveryCoreCommand,
   ): void {
-    if (
-      command.type !== "runner.suspend" &&
-      command.type !== "runner.shutdown"
-    ) {
+    if (!this.#isTerminalLifecycleCommand(command)) {
       return;
     }
     connection.sendJson(
@@ -1928,6 +2032,7 @@ const runnerExplicitProviderEnvironmentKeys = [
   "PAPERCLIP_NATIVE_MCP_URL",
   "PAPERCLIP_NATIVE_MCP_TOKEN",
   "PAPERCLIP_NATIVE_RUNTIME_CONTEXT_PATH",
+  "PAPERCLIP_RUNNER_EXTERNAL_SANDBOX",
   "PAPERCLIP_ACPX_PROVIDER_PACKAGE_ROOT",
   "PAPERCLIP_ACPX_PROVIDER_PACKAGE_MANIFEST",
   "PAPERCLIP_ACPX_PROVIDER_RECOVERY_POLICY",
@@ -1955,6 +2060,7 @@ function runnerEnvironment(
       const value = explicitSource[key];
       if (value !== undefined) environment[key] = value;
     }
+    Object.assign(environment, githubCredentialEnvironment(explicitSource));
   }
   return environment;
 }
@@ -1993,6 +2099,7 @@ export function spawnRunner(options: {
   };
   environment?: NodeJS.ProcessEnv;
   processLauncher?: (spec: RunnerProcessLaunchSpec) => RunnerProcessHandle;
+  diagnosticsDirectory?: string;
 }): RunnerProcessHandle {
   const connection =
     options.connection ??
@@ -2096,6 +2203,9 @@ export function spawnRunner(options: {
       );
     }
   }
+  if (options.diagnosticsDirectory !== undefined) {
+    args.push("--diagnostics-directory", options.diagnosticsDirectory);
+  }
 
   const command = options.runnerBinaryPath ?? runnerBinary;
   const environment = runnerEnvironment(options.ticket, options.environment);
@@ -2109,28 +2219,75 @@ export function spawnRunner(options: {
     );
   }
 
+  const detached = process.platform !== "win32";
+  const diagnosticsDirectory = options.diagnosticsDirectory;
+  let stdoutPath: string | null = null;
+  let stderrPath: string | null = null;
+  if (diagnosticsDirectory) {
+    try {
+      const metadata = lstatSync(diagnosticsDirectory);
+      if (metadata.isSymbolicLink() || !metadata.isDirectory()) {
+        throw new Error(
+          `Private state directory is not a real directory: ${diagnosticsDirectory}`,
+        );
+      }
+    } catch (error) {
+      if (!isNodeError(error, "ENOENT")) throw error;
+      mkdirSync(diagnosticsDirectory, { recursive: true, mode: 0o700 });
+    }
+    if (process.platform !== "win32") chmodSync(diagnosticsDirectory, 0o700);
+    verifyPrivateDirectory(diagnosticsDirectory);
+    stdoutPath = resolve(diagnosticsDirectory, "runnerd.stdout.log");
+    stderrPath = resolve(diagnosticsDirectory, "runnerd.stderr.log");
+    // runnerd owns every durable diagnostic write so it can redact and bound
+    // the complete value before a byte reaches disk. Raw process output is
+    // intentionally discarded below; these files are only the runner-owned
+    // restart-survivable diagnostic channel.
+    atomicPrivateWrite(stdoutPath, "");
+    atomicPrivateWrite(stderrPath, "");
+  }
   const child = spawn(command, args, {
     cwd: packageRoot,
     env: environment,
-    stdio: "pipe",
+    detached,
+    stdio: diagnosticsDirectory ? "ignore" : "pipe",
   });
+  child.unref();
   let stdout = "";
   let stderr = "";
-  child.stdout.setEncoding("utf8").on("data", (chunk: string) => {
+  child.stdout?.setEncoding("utf8").on("data", (chunk: string) => {
     stdout = `${stdout}${chunk}`.slice(-16_384);
   });
-  child.stderr.setEncoding("utf8").on("data", (chunk: string) => {
+  child.stderr?.setEncoding("utf8").on("data", (chunk: string) => {
     stderr = `${stderr}${chunk}`.slice(-16_384);
   });
-  const completion = new Promise<RunnerProcessResult>(
+  const boundedDiagnostic = (filePath: string | null): string => {
+    if (!filePath) return "";
+    try {
+      return (readPrivateFile(filePath) ?? "").slice(-16_384);
+    } catch {
+      return "";
+    }
+  };
+  const processCompletion = new Promise<RunnerProcessResult>(
     (resolveCompletion, rejectCompletion) => {
       child.once("error", rejectCompletion);
       child.once("exit", (code, signal) =>
-        resolveCompletion({ code, signal, stdout, stderr }),
+        resolveCompletion({
+          code,
+          signal,
+          stdout: stdout || boundedDiagnostic(stdoutPath),
+          stderr: stderr || boundedDiagnostic(stderrPath),
+        }),
       );
     },
   );
-  return withRestart({ child, completion });
+  return withRestart({
+    child,
+    completion: processCompletion,
+    processGroupId: detached ? (child.pid ?? null) : null,
+    startedAt: new Date().toISOString(),
+  });
 }
 
 export async function waitForProcess(
@@ -2143,7 +2300,19 @@ export async function waitForProcess(
       handle.completion,
       new Promise<never>((_resolve, reject) => {
         timer = setTimeout(() => {
-          handle.child.kill("SIGKILL");
+          if (
+            process.platform !== "win32" &&
+            handle.processGroupId &&
+            handle.processGroupId > 0
+          ) {
+            try {
+              process.kill(-handle.processGroupId, "SIGKILL");
+            } catch {
+              handle.child.kill("SIGKILL");
+            }
+          } else {
+            handle.child.kill("SIGKILL");
+          }
           reject(new Error("Durable recovery runner timed out."));
         }, timeoutMs);
       }),

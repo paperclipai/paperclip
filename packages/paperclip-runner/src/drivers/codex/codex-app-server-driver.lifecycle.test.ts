@@ -92,7 +92,49 @@ class BlockingBootstrapTransport extends FakeCodexTransport {
   }
 }
 
+class WarmAttachTransport extends FakeCodexTransport {
+  readonly attachments: Array<{
+    runId: string;
+    turnId: string;
+    itemId: string;
+  }> = [];
+
+  async attachRun(input: {
+    runId: string;
+    turnId: string;
+    itemId: string;
+  }): Promise<void> {
+    this.attachments.push(structuredClone(input));
+  }
+}
+
 describe("Codex app-server Codex driver", () => {
+  it("accepts runner-proven warm attachment when the host active-turn reducer is stale", async () => {
+    const transport = new WarmAttachTransport();
+    const driver = makeDriver([transport]);
+    const session = await driver.openSession({
+      runId: "run-warm-first",
+      normalizedSessionId: "normalized-warm",
+      workingDirectory: WORKSPACE,
+    });
+
+    await session.startTurn({
+      message: { role: "user", text: "first turn" },
+    });
+    await expect(
+      session.attachRun?.({ runId: "run-warm-second" }),
+    ).resolves.toBeUndefined();
+    expect(transport.attachments).toHaveLength(1);
+    expect((await session.snapshot()).activeTurnId).toBeNull();
+
+    await expect(
+      session.startTurn({
+        message: { role: "user", text: "second turn" },
+      }),
+    ).resolves.toMatchObject({ turnId: "turn-1" });
+    await session.close({ reason: "test complete" });
+  });
+
   it("does not create a transport for a pre-aborted session open", async () => {
     const transportFactory = vi.fn(() => new FakeCodexTransport());
     const driver = makeDriver([], { transportFactory });
@@ -100,12 +142,14 @@ describe("Codex app-server Codex driver", () => {
     const cancelled = new Error("session open cancelled before admission");
     controller.abort(cancelled);
 
-    await expect(driver.openSession({
-      runId: "run-pre-aborted",
-      normalizedSessionId: "normalized-pre-aborted",
-      workingDirectory: WORKSPACE,
-      signal: controller.signal,
-    })).rejects.toBe(cancelled);
+    await expect(
+      driver.openSession({
+        runId: "run-pre-aborted",
+        normalizedSessionId: "normalized-pre-aborted",
+        workingDirectory: WORKSPACE,
+        signal: controller.signal,
+      }),
+    ).rejects.toBe(cancelled);
     expect(transportFactory).not.toHaveBeenCalled();
   });
 
@@ -124,9 +168,11 @@ describe("Codex app-server Codex driver", () => {
     const cancelled = new Error("session recovery cancelled before admission");
     controller.abort(cancelled);
 
-    await expect(recoveryDriver.recoverSession(snapshot, {
-      signal: controller.signal,
-    })).rejects.toBe(cancelled);
+    await expect(
+      recoveryDriver.recoverSession(snapshot, {
+        signal: controller.signal,
+      }),
+    ).rejects.toBe(cancelled);
     expect(transportFactory).not.toHaveBeenCalled();
   });
 
@@ -137,17 +183,20 @@ describe("Codex app-server Codex driver", () => {
     const cancelled = new Error("session open cancelled while blocked");
     let settled = false;
 
-    const opening = driver.openSession({
-      runId: "run-blocked-open",
-      normalizedSessionId: "normalized-blocked-open",
-      workingDirectory: WORKSPACE,
-      signal: controller.signal,
-    }).then(
-      () => ({ error: null }),
-      (error: unknown) => ({ error }),
-    ).finally(() => {
-      settled = true;
-    });
+    const opening = driver
+      .openSession({
+        runId: "run-blocked-open",
+        normalizedSessionId: "normalized-blocked-open",
+        workingDirectory: WORKSPACE,
+        signal: controller.signal,
+      })
+      .then(
+        () => ({ error: null }),
+        (error: unknown) => ({ error }),
+      )
+      .finally(() => {
+        settled = true;
+      });
     await transport.blocked;
     controller.abort(cancelled);
     await transport.closeStarted;
@@ -178,14 +227,17 @@ describe("Codex app-server Codex driver", () => {
     const cancelled = new Error("session recovery cancelled while blocked");
     let settled = false;
 
-    const recovering = driver.recoverSession(snapshot, {
-      signal: controller.signal,
-    }).then(
-      (value) => ({ value, error: null }),
-      (error: unknown) => ({ value: null, error }),
-    ).finally(() => {
-      settled = true;
-    });
+    const recovering = driver
+      .recoverSession(snapshot, {
+        signal: controller.signal,
+      })
+      .then(
+        (value) => ({ value, error: null }),
+        (error: unknown) => ({ value: null, error }),
+      )
+      .finally(() => {
+        settled = true;
+      });
     await recoveryTransport.blocked;
     controller.abort(cancelled);
     await recoveryTransport.closeStarted;
@@ -241,6 +293,112 @@ describe("Codex app-server Codex driver", () => {
     expect(transport.calls[0]?.method).toBe("initialize");
   });
 
+  it("persists process ownership after a lazy transport launches during session open", async () => {
+    const transport = new FakeCodexTransport();
+    Object.assign(transport, {
+      processInfo: () => ({
+        pid: transport.calls.some((call) => call.method === "thread/start")
+          ? 71_002
+          : null,
+        processGroupId: 71_002,
+        startedAt: "2026-08-18T18:01:00.000Z",
+        exited: false,
+        exitCode: null,
+        signal: null,
+      }),
+    });
+    const onSpawn = vi.fn(async () => undefined);
+    const driver = makeDriver([transport], { onSpawn });
+
+    await driver.openSession({
+      runId: "run-lazy-owned",
+      normalizedSessionId: "normalized-lazy-owned",
+      workingDirectory: WORKSPACE,
+    });
+
+    expect(onSpawn).toHaveBeenCalledOnce();
+    expect(onSpawn).toHaveBeenCalledWith({
+      pid: 71_002,
+      processGroupId: 71_002,
+      startedAt: "2026-08-18T18:01:00.000Z",
+    });
+    expect(transport.calls.map((call) => call.method)).toContain(
+      "thread/start",
+    );
+  });
+
+  it("persists process ownership after a lazy transport launches during recovery", async () => {
+    const originalTransport = new FakeCodexTransport();
+    const originalDriver = makeDriver([originalTransport]);
+    const original = await originalDriver.openSession({
+      runId: "run-lazy-recovery-owned",
+      normalizedSessionId: "normalized-lazy-recovery-owned",
+      workingDirectory: WORKSPACE,
+    });
+    const snapshot = await original.snapshot();
+    snapshot.activeTurnId = "turn-recovery-race";
+    await original.close({ reason: "prepare lazy ownership recovery" });
+
+    const recoveryTransport = new FakeCodexTransport();
+    Object.assign(recoveryTransport, {
+      processInfo: () => ({
+        pid: recoveryTransport.calls.some(
+          (call) => call.method === "thread/read",
+        )
+          ? 71_003
+          : null,
+        processGroupId: 71_003,
+        startedAt: "2026-08-18T18:02:00.000Z",
+        exited: false,
+        exitCode: null,
+        signal: null,
+      }),
+    });
+    const onSpawn = vi.fn(async () => undefined);
+    const transportFactory = vi.fn(() => recoveryTransport);
+    const recoveryDriver = makeDriver([], { onSpawn, transportFactory });
+
+    const recovered = await recoveryDriver.recoverSession(snapshot);
+
+    expect(recovered.recovered).toBe(true);
+    expect(transportFactory).toHaveBeenCalledWith({
+      providerRecoveryPolicy: snapshot.providerRecoveryPolicy,
+      persistedSession: {
+        driverSessionId: snapshot.driverSessionId,
+        providerSessionId: snapshot.providerSessionId,
+        providerIdentity: snapshot.providerIdentity,
+        activeTurnId: snapshot.activeTurnId,
+      },
+    });
+    expect(onSpawn).toHaveBeenCalledOnce();
+    expect(onSpawn).toHaveBeenCalledWith({
+      pid: 71_003,
+      processGroupId: 71_003,
+      startedAt: "2026-08-18T18:02:00.000Z",
+    });
+    expect(recoveryTransport.calls.map((call) => call.method)).toContain(
+      "thread/read",
+    );
+  });
+
+  it("detaches restart authority without closing the provider transport", async () => {
+    const transport = new FakeCodexTransport();
+    const detachControllerForRestart = vi.fn(async () => undefined);
+    Object.assign(transport, { detachControllerForRestart });
+    const driver = makeDriver([transport]);
+    const session = await driver.openSession({
+      runId: "run-hot-detach",
+      normalizedSessionId: "normalized-hot-detach",
+      workingDirectory: WORKSPACE,
+    });
+    const close = vi.spyOn(transport, "close");
+
+    await session.detachControllerForRestart?.();
+
+    expect(detachControllerForRestart).toHaveBeenCalledOnce();
+    expect(close).not.toHaveBeenCalled();
+  });
+
   it("sends direct chat as plain text and permits a follow-up turn", async () => {
     const transport = new FakeCodexTransport();
     const driver = makeDriver([transport], { conversationMode: "direct" });
@@ -289,7 +447,9 @@ describe("Codex app-server Codex driver", () => {
 
   it("forwards the persisted native model to the runner transport", async () => {
     const transport = new FakeCodexTransport();
-    const driver = makeDriver([transport], { model: "qualified-provider-model" });
+    const driver = makeDriver([transport], {
+      model: "qualified-provider-model",
+    });
 
     await driver.openSession({
       runId: "run-qualified-model",
@@ -326,7 +486,9 @@ describe("Codex app-server Codex driver", () => {
       workingDirectory: WORKSPACE,
     });
 
-    const threadStart = transport.calls.find((call) => call.method === "thread/start");
+    const threadStart = transport.calls.find(
+      (call) => call.method === "thread/start",
+    );
     expect(threadStart?.params).toMatchObject({
       baseInstructions,
       config: {
@@ -334,7 +496,9 @@ describe("Codex app-server Codex driver", () => {
         include_apps_instructions: false,
       },
     });
-    expect(JSON.stringify(threadStart?.params.input ?? null)).not.toContain(baseInstructions);
+    expect(JSON.stringify(threadStart?.params.input ?? null)).not.toContain(
+      baseInstructions,
+    );
   });
 
   it("passes the common typed-event contract and reports one provider turn terminal", async () => {
@@ -465,7 +629,9 @@ describe("Codex app-server Codex driver", () => {
     expect(
       events.filter((event) => event.eventType === "run.terminal"),
     ).toHaveLength(0);
-    const workspaceEvents = events.filter((event) => event.eventType === "workspace.change.updated");
+    const workspaceEvents = events.filter(
+      (event) => event.eventType === "workspace.change.updated",
+    );
     expect(workspaceEvents[0]?.payload).toMatchObject({
       schema: "paperclip.workspace.diff.v1",
       changeSetId: `${turn.turnId}:workspace`,
@@ -477,9 +643,13 @@ describe("Codex app-server Codex driver", () => {
       complete: true,
       totals: { files: 1 },
     });
-    const planEvents = events.filter((event) => event.eventType === "plan.updated");
+    const planEvents = events.filter(
+      (event) => event.eventType === "plan.updated",
+    );
     expect(planEvents).toHaveLength(2);
-    expect(new Set(planEvents.map((event) => event.itemId))).toEqual(new Set([turn.turnId]));
+    expect(new Set(planEvents.map((event) => event.itemId))).toEqual(
+      new Set([turn.turnId]),
+    );
     expect(planEvents.at(-1)?.payload).toMatchObject({
       planId: turn.turnId,
       revision: 2,
@@ -551,5 +721,4 @@ describe("Codex app-server Codex driver", () => {
       modelContextWindow: 128000,
     });
   });
-
 });

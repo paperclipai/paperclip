@@ -306,6 +306,7 @@ export const toolsApi = {
     connectionId: string,
     input: {
       asCurrentUser?: boolean;
+      asAgentId?: string;
       interactionId?: string;
     } = {},
   ) =>

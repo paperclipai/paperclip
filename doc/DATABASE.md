@@ -251,6 +251,15 @@ that invariant. Removing or disabling a future native rollout flag must not
 delete these records; persisted experimental runs remain available for recovery
 and inspection.
 
+`native_run_finalizations` also stores restart ownership and recovery state.
+The controller owner is a server boot id, PID, operating-system process-start
+timestamp, and monotonically increasing controller generation. Recovery writes
+its correlated request id, current state, and a bounded JSON history. A
+successor can take the lease immediately only when coordinated handoff or PID
+and process-start evidence proves the prior controller is gone, or when the
+lease expires. Recovery generation changes do not increment the independent
+provider-attempt counter.
+
 ## Question-response delivery receipts
 
 `issue_question_response_deliveries` is the retry-safe, content-free outbox for

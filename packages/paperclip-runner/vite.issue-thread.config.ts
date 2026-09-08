@@ -14,7 +14,6 @@ export default defineConfig({
   plugins: [react(), capabilityIssueThreadServerPlugin()],
   server: { host: "127.0.0.1" },
   preview: { host: "127.0.0.1" },
-  optimizeDeps: { esbuildOptions: { target: "esnext" } },
   build: {
     outDir: resolve(packageRoot, "dist-issue-thread"),
     emptyOutDir: true,

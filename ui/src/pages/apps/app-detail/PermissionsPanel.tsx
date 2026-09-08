@@ -4,6 +4,7 @@ import type { Agent, ToolCatalogEntry, ToolConnectionCapabilities } from "@paper
 import { useSearchParams } from "@/lib/router";
 import { AgentIcon } from "@/components/AgentIconPicker";
 import { AgentMultiSelect } from "@/components/AgentMultiSelect";
+import { InlineBanner } from "@/components/InlineBanner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { RadioCardGroup } from "@/components/ui/radio-card";
@@ -35,6 +36,7 @@ export function PermissionsPanel({
   onRefreshActions,
   refreshPending,
   capabilities,
+  permissionChangeWarning,
 }: Pick<
   AppDetailSectionProps,
   | "appName"
@@ -55,6 +57,7 @@ export function PermissionsPanel({
   onRefreshActions: () => void;
   refreshPending: boolean;
   capabilities: ToolConnectionCapabilities | undefined;
+  permissionChangeWarning?: string;
 }) {
   const [searchParams] = useSearchParams();
   return (
@@ -68,6 +71,7 @@ export function PermissionsPanel({
         onSave={onSaveAccess}
       />
       <ActionsSection
+        key={connectionId}
         connectionId={connectionId}
         appName={appName}
         readOnly={readOnly}
@@ -79,6 +83,7 @@ export function PermissionsPanel({
         refreshPending={refreshPending}
         focusId={searchParams.get("focus")}
         canConfigure={capabilities?.canConfigure ?? false}
+        permissionChangeWarning={permissionChangeWarning}
         onSetPermission={onSetActionPermission}
         onReviewQuarantined={onReviewQuarantined}
         onRefreshActions={onRefreshActions}
@@ -197,6 +202,7 @@ function ActionsSection({
   refreshPending,
   focusId,
   canConfigure,
+  permissionChangeWarning,
   onSetPermission,
   onReviewQuarantined,
   onRefreshActions,
@@ -212,12 +218,14 @@ function ActionsSection({
   refreshPending: boolean;
   focusId?: string | null;
   canConfigure: boolean;
+  permissionChangeWarning?: string;
   onSetPermission: (id: string, next: ActionPermission) => void;
   onReviewQuarantined: (enabledIds: string[]) => void;
   onRefreshActions: () => void;
 }) {
   const [query, setQuery] = useState("");
   const [kindFilter, setKindFilter] = useState<ActionKindFilter>("all");
+  const [showPermissionChangeWarning, setShowPermissionChangeWarning] = useState(false);
   const byName = (a: ToolCatalogEntry, b: ToolCatalogEntry) =>
     (a.title ?? a.toolName).localeCompare(b.title ?? b.toolName);
   const sortedRead = useMemo(() => [...readOnly].sort(byName), [readOnly]);
@@ -264,6 +272,12 @@ function ActionsSection({
         />
       ) : null}
 
+      {permissionChangeWarning && showPermissionChangeWarning ? (
+        <InlineBanner tone="warning" compact>
+          {permissionChangeWarning}
+        </InlineBanner>
+      ) : null}
+
       <div className="space-y-2">
         <div className="flex flex-wrap items-center gap-2">
           <div className="relative min-w-(--sz-12rem) flex-1">
@@ -299,7 +313,10 @@ function ActionsSection({
             disabled={disabled}
             focusId={focusId}
             canConfigure={canConfigure}
-            onSetPermission={onSetPermission}
+            onSetPermission={(id, next) => {
+              setShowPermissionChangeWarning(true);
+              onSetPermission(id, next);
+            }}
           />
           <ActionGroup
             title={`Write (${visibleWrite.length})`}
@@ -311,7 +328,10 @@ function ActionsSection({
             disabled={disabled}
             focusId={focusId}
             canConfigure={canConfigure}
-            onSetPermission={onSetPermission}
+            onSetPermission={(id, next) => {
+              setShowPermissionChangeWarning(true);
+              onSetPermission(id, next);
+            }}
           />
         </div>
       )}

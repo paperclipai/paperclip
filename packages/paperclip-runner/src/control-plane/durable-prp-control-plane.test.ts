@@ -4,7 +4,13 @@ import {
   createHash,
   createHmac,
 } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
+import {
+  chmodSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { connect, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
@@ -30,6 +36,133 @@ const identity: DurableRecoveryIdentity = {
 };
 const expectedRunnerVersion = "0.3.0";
 const expectedRunnerDigest = `sha256:${"a".repeat(64)}`;
+
+it("persists the initial warm attachment seed idempotently and rejects replacement", () => {
+  const root = mkdtempSync(
+    resolve(tmpdir(), "runner-initial-attachment-seed-test-"),
+  );
+  const template = {
+    provider: {
+      kind: "codex",
+      runId: identity.runId,
+      normalizedSessionId: identity.normalizedSessionId,
+    },
+    authorizedTools: {},
+  };
+  try {
+    const core = new DurablePrpControlPlane({
+      stateDirectory: root,
+      identity,
+      expectedRunnerVersion,
+      expectedRunnerDigest,
+    });
+    core.persistRunAttachTemplate(template);
+    core.persistRunAttachTemplate(structuredClone(template));
+
+    expect(
+      JSON.parse(
+        readFileSync(resolve(root, "control-plane-state.json"), "utf8"),
+      ).runAttachTemplate,
+    ).toEqual(template);
+    expect(() =>
+      core.persistRunAttachTemplate({
+        ...template,
+        provider: { ...template.provider, kind: "opencode" },
+      }),
+    ).toThrow("attachment template conflicts");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+it("persists a connection-free warm attachment seed when rotating run identity", () => {
+  const root = mkdtempSync(resolve(tmpdir(), "runner-attachment-seed-test-"));
+  const nextIdentity: DurableRecoveryIdentity = {
+    ...identity,
+    runId: "00000000-0000-4000-8000-000000000002",
+    turnId: "turn-test-2",
+    itemId: "item-test-2",
+  };
+  const template = {
+    provider: {
+      kind: "acpx",
+      runId: nextIdentity.runId,
+      normalizedSessionId: nextIdentity.normalizedSessionId,
+    },
+    workspace: { cwd: "/workspace" },
+  };
+  try {
+    const core = new DurablePrpControlPlane({
+      stateDirectory: root,
+      identity,
+      expectedRunnerVersion,
+      expectedRunnerDigest,
+    });
+    core.rotateRunIdentity(nextIdentity, template);
+
+    const stored = JSON.parse(
+      readFileSync(resolve(root, "control-plane-state.json"), "utf8"),
+    ) as Record<string, unknown>;
+    expect(stored.identity).toEqual(nextIdentity);
+    expect(stored.commands).toEqual([]);
+    expect(stored.runAttachTemplate).toEqual(template);
+
+    expect(
+      () =>
+        new DurablePrpControlPlane({
+          stateDirectory: root,
+          identity: nextIdentity,
+          expectedRunnerVersion,
+          expectedRunnerDigest,
+        }),
+    ).not.toThrow();
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+it.skipIf(process.platform === "win32")(
+  "never persists raw child stdout or stderr as durable diagnostics",
+  async () => {
+    const root = mkdtempSync(resolve(tmpdir(), "runner-diagnostics-test-"));
+    const executable = resolve(root, "noisy-runner");
+    const diagnosticsDirectory = resolve(root, "diagnostics");
+    writeFileSync(
+      executable,
+      [
+        "#!/usr/bin/env node",
+        'process.stdout.write("token=raw-stdout-secret " + "o".repeat(256 * 1024));',
+        'process.stderr.write("Authorization: Bearer raw-stderr-secret " + "e".repeat(256 * 1024));',
+      ].join("\n"),
+      { mode: 0o700 },
+    );
+    chmodSync(executable, 0o700);
+    try {
+      const handle = spawnRunner({
+        connection: { mode: "connect", connectUrl: "ws://127.0.0.1:43127" },
+        stateDirectory: resolve(root, "state"),
+        identity,
+        ticket: "bootstrap-ticket",
+        maxOutboxBytes: 256 * 1024,
+        p0ReserveBytes: 64 * 1024,
+        runnerVersion: expectedRunnerVersion,
+        runnerDigest: expectedRunnerDigest,
+        runnerBinaryPath: executable,
+        diagnosticsDirectory,
+      });
+      const result = await handle.completion;
+      expect(result.stdout).toBe("");
+      expect(result.stderr).toBe("");
+
+      for (const name of ["runnerd.stdout.log", "runnerd.stderr.log"]) {
+        const filePath = resolve(diagnosticsDirectory, name);
+        expect(readFileSync(filePath, "utf8")).toBe("");
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+);
 
 it("pins the ACPX launch profile in runner startup arguments and restarts", () => {
   const launches: RunnerProcessLaunchSpec[] = [];
@@ -192,6 +325,66 @@ it("preserves an explicit OpenCode permission mode at the runner spawn boundary"
   expect(launches[0]!.environment.PAPERCLIP_API_KEY).toBeUndefined();
   expect(launches[0]!.environment.NODE_OPTIONS).toBeUndefined();
   expect(launches[0]!.environment.PAPERCLIP_OPENCODE_COMMAND).toBeUndefined();
+});
+
+it("preserves only bounded GitHub credential projection at the runner spawn boundary", () => {
+  const launches: RunnerProcessLaunchSpec[] = [];
+  spawnRunner({
+    connection: { mode: "connect", connectUrl: "ws://127.0.0.1:43127" },
+    stateDirectory: "/tmp/paperclip-runner-test",
+    identity,
+    ticket: "bootstrap-ticket",
+    maxOutboxBytes: 256 * 1024,
+    p0ReserveBytes: 64 * 1024,
+    runnerVersion: expectedRunnerVersion,
+    runnerDigest: expectedRunnerDigest,
+    environment: {
+      PATH: "/bin",
+      GH_TOKEN: "github-token",
+      GITHUB_TOKEN: "github-token",
+      PAPERCLIP_GIT_TOKEN: "github-token",
+      GIT_TERMINAL_PROMPT: "0",
+      GIT_CONFIG_COUNT: "1",
+      GIT_CONFIG_KEY_0: "credential.https://github.com.helper",
+      GIT_CONFIG_VALUE_0: "!trusted-helper",
+      GIT_CONFIG_KEY_1: "must.not.cross",
+      GIT_CONFIG_VALUE_1: "must-not-cross",
+      PAPERCLIP_RUNNER_EXTERNAL_SANDBOX: "1",
+      DATABASE_URL: "must-not-cross",
+    },
+    processLauncher: (spec) => {
+      launches.push(spec);
+      return {
+        child: {
+          pid: 42,
+          exitCode: null,
+          signalCode: null,
+          kill: () => true,
+        },
+        completion: Promise.resolve({
+          code: 0,
+          signal: null,
+          stdout: "",
+          stderr: "",
+        }),
+      };
+    },
+  });
+
+  expect(launches).toHaveLength(1);
+  expect(launches[0]!.environment).toMatchObject({
+    GH_TOKEN: "github-token",
+    GITHUB_TOKEN: "github-token",
+    PAPERCLIP_GIT_TOKEN: "github-token",
+    GIT_TERMINAL_PROMPT: "0",
+    GIT_CONFIG_COUNT: "1",
+    GIT_CONFIG_KEY_0: "credential.https://github.com.helper",
+    GIT_CONFIG_VALUE_0: "!trusted-helper",
+    PAPERCLIP_RUNNER_EXTERNAL_SANDBOX: "1",
+  });
+  expect(launches[0]!.environment.GIT_CONFIG_KEY_1).toBeUndefined();
+  expect(launches[0]!.environment.GIT_CONFIG_VALUE_1).toBeUndefined();
+  expect(launches[0]!.environment.DATABASE_URL).toBeUndefined();
 });
 
 it("preserves the controller-selected ACPX provider package root", () => {
@@ -994,6 +1187,15 @@ describe.sequential("DurablePrpControlPlane", () => {
         controlPlane,
         controlPlane.issueBootstrapTicket(),
       );
+      const nextAuthorityCommand = controlPlane.queueCommand(
+        "runner.drain",
+        {},
+        "command-after-suspend-1",
+        true,
+      );
+      expect(
+        controlPlane.store.state.commandDeliveryCounts[command.commandId],
+      ).toBe(1);
       const terminalResult = {
         protocol: "paperclip.runner",
         version: 1,
@@ -1019,7 +1221,13 @@ describe.sequential("DurablePrpControlPlane", () => {
       });
       expect(controlPlane.store.state.commands).toMatchObject([
         { commandId: "command-suspend-1", status: "completed" },
+        { commandId: "command-after-suspend-1", status: "pending" },
       ]);
+      expect(
+        controlPlane.store.state.commandDeliveryCounts[
+          nextAuthorityCommand.commandId
+        ],
+      ).toBeUndefined();
 
       sendSecure(client!, terminalResult);
       await expect(receiveSecure(client!)).resolves.toMatchObject({
@@ -1027,7 +1235,22 @@ describe.sequential("DurablePrpControlPlane", () => {
         payload: { commandId: "command-suspend-1" },
       });
       expect(controlPlane.store.state.duplicateCommandResults).toBe(1);
+      expect(
+        controlPlane.store.state.commandDeliveryCounts[
+          nextAuthorityCommand.commandId
+        ],
+      ).toBeUndefined();
+      const leaseToken = client!.leaseToken!;
       client?.socket.destroy();
+      const successor = await authenticate(controlPlane, leaseToken);
+      expect(successor?.welcome.payload).toMatchObject({
+        pendingCommands: [
+          expect.objectContaining({
+            commandId: nextAuthorityCommand.commandId,
+          }),
+        ],
+      });
+      successor?.socket.destroy();
     } finally {
       await controlPlane.stop();
       rmSync(root, { recursive: true, force: true });

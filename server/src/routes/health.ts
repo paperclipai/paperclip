@@ -1,10 +1,15 @@
-import { timingSafeEqual } from "node:crypto";
+import { randomUUID, timingSafeEqual } from "node:crypto";
 import { Router } from "express";
 import type { Db } from "@paperclipai/db";
 import { and, count, eq, gt, inArray, isNull, sql } from "drizzle-orm";
 import { heartbeatRuns, instanceUserRoles, invites } from "@paperclipai/db";
 import type { DeploymentExposure, DeploymentMode } from "@paperclipai/shared";
-import { readPersistedDevServerStatus, toDevServerHealthStatus, writeDevServerRestartRequest } from "../dev-server-status.js";
+import {
+  readPersistedDevServerStatus,
+  removeDevServerRestartRequest,
+  toDevServerHealthStatus,
+  writeDevServerRestartRequest,
+} from "../dev-server-status.js";
 import { logger } from "../middleware/logger.js";
 import { getServerInfoSnapshot, type ServerInfoSnapshot } from "../server-info.js";
 import {
@@ -29,6 +34,12 @@ import {
   WORKSPACE_READINESS_USER_ID_HEADER,
 } from "../auth/workspace-login-handoff.js";
 import { serverVersion } from "../version.js";
+import { getStartupRecoveryState } from "../startup-recovery-state.js";
+import { nativeRestartRecoverySummary } from "../services/native-runtime/native-restart-recovery.js";
+import {
+  removeHotRestartIntent,
+  writeHotRestartIntent,
+} from "../services/hot-restart.js";
 
 function shouldExposeFullHealthDetails(
   actorType: "none" | "board" | "agent" | null | undefined,
@@ -146,16 +157,75 @@ export function healthRoutes(
       return;
     }
 
-    const written = writeDevServerRestartRequest({
-      requestedAt: new Date().toISOString(),
-      reason: "manual_restart_now",
-    });
-    if (!written) {
-      res.status(404).json({ error: "dev_server_supervisor_unavailable" });
+    if (!db) {
+      res.status(503).json({ error: "database_unavailable" });
       return;
     }
 
-    res.status(202).json({ status: "restart_requested" });
+    const requestId = randomUUID();
+    const requestedAt = new Date();
+    const serverInfo = opts.serverInfo ?? getServerInfoSnapshot();
+    const preflightActiveRunIds = await db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.status, "running"))
+      .then((rows) => rows.map((row) => row.id));
+    let intent: Awaited<ReturnType<typeof writeHotRestartIntent>> | null = null;
+    try {
+      intent = await writeHotRestartIntent({
+        previousServerPid: process.pid,
+        previousServerIdentity: serverInfo.processStartedAt,
+        previousServerVersion: serverVersion,
+        preflightActiveRunIds,
+        recoveryRequestId: requestId,
+        requestedAt,
+      });
+      const written = writeDevServerRestartRequest({
+        requestedAt: requestedAt.toISOString(),
+        reason: "manual_restart_now",
+        requestId,
+        mode: "hot",
+        previousServerIdentity: serverInfo.processStartedAt,
+      });
+      if (!written) {
+        throw new Error("dev_server_supervisor_unavailable");
+      }
+    } catch (error) {
+      try {
+        removeDevServerRestartRequest({ requestId });
+      } catch (rollbackError) {
+        logger.error(
+          { err: rollbackError, requestId },
+          "failed to roll back dev-server restart request",
+        );
+      }
+      if (intent) {
+        await removeHotRestartIntent(undefined, intent).catch(
+          (rollbackError) => {
+            logger.error(
+              { err: rollbackError, requestId },
+              "failed to roll back hot-restart intent",
+            );
+          },
+        );
+      }
+      if (
+        error instanceof Error &&
+        error.message === "dev_server_supervisor_unavailable"
+      ) {
+        res.status(404).json({ error: "dev_server_supervisor_unavailable" });
+        return;
+      }
+      logger.error({ err: error, requestId }, "failed to coordinate hot restart request");
+      res.status(500).json({ error: "hot_restart_intent_failed" });
+      return;
+    }
+
+    res.status(202).json({
+      status: "restart_requested",
+      requestId,
+      mode: "hot",
+    });
   });
 
   router.get("/", async (req, res) => {
@@ -165,6 +235,9 @@ export function healthRoutes(
       opts.deploymentMode,
     );
     const runtimeEnv = opts.runtimeEnv ?? process.env;
+    const startupRecovery = getStartupRecoveryState();
+    const healthStatus =
+      startupRecovery.phase === "ready" ? "ok" : "starting";
     const cloud = getCloudHealthStatus(runtimeEnv);
     // Operator-hidden settings ride every response (like `cloud`): the list
     // holds UI surface names only, and the settings nav needs it before any
@@ -200,7 +273,7 @@ export function healthRoutes(
       res.json(
         exposeFullDetails
           ? {
-              status: "ok",
+              status: healthStatus,
               version: serverVersion,
               serverVersion: serverVersion,
               commit,
@@ -209,7 +282,7 @@ export function healthRoutes(
               ...(hiddenSettings.length ? { hiddenSettings } : {}),
             }
           : {
-              status: "ok",
+              status: healthStatus,
               deploymentMode: opts.deploymentMode,
               commit,
               ...(cloud ? { cloud } : {}),
@@ -304,12 +377,18 @@ export function healthRoutes(
       ? inspectDatabaseBackupHealth(opts.databaseBackupHealth)
       : undefined;
     const warnings = databaseBackup?.warnings.length ? databaseBackup.warnings : undefined;
+    const nativeRecovery = exposeFullDetails
+      ? await nativeRestartRecoverySummary(db).catch((error) => {
+          logger.warn({ err: error }, "native recovery health summary failed");
+          return {};
+        })
+      : undefined;
 
     if (!exposeFullDetails) {
       const redactedDatabaseBackup = databaseBackup ? redactedDatabaseBackupHealth(databaseBackup) : undefined;
       const redactedWarnings = redactedDatabaseBackup?.warnings.length ? redactedDatabaseBackup.warnings : undefined;
       res.json({
-        status: "ok",
+        status: healthStatus,
         deploymentMode: opts.deploymentMode,
         deploymentExposure: opts.deploymentExposure,
         commit,
@@ -329,7 +408,7 @@ export function healthRoutes(
     }
 
     res.json({
-      status: "ok",
+      status: healthStatus,
       version: serverVersion,
       serverVersion,
       commit,
@@ -342,6 +421,8 @@ export function healthRoutes(
         companyDeletionEnabled: opts.companyDeletionEnabled,
       },
       serverInfo,
+      startupRecovery,
+      nativeRecovery,
       ...(databaseBackup ? { databaseBackup } : {}),
       ...(warnings ? { warnings } : {}),
       ...(devServer ? { devServer } : {}),

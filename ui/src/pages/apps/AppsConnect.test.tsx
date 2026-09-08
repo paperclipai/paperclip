@@ -24,9 +24,22 @@ const mockNavigate = vi.hoisted(() => vi.fn());
 const navigateTopLevelMock = vi.hoisted(() => vi.fn());
 const mockSearch = vi.hoisted(() => ({ value: "" }));
 const mockParams = vi.hoisted(() => ({ appKey: undefined as string | undefined }));
+const mockCompany = vi.hoisted(() => ({
+  value: {
+    selectedCompanyId: "company-1" as string | undefined,
+    selectedCompany: { id: "company-1", name: "Paperclip" } as { id: string; name: string } | null,
+  },
+}));
 
 const ZAPIER = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "zapier")!;
 const GITHUB = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "github")!;
+const GITHUB_MANAGED = {
+  ...GITHUB,
+  ownershipAvailability: {
+    ...GITHUB.ownershipAvailability,
+    platform_shared: true,
+  },
+};
 const NOTION = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "notion")!;
 const ASANA = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "asana")!;
 const POSTHOG = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "posthog")!;
@@ -37,6 +50,7 @@ const GOOGLE_CALENDAR = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "
 const GOOGLE_DRIVE = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "google-drive")!;
 const GMAIL = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "gmail")!;
 const PAGERDUTY = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "pagerduty")!;
+const COMPOSIO = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "composio")!;
 
 vi.mock("@/api/tools", () => ({
   toolsApi: {
@@ -70,10 +84,7 @@ vi.mock("@/lib/router", () => ({
 }));
 
 vi.mock("@/context/CompanyContext", () => ({
-  useCompany: () => ({
-    selectedCompanyId: "company-1",
-    selectedCompany: { id: "company-1", name: "Paperclip" },
-  }),
+  useCompany: () => mockCompany.value,
 }));
 
 vi.mock("@/context/BreadcrumbContext", () => ({
@@ -146,6 +157,7 @@ async function passAccessStep() {
   }
   const submit = Array.from(document.body.querySelectorAll("button")).find(
     (b) => b.textContent?.trim() === "Save and continue"
+      || b.textContent?.trim() === "Continue"
       || b.textContent?.trim().startsWith("Continue to"),
   );
   await act(async () => {
@@ -191,6 +203,11 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
 
   beforeEach(() => {
     vi.resetAllMocks();
+    window.sessionStorage.clear();
+    mockCompany.value = {
+      selectedCompanyId: "company-1",
+      selectedCompany: { id: "company-1", name: "Paperclip" },
+    };
     mockSearch.value = "";
     mockParams.appKey = undefined;
     container = document.createElement("div");
@@ -334,39 +351,39 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
   // credential is entered.
   // -------------------------------------------------------------------------
 
-  it("asks both access questions and defaults to company-wide access", async () => {
+  it("asks for a GitHub identity and defaults to the current user and every agent", async () => {
     mockParams.appKey = "github";
+    listGalleryMock.mockResolvedValue({ apps: [GITHUB_MANAGED] });
     await render();
 
     expect(container.textContent).toContain("Access");
-    expect(container.textContent).toContain("Which humans can use this credential?");
-    expect(container.textContent).toContain("Which agents can use this connection?");
+    expect(container.textContent).toContain("Connect GitHub as");
+    expect(container.textContent).toContain("Which agents may use your GitHub when you’re responsible?");
     expect(container.textContent).not.toContain("Choose access before adding credentials");
     expect(container.textContent).not.toContain("Set the identity and agent reach first");
-    expect(container.textContent).not.toContain("Whose GitHub account should agents act as?");
+    expect(container.textContent).not.toContain("Which humans can use this credential?");
     expect(container.textContent).not.toContain("Choose where this connection will be available.");
     // Nothing about the credential itself is on screen yet.
     expect(container.querySelector('input[type="password"]')).toBeNull();
 
     const radios = Array.from(document.body.querySelectorAll('[role="radio"]'));
-    const justMe = radios.find((r) => r.textContent?.includes("Just me"));
-    const wholeOrg = radios.find((r) => r.textContent?.includes("Any human in the company"));
-    const agentsIPick = radios.find((r) => r.textContent?.includes("Just agents I pick"));
+    const myAccount = radios.find((r) => r.textContent?.includes("My GitHub account"));
+    const dedicated = radios.find((r) => r.textContent?.includes("A dedicated account for an agent"));
+    const agentsIPick = radios.find((r) => r.textContent?.includes("Only agents I choose"));
     const anyAgent = radios.find((r) => r.textContent?.includes("Any agent"));
-    expect(justMe).toBeTruthy();
-    expect(wholeOrg).toBeTruthy();
-    expect(justMe?.textContent).toBe("Just me");
-    expect(wholeOrg?.textContent).toBe("Any human in the company");
-    expect(agentsIPick?.textContent).toBe("Just agents I pick");
-    expect(anyAgent?.textContent).toBe("Any agent");
-    expect(justMe?.querySelectorAll('[data-slot="radio-card-icon"] svg')).toHaveLength(1);
-    expect(wholeOrg?.querySelectorAll('[data-slot="radio-card-icon"] svg')).toHaveLength(1);
+    expect(myAccount).toBeTruthy();
+    expect(dedicated).toBeTruthy();
+    expect(myAccount?.textContent).toContain("Agents use it only for runs where you are the responsible person.");
+    expect(dedicated?.textContent).toContain("That agent always uses this account, regardless of who starts the run.");
+    expect(agentsIPick?.textContent).toContain("Only selected agents may use your GitHub when you’re responsible.");
+    expect(anyAgent?.textContent).toContain("Every agent may use your GitHub when you’re responsible.");
+    expect(myAccount?.querySelectorAll('[data-slot="radio-card-icon"] svg')).toHaveLength(1);
+    expect(dedicated?.querySelectorAll('[data-slot="radio-card-icon"] svg')).toHaveLength(1);
     expect(agentsIPick?.querySelectorAll('[data-slot="radio-card-icon"] svg')).toHaveLength(1);
     expect(anyAgent?.querySelectorAll('[data-slot="radio-card-icon"] svg')).toHaveLength(2);
-    // A flexible connection method defaults to the company identity...
-    expect(wholeOrg?.getAttribute("aria-checked")).toBe("true");
-    expect(justMe?.getAttribute("aria-checked")).toBe("false");
-    // ...and every agent is the product default for both access and install.
+    expect(myAccount?.getAttribute("aria-checked")).toBe("true");
+    expect(dedicated?.getAttribute("aria-checked")).toBe("false");
+    // Every agent is the default reach for the responsible person's identity.
     expect(agentsIPick?.getAttribute("aria-checked")).toBe("false");
     expect(anyAgent?.getAttribute("aria-checked")).toBe("true");
   });
@@ -400,7 +417,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
 
     await act(async () => {
       Array.from(document.body.querySelectorAll('[role="radio"]'))
-        .find((r) => r.textContent?.includes("Just agents I pick"))
+        .find((r) => r.textContent?.includes("Only agents I choose"))
         ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flushReact();
@@ -414,7 +431,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
 
     await act(async () => {
       Array.from(document.body.querySelectorAll('[role="radio"]'))
-        .find((r) => r.textContent?.includes("Just me"))
+        .find((r) => r.textContent?.includes("My GitHub account"))
         ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flushReact();
@@ -438,7 +455,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
 
     // Moving backward must not silently reset the identity the operator chose.
     const radios = Array.from(document.body.querySelectorAll('[role="radio"]'));
-    expect(radios.find((r) => r.textContent?.includes("Just me"))?.getAttribute("aria-checked"))
+    expect(radios.find((r) => r.textContent?.includes("My GitHub account"))?.getAttribute("aria-checked"))
       .toBe("true");
     expect(radios.find((r) => r.textContent?.includes("Any agent"))?.getAttribute("aria-checked"))
       .toBe("true");
@@ -460,7 +477,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
    * methods must still let the operator deliberately choose a personal identity.
    */
   it("defaults flexible methods to company identity and keeps personal credentials submittable", async () => {
-    listGalleryMock.mockResolvedValue({ apps: [GITHUB, POSTHOG] });
+    listGalleryMock.mockResolvedValue({ apps: [COMPOSIO, POSTHOG] });
 
     const identityChoices = () => {
       const radios = Array.from(
@@ -475,7 +492,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     // --- API-key-only method: shared by default, personal still offered ------
     let root = await render();
     await act(async () => {
-      buttonContaining("GitHub")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      buttonContaining("Composio")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flushReact();
 
@@ -505,7 +522,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     await flushReact();
 
     const keyField = container.querySelector<HTMLInputElement>("input[type=password]");
-    await act(async () => setInputValue(keyField!, "github-personal-token"));
+    await act(async () => setInputValue(keyField!, "composio-personal-token"));
     await flushReact();
     await act(async () => {
       buttonByText("Connect")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -516,7 +533,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     // a personal grant. A disabled "Just me" would make this unreachable.
     expect(connectAppMock).toHaveBeenCalledTimes(1);
     expect(connectAppMock.mock.calls[0]?.[1]).toMatchObject({
-      galleryKey: "github",
+      galleryKey: "composio",
       grantKind: "user",
     });
 
@@ -695,6 +712,10 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     await passAccessStep();
 
     expect(container.textContent).toContain("Connect with Paperclip");
+    expect(container.textContent).toContain(
+      "You must connect this instance to Paperclip to connect to Gmail (you only need to do this once).",
+    );
+    expect(buttonByText("Connect with Paperclip")?.closest(".rounded-xl")?.classList.contains("border-border")).toBe(true);
     expect(container.textContent).not.toContain("Required once for managed Google sign-in.");
     expect(container.textContent).not.toContain("Your OAuth app");
 
@@ -711,6 +732,308 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(navigateTopLevelMock).toHaveBeenCalledWith(
       "https://my-staging.paperclip.app/connections/enroll?id=enroll-test",
     );
+  });
+
+  it.each(["2020-01-01T00:00:00.000Z", "2099-01-01T00:00:00.000Z"])(
+    "revalidates a cached pending enrollment before continuing (expiry %s)",
+    async (expiresAt) => {
+      mockSearch.value = "source=github&stage=setup";
+      listGalleryMock.mockResolvedValue({
+        apps: [{
+          ...GITHUB,
+          methods: GITHUB.methods.filter((method) => !method.oauthStrategy),
+          ownershipAvailability: { platform_shared: false, customer: true, dcr: true },
+        }],
+      });
+      getCloudConnectorEnrollmentMock.mockResolvedValue({
+        configured: false,
+        status: "pending",
+        brokerBaseUrl: "https://my-staging.paperclip.app",
+        instanceId: "inst-test",
+        environment: "staging",
+        origins: [],
+        verificationUrl: "https://my-staging.paperclip.app/connections/enroll?id=cached",
+        expiresAt,
+      });
+
+      await render();
+      expect(container.textContent).toContain("Step 2 of 2");
+      await act(async () => {
+        buttonByText("Continue")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      await flushReact();
+
+      expect(startCloudConnectorEnrollmentMock).toHaveBeenCalledWith(
+        "company-1", "Paperclip", "/apps/connect?source=github&stage=setup",
+      );
+      expect(navigateTopLevelMock).toHaveBeenCalledWith(
+        "https://my-staging.paperclip.app/connections/enroll?id=enroll-test",
+      );
+      expect(navigateTopLevelMock).not.toHaveBeenCalledWith(
+        "https://my-staging.paperclip.app/connections/enroll?id=cached",
+      );
+    },
+  );
+
+  it("labels GitHub's local setup transition without promising a provider handoff", async () => {
+    mockSearch.value = "source=github";
+    listGalleryMock.mockResolvedValue({ apps: [GITHUB_MANAGED] });
+
+    await render();
+
+    const continueButton = buttonByText("Continue");
+    expect(continueButton).toBeDefined();
+    expect(continueButton?.disabled).toBe(false);
+    expect(continueButton?.querySelector(".lucide-arrow-up-right")).toBeNull();
+    expect(buttonByText("Continue to GitHub")).toBeUndefined();
+
+    await passAccessStep();
+
+    expect(container.textContent).toContain("Step 2 of 2");
+    expect(container.textContent).toContain("How do you want to connect?");
+    expect(buttonByText("Continue to GitHub")).toBeDefined();
+    expect(startOAuthMock).not.toHaveBeenCalled();
+    expect(connectAppMock).not.toHaveBeenCalled();
+  });
+
+  it("keeps provider-specific wording and the handoff cue for direct OAuth", async () => {
+    mockSearch.value = "source=notion";
+    listGalleryMock.mockResolvedValue({ apps: [NOTION] });
+
+    await render();
+
+    const continueButton = buttonByText("Continue to Notion");
+    expect(continueButton).toBeDefined();
+    expect(continueButton?.querySelector(".lucide-arrow-up-right")).not.toBeNull();
+  });
+
+  it("keeps GitHub's personal identity defaults while its managed method awaits enrollment", async () => {
+    mockParams.appKey = "github";
+    listGalleryMock.mockResolvedValue({
+      apps: [{
+        ...GITHUB,
+        methods: GITHUB.methods.filter((method) => !method.oauthStrategy),
+        ownershipAvailability: { platform_shared: false, customer: true, dcr: true },
+      }],
+    });
+    getCloudConnectorEnrollmentMock.mockResolvedValueOnce({
+      configured: false,
+      status: "not_configured",
+      brokerBaseUrl: "https://my-staging.paperclip.app",
+      instanceId: null,
+      environment: "staging",
+      origins: [],
+    });
+
+    await render();
+
+    expect(container.textContent).toContain("Access   ·   Sign in");
+    expect(radioContaining("My GitHub account")?.getAttribute("aria-checked")).toBe("true");
+    expect(radioContaining("Any agent")?.getAttribute("aria-checked")).toBe("true");
+    expect(container.textContent).toContain("Which agents may use your GitHub when you’re responsible?");
+    expect(buttonByText("Continue")).toBeDefined();
+    expect(buttonByText("Continue to GitHub")).toBeUndefined();
+
+    await passAccessStep();
+
+    expect(container.textContent).toContain("Connect with Paperclip");
+    expect(container.textContent).not.toContain("GitHub token");
+  });
+
+  it("restores the setup step after the one-time enrollment callback", async () => {
+    mockSearch.value = "source=github&stage=setup&cloud_connector=enrolled";
+    listGalleryMock.mockResolvedValueOnce({ apps: [GITHUB_MANAGED] });
+
+    await render();
+
+    expect(container.textContent).toContain("Step 2 of 2");
+    expect(container.textContent).toContain("Continue to GitHub");
+    expect(container.textContent).not.toContain("Connect GitHub as");
+    expect(container.textContent).not.toContain("Connect with Paperclip");
+  });
+
+  it("explains unavailable GitHub sign-in without silently switching to a PAT", async () => {
+    mockSearch.value = "source=github&stage=setup&cloud_connector=enrolled";
+    listGalleryMock.mockResolvedValueOnce({
+      apps: [{
+        ...GITHUB,
+        methods: GITHUB.methods.filter((method) => !method.oauthStrategy),
+        ownershipAvailability: { platform_shared: false, customer: true, dcr: true },
+      }],
+    });
+
+    await render();
+
+    expect(container.textContent).toContain("GitHub sign-in is unavailable");
+    expect(container.textContent).not.toContain("Your GitHub key");
+    expect(container.querySelector('input[type="password"]')).toBeNull();
+    expect(buttonByText("Try again")?.disabled).toBe(false);
+
+    listGalleryMock.mockResolvedValue({ apps: [GITHUB_MANAGED] });
+    await act(async () => buttonByText("Try again")!.click());
+    await flushReact();
+    expect(container.textContent).toContain("Continue to GitHub");
+    expect(container.textContent).not.toContain("GitHub sign-in is unavailable");
+  });
+
+  it("keeps GitHub sign-in intent when enrollment recovery reveals an unavailable profile", async () => {
+    mockSearch.value = "source=github&stage=setup&cloud_connector=enrolled";
+    listGalleryMock.mockResolvedValueOnce({
+      apps: [{
+        ...GITHUB,
+        methods: GITHUB.methods.filter((method) => !method.oauthStrategy),
+        ownershipAvailability: { platform_shared: false, customer: true, dcr: true },
+      }],
+    });
+    getCloudConnectorEnrollmentMock
+      .mockRejectedValueOnce(new Error("Cloud unavailable"))
+      .mockResolvedValueOnce({
+        configured: true,
+        status: "active",
+        brokerBaseUrl: "https://my-staging.paperclip.app",
+        instanceId: "inst-test",
+        environment: "staging",
+        origins: ["https://paperclip.example.test"],
+      });
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    await render(queryClient);
+
+    expect(container.textContent).toContain("Paperclip couldn’t check Cloud registration. Try again.");
+    expect(container.textContent).not.toContain("Your GitHub key");
+
+    await act(async () => {
+      await queryClient.invalidateQueries({ queryKey: ["cloud-connector", "enrollment"] });
+    });
+    await flushReact();
+
+    expect(container.textContent).toContain("GitHub sign-in is unavailable");
+    expect(container.textContent).not.toContain("Your GitHub key");
+    expect(buttonByText("Try again")?.disabled).toBe(false);
+  });
+
+  it("preserves a dedicated agent identity across the full-page enrollment callback", async () => {
+    mockParams.appKey = "github";
+    listGalleryMock.mockResolvedValue({
+      apps: [{
+        ...GITHUB,
+        methods: GITHUB.methods.filter((method) => !method.oauthStrategy),
+        ownershipAvailability: { platform_shared: false, customer: true, dcr: true },
+      }],
+      capabilities: {
+        canCreateOrganizationGrant: true,
+        organizationGrantReason: null,
+        canSetCompanyInstall: true,
+        companyInstallReason: null,
+      },
+    });
+    getCloudConnectorEnrollmentMock.mockResolvedValue({
+      configured: false,
+      status: "not_configured",
+      brokerBaseUrl: "https://my-staging.paperclip.app",
+      instanceId: null,
+      environment: "staging",
+      origins: [],
+    });
+
+    await render();
+    await act(async () => {
+      radioContaining("A dedicated account for an agent")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+    await act(async () => {
+      buttonByText("Select agents")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+    await act(async () => {
+      document.body.querySelector<HTMLElement>('[aria-label="Allow Ada"]')
+        ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+    const accessContinue = buttonByText("Continue");
+    expect(accessContinue?.disabled).toBe(false);
+    await act(async () => {
+      accessContinue?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+    await act(async () => {
+      buttonByText("Connect with Paperclip")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(JSON.parse(window.sessionStorage.getItem(
+      "paperclip.connector-enrollment-access:github",
+    ) ?? "null")).toEqual({
+      companyId: "company-1",
+      grantKind: "agent",
+      installChoice: "specific",
+      agentIds: ["agent-1"],
+    });
+
+    await act(async () => mountedRoot?.unmount());
+    mountedRoot = null;
+    container.innerHTML = "";
+    mockParams.appKey = undefined;
+    mockSearch.value = "source=github&stage=setup&cloud_connector=enrolled";
+    mockCompany.value = { selectedCompanyId: undefined, selectedCompany: null };
+    listGalleryMock.mockResolvedValue({ apps: [GITHUB_MANAGED] });
+    getCloudConnectorEnrollmentMock.mockResolvedValue({
+      configured: true,
+      status: "active",
+      brokerBaseUrl: "https://my-staging.paperclip.app",
+      instanceId: "inst-test",
+      environment: "staging",
+      origins: ["https://paperclip.example.test"],
+    });
+
+    const coldLoadClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await render(coldLoadClient);
+
+    expect(window.sessionStorage.getItem("paperclip.connector-enrollment-access:github")).toBeNull();
+    mockCompany.value = {
+      selectedCompanyId: "company-1",
+      selectedCompany: { id: "company-1", name: "Paperclip" },
+    };
+    await act(async () => {
+      mountedRoot?.render(
+        <QueryClientProvider client={coldLoadClient}>
+          <AppsConnect />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    expect(container.textContent).toContain("Step 2 of 2");
+    expect(window.sessionStorage.getItem(
+      "paperclip.connector-enrollment-access:github",
+    )).toBeNull();
+    await act(async () => {
+      buttonByText("Continue to GitHub")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(connectAppMock).toHaveBeenCalledWith("company-1", expect.objectContaining({
+      galleryKey: "github",
+      grantKind: "agent",
+      subjectAgentId: "agent-1",
+    }));
+  });
+
+  it("never renders self-host enrollment when the connector identity is already active", async () => {
+    mockSearch.value = "source=gmail&stage=setup";
+    listGalleryMock.mockResolvedValueOnce({
+      apps: [{
+        ...GMAIL,
+        methods: GMAIL.methods.filter((method) => !method.oauthStrategy),
+        ownershipAvailability: { platform_shared: false, customer: true, dcr: true },
+      }],
+    });
+
+    await render();
+
+    expect(container.textContent).not.toContain("You must connect this instance to Paperclip");
+    expect(container.textContent).not.toContain("Connect with Paperclip");
   });
 
   it("keeps Google Drive prerequisites off access and defaults to its write-capable method", async () => {
@@ -786,9 +1109,9 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
    * returned with the gallery reaches the real create flow.
    */
   it("disables Any agent and blocks Continue when the member cannot install company-wide", async () => {
-    mockParams.appKey = "github";
+    mockParams.appKey = "posthog";
     listGalleryMock.mockResolvedValueOnce({
-      apps: [GITHUB],
+      apps: [POSTHOG],
       capabilities: {
         canCreateOrganizationGrant: false,
         organizationGrantReason: "Only connection managers can share this credential.",
@@ -827,7 +1150,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     ).find((r) => r.textContent?.includes("Just agents I pick"));
     expect(pick?.disabled).toBe(false);
     // Continue refuses the forbidden choice even though it is the current one.
-    expect(buttonByText("Save and continue")?.disabled).toBe(true);
+    expect(buttonByText("Continue")?.disabled).toBe(true);
   });
 
   it("opens the selected app directly on its setup route", async () => {
@@ -836,7 +1159,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
 
     // A deep-linked app lands on Access first: identity and reach are chosen
     // before the credential (PAP-17835).
-    expect(container.textContent).toContain("Which humans can use this credential?");
+    expect(container.textContent).toContain("Connect GitHub as");
     await passAccessStep();
 
     expect(container.textContent).toContain("Connect GitHub");
@@ -1040,7 +1363,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     ));
     expect(container.textContent).toContain("This task grants access only to Ada");
     const continueButton = Array.from(container.querySelectorAll("button")).find(
-      (button) => button.textContent?.trim() === "Save and continue",
+      (button) => button.textContent?.trim() === "Continue",
     );
     expect(continueButton).toBeTruthy();
     expect(continueButton?.disabled).toBe(false);
@@ -1319,6 +1642,26 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(navigateTopLevelMock).toHaveBeenCalledWith(
       "https://mcp.notion.com/authorize?state=resumed",
     );
+  });
+
+  it("shows installation recovery for GitHub even when an advanced PAT method is available", async () => {
+    const connectionId = "22222222-2222-4222-8222-222222222222";
+    mockSearch.value = `source=github&resume=${connectionId}&oauth=failed&code=github_installation_required&installation_url=https%3A%2F%2Fgithub.com%2Fapps%2Fpaperclip-for-github%2Finstallations%2Fnew`;
+    listGalleryMock.mockResolvedValue({ apps: [GITHUB_MANAGED] });
+    listApplicationsMock.mockResolvedValue({ applications: [{ id: "app-github", status: "draft", metadata: { sourceTemplateKey: "github" } }] });
+    listConnectionsMock.mockResolvedValue({ connections: [{
+      id: connectionId, applicationId: "app-github", authKind: "oauth", credentialPolicy: "per_user", status: "draft",
+      config: { sourceTemplateKey: "github", connectionMethodKey: "managed" }, transportConfig: {},
+    }] });
+    await render();
+    await flushReact();
+    expect(container.textContent).toContain("Install Paperclip and grant at least one repository");
+    expect(container.querySelector('a[href="https://github.com/apps/paperclip-for-github/installations/new"]')?.textContent).toBe("Install Paperclip on GitHub");
+    expect(container.textContent).not.toContain("Your GitHub key");
+    await act(async () => buttonByText("Try again")!.click());
+    await flushReact();
+    expect(startOAuthMock).toHaveBeenCalledWith(connectionId, { asCurrentUser: true });
+    expect(connectAppMock).not.toHaveBeenCalled();
   });
 
   it("returns a declined OAuth draft to the same one-action resume checkpoint", async () => {
@@ -2191,7 +2534,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
       buttonByText("Back")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flushReact();
-    expect(container.textContent).toContain("Which humans can use this credential?");
+    expect(container.textContent).toContain("Connect GitHub as");
 
     await act(async () => {
       buttonByText("Back")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));

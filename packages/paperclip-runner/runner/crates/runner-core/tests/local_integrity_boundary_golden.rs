@@ -189,6 +189,7 @@ fn acpx_projection_matches_shared_plan_question_final_and_terminal_identity() {
         run_id: "run-boundary".to_owned(),
         normalized_session_id: "session-boundary".to_owned(),
         turn_id: fixture["turnId"].as_str().expect("turn id").to_owned(),
+        provider_turn_id: None,
         item_id: "question-boundary-1".to_owned(),
     };
 

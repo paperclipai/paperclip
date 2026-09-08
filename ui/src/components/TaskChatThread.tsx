@@ -2388,7 +2388,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
       <div
         className={cn(
           "flex flex-col",
-          !isMobile && "h-(--tc-thread-max-h) min-h-0 flex-1",
+          !isMobile && "min-h-0 flex-1",
         )}
         data-testid="task-chat-thread"
       >
@@ -2533,10 +2533,9 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                 ? "bottom-(--tc-composer-bottom) z-20 transition-[bottom] duration-200 ease-out"
                 : "bottom-0 z-10",
               "mx-auto flex w-full max-w-(--tc-shell-max-w) flex-col gap-2 px-4 pb-2",
-              streamlinedUiEnabled && "md:px-0 md:pb-4",
-              streamlinedUiEnabled && !isMobile
-                ? "-mt-(--radius-task-composer)"
-                : "bg-background/80 pt-1 backdrop-blur supports-[backdrop-filter]:bg-background/60",
+              streamlinedUiEnabled && "md:px-0 md:pb-0",
+              (!streamlinedUiEnabled || isMobile) &&
+                "bg-background/80 pt-1 backdrop-blur supports-[backdrop-filter]:bg-background/60",
             )}
           >
             {composerAccessory}

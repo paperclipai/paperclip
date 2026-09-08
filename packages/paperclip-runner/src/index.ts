@@ -20,7 +20,10 @@ export {
   OpenCodeServerDriver,
   type OpenCodeServerDriverOptions,
 } from "./drivers/opencode/opencode-server-driver.js";
-export { parseCodexTurnDiff, summarizeCodexTurnDiff } from "./drivers/codex/codex-turn-diff.js";
+export {
+  parseCodexTurnDiff,
+  summarizeCodexTurnDiff,
+} from "./drivers/codex/codex-turn-diff.js";
 export * from "./native-session-runtime.js";
 export {
   DurablePrpControlPlane,
@@ -38,6 +41,7 @@ export * from "./drivers/codex/codex-app-server-driver.js";
 export * from "./drivers/opencode/opencode-server-driver.js";
 export * from "./drivers/opencode/mcp-bridge.js";
 export * from "./drivers/acpx/qualified-profiles.js";
+export { acpxRuntimeSessionDirectoryName } from "./drivers/acpx/recovery-identity.js";
 export {
   probeQualifiedAcpxEnvironment,
   type ProbeQualifiedAcpxEnvironmentOptions,

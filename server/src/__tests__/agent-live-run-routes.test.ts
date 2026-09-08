@@ -771,11 +771,8 @@ describe("agent live run routes", () => {
     );
 
     expect(res.status, JSON.stringify(res.body)).toBe(202);
-    // The legacy /heartbeat/invoke endpoint forwards only the wake fields the
-    // caller actually supplied so empty-body callers (e.g. e2e suites) match
-    // the original fixed-arg `heartbeat.invoke()` shape exactly. When the
-    // caller supplies reason / payload / forceFreshSession those are
-    // forwarded; idempotencyKey is omitted unless explicitly set.
+    // Optional wake fields retain their existing shape; execution identity
+    // always comes from the authenticated caller.
     expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(routeAgentId, {
       source: "on_demand",
       triggerDetail: "manual",
@@ -790,6 +787,8 @@ describe("agent live run routes", () => {
       contextSnapshot: {
         triggeredBy: "board",
         actorId: "local-board",
+        responsibleUserId: "local-board",
+        originIdentityContextId: null,
         forceFreshSession: true,
       },
     });
@@ -813,6 +812,8 @@ describe("agent live run routes", () => {
       contextSnapshot: {
         triggeredBy: "board",
         actorId: "local-board",
+        responsibleUserId: "local-board",
+        originIdentityContextId: null,
       },
     });
   });

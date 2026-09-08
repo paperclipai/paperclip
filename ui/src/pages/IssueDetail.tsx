@@ -271,7 +271,10 @@ import { Textarea } from "@/components/ui/textarea";
 import { formatIssueActivityAction } from "@/lib/activity-format";
 import { copyTextToClipboard } from "../lib/clipboard";
 import { buildIssuePropertiesPanelKey } from "../lib/issue-properties-panel-key";
-import { buildAnsweredQuestionsDeliveryText } from "../lib/issue-thread-interactions";
+import {
+  buildAnsweredQuestionsDeliveryText,
+  buildIssueThreadInteractionSummary,
+} from "../lib/issue-thread-interactions";
 import { resolveIssueDocumentDeepLink } from "../lib/issue-document-deep-link";
 import {
   buildIssueSiblingNavigation,
@@ -4488,7 +4491,7 @@ export function IssueDetail() {
       pushToast({
         title:
           interaction.kind === "request_confirmation"
-            ? "Request declined"
+            ? buildIssueThreadInteractionSummary(interaction)
             : "Suggestion rejected",
         tone: "success",
       });
@@ -7251,7 +7254,10 @@ export function IssueDetail() {
                 "flex w-full flex-col gap-6"
               : // Fill main exactly so the outer page never scrolls — the
                 // thread's own viewport is the only scroll surface.
-                "flex h-full min-h-0 w-full flex-col gap-6"
+                // Keep status banners close to the transcript. A full section
+                // gap here shortens the pinned message viewport enough to
+                // leave its first visible bubble sliced at the top edge.
+                "flex h-full min-h-0 w-full flex-col gap-3"
             : "max-w-3xl space-y-6"
         }
       >
@@ -7263,6 +7269,7 @@ export function IssueDetail() {
             className={cn(
               "flex items-center gap-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive",
               shellSectionClass,
+              taskChatShellEnabled && (isMobile ? "mt-4" : "mt-3"),
             )}
           >
             <EyeOff className="h-4 w-4 shrink-0" />
@@ -7274,6 +7281,9 @@ export function IssueDetail() {
             className={cn(
               "rounded-md border border-amber-500/35 bg-amber-500/10 p-3 text-sm text-amber-800 dark:text-amber-200",
               shellSectionClass,
+              taskChatShellEnabled &&
+                !issue.hiddenAt &&
+                (isMobile ? "mt-4" : "mt-3"),
             )}
           >
             {activePauseHold.isRoot ? (

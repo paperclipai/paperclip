@@ -48,6 +48,10 @@ class AsyncQueue<T> implements AsyncIterable<T> {
       waiter({ value: undefined, done: true });
   }
 
+  clear(): void {
+    this.#values = [];
+  }
+
   [Symbol.asyncIterator](): AsyncIterator<T> {
     return {
       next: async () => {
@@ -340,7 +344,7 @@ export class CodexSessionState {
     }
     this.terminal = true;
     this.eventQueue.close();
-    void this.transport.close();
+    void this.transport.close(`protocol_failure:${code}`);
   }
 
   emit(

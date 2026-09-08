@@ -51,6 +51,10 @@ import {
   type AcpxSidecarResponse,
 } from "../drivers/acpx/sidecar-protocol.js";
 import { safeAcpxLocations } from "./acpx-sidecar-locations.js";
+import {
+  persistedAcpxTurnUsage,
+  qualifiedAcpxUsageBreakdown,
+} from "../drivers/acpx/usage-accounting.js";
 import { validatePrpStructuredRunResult } from "../protocol/replay-contract.js";
 import type { RunnerToolCall } from "../drivers/runner-tool-bridge.js";
 import {
@@ -314,7 +318,9 @@ async function dispatch(
     const currentTurnId = boundedIdentity(request.params.turnId, "turnId");
     turnId = currentTurnId;
     let runtimeTurn: AcpxRuntimeTurn;
+    let usageBefore: unknown;
     try {
+      usageBefore = await readSidecarHostStatusWithin(activeHost);
       runtimeTurn = activeHost.startTurn({
         requestId: `${runId}:${currentTurnId}`,
         text: boundedText(request.params.message, "message", 1024 * 1024),
@@ -325,7 +331,7 @@ async function dispatch(
       turnId = null;
       throw error;
     }
-    void pumpTurn(currentTurnId, runtimeTurn);
+    void pumpTurn(currentTurnId, runtimeTurn, activeHost, usageBefore);
     return { turnId: currentTurnId };
   }
   if (request.command === "turn.cancel") {
@@ -479,6 +485,8 @@ async function dispatch(
 async function pumpTurn(
   currentTurnId: string,
   runtimeTurn: AcpxRuntimeTurn,
+  activeHost: AcpxRuntimeHost,
+  usageBefore: unknown,
 ): Promise<void> {
   let terminal: Record<string, unknown>;
   try {
@@ -496,6 +504,24 @@ async function pumpTurn(
       );
     }
     const result = await runtimeTurn.result;
+    try {
+      const usage = persistedAcpxTurnUsage(
+        usageBefore,
+        await readSidecarHostStatusWithin(activeHost),
+        runtimeTurn.requestId,
+      );
+      if (usage) {
+        emit(
+          "runtime.event",
+          sanitizeRuntimeEvent(usage as unknown as AcpRuntimeEvent),
+          currentTurnId,
+        );
+      }
+    } catch (error) {
+      // Missing usage must stay unknown, but an accounting read failure must
+      // not replace the provider's authoritative completed/cancelled result.
+      diagnostic("acpx_terminal_usage_unavailable", safeMessage(error));
+    }
     terminal = boundedSidecarValue(result);
   } catch (error) {
     terminal = {
@@ -868,7 +894,9 @@ function sanitizeRuntimeStatus(value: unknown): Record<string, unknown> {
 
 function safeUsage(cost: unknown, breakdown: unknown): Record<string, unknown> {
   const nativeCost = record(cost);
-  const nativeBreakdown = record(breakdown);
+  const nativeBreakdown = record(
+    qualifiedAcpxUsageBreakdown(initializedAgent, breakdown),
+  );
   return {
     cost:
       cost === undefined || cost === null

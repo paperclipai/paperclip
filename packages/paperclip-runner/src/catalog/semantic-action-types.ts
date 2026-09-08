@@ -1,4 +1,6 @@
 export type PaperclipSemanticActionId =
+  | "search_api"
+  | "call_api"
   | "get_task_context"
   | "get_task_history"
   | "list_documents"

@@ -261,7 +261,7 @@ impl VerifiedProcessLaunch {
                     }
                     #[cfg(target_os = "macos")]
                     {
-                        let executable = materialize_executable(artifact)?;
+                        let executable = materialize_bound_executable(artifact)?;
                         args.push(executable.path.to_string_lossy().into_owned());
                         temporary_executables.push(executable);
                     }
@@ -290,6 +290,7 @@ struct InheritedCommand {
 #[cfg(target_os = "macos")]
 struct TemporaryExecutable {
     path: PathBuf,
+    cleanup_directory: Option<PathBuf>,
     _file: File,
 }
 
@@ -297,13 +298,16 @@ struct TemporaryExecutable {
 impl Drop for TemporaryExecutable {
     fn drop(&mut self) {
         let _ = fs::remove_file(&self.path);
+        if let Some(directory) = &self.cleanup_directory {
+            let _ = fs::remove_dir(directory);
+        }
     }
 }
 
 #[cfg(target_os = "macos")]
-fn materialize_executable(
+fn verified_executable_parent(
     artifact: &VerifiedProcessArtifact,
-) -> Result<TemporaryExecutable, LocalRunnerError> {
+) -> Result<&Path, LocalRunnerError> {
     let directory = artifact.display_path.parent().ok_or_else(|| {
         LocalRunnerError::invalid(format!(
             "verified process artifact {} has no parent directory",
@@ -318,10 +322,15 @@ fn materialize_executable(
             directory.display()
         )));
     }
-    let path = directory.join(format!(
-        ".paperclip-verified-executable-{}",
-        Uuid::new_v4().simple()
-    ));
+    Ok(directory)
+}
+
+#[cfg(target_os = "macos")]
+fn materialize_executable_at(
+    artifact: &VerifiedProcessArtifact,
+    path: PathBuf,
+    cleanup_directory: Option<PathBuf>,
+) -> Result<TemporaryExecutable, LocalRunnerError> {
     let mut writable = OpenOptions::new()
         .read(true)
         .write(true)
@@ -375,11 +384,46 @@ fn materialize_executable(
         drop(writable);
         Ok(TemporaryExecutable {
             path: path.clone(),
+            cleanup_directory,
             _file: file,
         })
     })();
     if result.is_err() {
         let _ = fs::remove_file(path);
+    }
+    result
+}
+
+#[cfg(target_os = "macos")]
+fn materialize_executable(
+    artifact: &VerifiedProcessArtifact,
+) -> Result<TemporaryExecutable, LocalRunnerError> {
+    let directory = verified_executable_parent(artifact)?;
+    let path = directory.join(format!(
+        ".paperclip-verified-executable-{}",
+        Uuid::new_v4().simple()
+    ));
+    materialize_executable_at(artifact, path, None)
+}
+
+#[cfg(target_os = "macos")]
+fn materialize_bound_executable(
+    artifact: &VerifiedProcessArtifact,
+) -> Result<TemporaryExecutable, LocalRunnerError> {
+    let parent = verified_executable_parent(artifact)?;
+    let directory = parent.join(format!(
+        ".paperclip-verified-executable-{}",
+        Uuid::new_v4().simple()
+    ));
+    fs::create_dir(&directory).map_err(|error| snapshot_error(&artifact.display_path, error))?;
+    if let Err(error) = fs::set_permissions(&directory, fs::Permissions::from_mode(0o700)) {
+        let _ = fs::remove_dir(&directory);
+        return Err(snapshot_error(&artifact.display_path, error));
+    }
+    let result =
+        materialize_executable_at(artifact, directory.join("launch"), Some(directory.clone()));
+    if result.is_err() {
+        let _ = fs::remove_dir(directory);
     }
     result
 }
@@ -939,6 +983,52 @@ mod tests {
         assert!(inherited.args[2].starts_with("/proc/self/fd/"));
         #[cfg(target_os = "macos")]
         assert!(inherited.args[2].starts_with("/dev/fd/"));
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn executable_arguments_use_the_private_nested_launch_contract() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "paperclip-executable-argument-launch-{}-{nonce}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&directory).unwrap();
+        let program = verified_artifact(&directory.join("node"), b"node");
+        let executable = verified_artifact(&directory.join("opencode"), b"opencode");
+        let launch = VerifiedProcessLaunch::new(
+            program,
+            vec![VerifiedProcessArgument::ExecutableArtifact(executable)],
+        );
+
+        let inherited = launch.inherited_command().unwrap();
+        let command = PathBuf::from(&inherited.args[0]);
+        let private_directory = command.parent().unwrap().to_path_buf();
+        assert_eq!(command.file_name().unwrap(), "launch");
+        assert!(private_directory
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with(".paperclip-verified-executable-"));
+        assert_eq!(
+            fs::symlink_metadata(&private_directory)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
+        assert_eq!(
+            fs::symlink_metadata(&command).unwrap().permissions().mode() & 0o777,
+            0o500
+        );
+
+        drop(inherited);
+        assert!(!private_directory.exists());
         fs::remove_dir_all(directory).unwrap();
     }
 }

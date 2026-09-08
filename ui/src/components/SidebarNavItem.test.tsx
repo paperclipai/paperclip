@@ -98,18 +98,20 @@ describe("SidebarNavItem", () => {
     expect(link().firstElementChild?.textContent).toBe("Recent task");
   });
 
-  it("uses the Paper nav surface for the active item", () => {
+  it("uses the sidebar accent surface for the active item", () => {
     render(<SidebarNavItem to="/issues" label="Tasks" icon={Inbox} active />);
 
-    expect(classTokens(link())).toContain("bg-background");
-    expect(classTokens(link())).not.toContain("bg-accent");
+    expect(classTokens(link())).toContain("bg-sidebar-accent");
+    expect(classTokens(link())).toContain("text-sidebar-accent-foreground");
+    expect(classTokens(link())).not.toContain("bg-background");
   });
 
-  it("uses the active nav surface for hover", () => {
+  it("uses the legible sidebar accent surface for hover", () => {
     render(<SidebarNavItem to="/issues" label="Tasks" icon={Inbox} />);
 
-    expect(classTokens(link())).toContain("hover:bg-background");
-    expect(classTokens(link())).not.toContain("hover:bg-accent/50");
+    expect(classTokens(link())).toContain("hover:bg-sidebar-accent");
+    expect(classTokens(link())).toContain("hover:text-sidebar-accent-foreground");
+    expect(classTokens(link())).not.toContain("hover:bg-background");
   });
 
   it("clips the label (kept in flow for 1:1 row height) and collapses the badge to a dot in the rail", () => {

@@ -21,15 +21,25 @@ const mockAgentsApi = vi.hoisted(() => ({
   testEnvironment: vi.fn(),
   startAdapterAuthLogin: vi.fn(),
   getAdapterAuthLoginStatus: vi.fn(),
+  getActiveAdapterAuthLoginSession: vi.fn(),
   cancelAdapterAuthLogin: vi.fn(),
   startClaudeSetupTokenLogin: vi.fn(),
   getClaudeSetupTokenLoginStatus: vi.fn(),
+  getActiveClaudeSetupTokenLoginSession: vi.fn(),
   getClaudeSetupTokenLoginPrompt: vi.fn(),
   submitClaudeSetupTokenBrowserCode: vi.fn(),
   completeClaudeSetupTokenLogin: vi.fn(),
   cancelClaudeSetupTokenLogin: vi.fn(),
   getClaudeOAuthTokenStatus: vi.fn(),
 }));
+
+// The default resume read for a test that does not exercise resume: no active
+// session for the caller.
+function noActiveSession() {
+  return Promise.reject(
+    new ApiError("Adapter login session not found", 404, { error: "Adapter login session not found" }),
+  );
+}
 
 const mockClipboard = vi.hoisted(() => ({
   copyTextToClipboard: vi.fn(),
@@ -259,6 +269,7 @@ async function renderForm(
   const container = document.createElement("div");
   document.body.appendChild(container);
   const root = createRoot(container);
+  const onSave = vi.fn();
   const queryClient = new QueryClient({
     defaultOptions: {
       queries: { retry: false },
@@ -274,7 +285,7 @@ async function renderForm(
             <AgentConfigForm
               mode="edit"
               agent={makeAgent(agentOverrides)}
-              onSave={vi.fn()}
+              onSave={onSave}
               hidePromptTemplate
               content={options.content}
               showAdapterTypeField={false}
@@ -287,7 +298,7 @@ async function renderForm(
   });
 
   await flushReact();
-  return { container, root };
+  return { container, root, onSave };
 }
 
 async function renderCreateForm(
@@ -644,6 +655,10 @@ describe("AgentConfigForm environment selector", () => {
     mockEnvironmentsApi.capabilities.mockResolvedValue(SANDBOX_CAPABILITIES);
     mockSecretsApi.list.mockResolvedValue([]);
     mockSecretsApi.listProposals.mockResolvedValue([]);
+    // Default: the caller has no active session. A resume test overrides this
+    // with a resolved session body.
+    mockAgentsApi.getActiveAdapterAuthLoginSession.mockImplementation(noActiveSession);
+    mockAgentsApi.getActiveClaudeSetupTokenLoginSession.mockImplementation(noActiveSession);
     mockAgentsApi.startAdapterAuthLogin.mockResolvedValue({
       sessionId: "session-1",
       environmentId: "sandbox-1",
@@ -722,6 +737,84 @@ describe("AgentConfigForm environment selector", () => {
 
     expect(result.container.textContent).not.toContain("Environment override");
     expect(result.container.querySelector("select")).toBeNull();
+  });
+
+  it("renders GPT-6 Astra and its model-specific reasoning efforts", async () => {
+    mockAgentsApi.adapterModels.mockResolvedValue([
+      { id: "gpt-5.6-sol", label: "gpt-5.6-sol" },
+      { id: "gpt-6-astra", label: "gpt-6-astra" },
+    ]);
+    const result = await renderForm(
+      [makeEnvironment({ id: "local-1", name: "Local", driver: "local" })],
+      {
+        adapterConfig: {
+          model: "gpt-6-astra",
+          modelReasoningEffort: "ultra",
+        },
+      },
+    );
+    roots.push(result.root);
+
+    expect(result.container.textContent).toContain("gpt-6-astra");
+    const effortButton = Array.from(result.container.querySelectorAll("button"))
+      .find((button) => button.textContent?.trim() === "Ultra");
+    expect(effortButton).not.toBeUndefined();
+
+    await act(async () => {
+      effortButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    const effortChoices = Array.from(document.body.querySelectorAll("button"))
+      .map((button) => button.textContent?.replace(/\s+/g, "").trim());
+    expect(effortChoices).toContain("Maxmax");
+    expect(effortChoices).toContain("Ultraultra");
+    expect(effortChoices).not.toContain("Minimalminimal");
+  });
+
+  it("removes a legacy incompatible effort when the model changes to Astra", async () => {
+    mockAgentsApi.adapterModels.mockResolvedValue([
+      { id: "gpt-5.6-sol", label: "gpt-5.6-sol" },
+      { id: "gpt-6-astra", label: "gpt-6-astra" },
+    ]);
+    const result = await renderForm(
+      [makeEnvironment({ id: "local-1", name: "Local", driver: "local" })],
+      {
+        adapterConfig: {
+          model: "gpt-5.6-sol",
+          reasoningEffort: "minimal",
+        },
+      },
+    );
+    roots.push(result.root);
+
+    const modelButton = Array.from(result.container.querySelectorAll("button"))
+      .find((button) => button.textContent?.trim() === "gpt-5.6-sol");
+    expect(modelButton).not.toBeUndefined();
+    await act(async () => {
+      modelButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    const astraOption = Array.from(document.body.querySelectorAll("button"))
+      .find((button) => button.textContent?.trim() === "gpt-6-astra");
+    expect(astraOption).not.toBeUndefined();
+    await act(async () => {
+      astraOption!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    const saveButton = Array.from(result.container.querySelectorAll("button"))
+      .find((button) => button.textContent?.trim() === "Save");
+    expect(saveButton).not.toBeUndefined();
+    await act(async () => {
+      saveButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(result.onSave).toHaveBeenCalledWith({
+      adapterConfig: { model: "gpt-6-astra" },
+      replaceAdapterConfig: true,
+    });
   });
 
   it("keeps secret access out of the main Configuration content", async () => {
@@ -1524,17 +1617,14 @@ describe("AgentConfigForm environment selector", () => {
     expect(result.container.textContent).not.toContain("WXYZ-1234");
   });
 
-  it("releases an active login session when the panel unmounts", async () => {
-    // The server holds a one-per-owner reservation until the session reaches a
-    // terminal state, so a panel that disappears mid-login would leave the owner
-    // unable to start another until it expires.
-    //
-    // Reachable in the settings form only by navigating away, which is why this
-    // went unnoticed. The connect step unmounts the panel routinely — Cancel
-    // closes the canvas, switching source remounts it under a new key, closing
-    // the wizard drops it — so the cleanup is what keeps an immediate retry
-    // possible. Deliberately not pushed to `roots`: this test does the unmount
-    // itself, and that unmount is the thing under test.
+  it("does not cancel an active login session when the panel unmounts", async () => {
+    // The owner-scoped active-session read and the manual Cancel button now
+    // take over the purpose the unmount cancel used to serve. The connect step
+    // unmounts the panel routinely — Cancel closes the canvas, switching source
+    // remounts it under a new key, closing the wizard drops it — and each of
+    // those unmounts must leave the session reachable by a later mount's resume
+    // read, not release it. Deliberately not pushed to `roots`: this test does
+    // the unmount itself, and that unmount is the thing under test.
     mockAgentsApi.testEnvironment.mockResolvedValue(AUTH_MISSING_RESULT);
     const result = await renderCodexSandbox();
 
@@ -1547,11 +1637,161 @@ describe("AgentConfigForm environment selector", () => {
       result.root.unmount();
     });
 
-    expect(mockAgentsApi.cancelAdapterAuthLogin).toHaveBeenCalledWith(
+    expect(mockAgentsApi.cancelAdapterAuthLogin).not.toHaveBeenCalled();
+  });
+
+  it("offers no Cancel in the onboarding chrome", async () => {
+    // The card carried a Cancel beside its instruction, directly above the
+    // step's own Back. Two ways out of one screen is one too many, so the
+    // button went — and with it the only explicit release, since unmounting
+    // deliberately keeps the session alive for a later resume. An abandoned
+    // login is now collected by the server deadline, the same as one abandoned
+    // by closing the tab.
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    roots.push(root);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <ToastProvider>
+            <TooltipProvider>
+              <AdapterLoginPanel
+                companyId="company-1"
+                adapterType="codex_local"
+                environmentId="sandbox-1"
+                chrome="onboarding"
+                autoStart
+              />
+            </TooltipProvider>
+          </ToastProvider>
+        </QueryClientProvider>,
+      );
+    });
+    // Wait for the card itself, then assert it is actually there: an absence
+    // check over an empty render passes for the wrong reason.
+    await flushUntil(() => container.textContent?.includes("authorization code") ?? false);
+    expect(container.textContent).toContain("authorization code");
+
+    expect(findButton(container, "Cancel")).toBeFalsy();
+    expect(mockAgentsApi.cancelAdapterAuthLogin).not.toHaveBeenCalled();
+  });
+  it("resumes an active login session on mount, adopting its session id and prompt", async () => {
+    // A page reload loses every piece of local state, so the panel must read
+    // the caller's active session and adopt it instead of starting a new one.
+    mockAgentsApi.testEnvironment.mockResolvedValue(AUTH_MISSING_RESULT);
+    mockAgentsApi.getActiveAdapterAuthLoginSession.mockResolvedValue({
+      sessionId: "resumed-session-1",
+      environmentId: "sandbox-1",
+      status: "waiting_for_user",
+      expiresAt: null,
+      failure: null,
+      prompt: { url: "https://auth.example.test/resumed", code: "RESUME-1" },
+    });
+    // The prompt survives every owner read while the session stays active, so
+    // the status poll for the resumed session agrees with the resumed read.
+    mockAgentsApi.getAdapterAuthLoginStatus.mockResolvedValue({
+      sessionId: "resumed-session-1",
+      environmentId: "sandbox-1",
+      status: "waiting_for_user",
+      expiresAt: null,
+      failure: null,
+      prompt: { url: "https://auth.example.test/resumed", code: "RESUME-1" },
+    });
+    const result = await renderCodexSandbox();
+    roots.push(result.root);
+
+    await runTest(result.container);
+    await flushUntil(() => (result.container.textContent ?? "").includes("RESUME-1"));
+
+    // The prompt from the resumed read shows without a fresh start.
+    expect(result.container.textContent).toContain("RESUME-1");
+    expect(result.container.textContent).toContain("https://auth.example.test/resumed");
+    expect(mockAgentsApi.startAdapterAuthLogin).not.toHaveBeenCalled();
+    // The panel polls the resumed session id, not a freshly started one.
+    expect(mockAgentsApi.getAdapterAuthLoginStatus).toHaveBeenCalledWith(
       "company-1",
       "codex_local",
-      "session-1",
+      "resumed-session-1",
     );
+    expect(findButton(result.container, "Cancel")).toBeTruthy();
+  });
+
+  it("starts a new session when the active-session read finds none", async () => {
+    // The default mock already answers with no active session (a 404). This
+    // pins the fallback: the panel still waits for the caller's press.
+    mockAgentsApi.testEnvironment.mockResolvedValue(AUTH_MISSING_RESULT);
+    const result = await renderCodexSandbox();
+    roots.push(result.root);
+
+    await runTest(result.container);
+    await flushUntil(() => mockAgentsApi.getActiveAdapterAuthLoginSession.mock.calls.length > 0);
+    await flushReact();
+
+    expect(mockAgentsApi.startAdapterAuthLogin).not.toHaveBeenCalled();
+    expect(findButton(result.container, "Sign in")?.disabled).toBe(false);
+
+    await startLogin(result.container);
+
+    expect(mockAgentsApi.startAdapterAuthLogin).toHaveBeenCalledWith("company-1", "codex_local", {
+      environmentId: "sandbox-1",
+    });
+  });
+
+  it("releases a resumed session after an unrecoverable resume error, waiting for the cancel response", async () => {
+    // The active-session read finds a session, but by the time the status poll
+    // reaches the server the session is already gone (a race between the two
+    // reads). The panel cannot resume it, so it releases the reservation
+    // explicitly instead of trusting the 404 alone, and it waits for that
+    // release before it returns to its start state.
+    mockAgentsApi.testEnvironment.mockResolvedValue(AUTH_MISSING_RESULT);
+    mockAgentsApi.getActiveAdapterAuthLoginSession.mockResolvedValue({
+      sessionId: "resumed-session-1",
+      environmentId: "sandbox-1",
+      status: "waiting_for_user",
+      expiresAt: null,
+      failure: null,
+      prompt: null,
+    });
+    mockAgentsApi.getAdapterAuthLoginStatus.mockRejectedValue(
+      new ApiError("Adapter login session not found", 404, {
+        error: "Adapter login session not found",
+      }),
+    );
+    let resolveCancel!: () => void;
+    mockAgentsApi.cancelAdapterAuthLogin.mockReturnValue(
+      new Promise((resolve) => {
+        resolveCancel = () => resolve({
+          sessionId: "resumed-session-1",
+          environmentId: "sandbox-1",
+          status: "cancelled",
+          expiresAt: null,
+          failure: null,
+          prompt: null,
+        });
+      }),
+    );
+    const result = await renderCodexSandbox();
+    roots.push(result.root);
+
+    await runTest(result.container);
+    await flushUntil(() =>
+      mockAgentsApi.cancelAdapterAuthLogin.mock.calls.some((call) => call[2] === "resumed-session-1"),
+    );
+
+    // The cancel call fired, but the panel still shows the resumed login as
+    // active because it is waiting for the cancel response.
+    expect(findButton(result.container, "Cancel")).toBeTruthy();
+
+    resolveCancel();
+    await flushUntil(() => findButton(result.container, "Sign in")?.disabled === false);
+
+    expect(findButton(result.container, "Cancel")).toBeFalsy();
+    expect(findButton(result.container, "Sign in")?.disabled).toBe(false);
   });
 
   it("announces the login state through a polite live region", async () => {
@@ -1949,6 +2189,46 @@ describe("AgentConfigForm environment selector", () => {
     expect(onStored).toHaveBeenCalledWith("stored-session-1");
   });
 
+  it("offers no Cancel in the onboarding chrome", async () => {
+    // The card carried a Cancel beside its instruction, directly above the
+    // step's own Back. Two ways out of one screen is one too many, so the
+    // button went — and with it the only explicit release, since unmounting
+    // deliberately keeps the session alive for a later resume. An abandoned
+    // login is now collected by the server deadline, the same as one abandoned
+    // by closing the tab.
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    roots.push(root);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <ToastProvider>
+            <TooltipProvider>
+              <AdapterLoginPanel
+                companyId="company-1"
+                adapterType="claude_local"
+                environmentId="sandbox-1"
+                chrome="onboarding"
+                autoStart
+              />
+            </TooltipProvider>
+          </ToastProvider>
+        </QueryClientProvider>,
+      );
+    });
+    // Wait for the card itself, then assert it is actually there: an absence
+    // check over an empty render passes for the wrong reason.
+    await flushUntil(() => container.textContent?.includes("authorization code") ?? false);
+    expect(container.textContent).toContain("authorization code");
+
+    expect(findButton(container, "Cancel")).toBeFalsy();
+    expect(mockAgentsApi.cancelClaudeSetupTokenLogin).not.toHaveBeenCalled();
+  });
   it("offers an apply-existing affordance when the status route reports a stored value", async () => {
     mockAgentsApi.getClaudeOAuthTokenStatus.mockResolvedValue({
       secretId: "secret-1",
@@ -2186,7 +2466,10 @@ describe("AgentConfigForm environment selector", () => {
     expect(result.container.textContent).not.toContain("Could not cancel the login.");
   });
 
-  it("cancels the active server session when the panel unmounts", async () => {
+  it("does not cancel an active login session when the panel unmounts", async () => {
+    // The owner-scoped active-session read and the manual Cancel button now
+    // take over the purpose the unmount cancel used to serve, so an unmount
+    // must leave the session reachable by a later mount's resume read.
     mockAgentsApi.testEnvironment.mockResolvedValue(CLAUDE_AUTH_MISSING_RESULT);
     const result = await renderClaudeSandbox();
 
@@ -2198,16 +2481,12 @@ describe("AgentConfigForm environment selector", () => {
     // The login is active before the unmount.
     expect(findButton(result.container, "Cancel")).toBeTruthy();
 
+    mockAgentsApi.cancelClaudeSetupTokenLogin.mockClear();
     await act(async () => {
       result.root.unmount();
     });
 
-    // The unmount released the active server session, so the abandoned session
-    // does not hold the per-owner reservation until the server deadline.
-    expect(mockAgentsApi.cancelClaudeSetupTokenLogin).toHaveBeenCalledWith(
-      "company-1",
-      "claude-session-1",
-    );
+    expect(mockAgentsApi.cancelClaudeSetupTokenLogin).not.toHaveBeenCalled();
   });
 
   it("does not cancel on unmount when no login is active", async () => {
@@ -2224,6 +2503,134 @@ describe("AgentConfigForm environment selector", () => {
     });
 
     expect(mockAgentsApi.cancelClaudeSetupTokenLogin).not.toHaveBeenCalled();
+  });
+
+  it("resumes an active Claude login session on mount, adopting its session id and authorization URL", async () => {
+    mockAgentsApi.testEnvironment.mockResolvedValue(CLAUDE_AUTH_MISSING_RESULT);
+    mockAgentsApi.getActiveClaudeSetupTokenLoginSession.mockResolvedValue({
+      sessionId: "resumed-claude-session-1",
+      environmentId: "sandbox-1",
+      status: "waiting_for_user",
+      expiresAt: null,
+      failure: null,
+      panelMode: "submitted_browser_code",
+      prompt: { authorizationUrl: "https://claude.example.test/resumed" },
+    });
+    const result = await renderClaudeSandbox();
+    roots.push(result.root);
+
+    await runTest(result.container);
+    await flushUntil(() =>
+      (result.container.textContent ?? "").includes("https://claude.example.test/resumed"),
+    );
+
+    expect(result.container.textContent).toContain("https://claude.example.test/resumed");
+    expect(mockAgentsApi.startClaudeSetupTokenLogin).not.toHaveBeenCalled();
+    expect(mockAgentsApi.getClaudeSetupTokenLoginStatus).toHaveBeenCalledWith(
+      "company-1",
+      "resumed-claude-session-1",
+    );
+    expect(findButton(result.container, "Cancel")).toBeTruthy();
+  });
+
+  it("starts a new Claude login when the active-session read finds none", async () => {
+    // The default mock already answers with no active session (a 404).
+    mockAgentsApi.testEnvironment.mockResolvedValue(CLAUDE_AUTH_MISSING_RESULT);
+    const result = await renderClaudeSandbox();
+    roots.push(result.root);
+
+    await runTest(result.container);
+    await flushUntil(() => mockAgentsApi.getActiveClaudeSetupTokenLoginSession.mock.calls.length > 0);
+    await flushReact();
+
+    expect(mockAgentsApi.startClaudeSetupTokenLogin).not.toHaveBeenCalled();
+    expect(findButton(result.container, "Sign in")?.disabled).toBe(false);
+
+    await startLogin(result.container);
+
+    expect(mockAgentsApi.startClaudeSetupTokenLogin).toHaveBeenCalled();
+  });
+
+  it("cancels a resumed Claude login session with the manual Cancel button", async () => {
+    mockAgentsApi.testEnvironment.mockResolvedValue(CLAUDE_AUTH_MISSING_RESULT);
+    mockAgentsApi.getActiveClaudeSetupTokenLoginSession.mockResolvedValue({
+      sessionId: "resumed-claude-session-1",
+      environmentId: "sandbox-1",
+      status: "waiting_for_user",
+      expiresAt: null,
+      failure: null,
+      panelMode: "submitted_browser_code",
+      prompt: { authorizationUrl: "https://claude.example.test/resumed" },
+    });
+    const result = await renderClaudeSandbox();
+    roots.push(result.root);
+
+    await runTest(result.container);
+    await flushUntil(() =>
+      (result.container.textContent ?? "").includes("https://claude.example.test/resumed"),
+    );
+
+    await clickByText(result.container, "Cancel");
+    await flushReact();
+
+    expect(mockAgentsApi.cancelClaudeSetupTokenLogin).toHaveBeenCalledWith(
+      "company-1",
+      "resumed-claude-session-1",
+    );
+    expect(findButton(result.container, "Sign in")?.disabled).toBe(false);
+    expect(findButton(result.container, "Cancel")).toBeFalsy();
+  });
+
+  it("releases a resumed Claude login after an unrecoverable resume error, waiting for the cancel response", async () => {
+    // The active-session read finds a session, but the status poll for that
+    // resumed session finds it already gone (a race between the two reads).
+    // The panel cannot resume it, so it releases the reservation explicitly
+    // and waits for that release before it returns to its start state.
+    mockAgentsApi.testEnvironment.mockResolvedValue(CLAUDE_AUTH_MISSING_RESULT);
+    mockAgentsApi.getActiveClaudeSetupTokenLoginSession.mockResolvedValue({
+      sessionId: "resumed-claude-session-1",
+      environmentId: "sandbox-1",
+      status: "waiting_for_user",
+      expiresAt: null,
+      failure: null,
+      panelMode: "submitted_browser_code",
+      prompt: null,
+    });
+    mockAgentsApi.getClaudeSetupTokenLoginStatus.mockRejectedValue(
+      new ApiError("Setup-token login session not found.", 404, {
+        error: "Setup-token login session not found.",
+      }),
+    );
+    mockAgentsApi.getClaudeSetupTokenLoginPrompt.mockRejectedValue(
+      new ApiError("Setup-token login session not found.", 404, {
+        error: "Setup-token login session not found.",
+      }),
+    );
+    let resolveCancel!: () => void;
+    mockAgentsApi.cancelClaudeSetupTokenLogin.mockReturnValue(
+      new Promise((resolve) => {
+        resolveCancel = () => resolve(undefined);
+      }),
+    );
+    const result = await renderClaudeSandbox();
+    roots.push(result.root);
+
+    await runTest(result.container);
+    await flushUntil(() =>
+      mockAgentsApi.cancelClaudeSetupTokenLogin.mock.calls.some(
+        (call) => call[1] === "resumed-claude-session-1",
+      ),
+    );
+
+    // The cancel call fired, but the panel still shows the resumed login as
+    // active because it is waiting for the cancel response.
+    expect(findButton(result.container, "Sign in")?.disabled).toBe(true);
+
+    resolveCancel();
+    await flushUntil(() => findButton(result.container, "Sign in")?.disabled === false);
+
+    expect(findButton(result.container, "Cancel")).toBeFalsy();
+    expect(findButton(result.container, "Sign in")?.disabled).toBe(false);
   });
 
   it("stops both polls and shows the timed-out state at the server deadline", async () => {
@@ -2460,6 +2867,8 @@ describe("AgentConfigForm create-mode Claude OAuth binding", () => {
     mockEnvironmentsApi.capabilities.mockResolvedValue(SANDBOX_CAPABILITIES);
     mockSecretsApi.list.mockResolvedValue([]);
     mockSecretsApi.listProposals.mockResolvedValue([]);
+    mockAgentsApi.getActiveAdapterAuthLoginSession.mockImplementation(noActiveSession);
+    mockAgentsApi.getActiveClaudeSetupTokenLoginSession.mockImplementation(noActiveSession);
     mockAgentsApi.testEnvironment.mockResolvedValue(CLAUDE_AUTH_MISSING_RESULT);
     mockAgentsApi.startClaudeSetupTokenLogin.mockResolvedValue({
       sessionId: "claude-session-1",
@@ -2658,6 +3067,8 @@ describe("AgentConfigForm edit-mode Claude OAuth binding", () => {
     mockEnvironmentsApi.capabilities.mockResolvedValue(SANDBOX_CAPABILITIES);
     mockSecretsApi.list.mockResolvedValue([]);
     mockSecretsApi.listProposals.mockResolvedValue([]);
+    mockAgentsApi.getActiveAdapterAuthLoginSession.mockImplementation(noActiveSession);
+    mockAgentsApi.getActiveClaudeSetupTokenLoginSession.mockImplementation(noActiveSession);
     mockAgentsApi.testEnvironment.mockResolvedValue(CLAUDE_AUTH_MISSING_RESULT);
     mockAgentsApi.startClaudeSetupTokenLogin.mockResolvedValue({
       sessionId: "claude-session-1",

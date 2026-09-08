@@ -24,6 +24,7 @@ import { verifyLocalAgentJwt } from "../agent-auth-jwt.js";
 import { isUuidLike, normalizeAgentApiKeyScope, type DeploymentMode } from "@paperclipai/shared";
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
 import { logger } from "./logger.js";
+import { captureRunIdentity } from "../services/run-identity.js";
 import { boardAuthService } from "../services/board-auth.js";
 
 const CLOUD_TENANT_WRITE_DEBOUNCE_MS = 5_000;
@@ -379,7 +380,18 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
         return;
       }
 
-      const onBehalfOfUserId = claims.responsible_user_id !== undefined
+      const [identityRun] = await db.select({ activeIdentityContextId: heartbeatRuns.activeIdentityContextId,
+        responsibleUserId: heartbeatRuns.responsibleUserId, status: heartbeatRuns.status }).from(heartbeatRuns).where(and(
+          eq(heartbeatRuns.id, claims.run_id), eq(heartbeatRuns.companyId, claims.company_id), eq(heartbeatRuns.agentId, claims.sub),
+        ));
+      if (identityRun?.activeIdentityContextId && identityRun.status === "running") {
+        const captured = await captureRunIdentity(db, { companyId: claims.company_id, agentId: claims.sub, runId: claims.run_id });
+        identityRun.activeIdentityContextId = captured.context?.id ?? null;
+        identityRun.responsibleUserId = captured.context?.responsibleUserId ?? null;
+      }
+      const onBehalfOfUserId = identityRun?.activeIdentityContextId
+        ? identityRun.responsibleUserId
+        : claims.responsible_user_id !== undefined
         ? normalizeOptionalString(claims.responsible_user_id)
         : await resolveLegacyRunResponsibleUserId(db, {
             companyId: claims.company_id,
@@ -399,6 +411,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
         keyScope: normalizeAgentApiKeyScope(claims.key_scope),
         runId: claims.run_id,
         onBehalfOfUserId,
+        identityContextId: identityRun?.activeIdentityContextId ?? null,
         onBehalfOfMemberships,
         source: "agent_jwt",
       };

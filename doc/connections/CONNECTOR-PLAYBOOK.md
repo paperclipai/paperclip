@@ -107,7 +107,7 @@ chooses all five axes below.
 | Authentication | `oauth`, `api_key`, `none` | How does the provider authorize requests? |
 | OAuth client ownership | `dcr`, `customer`, `platform_shared`, `platform_provisioned` | Who supplies and controls the OAuth client registration? |
 | Credential source | `paperclip_vault`, reviewed `vercel_connect` | Where does durable provider credential material live? |
-| Grant identity | `organization`, `user` | Does the credential act for the company or one person? |
+| Grant identity | `organization`, `user`, `agent` | Does the credential act for the company, one person, or one dedicated agent? |
 
 These axes produce combinations such as:
 
@@ -119,6 +119,8 @@ These axes produce combinations such as:
 - Remote MCP + no auth + required tenant field: Shopify.
 - Remote MCP + Paperclip-managed OAuth client + per-user grant: Google
   Workspace MCP previews.
+- Remote MCP + Paperclip-managed OAuth client + personal or dedicated-agent
+  grant: GitHub. See [GitHub managed connection](./GITHUB.md).
 - Local stdio MCP + approved command template: the Google Sheets robot flow and
   development fixtures.
 - REST API parent + provider-specific child-session bridge: Composio. This is a

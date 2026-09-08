@@ -98,6 +98,8 @@ export interface SandboxCallbackBridgeRouteRule {
 // reverse bridge. Keep this in sync with the Paperclip skill in
 // `skills/paperclip/SKILL.md` and `references/api-reference.md`.
 export const DEFAULT_SANDBOX_CALLBACK_BRIDGE_ROUTE_ALLOWLIST: readonly SandboxCallbackBridgeRouteRule[] = [
+  // Runtime capability authentication is independently checked by the controller.
+  { method: "POST", path: /^\/runtime-tools\/github\/credentials$/ },
   // Identity, inbox, agent self-management
   { method: "GET", path: /^\/api\/agents\/me$/ },
   { method: "GET", path: /^\/api\/agents\/me\/inbox-lite$/ },
@@ -186,6 +188,7 @@ export const DEFAULT_SANDBOX_CALLBACK_BRIDGE_HEADER_ALLOWLIST = [
   "content-type",
   "if-match",
   "if-none-match",
+  "x-paperclip-github-capability",
 ] as const;
 
 export interface SandboxCallbackBridgeRequest {
