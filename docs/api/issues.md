@@ -326,6 +326,112 @@ GET /api/attachments/{attachmentId}/content
 DELETE /api/attachments/{attachmentId}
 ```
 
+## Delivery Tracking (opt-in)
+
+Delivery tracking is per issue and off by default. An issue that is never
+enrolled has no candidate, no review requirement, no evidence requirement, and
+no extra completion gate — nothing in this section affects ordinary work.
+
+### State
+
+```
+GET /api/issues/{issueId}/delivery
+```
+
+Returns `enrolled`, the track, the server-derived plan revision state (for a
+plan-pinned track), the current writer taken from checkout state, the current
+candidate/verdict/acceptance, registered evidence, `allowedActions`, and
+`blockers`. Denials elsewhere in this section use the same stable `code` values
+that appear in `blockers`.
+
+### Enroll
+
+```
+POST /api/issues/{issueId}/delivery/enroll
+{
+  "repositoryUrl": "https://github.com/org/repo",
+  "requireReview": true,
+  "requireVerifiedEvidence": true,
+  "pinPlanRevision": false,
+  "reviewerAgentIds": []
+}
+```
+
+Every field is optional and defaults to the least restrictive setting. A board
+user, or the agent currently holding the issue, may create the track. Changing
+an existing track's requirements — or `POST /api/issues/{issueId}/delivery/close`
+— is board-only, so a worker cannot relax its own completion requirements after
+enrolling. `reviewerAgentIds` empty means any agent other than the submitter may
+review.
+
+### Submit a candidate
+
+```
+POST /api/issues/{issueId}/delivery/submit
+{
+  "expectedPlanRevisionId": "<uuid, required only for a plan-pinned track>",
+  "candidate": { "repositoryUrl": "...", "headSha": "<40 or 64 hex>", "baseSha": "..." },
+  "evidenceRefs": []
+}
+```
+
+The caller must be the issue's assignee acting inside the run that currently
+holds the issue's execution lock; the server derives actor and run and never
+trusts a caller-supplied identity. Re-submitting the same `headSha` is
+idempotent; a different `headSha` supersedes the previous candidate. A
+submission never accepts or completes anything.
+
+### Record a review verdict
+
+```
+POST /api/issues/{issueId}/delivery/verdict
+{
+  "candidateHeadSha": "...",
+  "verdict": "pass" | "changes_requested",
+  "findings": [{ "summary": "...", "evidenceRef": "<uuid>" }]
+}
+```
+
+Append-only. An agent cannot review the candidate it submitted, and when the
+track pins reviewers, only those agents may review. `changes_requested` requires
+at least one finding.
+
+### Register verification evidence (board/evaluator only)
+
+```
+POST /api/issues/{issueId}/delivery/evidence
+{
+  "candidateHeadSha": "...",
+  "planRevisionId": "<uuid, optional>",
+  "kind": "command_result" | "artifact_digest" | "external_check",
+  "digest": "<sha256 hex of the evidence bytes>",
+  "summary": { "label": "integration suite", "command": "pnpm test:run", "exitCode": 0 },
+  "producerLabel": "protected-runner"
+}
+```
+
+Agent keys are rejected. Evidence rows are immutable and bound to one issue and
+candidate, so a self-reported result cannot become proof and evidence cannot be
+replayed onto another candidate.
+
+### Accept a candidate (board/evaluator only)
+
+```
+POST /api/issues/{issueId}/delivery/accept
+{
+  "candidateHeadSha": "...",
+  "expectedPlanRevisionId": "<uuid, required only for a plan-pinned track>",
+  "verificationEvidenceRefs": ["<uuid>"]
+}
+```
+
+Acceptance requires the current candidate, a passing independent review when the
+track requires review, and registered evidence when the track requires evidence.
+Completing an enrolled issue (`status: "done"`) re-checks the acceptance against
+the candidate and plan revision that are current at commit time, so a later plan
+edit or a newer candidate turns an earlier acceptance stale. Cancellation stays
+available at all times.
+
 ## Issue Lifecycle
 
 ```

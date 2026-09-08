@@ -218,6 +218,42 @@ Triage writes serialize on the company and attention-source identity so concurre
 
 `decision_retention` tracks the last observed source `activityAt`, Keep, reversible archive provenance, and monotonic source/archive versions. `decision_archive_notification_outbox` has a unique key over company, source identity, archive version, and immutable origin agent so repeated sweeps cannot enqueue duplicate notifications; delivery claims are retryable and coalesced per agent.
 
+## Delivery tracking (opt-in, per issue)
+
+`delivery_tracks` is the opt-in record. An issue with no active row behaves like
+any other issue: no candidate, no review, no evidence, and no extra completion
+gate. There is no project-wide or instance-wide rule that turns tracking on, so
+an orchestrator can create, delegate, and revise ordinary work without any of
+this machinery and enroll only the tasks whose completion must be pinned to a
+reviewed, evidence-backed candidate. Every requirement (`require_review`,
+`require_verified_evidence`, `pin_plan_revision`, `reviewer_agent_ids`) lives on
+the track row itself.
+
+`delivery_submissions`, `delivery_verdicts`, `delivery_verification_evidence`,
+and `delivery_acceptances` are the append-oriented candidate chain. Exactly one
+submission per issue is current (`superseded_at IS NULL`); verdicts and
+acceptances bind to that submission. Unique keys over
+`(company_id, issue_id, head_sha)`, `(company_id, submission_id, reviewer_agent_id,
+reviewer_run_id)`, `(company_id, issue_id, digest)`, and
+`(company_id, issue_id, candidate_head_sha)` make retried submits, verdicts,
+ingestions, and acceptances idempotent rather than duplicated.
+
+`delivery_verification_evidence` is immutable and has no update or delete path.
+Rows are written only by the board/evaluator ingestion endpoint, so agent-
+reported JSON never becomes proof: `digest` is a sha256 of bytes produced
+outside Paperclip, and each row is bound to one issue, candidate head, and
+optional plan revision so evidence cannot be replayed onto another candidate.
+
+Agent pointers (`submitted_by_agent_id`, `reviewer_agent_id`, run ids) are
+nullable and clear on principal deletion. Completion re-verifies those pointers,
+so a cleared pointer fails closed rather than accepting silently.
+
+Completion of an enrolled issue is checked inside the transaction that writes
+the terminal status, under the issue row lock: acceptance must exist for the
+issue's current candidate, and — for a plan-pinned track — for the plan revision
+that is still effective at commit time. A plan edit or a newer candidate makes an
+earlier acceptance stale instead of authoritative. Cancellation is never gated.
+
 ## Native runner persistence
 
 Native runner state is additive to the existing heartbeat tables. Every existing

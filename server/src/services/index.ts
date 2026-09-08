@@ -48,6 +48,12 @@ export {
   type IssueReviewVerdictActor,
 } from "./issue-review-policy.js";
 export { issueTreeControlService } from "./issue-tree-control.js";
+export {
+  assertDeliveryCompletionAllowed,
+  deliveryTrackingService,
+  resolveEffectivePlanRevision,
+  type DeliveryActor,
+} from "./delivery-tracking.js";
 export { issueApprovalService } from "./issue-approvals.js";
 export { issueReferenceService } from "./issue-references.js";
 export { issueRecoveryActionService } from "./issue-recovery-actions.js";

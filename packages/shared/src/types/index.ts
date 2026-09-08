@@ -795,6 +795,21 @@ export type {
   IssueTreePreviewTotals,
   IssueTreePreviewWarning,
 } from "./issue-tree-control.js";
+export type {
+  DeliveryAcceptanceRecord,
+  DeliveryAction,
+  DeliveryCandidate,
+  DeliveryDenialCode,
+  DeliveryEvidenceKind,
+  DeliveryEvidenceRecord,
+  DeliveryPlanRevisionState,
+  DeliveryStateSnapshot,
+  DeliverySubmissionRecord,
+  DeliveryTrack,
+  DeliveryVerdict,
+  DeliveryVerdictFinding,
+  DeliveryVerdictRecord,
+} from "./delivery.js";
 export type { Goal } from "./goal.js";
 export type { Approval, ApprovalComment } from "./approval.js";
 export type {
