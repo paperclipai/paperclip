@@ -61,6 +61,7 @@ import { EmptyState } from "./EmptyState";
 import { Identity } from "./Identity";
 import { IssueGroupHeader } from "./IssueGroupHeader";
 import { IssueFiltersPopover } from "./IssueFiltersPopover";
+import { SavedViewsMenu } from "./SavedViewsMenu";
 import { IssueRow, type IssueRowPresentation } from "./IssueRow";
 import { CollectionToolbar, type CollectionToolbarProps } from "./CollectionToolbar";
 import { IssuesList as LegacyIssuesList } from "./LegacyIssuesList";
@@ -851,6 +852,35 @@ function StreamlinedIssuesList({
     preferenceLocation.legacyViewStorageKey,
     visibleIssueColumns,
   ]);
+
+  const savedViewNormalizers = useMemo(() => ({
+    normalizeViewState: normalizeIssueViewState,
+    normalizeColumns: (value: unknown) =>
+      normalizeInboxIssueColumns(Array.isArray(value) ? value : []),
+  }), []);
+
+  // Applying a named view replaces the whole filter/sort/group state at once.
+  // Transient folding state stays out of the snapshot so a view never reopens
+  // collapsed groups from another session.
+  const applySavedView = useCallback((view: { viewState: IssueViewState; columns: InboxIssueColumn[] }) => {
+    setViewState(view.viewState);
+    setVisibleIssueColumns(view.columns);
+    saveTaskCollectionPreferences(preferenceLocation, {
+      viewState: view.viewState,
+      columns: view.columns,
+    });
+  }, [
+    preferenceLocation.companyId,
+    preferenceLocation.collectionKey,
+    preferenceLocation.legacyColumnsStorageKey,
+    preferenceLocation.legacyViewStorageKey,
+  ]);
+
+  const savedViewSnapshot = useMemo(() => ({
+    ...viewState,
+    collapsedGroups: [],
+    collapsedParents: [],
+  }), [viewState]);
 
   useEffect(() => {
     if (!experimentalSettingsLoaded || externalObjectsEnabled || viewState.externalObjectStatuses.length === 0) return;
@@ -1866,6 +1896,15 @@ function StreamlinedIssuesList({
             title="Choose which task columns stay visible"
             iconOnly
             rowPresentation={rowPresentation}
+          />
+
+          <SavedViewsMenu
+            companyId={selectedCompanyId}
+            collectionKey={viewStateKey}
+            snapshotViewState={savedViewSnapshot}
+            snapshotColumns={visibleIssueColumns}
+            normalizers={savedViewNormalizers}
+            onApply={applySavedView}
           />
 
           <IssueFiltersPopover
