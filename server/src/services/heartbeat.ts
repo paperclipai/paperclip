@@ -364,6 +364,7 @@ import {
 import { withRecoveryContext } from "./recovery/status-only-context.js";
 import {
   ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS as RECOVERY_ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS,
+  isOperatorCancelledRun,
   recoveryService,
 } from "./recovery/service.js";
 import { collectDispositionRepairSourceState } from "./recovery/disposition-repair.js";
@@ -22956,6 +22957,8 @@ export function heartbeatService(
     run: typeof heartbeatRuns.$inferSelect,
     options: { suppressImmediateRecovery?: boolean } = {},
   ) {
+    const suppressImmediateRecovery =
+      options.suppressImmediateRecovery || isOperatorCancelledRun(run);
     const runContext = parseObject(run.contextSnapshot);
     const contextIssueId = readNonEmptyString(runContext.issueId);
     const taskKey = deriveTaskKeyWithHeartbeatFallback(runContext, null);
@@ -23558,7 +23561,7 @@ export function heartbeatService(
         const existingReviewParticipantExecutionPath =
           await findExistingExecutionPath(currentParticipant.agentId);
         if (
-          options.suppressImmediateRecovery ||
+          suppressImmediateRecovery ||
           existingReviewParticipantExecutionPath ||
           issueHasPersistedMonitor ||
           (await isAutomaticRecoverySuppressedByPauseHold(
@@ -23694,7 +23697,7 @@ export function heartbeatService(
       if (!issueNeedsImmediateRecovery) {
         return { kind: "released" as const };
       }
-      if (options.suppressImmediateRecovery) {
+      if (suppressImmediateRecovery) {
         return { kind: "released" as const };
       }
 
@@ -25882,21 +25885,42 @@ export function heartbeatService(
 
     const running = runningProcesses.get(run.id);
     try {
+      if (run.runtimeMode !== "native") {
+        // Claim cancellation before signalling: an adapter can return success
+        // during shutdown and otherwise enqueue a continuation before we stop it.
+        // Native sessions persist their own audited cancellation intent below.
+        const claim = await setRunStatusFromLive(
+          run.id,
+          "cancelled",
+          [...CANCELLABLE_HEARTBEAT_RUN_STATUSES],
+          {
+            finishedAt: new Date(),
+            error: reason,
+            errorCode,
+            ...(resultJson ? { resultJson } : {}),
+          },
+        );
+        if (!claim.updated) return claim.run;
+      }
       await cancelHeartbeatNativeRun({
         db,
         runId: run.id,
         reason,
         runtimeMode: run.runtimeMode,
       });
-      if (running) {
-        await terminateHeartbeatRunProcess({
-          pid: running.child.pid,
-          processGroupId: running.processGroupId,
-          graceMs: Math.max(1, running.graceSec) * 1000,
-        });
-      }
     } finally {
-      runningProcesses.delete(run.id);
+      // A persistence failure must not leave the owned process running.
+      try {
+        if (running) {
+          await terminateHeartbeatRunProcess({
+            pid: running.child.pid,
+            processGroupId: running.processGroupId,
+            graceMs: Math.max(1, running.graceSec) * 1000,
+          });
+        }
+      } finally {
+        runningProcesses.delete(run.id);
+      }
     }
 
     const finishedAt = new Date();

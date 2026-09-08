@@ -608,7 +608,7 @@ function isStrandedIssueRecoveryIssue(issue: Pick<typeof issues.$inferSelect, "o
  * stopped the agent, and re-waking it — or escalating "stranding" — would
  * fight the human. Any newer run or wake supersedes the exemption.
  */
-function isOperatorCancelledRun(latestRun: LatestIssueRun): boolean {
+export function isOperatorCancelledRun(latestRun: LatestIssueRun): boolean {
   if (!latestRun || latestRun.status !== "cancelled") return false;
   if (latestRun.errorCode === "operator_interrupted") return true;
   const result = parseObject(latestRun.resultJson);

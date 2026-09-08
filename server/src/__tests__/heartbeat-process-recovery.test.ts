@@ -5894,18 +5894,20 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     );
   });
 
-  it("terminates the in-memory process before persisting cancellation status", async () => {
+  it("terminates the owned process even when cancellation persistence fails", async () => {
     const { runId } = await seedRunFixture({
       agentStatus: "running",
       includeIssue: false,
     });
     const heartbeat = heartbeatService(db);
+    const child = spawnAliveProcess();
+    childProcesses.add(child);
+    if (!child.pid) throw new Error("Cancellation fixture did not expose a pid");
     runningProcesses.set(runId, {
-      child: { pid: 12345 } as ChildProcess,
+      child,
       graceSec: 1,
       processGroupId: null,
     });
-    mockTerminateLocalService.mockResolvedValueOnce(undefined);
     const updateSpy = vi.spyOn(db, "update");
     updateSpy.mockImplementationOnce((() => {
       throw new Error("db update unavailable");
@@ -5915,14 +5917,34 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       await expect(heartbeat.cancelRun(runId)).rejects.toThrow(
         "db update unavailable",
       );
-      expect(mockTerminateLocalService).toHaveBeenCalledWith(
-        expect.objectContaining({ pid: 12345, processGroupId: null }),
-        { forceAfterMs: 1000 },
-      );
-      expect(runningProcesses.has(runId)).toBe(false);
+      expect(await waitForPidExit(child.pid)).toBe(true);
     } finally {
       updateSpy.mockRestore();
     }
+  });
+
+  it("does not restart an unfinished issue after board cancellation", async () => {
+    const { companyId, runId, issueId } = await seedRunFixture({
+      agentStatus: "running",
+      includeIssue: true,
+    });
+
+    await heartbeatService(db).cancelRun(runId, "Cancelled by a board operator", {
+      resultJson: { cancelledByActorType: "user" },
+    });
+
+    const runs = await db
+      .select({ id: heartbeatRuns.id, status: heartbeatRuns.status })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.companyId, companyId));
+    expect(runs).toEqual([{ id: runId, status: "cancelled" }]);
+
+    const issue = await db
+      .select({ status: issues.status })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]);
+    expect(issue?.status).toBe("in_progress");
   });
 
   it("does not signal an unowned persisted process during manual cancellation", async () => {
