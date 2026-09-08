@@ -2058,7 +2058,7 @@ export function ConfigurationTab({
         sectionLayout="cards"
         environmentVariablesPlacement="configuration"
         compactTestFeedback
-        sectionOrder={["adapter", "configuration", "environment", "environment-variables", "run-policy", "identity"]}
+        sectionOrder={["identity", "adapter", "configuration", "environment", "environment-variables", "run-policy"]}
         sectionTitles={{ adapter: "Adapter", configuration: "Configuration", identity: "Agent identity" }}
         canConfigureProviderTrace={canConfigureProviderTrace}
       /> : null}

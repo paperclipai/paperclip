@@ -1,3 +1,4 @@
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../../components/ui/select";
 import { configFieldsForSection } from "../config-sections";
 import type { AdapterConfigFieldsProps } from "../types";
 import {
@@ -374,17 +375,16 @@ export function CodexLocalConfigFields({
           label="Permission mode"
           hint={`${runnerPermissionCapability.description} The selected mode does not widen Paperclip's workspace, network, credential, or planning boundaries.`}
         >
-          <select
-            className={inputClass}
+          <Select
             value={
               runnerPermissionModeUnsupported
                 ? "__unsupported__"
                 : runnerPermissionMode
             }
-            onChange={(event) => {
+            onValueChange={(selectedMode) => {
               const value = resolvePaperclipRunnerPermissionMode(
                 runnerProvider,
-                event.target.value,
+                selectedMode,
               ) as PaperclipRunnerPermissionMode;
               if (isCreate) {
                 set!({
@@ -402,17 +402,26 @@ export function CodexLocalConfigFields({
               }
             }}
           >
-            {runnerPermissionModeUnsupported && (
-              <option value="__unsupported__" disabled>
-                Unsupported saved mode — select a qualified mode
-              </option>
-            )}
-            {runnerPermissionCapability.options.map((option) => (
-              <option key={option.value} value={option.value}>
-                {option.label}
-              </option>
-            ))}
-          </select>
+            <SelectTrigger aria-label="Permission mode" className="w-full font-sans">
+              <SelectValue>
+                {runnerPermissionModeUnsupported
+                  ? "Unsupported saved mode — select a qualified mode"
+                  : runnerPermissionCapability.options.find((option) => option.value === runnerPermissionMode)?.label}
+              </SelectValue>
+            </SelectTrigger>
+            <SelectContent>
+              {runnerPermissionModeUnsupported && (
+                <SelectItem value="__unsupported__" disabled>
+                  Unsupported saved mode — select a qualified mode
+                </SelectItem>
+              )}
+              {runnerPermissionCapability.options.map((option) => (
+                <SelectItem key={option.value} value={option.value}>
+                  {option.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
           {runnerPermissionModeUnsupported && runnerProvider === "codex" && (
             <p className="mt-1 text-xs text-destructive" role="alert">
               This saved Codex mode cannot start or recover a Paperclip Runner

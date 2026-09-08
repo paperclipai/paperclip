@@ -1336,21 +1336,6 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 chooseLabel="Choose manager…"
               />
             </Field>
-            <Field label="Capabilities" hint={help.capabilities}>
-              <MarkdownEditor
-                value={eff("identity", "capabilities", props.agent.capabilities ?? "") ?? ""}
-                onChange={(v) => mark("identity", "capabilities", v || null)}
-                placeholder="Describe what this agent can do..."
-                contentClassName="min-h-(--sz-44px) text-sm font-mono"
-                imageUploadHandler={async (file) => {
-                  const asset = await uploadMarkdownImage.mutateAsync({
-                    file,
-                    namespace: `agents/${props.agent.id}/capabilities`,
-                  });
-                  return asset.contentPath;
-                }}
-              />
-            </Field>
             {isLocal && !props.hidePromptTemplate && (
               <>
                 <Field label="Prompt Template" hint={help.promptTemplate}>
