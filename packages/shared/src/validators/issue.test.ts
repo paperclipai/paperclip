@@ -211,6 +211,35 @@ describe("issue validators", () => {
     ).toBe(false);
   });
 
+  it("allows recovery resolutions to preserve an intentional backlog disposition", () => {
+    for (const outcome of ["restored", "false_positive", "cancelled"] as const) {
+      expect(
+        resolveIssueRecoveryActionSchema.parse({
+          outcome,
+          sourceIssueStatus: "backlog",
+          resolutionNote: "The source issue is intentionally parked in backlog.",
+        }),
+      ).toMatchObject({ outcome, sourceIssueStatus: "backlog" });
+    }
+
+    expect(
+      resolveIssueRecoveryActionSchema.safeParse({
+        outcome: "blocked",
+        sourceIssueStatus: "backlog",
+      }).success,
+    ).toBe(false);
+
+    for (const resolutionNote of [undefined, null, "   "]) {
+      expect(
+        resolveIssueRecoveryActionSchema.safeParse({
+          outcome: "restored",
+          sourceIssueStatus: "backlog",
+          resolutionNote,
+        }).success,
+      ).toBe(false);
+    }
+  });
+
   it("allows cancelled recovery resolutions to atomically restore the source issue status", () => {
     expect(
       resolveIssueRecoveryActionSchema.parse({
