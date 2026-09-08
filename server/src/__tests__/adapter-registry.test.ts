@@ -287,7 +287,7 @@ describe("server adapter registry", () => {
         transport: "sandbox",
         remoteCwd: "/workspace",
         providerKey: "test-provider",
-        runner: { execute: vi.fn() },
+        runner: { execute: vi.fn().mockResolvedValue({ exitCode: 0, timedOut: false, stdout: "Linux\nx86_64\n" }) },
       },
     });
 

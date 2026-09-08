@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { assertValidAdapterLoginCapability } from "@paperclipai/adapter-utils";
 import { listServerAdapters, requireServerAdapter } from "./registry.js";
+import * as executionTarget from "@paperclipai/adapter-utils/execution-target";
 import { BUILTIN_ADAPTER_TYPES } from "./builtin-adapter-types.js";
 
 // The registry registers a login capability for the two built-in interactive
@@ -111,8 +112,49 @@ describe("native ACPX environment checks", () => {
     vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
     const result = await requireServerAdapter("paperclip_runner").testEnvironment!({
       ...context,
-      executionTarget: { kind: "remote", transport: "sandbox", remoteCwd: "/workspace" },
+      executionTarget: {
+        kind: "remote", transport: "sandbox", remoteCwd: "/workspace", providerKey: "test",
+        runner: { execute: vi.fn().mockResolvedValue({ exitCode: 0, timedOut: false, stdout: "Linux\nx86_64\n" }) },
+      },
     });
     expect(result.status).toBe("pass");
+  });
+
+  const sshTarget = {
+    kind: "remote" as const, transport: "ssh" as const, remoteCwd: "/workspace",
+    spec: {
+      host: "example.test", port: 22, username: "tester", remoteCwd: "/workspace",
+      remoteWorkspacePath: "/workspace", privateKey: null, knownHosts: null, strictHostKeyChecking: true,
+    },
+  };
+
+  it.each([
+    ["Linux\nx86_64\n", "pass"],
+    ["Darwin\nx86_64\n", "fail"],
+    ["Linux\naarch64\n", "fail"],
+    ["", "fail"],
+  ])("qualifies the SSH platform from its own uname output %j", async (stdout, status) => {
+    vi.spyOn(process, "platform", "get").mockReturnValue("linux");
+    vi.spyOn(process, "arch", "get").mockReturnValue("x64");
+    const probe = vi.spyOn(executionTarget, "runAdapterExecutionTargetShellCommand").mockResolvedValue({
+      exitCode: 0, timedOut: false, stdout, stderr: "", signal: null, pid: null, startedAt: new Date(0).toISOString(),
+    });
+    const result = await requireServerAdapter("paperclip_runner").testEnvironment!({ ...context, executionTarget: sshTarget });
+    expect(result.status).toBe(status);
+    expect(probe).toHaveBeenCalledWith(expect.any(String), sshTarget, "uname -s && uname -m", {
+      cwd: "/workspace", env: {}, timeoutSec: 15,
+    });
+  });
+
+  it.each(["timeout", "exit", "exception"])("does not qualify an SSH target after a probe %s", async (failure) => {
+    const probe = vi.spyOn(executionTarget, "runAdapterExecutionTargetShellCommand");
+    if (failure === "exception") probe.mockRejectedValue(new Error("connection unavailable"));
+    else probe.mockResolvedValue({
+      exitCode: failure === "exit" ? 1 : 0, timedOut: failure === "timeout",
+      stdout: "Linux\nx86_64\n", stderr: "", signal: null, pid: null, startedAt: new Date(0).toISOString(),
+    });
+    const result = await requireServerAdapter("paperclip_runner").testEnvironment!({ ...context, executionTarget: sshTarget });
+    expect(result.status).toBe("fail");
+    expect(result.checks[0].code).toBe("acpx_runtime_platform_unverified");
   });
 });

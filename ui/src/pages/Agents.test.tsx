@@ -468,24 +468,26 @@ describe("Agents", () => {
     expect(row).not.toBeNull();
     expect(row?.querySelector(".sm\\:hidden")).toBeNull();
     expect(row?.querySelector(".hidden.sm\\:flex")).not.toBeNull();
-    expect(row?.querySelector(".flex-1.hidden.xl\\:block")).not.toBeNull();
+    expect(row?.querySelector(".flex-1.hidden.\\@5xl\\:block")).not.toBeNull();
     expect(row?.classList.contains("text-foreground/55")).toBe(false);
     expect(row?.classList.contains("sm:text-foreground/55")).toBe(true);
     const name = row?.querySelector("span[title='Paperclip Engineer With A Much Longer Display Name']");
     const subtitle = Array.from(row?.querySelectorAll("p") ?? []).find((node) =>
       node.textContent?.includes("Software Engineer With A Much Longer Specialty Title"),
     );
-    expect(name?.classList.contains("whitespace-normal")).toBe(true);
-    expect(name?.classList.contains("break-words")).toBe(true);
-    expect(name?.classList.contains("xl:truncate")).toBe(true);
-    expect(name?.classList.contains("xl:whitespace-nowrap")).toBe(true);
-    expect(name?.classList.contains("truncate")).toBe(false);
+    expect(name?.classList.contains("truncate")).toBe(true);
     expect(subtitle).toBeDefined();
-    expect(subtitle?.classList.contains("whitespace-normal")).toBe(true);
-    expect(subtitle?.classList.contains("break-words")).toBe(true);
-    expect(subtitle?.classList.contains("xl:truncate")).toBe(true);
-    expect(subtitle?.classList.contains("xl:whitespace-nowrap")).toBe(true);
-    expect(subtitle?.classList.contains("truncate")).toBe(false);
+    expect(subtitle?.classList.contains("truncate")).toBe(true);
+    const actions = row?.querySelector('button[aria-label="Open actions for Paperclip Engineer With A Much Longer Display Name"]');
+    expect(actions).not.toBeNull();
+    // Neither the action button nor its ancestors may hide the mobile menu.
+    for (let node = actions; node && node !== row; node = node.parentElement) {
+      expect(node.classList.contains("hidden")).toBe(false);
+    }
+    await act(async () => { (actions as HTMLButtonElement).click(); });
+    await flushReact();
+    expect(document.body.textContent).toContain("Duplicate");
+    expect(document.body.textContent).toContain("Terminate");
   });
 
   it("uses the built-in agents route segment as the built-in filter", async () => {
@@ -959,13 +961,13 @@ describe("Agents", () => {
     });
     await flushReact();
 
-    // The title cell carries a constant width at xl (`xl:w-56`), not a
+    // The title cell carries a constant width in a wide container, not a
     // content-sized `min-w-(--sz-7rem)`, so the `meta` group starts at the same
     // x on every row and the model + timestamp columns line up vertically.
-    // Below xl the meta columns are hidden and the title flexes (`flex-1`)
+    // In narrower containers metadata is hidden and the title flexes (`flex-1`)
     // instead, so the shrink-0 trailing actions can't squeeze the agent name
     // to zero width on mobile.
-    const titleCell = container.querySelector(".xl\\:w-56");
+    const titleCell = container.querySelector(".\\@5xl\\:w-56");
     expect(titleCell).not.toBeNull();
     expect(titleCell?.textContent).toContain("Alpha");
     expect(titleCell?.classList.contains("flex-1")).toBe(true);

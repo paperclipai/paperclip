@@ -420,7 +420,7 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
             )}
             {/* Actions have their own wrapping line, so names keep their width. */}
             <div
-              className="hidden pt-1 sm:block"
+              className="pt-1"
               onClick={(e) => {
                 e.preventDefault();
                 e.stopPropagation();

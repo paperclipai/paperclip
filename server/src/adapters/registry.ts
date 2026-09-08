@@ -7,6 +7,7 @@ import {
   PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES,
 } from "@paperclipai/adapter-utils";
 import type { AdapterLoginCapability } from "@paperclipai/adapter-utils";
+import { runAdapterExecutionTargetShellCommand } from "@paperclipai/adapter-utils/execution-target";
 import {
   execute as claudeExecute,
   listClaudeSkills,
@@ -405,10 +406,34 @@ const paperclipRunnerAdapter: ServerAdapterModule = {
     if (profile.provider === "acpx") {
       // The pinned ACPX executables are qualified for Linux x64. A host CLI
       // login probe can succeed on macOS even though runner admission cannot.
-      if (
-        context.executionTarget?.kind !== "remote" &&
-        (process.platform !== "linux" || process.arch !== "x64")
-      ) {
+      let supported = process.platform === "linux" && process.arch === "x64";
+      const target = context.executionTarget;
+      if (target?.kind === "remote") {
+        try {
+          const probe = await runAdapterExecutionTargetShellCommand(
+            `acpx-platform-${crypto.randomUUID()}`,
+            target,
+            "uname -s && uname -m",
+            { cwd: target.remoteCwd, env: {}, timeoutSec: 15 },
+          );
+          if (probe.timedOut || probe.exitCode !== 0) throw new Error("Platform probe failed");
+          const [os, arch] = probe.stdout.trim().split(/\s+/);
+          supported = os === "Linux" && arch === "x86_64";
+        } catch {
+          return {
+            adapterType: "paperclip_runner",
+            status: "fail" as const,
+            testedAt: new Date().toISOString(),
+            checks: [{
+              code: "acpx_runtime_platform_unverified",
+              level: "error" as const,
+              message: "Could not verify the remote ACPX runner platform.",
+              hint: "Check the environment connection and retry. The native ACPX runner requires Linux x64.",
+            }],
+          };
+        }
+      }
+      if (!supported) {
         return {
           adapterType: "paperclip_runner",
           status: "fail" as const,
