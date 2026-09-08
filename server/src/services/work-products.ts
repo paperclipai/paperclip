@@ -1,6 +1,6 @@
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { heartbeatRunEvents, issueWorkProducts, workspaceRuntimeServices } from "@paperclipai/db";
+import { heartbeatRunEvents, issues, issueWorkProducts, workspaceRuntimeServices } from "@paperclipai/db";
 import type { IssueWorkProduct } from "@paperclipai/shared";
 import { insertRowsInChunks } from "./batch-insert.js";
 import {
@@ -16,6 +16,44 @@ import {
 import type { ImportIssueWorkProductRow } from "./import-write-types.js";
 
 type IssueWorkProductRow = typeof issueWorkProducts.$inferSelect;
+
+const DEADLOCK_SQLSTATE = "40P01";
+const WORK_PRODUCT_TRANSACTION_ATTEMPTS = 3;
+
+function postgresErrorCode(error: unknown): string | null {
+  let candidate: unknown = error;
+  for (let depth = 0; depth < 4 && candidate && typeof candidate === "object"; depth += 1) {
+    const record = candidate as Record<string, unknown>;
+    if (typeof record.code === "string") return record.code;
+    candidate = record.cause;
+  }
+  return null;
+}
+
+async function withDeadlockRetry<T>(operation: () => Promise<T>): Promise<T> {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await operation();
+    } catch (error) {
+      if (postgresErrorCode(error) !== DEADLOCK_SQLSTATE || attempt >= WORK_PRODUCT_TRANSACTION_ATTEMPTS) {
+        throw error;
+      }
+      const jitterMs = 10 + Math.floor(Math.random() * 31) * attempt;
+      await new Promise((resolve) => setTimeout(resolve, jitterMs));
+    }
+  }
+}
+
+function workProductIdempotencyExternalId(
+  data: Omit<typeof issueWorkProducts.$inferInsert, "issueId" | "companyId">,
+): string | null {
+  if (data.externalId) return data.externalId;
+  if (data.type !== "artifact" || data.provider !== "paperclip") return null;
+  const attachmentId = data.metadata && typeof data.metadata === "object"
+    ? data.metadata.attachmentId
+    : null;
+  return typeof attachmentId === "string" && attachmentId.length > 0 ? attachmentId : null;
+}
 
 export interface WorkProductDiffSummary {
   additions: number | null;
@@ -244,8 +282,31 @@ export function workProductService(
     },
 
     createForIssue: async (issueId: string, companyId: string, data: Omit<typeof issueWorkProducts.$inferInsert, "issueId" | "companyId">) => {
-      const row = await db.transaction(async (tx) => {
-        if (data.isPrimary) {
+      const row = await withDeadlockRetry(() => db.transaction(async (tx) => {
+        // The issue row is the per-issue serialization point. Taking it before
+        // any work-product write gives primary transitions one lock order.
+        await tx.execute(sql`select ${issues.id} from ${issues} where ${issues.id} = ${issueId} for update`);
+
+        const idempotencyExternalId = workProductIdempotencyExternalId(data);
+        const normalizedData = idempotencyExternalId && data.externalId !== idempotencyExternalId
+          ? { ...data, externalId: idempotencyExternalId }
+          : data;
+        const existing = idempotencyExternalId
+          ? await tx
+            .select()
+            .from(issueWorkProducts)
+            .where(and(
+              eq(issueWorkProducts.companyId, companyId),
+              eq(issueWorkProducts.issueId, issueId),
+              eq(issueWorkProducts.type, normalizedData.type),
+              eq(issueWorkProducts.provider, normalizedData.provider),
+              eq(issueWorkProducts.externalId, idempotencyExternalId),
+            ))
+            .limit(1)
+            .then((rows) => rows[0] ?? null)
+          : null;
+
+        if (normalizedData.isPrimary) {
           await tx
             .update(issueWorkProducts)
             .set({ isPrimary: false, updatedAt: new Date() })
@@ -253,31 +314,43 @@ export function workProductService(
               and(
                 eq(issueWorkProducts.companyId, companyId),
                 eq(issueWorkProducts.issueId, issueId),
-                eq(issueWorkProducts.type, data.type),
+                eq(issueWorkProducts.type, normalizedData.type),
               ),
             );
+        }
+        if (existing) {
+          return await tx
+            .update(issueWorkProducts)
+            .set({ ...normalizedData, updatedAt: new Date() })
+            .where(eq(issueWorkProducts.id, existing.id))
+            .returning()
+            .then((rows) => rows[0] ?? null);
         }
         return await tx
           .insert(issueWorkProducts)
           .values({
-            ...data,
+            ...normalizedData,
             companyId,
             issueId,
           })
           .returning()
           .then((rows) => rows[0] ?? null);
-      });
+      }));
       return row ? toIssueWorkProduct(row) : null;
     },
 
     update: async (id: string, patch: Partial<typeof issueWorkProducts.$inferInsert>) => {
-      const row = await db.transaction(async (tx) => {
+      const row = await withDeadlockRetry(() => db.transaction(async (tx) => {
         const existing = await tx
           .select()
           .from(issueWorkProducts)
           .where(eq(issueWorkProducts.id, id))
           .then((rows) => rows[0] ?? null);
         if (!existing) return null;
+
+        await tx.execute(
+          sql`select ${issues.id} from ${issues} where ${issues.id} = ${existing.issueId} for update`,
+        );
 
         if (patch.isPrimary === true) {
           await tx
@@ -298,7 +371,7 @@ export function workProductService(
           .where(eq(issueWorkProducts.id, id))
           .returning()
           .then((rows) => rows[0] ?? null);
-      });
+      }));
       return row ? toIssueWorkProduct(row) : null;
     },
 
