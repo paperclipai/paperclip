@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Activity, AlertCircle, ChevronDown, ChevronUp, Dumbbell, Heart, Leaf, MapPin, Moon, Pencil, Plus, Sun, Thermometer, Trash2, Weight, Wind } from "lucide-react";
+import { Activity, AlertCircle, ChevronDown, ChevronUp, Dumbbell, Heart, Leaf, MapPin, Moon, Pencil, Plus, Smile, Sun, Thermometer, Trash2, Weight, Wind, Zap } from "lucide-react";
 import {
   usePersonalEnvironmentalScore,
   type ColorTier,
@@ -35,6 +35,12 @@ import {
   useDeleteBiometricReading,
   type BiometricReading,
 } from "../hooks/useBiometrics";
+import {
+  useMoodHistory,
+  useLogMood,
+  useDeleteMoodLog,
+  type MoodLog,
+} from "../hooks/useMood";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { EmptyState } from "../components/EmptyState";
@@ -1402,12 +1408,232 @@ function BiometricsView({ companyId }: { companyId: string }) {
   );
 }
 
+// ---- Mood ----
+
+const MOOD_EMOJI: Record<number, string> = {
+  1: "😞", 2: "😟", 3: "😕", 4: "😐", 5: "🙂",
+  6: "😊", 7: "😄", 8: "😁", 9: "🤩", 10: "🥳",
+};
+
+function MoodRow({ log, onDelete }: { log: MoodLog; onDelete: (id: string) => void }) {
+  const [confirming, setConfirming] = useState(false);
+
+  return (
+    <div className="flex items-start gap-3 py-3">
+      <div className="flex-1 min-w-0">
+        <p className="text-sm font-medium tabular-nums">{log.logDate}</p>
+        <div className="flex flex-wrap gap-x-4 gap-y-0.5 mt-0.5">
+          <span className="text-xs text-muted-foreground flex items-center gap-1">
+            <Smile className="w-3 h-3" />
+            Mood {log.moodScore}/10 {MOOD_EMOJI[log.moodScore]}
+          </span>
+          {log.energyLevel !== null && (
+            <span className="text-xs text-muted-foreground flex items-center gap-1">
+              <Zap className="w-3 h-3" />
+              Energy {log.energyLevel}/10
+            </span>
+          )}
+        </div>
+        {log.notes && (
+          <p className="text-xs text-muted-foreground mt-0.5 truncate">{log.notes}</p>
+        )}
+      </div>
+      <div className="shrink-0">
+        {confirming ? (
+          <div className="flex gap-1">
+            <button
+              className="text-[10px] text-destructive font-medium px-1.5 py-0.5 rounded border border-destructive/30 hover:bg-destructive/10 transition-colors"
+              onClick={() => onDelete(log.id)}
+            >
+              Delete
+            </button>
+            <button
+              className="text-[10px] text-muted-foreground px-1.5 py-0.5 rounded border border-border hover:bg-muted transition-colors"
+              onClick={() => setConfirming(false)}
+            >
+              Cancel
+            </button>
+          </div>
+        ) : (
+          <button
+            className="text-muted-foreground hover:text-destructive transition-colors"
+            onClick={() => setConfirming(true)}
+          >
+            <Trash2 className="w-3.5 h-3.5" />
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function MoodView({ companyId }: { companyId: string }) {
+  const today = new Date().toISOString().slice(0, 10);
+  const fourteenDaysAgo = new Date(Date.now() - 13 * 86_400_000).toISOString().slice(0, 10);
+
+  const { data, isLoading, error } = useMoodHistory(companyId, fourteenDaysAgo, today);
+  const logMutation = useLogMood();
+  const deleteMutation = useDeleteMoodLog();
+
+  const [showForm, setShowForm] = useState(false);
+  const [formDate, setFormDate] = useState(today);
+  const [formMood, setFormMood] = useState("7");
+  const [formEnergy, setFormEnergy] = useState("");
+  const [formNotes, setFormNotes] = useState("");
+  const [formError, setFormError] = useState<string | null>(null);
+
+  const logs = data?.logs ?? [];
+
+  function resetForm() {
+    setFormDate(today);
+    setFormMood("7");
+    setFormEnergy("");
+    setFormNotes("");
+    setFormError(null);
+    setShowForm(false);
+  }
+
+  function handleSubmit() {
+    setFormError(null);
+    const moodScore = parseInt(formMood, 10);
+    if (isNaN(moodScore) || moodScore < 1 || moodScore > 10) {
+      setFormError("Mood score must be between 1 and 10.");
+      return;
+    }
+    let energyLevel: number | undefined;
+    if (formEnergy !== "") {
+      energyLevel = parseInt(formEnergy, 10);
+      if (isNaN(energyLevel) || energyLevel < 1 || energyLevel > 10) {
+        setFormError("Energy level must be between 1 and 10.");
+        return;
+      }
+    }
+
+    logMutation.mutate(
+      {
+        companyId,
+        logDate: formDate,
+        moodScore,
+        energyLevel: energyLevel ?? null,
+        notes: formNotes.trim() || null,
+      },
+      { onSuccess: resetForm, onError: (e) => setFormError(e.message) },
+    );
+  }
+
+  if (isLoading) return <PageSkeleton />;
+  if (error) {
+    return (
+      <div className="flex items-center gap-2 text-sm text-destructive">
+        <AlertCircle className="w-4 h-4" />
+        {error.message}
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <p className="text-xs text-muted-foreground">Last 14 days</p>
+        <Button size="sm" variant="outline" onClick={() => setShowForm((s) => !s)}>
+          <Plus className="w-3.5 h-3.5 mr-1" />
+          Log
+        </Button>
+      </div>
+
+      {showForm && (
+        <div className="rounded-md border border-border p-4 space-y-3 bg-muted/30">
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1 col-span-2 sm:col-span-1">
+              <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                Date
+              </label>
+              <input
+                type="date"
+                className="w-full text-sm border border-border rounded px-2 py-1 bg-background"
+                value={formDate}
+                max={today}
+                onChange={(e) => setFormDate(e.target.value)}
+              />
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                Mood Score (1–10)
+              </label>
+              <input
+                type="number"
+                min="1"
+                max="10"
+                placeholder="e.g. 7"
+                className="w-full text-sm border border-border rounded px-2 py-1 bg-background"
+                value={formMood}
+                onChange={(e) => setFormMood(e.target.value)}
+              />
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                Energy Level (1–10)
+              </label>
+              <input
+                type="number"
+                min="1"
+                max="10"
+                placeholder="Optional"
+                className="w-full text-sm border border-border rounded px-2 py-1 bg-background"
+                value={formEnergy}
+                onChange={(e) => setFormEnergy(e.target.value)}
+              />
+            </div>
+            <div className="space-y-1 col-span-2">
+              <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                Notes
+              </label>
+              <input
+                type="text"
+                placeholder="Optional note"
+                className="w-full text-sm border border-border rounded px-2 py-1 bg-background"
+                value={formNotes}
+                onChange={(e) => setFormNotes(e.target.value)}
+              />
+            </div>
+          </div>
+          {formError && <p className="text-xs text-destructive">{formError}</p>}
+          <div className="flex gap-2">
+            <Button size="sm" onClick={handleSubmit} disabled={logMutation.isPending}>
+              {logMutation.isPending ? "Saving…" : "Save"}
+            </Button>
+            <Button size="sm" variant="ghost" onClick={resetForm}>
+              Cancel
+            </Button>
+          </div>
+        </div>
+      )}
+
+      <div className="rounded-md border border-border divide-y divide-border/30">
+        {logs.length === 0 ? (
+          <p className="text-sm text-muted-foreground py-2 px-3">No mood logs in the last 14 days.</p>
+        ) : (
+          <div className="divide-y divide-border/30 px-3">
+            {logs.map((l) => (
+              <MoodRow
+                key={l.id}
+                log={l}
+                onDelete={(id) => deleteMutation.mutate({ id, companyId })}
+              />
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ---- Page ----
 
 export function Health() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
-  const [view, setView] = useState<"score" | "locations" | "sleep" | "exercise" | "biometrics">("score");
+  const [view, setView] = useState<"score" | "locations" | "sleep" | "exercise" | "biometrics" | "mood">("score");
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Health" }]);
@@ -1465,6 +1691,15 @@ export function Health() {
         >
           Biometrics
         </button>
+        <button
+          className={cn(
+            "px-3 py-1 text-xs font-medium rounded transition-colors",
+            view === "mood" ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground",
+          )}
+          onClick={() => setView("mood")}
+        >
+          Mood
+        </button>
       </div>
 
       {view === "score" ? (
@@ -1475,8 +1710,10 @@ export function Health() {
         <SleepView companyId={selectedCompanyId} />
       ) : view === "exercise" ? (
         <ExerciseView companyId={selectedCompanyId} />
-      ) : (
+      ) : view === "biometrics" ? (
         <BiometricsView companyId={selectedCompanyId} />
+      ) : (
+        <MoodView companyId={selectedCompanyId} />
       )}
     </div>
   );
