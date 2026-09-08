@@ -532,13 +532,14 @@ export function connectionIntentService(db: Db) {
       );
       if (selectedConnection.authKind === "oauth" && pendingPersonalGrant) {
         // txAccess is bound to the outer transaction. Its internal transactions
-        // become savepoints, so activation, credential bindings, the all-agents
-        // profile, and the company install roll back with any later failure.
+        // become savepoints, so activation, credential bindings, and the
+        // requesting agent's access roll back with any later failure.
         await txAccess.finalizeOAuthAccess(
           loaded.issue.companyId,
           selectedConnection.id,
           { grantKind: "user" },
           { actorType: "user", actorId: userId },
+          payload.requestingAgentId,
         );
         selectedConnection = await txAccess.getConnection(
           selectedConnection.id,

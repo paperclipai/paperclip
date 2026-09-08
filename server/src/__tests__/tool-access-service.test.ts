@@ -6467,13 +6467,34 @@ describeEmbeddedPostgres("tool access service", () => {
     )).length).toBe(versionCountBeforeAccessRevocation);
   });
 
-  it("activates and discovers actions for a fresh personal OAuth callback before access is finalized", async () => {
+  it.each(["page", "task"] as const)("activates and discovers actions for a fresh personal OAuth callback from %s without widening task access", async (host) => {
     vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_ID", "slack-client-id");
     vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_SECRET", "slack-client-secret");
     const company = await createCompany(db);
     const userId = `oauth-owner-${randomUUID()}`;
     await grantBoardUser(db, company.id, userId, [], "owner");
     const agent = await createAgent(db, company.id);
+    const otherAgent = await createAgent(db, company.id);
+    const { issue, run } = await createIssueAndRun(db, company.id, agent.id);
+    const interaction = host === "task"
+      ? (await db.insert(issueThreadInteractions).values({
+          companyId: company.id,
+          issueId: issue.id,
+          sourceRunId: run.id,
+          kind: "connection_intent",
+          status: "pending",
+          createdByAgentId: agent.id,
+          addresseeUserId: userId,
+          payload: {
+            version: 1,
+            serviceSlug: "slack",
+            serviceName: "Slack",
+            requestingAgentId: agent.id,
+            requestingAgentName: agent.name,
+            phase: "authorizing",
+          },
+        }).returning())[0]
+      : undefined;
     const service = createTestToolAccessService(db);
     const connected = await service.connectGalleryApp(company.id, {
       galleryKey: "slack",
@@ -6484,6 +6505,7 @@ describeEmbeddedPostgres("tool access service", () => {
       redirectUri: "https://paperclip.example/api/tools/oauth/callback",
       actor: { actorType: "user", actorId: userId },
       subjectUserId: userId,
+      interactionId: interaction?.id,
     });
     vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
       const href = String(url);
@@ -6547,9 +6569,9 @@ describeEmbeddedPostgres("tool access service", () => {
       eq(toolPolicies.enabled, true),
     ))).resolves.toEqual([]);
     const callbackPolicy = toolAccessPolicyService(db);
-    const decide = (entry: (typeof completed.catalog)[number]) => callbackPolicy.decide({
+    const decide = (entry: (typeof completed.catalog)[number], agentId = agent.id) => callbackPolicy.decide({
       companyId: company.id,
-      actor: { actorType: "agent", actorId: agent.id, agentId: agent.id },
+      actor: { actorType: "agent", actorId: agentId, agentId },
       request: {
         connectionId: connected.connectionId,
         catalogEntryId: entry.id,
@@ -6557,14 +6579,22 @@ describeEmbeddedPostgres("tool access service", () => {
         arguments: {},
       },
     });
-    await expect(decide(searchMessagesEntry)).resolves.toMatchObject({
-      decision: "allow",
-      reasonCode: "allow_profile",
-    });
-    await expect(decide(sendMessageEntry)).resolves.toMatchObject({
-      decision: "allow",
-      reasonCode: "allow_profile",
-    });
+    for (const entry of [searchMessagesEntry, sendMessageEntry]) {
+      await expect(decide(entry)).resolves.toMatchObject(host === "task"
+        ? { decision: "deny" }
+        : { decision: "allow", reasonCode: "allow_profile" });
+    }
+    if (host === "task") {
+      await expect(db.select().from(toolProfileBindings).where(eq(
+        toolProfileBindings.profileId, callbackProfile!.id,
+      ))).resolves.toEqual([]);
+      await expect(db.select().from(toolConnectionInstalls).where(eq(
+        toolConnectionInstalls.connectionId, connected.connectionId,
+      ))).resolves.toEqual([]);
+      await expect(db.select().from(issueThreadInteractions).where(eq(
+        issueThreadInteractions.id, interaction!.id,
+      ))).resolves.toEqual([expect.objectContaining({ status: "pending", result: null })]);
+    }
     const [personalGrant] = await db.select().from(connectionGrants).where(and(
       eq(connectionGrants.connectionId, connected.connectionId),
       eq(connectionGrants.subjectUserId, userId),
@@ -6577,15 +6607,41 @@ describeEmbeddedPostgres("tool access service", () => {
 
     const finished = await service.finalizeOAuthAccess(company.id, connected.connectionId, {
       grantKind: "user",
-    }, { actorType: "user", actorId: userId });
+    }, { actorType: "user", actorId: userId }, host === "task" ? agent.id : undefined);
     expect(finished.profileEntries).toHaveLength(2);
     expect(finished.profileBindings).toEqual([
-      expect.objectContaining({ targetType: "company", targetId: company.id }),
+      expect.objectContaining(host === "task"
+        ? { targetType: "agent", targetId: agent.id }
+        : { targetType: "company", targetId: company.id }),
     ]);
     await expect(db.select().from(toolConnectionInstalls).where(and(
       eq(toolConnectionInstalls.connectionId, connected.connectionId),
       eq(toolConnectionInstalls.targetType, "company"),
-    ))).resolves.toHaveLength(1);
+    ))).resolves.toHaveLength(host === "task" ? 0 : 1);
+    if (host === "task") {
+      await expect(decide(searchMessagesEntry)).resolves.toMatchObject({ decision: "allow" });
+      await expect(decide(searchMessagesEntry, otherAgent.id)).resolves.toMatchObject({ decision: "deny" });
+      // Granting a second requester and retrying the first must preserve both installs.
+      for (const requestingAgentId of [otherAgent.id, agent.id]) {
+        await service.finalizeOAuthAccess(company.id, connected.connectionId, {
+          grantKind: "user",
+        }, { actorType: "user", actorId: userId }, requestingAgentId);
+      }
+      const bindings = await db.select().from(toolProfileBindings).where(eq(
+        toolProfileBindings.profileId, callbackProfile!.id,
+      ));
+      expect(bindings.map(({ targetType, targetId }) => ({ targetType, targetId }))).toEqual(
+        expect.arrayContaining([agent.id, otherAgent.id].map((targetId) => ({ targetType: "agent", targetId }))),
+      );
+      expect(bindings).toHaveLength(2);
+      const installs = await db.select().from(toolConnectionInstalls).where(eq(
+        toolConnectionInstalls.connectionId, connected.connectionId,
+      ));
+      expect(installs.map(({ targetType, targetId }) => ({ targetType, targetId }))).toEqual(
+        expect.arrayContaining([agent.id, otherAgent.id].map((targetId) => ({ targetType: "agent", targetId }))),
+      );
+      expect(installs).toHaveLength(2);
+    }
     await expect(service.startOAuth(company.id, connected.connectionId, {
       redirectUri: "https://paperclip.example/api/tools/oauth/callback",
       actor: { actorType: "user", actorId: `different-user-${randomUUID()}` },
@@ -6607,6 +6663,7 @@ describeEmbeddedPostgres("tool access service", () => {
     const reconnect = await service.startOAuth(company.id, connected.connectionId, {
       redirectUri: "https://paperclip.example/api/tools/oauth/callback",
       actor: { actorType: "user", actorId: userId },
+      interactionId: interaction?.id,
     });
     await expect(service.peekOAuthState(new URL(reconnect.authorizationUrl).searchParams.get("state")!))
       .resolves.toMatchObject({ subjectUserId: userId });
@@ -6631,6 +6688,16 @@ describeEmbeddedPostgres("tool access service", () => {
     ));
     expect(revivedSecrets).toHaveLength(2);
     expect(revivedSecrets.every((secret) => secret.latestVersion === 2)).toBe(true);
+    if (host === "task") {
+      const installs = await db.select().from(toolConnectionInstalls).where(eq(
+        toolConnectionInstalls.connectionId, connected.connectionId,
+      ));
+      expect(installs).toHaveLength(2);
+      expect(installs.every((install) => install.targetType === "agent")).toBe(true);
+      for (const allowedAgentId of [agent.id, otherAgent.id]) {
+        await expect(decide(searchMessagesEntry, allowedAgentId)).resolves.toMatchObject({ decision: "allow" });
+      }
+    }
   });
 
   it("promotes a personal OAuth identity only after Everyone in the company is chosen", async () => {

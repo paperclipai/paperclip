@@ -10814,7 +10814,17 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     suggestedDefaults: ConnectToolAppResult["suggestedDefaults"];
     activateQuarantined?: boolean;
     actor?: ActorInfo;
+    interactionId?: string | null;
   }) {
+    const linkedInteraction = input.interactionId
+      ? await db.select({ kind: issueThreadInteractions.kind }).from(issueThreadInteractions).where(and(
+          eq(issueThreadInteractions.id, input.interactionId),
+          eq(issueThreadInteractions.companyId, input.connection.companyId),
+        )).limit(1).then((rows) => rows[0] ?? null)
+      : null;
+    // A task callback only prepares the catalog. The intent completion transaction
+    // validates current ownership and adds the requesting agent's access.
+    const deferTaskAccess = linkedInteraction?.kind === "connection_intent";
     const installs = await db.select().from(toolConnectionInstalls).where(and(
       eq(toolConnectionInstalls.companyId, input.connection.companyId),
       eq(toolConnectionInstalls.connectionId, input.connection.id),
@@ -10833,7 +10843,9 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       : suggestedAgentIds.length > 0
         ? { agentIds: suggestedAgentIds }
         : "all_agents";
-    const access: FinishToolApp["access"] = installs.length === 0
+    const access: FinishToolApp["access"] = deferTaskAccess
+      ? { agentIds: [] }
+      : installs.length === 0
       ? normalizedSuggestedAccess
       : companyInstall
         ? "all_agents"
@@ -10857,8 +10869,9 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         ? enabledCatalog.filter((entry) => entry.status === "quarantined").map((entry) => entry.id)
         : undefined,
       access,
+      preserveExistingAccess: deferTaskAccess,
     }, input.actor);
-    if (installs.length === 0) {
+    if (!deferTaskAccess && installs.length === 0) {
       const installTargets = access === "all_agents"
         ? [{ targetType: "company" as const, targetId: input.connection.companyId }]
         : [...new Set(access.agentIds)].map((agentId) => ({ targetType: "agent" as const, targetId: agentId }));
@@ -11150,6 +11163,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       : recommended;
     const finished = shouldFinalizeManagedDefaults
       ? await finishOAuthCatalogWithRecommendedDefaults({
+          interactionId: stateRow.interactionId,
           connection,
           catalog: refresh.catalog,
           suggestedDefaults,
@@ -11306,6 +11320,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     });
     const suggestedDefaults = recommendedDefaultsForApp(galleryEntry, method.key);
     const finished = await finishOAuthCatalogWithRecommendedDefaults({
+      interactionId: stateRow.interactionId,
       connection,
       catalog: refresh.catalog,
       suggestedDefaults,
@@ -11565,6 +11580,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         ? recommendedDefaultsForApp(galleryEntry, connectionMethodForConnection(galleryEntry, connection).key)
         : { access: "all_agents" as const, askFirstRiskLevels: [] };
       const finished = await finishOAuthCatalogWithRecommendedDefaults({
+        interactionId: stateRow.interactionId,
         connection,
         catalog: refresh.catalog,
         suggestedDefaults,
@@ -11720,6 +11736,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       askFirstRiskLevels: [],
     };
     const finished = await finishOAuthCatalogWithRecommendedDefaults({
+      interactionId: stateRow.interactionId,
       connection,
       catalog: refresh.catalog,
       suggestedDefaults,
@@ -11748,7 +11765,9 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     connectionId: string,
     input: FinalizeOAuthAccess,
     actor?: ActorInfo,
+    requestingAgentId?: string,
   ): Promise<FinishToolAppResult> {
+    if (requestingAgentId) await assertAgentsInCompany(companyId, [requestingAgentId]);
     let connection = await getConnectionRow(connectionId, companyId);
     if (connection.authKind !== "oauth") throw badRequest("This connection does not use browser sign-in");
     if (connection.status === "archived") throw conflict("Archived app connections cannot be finished");
@@ -11966,13 +11985,14 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       askFirstCatalogEntryIds: catalog
         .filter((entry) => askFirstRiskLevels.has(entry.riskLevel))
         .map((entry) => entry.id),
-      access: "all_agents",
+      access: requestingAgentId ? { agentIds: [requestingAgentId] } : "all_agents",
+      preserveExistingAccess: Boolean(requestingAgentId),
     }, actor);
     await db.insert(toolConnectionInstalls).values({
       companyId,
       connectionId: connection.id,
-      targetType: "company",
-      targetId: companyId,
+      targetType: requestingAgentId ? "agent" : "company",
+      targetId: requestingAgentId ?? companyId,
       createdByUserId: actorUserId,
     }).onConflictDoNothing();
     return finished;

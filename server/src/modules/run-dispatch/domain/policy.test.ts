@@ -342,6 +342,40 @@ describe("decideQueuedRunStaleness", () => {
     expect(decision).toMatchObject({ errorCode });
   });
 
+  describe.each([
+    { name: "resolved connection", isResolvedInteractionContinuation: true, wakeReason: "issue_interaction_resolved" },
+    { name: "tool snapshot refresh", isResolvedInteractionContinuation: false, wakeReason: "connection_tools_updated" },
+  ])("$name continuation", ({ isResolvedInteractionContinuation, wakeReason }) => {
+    const connectionFacts = (): QueuedRunFacts => ({
+      ...baseStalenessFacts(),
+      isConnectionContinuation: true,
+      isResolvedInteractionContinuation,
+      wakeReason,
+      issueStatus: "in_review",
+      reviewParticipant: { ...NO_PARTICIPANT, isInReview: true },
+    });
+
+    it("continues an owned task waiting in review after connection access becomes ready", () => {
+      expect(decideQueuedRunStaleness(connectionFacts(), NOW)).toEqual({ stale: false });
+    });
+
+    it.each(["done", "cancelled", "todo", "backlog", "blocked"])("rejects a task in %s", (issueStatus) => {
+      expect(decideQueuedRunStaleness({ ...connectionFacts(), issueStatus }, NOW)).toMatchObject({
+        stale: true,
+        errorCode: "issue_not_in_progress",
+      });
+    });
+
+    it("rejects a reassigned task even when an interaction wake normally bypasses ownership", () => {
+      expect(decideQueuedRunStaleness({
+        ...connectionFacts(),
+        issueAssigneeAgentId: "agent-2",
+        isInteractionWake: true,
+        wakeCommentIdPresent: true,
+      }, NOW)).toMatchObject({ stale: true, errorCode: "issue_assignee_changed" });
+    });
+  });
+
   it("does not cancel a parked continuation summary when the classifier says it does not park the executor", () => {
     const facts: QueuedRunFacts = {
       ...baseStalenessFacts(),
