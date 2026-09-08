@@ -178,7 +178,7 @@ export async function resolveNativeRuntimeMcpSnapshot(input: { db: Db; agent: Pi
     return config.sourceTemplateKey === "github" || transportConfig.sourceTemplateKey === "github";
   });
   const [runIdentity] = hasGitHubConnection
-    ? await input.db.select({ responsibleUserId: heartbeatRuns.responsibleUserId })
+    ? await input.db.select({ responsibleUserId: heartbeatRuns.responsibleUserId, activeIdentityContextId: heartbeatRuns.activeIdentityContextId })
       .from(heartbeatRuns)
       .where(and(
         eq(heartbeatRuns.id, input.runId),
@@ -187,7 +187,10 @@ export async function resolveNativeRuntimeMcpSnapshot(input: { db: Db; agent: Pi
       ))
       .limit(1)
     : [];
-  const resolvedInstalledConnections = await filterResolvedGitHubConnectionsForRun({
+  // Broker runs pin the permitted tool catalog, not one person’s credential.
+  // Selection happens at each operation and can change through steering.
+  const resolvedInstalledConnections = runIdentity?.activeIdentityContextId
+    ? effective.installedConnections : await filterResolvedGitHubConnectionsForRun({
     db: input.db,
     companyId: input.agent.companyId,
     agentId: input.agent.id,
@@ -200,7 +203,8 @@ export async function resolveNativeRuntimeMcpSnapshot(input: { db: Db; agent: Pi
     permitted.has(connection.id)
     && connection.status === "active"
     && connection.enabled
-    && !isToolConnectionAttentionHealth(connection.healthStatus)
+    && (Boolean(runIdentity?.activeIdentityContextId) && (connection.config?.sourceTemplateKey === "github" || connection.transportConfig?.sourceTemplateKey === "github")
+      || !isToolConnectionAttentionHealth(connection.healthStatus))
     && ["mcp_remote", "local_stdio"].includes(connection.transport)
   ).map((connection) => connection.id));
   const assignment = {

@@ -283,6 +283,9 @@ function runVitest(args, label) {
     ...process.env,
     NODE_ENV: "test",
     PAPERCLIP_HOME: path.join(testRoot, "h"),
+    // Config discovery otherwise prefers the checkout's .paperclip/config.json
+    // over PAPERCLIP_HOME, importing preview scheduling policy into unit tests.
+    PAPERCLIP_CONFIG: path.join(testRoot, "h", "config.json"),
     PAPERCLIP_INSTANCE_ID: `vt-${process.pid}-${invocationIndex}`,
     TMPDIR: path.join(testRoot, "t"),
   };

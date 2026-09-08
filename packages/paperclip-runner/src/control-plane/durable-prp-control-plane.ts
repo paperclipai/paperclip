@@ -28,6 +28,7 @@ import { dirname, resolve } from "node:path";
 import type { Duplex } from "node:stream";
 import { fileURLToPath } from "node:url";
 
+import { githubCredentialEnvironment } from "../github-credential-environment.js";
 import {
   validatePrpEvent,
   type PrpEvent,
@@ -48,7 +49,10 @@ const coreStateSchema = "paperclip.runner.durable.control-plane-state.v1";
 const maxFrameBytes = 1024 * 1024;
 const maxCommandBytes = maxFrameBytes - 4 * 1024;
 const maxCommands = 500;
-const maxCommittedEventWindow = 64;
+// A provider can emit several 100-event runner batches before the transport's
+// polling turn regains the event loop. Match the transport's explicit deferred
+// event bound so a valid burst is not compacted before it can be observed.
+const maxCommittedEventWindow = 4_096;
 const maxStateBytes = 192 * 1024 * 1024;
 const authChallengeTtlMs = 5_000;
 const stableIdPattern = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,239}$/;
@@ -120,6 +124,13 @@ interface ConnectionLeaseRecord {
 interface StoredCoreState {
   schema: typeof coreStateSchema;
   identity: DurableRecoveryIdentity;
+  /**
+   * Connection-free provider attachment payload retained across authority
+   * epochs. Commands are intentionally reset when a reusable runner changes
+   * run identity, so the next controller cannot rely on command history to
+   * reconstruct another warm attachment.
+   */
+  runAttachTemplate?: Record<string, unknown> | null;
   tickets: Record<string, BootstrapTicketRecord>;
   leases: Record<string, ConnectionLeaseRecord>;
   commands: DurableRecoveryCoreCommand[];
@@ -387,6 +398,13 @@ function isStoredCoreState(
     return false;
   }
   if (
+    value.runAttachTemplate !== undefined &&
+    value.runAttachTemplate !== null &&
+    !isRecord(value.runAttachTemplate)
+  ) {
+    return false;
+  }
+  if (
     !commands.every(
       (command, index) =>
         isRecord(command) &&
@@ -565,6 +583,7 @@ function initialCoreState(identity: DurableRecoveryIdentity): StoredCoreState {
   return {
     schema: coreStateSchema,
     identity,
+    runAttachTemplate: null,
     tickets: {},
     leases: {},
     commands: [],
@@ -945,7 +964,7 @@ class AuthorityConnection {
 
 /** Authenticated, replay-safe PRP transport authority. Business operations are caller supplied. */
 export class DurablePrpControlPlane {
-  readonly #identity: DurableRecoveryIdentity;
+  #identity: DurableRecoveryIdentity;
   readonly #store: DurableCoreStore;
   #expectedRunnerVersion: string;
   #expectedRunnerDigest: string;
@@ -1045,6 +1064,69 @@ export class DurablePrpControlPlane {
     return [...this.#connections].filter(
       (connection) => connection.secureChannel !== null,
     ).length;
+  }
+
+  /**
+   * Atomically advances a settled reusable runner to a new run authority while
+   * retaining its existing connection lease secret. The runner performs the
+   * matching state transition only after acknowledging `run.attach`.
+   */
+  rotateRunIdentity(
+    identity: DurableRecoveryIdentity,
+    runAttachTemplate?: Record<string, unknown>,
+  ): void {
+    if (
+      !Object.values(identity).every(
+        (value) => typeof value === "string" && stableIdPattern.test(value),
+      ) ||
+      identity.runnerInstanceId !== this.#identity.runnerInstanceId ||
+      identity.environmentLeaseId !== this.#identity.environmentLeaseId ||
+      identity.normalizedSessionId !== this.#identity.normalizedSessionId ||
+      identity.runId === this.#identity.runId ||
+      this.#store.state.commands.some((command) => command.status === "pending")
+    ) {
+      throw new Error("Durable PRP run identity rotation is invalid.");
+    }
+    this.disconnectActiveRunner();
+    const leases = Object.fromEntries(
+      Object.entries(this.#store.state.leases).map(([key, lease]) => [
+        key,
+        { ...lease, identity: structuredClone(identity) },
+      ]),
+    );
+    Object.assign(this.#store.state, initialCoreState(identity), {
+      leases,
+      runAttachTemplate:
+        runAttachTemplate === undefined
+          ? null
+          : structuredClone(runAttachTemplate),
+    });
+    this.#identity = structuredClone(identity);
+    this.#store.save();
+  }
+
+  /**
+   * Retain the connection-free provider preparation payload before the first
+   * runner bootstrap. Completed command history is bounded and may be
+   * compacted before a warm continuation arrives, so it cannot be the sole
+   * source for a later run.attach. Repeating the same write is idempotent;
+   * changing an established seed fails closed.
+   */
+  persistRunAttachTemplate(runAttachTemplate: Record<string, unknown>): void {
+    if (!isRecord(runAttachTemplate.provider)) {
+      throw new Error("Durable PRP run attachment template is invalid.");
+    }
+    const existing = this.#store.state.runAttachTemplate;
+    if (
+      existing !== undefined &&
+      existing !== null &&
+      canonicalJson(existing) !== canonicalJson(runAttachTemplate)
+    ) {
+      throw new Error("Durable PRP run attachment template conflicts.");
+    }
+    if (existing !== undefined && existing !== null) return;
+    this.#store.state.runAttachTemplate = structuredClone(runAttachTemplate);
+    this.#store.save();
   }
 
   issueBootstrapTicket(ttlMs = 5_000): string {
@@ -1993,6 +2075,7 @@ const runnerExplicitProviderEnvironmentKeys = [
   "PAPERCLIP_NATIVE_MCP_URL",
   "PAPERCLIP_NATIVE_MCP_TOKEN",
   "PAPERCLIP_NATIVE_RUNTIME_CONTEXT_PATH",
+  "PAPERCLIP_RUNNER_EXTERNAL_SANDBOX",
   "PAPERCLIP_ACPX_PROVIDER_PACKAGE_ROOT",
   "PAPERCLIP_ACPX_PROVIDER_PACKAGE_MANIFEST",
   "PAPERCLIP_ACPX_PROVIDER_RECOVERY_POLICY",
@@ -2020,6 +2103,7 @@ function runnerEnvironment(
       const value = explicitSource[key];
       if (value !== undefined) environment[key] = value;
     }
+    Object.assign(environment, githubCredentialEnvironment(explicitSource));
   }
   return environment;
 }

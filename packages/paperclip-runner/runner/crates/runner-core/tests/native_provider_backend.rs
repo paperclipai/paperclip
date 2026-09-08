@@ -144,7 +144,7 @@ fn prepare_payload(directory: &Path, agent: &str) -> Value {
 fn prepare_payload_with_mode(directory: &Path, agent: &str, mode: &str) -> Value {
     let operations = Vec::new();
     let (runtime_package, runtime_version) = if agent == "codex" {
-        (json!("@openai/codex"), json!("0.148.0"))
+        (json!("@openai/codex"), json!("0.153.4"))
     } else {
         (Value::Null, Value::Null)
     };
@@ -240,7 +240,7 @@ fn opencode_prepare_payload(directory: &Path) -> Value {
             "kind": "opencode",
             "provider": "opencode",
             "driver": "opencode_server",
-            "providerVersion": "1.18.17",
+            "providerVersion": "1.18.29",
             "command": directory.join("qualified-opencode-proxy-command"),
             "args": [directory.join("qualified-opencode-proxy-script")],
             "cwd": directory,
@@ -283,7 +283,7 @@ fn managed_prepare_payload(kind: &str) -> Value {
             "contextBucket": "context-bucket",
             "contextPrefix": "companies/company/profiles/profile",
             "contextKmsKeyArn": "arn:aws:kms:us-east-1:123456789012:key/test",
-            "qualificationRevision": "aws-agentcore-harness-v1",
+            "qualificationRevision": "aws-agentcore-harness-context-v2",
             "eventExpiryDays": 90,
             "maxEstimatedSessionCostUsd": 1.0,
             "maxIterations": 8,

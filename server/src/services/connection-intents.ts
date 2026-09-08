@@ -126,6 +126,7 @@ export function connectionIntentService(db: Db) {
         agentId: heartbeatRuns.agentId,
         status: heartbeatRuns.status,
         responsibleUserId: heartbeatRuns.responsibleUserId,
+        activeIdentityContextId: heartbeatRuns.activeIdentityContextId,
         contextSnapshot: heartbeatRuns.contextSnapshot,
       })
       .from(heartbeatRuns)
@@ -135,7 +136,7 @@ export function connectionIntentService(db: Db) {
       !run
       || run.companyId !== claims.company_id
       || run.agentId !== claims.sub
-      || run.responsibleUserId !== claims.responsible_user_id
+      || (!run.activeIdentityContextId && run.responsibleUserId !== claims.responsible_user_id)
     ) throw forbidden("Runtime tool token does not match its heartbeat run");
     if (run.status !== "running") throw forbidden("Runtime tool token is no longer active");
     const snapshot = record(run.contextSnapshot);

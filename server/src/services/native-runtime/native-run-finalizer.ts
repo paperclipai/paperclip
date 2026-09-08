@@ -126,7 +126,11 @@ async function acceptedInteractionFromRun(input: {
     .then((rows) => rows[0] ?? null);
 }
 
-async function claimCoordinator(input: { db: Db; runId: string }) {
+async function claimCoordinator(input: {
+  db: Db;
+  runId: string;
+  preserveProviderAttempt?: boolean;
+}) {
   const leaseOwner = `native-finalizer:${randomUUID()}`;
   const now = new Date();
   const claimed = await input.db.transaction(async (tx) => {
@@ -152,23 +156,33 @@ async function claimCoordinator(input: { db: Db; runId: string }) {
     }
     if (coordinator.phase === "terminal_failure") throw new Error("native_finalization_terminal_failure");
     if (
-      coordinator.leaseOwner
-      && coordinator.leaseExpiresAt
-      && coordinator.leaseExpiresAt > now
-      && coordinator.leaseOwner !== leaseOwner
-    ) throw new Error("native_finalization_lease_busy");
-    const [updated] = await tx.update(nativeRunFinalizations).set({
-      leaseOwner,
-      leaseExpiresAt: new Date(now.getTime() + 5 * 60_000),
-      attempt: coordinator.attempt + 1,
-      phase: coordinator.phase === "retryable_failure"
-        ? coordinator.assessmentId ? "arbitrating" : "workspace_finalizing"
-        : coordinator.phase,
-      failureCode: null,
-      failureDetail: null,
-      nextAttemptAt: null,
-      updatedAt: now,
-    }).where(eq(nativeRunFinalizations.runId, input.runId)).returning();
+      coordinator.leaseOwner &&
+      coordinator.leaseExpiresAt &&
+      coordinator.leaseExpiresAt > now &&
+      coordinator.leaseOwner !== leaseOwner
+    )
+      throw new Error("native_finalization_lease_busy");
+    const [updated] = await tx
+      .update(nativeRunFinalizations)
+      .set({
+        leaseOwner,
+        leaseExpiresAt: new Date(now.getTime() + 5 * 60_000),
+        attempt: input.preserveProviderAttempt
+          ? coordinator.attempt
+          : coordinator.attempt + 1,
+        phase:
+          coordinator.phase === "retryable_failure"
+            ? coordinator.assessmentId
+              ? "arbitrating"
+              : "workspace_finalizing"
+            : coordinator.phase,
+        failureCode: null,
+        failureDetail: null,
+        nextAttemptAt: null,
+        updatedAt: now,
+      })
+      .where(eq(nativeRunFinalizations.runId, input.runId))
+      .returning();
     if (!updated) throw new Error("native_finalization_claim_failed");
     return { coordinator: updated, leaseOwner };
   });
@@ -183,6 +197,8 @@ async function recordRetryableFailure(input: {
   message: string;
   nextAction: string;
   projectRunStatus?: boolean;
+  failureScope?: "provider" | "workspace";
+  permanent?: boolean;
 }) {
   const now = new Date();
   const nextAttemptAt = new Date(now.getTime() + 30_000);
@@ -228,50 +244,87 @@ async function recordRetryableFailure(input: {
     const supersededByNewerRun = Boolean(
       latestDecisionRun && latestDecisionRun.createdAt > input.run.createdAt,
     );
-    const exhausted = input.coordinator.attempt >= 3;
-    const phase = supersededByNewerRun || exhausted
-      ? "terminal_failure" as const
-      : "retryable_failure" as const;
+    const priorFailureDetail = record(input.coordinator.failureDetail);
+    const workspaceFinalizeAttempt =
+      input.failureScope === "workspace"
+        ? (typeof priorFailureDetail.workspaceFinalizeAttempt === "number" &&
+          Number.isInteger(priorFailureDetail.workspaceFinalizeAttempt) &&
+          priorFailureDetail.workspaceFinalizeAttempt >= 0
+            ? priorFailureDetail.workspaceFinalizeAttempt
+            : 0) + 1
+        : null;
+    const exhausted =
+      input.permanent === true ||
+      (workspaceFinalizeAttempt !== null
+        ? workspaceFinalizeAttempt >= 3
+        : input.coordinator.attempt >= 3);
+    const phase =
+      supersededByNewerRun || exhausted
+        ? ("terminal_failure" as const)
+        : ("retryable_failure" as const);
     const failureCode = supersededByNewerRun
       ? "native_finalization_superseded"
-      : exhausted
-        ? "native_finalization_retry_exhausted"
-        : input.failureCode;
-    await tx.update(nativeRunFinalizations).set({
-      phase,
-      leaseOwner: null,
-      leaseExpiresAt: null,
-      failureCode,
-      failureDetail: {
-        message: input.message.slice(0, 2_000),
-        originalFailureCode: input.failureCode,
-        recoveryOwner: supersededByNewerRun
-          ? { kind: "none", reason: "newer_native_decision" }
-          : exhausted
-          ? { kind: "board" }
-          : { kind: "agent", agentId: input.run.agentId },
-        nextAction: input.nextAction,
-      },
-      nextAttemptAt: supersededByNewerRun || exhausted ? null : nextAttemptAt,
-      updatedAt: now,
-    }).where(eq(nativeRunFinalizations.runId, input.run.id));
-    const projectsTerminalStatus = exhausted && !supersededByNewerRun && input.projectRunStatus;
-    const [updatedRun] = await tx.update(heartbeatRuns).set({
-      ...(projectsTerminalStatus ? {
-        status: exhaustedRunStatus,
-        finishedAt: input.run.finishedAt ?? now,
-      } : {}),
-      nativePhase: phase,
-      nativePhaseUpdatedAt: now,
-      resultJson: {
-        ...record(input.run.resultJson),
-        finalizationPhase: phase,
+      : input.permanent
+        ? input.failureCode
+        : exhausted
+          ? input.failureScope === "workspace"
+            ? "native_workspace_sync_out_retry_exhausted"
+            : "native_finalization_retry_exhausted"
+          : input.failureCode;
+    await tx
+      .update(nativeRunFinalizations)
+      .set({
+        phase,
+        leaseOwner: null,
+        leaseExpiresAt: null,
         failureCode,
-        originalFailureCode: input.failureCode,
-        nextAttemptAt: supersededByNewerRun || exhausted ? null : nextAttemptAt.toISOString(),
-      },
-      updatedAt: now,
-    }).where(eq(heartbeatRuns.id, input.run.id)).returning();
+        failureDetail: {
+          message: input.message.slice(0, 2_000),
+          originalFailureCode: input.failureCode,
+          ...(workspaceFinalizeAttempt === null
+            ? {}
+            : { workspaceFinalizeAttempt }),
+          recoveryOwner: supersededByNewerRun
+            ? { kind: "none", reason: "newer_native_decision" }
+            : exhausted
+              ? { kind: "board" }
+              : { kind: "agent", agentId: input.run.agentId },
+          nextAction: input.nextAction,
+        },
+        nextAttemptAt: supersededByNewerRun || exhausted ? null : nextAttemptAt,
+        updatedAt: now,
+      })
+      .where(eq(nativeRunFinalizations.runId, input.run.id));
+    const projectsTerminalStatus =
+      exhausted && !supersededByNewerRun && input.projectRunStatus;
+    const [updatedRun] = await tx
+      .update(heartbeatRuns)
+      .set({
+        ...(projectsTerminalStatus
+          ? {
+              status:
+                input.failureScope === "workspace"
+                  ? "failed"
+                  : exhaustedRunStatus,
+              finishedAt: input.run.finishedAt ?? now,
+            }
+          : {}),
+        nativePhase: phase,
+        nativePhaseUpdatedAt: now,
+        resultJson: {
+          ...record(input.run.resultJson),
+          finalizationPhase: phase,
+          failureCode,
+          originalFailureCode: input.failureCode,
+          nextAttemptAt:
+            supersededByNewerRun || exhausted
+              ? null
+              : nextAttemptAt.toISOString(),
+        },
+        updatedAt: now,
+      })
+      .where(eq(heartbeatRuns.id, input.run.id))
+      .returning();
     if (projectsTerminalStatus) terminalRunToEmit = updatedRun ?? null;
     if (supersededByNewerRun) {
       await issueRecoveryActionService(tx as unknown as Db).resolveActiveForIssue({
@@ -284,9 +337,16 @@ async function recordRetryableFailure(input: {
         resolutionNote: "A newer native run already committed the authoritative issue decision; the stale finalizer was retired without changing issue state.",
       }, tx);
     } else if (exhausted) {
-      await issueService(tx as unknown as Db).update(input.coordinator.issueId, {
-        status: "in_review",
-      }, tx);
+      await issueService(tx as unknown as Db).update(
+        input.coordinator.issueId,
+        {
+          status:
+            input.permanent && input.failureScope === "workspace"
+              ? "blocked"
+              : "in_review",
+        },
+        tx,
+      );
     }
     if (!supersededByNewerRun) {
       await issueRecoveryActionService(tx as unknown as Db).upsertSourceScoped({
@@ -301,10 +361,15 @@ async function recordRetryableFailure(input: {
         evidence: {
           runId: input.run.id,
           coordinatorAttempt: input.coordinator.attempt,
+          ...(workspaceFinalizeAttempt === null
+            ? {}
+            : { workspaceFinalizeAttempt }),
           originalFailureCode: input.failureCode,
         },
         nextAction: exhausted
-          ? `Finalization retry budget exhausted. ${input.nextAction}`
+          ? input.permanent
+            ? input.nextAction
+            : `Finalization retry budget exhausted. ${input.nextAction}`
           : input.nextAction,
         wakePolicy: exhausted
           ? null
@@ -328,6 +393,8 @@ export async function recordNativeFinalizationFailure(input: {
   runId: string;
   error: unknown;
   projectRunStatus?: boolean;
+  failureScope?: "provider" | "workspace";
+  permanent?: boolean;
 }) {
   const [run, coordinator] = await Promise.all([
     input.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, input.runId))
@@ -344,8 +411,15 @@ export async function recordNativeFinalizationFailure(input: {
     coordinator,
     failureCode,
     message,
-    nextAction: "Repair the persisted native result or contract discriminator, then resume finalization from the coordinator.",
+    nextAction:
+      input.failureScope === "workspace"
+        ? input.permanent
+          ? "Restore the exact sandbox containing the unexported workspace changes, or resolve the task manually from durable evidence."
+          : "Retry workspace export and merge from the retained sandbox; do not submit another provider turn."
+        : "Repair the persisted native result or contract discriminator, then resume finalization from the coordinator.",
     projectRunStatus: input.projectRunStatus,
+    failureScope: input.failureScope,
+    permanent: input.permanent,
   });
 }
 
@@ -395,12 +469,23 @@ export async function finalizeNativeRun(input: {
   workspaceFinalizeStatus: "succeeded" | "failed";
   /** Reconciliation owns terminal run projection; the live heartbeat does it afterward. */
   projectRunStatus?: boolean;
+  /** Workspace-only replay must not consume the provider recovery budget. */
+  preserveProviderAttempt?: boolean;
   failpoint?: NativeStatusCommitFailpoint;
 }) {
-  const run = await input.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, input.runId))
-    .limit(1).then((rows) => rows[0] ?? null);
-  if (!run || run.runtimeMode !== "native") throw new Error("native_finalization_run_missing");
-  const claim = await claimCoordinator({ db: input.db, runId: input.runId });
+  const run = await input.db
+    .select()
+    .from(heartbeatRuns)
+    .where(eq(heartbeatRuns.id, input.runId))
+    .limit(1)
+    .then((rows) => rows[0] ?? null);
+  if (!run || run.runtimeMode !== "native")
+    throw new Error("native_finalization_run_missing");
+  const claim = await claimCoordinator({
+    db: input.db,
+    runId: input.runId,
+    preserveProviderAttempt: input.preserveProviderAttempt,
+  });
   const coordinator = claim.coordinator;
   if (!claim.leaseOwner && coordinator.phase === "committed") {
     if (input.projectRunStatus) await projectCommittedRun({ db: input.db, run, coordinator });

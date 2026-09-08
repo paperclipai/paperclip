@@ -148,9 +148,11 @@ describeEmbeddedPostgres("heartbeat teardown terminalizes the run before releasi
     runId: string;
     companyId: string;
     agentId: string;
+    providerResourceDisposition?: "keep_running" | "stop_and_retain" | "destroy";
   }) {
     const { runId, companyId, agentId } = input;
     const releaseLeafCalls: Array<{ runId: string; status: string }> = [];
+    const ordering: string[] = [];
     const fakeEnvironmentRuntime = {
       // The orchestrator's `releaseForRun` calls this leaf with the mapped lease
       // status. There are no seeded leases, so return an empty release set.
@@ -158,11 +160,18 @@ describeEmbeddedPostgres("heartbeat teardown terminalizes the run before releasi
         heartbeatRunId: string,
         status: "released" | "expired" | "failed",
       ) => {
+        ordering.push(`release:${heartbeatRunId}`);
         releaseLeafCalls.push({ runId: heartbeatRunId, status });
         return [];
       },
     } as unknown as HeartbeatEnvironmentRuntime;
-    const heartbeat = heartbeatService(db, { environmentRuntime: fakeEnvironmentRuntime });
+    const heartbeat = heartbeatService(db, {
+      environmentRuntime: fakeEnvironmentRuntime,
+      closeWarmNativeSessionsForRun: async ({ runId }) => {
+        ordering.push(`close:${runId}`);
+        return { closed: 1, busy: 0, failed: 0 };
+      },
+    });
 
     let latestRun = await db
       .select()
@@ -182,6 +191,7 @@ describeEmbeddedPostgres("heartbeat teardown terminalizes the run before releasi
       companyId,
       agentId,
       status: statusThreadedToRelease,
+      providerResourceDisposition: input.providerResourceDisposition,
     });
     const orchestratorObservedRunId = releaseLeafCalls.at(-1)?.runId ?? null;
     const orchestratorObservedLeaseStatus = releaseLeafCalls.at(-1)?.status ?? null;
@@ -193,9 +203,42 @@ describeEmbeddedPostgres("heartbeat teardown terminalizes the run before releasi
       releaseCallCount: releaseLeafCalls.length,
       orchestratorObservedRunId,
       orchestratorObservedLeaseStatus,
+      ordering,
       terminalRun: latestRun,
     };
   }
+
+  it("closes a warm native session before destroying its terminal lease", async () => {
+    const { companyId, agentId, runId } = await seed({ issueStatus: "done", runStatus: "running" });
+    const observed = await runTeardownSequenceObservingRelease({
+      runId,
+      companyId,
+      agentId,
+      providerResourceDisposition: "destroy",
+    });
+
+    expect(observed.ordering).toEqual([`close:${runId}`, `release:${runId}`]);
+    expect(observed.releaseCallCount).toBe(1);
+  });
+
+  it("does not destroy a terminal lease while its warm native session is busy", async () => {
+    const { companyId, agentId, runId } = await seed({ issueStatus: "done", runStatus: "running" });
+    const releaseRunLeases = vi.fn(async () => []);
+    const heartbeat = heartbeatService(db, {
+      environmentRuntime: { releaseRunLeases } as unknown as HeartbeatEnvironmentRuntime,
+      closeWarmNativeSessionsForRun: async () => ({ closed: 0, busy: 1, failed: 0 }),
+    });
+
+    await heartbeat.releaseEnvironmentLeasesForRun({
+      runId,
+      companyId,
+      agentId,
+      status: "succeeded",
+      providerResourceDisposition: "destroy",
+    });
+
+    expect(releaseRunLeases).not.toHaveBeenCalled();
+  });
 
   it("terminalizes a running run to succeeded before release when the issue reached done", async () => {
     const { companyId, agentId, issueId, runId } = await seed({ issueStatus: "done", runStatus: "running" });

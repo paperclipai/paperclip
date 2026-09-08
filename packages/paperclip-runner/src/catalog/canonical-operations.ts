@@ -21,7 +21,7 @@ export const CAPABILITY_CANONICAL_OPERATIONS: readonly CapabilityCanonicalOperat
     .sort((left, right) => left.operationId.localeCompare(right.operationId)),
 );
 const byId = new Map(CAPABILITY_CANONICAL_OPERATIONS.map((operation) => [operation.operationId, operation]));
-if (byId.size !== 41) throw new Error(`expected 41 canonical semantic operations, found ${byId.size}`);
+if (byId.size !== 43) throw new Error(`expected 43 canonical semantic operations, found ${byId.size}`);
 export function capabilityCanonicalOperation(operationId: string): CapabilityCanonicalOperation | undefined { return byId.get(operationId); }
 export function capabilityCanonicalOperationsForSurface(surface: CapabilityCatalogSurface): readonly CapabilityCanonicalOperation[] { return CAPABILITY_CANONICAL_OPERATIONS.filter((operation) => operation.surfaces.includes(surface)); }
 export function capabilityCanonicalOperationIds(): readonly string[] { return CAPABILITY_CANONICAL_OPERATIONS.map((operation) => operation.operationId); }

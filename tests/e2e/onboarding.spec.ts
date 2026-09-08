@@ -305,6 +305,213 @@ test.describe("Onboarding wizard", () => {
 
     expect(pageErrors, pageErrors.join("\n")).toHaveLength(0);
   });
+  test("a reload during a login resumes the same session", async ({ page }) => {
+    // The last piece of the resume feature: a customer who reloads the page
+    // mid-login must see the same login still running, not the tile row
+    // again and not a second session started behind their back.
+    //
+    // A bare `/onboarding` reload is not the right way to exercise this: that
+    // route always forces its own fixed entry step (see
+    // `resolveRouteOnboardingOptions` — a bare `/onboarding` hit is a request
+    // to start a new company, by design, and always wins over a saved draft's
+    // step). A returning visit to an existing company's own onboarding path
+    // (`/{prefix}/onboarding`) is the real "reopen onboarding" entry point, so
+    // this test reloads through that path instead, landing on the agent step
+    // with the draft's agent name already restored, then advances once to the
+    // connect step — where the resumed login must already be running.
+    const pageErrors: string[] = [];
+    page.on("pageerror", (err) => pageErrors.push(err.message));
+
+    const flagRes = await page.request.patch("/api/instance/settings/experimental", {
+      data: { enableConferenceRoomChat: true },
+    });
+    expect(flagRes.ok()).toBe(true);
+
+    const FAKE_SANDBOX_ENVIRONMENT_ID = "e2e-fake-sandbox-environment-reload";
+    const FAKE_SANDBOX_PROVIDER = "e2e-fake-provider-reload";
+
+    await page.route("**/environments", async (route) => {
+      const response = await route.fetch();
+      const environments = await response.json();
+      environments.push({
+        id: FAKE_SANDBOX_ENVIRONMENT_ID,
+        name: "E2E fake sandbox",
+        description: null,
+        driver: "sandbox",
+        status: "active",
+        config: { provider: FAKE_SANDBOX_PROVIDER },
+        envVars: {},
+        metadata: {},
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      });
+      await route.fulfill({ response, json: environments });
+    });
+
+    await page.route("**/environments/capabilities", async (route) => {
+      const response = await route.fetch();
+      const capabilities = await response.json();
+      capabilities.sandboxProviders[FAKE_SANDBOX_PROVIDER] = {
+        status: "supported",
+        supportsSavedProbe: true,
+        supportsUnsavedProbe: true,
+        supportsRunExecution: true,
+        supportsReusableLeases: false,
+        supportsInteractiveSetup: false,
+        interactiveSetupConnectionTypes: [],
+        supportsTemplateCapture: false,
+        supportsTemplateDelete: false,
+        supportsLoginPty: true,
+        source: "plugin",
+      };
+      await route.fulfill({ response, json: capabilities });
+    });
+
+    await page.route("**/instance/settings", async (route) => {
+      const response = await route.fetch();
+      const settings = await response.json();
+      settings.defaultEnvironmentId = FAKE_SANDBOX_ENVIRONMENT_ID;
+      await route.fulfill({ response, json: settings });
+    });
+
+    await page.route("**/adapters/*/auth-signal*", (route) =>
+      route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify({ status: "absent" }),
+      }),
+    );
+
+    const SESSION_ID = "e2e-reload-setup-token-session";
+    const AUTHORIZATION_URL = "https://claude.ai/oauth/authorize?code=true&client=e2e-reload";
+    let startCalls = 0;
+    // Flips once the login actually starts, so the owner-scoped resume read
+    // below answers "no active session" until then — matching the real
+    // route, and keeping the pre-Connect part of this test the same as the
+    // ordinary sign-in test above.
+    let sessionStarted = false;
+    await page.route("**/setup-token-login-sessions", (route) => {
+      if (route.request().method() === "POST") {
+        startCalls += 1;
+        sessionStarted = true;
+      }
+      return route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify({
+          sessionId: SESSION_ID,
+          status: "pending",
+          expiresAt: new Date(Date.now() + 600_000).toISOString(),
+        }),
+      });
+    });
+    await page.route(`**/setup-token-login-sessions/${SESSION_ID}/prompt`, (route) =>
+      route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify({
+          authorizationUrl: AUTHORIZATION_URL,
+          transportAdvisory: null,
+        }),
+      }),
+    );
+    await page.route(`**/setup-token-login-sessions/${SESSION_ID}`, (route) => {
+      if (route.request().method() !== "GET") return route.continue();
+      return route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify({
+          sessionId: SESSION_ID,
+          status: "pending",
+          expiresAt: new Date(Date.now() + 600_000).toISOString(),
+        }),
+      });
+    });
+    // The owner-scoped resume read. Both the wizard's own step-restore effect
+    // and the panel's own resume-on-mount read use this, with no session id
+    // in the URL — the caller rediscovers its own session.
+    await page.route("**/setup-token-login-sessions/active", (route) => {
+      if (!sessionStarted) {
+        return route.fulfill({
+          status: 404,
+          contentType: "application/json",
+          body: JSON.stringify({ error: "Setup-token login session not found." }),
+        });
+      }
+      return route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify({
+          sessionId: SESSION_ID,
+          status: "pending",
+          expiresAt: new Date(Date.now() + 600_000).toISOString(),
+          panelMode: "submitted_browser_code",
+          prompt: { authorizationUrl: AUTHORIZATION_URL, transportAdvisory: null },
+        }),
+      });
+    });
+
+    await page.goto("/onboarding");
+
+    const startBtn = page.getByRole("button", {
+      name: /Start Onboarding|New Organization|Add Agent/,
+    });
+    if (await startBtn.count()) {
+      await startBtn.first().click();
+    }
+    const createCard = page.getByRole("button", { name: /Build a new organization/ });
+    if (await createCard.count()) {
+      await createCard.first().click();
+    }
+
+    await expect(
+      page.getByRole("heading", { name: "What is the name of your organization?" }),
+    ).toBeVisible({ timeout: 15_000 });
+    await page.getByPlaceholder("e.g. Northwind Labs").fill(`${COMPANY_NAME}-reload`);
+    await page.getByRole("button", { name: /^Continue/ }).click();
+
+    await page.waitForSelector("#onboarding-agent-name", { timeout: 30_000 });
+    await page.locator("#onboarding-agent-name").fill("Ada");
+    await page.getByRole("button", { name: "Next" }).click();
+
+    const source = page.getByRole("radio").first();
+    await source.waitFor({ timeout: 30_000 });
+
+    // Answering the row is what starts the sign-in now — there is no separate
+    // Connect press between choosing a source and being signed in.
+    await source.click();
+
+    const cardInstruction = page.getByText("then come back and enter authorization code");
+    const authorizationLink = page.getByRole("link", { name: /^Sign in to / });
+
+    await expect(cardInstruction).toBeVisible({ timeout: 30_000 });
+    await expect(authorizationLink).toBeVisible({ timeout: 15_000 });
+    await expect(authorizationLink).toHaveAttribute("href", /claude\.ai\/oauth\/authorize/);
+    expect(startCalls).toBe(1);
+
+    const companiesRes = await page.request.get("/api/companies");
+    expect(companiesRes.ok()).toBe(true);
+    const companies = await companiesRes.json();
+    const company = companies.find(
+      (c: { name: string }) => c.name === `${COMPANY_NAME}-reload`,
+    );
+    expect(company, "the created company should exist").toBeTruthy();
+
+    // Reload through the company's own onboarding path — the real "reopen
+    // onboarding" entry point for a company that already exists.
+    await page.goto(`/${company.issuePrefix}/onboarding`);
+
+    // This entry point always re-enters on the agent step, with the agent
+    // name restored from the draft. One more press reaches the connect step.
+    await page.waitForSelector("#onboarding-agent-name", { timeout: 30_000 });
+    await expect(page.locator("#onboarding-agent-name")).toHaveValue("Ada");
+    await page.getByRole("button", { name: "Next" }).click();
+
+    // The resumed login shows with no new source pick and no fresh sign-in
+    // press: the panel and the step both discover it from the caller's active
+    // session.
+    await expect(cardInstruction).toBeVisible({ timeout: 15_000 });
+    await expect(authorizationLink).toBeVisible({ timeout: 15_000 });
+    expect(startCalls, "the reload must resume the session, not start a new one").toBe(1);
+
+    expect(pageErrors, pageErrors.join("\n")).toHaveLength(0);
+  });
+
   test("connect step blocks the hire when the environment probe fails and no sign-in is needed", async ({
     page,
   }) => {

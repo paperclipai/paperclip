@@ -522,11 +522,22 @@ describe("TaskChatInteractionCard", () => {
     expect(container.textContent).not.toContain("Resolved by:");
   });
 
-  it("collapses accepted confirmations and selections to one borderless row", () => {
+  it("collapses resolved confirmations and selections to one borderless row", () => {
     const acceptedConfirmation = createRequestConfirmation({
       status: "accepted",
       resolvedAt: new Date("2026-08-24T13:30:00.000Z"),
       result: { version: 1, outcome: "accepted" },
+    });
+    const continuedConfirmation = createRequestConfirmation({
+      id: "confirmation-continued",
+      status: "rejected",
+      resolvedAt: new Date("2026-08-24T13:30:30.000Z"),
+      payload: {
+        version: 1,
+        prompt: "Is this task ready to complete?",
+        rejectLabel: "Continue work",
+      },
+      result: { version: 1, outcome: "rejected" },
     });
     const acceptedSelection = structuredClone(
       pendingRequestCheckboxConfirmationInteraction,
@@ -548,6 +559,9 @@ describe("TaskChatInteractionCard", () => {
                 item={interactionItem(acceptedConfirmation)}
               />
               <TaskChatInteractionCard
+                item={interactionItem(continuedConfirmation)}
+              />
+              <TaskChatInteractionCard
                 item={interactionItem(acceptedSelection)}
               />
             </>
@@ -559,11 +573,14 @@ describe("TaskChatInteractionCard", () => {
     const receipts = container.querySelectorAll<HTMLDetailsElement>(
       '[data-testid="task-chat-interaction-receipt"]',
     );
-    expect(receipts).toHaveLength(2);
+    expect(receipts).toHaveLength(3);
     expect(receipts[0]?.querySelector("summary")?.textContent).toBe(
       "Confirmed request",
     );
     expect(receipts[1]?.querySelector("summary")?.textContent).toBe(
+      "Selected “Continue work”",
+    );
+    expect(receipts[2]?.querySelector("summary")?.textContent).toBe(
       "Confirmed with no options selected",
     );
     for (const receipt of receipts) {

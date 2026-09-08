@@ -947,6 +947,8 @@ export type {
   AssetImage,
   Project,
   ProjectBudgetSummary,
+  ProjectRepository,
+  ProjectRepositoryOptions,
   ProjectCodebase,
   ProjectCodebaseOrigin,
   ProjectGoalRef,

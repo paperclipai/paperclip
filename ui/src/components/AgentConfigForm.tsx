@@ -2020,10 +2020,10 @@ export type AdapterLoginDescriptor = {
 //
 // They are props on the existing panels rather than a second implementation
 // because the part onboarding needs unchanged is the whole of it: the session
-// start, the two polls, the server deadline, the one-shot completion read, the
-// unmount release. A copy drawn to the new design would have had to reproduce
-// all of that correctly, and the first thing to rot would have been the
-// timeout and cleanup paths, which are the ones nobody exercises by hand.
+// start, the two polls, the server deadline, the one-shot completion read. A
+// copy drawn to the new design would have had to reproduce all of that
+// correctly, and the first thing to rot would have been the timeout and
+// cleanup paths, which are the ones nobody exercises by hand.
 export type AdapterLoginPanelProps = AdapterLoginDescriptor & {
   onStored?: (storedSessionId: string) => void;
   onApplyStored?: () => void;
@@ -2031,10 +2031,6 @@ export type AdapterLoginPanelProps = AdapterLoginDescriptor & {
   // footer button is the press — by the time the panel is rendered there, the
   // customer has already asked for this.
   autoStart?: boolean;
-  // The customer abandoned the login from inside the card. The panel has
-  // already cancelled the server session by the time this fires; the caller
-  // uses it to put its own control back to the state it started in.
-  onCancel?: () => void;
   // The login reached its success state. Onboarding advances on this, which is
   // why the `onboarding` chrome draws no success state of its own — the screen
   // it would appear on is already gone.
@@ -2047,8 +2043,9 @@ export type AdapterLoginPanelProps = AdapterLoginDescriptor & {
    * its own button is what sends the customer there, and a prompt arriving is
    * what moves the step from waiting to ready. Everything else it needs the
    * panel already does — the paste submits itself, success is reported through
-   * `onConnected`, and an unmount releases the session — so this stays a single
-   * value rather than a whole session handed upward.
+   * `onConnected`, and the customer's own Cancel press is reported through
+   * `onCancel` — so this stays a single value rather than a whole session
+   * handed upward.
    */
   onPromptReady?: (authorizationUrl: string | null) => void;
 };
@@ -2090,7 +2087,6 @@ function DisplayedCodeLoginPanel({
   adapterType,
   environmentId,
   autoStart,
-  onCancel,
   onConnected,
   chrome = "panel",
   onPromptReady,
@@ -2102,9 +2098,18 @@ function DisplayedCodeLoginPanel({
   // URL.
   const [latchedPrompt, setLatchedPrompt] = useState<AdapterAuthSessionPrompt | null>(null);
 
+  // True for the session currently held in `sessionId` when it came from the
+  // owner-scoped resume read rather than a fresh `startLogin`. It marks the
+  // one case that needs the extra release-on-error path below: a session this
+  // browser instance did not just start, so a broken poll cannot fall back to
+  // the ordinary "let the user press Sign in again" recovery — the owner has
+  // no local memory of ever starting it.
+  const resumedRef = useRef(false);
+
   const startLogin = useMutation({
     mutationFn: () => agentsApi.startAdapterAuthLogin(companyId, adapterType, { environmentId }),
     onSuccess: (session) => {
+      resumedRef.current = false;
       setStartError(null);
       setLatchedPrompt(null);
       setSessionId(session.sessionId);
@@ -2114,24 +2119,61 @@ function DisplayedCodeLoginPanel({
     },
   });
 
+  // Reset local state, so the panel returns to its idle start state and the
+  // Sign in button is available again.
+  const clearActiveSession = useCallback(() => {
+    resumedRef.current = false;
+    setSessionId(null);
+    setLatchedPrompt(null);
+    setStartError(null);
+  }, []);
+
   const cancelLogin = useMutation({
     mutationFn: () => agentsApi.cancelAdapterAuthLogin(companyId, adapterType, sessionId!),
-    onSuccess: () => {
-      // Reset local state, so the panel returns to its idle start state and the
-      // Log in button is available again.
-      setSessionId(null);
-      setLatchedPrompt(null);
-      setStartError(null);
-    },
+    onSuccess: clearActiveSession,
     onError: (error) => {
       setStartError(error instanceof Error ? error.message : "Could not cancel the login.");
     },
   });
 
+  // Read the caller's active session on mount, with no session id, so the
+  // browser rediscovers its own session after a reload with no local state. A
+  // 404 means no active session for the caller.
+  const activeSessionQuery = useQuery({
+    queryKey: ["adapter-login-active-session", companyId, adapterType],
+    queryFn: async () => {
+      try {
+        return await agentsApi.getActiveAdapterAuthLoginSession(companyId, adapterType);
+      } catch (error) {
+        if (error instanceof ApiError && error.status === 404) return null;
+        throw error;
+      }
+    },
+    retry: false,
+    // Never answered from cache. This read decides whether to adopt a running
+    // session or start a new one, and a cached "none" from an earlier mount is
+    // exactly wrong after Back: the panel would read `isFetched` immediately,
+    // see the stale null, and start a second login while the refetch was still
+    // in flight — which the per-owner cap then rejects.
+    gcTime: 0,
+    staleTime: 0,
+  });
+
+  // While the panel releases a resumed session it cannot recover (see below),
+  // it keeps showing the login as active rather than dropping back to idle, so
+  // it does not clear local state before the release finishes.
+  const [releasingResumedSession, setReleasingResumedSession] = useState(false);
+
   const statusQuery = useQuery({
     queryKey: ["adapter-login-status", companyId, adapterType, sessionId],
     queryFn: () => agentsApi.getAdapterAuthLoginStatus(companyId, adapterType, sessionId!),
-    enabled: Boolean(sessionId),
+    enabled: Boolean(sessionId) && !releasingResumedSession,
+    // A status 404 is unrecoverable: the server removed the row, so a retry
+    // cannot bring it back. Stop at once and fail loudly.
+    retry: (failureCount, error) => {
+      if (error instanceof ApiError && error.status === 404) return false;
+      return failureCount < 3;
+    },
     refetchInterval: (query) => {
       const status = query.state.data?.status;
       return status && ADAPTER_LOGIN_TERMINAL_STATUSES.has(status)
@@ -2154,54 +2196,79 @@ function DisplayedCodeLoginPanel({
   const isActive = Boolean(sessionId) && !isTerminal;
   const startDisabled = startLogin.isPending || isActive;
 
-  // Release the server session at once, without a change to the panel state, the
-  // way the submitted-browser-code panel does. The server holds a per-owner
-  // reservation until the session reaches a terminal state, so an abandoned
-  // session locks the owner out until the server deadline. Fire-and-forget: a
-  // 404 means the server already removed a terminal session, and a cleanup path
-  // cannot surface any other error either, so it drops them all. The manual
-  // Cancel button keeps using the `cancelLogin` mutation, because that path also
-  // returns the panel to its idle start state.
-  const releaseServerSession = useCallback(
-    (id: string) => {
-      void agentsApi.cancelAdapterAuthLogin(companyId, adapterType, id).catch(() => {
-        // Drop the error, as above.
-      });
-    },
-    [companyId, adapterType],
-  );
-
-  // Hold the active session id for the unmount cleanup. Onboarding removes this
-  // panel as soon as Cancel is pressed — `handleCancel` fires the request and
-  // calls `onCancel` without waiting for it — so the panel can be gone before
-  // the cancel resolves. Without this, a failed cancel, or any other unmount
-  // (navigating away, the step advancing), would leave the reservation held
-  // until the server deadline and an immediate retry unable to start. The ref is
-  // null once the session leaves the active state, so the cleanup never cancels
-  // a session the server already removed.
-  const activeSessionRef = useRef<string | null>(null);
-  activeSessionRef.current = isActive ? sessionId : null;
-
+  // Adopt the caller's active session once, on mount. This is what makes a
+  // page reload keep the session: with no local state at all, the panel would
+  // otherwise show its idle start state even though the server still holds an
+  // active login for this owner.
+  const resumeAttemptedRef = useRef(false);
   useEffect(() => {
-    return () => {
-      const id = activeSessionRef.current;
-      if (id) releaseServerSession(id);
-    };
-  }, [releaseServerSession]);
+    if (resumeAttemptedRef.current || !activeSessionQuery.isFetched) return;
+    resumeAttemptedRef.current = true;
+    const active = activeSessionQuery.data;
+    if (!active) return;
+    resumedRef.current = true;
+    setStartError(null);
+    setLatchedPrompt(active.prompt ?? null);
+    setSessionId(active.sessionId);
+  }, [activeSessionQuery.isFetched, activeSessionQuery.data]);
 
-  // Start once, on mount, when the caller has already taken the press. The ref
-  // is the guard rather than the mutation's own pending flag: `startLogin`
-  // settles, and without a latch a re-render after it settles would read "not
-  // pending, no session yet" during the gap before the session id lands and
-  // start a second login the server would count against the per-owner cap.
+  // A resumed session's status poll found the session already gone: the read
+  // that discovered it and the poll that tried to use it raced, and the
+  // session lost. The panel cannot resume it, and there is no unmount cleanup
+  // left to fall back on, so it releases the reservation itself and waits for
+  // that release before it returns to the idle start state.
+  useEffect(() => {
+    const error = statusQuery.error;
+    if (!(error instanceof ApiError && error.status === 404)) return;
+    if (!resumedRef.current || releasingResumedSession) return;
+    setReleasingResumedSession(true);
+    const id = sessionId;
+    void (async () => {
+      if (id) {
+        await agentsApi.cancelAdapterAuthLogin(companyId, adapterType, id).catch(() => {
+          // The session is already gone either way; nothing more to do.
+        });
+      }
+      setReleasingResumedSession(false);
+      clearActiveSession();
+    })();
+  }, [statusQuery.error, releasingResumedSession, sessionId, companyId, adapterType, clearActiveSession]);
+
+  // Start once, on mount, when the caller has already taken the press, and
+  // only once the resume read has answered: a resumed session takes over
+  // instead of a fresh start. The ref is the guard rather than the mutation's
+  // own pending flag: `startLogin` settles, and without a latch a re-render
+  // after it settles would read "not pending, no session yet" during the gap
+  // before the session id lands and start a second login the server would
+  // count against the per-owner cap.
   const autoStartedRef = useRef(false);
   const startLoginRef = useRef(startLogin.mutate);
   startLoginRef.current = startLogin.mutate;
   useEffect(() => {
     if (!autoStart || autoStartedRef.current) return;
+    // A failed lookup is not proof that no session exists: only a successful
+    // lookup is. Show the failure to the user instead of starting a second
+    // login the server would reject against the per-owner cap.
+    if (activeSessionQuery.isError) {
+      autoStartedRef.current = true;
+      setStartError(
+        activeSessionQuery.error instanceof Error
+          ? activeSessionQuery.error.message
+          : "Could not check for an active login.",
+      );
+      return;
+    }
+    if (!activeSessionQuery.isSuccess) return;
     autoStartedRef.current = true;
+    if (activeSessionQuery.data) return;
     startLoginRef.current();
-  }, [autoStart]);
+  }, [
+    autoStart,
+    activeSessionQuery.isSuccess,
+    activeSessionQuery.isError,
+    activeSessionQuery.data,
+    activeSessionQuery.error,
+  ]);
 
   // Report success upward once. `authenticated` is this panel's terminal
   // success: unlike the Claude login there is no completion read after it, so
@@ -2225,11 +2292,6 @@ function DisplayedCodeLoginPanel({
   useEffect(() => {
     onPromptReadyRef.current?.(prompt?.url ?? null);
   }, [prompt]);
-
-  const handleCancel = () => {
-    cancelLogin.mutate();
-    onCancel?.();
-  };
 
   if (chrome === "onboarding") {
     const failed = isTerminal && status && status !== "authenticated";
@@ -2429,7 +2491,6 @@ function SubmittedBrowserCodeLoginPanel({
   onStored,
   onApplyStored,
   autoStart,
-  onCancel,
   onConnected,
   chrome = "panel",
   onPromptReady,
@@ -2465,6 +2526,13 @@ function SubmittedBrowserCodeLoginPanel({
   // apply-existing path binds the fixed reference with no new login round trip,
   // so the panel shows the applied confirmation and hides the apply affordance.
   const [appliedStored, setAppliedStored] = useState(false);
+  // True for the session currently held in `sessionId` when it came from the
+  // owner-scoped resume read rather than a fresh `startLogin`. It marks the
+  // one case that needs the extra release-on-error path below: a session this
+  // browser instance did not just start, so a broken poll cannot fall back to
+  // the ordinary "let the user press Sign in again" recovery — the owner has
+  // no local memory of ever starting it.
+  const resumedRef = useRef(false);
 
   const resetLocalState = () => {
     setStartError(null);
@@ -2520,6 +2588,7 @@ function SubmittedBrowserCodeLoginPanel({
           : {}),
       }),
     onSuccess: (session) => {
+      resumedRef.current = false;
       resetLocalState();
       setSessionId(session.sessionId);
     },
@@ -2531,6 +2600,7 @@ function SubmittedBrowserCodeLoginPanel({
   const clearActiveSession = () => {
     // Return the panel to its idle start state. The Log in button is available
     // again, and both polls stop because the session id is null.
+    resumedRef.current = false;
     setSessionId(null);
     resetLocalState();
   };
@@ -2555,7 +2625,7 @@ function SubmittedBrowserCodeLoginPanel({
   });
 
   // Release the server session at once, without a change to the panel state. The
-  // client-cutoff timer and the unmount path both use this. The server holds a
+  // client-cutoff timer uses this. The server holds a
   // per-owner reservation until the session reaches a terminal state, so an
   // abandoned session locks the owner out until the server deadline. A best-
   // effort cancel frees that reservation now, so the same owner can start a new
@@ -2575,11 +2645,40 @@ function SubmittedBrowserCodeLoginPanel({
     [companyId],
   );
 
+  // Read the caller's active Claude setup-token session on mount, with no
+  // session id, so the browser rediscovers its own session after a reload
+  // with no local state. A 404 means no active session for the caller.
+  const activeSessionQuery = useQuery({
+    queryKey: ["claude-setup-token-active-session", companyId],
+    queryFn: async () => {
+      try {
+        return await agentsApi.getActiveClaudeSetupTokenLoginSession(companyId);
+      } catch (error) {
+        if (error instanceof ApiError && error.status === 404) return null;
+        throw error;
+      }
+    },
+    retry: false,
+    // Never answered from cache. This read decides whether to adopt a running
+    // session or start a new one, and a cached "none" from an earlier mount is
+    // exactly wrong after Back: the panel would read `isFetched` immediately,
+    // see the stale null, and start a second login while the refetch was still
+    // in flight — which the per-owner cap then rejects.
+    gcTime: 0,
+    staleTime: 0,
+  });
+
+  // While the panel releases a resumed session it cannot recover (see below),
+  // it keeps showing the login as active rather than dropping back to idle, so
+  // it does not clear local state before the release finishes.
+  const [releasingResumedSession, setReleasingResumedSession] = useState(false);
+
   // Both polls run only while a session is active and the client cap has not
   // passed. The timeout stops the polls, so the panel never polls forever. A
   // status 404 also stops the polls: the server cleaned up the session, so the
   // panel enters a terminal failure state instead.
-  const pollingEnabled = Boolean(sessionId) && !timedOut && !statusGone;
+  const pollingEnabled =
+    Boolean(sessionId) && !timedOut && !statusGone && !releasingResumedSession;
 
   const statusQuery = useQuery({
     queryKey: ["claude-setup-token-status", companyId, sessionId],
@@ -2606,12 +2705,51 @@ function SubmittedBrowserCodeLoginPanel({
   // race against the next poll. React Query keeps the last successful data on
   // error, so without this branch the panel would hold stale data and show
   // nothing. Enter the terminal failure state, which stops both polls.
+  //
+  // A resumed session takes a different path: the read that discovered it and
+  // the poll that tried to use it raced, and the session lost. There is no
+  // unmount cleanup left to fall back on, so the panel releases the
+  // reservation itself and waits for that release before it returns to the
+  // idle start state, instead of trusting the 404 alone.
   useEffect(() => {
     const error = statusQuery.error;
-    if (error instanceof ApiError && error.status === 404) {
-      setStatusGone(true);
+    if (!(error instanceof ApiError && error.status === 404)) return;
+    if (resumedRef.current) {
+      if (releasingResumedSession) return;
+      setReleasingResumedSession(true);
+      const id = sessionId;
+      void (async () => {
+        if (id) {
+          await agentsApi.cancelClaudeSetupTokenLogin(companyId, id).catch(() => {
+            // The session is already gone either way; nothing more to do.
+          });
+        }
+        setReleasingResumedSession(false);
+        clearActiveSession();
+      })();
+      return;
     }
-  }, [statusQuery.error]);
+    setStatusGone(true);
+  }, [statusQuery.error, releasingResumedSession, sessionId, companyId]);
+
+  // Adopt the caller's active session once, on mount. This is what makes a
+  // page reload keep the session: with no local state at all, the panel would
+  // otherwise show its idle start state even though the server still holds an
+  // active login for this owner.
+  const resumeAttemptedRef = useRef(false);
+  useEffect(() => {
+    if (resumeAttemptedRef.current || !activeSessionQuery.isFetched) return;
+    resumeAttemptedRef.current = true;
+    const active = activeSessionQuery.data;
+    if (!active) return;
+    resumedRef.current = true;
+    resetLocalState();
+    setSessionId(active.sessionId);
+    if (active.prompt) {
+      setAuthorizationUrl(active.prompt.authorizationUrl);
+      if (active.prompt.transportAdvisory) setTransportInsecure(true);
+    }
+  }, [activeSessionQuery.isFetched, activeSessionQuery.data]);
 
   // Poll the guarded prompt route until it returns the authorization URL. The
   // route returns 404 until the URL is ready, so the panel treats a 404 as
@@ -2686,21 +2824,6 @@ function SubmittedBrowserCodeLoginPanel({
   const isActive = Boolean(sessionId) && !isStored && !isFailure && !timedOut;
   const startDisabled = startLogin.isPending || isActive;
 
-  // Hold the active session id for the unmount cleanup. The panel updates it on
-  // every render. When the panel unmounts, or the parent removes it as the login
-  // closes, with an active, non-terminal session, the cleanup releases that
-  // session on the server. The ref is null once the session leaves the active
-  // state, so the cleanup never cancels a session the server already removed.
-  const activeSessionRef = useRef<string | null>(null);
-  activeSessionRef.current = isActive ? sessionId : null;
-
-  useEffect(() => {
-    return () => {
-      const id = activeSessionRef.current;
-      if (id) releaseServerSession(id);
-    };
-  }, [releaseServerSession]);
-
   // Cap the active login at the server deadline. The timer arms when the login
   // becomes active and clears when the login leaves the active state (a terminal
   // status, a stored success, or a new login). It re-arms when `expiresAt`
@@ -2741,22 +2864,56 @@ function SubmittedBrowserCodeLoginPanel({
   const handleSubmit = () => {
     if (!canSubmit) return;
     submitCode.mutate(trimmedCode);
-    // Clear the browser code right after submit, so the secret never lingers in
-    // the input.
-    setBrowserCode("");
+    // Onboarding keeps the code on screen; the panel still clears it.
+    //
+    // Clearing emptied the input in the same frame the paste landed, so on the
+    // connect step the only feedback for the seconds that followed was a field
+    // that had just gone blank — reported from staging as the paste looking
+    // dropped, or the step looking stuck. There the field is disabled from here
+    // on and the step's own button carries the status, so the code can stay:
+    // `resetLocalState` clears it whenever a session starts, resumes or is
+    // cleared, the value dies with the panel moments later, and the code is
+    // single-use and already spent.
+    //
+    // The panel is not that. It sits in a form that stays open long after the
+    // login, with its own status area doing the reporting — so there the code
+    // does have somewhere to linger, and clearing it remains right.
+    if (chrome !== "onboarding") setBrowserCode("");
   };
 
-  // Start once, on mount, when the caller has already taken the press. Latched
-  // for the same reason as the displayed-code panel: a second start would burn
-  // an owner reservation, and here it would also rotate the stored token twice.
+  // Start once, on mount, when the caller has already taken the press, and
+  // only once the resume read has answered: a resumed session takes over
+  // instead of a fresh start. Latched for the same reason as the
+  // displayed-code panel: a second start would burn an owner reservation, and
+  // here it would also rotate the stored token twice.
   const autoStartedRef = useRef(false);
   const startLoginRef = useRef(startLogin.mutate);
   startLoginRef.current = startLogin.mutate;
   useEffect(() => {
     if (!autoStart || autoStartedRef.current) return;
+    // A failed lookup is not proof that no session exists: only a successful
+    // lookup is. Show the failure to the user instead of starting a second
+    // login the server would reject against the per-owner cap.
+    if (activeSessionQuery.isError) {
+      autoStartedRef.current = true;
+      setStartError(
+        activeSessionQuery.error instanceof Error
+          ? activeSessionQuery.error.message
+          : "Could not check for an active login.",
+      );
+      return;
+    }
+    if (!activeSessionQuery.isSuccess) return;
     autoStartedRef.current = true;
+    if (activeSessionQuery.data) return;
     startLoginRef.current();
-  }, [autoStart]);
+  }, [
+    autoStart,
+    activeSessionQuery.isSuccess,
+    activeSessionQuery.isError,
+    activeSessionQuery.data,
+    activeSessionQuery.error,
+  ]);
 
   /**
    * Submit the pasted code without a press.
@@ -2802,11 +2959,6 @@ function SubmittedBrowserCodeLoginPanel({
     connectedRef.current = true;
     onConnectedRef.current?.();
   }, [isStored]);
-
-  const handleCancel = () => {
-    cancelLogin.mutate();
-    onCancel?.();
-  };
 
   const onPromptReadyRef = useRef(onPromptReady);
   onPromptReadyRef.current = onPromptReady;

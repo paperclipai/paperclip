@@ -1,3 +1,5 @@
+import { experimentalApiMetadata } from "./experimental-api-metadata.js";
+import { experimentalApiPaths, experimentalApiQueries } from "./experimental-api-paths.js";
 import { Router } from "express";
 import { z } from "zod";
 import {
@@ -820,6 +822,7 @@ const RUNTIME_TOOLS_SECURITY: Array<Record<string, string[]>> = [
 ];
 
 const RUNTIME_TOOLS_OPERATIONS = new Set([
+  "POST /runtime-tools/github/credentials",
   "GET /mcp/runtime-tools",
   "POST /mcp/runtime-tools",
   "POST /runtime-tools/connections/search",
@@ -856,6 +859,10 @@ const BOARD_ONLY_PREFIXES = [
 ];
 
 const BOARD_ONLY_OPERATIONS = new Set([
+  "GET /api/companies/{companyId}/project-repositories",
+  "PUT /api/projects/{id}/repositories",
+  "DELETE /api/issues/{id}/documents/{key}",
+  "GET /api/companies/{companyId}/decisions",
   "GET /api/cloud/stacks",
   "GET /api/companies",
   "POST /api/companies",
@@ -1104,7 +1111,7 @@ function resolveOperationAuthLevel(method: string, path: string): OpenApiAuthLev
   if (PUBLIC_OPERATIONS.has(key)) return "public";
   if (RUNTIME_TOOLS_OPERATIONS.has(key)) return "runtime_tools";
   if (INSTANCE_ADMIN_OPERATIONS.has(key)) return "instance_admin";
-  if (isBoardOnlyOperation(method, path)) return "board";
+  if (isBoardOnlyOperation(method, path) || experimentalApiMetadata[`${method.toUpperCase()} ${path}`]?.boardOnly) return "board";
   return "authenticated";
 }
 
@@ -1147,7 +1154,7 @@ function applyDocumentFixups(document: any): any {
       scheme: "bearer",
       bearerFormat: "Heartbeat-bound runtime tools token",
       description:
-        "Short-lived token bound to an active heartbeat run and presented in the Authorization bearer header.",
+        "Scoped token bound to an active heartbeat run and presented in the Authorization bearer header. The GitHub credential endpoint requires the distinct github_credentials scope.",
     },
   };
   document.security = AUTHENTICATED_SECURITY;
@@ -2268,6 +2275,17 @@ registry.registerPath({
 
 registry.registerPath({
   method: "get",
+  path: "/api/companies/{companyId}/adapters/{type}/login-sessions/active",
+  tags: ["adapters"],
+  summary: "Read the caller's active adapter device login session",
+  request: {
+    params: z.object({ companyId: z.string(), type: z.string() }),
+  },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "get",
   path: "/api/companies/{companyId}/adapters/{type}/login-sessions/{sessionId}",
   tags: ["adapters"],
   summary: "Read an adapter device login session",
@@ -2854,6 +2872,33 @@ registry.registerPath({
 
 registry.registerPath({
   method: "get",
+  path: "/api/companies/{companyId}/project-repositories",
+  tags: ["projects"],
+  summary: "Discover GitHub repositories available to the current board user",
+  description: "Deduplicates repositories across usable personal and company-shared GitHub connections. Failed connections are reported without discarding successful results.",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: {
+    200: r.ok(z.object({
+      repositories: z.array(z.object({ id: z.string(), fullName: z.string(), url: z.string(), private: z.boolean().optional(), connections: z.array(z.string()) })),
+      connectionCount: z.number().int().nonnegative(),
+      failedConnectionCount: z.number().int().nonnegative(),
+    })),
+    401: r.unauthorized, 403: r.forbidden,
+  },
+});
+
+registry.registerPath({
+  method: "put",
+  path: "/api/projects/{id}/repositories",
+  tags: ["projects"],
+  summary: "Replace selected GitHub source repositories",
+  description: "Saves provider IDs transactionally, refreshes canonical names and URLs, and preserves legacy workspace URLs. Unavailable existing selections can remain; new selections must be available to the caller.",
+  request: { params: z.object({ id: z.string() }), body: jsonBody(createProjectSchema.pick({ repositoryIds: true }).required()) },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 422: r.unprocessable },
+});
+
+registry.registerPath({
+  method: "get",
   path: "/api/companies/{companyId}/projects",
   tags: ["projects"],
   summary: "List projects in a company",
@@ -2866,11 +2911,12 @@ registry.registerPath({
   path: "/api/companies/{companyId}/projects",
   tags: ["projects"],
   summary: "Create a project",
+  description: "The optional repositoryIds field selects GitHub source repositories and requires a board caller. It cannot be combined with workspace. All selections are validated before the project and repository workspaces are created atomically.",
   request: {
     params: z.object({ companyId: z.string() }),
     body: jsonBody(createProjectSchema),
   },
-  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 422: r.unprocessable },
 });
 
 registry.registerPath({
@@ -4653,7 +4699,7 @@ registry.registerPath({
       configuration: z.record(z.string(), z.unknown()),
       enabled: z.boolean().optional(),
       retentionAcknowledged: z.boolean().optional(),
-      qualification: z.object({ suite: z.literal("aws-agentcore-harness-v1") }).strict().optional(),
+      qualification: z.object({ suite: z.literal("aws-agentcore-harness-context-v2") }).strict().optional(),
     })),
   },
   responses: {
@@ -4992,6 +5038,20 @@ registry.registerPath({
     403: r.forbidden,
     404: r.notFound,
     503: r.serverError,
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/setup-token-login-sessions/active",
+  tags: ["companies"],
+  summary: "Read the caller's active Claude setup-token login session",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: {
+    200: r.ok(claudeSetupTokenSessionOwnerResponseSchema),
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
   },
 });
 
@@ -7446,6 +7506,14 @@ for (const route of [
 // --- Connection intents ------------------------------------------------------
 
 registerCurrentRoute({
+  method: "post",
+  path: "/runtime-tools/github/credentials",
+  tags: ["connection-intents"],
+  summary: "Resolve operation credentials using a run capability with github_credentials scope; browser sessions are rejected",
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 409: r.conflict },
+});
+
+registerCurrentRoute({
   method: "get",
   path: "/mcp/runtime-tools",
   tags: ["connection-intents"],
@@ -8360,6 +8428,24 @@ registerCurrentRoute({
     cursor: z.string().optional(),
   }),
 });
+
+// Every experimental REST route remains discoverable while its runtime feature
+// flag and actor checks stay authoritative. Shared validators prevent drift.
+for (const [method, path, body] of experimentalApiPaths) {
+  const query = experimentalApiQueries[`${method.toUpperCase()} ${path}`];
+  const metadata = experimentalApiMetadata[`${method.toUpperCase()} ${path}`];
+  registry.registerPath({
+    method, path, tags: ["Experimental"],
+    summary: `${method.toUpperCase()} ${path.replace(/\{[^}]+\}/g, "").replace(/\/api\//, "").replaceAll("/", " ")}`,
+    description: "Experimental API; the corresponding instance feature must be enabled. Existing route authorization applies." + (path.startsWith("/api/cases/{caseId}") ? " Pipeline case resource. On overlapping /cases routes the server selects the handler by resource identity; use a pipeline case ID." : path.startsWith("/api/cases/{id}") ? " Cases resource (not a pipeline case). Overlapping /cases routes select their handler by resource identity." : ""),
+    request: {
+      params: z.object(Object.fromEntries([...path.matchAll(/\{([^}]+)\}/g)].map((match) => [match[1], z.string()]))),
+      ...(query ? { query } : {}),
+      ...(path === "/api/cases/{id}/attachments" ? { body: { required: true, content: { "multipart/form-data": { schema: { type: "object", required: ["file"], properties: { file: { type: "string", format: "binary" } } } } } } } : body ? { body: { required: true, content: { "application/json": { schema: body } } } } : {}),
+    },
+    responses: { ...Object.fromEntries((metadata?.successStatuses ?? [200]).map(status => [status, responses.ok()])), 400: responses.badRequest, 403: responses.forbidden, 404: responses.notFound },
+  });
+}
 
 // ─── Spec builder ─────────────────────────────────────────────────────────────
 

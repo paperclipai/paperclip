@@ -216,6 +216,14 @@ Invariant:
 
 Routine execution issues add a routine-scoped env overlay after project env and before Paperclip runtime-owned keys. Routine env uses the same secret-aware binding format, is stored on `routines.env`, is snapshotted in routine revisions, and resolves secret refs against the routine binding target so routine-owned secrets do not require direct bindings on the executing agent.
 
+Project source repositories use the existing `project_workspaces` collection.
+Each selected GitHub repository has a canonical `repo_url` and stable provider ID
+in `metadata.githubRepositoryId`; the first workspace remains the execution default.
+The board can select multiple repositories from its usable personal and shared
+GitHub grants. Selection does not grant runtime credential access. Legacy workspace
+URLs remain valid. Project creation and repository replacement are transactional.
+See `doc/project-repositories.md` for the API and UI contract.
+
 ## 7.6 `issues` (core task entity)
 
 - `id` uuid pk
@@ -1252,6 +1260,12 @@ live goal controller and remain unsupported, even when their underlying ACP
 package exposes goals. Goal actions never change an agent's adapter, model,
 permission policy, or rollout settings to manufacture support. CLI, one-shot
 ACP, and providers without the structured extension remain unsupported.
+
+When a goal heartbeat settles, the runner suspends its durable authority even
+under a warm lifecycle policy. Paused, blocked, completed, and rollover goals
+must survive controller restart without relying on an in-memory warm owner.
+The next run resumes the same provider session through the existing verified
+checkpoint and authority-rotation path.
 
 The board composer treats `/goal` as an action command rather than Markdown or
 comment text. It is capability-aware, and the issue thread renders durable goal

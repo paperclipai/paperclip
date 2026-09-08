@@ -3579,6 +3579,29 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
                 </span>
               </div>
             )}
+            {Boolean(run.identityHistory?.length) && (
+              <details className="text-xs text-muted-foreground" data-testid="run-identity-history">
+                <summary className="cursor-pointer">GitHub identity history</summary>
+                <ol className="mt-2 space-y-2">
+                  {run.identityHistory!.map((identity) => {
+                    const person = userDirectory?.users.find((entry) => entry.principalId === identity.responsibleUserId);
+                    return (
+                      <li key={identity.id}>
+                        <span className="text-foreground">{person?.user?.name ?? person?.user?.email ?? identity.responsibleUserId ?? "No responsible person"}</span>
+                        {" · "}{identity.cause}{" · "}{identity.status}
+                        {identity.github ? (
+                          <span className="block">
+                            {identity.github.login ? `@${identity.github.login} · ` : ""}
+                            {identity.github.source ? `${identity.github.source} · ` : ""}
+                            {identity.github.status}{identity.github.reason ? `: ${identity.github.reason}` : ""}
+                          </span>
+                        ) : <span className="block">No GitHub operation recorded</span>}
+                      </li>
+                    );
+                  })}
+                </ol>
+              </details>
+            )}
             {resumeRun.isError && (
               <div className="text-xs text-destructive">
                 {resumeRun.error instanceof Error ? resumeRun.error.message : "Failed to resume run"}

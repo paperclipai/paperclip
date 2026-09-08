@@ -96,6 +96,62 @@ import { autoExtendNotice, INSTALL_ALL_WARNING, installInfoNotice, installPayloa
 type Step = "gallery" | "access" | "key" | "success";
 export type OAuthConnectPhase = "entry" | "starting" | "redirecting" | "error";
 
+type EnrollmentAccessState = {
+  companyId: string;
+  grantKind: ConnectionGrantKind;
+  installChoice: "specific" | "all";
+  agentIds: string[];
+};
+
+function enrollmentAccessStorageKey(appKey: string): string {
+  return `paperclip.connector-enrollment-access:${appKey}`;
+}
+
+function validEnrollmentAccessState(value: unknown): value is EnrollmentAccessState {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const candidate = value as Record<string, unknown>;
+  if (typeof candidate.companyId !== "string" || !candidate.companyId.trim()) return false;
+  if (!(candidate.grantKind === "user" || candidate.grantKind === "agent" || candidate.grantKind === "organization")) {
+    return false;
+  }
+  if (candidate.installChoice !== "specific" && candidate.installChoice !== "all") return false;
+  if (!Array.isArray(candidate.agentIds) || candidate.agentIds.some((id) => typeof id !== "string" || !id.trim())) {
+    return false;
+  }
+  const agentIds = new Set(candidate.agentIds);
+  if (agentIds.size !== candidate.agentIds.length) return false;
+  if (candidate.grantKind === "agent") {
+    return candidate.installChoice === "specific" && agentIds.size === 1;
+  }
+  return candidate.installChoice === "all" ? agentIds.size === 0 : agentIds.size > 0;
+}
+
+function saveEnrollmentAccessState(
+  companyId: string,
+  appKey: string,
+  state: Omit<EnrollmentAccessState, "companyId">,
+): void {
+  try {
+    window.sessionStorage.setItem(enrollmentAccessStorageKey(appKey), JSON.stringify({ ...state, companyId }));
+  } catch {
+    // Browser storage can be unavailable under restrictive privacy settings.
+    // The callback will safely use the provider's defaults in that case.
+  }
+}
+
+function consumeEnrollmentAccessState(appKey: string): EnrollmentAccessState | null {
+  const key = enrollmentAccessStorageKey(appKey);
+  try {
+    const raw = window.sessionStorage.getItem(key);
+    window.sessionStorage.removeItem(key);
+    if (!raw) return null;
+    const parsed: unknown = JSON.parse(raw);
+    return validEnrollmentAccessState(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
 function githubRecoveryUrl(value: string | null): string | null {
   if (!value) return null;
   try {
@@ -123,6 +179,19 @@ const ROUTE_STAGE_BY_STEP: Partial<Record<Step, string>> = {
   key: "setup",
   success: "complete",
 };
+
+export function requestedConnectionInitialStep(input: {
+  requestedAppKey: string | undefined;
+  routeStage: string | null;
+  resumeConnectionId: string | null;
+  hasPrefilledLink: boolean;
+  zapierSource: boolean;
+}): Step {
+  if (input.requestedAppKey) {
+    return input.resumeConnectionId || input.routeStage === "setup" ? "key" : "access";
+  }
+  return input.hasPrefilledLink || input.zapierSource ? "access" : "gallery";
+}
 
 export function requestedConnectionEntry(input: {
   requestedAppKey: string;
@@ -302,6 +371,17 @@ function recommendedSetupConnectionMethod(
     : null;
 }
 
+function recommendedManagedConnectorMethod(
+  entry: AppDefinition | null | undefined,
+): ConnectionMethodDef | null {
+  return recommendedSetupConnectionMethod(
+    (entry?.methods ?? []).filter((candidate) =>
+      candidate.oauthStrategy === "paperclip_cloud_connector"
+      || candidate.oauthStrategy === "paperclip_id_connector",
+    ),
+  );
+}
+
 function canUseAutomaticOAuthFastPath(entry: AppDefinition | null | undefined): boolean {
   if (!entry) return false;
   const methods = getAvailableConnectionMethods(entry);
@@ -395,6 +475,7 @@ export interface ConnectionSetupFlowProps {
   serviceSlug?: string;
   requestedAgentId?: string;
   interactionId?: string;
+  forceNewConnection?: boolean;
   existingConnections?: ToolConnection[];
   onUseExisting?: (connectionId: string) => Promise<void>;
   onComplete?: (result: ConnectionSetupCompletion) => void;
@@ -416,6 +497,7 @@ export function ConnectionSetupFlow({
   serviceSlug,
   requestedAgentId,
   interactionId,
+  forceNewConnection = false,
   existingConnections = [],
   onUseExisting,
   onComplete,
@@ -439,7 +521,8 @@ export function ConnectionSetupFlow({
     || null;
   const appKey = routeParams.appKey ?? searchParams.get("appKey") ?? undefined;
   const sourceSlug = searchParams.get("source")?.trim() || null;
-  const createNewConnection = searchParams.get("new") === "1";
+  const createNewConnection = forceNewConnection || searchParams.get("new") === "1";
+  const routeStage = searchParams.get("stage")?.trim() || null;
   const resumeConnectionId = searchParams.get("resume")?.trim() || null;
   const oauthCallbackOutcome = searchParams.get("oauth");
   const oauthCallbackCode = searchParams.get("code");
@@ -464,6 +547,13 @@ export function ConnectionSetupFlow({
   const zapierSource = (serviceSlug ?? sourceSlug ?? appKey) === "zapier";
   const requestedAppKey = zapierSource ? undefined : routeAppKey;
   const byo = host === "page" && (byoOnly || searchParams.get("byo") === "1");
+  const [restoredEnrollmentAccess] = useState<EnrollmentAccessState | null>(() =>
+    host === "page"
+      && searchParams.get("cloud_connector") === "enrolled"
+      && requestedAppKey
+      ? consumeEnrollmentAccessState(requestedAppKey)
+      : null,
+  );
 
   // Prefill arrives from the app page for reconnects; read once so later
   // wizard navigation doesn't fight the URL.
@@ -476,11 +566,13 @@ export function ConnectionSetupFlow({
     };
   });
 
-  const [step, setStep] = useState<Step>(
-    requestedAppKey
-      ? resumeConnectionId ? "key" : "access"
-      : prefill.link || zapierSource ? "access" : "gallery",
-  );
+  const [step, setStep] = useState<Step>(() => requestedConnectionInitialStep({
+    requestedAppKey,
+    routeStage,
+    resumeConnectionId,
+    hasPrefilledLink: Boolean(prefill.link),
+    zapierSource,
+  }));
   const [entry, setEntry] = useState<AppDefinition | null>(null);
   const [galleryName, setGalleryName] = useState("");
   const [linkUrl, setLinkUrl] = useState(prefill.link);
@@ -509,7 +601,7 @@ export function ConnectionSetupFlow({
   const [access, setAccess] = useState<"all" | "specific">("all");
   const [agentIds, setAgentIds] = useState<Set<string>>(new Set());
   const [installAgentIds, setInstallAgentIds] = useState<Set<string>>(
-    () => new Set(requestedAgentId ? [requestedAgentId] : []),
+    () => new Set(restoredEnrollmentAccess?.agentIds ?? (requestedAgentId ? [requestedAgentId] : [])),
   );
   /**
    * Access-step selections (PAP-17835). These are chosen before the credential
@@ -517,10 +609,10 @@ export function ConnectionSetupFlow({
    * backwards through the wizard.
    */
   const [grantKind, setGrantKind] = useState<ConnectionGrantKind>(
-    reconnectGrantKindHint ?? "organization",
+    restoredEnrollmentAccess?.grantKind ?? reconnectGrantKindHint ?? "organization",
   );
   const [installChoice, setInstallChoice] = useState<"specific" | "all">(
-    requestedAgentId ? "specific" : "all",
+    restoredEnrollmentAccess?.installChoice ?? (requestedAgentId ? "specific" : "all"),
   );
   const resumingAfterOAuthFailure = Boolean(
     resumeConnectionId
@@ -540,6 +632,7 @@ export function ConnectionSetupFlow({
   const hydratedResumeConnectionIdRef = useRef<string | null>(null);
   const [hydratedResumeConnectionId, setHydratedResumeConnectionId] = useState<string | null>(null);
   const oauthPopupRef = useRef<Window | null>(null);
+  const [dialogOAuthConnectionId, setDialogOAuthConnectionId] = useState<string | null>(null);
   const oauthHandoffAbortRef = useRef<AbortController | null>(null);
   const [showConnectionChoice, setShowConnectionChoice] = useState(
     existingConnections.length > 0 && Boolean(onUseExisting),
@@ -624,6 +717,51 @@ export function ConnectionSetupFlow({
     window.addEventListener("message", receiveOAuthOutcome);
     return () => window.removeEventListener("message", receiveOAuthOutcome);
   }, [connectionIntentId, host, onComplete, onOAuthDeclined]);
+
+  // Standalone dialog hosts have no task interaction to receive a callback.
+  // Wait for this popup to return to our origin, then verify durable state via
+  // the API. Provider-window contents never determine the saved connection.
+  useEffect(() => {
+    if (host !== "dialog" || connectionIntentId || !dialogOAuthConnectionId) return;
+    let cancelled = false;
+    let checking = false;
+    const timer = window.setInterval(async () => {
+      if (checking || cancelled) return;
+      const popup = oauthPopupRef.current;
+      if (!popup || popup.closed) {
+        setDialogOAuthConnectionId(null);
+        setOAuthPhase("error");
+        setOAuthError("The sign-in window closed. Try again to finish connecting GitHub.");
+        return;
+      }
+      let returned: URL;
+      try { returned = new URL(popup.location.href); } catch { return; }
+      if (returned.origin !== window.location.origin || !returned.pathname.includes(dialogOAuthConnectionId)) return;
+      if (returned.searchParams.has("oauth")) {
+        setDialogOAuthConnectionId(null);
+        setOAuthPhase("error");
+        setOAuthError("Authorization did not complete. Finish setup in the sign-in window or try again.");
+        return;
+      }
+      if (returned.searchParams.get("success") !== "1") return;
+      checking = true;
+      try {
+        const connection = await toolsApi.getConnection(dialogOAuthConnectionId);
+        if (!cancelled && connection.status === "active") {
+          setDialogOAuthConnectionId(null);
+          popup.close();
+          onComplete?.({ connectionId: connection.id });
+        }
+      } catch {
+        if (!cancelled) {
+          setDialogOAuthConnectionId(null);
+          setOAuthPhase("error");
+          setOAuthError("Could not confirm the connection. Try again.");
+        }
+      } finally { checking = false; }
+    }, 1000);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, [connectionIntentId, dialogOAuthConnectionId, host, onComplete]);
 
   const resetGenericAuthState = () => {
     setLinkAuthMode("auto");
@@ -729,6 +867,16 @@ export function ConnectionSetupFlow({
       || candidate.oauthStrategy === "paperclip_id_connector"
     ),
   );
+  // Before a self-hosted instance enrolls, the server intentionally withholds
+  // platform-managed methods from the advertised gallery. The setup route still
+  // needs the managed method's identity model, labels, and defaults because the
+  // next step is enrollment for that exact method—not the visible PAT/BYO
+  // compatibility fallback.
+  const preEnrollmentManagedMethod = entry
+    && requestedDefinitionUsesManagedConnector
+    && !entryAdvertisesManagedConnector
+    ? recommendedManagedConnectorMethod(fullRequestedDefinition)
+    : null;
   const connectorEnrollmentQuery = useQuery({
     queryKey: ["cloud-connector", "enrollment"],
     queryFn: () => toolsApi.getCloudConnectorEnrollment(),
@@ -739,6 +887,14 @@ export function ConnectionSetupFlow({
     ),
   });
   const [connectorEnrollmentError, setConnectorEnrollmentError] = useState<string | null>(null);
+  const preserveEnrollmentAccess = useCallback(() => {
+    if (!selectedCompanyId || !requestedAppKey) return;
+    saveEnrollmentAccessState(selectedCompanyId, requestedAppKey, {
+      grantKind,
+      installChoice,
+      agentIds: installChoice === "specific" ? [...installAgentIds] : [],
+    });
+  }, [grantKind, installAgentIds, installChoice, requestedAppKey, selectedCompanyId]);
   const openConnectorEnrollment = useCallback((verificationUrl: string) => {
     const target = resolveAuthorizationTarget(verificationUrl);
     if (!target.ok) {
@@ -785,7 +941,7 @@ export function ConnectionSetupFlow({
     refetchOnMount: "always",
   });
   const existingOAuthConnection = useMemo(
-    () => reusableOAuthConnection(
+    () => forceNewConnection ? null : reusableOAuthConnection(
       directOAuthSource,
       applicationsQuery.data?.applications ?? [],
       connectionsQuery.data?.connections ?? [],
@@ -793,7 +949,7 @@ export function ConnectionSetupFlow({
         ? { applicationId: prefill.applicationId, draftOnly: true }
         : {},
     ),
-    [applicationsQuery.data, connectionsQuery.data, createNewConnection, directOAuthSource, prefill.applicationId],
+    [applicationsQuery.data, connectionsQuery.data, createNewConnection, directOAuthSource, prefill.applicationId, forceNewConnection],
   );
   const reconnectConnection = useMemo(
     () => reconnectConnectionId
@@ -853,7 +1009,12 @@ export function ConnectionSetupFlow({
     [entry, galleryQuery.data, linkUrl],
   );
 
-  const entryAutomaticOAuthMethod = automaticOAuthMethod(entry);
+  const selectedSetupMethod = entry ? getAvailableConnectionMethod(entry, connectionMethodKey || null) : null;
+  // Apps with an advanced PAT option still need OAuth progress and recovery
+  // screens when their selected method is managed sign-in.
+  const entryAutomaticOAuthMethod = selectedSetupMethod && connectionMethodSupportsAutomaticOAuth(selectedSetupMethod)
+    ? selectedSetupMethod
+    : automaticOAuthMethod(entry);
   const automaticOAuthEntry = credentialSource === "paperclip_vault" && entryAutomaticOAuthMethod ? entry : null;
   const directOAuthEntry = credentialSource === "paperclip_vault" && canUseAutomaticOAuthFastPath(entry) ? entry : null;
   const directOAuthLookupPending = Boolean(directOAuthSource) && (
@@ -902,8 +1063,9 @@ export function ConnectionSetupFlow({
   const startOAuth = useCallback((connection: ToolConnection) => {
     onPhaseChange?.("authorizing");
     reserveOAuthPopup();
+    if (host === "dialog" && !connectionIntentId) setDialogOAuthConnectionId(connection.id);
     mutateOAuthStart(connection);
-  }, [mutateOAuthStart, onPhaseChange, reserveOAuthPopup]);
+  }, [mutateOAuthStart, onPhaseChange, reserveOAuthPopup, host, connectionIntentId]);
 
   /**
    * Commit the Access step's agent reach for a connection. Shared by the
@@ -1106,7 +1268,28 @@ export function ConnectionSetupFlow({
       reconnectConnection,
       applications: applicationsQuery.data?.applications ?? [],
     });
+    const requestedEntryAdvertisesManagedConnector = Boolean(
+      requestedEntry?.methods.some((candidate) =>
+        candidate.oauthStrategy === "paperclip_cloud_connector"
+        || candidate.oauthStrategy === "paperclip_id_connector"
+      ),
+    );
+    // The enrollment lookup decides whether a hidden managed method means
+    // "enroll this instance" or "that Cloud profile is unavailable here".
+    // Preserve managed sign-in intent in both cases; the setup screen explains
+    // unavailable profiles rather than downgrading to a credential form.
+    if (
+      requestedDefinitionUsesManagedConnector
+      && !requestedEntryAdvertisesManagedConnector
+      && connectorEnrollmentQuery.isLoading
+    ) return;
     const methods = connectionMethodsForCredentialSource(requestedEntry, credentialSource);
+    const initialMethod = (
+      requestedDefinitionUsesManagedConnector
+        && !requestedEntryAdvertisesManagedConnector
+        ? recommendedManagedConnectorMethod(fullRequestedDefinition)
+        : null
+    ) ?? recommendedSetupConnectionMethod(methods);
     const method = methods.length === 1 ? methods[0]! : null;
     const automaticOAuth = credentialSource === "paperclip_vault" && Boolean(automaticOAuthMethod(requestedEntry));
     const vercelUnavailable = isVercelConnectUnavailable({
@@ -1158,19 +1341,35 @@ export function ConnectionSetupFlow({
       setCuratedOAuthClientId("");
       setCuratedOAuthClientSecret("");
       setVercelConnector("");
-      const initialMethod = recommendedSetupConnectionMethod(methods);
       setConnectionMethodKey(initialMethod?.key ?? "");
       setConfigValues(defaultMethodConfig(initialMethod));
       setGoogleSheetsLinks("");
       setGoogleSheetsError(null);
       setConnectResult(null);
-      setGrantKind(reconnectGrantKind ?? defaultGrantKindFor(initialMethod));
-      setInstallAgentIds(new Set(requestedAgentId ? [requestedAgentId] : []));
-      setInstallChoice(requestedAgentId ? "specific" : "all");
+      const matchingEnrollmentAccess = restoredEnrollmentAccess?.companyId === selectedCompanyId
+        ? restoredEnrollmentAccess
+        : null;
+      setGrantKind(reconnectGrantKind ?? matchingEnrollmentAccess?.grantKind ?? defaultGrantKindFor(initialMethod));
+      setInstallAgentIds(new Set(
+        matchingEnrollmentAccess?.agentIds ?? (requestedAgentId ? [requestedAgentId] : []),
+      ));
+      setInstallChoice(matchingEnrollmentAccess?.installChoice ?? (requestedAgentId ? "specific" : "all"));
       // Route/service selection initializes the wizard once. Later renders must
       // preserve the user's current step in both hosts instead of snapping back
       // to Access after they continue.
-      setStep(resumeConnectionId ? "key" : "access");
+      setStep(requestedConnectionInitialStep({
+        requestedAppKey,
+        routeStage,
+        resumeConnectionId,
+        hasPrefilledLink: Boolean(prefill.link),
+        zapierSource,
+      }));
+    } else if (entryAdvertisesManagedConnector !== requestedEntryAdvertisesManagedConnector) {
+      // A capability refresh must replace the stale gallery entry as well as
+      // its method, while preserving the chosen audience and wizard step.
+      setEntry(requestedEntry);
+      setConnectionMethodKey(initialMethod?.key ?? "");
+      setConfigValues(defaultMethodConfig(initialMethod));
     }
 
     if (automaticOAuth && (
@@ -1190,8 +1389,12 @@ export function ConnectionSetupFlow({
     applicationsQuery.data,
     connectionsQuery.isError,
     connectionsQuery.isFetchedAfterMount,
+    connectorEnrollmentQuery.data?.configured,
+    connectorEnrollmentQuery.isLoading,
+    connectionMethodKey,
     credentialSource,
     entry?.slug,
+    entryAdvertisesManagedConnector,
     galleryQuery.data,
     galleryQuery.isLoading,
     navigate,
@@ -1200,8 +1403,12 @@ export function ConnectionSetupFlow({
     reconnectConnectionId,
     reconnectSourceMatches,
     resumeConnectionId,
+    fullRequestedDefinition,
     requestedAppKey,
     requestedAgentId,
+    restoredEnrollmentAccess,
+    routeStage,
+    zapierSource,
   ]);
 
   // Resume the exact method and non-secret provider configuration that the
@@ -1531,6 +1738,14 @@ export function ConnectionSetupFlow({
     && (directOAuthEntry || oauthPhase !== "entry"),
   );
 
+  const managedConnectorUnavailable = Boolean(
+    step === "key"
+    && entry
+    && requestedDefinitionUsesManagedConnector
+    && !entryAdvertisesManagedConnector
+    && connectorEnrollmentQuery.data?.configured === true
+  );
+
   const showConnectorEnrollmentStep = Boolean(
     step === "key"
     && entry
@@ -1674,6 +1889,9 @@ export function ConnectionSetupFlow({
     entry?.name ??
     (linkName.trim() || defaultGenericMcpName(linkUrl) || "this app");
   const credentialSourceMethods = connectionMethodsForCredentialSource(entry, credentialSource);
+  const setupCredentialSourceMethods = preEnrollmentManagedMethod
+    ? [preEnrollmentManagedMethod]
+    : credentialSourceMethods;
   const credentialSourceApps = vercelConnectMode
     ? (galleryQuery.data?.apps ?? []).filter(
         (app) => connectionMethodsForCredentialSource(app, credentialSource).length > 0,
@@ -1684,9 +1902,9 @@ export function ConnectionSetupFlow({
     : null;
   const stepLabels = zapierSource
     ? ZAPIER_STEP_LABELS
-    : entry && credentialSourceMethods.length > 1
+    : entry && setupCredentialSourceMethods.length > 1
       ? ["Access", "Choose connection"]
-    : entry && credentialSourceMethods[0]?.auth === "oauth"
+    : entry && setupCredentialSourceMethods[0]?.auth === "oauth"
       ? ["Access", "Sign in"]
     : isGoogleSheetsRobotMethod(entry, connectionMethodKey)
       ? ["Access", "Share sheet"]
@@ -1697,8 +1915,8 @@ export function ConnectionSetupFlow({
   // credential, so it reads the selected method's auth kind.
   const accessStepMethod = entry
     ? (connectionMethodKey
-        ? credentialSourceMethods.find((m) => m.key === connectionMethodKey) ?? null
-        : credentialSourceMethods[0] ?? null)
+        ? setupCredentialSourceMethods.find((m) => m.key === connectionMethodKey) ?? null
+        : setupCredentialSourceMethods[0] ?? null)
     : null;
   const accessStepAuthKind: ToolConnectionAuthKind = entry
     ? accessStepMethod?.auth ?? "none"
@@ -1707,14 +1925,12 @@ export function ConnectionSetupFlow({
       : linkAuthMode === "oauth"
         ? "oauth"
         : "api_key";
-  // The primary label names the next effect, so an OAuth handoff never arrives
-  // unannounced.
-  const accessMethodIsKnown = !entry
-    || Boolean(connectionMethodKey)
-    || credentialSourceMethods.length === 1;
-  const accessSubmitLabel = accessStepAuthKind === "oauth" && accessMethodIsKnown
+  // Name the actual next effect: multi-method apps and enrollment still have
+  // a local setup screen, even when OAuth is already the selected method.
+  const accessContinuesToProvider = Boolean(directOAuthEntry);
+  const accessSubmitLabel = accessContinuesToProvider
     ? `Continue to ${entry?.name ?? "sign-in"}`
-    : "Save and continue";
+    : accessStepAuthKind === "oauth" ? "Continue" : "Save and continue";
 
   const stepIndex = (zapierSource || entry) && step !== "gallery" && step !== "success"
     ? SELECTED_APP_STEP_INDEX[step]
@@ -1779,44 +1995,64 @@ export function ConnectionSetupFlow({
         />
       )}
 
-      {step === "key" && entry && showConnectorEnrollmentStep ? (
-        <div className="mx-auto max-w-xl">
-          <div className="flex items-start gap-3">
-            <div className="rounded-lg bg-muted p-2 text-muted-foreground">
-              <Cloud className="h-5 w-5" />
-            </div>
-            <div className="min-w-0">
-              <h2 className="text-lg font-semibold text-foreground">
-                Connect with Paperclip
-              </h2>
-            </div>
-          </div>
-
-          {connectorEnrollmentQuery.isError || connectorEnrollmentError ? (
-            <InlineBanner tone="danger" className="mt-4">
-              {connectorEnrollmentError ?? "Paperclip couldn’t check Cloud registration. Try again."}
-            </InlineBanner>
-          ) : null}
-
+      {managedConnectorUnavailable && entry ? (
+        <div className="mx-auto max-w-xl rounded-xl border border-border bg-card p-6">
+          <h2 className="text-lg font-semibold text-foreground">{entry.name} sign-in is unavailable</h2>
+          <p className="mt-2 text-sm text-muted-foreground">
+            This instance is connected to Paperclip, but {entry.name} sign-in is not currently available. Try again shortly or contact your instance administrator.
+          </p>
           <div className="mt-6 flex items-center justify-between gap-3">
-            <Button type="button" variant="ghost" onClick={() => setAppStep("access")}>
-              Back
+            <Button type="button" variant="ghost" onClick={() => setAppStep("access")}>Back</Button>
+            <Button type="button" disabled={galleryQuery.isFetching} onClick={() => void galleryQuery.refetch()}>
+              {galleryQuery.isFetching ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+              Try again
             </Button>
-            <Button
-              type="button"
-              disabled={connectorEnrollmentQuery.isLoading || startConnectorEnrollment.isPending}
-              onClick={() => {
-                setConnectorEnrollmentError(null);
-                const verificationUrl = connectorEnrollmentQuery.data?.verificationUrl;
-                if (verificationUrl) openConnectorEnrollment(verificationUrl);
-                else startConnectorEnrollment.mutate();
-              }}
-            >
-              {startConnectorEnrollment.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
-              {connectorEnrollmentQuery.data?.status === "pending"
-                ? "Continue"
-                : "Connect with Paperclip"}
-            </Button>
+          </div>
+        </div>
+      ) : step === "key" && entry && showConnectorEnrollmentStep ? (
+        <div className="mx-auto max-w-xl">
+          <div className="rounded-xl border border-border bg-card p-6">
+            <div className="flex items-start gap-3">
+              <div className="rounded-lg bg-muted p-2 text-muted-foreground">
+                <Cloud className="h-5 w-5" />
+              </div>
+              <div className="min-w-0">
+                <h2 className="text-lg font-semibold text-foreground">
+                  Connect with Paperclip
+                </h2>
+                <p className="mt-2 text-sm text-muted-foreground">
+                  You must connect this instance to Paperclip to connect to {entry.name} (you only need to do this once).
+                </p>
+              </div>
+            </div>
+
+            {connectorEnrollmentQuery.isError || connectorEnrollmentError ? (
+              <InlineBanner tone="danger" className="mt-4">
+                {connectorEnrollmentError ?? "Paperclip couldn’t check Cloud registration. Try again."}
+              </InlineBanner>
+            ) : null}
+
+            <div className="mt-6 flex items-center justify-between gap-3">
+              <Button type="button" variant="ghost" onClick={() => setAppStep("access")}>
+                Back
+              </Button>
+              <Button
+                type="button"
+                disabled={connectorEnrollmentQuery.isLoading || startConnectorEnrollment.isPending}
+                onClick={() => {
+                  setConnectorEnrollmentError(null);
+                  preserveEnrollmentAccess();
+                  // Let the server reuse a live enrollment or replace an expired
+                  // one. A cached verification URL may expire while this page is open.
+                  startConnectorEnrollment.mutate();
+                }}
+              >
+                {startConnectorEnrollment.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+                {connectorEnrollmentQuery.data?.status === "pending"
+                  ? "Continue"
+                  : "Connect with Paperclip"}
+              </Button>
+            </div>
           </div>
         </div>
       ) : step === "key" && entry ? (
@@ -1965,6 +2201,7 @@ export function ConnectionSetupFlow({
           capabilities={galleryQuery.data?.capabilities}
           githubIdentity={entry?.slug === "github"}
           submitLabel={accessSubmitLabel}
+          continuesToProvider={accessContinuesToProvider}
           identityLoading={Boolean(automaticOAuthEntry) && directOAuthLookupPending}
           preserveAgentAccess={Boolean(automaticOAuthEntry && (resumableOAuthConnection || reconnectConnection))}
           pending={connectMutation.isPending || oauthStartMutation.isPending}
@@ -3236,7 +3473,9 @@ function KeyStep({
             ? "Checking…"
             : usingVercel
               ? method?.auth === "oauth" ? "Validate and continue" : "Validate and connect"
-              : method?.auth === "oauth" ? "Continue to sign in" : "Connect"}
+              : method?.auth === "oauth"
+                ? entry.slug === "github" ? "Continue to GitHub" : "Continue to sign in"
+                : "Connect"}
         </Button>
       </div>
     </div>
@@ -3412,6 +3651,7 @@ export function AccessStep({
   capabilities,
   githubIdentity = false,
   submitLabel,
+  continuesToProvider = false,
   identityLoading = false,
   preserveAgentAccess = false,
   pending = false,
@@ -3436,6 +3676,8 @@ export function AccessStep({
   } | null;
   githubIdentity?: boolean;
   submitLabel: string;
+  /** Only show an external-handoff cue when this action starts provider OAuth. */
+  continuesToProvider?: boolean;
   /** Wait for a durable OAuth connection before showing a reconnect identity. */
   identityLoading?: boolean;
   /** Reconnect changes credentials only; existing install reach stays intact. */
@@ -3449,7 +3691,7 @@ export function AccessStep({
     queryFn: () => agentsApi.list(companyId),
   });
   const allAgents: Agent[] = (agentsQuery.data ?? []).filter((a) => a.status !== "terminated");
-  // "Just agents I pick" means agents this person may actually edit. When the server
+  // "Only agents I choose" / "Just agents I pick" means agents this person may actually edit. When the server
   // has not told us, fall back to every live agent rather than an empty list —
   // an empty picker would read as "you have no agents".
   const editableAgentIds = capabilities?.editableAgentIds;
@@ -3479,13 +3721,25 @@ export function AccessStep({
   const lockedAgentName = lockedAgentId
     ? allAgents.find((agent) => agent.id === lockedAgentId)?.name ?? "the requesting agent"
     : null;
+  const identityHeading = githubIdentity ? "Connect GitHub as" : "Which humans can use this credential?";
+  const agentAccessHeading = grantKind === "agent"
+    ? "Which agent owns this GitHub account?"
+    : githubIdentity && grantKind === "user"
+      ? "Which agents may use your GitHub when you’re responsible?"
+      : githubIdentity
+        ? "Which agents may use the shared GitHub account?"
+        : "Which agents can use this connection?";
+  const agentAccessLabel = githubIdentity ? agentAccessHeading : "Which agents can use this connection?";
 
   return (
     <div className="mx-auto max-w-2xl">
       <div className="overflow-hidden rounded-xl border border-border">
         <div className="divide-y divide-border">
           <section className="p-6">
-            <h2 className="text-sm font-semibold text-foreground">{githubIdentity ? "Which GitHub identity should this use?" : "Which humans can use this credential?"}</h2>
+            <h2 className="text-sm font-semibold text-foreground">{identityHeading}</h2>
+            {githubIdentity && grantKind === "agent" ? (
+              <p className="mt-2 text-sm text-muted-foreground">This agent uses this GitHub account for everyone’s work, instead of the person giving instructions.</p>
+            ) : null}
             {identityLoading ? (
               <div className="mt-4 grid gap-2 sm:grid-cols-2" aria-label="Loading connection identity">
                 <Skeleton className="h-20 w-full rounded-md" />
@@ -3500,17 +3754,28 @@ export function AccessStep({
                 ) : (
                   <UsersRound className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden="true" />
                 )}
-                <div className="text-sm font-medium text-foreground">
-                  {allowedGrantKinds[0] === "user"
-                    ? githubIdentity ? "My GitHub account" : "Just me"
-                    : allowedGrantKinds[0] === "agent"
-                      ? "A dedicated account for an agent"
-                      : "Any human in the company"}
+                <div>
+                  <div className="text-sm font-medium text-foreground">
+                    {allowedGrantKinds[0] === "user"
+                      ? githubIdentity ? "My GitHub account" : "Just me"
+                      : allowedGrantKinds[0] === "agent"
+                        ? "A dedicated account for an agent"
+                        : githubIdentity ? "Shared company GitHub account (advanced)" : "Any human in the company"}
+                  </div>
+                  {githubIdentity ? (
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      {allowedGrantKinds[0] === "user"
+                        ? "Agents use it only for runs where you are the responsible person."
+                        : allowedGrantKinds[0] === "agent"
+                          ? "That agent always uses this account, regardless of who starts the run."
+                          : "Eligible agents use one shared credential, regardless of who starts the run."}
+                    </p>
+                  ) : null}
                 </div>
               </div>
             ) : needsIdentityChoice ? (
               <RadioCardGroup
-                ariaLabel="Which humans can use this credential?"
+                ariaLabel={githubIdentity ? identityHeading : "Which humans can use this credential?"}
                 className="mt-4 sm:grid-cols-2"
                 value={grantKind}
                 onValueChange={(next) => {
@@ -3525,20 +3790,29 @@ export function AccessStep({
                   {
                     value: "user",
                     title: githubIdentity ? "My GitHub account" : "Just me",
+                    description: githubIdentity
+                      ? "Agents use it only for runs where you are the responsible person."
+                      : undefined,
                     icon: <UserRound className="h-4 w-4" aria-hidden="true" />,
                   },
                   {
                     value: "agent",
                     title: "A dedicated account for an agent",
+                    description: githubIdentity
+                      ? "That agent always uses this account, regardless of who starts the run."
+                      : undefined,
                     icon: <Bot className="h-4 w-4" aria-hidden="true" />,
                   },
                   {
                     value: "organization",
-                    title: "Any human in the company",
+                    title: githubIdentity ? "Shared company GitHub account (advanced)" : "Any human in the company",
+                    description: githubIdentity
+                      ? "Eligible agents use one shared credential, regardless of who starts the run."
+                      : undefined,
                     icon: <UsersRound className="h-4 w-4" aria-hidden="true" />,
                     accessibleLabel: canCreateOrganizationGrant
-                      ? "Any human in the company"
-                      : `Any human in the company. Unavailable: ${capabilities?.organizationGrantReason ??
+                      ? githubIdentity ? "Shared company GitHub account (advanced)" : "Any human in the company"
+                      : `${githubIdentity ? "Shared company GitHub account (advanced)" : "Any human in the company"}. Unavailable: ${capabilities?.organizationGrantReason ??
                         "Only a connection manager can share this credential with the organization."}`,
                     tooltip: canCreateOrganizationGrant
                       ? undefined
@@ -3556,7 +3830,7 @@ export function AccessStep({
           </section>
 
           <section className="p-6">
-            <h2 className="text-sm font-semibold text-foreground">{grantKind === "agent" ? "Which agent owns this GitHub account?" : "Which agents can use this connection?"}</h2>
+            <h2 className="text-sm font-semibold text-foreground">{agentAccessHeading}</h2>
             {preserveAgentAccess ? (
               <div className="mt-4 flex items-start gap-3 rounded-md border border-border bg-muted/40 p-4">
                 <UsersRound className="mt-0.5 h-4 w-4 shrink-0 text-primary" aria-hidden="true" />
@@ -3576,19 +3850,29 @@ export function AccessStep({
               grantKind === "agent" ? (
                 <p className="mt-2 text-sm text-muted-foreground">Choose exactly one agent. This identity cannot be shared with other agents.</p>
               ) : <RadioCardGroup
-                ariaLabel="Which agents can use this connection?"
+                ariaLabel={agentAccessLabel}
                 className="mt-4 sm:grid-cols-2"
                 value={installChoice}
                 onValueChange={(next) => setInstallChoice(next as "specific" | "all")}
                 options={[
                   {
                     value: "specific",
-                    title: "Just agents I pick",
+                    title: githubIdentity ? "Only agents I choose" : "Just agents I pick",
+                    description: githubIdentity
+                      ? grantKind === "user"
+                        ? "Only selected agents may use your GitHub when you’re responsible."
+                        : "Only selected agents may use the shared account."
+                      : undefined,
                     icon: <Bot className="h-4 w-4" aria-hidden="true" />,
                   },
                   {
                     value: "all",
                     title: "Any agent",
+                    description: githubIdentity
+                      ? grantKind === "user"
+                        ? "Every agent may use your GitHub when you’re responsible."
+                        : "Every agent may use the shared account."
+                      : undefined,
                     icon: <BotGroupIcon />,
                     accessibleLabel: canSetCompanyInstall
                       ? "Any agent"
@@ -3634,7 +3918,7 @@ export function AccessStep({
         >
           {pending ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : null}
           {submitLabel}
-          {!pending && authKind === "oauth" ? <ArrowUpRight className="h-4 w-4" aria-hidden="true" /> : null}
+          {!pending && continuesToProvider ? <ArrowUpRight className="h-4 w-4" aria-hidden="true" /> : null}
         </Button>
       </div>
     </div>

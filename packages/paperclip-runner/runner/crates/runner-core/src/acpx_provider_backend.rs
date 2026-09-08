@@ -147,7 +147,7 @@ impl AcpxProviderDescriptor {
                 "@agentclientprotocol/claude-agent-acp",
                 "0.70.0",
                 Some("@anthropic-ai/claude-agent-sdk"),
-                Some("0.3.232"),
+                Some("0.3.263"),
                 "sha256:9d73d1f0f121fb96cc8badb28c22d5bff02d8582eb2e40360a81c189e1b9422a",
             ),
             "codex" => (
@@ -155,7 +155,7 @@ impl AcpxProviderDescriptor {
                 "@agentclientprotocol/codex-acp",
                 "1.6.2",
                 Some("@openai/codex"),
-                Some("0.148.0"),
+                Some("0.153.4"),
                 "sha256:91d61bdfcb3c2830a5af690b13e355c669a483b562ce2f5d82d3e53b2378bb00",
             ),
             "pi" => return Err(DurableRunnerError::invalid(
@@ -1508,6 +1508,13 @@ impl CommandExecutor for AcpxCommandExecutor {
         }
     }
 
+    fn rotate_authority(&mut self, config: &DurableRunnerConfig) {
+        self.context.run_id = config.run_id.clone();
+        self.context.normalized_session_id = config.normalized_session_id.clone();
+        self.context.turn_id = config.turn_id.clone();
+        self.context.item_id = config.item_id.clone();
+    }
+
     fn poll_events(&mut self) -> Result<Vec<PolledEvent>, DurableRunnerError> {
         self.restore()?;
         if self
@@ -1757,7 +1764,7 @@ mod tests {
                     "@agentclientprotocol/claude-agent-acp",
                     "0.70.0",
                     json!("@anthropic-ai/claude-agent-sdk"),
-                    json!("0.3.232"),
+                    json!("0.3.263"),
                     "sha256:9d73d1f0f121fb96cc8badb28c22d5bff02d8582eb2e40360a81c189e1b9422a",
                 )
             } else {
@@ -1766,7 +1773,7 @@ mod tests {
                     "@agentclientprotocol/codex-acp",
                     "1.6.2",
                     json!("@openai/codex"),
-                    json!("0.148.0"),
+                    json!("0.153.4"),
                     "sha256:91d61bdfcb3c2830a5af690b13e355c669a483b562ce2f5d82d3e53b2378bb00",
                 )
             };

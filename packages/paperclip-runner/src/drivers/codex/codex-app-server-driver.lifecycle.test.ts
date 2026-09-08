@@ -92,7 +92,49 @@ class BlockingBootstrapTransport extends FakeCodexTransport {
   }
 }
 
+class WarmAttachTransport extends FakeCodexTransport {
+  readonly attachments: Array<{
+    runId: string;
+    turnId: string;
+    itemId: string;
+  }> = [];
+
+  async attachRun(input: {
+    runId: string;
+    turnId: string;
+    itemId: string;
+  }): Promise<void> {
+    this.attachments.push(structuredClone(input));
+  }
+}
+
 describe("Codex app-server Codex driver", () => {
+  it("accepts runner-proven warm attachment when the host active-turn reducer is stale", async () => {
+    const transport = new WarmAttachTransport();
+    const driver = makeDriver([transport]);
+    const session = await driver.openSession({
+      runId: "run-warm-first",
+      normalizedSessionId: "normalized-warm",
+      workingDirectory: WORKSPACE,
+    });
+
+    await session.startTurn({
+      message: { role: "user", text: "first turn" },
+    });
+    await expect(
+      session.attachRun?.({ runId: "run-warm-second" }),
+    ).resolves.toBeUndefined();
+    expect(transport.attachments).toHaveLength(1);
+    expect((await session.snapshot()).activeTurnId).toBeNull();
+
+    await expect(
+      session.startTurn({
+        message: { role: "user", text: "second turn" },
+      }),
+    ).resolves.toMatchObject({ turnId: "turn-1" });
+    await session.close({ reason: "test complete" });
+  });
+
   it("does not create a transport for a pre-aborted session open", async () => {
     const transportFactory = vi.fn(() => new FakeCodexTransport());
     const driver = makeDriver([], { transportFactory });

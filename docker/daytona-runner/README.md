@@ -2,7 +2,7 @@
 
 This image is the Paperclip Cloud fleet sandbox image plus a source-built
 `paperclip-runnerd` and immutable provider pack. The pack contains Node 24.11,
-OpenCode 1.18.17, the compiled OpenCode proxy, ACPX 0.13.1 sidecar, qualified ACP
+OpenCode 1.18.29, the compiled OpenCode proxy, ACPX 0.13.1 sidecar, qualified ACP
 agents, and the production lockfile. Its manifest digests each executable bridge
 and binds the pack to the runner source revision, avoiding artifact upload and
 npm installation on every fresh lease.
@@ -67,3 +67,13 @@ full Git SHA as `PAPERCLIP_RUNNER_SOURCE_REVISION`.
 
 Do not bake provider credentials, Paperclip bootstrap tickets, or Daytona
 preview tokens into this image. They remain per-run secret material.
+
+Provider CLI updates are manifest-only changes: repository CI owns the root
+lockfile. The image build resolves the complete workspace manifest graph before
+its frozen install, matching CI when a source commit precedes the lockfile bot.
+The complete resolved lockfile must match `PAPERCLIP_RUNNER_LOCK_SHA256` before
+package installation or lifecycle execution. Review and refresh that digest
+with source dependency changes; registry-time resolution drift fails closed.
+Keep one latest stable CLI installation per provider; refresh exact runtime
+versions and qualification digests together, never install a private older copy
+or download dependencies when a task starts.

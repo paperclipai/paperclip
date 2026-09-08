@@ -7130,4 +7130,26 @@ describeEmbeddedPostgres("issueService.addComment createdByRunId", () => {
 
     expect(await createdByRunIdFor(comment.id)).toBe(runId);
   });
+
+  it("deduplicates concurrent identical comments from the same run", async () => {
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      status: "running",
+    });
+
+    const [first, second] = await Promise.all([
+      svc.addComment(issueId, "one durable result", { agentId, runId }),
+      svc.addComment(issueId, "one durable result", { agentId, runId }),
+    ]);
+
+    expect(second.id).toBe(first.id);
+    const duplicates = await db
+      .select({ id: issueComments.id })
+      .from(issueComments)
+      .where(eq(issueComments.createdByRunId, runId));
+    expect(duplicates).toHaveLength(1);
+  });
 });

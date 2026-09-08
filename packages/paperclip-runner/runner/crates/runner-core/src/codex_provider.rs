@@ -24,10 +24,13 @@ use crate::qualified_launch::verify_launch_artifact;
 use crate::question_response::validate_question_response;
 
 pub const CODEX_APP_SERVER_MAX_FRAME_BYTES: usize = 4 * 1024 * 1024;
-const QUALIFIED_OPENCODE_VERSION: &str = "1.18.17";
+const QUALIFIED_OPENCODE_VERSION: &str = "1.18.29";
 const DEFAULT_PROVIDER_TRACE_MAX_BYTES: usize = 64 * 1024 * 1024;
 const MAX_BUFFERED_MESSAGES: usize = 1_024;
 const MAX_BUFFERED_MESSAGE_BYTES: usize = 16 * 1024 * 1024;
+const WARM_ATTACHMENT_TAIL_DRAIN_LIMIT: usize = 256;
+const WARM_ATTACHMENT_QUIET_WINDOW: Duration = Duration::from_millis(10);
+const WARM_ATTACHMENT_DRAIN_DEADLINE: Duration = Duration::from_millis(100);
 const OPENCODE_PROVIDER_ENVIRONMENT_KEYS: &[&str] = &[
     "OPENROUTER_API_KEY",
     "PAPERCLIP_NATIVE_MCP_NAME",
@@ -54,7 +57,7 @@ pub(crate) const MAX_SETTLED_PROVIDER_TURN_IDS: usize = 4_096;
 type QuestionOptionLabels = BTreeMap<String, BTreeMap<String, String>>;
 type QuestionSetMapping = (String, Value, QuestionOptionLabels);
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 struct ProviderCompletionContract {
     revision: String,
     criterion_ids: Vec<String>,
@@ -282,6 +285,8 @@ pub struct CodexProviderConfig {
     pub instructions: String,
     #[serde(default = "default_approval_policy")]
     pub approval_policy: String,
+    #[serde(default)]
+    pub externally_sandboxed: bool,
 }
 
 impl CodexProviderConfig {
@@ -303,6 +308,11 @@ impl CodexProviderConfig {
             return Err(LocalRunnerError::invalid(format!(
                 "OpenCode providerVersion must equal the qualified {QUALIFIED_OPENCODE_VERSION} release",
             )));
+        }
+        if self.externally_sandboxed && self.provider != "codex" {
+            return Err(LocalRunnerError::invalid(
+                "external sandbox delegation is only supported by the Codex provider",
+            ));
         }
         if self.command.as_os_str().is_empty() {
             return Err(LocalRunnerError::invalid("Codex command is required"));
@@ -522,6 +532,7 @@ pub struct CodexProvider {
     expected_shutdown: bool,
     process_generation: u64,
     completed_turn_authority: Option<CompletedTurnAuthority>,
+    active_turn_result_authoritative: bool,
     completion_reconciliation_pending: bool,
     goal_allows_autonomous_turns: bool,
     ambiguous_turn_start_pending: bool,
@@ -532,6 +543,119 @@ pub struct CodexProvider {
     last_trace_frame_id: Option<u64>,
     opencode_launch_profile: Option<OpenCodeLaunchProfile>,
     completion_contract: Option<ProviderCompletionContract>,
+    permission_profile: &'static str,
+}
+
+// The controller accepts at most 32 process-scoped Git config entries and
+// projects only these exact GitHub credential names into runnerd. Keep the
+// provider child boundary equally explicit: runnerd may inherit a configured
+// entry from this static ceiling, but cannot introduce another environment
+// variable by changing GIT_CONFIG_COUNT.
+const GITHUB_CREDENTIAL_ENVIRONMENT_KEYS: &[&str] = &[
+    "ZDOTDIR",
+    "BASH_ENV",
+    "PAPERCLIP_GITHUB_BROKER_URL",
+    "PAPERCLIP_GITHUB_BROKER_TOKEN",
+    "PAPERCLIP_GITHUB_LAUNCHER_DIR",
+    "GH_CONFIG_DIR",
+    "GH_ENTERPRISE_TOKEN",
+    "GITHUB_ENTERPRISE_TOKEN",
+    "GIT_CONFIG_GLOBAL",
+    "GIT_CONFIG_SYSTEM",
+    "GIT_CONFIG_NOSYSTEM",
+    "GIT_ASKPASS",
+    "SSH_ASKPASS",
+    "SSH_AUTH_SOCK",
+    "GIT_SSH_COMMAND",
+    "PAPERCLIP_GITHUB_BRIDGE_TOKEN",
+    "GH_TOKEN",
+    "GITHUB_TOKEN",
+    "PAPERCLIP_GIT_TOKEN",
+    "GIT_TERMINAL_PROMPT",
+    "GIT_CONFIG_COUNT",
+    "GIT_AUTHOR_NAME",
+    "GIT_AUTHOR_EMAIL",
+    "GIT_COMMITTER_NAME",
+    "GIT_COMMITTER_EMAIL",
+    "GIT_CONFIG_KEY_0",
+    "GIT_CONFIG_VALUE_0",
+    "GIT_CONFIG_KEY_1",
+    "GIT_CONFIG_VALUE_1",
+    "GIT_CONFIG_KEY_2",
+    "GIT_CONFIG_VALUE_2",
+    "GIT_CONFIG_KEY_3",
+    "GIT_CONFIG_VALUE_3",
+    "GIT_CONFIG_KEY_4",
+    "GIT_CONFIG_VALUE_4",
+    "GIT_CONFIG_KEY_5",
+    "GIT_CONFIG_VALUE_5",
+    "GIT_CONFIG_KEY_6",
+    "GIT_CONFIG_VALUE_6",
+    "GIT_CONFIG_KEY_7",
+    "GIT_CONFIG_VALUE_7",
+    "GIT_CONFIG_KEY_8",
+    "GIT_CONFIG_VALUE_8",
+    "GIT_CONFIG_KEY_9",
+    "GIT_CONFIG_VALUE_9",
+    "GIT_CONFIG_KEY_10",
+    "GIT_CONFIG_VALUE_10",
+    "GIT_CONFIG_KEY_11",
+    "GIT_CONFIG_VALUE_11",
+    "GIT_CONFIG_KEY_12",
+    "GIT_CONFIG_VALUE_12",
+    "GIT_CONFIG_KEY_13",
+    "GIT_CONFIG_VALUE_13",
+    "GIT_CONFIG_KEY_14",
+    "GIT_CONFIG_VALUE_14",
+    "GIT_CONFIG_KEY_15",
+    "GIT_CONFIG_VALUE_15",
+    "GIT_CONFIG_KEY_16",
+    "GIT_CONFIG_VALUE_16",
+    "GIT_CONFIG_KEY_17",
+    "GIT_CONFIG_VALUE_17",
+    "GIT_CONFIG_KEY_18",
+    "GIT_CONFIG_VALUE_18",
+    "GIT_CONFIG_KEY_19",
+    "GIT_CONFIG_VALUE_19",
+    "GIT_CONFIG_KEY_20",
+    "GIT_CONFIG_VALUE_20",
+    "GIT_CONFIG_KEY_21",
+    "GIT_CONFIG_VALUE_21",
+    "GIT_CONFIG_KEY_22",
+    "GIT_CONFIG_VALUE_22",
+    "GIT_CONFIG_KEY_23",
+    "GIT_CONFIG_VALUE_23",
+    "GIT_CONFIG_KEY_24",
+    "GIT_CONFIG_VALUE_24",
+    "GIT_CONFIG_KEY_25",
+    "GIT_CONFIG_VALUE_25",
+    "GIT_CONFIG_KEY_26",
+    "GIT_CONFIG_VALUE_26",
+    "GIT_CONFIG_KEY_27",
+    "GIT_CONFIG_VALUE_27",
+    "GIT_CONFIG_KEY_28",
+    "GIT_CONFIG_VALUE_28",
+    "GIT_CONFIG_KEY_29",
+    "GIT_CONFIG_VALUE_29",
+    "GIT_CONFIG_KEY_30",
+    "GIT_CONFIG_VALUE_30",
+    "GIT_CONFIG_KEY_31",
+    "GIT_CONFIG_VALUE_31",
+];
+
+const CODEX_PROVIDER_ENVIRONMENT_KEYS: &[&str] = &[
+    "CODEX_HOME",
+    "OPENAI_API_KEY",
+    "CODEX_API_KEY",
+    "PAPERCLIP_RUNNER_EXTERNAL_SANDBOX",
+];
+
+fn codex_permission_profile(provider: &str, external_sandbox: bool) -> &'static str {
+    if provider == "codex" && external_sandbox {
+        "paperclip-runner-external-sandbox"
+    } else {
+        "paperclip-runner-workspace-only"
+    }
 }
 
 impl CodexProvider {
@@ -579,6 +703,11 @@ impl CodexProvider {
             ));
         }
         let authorized_tools = authorized_tools.into_iter().collect::<Vec<_>>();
+        let permission_profile = codex_permission_profile(
+            &config.provider,
+            config.externally_sandboxed
+                || std::env::var("PAPERCLIP_RUNNER_EXTERNAL_SANDBOX").as_deref() == Ok("1"),
+        );
         let (dynamic_tools, authorized_tool_ids) =
             codex_dynamic_tools(authorized_tools.iter().cloned())?;
         let common_environment_keys = [
@@ -599,12 +728,13 @@ impl CodexProvider {
         let provider_environment_keys = if config.provider == "opencode" {
             OPENCODE_PROVIDER_ENVIRONMENT_KEYS
         } else {
-            &["CODEX_HOME", "OPENAI_API_KEY", "CODEX_API_KEY"][..]
+            CODEX_PROVIDER_ENVIRONMENT_KEYS
         };
         let environment_keys = common_environment_keys
             .iter()
             .copied()
             .chain(provider_environment_keys.iter().copied())
+            .chain(GITHUB_CREDENTIAL_ENVIRONMENT_KEYS.iter().copied())
             .collect::<Vec<_>>();
         let process = if config.provider == "opencode" {
             let profile = opencode_launch_profile.ok_or_else(|| {
@@ -663,6 +793,7 @@ impl CodexProvider {
             expected_shutdown: false,
             process_generation,
             completed_turn_authority: None,
+            active_turn_result_authoritative: false,
             completion_reconciliation_pending: false,
             goal_allows_autonomous_turns: false,
             ambiguous_turn_start_pending: false,
@@ -678,6 +809,7 @@ impl CodexProvider {
                     criterion_ids: criterion_ids.to_vec(),
                 }
             }),
+            permission_profile,
         };
         let initialized = provider.request(
             "initialize",
@@ -699,7 +831,6 @@ impl CodexProvider {
             "cwd": config.cwd,
             "model": config.model,
             "approvalPolicy": config.approval_policy,
-            "permissions": "paperclip-runner-workspace-only",
             "runtimeWorkspaceRoots": [config.cwd],
             "baseInstructions": config.instructions,
             "dynamicTools": dynamic_tools,
@@ -707,6 +838,14 @@ impl CodexProvider {
         let params_object = params
             .as_object_mut()
             .expect("Codex thread parameters are an object");
+        if provider.permission_profile == "paperclip-runner-external-sandbox" {
+            // The execution target (for example Daytona) is the OS sandbox.
+            // Codex must not try to create nested user/network namespaces,
+            // which correctly fail inside an unprivileged container.
+            params_object.insert("sandbox".to_owned(), json!("danger-full-access"));
+        } else {
+            params_object.insert("permissions".to_owned(), json!(provider.permission_profile));
+        }
         if config.provider == "opencode" {
             if let Some(contract) = provider.completion_contract.as_ref() {
                 params_object.insert(
@@ -809,6 +948,181 @@ impl CodexProvider {
         self.durable_tool_call_replays = true;
     }
 
+    pub(crate) fn attach_run_in_place(
+        &mut self,
+        authorized_tools: impl IntoIterator<Item = AuthorizedTool>,
+        completion_contract: Option<(&str, &[String])>,
+    ) -> Result<bool, LocalRunnerError> {
+        let authorized_tools = authorized_tools.into_iter().collect::<Vec<_>>();
+        let completion_contract =
+            completion_contract.map(|(revision, criterion_ids)| ProviderCompletionContract {
+                revision: revision.to_owned(),
+                criterion_ids: criterion_ids.to_vec(),
+            });
+        if authorized_tools != self.authorized_tools
+            || completion_contract != self.completion_contract
+        {
+            return Ok(false);
+        }
+        let blockers = self.warm_run_attachment_blockers(true)?;
+        if !blockers.is_empty() {
+            return Err(LocalRunnerError::invalid(
+                format!(
+                    "Codex warm run attachment requires an idle live provider with no pending work ({})",
+                    blockers.join(",")
+                ),
+            ));
+        }
+        // The provider process and its thread remain authoritative. Exact
+        // settled-turn identities stay in memory so delayed output from an
+        // earlier run cannot be accepted as the next turn. A changed semantic
+        // tool or completion contract returns false so the caller can preserve
+        // the existing cold-resume behavior for that incompatible boundary.
+        self.completed_turn_authority = None;
+        self.active_turn_result_authoritative = false;
+        self.completion_reconciliation_pending = false;
+        self.expected_shutdown = false;
+        Ok(true)
+    }
+
+    fn drain_completed_turn_tail_for_warm_attachment(&mut self) -> Result<(), LocalRunnerError> {
+        let Some(completed_turn_id) = self
+            .completed_turn_authority
+            .as_ref()
+            .map(|authority| authority.provider_turn_id.clone())
+        else {
+            return Ok(());
+        };
+        if self.active_provider_turn_id.is_some() {
+            return Ok(());
+        }
+
+        // Readiness probes run over the PRP command channel while provider
+        // stdout is drained by runnerd's adjacent control-loop iteration. A
+        // final usage/warning/item frame can therefore land after the last
+        // successful probe but before run.attach executes. Close that race in
+        // the same critical section as authority rotation. Only bounded tail
+        // notifications for the already-settled turn may be discarded: a new
+        // turn, provider request, process exit, or mismatched turn remains a
+        // fail-closed attachment error.
+        let deadline = std::time::Instant::now() + WARM_ATTACHMENT_DRAIN_DEADLINE;
+        let mut quiet_since: Option<std::time::Instant> = None;
+        let mut drained = 0usize;
+        loop {
+            if std::time::Instant::now() >= deadline {
+                return Err(LocalRunnerError::invalid(
+                    "Codex warm run attachment tail did not become quiescent",
+                ));
+            }
+            match self.poll()? {
+                Some(CodexProviderEvent::Notification { method, params }) => {
+                    quiet_since = None;
+                    drained = drained.saturating_add(1);
+                    if drained > WARM_ATTACHMENT_TAIL_DRAIN_LIMIT {
+                        return Err(LocalRunnerError::invalid(
+                            "Codex warm run attachment tail exceeded its bounded frame limit",
+                        ));
+                    }
+                    let names_other_turn = notification_turn_id(&params)
+                        .is_some_and(|turn_id| turn_id != completed_turn_id);
+                    let safe_tail_method = matches!(
+                        method.as_str(),
+                        "warning"
+                            | "configWarning"
+                            | "remoteControl/status/changed"
+                            | "mcpServer/startupStatus/updated"
+                            | "account/rateLimits/updated"
+                            | "item/started"
+                            | "item/completed"
+                            | "item/agentMessage/delta"
+                            | "rawResponseItem/completed"
+                            | "rawResponse/completed"
+                            | "thread/goal/updated"
+                            | "thread/goal/cleared"
+                            | "thread/tokenUsage/updated"
+                            | "thread/status/changed"
+                            | "turn/diff/updated"
+                            | "turn/plan/updated"
+                    );
+                    if names_other_turn || !safe_tail_method {
+                        return Err(LocalRunnerError::invalid(format!(
+                            "Codex warm run attachment observed unsafe post-terminal provider method {}",
+                            bounded_method(&method)
+                        )));
+                    }
+                    if let Some(frame_id) = self.take_provider_trace_frame_id() {
+                        self.record_provider_trace_interpretation(
+                            frame_id,
+                            "codex.warm_attachment.completed_turn_tail",
+                            "ignored",
+                            Vec::new(),
+                            "Provider emitted a bounded tail notification after the prior turn terminal and before run attachment",
+                        );
+                    }
+                }
+                Some(CodexProviderEvent::ToolCall { .. })
+                | Some(CodexProviderEvent::RuntimeRequest { .. }) => {
+                    return Err(LocalRunnerError::invalid(
+                        "Codex warm run attachment observed a post-terminal provider request",
+                    ));
+                }
+                Some(CodexProviderEvent::Exited { .. }) => {
+                    return Err(LocalRunnerError::invalid(
+                        "Codex exited while quiescing for warm run attachment",
+                    ));
+                }
+                None => {
+                    let now = std::time::Instant::now();
+                    let quiet_start = quiet_since.get_or_insert(now);
+                    if now.duration_since(*quiet_start) >= WARM_ATTACHMENT_QUIET_WINDOW {
+                        return Ok(());
+                    }
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+            }
+        }
+    }
+
+    pub(crate) fn warm_run_attachment_blockers(
+        &mut self,
+        quiesce_completed_tail: bool,
+    ) -> Result<Vec<&'static str>, LocalRunnerError> {
+        // Only an explicit attachment-readiness probe may consume the bounded,
+        // already-settled provider suffix. Ordinary checkpoint snapshots run
+        // immediately after a terminal frame while the provider can still be
+        // unwinding; turning those observations into quiescence barriers can
+        // quarantine an otherwise reusable runner before its next turn.
+        if quiesce_completed_tail {
+            self.drain_completed_turn_tail_for_warm_attachment()?;
+        }
+        let mut blockers = Vec::new();
+        if self.process.try_wait()?.is_some() {
+            blockers.push("process_exited");
+        }
+        if self.quarantined {
+            blockers.push("quarantined");
+        }
+        if self.active_provider_turn_id.is_some() {
+            blockers.push("active_turn");
+        }
+        if self.ambiguous_turn_start_pending {
+            blockers.push("ambiguous_turn_start");
+        }
+        if !self.pending_messages.is_empty() {
+            blockers.push("pending_messages");
+        }
+        if !self.deferred_ambiguous_messages.is_empty() {
+            blockers.push("deferred_messages");
+        }
+        if !self.pending_tool_requests.is_empty() {
+            blockers.push("pending_tool_requests");
+        }
+        if !self.pending_runtime_requests.is_empty() {
+            blockers.push("pending_runtime_requests");
+        }
+        Ok(blockers)
+    }
+
     pub(crate) fn restore_completed_turn_authority(
         &mut self,
         authoritative: bool,
@@ -823,6 +1137,7 @@ impl CodexProvider {
                 .unwrap_or("durable-completed-turn")
                 .to_owned(),
         });
+        self.active_turn_result_authoritative = false;
         if let Some(authority) = self.completed_turn_authority.as_ref() {
             self.settled_provider_turn_ids
                 .restore(authority.provider_turn_id.clone())?;
@@ -855,6 +1170,16 @@ impl CodexProvider {
                 authority.provider_turn_id.as_str(),
             )
         })
+    }
+
+    pub(crate) fn mark_active_turn_result_authoritative(&mut self) -> Result<(), LocalRunnerError> {
+        if self.active_provider_turn_id.is_none() || self.ambiguous_turn_start_pending {
+            return Err(LocalRunnerError::invalid(
+                "Codex semantic result cannot authorize a turn without exact active provider identity",
+            ));
+        }
+        self.active_turn_result_authoritative = true;
+        Ok(())
     }
 
     pub(crate) fn take_rejected_accepted_turn(&mut self) -> Option<RejectedAcceptedTurn> {
@@ -1068,16 +1393,24 @@ impl CodexProvider {
         let prior_buffered_message_count = self.pending_messages.len();
         self.ambiguous_turn_start_pending = true;
         let runtime_request_scope = new_runtime_request_scope()?;
-        let result = match self.request_classified(
-            "turn/start",
-            json!({
-                "threadId": self.thread_id,
-                "cwd": cwd,
-                "permissions": "paperclip-runner-workspace-only",
-                "runtimeWorkspaceRoots": [cwd],
-                "input": [{"type": "text", "text": message, "text_elements": []}],
-            }),
-        ) {
+        let mut turn_params = json!({
+            "threadId": self.thread_id,
+            "cwd": cwd,
+            "runtimeWorkspaceRoots": [cwd],
+            "input": [{"type": "text", "text": message, "text_elements": []}],
+        });
+        let turn_params_object = turn_params
+            .as_object_mut()
+            .expect("Codex turn parameters are an object");
+        if self.permission_profile == "paperclip-runner-external-sandbox" {
+            turn_params_object.insert(
+                "sandboxPolicy".to_owned(),
+                json!({"type": "externalSandbox", "networkAccess": "enabled"}),
+            );
+        } else {
+            turn_params_object.insert("permissions".to_owned(), json!(self.permission_profile));
+        }
+        let result = match self.request_classified("turn/start", turn_params) {
             Ok(result) => result,
             Err(ProviderRequestError::Rejected(error)) => {
                 // A definite rejection proves no replacement work began.
@@ -1173,6 +1506,7 @@ impl CodexProvider {
         self.ambiguous_turn_start_pending = false;
         self.expected_shutdown = false;
         self.completed_turn_authority = None;
+        self.active_turn_result_authoritative = false;
         self.completion_reconciliation_pending = false;
         self.completed_tool_call_ids.clear();
         // Retain the prior settled identity while the next turn runs. Besides
@@ -1788,14 +2122,16 @@ impl CodexProvider {
                     .active_provider_turn_id
                     .clone()
                     .expect("active provider turn checked above");
-                let completed_turn_authority = if terminal_event_type == "turn.completed" {
-                    Some(CompletedTurnAuthority {
-                        process_generation: self.process_generation,
-                        provider_turn_id: provider_turn_id.clone(),
-                    })
-                } else {
-                    None
-                };
+                let result_authoritative = self.active_turn_result_authoritative;
+                let completed_turn_authority =
+                    if terminal_event_type == "turn.completed" || result_authoritative {
+                        Some(CompletedTurnAuthority {
+                            process_generation: self.process_generation,
+                            provider_turn_id: provider_turn_id.clone(),
+                        })
+                    } else {
+                        None
+                    };
                 if !self
                     .settled_provider_turn_ids
                     .insert(provider_turn_id.clone())
@@ -1805,9 +2141,11 @@ impl CodexProvider {
                     ));
                 }
                 self.active_provider_turn_id = None;
+                self.active_turn_result_authoritative = false;
                 self.expected_shutdown = true;
                 self.completed_turn_authority = completed_turn_authority;
-                self.completion_reconciliation_pending = terminal_event_type == "turn.completed";
+                self.completion_reconciliation_pending =
+                    terminal_event_type == "turn.completed" || result_authoritative;
                 // The provider terminal is authoritative once received. Clear
                 // local request ownership and attempt courtesy responses, but
                 // a provider that already closed stdin must not turn the
@@ -2929,6 +3267,7 @@ mod tests {
             provider_session_id: None,
             instructions: String::new(),
             approval_policy: "never".to_owned(),
+            externally_sandboxed: false,
         };
         config.validate().unwrap();
         config.provider_version = "1.18.18".to_owned();
@@ -2945,6 +3284,53 @@ mod tests {
     #[test]
     fn does_not_forward_an_ambient_opencode_command_override() {
         assert!(!OPENCODE_PROVIDER_ENVIRONMENT_KEYS.contains(&"PAPERCLIP_OPENCODE_COMMAND"));
+    }
+
+    #[test]
+    fn github_credentials_cross_only_the_bounded_provider_environment() {
+        assert_eq!(GITHUB_CREDENTIAL_ENVIRONMENT_KEYS.len(), 89);
+        for key in [
+            "PAPERCLIP_GITHUB_BROKER_URL",
+            "PAPERCLIP_GITHUB_BROKER_TOKEN",
+            "PAPERCLIP_GITHUB_LAUNCHER_DIR",
+            "GH_CONFIG_DIR",
+            "PAPERCLIP_GITHUB_BRIDGE_TOKEN",
+            "GH_TOKEN",
+            "GITHUB_TOKEN",
+            "PAPERCLIP_GIT_TOKEN",
+            "GIT_TERMINAL_PROMPT",
+            "GIT_CONFIG_COUNT",
+            "GIT_AUTHOR_NAME",
+            "GIT_AUTHOR_EMAIL",
+            "GIT_COMMITTER_NAME",
+            "GIT_COMMITTER_EMAIL",
+            "GIT_CONFIG_KEY_0",
+            "GIT_CONFIG_VALUE_0",
+            "GIT_CONFIG_KEY_31",
+            "GIT_CONFIG_VALUE_31",
+        ] {
+            assert!(GITHUB_CREDENTIAL_ENVIRONMENT_KEYS.contains(&key));
+        }
+        assert!(!GITHUB_CREDENTIAL_ENVIRONMENT_KEYS.contains(&"GIT_CONFIG_KEY_32"));
+        assert!(!GITHUB_CREDENTIAL_ENVIRONMENT_KEYS.contains(&"GIT_CONFIG_VALUE_32"));
+    }
+
+    #[test]
+    fn codex_provider_accepts_only_the_controller_derived_external_sandbox_bit() {
+        assert!(CODEX_PROVIDER_ENVIRONMENT_KEYS.contains(&"PAPERCLIP_RUNNER_EXTERNAL_SANDBOX"));
+        assert!(!CODEX_PROVIDER_ENVIRONMENT_KEYS.contains(&"PAPERCLIP_SANDBOX_MODE"));
+        assert_eq!(
+            codex_permission_profile("codex", true),
+            "paperclip-runner-external-sandbox"
+        );
+        assert_eq!(
+            codex_permission_profile("codex", false),
+            "paperclip-runner-workspace-only"
+        );
+        assert_eq!(
+            codex_permission_profile("opencode", true),
+            "paperclip-runner-workspace-only"
+        );
     }
 
     #[test]

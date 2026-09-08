@@ -1,5 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import type { HarnessRuntimeRequestResolution } from "../../contracts/harness-driver.js";
+import { githubCredentialEnvironment } from "../../github-credential-environment.js";
 
 export interface CodexRpcNotification {
   method: string;
@@ -45,7 +46,11 @@ export interface CodexAppServerTransport {
     turnId: string;
     resolution: HarnessRuntimeRequestResolution;
   }): Promise<void>;
-  close(): Promise<void>;
+  /**
+   * Close the provider transport. The optional reason is controller-owned
+   * diagnostic context; transports must not forward it to the provider.
+   */
+  close(reason?: string): Promise<void>;
   /** Relinquish controller authority while leaving durable runner work alive. */
   detachControllerForRestart?(): Promise<void>;
   processInfo?(): CodexTransportProcessInfo;
@@ -198,6 +203,7 @@ const SAFE_ENVIRONMENT_KEYS = [
   "LC_ALL",
   "NO_PROXY",
   "NODE_EXTRA_CA_CERTS",
+  "PAPERCLIP_RUNNER_EXTERNAL_SANDBOX",
   "PATH",
   "PATHEXT",
   "SSL_CERT_FILE",
@@ -223,6 +229,7 @@ export function createSanitizedCodexEnvironment(
     if (key.includes("PROXY") && proxyContainsCredentials(value)) continue;
     environment[key] = value;
   }
+  Object.assign(environment, githubCredentialEnvironment(source));
   return environment;
 }
 

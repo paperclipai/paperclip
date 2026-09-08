@@ -196,6 +196,18 @@ function renderCase(
       </tr>`,
     )
     .join("");
+  const turnTimingRows = (entry?.result.turnTimings ?? [])
+    .map(
+      (timing) => `<tr>
+        <td>${timing.turn}</td>
+        <td><code>${html(timing.runId)}</code></td>
+        <td>${html(timing.leaseAcquisitionOutcome)}</td>
+        <td>${html(timing.schedulerLatencyMs === null ? "unavailable" : durationLabel(timing.schedulerLatencyMs))}</td>
+        <td>${html(timing.runDurationMs === null ? "unavailable" : durationLabel(timing.runDurationMs))}</td>
+        <td>${html(timing.responseLatencyMs === null ? "unavailable" : durationLabel(timing.responseLatencyMs))}</td>
+      </tr>`,
+    )
+    .join("");
   const gallery = screenshots.length
     ? `<div class="gallery" aria-label="Screenshots for ${html(execution.id)}">${screenshots
         .map(
@@ -235,6 +247,7 @@ function renderCase(
       </div>`
     : "";
   return `<article
+    id="execution-${html(execution.id)}"
     class="case case-${state}"
     data-execution-id="${html(execution.id)}"
     data-report-case
@@ -268,6 +281,7 @@ function renderCase(
         : ""
     }
     <p class="detail">${html(detail)}</p>
+    ${turnTimingRows ? `<div class="matcher-wrap"><table class="matchers"><thead><tr><th>Turn</th><th>Run</th><th>Lease</th><th>Scheduler</th><th>Run duration</th><th>Response</th></tr></thead><tbody>${turnTimingRows}</tbody></table></div>` : ""}
     ${matcherRows ? `<div class="matcher-wrap"><table class="matchers"><thead><tr><th>Result</th><th>Matcher</th><th>Expectation</th><th>Detail</th></tr></thead><tbody>${matcherRows}</tbody></table></div>` : `<p class="detail">No matcher result was recorded.</p>`}
     ${entry ? `<details class="usage"><summary>Usage and billing metadata</summary><pre>${html(JSON.stringify({ billing, rawUsage: entry.result.usage ?? null }, null, 2))}</pre></details>` : ""}
     ${links}
@@ -981,7 +995,7 @@ export function renderRunnerE2EDashboard(input: RunnerDashboardInput) {
       <div>
         <p class="eyebrow">Full-stack acceptance campaign</p>
         <h1>${html(input.title)}</h1>
-        <p class="lede">A browser-verified matrix of runner profiles, execution environments, and deterministic task contracts. Visual evidence is retained in the access-controlled workflow artifact; public history contains inert structured evidence and a trusted synthetic campaign summary.</p>
+        <p class="lede">A browser-verified matrix of runner profiles, execution environments, and deterministic task contracts. Declared PNG screenshots and sanitized structured evidence are retained with every published campaign; additional diagnostic evidence remains in the access-controlled workflow artifact.</p>
       </div>
       <div class="report-actions">
         <div class="summary" aria-label="Campaign summary">
@@ -1020,7 +1034,7 @@ export function renderRunnerE2EDashboard(input: RunnerDashboardInput) {
     </section>
     ${suiteSections}
     ${historySection}
-    <footer><span>Generated ${html(input.generatedAt)}</span><span>${input.catalog.length} catalog executions · Public history excludes provider-produced visual evidence</span></footer>
+    <footer><span>Generated ${html(input.generatedAt)}</span><span>${input.catalog.length} catalog executions · Declared screenshots and sanitized structured evidence published</span></footer>
   </main>
   <dialog class="gallery-dialog" data-gallery-dialog aria-labelledby="gallery-title">
     <div class="gallery-shell">

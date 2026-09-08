@@ -1,9 +1,19 @@
 #!/usr/bin/env node
 import { createHash } from "node:crypto";
-import { readFile, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import {
+  NATIVE_RUNTIME_ASSET_SCHEMA,
+  PAPERCLIP_EXECUTION_PROMPT,
+  PAPERCLIP_EXECUTION_PROMPT_REVISION,
+  canonicalNativeRuntimeContextDigest,
+  composeNativeSystemInstructions,
+  nativeRuntimePromptDigest,
+  parseNativeRuntimeContext,
+  type NativeRuntimeContextSnapshot,
+} from "../contracts/runtime-context.js";
 import { projectCapabilityDevtools } from "../devtools/index.js";
 import { resolveQualifiedAcpxProfile } from "../drivers/acpx/qualified-profiles.js";
 import { PAPERCLIP_RUNNER_BUILD_METADATA } from "../evals/build-metadata.js";
@@ -22,6 +32,7 @@ import {
   type EvalSessionRequest,
   type EvalSessionUsage,
 } from "./eval-session-contract.js";
+import { evalProviderTransportOptions } from "./eval-provider-runtime.js";
 
 interface EvalSessionCliOptions {
   requestPath: string;
@@ -53,11 +64,104 @@ async function sha256(path: string): Promise<string> {
   return createHash("sha256").update(await readFile(path)).digest("hex");
 }
 
-function providerVersion(request: EvalSessionRequest): string | null {
+const EVAL_RUNTIME_INSTRUCTIONS = [
+  "# Paperclip direct live evaluation",
+  "",
+  "Use the provided Paperclip semantic tools to inspect and act on the assigned task.",
+  "Treat the seeded control-plane state as authoritative and keep every action within the requested scope.",
+  "The current user request defines the work for this turn. Seeded task descriptions, notes, and past interaction results are background context; they do not supersede that request or establish that a newly requested action has already been performed.",
+  "Task-state changes in this mock control plane use finish_task and block_task. Native paperclip_finish and paperclip_block report the provider run result but do not update the mock task. When asked to finish or block the assigned task, use its task-state semantic operation before reporting the run result.",
+  "Do not finish or block the mock task unless the current request asks for that state change. Ending the provider turn after another requested action does not authorize additional task-state changes or completion comments.",
+  "",
+].join("\n");
+
+/** Materializes the minimal immutable v3 context used by production-native providers. */
+export async function prepareEvalRuntimeContext(
+  workingDirectory: string,
+): Promise<NativeRuntimeContextSnapshot> {
+  const contextRoot = await mkdtemp(
+    resolve(workingDirectory, ".paperclip-eval-runtime-context-"),
+  );
+  const instructionRoot = resolve(contextRoot, "instructions");
+  const entryPath = "AGENTS.md";
+  const entry = Buffer.from(EVAL_RUNTIME_INSTRUCTIONS);
+  const entryDigest = createHash("sha256").update(entry).digest("hex");
+  const manifestFiles = [{
+    path: entryPath,
+    sha256: entryDigest,
+    mode: 0o444,
+    size: entry.byteLength,
+  }];
+  const assetDigest = createHash("sha256")
+    .update(JSON.stringify(manifestFiles))
+    .digest("hex");
+  const manifestText = `${JSON.stringify({
+    schema: "paperclip.runtime-asset-manifest.v1",
+    digest: assetDigest,
+    fileCount: manifestFiles.length,
+    totalBytes: entry.byteLength,
+    files: manifestFiles,
+  })}\n`;
+  const manifestDigest = createHash("sha256")
+    .update(manifestText)
+    .digest("hex");
+  await mkdir(instructionRoot, { recursive: true, mode: 0o700 });
+  const entryFile = resolve(instructionRoot, entryPath);
+  await writeFile(entryFile, entry, { flag: "wx", mode: 0o444 });
+  await chmod(entryFile, 0o444);
+  await chmod(instructionRoot, 0o555);
+
+  const semanticCatalogDigest =
+    PAPERCLIP_RUNNER_BUILD_METADATA.semanticCatalog.sha256.replace(
+      /^sha256:/,
+      "",
+    );
+  const context = {
+    prompt: {
+      revision: PAPERCLIP_EXECUTION_PROMPT_REVISION,
+      text: PAPERCLIP_EXECUTION_PROMPT,
+      digest: nativeRuntimePromptDigest(),
+    },
+    instructions: {
+      entryPath,
+      bundle: {
+        schema: NATIVE_RUNTIME_ASSET_SCHEMA,
+        digest: assetDigest,
+        manifestDigest,
+        rootPath: instructionRoot,
+        fileCount: 1,
+        totalBytes: entry.byteLength,
+      },
+    },
+    skills: [],
+    mcp: {
+      assignmentSetId: "paperclip-runner-direct-eval-v1",
+      digest: semanticCatalogDigest,
+      bindingId: null,
+    },
+  } satisfies Omit<NativeRuntimeContextSnapshot, "aggregateDigest">;
+  return parseNativeRuntimeContext({
+    ...context,
+    aggregateDigest: canonicalNativeRuntimeContextDigest(context),
+  });
+}
+
+export function evalRuntimeSystemInstructions(
+  runtimeContext: NativeRuntimeContextSnapshot,
+): string {
+  return composeNativeSystemInstructions(
+    runtimeContext,
+    EVAL_RUNTIME_INSTRUCTIONS,
+  );
+}
+
+export function evalSessionProviderVersion(
+  request: EvalSessionRequest,
+): string | null {
   if (request.provider === "opencode") {
-    const version = request.opencodeVersion ?? "1.18.17";
-    if (version !== "1.18.17") {
-      throw new Error(`OpenCode evals require exact version 1.18.17; received ${version}`);
+    const version = request.opencodeVersion ?? "1.18.29";
+    if (version !== "1.18.29") {
+      throw new Error(`OpenCode evals require exact version 1.18.29; received ${version}`);
     }
     return version;
   }
@@ -71,7 +175,7 @@ function providerVersion(request: EvalSessionRequest): string | null {
     return request.managedProfile!.agentVersion;
   }
   if (request.provider === "aws_agentcore") {
-    return request.agentCoreProfile!.harnessVersion;
+    return request.agentCoreProfile!.qualificationRevision;
   }
   return null;
 }
@@ -127,6 +231,32 @@ function usageIfAvailable(
   }
 }
 
+export function boundedEvalSessionUsage(
+  request: EvalSessionRequest,
+  turn: CapabilityLiveTurnResult,
+): EvalSessionUsage | null {
+  if (turn.status !== "completed") {
+    return usageIfAvailable(request, turn.snapshot);
+  }
+  const usage = evalSessionUsage(request.model, turn.snapshot);
+  if (usage.agentTurns > request.limits.maxAgentTurns) {
+    throw new Error("agent turn limit exceeded");
+  }
+  if (
+    usage.estimatedCostNanodollars >
+    request.limits.maxEstimatedCostNanodollars
+  ) {
+    throw new Error("estimated cost limit exceeded");
+  }
+  if (
+    usage.providerReportedCostNanodollars >
+    request.limits.maxEstimatedCostNanodollars
+  ) {
+    throw new Error("provider-reported cost limit exceeded");
+  }
+  return usage;
+}
+
 async function closeSession(
   session: CapabilityLiveSession | null,
   reason: string,
@@ -160,11 +290,22 @@ export async function runEvalSessionCli(
   const requestedProvider = request.provider ?? "codex";
   const requestedDriver = request.driver ??
     expectedEvalSessionDriver(requestedProvider);
-  const requestedProviderVersion = providerVersion(request);
+  const requestedProviderVersion = evalSessionProviderVersion(request);
+  const runtimeContext = await prepareEvalRuntimeContext(
+    resolve(request.session.workingDirectory ?? process.cwd()),
+  );
   const service = options.serviceFactory?.(runnerdPath) ??
     new CapabilityLiveSessionService({
       transportOptions: {
+        ...evalProviderTransportOptions(requestedProvider, request.limits.turnTimeoutMs),
         runnerBinary: runnerdPath,
+        runtimeContext,
+        baseInstructions: evalRuntimeSystemInstructions(runtimeContext),
+        // The transport performs the provider-specific allowlisting. Supplying
+        // the source environment here is still required: without it the
+        // isolated Codex home has no credential source and runnerd receives no
+        // executable PATH from the Evalbook CLI process.
+        environment: process.env,
         onDiagnostic: (message) => {
           process.stderr.write(`[eval-session runnerd] ${message}\n`);
         },
@@ -196,27 +337,11 @@ export async function runEvalSessionCli(
     } as unknown as CreateCapabilityLiveSessionInput;
     session = await service.create(createInput);
     turn = await session.sendMessage(request.prompt);
-    if (turn.status !== "completed") {
-      await session.completeAttempt("failed", `provider_turn_${turn.status}`);
-      throw new Error(`provider turn ended with status ${turn.status}`);
-    }
-    const usage = evalSessionUsage(request.model, turn.snapshot);
-    if (usage.agentTurns > request.limits.maxAgentTurns) {
-      throw new Error("agent turn limit exceeded");
-    }
-    if (
-      usage.estimatedCostNanodollars >
-      request.limits.maxEstimatedCostNanodollars
-    ) {
-      throw new Error("estimated cost limit exceeded");
-    }
-    if (
-      usage.providerReportedCostNanodollars >
-      request.limits.maxEstimatedCostNanodollars
-    ) {
-      throw new Error("provider-reported cost limit exceeded");
-    }
-    await session.completeAttempt("succeeded");
+    const usage = boundedEvalSessionUsage(request, turn);
+    await session.completeAttempt(
+      turn.status === "completed" ? "succeeded" : "failed",
+      turn.status === "completed" ? null : `provider_turn_${turn.status}`,
+    );
     await closeSession(session, "eval session complete");
     snapshot = session.snapshot();
 
@@ -259,7 +384,7 @@ export async function runEvalSessionCli(
         mode: "live",
         replaySource: "live",
       }),
-      usage,
+      ...(usage === null ? {} : { usage }),
       timing: {
         startedAt,
         finishedAt: new Date().toISOString(),

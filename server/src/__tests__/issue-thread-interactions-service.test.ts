@@ -1906,6 +1906,56 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     })).rejects.toThrow("A decline reason is required for this confirmation");
   });
 
+  it("reopens an in-review issue before waking the assignee after rejection", async () => {
+    const { companyId, issueId } = await seedConfirmationIssue(
+      "Continue after review rejection",
+    );
+    const created = await interactionsSvc.create(
+      { id: issueId, companyId },
+      {
+        kind: "request_confirmation",
+        continuationPolicy: "wake_assignee",
+        payload: {
+          version: 1,
+          prompt: "Continue the next turn?",
+          rejectLabel: "Continue work",
+          rejectRequiresReason: true,
+          target: {
+            type: "custom",
+            key: "warm_turn_1",
+            revisionId: "warm-turn-1",
+          },
+        },
+      },
+      {
+        userId: "local-board",
+      },
+    );
+    await db
+      .update(issues)
+      .set({ status: "in_review" })
+      .where(eq(issues.id, issueId));
+
+    await interactionsSvc.rejectInteraction(
+      {
+        id: issueId,
+        companyId,
+        status: "in_review",
+      },
+      created.id,
+      {
+        reason: "Proceed with turn two.",
+      },
+      {
+        userId: "local-board",
+      },
+    );
+
+    await expect(issuesSvc.getById(issueId)).resolves.toMatchObject({
+      status: "todo",
+    });
+  });
+
   it("records an authorized agent as the review-confirmation resolver", async () => {
     const { companyId, goalId, issueId } = await seedConfirmationIssue("Agent review verdict");
     const resolverAgentId = randomUUID();

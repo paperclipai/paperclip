@@ -294,6 +294,19 @@ function createMemoryStore(): AdapterAuthSessionStore & { rows: Map<string, Adap
       }
       return null;
     },
+    async getActiveByOwner(companyId, startedByUserId, adapterType) {
+      for (const row of rows.values()) {
+        if (
+          row.companyId === companyId &&
+          row.startedByUserId === startedByUserId &&
+          row.adapterType === adapterType &&
+          isActive(row.status)
+        ) {
+          return { ...row };
+        }
+      }
+      return null;
+    },
     async withCompanyAdapterPromotionLock(_companyId, _startedByUserId, _adapterType, fn) {
       // The route test runs on a single event loop, so it needs no real lock. The
       // pass-through keeps the promotion contract satisfied.
@@ -647,7 +660,7 @@ describe("adapter device-login routes", () => {
     expect(harness.acquisitions).toHaveLength(0);
   });
 
-  it("delivers the one-time prompt to the owner on the first read only", async () => {
+  it("delivers the prompt to the owner on every read while the session is active, and clears it on a terminal transition", async () => {
     const app = await createApp();
 
     const start = await request(app)
@@ -656,17 +669,30 @@ describe("adapter device-login routes", () => {
     expect(start.status, JSON.stringify(start.body)).toBe(201);
     const sessionId = start.body.sessionId as string;
 
-    // The first authorized owner read receives the one-time prompt.
+    // The first authorized owner read receives the prompt. The response
+    // repeats the live prompt on every read, so it carries the same private
+    // no-store policy as the `.../login-sessions/active` route (see the tests
+    // below).
     const first = await request(app).get(`${loginPath(COMPANY_1)}/${sessionId}`);
     expect(first.status, JSON.stringify(first.body)).toBe(200);
     expect(first.body.prompt).toEqual({ url: DEVICE_LOGIN_URL, code: PROMPT_CODE });
+    expect(first.headers["cache-control"]).toBe("no-store, private");
 
-    // A second authorized owner read no longer carries the prompt. The status
-    // stays available, so the owner still tracks the session.
+    // A second authorized owner read still carries the prompt while the
+    // session is active. The status stays available too, so the owner still
+    // tracks the session across a page reload.
     const second = await request(app).get(`${loginPath(COMPANY_1)}/${sessionId}`);
     expect(second.status, JSON.stringify(second.body)).toBe(200);
-    expect(second.body.prompt).toBeNull();
+    expect(second.body.prompt).toEqual({ url: DEVICE_LOGIN_URL, code: PROMPT_CODE });
     expect(second.body.status).toBe(first.body.status);
+
+    // Once the login reaches a terminal state, the prompt is gone.
+    harness.releaseGate();
+    await vi.waitFor(async () => {
+      const afterTerminal = await request(app).get(`${loginPath(COMPANY_1)}/${sessionId}`);
+      expect(["authenticated", "failed"]).toContain(afterTerminal.body.status);
+      expect(afterTerminal.body.prompt).toBeNull();
+    });
   });
 
   it("starts a Grok session, delivers the Grok prompt once, and a codex_local read finds no row", async () => {
@@ -737,6 +763,52 @@ describe("adapter device-login routes", () => {
     const status = await request(app).get(`${loginPath(COMPANY_2)}/${sessionId}`);
     expect(status.status, JSON.stringify(status.body)).toBe(404);
     expect(status.body.prompt).toBeUndefined();
+  });
+
+  it("returns the caller's active login session with no session id in the URL", async () => {
+    const app = await createApp();
+
+    const start = await request(app)
+      .post(loginPath(COMPANY_1))
+      .send({ environmentId: SANDBOX_ENV_1 });
+    expect(start.status, JSON.stringify(start.body)).toBe(201);
+
+    const active = await request(app).get(`${loginPath(COMPANY_1)}/active`);
+    expect(active.status, JSON.stringify(active.body)).toBe(200);
+    expect(active.body.sessionId).toBe(start.body.sessionId);
+    expect(active.body.prompt).toEqual({ url: DEVICE_LOGIN_URL, code: PROMPT_CODE });
+    expect(active.headers["cache-control"]).toBe("no-store, private");
+  });
+
+  it("returns the identical 404 on the active route for no active session, another owner, another company, and another adapter", async () => {
+    const app = await createApp();
+
+    // No active session exists yet.
+    const none = await request(app).get(`${loginPath(COMPANY_1)}/active`);
+    expect(none.status, JSON.stringify(none.body)).toBe(404);
+    expect(none.body).toEqual({ error: "Adapter login session not found" });
+
+    const start = await request(app)
+      .post(loginPath(COMPANY_1))
+      .send({ environmentId: SANDBOX_ENV_1 });
+    expect(start.status, JSON.stringify(start.body)).toBe(201);
+
+    // A different board user in the same company holds no active session.
+    currentActor = boardActor(OWNER_B);
+    const otherOwner = await request(app).get(`${loginPath(COMPANY_1)}/active`);
+    expect(otherOwner.status, JSON.stringify(otherOwner.body)).toBe(404);
+    expect(otherOwner.body).toEqual(none.body);
+    currentActor = boardActor(OWNER_A);
+
+    // The same owner under a different company holds no active session there.
+    const otherCompany = await request(app).get(`${loginPath(COMPANY_2)}/active`);
+    expect(otherCompany.status, JSON.stringify(otherCompany.body)).toBe(404);
+    expect(otherCompany.body).toEqual(none.body);
+
+    // The owner's active session belongs to `codex_local`, not `grok_local`.
+    const otherAdapter = await request(app).get(`${loginPath(COMPANY_1, "grok_local")}/active`);
+    expect(otherAdapter.status, JSON.stringify(otherAdapter.body)).toBe(404);
+    expect(otherAdapter.body).toEqual(none.body);
   });
 
   it("durably cancels a login for the owner and releases the company slot", async () => {

@@ -17,7 +17,11 @@ export interface CapabilityDiscoveryResult {
   readonly truncated: boolean;
 }
 
+const MAX_DISCOVERY_RESULTS = 10;
+
 const NAMESPACE: Readonly<Record<CapabilitySemanticOperationId, string>> = Object.freeze({
+  search_api: "api_fallback",
+  call_api: "api_fallback",
   get_task_context: "active_task", get_task_history: "active_task",
   list_documents: "documents", read_document: "documents", list_document_revisions: "documents",
   report_progress: "active_task", answer_status_question: "active_task", write_document: "documents",
@@ -32,6 +36,7 @@ const NAMESPACE: Readonly<Record<CapabilitySemanticOperationId, string>> = Objec
 });
 
 export const CAPABILITY_DISCOVERY_NAMESPACES = Object.freeze([
+  { name: "api_fallback", description: "API escape hatch for work unsupported by available dedicated tools." },
   { name: "discovery", description: "Find company tasks and agents." },
   { name: "delegation", description: "Create bounded child work and task dependencies." },
   { name: "governance", description: "Read, request, discuss, and decide approvals." },
@@ -47,7 +52,7 @@ export const CAPABILITY_DISCOVERY_GATEWAY_DEFINITIONS = Object.freeze([{
     type: "object", properties: {
       query: { type: "string", minLength: 1, maxLength: 500 },
       namespace: { type: "string" },
-      limit: { type: "integer", minimum: 1, maximum: 8 },
+      limit: { type: "integer", minimum: 1, maximum: MAX_DISCOVERY_RESULTS },
     }, required: ["query"], additionalProperties: false,
   },
   outputSchema: {
@@ -90,7 +95,10 @@ export function discoverCapabilityDefinitions(
 ): CapabilityDiscoveryResult {
   const normalized = query.trim().toLowerCase();
   if (normalized.length === 0) throw new Error("discovery_query_empty");
-  const limit = Math.max(1, Math.min(options.limit ?? 5, 8));
+  const limit = Math.max(
+    1,
+    Math.min(options.limit ?? 5, MAX_DISCOVERY_RESULTS),
+  );
   const tokens = normalized.split(/[^a-z0-9]+/).filter((token) => token.length > 1);
   const permitted = CAPABILITY_SEMANTIC_TOOL_CATALOG
     .filter((descriptor) => descriptor.exposure === "optional")

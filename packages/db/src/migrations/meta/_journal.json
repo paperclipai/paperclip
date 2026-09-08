@@ -1671,8 +1671,50 @@
     {
       "idx": 240,
       "version": "7",
-      "when": 1788872103472,
-      "tag": "0240_cheerful_junta",
+      "when": 1788796987307,
+      "tag": "0240_pink_fantastic_four",
+      "breakpoints": true
+    },
+    {
+      "idx": 241,
+      "version": "7",
+      "when": 1788797555060,
+      "tag": "0241_conscious_adam_destine",
+      "breakpoints": true
+    },
+    {
+      "idx": 242,
+      "version": "7",
+      "when": 1788798139203,
+      "tag": "0242_wide_lightspeed",
+      "breakpoints": true
+    },
+    {
+      "idx": 243,
+      "version": "7",
+      "when": 1788798652047,
+      "tag": "0243_sleepy_metal_master",
+      "breakpoints": true
+    },
+    {
+      "idx": 244,
+      "version": "7",
+      "when": 1788804288225,
+      "tag": "0244_organic_meltdown",
+      "breakpoints": true
+    },
+    {
+      "idx": 245,
+      "version": "7",
+      "when": 1788804969749,
+      "tag": "0245_misty_nightshade",
+      "breakpoints": true
+    },
+    {
+      "idx": 246,
+      "version": "7",
+      "when": 1788875847030,
+      "tag": "0246_concerned_black_crow",
       "breakpoints": true
     }
   ]
