@@ -1,4 +1,10 @@
 import fs from "node:fs/promises";
+import { z } from "zod";
+import {
+  askUserQuestionsPayloadSchema,
+  askUserQuestionsQuestionOptionSchema,
+  type AskUserQuestionsPayload,
+} from "@paperclipai/shared";
 
 // Everything the onboarding first agent is told lives as plain markdown under
 // server/src/onboarding-assets/first-task/ so the board can edit the wording
@@ -11,6 +17,44 @@ export interface OnboardingFirstTaskPlaceholders {
   agentName?: string | null;
   organizationName?: string | null;
 }
+
+// The opening card seeded on the first task right after the greeting: one
+// single-select question with two options, "interview me" or "I have a task in
+// mind" (free text). The brief refers to these ids, so they are fixed here;
+// only the wording lives in opening-question.json.
+export const ONBOARDING_FIRST_TASK_OPENING_QUESTION_ID = "first-task-opening";
+export const ONBOARDING_FIRST_TASK_OPENING_INTERVIEW_OPTION_ID = "interview";
+export const ONBOARDING_FIRST_TASK_OPENING_TASK_OPTION_ID = "task";
+
+const openingQuestionFileSchema = z.object({
+  prompt: z.string().trim().min(1).max(4000),
+  helpText: z.string().trim().max(4000).nullable().optional(),
+  submitLabel: z.string().trim().max(120).nullable().optional(),
+  options: z.array(askUserQuestionsQuestionOptionSchema).length(2),
+}).superRefine((value, ctx) => {
+  const ids = value.options.map((option) => option.id);
+  if (!ids.includes(ONBOARDING_FIRST_TASK_OPENING_INTERVIEW_OPTION_ID)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: `opening-question.json must keep an option with id "${ONBOARDING_FIRST_TASK_OPENING_INTERVIEW_OPTION_ID}"`,
+      path: ["options"],
+    });
+  }
+  const taskOption = value.options.find((option) => option.id === ONBOARDING_FIRST_TASK_OPENING_TASK_OPTION_ID);
+  if (!taskOption) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: `opening-question.json must keep an option with id "${ONBOARDING_FIRST_TASK_OPENING_TASK_OPTION_ID}"`,
+      path: ["options"],
+    });
+  } else if (taskOption.freeText !== true) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: `the "${ONBOARDING_FIRST_TASK_OPENING_TASK_OPTION_ID}" option must set freeText: true so the user can describe their task`,
+      path: ["options"],
+    });
+  }
+});
 
 function resolveFirstTaskAssetUrl(relativePath: string) {
   return new URL(`../onboarding-assets/first-task/${relativePath}`, import.meta.url);
@@ -49,6 +93,31 @@ export async function renderOnboardingFirstTaskGreeting(
 ): Promise<string> {
   const template = await loadFirstTaskAsset("greeting.md");
   return fillFirstTaskPlaceholders(template, placeholders).trim();
+}
+
+// Layer C — the opening ask_user_questions card seeded as the agent right after
+// the greeting, so the first task is not open-ended: the user either asks to be
+// interviewed or types the task they have in mind. Deterministic, no LLM.
+export async function buildOnboardingFirstTaskOpeningQuestion(): Promise<AskUserQuestionsPayload> {
+  const raw = await loadFirstTaskAsset("opening-question.json");
+  const file = openingQuestionFileSchema.parse(JSON.parse(raw));
+  return askUserQuestionsPayloadSchema.parse({
+    version: 1,
+    submitLabel: file.submitLabel ?? null,
+    // A typed message instead of an answer still counts as the user's choice:
+    // the card expires and the comment wakes the agent through the normal path.
+    supersedeOnUserComment: true,
+    questions: [
+      {
+        id: ONBOARDING_FIRST_TASK_OPENING_QUESTION_ID,
+        prompt: file.prompt,
+        helpText: file.helpText ?? null,
+        selectionMode: "single",
+        required: true,
+        options: file.options,
+      },
+    ],
+  });
 }
 
 // Layer A — the first task's description. brief.md carries {{proposalStep}},

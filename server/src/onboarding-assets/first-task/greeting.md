@@ -1,1 +1,1 @@
-Welcome to Paperclip! I'm {{agentName}}, your first agent teammate. If you don't know where to start, I can help you hone in on a concrete plan and a team to execute it, or I can start working on a task right away. What would you like to do?
+Welcome to Paperclip! I'm {{agentName}}, your first agent teammate. Pick how you'd like to start and I'll take it from there.

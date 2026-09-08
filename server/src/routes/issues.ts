@@ -196,7 +196,10 @@ import {
   renderOnboardingGreeting,
   ONBOARDING_GREETING_AUTHORIZATION_REASON,
 } from "../services/onboarding-greeting.js";
-import { buildOnboardingFirstTaskBrief } from "../services/onboarding-first-task-assets.js";
+import {
+  buildOnboardingFirstTaskBrief,
+  buildOnboardingFirstTaskOpeningQuestion,
+} from "../services/onboarding-first-task-assets.js";
 import {
   ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,
   buildIssueBlockersResolvedWakeStateKey,
@@ -9555,6 +9558,30 @@ export function issueRoutes(
         logger.warn(
           { err, issueId: issue.id, companyId },
           "failed to seed onboarding first-task greeting",
+        );
+      }
+
+      // Seed the opening question card right after the greeting so the first
+      // task is not open-ended: "Interview me and propose a plan and an agent
+      // team" or "I have a task in mind" (free text). Posted as the assignee,
+      // deterministic (no LLM), and best-effort like the greeting. Answering
+      // the card wakes the assignee through the normal question-response path;
+      // typing a message instead supersedes the card and wakes on the comment.
+      try {
+        await issueThreadInteractionService(db).create(
+          issue,
+          {
+            kind: "ask_user_questions",
+            idempotencyKey: `onboarding-first-task:${issue.id}:opening-question`,
+            continuationPolicy: "wake_assignee",
+            payload: await buildOnboardingFirstTaskOpeningQuestion(),
+          },
+          { agentId: issue.assigneeAgentId },
+        );
+      } catch (err) {
+        logger.warn(
+          { err, issueId: issue.id, companyId },
+          "failed to seed onboarding first-task opening question",
         );
       }
     }

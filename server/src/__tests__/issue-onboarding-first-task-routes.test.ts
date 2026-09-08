@@ -15,6 +15,7 @@ import {
   heartbeatRuns,
   instanceSettings,
   issueComments,
+  issueThreadInteractions,
   issues,
 } from "@paperclipai/db";
 import { ONBOARDING_FIRST_TASK_ORIGIN_KIND } from "@paperclipai/shared";
@@ -90,6 +91,7 @@ describeEmbeddedPostgres("issue create onboarding first-task routes", () => {
     // agent_wakeup_requests. heartbeat_runs references both, so a completed run
     // row blocks a parent delete with a foreign-key violation.
     await db.delete(activityLog);
+    await db.delete(issueThreadInteractions);
     await db.delete(issueComments);
     await db.delete(heartbeatRunEvents);
     await db.delete(heartbeatRuns);
@@ -171,6 +173,63 @@ describeEmbeddedPostgres("issue create onboarding first-task routes", () => {
     expect(comments[0]).toMatchObject({ authorType: "agent", authorAgentId: agentId });
   });
 
+  it("seeds the two-option opening question card as the assignee on the first task", async () => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent(companyId);
+    const app = createApp();
+
+    const created = await request(app)
+      .post(`/api/companies/${companyId}/issues`)
+      .send({ title: "Get started", onboardingFirstTask: true, assigneeAgentId: agentId })
+      .expect(201);
+
+    const interactions = await db
+      .select()
+      .from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.issueId, created.body.id));
+    expect(interactions).toHaveLength(1);
+    expect(interactions[0]).toMatchObject({
+      kind: "ask_user_questions",
+      status: "pending",
+      createdByAgentId: agentId,
+      createdByUserId: null,
+      continuationPolicy: "wake_assignee",
+    });
+    const payload = interactions[0].payload as {
+      supersedeOnUserComment?: boolean;
+      questions: Array<{ selectionMode: string; options: Array<{ id: string; label: string; freeText?: boolean }> }>;
+    };
+    expect(payload.supersedeOnUserComment).toBe(true);
+    expect(payload.questions).toHaveLength(1);
+    expect(payload.questions[0].selectionMode).toBe("single");
+    expect(payload.questions[0].options.map((option) => option.id)).toEqual(["interview", "task"]);
+    expect(payload.questions[0].options[0].label).toBe(
+      "Interview me and propose a plan and an agent team to execute it.",
+    );
+    expect(payload.questions[0].options[1]).toMatchObject({ label: "I have a task in mind", freeText: true });
+
+    // The seeded card is read-only for the thread until the user answers: it
+    // must not have queued a run by itself.
+    await drainHeartbeatRunsToQuiescence(db, heartbeatService(db));
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+  });
+
+  it("does not seed the opening card on an unassigned onboarding first task", async () => {
+    const companyId = await seedCompany();
+    const app = createApp();
+
+    const created = await request(app)
+      .post(`/api/companies/${companyId}/issues`)
+      .send({ title: "Get started", onboardingFirstTask: true })
+      .expect(201);
+
+    const interactions = await db
+      .select()
+      .from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.issueId, created.body.id));
+    expect(interactions).toHaveLength(0);
+  });
+
   it("fails closed to an ordinary issue when the onboarding origin is already claimed", async () => {
     const companyId = await seedCompany();
     const agentId = await seedAgent(companyId);
@@ -234,6 +293,7 @@ describeEmbeddedPostgres("issue create onboarding first-task routes", () => {
       .expect(201);
 
     expect(created.body.description).toContain("This is the user's first task in Paperclip.");
+    expect(created.body.description).toContain("Take the path the user picked.");
     // Toggle defaults off → the confirmation proposal form is inlined.
     expect(created.body.description).toContain("post ONE request_confirmation that says, in a few lines");
     expect(created.body.description).not.toContain("treat it like the plan path");

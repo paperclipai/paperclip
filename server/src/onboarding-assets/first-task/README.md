@@ -11,11 +11,23 @@ organization's first task and when it hires the first agent.
 | File | Layer | What it is |
 | --- | --- | --- |
 | `greeting.md` | C | The deterministic greeting the server posts as the agent on the first task, before anything runs. No LLM. |
-| `brief.md` | A (steps 1, 3, 4) | The first task's description. Contains the `{{proposalStep}}` placeholder. |
+| `opening-question.json` | C | The deterministic `ask_user_questions` card the server posts as the agent right after the greeting: "Interview me and propose a plan and an agent team to execute it." or "I have a task in mind" (free text). The option ids `interview` and `task` are fixed because `brief.md` refers to them; the `task` option must keep `freeText: true`. No LLM. |
+| `brief.md` | A (steps 1, 3, 4) | The first task's description. Contains the `{{proposalStep}}` placeholder and tells the agent what to do with each answer to the opening card. |
 | `proposal-confirmation.md` | A (step 2, task path) | The proposal instructions used when the plan-proposal toggle is **off** (default): a one-card `request_confirmation`. |
 | `proposal-plan.md` | A (step 2, task path) | The proposal instructions used when the toggle is **on**: a short plan document plus a checkbox card. |
 | `chief-of-staff/AGENTS.md` | B | The chief-of-staff persona seeded over the first agent's entry instruction file at hire time. |
 | `README.md` | — | This file. |
+
+## The opening card
+
+`opening-question.json` is one single-select question. Its `prompt`, optional
+`helpText`, optional `submitLabel`, and the two options' `label`/`description`
+are free to edit. The server validates the file when it creates a first task
+and refuses (logging a warning, the task is still created) if either option id
+changes or the `task` option loses `freeText: true`. When the user answers, the
+answer reaches the agent in its wake payload and `brief.md` step 1 tells it
+which path to take; when the user types a message instead, the card expires
+and the message wakes the agent as before.
 
 ## Placeholders
 

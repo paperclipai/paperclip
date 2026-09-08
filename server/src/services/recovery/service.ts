@@ -1123,7 +1123,22 @@ export function recoveryService(
       )
       .limit(1)
       .then((rows) => rows[0] ?? null);
-    return userComment === null;
+    if (userComment !== null) return false;
+    // Answering the seeded opening card ("interview me" / "I have a task in
+    // mind") is the user's first input too, even though it is not a comment.
+    const userResolvedInteraction = await db
+      .select({ id: issueThreadInteractions.id })
+      .from(issueThreadInteractions)
+      .where(
+        and(
+          eq(issueThreadInteractions.companyId, issue.companyId),
+          eq(issueThreadInteractions.issueId, issue.id),
+          sql`${issueThreadInteractions.resolvedByUserId} is not null`,
+        ),
+      )
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    return userResolvedInteraction === null;
   }
 
   async function isInvocationBudgetBlocked(issue: typeof issues.$inferSelect, agentId: string) {
