@@ -4,6 +4,12 @@ import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { NewAgentDialog } from "./NewAgentDialog";
+import { queryKeys } from "@/lib/queryKeys";
+vi.mock("@/api/instanceSettings", () => ({
+  instanceSettingsApi: {
+    getExperimental: async () => ({ enableNativeRunner: true }),
+  },
+}));
 const invites = vi.hoisted(() => ({ createCompanyInvite: vi.fn(), getInviteOnboarding: vi.fn(), copy: vi.fn() }));
 vi.mock("../api/access", () => ({ accessApi: invites }));
 vi.mock("../lib/clipboard", () => ({ copyTextToClipboard: invites.copy }));
@@ -108,6 +114,54 @@ it("offers native Codex, Claude ACPX, and OpenCode runners", async () => {
   expect(options).toContain("Claude (ACPX)");
   expect(options).toContain("OpenCode");
   expect(options.join(" ")).not.toContain("ACPX Codex");
+});
+
+it.each([false, undefined])(
+  "hides the runner unless explicitly enabled (%s)",
+  async (enableNativeRunner) => {
+    await act(async () => {
+      cache.setQueryData(queryKeys.instance.experimentalSettings, {
+        enableNativeRunner,
+      });
+    });
+    await name();
+    expect(
+      document.querySelector('input[value="paperclip_runner"]'),
+    ).toBeNull();
+    expect(document.querySelector('input[value="codex_local"]')).not.toBeNull();
+  },
+);
+
+it("offers only Claude, Codex, and OpenCode on Cloud, even with the runner enabled", async () => {
+  await act(async () => {
+    cache.setQueryData(queryKeys.health, {
+      status: "ok",
+      cloud: { managed: true },
+    });
+    cache.setQueryData(
+      queryKeys.adapters.all,
+      [
+        "claude_local",
+        "codex_local",
+        "opencode_local",
+        "cursor",
+        "cursor_cloud",
+        "gemini_local",
+        "grok_local",
+        "kimi_local",
+        "pi_local",
+        "hermes_local",
+        "paperclip_runner",
+      ].map((type) => ({ type, loaded: true })),
+    );
+  });
+  await name();
+  expect(
+    [...document.querySelectorAll<HTMLInputElement>('input[type="radio"]')].map(
+      (input) => input.value,
+    ),
+  ).toEqual(["claude_local", "codex_local", "opencode_local"]);
+  expect(document.body.textContent).not.toContain("CLI harness");
 });
 
 it("keeps agent-only invitations reachable from the new-agent flow", async () => {

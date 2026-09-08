@@ -3,6 +3,8 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { TooltipProvider } from "@/components/ui/tooltip";
+import { queryKeys } from "@/lib/queryKeys";
 import { NewAgent } from "./NewAgent";
 
 const api = vi.hoisted(() => ({
@@ -20,6 +22,8 @@ const settings = vi.hoisted(() => ({
   getGeneral: vi.fn(),
 }));
 const secrets = vi.hoisted(() => ({
+  create: vi.fn(),
+  remove: vi.fn(),
   list: vi.fn(),
   listMyUserSecrets: vi.fn(),
   createUserSecretDefinition: vi.fn(),
@@ -125,7 +129,7 @@ async function render(adapter = "pi_local", runnerProvider = "codex") {
   await act(async () =>
     root.render(
       <QueryClientProvider client={cache}>
-        <NewAgent />
+        <TooltipProvider><NewAgent /></TooltipProvider>
       </QueryClientProvider>,
     ),
   );
@@ -156,7 +160,7 @@ beforeEach(() => {
     "codex_local",
     "opencode_local",
     "pi_local",
-    "paperclip_runner",
+    "paperclip_runner", "cursor_cloud", "cursor", "gemini_local", "kimi_local", "grok_local", "hermes_local", "hermes_gateway",
   ].map((type) => ({ type, loaded: true, disabled: false }));
   api.adapterModels.mockResolvedValue([]);
   api.list.mockResolvedValue([{ id: "ceo", role: "ceo", status: "idle" }]);
@@ -170,9 +174,11 @@ beforeEach(() => {
   ]);
   envApi.capabilities.mockResolvedValue({ sandboxProviders: {} });
   settings.get.mockResolvedValue({ defaultEnvironmentId: "local-1" });
-  settings.getExperimental.mockResolvedValue({});
+  settings.getExperimental.mockResolvedValue({ enableNativeRunner: true });
   settings.getGeneral.mockResolvedValue({ executionMode: "any" });
   secrets.list.mockResolvedValue([]);
+  secrets.create.mockResolvedValue({ id: "org-secret-1" });
+  secrets.remove.mockResolvedValue({ ok: true });
   secrets.listMyUserSecrets.mockResolvedValue([]);
   secrets.createUserSecretDefinition.mockResolvedValue({ id: "definition-1" });
   secrets.createMyUserSecret.mockResolvedValue({ id: "secret-1" });
@@ -184,6 +190,106 @@ afterEach(async () => {
   container.remove();
 });
 describe("New agent setup", () => {
+  it("blocks direct runner setup links when the experiment is disabled", async () => {
+    settings.getExperimental.mockResolvedValue({ enableNativeRunner: false });
+    await render("paperclip_runner");
+    expect(container.textContent).toContain("This adapter is unavailable");
+    expect(api.hire).not.toHaveBeenCalled();
+  });
+  it("blocks direct setup links for unsupported Cloud adapters", async () => {
+    cache.setQueryData(queryKeys.health, {
+      status: "ok",
+      cloud: { managed: true },
+    });
+    await render("pi_local");
+    expect(container.textContent).toContain("This adapter is unavailable");
+    expect(api.hire).not.toHaveBeenCalled();
+  });
+  it("sends Cursor Cloud repo/ref and transient API key, then saves an organization secret", async () => {
+    await render("cursor_cloud");
+    expect(container.querySelector('[aria-label="Model"]')).toBeNull();
+    expect(container.querySelector('[aria-label="Thinking effort"]')).toBeNull();
+    await fill("GitHub repository", "https://github.com/paperclipai/paperclip");
+    await fill("Branch", "master");
+    await fill("CURSOR_API_KEY", "cursor-test-key");
+    await click("Run test");
+    expect(api.testEnvironment.mock.calls[0][2]).toMatchObject({
+      adapterConfig: { repoUrl: "https://github.com/paperclipai/paperclip", repoStartingRef: "master" },
+      testCredentials: { CURSOR_API_KEY: "cursor-test-key" },
+    });
+    expect(secrets.create).not.toHaveBeenCalled();
+    await click("Finish setup");
+    const config = api.hire.mock.calls[0][1].adapterConfig;
+    expect(config).toMatchObject({ repoUrl: "https://github.com/paperclipai/paperclip", repoStartingRef: "master", env: {
+      CURSOR_API_KEY: { type: "secret_ref", secretId: "org-secret-1", version: "latest" },
+    } });
+    expect(config).not.toHaveProperty("repository");
+    expect(config).not.toHaveProperty("branch");
+    expect(JSON.stringify(config)).not.toContain("cursor-test-key");
+    expect(secrets.create).toHaveBeenCalledWith("company-1", expect.objectContaining({ value: "cursor-test-key" }));
+  });
+  it("requires a new Cursor Cloud key even when organization and personal keys exist", async () => {
+    secrets.list.mockResolvedValue([{ id: "existing", key: "CURSOR_API_KEY", name: "Cursor", status: "active" }]);
+    secrets.listMyUserSecrets.mockResolvedValue([{ definition: { key: "CURSOR_API_KEY" }, secret: { id: "personal-key" } }]);
+    await render("cursor_cloud");
+    expect(container.textContent).not.toContain("Or use an organization secret");
+    await fill("GitHub repository", "https://github.com/example/repo");
+    await click("Finish setup");
+    expect(api.hire).not.toHaveBeenCalled();
+    expect(container.textContent).toContain("Enter a Cursor API key");
+    await fill("CURSOR_API_KEY", "new-cursor-key");
+    await click("Finish setup");
+    expect(secrets.create).toHaveBeenCalledWith("company-1", expect.objectContaining({ value: "new-cursor-key" }));
+    expect(api.hire.mock.calls[0][1].adapterConfig.env.CURSOR_API_KEY).toMatchObject({ type: "secret_ref", secretId: "org-secret-1" });
+  });
+  it.each([
+    ["cursor", "CURSOR_API_KEY"],
+    ["gemini_local", "GEMINI_API_KEY"],
+    ["hermes_local", "OPENROUTER_API_KEY"],
+  ])("provides %s credentials to tests and stores only a secret reference", async (adapter, key) => {
+    await render(adapter);
+    await fill(key, "adapter-test-key");
+    await click("Finish setup");
+    expect(api.testEnvironment.mock.calls[0][2].testCredentials).toEqual({ [key]: "adapter-test-key" });
+    expect(api.hire.mock.calls[0][1].adapterConfig.env[key]).toMatchObject({ type: "secret_ref", secretId: "org-secret-1" });
+    expect(container.querySelector('[aria-label="Thinking effort"]')).toBeNull();
+  });
+  it("defines a Kimi API model without overriding it with a CLI model alias", async () => {
+    await render("kimi_local");
+    await fill("KIMI_MODEL_API_KEY", "kimi-test-key");
+    await click("Run test");
+    expect(api.testEnvironment).not.toHaveBeenCalled();
+    expect(container.textContent).toContain("Enter the Kimi API model name");
+    await fill("Kimi API model name", "kimi-for-coding");
+    await fill("Kimi API base URL", "https://api.kimi.com/coding/v1");
+    await click("Finish setup");
+    const config = api.hire.mock.calls[0][1].adapterConfig;
+    expect(config).not.toHaveProperty("model");
+    expect(config.env).toMatchObject({
+      KIMI_MODEL_NAME: { type: "plain", value: "kimi-for-coding" },
+      KIMI_MODEL_BASE_URL: { type: "plain", value: "https://api.kimi.com/coding/v1" },
+      KIMI_MODEL_API_KEY: { type: "secret_ref", secretId: "org-secret-1" },
+    });
+  });
+  it("configures Hermes Gateway URL and its top-level secret reference", async () => {
+    await render("hermes_gateway");
+    expect(container.querySelector('[aria-label="Model"]')).toBeNull();
+    await fill("Hermes API base URL", "https://hermes.example.com");
+    await fill("API_SERVER_KEY", "hermes-test-key");
+    await click("Finish setup");
+    expect(api.testEnvironment.mock.calls[0][2]).toMatchObject({
+      adapterConfig: { apiBaseUrl: "https://hermes.example.com" },
+      testCredentials: { API_SERVER_KEY: "hermes-test-key" },
+    });
+    expect(api.hire.mock.calls[0][1].adapterConfig.apiKey).toMatchObject({ type: "secret_ref", secretId: "org-secret-1" });
+    expect(JSON.stringify(api.hire.mock.calls)).not.toContain("hermes-test-key");
+  });
+  it("shows Grok login guidance and hides ignored Kimi and OpenCode effort controls", async () => {
+    await render("grok_local");
+    expect(container.textContent).toContain("grok login");
+    await render("opencode_local");
+    expect(container.querySelector('[aria-label="Thinking effort"]')).toBeNull();
+  });
   it("restores confirmation on refresh without hiring again", async () => {
     api.get.mockResolvedValue({
       id: "saved-agent",
@@ -201,7 +307,7 @@ describe("New agent setup", () => {
     await act(async () =>
       root.render(
         <QueryClientProvider client={cache}>
-          <NewAgent />
+          <TooltipProvider><NewAgent /></TooltipProvider>
         </QueryClientProvider>,
       ),
     );
@@ -289,17 +395,17 @@ describe("New agent setup", () => {
       expect(api.testEnvironment.mock.calls[0][2].testCredentials).toEqual({ OPENROUTER_API_KEY: "example-test-secret" });
       await click("Finish setup");
       expect(api.hire.mock.calls[0][1].adapterConfig.env.OPENROUTER_API_KEY).toEqual({
-        type: "user_secret_ref",
-        key: expect.stringMatching(/^OPENROUTER_API_KEY\.setup\./),
+        type: "secret_ref",
+        secretId: "org-secret-1",
         version: "latest",
       });
-      expect(secrets.createMyUserSecret).toHaveBeenCalledWith(
+      expect(secrets.create).toHaveBeenCalledWith(
         "company-1", expect.objectContaining({ value: "example-test-secret" }),
       );
       expect(JSON.stringify(api.hire.mock.calls)).not.toContain(
         "example-test-secret",
       );
-      expect(secrets.createMyUserSecret).toHaveBeenCalledTimes(1);
+      expect(secrets.create).toHaveBeenCalledTimes(1);
     },
   );
   it.each(["codex", "claude", "opencode"])(
@@ -358,7 +464,7 @@ describe("New agent setup", () => {
     await fill("OPENROUTER_API_KEY", "new-key");
     api.hire.mockRejectedValueOnce(new Error("Creation rejected"));
     await click("Finish setup");
-    expect(secrets.removeUserSecretDefinition).toHaveBeenCalledWith("company-1", "definition-1");
+    expect(secrets.remove).toHaveBeenCalledWith("org-secret-1");
     expect(container.textContent).toContain("Creation rejected");
   });
   it("preserves the creation error when credential cleanup also fails", async () => {
@@ -366,7 +472,7 @@ describe("New agent setup", () => {
     await fill("Model", "openrouter/anthropic/claude-sonnet-4.6");
     await fill("OPENROUTER_API_KEY", "new-key");
     api.hire.mockRejectedValueOnce(new Error("Agent quota exceeded"));
-    secrets.removeUserSecretDefinition.mockRejectedValueOnce(new Error("Cleanup unavailable"));
+    secrets.remove.mockRejectedValueOnce(new Error("Cleanup unavailable"));
     await click("Finish setup");
     expect(container.textContent).toContain("Agent quota exceeded");
     expect(container.textContent).toContain("Could not remove an unused setup credential");

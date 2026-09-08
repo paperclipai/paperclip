@@ -2,6 +2,9 @@ import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { AnimatePresence, motion, MotionConfig } from "motion/react";
 import { ArrowLeft, ArrowRight, Check, ChevronRight, Plus, RotateCcw, Settings2, Users } from "lucide-react";
 import { getAdapterDisplay } from "@/adapters/adapter-display-registry";
+import { AdapterMark as AgentAdapterMark } from "@/components/new-agent/AgentBasicsDialog";
+import { setupEfforts, SETUP_CREDENTIAL_KEYS, SETUP_LOGIN_HINTS } from "@/lib/agent-setup-fields";
+import { isNewAgentAdapterAllowed } from "@/lib/new-agent-adapters";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
@@ -47,30 +50,17 @@ export const NEW_AGENT_ADAPTERS = [
 export type NewAgentAdapter = typeof NEW_AGENT_ADAPTERS[number];
 export type NewAgentScreen = "name" | "adapter" | "connect" | "runtime" | "saved";
 
-const adapterNotes: Record<NewAgentAdapter, string> = {
-  claude_local: "Anthropic coding agent", codex_local: "OpenAI coding agent",
-  cursor: "Cursor CLI", cursor_cloud: "Runs in Cursor’s cloud", gemini_local: "Google coding agent",
-  grok_local: "xAI coding agent", kimi_local: "Moonshot coding agent", opencode_local: "Choose your provider",
-  pi_local: "Choose your provider", hermes_local: "Hermes coding agent", paperclip_runner: "Experimental runner",
-};
-const brandAssets: Partial<Record<NewAgentAdapter, string>> = {
-  claude_local: "/brands/claude-color.svg", codex_local: "/brands/codex-color.svg",
-};
-
 export type RunnerProvider = "Codex (app server)" | "OpenCode" | "Claude (ACPX)";
 
 type RuntimeDraft = {
-  model: string; effort: string; repoUrl: string; branch: string;
+  model: string; effort: string; repoUrl: string; branch: string; apiKey: string; kimiModel: string;
 };
 function defaultRuntime(): RuntimeDraft {
-  return { model: "", effort: "Auto", repoUrl: "", branch: "main" };
+  return { model: "", effort: "Auto", repoUrl: "", branch: "", apiKey: "", kimiModel: "" };
 }
 
 function AdapterMark({ adapter }: { adapter: NewAgentAdapter }) {
-  const Icon = getAdapterDisplay(adapter).icon;
-  return brandAssets[adapter]
-    ? <img src={brandAssets[adapter]} alt="" className="size-6" />
-    : <Icon className="size-6" />;
+  return <AgentAdapterMark type={adapter} />;
 }
 
 function TextField({ label, hint, value, onChange, placeholder, required, invalid, readOnly, type = "text" }: {
@@ -104,9 +94,10 @@ function Section({ title, description, children }: { title: string; description?
   </section>;
 }
 
-export function NewAgentWizard({ initialScreen = "name", initialAdapter = null, initialName = "", initialOpen = true,
+export function NewAgentWizard({ initialScreen = "name", initialAdapter = null, initialName = "", initialOpen = true, cloud = false, nativeRunnerEnabled = true,
   initialRunnerProvider = "Codex (app server)", initialConnectionMethod = "subscription", initialConnectionWaiting = false, initialTestState = "idle", testOutcome = "pass", testDelayMs = 1200,
 }: {
+  cloud?: boolean; nativeRunnerEnabled?: boolean;
   initialScreen?: NewAgentScreen; initialAdapter?: NewAgentAdapter | null; initialName?: string; initialOpen?: boolean;
   initialRunnerProvider?: RunnerProvider; initialConnectionMethod?: ConnectionMethod; initialConnectionWaiting?: boolean;
   initialTestState?: TestState; testOutcome?: TestOutcome; testDelayMs?: number;
@@ -164,6 +155,10 @@ export function NewAgentWizard({ initialScreen = "name", initialAdapter = null, 
       setError("Enter the GitHub repository URL for this Cursor Cloud agent.");
       return false;
     }
+    if (selected === "cursor_cloud" && !draft.apiKey.trim()) {
+      setError("Enter a Cursor API key.");
+      return false;
+    }
     return true;
   }
 
@@ -171,7 +166,7 @@ export function NewAgentWizard({ initialScreen = "name", initialAdapter = null, 
     ...(draft.model.trim() ? { model: draft.model.trim() } : {}),
     ...(draft.effort !== "Auto" ? { [isRunner ? "thinkingEffort" : selected === "codex_local" ? "modelReasoningEffort" : "thinkingEffort"]: draft.effort.toLowerCase() } : {}),
     ...(isRunner ? { provider: isAcpx ? "acpx" : runnerProvider === "OpenCode" ? "opencode" : "codex", ...(isAcpx ? { acpxAgent: "claude" } : {}) } : {}),
-    ...(selected === "cursor_cloud" ? { repository: draft.repoUrl, branch: draft.branch } : {}),
+    ...(selected === "cursor_cloud" ? { repoUrl: draft.repoUrl, repoStartingRef: draft.branch } : {}),
   };
   const previewAgent: Agent = { ...storybookHiredAgent, id: PREVIEW_AGENT_ID, name: name || "Darnold", adapterType: selected, adapterConfig };
   useNewAgentFixtures(previewAgent, testOutcome, testDelayMs, setTaskCreated);
@@ -251,14 +246,13 @@ export function NewAgentWizard({ initialScreen = "name", initialAdapter = null, 
                     </div> : <fieldset className="flex flex-col gap-3">
                       <legend className="sr-only">Adapter</legend>
                       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-                        {NEW_AGENT_ADAPTERS.map(type => {
+                        {NEW_AGENT_ADAPTERS.filter(type => isNewAgentAdapterAllowed(type, { cloud, nativeRunnerEnabled })).map(type => {
                           const info = getAdapterDisplay(type);
                           return <label key={type} className="relative cursor-pointer">
                             <input type="radio" name="new-agent-adapter" value={type} checked={adapter === type} onChange={() => setAdapter(type)} className="peer sr-only" />
                             <span className={cn("flex h-full flex-col items-center gap-2 rounded-lg border px-3 py-4 text-center peer-focus-visible:ring-2 peer-focus-visible:ring-ring hover:bg-accent/40", adapter === type ? "border-foreground/40 bg-accent" : "border-border bg-card")}>
                               <span aria-hidden="true"><AdapterMark adapter={type} /></span>
                               <span className="text-sm font-medium">{info.label}</span>
-                              <span className="text-xs leading-snug text-muted-foreground">{adapterNotes[type]}</span>
                               {adapter === type && <Check className="absolute right-2 top-2 size-3.5" />}
                             </span>
                           </label>;
@@ -316,7 +310,7 @@ export function NewAgentWizard({ initialScreen = "name", initialAdapter = null, 
             <div className="flex items-center gap-3"><Check className="size-5" /><h2 className="text-lg font-semibold">Your agent is ready</h2></div>
             <dl className="grid grid-cols-2 gap-4 text-sm">
               <dt className="text-muted-foreground">Adapter</dt><dd>{display.label}</dd>
-              <dt className="text-muted-foreground">Model</dt><dd className="break-all font-mono text-xs">{draft.model || "Default"}</dd>
+              {selected !== "cursor_cloud" && <><dt className="text-muted-foreground">Model</dt><dd className="break-all font-mono text-xs">{draft.model || "Default"}</dd></>}
               {isRunner && <><dt className="text-muted-foreground">Provider</dt><dd>{runnerProvider}</dd></>}
               {connectionProvider && <><dt className="text-muted-foreground">Connection</dt><dd>{connectionProvider} · {connectedMethod === "api" ? "API key" : connectedMethod === "subscription" ? "Subscription" : "Not connected"}</dd></>}
               <dt className="text-muted-foreground">Environment</dt><dd>{selected === "cursor_cloud" ? "Cursor Cloud" : environment}</dd>
@@ -337,16 +331,23 @@ export function NewAgentWizard({ initialScreen = "name", initialAdapter = null, 
           <Section title="Runtime">
             {selected === "cursor_cloud" && <div className="grid gap-5 sm:grid-cols-2">
               <TextField label="GitHub repository" required value={draft.repoUrl} onChange={repoUrl => setDraft({ repoUrl })} placeholder="https://github.com/your-org/your-repo" />
-              <TextField label="Branch" value={draft.branch} onChange={branch => setDraft({ branch })} placeholder="main" />
+              <TextField label="Branch" value={draft.branch} onChange={branch => setDraft({ branch })} placeholder="Repository default" />
             </div>}
             <div className="grid gap-5 sm:grid-cols-2">
-              <div className="flex flex-col gap-2">
+              {selected !== "cursor_cloud" && !(selected === "kimi_local" && draft.apiKey) && <div className="flex flex-col gap-2">
                 <ModelDropdown models={models} value={draft.model} onChange={model => setDraft({ model })}
                   open={modelOpen} onOpenChange={setModelOpen} allowDefault required={false} groupByProvider={usesOpenCode}
                   creatable defaultLabel="Default" />
-              </div>
-              {!isAcpx && selected !== "cursor_cloud" && <SelectField label="Thinking effort" value={draft.effort} onChange={effort => setDraft({ effort })} options={["Auto", "Low", "Medium", "High"]} />}
+              </div>}
+              {!isRunner && setupEfforts(selected, draft.model).length > 0 && <SelectField label="Thinking effort" value={draft.effort} onChange={effort => setDraft({ effort })} options={["Auto", ...setupEfforts(selected, draft.model)]} />}
             </div>
+            {SETUP_LOGIN_HINTS[selected] && <p className="text-sm text-muted-foreground">{SETUP_LOGIN_HINTS[selected]}</p>}
+            {SETUP_CREDENTIAL_KEYS[selected] && <>
+              <TextField type="password" label={SETUP_CREDENTIAL_KEYS[selected]} required={selected === "cursor_cloud"} value={draft.apiKey} onChange={apiKey => setDraft({ apiKey })} />
+              {selected === "cursor_cloud" && <a href="https://cursor.com/dashboard/api?section=user-keys#user-api-keys" target="_blank" rel="noopener noreferrer" className="shrink-0 text-xs text-muted-foreground underline underline-offset-4 hover:text-foreground">get api key</a>}
+              <p className="text-xs text-muted-foreground">New keys are saved as organization secrets when you finish setup.</p>
+            </>}
+            {selected === "kimi_local" && draft.apiKey && <TextField label="Kimi API model name" value={draft.kimiModel} onChange={kimiModel => setDraft({ kimiModel })} placeholder="kimi-for-coding" required />}
           </Section>
           {selected !== "cursor_cloud" && <Section title="Environment">
             <SelectField label="Environment" hideLabel value={environment} onChange={value => { setEnvironments(previous => ({ ...previous, [selected]: value })); resetTest(); }} options={["Organization default", "Paperclip Computer", "Local machine"]} />

@@ -237,6 +237,12 @@ export const testAdapterEnvironmentSchema = z.object({
     XAI_API_KEY: z.string().max(16384),
     GROQ_API_KEY: z.string().max(16384),
     OPENCODE_API_KEY: z.string().max(16384),
+    CURSOR_API_KEY: z.string().max(16384),
+    KIMI_MODEL_API_KEY: z.string().max(16384),
+    API_SERVER_KEY: z.string().max(16384),
+    ZAI_API_KEY: z.string().max(16384),
+    KIMI_API_KEY: z.string().max(16384),
+    MINIMAX_API_KEY: z.string().max(16384),
   }).partial().strict().optional(),
   adapterConfig: adapterConfigSchema.optional().default({}),
   /**

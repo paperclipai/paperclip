@@ -2,6 +2,9 @@ import { useId, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { ArrowLeft, ArrowRight, Check, ChevronRight } from "lucide-react";
 import { adaptersApi } from "@/api/adapters";
+import { instanceSettingsApi } from "@/api/instanceSettings";
+import { useCloudInstance } from "@/hooks/useCloudInstance";
+import { isNewAgentAdapterAllowed } from "@/lib/new-agent-adapters";
 import { queryKeys } from "@/lib/queryKeys";
 import { getAdapterDisplay } from "@/adapters/adapter-display-registry";
 import { cn } from "@/lib/utils";
@@ -20,6 +23,31 @@ export type AgentBasics = {
   adapterType: string;
   runnerProvider: string;
 };
+const brandMarks: Record<string, { src: string; dark?: string }> = {
+  claude_local: { src: "/brands/claude-color.svg" },
+  codex_local: { src: "/brands/codex-color.svg" },
+  gemini_local: { src: "/brands/adapters/gemini-color.svg" },
+  kimi_local: {
+    src: "/brands/adapters/kimi-color-light.svg",
+    dark: "/brands/adapters/kimi-color.svg",
+  },
+  ...Object.fromEntries(
+    [
+      ["cursor", "cursor"],
+      ["cursor_cloud", "cursor"],
+      ["grok_local", "grok"],
+      ["hermes_local", "hermesagent"],
+      ["hermes_gateway", "hermesagent"],
+      ["pi_local", "pi"],
+    ].map(([type, icon]) => [
+      type,
+      {
+        src: `/brands/adapters/${icon}.svg`,
+        dark: `/brands/adapters/${icon}-dark.svg`,
+      },
+    ]),
+  ),
+};
 export function AdapterMark({
   type,
   className = "size-6",
@@ -28,14 +56,27 @@ export function AdapterMark({
   className?: string;
 }) {
   const Icon = getAdapterDisplay(type).icon;
-  return type === "claude_local" || type === "codex_local" ? (
-    <img
-      src={`/brands/${type === "claude_local" ? "claude" : "codex"}-color.svg`}
-      className={className}
-      alt=""
-    />
-  ) : (
-    <Icon className={className} />
+  const mark = brandMarks[type];
+  if (!mark) return <Icon className={className} />;
+  return (
+    <>
+      <img
+        src={mark.src}
+        className={cn(
+          "shrink-0 object-contain",
+          mark.dark && "dark:hidden",
+          className,
+        )}
+        alt=""
+      />
+      {mark.dark && (
+        <img
+          src={mark.dark}
+          className={cn("hidden shrink-0 object-contain dark:block", className)}
+          alt=""
+        />
+      )}
+    </>
   );
 }
 export function AgentBasicsDialog({
@@ -52,6 +93,13 @@ export function AgentBasicsDialog({
   onInvite?: () => void;
 }) {
   const id = useId();
+  const cloud = Boolean(useCloudInstance());
+  const experimental = useQuery({
+    queryKey: queryKeys.instance.experimentalSettings,
+    queryFn: instanceSettingsApi.getExperimental,
+    enabled: open,
+    retry: false,
+  });
   const [name, setName] = useState("");
   const [adapterType, setAdapterType] = useState(initialAdapter);
   const [runnerProvider, setRunnerProvider] = useState("codex");
@@ -69,6 +117,10 @@ export function AgentBasicsDialog({
     (adapter) =>
       adapter.loaded &&
       !adapter.disabled &&
+      isNewAgentAdapterAllowed(adapter.type, {
+        cloud,
+        nativeRunnerEnabled: experimental.data?.enableNativeRunner === true,
+      }) &&
       !["process", "http"].includes(adapter.type) &&
       !getAdapterDisplay(adapter.type).comingSoon,
   );
@@ -143,7 +195,12 @@ export function AgentBasicsDialog({
                   className="h-12 text-base"
                 />
                 {onInvite && (
-                  <Button type="button" variant="link" className="px-0 text-muted-foreground" onClick={onInvite}>
+                  <Button
+                    type="button"
+                    variant="link"
+                    className="px-0 text-muted-foreground"
+                    onClick={onInvite}
+                  >
                     Invite an external agent
                   </Button>
                 )}
@@ -189,11 +246,6 @@ export function AgentBasicsDialog({
                           <span className="text-sm font-medium">
                             {display.label}
                           </span>
-                          <span className="text-xs leading-snug text-muted-foreground">
-                            {adapter.type === "paperclip_runner"
-                              ? "Native Codex, Claude, or OpenCode"
-                              : display.description}
-                          </span>
                           {adapterType === adapter.type && (
                             <Check className="absolute right-2 top-2 size-3.5" />
                           )}
@@ -202,7 +254,7 @@ export function AgentBasicsDialog({
                     );
                   })}
                 </div>
-                {adapterType === "paperclip_runner" && (
+                {validAdapter && adapterType === "paperclip_runner" && (
                   <label className="flex flex-col gap-2 text-sm font-medium">
                     Runner
                     <select

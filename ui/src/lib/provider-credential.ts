@@ -10,6 +10,28 @@ export const PROVIDER_ENV_KEYS: Record<string, string> = {
   opencode: "OPENCODE_API_KEY",
 };
 
+/** New organization credentials get a distinct key; never rotate another agent's secret. */
+export async function storeOrganizationApiKey(
+  companyId: string,
+  envKey: string,
+  value: string,
+) {
+  const secret = await secretsApi.create(companyId, {
+    name: `${envKey} · agent setup`,
+    key: `${envKey}.setup.${crypto.randomUUID()}`,
+    value: value.trim(),
+    description: "Adapter credential supplied during agent setup.",
+  });
+  return {
+    binding: {
+      type: "secret_ref" as const,
+      secretId: secret.id,
+      version: "latest" as const,
+    },
+    remove: () => secretsApi.remove(secret.id),
+  };
+}
+
 /** Store a validated key during agent creation without rotating other agents’
  * credentials. The caller removes this definition if creation fails. */
 export async function storeProviderApiKey(
@@ -23,7 +45,8 @@ export async function storeProviderApiKey(
     name: `${envKey} · agent setup`,
     description: "Model provider credential for a new agent setup.",
   });
-  const remove = () => secretsApi.removeUserSecretDefinition(companyId, definition.id);
+  const remove = () =>
+    secretsApi.removeUserSecretDefinition(companyId, definition.id);
   try {
     await secretsApi.createMyUserSecret(companyId, {
       definitionId: definition.id,
@@ -35,7 +58,11 @@ export async function storeProviderApiKey(
     throw error;
   }
   return {
-    binding: { type: "user_secret_ref" as const, key, version: "latest" as const },
+    binding: {
+      type: "user_secret_ref" as const,
+      key,
+      version: "latest" as const,
+    },
     remove,
   };
 }
