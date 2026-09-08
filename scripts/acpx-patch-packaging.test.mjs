@@ -13,6 +13,8 @@ import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { createRequire } from "node:module";
+import { runInNewContext } from "node:vm";
 
 import cliEsbuildConfig from "../cli/esbuild.config.mjs";
 import { bundledCliNpmDependencies } from "./cli-bundled-npm-dependencies.mjs";
@@ -341,4 +343,24 @@ test("bundled package dry runs preview without querying published versions", () 
 test("npm builds use corepack instead of requiring a global pnpm", () => {
   assert.match(buildNpmScript, /corepack pnpm -r typecheck/);
   assert.doesNotMatch(buildNpmScript, /^\s*pnpm -r typecheck/m);
+});
+
+
+test("installed ACPX runtime persists and restores optional goal capabilities", () => {
+  const requireRunner = createRequire(new URL("../packages/paperclip-runner/package.json", import.meta.url));
+  const runtimeSource = readFileSync(requireRunner.resolve("acpx/runtime"), "utf8");
+  const start = runtimeSource.indexOf("function persistedGoalCapability(");
+  const end = runtimeSource.indexOf("function planUpdateEvent(", start);
+  assert.ok(start >= 0 && end > start, "the installed patch must define both goal helpers");
+  const helpers = runInNewContext(runtimeSource.slice(start, end) + ";({ persistedGoalCapability, restoredGoalCapability })", {
+    isRecord: (value) => value !== null && typeof value === "object" && !Array.isArray(value),
+  });
+  assert.equal(helpers.persistedGoalCapability(undefined), undefined);
+  assert.equal(helpers.restoredGoalCapability(undefined), undefined);
+  const goal = { version: 1, controlMethod: "_session/goal", actions: ["set", "pause", "clear"] };
+  const saved = JSON.parse(JSON.stringify(helpers.persistedGoalCapability(goal)));
+  assert.equal(saved.control_method, "_session/goal");
+  assert.deepEqual(JSON.parse(JSON.stringify(helpers.restoredGoalCapability(saved))), goal);
+  assert.equal(helpers.persistedGoalCapability({ ...goal, version: 2 }), undefined);
+  assert.equal(helpers.persistedGoalCapability({ ...goal, actions: ["set"] }), undefined);
 });

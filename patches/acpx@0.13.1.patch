@@ -235,10 +235,24 @@ index a1f4a70a003792c6eacf68b6b038f37bfec1db53..50029e881c07a7228ddd978bb03d0406
  	client_operation: clientOperationEvent,
  	update: updateStatusEvent,
  	done: () => null,
-@@ -424,6 +424,20 @@ function availableCommandsUpdateEvent(payload) {
+@@ -424,6 +424,34 @@ function availableCommandsUpdateEvent(payload) {
  		availableCommands
  	};
  }
++function persistedGoalCapability(goal) {
++	if (!isRecord(goal) || goal.version !== 1 || goal.controlMethod !== "_session/goal" || !Array.isArray(goal.actions)) return;
++	const actions = goal.actions.filter((action) => ["set", "pause", "resume", "clear"].includes(action));
++	if (!actions.includes("set") || !actions.includes("clear")) return;
++	return { version: 1, control_method: goal.controlMethod, actions };
++}
++function restoredGoalCapability(goal) {
++	if (!isRecord(goal)) return;
++	const canonical = persistedGoalCapability({ ...goal, controlMethod: goal.control_method ?? goal.controlMethod });
++	if (!canonical) return;
++	return { version: canonical.version, controlMethod: canonical.control_method, actions: canonical.actions };
++}
++
++
 +function planUpdateEvent(payload) {
 +	const raw = Array.isArray(payload.entries) ? payload.entries : [];
 +	const entries = [];

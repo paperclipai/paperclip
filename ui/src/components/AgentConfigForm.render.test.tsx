@@ -3280,6 +3280,12 @@ describe("AgentConfigForm managed-sandbox-only host surfaces", () => {
     );
     roots.push(result.root);
 
+    await act(async () => {
+      for (const button of result.container.querySelectorAll("button")) {
+        if (["Advanced", "Advanced Run Policy"].includes(button.textContent?.trim() ?? "")) button.click();
+      }
+    });
+    await flushReact();
     const labels = fieldLabels(result.container);
     expect(labels).toContain("Working directory (deprecated)");
     expect(labels).toContain("Command");
@@ -3301,6 +3307,12 @@ describe("AgentConfigForm managed-sandbox-only host surfaces", () => {
     );
     roots.push(result.root);
 
+    await act(async () => {
+      for (const button of result.container.querySelectorAll("button")) {
+        if (["Advanced", "Advanced Run Policy"].includes(button.textContent?.trim() ?? "")) button.click();
+      }
+    });
+    await flushReact();
     const labels = fieldLabels(result.container);
     expect(labels).not.toContain("Working directory (deprecated)");
     expect(labels).not.toContain("Command");
@@ -3321,6 +3333,12 @@ describe("AgentConfigForm managed-sandbox-only host surfaces", () => {
     );
     roots.push(result.root);
 
+    await act(async () => {
+      for (const button of result.container.querySelectorAll("button")) {
+        if (["Advanced", "Advanced Run Policy"].includes(button.textContent?.trim() ?? "")) button.click();
+      }
+    });
+    await flushReact();
     const labels = fieldLabels(result.container);
     expect(labels).toContain("ACP session mode");
     expect(labels).toContain("ACP non-interactive permissions");
@@ -3336,6 +3354,12 @@ describe("AgentConfigForm managed-sandbox-only host surfaces", () => {
     );
     roots.push(result.root);
 
+    await act(async () => {
+      for (const button of result.container.querySelectorAll("button")) {
+        if (["Advanced", "Advanced Run Policy"].includes(button.textContent?.trim() ?? "")) button.click();
+      }
+    });
+    await flushReact();
     const labels = fieldLabels(result.container);
     expect(labels).not.toContain("Working directory (deprecated)");
     expect(labels).not.toContain("Command");
@@ -3352,6 +3376,12 @@ describe("AgentConfigForm managed-sandbox-only host surfaces", () => {
     );
     roots.push(result.root);
 
+    await act(async () => {
+      for (const button of result.container.querySelectorAll("button")) {
+        if (["Advanced", "Advanced Run Policy"].includes(button.textContent?.trim() ?? "")) button.click();
+      }
+    });
+    await flushReact();
     const labels = fieldLabels(result.container);
     expect(labels).not.toContain("Working directory (deprecated)");
     expect(labels).not.toContain("Command");

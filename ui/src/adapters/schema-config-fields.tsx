@@ -248,21 +248,21 @@ export function invalidateConfigSchemaCache(adapterType: string): void {
 // ---------------------------------------------------------------------------
 
 export function useConfigSchema(adapterType: string): AdapterConfigSchema | null {
-  const [schema, setSchema] = useState<AdapterConfigSchema | null>(
-    schemaCache.get(adapterType) ?? null,
+  const [loaded, setLoaded] = useState<{ adapterType: string; schema: AdapterConfigSchema | null }>(
+    () => ({ adapterType, schema: schemaCache.get(adapterType) ?? null }),
   );
 
   useEffect(() => {
     let cancelled = false;
     fetchConfigSchema(adapterType).then((s) => {
-      if (!cancelled) setSchema(s);
+      if (!cancelled) setLoaded({ adapterType, schema: s });
     });
     return () => {
       cancelled = true;
     };
   }, [adapterType]);
 
-  return schema;
+  return loaded.adapterType === adapterType ? loaded.schema : schemaCache.get(adapterType) ?? null;
 }
 
 // ---------------------------------------------------------------------------
@@ -333,9 +333,9 @@ export function SchemaConfigFields({
 }: AdapterConfigFieldsProps) {
   const schema = useConfigSchema(adapterType);
 
-  const [defaultsApplied, setDefaultsApplied] = useState(false);
+  const [defaultsApplied, setDefaultsApplied] = useState<string | null>(null);
   useEffect(() => {
-    if (!schema || !isCreate || defaultsApplied || (section && section !== "configuration")) return;
+    if (!schema || !isCreate || defaultsApplied === adapterType || (section && section !== "configuration")) return;
     const defaults: Record<string, unknown> = {};
     for (const field of schema.fields) {
       const def = getDefaultValue(field);
@@ -348,8 +348,8 @@ export function SchemaConfigFields({
         adapterSchemaValues: { ...values?.adapterSchemaValues, ...defaults },
       });
     }
-    setDefaultsApplied(true);
-  }, [schema, isCreate, defaultsApplied, set, values?.adapterSchemaValues, section]);
+    setDefaultsApplied(adapterType);
+  }, [schema, adapterType, isCreate, defaultsApplied, set, values?.adapterSchemaValues, section]);
 
   if (!schema || schema.fields.length === 0) return null;
 

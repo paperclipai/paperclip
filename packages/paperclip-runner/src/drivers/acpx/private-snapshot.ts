@@ -39,6 +39,9 @@ export async function createAcpxPrivateSnapshot(
   executable: FileHandle | null,
 ): Promise<AcpxPrivateSnapshot> {
   sourceRoots = await Promise.all(sourceRoots.map((root) => realpath(root)));
+  const sourceIdentities = await Promise.all(
+    sourceRoots.map((root) => lstat(root, { bigint: true })),
+  );
   const directory = await realpath(
     await mkdtemp(join(tmpdir(), "paperclip-acpx-")),
   );
@@ -47,9 +50,6 @@ export async function createAcpxPrivateSnapshot(
   const directories: string[] = [directory];
   let bytesCopied = 0;
   let filesCopied = 0;
-  const sourceIdentities = await Promise.all(
-    sourceRoots.map((root) => lstat(root, { bigint: true })),
-  );
   const same = (
     a: (typeof sourceIdentities)[number],
     b: (typeof sourceIdentities)[number],
