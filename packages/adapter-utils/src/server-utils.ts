@@ -651,6 +651,16 @@ type PaperclipWakeLivenessContinuation = {
   instruction: string | null;
 };
 
+type PaperclipWakeSuccessfulRunHandoff = {
+  attempt: number | null;
+  maxAttempts: number | null;
+  sourceRunId: string | null;
+  reason: string | null;
+  missingDisposition: string | null;
+  validDispositionOptions: string[];
+  instruction: string | null;
+};
+
 type PaperclipWakeChildIssueSummary = {
   id: string | null;
   identifier: string | null;
@@ -730,6 +740,7 @@ type PaperclipWakePayload = {
   planReviewContext: PaperclipWakePlanReviewContext | null;
   documentReviewContext: PaperclipWakeDocumentReviewContext | null;
   livenessContinuation: PaperclipWakeLivenessContinuation | null;
+  successfulRunHandoff: PaperclipWakeSuccessfulRunHandoff | null;
   taskWatchdog: PaperclipWakeTaskWatchdogContext | null;
   interactionKind: string | null;
   interactionStatus: string | null;
@@ -1112,6 +1123,34 @@ function normalizePaperclipWakeLivenessContinuation(value: unknown): PaperclipWa
   };
 }
 
+function normalizePaperclipWakeSuccessfulRunHandoff(value: unknown): PaperclipWakeSuccessfulRunHandoff | null {
+  const handoff = parseObject(value);
+  const attempt = asNumber(handoff.attempt, 0);
+  const maxAttempts = asNumber(handoff.maxAttempts, 0);
+  const sourceRunId = asString(handoff.sourceRunId, "").trim() || null;
+  const reason = asString(handoff.reason, "").trim() || null;
+  const missingDisposition = asString(handoff.missingDisposition, "").trim() || null;
+  const validDispositionOptions = Array.isArray(handoff.validDispositionOptions)
+    ? handoff.validDispositionOptions
+        .map((entry) => asString(entry, "").trim())
+        .filter((entry) => entry.length > 0)
+    : [];
+  const instruction = asString(handoff.instruction, "").trim() || null;
+  if (
+    !attempt && !maxAttempts && !sourceRunId && !reason && !missingDisposition
+    && validDispositionOptions.length === 0 && !instruction
+  ) return null;
+  return {
+    attempt: attempt > 0 ? attempt : null,
+    maxAttempts: maxAttempts > 0 ? maxAttempts : null,
+    sourceRunId,
+    reason,
+    missingDisposition,
+    validDispositionOptions,
+    instruction,
+  };
+}
+
 function normalizePaperclipWakeChildIssueSummary(value: unknown): PaperclipWakeChildIssueSummary | null {
   const child = parseObject(value);
   const id = asString(child.id, "").trim() || null;
@@ -1378,6 +1417,7 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
         .filter((entry): entry is PaperclipWakeAnnotationDelta => Boolean(entry))
     : [];
   const livenessContinuation = normalizePaperclipWakeLivenessContinuation(payload.livenessContinuation);
+  const successfulRunHandoff = normalizePaperclipWakeSuccessfulRunHandoff(payload.successfulRunHandoff);
   const taskWatchdog = normalizePaperclipWakeTaskWatchdog(payload.taskWatchdog);
   const recovery = normalizePaperclipWakeRecovery(payload.recovery);
   const childIssueSummaries = Array.isArray(payload.childIssueSummaries)
@@ -1413,7 +1453,7 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
     : null;
   const executionWorkspace = normalizePaperclipWakeExecutionWorkspace(payload.executionWorkspace);
   const agentMessage = normalizePaperclipWakeAgentMessage(payload.agentMessage);
-  if (comments.length === 0 && commentIds.length === 0 && annotationDeltas.length === 0 && childIssueSummaries.length === 0 && unresolvedBlockerIssueIds.length === 0 && unresolvedBlockerSummaries.length === 0 && !activeTreeHold && !executionStage && !continuationSummary && !planReviewContext && !documentReviewContext && !livenessContinuation && !taskWatchdog && !checkboxSelection && !questionResponse && !executionWorkspace && !agentMessage && !recovery && !normalizePaperclipWakeIssue(payload.issue)) {
+  if (comments.length === 0 && commentIds.length === 0 && annotationDeltas.length === 0 && childIssueSummaries.length === 0 && unresolvedBlockerIssueIds.length === 0 && unresolvedBlockerSummaries.length === 0 && !activeTreeHold && !executionStage && !continuationSummary && !planReviewContext && !documentReviewContext && !livenessContinuation && !successfulRunHandoff && !taskWatchdog && !checkboxSelection && !questionResponse && !executionWorkspace && !agentMessage && !recovery && !normalizePaperclipWakeIssue(payload.issue)) {
     return null;
   }
 
@@ -1434,6 +1474,7 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
     documentReviewContext,
     annotationDeltas,
     livenessContinuation,
+    successfulRunHandoff,
     taskWatchdog,
     interactionKind: asString(payload.interactionKind, "").trim() || null,
     interactionStatus: asString(payload.interactionStatus, "").trim() || null,
@@ -1476,7 +1517,11 @@ export function stringifyPaperclipWakePayload(
 
 export function isPaperclipRecoveryWakePayload(value: unknown): boolean {
   const normalized = normalizePaperclipWakePayload(value);
-  return Boolean(normalized?.recovery || normalized?.reason === "source_scoped_recovery_action");
+  return Boolean(
+    normalized?.recovery
+    || normalized?.successfulRunHandoff
+    || normalized?.reason === "source_scoped_recovery_action",
+  );
 }
 
 export function readPaperclipIssueWorkModeFromContext(value: unknown): string | null {
@@ -2045,6 +2090,33 @@ export function renderPaperclipWakePrompt(
     }
     if (continuation.instruction) {
       lines.push(`- instruction: ${continuation.instruction}`);
+    }
+  }
+
+  if (normalized.successfulRunHandoff) {
+    const handoff = normalized.successfulRunHandoff;
+    lines.push("", "Successful run missing a disposition:");
+    if (handoff.attempt) {
+      lines.push(
+        `- attempt: ${handoff.attempt}${handoff.maxAttempts ? `/${handoff.maxAttempts}` : ""}`,
+      );
+    }
+    if (handoff.sourceRunId) {
+      lines.push(`- source run: ${handoff.sourceRunId}`);
+    }
+    if (handoff.reason) {
+      lines.push(`- reason: ${handoff.reason}`);
+    }
+    if (handoff.missingDisposition) {
+      lines.push(`- missing: ${handoff.missingDisposition}`);
+    }
+    if (handoff.validDispositionOptions.length > 0) {
+      lines.push(`- valid dispositions: ${handoff.validDispositionOptions.join(", ")}`);
+    }
+    if (handoff.instruction) {
+      // The producer writes a multi-line markdown instruction, so it goes on its
+      // own lines instead of inside the bullet.
+      lines.push("- instruction:", handoff.instruction);
     }
   }
 
