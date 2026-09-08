@@ -10,6 +10,7 @@ import {
 function counterDb(
   initialCount = 0,
   runOverrides: Record<string, unknown> | null = {},
+  issueCheckedOutByRun: string | null = null,
 ) {
   let observedCount = initialCount;
   const inserted: Array<Record<string, unknown>> = [];
@@ -18,10 +19,19 @@ function counterDb(
       from: () => ({
         where: () => {
           if (Object.keys(selection).includes("count")) {
+            // Activity-log count query
             return {
               then: (resolve: (rows: unknown[]) => unknown) => resolve([{ count: observedCount }]),
             };
           }
+          if (Object.keys(selection).includes("checkoutRunId")) {
+            // Issue checkout-ownership query (no .for() — plain .then())
+            return {
+              then: (resolve: (rows: unknown[]) => unknown) =>
+                resolve(issueCheckedOutByRun ? [{ checkoutRunId: issueCheckedOutByRun }] : []),
+            };
+          }
+          // heartbeatRuns lock query (.for("update").then())
           return {
             for: () => ({
               then: (resolve: (rows: unknown[]) => unknown) => resolve(runOverrides === null ? [] : [{
@@ -198,8 +208,9 @@ describe("cross-issue influence limit rollout", () => {
     expect(fake.inserted).toEqual([]);
   });
 
-  it("fails closed when the persisted run has no source issue", async () => {
-    const fake = counterDb(0, { contextSnapshot: {} });
+  it("fails closed when the persisted run has no source issue and has not checked out the target", async () => {
+    // issueCheckedOutByRun=null → no checkout match → still 403
+    const fake = counterDb(0, { contextSnapshot: {} }, null);
 
     await expect(observeCrossIssueInfluence(fake.db as never, {
       companyId: "22222222-2222-4222-8222-222222222222",
@@ -211,6 +222,25 @@ describe("cross-issue influence limit rollout", () => {
       status: 403,
       details: { code: "cross_issue_influence_run_context_required" },
     });
+    expect(fake.inserted).toEqual([]);
+  });
+
+  it("allows writes when a heartbeat_timer run has no context issue but owns the checkout", async () => {
+    // heartbeat_timer run: contextSnapshot has no issueId but the run checked out the target
+    const fake = counterDb(
+      0,
+      { contextSnapshot: { wakeReason: "heartbeat_timer" } },
+      "11111111-1111-4111-8111-111111111111", // issue.checkoutRunId === runId
+    );
+
+    await expect(observeCrossIssueInfluence(fake.db as never, {
+      companyId: "22222222-2222-4222-8222-222222222222",
+      runId: "11111111-1111-4111-8111-111111111111",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      targetIssueId: "55555555-5555-4555-8555-555555555555",
+      kind: "update",
+    })).resolves.toBeNull();
+    // Null means "same-issue" — not counted against the cross-issue cap
     expect(fake.inserted).toEqual([]);
   });
 });
