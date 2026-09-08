@@ -105,9 +105,7 @@ describe("native ACPX environment checks", () => {
     })]);
   });
 
-  it.each([["linux", "x64"], ["darwin", "arm64"], ["darwin", "x64"]] as const)("requires the installed runtime probe on %s %s", async (platform, arch) => {
-    vi.spyOn(process, "platform", "get").mockReturnValue(platform);
-    vi.spyOn(process, "arch", "get").mockReturnValue(arch);
+  it("requires a successful installed runtime probe", async () => {
     const result = await requireServerAdapter("paperclip_runner").testEnvironment!(context);
     expect(result.status).toBe("pass");
     expect(probeInstallation).toHaveBeenCalledWith(context.config.model);

@@ -1,4 +1,4 @@
-import { ACPX_PRIVATE_SNAPSHOT_ENV, createAcpxPrivateSnapshot, type AcpxPrivateSnapshot } from "./private-snapshot.js";
+import { MAX_ACPX_RUNTIME_EXECUTABLE_BYTES, ACPX_PRIVATE_SNAPSHOT_ENV, createAcpxPrivateSnapshot, type AcpxPrivateSnapshot } from "./private-snapshot.js";
 import { createHash } from "node:crypto";
 import {
   spawn as spawnChildProcess,
@@ -34,7 +34,6 @@ import {
 
 const MAX_PACKAGE_JSON_BYTES = 256 * 1024;
 const MAX_AGENT_COMMAND_BYTES = 16 * 1024 * 1024;
-const MAX_RUNTIME_EXECUTABLE_BYTES = 384 * 1024 * 1024;
 const COMMAND_SOURCE_FD = 3;
 const COMMAND_DIRECTORY_FD = 4;
 const DEPENDENCY_ANCESTOR_FD_START = 5;
@@ -1046,7 +1045,7 @@ async function openVerifiedRuntimeExecutable(
     if (
       !before.isFile() ||
       before.size < 1n ||
-      before.size > BigInt(MAX_RUNTIME_EXECUTABLE_BYTES) ||
+      before.size > BigInt(MAX_ACPX_RUNTIME_EXECUTABLE_BYTES) ||
       (before.mode & 0o111n) === 0n
     ) {
       throw new Error(

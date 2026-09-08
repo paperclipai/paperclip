@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   mkdtemp,
   mkdir,
@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   createAcpxPrivateSnapshot,
+  MAX_ACPX_RUNTIME_EXECUTABLE_BYTES,
   type AcpxPrivateSnapshot,
 } from "./private-snapshot.js";
 const roots: string[] = [];
@@ -56,6 +57,24 @@ describe("private ACPX package snapshots", () => {
     await expect(
       access(join(snapshot.roots[0]!, "escape.js")),
     ).rejects.toThrow();
+  });
+  it("rejects an oversized executable before allocating or reading it", async () => {
+    const { root, source } = await fixture();
+    const handle = await open(join(root, "oversized-runtime"), "w+");
+    await handle.truncate(MAX_ACPX_RUNTIME_EXECUTABLE_BYTES + 1);
+    const allocate = vi.spyOn(Buffer, "alloc");
+    const read = vi.spyOn(handle, "read");
+    try {
+      await expect(createAcpxPrivateSnapshot([source], handle)).rejects.toThrow(
+        "ACPX runtime executable must be a bounded executable file",
+      );
+      expect(allocate.mock.calls.every(([size]) => size <= MAX_ACPX_RUNTIME_EXECUTABLE_BYTES)).toBe(true);
+      expect(read).not.toHaveBeenCalled();
+    } finally {
+      allocate.mockRestore();
+      read.mockRestore();
+      await handle.close();
+    }
   });
   it("copies the executable from its verified open handle", async () => {
     const { root, source } = await fixture();

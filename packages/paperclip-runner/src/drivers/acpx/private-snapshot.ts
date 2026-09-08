@@ -16,6 +16,11 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 
+// Match the admission limit and reserve separate space for qualified modules.
+export const MAX_ACPX_RUNTIME_EXECUTABLE_BYTES = 384 * 1024 * 1024;
+const MAX_PACKAGE_SNAPSHOT_BYTES = 128 * 1024 * 1024;
+const MAX_SNAPSHOT_BYTES = MAX_PACKAGE_SNAPSHOT_BYTES + MAX_ACPX_RUNTIME_EXECUTABLE_BYTES;
+
 export const ACPX_PRIVATE_SNAPSHOT_ENV = "PAPERCLIP_ACPX_PRIVATE_SNAPSHOT";
 export interface AcpxPrivateSnapshot {
   roots: string[];
@@ -32,6 +37,17 @@ const within = (root: string, file: string) => {
     rel === "" || (rel !== ".." && !rel.startsWith("../") && !isAbsolute(rel))
   );
 };
+
+async function readSnapshotBytes(handle: FileHandle, byteLength: number): Promise<Buffer> {
+  const bytes = Buffer.alloc(byteLength);
+  let offset = 0;
+  while (offset < bytes.length) {
+    const read = await handle.read(bytes, offset, bytes.length - offset, offset);
+    if (!read.bytesRead) throw new Error("ACPX file ended during snapshot");
+    offset += read.bytesRead;
+  }
+  return bytes;
+}
 
 /** macOS has no /proc directory descriptors. Freeze only the admitted package roots. */
 export async function createAcpxPrivateSnapshot(
@@ -103,7 +119,7 @@ export async function createAcpxPrivateSnapshot(
     if (!before.isFile() || before.size > 16n * 1024n * 1024n)
       throw new Error("ACPX module must be a bounded regular file");
     bytesCopied += Number(before.size);
-    if (bytesCopied > 128 * 1024 * 1024)
+    if (bytesCopied > MAX_PACKAGE_SNAPSHOT_BYTES)
       throw new Error("ACPX package snapshot exceeds its byte bound");
     const handle = await open(
       source,
@@ -112,7 +128,7 @@ export async function createAcpxPrivateSnapshot(
     try {
       if (!same(before, await handle.stat({ bigint: true })))
         throw new Error("ACPX module changed before snapshot");
-      const bytes = await handle.readFile();
+      const bytes = await readSnapshotBytes(handle, Number(before.size));
       if (
         !same(before, await handle.stat({ bigint: true })) ||
         !same(before, await lstat(source, { bigint: true }))
@@ -169,19 +185,16 @@ export async function createAcpxPrivateSnapshot(
     let executablePath: string | null = null;
     if (executable) {
       const before = await executable.stat({ bigint: true });
-      const bytes = Buffer.alloc(Number(before.size));
-      let offset = 0;
-      while (offset < bytes.length) {
-        const read = await executable.read(
-          bytes,
-          offset,
-          bytes.length - offset,
-          offset,
-        );
-        if (!read.bytesRead)
-          throw new Error("ACPX executable ended during snapshot");
-        offset += read.bytesRead;
+      if (!before.isFile() || before.size < 1n || before.size > BigInt(MAX_ACPX_RUNTIME_EXECUTABLE_BYTES)) {
+        throw new Error("ACPX runtime executable must be a bounded executable file");
       }
+      // The bigint bound above makes this conversion exact before allocation.
+      const executableBytes = Number(before.size);
+      bytesCopied += executableBytes;
+      if (bytesCopied > MAX_SNAPSHOT_BYTES) {
+        throw new Error("ACPX snapshot exceeds its byte bound");
+      }
+      const bytes = await readSnapshotBytes(executable, executableBytes);
       if (!same(before, await executable.stat({ bigint: true })))
         throw new Error("ACPX executable changed during snapshot");
       executablePath = join(directory, "runtime");

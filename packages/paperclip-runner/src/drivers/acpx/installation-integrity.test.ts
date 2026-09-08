@@ -33,6 +33,7 @@ import {
   snapshotDescriptorResolution,
   verifiedExecutableOpenFlags,
   verifyQualifiedAcpxInstallation,
+  probeAcpxClaudeInstallation,
   type VerifiedAcpxProviderLifetime,
 } from "./installation-integrity.js";
 import { stageManagedCodexCredential } from "./codex-credentials.js";
@@ -49,6 +50,21 @@ afterEach(async () => {
 });
 
 describe("ACPX installation integrity", () => {
+  it.each([["linux", "arm64"], ["darwin", "ia32"], ["freebsd", "x64"]] as const)(
+    "rejects the actual Claude runtime probe on unsupported %s %s",
+    async (platform, arch) => {
+      const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue(platform);
+      const archSpy = vi.spyOn(process, "arch", "get").mockReturnValue(arch);
+      try {
+        await expect(probeAcpxClaudeInstallation("custom-claude-model")).rejects.toThrow(
+          `ACPX claude verified runtime executable is unavailable for ${platform} ${arch}`,
+        );
+      } finally {
+        platformSpy.mockRestore();
+        archSpy.mockRestore();
+      }
+    },
+  );
   it("anchors dynamic provider package resolution at an explicit root", async () => {
     const parent = await mkdtemp(
       join(tmpdir(), "paperclip-acpx-package-parent-"),
@@ -558,7 +574,7 @@ describe("ACPX installation integrity", () => {
     );
   });
 
-  it.runIf(process.platform === "linux" && process.arch === "x64")(
+  it.runIf((process.platform === "linux" && process.arch === "x64") || (process.platform === "darwin" && ["arm64", "x64"].includes(process.arch)))(
     "resolves and pins the installed Claude ACP dependency graph",
     async () => {
       const profile = resolveQualifiedAcpxProfile("claude", "claude-sonnet-5");
