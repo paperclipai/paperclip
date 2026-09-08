@@ -34,6 +34,7 @@ import { adapterRoutes } from "./routes/adapters.js";
 import { pluginUiStaticRoutes } from "./routes/plugin-ui-static.js";
 import { healthLongevityRoutes } from "./routes/health-longevity.js";
 import { supplementsRoutes } from "./routes/supplements.js";
+import { sleepRoutes } from "./routes/sleep.js";
 import { estateRoutes } from "./routes/estate.js";
 import { applyUiBranding } from "./ui-branding.js";
 import { logger } from "./middleware/logger.js";
@@ -155,6 +156,7 @@ export async function createApp(
   );
   api.use("/health", healthLongevityRoutes(db));
   api.use(supplementsRoutes(db));
+  api.use(sleepRoutes(db));
   api.use(estateRoutes(db));
   api.use("/companies", companyRoutes(db, opts.storageService));
   api.use(companySkillRoutes(db));

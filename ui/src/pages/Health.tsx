@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Activity, AlertCircle, ChevronDown, ChevronUp, Leaf, MapPin, Pencil, Plus, Sun, Thermometer, Trash2, Wind } from "lucide-react";
+import { Activity, AlertCircle, ChevronDown, ChevronUp, Leaf, MapPin, Moon, Pencil, Plus, Sun, Thermometer, Trash2, Wind } from "lucide-react";
 import {
   usePersonalEnvironmentalScore,
   type ColorTier,
@@ -14,6 +14,13 @@ import {
   type UserLocation,
   type EnvironmentalReading,
 } from "../hooks/useLocations";
+import {
+  useSleepHistory,
+  useLogSleep,
+  useDeleteSleepRecord,
+  type SleepQuality,
+  type SleepRecord,
+} from "../hooks/useSleep";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { EmptyState } from "../components/EmptyState";
@@ -515,12 +522,297 @@ function LocationsView({ companyId }: { companyId: string }) {
   );
 }
 
+// ---- Sleep view ----
+
+const QUALITY_LABEL: Record<SleepQuality, string> = {
+  poor: "Poor",
+  fair: "Fair",
+  good: "Good",
+  excellent: "Excellent",
+};
+
+const QUALITY_COLOR: Record<SleepQuality, string> = {
+  poor: "text-red-600",
+  fair: "text-yellow-600",
+  good: "text-green-600",
+  excellent: "text-emerald-600",
+};
+
+function formatDuration(minutes: number): string {
+  const h = Math.floor(minutes / 60);
+  const m = minutes % 60;
+  if (m === 0) return `${h}h`;
+  return `${h}h ${m}m`;
+}
+
+function SleepBar({ record }: { record: SleepRecord }) {
+  const maxMinutes = 10 * 60;
+  const pct = Math.min(100, Math.round((record.durationMinutes / maxMinutes) * 100));
+  const label = new Date(record.sleepDate + "T00:00:00Z").toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+  });
+  const barColor =
+    record.durationMinutes >= 7 * 60
+      ? "bg-blue-500"
+      : record.durationMinutes >= 6 * 60
+        ? "bg-yellow-500"
+        : "bg-red-500";
+  return (
+    <div className="flex flex-col items-center gap-0.5 w-8 shrink-0">
+      <span className="text-[9px] text-muted-foreground tabular-nums">
+        {record.durationMinutes >= 60
+          ? `${Math.floor(record.durationMinutes / 60)}h`
+          : `${record.durationMinutes}m`}
+      </span>
+      <div className="relative h-16 w-full flex items-end">
+        <div
+          className={cn("w-full rounded-t-sm", barColor)}
+          style={{ height: `${pct}%` }}
+        />
+      </div>
+      <span className="text-[9px] text-muted-foreground leading-tight text-center">{label}</span>
+    </div>
+  );
+}
+
+function SleepLogRow({
+  record,
+  onDelete,
+}: {
+  record: SleepRecord;
+  onDelete: (id: string) => void;
+}) {
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  return (
+    <div className="flex items-center justify-between py-2 border-b border-border/50 last:border-0">
+      <div className="flex items-center gap-3 min-w-0">
+        <span className="text-sm font-medium tabular-nums shrink-0">
+          {new Date(record.sleepDate + "T00:00:00Z").toLocaleDateString(undefined, {
+            weekday: "short",
+            month: "short",
+            day: "numeric",
+          })}
+        </span>
+        <span className="text-sm tabular-nums text-foreground/80">
+          {formatDuration(record.durationMinutes)}
+        </span>
+        {record.quality && (
+          <span className={cn("text-xs font-medium", QUALITY_COLOR[record.quality])}>
+            {QUALITY_LABEL[record.quality]}
+          </span>
+        )}
+        {record.notes && (
+          <span className="text-xs text-muted-foreground truncate hidden sm:block">
+            {record.notes}
+          </span>
+        )}
+      </div>
+      {confirmDelete ? (
+        <div className="flex gap-1">
+          <button
+            className="text-xs text-destructive hover:underline"
+            onClick={() => onDelete(record.id)}
+          >
+            Confirm
+          </button>
+          <button
+            className="text-xs text-muted-foreground hover:underline"
+            onClick={() => setConfirmDelete(false)}
+          >
+            Cancel
+          </button>
+        </div>
+      ) : (
+        <button
+          className="text-muted-foreground hover:text-destructive ml-2 shrink-0"
+          onClick={() => setConfirmDelete(true)}
+          title="Delete"
+        >
+          <Trash2 className="h-3.5 w-3.5" />
+        </button>
+      )}
+    </div>
+  );
+}
+
+function SleepView({ companyId }: { companyId: string }) {
+  const today = new Date().toISOString().slice(0, 10);
+  const fourteenDaysAgo = new Date(Date.now() - 13 * 86_400_000).toISOString().slice(0, 10);
+
+  const { data, isLoading, error } = useSleepHistory(companyId, fourteenDaysAgo, today);
+  const logMutation = useLogSleep();
+  const deleteMutation = useDeleteSleepRecord();
+
+  const [showForm, setShowForm] = useState(false);
+  const [formDate, setFormDate] = useState(today);
+  const [formHours, setFormHours] = useState("7");
+  const [formMinutes, setFormMinutes] = useState("0");
+  const [formQuality, setFormQuality] = useState<SleepQuality | "">("");
+  const [formNotes, setFormNotes] = useState("");
+  const [formErr, setFormErr] = useState<string | null>(null);
+
+  async function handleLog(e: React.FormEvent) {
+    e.preventDefault();
+    setFormErr(null);
+    const h = parseInt(formHours, 10);
+    const m = parseInt(formMinutes, 10);
+    if (isNaN(h) || isNaN(m) || h < 0 || m < 0 || h > 23 || m > 59 || (h === 0 && m === 0)) {
+      setFormErr("Enter a valid duration.");
+      return;
+    }
+    const durationMinutes = h * 60 + m;
+    try {
+      await logMutation.mutateAsync({
+        companyId,
+        sleepDate: formDate,
+        durationMinutes,
+        quality: formQuality || null,
+        notes: formNotes.trim() || null,
+      });
+      setShowForm(false);
+      setFormHours("7");
+      setFormMinutes("0");
+      setFormQuality("");
+      setFormNotes("");
+    } catch (err) {
+      setFormErr(err instanceof Error ? err.message : "Failed to log sleep");
+    }
+  }
+
+  if (isLoading) return <PageSkeleton />;
+  if (error) {
+    return (
+      <div className="flex items-center gap-2 text-sm text-destructive">
+        <AlertCircle className="h-4 w-4" />
+        {error.message}
+      </div>
+    );
+  }
+
+  const records = data?.records ?? [];
+
+  return (
+    <div className="space-y-4">
+      {/* Bar chart */}
+      {records.length > 0 && (
+        <div className="rounded-lg border border-border bg-card p-4">
+          <p className="text-xs text-muted-foreground mb-3">Sleep duration — last 14 days (max 10h)</p>
+          <div className="flex items-end gap-1 overflow-x-auto pb-1">
+            {[...records].reverse().map((r) => (
+              <SleepBar key={r.id} record={r} />
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Log button / form */}
+      <div className="rounded-lg border border-border bg-card p-4 space-y-3">
+        <div className="flex items-center justify-between">
+          <h3 className="text-sm font-semibold flex items-center gap-2">
+            <Moon className="h-4 w-4 text-blue-400" />
+            Sleep Log
+          </h3>
+          <Button
+            size="sm"
+            variant={showForm ? "ghost" : "outline"}
+            onClick={() => setShowForm((v) => !v)}
+          >
+            {showForm ? "Cancel" : <><Plus className="h-3.5 w-3.5 mr-1" />Log sleep</>}
+          </Button>
+        </div>
+
+        {showForm && (
+          <form onSubmit={handleLog} className="space-y-2 pt-1 border-t border-border/50">
+            <div className="flex flex-wrap gap-2">
+              <div className="flex flex-col gap-1">
+                <label className="text-xs text-muted-foreground">Date</label>
+                <input
+                  type="date"
+                  value={formDate}
+                  max={today}
+                  onChange={(e) => setFormDate(e.target.value)}
+                  className="h-8 rounded border border-border bg-background px-2 text-sm"
+                  required
+                />
+              </div>
+              <div className="flex flex-col gap-1">
+                <label className="text-xs text-muted-foreground">Hours</label>
+                <input
+                  type="number"
+                  value={formHours}
+                  min={0}
+                  max={23}
+                  onChange={(e) => setFormHours(e.target.value)}
+                  className="h-8 w-16 rounded border border-border bg-background px-2 text-sm"
+                  required
+                />
+              </div>
+              <div className="flex flex-col gap-1">
+                <label className="text-xs text-muted-foreground">Minutes</label>
+                <input
+                  type="number"
+                  value={formMinutes}
+                  min={0}
+                  max={59}
+                  onChange={(e) => setFormMinutes(e.target.value)}
+                  className="h-8 w-16 rounded border border-border bg-background px-2 text-sm"
+                  required
+                />
+              </div>
+              <div className="flex flex-col gap-1">
+                <label className="text-xs text-muted-foreground">Quality</label>
+                <select
+                  value={formQuality}
+                  onChange={(e) => setFormQuality(e.target.value as SleepQuality | "")}
+                  className="h-8 rounded border border-border bg-background px-2 text-sm"
+                >
+                  <option value="">—</option>
+                  <option value="poor">Poor</option>
+                  <option value="fair">Fair</option>
+                  <option value="good">Good</option>
+                  <option value="excellent">Excellent</option>
+                </select>
+              </div>
+            </div>
+            <input
+              type="text"
+              placeholder="Notes (optional)"
+              value={formNotes}
+              onChange={(e) => setFormNotes(e.target.value)}
+              className="w-full h-8 rounded border border-border bg-background px-2 text-sm"
+            />
+            {formErr && <p className="text-xs text-destructive">{formErr}</p>}
+            <Button type="submit" size="sm" disabled={logMutation.isPending}>
+              {logMutation.isPending ? "Saving..." : "Save"}
+            </Button>
+          </form>
+        )}
+
+        {records.length === 0 ? (
+          <p className="text-sm text-muted-foreground py-2">No sleep records for the last 14 days.</p>
+        ) : (
+          <div className="divide-y divide-border/30">
+            {records.map((r) => (
+              <SleepLogRow
+                key={r.id}
+                record={r}
+                onDelete={(id) => deleteMutation.mutate({ id, companyId })}
+              />
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ---- Page ----
 
 export function Health() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
-  const [view, setView] = useState<"score" | "locations">("score");
+  const [view, setView] = useState<"score" | "locations" | "sleep">("score");
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Health" }]);
@@ -551,12 +843,23 @@ export function Health() {
         >
           Locations
         </button>
+        <button
+          className={cn(
+            "px-3 py-1 text-xs font-medium rounded transition-colors",
+            view === "sleep" ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground",
+          )}
+          onClick={() => setView("sleep")}
+        >
+          Sleep
+        </button>
       </div>
 
       {view === "score" ? (
         <ScoreView companyId={selectedCompanyId} />
-      ) : (
+      ) : view === "locations" ? (
         <LocationsView companyId={selectedCompanyId} />
+      ) : (
+        <SleepView companyId={selectedCompanyId} />
       )}
     </div>
   );
