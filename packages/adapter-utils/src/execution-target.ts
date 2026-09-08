@@ -3,7 +3,7 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { randomBytes, randomUUID } from "node:crypto";
-import { githubLauncherSource } from "./github-launcher.js";
+import { githubLauncherCommandSource, githubLauncherSource } from "./github-launcher.js";
 import type { SshRemoteExecutionSpec } from "./ssh.js";
 import {
   prepareCommandManagedRuntime,
@@ -1502,6 +1502,15 @@ export function runtimeAssetDir(
   return prepared.assetDirs[key] ?? path.posix.join(fallbackRemoteCwd, ".paperclip-runtime", key);
 }
 
+/** Git Bash maps `C:\dir` to `/c/dir`, so POSIX profiles staged on Windows use that form. */
+function gitBashPathList(value: string): string {
+  return value.split(";").map((entry) => {
+    if (/^[A-Za-z]:[\\/]/.test(entry)) return `/${entry[0].toLowerCase()}${entry.slice(2).replace(/\\/g, "/")}`;
+    if (entry.startsWith("\\\\")) return `//${entry.slice(2).replace(/\\/g, "/")}`;
+    return entry.replace(/\\/g, "/");
+  }).join(":");
+}
+
 type GitHubLauncherLocation = {
   runId: string; target: AdapterExecutionTarget | null | undefined;
 };
@@ -1561,14 +1570,23 @@ export async function prepareGitHubOperationLaunchers(input: {
   const directory = githubOperationLauncherDirectory(input);
   const configDirectory = path.posix.join(directory, "gh-config");
   const basePath = await githubOperationLauncherBasePath(remote, input.env);
-  const managedPath = basePath ? `${directory}:${basePath}` : directory;
+  // Native Windows processes require ';' between PATH entries; remote and POSIX
+  // locals keep the POSIX ':' join.
+  const managedDelimiter = remote ? ":" : path.delimiter;
+  const managedPath = basePath ? [directory, basePath].join(managedDelimiter) : directory;
   // Login shells may reorder PATH through /etc/profile or path_helper. Restore
   // the managed launchers after startup without loading a host user's profile.
-  const profile = `export PATH=${shellQuote(managedPath)}\n`;
+  const profilePath = !remote && process.platform === "win32" ? gitBashPathList(managedPath) : managedPath;
+  const profile = `export PATH=${shellQuote(profilePath)}\n`;
   const files: Record<string, string> = Object.fromEntries([
     ...["git", "gh"].map((name) => [name, githubLauncherSource()] as const),
     ...[".zshenv", ".zprofile", ".zshrc", ".bash_profile", ".bashrc", ".profile"].map((name) => [name, profile] as const),
   ]);
+  if (!remote && process.platform === "win32") {
+    // cmd.exe and PowerShell resolve commands through PATHEXT, so the
+    // extension-less shebang shims need callable .cmd peers.
+    for (const name of ["git", "gh"]) files[`${name}.cmd`] = githubLauncherCommandSource(process.execPath, name);
+  }
   if (remote) {
     const runner = adapterExecutionTargetCommandRunner(remote);
     for (const [program, body] of Object.entries(files)) {

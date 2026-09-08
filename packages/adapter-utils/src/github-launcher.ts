@@ -5,12 +5,25 @@ const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 const { spawn } = require('node:child_process');
+const windows = process.platform === 'win32';
 const directory = path.dirname(fs.realpathSync(process.argv[1]));
-const program = path.basename(process.argv[1]);
-const originalPath = (process.env.PATH || '').split(path.delimiter).filter(p => {
-  try { return fs.realpathSync(p) !== directory; } catch { return true; }
+const program = path.basename(process.argv[1]).replace(/\.(com|exe|bat|cmd)$/i, '');
+// Git Bash and MSYS shells hand native Node a POSIX colon-joined PATH, while
+// plain Windows processes use semicolons. Split with the delimiter this value
+// actually uses, and restore the same shape for child processes.
+const rawPath = process.env.PATH || '';
+const pathDelimiter = windows && !rawPath.includes(';') && rawPath.includes(':') ? ':' : path.delimiter;
+const sameDirectory = (a, b) => windows ? a.toLowerCase() === b.toLowerCase() : a === b;
+const originalPath = rawPath.split(pathDelimiter).filter(Boolean).filter(p => {
+  try { return !sameDirectory(fs.realpathSync(p), directory); } catch { return true; }
 });
-const executable = originalPath.map(p => path.join(p, program)).find(p => {
+// Windows installs ship gh.exe/git.exe, so resolve PATHEXT candidates before
+// the bare name; POSIX keeps the single bare candidate.
+const pathExtensions = (process.env.PATHEXT || '.COM;.EXE;.BAT;.CMD').split(';')
+  .map(e => e.trim().toLowerCase()).filter(e => e.startsWith('.'));
+pathExtensions.push('');
+const candidates = windows ? pathExtensions.map(e => program + e) : [program];
+const executable = originalPath.flatMap(p => candidates.map(c => path.join(p, c))).find(p => {
   try { fs.accessSync(p, fs.constants.X_OK); return fs.statSync(p).isFile(); } catch { return false; }
 });
 if (!['git', 'gh'].includes(program) || !executable) {
@@ -71,7 +84,7 @@ async function main() {
   }
   // Only this invocation and its children inherit the captured credential.
   // Its Git children use the real binary, so steering cannot split a gh operation.
-  env.PATH = originalPath.join(path.delimiter);
+  env.PATH = originalPath.join(pathDelimiter);
   // Nested shell aliases must not reload the parent launcher profile and
   // recapture a newer identity. All ordinary descendants stay in this operation.
   env.ZDOTDIR = configDirectory;
@@ -84,6 +97,14 @@ async function main() {
 }
 main().catch(() => { process.stderr.write('Paperclip: GitHub credential context unavailable; retry this operation.\n'); process.exitCode = 1; });
 `;
+}
+
+/**
+ * cmd.exe and PowerShell cannot execute the shebang shim directly. Stage a
+ * PATHEXT-discoverable wrapper that runs it with the controller's Node.
+ */
+export function githubLauncherCommandSource(nodePath: string, name: string): string {
+  return `@"${nodePath}" "%~dp0${name}" %*\r\n`;
 }
 
 /** Override inherited credentials even when adapters merge the host environment later. */
