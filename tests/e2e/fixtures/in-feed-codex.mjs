@@ -3,7 +3,7 @@
 // authenticated MCP gateway still execute every tool and enforce access.
 import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { createInterface } from 'node:readline';
 if (process.argv.includes('--version')) { console.log('codex-cli 0.115.0 (in-feed fixture)'); process.exit(0); }
 let threadId = `fixture-${randomUUID()}`;
@@ -24,11 +24,22 @@ function unwrap(result) {
   return result;
 }
 async function mcp(method, params = {}) {
+  // Native execution creates a dedicated provider home and issues a short-lived
+  // gateway token for this fixture run. Never load the user's normal Codex home.
+  if (!process.env.CODEX_HOME || !process.env.HOME
+    || resolve(process.env.CODEX_HOME) !== resolve(process.env.HOME)) {
+    throw new Error('The fixture requires an isolated native provider home');
+  }
   const config = readFileSync(join(process.env.CODEX_HOME, 'config.toml'), 'utf8');
   const url = JSON.parse(config.match(/^url = (.+)$/m)?.[1] ?? 'null');
   const authorization = JSON.parse(config.match(/Authorization = (".*?")/m)?.[1] ?? 'null');
   if (!url || !authorization) throw new Error('Native continuation did not install the MCP gateway');
-  const response = await fetch(url, { method: 'POST', headers: { Authorization: authorization, 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream' }, body: JSON.stringify({ jsonrpc: '2.0', id: ++toolSequence, method, params }) });
+  const endpoint = new URL(url);
+  if (endpoint.protocol !== 'http:' || !['127.0.0.1', 'localhost', '[::1]'].includes(endpoint.hostname)
+    || endpoint.username || endpoint.password || endpoint.hash) {
+    throw new Error('The fixture only accepts a local native gateway');
+  }
+  const response = await fetch(endpoint, { redirect: 'error', method: 'POST', headers: { Authorization: authorization, 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream' }, body: JSON.stringify({ jsonrpc: '2.0', id: ++toolSequence, method, params }) });
   if (!response.ok) throw new Error(`Gateway HTTP ${response.status}`);
   const text = await response.text();
   const envelope = JSON.parse(text.startsWith('event:') || text.startsWith('data:') ? text.split('\n').find((line) => line.startsWith('data:')).slice(5) : text);

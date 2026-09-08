@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { spawn, type ChildProcess } from 'node:child_process';
+import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { createServer } from 'node:http';
 import { resolve } from 'node:path';
 import { writeFile } from 'node:fs/promises';
@@ -39,7 +39,7 @@ for (const journey of ['connect', 'decline', 'restart'] as const) test(`fresh na
     const isSettledRun = (run: { status: string; errorCode?: string }) => run.status === 'succeeded'
       || (run.status === 'cancelled' && run.errorCode === 'issue_not_in_progress');
     const health = await api('/health');
-    expect(health).toMatchObject({ status: 'ok', deploymentMode: 'local_trusted', bootstrapStatus: 'ready', serverInfo: { git: { branchName: 'codex/in-feed-connections' } } });
+    expect(health).toMatchObject({ status: 'ok', deploymentMode: 'local_trusted', bootstrapStatus: 'ready', serverInfo: { git: { branchName: execFileSync('git', ['branch', '--show-current'], { cwd: root, encoding: 'utf8' }).trim() } } });
     const [company] = await api('/companies');
     const [agent] = await api(`/companies/${company.id}/agents`);
     expect(agent.adapterType).toBe('codex_local');
