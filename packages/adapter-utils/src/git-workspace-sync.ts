@@ -145,6 +145,15 @@ export async function readGitWorkspaceSnapshot(localDir: string): Promise<GitWor
     if (insideWorkTree.stdout.trim() !== "true") {
       return null;
     }
+    // Git walks up to parent repositories. A plain workspace nested inside a
+    // checkout must use file sync, not clone the unrelated parent repository.
+    const topLevel = await runLocalGit(localDir, ["rev-parse", "--show-toplevel"], {
+      timeout: 10_000,
+      maxBuffer: 16 * 1024,
+    });
+    if (await fs.realpath(localDir) !== await fs.realpath(topLevel.stdout.trim())) {
+      return null;
+    }
 
     const [headCommitResult, branchResult, overlayDiffResult, untrackedResult, deletedResult, ignoredResult] = await Promise.all([
       runLocalGit(localDir, ["rev-parse", "HEAD"], {

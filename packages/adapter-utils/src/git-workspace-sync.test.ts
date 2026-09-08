@@ -118,6 +118,17 @@ describe("git workspace sync", () => {
     return repo;
   }
 
+  it("does not treat a plain directory inside a repository as its own git workspace", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-git-sync-"));
+    cleanupDirs.push(rootDir);
+    const repo = await createRepo(rootDir);
+    const workspace = path.join(repo, "instance", "workspaces", "agent");
+    await mkdir(workspace, { recursive: true });
+    await writeFile(path.join(workspace, "task.txt"), "task workspace\n");
+    expect(await readGitWorkspaceSnapshot(workspace)).toBeNull();
+    expect(await readGitWorkspaceSnapshot(repo)).not.toBeNull();
+  });
+
   it("creates a shallow standalone clone from the local HEAD snapshot", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-git-sync-"));
     cleanupDirs.push(rootDir);
