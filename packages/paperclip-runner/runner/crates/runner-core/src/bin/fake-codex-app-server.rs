@@ -1044,10 +1044,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         thread::spawn(move || {
                             for _ in 0..3_000 {
                                 if PathBuf::from(&trigger).is_file() {
-                                    let _ = send(json!({"method":"item/started", "params":{
+                                    if send(json!({"method":"item/started", "params":{
                                         "threadId":thread_id, "turnId":"provider-goal-turn-1",
                                         "item":{"id":"mid-recovery-item", "type":"agentMessage", "text":"Continuing after disconnect"}
-                                    }}));
+                                    }})).is_ok() {
+                                        let _ = fs::write(format!("{trigger}.sent"), "sent");
+                                    }
                                     break;
                                 }
                                 thread::sleep(Duration::from_millis(10));

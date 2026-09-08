@@ -100,6 +100,10 @@ describe("runtime skill revision cache", () => {
     expect(await fs.readFile(path.join(next!, "references/a.md"), "utf8")).toBe("updated");
   });
 
+  it("never fingerprints mutable local sources as immutable cached revisions", () => {
+    expect(runtimeSkillCacheSpec(root, { ...skill, sourceType: "local_path", sourceRef: null })).toBeNull();
+  });
+
   it.each(["manifest-missing", "manifest-malformed", "changed", "deleted", "extra", "symlink"])("rejects %s without read-only repair, then rebuilds", async (corruption) => {
     const spec = runtimeSkillCacheSpec(root, skill)!;
     const source = (await resolveRuntimeSkillCache(spec, reader()))!;

@@ -207,6 +207,38 @@ describeEmbeddedPostgres("companySkillService.list", () => {
     expect(await fs.readFile(path.join(next.source, "SKILL.md"), "utf8")).toContain("New local instructions");
   });
 
+  it("observes supporting-only local file saves across runtime preparations and service restarts", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Local supporting files", issuePrefix: `T${companyId.slice(0, 6)}` });
+    const skill = await svc.createLocalSkill(companyId, { name: "Local references", slug: "local-references" });
+    const source = skill.sourceLocator!;
+    await fs.writeFile(path.join(source, "reference.md"), "Original supporting file");
+    await db.update(companySkills).set({
+      fileInventory: [...skill.fileInventory, { path: "reference.md", kind: "reference" }],
+    }).where(eq(companySkills.id, skill.id));
+    const prepare = async () => (await companySkillService(db).listRuntimeSkillEntries(companyId))
+      .find((entry) => entry.key === skill.key)!;
+    const first = await prepare();
+    expect(first.sourceStatus).toBe("available");
+    expect(await fs.readFile(path.join(first.source, "reference.md"), "utf8")).toBe("Original supporting file");
+
+    await svc.updateFile(companyId, skill.id, "reference.md", "Edited supporting file");
+    expect((await svc.getById(companyId, skill.id))?.markdown).toBe(skill.markdown);
+    const next = await prepare();
+    expect(next.sourceStatus).toBe("available");
+    expect(await fs.readFile(path.join(next.source, "reference.md"), "utf8")).toBe("Edited supporting file");
+
+    await fs.writeFile(path.join(source, "reference.md"), "Direct filesystem edit");
+    const onDisk = await prepare();
+    expect(await fs.readFile(path.join(onDisk.source, "reference.md"), "utf8")).toBe("Direct filesystem edit");
+    // Mutable local sources never enter the immutable revision-cache fast path.
+    expect(first.source).toBe(source);
+    expect(next.source).toBe(source);
+    expect(onDisk.source).toBe(source);
+    await fs.unlink(path.join(source, "SKILL.md"));
+    expect(await prepare()).toBeUndefined();
+  });
+
   it("lists skills without exposing markdown content", async () => {
     const companyId = randomUUID();
     const skillId = randomUUID();

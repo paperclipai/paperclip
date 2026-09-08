@@ -3427,8 +3427,11 @@ async function verifyLiveRunnerAdoption(mismatchedCheckpoint: boolean, goalMidTu
     expect(() => process.kill(runnerPid!, 0)).not.toThrow();
     if (goalMidTurn) {
       await writeFile(join(stateDirectory, "emit-goal-item"), "emit");
+      // runnerd need not poll the provider into its PRP outbox while disconnected.
+      // Wait for flushed provider output, not a platform-dependent final poll
+      // racing the disconnect. Adoption must still bind that buffered item.
       await vi.waitFor(async () => {
-        expect(await readFile(join(stateDirectory, "runner", "runner-state.json"), "utf8")).toContain("mid-recovery-item");
+        expect(await readFile(join(stateDirectory, "emit-goal-item.sent"), "utf8")).toBe("sent");
       }, { timeout: 5_000 });
     }
 

@@ -34,6 +34,10 @@ export function runtimeSkillCacheSpec(managedRoot: string, skill: CompanySkill):
   const paths = inventory.map((entry) => entry.path);
   if (!paths.includes("SKILL.md")) throw new Error("Company skill could not be materialized because its stored SKILL.md copy is missing.");
   if (new Set(paths).size !== paths.length) throw new Error("Invalid runtime skill file inventory");
+  // Local supporting files are mutable outside the DB as well as through the
+  // editor. Existing directories are used directly; missing-source fallback
+  // must reread its files rather than reuse an immutable revision fingerprint.
+  if (skill.sourceType === "local_path") return null;
   const fingerprint = digest(JSON.stringify({
     format: FORMAT, companyId: skill.companyId, skillId: skill.id,
     sourceType: skill.sourceType, sourceLocator: skill.sourceLocator, sourceRef: skill.sourceRef,
