@@ -82,8 +82,10 @@ afterEach(async () => {
 describe("InstanceAccess company directory", () => {
   it("lets admins grant access outside their navigation list and refreshes their own navigation", async () => {
     await renderPage();
-    await eventually(() => expect(button("Save organization access")).toBeDefined());
-    expect(container.querySelector("nav")?.textContent).toBe("Company A");
+    await eventually(() => {
+      expect(button("Save organization access")).toBeDefined();
+      expect(container.querySelector("nav")?.textContent).toBe("Company A");
+    });
     const otherCompany = [...container.querySelectorAll("label")].find((label) => label.textContent?.includes("Company B"));
     const checkbox = otherCompany?.querySelector<HTMLButtonElement>('[role="checkbox"]');
     expect(checkbox?.getAttribute("aria-checked")).toBe("false");
@@ -105,9 +107,11 @@ describe("InstanceAccess company directory", () => {
   it("prevents editing an incomplete directory and lets the admin retry", async () => {
     mocks.directory.mockRejectedValue(new Error("Unavailable"));
     await renderPage();
-    await eventually(() => expect(container.textContent).toContain("Failed to load organizations."));
+    await eventually(() => {
+      expect(container.textContent).toContain("Failed to load organizations.");
+      expect(container.querySelector("nav")?.textContent).toBe("Company A");
+    });
     expect(button("Save organization access")).toBeUndefined();
-    expect(container.querySelector("nav")?.textContent).toBe("Company A");
     expect(mocks.setUserCompanyAccess).not.toHaveBeenCalled();
     mocks.directory.mockResolvedValue([companyA, companyB]);
     await act(async () => button("Try again")!.click());
