@@ -26,7 +26,7 @@ def read_secret(path, key):
 
     raise RuntimeError(f"{key} nicht in Secrets-File gefunden: {path}")
 
-PAPERCLIP_BASE = "http://localhost:3100"
+PAPERCLIP_BASE = os.environ.get("PAPERCLIP_API_URL", "http://localhost:3100").rstrip("/")
 AUTH_JSON = os.path.expanduser("~/.paperclip/auth.json")
 SECRETS_ENV = os.path.expanduser("~/.paperclip/instances/default/secrets/openai_image.env")
 MAIL_SECRET_ENV = os.path.expanduser("~/.paperclip/instances/default/secrets/mailhub.env")
@@ -107,8 +107,18 @@ OPENAI_FORMAT_MAP = {"1344x768": "1536x1024", "768x1344": "1024x1536",
                      "1024x512": "1536x1024"}
 
 DAILY_LOCAL_LIMIT = 60      # Amoklauf-Bremse, kostet nichts, schuetzt den Knoten
-MAX_INFLIGHT_JOBS = 3       # gleichzeitig auf dem Knoten
-JOB_TIMEOUT_SEC = 300       # gemessen auf dem Headless-Knoten: 14,1 s warm, 35 s nach Neustart
+# 1 statt 3, seit der lokale Mac rendert (07.09.2026): Von seinen 128 GB sind
+# real rund 44 GB verfuegbar, ein qwen-image-Lauf belegt davon ~35 GB
+# (19,0 GB Diffusionsmodell + 8,7 GB Text-Encoder + LoRA + Aktivierungen).
+# Zwei gleichzeitige Jobs haetten zwei solche Saetze im Speicher und wuerden
+# den Knoten ins Swapping treiben -- der Swap ist ohnehin schon zu 82 % voll.
+MAX_INFLIGHT_JOBS = 1
+# 300 s bleibt gueltig, die Messgrundlage hat sich aber geaendert.
+# Alter Headless-Knoten: 14,1 s warm, 35 s nach Neustart.
+# Lokaler Mac (07.09.2026, qwen-image 1024x1024, 2 Schritte): 15-18 s warm,
+# aber 99 s beim ersten Lauf -- das Laden der 30 GB von SSD dauert hier
+# deutlich laenger. Der Deckel muss also ueber 100 s liegen, nicht ueber 35 s.
+JOB_TIMEOUT_SEC = 300
 
 # Modelle, die laenger brauchen als der Standarddeckel. 360 laeuft mit 20
 # Schritten auf 2048x1024 (~11 s je Schritt gemessen) und wuerde von den 300 s
@@ -147,6 +157,23 @@ STUCK_JOB_AGE_MULTIPLIER = 10
 
 MAX_SEED = 18446744073709551615  # KSampler.seed max from ComfyUI node schema
 
-# --- ComfyUI-Renderknoten (MacBook M5 Max) ---
-COMFY_BASE = "http://192.168.2.40:8189"
+# --- ComfyUI-Renderknoten ---
+# Bis 04.09.2026 lief hier ein eigener headless-Knoten (MacBook, in der
+# FritzBox als 'm4max') auf 192.168.2.40:8189. Der ist aus der Farm
+# ausgeschieden -- seitdem rendert der lokale ComfyUI-Dienst dieses Macs mit
+# (LaunchAgent ai.whitestag.comfyui, Port 8000).
+# UEBERGANGSLOESUNG: Dieser Mac ist KEIN dedizierter Renderknoten. Hier laufen
+# LM Studio (~25 GB, das LLM-Backend der Agenten), n8n und eine volle
+# Desktop-Session mit.
+# Alle drei Workflows sind lokal lauffaehig, am 09.09.2026 gemessen:
+#   qwen-image  15-18 s warm (99 s kalt)
+#   qwen-edit   172 s
+#   qwen-360    593 s (2048x1024, 20 Schritte)
+# Fuer qwen-edit MUSS die bf16-Variante bleiben: fp8mixed und int8_convrot
+# sind zwar halb so gross, laufen auf Apple Silicon aber nicht -- MPS kann
+# Float8_e4m3fn nicht ('does not have support for that dtype'), und
+# int8_convrot scheitert an 'int8_tensorwise'. Beide am 09.09. geprueft.
+# qwen-360 braucht zusaetzlich die Custom Node ProGamerGov/
+# ComfyUI_pytorch360convert ('Apply Circular Padding Model'/'... VAE').
+COMFY_BASE = "http://127.0.0.1:8000"
 COMFY_HTTP_TIMEOUT = 30          # Sekunden je HTTP-Aufruf
