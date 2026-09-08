@@ -261,10 +261,11 @@ import {
 } from "../services/issue-thread-interaction-resolution.js";
 import { resolveSelectedSuggestedTasks } from "../services/issue-thread-interactions.js";
 import {
+  authorizeCrossIssueInfluence,
   crossIssueInfluenceLimitError,
   crossIssueInfluenceRunContextError,
-  observeCrossIssueInfluence,
   type CrossIssueInfluenceKind,
+  type CrossIssueInfluenceMutationAuthority,
 } from "../services/cross-issue-influence-limit.js";
 import {
   getNativeSessionSteeringState,
@@ -3062,12 +3063,14 @@ export function issueRoutes(
     issue: { id: string; identifier?: string | null; companyId: string },
     kind: CrossIssueInfluenceKind,
   ) {
-    if (req.actor.type !== "agent") return true;
+    if (req.actor.type !== "agent") {
+      return { requiredCheckoutRunId: null } satisfies CrossIssueInfluenceMutationAuthority;
+    }
     if (!req.actor.agentId || !req.actor.runId) throw crossIssueInfluenceRunContextError();
 
     // The counter transaction locks and validates the persisted run before it
     // derives the source issue. Never trust the API-key run header by itself.
-    const decision = await observeCrossIssueInfluence(db, {
+    const { decision, mutationAuthority } = await authorizeCrossIssueInfluence(db, {
       companyId: issue.companyId,
       runId: req.actor.runId,
       agentId: req.actor.agentId,
@@ -3076,7 +3079,7 @@ export function issueRoutes(
       targetIssueIdentifier: issue.identifier ?? null,
       kind,
     });
-    if (!decision || decision.allowed) return true;
+    if (!decision || decision.allowed) return mutationAuthority;
 
     const labels = await issueWriteDenialLabels(req, {
       identifier: issue.identifier ?? null,
@@ -4524,8 +4527,14 @@ export function issueRoutes(
     // activity, tool, and wake side effect is still downstream. Same-issue
     // resolutions short-circuit inside the counter transaction and are not
     // charged, matching comment/update semantics.
-    if (!(await assertCrossIssueInfluenceWithinRunCap(req, res, issue, "interaction_resolution"))) return false;
-    return { decision, resolverPolicyRestriction } as const;
+    const crossIssueMutationAuthority = await assertCrossIssueInfluenceWithinRunCap(
+      req,
+      res,
+      issue,
+      "interaction_resolution",
+    );
+    if (!crossIssueMutationAuthority) return false;
+    return { decision, resolverPolicyRestriction, crossIssueMutationAuthority } as const;
   }
 
   async function getIssueThreadInteractionResolutionAuthorization(
@@ -7400,6 +7409,7 @@ export function issueRoutes(
     if (!existing) return;
     if (!(await assertIssueReadAllowed(req, res, existing))) return;
     if (await assertLowTrustControlPlaneDenied(req, res, existing.companyId, existing)) return;
+    let recoveryMutationAuthority: CrossIssueInfluenceMutationAuthority | null = null;
     if (req.actor.type === "agent") {
       const boundaryDecision = await decideIssueAccess(req, existing, "issue:mutate");
       if (!boundaryDecision.allowed) {
@@ -7407,7 +7417,9 @@ export function issueRoutes(
         return;
       }
       if (!requireAgentRunId(req, res)) return;
-      if (!(await assertCrossIssueInfluenceWithinRunCap(req, res, existing, "update"))) return;
+      const authority = await assertCrossIssueInfluenceWithinRunCap(req, res, existing, "update");
+      if (!authority) return;
+      recoveryMutationAuthority = authority;
     }
 
     const { actionId, outcome, sourceIssueStatus, resolutionNote } = req.body;
@@ -7427,6 +7439,12 @@ export function issueRoutes(
         .for("update")
         .then((rows) => rows[0] ?? null);
       if (!lockedIssue) throw notFound("Issue not found");
+      if (
+        recoveryMutationAuthority?.requiredCheckoutRunId
+        && lockedIssue.checkoutRunId !== recoveryMutationAuthority.requiredCheckoutRunId
+      ) {
+        throw crossIssueInfluenceRunContextError();
+      }
 
       const activeRecoveryAction = await recoveryActionsSvc.getActiveForIssue(
         lockedIssue.companyId,
@@ -10148,14 +10166,18 @@ export function issueRoutes(
       req.actor.type === "agent" &&
       (Object.keys(updateFields).length > 0 || reviewRequest !== undefined || hiddenAtRaw !== undefined);
 
-    if (
-      isAgentWorkUpdate &&
-      !(await assertCrossIssueInfluenceWithinRunCap(req, res, existing, "update"))
-    ) return;
-    if (
-      commentBody &&
-      !(await assertCrossIssueInfluenceWithinRunCap(req, res, existing, "comment"))
-    ) return;
+    let issueUpdateMutationAuthority: CrossIssueInfluenceMutationAuthority | null = null;
+    if (isAgentWorkUpdate) {
+      const authority = await assertCrossIssueInfluenceWithinRunCap(req, res, existing, "update");
+      if (!authority) return;
+      issueUpdateMutationAuthority = authority;
+    }
+    let commentMutationAuthority: CrossIssueInfluenceMutationAuthority | null = null;
+    if (commentBody) {
+      const authority = await assertCrossIssueInfluenceWithinRunCap(req, res, existing, "comment");
+      if (!authority) return;
+      commentMutationAuthority = authority;
+    }
 
     if (interruptRequested) {
       if (!commentBody) {
@@ -10433,6 +10455,7 @@ export function issueRoutes(
       ...updateFields,
       actorAgentId: actor.agentId ?? null,
       actorUserId: actor.actorType === "user" ? actor.actorId : null,
+      crossIssueMutationAuthority: issueUpdateMutationAuthority,
     };
     const shouldCollectCompletionPublication =
       actor.actorType === "user" && existing.status !== "done" && updateFields.status === "done";
@@ -11025,6 +11048,15 @@ export function issueRoutes(
       }, {
         authorizationReason: issueMutationAuthorizationReason,
         sourceTrust: await sourceTrustForActorWrite(issue, actor),
+        // A terminal update in this same request clears its own checkout after
+        // the guarded issue write commits. Otherwise the comment revalidates
+        // the timer checkout while holding the issue row through its insert.
+        crossIssueMutationAuthority:
+          commentMutationAuthority?.requiredCheckoutRunId
+          && issueUpdateMutationAuthority?.requiredCheckoutRunId === commentMutationAuthority.requiredCheckoutRunId
+          && issue.checkoutRunId !== commentMutationAuthority.requiredCheckoutRunId
+            ? null
+            : commentMutationAuthority,
       });
       await issueReferencesSvc.syncComment(comment.id);
       await externalObjectsSvc.syncCommentSafely(comment.id);
@@ -12352,6 +12384,7 @@ export function issueRoutes(
         runId: actor.runId,
         userId: actor.actorType === "user" ? actor.actorId : null,
         resolverPolicyRestriction: resolutionAuthorization.resolverPolicyRestriction,
+        crossIssueMutationAuthority: resolutionAuthorization.crossIssueMutationAuthority,
         suggestedTaskEffectsAuthorized,
       });
       const toolAction = interaction.payload && typeof interaction.payload === "object"
@@ -12596,6 +12629,7 @@ export function issueRoutes(
         runId: actor.runId,
         userId: actor.actorType === "user" ? actor.actorId : null,
         resolverPolicyRestriction: resolutionAuthorization.resolverPolicyRestriction,
+        crossIssueMutationAuthority: resolutionAuthorization.crossIssueMutationAuthority,
       });
 
       await logActivity(db, {
@@ -12668,6 +12702,7 @@ export function issueRoutes(
         runId: actor.runId,
         userId: actor.actorType === "user" ? actor.actorId : null,
         resolverPolicyRestriction: resolutionAuthorization.resolverPolicyRestriction,
+        crossIssueMutationAuthority: resolutionAuthorization.crossIssueMutationAuthority,
       });
 
       await logActivity(db, {
@@ -12737,6 +12772,7 @@ export function issueRoutes(
           runId: actor.runId,
           userId: actor.actorType === "user" ? actor.actorId : null,
           resolverPolicyRestriction: resolutionAuthorization.resolverPolicyRestriction,
+          crossIssueMutationAuthority: resolutionAuthorization.crossIssueMutationAuthority,
         },
       );
 
@@ -13378,7 +13414,8 @@ export function issueRoutes(
       res.status(409).json({ error: "Issue follow-up blocked by unresolved blockers" });
       return;
     }
-    if (!(await assertCrossIssueInfluenceWithinRunCap(req, res, issue, "comment"))) return;
+    const commentMutationAuthority = await assertCrossIssueInfluenceWithinRunCap(req, res, issue, "comment");
+    if (!commentMutationAuthority) return;
     // Reopen the closed isolated workspace only after every access, resume-intent,
     // blocker, and run-cap gate passes. A rejected comment must not rebuild and
     // republish the workspace as active, because the issue stays terminal and the
@@ -13563,6 +13600,7 @@ export function issueRoutes(
         presentation: commentPresentation,
         metadata: req.body.metadata ?? null,
         sourceTrust,
+        crossIssueMutationAuthority: commentMutationAuthority,
       };
       let txResult: { comment: Awaited<ReturnType<typeof svc.addComment>>; issue: NonNullable<Awaited<ReturnType<typeof svc.update>>> };
       const postCommitActivityPublications: ActivityPublication[] = [];
@@ -13657,6 +13695,7 @@ export function issueRoutes(
         metadata: req.body.metadata ?? null,
         authorizationReason: commentAuthorizationReason,
         sourceTrust: await sourceTrustForActorWrite(currentIssue, actor),
+        crossIssueMutationAuthority: commentMutationAuthority,
       });
     }
 

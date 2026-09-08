@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  authorizeCrossIssueInfluence,
   CROSS_ISSUE_INFLUENCE_ENFORCE_AT,
   CROSS_ISSUE_INFLUENCE_LIMIT,
   crossIssueInfluenceLimitError,
@@ -183,6 +184,16 @@ describe("cross-issue influence limit rollout", () => {
       agentId: "33333333-3333-4333-8333-333333333333",
       targetIssueId: "55555555-5555-4555-8555-555555555555",
     } as const;
+
+    await expect(authorizeCrossIssueInfluence(checkoutAttributed.db as never, {
+      ...input,
+      kind: "comment",
+    })).resolves.toMatchObject({
+      decision: null,
+      mutationAuthority: {
+        requiredCheckoutRunId: "11111111-1111-4111-8111-111111111111",
+      },
+    });
 
     // These are the two guarded writes in the checkout -> comment -> terminal
     // status flow. Neither consumes cross-issue influence after checkout.
