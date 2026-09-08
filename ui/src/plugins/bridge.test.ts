@@ -351,6 +351,7 @@ describe("plugin ReactDOM shim", () => {
     }
 
     expect(source).toContain("export default RD;");
+    expect(source).toContain('Paperclip plugin ReactDOM runtime is not initialized.');
     expect(source).toContain("export const createPortal = RD.createPortal;");
     expect(source).toContain("export const flushSync = RD.flushSync;");
     expect(source).toContain("export const unstable_batchedUpdates = RD.unstable_batchedUpdates;");
