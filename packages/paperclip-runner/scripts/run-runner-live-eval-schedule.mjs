@@ -9,6 +9,8 @@ import {
 } from "node:fs/promises";
 import { resolve } from "node:path";
 
+import { renderRunnerWorkflowWithCanonicalEvalbook } from "./render-runner-workflow-evalbook.mjs";
+
 const packageRoot = resolve(import.meta.dirname, "..");
 const evals = await import(resolve(packageRoot, "dist/eval/index.js"));
 const packageManifest = JSON.parse(
@@ -21,8 +23,7 @@ if (mode !== "nightly" && mode !== "chaos")
   throw new Error(`unsupported workflow eval schedule mode: ${mode}`);
 const now = process.env.PAPERCLIP_EVAL_GENERATED_AT ?? new Date().toISOString();
 const rotationDay = Number(
-  process.env.PAPERCLIP_EVAL_ROTATION_DAY ??
-    evals.runnerLiveRotationWeek(now),
+  process.env.PAPERCLIP_EVAL_ROTATION_DAY ?? evals.runnerLiveRotationWeek(now),
 );
 const seed =
   process.env.PAPERCLIP_EVAL_SCHEDULE_SEED ?? "runner-live-seven-week-v1";
@@ -34,6 +35,51 @@ const historyDirectory = resolve(
   process.env.PAPERCLIP_EVAL_HISTORY_DIR ?? resolve(outputDirectory, "history"),
 );
 await mkdir(outputDirectory, { recursive: true });
+
+function selectorValues(flag, environmentName) {
+  const values = [];
+  for (let index = 0; index < process.argv.length; index += 1) {
+    if (process.argv[index] !== flag) continue;
+    const value = process.argv[index + 1];
+    if (!value || value.startsWith("--")) {
+      throw new Error(`${flag} requires a comma-separated value`);
+    }
+    values.push(value);
+  }
+  if (process.env[environmentName]) values.push(process.env[environmentName]);
+  return [
+    ...new Set(
+      values.flatMap((value) =>
+        value
+          .split(",")
+          .map((entry) => entry.trim())
+          .filter(Boolean),
+      ),
+    ),
+  ];
+}
+
+function selectionLimit() {
+  const index = process.argv.indexOf("--limit");
+  const raw =
+    index < 0 ? process.env.PAPERCLIP_EVAL_LIMIT : process.argv[index + 1];
+  if (raw === undefined || raw === "") return undefined;
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new Error("--limit must be a positive integer");
+  }
+  return value;
+}
+
+const selection = {
+  candidateIds: selectorValues("--candidate", "PAPERCLIP_EVAL_CANDIDATE"),
+  caseIds: selectorValues("--case", "PAPERCLIP_EVAL_CASE"),
+  limit: selectionLimit(),
+};
+const selectionActive =
+  selection.candidateIds.length > 0 ||
+  selection.caseIds.length > 0 ||
+  selection.limit !== undefined;
 
 function safeBundleId(schedule) {
   const runnerBuild =
@@ -51,6 +97,13 @@ function safeBundleId(schedule) {
         reasoningEffort,
       }),
     ),
+    ...(selectionActive
+      ? {
+          selectedExecutions: schedule.entries.map(
+            (entry) => entry.executionId,
+          ),
+        }
+      : {}),
   });
   return `runner-live-v2-${createHash("sha256").update(identity).digest("hex").slice(0, 16)}`;
 }
@@ -110,7 +163,7 @@ async function retainHistory(report) {
 }
 
 if (mode === "nightly") {
-  const schedule = evals.buildRunnerLiveEvalSchedule({
+  const fullSchedule = evals.buildRunnerLiveEvalSchedule({
     seed,
     rotationDay,
     generatedAt: now,
@@ -120,9 +173,12 @@ if (mode === "nightly") {
     throw new Error(
       `live schedule coverage failed: ${JSON.stringify(coverage)}`,
     );
+  const schedule = selectionActive
+    ? evals.selectRunnerLiveEvalSchedule(fullSchedule, selection)
+    : fullSchedule;
   await writeFile(
     resolve(outputDirectory, "nightly-schedule.json"),
-    `${JSON.stringify({ schedule, coverage }, null, 2)}\n`,
+    `${JSON.stringify({ schedule, coverage, selection: selectionActive ? selection : null }, null, 2)}\n`,
   );
   if (!execute) {
     process.stdout.write(
@@ -230,9 +286,15 @@ if (mode === "nightly") {
       `${evals.renderRunnerWorkflowGitHubSummary(report, alerts)}\n## Previous compatible bundle\n\n${comparison === null ? "No compatible prior bundle is available." : `Pass-rate delta: ${comparison.passRateDelta}; overall delta: ${comparison.overallDelta}.`}\n`,
     ),
   ]);
+  await renderRunnerWorkflowWithCanonicalEvalbook({
+    packageRoot,
+    outputDirectory,
+    report,
+    caseForId: evals.runnerWorkflowCase,
+  });
   await retainHistory(report);
   process.stdout.write(
-    `Runner live evals complete: ${report.aggregate.passed}/${report.aggregate.scoreable} scoreable passed; ${report.aggregate.infrastructureFailures} infrastructure, ${report.aggregate.skipped} skipped, ${alerts.length} alert(s).\n`,
+    `Runner live evals complete: ${report.aggregate.passed}/${report.aggregate.scoreable} scoreable passed; ${report.aggregate.infrastructureFailures} infrastructure, ${report.aggregate.skipped} skipped, ${alerts.length} alert(s). Open ${resolve(outputDirectory, "index.html")}.\n`,
   );
 } else {
   const payload = {

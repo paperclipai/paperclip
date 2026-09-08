@@ -43,7 +43,7 @@ export function TaskChatInteractionCard({
     interaction.result?.expirationReason === "superseded_by_newer_interaction";
   if (shouldHideInteractionCard(interaction) && !isSupersededQuestionReceipt)
     return null;
-  if (presentation === "timeline" && interaction.status === "pending") {
+  if (presentation === "timeline" && interaction.status === "pending" && interaction.kind !== "connection_intent") {
     const isPlanReview =
       interaction.kind === "request_confirmation" &&
       Boolean(interaction.sourceRunId) &&

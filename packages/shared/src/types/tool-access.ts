@@ -224,9 +224,12 @@ export interface ConnectionGrant {
       repositorySelection: "all" | "selected" | "mixed" | "none";
       installationIds: string[];
       installationOwnerLogins: string[];
+      /** Repository metadata visible to this credential; refreshed from GitHub. */
+      repositories?: Array<{ id: string; fullName: string; installationId: string; private?: boolean }>;
       installationUrl?: string;
       managementUrl?: string;
       appSlug?: string;
+      accessRevision?: string;
       lastAccessRefreshAt?: string;
       lastWebhookAt?: string;
       webhookHealth?: "pending" | "healthy" | "unhealthy";

@@ -236,7 +236,7 @@ export function CodexLocalConfigFields({
             }}
           >
             <option value="codex">Codex</option>
-            <option value="opencode">OpenCode 1.18.17</option>
+            <option value="opencode">OpenCode 1.18.29</option>
             <option value="claude_managed">Claude Managed</option>
             <option value="aws_agentcore">AWS AgentCore</option>
             <option value="acpx">ACPX</option>

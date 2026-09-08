@@ -269,6 +269,24 @@ impl AcpxProviderSession {
         self.catalog_revision
     }
 
+    /// Session controls are independent of a prompt's receipt epoch.
+    pub fn goal_control(
+        &mut self,
+        command: GeneratedAcpxSidecarCommand,
+        payload: Value,
+    ) -> Result<Value, LocalRunnerError> {
+        self.ensure_open()?;
+        if !matches!(
+            command,
+            GeneratedAcpxSidecarCommand::SessionGoalGet
+                | GeneratedAcpxSidecarCommand::SessionGoalSet
+                | GeneratedAcpxSidecarCommand::SessionGoalClear
+        ) {
+            return Err(LocalRunnerError::invalid("not an ACPX goal control"));
+        }
+        self.transport.request(command, payload)
+    }
+
     pub fn start_turn(
         &mut self,
         turn_id: &str,

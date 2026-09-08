@@ -870,7 +870,7 @@ describe("Layout", () => {
     }
   });
 
-  it("keeps global navigation on legacy Agent and Routine detail routes", async () => {
+  it("keeps global navigation with agent configuration navigation in the legacy shell", async () => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({
       enableApps: true,
       enableStreamlinedUi: false,
@@ -895,7 +895,8 @@ describe("Layout", () => {
       await flushReact();
 
       expect(container.textContent).toContain("Main company nav");
-      expect(container.textContent).not.toContain("Agent sidebar");
+      if (pathname.includes("/agents/")) expect(container.textContent).toContain("Agent sidebar");
+      else expect(container.textContent).not.toContain("Agent sidebar");
       expect(container.textContent).not.toContain("Routine sidebar");
 
       await act(async () => {

@@ -325,6 +325,7 @@ fn correlates_projected_runtime_requests_to_the_upstream_input_id() {
             run_id: "run-1".to_owned(),
             normalized_session_id: "session-1".to_owned(),
             turn_id: "turn-1".to_owned(),
+            provider_turn_id: None,
             item_id: "item-1".to_owned(),
         },
         &emitted[0],

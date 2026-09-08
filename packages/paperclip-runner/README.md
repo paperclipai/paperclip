@@ -190,7 +190,25 @@ Live console provider-backed routes are loopback-only and reject wildcard/LAN
 binds. Browser mutations require same-origin Fetch Metadata, matching Origin,
 and JSON content; see the protocol-server tutorial for direct `curl` examples.
 
-## Live, chaos, and AWS AgentCore operations
+## Direct live protocol qualification
+
+The canonical direct live protocol suite lives in the separate
+`paperclip-evals` repository under `evals/paperclip-runner/`. Its
+`live-mini.json` roster is the complete 35-case Codex qualification lane. Build
+this package's TypeScript output, release `paperclip-runnerd`, package tarball,
+and `dist-issue-thread` viewer, then use the roster runner documented in that
+repository. The package ships the required orchestration entry point as
+`paperclip-runner-eval-session` (`dist/cli/eval-session.js`). Evalbook owns the
+consistent HTML matrix and read-only attempt drill-down pages.
+
+The hosted full-campaign workflow, parallel matrix, credential boundaries,
+canonical report merge, and versioned S3 index are documented in
+[`docs/runner-protocol-live-evals.md`](docs/runner-protocol-live-evals.md).
+
+This direct protocol qualification is separate from the stress-derived Runner
+workflow schedule below and from the full-stack browser model E2E suite.
+
+## Stress-derived workflow, chaos, and AWS AgentCore operations
 
 The deterministic workflow scorer and the chaos schedule do not require
 provider credentials:
@@ -209,13 +227,22 @@ additional scheduling after the observed campaign total reaches that value:
 
 ```sh
 PAPERCLIP_EVAL_MAX_CAMPAIGN_COST_USD=12 \
+  PAPERCLIP_EVALS_ROOT=/path/to/paperclip-evals \
   pnpm --filter @paperclipai/paperclip-runner report:runner-live-evals
+
+# Run two scheduled native Codex executions only.
+PAPERCLIP_EVALS_ROOT=/path/to/paperclip-evals \
+  pnpm --filter @paperclipai/paperclip-runner report:runner-live-evals -- \
+  --candidate codex-luna --limit 2
 ```
 
 GitHub-hosted live campaigns additionally require the default branch, an
 allowlisted numeric actor ID, the protected `runner-e2e-paid` environment, and
-an explicit repository variable before scheduled runs are enabled. Uploaded
-reports contain redacted observations and trace digests, not raw provider
+an explicit repository variable before scheduled runs are enabled. Manual
+dispatches accept the same candidate, case, and execution-limit selectors. The
+paid job uses the reviewed RunsOn Fleet label when `RUNNER_E2E_AWS_ENABLED=true`
+and otherwise stays on `ubuntu-latest`. Uploaded reports contain redacted
+observations and trace digests, not raw provider
 frames, prompts, credentials, tool arguments, or hidden reasoning.
 
 The AgentCore proof-of-concept uses an AWS CLI v2 profile to provision a
@@ -233,6 +260,21 @@ pnpm --filter @paperclipai/paperclip-runner aws-agentcore:lab
 pnpm --filter @paperclipai/paperclip-runner smoke:capability:aws-agentcore
 pnpm --filter @paperclipai/paperclip-runner aws-agentcore:destroy -- --yes
 ```
+
+To admit the hosted direct-eval workflow, provision with the account-local
+GitHub Actions OIDC provider and keep the default exact repository and protected
+environment binding:
+
+```sh
+pnpm --filter @paperclipai/paperclip-runner aws-agentcore:provision -- \
+  --aws-profile paperclip-dev \
+  --github-oidc-provider-arn arn:aws:iam::<account-id>:oidc-provider/token.actions.githubusercontent.com
+```
+
+This adds only `repo:paperclipai/paperclip:environment:runner-e2e-paid` as a
+web-identity subject on the scoped invocation role. The generated nonsecret
+profile records that role as both the local invocation role and the hosted
+execution role.
 
 Provisioning can incur Bedrock, AgentCore Runtime/Memory, storage, and private
 networking charges. Provisioning refuses to modify a colliding stack unless its
@@ -256,8 +298,8 @@ recorded lab unless `--force` is also supplied.
 | `check:clean-consumers`                                 | Pack the runner and install its root, evals, and testing exports in a clean consumer.                                                       |
 | `test:eval-slice`                                       | Run the credential-free eval bundle, scoring, and behavior/fault slice.                                                                     |
 | `test:runner-workflow-evals`                            | Run the deterministic provider-neutral workflow matrix.                                                                                     |
-| `report:runner-workflow-evals`                          | Validate deterministic results and write local reports only when every scoreable result passes.                                             |
-| `report:runner-live-evals`                              | Execute the paid forty-execution provider schedule with qualification and campaign-cost guards.                                             |
+| `report:runner-workflow-evals`                          | Validate deterministic fail-closed results and write JSON, Markdown, JUnit, and GitHub-safe reports.                                        |
+| `report:runner-live-evals`                              | Execute the paid provider schedule and render its immutable attempts with the canonical `paperclip-evals` HTML grid.                        |
 | `report:runner-chaos-evals`                             | Write the credential-free eight-scenario chaos schedule.                                                                                    |
 | `test:aws-agentcore-provisioning`                       | Validate the AgentCore template and wrapper safety contracts without provisioning.                                                          |
 | `aws-agentcore:provision` / `probe` / `lab` / `destroy` | Manage the scoped AgentCore proof-of-concept lifecycle.                                                                                     |

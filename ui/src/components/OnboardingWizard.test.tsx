@@ -98,6 +98,10 @@ const mockAgentsApi = vi.hoisted(() => ({
     prompt: { url: "https://auth.openai.com/codex/device", code: "Q2RJ-E1YIF" },
   })),
   cancelAdapterAuthLogin: vi.fn(async () => ({})),
+  // No default implementation: the top-level `beforeEach` sets the "no active
+  // session" 404 rejection, matching the real route.
+  getActiveAdapterAuthLoginSession: vi.fn(),
+  getActiveClaudeSetupTokenLoginSession: vi.fn(),
 }));
 // The adapter registry mock below always returns this function, so a test
 // can shape the built adapter config (e.g. a configured ANTHROPIC_API_KEY)
@@ -324,6 +328,16 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
     // with that status as "no stored value" rather than a hard failure.
     mockAgentsApi.getClaudeOAuthTokenStatus.mockReset();
     mockAgentsApi.getClaudeOAuthTokenStatus.mockRejectedValue(
+      new ApiError("Not found", 404, null),
+    );
+    // Default: no active login session for the caller. A resume test
+    // overrides this with a resolved session body.
+    mockAgentsApi.getActiveAdapterAuthLoginSession.mockReset();
+    mockAgentsApi.getActiveAdapterAuthLoginSession.mockRejectedValue(
+      new ApiError("Not found", 404, null),
+    );
+    mockAgentsApi.getActiveClaudeSetupTokenLoginSession.mockReset();
+    mockAgentsApi.getActiveClaudeSetupTokenLoginSession.mockRejectedValue(
       new ApiError("Not found", 404, null),
     );
     // Reset to each mock's original default. `mockResolvedValue` /
@@ -2214,6 +2228,11 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
         "claude-session-1",
         "Q2RJ-E1YIF-authorization-code",
       );
+      // And it stays on screen. Clearing the field on submit emptied it in the
+      // same frame the paste landed, so the only feedback for the seconds that
+      // followed was an input that had just gone blank — reported from staging
+      // as the paste looking dropped, or the step looking stuck.
+      expect(field!.value).toBe("Q2RJ-E1YIF-authorization-code");
 
       await act(async () => root.unmount());
     });
@@ -2323,6 +2342,66 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       await act(async () => root.unmount());
     });
 
+    it("shows no probe diagnostics between the sign-in succeeding and the step advancing", async () => {
+      // Reported from staging: a block of amber diagnostics flashed up right
+      // after a successful sign-in. They are the identity and target INFO
+      // checks every run reports, which make the result a `warn` without
+      // blocking anything — so they rendered for the window between the probe
+      // returning and the step advancing, reading as an error thrown by the
+      // sign-in that had just succeeded.
+      mockAgentsApi.getAdapterAuthSignal.mockResolvedValue({ status: "absent" });
+      mockAgentsApi.getClaudeSetupTokenLoginStatus.mockResolvedValue({
+        sessionId: "claude-session-1",
+        status: "authenticated",
+        expiresAt: new Date(Date.now() + 600_000).toISOString(),
+      });
+      mockAgentsApi.testEnvironment.mockResolvedValue({
+        adapterType: "claude_local",
+        status: "warn",
+        checks: [
+          {
+            code: "environment_identity",
+            level: "info",
+            message: 'Environment test identity for "Paperclip Computer".',
+            detail: "paperclipLeaseId=ff9e58e9; provider=daytona",
+          },
+        ],
+        testedAt: new Date().toISOString(),
+      });
+      // Hold the hire open, which is the window the diagnostics appeared in:
+      // the probe has returned but `loading` is not cleared until the `finally`
+      // that runs after the step advances.
+      let finishHire: (v: { agent: { id: string }; approval: null }) => void = () => {};
+      mockAgentsApi.hire.mockReturnValue(
+        new Promise((resolve) => {
+          finishHire = resolve;
+        }),
+      );
+
+      const { root } = await openStep4({ adapterType: "claude_local" });
+      await pickSource(/Claude/);
+      for (let i = 0; i < 8; i++) await flushReact();
+
+      // Past the deliberate hold, so the hire is running and its probe is done.
+      await act(async () => {
+        await new Promise((resolve) => window.setTimeout(resolve, CONNECTED_HOLD_MS + 400));
+      });
+      for (let i = 0; i < 8; i++) await flushReact();
+
+      expect(mockAgentsApi.hire).toHaveBeenCalled();
+      expect(document.body.textContent).not.toContain("Environment test identity");
+      expect(document.body.textContent).not.toContain("Warnings");
+      // And the button goes on saying what is happening rather than going quiet.
+      expect(
+        [...document.body.querySelectorAll("button")].pop()?.textContent?.trim(),
+      ).toBe("Connecting");
+
+      await act(async () => finishHire({ agent: { id: "agent-1" }, approval: null }));
+      for (let i = 0; i < 6; i++) await flushReact();
+
+      await act(async () => root.unmount());
+    });
+
     it("starts no login when Back interrupts the collapse", async () => {
       // Backing out before the card has opened has nothing to close. Unwinding
       // through the card beat regardless mounted the panel — which starts a
@@ -2418,6 +2497,153 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       await act(async () => root.unmount());
     });
 
+    it("shows the failure instead of starting a codex_local login when the active-session read fails", async () => {
+      // A transient active-session lookup failure is not proof that no
+      // session exists — only a successful lookup that resolves to null is.
+      // The step must not start a second login the server would reject
+      // against the per-owner cap; it shows the failure instead.
+      mockAgentsApi.getAdapterAuthSignal.mockResolvedValue({ status: "unknown" });
+      mockAgentsApi.getActiveAdapterAuthLoginSession.mockReset();
+      mockAgentsApi.getActiveAdapterAuthLoginSession.mockRejectedValue(
+        new ApiError("Service unavailable", 503, null),
+      );
+      const { root } = await openStep4({ adapterType: "codex_local" });
+
+      await pickSource(/OpenAI/);
+
+      expect(mockAgentsApi.startAdapterAuthLogin).not.toHaveBeenCalled();
+      expect(document.body.textContent).toContain("Service unavailable");
+
+      await act(async () => root.unmount());
+    });
+
+    it("shows the failure instead of starting a claude_local login when the active-session read fails", async () => {
+      mockAgentsApi.getAdapterAuthSignal.mockResolvedValue({ status: "absent" });
+      mockAgentsApi.getActiveClaudeSetupTokenLoginSession.mockReset();
+      mockAgentsApi.getActiveClaudeSetupTokenLoginSession.mockRejectedValue(
+        new ApiError("Service unavailable", 503, null),
+      );
+      const { root } = await openStep4({ adapterType: "claude_local" });
+
+      await pickSource(/Claude/);
+
+      expect(mockAgentsApi.startClaudeSetupTokenLogin).not.toHaveBeenCalled();
+      expect(document.body.textContent).toContain("Service unavailable");
+
+      await act(async () => root.unmount());
+    });
+
+    it("resumes the same claude_local session after Back, rather than starting a second", async () => {
+      // This is the behaviour that makes the card's Cancel removable. Back only
+      // hides the card — it deliberately does not release the session — so
+      // coming back has to adopt the one already running. If it started a
+      // fresh one instead, the removed Cancel would have been the only way out
+      // of a login the customer could no longer reach, and the per-owner cap
+      // would reject the second start.
+      const session = {
+        sessionId: "claude-session-1",
+        status: "pending",
+        expiresAt: new Date(Date.now() + 600_000).toISOString(),
+      };
+      let started = false;
+      mockAgentsApi.startClaudeSetupTokenLogin.mockImplementation(async () => {
+        started = true;
+        return session;
+      });
+      mockAgentsApi.getActiveClaudeSetupTokenLoginSession.mockReset();
+      mockAgentsApi.getActiveClaudeSetupTokenLoginSession.mockImplementation(async () =>
+        started ? session : null,
+      );
+      mockAgentsApi.getAdapterAuthSignal.mockResolvedValue({ status: "absent" });
+      const { root } = await openStep4({ adapterType: "claude_local" });
+
+      await pickSource(/Claude/);
+      // The login is genuinely running: without this the assertion below holds
+      // for the wrong reason.
+      expect(mockAgentsApi.startClaudeSetupTokenLogin).toHaveBeenCalledTimes(1);
+
+      const back = [...document.body.querySelectorAll("button")].find((b) =>
+        b.textContent?.trim().startsWith("Back"),
+      );
+      await act(async () => {
+        back!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      for (let i = 0; i < 12; i++) await flushReact();
+
+      await pickSource(/Claude/);
+      for (let i = 0; i < 8; i++) await flushReact();
+
+      expect(mockAgentsApi.startClaudeSetupTokenLogin).toHaveBeenCalledTimes(1);
+      expect(mockAgentsApi.getActiveClaudeSetupTokenLoginSession).toHaveBeenCalled();
+
+      await act(async () => root.unmount());
+    });
+
+    it("resumes the same codex_local session after Back, rather than starting a second", async () => {
+      const session = { sessionId: "codex-session-1", status: "pending" };
+      let started = false;
+      mockAgentsApi.startAdapterAuthLogin.mockImplementation(async () => {
+        started = true;
+        return session;
+      });
+      mockAgentsApi.getActiveAdapterAuthLoginSession.mockReset();
+      mockAgentsApi.getActiveAdapterAuthLoginSession.mockImplementation(async () =>
+        started ? session : null,
+      );
+      mockAgentsApi.getAdapterAuthSignal.mockResolvedValue({ status: "unknown" });
+      const { root } = await openStep4({ adapterType: "claude_local" });
+
+      await pickSource(/OpenAI/);
+      expect(mockAgentsApi.startAdapterAuthLogin).toHaveBeenCalledTimes(1);
+
+      const back = [...document.body.querySelectorAll("button")].find((b) =>
+        b.textContent?.trim().startsWith("Back"),
+      );
+      await act(async () => {
+        back!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      for (let i = 0; i < 12; i++) await flushReact();
+
+      await pickSource(/OpenAI/);
+      for (let i = 0; i < 8; i++) await flushReact();
+
+      expect(mockAgentsApi.startAdapterAuthLogin).toHaveBeenCalledTimes(1);
+      expect(mockAgentsApi.getActiveAdapterAuthLoginSession).toHaveBeenCalled();
+
+      await act(async () => root.unmount());
+    });
+
+    it("starts the other source's login after backing out of the first", async () => {
+      // The abandonment case, raised in review against removing the card's
+      // Cancel: with no explicit release, does a source switch still get a
+      // login? It does. The server's lease is keyed on the adapter type as
+      // well as the company and environment, so the abandoned Claude session
+      // does not stand in the way of a Codex one — and it is collected on its
+      // own five-minute timer regardless (DEVICE_LOGIN_TIMEOUT_MS), with the
+      // reaper as the restart-safe backstop.
+      mockAgentsApi.getAdapterAuthSignal.mockResolvedValue({ status: "absent" });
+      const { root } = await openStep4({ adapterType: "claude_local" });
+
+      await pickSource(/Claude/);
+      expect(mockAgentsApi.startClaudeSetupTokenLogin).toHaveBeenCalledTimes(1);
+
+      const back = [...document.body.querySelectorAll("button")].find((b) =>
+        b.textContent?.trim().startsWith("Back"),
+      );
+      await act(async () => {
+        back!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      for (let i = 0; i < 12; i++) await flushReact();
+
+      await pickSource(/OpenAI/);
+      for (let i = 0; i < 8; i++) await flushReact();
+
+      expect(mockAgentsApi.startAdapterAuthLogin).toHaveBeenCalledTimes(1);
+      expect(mockAgentsApi.startClaudeSetupTokenLogin).toHaveBeenCalledTimes(1);
+
+      await act(async () => root.unmount());
+    });
+
     it("hires on Connect, with no sign-in, when the signal reports a ready credential", async () => {
       mockAgentsApi.getAdapterAuthSignal.mockResolvedValue({ status: "present" });
       const { root } = await openStep4({ adapterType: "claude_local" });
@@ -2492,6 +2718,39 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       const { root } = await openStep4({ adapterType: "claude_local" });
       expect(document.body.textContent).not.toContain("Sign in to Anthropic");
       expect(mockAgentsApi.getAdapterAuthSignal).not.toHaveBeenCalled();
+      await act(async () => root.unmount());
+    });
+
+    it("restores the started-login state after a reload, resuming the active session with no press", async () => {
+      // A reload loses `connectPhase` — the draft deliberately does not carry
+      // it, because a login is a live server session with a deadline, not
+      // wizard state to replay blindly. The step must instead re-derive it
+      // from the caller's active session, so a customer who reloads mid-login
+      // sees their sign-in still running rather than the tile row again.
+      mockAgentsApi.getAdapterAuthSignal.mockResolvedValue({ status: "absent" });
+      mockAgentsApi.getActiveClaudeSetupTokenLoginSession.mockResolvedValue({
+        sessionId: "claude-session-1",
+        environmentId: "env-sandbox-1",
+        status: "waiting_for_user",
+        expiresAt: null,
+        failure: null,
+        panelMode: "submitted_browser_code",
+        prompt: { authorizationUrl: "https://claude.ai/oauth/authorize?code=true" },
+      });
+      const { root } = await openStep4({ adapterType: "claude_local" });
+      // A reload's resume now runs one layer deeper than a fresh press: the
+      // step's own active-session read has to land before it opens the
+      // sequence, and only then does the mounted panel run its own resume
+      // read. Each is a further round trip `flushReact` has to catch up to.
+      for (let i = 0; i < 10; i += 1) await flushReact();
+
+      // No press: the resumed session is discovered on load and the card
+      // shows the login already running.
+      expect(mockAgentsApi.startClaudeSetupTokenLogin).not.toHaveBeenCalled();
+      expect(document.body.textContent).toContain(
+        "Sign in to Claude then come back and enter authorization code",
+      );
+
       await act(async () => root.unmount());
     });
   });

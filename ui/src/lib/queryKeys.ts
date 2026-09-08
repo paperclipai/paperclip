@@ -16,6 +16,8 @@ export const queryKeys = {
      */
     list: (userId: string | null) =>
       ["companies", "list", userId ?? "anonymous"] as const,
+    directory: (userId: string | null) =>
+      ["companies", "directory", userId ?? "anonymous"] as const,
     detail: (id: string) => ["companies", id] as const,
     stats: ["companies", "stats"] as const,
     exportFidelity: (companyId: string) =>
@@ -224,6 +226,8 @@ export const queryKeys = {
       ["agents", companyId, "detect-model", adapterType] as const,
     authSignal: (companyId: string, adapterType: string, environmentId?: string | null) =>
       ["agents", companyId, "auth-signal", adapterType, environmentId ?? null] as const,
+    activeLoginSession: (companyId: string, adapterType: string) =>
+      ["agents", companyId, "active-login-session", adapterType] as const,
   },
   builtInAgents: {
     list: (companyId: string) => ["built-in-agents", companyId] as const,
@@ -361,6 +365,8 @@ export const queryKeys = {
     approvals: (issueId: string) => ["issues", "approvals", issueId] as const,
     liveRuns: (issueId: string) => ["issues", "live-runs", issueId] as const,
     activeRun: (issueId: string) => ["issues", "active-run", issueId] as const,
+    runnerGoal: (issueId: string, agentId?: string | null) =>
+      ["issues", "runner-goal", issueId, agentId ?? "__effective__"] as const,
     workProducts: (issueId: string) =>
       ["issues", "work-products", issueId] as const,
     fileResources: (

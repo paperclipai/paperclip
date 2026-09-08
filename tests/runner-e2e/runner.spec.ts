@@ -11,6 +11,7 @@ import { setupLiveFixtures, type LiveFixtureValues } from "./live-fixtures.js";
 import { evaluateMatcher, type MatcherResult } from "./matchers.js";
 import {
   acceptedPlanSessionResetFailures,
+  hasTerminalMalformedPlanConfirmation,
   isControlPlaneGovernedResponseWait,
   isNonExecutingReviewFenceRun,
   isOpenRouterDeepSeekHelloTerminalVariance,
@@ -18,6 +19,10 @@ import {
   providerSessionContinuityFailures,
 } from "./run-observations.js";
 import { resolveRunnerE2ESource } from "./source.js";
+import {
+  isPublicRunnerScreenshotRoute,
+  PUBLIC_RUNNER_SCREENSHOT_MARKER,
+} from "./screenshot-policy.js";
 import {
   assertSecretFree,
   findSecretLeakInJsonValues,
@@ -39,6 +44,9 @@ interface IssueRecord {
   status: string;
   workMode?: string;
   assigneeAgentId?: string | null;
+  projectId?: string | null;
+  projectWorkspaceId?: string | null;
+  executionWorkspaceId?: string | null;
   executionRunId?: string | null;
   checkoutRunId?: string | null;
 }
@@ -61,6 +69,9 @@ interface RunRecord {
   continuationAttempt?: number;
   retryOfRunId?: string | null;
   runnerInstanceId?: string | null;
+  nativeSessionId?: string | null;
+  processPid?: number | null;
+  processStartedAt?: string | null;
   contextSnapshot?: Record<string, unknown> | null;
   runnerProfileJson?: Record<string, unknown> | null;
   usageJson?: Record<string, unknown> | null;
@@ -75,19 +86,26 @@ interface RunRecord {
 
 interface EnvironmentLeaseRecord {
   id: string;
+  status?: string;
+  cleanupStatus?: string | null;
+  leasePolicy?: string;
+  providerLeaseId?: string | null;
+  executionWorkspaceId?: string | null;
+  metadata?: Record<string, unknown> | null;
   issueId?: string | null;
   heartbeatRunId?: string | null;
   provider?: string | null;
   acquiredAt?: string | null;
   releasedAt?: string | null;
   updatedAt?: string | null;
-  metadata?: Record<string, unknown> | null;
 }
 
 interface InteractionRecord {
   id: string;
   status: string;
   kind?: string;
+  sourceRunId?: string | null;
+  continuationPolicy?: string;
   payload?: {
     version?: number;
     acceptLabel?: string;
@@ -285,6 +303,7 @@ async function createTaskThroughUi(input: {
   title: string;
   prompt: string;
   workMode: "standard" | "planning" | "ask";
+  projectName?: string;
 }) {
   const issuesUrl = `/${encodeURIComponent(input.issuePrefix)}/issues`;
   const newTask = input.page.getByRole("button", { name: "New Task" }).first();
@@ -331,9 +350,49 @@ async function createTaskThroughUi(input: {
     .getByPlaceholder("Search assignees...")
     .fill(input.agentName);
   await input.page.getByText(input.agentName, { exact: true }).last().click();
+  if (input.projectName) {
+    const dialog = input.page.getByRole("dialog");
+    // Selecting the assignee advances focus to this selector and opens it.
+    // Focus is idempotent here; clicking would toggle an already-open popover
+    // closed before the search field can be filled.
+    await dialog.getByRole("button", { name: "Project", exact: true }).focus();
+    await dialog.getByPlaceholder("Search projects...").fill(input.projectName);
+    await dialog.getByText(input.projectName, { exact: true }).last().click();
+  }
+  const submittedAtMs = Date.now();
   await input.page
     .getByRole("button", { name: "Create Task", exact: true })
     .click();
+  return submittedAtMs;
+}
+
+async function submitTaskReply(page: Page, body: string): Promise<number> {
+  const composer = page.getByTestId("task-chat-composer-input").last();
+  await expect(composer).toBeVisible({ timeout: 30_000 });
+  await composer
+    .locator('[contenteditable="true"], textarea')
+    .first()
+    .fill(body);
+  const submittedAtMs = Date.now();
+  await page.getByTestId("task-chat-composer-send").last().click();
+  return submittedAtMs;
+}
+
+async function submitTaskRevision(page: Page, body: string): Promise<number> {
+  const revise = page
+    .getByRole("button", { name: "Continue work", exact: true })
+    .last();
+  await expect(revise).toBeVisible({ timeout: 30_000 });
+  await revise.click();
+  const reason = page.getByPlaceholder("Add a short note").last();
+  await expect(reason).toBeVisible({ timeout: 30_000 });
+  await reason.fill(body);
+  const submittedAtMs = Date.now();
+  await page
+    .getByRole("button", { name: "Continue work", exact: true })
+    .last()
+    .click();
+  return submittedAtMs;
 }
 
 function matchingRuns(runs: RunRecord[], issue: IssueRecord) {
@@ -366,6 +425,15 @@ function isPendingQuestion(interaction: InteractionRecord) {
     interaction.kind === "ask_user_questions" &&
     interaction.status === "pending" &&
     Boolean(interaction.payload?.questions?.length)
+  );
+}
+
+function isPendingWarmConfirmation(interaction: InteractionRecord) {
+  return (
+    interaction.kind === "request_confirmation" &&
+    interaction.status === "pending" &&
+    interaction.continuationPolicy === "wake_assignee" &&
+    interaction.payload?.target?.type === "custom"
   );
 }
 
@@ -519,7 +587,11 @@ for (const execution of executions) {
     page,
     request,
   }, testInfo) => {
-    test.setTimeout(deadlineMs + 90_000);
+    test.setTimeout(
+      execution.task.flow === "warm_three_turn"
+        ? deadlineMs
+        : deadlineMs + 90_000,
+    );
     const startedAtMs = Date.now();
     const startedAt = new Date(startedAtMs).toISOString();
     const nonce = `${randomBytes(6).toString("hex")}-${attempt}`;
@@ -536,23 +608,46 @@ for (const execution of executions) {
     let selectedRuns: RunRecord[] = [];
     let runtimeLeases: EnvironmentLeaseRecord[] = [];
     let matcherResults: MatcherResult[] = [];
+    let turnTimings: NonNullable<RunnerE2EResult["turnTimings"]> | undefined;
+    const turnSubmissionTimesMs: number[] = [];
     const screenshots: NonNullable<RunnerE2EResult["screenshots"]> = [];
     let primaryError: unknown;
     let failureClassOverride: FailureClass | undefined;
     let cleanup: RunnerE2EResult["cleanup"] = "not_started";
 
-    const captureScreenshot = async (
-      id: string,
-      label: string,
-      file: string,
-    ) => {
+    const capturePrivateScreenshot = async (id: string, file: string) => {
       const screenshotPath = path.join(privateDir, file);
       await page.screenshot({ path: screenshotPath, fullPage: true });
       await testInfo.attach(id, {
         path: screenshotPath,
         contentType: "image/png",
       });
-      screenshots.push({ id, label, file });
+    };
+
+    const isReviewedFixtureScreenshotRoute = () =>
+      isPublicRunnerScreenshotRoute(page.url(), {
+        issuePrefix: fixtures?.company.issuePrefix,
+        issueId: issue?.id,
+        issueIdentifier: issue?.identifier,
+      });
+
+    const captureScreenshot = async (
+      id: string,
+      label: string,
+      file: string,
+    ) => {
+      if (!isReviewedFixtureScreenshotRoute()) {
+        throw new Error(
+          `Public runner screenshot blocked on non-task route ${page.url()}`,
+        );
+      }
+      await capturePrivateScreenshot(id, file);
+      screenshots.push({
+        id,
+        label,
+        file,
+        publication: PUBLIC_RUNNER_SCREENSHOT_MARKER,
+      });
     };
 
     const captureRuntimeLeases = async () => {
@@ -570,6 +665,40 @@ for (const execution of executions) {
             (issue && lease.issueId === issue.id)),
       );
       runtimeLeases = relevant.length > 0 ? relevant : listed;
+    };
+
+    const cancelActiveRunsForCleanup = async () => {
+      if (!issue) return;
+      const cleanupIssueId = issue.id;
+      const runs = await api.get<RunRecord[]>(
+        `/api/issues/${cleanupIssueId}/runs`,
+      );
+      const activeRunIds = [
+        ...new Set(
+          runs
+            .filter((run) => !TERMINAL_RUN_STATUSES.has(run.status))
+            .map((run) => run.id)
+            .filter(
+              (runId): runId is string =>
+                typeof runId === "string" && runId.length > 0,
+            ),
+        ),
+      ];
+      for (const runId of activeRunIds) {
+        await api.post(`/api/heartbeat-runs/${runId}/cancel`);
+      }
+      if (activeRunIds.length === 0) return;
+      const activeIds = new Set(activeRunIds);
+      await pollUntil({
+        label: `cleanup cancellation for issue ${cleanupIssueId}`,
+        deadlineAt: Date.now() + 45_000,
+        load: () => api.get<RunRecord[]>(`/api/issues/${cleanupIssueId}/runs`),
+        accept: (currentRuns) =>
+          currentRuns
+            .filter((run) => activeIds.has(run.id))
+            .every((run) => TERMINAL_RUN_STATUSES.has(run.status)),
+        intervalMs: 500,
+      });
     };
 
     const captureFailureApiState = async () => {
@@ -673,6 +802,9 @@ for (const execution of executions) {
       expect(initialExperimental.enableNativeRunner).toBe(false);
       await api.patch("/api/instance/settings/experimental", {
         enableNativeRunner: true,
+        ...(execution.task.flow === "warm_three_turn"
+          ? { enableIsolatedWorkspaces: true }
+          : {}),
         ...(execution.profile.generation === "native" &&
         execution.environment.id === "daytona"
           ? { enableRunnerPreviewIngress: true }
@@ -717,14 +849,17 @@ for (const execution of executions) {
         throw new Error(
           "Created fixture company did not return an issue prefix",
         );
-      await createTaskThroughUi({
-        page,
-        issuePrefix,
-        agentName: fixtures.agent.name,
-        title,
-        prompt,
-        workMode: execution.task.workMode,
-      });
+      turnSubmissionTimesMs.push(
+        await createTaskThroughUi({
+          page,
+          issuePrefix,
+          agentName: fixtures.agent.name,
+          title,
+          prompt,
+          workMode: execution.task.workMode,
+          projectName: fixtures.project?.name,
+        }),
+      );
 
       const deadlineAt = startedAtMs + deadlineMs;
       issue = await pollUntil({
@@ -752,6 +887,16 @@ for (const execution of executions) {
           `UI-created issue work mode was ${String(issue.workMode)}; expected ${execution.task.workMode}`,
         );
       }
+      if (fixtures.project) {
+        if (
+          issue.projectId !== fixtures.project.id ||
+          issue.projectWorkspaceId !== fixtures.project.primaryWorkspace?.id
+        ) {
+          throw new Error(
+            `Warm task did not retain its project/workspace scope: ${JSON.stringify({ projectId: issue.projectId, projectWorkspaceId: issue.projectWorkspaceId })}`,
+          );
+        }
+      }
 
       await page.goto(
         `/${encodeURIComponent(issuePrefix)}/issues/${encodeURIComponent(issue.identifier ?? issue.id)}`,
@@ -776,8 +921,29 @@ for (const execution of executions) {
         };
       };
 
+      const rejectPlanConfirmationPoll = (input: {
+        taskRuns: RunRecord[];
+        interactions: InteractionRecord[];
+        minimumRunCount: number;
+      }) => {
+        const runFailure = definitiveRunFailure(input.taskRuns);
+        if (runFailure) return runFailure;
+        if (
+          !hasTerminalMalformedPlanConfirmation({
+            runs: input.taskRuns,
+            interactions: input.interactions,
+            minimumRunCount: input.minimumRunCount,
+          })
+        ) {
+          return undefined;
+        }
+        failureClassOverride = "provider_variance";
+        return "succeeded heartbeat run created a pending request_confirmation without a revision-bound Plan target";
+      };
+
       let planLifecycleEvidence: Record<string, unknown> | null = null;
       let questionLifecycleEvidence: Record<string, unknown> | null = null;
+      let warmLifecycleEvidence: Record<string, unknown> | null = null;
       let expectedQuestionResolution: {
         interactionId: string;
         optionId: string;
@@ -798,7 +964,12 @@ for (const execution of executions) {
             taskRuns.length >= 1 &&
             taskRuns.every((run) => TERMINAL_RUN_STATUSES.has(run.status)) &&
             interactions.some(isPendingPlanConfirmation),
-          reject: ({ taskRuns }) => definitiveRunFailure(taskRuns),
+          reject: ({ taskRuns, interactions }) =>
+            rejectPlanConfirmationPoll({
+              taskRuns,
+              interactions,
+              minimumRunCount: 1,
+            }),
         });
         const draftInteraction = draftState.interactions.find(
           isPendingPlanConfirmation,
@@ -874,7 +1045,12 @@ for (const execution of executions) {
                 isPendingPlanConfirmation(interaction) &&
                 interaction.id !== draftInteraction.id,
             ),
-          reject: ({ taskRuns }) => definitiveRunFailure(taskRuns),
+          reject: ({ taskRuns, interactions }) =>
+            rejectPlanConfirmationPoll({
+              taskRuns,
+              interactions,
+              minimumRunCount: 2,
+            }),
         });
         const revisedInteraction = revisedState.interactions.find(
           (interaction) =>
@@ -1110,7 +1286,12 @@ for (const execution of executions) {
             taskRuns.length >= 1 &&
             taskRuns.every((run) => TERMINAL_RUN_STATUSES.has(run.status)) &&
             interactions.some(isPendingPlanConfirmation),
-          reject: ({ taskRuns }) => definitiveRunFailure(taskRuns),
+          reject: ({ taskRuns, interactions }) =>
+            rejectPlanConfirmationPoll({
+              taskRuns,
+              interactions,
+              minimumRunCount: 1,
+            }),
         });
         const interaction = pendingState.interactions.find(
           isPendingPlanConfirmation,
@@ -1150,12 +1331,181 @@ for (const execution of executions) {
           .last()
           .click();
         planLifecycleEvidence = { interaction, plan };
+      } else if (execution.task.flow === "warm_three_turn") {
+        const followups = execution.task.buildFollowupMessages?.(nonce);
+        if (!followups || !fixtures.project?.primaryWorkspace?.id) {
+          throw new Error(
+            `Warm fixture ${execution.task.id} is missing its project or follow-up messages`,
+          );
+        }
+        const workspaceFile = path.join(
+          workspacePath,
+          `daytona-warm-${nonce}.txt`,
+        );
+        const turnEvidence: Array<Record<string, unknown>> = [];
+        for (const completedTurn of [1, 2] as const) {
+          const turnDeadlineAt = Math.min(
+            deadlineAt,
+            turnSubmissionTimesMs[completedTurn - 1]! +
+              (execution.task.turnTimeoutMs ?? 10 * 60_000),
+          );
+          const waitingState = await pollUntil({
+            label: `warm Daytona turn ${completedTurn} review state for issue ${issue.id}`,
+            deadlineAt: turnDeadlineAt,
+            load: loadTaskState,
+            accept: ({ currentIssue, taskRuns, interactions }) => {
+              const latestRun = sortRunsChronologically(taskRuns).at(-1);
+              const pendingConfirmations = interactions.filter(
+                isPendingWarmConfirmation,
+              );
+              return (
+                currentIssue.status === "in_review" &&
+                taskRuns.length === completedTurn &&
+                taskRuns.every((run) => run.status === "succeeded") &&
+                pendingConfirmations.length === 1 &&
+                pendingConfirmations[0]?.sourceRunId === latestRun?.id
+              );
+            },
+            reject: ({ taskRuns }) =>
+              definitiveRunFailure(taskRuns) ??
+              (taskRuns.length > completedTurn
+                ? `warm turn ${completedTurn} dispatched duplicate runs`
+                : undefined),
+          });
+          const expectedPrefix = `${Array.from(
+            { length: completedTurn },
+            (_, index) => `T${index + 1}-${nonce}`,
+          ).join("\n")}\n`;
+          const hostContent = await readFile(workspaceFile, "utf8");
+          if (hostContent !== expectedPrefix) {
+            throw new Error(
+              `Host workspace was not finalized after warm turn ${completedTurn}: expected ${JSON.stringify(expectedPrefix)}, observed ${JSON.stringify(hostContent)}`,
+            );
+          }
+          if (
+            waitingState.currentIssue.projectId !== fixtures.project.id ||
+            waitingState.currentIssue.projectWorkspaceId !==
+              fixtures.project.primaryWorkspace.id ||
+            !waitingState.currentIssue.executionWorkspaceId
+          ) {
+            throw new Error(
+              `Warm turn ${completedTurn} lost its project execution-workspace scope`,
+            );
+          }
+          const chronologicalRuns = sortRunsChronologically(
+            waitingState.taskRuns,
+          );
+          const completedRunIds = new Set(
+            chronologicalRuns.map((candidate) => candidate.id),
+          );
+          const retainedTurnLeases = await pollUntil({
+            label: `retained Daytona leases after warm turn ${completedTurn}`,
+            deadlineAt: Math.min(turnDeadlineAt, Date.now() + 30_000),
+            intervalMs: 500,
+            load: () =>
+              api.get<EnvironmentLeaseRecord[]>(
+                `/api/environments/${fixtures!.environment.id}/leases`,
+              ),
+            accept: (leases) => {
+              const runOrder = new Map(
+                chronologicalRuns.map((candidate, index) => [
+                  candidate.id,
+                  index,
+                ]),
+              );
+              const completed = leases
+                .filter(
+                  (lease) =>
+                    lease.heartbeatRunId &&
+                    completedRunIds.has(lease.heartbeatRunId),
+                )
+                .sort(
+                  (left, right) =>
+                    (runOrder.get(left.heartbeatRunId ?? "") ?? 0) -
+                    (runOrder.get(right.heartbeatRunId ?? "") ?? 0),
+                );
+              return (
+                completed.length === completedTurn &&
+                completed
+                  .slice(0, -1)
+                  .every(
+                    (lease) =>
+                      lease.status === "expired" &&
+                      lease.cleanupStatus === "success",
+                  ) &&
+                completed.at(-1)?.status === "retained" &&
+                completed.every(
+                  (lease) =>
+                    lease.leasePolicy === "reuse_by_environment" &&
+                    typeof lease.providerLeaseId === "string" &&
+                    record(lease.metadata).sandboxState === "started",
+                ) &&
+                completed
+                  .slice(1)
+                  .every(
+                    (lease) =>
+                      record(lease.metadata).resumedFromState === "started",
+                  )
+              );
+            },
+          });
+          const turnRunOrder = new Map(
+            chronologicalRuns.map((candidate, index) => [candidate.id, index]),
+          );
+          const completedLeases = retainedTurnLeases
+            .filter(
+              (lease) =>
+                lease.heartbeatRunId &&
+                completedRunIds.has(lease.heartbeatRunId),
+            )
+            .sort(
+              (left, right) =>
+                (turnRunOrder.get(left.heartbeatRunId ?? "") ?? 0) -
+                (turnRunOrder.get(right.heartbeatRunId ?? "") ?? 0),
+            );
+          if (
+            new Set(completedLeases.map((lease) => lease.providerLeaseId))
+              .size !== 1
+          ) {
+            throw new Error(
+              `Warm turn ${completedTurn} replaced its Daytona sandbox`,
+            );
+          }
+          turnEvidence.push({
+            turn: completedTurn,
+            issue: waitingState.currentIssue,
+            run: chronologicalRuns.at(-1),
+            hostContent,
+            leases: completedLeases,
+          });
+          await page.goto(
+            `/${encodeURIComponent(issuePrefix)}/issues/${encodeURIComponent(issue.identifier ?? issue.id)}`,
+            { waitUntil: "domcontentloaded" },
+          );
+          await captureScreenshot(
+            `warm-turn-${completedTurn}`,
+            `Warm Daytona turn ${completedTurn} awaiting review`,
+            `warm-turn-${completedTurn}.png`,
+          );
+          turnSubmissionTimesMs.push(
+            await submitTaskRevision(page, followups[completedTurn - 1]),
+          );
+        }
+        warmLifecycleEvidence = { turns: turnEvidence };
       }
 
       const taskMatchers = execution.task.buildMatchers(nonce, execution);
+      const terminalDeadlineAt =
+        execution.task.flow === "warm_three_turn"
+          ? Math.min(
+              deadlineAt,
+              turnSubmissionTimesMs.at(-1)! +
+                (execution.task.turnTimeoutMs ?? 10 * 60_000),
+            )
+          : deadlineAt;
       let terminal = await pollUntil({
         label: `issue ${issue.id} and heartbeat run terminal state`,
-        deadlineAt,
+        deadlineAt: terminalDeadlineAt,
         load: loadTaskState,
         accept: ({ currentIssue, taskRuns }) =>
           currentIssue.status === execution.task.expectedTerminalState.issue &&
@@ -1225,6 +1575,45 @@ for (const execution of executions) {
         ),
       );
       selectedRuns = sortRunsChronologically(selectedRuns);
+      if (execution.task.flow === "warm_three_turn") {
+        turnTimings = selectedRuns.map((candidate, index) => {
+          const submittedAtMs = turnSubmissionTimesMs[index]!;
+          const runStartedAtMs = candidate.startedAt
+            ? Date.parse(candidate.startedAt)
+            : Number.NaN;
+          const runFinishedAtMs = candidate.finishedAt
+            ? Date.parse(candidate.finishedAt)
+            : Number.NaN;
+          const acquisition = record(
+            record(candidate.contextSnapshot).paperclipEnvironment,
+          ).sandboxLeaseAcquisition;
+          const acquisitionOutcome = record(acquisition).outcome;
+          return {
+            turn: index + 1,
+            submittedAt: new Date(submittedAtMs).toISOString(),
+            runStartedAt: candidate.startedAt ?? null,
+            runFinishedAt: candidate.finishedAt ?? null,
+            schedulerLatencyMs: Number.isFinite(runStartedAtMs)
+              ? Math.max(0, runStartedAtMs - submittedAtMs)
+              : null,
+            runDurationMs:
+              Number.isFinite(runStartedAtMs) &&
+              Number.isFinite(runFinishedAtMs)
+                ? Math.max(0, runFinishedAtMs - runStartedAtMs)
+                : null,
+            responseLatencyMs: Number.isFinite(runFinishedAtMs)
+              ? Math.max(0, runFinishedAtMs - submittedAtMs)
+              : null,
+            runId: candidate.id,
+            leaseAcquisitionOutcome:
+              acquisitionOutcome === "created" ||
+              acquisitionOutcome === "resumed" ||
+              acquisitionOutcome === "replacement"
+                ? acquisitionOutcome
+                : "unknown",
+          };
+        });
+      }
       const finalRun = selectedRuns.at(-1)!;
       const run =
         selectedRuns.find(
@@ -1436,10 +1825,31 @@ for (const execution of executions) {
           interactions: terminal.interactions,
         },
       };
+      const fileObservations = Object.fromEntries(
+        await Promise.all(
+          taskMatchers
+            .filter(
+              (matcher) =>
+                matcher.kind === "file_exists" ||
+                matcher.kind === "file_exact" ||
+                matcher.kind === "file_contains",
+            )
+            .map(async (matcher) => [
+              matcher.path,
+              await readFile(
+                path.isAbsolute(matcher.path)
+                  ? matcher.path
+                  : path.join(workspacePath, matcher.path),
+                "utf8",
+              ).catch(() => undefined),
+            ]),
+        ),
+      );
       matcherResults = await Promise.all(
         taskMatchers.map((matcher) =>
           evaluateMatcher(matcher, {
             ...matcherObservation,
+            files: fileObservations,
             // Multi-run tasks intentionally retain earlier waiting/revision
             // replies. Exact completion text belongs to the chronological
             // final run, while occurrence checks still span every agent
@@ -1506,6 +1916,198 @@ for (const execution of executions) {
         invariantFailures.push(
           "expected a Daytona sandbox lease on the run context",
         );
+      }
+      if (execution.task.flow === "warm_three_turn") {
+        const runEnvironmentContexts = selectedRuns.map((candidate) =>
+          record(record(candidate.contextSnapshot).paperclipEnvironment),
+        );
+        const leaseIds = runEnvironmentContexts.map((entry) => entry.leaseId);
+        const acquisitionOutcomes = runEnvironmentContexts.map(
+          (entry) => record(entry.sandboxLeaseAcquisition).outcome,
+        );
+        const projectWorkspaceIds = selectedRuns.map(
+          (candidate) =>
+            record(record(candidate.contextSnapshot).paperclipWorkspace)
+              .workspaceId,
+        );
+        const executionWorkspaceIds = selectedRuns.map(
+          (candidate) => record(candidate.contextSnapshot).executionWorkspaceId,
+        );
+        if (
+          leaseIds.some(
+            (leaseId) => typeof leaseId !== "string" || leaseId.length === 0,
+          )
+        ) {
+          invariantFailures.push(
+            `expected a persisted Daytona lease row for every warm turn; observed ${JSON.stringify(leaseIds)}`,
+          );
+        }
+        if (
+          JSON.stringify(acquisitionOutcomes) !==
+          JSON.stringify(["created", "resumed", "resumed"])
+        ) {
+          invariantFailures.push(
+            `expected warm lease outcomes created,resumed,resumed; observed ${JSON.stringify(acquisitionOutcomes)}`,
+          );
+        }
+        if (
+          !fixtures.project?.primaryWorkspace?.id ||
+          projectWorkspaceIds.some(
+            (workspaceId) =>
+              workspaceId !== fixtures!.project!.primaryWorkspace!.id,
+          ) ||
+          new Set(executionWorkspaceIds).size !== 1 ||
+          executionWorkspaceIds[0] !== issue.executionWorkspaceId ||
+          issue.projectId !== fixtures.project.id ||
+          issue.projectWorkspaceId !== fixtures.project.primaryWorkspace.id ||
+          !issue.executionWorkspaceId
+        ) {
+          invariantFailures.push(
+            `warm task did not preserve project, project-workspace, and execution-workspace identity: ${JSON.stringify({ projectWorkspaceIds, executionWorkspaceIds, projectId: issue.projectId, projectWorkspaceId: issue.projectWorkspaceId, executionWorkspaceId: issue.executionWorkspaceId })}`,
+          );
+        }
+        if (execution.profile.generation === "native") {
+          const stableIdentityFields: Array<{
+            label: string;
+            values: unknown[];
+          }> = [
+            {
+              label: "native session",
+              values: selectedRuns.map(
+                (candidate) => candidate.nativeSessionId,
+              ),
+            },
+            {
+              label: "runner instance",
+              values: selectedRuns.map(
+                (candidate) => candidate.runnerInstanceId,
+              ),
+            },
+            {
+              label: "provider session",
+              values: selectedRuns.map((candidate) => candidate.sessionIdAfter),
+            },
+            {
+              label: "runner pid",
+              values: selectedRuns.map((candidate) => candidate.processPid),
+            },
+            {
+              label: "runner process fingerprint",
+              values: selectedRuns.map(
+                (candidate) => candidate.processStartedAt,
+              ),
+            },
+          ];
+          for (const { label, values } of stableIdentityFields) {
+            if (
+              values.some(
+                (value) =>
+                  value === null ||
+                  value === undefined ||
+                  String(value).length === 0,
+              ) ||
+              new Set(values).size !== 1
+            ) {
+              invariantFailures.push(
+                `expected one stable ${label} across native warm turns; observed ${JSON.stringify(values)}`,
+              );
+            }
+          }
+        }
+        if (
+          turnTimings?.length !== 3 ||
+          turnTimings.some(
+            (timing) =>
+              timing.runStartedAt === null ||
+              timing.runFinishedAt === null ||
+              timing.schedulerLatencyMs === null ||
+              timing.runDurationMs === null ||
+              timing.responseLatencyMs === null ||
+              timing.responseLatencyMs >
+                (execution.task.turnTimeoutMs ?? 10 * 60_000),
+          )
+        ) {
+          invariantFailures.push(
+            `warm turn timing data was incomplete or exceeded its structural deadline: ${JSON.stringify(turnTimings)}`,
+          );
+        }
+        const retainedLeases = await pollUntil({
+          label: `terminal warm Daytona lease history for issue ${issue.id}`,
+          deadlineAt: Math.min(deadlineAt, Date.now() + 30_000),
+          intervalMs: 500,
+          load: () =>
+            api.get<EnvironmentLeaseRecord[]>(
+              `/api/environments/${fixtures!.environment.id}/leases`,
+            ),
+          accept: (leases) => {
+            const warmLeases = leases.filter(
+              (lease) =>
+                lease.issueId === issue!.id &&
+                selectedRuns.some(
+                  (candidate) => candidate.id === lease.heartbeatRunId,
+                ),
+            );
+            return (
+              warmLeases.length === 3 &&
+              warmLeases.every((lease) => {
+                const runIndex = selectedRuns.findIndex(
+                  (candidate) => candidate.id === lease.heartbeatRunId,
+                );
+                return (
+                  lease.status ===
+                    (runIndex === selectedRuns.length - 1
+                      ? "retained"
+                      : "expired") &&
+                  lease.cleanupStatus === "success" &&
+                  lease.leasePolicy === "reuse_by_environment" &&
+                  typeof lease.providerLeaseId === "string" &&
+                  record(lease.metadata).sandboxState === "started"
+                );
+              })
+            );
+          },
+        });
+        const selectedRunOrder = new Map(
+          selectedRuns.map((candidate, index) => [candidate.id, index]),
+        );
+        const warmLeases = retainedLeases
+          .filter(
+            (lease) =>
+              lease.issueId === issue!.id &&
+              selectedRunOrder.has(lease.heartbeatRunId ?? ""),
+          )
+          .sort(
+            (left, right) =>
+              (selectedRunOrder.get(left.heartbeatRunId ?? "") ?? 0) -
+              (selectedRunOrder.get(right.heartbeatRunId ?? "") ?? 0),
+          );
+        const providerLeaseIds = warmLeases.map(
+          (lease) => lease.providerLeaseId,
+        );
+        const resumedFromStates = warmLeases
+          .slice(1)
+          .map((lease) => record(lease.metadata).resumedFromState);
+        if (
+          new Set(providerLeaseIds).size !== 1 ||
+          typeof providerLeaseIds[0] !== "string" ||
+          JSON.stringify(resumedFromStates) !==
+            JSON.stringify(["started", "started"])
+        ) {
+          invariantFailures.push(
+            `expected one continuously-started Daytona sandbox; observed ${JSON.stringify({ providerLeaseIds, resumedFromStates })}`,
+          );
+        }
+        warmLifecycleEvidence = {
+          ...(warmLifecycleEvidence ?? {}),
+          leaseIds,
+          acquisitionOutcomes,
+          projectWorkspaceIds,
+          executionWorkspaceIds,
+          providerLeaseIds,
+          resumedFromStates,
+          retainedLeases: warmLeases,
+          turnTimings,
+        };
       }
       if (execution.environment.id === "local") {
         const runLogContent = String(record(runLog).content ?? "");
@@ -1659,6 +2261,7 @@ for (const execution of executions) {
           interactions: terminal.interactions,
           planLifecycleEvidence,
           questionLifecycleEvidence,
+          warmLifecycleEvidence,
           matcherResults,
           invariantFailures,
           runEvents,
@@ -1721,6 +2324,15 @@ for (const execution of executions) {
           exact: true,
         }),
       ).toBeVisible({ timeout: 30_000 });
+      if (execution.task.flow === "warm_three_turn") {
+        const continuedReceipts = page
+          .getByTestId("task-chat-interaction-receipt")
+          .filter({ hasText: "Selected “Continue work”" });
+        await expect(continuedReceipts).toHaveCount(2, { timeout: 30_000 });
+        await expect(
+          page.getByText("Declined request", { exact: true }),
+        ).toHaveCount(0);
+      }
       await captureScreenshot(
         "final-state",
         "Final visible task state",
@@ -1759,16 +2371,17 @@ for (const execution of executions) {
         }
       }
       if (!page.isClosed()) {
-        const failureScreenshot = path.join(privateDir, "failure.png");
-        await page
-          .screenshot({ path: failureScreenshot, fullPage: true })
-          .catch(() => undefined);
-        await testInfo
-          .attach("failure", {
-            path: failureScreenshot,
-            contentType: "image/png",
-          })
-          .catch(() => undefined);
+        if (isReviewedFixtureScreenshotRoute()) {
+          await captureScreenshot(
+            "failure",
+            "Task state at failure",
+            "failure.png",
+          ).catch(() => undefined);
+        } else {
+          await capturePrivateScreenshot("failure", "failure.png").catch(
+            () => undefined,
+          );
+        }
       }
     } finally {
       try {
@@ -1796,6 +2409,7 @@ for (const execution of executions) {
           });
         });
         try {
+          await cancelActiveRunsForCleanup();
           await fixtures.teardown();
           cleanup = "passed";
         } catch (error) {
@@ -1875,6 +2489,7 @@ for (const execution of executions) {
         issueId: issue?.id,
         issueIdentifier: issue?.identifier ?? null,
         runIds: selectedRuns.map((run) => run.id),
+        ...(turnTimings ? { turnTimings } : {}),
         startedAt,
         finishedAt: new Date(finishedAtMs).toISOString(),
         durationMs: finishedAtMs - startedAtMs,

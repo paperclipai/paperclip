@@ -25,6 +25,9 @@ import type {
   IssueTreeHold,
   IssueWatchdog,
   IssueWorkProduct,
+  RunnerGoalActionAccepted,
+  RunnerGoalActionRequest,
+  RunnerGoalProjection,
   PreviewIssueTreeControl,
   ReleaseIssueTreeHold,
   UpsertIssueWatchdog,
@@ -153,6 +156,12 @@ export const issuesApi = {
   get: (id: string, options?: RequestOptions) => options
     ? api.get<Issue>(`/issues/${id}`, options)
     : api.get<Issue>(`/issues/${id}`),
+  getRunnerGoal: (id: string, agentId?: string | null) => {
+    const query = agentId ? `?agentId=${encodeURIComponent(agentId)}` : "";
+    return api.get<RunnerGoalProjection>(`/issues/${id}/runner-goal${query}`);
+  },
+  actOnRunnerGoal: (id: string, request: RunnerGoalActionRequest) =>
+    api.post<RunnerGoalActionAccepted>(`/issues/${id}/runner-goal/actions`, request),
   getWatchdog: (id: string) => api.get<IssueWatchdog | null>(`/issues/${id}/watchdog`),
   upsertWatchdog: (id: string, data: UpsertIssueWatchdog) =>
     api.put<IssueWatchdog>(`/issues/${id}/watchdog`, data),

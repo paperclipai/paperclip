@@ -4,16 +4,24 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import type { CapabilityJsonValue } from "../mock-core/capability-control-plane-types.js";
+import { CapabilityMockControlPlaneAdapter } from "../mock-core/capability-mock-control-plane-adapter.js";
+import type {
+  PrpStructuredRunResult,
+  PrpTerminalState,
+} from "../protocol/replay-contract.js";
 import { capabilityFixtureRunCapabilities } from "../scenarios/fixture-run-capabilities.js";
 import {
   CapabilityLiveSessionService,
   InMemoryCapabilityLiveSessionStore,
   type CapabilityLiveSession,
+  type CapabilityLiveSessionServiceOptions,
   type CapabilityLiveSessionSnapshot,
+  type CapabilityLiveSessionStore,
   type CapabilityLiveTurnEvent,
   type CapabilityLiveTurnResult,
 } from "../live/live-session.js";
 import type { EvalObservation } from "./eval-scoring.js";
+import { isCapabilitySemanticReadOperation } from "../semantic-tools/policy.js";
 import {
   RUNNER_WORKFLOW_OBSERVATION_SCHEMA,
   type RunnerWorkflowCheck,
@@ -74,7 +82,259 @@ function continuationPrompt(evalCase: RunnerWorkflowEvalCase): string {
   if (evalCase.id === "steering-causality") {
     return "Steering update: use bullet points only. Apply only this formatting change and call finish_task exactly once without repeating prior work.";
   }
+  if (evalCase.id === "delegation-return") {
+    return "The plan is accepted. Create exactly one justified child, set the source task dependency to that child, then stop without calling finish_task. Wait for the authoritative child-completion result.";
+  }
   return "Continue from the authoritative typed interaction result. Do not redo completed work.";
+}
+
+function workflowResult(
+  disposition: "done" | "blocked",
+  summary: string,
+  idempotencyKey: string,
+): PrpStructuredRunResult {
+  return {
+    schema: "paperclip.run_result.v1",
+    reportedWorkDisposition: disposition,
+    summary,
+    completionClaim: {
+      contractRevision: "runner-workflow-eval-v1",
+      objectiveSatisfied: disposition === "done",
+      criteria: [],
+      remainingWork:
+        disposition === "done"
+          ? []
+          : [
+              {
+                description: "Wait for the delegated child to complete.",
+                blocksCompletion: true,
+              },
+            ],
+    },
+    evidence: [],
+    verification: [],
+    attentionRequests: [],
+    artifacts: [],
+    ...(disposition === "done"
+      ? {}
+      : {
+          blocker: {
+            reasonCode: "delegated_child_in_progress",
+            owner: { kind: "agent" as const, name: "Delegated child" },
+            unblockAction: "Complete the delegated child task.",
+            scope: "current_track" as const,
+          },
+          continuation: {
+            kind: "delegated_issue" as const,
+            summary:
+              "Resume the source task after the delegated child completes.",
+            idempotencyKey,
+          },
+        }),
+  };
+}
+
+async function completeWorkflowRun(
+  adapter: CapabilityMockControlPlaneAdapter,
+  input: {
+    runId: string;
+    sessionId: string;
+    source: string;
+    disposition: "done" | "blocked";
+    summary: string;
+  },
+): Promise<void> {
+  const terminal: PrpTerminalState = {
+    schema: "paperclip.prp.terminal.v1",
+    turnTerminalState: "completed",
+    runTerminalState: "succeeded",
+    reportedWorkDisposition: input.disposition,
+  };
+  const current = adapter.snapshot().runs.find((run) => run.id === input.runId);
+  if (current === undefined) {
+    throw new Error(`workflow eval run ${input.runId} is missing`);
+  }
+  if (current.result !== null) return;
+  if (
+    !current.events.some(
+      (event) => "eventType" in event && event.eventType === "run.terminal",
+    )
+  ) {
+    await adapter.appendEvent({
+      schema: "paperclip.prp.event.v1",
+      sourceEventId: `${input.source}:terminal:1`,
+      sourceSeq: 1,
+      sourceInstanceId: input.source,
+      sourceKind: "runner",
+      runId: input.runId,
+      normalizedSessionId: input.sessionId,
+      turnId: `${input.source}-turn`,
+      eventType: "run.terminal",
+      schemaVersion: 1,
+      priority: 0,
+      emittedAt: new Date().toISOString(),
+      payload: terminal,
+    });
+  }
+  await adapter.completeRun({
+    result: workflowResult(
+      input.disposition,
+      input.summary,
+      `${input.source}-continuation`,
+    ),
+    terminal,
+  });
+}
+
+export interface AdvancedDelegationReturnState {
+  mockState: string;
+  childTaskId: string;
+  returnRunId: string;
+}
+
+/**
+ * Advance the controlled mock authority through the child-return boundary.
+ * This is orchestration evidence, not a model-authored semantic call: the
+ * evaluated provider still has to author the child/dependency and final result.
+ */
+export async function advanceDelegationReturnMockState(input: {
+  mockState: string;
+  parentRunId: string;
+  parentSessionId: string;
+  parentTaskId: string;
+  capabilities: readonly string[];
+}): Promise<AdvancedDelegationReturnState | null> {
+  const adapter = CapabilityMockControlPlaneAdapter.restore(input.mockState);
+  if (adapter.snapshot().lifecycle !== "running") await adapter.start();
+  const initial = adapter.snapshot();
+  const children = initial.tasks.filter(
+    (task) => task.parentId === input.parentTaskId,
+  );
+  if (children.length !== 1) return null;
+  const child = children[0]!;
+  if (
+    !initial.blockers.some(
+      (blocker) =>
+        blocker.taskId === input.parentTaskId &&
+        blocker.blockedByTaskId === child.id,
+    )
+  ) {
+    return null;
+  }
+
+  await completeWorkflowRun(adapter, {
+    runId: input.parentRunId,
+    sessionId: input.parentSessionId,
+    source: `${input.parentRunId}-delegation-wait`,
+    disposition: "blocked",
+    summary: "Source task is waiting on its delegated child.",
+  });
+
+  const childRunId = `${input.parentRunId}-child`;
+  const childSessionId = `${input.parentSessionId}-child`;
+  const actorId = child.assigneeActorId ?? initial.actors[0]!.id;
+  await adapter.openFixtureRun({
+    identity: {
+      runId: childRunId,
+      sessionId: childSessionId,
+      companyId: child.companyId,
+      issueId: child.id,
+      agentId: actorId,
+    },
+    backendKind: "runner",
+    sourceInstanceId: "runner-workflow-eval-child",
+    capabilities: [...input.capabilities],
+  });
+  await adapter.applyCommand({
+    runId: childRunId,
+    idempotencyKey: `${childRunId}-finish`,
+    command: {
+      kind: "finish_task",
+      taskId: child.id,
+      summary: "Delegated verification completed.",
+    },
+  });
+  await completeWorkflowRun(adapter, {
+    runId: childRunId,
+    sessionId: childSessionId,
+    source: `${childRunId}-completion`,
+    disposition: "done",
+    summary: "Delegated verification completed.",
+  });
+
+  const returnRunId = `${input.parentRunId}-return`;
+  await adapter.openFixtureRun({
+    identity: {
+      runId: returnRunId,
+      sessionId: input.parentSessionId,
+      companyId: initial.company.id,
+      issueId: input.parentTaskId,
+      agentId: initial.actors[0]!.id,
+    },
+    backendKind: "runner",
+    sourceInstanceId: "runner-workflow-eval-return",
+    capabilities: [...input.capabilities],
+    wake: {
+      reason: "blockers_resolved",
+      payload: { completedTaskId: child.id },
+    },
+  });
+  return { mockState: adapter.serialize(), childTaskId: child.id, returnRunId };
+}
+
+async function restoreAfterDelegatedChild(input: {
+  session: CapabilityLiveSession;
+  store: CapabilityLiveSessionStore;
+  transportOptions: CapabilityLiveSessionServiceOptions["transportOptions"];
+}): Promise<{
+  service: CapabilityLiveSessionService;
+  session: CapabilityLiveSession;
+} | null> {
+  const before = input.session.snapshot();
+  const advanced = await advanceDelegationReturnMockState({
+    mockState: before.mockState,
+    parentRunId: before.authority.runId,
+    parentSessionId: before.sessionId,
+    parentTaskId: before.authority.taskId,
+    capabilities: before.authority.capabilities,
+  });
+  if (advanced === null) return null;
+  await input.session.suspend("workflow eval delegated child completed");
+  const checkpoint = await input.store.load(before.sessionId);
+  if (checkpoint === null) {
+    throw new Error("workflow eval delegation checkpoint is missing");
+  }
+  const {
+    providerRunBinding: _providerRunBinding,
+    ...checkpointWithoutBinding
+  } = checkpoint;
+  const at = new Date().toISOString();
+  const updated: CapabilityLiveSessionSnapshot = {
+    ...checkpointWithoutBinding,
+    revision: checkpoint.revision + 1,
+    updatedAt: at,
+    authority: {
+      ...checkpoint.authority,
+      runId: advanced.returnRunId,
+    },
+    mockState: advanced.mockState,
+    stateHistory: [
+      ...(checkpoint.stateHistory ?? []),
+      {
+        revision: JSON.parse(advanced.mockState).revision as number,
+        at,
+        turnId: null,
+        operationId: "eval.delegated_child_completed",
+        state: advanced.mockState,
+      },
+    ],
+  };
+  await input.store.save(updated);
+  const service = new CapabilityLiveSessionService({
+    store: input.store,
+    transportOptions: input.transportOptions,
+  });
+  return { service, session: await service.restore(before.sessionId) };
 }
 
 function acpxAgent(
@@ -139,6 +399,33 @@ function observedCalls(snapshot: CapabilityLiveSessionSnapshot): string[] {
     entry.kind === "tool_call" && typeof entry.data.operationId === "string"
       ? [entry.data.operationId]
       : [],
+  );
+}
+
+export function unexpectedLiveWorkflowCalls(
+  calls: readonly string[],
+  expectedCalls: readonly string[],
+): string[] {
+  const expected = new Set(expectedCalls);
+  return scorableLiveWorkflowCalls(calls, expectedCalls).filter(
+    (operationId) => !expected.has(operationId),
+  );
+}
+
+/**
+ * Keeps required reads and every stateful operation in trajectory scoring while
+ * ignoring optional read-only context gathering. The full call list remains in
+ * the workflow evidence and metrics for auditability.
+ */
+export function scorableLiveWorkflowCalls(
+  calls: readonly string[],
+  expectedCalls: readonly string[],
+): string[] {
+  const expected = new Set(expectedCalls);
+  return calls.filter(
+    (operationId) =>
+      expected.has(operationId) ||
+      !isCapabilitySemanticReadOperation(operationId),
   );
 }
 
@@ -591,6 +878,24 @@ export async function executeLiveRunnerWorkflow(input: {
           ),
         );
         await settleInteractions(input.evalCase, session, turns, withinBudget);
+        if (input.evalCase.id === "delegation-return" && withinBudget()) {
+          const restored = await restoreAfterDelegatedChild({
+            session,
+            store,
+            transportOptions,
+          });
+          if (restored !== null) {
+            service = restored.service;
+            session = restored.session;
+            subscribeToSession(session);
+            turns.push(
+              await session.sendMessage(
+                "The delegated child completed successfully and the source task is unblocked. Use the authoritative child result and call finish_task exactly once without repeating the delegated work.",
+                { allowMissingUsage: input.allowMissingUsage },
+              ),
+            );
+          }
+        }
         if (input.evalCase.id === "steering-causality" && withinBudget()) {
           turns.push(
             await session.sendMessage(continuationPrompt(input.evalCase), {
@@ -660,9 +965,7 @@ export async function executeLiveRunnerWorkflow(input: {
   const missingCalls = expectedCalls.filter(
     (operationId) => !calls.includes(operationId),
   );
-  const extraCalls = calls.filter(
-    (operationId) => !expectedCalls.includes(operationId),
-  );
+  const extraCalls = unexpectedLiveWorkflowCalls(calls, expectedCalls);
   const duplicateSignals =
     snapshot === undefined ? [] : duplicateEffectSignals(snapshot);
   const pendingInteractions = session?.pendingInteractions().length ?? 0;
@@ -712,7 +1015,7 @@ export async function executeLiveRunnerWorkflow(input: {
     provenance: { source: "live_model", behavior: input.evalCase.id },
     controlPlaneOwned: expectedCalls.length === 0,
     expectedCalls,
-    observedCalls: calls,
+    observedCalls: scorableLiveWorkflowCalls(calls, expectedCalls),
     forbiddenCalls: [],
     finalState: {
       expected: expectedCalls.length === 0 ? "unchanged" : "mutated",

@@ -369,10 +369,8 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
     const agentStarred = isStarred(membershipsQuery.data, "agent", agent.id);
     const builtInState = builtInByAgentId.get(agent.id);
     const showBuiltInLifecycle = builtInState?.status === "needs_setup" || builtInState?.status === "pending_approval";
-    // Lifecycle chip + inline `Set up`. Rendered inline in
-    // `meta` at xl (where there's room and the meta columns align) and on a
-    // dedicated full-width line beneath the name below xl, so the chips never
-    // starve the name — the row's primary identifier — at narrow widths.
+    // Keep lifecycle controls with the metadata only when the content area
+    // has enough room; the sidebar can leave less space than the viewport suggests.
     const builtInCluster = builtInState && showBuiltInLifecycle ? (
       <>
         <BuiltInLifecycleChip status={builtInState.status} />
@@ -398,18 +396,13 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
       <EntityRow
         key={agent.id}
         title={agent.name}
-        // Fixed (truncating) title width at xl so the `meta` group starts at a
-        // constant x on every row — that's what makes the model + timestamp
-        // columns line up vertically. Below xl the meta columns are hidden, so
-        // the title flexes instead: a fixed width there let the shrink-0
-        // trailing actions squeeze the name to zero width on mobile.
-        titleClassName="flex-1 xl:flex-none xl:w-56"
-        titleTextClassName="whitespace-normal break-words xl:truncate xl:whitespace-nowrap"
-        subtitleClassName="whitespace-normal break-words xl:truncate xl:whitespace-nowrap"
+        titleClassName="flex-1 @5xl:flex-none @5xl:w-56"
+        titleTextClassName="truncate"
+        subtitleClassName="truncate"
         subtitle={`${roleLabels[agent.role] ?? agent.role}${agent.title ? ` - ${agent.title}` : ""}`}
         to={agentUrl(agent)}
         className={cn(
-          "group",
+          "group py-3",
           agent.pausedAt && tab !== "paused" ? "opacity-50" : "",
           resourceMembershipState(membershipsQuery.data, "agent", agent.id) === "left" ? "sm:text-foreground/55" : "",
         )}
@@ -419,20 +412,39 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
           <AgentStatusCapsule status={agent.status} />
         )}
         secondaryRow={
-          builtInCluster ? (
-            <div className="xl:hidden flex flex-wrap items-center gap-1.5">
-              {builtInCluster}
+          <div className="flex flex-col gap-2">
+            {builtInCluster && (
+              <div className="@5xl:hidden flex flex-wrap items-center gap-1.5">
+                {builtInCluster}
+              </div>
+            )}
+            {/* Actions have their own wrapping line, so names keep their width. */}
+            <div
+              className="pt-1"
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+              }}
+            >
+              <AgentActionButtons
+                agent={agent}
+                companyId={selectedCompanyId}
+                runLabel="Run Heartbeat"
+                showStatus={false}
+                canRunWithProviderTrace={canUseProviderTrace}
+                className="flex flex-wrap items-center gap-2"
+              />
             </div>
-          ) : undefined
+          </div>
         }
         meta={
           <div className="flex items-center gap-3">
             {builtInCluster && (
-              <div className="hidden xl:flex items-center gap-1.5">
+              <div className="hidden @5xl:flex items-center gap-1.5">
                 {builtInCluster}
               </div>
             )}
-            <div className="hidden xl:flex items-center gap-3">
+            <div className="hidden @5xl:flex items-center gap-3">
               <AgentMetaColumns
                 agent={agent}
                 environment={resolveRenderedEnvironment(agent.id)}
@@ -441,7 +453,7 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
             </div>
           </div>
         }
-        metaSpacerClassName="hidden xl:block"
+        metaSpacerClassName="hidden @5xl:block"
         trailing={
           <div className="flex items-center gap-3">
             <div className="hidden sm:flex items-center gap-3">
@@ -455,23 +467,6 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
               <span className="w-20 flex justify-end">
                 <AgentStatusBadge status={agent.status} />
               </span>
-              {/* Row actions mirror the agent detail page; stop the click
-                  from bubbling to the row link so buttons don't navigate.
-                  Hidden on mobile so the agent name keeps room to render. */}
-              <div
-                onClick={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                }}
-              >
-                <AgentActionButtons
-                  agent={agent}
-                  companyId={selectedCompanyId}
-                  runLabel="Run Heartbeat"
-                  showStatus={false}
-                  canRunWithProviderTrace={canUseProviderTrace}
-                />
-              </div>
               <StarToggle
                 size="row"
                 starred={agentStarred}
@@ -511,11 +506,12 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
 
   return (
     <div className={cn(
+      "@container",
       effectiveView === "org"
         ? "flex h-full min-h-0 flex-col gap-4"
         : "space-y-4",
     )}>
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <Tabs value={tab} onValueChange={(v) => navigate(`/agents/${v}`)}>
           <PageTabBar
             items={visibleTabItems}

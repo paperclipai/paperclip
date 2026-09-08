@@ -195,6 +195,562 @@ function highestContiguous(events: PrpEvent[]): number {
 }
 
 describe("executeNativeSession recovery", () => {
+  it.each((["complete", "paused", "blocked", "limited", "usageLimited", "budgetLimited"] as const)
+    .flatMap((status) => [false, true].map((snapshotBeforeUpdate) => ({ status, snapshotBeforeUpdate }))))(
+    "handles a new chat turn instead of completing it from an existing $status goal (snapshot: $snapshotBeforeUpdate)", async ({ status, snapshotBeforeUpdate }) => {
+    const oldGoal = {
+      threadId: "provider-recovery",
+      objective: "Say hello",
+      status,
+      tokenBudget: null,
+      tokensUsed: 500,
+      timeUsedSeconds: 2,
+      createdAt: Date.parse("2026-08-09T00:00:00.000Z"),
+      updatedAt: Date.parse("2026-08-09T00:00:02.000Z"),
+    };
+    const reply = { ...result, summary: "Said bye in response to the new message." };
+    const capabilities = {
+      resume: true, typedEvents: true, steering: false,
+      interruption: true, structuredResult: true,
+    };
+    const checkpoint: PersistedNativeSession = {
+      backendKind: "mock",
+      sessionId: "driver-recovery",
+      identity,
+      providerSessionId: oldGoal.threadId,
+      activeTurnId: null,
+      semanticResult: null,
+      terminal: null,
+      terminalTurns: [],
+      pendingRuntimeRequests: [],
+      goal: { ...oldGoal, createdAt: oldGoal.createdAt / 1000, updatedAt: oldGoal.updatedAt / 1000 },
+    };
+    const startTurn = vi.fn<NativeSession["startTurn"]>(async () => ({ turnId: "turn-recovery" }));
+    const goal = vi.fn(async () => oldGoal);
+    const session: NativeSession = {
+      identity: () => identity,
+      async capabilities() { return capabilities; },
+      async *events() {
+        let seq = 0;
+        // The resume snapshot is durable UI state, not work for this prompt.
+        if (snapshotBeforeUpdate) yield runnerEvent(++seq, "session.goal.snapshot", {
+          goal: {
+            ...oldGoal,
+            createdAt: new Date(oldGoal.createdAt).toISOString(),
+            elapsedSeconds: oldGoal.timeUsedSeconds,
+          },
+          workingNow: false,
+        });
+        // Codex replays the unchanged goal as an update during resume too.
+        // Usage-only changes do not make an inactive goal own a new prompt.
+        yield runnerEvent(++seq, "session.goal.updated", {
+          goal: {
+            ...oldGoal,
+            createdAt: new Date(oldGoal.createdAt).toISOString(),
+            tokensUsed: 600,
+            updatedAt: new Date(oldGoal.updatedAt + 1000).toISOString(),
+          },
+          workingNow: false,
+        });
+        yield runnerEvent(++seq, "turn.started");
+        yield runnerEvent(++seq, "run.result.proposed", reply);
+        yield runnerEvent(++seq, "turn.completed");
+      },
+      startTurn,
+      goal,
+      async result() { return { result: reply, terminal, turnId: "turn-recovery" }; },
+      async snapshot() { return checkpoint; },
+      async close() {},
+    };
+    const appended: PrpEvent[] = [];
+    const completed = await executeNativeSession({
+      input: { ...input, task: { ...input.task, prompt: "Say bye" } },
+      backend: {
+        async descriptor() {
+          return { kind: "mock", name: "chat-after-goal", version: "1", capabilities };
+        },
+        async openSession() { throw new Error("must resume the same provider session"); },
+        async recoverSession() { return { recovered: true, session }; },
+      },
+      persistedSession: checkpoint,
+      controlPlane: {
+        async openRun() {},
+        async checkpointSession() {},
+        async appendEvent(event) {
+          appended.push(event);
+          return { cursor: event.sourceSeq, highestContiguousSourceSeq: event.sourceSeq, disposition: "committed" };
+        },
+        async replayEvents() { return { events: [], highestContiguousSourceSeq: 0 }; },
+        async completeRun() {},
+      },
+      runnerInstanceId: "runner-recovery",
+      controlPlaneInstanceId: "control-recovery",
+      timeoutMs: 1000,
+    });
+    expect(startTurn).toHaveBeenCalledOnce();
+    expect(JSON.parse(startTurn.mock.calls[0]![0]!.message.text).task.prompt).toBe("Say bye");
+    expect(goal).not.toHaveBeenCalled();
+    expect(completed.providerSessionId).toBe(oldGoal.threadId);
+    expect(completed.result).toEqual(reply);
+    expect(appended.map((event) => event.eventType)).toEqual([
+      ...(snapshotBeforeUpdate ? ["session.goal.snapshot"] : []),
+      "session.goal.updated", "turn.started", "run.result.proposed", "turn.completed",
+      "run.result.accepted", "run.terminal",
+    ]);
+  });
+
+  it("applies a session goal control without starting an ordinary turn", async () => {
+    const activeGoal = {
+      threadId: "provider-recovery",
+      objective: "Verify goal mode",
+      status: "active" as const,
+      tokenBudget: 12_000,
+      tokensUsed: 100,
+      timeUsedSeconds: 1,
+      createdAt: Date.parse("2026-08-09T00:00:00.000Z"),
+      updatedAt: Date.parse("2026-08-09T00:00:01.000Z"),
+    };
+    const completeGoal = {
+      ...activeGoal,
+      status: "complete" as const,
+      tokensUsed: 500,
+      timeUsedSeconds: 2,
+      updatedAt: Date.parse("2026-08-09T00:00:02.000Z"),
+    };
+    const startTurn = vi.fn(async () => ({ turnId: "turn-recovery" }));
+    const goal = vi.fn(async (operation: Parameters<NonNullable<NativeSession["goal"]>>[0]) =>
+      operation.action === "get" ? completeGoal : activeGoal,
+    );
+    const session: NativeSession = {
+      identity: () => identity,
+      async capabilities() {
+        return {
+          resume: true,
+          typedEvents: true,
+          steering: false,
+          interruption: true,
+          structuredResult: true,
+        };
+      },
+      async *events() {
+        yield runnerEvent(1, "session.goal.snapshot", {
+          goal: null,
+          workingNow: false,
+        });
+        yield runnerEvent(2, "session.goal.updated", {
+          requestId: "goal-create",
+          goal: {
+            objective: activeGoal.objective,
+            status: activeGoal.status,
+            tokenBudget: activeGoal.tokenBudget,
+            tokensUsed: activeGoal.tokensUsed,
+            elapsedSeconds: activeGoal.timeUsedSeconds,
+          },
+          workingNow: false,
+        });
+        yield runnerEvent(3, "turn.started");
+        yield runnerEvent(4, "run.result.proposed", result);
+        yield runnerEvent(5, "turn.completed");
+        yield runnerEvent(6, "session.goal.snapshot", {
+          goal: {
+            objective: completeGoal.objective,
+            status: completeGoal.status,
+            tokenBudget: completeGoal.tokenBudget,
+            tokensUsed: completeGoal.tokensUsed,
+            elapsedSeconds: completeGoal.timeUsedSeconds,
+          },
+          workingNow: false,
+        });
+      },
+      startTurn,
+      goal,
+      async result() {
+        return null;
+      },
+      async snapshot() {
+        return {
+          backendKind: "mock",
+          sessionId: "driver-recovery",
+          identity,
+          providerSessionId: "provider-recovery",
+          cursor: null,
+          activeTurnId: null,
+          pendingRuntimeRequests: [],
+          goal: completeGoal,
+          lineage: [],
+        };
+      },
+      async close() {},
+    };
+    const backend: NativeSessionBackend = {
+      async descriptor() {
+        return {
+          kind: "mock",
+          name: "goal-backend",
+          version: "1",
+          capabilities: {
+            resume: true,
+            typedEvents: true,
+            steering: false,
+            interruption: true,
+            structuredResult: true,
+          },
+        };
+      },
+      async openSession() {
+        return session;
+      },
+    };
+    const appended: PrpEvent[] = [];
+    const port: ControlPlanePort = {
+      async openRun() {},
+      async checkpointSession() {},
+      async appendEvent(event) {
+        appended.push(event);
+        return {
+          cursor: event.sourceSeq,
+          highestContiguousSourceSeq: event.sourceSeq,
+          disposition: "committed",
+        };
+      },
+      async replayEvents() {
+        return { events: [], highestContiguousSourceSeq: 0 };
+      },
+      async completeRun() {},
+    };
+
+    const completed = await executeNativeSession({
+      input,
+      backend,
+      controlPlane: port,
+      runnerInstanceId: "runner-recovery",
+      controlPlaneInstanceId: "control-recovery",
+      sessionGoalControl: {
+        requestId: "goal-create",
+        action: "create",
+        objective: activeGoal.objective,
+        tokenBudget: activeGoal.tokenBudget,
+      },
+    });
+
+    expect(startTurn).not.toHaveBeenCalled();
+    expect(goal).toHaveBeenNthCalledWith(1, {
+      action: "set",
+      objective: activeGoal.objective,
+      status: "active",
+      requestId: "goal-create",
+      tokenBudget: activeGoal.tokenBudget,
+    });
+    expect(goal).toHaveBeenNthCalledWith(2, { action: "get" });
+    expect(appended.map((event) => event.eventType)).toContain("session.goal.snapshot");
+    expect(completed.result).toMatchObject({
+      reportedWorkDisposition: "done",
+      summary: result.summary,
+      completionClaim: { objectiveSatisfied: true },
+    });
+  });
+
+  it.each((["complete", "paused", "blocked", "limited", "usageLimited", "budgetLimited"] as const)
+    .flatMap((status) => [false, true].map((lateGoal) => ({ status, lateGoal }))))(
+    "reconciles an out-of-band $status goal (after semantic result: $lateGoal)", async ({ status, lateGoal }) => {
+    const activeGoal = {
+      threadId: "provider-agent-goal",
+      objective: "Finish autonomous work",
+      status: "active" as const,
+      tokenBudget: null,
+      tokensUsed: 100,
+      timeUsedSeconds: 1,
+      createdAt: Date.parse("2026-08-09T00:00:00.000Z"),
+      updatedAt: Date.parse("2026-08-09T00:00:01.000Z"),
+    };
+    const completeGoal = {
+      ...activeGoal,
+      status,
+      tokensUsed: 500,
+      timeUsedSeconds: 2,
+      updatedAt: Date.parse("2026-08-09T00:00:02.000Z"),
+    };
+    const startTurn = vi.fn(async () => ({ turnId: "turn-agent-goal" }));
+    const goal = vi.fn(async () => completeGoal);
+    const session: NativeSession = {
+      identity: () => identity,
+      async capabilities() {
+        return {
+          resume: true,
+          typedEvents: true,
+          steering: false,
+          interruption: true,
+          structuredResult: true,
+        };
+      },
+      async *events() {
+        if (lateGoal) yield runnerEvent(1, "run.result.proposed", result);
+        yield runnerEvent(lateGoal ? 2 : 1, "session.goal.updated", {
+          goal: {
+            objective: activeGoal.objective,
+            status: activeGoal.status,
+            tokenBudget: activeGoal.tokenBudget,
+            tokensUsed: activeGoal.tokensUsed,
+            elapsedSeconds: activeGoal.timeUsedSeconds,
+          },
+          workingNow: true,
+        });
+        if (!lateGoal) yield runnerEvent(2, "run.result.proposed", result);
+        // A newly observed goal must revoke the ordinary semantic-result
+        // timeout, including when the proposal arrived first.
+        await new Promise((resolve) => setTimeout(resolve, 25));
+        yield runnerEvent(3, "session.goal.updated", {
+          goal: {
+            objective: completeGoal.objective,
+            status: completeGoal.status,
+            tokenBudget: completeGoal.tokenBudget,
+            tokensUsed: completeGoal.tokensUsed,
+            elapsedSeconds: completeGoal.timeUsedSeconds,
+          },
+          workingNow: true,
+        });
+        yield runnerEvent(4, "turn.completed");
+      },
+      startTurn,
+      goal,
+      async result() {
+        return null;
+      },
+      async snapshot() {
+        return {
+          backendKind: "mock",
+          sessionId: "driver-agent-goal",
+          identity,
+          providerSessionId: activeGoal.threadId,
+          cursor: null,
+          activeTurnId: null,
+          pendingRuntimeRequests: [],
+          goal: activeGoal,
+          lineage: [],
+        };
+      },
+      async close() {},
+    };
+    const backend: NativeSessionBackend = {
+      async descriptor() {
+        return {
+          kind: "mock",
+          name: "agent-goal-backend",
+          version: "1",
+          capabilities: {
+            resume: true,
+            typedEvents: true,
+            steering: false,
+            interruption: true,
+            structuredResult: true,
+          },
+        };
+      },
+      async openSession() {
+        return session;
+      },
+    };
+    const appended: PrpEvent[] = [];
+    const port: ControlPlanePort = {
+      async openRun() {},
+      async checkpointSession() {},
+      async appendEvent(event) {
+        appended.push(event);
+        return {
+          cursor: event.sourceSeq,
+          highestContiguousSourceSeq: event.sourceSeq,
+          disposition: "committed",
+        };
+      },
+      async replayEvents() {
+        return { events: [], highestContiguousSourceSeq: 0 };
+      },
+      async completeRun() {},
+    };
+
+    const completed = await executeNativeSession({
+      input,
+      backend,
+      controlPlane: port,
+      runnerInstanceId: "runner-agent-goal",
+      controlPlaneInstanceId: "control-agent-goal",
+      semanticResultTerminalGraceMs: 5,
+    });
+
+    expect(startTurn).toHaveBeenCalledOnce();
+    expect(goal).not.toHaveBeenCalled();
+    expect(appended.map((event) => event.eventType)).toEqual([
+      ...(lateGoal ? ["run.result.proposed", "session.goal.updated"] : ["session.goal.updated", "run.result.proposed"]),
+      "session.goal.updated",
+      "turn.completed",
+      "run.result.accepted",
+      "run.terminal",
+    ]);
+    expect(completed.result).toMatchObject({
+      reportedWorkDisposition: status === "complete" ? "done" : status === "blocked" ? "blocked" : "yielded",
+      ...(status === "complete" ? { summary: result.summary } : {}),
+      completionClaim: { objectiveSatisfied: status === "complete" },
+    });
+  });
+
+  it.each([
+    { keepSessionOpen: false, recoveryOnly: false },
+    { keepSessionOpen: true, recoveryOnly: false },
+    { keepSessionOpen: false, recoveryOnly: true },
+    { keepSessionOpen: true, recoveryOnly: true },
+  ].flatMap((options) => [false, true].map((cleared) => ({ ...options, cleared }))))("reconciles goal recovery without replaying completed controls (warm=$keepSessionOpen, recovery=$recoveryOnly, cleared=$cleared)", async ({ keepSessionOpen, recoveryOnly, cleared }) => {
+    const pausedGoal = {
+      threadId: "provider-recovery",
+      objective: "Verify recovered goal control",
+      status: recoveryOnly ? "complete" as const : "paused" as const,
+      tokenBudget: null,
+      tokensUsed: 250,
+      timeUsedSeconds: 2,
+      createdAt: Date.parse("2026-08-09T00:00:00.000Z"),
+      updatedAt: Date.parse("2026-08-09T00:00:02.000Z"),
+    };
+    const startTurn = vi.fn(async () => ({ turnId: "turn-recovery" }));
+    const goal = vi.fn(async () => cleared ? null : pausedGoal);
+    const requestId = recoveryOnly ? `recovery_${input.binding.runId}` : cleared ? "goal-clear" : "goal-pause";
+    const close = vi.fn(async () => {});
+    let snapshotCount = 0;
+    const session: NativeSession = {
+      identity: () => identity,
+      async capabilities() {
+        return {
+          resume: true,
+          typedEvents: true,
+          steering: false,
+          interruption: true,
+          structuredResult: true,
+        };
+      },
+      async *events() {
+        yield runnerEvent(1, cleared ? "session.goal.cleared" : "session.goal.updated", {
+          requestId,
+          goal: cleared ? null : {
+            objective: pausedGoal.objective,
+            status: pausedGoal.status,
+            tokenBudget: pausedGoal.tokenBudget,
+            tokensUsed: pausedGoal.tokensUsed,
+            elapsedSeconds: pausedGoal.timeUsedSeconds,
+          },
+          workingNow: !recoveryOnly,
+        });
+        yield runnerEvent(2, "turn.completed");
+        yield runnerEvent(3, "session.goal.snapshot", {
+          goal: cleared ? null : {
+            objective: pausedGoal.objective,
+            status: pausedGoal.status,
+            tokenBudget: pausedGoal.tokenBudget,
+            tokensUsed: pausedGoal.tokensUsed,
+            elapsedSeconds: pausedGoal.timeUsedSeconds,
+          },
+          workingNow: false,
+        });
+      },
+      startTurn,
+      goal,
+      async result() {
+        return null;
+      },
+      async snapshot() {
+        snapshotCount += 1;
+        return {
+          backendKind: "mock",
+          sessionId: "driver-recovery",
+          identity,
+          providerSessionId: "provider-recovery",
+          cursor: null,
+          activeTurnId: !recoveryOnly && snapshotCount === 1 ? "turn-recovery" : null,
+          pendingRuntimeRequests: [],
+          goal: cleared ? null : pausedGoal,
+          lineage: [],
+        };
+      },
+      close,
+    };
+    const persistedSession: PersistedNativeSession = {
+      backendKind: "mock",
+      sessionId: "driver-recovery",
+      identity,
+      providerSessionId: "provider-recovery",
+      cursor: null,
+      activeTurnId: "turn-recovery",
+      pendingRuntimeRequests: [],
+      goal: { ...pausedGoal, status: "active" },
+      lineage: [],
+    };
+    const backend: NativeSessionBackend = {
+      async descriptor() {
+        return {
+          kind: "mock",
+          name: "goal-recovery-backend",
+          version: "1",
+          capabilities: {
+            resume: true,
+            typedEvents: true,
+            steering: false,
+            interruption: true,
+            structuredResult: true,
+          },
+        };
+      },
+      async openSession() {
+        throw new Error("fresh session must not be opened");
+      },
+      async recoverSession() {
+        return { recovered: true, session };
+      },
+    };
+    const port: ControlPlanePort = {
+      async openRun() {},
+      async checkpointSession() {},
+      async appendEvent(event) {
+        return {
+          cursor: event.sourceSeq,
+          highestContiguousSourceSeq: event.sourceSeq,
+          disposition: "committed",
+        };
+      },
+      async replayEvents() {
+        return { events: [], highestContiguousSourceSeq: 0 };
+      },
+      async completeRun() {},
+    };
+
+    const completed = await executeNativeSession({
+      input,
+      backend,
+      controlPlane: port,
+      runnerInstanceId: "runner-recovery",
+      controlPlaneInstanceId: "control-recovery",
+      persistedSession,
+      keepSessionOpen,
+      requireSessionCloseBeforeReturn: true,
+      resumeSessionGoalHeartbeat: recoveryOnly,
+      sessionGoalControl: recoveryOnly ? null : {
+        requestId,
+        action: cleared ? "clear" : "pause",
+      },
+    });
+
+    expect(startTurn).not.toHaveBeenCalled();
+    expect(goal).toHaveBeenNthCalledWith(1, {
+      action: recoveryOnly ? "get" : cleared ? "clear" : "pause",
+      requestId,
+    });
+    expect(goal).toHaveBeenCalledTimes(cleared && !recoveryOnly ? 2 : 1);
+    if (cleared && !recoveryOnly) {
+      expect(goal).toHaveBeenNthCalledWith(2, { action: "get" });
+    }
+    expect(close).toHaveBeenCalledTimes(1);
+    expect(completed.result).toMatchObject({
+      reportedWorkDisposition: recoveryOnly && !cleared ? "done" : "yielded",
+      completionClaim: { objectiveSatisfied: recoveryOnly && !cleared },
+    });
+  });
+
   it("keeps governed-wait discovery synchronous", () => {
     type GovernedWaitResolver = NonNullable<
       ExecuteNativeSessionOptions["resolveGovernedWait"]
@@ -1388,9 +1944,9 @@ describe("executeNativeSession recovery", () => {
       // resources. A replacement bootstrap cannot start concurrently.
       await vi.advanceTimersByTimeAsync(101);
       const blockedAdmission = execute();
-      const blockedAdmissionRejection = expect(blockedAdmission).rejects.toThrow(
-        "replacement bootstrap launched",
-      );
+      const blockedAdmissionRejection = expect(
+        blockedAdmission,
+      ).rejects.toThrow("replacement bootstrap launched");
       await vi.advanceTimersByTimeAsync(1_000);
       expect(openSession).toHaveBeenCalledOnce();
 
@@ -2022,6 +2578,7 @@ describe("executeNativeSession recovery", () => {
           completeRun,
         };
         const retainedSessions: Array<NativeSession | null> = [];
+        const enrichmentFailures: Array<"checkpoint" | "usage"> = [];
 
         const execution = executeNativeSession({
           input,
@@ -2032,6 +2589,8 @@ describe("executeNativeSession recovery", () => {
           timeoutMs: 10,
           keepSessionOpen: true,
           onSession: (current) => retainedSessions.push(current),
+          onPostCompletionEnrichmentFailure: ({ stage }) =>
+            enrichmentFailures.push(stage),
         });
         await enrichmentStalled;
         if (stalledSignal !== undefined)
@@ -2049,8 +2608,16 @@ describe("executeNativeSession recovery", () => {
         if (stalledSignal !== undefined)
           expect(stalledSignal.aborted).toBe(true);
         expect(completeRun).toHaveBeenCalledOnce();
-        expect(close).toHaveBeenCalledOnce();
-        expect(retainedSessions).toEqual([session, null]);
+        expect(enrichmentFailures).toEqual([
+          stalledBoundary === "provider usage" ? "usage" : "checkpoint",
+        ]);
+        if (stalledBoundary === "provider usage") {
+          expect(close).not.toHaveBeenCalled();
+          expect(retainedSessions).toEqual([session]);
+        } else {
+          expect(close).toHaveBeenCalledOnce();
+          expect(retainedSessions).toEqual([session, null]);
+        }
       } finally {
         vi.useRealTimers();
       }
@@ -2679,6 +3246,215 @@ describe("executeNativeSession recovery", () => {
     await pendingClose;
   });
 
+  it.each([false, true])(
+    "waits for a required backend checkpoint close when enrichment failure=%s",
+    async (enrichmentFails) => {
+      let releaseClose = () => {};
+      const pendingClose = new Promise<void>((resolve) => {
+        releaseClose = resolve;
+      });
+      const close = vi.fn(() => pendingClose);
+      let runCompleted = false;
+      let enrichmentFailureObserved = false;
+      const session: NativeSession = {
+        identity: () => identity,
+        async capabilities() {
+          return {
+            resume: true,
+            typedEvents: true,
+            steering: false,
+            interruption: false,
+            structuredResult: true,
+          };
+        },
+        async *events() {
+          yield runnerEvent(1, "turn.completed");
+        },
+        async startTurn() {
+          return { turnId: "turn-recovery" };
+        },
+        async result() {
+          return { result, terminal, turnId: "turn-recovery" };
+        },
+        async snapshot() {
+          // Exercise only the best-effort enrichment snapshot after the
+          // control plane has durably committed the run result.
+          if (enrichmentFails && runCompleted) {
+            enrichmentFailureObserved = true;
+            throw new Error("checkpoint enrichment failed");
+          }
+          return {
+            backendKind: "mock",
+            sessionId: "driver-recovery",
+            identity,
+            providerSessionId: "provider-recovery",
+            cursor: "1",
+            activeTurnId: null,
+            pendingRuntimeRequests: [],
+            lineage: [],
+          };
+        },
+        close,
+      };
+      const backend: NativeSessionBackend = {
+        async descriptor() {
+          return {
+            kind: "mock",
+            name: "recovery-backend",
+            version: "1",
+            capabilities: {
+              resume: true,
+              typedEvents: true,
+              steering: false,
+              interruption: false,
+              structuredResult: true,
+            },
+          };
+        },
+        async openSession() {
+          return session;
+        },
+      };
+      const events: PrpEvent[] = [];
+      const port: ControlPlanePort = {
+        async openRun() {},
+        async checkpointSession() {},
+        async appendEvent(event) {
+          events.push(structuredClone(event as PrpEvent));
+          return {
+            cursor: events.length,
+            highestContiguousSourceSeq: highestContiguous(events),
+            disposition: "committed",
+          };
+        },
+        async replayEvents() {
+          return { events: [], highestContiguousSourceSeq: 0 };
+        },
+        async completeRun() {
+          runCompleted = true;
+        },
+      };
+
+      let resolved = false;
+      const execution = executeNativeSession({
+        input,
+        backend,
+        controlPlane: port,
+        runnerInstanceId: "runner-recovery",
+        controlPlaneInstanceId: "control-recovery",
+        requireSessionCloseBeforeReturn: true,
+      }).then((value) => {
+        resolved = true;
+        return value;
+      });
+      await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      expect(resolved).toBe(false);
+      releaseClose();
+      await expect(execution).resolves.toMatchObject({ result, terminal });
+      expect(resolved).toBe(true);
+      expect(enrichmentFailureObserved).toBe(enrichmentFails);
+    },
+  );
+
+  it("propagates an exhausted required backend checkpoint close", async () => {
+    vi.useFakeTimers();
+    try {
+      const closeFailure = new Error("required remote checkpoint close failed");
+      const close = vi.fn(({ reason }: { reason: string }) =>
+        reason === "native session quarantined cleanup recovery"
+          ? Promise.resolve()
+          : Promise.reject(closeFailure),
+      );
+      const session: NativeSession = {
+        identity: () => identity,
+        async capabilities() {
+          return {
+            resume: true,
+            typedEvents: true,
+            steering: false,
+            interruption: false,
+            structuredResult: true,
+          };
+        },
+        async *events() {
+          yield runnerEvent(1, "turn.completed");
+        },
+        async startTurn() {
+          return { turnId: "turn-recovery" };
+        },
+        async result() {
+          return { result, terminal, turnId: "turn-recovery" };
+        },
+        async snapshot() {
+          return {
+            backendKind: "mock",
+            sessionId: "driver-recovery",
+            identity,
+            providerSessionId: "provider-recovery",
+            cursor: "1",
+            activeTurnId: null,
+            pendingRuntimeRequests: [],
+            lineage: [],
+          };
+        },
+        close,
+      };
+      const backend: NativeSessionBackend = {
+        async descriptor() {
+          return {
+            kind: "mock",
+            name: "recovery-backend",
+            version: "1",
+            capabilities: {
+              resume: true,
+              typedEvents: true,
+              steering: false,
+              interruption: false,
+              structuredResult: true,
+            },
+          };
+        },
+        async openSession() {
+          return session;
+        },
+      };
+      const events: PrpEvent[] = [];
+      const port: ControlPlanePort = {
+        async openRun() {},
+        async checkpointSession() {},
+        async appendEvent(event) {
+          events.push(structuredClone(event as PrpEvent));
+          return {
+            cursor: events.length,
+            highestContiguousSourceSeq: highestContiguous(events),
+            disposition: "committed",
+          };
+        },
+        async replayEvents() {
+          return { events: [], highestContiguousSourceSeq: 0 };
+        },
+        async completeRun() {},
+      };
+
+      const execution = expect(
+        executeNativeSession({
+          input,
+          backend,
+          controlPlane: port,
+          runnerInstanceId: "runner-recovery",
+          controlPlaneInstanceId: "control-recovery",
+          requireSessionCloseBeforeReturn: true,
+        }),
+      ).rejects.toThrow(closeFailure);
+      await vi.advanceTimersByTimeAsync(3_000);
+      await execution;
+      expect(close).toHaveBeenCalledTimes(5);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("closes after a synchronous governed-wait probe returns no result", async () => {
     const resolveGovernedWait = vi.fn(() => null);
     const lifecycle: string[] = [];
@@ -2877,17 +3653,29 @@ describe("executeNativeSession recovery", () => {
     ]);
   });
 
-  it("finalizes a durable semantic result without waiting for a provider terminal", async () => {
+  it("retains a reusable session after its remote semantic-result cancellation settles", async () => {
     const lifecycle: string[] = [];
+    let releaseProvider = () => {};
+    const providerReleased = new Promise<void>((resolve) => {
+      releaseProvider = resolve;
+    });
     const cancel = vi.fn(() => {
       lifecycle.push("cancelled");
-      return { cleanup: Promise.resolve() };
+      return {
+        cleanup: new Promise<void>((resolve) =>
+          setTimeout(() => {
+            releaseProvider();
+            resolve();
+          }, 150),
+        ),
+      };
     });
     const providerResult = vi.fn(async () => null);
     const close = vi.fn(async () => {
       lifecycle.push("closed");
     });
     const events: PrpEvent[] = [];
+    const retainedSessions: Array<NativeSession | null> = [];
     const session: NativeSession = {
       identity: () => identity,
       async capabilities() {
@@ -2901,7 +3689,7 @@ describe("executeNativeSession recovery", () => {
       },
       async *events() {
         yield runnerEvent(1, "run.result.proposed", result);
-        await new Promise<never>(() => undefined);
+        await providerReleased;
       },
       async startTurn() {
         return { turnId: "turn-recovery" };
@@ -2973,6 +3761,8 @@ describe("executeNativeSession recovery", () => {
         runnerInstanceId: "runner-recovery",
         controlPlaneInstanceId: "control-recovery",
         semanticResultTerminalGraceMs: 0,
+        keepSessionOpen: true,
+        onSession: (current) => retainedSessions.push(current),
       }),
     ).resolves.toMatchObject({ result, terminal });
 
@@ -2986,7 +3776,101 @@ describe("executeNativeSession recovery", () => {
       "run.result.accepted",
       "run.terminal",
     ]);
-    expect(lifecycle).toEqual(["cancelled", "closed"]);
+    expect(lifecycle).toEqual(["cancelled"]);
+    expect(close).not.toHaveBeenCalled();
+    expect(retainedSessions).toEqual([session]);
+  });
+
+  it("retains a reusable session while a semantic terminal releases its remote subscription", async () => {
+    const close = vi.fn(async () => undefined);
+    const retainedSessions: Array<NativeSession | null> = [];
+    const session: NativeSession = {
+      identity: () => identity,
+      async capabilities() {
+        return {
+          resume: true,
+          typedEvents: true,
+          steering: false,
+          interruption: true,
+          structuredResult: true,
+        };
+      },
+      async *events() {
+        try {
+          yield runnerEvent(1, "run.result.proposed", result);
+          yield {
+            ...runnerEvent(2, "turn.completed"),
+            turnId: "turn-recovery",
+          };
+        } finally {
+          await new Promise<void>((resolve) => setTimeout(resolve, 150));
+        }
+      },
+      async startTurn() {
+        return { turnId: "turn-recovery" };
+      },
+      async result() {
+        return null;
+      },
+      async snapshot() {
+        return {
+          backendKind: "mock",
+          sessionId: identity.sessionId,
+          identity,
+          providerSessionId: "provider-recovery",
+          cursor: "2",
+          activeTurnId: null,
+          pendingRuntimeRequests: [],
+          lineage: [],
+        };
+      },
+      close,
+    };
+    const backend: NativeSessionBackend = {
+      async descriptor() {
+        return {
+          kind: "mock",
+          name: "semantic-terminal-subscription-backend",
+          version: "1",
+          capabilities: await session.capabilities(),
+        };
+      },
+      async openSession() {
+        return session;
+      },
+    };
+    const events: PrpEvent[] = [];
+    const port: ControlPlanePort = {
+      async openRun() {},
+      async checkpointSession() {},
+      async appendEvent(event) {
+        events.push(structuredClone(event as PrpEvent));
+        return {
+          cursor: events.length,
+          highestContiguousSourceSeq: highestContiguous(events),
+          disposition: "committed",
+        };
+      },
+      async replayEvents() {
+        return { events: [], highestContiguousSourceSeq: 0 };
+      },
+      async completeRun() {},
+    };
+
+    await expect(
+      executeNativeSession({
+        input,
+        backend,
+        controlPlane: port,
+        runnerInstanceId: "runner-recovery",
+        controlPlaneInstanceId: "control-recovery",
+        keepSessionOpen: true,
+        onSession: (current) => retainedSessions.push(current),
+      }),
+    ).resolves.toMatchObject({ result, terminal });
+
+    expect(close).not.toHaveBeenCalled();
+    expect(retainedSessions).toEqual([session]);
   });
 
   it("retains provider output emitted after a durable semantic result", async () => {
@@ -4652,9 +5536,10 @@ describe("executeNativeSession recovery", () => {
     });
   });
 
-  it("retries disposition recovery when the driver releases an absent bound provider turn", async () => {
+  it("only replays the original ACPX envelope for a proven effect-free initial turn", async () => {
     const checkpoint: PersistedNativeSession = {
       backendKind: "mock",
+      driverKind: "acpx_runtime",
       sessionId: "driver-recovery",
       identity,
       providerSessionId: "provider-recovery",
@@ -4769,6 +5654,51 @@ describe("executeNativeSession recovery", () => {
       async completeRun() {},
     };
 
+    const submittedTurn = runnerEvent(1, "turn.submitted");
+    delete submittedTurn.turnId;
+    const effectFreeTurn = [
+      submittedTurn,
+      {
+        ...runnerEvent(2, "turn.started", { status: "inProgress" }),
+        turnId: "turn-work",
+      },
+      { ...runnerEvent(3, "turn.accepted"), turnId: "turn-work" },
+      {
+        ...runnerEvent(4, "item.completed", {
+          kind: "usage",
+          usage: {
+            total: {
+              requests: 1,
+              inputTokens: 0,
+              outputTokens: 0,
+              activeSeconds: 0,
+              providerCostUsd: 0,
+              cacheReadTokens: 0,
+              cacheWriteTokens: 0,
+            },
+            runDelta: {
+              requests: 1,
+              inputTokens: 0,
+              outputTokens: 0,
+              activeSeconds: 0,
+              providerCostUsd: 0,
+              cacheReadTokens: 0,
+              cacheWriteTokens: 0,
+            },
+          },
+        }),
+        turnId: "turn-work",
+      },
+      {
+        ...runnerEvent(5, "turn.completed", {
+          status: "completed",
+          error: null,
+        }),
+        turnId: "turn-work",
+      },
+    ];
+    bySource.set("runner-recovery", effectFreeTurn);
+
     await expect(
       executeNativeSession({
         input,
@@ -4788,17 +5718,62 @@ describe("executeNativeSession recovery", () => {
       afterSourceSeq: 0,
       limit: 1_000,
     });
-    expect(replayedPages.every((events) => events.length === 0)).toBe(true);
+    expect(
+      replayedPages.some(
+        (events) =>
+          events.length === effectFreeTurn.length &&
+          events.every(
+            (event, index) =>
+              event.sourceSeq === effectFreeTurn[index]!.sourceSeq,
+          ),
+      ),
+    ).toBe(true);
     const recoveryEnvelope = JSON.parse(
       startTurn.mock.calls[0]![0].message.text,
     ) as { task: { prompt: string } };
-    expect(recoveryEnvelope.task.prompt).toContain(
+    expect(recoveryEnvelope.task.prompt).toBe(input.task.prompt);
+
+    startTurn.mockClear();
+    bySource.set("runner-recovery", [
+      ...effectFreeTurn.slice(0, 3),
+      {
+        ...runnerEvent(4, "item.completed", {
+          kind: "agentMessage",
+          text: "Work may already have been performed.",
+        }),
+        turnId: "turn-work",
+      },
+      {
+        ...runnerEvent(5, "turn.completed", {
+          status: "completed",
+          error: null,
+        }),
+        turnId: "turn-work",
+      },
+    ]);
+
+    await expect(
+      executeNativeSession({
+        input,
+        backend,
+        controlPlane: port,
+        runnerInstanceId: "runner-recovery",
+        controlPlaneInstanceId: "control-recovery",
+      }),
+    ).resolves.toMatchObject({
+      turnId: "turn-continuation",
+      providerSessionId: "provider-recovery",
+    });
+    const dispositionEnvelope = JSON.parse(
+      startTurn.mock.calls[0]![0].message.text,
+    ) as { task: { prompt: string } };
+    expect(dispositionEnvelope.task.prompt).toContain(
       "semantic-result recovery for a prior completed provider turn",
     );
-    expect(recoveryEnvelope.task.prompt).toContain(
+    expect(dispositionEnvelope.task.prompt).toContain(
       "Do not repeat implementation, tests, research, or the final answer",
     );
-    expect(recoveryEnvelope.task.prompt).not.toContain(input.task.prompt);
+    expect(dispositionEnvelope.task.prompt).not.toContain(input.task.prompt);
 
     checkpoint.dispositionOnlyRecoveryTurnId = undefined;
     recoveredSnapshot.dispositionOnlyRecoveryTurnId = undefined;
@@ -5348,10 +6323,12 @@ describe("executeNativeSession recovery", () => {
       pendingRuntimeRequests: [],
       lineage: [],
     };
-    const events = [{
-      ...controlEvent(1, "run.result.accepted", { result }),
-      turnId: "turn-with-result",
-    }];
+    const events = [
+      {
+        ...controlEvent(1, "run.result.accepted", { result }),
+        turnId: "turn-with-result",
+      },
+    ];
     const checkpoints: PersistedNativeSession[] = [];
     const completeRun = vi.fn(async () => undefined);
     const startTurn = vi.fn(async () => ({ turnId: "unexpected-turn" }));

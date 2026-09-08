@@ -6,6 +6,166 @@
       "planning",
       "skill_test"
     ],
+    "description": "Fallback only: discover Paperclip API operations when the available dedicated tools cannot express the task. Prefer dedicated tools for common operations; do not search before using them.",
+    "effect": "read",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "cursor": {
+          "maxLength": 200,
+          "type": "string"
+        },
+        "limit": {
+          "default": 5,
+          "maximum": 10,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "query": {
+          "maxLength": 500,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "query"
+      ],
+      "type": "object"
+    },
+    "operationId": "search_api",
+    "outputSchema": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "placement": "optional",
+    "requiredClaims": [
+      "api:discover"
+    ],
+    "schema": "paperclip.semantic-action.v1",
+    "title": "Search the Paperclip API",
+    "version": 1
+  },
+  {
+    "allowedModes": [
+      "standard",
+      "ask",
+      "planning",
+      "skill_test"
+    ],
+    "description": "Fallback only: call a discovered Paperclip API operation when dedicated tools lack the required operation or parameters. Uses your existing permissions. Prefer dedicated tools; never bypass a denial or runner lifecycle tool.",
+    "effect": "write",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "body": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "items": {},
+              "type": "array"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Request value matching the discovered schema. For JSON object or array requests, pass the object or array directly, never a JSON-encoded string. Strings are for text bodies or endpoints whose schema explicitly accepts a string."
+        },
+        "contentType": {
+          "maxLength": 120,
+          "type": "string"
+        },
+        "files": {
+          "items": {
+            "additionalProperties": false,
+            "oneOf": [
+              {
+                "properties": {
+                  "artifactId": {}
+                },
+                "required": [
+                  "artifactId"
+                ]
+              },
+              {
+                "properties": {
+                  "path": {}
+                },
+                "required": [
+                  "path"
+                ]
+              }
+            ],
+            "properties": {
+              "artifactId": {
+                "type": "string"
+              },
+              "field": {
+                "type": "string"
+              },
+              "path": {
+                "description": "File relative to the active issue workspace. Remote files must first be uploaded as an artifact.",
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "maxItems": 10,
+          "type": "array"
+        },
+        "operationId": {
+          "description": "Exact operationId returned by search_api, for example GET /api/projects/{id}. Do not guess identifiers.",
+          "maxLength": 500,
+          "minLength": 1,
+          "type": "string"
+        },
+        "pathParams": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "query": {
+          "additionalProperties": true,
+          "type": "object"
+        }
+      },
+      "required": [
+        "operationId"
+      ],
+      "type": "object"
+    },
+    "operationId": "call_api",
+    "outputSchema": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "placement": "optional",
+    "requiredClaims": [
+      "api:call"
+    ],
+    "schema": "paperclip.semantic-action.v1",
+    "title": "Call the Paperclip API",
+    "version": 1
+  },
+  {
+    "allowedModes": [
+      "standard",
+      "ask",
+      "planning",
+      "skill_test"
+    ],
     "description": "Read the active task, actor, wake context, ancestors, and budget summary.",
     "effect": "read",
     "inputSchema": {

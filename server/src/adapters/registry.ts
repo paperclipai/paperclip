@@ -7,6 +7,7 @@ import {
   PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES,
 } from "@paperclipai/adapter-utils";
 import type { AdapterLoginCapability } from "@paperclipai/adapter-utils";
+import { runAdapterExecutionTargetShellCommand } from "@paperclipai/adapter-utils/execution-target";
 import {
   execute as claudeExecute,
   listClaudeSkills,
@@ -403,6 +404,48 @@ const paperclipRunnerAdapter: ServerAdapterModule = {
       };
     }
     if (profile.provider === "acpx") {
+      // The pinned ACPX executables are qualified for Linux x64. A host CLI
+      // login probe can succeed on macOS even though runner admission cannot.
+      let supported = process.platform === "linux" && process.arch === "x64";
+      const target = context.executionTarget;
+      if (target?.kind === "remote") {
+        try {
+          const probe = await runAdapterExecutionTargetShellCommand(
+            `acpx-platform-${crypto.randomUUID()}`,
+            target,
+            "uname -s && uname -m",
+            { cwd: target.remoteCwd, env: {}, timeoutSec: 15 },
+          );
+          if (probe.timedOut || probe.exitCode !== 0) throw new Error("Platform probe failed");
+          const [os, arch] = probe.stdout.trim().split(/\s+/);
+          supported = os === "Linux" && arch === "x86_64";
+        } catch {
+          return {
+            adapterType: "paperclip_runner",
+            status: "fail" as const,
+            testedAt: new Date().toISOString(),
+            checks: [{
+              code: "acpx_runtime_platform_unverified",
+              level: "error" as const,
+              message: "Could not verify the remote ACPX runner platform.",
+              hint: "Check the environment connection and retry. The native ACPX runner requires Linux x64.",
+            }],
+          };
+        }
+      }
+      if (!supported) {
+        return {
+          adapterType: "paperclip_runner",
+          status: "fail" as const,
+          testedAt: new Date().toISOString(),
+          checks: [{
+            code: "acpx_runtime_platform_unsupported",
+            level: "error" as const,
+            message: `The native ACPX ${profile.acpxAgent} runner requires a Linux x64 environment.`,
+            hint: `Select a Linux x64 environment, or use the regular ${profile.acpxAgent === "claude" ? "Claude Code" : "Codex"} adapter on this machine.`,
+          }],
+        };
+      }
       return {
         adapterType: "paperclip_runner",
         status: "pass" as const,
@@ -486,7 +529,7 @@ const paperclipRunnerAdapter: ServerAdapterModule = {
           "opencode",
           `opencode-ai@${QUALIFIED_OPENCODE_RUNNER_VERSION}`,
         )
-      : buildNpmRuntimeCommandSpec(config, "codex", "@openai/codex@0.148.0"),
+      : buildNpmRuntimeCommandSpec(config, "codex", "@openai/codex@0.153.4"),
   agentConfigurationDoc:
     "# Paperclip Runner\n\nAdapter: paperclip_runner\n\nRuns Codex, OpenCode, Claude Managed, AWS AgentCore, or a qualified Claude/Codex ACP agent through the Rust Paperclip runner and authenticated PRP transport. Pi is not available through the qualified ACPX profile. Managed providers use company-scoped qualified profiles, explicit retention acknowledgement, and spend limits.\n",
   getConfigSchema: () => ({

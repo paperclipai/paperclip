@@ -1,3 +1,6 @@
+import { z } from "zod";
+import { resolveProjectRepositorySelection } from "../services/project-repositories.js";
+import { toolAccessService } from "../services/tool-access.js";
 import { Router, type Request, type Response } from "express";
 import type { Db } from "@paperclipai/db";
 import {
@@ -17,7 +20,7 @@ import { accessService, projectService, logActivity, workspaceOperationService }
 import { conflict, forbidden, unprocessable } from "../errors.js";
 import { externalObjectService } from "../services/external-objects.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
-import { assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
+import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
 import {
   buildWorkspaceRuntimeDesiredStatePatch,
   listConfiguredRuntimeServiceEntries,
@@ -43,6 +46,13 @@ const SHARED_WORKSPACE_STOP_AND_RESTART_ACTIONS = new Set(["stop", "restart"]);
 export function projectRoutes(db: Db) {
   const router = Router();
   const svc = projectService(db);
+
+  async function selectedRepositories(req: Request, companyId: string, ids: string[], existing: import("@paperclipai/shared").ProjectWorkspace[] = []) {
+    assertBoard(req);
+    if (!ids.length) return [];
+    const available = await toolAccessService(db).listProjectRepositories(companyId, req.actor.userId ?? null, req.actor.source === "local_implicit");
+    return resolveProjectRepositorySelection(ids, available.repositories, existing);
+  }
   const access = accessService(db);
   const secretsSvc = secretService(db);
   const workspaceOperations = workspaceOperationService(db);
@@ -162,6 +172,28 @@ export function projectRoutes(db: Db) {
     }
   });
 
+  router.get("/companies/:companyId/project-repositories", async (req, res) => {
+    assertBoard(req);
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    res.json(await toolAccessService(db).listProjectRepositories(companyId, req.actor.userId ?? null, req.actor.source === "local_implicit"));
+  });
+
+  router.put("/projects/:id/repositories", validate(z.object({ repositoryIds: z.array(z.string().regex(/^\d+$/)) })), async (req, res) => {
+    assertBoard(req);
+    const project = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Project not found");
+    if (!project) return;
+    const repositories = await selectedRepositories(req, project.companyId, req.body.repositoryIds, project.workspaces);
+    const updated = await svc.replaceRepositories(project.id, repositories);
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: project.companyId, actorType: actor.actorType, actorId: actor.actorId,
+      action: "project.repositories_updated", entityType: "project", entityId: project.id,
+      details: { repositoryIds: repositories.map((repo) => repo.id) },
+    });
+    res.json(updated);
+  });
+
   router.get("/companies/:companyId/projects", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
@@ -191,9 +223,10 @@ export function projectRoutes(db: Db) {
     assertCompanyAccess(req, companyId);
     type CreateProjectPayload = Parameters<typeof svc.create>[1] & {
       workspace?: Parameters<typeof svc.createWorkspace>[1];
+      repositoryIds?: string[];
     };
 
-    const { workspace, ...projectData } = req.body as CreateProjectPayload;
+    const { workspace, repositoryIds, ...projectData } = req.body as CreateProjectPayload;
     await assertProjectEnvironmentSelection(
       companyId,
       readProjectPolicyEnvironmentId(projectData.executionWorkspacePolicy),
@@ -213,7 +246,9 @@ export function projectRoutes(db: Db) {
         { strictMode: strictSecretsMode, fieldPath: "env" },
       );
     }
-    const project = await svc.create(companyId, projectData);
+    if (workspace && repositoryIds) throw unprocessable("Use either workspace or repositoryIds when creating a project");
+    const repositories = repositoryIds ? await selectedRepositories(req, companyId, repositoryIds) : null;
+    const project = repositories ? await svc.createWithRepositories(companyId, projectData, repositories) : await svc.create(companyId, projectData);
     if (project.env) {
       await secretsSvc.syncEnvBindingsForTarget?.(
         companyId,

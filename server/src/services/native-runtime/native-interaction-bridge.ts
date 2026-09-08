@@ -279,7 +279,7 @@ export async function materializeNativeInteractionResponses(input: {
       continue;
     }
 
-    if (interaction.kind === "suggest_tasks") {
+    if (interaction.kind === "suggest_tasks" || interaction.kind === "connection_intent") {
       if (
         (interaction.status !== "accepted" && interaction.status !== "rejected")
         || !interaction.result

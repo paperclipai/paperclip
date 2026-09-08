@@ -154,6 +154,90 @@ Choose local instance:
 npx paperclipai run --instance dev
 ```
 
+## Isolated Manual Test Drives
+
+`paperclipai test-drive` creates or reuses an isolated local data directory,
+ensures one usable CEO agent exists in a fresh database, starts Paperclip in the
+foreground, and opens the browser after initialization succeeds. It never
+installs a background service and never creates a goal, project, issue, task,
+or heartbeat.
+
+```sh
+npx paperclipai test-drive \
+  [-d, --data-dir <path>] \
+  [--company-name <name>] \
+  [--agent-name <name>] \
+  [--harness <claude|codex|opencode>] \
+  [--model <model-id>] \
+  [--api-key-env <variable> | --api-key <value>] \
+  [--no-browser]
+```
+
+Defaults are `Test Company`, a `CEO` agent with the `ceo` role, and the Claude
+harness. Without `--data-dir`, every invocation creates a unique OS temporary
+directory and prints its absolute path. The directory is retained after exit
+for inspection. An explicit data directory is reused and is never reset. The
+reused directory must use Paperclip's embedded database; `DATABASE_URL`,
+`DATABASE_MIGRATION_URL`, and configs with `database.mode: postgres` are
+rejected so test-drive cannot mutate an external database. The server also
+ignores the invocation directory's `.env` for test-drive launches, while still
+loading the selected instance's own environment file. Reused directories also
+retain the normal guard against colliding with a managed Paperclip service. The
+server uses the first available loopback port at or above `3100`, so an
+unrelated local Paperclip process can remain running.
+
+Harness configuration:
+
+| Harness | Agent adapter | Agent credential variable | Model |
+| --- | --- | --- | --- |
+| `claude` | `claude_local` | `ANTHROPIC_API_KEY` | Optional; omitted uses the adapter default |
+| `codex` | `codex_local` | `OPENAI_API_KEY` | Optional; omitted uses the adapter default |
+| `opencode` | `opencode_local` | `OPENROUTER_API_KEY` | Required and must begin with `openrouter/` |
+
+OpenCode model references retain their complete path, including additional
+slashes:
+
+```sh
+OPENROUTER_API_KEY=... npx paperclipai test-drive \
+  --harness opencode \
+  --model openrouter/anthropic/claude-sonnet-4.5
+```
+
+Credentials come from `--api-key`, the variable named by `--api-key-env`, or
+the harness's canonical environment variable shown in the table. `--api-key`
+and `--api-key-env` are mutually exclusive. A custom source variable is still
+stored and projected under the canonical target variable:
+
+```sh
+MY_ROUTER_KEY=... npx paperclipai test-drive \
+  --harness opencode \
+  --model openrouter/openai/gpt-5.4 \
+  --api-key-env MY_ROUTER_KEY
+```
+
+Credentials are stored through Paperclip's user-secret reference path and are
+redacted from Paperclip command output. Paperclip does not print `--api-key`,
+and it removes the value from its JavaScript argument view immediately after
+Commander parses it. Paperclip does not put the raw argument list in telemetry,
+API metadata, or diagnostics. Command wrappers, operating-system process
+listings, and shell history can still expose values passed in arguments. This
+is an explicit tradeoff for the local test-drive workflow. Prefer an exported
+canonical variable or `--api-key-env` when that matters. Provider connectivity,
+local harness installation, credential validity, and model availability are
+intentionally checked only when the agent first runs.
+
+When invoked inside a linked Git worktree, the command ignores inherited
+`PAPERCLIP_IN_WORKTREE` state, launches in worktree mode, and verifies **Run
+tasks in this worktree** is armed for the current instance before opening the
+browser. In a primary checkout or non-Git directory it launches without
+worktree mode and does not alter the setting. On reuse, if any company already
+exists, all bootstrap flags are ignored and companies, agents, and secrets are
+left untouched; worktree-setting reconciliation is the only permitted
+mutation.
+
+Use `--no-browser` for a foreground instance that prints its ready URL without
+opening it.
+
 ## Install, Update, And Uninstall
 
 Managed installs keep CLI payloads under `~/.paperclip/cli`, expose a stable

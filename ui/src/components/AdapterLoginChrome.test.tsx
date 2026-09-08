@@ -2,12 +2,13 @@
 
 import { createRoot, type Root } from "react-dom/client";
 import { flushSync } from "react-dom";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type React from "react";
 import {
   OnboardingLoginCard,
   OnboardingCardField,
+  OnboardingLoginCodeRow,
   onboardingCardInputClass,
 } from "./AdapterLoginChrome";
 
@@ -139,5 +140,114 @@ describe("the connect step's cards", () => {
 
     expect(waiting).toContain("min-h-(--sz-108px)");
     expect(ready).toContain("min-h-(--sz-108px)");
+  });
+});
+
+/**
+ * The displayed-code card puts the code on the clipboard the moment it is
+ * readable, so the customer can paste it wherever they are being asked for it
+ * without reaching for the button. That convenience is only worth anything if
+ * it actually happened — a card claiming "Copied!" over an empty clipboard is
+ * worse than one that never claimed it, because the customer stops checking.
+ */
+describe("the displayed code's auto-copy", () => {
+  function stubClipboard() {
+    const writeText = vi.fn(async () => {});
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+    return writeText;
+  }
+
+  function stubFocus(focused: boolean) {
+    const original = document.hasFocus;
+    document.hasFocus = () => focused;
+    return () => {
+      document.hasFocus = original;
+    };
+  }
+
+  afterEach(() => {
+    Reflect.deleteProperty(navigator, "clipboard");
+  });
+
+  it("writes nothing when there is no code yet", async () => {
+    // The row renders before the server's one-time prompt carries a value on
+    // some paths. The latch used to be taken on that first run, so the copy
+    // that mattered never ran and the clipboard kept whatever it already had.
+    const writeText = stubClipboard();
+    const restore = stubFocus(true);
+    try {
+      await render(<OnboardingLoginCodeRow code="" autoCopy />);
+      expect(writeText).not.toHaveBeenCalled();
+    } finally {
+      restore();
+    }
+  });
+
+  it("copies the code once it arrives", async () => {
+    const writeText = stubClipboard();
+    const restore = stubFocus(true);
+    try {
+      await render(<OnboardingLoginCodeRow code="WFK7-4GA3U" autoCopy />);
+      expect(writeText).toHaveBeenCalledWith("WFK7-4GA3U");
+    } finally {
+      restore();
+    }
+  });
+
+  it("asks once while a write is still in flight", async () => {
+    // The success latch is only taken when the write resolves, so it cannot
+    // also mean "already running" — without a separate guard a focus event
+    // arriving mid-write started a second attempt.
+    let settle: () => void = () => {};
+    const writeText = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          settle = resolve;
+        }),
+    );
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+    const restore = stubFocus(true);
+    try {
+      await render(<OnboardingLoginCodeRow code="WFK7-4GA3U" autoCopy />);
+      expect(writeText).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        window.dispatchEvent(new Event("focus"));
+        window.dispatchEvent(new Event("focus"));
+      });
+      expect(writeText).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        settle();
+      });
+    } finally {
+      restore();
+    }
+  });
+
+  it("waits for the document rather than spending its one attempt unfocused", async () => {
+    // A write from an unfocused document is refused, and the first attempt is
+    // the most likely to be refused, since it fires while the card is still
+    // arriving. Latching before the attempt made that refusal permanent.
+    const writeText = stubClipboard();
+    const restore = stubFocus(false);
+    try {
+      await render(<OnboardingLoginCodeRow code="WFK7-4GA3U" autoCopy />);
+      expect(writeText).not.toHaveBeenCalled();
+
+      document.hasFocus = () => true;
+      await act(async () => {
+        window.dispatchEvent(new Event("focus"));
+      });
+      expect(writeText).toHaveBeenCalledWith("WFK7-4GA3U");
+    } finally {
+      restore();
+    }
   });
 });

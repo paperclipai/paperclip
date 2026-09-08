@@ -44,6 +44,57 @@ import {
 } from "./codex-app-server-driver.test-support.js";
 
 describe("Codex app-server Codex driver", () => {
+  it.each([null, "checkpointed-prior-turn"])("recovers an autonomous goal turn beyond checkpoint %s", async (checkpointTurnId) => {
+    const first = new FakeCodexTransport();
+    const second = new FakeCodexTransport();
+    const driver = makeDriver([first, second]);
+    const original = await driver.openSession({
+      runId: "run-goal-recovery", normalizedSessionId: "normalized-goal-recovery", workingDirectory: WORKSPACE,
+    });
+    await original.goal?.({ action: "set", objective: "Continue across a controller crash" });
+    const snapshot = await original.snapshot();
+    snapshot.activeTurnId = checkpointTurnId;
+    second.goalState = structuredClone(first.goalState);
+    second.readResponse = { thread: {
+      id: "thread-1", sessionId: "provider-session-1", cwd: WORKSPACE,
+      turns: [{ id: "autonomous-live-turn", status: "inProgress", items: [] }],
+    } };
+    await original.close({ reason: "controller lost before goal turn checkpoint" });
+    const recovery = await driver.recoverSession?.(snapshot);
+    expect(recovery).toMatchObject({ recovered: true });
+    const recovered = recovery!.session!;
+    expect(await recovered.snapshot()).toMatchObject({ activeTurnId: "autonomous-live-turn" });
+    second.push("item/started", {
+      threadId: "thread-1", turnId: "autonomous-live-turn", item: { id: "recovered-item", type: "agentMessage", text: "Continuing" },
+    });
+    const iterator = recovered.events()[Symbol.asyncIterator]();
+    let event: PrpEvent | undefined;
+    do { event = (await iterator.next()).value; } while (event && event.eventType !== "item.started" && !event.eventType.startsWith("run."));
+    expect(event).toMatchObject({ eventType: "item.started", turnId: "autonomous-live-turn" });
+    expect(second.calls.some((call) => call.method === "turn/start" || call.method === "thread/goal/set")).toBe(false);
+    await recovered.close({ reason: "test complete" });
+  });
+
+  it.each([undefined, [{ id: "", status: "inProgress" }], [
+    { id: "first", status: "inProgress" }, { id: "second", status: "inProgress" },
+  ]])("rejects ambiguous autonomous goal history %j", async (turns) => {
+    const first = new FakeCodexTransport();
+    const second = new FakeCodexTransport();
+    const driver = makeDriver([first, second]);
+    const original = await driver.openSession({
+      runId: "run-goal-recovery", normalizedSessionId: "normalized-goal-recovery", workingDirectory: WORKSPACE,
+    });
+    await original.goal?.({ action: "set", objective: "Continue across a controller crash" });
+    const snapshot = await original.snapshot();
+    second.goalState = structuredClone(first.goalState);
+    second.readResponse = { thread: { id: "thread-1", sessionId: "provider-session-1", cwd: WORKSPACE, turns } };
+    await original.close({ reason: "controller lost" });
+    await expect(driver.recoverSession?.(snapshot)).resolves.toEqual({
+      recovered: false, reason: "provider exposed ambiguous autonomous goal turn history",
+    });
+    expect(second.calls.some((call) => call.method === "turn/start" || call.method === "thread/goal/set")).toBe(false);
+  });
+
   it("persists and verifies the tagged runnerd provider identity on recovery", async () => {
     const providerIdentity = {
       kind: "acpx",

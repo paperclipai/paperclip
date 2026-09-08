@@ -1,3 +1,4 @@
+import { connectionIntentDeliveryService } from "./services/connection-intent-delivery.js";
 /// <reference path="./types/express.d.ts" />
 // Kicks off the OTel bootstrap as early as possible (no-op unless
 // OTEL_EXPORTER_OTLP_ENDPOINT is set). startServer() awaits
@@ -104,6 +105,7 @@ import { conflict } from "./errors.js";
 import { ensureDecisionSigningSecret } from "./services/decision-signing.js";
 import { createDecisionRetentionNotifyOriginAgent, createDecisionWakeOriginAgent } from "./services/decision-wakeup.js";
 import {
+  closeHttpListenerForShutdown,
   coordinateHeartbeatSchedulerShutdown,
   drainRunExecutionFinalizersForShutdown,
   finalizeServerShutdown,
@@ -155,9 +157,43 @@ export interface StartedServer {
   listenPort: number;
   apiUrl: string;
   databaseUrl: string;
+  shutdown: (signal?: "SIGINT" | "SIGTERM") => Promise<void>;
+}
+
+// Set by the boot sequence once the primary pool exists. A boot that fails
+// after that point (a bootstrap query that throws, for example) must end the
+// pool before the caller exits: the driver keeps idle connections open until
+// the process dies, and in a restart loop the leftover backends of every
+// failed generation can exhaust `max_connections` before the next boot even
+// gets a connection.
+type StartupDatabaseTeardown = { close: (() => Promise<void>) | null };
+
+// Ends the pool behind a drizzle client. Tolerates a client without `$client`
+// (test doubles) and never throws, so it is safe on every exit path.
+async function endDatabaseClient(client: unknown, timeoutSeconds: number): Promise<void> {
+  const sql = (client as { $client?: { end?: (options?: { timeout?: number }) => Promise<void> } } | null)
+    ?.$client;
+  if (typeof sql?.end !== "function") return;
+  await sql.end({ timeout: timeoutSeconds });
 }
 
 export async function startServer(): Promise<StartedServer> {
+  const startupDatabase: StartupDatabaseTeardown = { close: null };
+  try {
+    return await startServerWithDatabaseTeardown(startupDatabase);
+  } catch (error) {
+    if (startupDatabase.close) {
+      await startupDatabase.close().catch((closeError) => {
+        logger.error({ err: closeError }, "failed to close database clients after startup failure");
+      });
+    }
+    throw error;
+  }
+}
+
+async function startServerWithDatabaseTeardown(
+  startupDatabase: StartupDatabaseTeardown,
+): Promise<StartedServer> {
   setStartupRecoveryPhase("starting");
   warnIfUnsupportedNodeVersion(process.versions.node, (message) => logger.warn(message));
 
@@ -585,6 +621,15 @@ export async function startServer(): Promise<StartedServer> {
     resolvedEmbeddedPostgresPort = port;
     startupDbInfo = { mode: "embedded-postgres", dataDir, port };
   }
+
+  // Ends every pool this process opened. Used by the orderly shutdown path
+  // (after the application services, before the embedded provider stops) and
+  // by the fail-loud startup path, so no exit leaves pooled backends behind.
+  const closeDatabaseClients = async () => {
+    const clients = pluginMigrationDb === db ? [db] : [db, pluginMigrationDb];
+    await Promise.all(clients.map((client) => endDatabaseClient(client, 5)));
+  };
+  startupDatabase.close = closeDatabaseClients;
   
   // A claimed warm-pool stack may restart while its provider environment still
   // names the pool host. Restore the signed, durable identity before Better
@@ -1138,6 +1183,7 @@ export async function startServer(): Promise<StartedServer> {
   const ENVIRONMENT_LEASE_CLEANUP_SWEEP_BACKOFF_MS = 5 * 60 * 1000;
   const environmentLeaseCleanupHeartbeat =
     heartbeat ?? heartbeatService(db as any, { pluginWorkerManager });
+  const connectionDeliveries = connectionIntentDeliveryService(db as any, environmentLeaseCleanupHeartbeat);
   const questionResponseDeliveries = questionResponseDeliveryService(db as any, {
     heartbeat: environmentLeaseCleanupHeartbeat,
     resolveNativeQuestion: (interaction) => deliverNativeQuestionResponse(db as any, interaction),
@@ -1192,6 +1238,7 @@ export async function startServer(): Promise<StartedServer> {
       }));
   };
 
+  await connectionDeliveries.sweepPending();
   await questionResponseDeliveries.sweepPending().then((result) => {
     if (result.scanned > 0) {
       logger.info(result, "startup question-response delivery sweep completed");
@@ -1413,6 +1460,23 @@ export async function startServer(): Promise<StartedServer> {
 
         const promotion = await heartbeat.promoteDueScheduledRetries();
         await heartbeat.resumeQueuedRuns();
+        const recoveredGoalActions = await heartbeat.recoverPendingSessionGoalActions();
+        if (
+          recoveredGoalActions.enqueued > 0 ||
+          recoveredGoalActions.invalid > 0
+        ) {
+          logger.warn(
+            recoveredGoalActions,
+            "startup session-goal action outbox recovery reconciled pending controls",
+          );
+        }
+        const recoveredGoals = await heartbeat.recoverActiveSessionGoals();
+        if (recoveredGoals.enqueued > 0) {
+          logger.warn(
+            recoveredGoals,
+            "startup session-goal recovery resumed durable agent goals",
+          );
+        }
         const reconciled = await heartbeat.reconcileStrandedAssignedIssues();
         if (
           promotion.promoted > 0 ||
@@ -1646,6 +1710,7 @@ export async function startServer(): Promise<StartedServer> {
             logger.error({ err }, "periodic secret proposal expiry sweep failed");
           }));
 
+        trackHeartbeatSchedulerWork(connectionDeliveries.sweepPending().catch((err) => logger.error({ err }, "connection continuation delivery failed")));
         trackHeartbeatSchedulerWork(questionResponseDeliveries.sweepPending()
           .then((result) => {
             if (result.scanned > 0) {
@@ -1814,7 +1879,6 @@ export async function startServer(): Promise<StartedServer> {
         databaseBackupRetentionDays: config.databaseBackupRetentionDays,
         databaseBackupDir: config.databaseBackupDir,
   });
-
   const boardClaimUrl = getBoardClaimWarningUrl(config.host, listenPort);
   if (boardClaimUrl) {
     const red = "\x1b[41m\x1b[30m";
@@ -1831,96 +1895,113 @@ export async function startServer(): Promise<StartedServer> {
     );
   }
   
-  {
-    const shutdown = async (signal: "SIGINT" | "SIGTERM") => {
-      await systemdNotify(["--stopping", `--status=Stopping after ${signal}`]);
-      heartbeatSchedulerStopped = true;
-      if (heartbeatSchedulerInterval) {
-        clearInterval(heartbeatSchedulerInterval);
-        heartbeatSchedulerInterval = null;
-      }
+  const shutdown = async (
+    signal: "SIGINT" | "SIGTERM",
+    exitProcess: boolean,
+  ) => {
+    await systemdNotify(["--stopping", `--status=Stopping after ${signal}`]);
+    heartbeatSchedulerStopped = true;
+    if (heartbeatSchedulerInterval) {
+      clearInterval(heartbeatSchedulerInterval);
+      heartbeatSchedulerInterval = null;
+    }
 
-      const heartbeatShutdown = await coordinateHeartbeatSchedulerShutdown({
-        signal,
-        prepareHotRestartShutdown,
-        waitForHeartbeatSchedulerIdle,
-      });
-      const skipHeartbeatDrain = heartbeatShutdown.hotRestart?.skipDrain === true;
-      const selectiveDrainRunIds = heartbeatShutdown.hotRestart?.drainRunIds ?? null;
-      if (skipHeartbeatDrain) {
-        logger.info(
-          { signal, hotRestart: heartbeatShutdown.hotRestart },
-          "hot-restart shutdown prepared after scheduler quiescence; skipping graceful run drain",
-        );
-      } else if (heartbeatShutdown.preparationError) {
-        logger.error(
-          { err: heartbeatShutdown.preparationError, signal },
-          "hot-restart shutdown preparation failed; falling back to graceful heartbeat run drain",
-        );
-      }
+    const heartbeatShutdown = await coordinateHeartbeatSchedulerShutdown({
+      signal,
+      prepareHotRestartShutdown,
+      waitForHeartbeatSchedulerIdle,
+    });
+    const skipHeartbeatDrain = heartbeatShutdown.hotRestart?.skipDrain === true;
+    const selectiveDrainRunIds = heartbeatShutdown.hotRestart?.drainRunIds ?? null;
+    if (skipHeartbeatDrain) {
+      logger.info(
+        { signal, hotRestart: heartbeatShutdown.hotRestart },
+        "hot-restart shutdown prepared after scheduler quiescence; skipping graceful run drain",
+      );
+    } else if (heartbeatShutdown.preparationError) {
+      logger.error(
+        { err: heartbeatShutdown.preparationError, signal },
+        "hot-restart shutdown preparation failed; falling back to graceful heartbeat run drain",
+      );
+    }
 
-      const telemetryClient = getTelemetryClient();
-      if (telemetryClient) {
-        telemetryClient.stop();
-        await telemetryClient.flush();
-      }
+    const telemetryClient = getTelemetryClient();
+    if (telemetryClient) {
+      telemetryClient.stop();
+      await telemetryClient.flush();
+    }
 
-      if (!skipHeartbeatDrain && drainHeartbeatRunsForShutdown) {
-        try {
-          const drain = await drainHeartbeatRunsForShutdown(signal, selectiveDrainRunIds);
-          logger.info({ signal, drain }, "graceful heartbeat run drain complete");
-        } catch (err) {
-          logger.error({ err, signal }, "graceful heartbeat run drain failed");
-        }
-      }
-
-      if (!skipHeartbeatDrain) {
-        await drainRunExecutionFinalizersForShutdown({
-          signal,
-          drain: drainHeartbeatExecutionFinalizers,
-          log: logger,
-        });
-      }
-
-      // Whatever the drain did not finalize (timed-out runs, the hot-restart
-      // skip path) still has a local-only tail when the in-flight run-log
-      // mirror is enabled; upload those tails now so an orderly restart
-      // never loses run output. No-op when the mirror is off.
+    if (!skipHeartbeatDrain && drainHeartbeatRunsForShutdown) {
       try {
-        await flushInFlightRunLogMirrors();
+        const drain = await drainHeartbeatRunsForShutdown(signal, selectiveDrainRunIds);
+        logger.info({ signal, drain }, "graceful heartbeat run drain complete");
       } catch (err) {
-        logger.error({ err, signal }, "run-log in-flight mirror flush failed");
+        logger.error({ err, signal }, "graceful heartbeat run drain failed");
       }
+    }
 
-      const appShutdown = (app as { locals?: { paperclipShutdown?: () => Promise<void> } }).locals
-        ?.paperclipShutdown;
-      const stopEmbeddedPostgres = embeddedPostgres && embeddedPostgresStartedByThisProcess
-        ? () => embeddedPostgresSupervisor?.shutdown() ?? embeddedPostgres!.stop()
-        : null;
-
-      // Await the ordered application teardown before the process exits. A live
-      // setup-token login session must stop and release its sandbox lease before
-      // the database and the provider stop, so an orderly shutdown never leaves a
-      // sandbox lease or confidential login state alive past the process exit.
-      await finalizeServerShutdown({
+    if (!skipHeartbeatDrain) {
+      await drainRunExecutionFinalizersForShutdown({
         signal,
-        shutdownAppServices: appShutdown,
-        stopEmbeddedPostgres,
-        shutdownInstrumentation,
-        shutdownSentry,
+        drain: drainHeartbeatExecutionFinalizers,
         log: logger,
       });
+    }
 
-      process.exit(0);
-    };
+    // Whatever the drain did not finalize (timed-out runs, the hot-restart
+    // skip path) still has a local-only tail when the in-flight run-log
+    // mirror is enabled; upload those tails now so an orderly restart
+    // never loses run output. No-op when the mirror is off.
+    try {
+      await flushInFlightRunLogMirrors();
+    } catch (err) {
+      logger.error({ err, signal }, "run-log in-flight mirror flush failed");
+    }
 
-    process.once("SIGINT", () => {
-      void shutdown("SIGINT");
+    const appShutdown = (app as { locals?: { paperclipShutdown?: () => Promise<void> } }).locals
+      ?.paperclipShutdown;
+    const stopEmbeddedPostgres = embeddedPostgres && embeddedPostgresStartedByThisProcess
+      ? () => embeddedPostgresSupervisor?.shutdown() ?? embeddedPostgres!.stop()
+      : null;
+
+    // Await the ordered application teardown before the process exits. A live
+    // setup-token login session must stop and release its sandbox lease before
+    // the database and the provider stop, so an orderly shutdown never leaves a
+    // sandbox lease or confidential login state alive past the process exit.
+    // The HTTP listener closes first, while every service is still up, so a
+    // request in flight is drained against a working server and none reaches
+    // a route once the pool is gone; the programmatic close below then finds
+    // the listener already closed and skips.
+    await finalizeServerShutdown({
+      signal,
+      shutdownAppServices: appShutdown,
+      closeHttpListener: () =>
+        closeHttpListenerForShutdown({ server, signal, log: logger }),
+      closeDatabase: closeDatabaseClients,
+      stopEmbeddedPostgres,
+      shutdownInstrumentation,
+      shutdownSentry,
+      log: logger,
     });
-    process.once("SIGTERM", () => {
-      void shutdown("SIGTERM");
-    });
-  }
+
+    if (!exitProcess && server.listening) {
+      await new Promise<void>((resolveClose, rejectClose) => {
+        server.close((err) => {
+          if (err) rejectClose(err);
+          else resolveClose();
+        });
+      });
+    }
+
+    if (exitProcess) process.exit(0);
+  };
+
+  process.once("SIGINT", () => {
+    void shutdown("SIGINT", true);
+  });
+  process.once("SIGTERM", () => {
+    void shutdown("SIGTERM", true);
+  });
 
   return {
     server,
@@ -1928,6 +2009,7 @@ export async function startServer(): Promise<StartedServer> {
     listenPort,
     apiUrl: configuredApiUrl,
     databaseUrl: activeDatabaseConnectionString,
+    shutdown: (signal = "SIGTERM") => shutdown(signal, false),
   };
   } catch (error) {
     if (startupListenerBound) {

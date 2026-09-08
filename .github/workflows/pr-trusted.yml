@@ -318,6 +318,13 @@ jobs:
 
       - name: Test no-git-push check
         run: node --test ./scripts/check-no-git-push.test.mjs
+
+      - name: Validate feature module boundaries
+        run: pnpm check:module-boundaries
+
+      - name: Test feature module boundary check
+        run: node --test ./scripts/check-module-boundaries.test.mjs
+
       - name: Test PR quality-gate scripts
         run: node --test '.github/scripts/tests/*.test.mjs'
 
@@ -625,6 +632,9 @@ jobs:
 
       - name: Verify Paperclip Runner
         run: pnpm --filter @paperclipai/paperclip-runner check:all
+
+      - name: Build Runner Evalbook viewer
+        run: pnpm --filter @paperclipai/paperclip-runner build:issue-thread
 
       - name: Build
         run: pnpm build

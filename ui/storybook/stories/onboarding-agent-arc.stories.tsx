@@ -337,3 +337,51 @@ export const PillMorph: StoryObj = {
     );
   },
 };
+
+// These mount the shipped onboarding flow, not ConnectModelPreview. Selecting
+// a source opens its actual login panel against the Storybook API fixtures.
+function signedOutConnectionFixture() {
+  clearOnboardingDraft();
+  setOnboardingFixtureState({ environments: "managed-sandbox", authSignal: "absent" });
+  return () => { clearOnboardingDraft(); resetOnboardingFixtureState(); };
+}
+
+async function openProviderConnection(provider: "Claude" | "OpenAI", mode: "subscription" | "api") {
+  await advance("Connect a model");
+  if (mode === "api") {
+    await userEvent.click(await screen.findByRole("button", { name: "Use API key instead" }, { timeout: STEP_TIMEOUT_MS }));
+  }
+  await userEvent.click(await screen.findByRole("radio", { name: new RegExp(`^${provider} `) }, { timeout: STEP_TIMEOUT_MS }));
+  if (mode === "api") {
+    await screen.findByLabelText("API key", {}, { timeout: STEP_TIMEOUT_MS });
+  } else if (provider === "Claude") {
+    await screen.findByLabelText("Authorization code", {}, { timeout: STEP_TIMEOUT_MS });
+  } else {
+    await screen.findByText("STORY-BOOK", {}, { timeout: STEP_TIMEOUT_MS });
+  }
+}
+
+export const ClaudeSubscription: StoryObj = {
+  name: "Connect · Claude subscription",
+  beforeEach: signedOutConnectionFixture,
+  render: () => <WizardArc />,
+  play: () => openProviderConnection("Claude", "subscription"),
+};
+export const CodexSubscription: StoryObj = {
+  name: "Connect · Codex / OpenAI subscription",
+  beforeEach: signedOutConnectionFixture,
+  render: () => <WizardArc />,
+  play: () => openProviderConnection("OpenAI", "subscription"),
+};
+export const ClaudeApiKey: StoryObj = {
+  name: "Connect · Claude API key",
+  beforeEach: signedOutConnectionFixture,
+  render: () => <WizardArc />,
+  play: () => openProviderConnection("Claude", "api"),
+};
+export const CodexApiKey: StoryObj = {
+  name: "Connect · Codex / OpenAI API key",
+  beforeEach: signedOutConnectionFixture,
+  render: () => <WizardArc />,
+  play: () => openProviderConnection("OpenAI", "api"),
+};

@@ -1,8 +1,36 @@
+diff --git a/dist/client-CxNllqui.d.ts b/dist/client-CxNllqui.d.ts
+index 5e2113a..b7b5151 100644
+--- a/dist/client-CxNllqui.d.ts
++++ b/dist/client-CxNllqui.d.ts
+@@ -135,6 +135,7 @@ declare class AcpClient {
+   private throwPromptPermissionFailureIfPresent;
+   setSessionMode(sessionId: string, modeId: string): Promise<void>;
+   setSessionConfigOption(sessionId: string, configId: string, value: string): Promise<SetSessionConfigOptionResponse>;
++  requestExtension(method: string, params: Record<string, unknown>): Promise<Record<string, unknown>>;
+   setSessionModel(sessionId: string, modelId: string, controlOverride?: ModelControlOverride): Promise<SetSessionConfigOptionResponse | undefined>;
+   private setSessionModelThroughConfig;
+   private setSessionModelThroughLegacyMethod;
 diff --git a/dist/live-checkpoint-BSIrfgVo.js b/dist/live-checkpoint-BSIrfgVo.js
 index d454fd7c5bf742b469be75eb8c3988b694a0ffaa..f5775e731d6a4808c7bd59b4228da766f46ce3db 100644
 --- a/dist/live-checkpoint-BSIrfgVo.js
 +++ b/dist/live-checkpoint-BSIrfgVo.js
-@@ -1661,7 +1661,7 @@ const ZED_TAG_KEYS = /* @__PURE__ */ new Set([
+@@ -1068,6 +1068,7 @@ function serializeSessionRecordForDisk(record) {
+ 		last_agent_disconnect_reason: canonical.lastAgentDisconnectReason,
+ 		protocol_version: canonical.protocolVersion,
+ 		agent_capabilities: canonical.agentCapabilities,
++		agent_goal_capability: canonical.agentGoalCapability,
+ 		title: canonical.title,
+ 		messages: canonical.messages,
+ 		updated_at: canonical.updated_at,
+@@ -1541,6 +1542,7 @@ function parseSessionRecord(raw) {
+ 		lastAgentDisconnectReason: optionals.lastAgentDisconnectReason,
+ 		protocolVersion: typeof record.protocol_version === "number" ? record.protocol_version : void 0,
+ 		agentCapabilities: asRecord$4(record.agent_capabilities),
++		agentGoalCapability: asRecord$4(record.agent_goal_capability),
+ 		title: conversation.title,
+ 		messages: conversation.messages,
+ 		updated_at: conversation.updated_at,
+@@ -1661,7 +1663,7 @@ const ZED_TAG_KEYS = /* @__PURE__ */ new Set([
  	"RedactedThinking",
  	"ToolUse"
  ]);
@@ -114,6 +142,13 @@ index d454fd7c5bf742b469be75eb8c3988b694a0ffaa..f5775e731d6a4808c7bd59b4228da766
  		});
  		child.once("close", (exitCode, signal) => {
  			this.recordAgentExit("process_close", exitCode, signal);
+@@ -6518,4 +6547,4 @@ var LiveSessionCheckpoint = class {
+ //#endregion
+ export { writeSessionRecord as $, PERMISSION_POLICY_ACTIONS as $t, REQUESTED_MODEL_UNSUPPORTED_ERROR_CODE as A, TimeoutError as At, getAcpxVersion as B, formatErrorMessage as Bt, mergeSessionOptions as C, PromptInputValidationError as Ct, applyLifecycleSnapshotToRecord as D, promptToDisplayText as Dt, applyConversation as E, parsePromptSource as Et, modelStateFromConfigOptions as F, normalizeAgentName$1 as Ft, findSession as G, toAcpErrorPayload as Gt, DEFAULT_HISTORY_LIMIT as H, normalizeOutputError as Ht, normalizeAgentCommandInput as I, resolveAgentArgv as It, listSessions as J, NON_INTERACTIVE_PERMISSION_POLICIES as Jt, findSessionByDirectoryWalk as K, AUTH_POLICIES as Kt, renderArgvIdentity as L, resolveAgentCommand as Lt, RequestedModelUnsupportedError as M, withTimeout as Mt, assertRequestedModelSupported as N, DEFAULT_AGENT_NAME as Nt, reconcileAgentSessionId as O, textPrompt as Ot, isRequestedModelUnsupportedError as P, listBuiltInAgents as Pt, resolveSessionRecord as Q, PERMISSION_MODES as Qt, runTimedExecFile as R, resolveCanonicalAgentName as Rt, advertisedModelState as S, parsePromptStopReason as St, sessionOptionsFromRecord as T, mergePromptSourceWithText as Tt, absolutePath as U, extractAcpError as Ut, permissionModeSatisfies as V, isRetryablePromptError as Vt, findGitRepositoryRoot as W, isAcpResourceNotFoundError as Wt, normalizeName as X, OUTPUT_ERROR_ORIGINS as Xt, listSessionsForAgent as Y, OUTPUT_ERROR_CODES as Yt, pruneSessions as Z, OUTPUT_FORMATS as Zt, createSessionConversation as _, sessionEventLockPath as _t, applyRequestedModelIfAdvertised as a, measurePerf as at, recordSessionUpdate as b, isAcpJsonRpcMessage as bt, setCurrentModelId as c, setPerfGauge as ct, setDesiredModelId as d, serializeSessionRecordForDisk as dt, SESSION_RECORD_SCHEMA as en, createAtomicWriteTempPath as et, syncAdvertisedModelState as f, normalizeRuntimeSessionId as ft, cloneSessionConversation as g, sessionEventActivePath as gt, cloneSessionAcpxState as h, sessionBaseDir$1 as ht, connectAndLoadSession as i, QueueProtocolError as in, incrementPerfCounter as it, REQUESTED_MODEL_UNSUPPORTED_REASONS as j, withInterrupt as jt, AcpClient as k, InterruptedError as kt, setDesiredConfigOption as l, startPerfTimer as lt, applyConfigOptionsToState as m, defaultSessionEventLog as mt, runPromptTurn as n, AgentSpawnError as nn, formatPerfMetric as nt, currentModelIdFromSetModelResponse as o, recordPerfDuration as ot, applyConfigOptionsToRecord as p, DEFAULT_EVENT_SEGMENT_MAX_BYTES as pt, isoNow$2 as q, EXIT_CODES as qt, withConnectedSession as r, QueueConnectionError as rn, getPerfMetricsSnapshot as rt, clearDesiredConfigOption as s, resetPerfMetrics as st, LiveSessionCheckpoint as t, AcpxOperationalError as tn, assertPersistedKeyPolicy as tt, setDesiredModeId as u, parseSessionRecord as ut, recordClientOperation as v, sessionEventSegmentPath as vt, persistSessionOptions as w, isPromptInput as wt, trimConversationForRuntime as x, parseJsonRpcErrorMessage as xt, recordPromptSubmission as y, extractSessionUpdateNotification as yt, splitCommandLine as z, exitCodeForOutputErrorCode as zt };
+
+-//# sourceMappingURL=live-checkpoint-BSIrfgVo.js.map
+\ No newline at end of file
++//# sourceMappingURL=live-checkpoint-BSIrfgVo.js.map
 diff --git a/dist/runtime.d.ts b/dist/runtime.d.ts
 index e8102acb03c4c38830ad5ec22f356125eb0423b7..fcb1a1906f587b33ad818389c035f90362b0617e 100644
 --- a/dist/runtime.d.ts
@@ -267,6 +302,96 @@ index a1f4a70a003792c6eacf68b6b038f37bfec1db53..50029e881c07a7228ddd978bb03d0406
  		const active = owner.activeTurn;
  		if (!active) return;
  		const { task, turn } = active;
+@@ -1008,6 +1062,8 @@ var AcpRuntimeManager = class {
+ 		record.closedAt = void 0;
+ 		record.protocolVersion = owner.client.initializeResult?.protocolVersion;
+ 		record.agentCapabilities = owner.client.initializeResult?.agentCapabilities;
++		record.agentGoalCapability = persistedGoalCapability(owner.client.initializeResult?._meta?.goal);
++		this.options.onAgentInitialize?.(owner.client.initializeResult);
+ 		applyLifecycleSnapshotToRecord(record, owner.client.getAgentLifecycleSnapshot());
+ 	}
+ 	async finishBufferedOwnerControl(owner, record) {
+@@ -1086,6 +1142,11 @@ var AcpRuntimeManager = class {
+ 		record.closed = false;
+ 		record.closedAt = void 0;
+ 		this.closingActiveRecords.delete(record.acpxRecordId);
++		this.options.onAgentInitialize?.({
++			protocolVersion: record.protocolVersion,
++			agentCapabilities: record.agentCapabilities,
++			_meta: record.agentGoalCapability ? { goal: restoredGoalCapability(record.agentGoalCapability) } : void 0
++		});
+ 		await this.options.sessionStore.save(record);
+ 		return record;
+ 	}
+@@ -1149,6 +1210,8 @@ var AcpRuntimeManager = class {
+ 		this.closingActiveRecords.delete(record.acpxRecordId);
+ 		record.protocolVersion = client.initializeResult?.protocolVersion;
+ 		record.agentCapabilities = client.initializeResult?.agentCapabilities;
++		record.agentGoalCapability = persistedGoalCapability(client.initializeResult?._meta?.goal);
++		this.options.onAgentInitialize?.(client.initializeResult);
+ 		applyConfigOptionsToRecord(record, session.sessionResult);
+ 		const modelApplication = await applyRequestedModelIfAdvertised({
+ 			client,
+@@ -1469,6 +1532,10 @@ var AcpRuntimeManager = class {
+ 			setSessionConfigOption: async (configId, value) => {
+ 				return (await task.state.activeController.setResolvedSessionConfigOption(configId, value)).response;
+ 			},
++			requestExtension: async (method, params) => {
++				await this.waitForRuntimeControlSession(task, turn);
++				return await turn.client.requestExtension(method, params);
++			},
+ 			setResolvedSessionConfigOption: async (configId, value) => await this.setRuntimeResolvedSessionConfigOption(task, turn, configId, value)
+ 		};
+ 	}
+@@ -1575,6 +1642,8 @@ var AcpRuntimeManager = class {
+ 		reconcileAgentSessionId(turn.record, turn.record.agentSessionId);
+ 		turn.record.protocolVersion = turn.client.initializeResult?.protocolVersion;
+ 		turn.record.agentCapabilities = turn.client.initializeResult?.agentCapabilities;
++		turn.record.agentGoalCapability = persistedGoalCapability(turn.client.initializeResult?._meta?.goal);
++		this.options.onAgentInitialize?.(turn.client.initializeResult);
+ 		turn.record.acpx = turn.acpxState;
+ 		applyConversation(turn.record, turn.conversation);
+ 		applyLifecycleSnapshotToRecord(turn.record, turn.client.getAgentLifecycleSnapshot());
+@@ -1707,6 +1776,17 @@ var AcpRuntimeManager = class {
+ 		});
+ 		await this.options.sessionStore.save(result.record);
+ 	}
++	async requestExtension(input) {
++		const recordId = input.handle.acpxRecordId ?? input.handle.sessionKey;
++		return await this.withManagerLock(this.runtimeOperationLocks, recordId, async () => {
++			const record = await this.requireRecord(recordId);
++			const controller = this.activeControllers.get(record.acpxRecordId);
++			if (controller) return await controller.requestExtension(input.method, input.params);
++			return (await this.withRuntimeControlSession(record, input.sessionMode ?? "persistent", async ({ client }) => {
++				return await client.requestExtension(input.method, input.params);
++			})).value;
++		});
++	}
+ 	async cancel(handle) {
+ 		await this.activeControllers.get(handle.acpxRecordId ?? handle.sessionKey)?.requestCancelActivePrompt();
+ 	}
+@@ -2119,6 +2199,14 @@ var AcpxRuntime = class {
+ 		const { handle, state } = this.resolveManagerHandle(input.handle);
+ 		await (await this.getManager()).setConfigOption(handle, input.key, input.value, state.mode);
+ 	}
++	async requestExtension(input) {
++		const { handle, state } = this.resolveManagerHandle(input.handle);
++		return await (await this.getManager()).requestExtension({
++			...input,
++			handle,
++			sessionMode: input.sessionMode ?? state.mode
++		});
++	}
+ 	async cancel(input) {
+ 		const { handle } = this.resolveManagerHandle(input.handle);
+ 		await (await this.getManager()).cancel(handle);
+@@ -2178,4 +2266,4 @@ function createRuntimeStore(options) {
+ //#endregion
+ export { ACPX_BACKEND_ID, AcpRuntimeError, AcpxRuntime, DEFAULT_AGENT_NAME, REQUESTED_MODEL_UNSUPPORTED_ERROR_CODE, REQUESTED_MODEL_UNSUPPORTED_REASONS, RequestedModelUnsupportedError, createAcpRuntime, createAgentRegistry, createFileSessionStore, createRuntimeStore, decodeAcpxRuntimeHandleState, encodeAcpxRuntimeHandleState, isAcpRuntimeError, isRequestedModelUnsupportedError };
+
+-//# sourceMappingURL=runtime.js.map
+\ No newline at end of file
++//# sourceMappingURL=runtime.js.map
 diff --git a/dist/session-options-DwRDODlr.d.ts b/dist/session-options-DwRDODlr.d.ts
 index c3da1645235bbea22de3f8484149051cd7dca56b..ad1f2f6c6a7f477e83dc0061e4168c00c23382da 100644
 --- a/dist/session-options-DwRDODlr.d.ts
@@ -302,3 +427,18 @@ index c3da1645235bbea22de3f8484149051cd7dca56b..ad1f2f6c6a7f477e83dc0061e4168c00
    onAcpMessage?: (direction: AcpMessageDirection, message: AcpJsonRpcMessage) => void;
    onAcpOutputMessage?: (direction: AcpMessageDirection, message: AcpJsonRpcMessage) => void;
    onSessionUpdate?: (notification: SessionNotification) => void;
+@@ -263,6 +275,7 @@ type SessionRecord = {
+   lastAgentDisconnectReason?: string;
+   protocolVersion?: number;
+   agentCapabilities?: AgentCapabilities;
++  agentGoalCapability?: Record<string, unknown>;
+   title?: string | null;
+   messages: SessionMessage[];
+   updated_at: string;
+@@ -295,4 +308,4 @@ type SessionAgentOptions = {
+ };
+ //#endregion
+ export { SessionRecord as _, AcpElicitationHandler as a, AcpElicitationResponse as c, AuthPolicy as d, McpServer$1 as f, PermissionStats as g, PermissionPolicy as h, AcpElicitationContext as i, AcpPermissionDecision as l, PermissionMode as m, SystemPromptOption as n, AcpElicitationMode as o, NonInteractivePermissionPolicy as p, AcpClientOptions as r, AcpElicitationRequest as s, SessionAgentOptions as t, AcpPermissionRequest as u, PromptInput as v };
+-//# sourceMappingURL=session-options-DwRDODlr.d.ts.map
+\ No newline at end of file
++//# sourceMappingURL=session-options-DwRDODlr.d.ts.map

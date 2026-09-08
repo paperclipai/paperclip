@@ -1107,6 +1107,46 @@ function OnboardingWizardInner({
   const showAdapterLoginPanel =
     canShowAdapterLogin && (authSignalStatus === "absent" || authSignalStatus === "unknown");
   /**
+   * Restores the connect sequence after a reload.
+   *
+   * The panel resumes an active session on its own mount, but this step only
+   * mounts the panel once the sequence has moved off `idle` — and a reload
+   * starts the sequence at `idle` again, deliberately: `connectPhase` is not
+   * in the draft. Without this read, a reload during a login would leave the
+   * panel unmounted and the resumed session unreachable from this step. A 404
+   * means no active session for the caller.
+   */
+  const activeLoginSessionQuery = useQuery({
+    queryKey: createdCompanyId
+      ? queryKeys.agents.activeLoginSession(createdCompanyId, adapterType)
+      : ["agents", "none", "active-login-session", adapterType],
+    queryFn: async () => {
+      try {
+        return adapterCaps.login?.panelMode === "submitted_browser_code"
+          ? await agentsApi.getActiveClaudeSetupTokenLoginSession(createdCompanyId!)
+          : await agentsApi.getActiveAdapterAuthLoginSession(createdCompanyId!, adapterType);
+      } catch (error) {
+        if (error instanceof ApiError && error.status === 404) return null;
+        throw error;
+      }
+    },
+    enabled:
+      Boolean(createdCompanyId) && effectiveOnboardingOpen && step === 4 && canShowAdapterLogin,
+  });
+  useEffect(() => {
+    if (!activeLoginSessionQuery.data) return;
+    // Re-derive the row's answer along with the sequence: a resumed session
+    // implies a source was already picked, and the row stays a question
+    // otherwise (see `sourcePicked` above).
+    setSourcePicked(true);
+    // Skip straight past the collapsing beat — that animation is for a press
+    // landing on a step already on screen, not for a reload that should show
+    // the running login at once. The panel's own mount reports the resumed
+    // prompt through `onPromptReady`, below, which is what moves this beat
+    // from `loading` to `ready`, exactly as a fresh press would.
+    setConnectPhase((phase) => (phase === "idle" ? "loading" : phase));
+  }, [activeLoginSessionQuery.data]);
+  /**
    * The signal is being fetched and has not answered yet.
    *
    * Worth its own state rather than folding into "no panel to show". Until it
@@ -1353,20 +1393,22 @@ function OnboardingWizardInner({
   /**
    * Back, on the connect step, unwinds the sign-in before it leaves the step.
    *
-   * With no Cancel on the card this is the only way out, and what it undoes
-   * depends on how far in you are. Unmounting the panel is what releases the
-   * server session — see the release-on-unmount effect in `AdapterLoginPanel`
-   * — so the card leaving is the cancel, not a separate call.
+   * This hides the card; it does not cancel the login. Unmounting the panel
+   * does not release the server session — the session stays reachable for a
+   * later resume, the same read that restores it after a reload — so backing
+   * out and returning shows the sign-in still running, not a fresh one.
+   *
+   * Nothing releases it explicitly any more. The card carried a Cancel that
+   * did, sitting beside an instruction and directly above this step's own
+   * Back, and two ways out of one screen is one too many — the button went and
+   * the release went with it. What is left is the server deadline, which is
+   * the same thing that collects a session abandoned by closing the tab.
    */
   function unwindConnectStep() {
     setConnectAuthUrl(null);
     // Where the reverse starts depends on how far the sequence got. Backing out
-    // during the collapse has no card to close and no room to give back, and
-    // entering `unwindCard` regardless mounted the panel — which starts a
-    // server login on mount — purely so the unmount could cancel it. Should
-    // that cancel fail, the reservation is held to the server deadline and an
-    // immediate retry cannot start. With no card open, the row is the whole of
-    // the unwind.
+    // during the collapse has no card to close and no room to give back.
+    // With no card open, the row is the whole of the unwind.
     setConnectPhase(connectCardLive ? "unwindCard" : "unwindRow");
   }
 
@@ -1502,7 +1544,9 @@ function OnboardingWizardInner({
    * Nothing else needs to reset it. A source can only change by being picked,
    * and picking sets the phase itself; the credential mode can only change
    * before the sequence starts, because its control is inert once the row has
-   * collapsed.
+   * collapsed. Switching either no longer needs its own reset: the panel keeps
+   * its server session reachable for a later resume instead of releasing it on
+   * the remount, so there is nothing left here for that change to undo.
    */
   useEffect(() => {
     if (step === 4) return;
@@ -2508,17 +2552,23 @@ function OnboardingWizardInner({
                 // narrower than the next screen's makes the whole frame jump on
                 // Continue — which is the thing that read as "off" to begin
                 // with, and is more obvious once the buttons match.
-                // 68px sides, so the column inside the 560px frame is 424px —
-                // the measure the design draws every arc step to. It was 40px
-                // (a 480px column), which is wide enough that the two model
-                // tiles stretch and the name field sits under a question far
-                // narrower than itself.
+                // 40px sides, so the column inside the 560px frame is 480px:
+                // the measure the connect sequence is drawn to. The arc shares
+                // one shell, so the other steps take that measure rather than
+                // sitting narrower than the step between them.
+                //
+                // It has been both ways, and the objection that moved it last
+                // time has not been retested since it moved back. A 64px inset
+                // (a 432px column) was chosen because at the wider measure the
+                // two model tiles stretch and the name field sits under a
+                // question far narrower than itself. The connect step is now
+                // drawn to 480px, so the shell followed it. If step 1 or step 3
+                // reads loose, that is the reason and this is the line — but
+                // narrowing the shell again would put the connect step back out
+                // of step with its own design, so the fix would belong in those
+                // steps' own content rather than here.
                 isAgentArcStep || step === 1
-                  ? // 40px inset, not 64: the connect sequence is drawn against
-                    // a 480px column and the arc's other steps share the shell,
-                    // so they widen with it rather than sitting narrower than
-                    // the step between them.
-                    "w-(--sz-560px) max-w-full px-8 py-10 sm:px-10 sm:py-11"
+                  ? "w-(--sz-560px) max-w-full px-8 py-10 sm:px-10 sm:py-11"
                   : "w-full max-w-md px-8 py-12",
               )}
             >
@@ -3125,9 +3175,10 @@ function OnboardingWizardInner({
                          in the connect step's chrome. It owns the session; the
                          step owns the sequence around it.
 
-                         Unmounting it is the cancel: the panel releases its
-                         server session on unmount, so Back closing the card is
-                         what frees the owner's reservation.
+                         Unmounting it is not the cancel: the session stays
+                         reachable for a later resume, so Back and a source
+                         switch only hide the card, and nothing here releases
+                         the session early — see `unwindConnectStep`.
 
                          No "Use saved login" control: the hire step already
                          applies a stored login on its own. */
@@ -3183,7 +3234,20 @@ function OnboardingWizardInner({
                       step, so this block renders only when a probe has actually
                       found something: the checks the blocking error tells the
                       customer to fix have to be visible somewhere. */}
-                  {isLocalAdapter && (adapterEnvError || (adapterEnvResult && adapterEnvResult.status !== "pass")) && (
+                  {/* Not while the hire is in flight. The probe's result lands
+                      before the hire it gates has finished, so a warn that does
+                      not block — the identity and target INFO checks, which
+                      every run reports — rendered a block of diagnostics for the
+                      moment between the probe returning and the step advancing.
+                      It read as an error thrown up by a sign-in that had just
+                      succeeded.
+
+                      `loading` is the right gate rather than the connect phase:
+                      it is false again by the time a blocking result has stopped
+                      the hire, because `handleGiveHeartbeat` clears it in its
+                      `finally` after the early return — so a genuine block still
+                      shows its checks, which is the whole reason this is here. */}
+                  {isLocalAdapter && !loading && (adapterEnvError || (adapterEnvResult && adapterEnvResult.status !== "pass")) && (
                     <div className="space-y-2 rounded-md border border-border p-3">
                       {adapterEnvError && (
                         <div className="rounded-md border border-destructive/30 bg-destructive/10 px-2.5 py-2 text-(length:--text-micro) text-destructive">

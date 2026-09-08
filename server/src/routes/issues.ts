@@ -1,3 +1,4 @@
+import { storedSteeringAcknowledgement, reconcileSteeredIdentity, reserveSteeredIdentity, acceptSteeredIdentity, rejectSteeredIdentity } from "../services/run-identity.js";
 import { createHash, randomUUID } from "node:crypto";
 import { Router, type Request, type Response } from "express";
 import multer from "multer";
@@ -48,6 +49,7 @@ import {
   createIssueSchema,
   resolveCreateIssueStatusDefault,
   resolveIssueRecoveryActionSchema,
+  runnerGoalActionRequestSchema,
   feedbackTargetTypeSchema,
   feedbackTraceStatusSchema,
   feedbackVoteValueSchema,
@@ -144,6 +146,12 @@ import {
   routineService,
   workProductService,
 } from "../services/index.js";
+import {
+  runnerGoalService,
+  RunnerGoalActionError,
+  RunnerGoalConflictError,
+} from "../services/runner-goals.js";
+import { queueLiveRunnerPrpCommand } from "../realtime/runner-prp-ws.js";
 import { questionResponseDeliveryService } from "../services/question-response-delivery.js";
 import { emitAgentTaskRun } from "../services/agent-task-run-telemetry.js";
 import { artifactReviewDocumentService } from "../services/artifact-review-documents.js";
@@ -2231,55 +2239,85 @@ async function queueResolvedInteractionContinuationWakeup(input: {
           result: interactionResult,
         }
       : null;
-  void input.heartbeat.wakeup(input.issue.assigneeAgentId, {
-    source: "automation",
-    triggerDetail: "system",
-    reason: "issue_commented",
-    payload: {
-      issueId: input.issue.id,
-      interactionId: input.interaction.id,
-      interactionKind: input.interaction.kind,
-      interactionStatus: input.interaction.status,
-      sourceCommentId: input.interaction.sourceCommentId ?? null,
-      sourceRunId: input.interaction.sourceRunId ?? null,
-      ...(planReviewInteraction ? { planReviewInteraction } : {}),
-      ...(nativeCompletionReview ? { nativeCompletionReview } : {}),
-      ...(checkboxSelection ? { checkboxSelection } : {}),
-      ...(toolAction ? { toolAction } : {}),
-      ...(secretProposal ? { secretProposal } : {}),
-      ...(itemVerdicts ? { itemVerdicts, newlyResolvedItemIds } : {}),
-      ...(reviewPathContext ?? {}),
-      mutation: "interaction",
-    },
-    idempotencyKey: input.idempotencyKey ?? `interaction:${input.interaction.id}:${input.interaction.status}`,
-    requestedByActorType: input.actor.actorType,
-    requestedByActorId: input.actor.actorId,
-    contextSnapshot: {
-      issueId: input.issue.id,
-      taskId: input.issue.id,
-      interactionId: input.interaction.id,
-      interactionKind: input.interaction.kind,
-      interactionStatus: input.interaction.status,
-      sourceCommentId: input.interaction.sourceCommentId ?? null,
-      sourceRunId: input.interaction.sourceRunId ?? null,
-      ...(planReviewInteraction ? { planReviewInteraction } : {}),
-      ...(nativeCompletionReview ? { nativeCompletionReview } : {}),
-      ...(checkboxSelection ? { checkboxSelection } : {}),
-      ...(toolAction ? { toolAction } : {}),
-      ...(secretProposal ? { secretProposal } : {}),
-      ...(itemVerdicts ? { itemVerdicts, newlyResolvedItemIds } : {}),
-      ...(reviewPathContext ?? {}),
-      wakeReason: "issue_commented",
-      source: input.source,
-      ...(forceFreshSession ? { forceFreshSession: true } : {}),
-      ...(workspaceRefreshReason ? { workspaceRefreshReason } : {}),
-    },
-  }).catch((err) => logger.warn({
-    err,
-    issueId: input.issue.id,
-    interactionId: input.interaction.id,
-    agentId: input.issue.assigneeAgentId,
-  }, "failed to wake assignee on issue interaction resolution"));
+  const genericRejectionReason =
+    !planReviewInteraction &&
+    !nativeCompletionReview &&
+    input.interaction.status === "rejected" &&
+    (input.interaction.kind === "request_confirmation" ||
+      input.interaction.kind === "request_checkbox_confirmation")
+      ? readNonEmptyString(readObject(input.interaction.result).reason)
+      : null;
+  const rejectionAgentMessage = genericRejectionReason
+    ? {
+        text: genericRejectionReason,
+        source: "interaction_rejection",
+        sessionId: input.interaction.id,
+      }
+    : null;
+  void input.heartbeat
+    .wakeup(input.issue.assigneeAgentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_commented",
+      payload: {
+        issueId: input.issue.id,
+        interactionId: input.interaction.id,
+        interactionKind: input.interaction.kind,
+        interactionStatus: input.interaction.status,
+        sourceCommentId: input.interaction.sourceCommentId ?? null,
+        sourceRunId: input.interaction.sourceRunId ?? null,
+        ...(planReviewInteraction ? { planReviewInteraction } : {}),
+        ...(nativeCompletionReview ? { nativeCompletionReview } : {}),
+        ...(checkboxSelection ? { checkboxSelection } : {}),
+        ...(toolAction ? { toolAction } : {}),
+        ...(secretProposal ? { secretProposal } : {}),
+        ...(itemVerdicts ? { itemVerdicts, newlyResolvedItemIds } : {}),
+        ...(rejectionAgentMessage
+          ? { paperclipAgentMessage: rejectionAgentMessage }
+          : {}),
+        ...(reviewPathContext ?? {}),
+        mutation: "interaction",
+      },
+      idempotencyKey:
+        input.idempotencyKey ??
+        `interaction:${input.interaction.id}:${input.interaction.status}`,
+      requestedByActorType: input.actor.actorType,
+      requestedByActorId: input.actor.actorId,
+      contextSnapshot: {
+        issueId: input.issue.id,
+        taskId: input.issue.id,
+        interactionId: input.interaction.id,
+        interactionKind: input.interaction.kind,
+        interactionStatus: input.interaction.status,
+        sourceCommentId: input.interaction.sourceCommentId ?? null,
+        sourceRunId: input.interaction.sourceRunId ?? null,
+        ...(planReviewInteraction ? { planReviewInteraction } : {}),
+        ...(nativeCompletionReview ? { nativeCompletionReview } : {}),
+        ...(checkboxSelection ? { checkboxSelection } : {}),
+        ...(toolAction ? { toolAction } : {}),
+        ...(secretProposal ? { secretProposal } : {}),
+        ...(itemVerdicts ? { itemVerdicts, newlyResolvedItemIds } : {}),
+        ...(rejectionAgentMessage
+          ? { paperclipAgentMessage: rejectionAgentMessage }
+          : {}),
+        ...(reviewPathContext ?? {}),
+        wakeReason: "issue_commented",
+        source: input.source,
+        ...(forceFreshSession ? { forceFreshSession: true } : {}),
+        ...(workspaceRefreshReason ? { workspaceRefreshReason } : {}),
+      },
+    })
+    .catch((err) =>
+      logger.warn(
+        {
+          err,
+          issueId: input.issue.id,
+          interactionId: input.interaction.id,
+          agentId: input.issue.assigneeAgentId,
+        },
+        "failed to wake assignee on issue interaction resolution",
+      ),
+    );
 }
 
 function readCheckboxSelectionForWake(input: {
@@ -2952,6 +2990,100 @@ export function issueRoutes(
     heartbeat,
     resolveNativeQuestion: (interaction) => deliverNativeQuestionResponse(db, interaction),
   });
+  const runnerGoals = runnerGoalService(db, {
+    enqueueOfflineControl: async ({
+      issueId,
+      agentId,
+      requestId,
+      control,
+    }) => {
+      const run = await heartbeat.wakeup(agentId, {
+        source: "on_demand",
+        triggerDetail: "manual",
+        reason: "goal_control",
+        payload: { issueId, requestId, intent: "goal_control" },
+        idempotencyKey: `goal_control:${requestId}`,
+        requestedByActorType: "system",
+        contextSnapshot: {
+          issueId,
+          taskKey: issueId,
+          resumeIntent: true,
+          goalControlRequestId: requestId,
+          runnerGoalControl: control,
+          skipIssueComment: true,
+        },
+      });
+      if (!run) {
+        throw new RunnerGoalActionError(
+          "goal_control_wake_skipped",
+          "Goal execution did not start. Check that task execution is enabled for this instance and agent, then retry.",
+        );
+      }
+    },
+  });
+  const stopRunnerGoalForOwnershipChange = async (input: {
+    companyId: string;
+    issueId: string;
+    agentId: string;
+  }) => {
+    const current = await runnerGoals.projection(
+      input.companyId,
+      input.issueId,
+      input.agentId,
+    );
+    if (current?.pendingAction) {
+      throw conflict(
+        "The current agent goal has a control action still in progress",
+        { code: "runner_goal_action_pending", projection: current },
+      );
+    }
+    if (!current?.goal || current.goal.status === "complete") return null;
+    const action = current.capability.actions.includes("pause")
+      ? ("pause" as const)
+      : current.capability.actions.includes("clear")
+        ? ("clear" as const)
+        : null;
+    if (!action) {
+      throw conflict(
+        "The current agent goal cannot be stopped safely before reassignment",
+        { code: "runner_goal_stop_unsupported", projection: current },
+      );
+    }
+    await runnerGoals.act(input.companyId, input.issueId, {
+      requestId: `ownership_${randomUUID()}`,
+      agentId: input.agentId,
+      expectedRevision: current.revision,
+      action,
+    });
+    const deadline = Date.now() + 30_000;
+    while (Date.now() < deadline) {
+      const observed = await runnerGoals.projection(
+        input.companyId,
+        input.issueId,
+        input.agentId,
+      );
+      const stopped =
+        action === "pause"
+          ? observed?.goal?.status === "paused"
+          : observed?.goal === null;
+      if (observed && stopped && observed.pendingAction === null) return action;
+      if (observed && observed.pendingAction === null && !stopped) {
+        throw conflict(
+          "The current agent goal failed to stop before reassignment",
+          { code: "runner_goal_stop_failed", projection: observed },
+        );
+      }
+      await new Promise<void>((resolve) => setTimeout(resolve, 50));
+    }
+    throw conflict("Timed out stopping the current agent goal before reassignment", {
+      code: "runner_goal_stop_timeout",
+      projection: await runnerGoals.projection(
+        input.companyId,
+        input.issueId,
+        input.agentId,
+      ),
+    });
+  };
   const flushIssuePostCommitActions = async (actions: readonly IssuePostCommitAction[]) => {
     if (actions.length === 0) return;
     const { executeIssuePostCommitActions } = await import("../services/issues.js");
@@ -6886,6 +7018,58 @@ export function issueRoutes(
     res.json(removed);
   });
 
+  router.get("/issues/:id/runner-goal", async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await getAccessibleResource(req, res, getIssueById(req, id), "Issue not found");
+    if (!issue) return;
+    if (!(await assertIssueReadAllowed(req, res, issue))) return;
+    const requestedAgentId = typeof req.query.agentId === "string" && req.query.agentId.trim()
+      ? req.query.agentId.trim()
+      : null;
+    const goal = await runnerGoals.projection(issue.companyId, issue.id, requestedAgentId);
+    if (!goal) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    res.json(goal);
+  });
+
+  router.post(
+    "/issues/:id/runner-goal/actions",
+    validate(runnerGoalActionRequestSchema),
+    async (req, res) => {
+      const id = req.params.id as string;
+      const issue = await getAccessibleResource(req, res, getIssueById(req, id), "Issue not found");
+      if (!issue) return;
+      if (req.actor.type === "agent" && req.actor.agentId !== req.body.agentId) {
+        res.status(403).json({ error: "Agent can only control its own assigned session goal" });
+        return;
+      }
+      if (req.actor.type !== "agent") assertBoard(req);
+      if (!(await assertIssueWriteInfluenceAllowed(req, res, issue))) return;
+      try {
+        const accepted = await runnerGoals.act(issue.companyId, issue.id, req.body);
+        res.status(202).json(accepted);
+      } catch (error) {
+        if (error instanceof RunnerGoalConflictError) {
+          res.status(409).json({
+            error: error.code,
+            current: error.projection,
+          });
+          return;
+        }
+        if (error instanceof RunnerGoalActionError) {
+          res.status(error.code === "issue_not_found" || error.code === "agent_not_found" ? 404 : 422).json({
+            error: error.message,
+            code: error.code,
+          });
+          return;
+        }
+        throw error;
+      }
+    },
+  );
+
   router.get("/issues/:id/heartbeat-context", async (req, res) => {
     const id = req.params.id as string;
     const issue = await getAccessibleResource(req, res, getIssueById(req, id), "Issue not found");
@@ -9197,6 +9381,7 @@ export function issueRoutes(
       ...(taskBridgeOriginForActor(req) ?? {}),
       id: issueId,
       originRunId: createBody.originRunId ?? actor.runId,
+      originIdentityContextId: req.actor.identityContextId ?? null,
       executionPolicy,
       ...(sourceTrust ? { sourceTrust } : {}),
       createdByAgentId: actor.agentId,
@@ -9967,10 +10152,18 @@ export function issueRoutes(
       reopen: reopenRequested,
       resume: resumeRequested,
       interrupt: interruptRequested,
+      deferWakeForGoal,
       hiddenAt: hiddenAtRaw,
       onBehalfOfUserId: _requestedOnBehalfOfUserId,
       ...updateFields
     } = req.body;
+    if (deferWakeForGoal === true && (
+      !normalizedAssigneeAgentId ||
+      Object.keys(req.body).some((key) => !["assigneeAgentId", "assigneeUserId", "deferWakeForGoal"].includes(key))
+    )) {
+      res.status(400).json({ error: "Deferring the goal wake requires an assignment-only agent handoff" });
+      return;
+    }
     const reviewPolicyChangeRequested =
       req.body.reviewPolicy !== undefined
       && req.body.reviewPolicy !== existing.reviewPolicy;
@@ -10373,6 +10566,68 @@ export function issueRoutes(
       }
     }
 
+    if (assigneeWillChange && existing.assigneeAgentId) {
+      await stopRunnerGoalForOwnershipChange({
+        companyId: existing.companyId,
+        issueId: existing.id,
+        agentId: existing.assigneeAgentId,
+      });
+      const runToStopForReassignment = await resolveActiveIssueRun(existing);
+      if (runToStopForReassignment) {
+        const cancelled = await heartbeat.cancelRun(
+          runToStopForReassignment.id,
+          "Cancelled before issue reassignment",
+          {
+            errorCode: "issue_reassigned",
+            resultJson: { reassignmentStopConfirmed: true },
+            eventMessage: "run cancelled before issue reassignment",
+            eventPayload: { issueId: existing.id },
+          },
+        );
+        if (!cancelled || cancelled.status !== "cancelled") {
+          throw conflict("The active agent run could not be stopped before reassignment", {
+            code: "runner_goal_reassignment_stop_unconfirmed",
+            runId: runToStopForReassignment.id,
+          });
+        }
+        interruptedRunId = cancelled.id;
+      }
+    }
+
+    const terminalizingIssue =
+      typeof updateFields.status === "string" &&
+      updateFields.status !== existing.status &&
+      isClosedIssueStatus(updateFields.status);
+    if (!assigneeWillChange && terminalizingIssue && existing.assigneeAgentId) {
+      const goalStopAction = await stopRunnerGoalForOwnershipChange({
+        companyId: existing.companyId,
+        issueId: existing.id,
+        agentId: existing.assigneeAgentId,
+      });
+      const runToStopForTerminalization = goalStopAction
+        ? await resolveActiveIssueRun(existing)
+        : null;
+      if (goalStopAction && runToStopForTerminalization) {
+        const cancelled = await heartbeat.cancelRun(
+          runToStopForTerminalization.id,
+          "Cancelled before issue terminalization",
+          {
+            errorCode: "issue_terminalized",
+            resultJson: { terminalizationStopConfirmed: true },
+            eventMessage: "run cancelled before issue terminalization",
+            eventPayload: { issueId: existing.id, status: updateFields.status },
+          },
+        );
+        if (!cancelled || cancelled.status !== "cancelled") {
+          throw conflict("The active agent run could not be stopped before terminalizing the issue", {
+            code: "runner_goal_terminalization_stop_unconfirmed",
+            runId: runToStopForTerminalization.id,
+          });
+        }
+        interruptedRunId = cancelled.id;
+      }
+    }
+
     const nextParentId = updateFields.parentId === undefined
       ? existing.parentId
       : updateFields.parentId as string | null;
@@ -10605,7 +10860,7 @@ export function issueRoutes(
     }
 
     let cancelledStatusRunId: string | null = null;
-    if (runToCancelForCancelledStatus) {
+    if (runToCancelForCancelledStatus && runToCancelForCancelledStatus.id !== interruptedRunId) {
       try {
         const cancelled = await heartbeat.cancelRun(runToCancelForCancelledStatus.id);
         if (cancelled) {
@@ -10981,6 +11236,7 @@ export function issueRoutes(
     }
 
     let comment = null;
+    let goalCommentSteered = false;
     let lostReviewPathRef: string | null = null;
     if (commentBody) {
       const commentReferenceSummaryBefore = updateReferenceSummaryAfter
@@ -10996,6 +11252,37 @@ export function issueRoutes(
       });
       await issueReferencesSvc.syncComment(comment.id);
       await externalObjectsSvc.syncCommentSafely(comment.id);
+      if (
+        issue.assigneeAgentId &&
+        !(actor.actorType === "agent" && actor.actorId === issue.assigneeAgentId)
+      ) {
+        const goalProjection = await runnerGoals.projection(
+          issue.companyId,
+          issue.id,
+          issue.assigneeAgentId,
+        );
+        if (goalProjection?.goal?.status === "active" && goalProjection.workingNow) {
+          const steer = queueLiveRunnerPrpCommand({
+            companyId: issue.companyId,
+            issueId: issue.id,
+            agentId: issue.assigneeAgentId,
+            type: "turn.steer",
+            payload: { text: comment.body },
+            commandId: `goal_comment_${comment.id}`,
+          });
+          if (steer) {
+            try {
+              await steer.completion;
+              goalCommentSteered = true;
+            } catch (err) {
+              logger.warn(
+                { err, issueId: issue.id, commentId: comment.id, runId: steer.runId },
+                "failed to steer an active session goal; falling back to a boundary wake",
+              );
+            }
+          }
+        }
+      }
       const commentReferenceSummaryAfter = await issueReferencesSvc.listIssueReferenceSummary(issue.id);
       const commentReferenceDiff = issueReferencesSvc.diffIssueReferenceSummary(
         commentReferenceSummaryBefore,
@@ -11178,9 +11465,9 @@ export function issueRoutes(
         });
       };
 
-      if (executionStageWakeup) {
+      if (executionStageWakeup && deferWakeForGoal !== true) {
         addWakeup(executionStageWakeup.agentId, executionStageWakeup.wakeup);
-      } else if (assigneeChanged && issue.assigneeAgentId && issue.status !== "backlog") {
+      } else if (assigneeChanged && issue.assigneeAgentId && issue.status !== "backlog" && deferWakeForGoal !== true) {
         addWakeup(issue.assigneeAgentId, {
           source: "assignment",
           triggerDetail: "system",
@@ -11254,7 +11541,12 @@ export function issueRoutes(
           !(selfComment && resumeRequested !== true) &&
           (reopened || !isClosedIssueStatus(issue.status));
 
-        if (assigneeId && !assigneeChanged && shouldWakeAssigneeForComment) {
+        if (
+          assigneeId &&
+          !assigneeChanged &&
+          !goalCommentSteered &&
+          shouldWakeAssigneeForComment
+        ) {
           addWakeup(assigneeId, {
             source: "automation",
             triggerDetail: "system",
@@ -11933,6 +12225,10 @@ export function issueRoutes(
       const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
       if (!issue) return;
       const actor = getActorInfo(req);
+      const steeringIdentity = await reserveSteeredIdentity(db, {
+        companyId: issue.companyId, runId: req.body.targetRunId, issueId: issue.id, messageId: commentId,
+      });
+      let steeringDeliveryAttempted = false;
       let acknowledgedTurnId: string | null = null;
       let duplicate = false;
       let queue: IssueQueuedCommentQueue;
@@ -12045,11 +12341,14 @@ export function issueRoutes(
             });
           }
 
-          const acknowledgement = await steerNativeSession({
+          steeringDeliveryAttempted = true;
+          const acknowledgement = (steeringIdentity ? await storedSteeringAcknowledgement(tx, steeringIdentity) : null) ?? await steerNativeSession({
             runId: locked.activeRun.id,
             message: entry.comment.body,
             correlationId: commentId,
+            onAcknowledged: steeringIdentity ? () => reconcileSteeredIdentity(db, steeringIdentity) : undefined,
           });
+          if (steeringIdentity) await acceptSteeredIdentity(tx, steeringIdentity);
           acknowledgedTurnId = acknowledgement.turnId;
           const remainingIds = locked.queue.entries
             .map((candidate) => candidate.comment.id)
@@ -12100,6 +12399,10 @@ export function issueRoutes(
           });
         });
       } catch (error) {
+        const uncertain = steeringDeliveryAttempted && (!(error instanceof NativeSessionSteeringError)
+          || error.code === "steering_timeout");
+        if (steeringIdentity && !uncertain) await rejectSteeredIdentity(db, steeringIdentity);
+
         if (error instanceof NativeSessionSteeringError) {
           throw conflict(error.message, { code: error.code, retryable: true });
         }
@@ -12196,6 +12499,7 @@ export function issueRoutes(
       ...req.body,
       sourceRunId: req.actor.type === "agent" ? agentSourceRunId : req.body.sourceRunId ?? null,
     }, {
+      identityContextId: req.actor.identityContextId,
       agentId: actor.agentId,
       userId: actor.actorType === "user" ? actor.actorId : null,
     });
@@ -13481,6 +13785,7 @@ export function issueRoutes(
     // Without a single transaction, a 422 (or any error) thrown by the status update after the
     // comment is inserted would leave an orphan comment without the corresponding state change.
     let comment: Awaited<ReturnType<typeof svc.addComment>>;
+    let goalCommentSteered = false;
     if (shouldAutoApproveReviewComment) {
       const transition = applyIssueExecutionPolicyTransition({
         issue: currentIssue,
@@ -13618,6 +13923,37 @@ export function issueRoutes(
 
     await issueReferencesSvc.syncComment(comment.id);
     await externalObjectsSvc.syncCommentSafely(comment.id);
+    if (
+      currentIssue.assigneeAgentId &&
+      !(actor.actorType === "agent" && actor.actorId === currentIssue.assigneeAgentId)
+    ) {
+      const goalProjection = await runnerGoals.projection(
+        currentIssue.companyId,
+        currentIssue.id,
+        currentIssue.assigneeAgentId,
+      );
+      if (goalProjection?.goal?.status === "active" && goalProjection.workingNow) {
+        const steer = queueLiveRunnerPrpCommand({
+          companyId: currentIssue.companyId,
+          issueId: currentIssue.id,
+          agentId: currentIssue.assigneeAgentId,
+          type: "turn.steer",
+          payload: { text: comment.body },
+          commandId: `goal_comment_${comment.id}`,
+        });
+        if (steer) {
+          try {
+            await steer.completion;
+            goalCommentSteered = true;
+          } catch (err) {
+            logger.warn(
+              { err, issueId: currentIssue.id, commentId: comment.id, runId: steer.runId },
+              "failed to steer an active session goal; falling back to a boundary wake",
+            );
+          }
+        }
+      }
+    }
     const commentReferenceSummaryAfter = await issueReferencesSvc.listIssueReferenceSummary(currentIssue.id);
     const commentReferenceDiff = issueReferencesSvc.diffIssueReferenceSummary(
       commentReferenceSummaryBefore,
@@ -13801,7 +14137,7 @@ export function issueRoutes(
       const shouldWakeAssigneeForComment =
         !(selfComment && resumeRequested !== true) &&
         (reopened || !isClosedIssueStatus(wakeIssueSnapshot.status));
-      if (assigneeId && shouldWakeAssigneeForComment) {
+      if (assigneeId && !goalCommentSteered && shouldWakeAssigneeForComment) {
         if (reopened) {
           addWakeup(assigneeId, {
             source: "automation",

@@ -431,3 +431,22 @@ export function createNativeRunTrace(input: {
 }
 
 export type NativeRunTrace = ReturnType<typeof createNativeRunTrace>;
+
+/** Emit preparation failure even when execution aborts before a native session exists. */
+export async function recordFailedSkillPreparation(input: {
+  runId: string;
+  startedAtMs: number;
+  onEvent?: NativeRunTraceSink;
+  traceContext?: StartupTraceContextHandle;
+}): Promise<void> {
+  try {
+    const trace = createNativeRunTrace(input);
+    const preparation = trace.start("task.prepare", { parentName: "task.run", startedAtMs: input.startedAtMs });
+    const endedAtMs = Date.now();
+    await trace.record({ name: "skills.prepare", parentName: "task.prepare", startedAtMs: input.startedAtMs, endedAtMs, outcome: "failed" });
+    await trace.end(preparation, { endedAtMs, outcome: "failed" });
+    await trace.finish("failed");
+  } catch {
+    // Diagnostics must not replace the original preparation error.
+  }
+}

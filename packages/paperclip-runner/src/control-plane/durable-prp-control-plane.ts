@@ -28,6 +28,7 @@ import { dirname, resolve } from "node:path";
 import type { Duplex } from "node:stream";
 import { fileURLToPath } from "node:url";
 
+import { githubCredentialEnvironment } from "../github-credential-environment.js";
 import {
   validatePrpEvent,
   type PrpEvent,
@@ -40,14 +41,18 @@ import {
 } from "./prp-transport-types.js";
 
 const protocol = "paperclip.runner";
-const protocolVersion = 1;
+const protocolMinVersion = 1;
+const protocolVersion = 2;
 const secureFrameSchema = "paperclip.runner.secure-frame.v1";
 const websocketGuid = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 const coreStateSchema = "paperclip.runner.durable.control-plane-state.v1";
 const maxFrameBytes = 1024 * 1024;
 const maxCommandBytes = maxFrameBytes - 4 * 1024;
 const maxCommands = 500;
-const maxCommittedEventWindow = 64;
+// A provider can emit several 100-event runner batches before the transport's
+// polling turn regains the event loop. Match the transport's explicit deferred
+// event bound so a valid burst is not compacted before it can be observed.
+const maxCommittedEventWindow = 4_096;
 const maxStateBytes = 192 * 1024 * 1024;
 const authChallengeTtlMs = 5_000;
 const stableIdPattern = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,239}$/;
@@ -64,6 +69,9 @@ const commandTypes = new Set([
   "interaction.receipt",
   "semantic_tool.result",
   "session.snapshot",
+  "session.goal.get",
+  "session.goal.set",
+  "session.goal.clear",
   "session.close",
   "session.budget.increase",
   "session.destroy",
@@ -116,6 +124,13 @@ interface ConnectionLeaseRecord {
 interface StoredCoreState {
   schema: typeof coreStateSchema;
   identity: DurableRecoveryIdentity;
+  /**
+   * Connection-free provider attachment payload retained across authority
+   * epochs. Commands are intentionally reset when a reusable runner changes
+   * run identity, so the next controller cannot rely on command history to
+   * reconstruct another warm attachment.
+   */
+  runAttachTemplate?: Record<string, unknown> | null;
   tickets: Record<string, BootstrapTicketRecord>;
   leases: Record<string, ConnectionLeaseRecord>;
   commands: DurableRecoveryCoreCommand[];
@@ -177,6 +192,7 @@ interface PendingChallenge {
   serverProof: string;
   clientNonce: string;
   serverNonce: string;
+  selectedVersion: number;
 }
 
 interface SecureChannel {
@@ -382,10 +398,18 @@ function isStoredCoreState(
     return false;
   }
   if (
+    value.runAttachTemplate !== undefined &&
+    value.runAttachTemplate !== null &&
+    !isRecord(value.runAttachTemplate)
+  ) {
+    return false;
+  }
+  if (
     !commands.every(
       (command, index) =>
         isRecord(command) &&
-        command.schema === "paperclip.prp.command.v1" &&
+        (command.schema === "paperclip.prp.command.v1" ||
+          command.schema === "paperclip.prp.command.v2") &&
         typeof command.commandId === "string" &&
         stableIdPattern.test(command.commandId) &&
         command.commandId.length <= 160 &&
@@ -559,6 +583,7 @@ function initialCoreState(identity: DurableRecoveryIdentity): StoredCoreState {
   return {
     schema: coreStateSchema,
     identity,
+    runAttachTemplate: null,
     tickets: {},
     leases: {},
     commands: [],
@@ -898,6 +923,7 @@ class AuthorityConnection {
   secureChannel: SecureChannel | null = null;
   lease: ConnectionLeaseRecord | null = null;
   connectionId: string | null = null;
+  terminalLifecycleCommandId: string | null = null;
   readonly wire: PrpWireConnection;
   #closed = false;
   #onClose: () => void;
@@ -938,7 +964,7 @@ class AuthorityConnection {
 
 /** Authenticated, replay-safe PRP transport authority. Business operations are caller supplied. */
 export class DurablePrpControlPlane {
-  readonly #identity: DurableRecoveryIdentity;
+  #identity: DurableRecoveryIdentity;
   readonly #store: DurableCoreStore;
   #expectedRunnerVersion: string;
   #expectedRunnerDigest: string;
@@ -1040,6 +1066,69 @@ export class DurablePrpControlPlane {
     ).length;
   }
 
+  /**
+   * Atomically advances a settled reusable runner to a new run authority while
+   * retaining its existing connection lease secret. The runner performs the
+   * matching state transition only after acknowledging `run.attach`.
+   */
+  rotateRunIdentity(
+    identity: DurableRecoveryIdentity,
+    runAttachTemplate?: Record<string, unknown>,
+  ): void {
+    if (
+      !Object.values(identity).every(
+        (value) => typeof value === "string" && stableIdPattern.test(value),
+      ) ||
+      identity.runnerInstanceId !== this.#identity.runnerInstanceId ||
+      identity.environmentLeaseId !== this.#identity.environmentLeaseId ||
+      identity.normalizedSessionId !== this.#identity.normalizedSessionId ||
+      identity.runId === this.#identity.runId ||
+      this.#store.state.commands.some((command) => command.status === "pending")
+    ) {
+      throw new Error("Durable PRP run identity rotation is invalid.");
+    }
+    this.disconnectActiveRunner();
+    const leases = Object.fromEntries(
+      Object.entries(this.#store.state.leases).map(([key, lease]) => [
+        key,
+        { ...lease, identity: structuredClone(identity) },
+      ]),
+    );
+    Object.assign(this.#store.state, initialCoreState(identity), {
+      leases,
+      runAttachTemplate:
+        runAttachTemplate === undefined
+          ? null
+          : structuredClone(runAttachTemplate),
+    });
+    this.#identity = structuredClone(identity);
+    this.#store.save();
+  }
+
+  /**
+   * Retain the connection-free provider preparation payload before the first
+   * runner bootstrap. Completed command history is bounded and may be
+   * compacted before a warm continuation arrives, so it cannot be the sole
+   * source for a later run.attach. Repeating the same write is idempotent;
+   * changing an established seed fails closed.
+   */
+  persistRunAttachTemplate(runAttachTemplate: Record<string, unknown>): void {
+    if (!isRecord(runAttachTemplate.provider)) {
+      throw new Error("Durable PRP run attachment template is invalid.");
+    }
+    const existing = this.#store.state.runAttachTemplate;
+    if (
+      existing !== undefined &&
+      existing !== null &&
+      canonicalJson(existing) !== canonicalJson(runAttachTemplate)
+    ) {
+      throw new Error("Durable PRP run attachment template conflicts.");
+    }
+    if (existing !== undefined && existing !== null) return;
+    this.#store.state.runAttachTemplate = structuredClone(runAttachTemplate);
+    this.#store.save();
+  }
+
   issueBootstrapTicket(ttlMs = 5_000): string {
     if (!Number.isInteger(ttlMs) || ttlMs < 1_000 || ttlMs > 60_000) {
       throw new Error("Durable PRP bootstrap TTL is invalid.");
@@ -1101,7 +1190,9 @@ export class DurablePrpControlPlane {
     }
     const controllerSeq = this.#store.state.commands.length + 1;
     const command: DurableRecoveryCoreCommand = {
-      schema: "paperclip.prp.command.v1",
+      schema: type.startsWith("session.goal.")
+        ? "paperclip.prp.command.v2"
+        : "paperclip.prp.command.v1",
       commandId:
         commandId ?? `command_prp_${controllerSeq.toString().padStart(8, "0")}`,
       controllerSeq,
@@ -1127,6 +1218,23 @@ export class DurablePrpControlPlane {
       }
     }
     return command;
+  }
+
+  commandOutcome(commandId: string): {
+    status: DurableRecoveryCoreCommand["status"];
+    result: Record<string, unknown> | null;
+  } | null {
+    const command = this.#store.state.commands.find(
+      (candidate) => candidate.commandId === commandId,
+    );
+    if (!command) return null;
+    return {
+      status: command.status,
+      result:
+        command.result && typeof command.result === "object"
+          ? structuredClone(command.result as Record<string, unknown>)
+          : null,
+    };
   }
 
   /** Attach one HTTP upgrade to this run-bound authority. */
@@ -1212,9 +1320,18 @@ export class DurablePrpControlPlane {
       connection.close();
       return;
     }
+    const envelopeVersion = envelope.version;
+    const expectedVersion =
+      connection.lease?.protocolVersion ??
+      connection.pendingChallenge?.selectedVersion ??
+      null;
     if (
       envelope.protocol !== protocol ||
-      envelope.version !== protocolVersion
+      !Number.isInteger(envelopeVersion) ||
+      (expectedVersion === null
+        ? (envelopeVersion as number) < protocolMinVersion ||
+          (envelopeVersion as number) > protocolVersion
+        : envelopeVersion !== expectedVersion)
     ) {
       connection.close();
       return;
@@ -1306,13 +1423,17 @@ export class DurablePrpControlPlane {
       payload.itemId !== identity.itemId ||
       payload.runnerVersion !== this.#expectedRunnerVersion ||
       payload.runnerDigest !== this.#expectedRunnerDigest ||
-      payload.protocolMin !== 1 ||
-      payload.protocolMax !== 1 ||
+      !Number.isInteger(payload.protocolMin) ||
+      !Number.isInteger(payload.protocolMax) ||
+      (payload.protocolMin as number) > protocolVersion ||
+      (payload.protocolMax as number) < protocolMinVersion ||
+      (payload.protocolMin as number) > (payload.protocolMax as number) ||
       (authorization.kind === "bootstrap" &&
         (authorization.runnerVersion !== this.#expectedRunnerVersion ||
           authorization.runnerDigest !== this.#expectedRunnerDigest)) ||
       (authorization.kind === "lease" &&
-        authorization.protocolVersion !== protocolVersion)
+        (authorization.protocolVersion < (payload.protocolMin as number) ||
+          authorization.protocolVersion > (payload.protocolMax as number)))
     ) {
       return null;
     }
@@ -1399,6 +1520,10 @@ export class DurablePrpControlPlane {
       return;
     }
     const serverNonce = randomUUID();
+    const selectedVersion =
+      authorization.kind === "lease"
+        ? authorization.protocolVersion
+        : Math.min(protocolVersion, payload.protocolMax as number);
     const challengePayload: Record<string, unknown> = {
       credentialId: authorization.credentialId,
       credentialKind: authorization.kind,
@@ -1412,7 +1537,7 @@ export class DurablePrpControlPlane {
       itemId: payload.itemId,
       runnerVersion: payload.runnerVersion,
       runnerDigest: payload.runnerDigest,
-      selectedVersion: protocolVersion,
+      selectedVersion,
       credentialLeaseId:
         authorization.kind === "lease" ? authorization.leaseId : null,
       credentialExpiresAt: authorization.expiresAt,
@@ -1436,10 +1561,11 @@ export class DurablePrpControlPlane {
       serverProof,
       clientNonce: payload.clientNonce,
       serverNonce,
+      selectedVersion,
     };
     connection.sendJson({
       protocol,
-      version: protocolVersion,
+      version: selectedVersion,
       kind: "auth_challenge",
       payload: { ...challengePayload, serverProof },
     });
@@ -1498,7 +1624,7 @@ export class DurablePrpControlPlane {
         authKeyDigest: `sha256:${material.authKey.toString("hex")}`,
         leaseId: `connection_lease_${randomUUID()}`,
         identity: structuredClone(this.#identity),
-        protocolVersion,
+        protocolVersion: pending.selectedVersion,
         expiresAt: new Date(expiresAtUnixMs).toISOString(),
         expiresAtUnixMs,
         revocationEpoch: 0,
@@ -1537,6 +1663,11 @@ export class DurablePrpControlPlane {
     this.#store.state.lastLeaseExpiresAt = lease.expiresAt;
 
     const pending = this.#nextPendingCommand();
+    const [pendingCommand] = pending;
+    connection.terminalLifecycleCommandId =
+      pendingCommand && this.#isTerminalLifecycleCommand(pendingCommand)
+        ? pendingCommand.commandId
+        : null;
     for (const command of pending) {
       this.#store.state.commandDeliveryCounts[command.commandId] =
         (this.#store.state.commandDeliveryCounts[command.commandId] ?? 0) + 1;
@@ -1544,7 +1675,7 @@ export class DurablePrpControlPlane {
     this.#store.save();
     connection.sendJson({
       protocol,
-      version: protocolVersion,
+      version: lease.protocolVersion,
       envelopeId: `welcome_${this.#store.state.connectionCount}`,
       kind: "welcome",
       runnerInstanceId: this.#identity.runnerInstanceId,
@@ -1557,7 +1688,7 @@ export class DurablePrpControlPlane {
       connectionLeaseId: lease.leaseId,
       sentAt: new Date().toISOString(),
       payload: {
-        selectedVersion: 1,
+        selectedVersion: lease.protocolVersion,
         heartbeatIntervalMs: 250,
         connectionLeaseId: lease.leaseId,
         ...(leaseToken === null ? {} : { connectionLeaseToken: leaseToken }),
@@ -1569,7 +1700,7 @@ export class DurablePrpControlPlane {
           environmentLeaseId: this.#identity.environmentLeaseId,
           runId: this.#identity.runId,
           normalizedSessionId: this.#identity.normalizedSessionId,
-          protocolVersion,
+          protocolVersion: lease.protocolVersion,
         },
         maxFrameBytes,
         maxBatchEvents: 100,
@@ -1606,7 +1737,7 @@ export class DurablePrpControlPlane {
     }
     return {
       protocol,
-      version: protocolVersion,
+      version: connection.lease.protocolVersion,
       envelopeId,
       kind,
       runnerInstanceId: this.#identity.runnerInstanceId,
@@ -1623,8 +1754,12 @@ export class DurablePrpControlPlane {
   }
 
   #sendNextCommand(connection: AuthorityConnection): void {
+    if (connection.terminalLifecycleCommandId !== null) return;
     const [command] = this.#nextPendingCommand();
     if (command === undefined) return;
+    if (this.#isTerminalLifecycleCommand(command)) {
+      connection.terminalLifecycleCommandId = command.commandId;
+    }
     this.#store.state.commandDeliveryCounts[command.commandId] =
       (this.#store.state.commandDeliveryCounts[command.commandId] ?? 0) + 1;
     this.#store.save();
@@ -1655,6 +1790,9 @@ export class DurablePrpControlPlane {
       connection.close();
       return;
     }
+    if (this.#isTerminalLifecycleCommand(command)) {
+      connection.terminalLifecycleCommandId = command.commandId;
+    }
     const status = result.status;
     // `indeterminate` is terminal too: a runner that crashed between journaling
     // a command and confirming its effect reports it on recovery and will not
@@ -1678,24 +1816,31 @@ export class DurablePrpControlPlane {
       this.#store.state.duplicateCommandResults += 1;
       this.#store.save();
       this.#ackTerminalCommandResult(connection, command);
-      this.#sendNextCommand(connection);
+      if (!this.#isTerminalLifecycleCommand(command)) {
+        this.#sendNextCommand(connection);
+      }
       return;
     }
     command.status = status;
     command.result = structuredClone(result);
     this.#store.save();
     this.#ackTerminalCommandResult(connection, command);
-    this.#sendNextCommand(connection);
+    if (!this.#isTerminalLifecycleCommand(command)) {
+      this.#sendNextCommand(connection);
+    }
+  }
+
+  #isTerminalLifecycleCommand(command: DurableRecoveryCoreCommand): boolean {
+    return (
+      command.type === "runner.suspend" || command.type === "runner.shutdown"
+    );
   }
 
   #ackTerminalCommandResult(
     connection: AuthorityConnection,
     command: DurableRecoveryCoreCommand,
   ): void {
-    if (
-      command.type !== "runner.suspend" &&
-      command.type !== "runner.shutdown"
-    ) {
+    if (!this.#isTerminalLifecycleCommand(command)) {
       return;
     }
     connection.sendJson(
@@ -1930,6 +2075,7 @@ const runnerExplicitProviderEnvironmentKeys = [
   "PAPERCLIP_NATIVE_MCP_URL",
   "PAPERCLIP_NATIVE_MCP_TOKEN",
   "PAPERCLIP_NATIVE_RUNTIME_CONTEXT_PATH",
+  "PAPERCLIP_RUNNER_EXTERNAL_SANDBOX",
   "PAPERCLIP_ACPX_PROVIDER_PACKAGE_ROOT",
   "PAPERCLIP_ACPX_PROVIDER_PACKAGE_MANIFEST",
   "PAPERCLIP_ACPX_PROVIDER_RECOVERY_POLICY",
@@ -1957,6 +2103,7 @@ function runnerEnvironment(
       const value = explicitSource[key];
       if (value !== undefined) environment[key] = value;
     }
+    Object.assign(environment, githubCredentialEnvironment(explicitSource));
   }
   return environment;
 }

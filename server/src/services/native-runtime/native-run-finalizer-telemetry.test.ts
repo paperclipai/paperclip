@@ -279,6 +279,93 @@ describeEmbeddedPostgres("native run finalizer / status decision committer — a
     expect(run?.status).toBe("running");
   });
 
+  it("bounds workspace-only retries without consuming the provider attempt", async () => {
+    const fixture = await seedNativeRun();
+    await db.insert(nativeRunFinalizations).values({
+      runId: fixture.runId,
+      companyId,
+      issueId: fixture.issueId,
+      phase: "observed",
+      attempt: 1,
+    });
+
+    for (
+      let expectedAttempt = 1;
+      expectedAttempt <= 3;
+      expectedAttempt += 1
+    ) {
+      await recordNativeFinalizationFailure({
+        db,
+        runId: fixture.runId,
+        error: new Error("native_workspace_sync_out_failed"),
+        projectRunStatus: true,
+        failureScope: "workspace",
+      });
+      const coordinator = await db
+        .select()
+        .from(nativeRunFinalizations)
+        .where(eq(nativeRunFinalizations.runId, fixture.runId))
+        .then((rows) => rows[0]!);
+      expect(coordinator.attempt).toBe(1);
+      expect(coordinator.failureDetail).toMatchObject({
+        workspaceFinalizeAttempt: expectedAttempt,
+      });
+      expect(coordinator.phase).toBe(
+        expectedAttempt === 3 ? "terminal_failure" : "retryable_failure",
+      );
+    }
+
+    await expect(
+      db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, fixture.runId))
+        .then((rows) => rows[0]?.status),
+    ).resolves.toBe("failed");
+  });
+
+  it("blocks immediately when the sandbox with unexported changes is gone", async () => {
+    const fixture = await seedNativeRun();
+    await db.insert(nativeRunFinalizations).values({
+      runId: fixture.runId,
+      companyId,
+      issueId: fixture.issueId,
+      phase: "workspace_finalizing",
+      attempt: 1,
+      resultId: null,
+    });
+
+    const failure = await recordNativeFinalizationFailure({
+      db,
+      runId: fixture.runId,
+      error: new Error("native_workspace_sync_out_unrecoverable"),
+      projectRunStatus: true,
+      failureScope: "workspace",
+      permanent: true,
+    });
+
+    expect(failure).toMatchObject({
+      phase: "terminal_failure",
+      failureCode: "native_workspace_sync_out_unrecoverable",
+      nextAttemptAt: null,
+      attempt: 1,
+    });
+    await expect(
+      db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, fixture.runId))
+        .then((rows) => rows[0]?.status),
+    ).resolves.toBe("failed");
+    await expect(
+      db
+        .select({ status: issues.status })
+        .from(issues)
+        .where(eq(issues.id, fixture.issueId))
+        .then((rows) => rows[0]?.status),
+    ).resolves.toBe("blocked");
+  });
+
   it("emits exactly one event for a cancel_continuations write (trap 2: :685/:518 overlap)", async () => {
     const fixture = await seedNativeRun();
     // Build the minimal real rows commitNativeStatusDecision's foreign keys
@@ -329,7 +416,10 @@ describeEmbeddedPostgres("native run finalizer / status decision committer — a
       toStatus: "cancelled",
       reasonCode: "cancellation_issue_authorized",
       unblockDescriptor: null,
-      effects: [{ kind: "release_checkout" }, { kind: "cancel_continuations" }],
+      effects: [
+        { kind: "release_checkout" },
+        { kind: "cancel_continuations" },
+      ],
     };
 
     const callsBefore = mockTelemetryClient.track.mock.calls.length;
