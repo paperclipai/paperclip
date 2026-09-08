@@ -1,5 +1,25 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
+export interface EnvironmentalReading {
+  id: string;
+  readingAt: string;
+  aqi: number | null;
+  pm25: number | null;
+  pm10: number | null;
+  no2: number | null;
+  uvIndex: number | null;
+  landSurfaceTemp: number | null;
+  ndvi: number | null;
+  dataSource: string;
+}
+
+export interface LocationReadingsResponse {
+  locationId: string;
+  from: string;
+  to: string;
+  readings: EnvironmentalReading[];
+}
+
 export interface UserLocation {
   id: string;
   companyId: string;
@@ -19,6 +39,40 @@ export function buildLocationsUrl(companyId: string): string {
 
 export function buildLocationUrl(id: string): string {
   return `/api/health/locations/${encodeURIComponent(id)}`;
+}
+
+export function buildLocationReadingsUrl(
+  id: string,
+  companyId: string,
+  opts?: { from?: string; to?: string; limit?: number },
+): string {
+  const params = new URLSearchParams({ companyId });
+  if (opts?.from) params.set("from", opts.from);
+  if (opts?.to) params.set("to", opts.to);
+  if (opts?.limit != null) params.set("limit", String(opts.limit));
+  return `/api/health/locations/${encodeURIComponent(id)}/readings?${params}`;
+}
+
+export function useLocationReadings(
+  id: string | undefined,
+  companyId: string | undefined,
+) {
+  return useQuery<LocationReadingsResponse>({
+    queryKey: ["health-location-readings", id, companyId],
+    queryFn: async () => {
+      const res = await fetch(buildLocationReadingsUrl(id!, companyId!), {
+        credentials: "include",
+        headers: { Accept: "application/json" },
+      });
+      if (!res.ok) {
+        const payload = await res.json().catch(() => null) as { error?: string } | null;
+        throw new Error(payload?.error ?? `Failed to load readings (${res.status})`);
+      }
+      return res.json() as Promise<LocationReadingsResponse>;
+    },
+    enabled: !!id && !!companyId,
+    staleTime: 5 * 60 * 1000,
+  });
 }
 
 export function useLocationsList(companyId: string | undefined) {

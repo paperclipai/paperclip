@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Activity, AlertCircle, Leaf, MapPin, Pencil, Plus, Sun, Thermometer, Trash2, Wind } from "lucide-react";
+import { Activity, AlertCircle, ChevronDown, ChevronUp, Leaf, MapPin, Pencil, Plus, Sun, Thermometer, Trash2, Wind } from "lucide-react";
 import {
   usePersonalEnvironmentalScore,
   type ColorTier,
@@ -7,10 +7,12 @@ import {
 } from "../hooks/useEnvironmentalScore";
 import {
   useLocationsList,
+  useLocationReadings,
   useAddLocation,
   useEditLocation,
   useDeleteLocation,
   type UserLocation,
+  type EnvironmentalReading,
 } from "../hooks/useLocations";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
@@ -300,15 +302,82 @@ function LocationDialog({ open, companyId, existing, onClose }: LocationDialogPr
   );
 }
 
+// ---- Readings panel ----
+
+const AQI_COLOR: (aqi: number | null) => string = (aqi) => {
+  if (aqi == null) return "text-muted-foreground";
+  if (aqi <= 50) return "text-green-600";
+  if (aqi <= 100) return "text-yellow-600";
+  if (aqi <= 150) return "text-orange-500";
+  return "text-red-600";
+};
+
+function ReadingRow({ reading }: { reading: EnvironmentalReading }) {
+  const date = new Date(reading.readingAt).toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+  return (
+    <div className="flex items-center gap-3 py-1.5 border-b border-border/50 last:border-0 text-xs">
+      <span className="text-muted-foreground w-28 shrink-0">{date}</span>
+      <span className={cn("font-semibold tabular-nums w-10 shrink-0", AQI_COLOR(reading.aqi))}>
+        {reading.aqi != null ? `AQI ${reading.aqi}` : "—"}
+      </span>
+      {reading.pm25 != null && (
+        <span className="text-muted-foreground">PM2.5 {reading.pm25.toFixed(1)}</span>
+      )}
+      {reading.pm10 != null && (
+        <span className="text-muted-foreground">PM10 {reading.pm10.toFixed(1)}</span>
+      )}
+      <span className="ml-auto text-muted-foreground/70 capitalize">{reading.dataSource}</span>
+    </div>
+  );
+}
+
+function LocationReadingsPanel({ locationId, companyId }: { locationId: string; companyId: string }) {
+  const { data, isLoading, error } = useLocationReadings(locationId, companyId);
+
+  if (isLoading) {
+    return <p className="text-xs text-muted-foreground py-2 px-4">Loading readings…</p>;
+  }
+
+  if (error) {
+    return (
+      <p className="text-xs text-destructive py-2 px-4">
+        {error instanceof Error ? error.message : "Failed to load readings"}
+      </p>
+    );
+  }
+
+  if (!data || data.readings.length === 0) {
+    return <p className="text-xs text-muted-foreground py-2 px-4">No readings in the last 7 days.</p>;
+  }
+
+  return (
+    <div className="px-4 pb-3 pt-1 bg-muted/30">
+      <p className="text-[10px] text-muted-foreground uppercase tracking-wide font-medium mb-1">
+        Recent readings
+      </p>
+      {data.readings.slice(0, 10).map((r) => (
+        <ReadingRow key={r.id} reading={r} />
+      ))}
+    </div>
+  );
+}
+
 // ---- Location row ----
 
 interface LocationRowProps {
   location: UserLocation;
   companyId: string;
+  isExpanded: boolean;
+  onToggleExpand: () => void;
   onEdit: (loc: UserLocation) => void;
 }
 
-function LocationRow({ location, companyId, onEdit }: LocationRowProps) {
+function LocationRow({ location, companyId, isExpanded, onToggleExpand, onEdit }: LocationRowProps) {
   const deleteMutation = useDeleteLocation();
   const editMutation = useEditLocation();
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -324,42 +393,58 @@ function LocationRow({ location, companyId, onEdit }: LocationRowProps) {
 
   const busy = deleteMutation.isPending || editMutation.isPending;
 
+  const ExpandIcon = isExpanded ? ChevronUp : ChevronDown;
+
   return (
-    <div className="px-4 py-3 flex items-center gap-3 border-b border-border last:border-0">
-      <MapPin className="h-4 w-4 text-muted-foreground shrink-0" />
-      <div className="flex-1 min-w-0">
-        <p className="text-sm font-medium truncate">
-          {location.label ?? <span className="text-muted-foreground italic">Unnamed</span>}
-          {location.isDefault && (
-            <span className="ml-2 inline-block text-xs bg-primary/10 text-primary rounded px-1.5 py-0.5 font-medium">
-              Default
-            </span>
-          )}
-        </p>
-        <p className="text-xs text-muted-foreground tabular-nums">
-          {location.lat.toFixed(4)}, {location.lng.toFixed(4)}
-        </p>
-      </div>
-      <div className="flex items-center gap-1 shrink-0">
-        {!location.isDefault && (
-          <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={handleSetDefault} disabled={busy}>
-            Set default
+    <div className="border-b border-border last:border-0">
+      <div className="px-4 py-3 flex items-center gap-3">
+        <MapPin className="h-4 w-4 text-muted-foreground shrink-0" />
+        <div className="flex-1 min-w-0">
+          <p className="text-sm font-medium truncate">
+            {location.label ?? <span className="text-muted-foreground italic">Unnamed</span>}
+            {location.isDefault && (
+              <span className="ml-2 inline-block text-xs bg-primary/10 text-primary rounded px-1.5 py-0.5 font-medium">
+                Default
+              </span>
+            )}
+          </p>
+          <p className="text-xs text-muted-foreground tabular-nums">
+            {location.lat.toFixed(4)}, {location.lng.toFixed(4)}
+          </p>
+        </div>
+        <div className="flex items-center gap-1 shrink-0">
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-7 w-7 p-0"
+            onClick={onToggleExpand}
+            title={isExpanded ? "Hide readings" : "Show readings"}
+          >
+            <ExpandIcon className="h-3.5 w-3.5" />
           </Button>
-        )}
-        <Button variant="ghost" size="sm" className="h-7 w-7 p-0" onClick={() => onEdit(location)} disabled={busy}>
-          <Pencil className="h-3.5 w-3.5" />
-        </Button>
-        <Button
-          variant="ghost"
-          size="sm"
-          className={cn("h-7 w-7 p-0", confirmDelete ? "text-destructive" : "")}
-          onClick={handleDelete}
-          disabled={busy}
-          title={confirmDelete ? "Click again to confirm" : "Delete location"}
-        >
-          <Trash2 className="h-3.5 w-3.5" />
-        </Button>
+          {!location.isDefault && (
+            <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={handleSetDefault} disabled={busy}>
+              Set default
+            </Button>
+          )}
+          <Button variant="ghost" size="sm" className="h-7 w-7 p-0" onClick={() => onEdit(location)} disabled={busy}>
+            <Pencil className="h-3.5 w-3.5" />
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            className={cn("h-7 w-7 p-0", confirmDelete ? "text-destructive" : "")}
+            onClick={handleDelete}
+            disabled={busy}
+            title={confirmDelete ? "Click again to confirm" : "Delete location"}
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+          </Button>
+        </div>
       </div>
+      {isExpanded && (
+        <LocationReadingsPanel locationId={location.id} companyId={companyId} />
+      )}
     </div>
   );
 }
@@ -370,10 +455,15 @@ function LocationsView({ companyId }: { companyId: string }) {
   const { data: locations, isLoading, error } = useLocationsList(companyId);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editing, setEditing] = useState<UserLocation | undefined>(undefined);
+  const [expandedId, setExpandedId] = useState<string | undefined>(undefined);
 
   function openAdd() { setEditing(undefined); setDialogOpen(true); }
   function openEdit(loc: UserLocation) { setEditing(loc); setDialogOpen(true); }
   function closeDialog() { setDialogOpen(false); setEditing(undefined); }
+
+  function toggleExpand(id: string) {
+    setExpandedId((prev) => (prev === id ? undefined : id));
+  }
 
   if (isLoading) return <PageSkeleton variant="list" />;
 
@@ -403,7 +493,14 @@ function LocationsView({ companyId }: { companyId: string }) {
       ) : (
         <div className="rounded-lg border border-border bg-card overflow-hidden">
           {locations?.map((loc) => (
-            <LocationRow key={loc.id} location={loc} companyId={companyId} onEdit={openEdit} />
+            <LocationRow
+              key={loc.id}
+              location={loc}
+              companyId={companyId}
+              isExpanded={expandedId === loc.id}
+              onToggleExpand={() => toggleExpand(loc.id)}
+              onEdit={openEdit}
+            />
           ))}
         </div>
       )}
