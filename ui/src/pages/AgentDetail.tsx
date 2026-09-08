@@ -2056,10 +2056,10 @@ export function ConfigurationTab({
         hideInstructionsFile={hideInstructionsFile}
         content={content === "runtime" ? "configuration" : "secrets"}
         sectionLayout="cards"
-        environmentVariablesPlacement="secrets"
+        environmentVariablesPlacement="configuration"
         compactTestFeedback
         sectionOrder={["adapter", "configuration", "environment", "environment-variables", "run-policy", "identity"]}
-        sectionTitles={{ adapter: "Harness", permissions: "Model & execution", identity: "Agent identity" }}
+        sectionTitles={{ adapter: "Adapter", configuration: "Configuration", identity: "Agent identity" }}
         canConfigureProviderTrace={canConfigureProviderTrace}
       /> : null}
 
