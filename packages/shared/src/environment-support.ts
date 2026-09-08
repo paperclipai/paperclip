@@ -70,6 +70,7 @@ const REMOTE_MANAGED_ADAPTERS = new Set<AgentAdapterType>([
   "paperclip_runner",
   "cursor",
   "gemini_local",
+  "antigravity_local",
   "grok_local",
   "kimi_local",
   "opencode_local",

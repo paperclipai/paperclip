@@ -86,6 +86,11 @@ const adapterDisplayMap: Record<string, AdapterDisplayInfo> = {
     icon: Cpu,
     experimental: true,
   },
+  antigravity_local: {
+    label: "Antigravity CLI",
+    description: "Antigravity CLI harness",
+    icon: Sparkles,
+  },
   gemini_local: {
     label: "Gemini CLI",
     description: "Gemini CLI harness",

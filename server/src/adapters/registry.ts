@@ -59,6 +59,16 @@ import {
 } from "@paperclipai/adapter-cursor-cloud/server";
 import { agentConfigurationDoc as cursorCloudAgentConfigurationDoc } from "@paperclipai/adapter-cursor-cloud";
 import {
+  execute as antigravityExecute,
+  testEnvironment as antigravityTestEnvironment,
+  sessionCodec as antigravitySessionCodec,
+  getConfigSchema as getAntigravityConfigSchema,
+} from "@paperclipai/adapter-antigravity-local/server";
+import {
+  agentConfigurationDoc as antigravityAgentConfigurationDoc,
+  models as antigravityModels,
+} from "@paperclipai/adapter-antigravity-local";
+import {
   execute as geminiExecute,
   listGeminiSkills,
   syncGeminiSkills,
@@ -718,6 +728,27 @@ const geminiLocalAdapter: ServerAdapterModule = {
   getConfigSchema: getGeminiConfigSchema,
 };
 
+const antigravityLocalAdapter: ServerAdapterModule = {
+  type: "antigravity_local",
+  runtimeToolDelivery: "environment",
+  execute: antigravityExecute,
+  testEnvironment: antigravityTestEnvironment,
+  sessionCodec: antigravitySessionCodec,
+  sessionManagement: getAdapterSessionManagement("antigravity_local") ?? undefined,
+  models: antigravityModels,
+  supportsLocalAgentJwt: true,
+  supportsInstructionsBundle: true,
+  instructionsPathKey: "instructionsFilePath",
+  requiresMaterializedRuntimeSkills: false,
+  getRuntimeCommandSpec: (config) => ({
+    command: readConfiguredCommand(config, "agy"),
+    detectCommand: readConfiguredCommand(config, "agy"),
+    installCommand: null,
+  }),
+  agentConfigurationDoc: antigravityAgentConfigurationDoc,
+  getConfigSchema: getAntigravityConfigSchema,
+};
+
 const grokLocalAdapter: ServerAdapterModule = {
   type: "grok_local",
   runtimeToolDelivery: "environment",
@@ -851,6 +882,7 @@ function registerBuiltInAdapters() {
     cursorCloudAdapter,
     cursorLocalAdapter,
     geminiLocalAdapter,
+    antigravityLocalAdapter,
     grokLocalAdapter,
     kimiLocalAdapter,
     hermesGatewayAdapter,
