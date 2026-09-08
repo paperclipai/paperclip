@@ -668,7 +668,11 @@ async function waitForRecoveryRestoreRun(agentId: string) {
 
 async function escalateStartupFaultIssueToBlocked(
   fingerprint = "startup_fault:v1:worktree_requires_git_repository:deadbeefdeadbeefdeadbeef",
-  options?: { assigneeAdapterOverrides?: Record<string, unknown> },
+  options?: {
+    assigneeAdapterOverrides?: Record<string, unknown>;
+    adapterConfig?: Record<string, unknown>;
+    runtimeConfig?: Record<string, unknown>;
+  },
 ) {
   mockAdapterExecute.mockReset();
   mockAdapterExecute
@@ -680,6 +684,18 @@ async function escalateStartupFaultIssueToBlocked(
     await db.update(issues).set({
       assigneeAdapterOverrides: options.assigneeAdapterOverrides,
     }).where(eq(issues.id, fixture.issueId));
+  }
+  if (options?.adapterConfig || options?.runtimeConfig) {
+    const [agent] = await db.select().from(agents).where(eq(agents.id, fixture.agentId));
+    const existingRuntime = agent?.runtimeConfig && typeof agent.runtimeConfig === "object" && !Array.isArray(agent.runtimeConfig)
+      ? agent.runtimeConfig as Record<string, unknown>
+      : {};
+    await db.update(agents).set({
+      ...(options.adapterConfig ? { adapterConfig: options.adapterConfig } : {}),
+      ...(options.runtimeConfig
+        ? { runtimeConfig: { ...existingRuntime, ...options.runtimeConfig } }
+        : {}),
+    }).where(eq(agents.id, fixture.agentId));
   }
   const heartbeat = heartbeatService(db);
 
@@ -8336,6 +8352,107 @@ async function escalateStartupFaultIssueToBlocked(
       eq(activityLog.entityId, issueId),
       eq(activityLog.action, "issue.blocked_owner_notification_delivered"),
     ))).toHaveLength(1);
+  });
+
+  it("rejects disabled model-profile cwd edits that do not change executed config", async () => {
+    const fingerprint = "startup_fault:v1:worktree_requires_git_repository:eeeeeeeeeeeeeeeeeeeeeeee";
+    const { companyId, agentId, issueId, recoveryAction, heartbeat } = await escalateStartupFaultIssueToBlocked(
+      fingerprint,
+      {
+        adapterConfig: { cwd: "/unchanged" },
+        assigneeAdapterOverrides: { modelProfile: "cheap" },
+        runtimeConfig: {
+          modelProfiles: {
+            cheap: { enabled: false, adapterConfig: { cwd: "/ignored-a" } },
+          },
+        },
+      },
+    );
+    const app = createIssueRoutesApp(
+      { type: "board", source: "local_implicit" },
+      { recoveryActionEnqueueWakeup: heartbeat.wakeup.bind(heartbeat) },
+    );
+
+    await db.update(agents).set({
+      runtimeConfig: {
+        heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 },
+        modelProfiles: {
+          cheap: { enabled: false, adapterConfig: { cwd: "/ignored-b" } },
+        },
+      },
+    }).where(eq(agents.id, agentId));
+
+    const rejected = await request(app)
+      .post(`/api/issues/${issueId}/recovery-actions/resolve`)
+      .send({
+        actionId: recoveryAction!.id,
+        outcome: "restored",
+        sourceIssueStatus: "todo",
+        resolutionNote: "Edited disabled cheap profile cwd.",
+      })
+      .expect(422);
+    expect(rejected.body.error).toContain("Startup-fault retry bound is exhausted");
+    expect(mockAdapterExecute).toHaveBeenCalledTimes(2);
+
+    for (let tick = 0; tick < 100; tick += 1) {
+      await Promise.all([
+        heartbeat.reconcileStrandedAssignedIssues(),
+        heartbeat.reconcileStrandedAssignedIssues(),
+      ]);
+      await heartbeat.resumeQueuedRuns();
+    }
+    expect(mockAdapterExecute).toHaveBeenCalledTimes(2);
+    expect(await db.select().from(activityLog).where(and(
+      eq(activityLog.companyId, companyId),
+      eq(activityLog.entityId, issueId),
+      eq(activityLog.action, "issue.blocked_owner_notification_delivered"),
+    ))).toHaveLength(1);
+  });
+
+  it("repairs startup-fault by enabling a supported model profile cwd", async () => {
+    const fingerprint = "startup_fault:v1:worktree_requires_git_repository:ffffffffffffffffffffffff";
+    const { agentId, issueId, recoveryAction, heartbeat } = await escalateStartupFaultIssueToBlocked(
+      fingerprint,
+      {
+        adapterConfig: { cwd: "/broken" },
+        assigneeAdapterOverrides: { modelProfile: "cheap" },
+        runtimeConfig: {
+          modelProfiles: {
+            cheap: { enabled: false, adapterConfig: { cwd: "/repaired" } },
+          },
+        },
+      },
+    );
+    const app = createIssueRoutesApp(
+      { type: "board", source: "local_implicit" },
+      { recoveryActionEnqueueWakeup: heartbeat.wakeup.bind(heartbeat) },
+    );
+
+    await db.update(agents).set({
+      runtimeConfig: {
+        heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 },
+        modelProfiles: {
+          cheap: { enabled: true, adapterConfig: { cwd: "/repaired" } },
+        },
+      },
+    }).where(eq(agents.id, agentId));
+    mockAdapterExecute.mockResolvedValueOnce(successfulAdapterResult("Completed after enabling cheap profile cwd."));
+
+    await request(app)
+      .post(`/api/issues/${issueId}/recovery-actions/resolve`)
+      .send({
+        actionId: recoveryAction!.id,
+        outcome: "restored",
+        sourceIssueStatus: "todo",
+        resolutionNote: "Enabled cheap profile to repair cwd.",
+      })
+      .expect(200);
+
+    const recoveryRun = await waitForRecoveryRestoreRun(agentId);
+    expect(recoveryRun).toBeTruthy();
+    await waitForRunToSettle(heartbeat, recoveryRun!.id);
+    expect(mockAdapterExecute).toHaveBeenCalledTimes(3);
+    expect(await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]?.status)).not.toBe("blocked");
   });
 
   it("supersedes startup-fault recovery actions when effective configuration identity changes", async () => {

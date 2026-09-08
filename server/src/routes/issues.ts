@@ -157,11 +157,7 @@ import {
 } from "../services/task-watchdog-scope.js";
 import type { TaskWatchdogServiceDeps, taskWatchdogService } from "../services/task-watchdogs.js";
 import { logger } from "../middleware/logger.js";
-import {
-  hashStartupFaultConfigIdentity,
-  readStartupFaultIssueAdapterConfig,
-  readStartupFaultModelProfileAdapterConfig,
-} from "@paperclipai/adapter-utils";
+import { computeStartupFaultConfigIdentity } from "../services/heartbeat.js";
 import { badRequest, conflict, forbidden, HttpError, notFound, unauthorized, unprocessable } from "../errors.js";
 import { privateJsonEtag } from "../middleware/private-json-etag.js";
 import { createRequestPromiseMemo } from "../lib/request-promise-memo.js";
@@ -6908,16 +6904,12 @@ export function issueRoutes(
             .where(eq(agents.id, lockedIssue.assigneeAgentId))
             .limit(1);
           const currentIdentity = assignee
-            ? hashStartupFaultConfigIdentity({
+            ? await computeStartupFaultConfigIdentity({
                 adapterType: assignee.adapterType,
                 adapterConfig: assignee.adapterConfig,
-                modelProfileAdapterConfig: readStartupFaultModelProfileAdapterConfig(
-                  assignee.runtimeConfig,
-                  lockedIssue.assigneeAdapterOverrides,
-                ),
-                issueAdapterConfig: readStartupFaultIssueAdapterConfig(
-                  lockedIssue.assigneeAdapterOverrides,
-                ),
+                runtimeConfig: assignee.runtimeConfig,
+                assigneeAdapterOverrides: lockedIssue.assigneeAdapterOverrides,
+                executionWorkspaceSettings: lockedIssue.executionWorkspaceSettings,
               })
             : null;
           if (currentIdentity === storedIdentity) {

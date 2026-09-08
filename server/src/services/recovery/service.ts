@@ -86,11 +86,6 @@ import {
   withRecoveryModelProfileHint,
 } from "./model-profile-hint.js";
 import { isAutomaticRecoverySuppressedByPauseHold } from "./pause-hold-guard.js";
-import {
-  hashStartupFaultConfigIdentity,
-  readStartupFaultIssueAdapterConfig,
-  readStartupFaultModelProfileAdapterConfig,
-} from "@paperclipai/adapter-utils";
 import { blockedOwnerDeliveryMatchesIssue, blockedOwnerNotificationIdempotencyKey, deliverBlockedOwnerNotification } from "../routable-blocked.js";
 import {
   collectDispositionRepairSourceState,
@@ -2782,32 +2777,14 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     };
   }
 
-  async function startupFaultConfigIdentityEvidence(
-    issue: typeof issues.$inferSelect,
+  function startupFaultConfigIdentityEvidence(
+    latestRun: LatestIssueRun,
     recoveryCause: StrandedRecoveryCause,
   ) {
-    if (recoveryCause !== "startup_fault" || !issue.assigneeAgentId) return {};
-    const [agent] = await db
-      .select({
-        adapterType: agents.adapterType,
-        adapterConfig: agents.adapterConfig,
-        runtimeConfig: agents.runtimeConfig,
-      })
-      .from(agents)
-      .where(eq(agents.id, issue.assigneeAgentId))
-      .limit(1);
-    if (!agent) return {};
-    return {
-      startupFaultConfigIdentity: hashStartupFaultConfigIdentity({
-        adapterType: agent.adapterType,
-        adapterConfig: agent.adapterConfig,
-        modelProfileAdapterConfig: readStartupFaultModelProfileAdapterConfig(
-          agent.runtimeConfig,
-          issue.assigneeAdapterOverrides,
-        ),
-        issueAdapterConfig: readStartupFaultIssueAdapterConfig(issue.assigneeAdapterOverrides),
-      }),
-    };
+    if (recoveryCause !== "startup_fault") return {};
+    const identity = readNonEmptyString(parseObject(latestRun?.resultJson).startupFaultConfigIdentity);
+    if (!identity) return {};
+    return { startupFaultConfigIdentity: identity };
   }
 
   async function ensureSourceScopedStrandedRecoveryAction(input: {
@@ -2854,7 +2831,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           successfulRunHandoffEvidence: input.successfulRunHandoffEvidence,
         }),
         failureSummary: summarizeRunFailureForIssueComment(input.latestRun)?.trim() ?? null,
-        ...(await startupFaultConfigIdentityEvidence(input.issue, recoveryCause)),
+        ...startupFaultConfigIdentityEvidence(input.latestRun, recoveryCause),
       },
       evidenceOnCreate: isProviderQuotaWait
         ? {}

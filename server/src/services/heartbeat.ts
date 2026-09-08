@@ -74,7 +74,7 @@ import { conflict, HttpError, notFound } from "../errors.js";
 import { getStartupTraceContext, getStartupTracer } from "../instrumentation.js";
 import { createHostDuplexObservabilityRecorder } from "./duplex-observability-recorder.js";
 import type { DuplexAggregateByteLedger } from "@paperclipai/adapter-utils/duplex-aggregate-byte-ledger";
-import { ADAPTER_STARTUP_FAULT_ERROR_CODE } from "@paperclipai/adapter-utils";
+import { ADAPTER_STARTUP_FAULT_ERROR_CODE, hashStartupFaultConfigIdentity } from "@paperclipai/adapter-utils";
 import { incrementToolRuntimeMetricCounter } from "./tool-runtime-metrics.js";
 import { logger } from "../middleware/logger.js";
 import {
@@ -3804,6 +3804,54 @@ export function mergeModelProfileAdapterConfig(input: {
     ...(input.modelProfile.adapterConfig ?? {}),
     ...(input.issueAdapterConfig ?? {}),
   };
+}
+
+export async function computeStartupFaultConfigIdentity(input: {
+  adapterType: string;
+  adapterConfig: unknown;
+  runtimeConfig: unknown;
+  assigneeAdapterOverrides?: unknown;
+  contextSnapshot?: Record<string, unknown> | null;
+  executionWorkspaceSettings?: unknown;
+  projectExecutionWorkspacePolicy?: unknown;
+}) {
+  const overrides = parseIssueAssigneeAdapterOverrides(input.assigneeAdapterOverrides);
+  const issueSettings = parseIssueExecutionWorkspaceSettings(input.executionWorkspaceSettings);
+  const projectPolicy = parseProjectExecutionWorkspacePolicy(input.projectExecutionWorkspacePolicy);
+  const mode = resolveExecutionWorkspaceMode({
+    projectPolicy,
+    issueSettings,
+    legacyUseProjectWorkspace: overrides?.useProjectWorkspace ?? null,
+  });
+  const workspaceManagedConfig = buildExecutionWorkspaceAdapterConfig({
+    agentConfig: parseObject(input.adapterConfig),
+    projectPolicy,
+    issueSettings,
+    mode,
+    legacyUseProjectWorkspace: overrides?.useProjectWorkspace ?? null,
+  });
+  let adapterModelProfiles: AdapterModelProfileDefinition[] = [];
+  let profileResolutionFallbackReason: string | null = null;
+  try {
+    adapterModelProfiles = await listAdapterModelProfiles(input.adapterType);
+  } catch {
+    profileResolutionFallbackReason = "adapter_profile_resolution_failed";
+  }
+  const modelProfile = resolveModelProfileApplication({
+    adapterModelProfiles,
+    agentRuntimeConfig: input.runtimeConfig,
+    issueModelProfile: overrides?.modelProfile ?? null,
+    contextSnapshot: input.contextSnapshot ?? null,
+    profileResolutionFallbackReason,
+  });
+  return hashStartupFaultConfigIdentity({
+    adapterType: input.adapterType,
+    adapterConfig: mergeModelProfileAdapterConfig({
+      baseConfig: workspaceManagedConfig,
+      modelProfile,
+      issueAdapterConfig: overrides?.adapterConfig ?? null,
+    }),
+  });
 }
 
 function modelProfileRunMetadata(
@@ -16637,6 +16685,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               resultJson: {
                 ...parseObject(adapterResult.resultJson),
                 configFreshness: configFreshnessResultMetadata,
+                ...(adapterResult.errorCode === ADAPTER_STARTUP_FAULT_FAILURE_CODE
+                  ? {
+                      startupFaultConfigIdentity: hashStartupFaultConfigIdentity({
+                        adapterType: agent.adapterType,
+                        adapterConfig: mergedConfig,
+                      }),
+                    }
+                  : {}),
               },
               errorFamily: adapterResult.errorFamily ?? null,
               retryNotBefore: adapterResult.retryNotBefore ?? null,
