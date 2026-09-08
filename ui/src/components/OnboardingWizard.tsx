@@ -101,6 +101,7 @@ import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
 import { DEFAULT_KIMI_LOCAL_MODEL } from "@paperclipai/adapter-kimi-local";
 import { DEFAULT_OPENCODE_LOCAL_MODEL, isValidOpenCodeModelId } from "@paperclipai/adapter-opencode-local";
+import { isValidPiModelId } from "@paperclipai/adapter-pi-local";
 import {
   canGoBackFromOnboardingStep,
   canJumpToOnboardingStep,
@@ -273,6 +274,32 @@ const API_KEY_ENV_KEYS: Record<string, string> = {
 
 function apiKeyEnvKeyFor(adapterType: string): string {
   return API_KEY_ENV_KEYS[adapterType] ?? "API_KEY";
+}
+
+/**
+ * Adapters with no safe default model, keyed by the adapter's own shape check.
+ *
+ * The server's `assertAdapterConfigConstraints` rejects a hire for these
+ * adapters unless `adapterConfig.model` holds an explicit, valid id (pi
+ * routing is gateway/provider-specific per company, so no default can be
+ * right for everyone — see STU-27). This step is where the value comes from,
+ * so it collects the model and validates it with the same check before the
+ * hire, mirroring the `opencode_local` gate in `handleGiveHeartbeat` — the
+ * customer sees a clear field-level error rather than a server 422.
+ *
+ * An entry here composes end-to-end: the connect step renders a model input
+ * for the adapter, `buildAdapterConfig` passes the typed value through
+ * untouched (no default is introduced on either side), and the hire blocks
+ * on the entry's validator. Adding the next explicit-model adapter is adding
+ * one line here.
+ */
+const EXPLICIT_MODEL_VALIDATORS: Record<string, (value: string) => boolean> = {
+  pi_local: isValidPiModelId,
+};
+
+/** True when the adapter requires an explicitly typed model with no default. */
+function requiresExplicitModel(adapterType: string): boolean {
+  return Object.prototype.hasOwnProperty.call(EXPLICIT_MODEL_VALIDATORS, adapterType);
 }
 
 function ModelSourceMark({
@@ -2172,6 +2199,20 @@ function OnboardingWizardInner({
     setLoading(true);
     setError(null);
     try {
+      // Same fail-fast the server applies in `assertAdapterConfigConstraints`,
+      // one hop earlier: an adapter with no safe default model must not reach
+      // the hire with an empty or malformed model. The check is the adapter's
+      // own shape check (see EXPLICIT_MODEL_VALIDATORS), so the customer sees
+      // what this step is missing — not the server's 422 after the probe.
+      if (requiresExplicitModel(adapterType)) {
+        const selectedModelId = model.trim();
+        if (!EXPLICIT_MODEL_VALIDATORS[adapterType]!(selectedModelId)) {
+          setError(
+            `${connectSourceLabel} requires an explicit model in provider/model format.`
+          );
+          return;
+        }
+      }
       if (adapterType === "opencode_local") {
         const selectedModelId = model.trim();
         if (!isValidOpenCodeModelId(selectedModelId)) {
@@ -3221,11 +3262,39 @@ function OnboardingWizardInner({
                   </motion.div>
 
                   {/* Conditional adapter fields */}
-                  {/* No model picker. Every adapter this step offers resolves
-                      its own default (see buildAdapterConfig), so the picker
-                      asked the customer to choose a model before they had any
-                      way to judge one — and the agent's model is changeable
-                      later, where its work gives the choice meaning. */}
+                  {/* No model picker for the sources that resolve their own
+                      default (see buildAdapterConfig): the picker asked the
+                      customer to choose a model before they had any way to
+                      judge one — and the agent's model is changeable later,
+                      where its work gives the choice meaning.
+
+                      The exception is an adapter with no safe default at all
+                      (see EXPLICIT_MODEL_VALIDATORS): there the model is not a
+                      preference but a required field, so this step collects it
+                      and the hire blocks until it holds a valid id. */}
+                  {requiresExplicitModel(adapterType) && (
+                    <div>
+                      <label
+                        htmlFor="onboarding-model"
+                        className="text-xs text-muted-foreground mb-1 block"
+                      >
+                        Model
+                      </label>
+                      <input
+                        id="onboarding-model"
+                        className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm font-mono outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
+                        placeholder="provider/model, e.g. xai/grok-4"
+                        value={model}
+                        onChange={(e) => setModel(e.target.value)}
+                      />
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        {connectSourceLabel} has no default model: routing is
+                        provider-specific, so the model id has to be yours. List
+                        what your Pi install offers with{" "}
+                        <span className="font-mono">pi --list-models</span>.
+                      </p>
+                    </div>
+                  )}
 
                   {/* The environment check runs without being shown: Connect
                       probes the adapter before hiring (see handleGiveHeartbeat)
