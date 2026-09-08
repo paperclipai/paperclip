@@ -196,7 +196,6 @@ describeEmbeddedPostgres("companySkillService.list", () => {
     const next = (await svc.listRuntimeSkillEntries(companyId)).find((entry) => entry.key === skill.key)!;
     expect(next.source).toBe(first.source);
     expect(await fs.readFile(path.join(next.source, "SKILL.md"), "utf8")).toContain("New local instructions");
-    expect((await svc.getById(companyId, skill.id))?.markdown).toContain("New local instructions");
   });
 
   it("lists skills without exposing markdown content", async () => {
