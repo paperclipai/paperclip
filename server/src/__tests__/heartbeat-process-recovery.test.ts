@@ -162,6 +162,7 @@ import {
   noticeMetadataReferencesRecoveryAction,
 } from "../services/recovery/index.ts";
 import { collectDispositionRepairSourceState } from "../services/recovery/disposition-repair.ts";
+import { instanceSettingsService } from "../services/instance-settings.ts";
 import {
   UNMANAGED_BACKGROUND_TASK_LIVENESS_REASON,
   UNMANAGED_BACKGROUND_TASK_STOP_REASON,
@@ -672,6 +673,8 @@ async function escalateStartupFaultIssueToBlocked(
     assigneeAdapterOverrides?: Record<string, unknown>;
     adapterConfig?: Record<string, unknown>;
     runtimeConfig?: Record<string, unknown>;
+    projectExecutionWorkspacePolicy?: Record<string, unknown>;
+    wakeModelProfile?: string;
   },
 ) {
   mockAdapterExecute.mockReset();
@@ -680,6 +683,29 @@ async function escalateStartupFaultIssueToBlocked(
     .mockResolvedValueOnce(startupFaultAdapterResult(fingerprint));
 
   const fixture = await seedQueuedIssueRunFixture();
+  let projectId: string | null = null;
+  if (options?.projectExecutionWorkspacePolicy) {
+    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: true });
+    projectId = randomUUID();
+    await db.insert(projects).values({
+      id: projectId,
+      companyId: fixture.companyId,
+      name: "Startup fault project",
+      status: "in_progress",
+      executionWorkspacePolicy: options.projectExecutionWorkspacePolicy,
+    });
+    await db.update(issues).set({ projectId }).where(eq(issues.id, fixture.issueId));
+  }
+  if (options?.wakeModelProfile) {
+    await db.update(heartbeatRuns).set({
+      contextSnapshot: {
+        issueId: fixture.issueId,
+        taskId: fixture.issueId,
+        wakeReason: "issue_assigned",
+        modelProfile: options.wakeModelProfile,
+      },
+    }).where(eq(heartbeatRuns.id, fixture.runId));
+  }
   if (options?.assigneeAdapterOverrides) {
     await db.update(issues).set({
       assigneeAdapterOverrides: options.assigneeAdapterOverrides,
@@ -749,7 +775,7 @@ async function escalateStartupFaultIssueToBlocked(
     ));
   expect(notificationReceipts).toHaveLength(1);
 
-  return { ...fixture, heartbeat: restarted, issue, recoveryAction, retryRun };
+  return { ...fixture, heartbeat: restarted, issue, recoveryAction, retryRun, projectId };
 }
 
   async function seedEnvironmentLeaseFixture(input: {
@@ -8453,6 +8479,134 @@ async function escalateStartupFaultIssueToBlocked(
     await waitForRunToSettle(heartbeat, recoveryRun!.id);
     expect(mockAdapterExecute).toHaveBeenCalledTimes(3);
     expect(await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]?.status)).not.toBe("blocked");
+  });
+
+  it("rejects unchanged project execution policy startup-fault resolve", async () => {
+    const fingerprint = "startup_fault:v1:worktree_requires_git_repository:111111111111111111111111";
+    const policy = {
+      enabled: true,
+      defaultMode: "isolated_workspace",
+      workspaceStrategy: { type: "adapter_managed" },
+    };
+    const { companyId, agentId, issueId, recoveryAction, heartbeat } = await escalateStartupFaultIssueToBlocked(
+      fingerprint,
+      { projectExecutionWorkspacePolicy: policy },
+    );
+    const app = createIssueRoutesApp(
+      { type: "board", source: "local_implicit" },
+      { recoveryActionEnqueueWakeup: heartbeat.wakeup.bind(heartbeat) },
+    );
+
+    const rejected = await request(app)
+      .post(`/api/issues/${issueId}/recovery-actions/resolve`)
+      .send({
+        actionId: recoveryAction!.id,
+        outcome: "restored",
+        sourceIssueStatus: "todo",
+        resolutionNote: "Retry without changing project workspace policy.",
+      })
+      .expect(422);
+    expect(rejected.body.error).toContain("Startup-fault retry bound is exhausted");
+    expect(mockAdapterExecute).toHaveBeenCalledTimes(2);
+
+    await Promise.all([
+      heartbeat.reconcileStrandedAssignedIssues(),
+      heartbeat.reconcileStrandedAssignedIssues(),
+    ]);
+    const restarted = heartbeatService(db);
+    for (let tick = 0; tick < 100; tick += 1) {
+      await Promise.all([
+        restarted.reconcileStrandedAssignedIssues(),
+        restarted.reconcileStrandedAssignedIssues(),
+      ]);
+      await restarted.resumeQueuedRuns();
+    }
+    expect(mockAdapterExecute).toHaveBeenCalledTimes(2);
+    expect(await db.select().from(activityLog).where(and(
+      eq(activityLog.companyId, companyId),
+      eq(activityLog.entityId, issueId),
+      eq(activityLog.action, "issue.blocked_owner_notification_delivered"),
+    ))).toHaveLength(1);
+  });
+
+  it("repairs startup-fault through material project execution policy change", async () => {
+    const fingerprint = "startup_fault:v1:worktree_requires_git_repository:222222222222222222222222";
+    const { agentId, issueId, recoveryAction, heartbeat, projectId } = await escalateStartupFaultIssueToBlocked(
+      fingerprint,
+      {
+        projectExecutionWorkspacePolicy: {
+          enabled: true,
+          defaultMode: "isolated_workspace",
+          workspaceStrategy: { type: "adapter_managed", provisionCommand: "setup-a" },
+        },
+      },
+    );
+    const app = createIssueRoutesApp(
+      { type: "board", source: "local_implicit" },
+      { recoveryActionEnqueueWakeup: heartbeat.wakeup.bind(heartbeat) },
+    );
+
+    await db.update(projects).set({
+      executionWorkspacePolicy: {
+        enabled: true,
+        defaultMode: "isolated_workspace",
+        workspaceStrategy: { type: "adapter_managed", provisionCommand: "setup-b" },
+      },
+    }).where(eq(projects.id, projectId!));
+    mockAdapterExecute.mockResolvedValueOnce(successfulAdapterResult("Completed after project policy repair."));
+
+    await request(app)
+      .post(`/api/issues/${issueId}/recovery-actions/resolve`)
+      .send({
+        actionId: recoveryAction!.id,
+        outcome: "restored",
+        sourceIssueStatus: "todo",
+        resolutionNote: "Changed project workspace policy.",
+      })
+      .expect(200);
+
+    const recoveryRun = await waitForRecoveryRestoreRun(agentId);
+    expect(recoveryRun).toBeTruthy();
+    await waitForRunToSettle(heartbeat, recoveryRun!.id);
+    expect(mockAdapterExecute).toHaveBeenCalledTimes(3);
+    expect(await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]?.status)).not.toBe("blocked");
+  });
+
+  it("rejects unchanged wake-selected model profile startup-fault resolve", async () => {
+    const fingerprint = "startup_fault:v1:worktree_requires_git_repository:333333333333333333333333";
+    const { companyId, issueId, recoveryAction, heartbeat } = await escalateStartupFaultIssueToBlocked(
+      fingerprint,
+      {
+        adapterConfig: { cwd: "/base" },
+        wakeModelProfile: "cheap",
+        runtimeConfig: {
+          modelProfiles: {
+            cheap: { enabled: true, adapterConfig: { cwd: "/wake-cwd" } },
+          },
+        },
+      },
+    );
+    const app = createIssueRoutesApp(
+      { type: "board", source: "local_implicit" },
+      { recoveryActionEnqueueWakeup: heartbeat.wakeup.bind(heartbeat) },
+    );
+
+    const rejected = await request(app)
+      .post(`/api/issues/${issueId}/recovery-actions/resolve`)
+      .send({
+        actionId: recoveryAction!.id,
+        outcome: "restored",
+        sourceIssueStatus: "todo",
+        resolutionNote: "Retry without changing wake-selected profile.",
+      })
+      .expect(422);
+    expect(rejected.body.error).toContain("Startup-fault retry bound is exhausted");
+    expect(mockAdapterExecute).toHaveBeenCalledTimes(2);
+    expect(await db.select().from(activityLog).where(and(
+      eq(activityLog.companyId, companyId),
+      eq(activityLog.entityId, issueId),
+      eq(activityLog.action, "issue.blocked_owner_notification_delivered"),
+    ))).toHaveLength(1);
   });
 
   it("supersedes startup-fault recovery actions when effective configuration identity changes", async () => {

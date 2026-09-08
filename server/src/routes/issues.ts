@@ -24,6 +24,7 @@ import {
   pipelineCases,
   pipelineStages,
   pipelines,
+  projects,
   projectWorkspaces,
 } from "@paperclipai/db";
 import {
@@ -6904,13 +6905,37 @@ export function issueRoutes(
             .where(eq(agents.id, lockedIssue.assigneeAgentId))
             .limit(1);
           const currentIdentity = assignee
-            ? await computeStartupFaultConfigIdentity({
-                adapterType: assignee.adapterType,
-                adapterConfig: assignee.adapterConfig,
-                runtimeConfig: assignee.runtimeConfig,
-                assigneeAdapterOverrides: lockedIssue.assigneeAdapterOverrides,
-                executionWorkspaceSettings: lockedIssue.executionWorkspaceSettings,
-              })
+            ? await (async () => {
+                const experimental = await instanceSettings.getExperimental();
+                const project = lockedIssue.projectId
+                  ? await tx
+                      .select({ executionWorkspacePolicy: projects.executionWorkspacePolicy })
+                      .from(projects)
+                      .where(and(
+                        eq(projects.id, lockedIssue.projectId),
+                        eq(projects.companyId, lockedIssue.companyId),
+                      ))
+                      .then((rows) => rows[0] ?? null)
+                  : null;
+                const latestRunId = typeof evidence?.latestRunId === "string" ? evidence.latestRunId : null;
+                const latestRun = latestRunId
+                  ? await tx
+                      .select({ contextSnapshot: heartbeatRuns.contextSnapshot })
+                      .from(heartbeatRuns)
+                      .where(eq(heartbeatRuns.id, latestRunId))
+                      .then((rows) => rows[0] ?? null)
+                  : null;
+                return computeStartupFaultConfigIdentity({
+                  adapterType: assignee.adapterType,
+                  adapterConfig: assignee.adapterConfig,
+                  runtimeConfig: assignee.runtimeConfig,
+                  assigneeAdapterOverrides: lockedIssue.assigneeAdapterOverrides,
+                  executionWorkspaceSettings: lockedIssue.executionWorkspaceSettings,
+                  projectExecutionWorkspacePolicy: project?.executionWorkspacePolicy,
+                  isolatedWorkspacesEnabled: experimental.enableIsolatedWorkspaces === true,
+                  contextSnapshot: (latestRun?.contextSnapshot as Record<string, unknown> | null) ?? null,
+                });
+              })()
             : null;
           if (currentIdentity === storedIdentity) {
             throw unprocessable(

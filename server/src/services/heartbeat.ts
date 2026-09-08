@@ -3814,10 +3814,14 @@ export async function computeStartupFaultConfigIdentity(input: {
   contextSnapshot?: Record<string, unknown> | null;
   executionWorkspaceSettings?: unknown;
   projectExecutionWorkspacePolicy?: unknown;
+  isolatedWorkspacesEnabled?: boolean;
 }) {
   const overrides = parseIssueAssigneeAdapterOverrides(input.assigneeAdapterOverrides);
   const issueSettings = parseIssueExecutionWorkspaceSettings(input.executionWorkspaceSettings);
-  const projectPolicy = parseProjectExecutionWorkspacePolicy(input.projectExecutionWorkspacePolicy);
+  const projectPolicy = gateProjectExecutionWorkspacePolicy(
+    parseProjectExecutionWorkspacePolicy(input.projectExecutionWorkspacePolicy),
+    input.isolatedWorkspacesEnabled === true,
+  );
   const mode = resolveExecutionWorkspaceMode({
     projectPolicy,
     issueSettings,
