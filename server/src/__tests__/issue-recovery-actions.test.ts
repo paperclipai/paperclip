@@ -835,6 +835,32 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     // itself writes. The repair only acts when the block sits just after the failure that caused it.
     const BLOCKED_JUST_AFTER_FAILURE = new Date("2026-07-15T20:01:30.000Z");
 
+    // The escalation never writes `blocked` on its own: `escalateStrandedAssignedIssue` upserts a
+    // source-scoped recovery action stamped with the failed run first, and only then transitions the
+    // issue. A fixture that omits this row is not reproducing the production shape — it reproduces a
+    // human block that merely happens to follow a failed run. Every fixture below that claims
+    // recovery caused the block therefore seeds it.
+    async function seedRecoveryProducedBlock(input: {
+      companyId: string;
+      sourceIssueId: string;
+      runId: string;
+      cause?: string;
+    }) {
+      const cause = input.cause ?? "process_lost";
+      await db.insert(issueRecoveryActions).values({
+        id: randomUUID(),
+        companyId: input.companyId,
+        sourceIssueId: input.sourceIssueId,
+        kind: "stranded_assigned_issue",
+        status: "active",
+        ownerType: "board",
+        cause,
+        fingerprint: `${cause}:${input.runId}`,
+        nextAction: "Board operator: inspect the evidence, then retry, reassign, or resolve.",
+        evidence: { latestRunId: input.runId, sourceIssueId: input.sourceIssueId },
+      });
+    }
+
     it("restores an issue an infra failure left blocked with no blockers and no descriptor", async () => {
       const { companyId, coderId, sourceIssueId } = await seedCompany();
       const runId = randomUUID();
@@ -854,6 +880,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       await db.update(issues)
         .set({ status: "blocked", unblockDescriptor: null, blockedTransitionAt: BLOCKED_JUST_AFTER_FAILURE })
         .where(eq(issues.id, sourceIssueId));
+      await seedRecoveryProducedBlock({ companyId, sourceIssueId, runId, cause: "provider_quota" });
 
       const recovery = recoveryService(db, { enqueueWakeup: vi.fn(async () => null) });
       const result = await recovery.repairUnroutableBlockedIssues({ now: new Date("2026-07-15T20:05:00.000Z") });
@@ -869,8 +896,9 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     // worse, because an idle in_progress ticket also drags the watchdog.
     it("leaves the issue blocked when the failed run belongs to another agent", async () => {
       const { companyId, coderId, managerId, sourceIssueId } = await seedCompany();
+      const runId = randomUUID();
       await db.insert(heartbeatRuns).values({
-        id: randomUUID(),
+        id: runId,
         companyId,
         // Not the current assignee, so the quota monitor cannot be scheduled for it.
         agentId: managerId,
@@ -890,6 +918,9 @@ describeEmbeddedPostgres("issue recovery actions", () => {
           blockedTransitionAt: BLOCKED_JUST_AFTER_FAILURE,
         })
         .where(eq(issues.id, sourceIssueId));
+      // Recovery genuinely produced this block, so the causality gate passes and the assertion below
+      // is about the agent-match guard specifically, not about the gate short-circuiting first.
+      await seedRecoveryProducedBlock({ companyId, sourceIssueId, runId, cause: "provider_quota" });
 
       const recovery = recoveryService(db, { enqueueWakeup: vi.fn(async () => null) });
       const result = await recovery.repairUnroutableBlockedIssues({ now: new Date("2026-07-15T20:05:00.000Z") });
@@ -976,6 +1007,12 @@ describeEmbeddedPostgres("issue recovery actions", () => {
           lastDecisionOutcome: null,
         },
       }).where(eq(issues.id, sourceIssueId));
+      await seedRecoveryProducedBlock({
+        companyId,
+        sourceIssueId,
+        runId,
+        cause: "execution_review_participant_recovery",
+      });
 
       const recovery = recoveryService(db, { enqueueWakeup: vi.fn(async () => null) });
       const result = await recovery.repairUnroutableBlockedIssues({ now: new Date("2026-07-15T20:05:00.000Z") });
@@ -993,6 +1030,73 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     // the repair must lift it exactly like a quota outage.
     it("restores an issue a crashed adapter process left blocked", async () => {
       const { companyId, coderId, sourceIssueId } = await seedCompany();
+      const runId = randomUUID();
+      await db.insert(heartbeatRuns).values({
+        id: runId,
+        companyId,
+        agentId: coderId,
+        invocationSource: "manual",
+        status: "failed",
+        error: "Run process was lost before it reported a terminal status",
+        errorCode: "process_lost",
+        startedAt: new Date("2026-07-15T20:00:00.000Z"),
+        finishedAt: new Date("2026-07-15T20:01:00.000Z"),
+        contextSnapshot: { issueId: sourceIssueId },
+      });
+      await db.update(issues)
+        .set({ status: "blocked", unblockDescriptor: null, blockedTransitionAt: BLOCKED_JUST_AFTER_FAILURE })
+        .where(eq(issues.id, sourceIssueId));
+      await seedRecoveryProducedBlock({ companyId, sourceIssueId, runId });
+
+      const recovery = recoveryService(db, { enqueueWakeup: vi.fn(async () => null) });
+      const result = await recovery.repairUnroutableBlockedIssues({ now: new Date("2026-07-15T20:05:00.000Z") });
+
+      expect(result).toMatchObject({ repaired: 1 });
+      const [repaired] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+      expect(repaired).toMatchObject({ status: "in_progress", assigneeAgentId: coderId });
+      expect(repaired?.monitorNextCheckAt).toBeInstanceOf(Date);
+    });
+
+    // Otto's must-fix on this PR: timing proximity alone cannot tell an escalation's block from a
+    // deliberate one. This is the exact case that timing cannot separate — an infra-classed failure
+    // and a block 30 seconds later, i.e. inside the causal window, but written by a person rather
+    // than by recovery. Only the absence of the recovery action distinguishes it, and it must be
+    // enough to stop the repair overriding that decision in silence.
+    it("leaves an issue a human blocked right after an infra failure alone", async () => {
+      const { companyId, coderId, sourceIssueId } = await seedCompany();
+      await db.insert(heartbeatRuns).values({
+        id: randomUUID(),
+        companyId,
+        agentId: coderId,
+        invocationSource: "manual",
+        status: "failed",
+        error: "Run process was lost before it reported a terminal status",
+        errorCode: "process_lost",
+        startedAt: new Date("2026-07-15T20:00:00.000Z"),
+        finishedAt: new Date("2026-07-15T20:01:00.000Z"),
+        contextSnapshot: { issueId: sourceIssueId },
+      });
+      // Identical candidate signature to the repairable fixture above — blocked, no blockers, no
+      // descriptor, inside the causal window — and deliberately no recovery action row, because no
+      // escalation ran. This is a board member blocking the ticket for an unrelated reason.
+      await db.update(issues)
+        .set({ status: "blocked", unblockDescriptor: null, blockedTransitionAt: BLOCKED_JUST_AFTER_FAILURE })
+        .where(eq(issues.id, sourceIssueId));
+
+      const recovery = recoveryService(db, { enqueueWakeup: vi.fn(async () => null) });
+      const result = await recovery.repairUnroutableBlockedIssues({ now: new Date("2026-07-15T20:05:00.000Z") });
+
+      expect(result).toMatchObject({ repaired: 0, issueIds: [] });
+      const [untouched] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+      expect(untouched?.status).toBe("blocked");
+      expect(untouched?.monitorNextCheckAt ?? null).toBeNull();
+    });
+
+    // The other half of the same gate: an action exists for this issue, but it records an *earlier*
+    // escalation on a different run. Recovery did not write the block now under inspection, so the
+    // stale row must not be read as proof that it did.
+    it("leaves the issue blocked when the open recovery action names a different run", async () => {
+      const { companyId, coderId, sourceIssueId } = await seedCompany();
       await db.insert(heartbeatRuns).values({
         id: randomUUID(),
         companyId,
@@ -1008,14 +1112,14 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       await db.update(issues)
         .set({ status: "blocked", unblockDescriptor: null, blockedTransitionAt: BLOCKED_JUST_AFTER_FAILURE })
         .where(eq(issues.id, sourceIssueId));
+      await seedRecoveryProducedBlock({ companyId, sourceIssueId, runId: randomUUID() });
 
       const recovery = recoveryService(db, { enqueueWakeup: vi.fn(async () => null) });
       const result = await recovery.repairUnroutableBlockedIssues({ now: new Date("2026-07-15T20:05:00.000Z") });
 
-      expect(result).toMatchObject({ repaired: 1 });
-      const [repaired] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
-      expect(repaired).toMatchObject({ status: "in_progress", assigneeAgentId: coderId });
-      expect(repaired?.monitorNextCheckAt).toBeInstanceOf(Date);
+      expect(result).toMatchObject({ repaired: 0 });
+      const [untouched] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+      expect(untouched?.status).toBe("blocked");
     });
 
     // Review feedback on this PR: "the latest run failed on infrastructure" is not on its own
@@ -1024,8 +1128,9 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     // — has the identical candidate signature. Resuming it would override a real decision in silence.
     it("leaves an issue blocked long after the failed run alone", async () => {
       const { companyId, coderId, sourceIssueId } = await seedCompany();
+      const runId = randomUUID();
       await db.insert(heartbeatRuns).values({
-        id: randomUUID(),
+        id: runId,
         companyId,
         agentId: coderId,
         invocationSource: "manual",
@@ -1044,6 +1149,10 @@ describeEmbeddedPostgres("issue recovery actions", () => {
           blockedTransitionAt: new Date("2026-07-16T02:00:00.000Z"),
         })
         .where(eq(issues.id, sourceIssueId));
+      // An open action for this run is present, so the causality gate passes and what this test
+      // pins is the secondary time bound: the residual case of a deliberate re-block landing while
+      // the escalation's own action is still open.
+      await seedRecoveryProducedBlock({ companyId, sourceIssueId, runId });
 
       const recovery = recoveryService(db, { enqueueWakeup: vi.fn(async () => null) });
       const result = await recovery.repairUnroutableBlockedIssues({ now: new Date("2026-07-16T02:05:00.000Z") });
@@ -1120,8 +1229,9 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       }
 
       // The genuinely repairable issue sorts behind both of them.
+      const runId = randomUUID();
       await db.insert(heartbeatRuns).values({
-        id: randomUUID(),
+        id: runId,
         companyId,
         agentId: coderId,
         invocationSource: "manual",
@@ -1135,6 +1245,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       await db.update(issues)
         .set({ status: "blocked", unblockDescriptor: null, blockedTransitionAt: BLOCKED_JUST_AFTER_FAILURE })
         .where(eq(issues.id, sourceIssueId));
+      await seedRecoveryProducedBlock({ companyId, sourceIssueId, runId });
 
       const recovery = recoveryService(db, { enqueueWakeup: vi.fn(async () => null) });
 
@@ -1159,8 +1270,9 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     // from the periodic sweep — throttled, because it must not re-scan on every scheduler tick.
     it("throttles the periodic backstop but still runs once the interval has passed", async () => {
       const { companyId, coderId, sourceIssueId } = await seedCompany();
+      const runId = randomUUID();
       await db.insert(heartbeatRuns).values({
-        id: randomUUID(),
+        id: runId,
         companyId,
         agentId: coderId,
         invocationSource: "manual",
@@ -1174,6 +1286,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       await db.update(issues)
         .set({ status: "blocked", unblockDescriptor: null, blockedTransitionAt: BLOCKED_JUST_AFTER_FAILURE })
         .where(eq(issues.id, sourceIssueId));
+      await seedRecoveryProducedBlock({ companyId, sourceIssueId, runId, cause: "provider_quota" });
 
       const recovery = recoveryService(db, { enqueueWakeup: vi.fn(async () => null) });
       const first = await recovery.repairUnroutableBlockedIssues({

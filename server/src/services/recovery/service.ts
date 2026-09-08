@@ -510,13 +510,25 @@ export type DeferrableFailureClassification = Extract<
 // a configuration blocker a human must fix. Only a `business` failure may ever end in `blocked`.
 export type RunFailureClass = "infra" | "business";
 
+// The `infra` side of the split, expressed once, as a narrowing guard. Every infra classification is
+// exactly one that carries a retry instant — which is the whole point: an infrastructure failure has
+// a "try again at" and a business blocker does not. Callers that need the retry instant (the deferral
+// and the unroutable-blocked repair) narrow through this rather than re-testing `kind` inline, so
+// there is one definition of infra-vs-business and it cannot drift from `classifyRunFailureClass`.
+export function isInfraFailureClassification(
+  classification: AdapterFailureRecoveryClassification,
+): classification is DeferrableFailureClassification {
+  return classification?.kind === "provider_quota" || classification?.kind === "infra_transient";
+}
+
 export function classifyRunFailureClass(
   latestRun: Pick<NonNullable<LatestIssueRun>, "error" | "errorCode" | "resultJson"> | null | undefined,
   now = new Date(),
 ): RunFailureClass {
   if (!latestRun) return "business";
-  const kind = classifyAdapterFailureForRecovery(latestRun, now)?.kind;
-  return kind === "provider_quota" || kind === "infra_transient" ? "infra" : "business";
+  return isInfraFailureClassification(classifyAdapterFailureForRecovery(latestRun, now))
+    ? "infra"
+    : "business";
 }
 
 function parseProviderQuotaClockReset(error: string, now: Date) {
@@ -1065,6 +1077,35 @@ export function recoveryService(
       )
       .limit(1)
       .then((rows) => Boolean(rows[0]));
+  }
+
+  // Durable proof that the recovery escalation, and not a human or another agent, is what wrote this
+  // issue's `blocked` — keyed on the exact run that failed.
+  //
+  // `escalateStrandedAssignedIssue` upserts a source-scoped `issueRecoveryActions` row and stamps the
+  // failed run into `evidence.latestRunId` on every write, immediately before the `blocked` update.
+  // Nothing else writes these rows, so their presence is the actor marker the `blocked` transition
+  // itself does not carry. Restricting to the open statuses matters: a partial unique index allows at
+  // most one `active`/`escalated` row per (company, source issue), so this is an unambiguous single
+  // row, and a resolved row means the escalation it recorded has already been dispositioned by
+  // somebody — repairing against it would re-open a closed decision.
+  async function recoveryProducedBlockEvidence(
+    issue: Pick<typeof issues.$inferSelect, "companyId" | "id">,
+    latestRun: NonNullable<LatestIssueRun>,
+  ) {
+    const [action] = await db
+      .select({ id: issueRecoveryActions.id, cause: issueRecoveryActions.cause })
+      .from(issueRecoveryActions)
+      .where(
+        and(
+          eq(issueRecoveryActions.companyId, issue.companyId),
+          eq(issueRecoveryActions.sourceIssueId, issue.id),
+          inArray(issueRecoveryActions.status, ["active", "escalated"]),
+          sql`${issueRecoveryActions.evidence} ->> 'latestRunId' = ${latestRun.id}`,
+        ),
+      )
+      .limit(1);
+    return action ?? null;
   }
 
   async function hasQueuedIssueWake(companyId: string, issueId: string, agentId?: string | null) {
@@ -3143,11 +3184,9 @@ export function recoveryService(
         break;
       }
       const classification = classifyAdapterFailureForRecovery(row, now);
-      const rowClass: RunFailureClass =
-        classification?.kind === "provider_quota" || classification?.kind === "infra_transient"
-          ? "infra"
-          : "business";
-      if (rowClass !== "infra") break;
+      // Same predicate as `classifyRunFailureClass`, shared rather than re-derived: the tail of
+      // consecutive infra failures ends at the first run that was not an infrastructure failure.
+      if (!isInfraFailureClassification(classification)) break;
       // Provider quota is infra but carries no bound of its own (it retries at a parsed reset
       // instant), so it never counts against either cause's rope.
       if (classification?.kind !== "infra_transient" || classification.cause !== cause) continue;
@@ -3252,10 +3291,18 @@ export function recoveryService(
         eq(issues.status, "blocked"),
         isNull(issues.unblockDescriptor),
         isNull(issues.hiddenAt),
+        // An unassigned issue is excluded on purpose, not by oversight. The only wake this repair
+        // installs is a monitor scheduled for the agent that owns the failed run, and the restore
+        // below already refuses when that agent is not the issue's own target. With no assignee
+        // there is no agent to wake, so restoring would swap a dead `blocked` for an idle status
+        // with no execution path at all — strictly worse. Such an issue needs an assignee first;
+        // that is a routing repair, not this pass.
         sql`${issues.assigneeAgentId} is not null`,
         // A repair needs a transition stamp to prove causality, so a row without one can never be
-        // repaired. Excluding it here keeps rows written before migration 0198 (2026-08-11) out of
-        // the page entirely instead of letting them consume it, and makes the cursor tuple total.
+        // repaired. Excluding it here keeps rows written before `0184_routable_blocked.sql`
+        // (the migration that added both `unblock_descriptor` and `blocked_transition_at`, merged
+        // 2026-08-11) out of the page entirely instead of letting them consume it, and makes the
+        // cursor tuple total.
         sql`${issues.blockedTransitionAt} is not null`,
         // Bound as an ISO string with an explicit cast: the driver refuses a raw `Date` in a
         // hand-written tuple comparison.
@@ -3296,16 +3343,35 @@ export function recoveryService(
       const classification = latestRun && isUnsuccessfulTerminalIssueRun(latestRun)
         ? classifyAdapterFailureForRecovery(latestRun, now)
         : null;
-      if (!latestRun || !classification || classification.kind === "configuration_incomplete") {
+      // LUN-7056 AC1's split, read from the one predicate that defines it rather than re-tested as
+      // `classification.kind` inline. It also narrows `classification` to the deferrable shape, so
+      // the retry instant the monitor is armed on below is available without a second check.
+      if (!latestRun || !isInfraFailureClassification(classification)) {
         result.skipped += 1;
         continue;
       }
 
-      // The failure has to be what put the issue here. Matching on "latest run failed on infra" alone
-      // is not enough: an issue whose last run died on `process_lost` and which a human then blocked
-      // deliberately — for an unrelated reason, leaving no descriptor, a shape this system produces
-      // routinely — has exactly the same candidate signature. Resuming it would override that
-      // decision silently. Require the `blocked` transition to sit just after the run's death.
+      // The failure has to be what put the issue here, and only the escalation path can prove that.
+      // Timing proximity cannot: an issue whose last run died on `process_lost` and which a human or
+      // another agent then blocked deliberately — for an unrelated reason, leaving no descriptor, a
+      // shape this system produces routinely — has exactly the same timing signature, and resuming
+      // it would override that decision silently.
+      //
+      // `escalateStrandedAssignedIssue` writes a source-scoped `issueRecoveryActions` row (via
+      // `ensureSourceScopedStrandedRecoveryAction`) immediately before it writes `blocked`, and
+      // stamps the failed run into `evidence.latestRunId`. A human block writes no such row. So an
+      // open action naming *this* run is durable, run-scoped proof that recovery — not a person —
+      // produced this `blocked`, which is what the repair actually needs to know.
+      const recoveryBlockEvidence = await recoveryProducedBlockEvidence(issue, latestRun);
+      if (!recoveryBlockEvidence) {
+        result.skipped += 1;
+        continue;
+      }
+
+      // Kept as a secondary bound on top of that proof, not as the proof itself. It rejects the
+      // residual case the action row cannot: recovery escalated on run R, a human unblocked and
+      // later re-blocked deliberately while the same action was still open. The block then sits far
+      // from R's death even though the row still names R.
       const failedAt = latestRun.finishedAt ?? latestRun.startedAt ?? latestRun.createdAt;
       const blockedAt = issue.blockedTransitionAt;
       if (!blockedAt || !failedAt) {
@@ -3377,6 +3443,10 @@ export function recoveryService(
           recoveryClassification: classification.kind,
           retryAt: classification.retryAt.toISOString(),
           // The causal evidence this repair acted on, so the decision is auditable after the fact.
+          // `recoveryActionId` is the load-bearing one: it names the open recovery action that
+          // proves the escalation wrote this `blocked`. The two timestamps are the secondary bound.
+          recoveryActionId: recoveryBlockEvidence.id,
+          recoveryActionCause: recoveryBlockEvidence.cause,
           latestRunFailedAt: failedAt.toISOString(),
           blockedTransitionAt: blockedAt.toISOString(),
         },
