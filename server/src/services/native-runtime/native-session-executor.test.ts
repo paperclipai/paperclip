@@ -3379,7 +3379,11 @@ describe("native warm session supervision", () => {
     expect(close).not.toHaveBeenCalled();
   });
 
-  it.each([false, true])("verifies a live warm owner before refreshing run authority (broker: %s)", async (useBroker) => {
+  it.each([false, true].flatMap((useBroker) =>
+    [false, true].flatMap((projectless) =>
+      [false, true].map((local) => ({ useBroker, projectless, local })),
+    ),
+  ))("verifies a live warm owner before refreshing run authority (broker: $useBroker, projectless: $projectless, local: $local)", async ({ useBroker, projectless, local }) => {
     const stateBase = await mkdtemp(
       join(tmpdir(), "paperclip-runnerd-warm-authority-"),
     );
@@ -3394,7 +3398,7 @@ describe("native warm session supervision", () => {
       binding: {
         ...execution.binding,
         runId: "run-runnerd-warm-first",
-        executionWorkspaceId: "workspace-runnerd-warm",
+        executionWorkspaceId: projectless ? "run-runnerd-warm-first" : "workspace-runnerd-warm",
       },
       workspace: {
         cwd: "/tmp/runnerd-warm-authority",
@@ -3411,15 +3415,22 @@ describe("native warm session supervision", () => {
     } as NativeExecutionInputV1;
     const second = {
       ...first,
-      binding: { ...first.binding, runId: "run-runnerd-warm-second" },
+      binding: {
+        ...first.binding,
+        runId: "run-runnerd-warm-second",
+        executionWorkspaceId: projectless ? "run-runnerd-warm-second" : first.binding.executionWorkspaceId,
+      },
     } as NativeExecutionInputV1;
-    const remoteTarget = {
+    const remoteTarget = (local ? {
+      kind: "local" as const,
+      environmentId: "environment-runnerd-warm-authority",
+    } : {
       kind: "remote" as const,
       transport: "sandbox" as const,
       environmentId: "environment-runnerd-warm-authority",
       remoteCwd: "/home/daytona/paperclip-workspace",
       runner: { execute: vi.fn() },
-    } as never;
+    }) as never;
     const result = {
       result: { summary: "completed" },
       terminal: { runTerminalState: "succeeded" },
@@ -3446,6 +3457,8 @@ describe("native warm session supervision", () => {
           },
           providerSessionId: "provider-runnerd-warm",
           activeTurnId: "provider-turn-runnerd-warm-first",
+          semanticResult: { summary: "Only the previous run's result" },
+          terminal: { runTerminalState: "succeeded" },
         });
         options.onSession?.(firstSession);
         return result;
@@ -3454,6 +3467,9 @@ describe("native warm session supervision", () => {
         if (useBroker) {
           expect(options.existingSession).toBeUndefined();
           expect(options.persistedSession?.providerSessionId).toBe("provider-runnerd-warm");
+          expect(options.persistedSession?.semanticResult).toBeNull();
+          expect(options.persistedSession?.terminal).toBeNull();
+          expect(options.persistedSession?.activeTurnId).toBeNull();
         } else {
           expect(options.existingSession).toBe(firstSession);
           expect(options.persistedSession).toBeUndefined();
@@ -3470,6 +3486,30 @@ describe("native warm session supervision", () => {
         useRunnerd: true,
         runnerExecutionTarget: remoteTarget,
       });
+      if (projectless && useBroker) {
+        // Also prove an upgrade can resume the old per-run workspace digest
+        // without importing the previous heartbeat's result or turn authority.
+        const checkpointFile = (await readdir(stateBase, { recursive: true }))
+          .find((path) => path.includes("paperclip-runner/sessions/") && path.endsWith(".json"));
+        expect(checkpointFile).toBeDefined();
+        const checkpointPath = join(stateBase, checkpointFile!);
+        const envelope = JSON.parse(await readFile(checkpointPath, "utf8"));
+        envelope.configDigest = `sha256:${createHash("sha256").update(JSON.stringify({
+          companyId: first.binding.companyId,
+          normalizedSessionId: first.session.normalizedSessionId,
+          executionLocation: {
+            executionKind: "local_process",
+            workspaceId: first.binding.executionWorkspaceId,
+            cwd: first.workspace.cwd,
+          },
+          provider: first.provider,
+          driverKind: first.session.driverKind,
+          lifecyclePolicy: first.session.lifecyclePolicy,
+          executionMode: "default",
+          runtimeContextDigest: null,
+        })).digest("hex")}`;
+        await writeFile(checkpointPath, JSON.stringify(envelope));
+      }
       const scopedRoots = (await readdir(stateBase, { withFileTypes: true }))
         .filter(
           (entry) => entry.isDirectory() && /^[a-f0-9]{64}$/.test(entry.name),
@@ -3487,6 +3527,11 @@ describe("native warm session supervision", () => {
       await writeFile(
         join(durableRoot, "control-plane", "control-plane-state.json"),
         JSON.stringify(durableControlPlaneState(durableIdentity)),
+      );
+      await mkdir(join(durableRoot, "runner"), { recursive: true });
+      await writeFile(
+        join(durableRoot, "runner", "runner-state.json"),
+        JSON.stringify(durableRunnerState(durableIdentity, "ready")),
       );
       const continuationDb = {
         ...leaseDb(second),

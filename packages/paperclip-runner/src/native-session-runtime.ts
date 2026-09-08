@@ -725,6 +725,7 @@ async function consumeTurn(
     input: NativeExecutionInput;
     requestId: string;
   },
+  initialGoal?: HarnessThreadGoal | null,
 ) {
   let timer: ReturnType<typeof setTimeout> | undefined;
   let semanticResultTimer: ReturnType<typeof setTimeout> | undefined;
@@ -775,6 +776,7 @@ async function consumeTurn(
     let governedResult: PrpStructuredRunResult | null = null;
     let semanticResultProposal: PrpStructuredRunResult | null = null;
     let sessionGoalObserved = sessionGoal !== undefined;
+    let previousGoal = initialGoal ?? null;
     let goalControlObserved = false;
     let latestSessionGoal: HarnessThreadGoal | null = null;
     let resultSource: "semantic_result" | "governed_wait" | null = null;
@@ -870,7 +872,19 @@ async function consumeTurn(
         receipt.highestContiguousSourceSeq,
       );
       const eventGoal = goalFromEvent(event);
-      if (eventGoal !== undefined && eventGoal !== null) {
+      const goalChanged = eventGoal !== undefined &&
+        goalLifecycleFingerprint(eventGoal) !== goalLifecycleFingerprint(previousGoal);
+      if (eventGoal !== undefined) previousGoal = eventGoal;
+      if (
+        eventGoal !== undefined && eventGoal !== null &&
+        (sessionGoalObserved || goalStatus(eventGoal) === "active" ||
+          (event.eventType === "session.goal.updated" && goalChanged))
+      ) {
+        // An inactive resume snapshot describes the previous goal, not the
+        // work requested by a new ordinary prompt. Only an explicit goal
+        // control, an active goal, or a new lifecycle change owns this run's
+        // lifetime. Resume can replay unchanged updates as well as snapshots;
+        // append both for the UI without mistaking them for new goal work.
         sessionGoalObserved = true;
         latestSessionGoal = eventGoal;
         // A harness-created goal may arrive after a semantic result proposal.
@@ -1195,6 +1209,16 @@ async function consumeTurn(
     if (semanticResultTimer !== undefined) clearTimeout(semanticResultTimer);
     removeExternalAbort();
   }
+}
+
+function goalLifecycleFingerprint(goal: HarnessThreadGoal | null): string {
+  if (goal === null) return "cleared";
+  // Provider checkpoints can use seconds while normalized events use ISO
+  // timestamps (parsed as milliseconds). Usage/timing updates alone must not
+  // turn a completed or paused goal into ownership of an ordinary chat run.
+  const createdAt = goal.createdAt < 10_000_000_000
+    ? goal.createdAt * 1_000 : goal.createdAt;
+  return canonicalJson({ objective: goal.objective, status: goal.status, createdAt });
 }
 
 function goalStatus(goal: HarnessThreadGoal | null):
@@ -2144,6 +2168,7 @@ export async function executeNativeSession(
                     requestId: options.sessionGoalControl?.requestId ?? `recovery_${input.binding.runId}`,
                   }
                 : undefined,
+              recoveredSnapshot.goal,
             )
           : Promise.resolve({
               event: recoveryTerminal,

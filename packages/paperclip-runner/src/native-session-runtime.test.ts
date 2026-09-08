@@ -195,6 +195,110 @@ function highestContiguous(events: PrpEvent[]): number {
 }
 
 describe("executeNativeSession recovery", () => {
+  it.each((["complete", "paused", "blocked", "limited", "usageLimited", "budgetLimited"] as const)
+    .flatMap((status) => [false, true].map((snapshotBeforeUpdate) => ({ status, snapshotBeforeUpdate }))))(
+    "handles a new chat turn instead of completing it from an existing $status goal (snapshot: $snapshotBeforeUpdate)", async ({ status, snapshotBeforeUpdate }) => {
+    const oldGoal = {
+      threadId: "provider-recovery",
+      objective: "Say hello",
+      status,
+      tokenBudget: null,
+      tokensUsed: 500,
+      timeUsedSeconds: 2,
+      createdAt: Date.parse("2026-08-09T00:00:00.000Z"),
+      updatedAt: Date.parse("2026-08-09T00:00:02.000Z"),
+    };
+    const reply = { ...result, summary: "Said bye in response to the new message." };
+    const capabilities = {
+      resume: true, typedEvents: true, steering: false,
+      interruption: true, structuredResult: true,
+    };
+    const checkpoint: PersistedNativeSession = {
+      backendKind: "mock",
+      sessionId: "driver-recovery",
+      identity,
+      providerSessionId: oldGoal.threadId,
+      activeTurnId: null,
+      semanticResult: null,
+      terminal: null,
+      terminalTurns: [],
+      pendingRuntimeRequests: [],
+      goal: { ...oldGoal, createdAt: oldGoal.createdAt / 1000, updatedAt: oldGoal.updatedAt / 1000 },
+    };
+    const startTurn = vi.fn<NativeSession["startTurn"]>(async () => ({ turnId: "turn-recovery" }));
+    const goal = vi.fn(async () => oldGoal);
+    const session: NativeSession = {
+      identity: () => identity,
+      async capabilities() { return capabilities; },
+      async *events() {
+        let seq = 0;
+        // The resume snapshot is durable UI state, not work for this prompt.
+        if (snapshotBeforeUpdate) yield runnerEvent(++seq, "session.goal.snapshot", {
+          goal: {
+            ...oldGoal,
+            createdAt: new Date(oldGoal.createdAt).toISOString(),
+            elapsedSeconds: oldGoal.timeUsedSeconds,
+          },
+          workingNow: false,
+        });
+        // Codex replays the unchanged goal as an update during resume too.
+        // Usage-only changes do not make an inactive goal own a new prompt.
+        yield runnerEvent(++seq, "session.goal.updated", {
+          goal: {
+            ...oldGoal,
+            createdAt: new Date(oldGoal.createdAt).toISOString(),
+            tokensUsed: 600,
+            updatedAt: new Date(oldGoal.updatedAt + 1000).toISOString(),
+          },
+          workingNow: false,
+        });
+        yield runnerEvent(++seq, "turn.started");
+        yield runnerEvent(++seq, "run.result.proposed", reply);
+        yield runnerEvent(++seq, "turn.completed");
+      },
+      startTurn,
+      goal,
+      async result() { return { result: reply, terminal, turnId: "turn-recovery" }; },
+      async snapshot() { return checkpoint; },
+      async close() {},
+    };
+    const appended: PrpEvent[] = [];
+    const completed = await executeNativeSession({
+      input: { ...input, task: { ...input.task, prompt: "Say bye" } },
+      backend: {
+        async descriptor() {
+          return { kind: "mock", name: "chat-after-goal", version: "1", capabilities };
+        },
+        async openSession() { throw new Error("must resume the same provider session"); },
+        async recoverSession() { return { recovered: true, session }; },
+      },
+      persistedSession: checkpoint,
+      controlPlane: {
+        async openRun() {},
+        async checkpointSession() {},
+        async appendEvent(event) {
+          appended.push(event);
+          return { cursor: event.sourceSeq, highestContiguousSourceSeq: event.sourceSeq, disposition: "committed" };
+        },
+        async replayEvents() { return { events: [], highestContiguousSourceSeq: 0 }; },
+        async completeRun() {},
+      },
+      runnerInstanceId: "runner-recovery",
+      controlPlaneInstanceId: "control-recovery",
+      timeoutMs: 1000,
+    });
+    expect(startTurn).toHaveBeenCalledOnce();
+    expect(JSON.parse(startTurn.mock.calls[0]![0]!.message.text).task.prompt).toBe("Say bye");
+    expect(goal).not.toHaveBeenCalled();
+    expect(completed.providerSessionId).toBe(oldGoal.threadId);
+    expect(completed.result).toEqual(reply);
+    expect(appended.map((event) => event.eventType)).toEqual([
+      ...(snapshotBeforeUpdate ? ["session.goal.snapshot"] : []),
+      "session.goal.updated", "turn.started", "run.result.proposed", "turn.completed",
+      "run.result.accepted", "run.terminal",
+    ]);
+  });
+
   it("applies a session goal control without starting an ordinary turn", async () => {
     const activeGoal = {
       threadId: "provider-recovery",

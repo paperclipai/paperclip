@@ -1853,10 +1853,19 @@ function loadRunnerdDurableBinding(execution: NativeExecutionInput): {
   };
 }
 
-function nativeSessionConfigDigest(execution: NativeExecutionInput): string {
+function nativeSessionConfigDigest(
+  execution: NativeExecutionInput,
+  legacyProjectlessRunId?: string,
+): string {
   const executionLocation = {
     executionKind: "local_process",
-    workspaceId: execution.binding.executionWorkspaceId,
+    // Use the same workspace identity as the durable session scope. For a
+    // projectless task, executionWorkspaceId is a per-run placeholder, not a
+    // workspace change. Real workspace/provider/policy changes still fence
+    // retained processes and checkpoints through the rest of this digest.
+    workspaceId: execution.binding.executionWorkspaceId === execution.binding.runId
+      ? (legacyProjectlessRunId ?? nativeSessionWorkspaceScope(execution))
+      : execution.binding.executionWorkspaceId,
     cwd: execution.workspace.cwd,
   };
   return `sha256:${createHash("sha256")
@@ -1888,10 +1897,9 @@ function hasIdleWarmNativeSessionOwner(input: {
   if (!entry || entry.busy) return false;
   // A verified idle owner proves the checkpoint belongs to this session even
   // when its process must later rotate to a new run-scoped broker capability.
-  const environmentId =
-    input.runnerExecutionTarget?.kind === "remote"
-      ? (input.runnerExecutionTarget.environmentId ?? null)
-      : null;
+  // Local environments also have an id. Compare the same environment binding
+  // stored at acquisition instead of treating every local target as unbound.
+  const environmentId = input.runnerExecutionTarget?.environmentId ?? null;
   return (
     entry.companyId === input.execution.binding.companyId &&
     entry.environmentId === environmentId &&
@@ -2498,10 +2506,6 @@ function loadWarmNativeCheckpoint(
   ) {
     throw new Error("native_session_supervisor_checkpoint_mismatch");
   }
-  // A provider/model/runtime-context/permission change is an intentional
-  // incompatibility boundary. Leave the older checkpoint replayable by its
-  // original execution, but start a fresh provider session for this config.
-  if (envelope.configDigest !== configDigest) return null;
   const persistedIdentity = record(envelope.snapshot.identity);
   if (
     persistedIdentity.sessionId !== nativeSessionKey(execution) ||
@@ -2509,6 +2513,17 @@ function loadWarmNativeCheckpoint(
     persistedIdentity.agentId !== execution.binding.agentId
   ) {
     throw new Error("native_session_supervisor_checkpoint_mismatch");
+  }
+  // Upgrade old projectless checkpoints using their validated prior run id.
+  // Every provider/model/runtime-context/permission field must still match;
+  // only the old per-run workspace placeholder is normalized away.
+  const legacyDigest =
+    execution.binding.executionWorkspaceId === execution.binding.runId &&
+    typeof persistedIdentity.runId === "string"
+      ? nativeSessionConfigDigest(execution, persistedIdentity.runId)
+      : null;
+  if (envelope.configDigest !== configDigest && envelope.configDigest !== legacyDigest) {
+    return null;
   }
   const sameRunRecovery =
     persistedIdentity.runId === execution.binding.runId &&
@@ -2533,10 +2548,9 @@ function loadWarmNativeCheckpoint(
         terminalTurns: [],
         pendingRuntimeRequests: [],
       };
-  if (path !== scopedPath) {
-    // Copy the validated legacy checkpoint into the fully scoped location.
-    // persistWarmNativeCheckpoint uses an atomic rename and leaving the old
-    // file in place keeps this migration idempotent across interrupted boots.
+  if (path !== scopedPath || envelope.configDigest !== configDigest) {
+    // Upgrade the validated checkpoint atomically. When moving from a legacy
+    // path, retain that file so an interrupted migration remains replayable.
     persistWarmNativeCheckpoint(execution, configDigest, resumed);
   }
   return resumed;
