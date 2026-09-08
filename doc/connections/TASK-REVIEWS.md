@@ -18,8 +18,11 @@ nothing in one click. Both the task and Connections queue use
 one decision transaction; a decision removes the pending queue item while its
 history remains on the task. The human decision, resolver, remembered permission,
 and execution outcome remain separate. Provider failure does not turn an approved
-decision into a decline. Live activity invalidation refreshes both surfaces, with
-existing polling/reconnect reconciliation retained.
+decision into a decline. Successful results stay collapsed behind the status chevron;
+expanding it shows formatted JSON (or plain text). The resumed agent processes the
+recorded result in a new turn and writes the user-facing answer. Live activity
+invalidation refreshes both surfaces, with existing polling/reconnect reconciliation
+retained.
 
 ## Remembered permission
 

@@ -212,7 +212,7 @@ export function toolActionDeliveryService(
             } | null;
             const instructions =
               request.status === "executed"
-                ? "The approved action already ran. Do not call it again; continue with the recorded result."
+                ? "The approved action already ran. Do not call it again; continue with the recorded result. Process the result and answer the user in your own words. Do not paste the raw tool or transport JSON unless the user asks for it."
                 : request.status === "rejected"
                   ? "The human declined this action. Do not retry the same call. Adjust your approach or explain what is blocked."
                   : request.status === "expired" ||

@@ -296,6 +296,21 @@ export const Executing: Story = {
 export const Succeeded: Story = {
   render: () => <TaskScreen initial={[executedToolActionInteraction]} />,
 };
+export const ResultDetails: Story = {
+  render: () => <TaskScreen initial={[{
+    ...executedToolActionInteraction,
+    result: {
+      ...executedToolActionInteraction.result!,
+      toolAction: {
+        ...executedToolActionInteraction.result!.toolAction!,
+        resultSummary: JSON.stringify({ pages: [{ title: "Roadmap" }, { title: "Meeting notes" }] }),
+      },
+    },
+  }]} />,
+  play: async ({ canvasElement }) => {
+    await userEvent.click(within(canvasElement).getByRole("button", { name: "Show result details" }));
+  },
+};
 export const ExecutionFailed: Story = {
   render: () => <TaskScreen initial={[failedToolActionInteraction]} />,
 };

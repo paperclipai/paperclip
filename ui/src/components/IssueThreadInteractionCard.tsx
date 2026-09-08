@@ -1639,6 +1639,12 @@ function ToolActionResolution({
   interaction: RequestConfirmationInteraction;
 }) {
   const result = interaction.result?.toolAction;
+  const [resultOpen, setResultOpen] = useState(false);
+  const output = state === "executed" ? result?.resultSummary?.trim() : null;
+  let formattedOutput = output;
+  if (output) {
+    try { formattedOutput = JSON.stringify(JSON.parse(output), null, 2); } catch { /* Plain-text results remain readable. */ }
+  }
   const labels = {
     pending: "Waiting for approval",
     running: "Approved · Running…",
@@ -1649,17 +1655,28 @@ function ToolActionResolution({
     cancelled: "Cancelled",
   };
   const Icon = state === "running" ? Loader2 : state === "executed" ? CheckCircle2 : state === "failed" ? AlertTriangle : state === "expired" ? Clock : MinusCircle;
-  const detail = state === "executed" ? result?.resultSummary?.trim()
-    : state === "failed" ? result?.errorMessage?.trim() || "The action could not complete."
+  const detail = state === "failed" ? result?.errorMessage?.trim() || "The action could not complete."
     : state === "declined" ? interaction.result?.reason?.trim()
     : null;
+  const status = <>
+    <Icon className={cn("h-3.5 w-3.5 shrink-0", state === "running" && "animate-spin", state === "failed" && "text-destructive")} />
+    {labels[state]}
+    {result?.rememberedAction ? " · Always allowed" : ""}
+  </>;
   return (
     <div className="space-y-1 text-sm text-muted-foreground" aria-live="polite">
-      <p className="flex items-center gap-1.5">
-        <Icon className={cn("h-3.5 w-3.5 shrink-0", state === "running" && "animate-spin", state === "failed" && "text-destructive")} />
-        {labels[state]}
-        {result?.rememberedAction ? " · Always allowed" : ""}
-      </p>
+      {output ? (
+        <Collapsible open={resultOpen} onOpenChange={setResultOpen}>
+          <CollapsibleTrigger asChild>
+            <button type="button" className="flex items-center gap-1.5 rounded-sm hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" aria-label={resultOpen ? "Hide result details" : "Show result details"}>
+              {status}<ChevronDown className={cn("h-3 w-3", resultOpen && "rotate-180")} />
+            </button>
+          </CollapsibleTrigger>
+          <CollapsibleContent>
+            <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-md bg-muted p-3 font-mono text-xs text-foreground">{formattedOutput}</pre>
+          </CollapsibleContent>
+        </Collapsible>
+      ) : <p className="flex items-center gap-1.5">{status}</p>}
       {detail ? <p className={cn("break-words", state === "failed" && "text-destructive")}>{detail}</p> : null}
       {state === "executed" && result?.resultHref?.trim() ? (
         <a className="inline-flex items-center gap-1 underline underline-offset-4 hover:text-foreground" href={result.resultHref} target="_blank" rel="noreferrer">View result<ExternalLink className="h-3 w-3" /></a>

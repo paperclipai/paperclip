@@ -1052,16 +1052,30 @@ describe("IssueThreadInteractionCard tool-action card", () => {
     expect(host.querySelector(".animate-spin")).toBeTruthy();
   });
 
-  it("renders the executed state with a result summary and never reads Accepted", () => {
+  it("keeps the executed result collapsed and never reads Accepted", () => {
     const host = renderCard({ interaction: executedToolActionInteraction });
 
     expect(host.textContent).toContain("Succeeded");
-    expect(host.textContent).toContain("Row 42 added");
+    expect(host.textContent).not.toContain("Row 42 added");
+    expect(host.querySelector('button[aria-label="Show result details"]')?.getAttribute("aria-expanded")).toBe("false");
     expect(host.textContent).not.toContain("Accepted");
     const link = Array.from(host.querySelectorAll("a")).find((a) =>
       a.textContent?.includes("View result"),
     );
     expect(link?.getAttribute("href")).toContain("docs.google.com");
+  });
+
+  it("expands stored results as formatted JSON on demand", async () => {
+    const interaction = structuredClone(executedToolActionInteraction);
+    interaction.result!.toolAction!.resultSummary = '{"pages":["Roadmap","Meeting notes"]}';
+    const host = renderCard({ interaction });
+    expect(host.textContent).not.toContain("Roadmap");
+    const toggle = host.querySelector('button[aria-label="Show result details"]') as HTMLButtonElement;
+    await act(async () => toggle.click());
+    expect(host.querySelector("pre")?.textContent).toBe(JSON.stringify({ pages: ["Roadmap", "Meeting notes"] }, null, 2));
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    await act(async () => toggle.click());
+    expect(host.textContent).not.toContain("Roadmap");
   });
 
   it("distinguishes failed (ran + connector error) from declined (did not run)", () => {

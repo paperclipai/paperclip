@@ -57,13 +57,19 @@ const api = async (path, method = "GET", body) => {
   if (!response.ok) throw new Error(await response.text());
   return await response.json();
 };
+const describePages = (raw) => {
+  let value = raw;
+  if (typeof value === "string") { try { value = JSON.parse(value); } catch {} }
+  const content = typeof value === "string" ? value : typeof value?.content === "string" ? value.content : value?.data?.content?.filter(item => item.type === "text").map(item => item.text).join(" ") ?? "No pages returned.";
+  return "I found these recent pages: " + content.replace(/^Pages: /, "") + ".";
+};
 const issueId = process.env.PAPERCLIP_TASK_ID ?? (await api("/heartbeat-runs/" + process.env.PAPERCLIP_RUN_ID)).contextSnapshot.issueId;
 const interactions = await api("/issues/" + issueId + "/interactions");
 const review = interactions.find(i => i.payload?.toolAction);
 if (review?.status === "pending") { console.log("Still waiting for the existing review; no retry."); process.exit(0); }
 if (review && review.status !== "pending") {
   const result = review.result?.toolAction;
-  const message = review.status === "rejected" ? "Review declined. No pages were read." : result?.status === "failed" ? "Read failed: " + result.errorMessage : "Recent pages: " + result?.resultSummary;
+  const message = review.status === "rejected" ? "Review declined. No pages were read." : result?.status === "failed" ? "Read failed: " + result.errorMessage : ["expired", "cancelled"].includes(review.status) ? "The review expired or was cancelled. No pages were read." : describePages(result?.resultSummary);
   await api("/issues/" + issueId + "/comments", "POST", { body: message });
   await api("/issues/" + issueId, "PATCH", { status: "done" });
   console.log(message);
@@ -82,7 +88,7 @@ if (!call.ok) {
   console.log("Waiting for human review. No retry.");
   process.exit(0);
 }
-await api("/issues/" + issueId + "/comments", "POST", { body: "Recent pages: " + JSON.stringify(result.result) });
+await api("/issues/" + issueId + "/comments", "POST", { body: describePages(result.result) });
 await api("/issues/" + issueId, "PATCH", { status: "done" });
 `;
 }
@@ -172,6 +178,8 @@ for (const journey of [
       await expect(
         page.getByRole("button", { name: "Approve & run", exact: true }),
       ).toBeVisible({ timeout: 45_000 });
+      const originatingReviews = await json<Array<{ id: string; sourceRunId: string | null }>>(await request.get(`/api/issues/${issue.id}/interactions`));
+      const originatingReview = originatingReviews[0];
       const calls = () =>
         provider.captures.filter((c) => c.method === "tools/call").length;
       expect(calls()).toBe(0);
@@ -259,6 +267,19 @@ for (const journey of [
               ? "Read failed"
               : "Roadmap",
         );
+      const replies = await json<Array<{ body: string; authorAgentId: string | null; createdByRunId: string | null }>>(await request.get(`/api/issues/${issue.id}/comments`));
+      const reply = replies.find(comment => comment.authorAgentId === agent.id)!;
+      expect(reply.createdByRunId).toBeTruthy();
+      expect(originatingReview.sourceRunId).toBeTruthy();
+      expect(reply.createdByRunId).not.toBe(originatingReview.sourceRunId);
+      expect(reply.body).not.toContain('"content":');
+      if (!["decline", "failure"].includes(journey)) {
+        await expect(page.getByRole("button", { name: "Show result details" })).toBeVisible();
+        await expect(page.locator("pre")).not.toBeVisible();
+        await page.getByRole("button", { name: "Show result details" }).click();
+        await expect(page.locator("pre")).toContainText('"content":');
+        await page.getByRole("button", { name: "Hide result details" }).click();
+      }
       expect(calls()).toBe(journey === "decline" ? 0 : 1);
       await expect(
         page.getByRole("button", { name: "Approve & run", exact: true }),
