@@ -94,3 +94,4 @@ export { sleepRecords } from "./sleep_records.js";
 export { exerciseLogs } from "./exercise_logs.js";
 export { biometricReadings } from "./biometrics.js";
 export { moodLogs } from "./mood_logs.js";
+export { nutritionLogs } from "./nutrition_logs.js";
