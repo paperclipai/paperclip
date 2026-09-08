@@ -1,16 +1,16 @@
 import { execFile } from "node:child_process";
 import { createServer } from "node:http";
-import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
+import { copyFile, mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
-import { githubBrokerEnvironment, githubLauncherSource } from "./github-launcher.js";
+import { githubBrokerEnvironment, githubLauncherCommandSource, githubLauncherSource } from "./github-launcher.js";
 const exec = promisify(execFile);
 const cleanups: Array<() => Promise<unknown>> = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
 
-describe("managed GitHub launchers", () => {
+describe.skipIf(process.platform === "win32")("managed GitHub launchers", () => {
   it("explains unavailable access while allowing local work without credentials", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-github-diagnostic-"));
     cleanups.push(() => rm(root, {recursive:true,force:true}));
@@ -91,5 +91,58 @@ process.stdout.write(JSON.stringify({identity, token:process.env.GH_TOKEN ?? nul
     expect(await git("status", "--porcelain")).toBe(""); // unrelated public/local Git still works
     expect(env.GH_TOKEN).toBe("");
     expect(env.GIT_AUTHOR_NAME).toBe("");
+  });
+});
+
+describe.runIf(process.platform === "win32")("managed GitHub launchers on Windows", () => {
+  const stage = async (prefix: string) => {
+    const root = await mkdtemp(path.join(os.tmpdir(), prefix));
+    cleanups.push(() => rm(root, { recursive: true, force: true }));
+    const bin = path.join(root, "managed"), realBin = path.join(root, "real");
+    await mkdir(bin); await mkdir(realBin);
+    await writeFile(path.join(bin, "gh"), githubLauncherSource(), { mode: 0o700 });
+    // A real gh.exe stand-in: Windows discovery requires an executable image.
+    await copyFile(process.execPath, path.join(realBin, "gh.exe"));
+    return { root, bin, realBin };
+  };
+  const broker = async (token: string) => {
+    const server = createServer((_req, res) => {
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({ status: "available", env: { GH_TOKEN: token } }));
+    });
+    await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+    cleanups.push(() => new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())));
+    return server.address() as { port: number };
+  };
+  it("discovers gh.exe via PATHEXT on a semicolon-joined PATH", async () => {
+    const { bin, realBin } = await stage("paperclip-github-win-");
+    const { port } = await broker("credential-windows");
+    const env = { ...process.env, ...githubBrokerEnvironment({ GH_TOKEN: "host-token" }, { url: `http://127.0.0.1:${port}`, token: "run-capability" }),
+      PAPERCLIP_API_URL: "", PATH: [bin, realBin, process.env.PATH].join(";") };
+    const result = await exec(process.execPath, [path.join(bin, "gh"), "-e", "process.stdout.write(JSON.stringify({token:process.env.GH_TOKEN??null}))"], { env });
+    expect(JSON.parse(result.stdout)).toEqual({ token: "credential-windows" });
+  });
+  it("resolves a colon-joined POSIX-style PATH handed over by Git Bash", async () => {
+    const { root, bin, realBin } = await stage("paperclip-github-win-posix-");
+    const { port } = await broker("credential-posix-path");
+    const env = { ...process.env, ...githubBrokerEnvironment({}, { url: `http://127.0.0.1:${port}`, token: "run-capability" }),
+      PAPERCLIP_API_URL: "", PATH: ["managed", "real"].join(":") };
+    const result = await exec(process.execPath, [path.join(bin, "gh"), "-e", "process.stdout.write(process.env.GH_TOKEN)"], { cwd: root, env });
+    expect(result.stdout).toBe("credential-posix-path");
+  });
+  it("runs the staged .cmd wrapper from cmd.exe", async () => {
+    const { bin, realBin } = await stage("paperclip-github-win-cmd-");
+    await writeFile(path.join(bin, "gh.cmd"), githubLauncherCommandSource(process.execPath, "gh"));
+    const { port } = await broker("credential-cmd");
+    const env = { ...process.env, ...githubBrokerEnvironment({}, { url: `http://127.0.0.1:${port}`, token: "run-capability" }),
+      PAPERCLIP_API_URL: "", PATH: [bin, realBin, process.env.PATH].join(";") };
+    const result = await exec("cmd.exe", ["/d", "/c", path.join(bin, "gh.cmd"), "-e", "process.stdout.write(process.env.GH_TOKEN)"], { env });
+    expect(result.stdout).toBe("credential-cmd");
+  });
+  it("still exits 127 when no real GitHub binary is installed", async () => {
+    const { bin } = await stage("paperclip-github-win-missing-");
+    const env = { ...process.env, PATH: bin };
+    await expect(exec(process.execPath, [path.join(bin, "gh")], { env }))
+      .rejects.toMatchObject({ code: 127, stderr: expect.stringContaining("not installed") });
   });
 });
