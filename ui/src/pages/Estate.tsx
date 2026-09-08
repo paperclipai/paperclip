@@ -1,7 +1,7 @@
 import { useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Landmark, Home, TrendingUp, Car, Gem, Cpu, Package, AlertCircle } from "lucide-react";
-import { estateApi, type AssetType } from "../api/estate";
+import { Landmark, Home, TrendingUp, Car, Gem, Cpu, Package, AlertCircle, CheckCircle2, Circle } from "lucide-react";
+import { estateApi, type AssetType, type PlanStatusCheckKey, type PlanStatusResult } from "../api/estate";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { EmptyState } from "../components/EmptyState";
@@ -71,6 +71,71 @@ function AssetRow({ name, assetType, currentValueCents }: {
   );
 }
 
+const PLAN_CHECK_LABELS: Record<PlanStatusCheckKey, string> = {
+  hasWill: "Will",
+  hasTrust: "Trust",
+  hasPOA: "Power of Attorney",
+  hasHealthcareDirective: "Healthcare Directive",
+  hasInsurance: "Insurance Policy",
+  hasRetirementAccount: "Retirement Account",
+  hasBeneficiaries: "Beneficiaries Designated",
+  hasAnnualReview: "Annual Review (this year)",
+  hasDocumentVault: "Document Vault",
+};
+
+const ALL_PLAN_CHECKS: PlanStatusCheckKey[] = [
+  "hasWill", "hasTrust", "hasPOA", "hasHealthcareDirective", "hasInsurance",
+  "hasRetirementAccount", "hasBeneficiaries", "hasAnnualReview", "hasDocumentVault",
+];
+
+function PlanStatusSection({ status }: { status: PlanStatusResult }) {
+  const pct = status.score;
+  const color =
+    pct >= 80 ? "bg-green-500" :
+    pct >= 50 ? "bg-yellow-500" :
+    "bg-red-500";
+  const textColor =
+    pct >= 80 ? "text-green-700" :
+    pct >= 50 ? "text-yellow-700" :
+    "text-red-600";
+
+  return (
+    <div className="rounded-lg border border-border bg-card overflow-hidden">
+      <div className="px-4 py-3 border-b border-border bg-muted/30 flex items-center justify-between">
+        <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+          Estate Plan Completeness
+        </p>
+        <span className={cn("text-xs font-semibold tabular-nums", textColor)}>
+          {pct}%
+        </span>
+      </div>
+      <div className="px-4 pt-3 pb-1">
+        <div className="h-1.5 w-full rounded-full bg-muted overflow-hidden mb-3">
+          <div className={cn("h-full rounded-full transition-all", color)} style={{ width: `${pct}%` }} />
+        </div>
+        <p className="text-xs text-muted-foreground mb-3">
+          {status.completedCount} of {status.totalChecks} items complete
+        </p>
+      </div>
+      <div className="divide-y divide-border">
+        {ALL_PLAN_CHECKS.map((key) => {
+          const done = status.checks[key];
+          return (
+            <div key={key} className={cn("flex items-center gap-2.5 px-4 py-2", done ? "opacity-100" : "opacity-70")}>
+              {done
+                ? <CheckCircle2 className="h-3.5 w-3.5 text-green-600 shrink-0" />
+                : <Circle className="h-3.5 w-3.5 text-muted-foreground shrink-0" />}
+              <span className={cn("text-sm", done ? "text-foreground" : "text-muted-foreground")}>
+                {PLAN_CHECK_LABELS[key]}
+              </span>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 export function Estate() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
@@ -90,6 +155,22 @@ export function Estate() {
     queryKey: ["estate", "assets", selectedCompanyId],
     queryFn: () => estateApi.listAssets(selectedCompanyId!),
     enabled: !!selectedCompanyId,
+    staleTime: 5 * 60 * 1000,
+  });
+
+  const estatesQuery = useQuery({
+    queryKey: ["estates", "list", selectedCompanyId],
+    queryFn: () => estateApi.listEstates(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+    staleTime: 5 * 60 * 1000,
+  });
+
+  const primaryEstateId = estatesQuery.data?.estates[0]?.id ?? null;
+
+  const planStatusQuery = useQuery({
+    queryKey: ["estate", "plan-status", primaryEstateId],
+    queryFn: () => estateApi.planStatus(primaryEstateId!),
+    enabled: !!primaryEstateId,
     staleTime: 5 * 60 * 1000,
   });
 
@@ -220,6 +301,11 @@ export function Estate() {
             </div>
           ))}
         </div>
+      )}
+
+      {/* Estate plan completeness */}
+      {planStatusQuery.data && (
+        <PlanStatusSection status={planStatusQuery.data} />
       )}
     </div>
   );

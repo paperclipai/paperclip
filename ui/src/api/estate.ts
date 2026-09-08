@@ -45,6 +45,37 @@ export interface NetWorthResult {
   assetBreakdown: AssetBreakdownEntry[];
 }
 
+export interface EstateItem {
+  id: string;
+  companyId: string;
+  name: string;
+  ownerUserId: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type PlanStatusCheckKey =
+  | "hasWill"
+  | "hasTrust"
+  | "hasPOA"
+  | "hasHealthcareDirective"
+  | "hasInsurance"
+  | "hasRetirementAccount"
+  | "hasBeneficiaries"
+  | "hasAnnualReview"
+  | "hasDocumentVault";
+
+export interface PlanStatusResult {
+  estateId: string;
+  estateName: string;
+  score: number;
+  completedCount: number;
+  totalChecks: number;
+  checks: Record<PlanStatusCheckKey, boolean>;
+  completedItems: PlanStatusCheckKey[];
+  missingItems: PlanStatusCheckKey[];
+}
+
 function qs(params: Record<string, string | undefined>): string {
   const parts = Object.entries(params)
     .filter((e): e is [string, string] => e[1] !== undefined)
@@ -68,4 +99,10 @@ export const estateApi = {
   }) => api.post<EstateAsset>("/estate/assets", data),
 
   deleteAsset: (assetId: string) => api.delete<void>(`/estate/assets/${assetId}`),
+
+  listEstates: (companyId: string) =>
+    api.get<{ estates: EstateItem[] }>(`/estates${qs({ companyId })}`),
+
+  planStatus: (estateId: string) =>
+    api.get<PlanStatusResult>(`/estates/${estateId}/plan-status`),
 };
