@@ -33,6 +33,7 @@ const mockAdaptersApi = vi.hoisted(() => ({ list: vi.fn() }));
 const mockAgentsApi = vi.hoisted(() => ({
   create: vi.fn(),
   adapterModels: vi.fn(),
+  list: vi.fn(),
   hire: vi.fn(),
   instructionsBundle: vi.fn(),
   saveInstructionsFile: vi.fn(),
@@ -180,6 +181,9 @@ describe("OnboardingWizard — which step it lands on", () => {
     mockAdaptersApi.list.mockResolvedValue([]);
     mockGoalsApi.list.mockResolvedValue([]);
     mockAgentsApi.adapterModels.mockResolvedValue([]);
+    // The hire step lists the company's agents first so it can adopt one that
+    // already carries the typed name instead of hiring a duplicate.
+    mockAgentsApi.list.mockResolvedValue([]);
     mockAgentsApi.hire.mockResolvedValue({ agent: { id: "agent-1" }, approval: null });
     mockAgentsApi.instructionsBundle.mockResolvedValue({ entryFile: "AGENTS.md" });
     mockAgentsApi.saveInstructionsFile.mockResolvedValue({});

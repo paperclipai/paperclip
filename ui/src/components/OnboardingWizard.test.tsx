@@ -56,6 +56,10 @@ const mockAgentsApi = vi.hoisted(() => ({
     }),
   ),
   hire: vi.fn(async () => ({ agent: { id: "agent-1" }, approval: null })),
+  // The hire step lists the company's agents first and adopts one that already
+  // carries the typed name on the same source, so a wizard that reopens on the
+  // agent step cannot hire "Ada 2". Empty by default: the company is new.
+  list: vi.fn(async () => [] as Array<{ id: string; name: string; adapterType: string }>),
   instructionsBundle: vi.fn(async () => ({ entryFile: "AGENTS.md" })),
   saveInstructionsFile: vi.fn(async () => ({})),
   // No default implementation: the top-level `beforeEach` sets the "no
@@ -467,6 +471,77 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       expect(document.body.textContent).not.toContain("Organization name");
       expect(document.body.textContent).not.toContain("Model connected");
       expect(document.body.textContent).not.toContain("Mission");
+
+      await act(async () => root.unmount());
+    });
+
+    it("adopts an agent the company already has under that name instead of hiring it twice", async () => {
+      // The wizard can reopen on the agent step for a company that just got
+      // its first agent — the dashboard's agentless offer on a stale list is
+      // one way — with nothing in its state to say the hire happened. The
+      // server numbers a repeat name, so without this the walk produced
+      // "Ada" and "Ada 2". Same name on the same source is the same agent.
+      mockDialog.onboardingOptions = {};
+      mockCompany.companies = [];
+      mockCompany.loading = false;
+      mockCompaniesApi.list.mockResolvedValue([]);
+      mockCompaniesApi.create.mockResolvedValue({ id: "company-new", issuePrefix: "INI" });
+      mockAgentsApi.list.mockResolvedValueOnce([
+        { id: "agent-existing", name: "Ada", adapterType: "claude_local" },
+      ]);
+      mockAdapterRegistry.list = [{ type: "claude_local" }, { type: "codex_local" }];
+      const { root, queryClient } = render();
+      await act(async () => {
+        root.render(
+          <QueryClientProvider client={queryClient}>
+            <OnboardingWizard />
+          </QueryClientProvider>,
+        );
+      });
+      await flushReact();
+
+      const clickText = async (match: (t: string) => boolean) => {
+        const el = [...document.body.querySelectorAll("button")].find((b) =>
+          match(b.textContent?.trim() ?? ""),
+        )!;
+        await act(async () => {
+          el.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        });
+        await flushReact();
+      };
+
+      const nameField = document.body.querySelector(
+        "#onboarding-company-name",
+      ) as HTMLInputElement | null;
+      if (nameField) {
+        await act(async () => {
+          setControlledValue(nameField, "Initech");
+        });
+        await flushReact();
+      } else {
+        const anyName = document.body.querySelector(
+          'input[placeholder="e.g. Northwind Labs"]',
+        ) as HTMLInputElement;
+        await act(async () => {
+          setControlledValue(anyName, "Initech");
+        });
+        await flushReact();
+      }
+      await clickText((t) => t.startsWith("Continue"));
+      const agentField = document.body.querySelector(
+        "#onboarding-agent-name",
+      ) as HTMLInputElement;
+      await act(async () => {
+        setControlledValue(agentField, "ada ");
+      });
+      await flushReact();
+      await clickText((t) => isArcPrimary(t));
+      await pickFirstSource(clickText);
+      await clickText((t) => isArcPrimary(t));
+
+      expect(mockAgentsApi.list).toHaveBeenCalledWith("company-new");
+      expect(mockAgentsApi.hire).not.toHaveBeenCalled();
+      expect(document.body.textContent).toContain("ada is ready to work!");
 
       await act(async () => root.unmount());
     });

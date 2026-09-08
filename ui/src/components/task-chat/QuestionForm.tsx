@@ -34,6 +34,13 @@ export interface QuestionFormProps {
   questionSet: PaperclipQuestionSet;
   initialResponse?: PaperclipQuestionResponse | null;
   implicitCustomAnswer?: boolean;
+  /**
+   * Picking an option only selects it; the submit button sends the answers.
+   * Single-select questions otherwise submit on the click that answers the
+   * last one, which is right for a quick pick and wrong for an answer that
+   * starts work — there the user should press the button on purpose.
+   */
+  explicitSubmit?: boolean;
   draftKey?: string;
   disabled?: boolean;
   imageUploadHandler?: (file: File) => Promise<string>;
@@ -219,6 +226,7 @@ export function QuestionForm({
   questionSet,
   initialResponse,
   implicitCustomAnswer = false,
+  explicitSubmit = false,
   draftKey,
   disabled = false,
   imageUploadHandler,
@@ -326,7 +334,9 @@ export function QuestionForm({
     if (!multiple) {
       setCustomActive((current) => ({ ...current, [question.id]: false }));
       if (page < questionSet.questions.length - 1) setPage(page + 1);
-      else void submit(nextAnswers);
+      // The last answer is the whole response for a quick pick, but a card
+      // that asked for an explicit submit hands that to the button instead.
+      else if (!explicitSubmit) void submit(nextAnswers);
     }
   }
 
@@ -389,7 +399,8 @@ export function QuestionForm({
   const isLastPage = page === questionSet.questions.length - 1;
   const showQuestionActionButton =
     multiple ||
-    (isLastPage && (question.answerMode !== "single_select" || isCustomActive));
+    (isLastPage &&
+      (question.answerMode !== "single_select" || isCustomActive || explicitSubmit));
   const showActionRow = Boolean(
     takeoverActions?.skipButton || onCancel || showQuestionActionButton,
   );

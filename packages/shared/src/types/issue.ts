@@ -1195,6 +1195,11 @@ export interface AskUserQuestionsPayload {
   version: 1;
   title?: string | null;
   submitLabel?: string | null;
+  /**
+   * When true, picking an option never submits the card on its own: the user
+   * has to press the submit button. For answers that start work.
+   */
+  explicitSubmit?: boolean;
   supersedeOnUserComment?: boolean;
   questions: AskUserQuestionsQuestion[];
   /** Exact presentation for a recovered harness request. */

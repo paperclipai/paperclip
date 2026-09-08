@@ -197,9 +197,11 @@ describeEmbeddedPostgres("issue create onboarding first-task routes", () => {
     });
     const payload = interactions[0].payload as {
       supersedeOnUserComment?: boolean;
+      explicitSubmit?: boolean;
       questions: Array<{ selectionMode: string; options: Array<{ id: string; label: string; freeText?: boolean }> }>;
     };
     expect(payload.supersedeOnUserComment).toBe(true);
+    expect(payload.explicitSubmit).toBe(true);
     expect(payload.questions).toHaveLength(1);
     expect(payload.questions[0].selectionMode).toBe("single");
     expect(payload.questions[0].options.map((option) => option.id)).toEqual(["interview", "task"]);

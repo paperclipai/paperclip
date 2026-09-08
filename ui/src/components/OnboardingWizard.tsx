@@ -2025,10 +2025,35 @@ function OnboardingWizardInner({
       // path that clears the role must not reach a hire that silently no-ops.
       if (!agentRole) return;
 
+      const hireName = agentName.trim() || AGENT_ROLE_LABELS[agentRole];
+
+      // The company may already hold this agent. A wizard that reopens on the
+      // agent step after the hire — the dashboard's agentless offer on a stale
+      // list, a restored run — has no `createdAgentId` to stop it, and the
+      // server accepts a repeat name by numbering it, so the customer who
+      // walks the step twice ends up with "Ada" and "Ada 2". An agent with the
+      // same name on the same source is that agent: adopt it and move on to
+      // Review, the way a run that remembers its hire does.
+      const existingAgents = await agentsApi.list(createdCompanyId).catch(() => null);
+      const existing = existingAgents?.find(
+        (agent) =>
+          agent.name.trim().toLowerCase() === hireName.toLowerCase() &&
+          agent.adapterType === adapterType,
+      );
+      if (existing) {
+        if (!stillTheSameCompany(createdCompanyId)) return;
+        setCreatedAgentId(existing.id);
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.agents.list(createdCompanyId)
+        });
+        setStep(5);
+        return;
+      }
+
       const hire = await agentsApi.hire(createdCompanyId, {
         // The name is optional; an agent that reaches here without one is
         // named for the job it was hired to do rather than left blank.
-        name: agentName.trim() || AGENT_ROLE_LABELS[agentRole],
+        name: hireName,
         role: agentRole,
         adapterType,
         adapterConfig: hireAdapterConfig,

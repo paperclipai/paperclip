@@ -747,6 +747,7 @@ function AskUserQuestionsCard({
       questionSet={questionSet}
       initialResponse={initialResponse}
       implicitCustomAnswer={interaction.payload.questionSet === undefined}
+      explicitSubmit={interaction.payload.explicitSubmit === true}
       draftKey={draftKey}
       disabled={!onSubmitInteractionAnswers}
       imageUploadHandler={onUploadImage}

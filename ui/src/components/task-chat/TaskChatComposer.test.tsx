@@ -1584,6 +1584,116 @@ describe("TaskChatComposer", () => {
       ).toBeNull();
     });
 
+    it("waits for the submit button on an explicit-submit single-select question", async () => {
+      const onSubmit = vi.fn();
+      render(
+        <TaskChatComposer
+          onAdd={vi.fn()}
+          workMode="standard"
+          takeover={{
+            id: "opening-question",
+            label: "Questions",
+            pendingCount: 1,
+            inlineSkip: true,
+            content: (
+              <QuestionForm
+                id="first-task-opening"
+                questionSet={{
+                  schema: "paperclip.question_set.v1",
+                  submitLabel: "Continue",
+                  questions: [
+                    {
+                      id: "first-task-opening",
+                      prompt: "What would you like to do?",
+                      required: true,
+                      answerMode: "single_select",
+                      options: [
+                        { id: "interview", label: "Interview me" },
+                        { id: "task", label: "I have a task in mind" },
+                      ],
+                    },
+                  ],
+                }}
+                explicitSubmit
+                onSubmit={onSubmit}
+              />
+            ),
+            onDismiss: vi.fn(),
+            onSkip: vi.fn(),
+          }}
+        />,
+      );
+
+      const buttons = () =>
+        Array.from(container.querySelectorAll<HTMLButtonElement>("button"));
+      const interview = buttons().find((button) =>
+        button.textContent?.includes("Interview me"),
+      );
+      expect(interview).not.toBeUndefined();
+
+      // Picking the option only selects it: nothing is sent yet.
+      flushSync(() => interview?.click());
+      await flushAsync();
+      expect(interview?.getAttribute("data-selected")).toBe("true");
+      expect(onSubmit).not.toHaveBeenCalled();
+
+      // The submit button carries the card's label and does the sending.
+      const submit = buttons().find(
+        (button) => button.textContent?.trim() === "Continue",
+      );
+      expect(submit).not.toBeUndefined();
+      expect(submit?.disabled).toBe(false);
+      flushSync(() => submit?.click());
+      await flushAsync();
+      expect(onSubmit).toHaveBeenCalledTimes(1);
+      expect(onSubmit.mock.calls[0]?.[0]).toMatchObject({
+        answers: { "first-task-opening": { selectedOptionIds: ["interview"] } },
+      });
+    });
+
+    it("submits a single-select answer on the click by default", async () => {
+      const onSubmit = vi.fn();
+      render(
+        <TaskChatComposer
+          onAdd={vi.fn()}
+          workMode="standard"
+          takeover={{
+            id: "quick-pick",
+            label: "Questions",
+            pendingCount: 1,
+            inlineSkip: true,
+            content: (
+              <QuestionForm
+                id="quick-pick"
+                questionSet={{
+                  schema: "paperclip.question_set.v1",
+                  questions: [
+                    {
+                      id: "env",
+                      prompt: "Where?",
+                      required: true,
+                      answerMode: "single_select",
+                      options: [{ id: "staging", label: "Staging" }],
+                    },
+                  ],
+                }}
+                onSubmit={onSubmit}
+              />
+            ),
+            onDismiss: vi.fn(),
+            onSkip: vi.fn(),
+          }}
+        />,
+      );
+
+      const staging = Array.from(
+        container.querySelectorAll<HTMLButtonElement>("button"),
+      ).find((button) => button.textContent?.includes("Staging"));
+      flushSync(() => staging?.click());
+      await flushAsync();
+      expect(onSubmit).toHaveBeenCalledTimes(1);
+    });
+
     it("places Skip beside Submit answers for structured questions", () => {
       render(
         <TaskChatComposer
