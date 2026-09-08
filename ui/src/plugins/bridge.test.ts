@@ -24,7 +24,10 @@ import {
   type PluginBridgeContextValue,
 } from "./bridge";
 import { initPluginBridge } from "./bridge-init";
-import { _createReactShimSourceForTests } from "./slots";
+import {
+  _createReactDomShimSourceForTests,
+  _createReactShimSourceForTests,
+} from "./slots";
 
 function clickEvent(
   overrides: Partial<ReactMouseEvent<HTMLAnchorElement>> = {},
@@ -334,6 +337,23 @@ describe("plugin React shim", () => {
     expect(source).toContain("export const useId = R.useId;");
     expect(source).toContain("export const useSyncExternalStore = R.useSyncExternalStore;");
     expect(source).toContain("export const startTransition = R.startTransition;");
+  });
+});
+
+describe("plugin ReactDOM shim", () => {
+  it("re-exports every named export from the host ReactDOM module", () => {
+    const source = _createReactDomShimSourceForTests(ReactDOM);
+
+    for (const name of Object.keys(ReactDOM).sort()) {
+      if (name === "default") continue;
+      if (!/^[A-Za-z_$][\w$]*$/.test(name)) continue;
+      expect(source).toContain(`export const ${name} = RD.${name};`);
+    }
+
+    expect(source).toContain("export default RD;");
+    expect(source).toContain("export const createPortal = RD.createPortal;");
+    expect(source).toContain("export const flushSync = RD.flushSync;");
+    expect(source).toContain("export const unstable_batchedUpdates = RD.unstable_batchedUpdates;");
   });
 });
 
