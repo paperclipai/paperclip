@@ -12,6 +12,10 @@ import {
   assets,
   companies,
   companyMemberships,
+  companySecretBindings,
+  companySecretProposals,
+  companySecrets,
+  companySecretVersions,
   costEvents,
   createDb,
   executionWorkspaces,
@@ -22,8 +26,10 @@ import {
   issueRelations,
   issueThreadInteractions,
   issues,
+  instanceUserRoles,
   pluginManagedResources,
   plugins,
+  principalPermissionGrants,
   projects,
 } from "@paperclipai/db";
 import {
@@ -33,6 +39,7 @@ import {
 import { buildHostServices } from "../services/plugin-host-services.js";
 import { heartbeatService } from "../services/heartbeat.js";
 import { drainHeartbeatRunsToQuiescence } from "./helpers/drain-heartbeat-runs.js";
+import { createSecretProposalsService } from "../services/secret-proposals.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -61,9 +68,13 @@ if (!embeddedPostgresSupport.supported) {
 describeEmbeddedPostgres("plugin orchestration APIs", () => {
   let db!: ReturnType<typeof createDb>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+  let secretsRoot: string | null = null;
+  const previousSecretsMasterKeyFile = process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE;
   const tempRoots: string[] = [];
 
   beforeAll(async () => {
+    secretsRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-plugin-orchestration-secrets-"));
+    process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE = path.join(secretsRoot, "master.key");
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-plugin-orchestration-");
     db = createDb(tempDb.connectionString);
   }, 20_000);
@@ -109,7 +120,11 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
     await db.delete(agentWakeupRequests);
     await db.delete(issueRelations);
     await db.delete(issueComments);
+    await db.delete(companySecretProposals);
     await db.delete(issueThreadInteractions);
+    await db.delete(companySecretBindings);
+    await db.delete(companySecretVersions);
+    await db.delete(companySecrets);
     await db.delete(issueAttachments);
     await db.delete(assets);
     await db.delete(approvals);
@@ -118,13 +133,18 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
     await db.delete(pluginManagedResources);
     await db.delete(projects);
     await db.delete(plugins);
+    await db.delete(principalPermissionGrants);
     await db.delete(companyMemberships);
+    await db.delete(instanceUserRoles);
     await db.delete(agents);
     await db.delete(companies);
   });
 
   afterAll(async () => {
     await tempDb?.cleanup();
+    if (previousSecretsMasterKeyFile === undefined) delete process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE;
+    else process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE = previousSecretsMasterKeyFile;
+    if (secretsRoot) await fs.rm(secretsRoot, { recursive: true, force: true });
   });
 
   async function seedCompanyAndAgent() {
@@ -979,6 +999,119 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
     return interactionId;
   }
 
+  async function seedGovernedSecretBinding(options: {
+    conflictingConfig?: boolean;
+    acceptedWithoutReceipt?: boolean;
+    grantAgentsConfigure?: boolean;
+  } = {}) {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const actorUserId = randomUUID();
+    const issueId = randomUUID();
+    const heartbeatRunId = randomUUID();
+    await db.insert(companyMemberships).values({
+      companyId,
+      principalType: "user",
+      principalId: actorUserId,
+      status: "active",
+      membershipRole: "owner",
+    });
+    // Keep a stale instance-admin row in every fixture. Gateway attribution
+    // must never use it as authority; successful fixtures receive the explicit
+    // company-scoped grant that the governed effect requires.
+    await db.insert(instanceUserRoles).values({ userId: actorUserId, role: "instance_admin" });
+    if (options.grantAgentsConfigure !== false) {
+      await db.insert(principalPermissionGrants).values({
+        companyId,
+        principalType: "user",
+        principalId: actorUserId,
+        permissionKey: "agents:configure",
+        grantedByUserId: actorUserId,
+      });
+    }
+    await db.update(agents).set({
+      runtimeConfig: { heartbeat: { maxConcurrentRuns: 1 } },
+      ...(options.conflictingConfig
+        ? { adapterConfig: { command: "true", env: { GATEWAY_TOKEN: { type: "plain", value: "test-placeholder" } } } }
+        : {}),
+    }).where(eq(agents.id, agentId));
+    await db.insert(heartbeatRuns).values({
+      id: heartbeatRunId,
+      companyId,
+      agentId,
+      status: "running",
+      invocationSource: "assignment",
+      responsibleUserId: actorUserId,
+      contextSnapshot: { issueId },
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Create governed secret binding",
+      status: "in_review",
+      priority: "high",
+      assigneeAgentId: agentId,
+      executionRunId: heartbeatRunId,
+      responsibleUserId: actorUserId,
+    });
+
+    const proposals = createSecretProposalsService(db);
+    const secretProposal = await proposals.createSecret({
+      companyId,
+      heartbeatRunId,
+      registerForRedaction: async () => {},
+    }, {
+      name: `tests/gateway/${randomUUID()}`,
+      key: "GATEWAY_TOKEN",
+      value: "test-only-secret-material",
+      justification: "Exercise the governed gateway acceptance path",
+    });
+    const bindingProposal = await proposals.createBinding({ companyId, heartbeatRunId }, {
+      secretProposalId: secretProposal.id,
+      configPath: "env.GATEWAY_TOKEN",
+      justification: "Bind the test credential through a governed confirmation",
+      bindingTargetPolicy: "self_and_reports",
+    });
+    const interactionId = bindingProposal.interactionId!;
+    if (options.acceptedWithoutReceipt) {
+      await db.update(issueThreadInteractions).set({
+        status: "accepted",
+        result: { version: 1, outcome: "accepted" },
+        resolvedByUserId: actorUserId,
+        resolvedAt: new Date(),
+      }).where(eq(issueThreadInteractions.id, interactionId));
+    }
+    return {
+      companyId,
+      agentId,
+      actorUserId,
+      issueId,
+      heartbeatRunId,
+      secretProposalId: secretProposal.id,
+      bindingProposalId: bindingProposal.id,
+      interactionId,
+    };
+  }
+
+  async function waitForSecretProposalWake(
+    companyId: string,
+    agentId: string,
+    executionStatus: "executed" | "failed",
+  ) {
+    for (let attempt = 0; attempt < 30; attempt += 1) {
+      const runs = await db.select().from(heartbeatRuns).where(and(
+        eq(heartbeatRuns.companyId, companyId),
+        eq(heartbeatRuns.agentId, agentId),
+      ));
+      const match = runs.find((run) => {
+        const snapshot = run.contextSnapshot as { secretProposal?: { executionStatus?: string } } | null;
+        return snapshot?.secretProposal?.executionStatus === executionStatus;
+      });
+      if (match) return match;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    throw new Error(`Timed out waiting for ${executionStatus} secret-proposal wake`);
+  }
+
   it("respondInteraction fails closed when actorUserId is omitted", async () => {
     const { companyId, agentId } = await seedCompanyAndAgent();
     const issueId = randomUUID();
@@ -1057,6 +1190,182 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
     expect(result.applied).toBe(true);
     const [row] = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, interactionId));
     expect(row?.status).toBe("accepted");
+  });
+
+  it("respondInteraction cascades an accepted secret binding and wakes with an executed receipt", async () => {
+    const fixture = await seedGovernedSecretBinding();
+    const services = buildHostServices(
+      db,
+      "plugin-record-id",
+      "paperclip.gateway",
+      createEventBusStub(),
+      undefined,
+      { heartbeatRuntimeEnv: {} },
+    );
+
+    const result = await services.issues.respondInteraction({
+      issueId: fixture.issueId,
+      interactionId: fixture.interactionId,
+      companyId: fixture.companyId,
+      action: "accept",
+      actorUserId: fixture.actorUserId,
+    });
+
+    expect(result.applied).toBe(true);
+    expect(result.interaction.result).toMatchObject({
+      secretProposal: { status: "executed" },
+    });
+    expect(await db.select().from(companySecretProposals)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: fixture.secretProposalId, status: "approved" }),
+      expect.objectContaining({ id: fixture.bindingProposalId, status: "approved" }),
+    ]));
+    const [binding] = await db.select().from(companySecretBindings);
+    const [agent] = await db.select().from(agents).where(eq(agents.id, fixture.agentId));
+    expect(agent?.adapterConfig).toMatchObject({
+      env: { GATEWAY_TOKEN: { type: "secret_ref", secretId: binding?.secretId, version: "latest" } },
+    });
+    const wake = await waitForSecretProposalWake(fixture.companyId, fixture.agentId, "executed");
+    expect(wake.contextSnapshot).toMatchObject({
+      secretProposal: {
+        proposalId: fixture.bindingProposalId,
+        configPath: "env.GATEWAY_TOKEN",
+        executionStatus: "executed",
+      },
+    });
+  });
+
+  it("respondInteraction ignores a stale instance-admin row and allows an authorized replay", async () => {
+    const fixture = await seedGovernedSecretBinding({ grantAgentsConfigure: false });
+    const services = buildHostServices(
+      db,
+      "plugin-record-id",
+      "paperclip.gateway",
+      createEventBusStub(),
+      undefined,
+      { heartbeatRuntimeEnv: {} },
+    );
+
+    await expect(services.issues.respondInteraction({
+      issueId: fixture.issueId,
+      interactionId: fixture.interactionId,
+      companyId: fixture.companyId,
+      action: "accept",
+      actorUserId: fixture.actorUserId,
+    })).rejects.toThrow("Missing permission: agents:configure");
+
+    const [acceptedWithoutReceipt] = await db
+      .select()
+      .from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.id, fixture.interactionId));
+    expect(acceptedWithoutReceipt).toMatchObject({
+      status: "accepted",
+      result: { version: 1, outcome: "accepted" },
+    });
+    expect((acceptedWithoutReceipt?.result as { secretProposal?: unknown } | null)?.secretProposal)
+      .toBeUndefined();
+    expect(await db.select().from(companySecrets)).toHaveLength(0);
+    expect(await db.select().from(companySecretBindings)).toHaveLength(0);
+    expect(await db.select().from(companySecretProposals)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: fixture.secretProposalId, status: "pending" }),
+      expect.objectContaining({ id: fixture.bindingProposalId, status: "pending" }),
+    ]));
+    const [unchangedAgent] = await db.select().from(agents).where(eq(agents.id, fixture.agentId));
+    expect(unchangedAgent?.adapterConfig).toEqual({ command: "true" });
+
+    await db.insert(principalPermissionGrants).values({
+      companyId: fixture.companyId,
+      principalType: "user",
+      principalId: fixture.actorUserId,
+      permissionKey: "agents:configure",
+      grantedByUserId: fixture.actorUserId,
+    });
+    const repaired = await services.issues.respondInteraction({
+      issueId: fixture.issueId,
+      interactionId: fixture.interactionId,
+      companyId: fixture.companyId,
+      action: "accept",
+      actorUserId: fixture.actorUserId,
+    });
+
+    expect(repaired).toMatchObject({
+      applied: false,
+      interaction: { result: { secretProposal: { status: "executed" } } },
+    });
+    expect(await db.select().from(companySecrets)).toHaveLength(1);
+    expect(await db.select().from(companySecretBindings)).toHaveLength(1);
+  });
+
+  it("respondInteraction records a terminal failure when the secret binding cannot be applied", async () => {
+    const fixture = await seedGovernedSecretBinding({ conflictingConfig: true });
+    const services = buildHostServices(
+      db,
+      "plugin-record-id",
+      "paperclip.gateway",
+      createEventBusStub(),
+      undefined,
+      { heartbeatRuntimeEnv: {} },
+    );
+
+    const result = await services.issues.respondInteraction({
+      issueId: fixture.issueId,
+      interactionId: fixture.interactionId,
+      companyId: fixture.companyId,
+      action: "accept",
+      actorUserId: fixture.actorUserId,
+    });
+
+    expect(result.applied).toBe(true);
+    expect(result.interaction.result).toMatchObject({
+      secretProposal: { status: "failed", errorCode: "http_409" },
+    });
+    expect(await db.select().from(companySecrets)).toHaveLength(0);
+    expect(await db.select().from(companySecretBindings)).toHaveLength(0);
+    expect(await db.select().from(companySecretProposals)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: fixture.secretProposalId, status: "pending" }),
+      expect.objectContaining({ id: fixture.bindingProposalId, status: "rejected" }),
+    ]));
+    const [agent] = await db.select().from(agents).where(eq(agents.id, fixture.agentId));
+    expect(agent?.adapterConfig).toMatchObject({
+      env: { GATEWAY_TOKEN: { type: "plain", value: "test-placeholder" } },
+    });
+    await expect(waitForSecretProposalWake(fixture.companyId, fixture.agentId, "failed"))
+      .resolves.toMatchObject({ contextSnapshot: expect.objectContaining({ secretProposal: expect.objectContaining({ executionStatus: "failed" }) }) });
+  });
+
+  it("respondInteraction idempotently repairs an accepted card that has no execution receipt", async () => {
+    const fixture = await seedGovernedSecretBinding({ acceptedWithoutReceipt: true });
+    const services = buildHostServices(
+      db,
+      "plugin-record-id",
+      "paperclip.gateway",
+      createEventBusStub(),
+      undefined,
+      { heartbeatRuntimeEnv: {} },
+    );
+
+    const first = await services.issues.respondInteraction({
+      issueId: fixture.issueId,
+      interactionId: fixture.interactionId,
+      companyId: fixture.companyId,
+      action: "accept",
+      actorUserId: fixture.actorUserId,
+    });
+    const second = await services.issues.respondInteraction({
+      issueId: fixture.issueId,
+      interactionId: fixture.interactionId,
+      companyId: fixture.companyId,
+      action: "accept",
+      actorUserId: fixture.actorUserId,
+    });
+
+    expect(first).toMatchObject({ applied: false, interaction: { result: { secretProposal: { status: "executed" } } } });
+    expect(second).toMatchObject({ applied: false, interaction: { result: { secretProposal: { status: "executed" } } } });
+    expect(await db.select().from(companySecrets)).toHaveLength(1);
+    expect(await db.select().from(companySecretBindings)).toHaveLength(1);
+    expect(await db.select().from(companySecretProposals)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: fixture.secretProposalId, status: "approved" }),
+      expect.objectContaining({ id: fixture.bindingProposalId, status: "approved" }),
+    ]));
   });
 
   it.each(["accept", "reject"] as const)(
