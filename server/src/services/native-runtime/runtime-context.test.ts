@@ -225,6 +225,8 @@ describe("buildNativeRuntimeContext", () => {
       .toBe("Follow the agent instructions.\n");
     expect(await readFile(path.join(context.instructions.bundle.rootPath, "references", "policy.md"), "utf8"))
       .toBe("Company policy sibling.\n");
+    const unselected = await buildNativeRuntimeContext({ ...input, runtimeConfig: {} });
+    expect(unselected.skills).toEqual([]);
     expect(context.skills).toHaveLength(1);
     expect(context.skills[0]).toMatchObject({
       key: "company-1/reviewer",

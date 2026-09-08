@@ -1,4 +1,5 @@
 name: Release
+run-name: ${{ inputs.channel == 'preview' && format('Stack deploy {0} build', inputs.request_id) || 'Release' }}
 
 on:
   push:
@@ -17,12 +18,21 @@ on:
           - stable
           - beta
           - nightly
+          - preview
         default: stable
       source_ref:
-        description: (stable) Commit SHA, branch, or tag to publish as stable
+        description: Stable source ref, or full immutable SHA for a preview build
         required: true
         type: string
         default: master
+      request_id:
+        description: (preview) CLI correlation UUID
+        type: string
+        default: ""
+      preview_migrator:
+        description: (preview) Publish isolated shared and database packages if missing
+        type: boolean
+        default: false
       stable_date:
         description: Enter a UTC date in YYYY-MM-DD format, for example 2026-03-18. Do not enter a version string. The workflow will resolve that date to a stable version such as 2026.318.0, then 2026.318.1 for the next same-day stable.
         required: false
@@ -46,7 +56,7 @@ on:
         default: false
 
 concurrency:
-  group: release-${{ github.event_name }}-${{ github.ref }}
+  group: ${{ inputs.channel == 'preview' && format('preview-{0}', inputs.source_ref) || format('release-{0}-{1}', github.event_name, github.ref) }}
   cancel-in-progress: false
 
 env:
@@ -64,6 +74,219 @@ env:
   NPM_PUBLISH_VERIFY_DELAY_SECONDS: "10"
 
 jobs:
+  plan_preview:
+    name: Check preview artifacts
+    if: github.ref == 'refs/heads/master' && github.event_name == 'workflow_dispatch' && inputs.channel == 'preview' && !inputs.dry_run
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      image: ${{ steps.plan.outputs.image }}
+      packages: ${{ steps.plan.outputs.packages }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+      - name: Validate immutable source and inspect existing artifacts
+        id: plan
+        env:
+          SOURCE_SHA: ${{ inputs.source_ref }}
+          REQUEST_ID: ${{ inputs.request_id }}
+          PREVIEW_MIGRATOR: ${{ inputs.preview_migrator }}
+        run: node scripts/preview-artifacts.mjs plan "$SOURCE_SHA" "$REQUEST_ID" "$PREVIEW_MIGRATOR"
+
+  package_preview:
+    name: Build preview migrator
+    needs: plan_preview
+    if: needs.plan_preview.outputs.packages == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          path: trusted
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ inputs.source_ref }}
+          path: source
+          persist-credentials: false
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        with:
+          version: 9.15.4
+          run_install: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+      - name: Install build dependencies without lifecycle scripts
+        working-directory: source
+        run: pnpm install --ignore-scripts --no-frozen-lockfile
+      - name: Build and pack exact-source preview packages
+        env:
+          SOURCE_SHA: ${{ inputs.source_ref }}
+        run: node trusted/scripts/preview-artifacts.mjs pack source packages "$SOURCE_SHA"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: preview-packages
+          overwrite: true
+          path: packages/*.tgz
+          if-no-files-found: error
+          retention-days: 7
+
+  publish_preview:
+    name: Publish preview migrator
+    needs: [plan_preview, package_preview]
+    if: github.ref == 'refs/heads/master' && needs.plan_preview.outputs.packages == 'true' && needs.package_preview.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # Reuse release.yml's established npm trusted-publisher identity. This job
+    # publishes only isolated preview versions; it cannot advance lane tags.
+    environment: npm-canary
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+      - name: Install npm with trusted publishing support
+        run: npm install --global npm@11.18.0 --ignore-scripts
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: preview-packages
+          path: preview-packages
+      - name: Publish immutable preview packages without running package code
+        env:
+          SOURCE_SHA: ${{ inputs.source_ref }}
+        run: node scripts/preview-artifacts.mjs publish preview-packages "$SOURCE_SHA"
+
+  image_preview:
+    name: Build preview cloud image
+    needs: plan_preview
+    if: needs.plan_preview.outputs.image == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ inputs.source_ref }}
+          persist-credentials: false
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        with:
+          version: 9.15.4
+          run_install: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+      - name: Prepare locked image context
+        env:
+          SOURCE_SHA: ${{ inputs.source_ref }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          pnpm install --resolution-only --ignore-scripts --ignore-pnpmfile --no-frozen-lockfile
+          echo "TOOLS_EPOCH=$(date -u +%G-W%V)" >> "$GITHUB_ENV"
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
+      - name: Build the immutable cloud image without registry credentials
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+        with:
+          context: .
+          target: cloud
+          platforms: linux/amd64
+          push: false
+          provenance: false # Docker archives cannot carry registry attestations.
+          outputs: type=docker,dest=${{ runner.temp }}/preview-image.tar
+          tags: ghcr.io/paperclipai/paperclip:sha-${{ inputs.source_ref }}-cloud
+          build-args: |
+            CLOUD_BUNDLED_PLUGINS=daytona
+            CLOUD_BUNDLED_SERVER_DEPS=@sentry/node
+            PAPERCLIP_BUILD_COMMIT=${{ inputs.source_ref }}
+            PAPERCLIP_BUILD_VERSION=0.0.0-preview.g${{ inputs.source_ref }}
+            CLI_TOOLS_CACHE_EPOCH=${{ env.TOOLS_EPOCH }}
+          labels: |
+            org.opencontainers.image.revision=${{ inputs.source_ref }}
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: preview-image
+          overwrite: true
+          path: ${{ runner.temp }}/preview-image.tar
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 1
+
+  publish_image_preview:
+    name: Publish preview cloud image
+    needs: [plan_preview, image_preview]
+    if: github.ref == 'refs/heads/master' && needs.plan_preview.outputs.image == 'true' && needs.image_preview.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # This existing environment has an external master-only branch policy.
+    environment: npm-canary
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: preview-image
+          path: preview-image
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Verify image identity and publish without executing image code
+        env:
+          SOURCE_SHA: ${{ inputs.source_ref }}
+        run: node scripts/preview-artifacts.mjs publish-image preview-image/preview-image.tar "$SOURCE_SHA"
+
+  result_preview:
+    name: Verify preview artifacts
+    needs: [plan_preview, image_preview, publish_image_preview, package_preview, publish_preview]
+    if: >-
+      always() && needs.plan_preview.result == 'success' &&
+      (needs.publish_image_preview.result == 'success' || needs.plan_preview.outputs.image == 'false') &&
+      (needs.publish_preview.result == 'success' || needs.plan_preview.outputs.packages == 'false')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+      - name: Confirm exact artifacts are visible
+        env:
+          SOURCE_SHA: ${{ inputs.source_ref }}
+          REQUEST_ID: ${{ inputs.request_id }}
+          PREVIEW_MIGRATOR: ${{ inputs.preview_migrator }}
+        run: node scripts/preview-artifacts.mjs result "$SOURCE_SHA" "$REQUEST_ID"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: stack-deploy-result
+          overwrite: true
+          path: stack-deploy-result/result.json
+          if-no-files-found: error
+          retention-days: 30
+
   verify_canary:
     if: github.event_name == 'push'
     uses: ./.github/workflows/release-verify.yml

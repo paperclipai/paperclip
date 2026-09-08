@@ -159,7 +159,7 @@ import {
   assertManagedProfileRecoveryBinding,
   resolvePaperclipRunnerNativeProviderInput,
 } from "./native-runtime/provider-profile.js";
-import type { NativeRunHistoricalSpan } from "./native-runtime/native-run-trace.js";
+import { recordFailedSkillPreparation, type NativeRunHistoricalSpan } from "./native-runtime/native-run-trace.js";
 import {
   parseNativeExecutionInput,
   type NativeExecutionInput,
@@ -19128,18 +19128,39 @@ export function heartbeatService(
       const runtimeSkillPreference = readPaperclipSkillSyncPreference(
         effectiveResolvedConfig,
       );
-      const runtimeSkillEntries = await companySkills.listRuntimeSkillEntries(
-        agent.companyId,
-        {
-          versionSelections: skillVersionSelectionMap(
-            runtimeSkillPreference.desiredSkillEntries,
+      const nativeRunnerPreparationSpans: NativeRunHistoricalSpan[] = [];
+      const skillsPrepareStartedAtMs = Date.now();
+      const runtimeSkillEntries = await (async () => {
+        try {
+          return await companySkills.listRuntimeSkillEntries(
+            agent.companyId,
             {
-              versionPinsEnabled:
-                resolvedInstanceSettings.experimental.enableBetaSkills === true,
+              versionSelections: skillVersionSelectionMap(
+                runtimeSkillPreference.desiredSkillEntries,
+                {
+                  versionPinsEnabled:
+                    resolvedInstanceSettings.experimental.enableBetaSkills === true,
+                },
+              ),
             },
-          ),
-        },
-      );
+          );
+        } catch (error) {
+          if (agent.adapterType === "paperclip_runner") {
+            await recordFailedSkillPreparation({
+              runId: run.id,
+              startedAtMs: skillsPrepareStartedAtMs,
+              onEvent: async (event) => { await appendRunEvent(run, event); },
+            });
+          }
+          throw error;
+        }
+      })();
+      nativeRunnerPreparationSpans.push({
+        name: "skills.prepare",
+        parentName: "task.prepare",
+        startedAtMs: skillsPrepareStartedAtMs,
+        endedAtMs: Date.now(),
+      });
       let runtimeConfig: Record<string, unknown> = {
         ...effectiveResolvedConfig,
         paperclipRuntimeSkills: runtimeSkillEntries,
@@ -19823,7 +19844,6 @@ export function heartbeatService(
           })
           .where(eq(heartbeatRuns.id, run.id));
       }
-      const nativeRunnerPreparationSpans: NativeRunHistoricalSpan[] = [];
       const environmentAcquireStartedAtMs = Date.now();
       let acquiredEnvironment: Awaited<
         ReturnType<typeof envOrchestrator.acquireForRun>
