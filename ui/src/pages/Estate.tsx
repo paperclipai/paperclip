@@ -1,7 +1,7 @@
 import { useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Landmark, Home, TrendingUp, Car, Gem, Cpu, Package, AlertCircle, CheckCircle2, Circle, Users } from "lucide-react";
-import { estateApi, type AssetType, type PlanStatusCheckKey, type PlanStatusResult, type NetWorthProjectionResult, type EstateBeneficiary } from "../api/estate";
+import { Landmark, Home, TrendingUp, Car, Gem, Cpu, Package, AlertCircle, CheckCircle2, Circle, Users, Shield } from "lucide-react";
+import { estateApi, type AssetType, type PlanStatusCheckKey, type PlanStatusResult, type NetWorthProjectionResult, type EstateBeneficiary, type EstateTrust } from "../api/estate";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { EmptyState } from "../components/EmptyState";
@@ -252,6 +252,65 @@ function PlanStatusSection({ status }: { status: PlanStatusResult }) {
   );
 }
 
+const TRUST_TYPE_LABELS: Record<string, string> = {
+  revocable: "Revocable",
+  irrevocable: "Irrevocable",
+  testamentary: "Testamentary",
+  special_needs: "Special Needs",
+};
+
+const FUNDING_STATUS_COLORS: Record<string, string> = {
+  unfunded: "text-amber-600",
+  partially_funded: "text-blue-600",
+  fully_funded: "text-green-600",
+};
+
+const FUNDING_STATUS_LABELS: Record<string, string> = {
+  unfunded: "Unfunded",
+  partially_funded: "Partially Funded",
+  fully_funded: "Fully Funded",
+};
+
+function TrustsSection({ trusts }: { trusts: EstateTrust[] }) {
+  return (
+    <div className="rounded-lg border border-border bg-card overflow-hidden">
+      <div className="px-4 py-3 border-b border-border bg-muted/30 flex items-center gap-2">
+        <Shield className="h-3.5 w-3.5 text-muted-foreground" />
+        <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+          Trusts
+        </p>
+        <span className="ml-auto text-xs text-muted-foreground">{trusts.length} total</span>
+      </div>
+      {trusts.length === 0 ? (
+        <div className="px-4 py-8 text-center text-sm text-muted-foreground">
+          No trusts recorded yet.
+        </div>
+      ) : (
+        trusts.map((t) => (
+          <div
+            key={t.id}
+            className="flex items-start gap-3 px-4 py-3 border-b border-border last:border-b-0"
+          >
+            <div className="h-7 w-7 rounded-md bg-muted flex items-center justify-center shrink-0">
+              <Shield className="h-3.5 w-3.5 text-muted-foreground" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-medium truncate">{t.trustName}</p>
+              <p className="text-xs text-muted-foreground">
+                {TRUST_TYPE_LABELS[t.trustType] ?? t.trustType}
+                {t.successorTrusteeName && ` · Successor: ${t.successorTrusteeName}`}
+              </p>
+            </div>
+            <span className={cn("text-xs font-medium shrink-0", FUNDING_STATUS_COLORS[t.fundingStatus] ?? "text-muted-foreground")}>
+              {FUNDING_STATUS_LABELS[t.fundingStatus] ?? t.fundingStatus}
+            </span>
+          </div>
+        ))
+      )}
+    </div>
+  );
+}
+
 const DESIGNATION_LABELS: Record<string, string> = {
   primary: "Primary",
   contingent: "Contingent",
@@ -361,6 +420,13 @@ export function Estate() {
   const beneficiariesQuery = useQuery({
     queryKey: ["estate", "beneficiaries", primaryEstateId],
     queryFn: () => estateApi.listBeneficiaries(primaryEstateId!),
+    enabled: !!primaryEstateId,
+    staleTime: 5 * 60 * 1000,
+  });
+
+  const trustsQuery = useQuery({
+    queryKey: ["estate", "trusts", primaryEstateId],
+    queryFn: () => estateApi.listTrusts(primaryEstateId!),
     enabled: !!primaryEstateId,
     staleTime: 5 * 60 * 1000,
   });
@@ -509,6 +575,11 @@ export function Estate() {
       {/* Estate plan completeness */}
       {planStatusQuery.data && (
         <PlanStatusSection status={planStatusQuery.data} />
+      )}
+
+      {/* Trusts */}
+      {trustsQuery.data && (
+        <TrustsSection trusts={trustsQuery.data.trusts} />
       )}
 
       {/* Beneficiaries */}

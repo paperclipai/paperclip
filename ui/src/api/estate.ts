@@ -91,6 +91,23 @@ export interface NetWorthProjectionResult {
   projections: ProjectionYear[];
 }
 
+export type TrustType = "revocable" | "irrevocable" | "testamentary" | "special_needs";
+export type TrustFundingStatus = "unfunded" | "partially_funded" | "fully_funded";
+
+export interface EstateTrust {
+  id: string;
+  estateId: string;
+  companyId: string;
+  trustName: string;
+  trustType: TrustType;
+  trusteeUserId: string | null;
+  successorTrusteeName: string | null;
+  fundingStatus: TrustFundingStatus;
+  notes: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export type DesignationType = "primary" | "contingent" | "per_stirpes";
 
 export interface EstateBeneficiary {
@@ -145,4 +162,7 @@ export const estateApi = {
 
   listBeneficiaries: (estateId: string) =>
     api.get<{ beneficiaries: EstateBeneficiary[] }>(`/estates/${estateId}/beneficiaries`),
+
+  listTrusts: (estateId: string) =>
+    api.get<{ trusts: EstateTrust[] }>(`/estates/${estateId}/trusts`),
 };
