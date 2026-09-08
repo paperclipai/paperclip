@@ -7,7 +7,7 @@ let child: ChildProcess;
 let stopping = false;
 let restarting = false;
 function launch(first: boolean) {
-  child = spawn(
+  const launched = spawn(
     process.execPath,
     [
       "--import",
@@ -17,8 +17,10 @@ function launch(first: boolean) {
     ],
     { stdio: "inherit", detached: true, env: process.env },
   );
-  child.once("exit", (code) => {
-    if (!stopping && !restarting) process.exit(code ?? 1);
+  child = launched;
+  launched.once("exit", (code) => {
+    // An old child's exit notification may arrive after its replacement starts.
+    if (child === launched && !stopping && !restarting) process.exit(code ?? 1);
   });
 }
 async function stopChild() {
@@ -50,6 +52,12 @@ for (const signal of ["SIGTERM", "SIGINT"] as const)
     clearInterval(timer);
     void stopChild().finally(() => process.exit(0));
   });
+// Also clean up after an unexpected supervisor exit; the server is detached
+// only so the restart test can stop its entire owned process group.
+process.on("exit", () => {
+  if (!child?.pid) return;
+  try { process.kill(-child.pid, "SIGKILL"); } catch {}
+});
 launch(true);
 const timer = setInterval(async () => {
   if (stopping || restarting) return;

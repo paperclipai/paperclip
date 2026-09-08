@@ -112,6 +112,6 @@ Open **Chat & Comments / Connection Reviews**. The production task thread/card a
 Connections queue cover pending, dismissed/reopened, multiple requests, each
 submitting action, recoverable errors, concurrent resolution, approved/executing,
 success/failure, decline with/without a reason, expiry/cancellation, remembered
-scope/receipt, expanded details, narrow layout, and queue/empty states. The global
+scope/receipt, approval options, narrow layout, and queue/empty states. The global
 theme toolbar switches light/dark. Story actions simulate server responses; use the
 browser suite for integration proof.
