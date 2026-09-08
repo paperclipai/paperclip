@@ -4,8 +4,9 @@ import type { ReactNode } from "react";
 import type { IssueAttachment } from "@paperclipai/shared";
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ThemeProvider } from "@/context/ThemeContext";
+import { IssueGalleryContext } from "@/context/IssueGalleryContext";
 import { TaskChatBubble } from "./TaskChatBubble";
 import type { TaskChatMessageItem } from "./task-chat-model";
 
@@ -39,6 +40,23 @@ describe("TaskChatBubble attachment chips", () => {
       ),
     );
   }
+
+  it("opens attachment images in the shared task gallery", () => {
+    const openGallery = vi.fn(() => true);
+    const contentPath = "/api/attachments/shared-image/content";
+    flushSync(() => root!.render(
+      <ThemeProvider>
+        <IssueGalleryContext.Provider value={openGallery}>
+          <TaskChatBubble item={{ id: "m1", kind: "message", author: "agent", text: `![Proof](${contentPath})` }} />
+        </IssueGalleryContext.Provider>
+      </ThemeProvider>,
+    ));
+    const image = container.querySelector<HTMLImageElement>(`img[src="${contentPath}"]`);
+    expect(image).not.toBeNull();
+    flushSync(() => image!.click());
+    expect(openGallery).toHaveBeenCalledWith(contentPath);
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+  });
 
   it("renders a file reference as an attachment chip linking to the file", () => {
     renderMessage("Here you go.\n\n[notes.txt](/api/attachments/abc/content) ");

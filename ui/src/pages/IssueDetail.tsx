@@ -205,6 +205,7 @@ import { SidePanelToggleButton } from "../components/side-panel";
 import { PauseAffectsSummaryView } from "../components/interrupt-handoff/InterruptHandoffViews";
 import { computePauseAffectsSummary } from "../lib/interrupt-handoff";
 import { useIssueExternalObjects } from "../hooks/useIssueExternalObjects";
+import { IssueGalleryContext } from "../context/IssueGalleryContext";
 import { useIssuePlanDocument } from "../hooks/useIssuePlanDocument";
 import { IssueRunLedger } from "../components/IssueRunLedger";
 import { IssueWorkspaceCard } from "../components/IssueWorkspaceCard";
@@ -5337,6 +5338,94 @@ export function IssueDetail() {
     markIssueRead.mutate(issue.id);
   }, [issue?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  const mediaGalleryItems = useMemo<GalleryMediaItem[]>(() => {
+    const items: GalleryMediaItem[] = [];
+    const seen = new Set<string>();
+
+    const mark = (
+      attachmentId: string | null | undefined,
+      contentPath: string,
+    ) => {
+      if (attachmentId) seen.add(`attachment:${attachmentId}`);
+      seen.add(`content:${contentPath}`);
+    };
+
+    const hasSeen = (
+      attachmentId: string | null | undefined,
+      contentPath: string,
+    ) =>
+      Boolean(attachmentId && seen.has(`attachment:${attachmentId}`)) ||
+      seen.has(`content:${contentPath}`);
+
+    for (const attachment of attachments ?? []) {
+      if (!isImageAttachment(attachment) && !isVideoAttachment(attachment))
+        continue;
+      items.push(attachment);
+      mark(attachment.id, attachment.contentPath);
+    }
+
+    for (const item of getIssueOutputs(workProducts).items) {
+      const meta = item.metadata;
+      if (!meta) continue;
+      const isMedia =
+        isImageContentType(meta.contentType) ||
+        isVideoLikeOutput(meta.contentType, meta.originalFilename);
+      if (!isMedia || hasSeen(meta.attachmentId, meta.contentPath)) continue;
+      items.push({
+        id: `work-product-${item.id}`,
+        contentPath: meta.contentPath,
+        openPath: meta.openPath,
+        downloadPath: meta.downloadPath,
+        contentType: meta.contentType,
+        originalFilename: meta.originalFilename ?? item.title,
+      });
+      mark(meta.attachmentId, meta.contentPath);
+    }
+
+    return items;
+  }, [attachments, workProducts]);
+
+  const openIssueGallery = useCallback(
+    (src: string) => {
+      // Match content and preview URLs in either relative or absolute form.
+      const absoluteUrl = (path: string) => {
+        try {
+          return new URL(path, window.location.origin).href;
+        } catch {
+          return path;
+        }
+      };
+      const requestedUrl = absoluteUrl(src);
+      let idx = mediaGalleryItems.findIndex(
+        (a) => absoluteUrl(a.contentPath) === requestedUrl ||
+          (a.openPath && absoluteUrl(a.openPath) === requestedUrl),
+      );
+      if (idx < 0) {
+        // Try matching by asset ID extracted from /api/assets/{assetId}/content URLs
+        const assetMatch = src.match(/\/api\/assets\/([^/]+)\/content/);
+        if (assetMatch) {
+          idx = mediaGalleryItems.findIndex(
+            (a) => "assetId" in a && a.assetId === assetMatch[1],
+          );
+        }
+      }
+      if (idx >= 0) {
+        setGalleryIndex(idx);
+        setGalleryOpen(true);
+        return true;
+      }
+      return false;
+    },
+    [mediaGalleryItems],
+  );
+
+  const handleChatImageClick = useCallback(
+    (src: string) => {
+      if (!openIssueGallery(src)) window.open(src, "_blank");
+    },
+    [openIssueGallery],
+  );
+
   useEffect(() => {
     if (!panelIssue || suppressPanelUntilPlan) {
       closePanel();
@@ -5370,22 +5459,29 @@ export function IssueDetail() {
     };
     if (taskChatShellEnabled) {
       openPanel(
-        <TaskSidePanel
-          key={panelIssue.id}
-          {...sharedProps}
-          accountScope={currentUserId ?? "anonymous"}
-          fileTabsEnabled={fileViewerEnabled}
-          streamlinedTabs={streamlinedTaskDetailEnabled}
-          showSubtasksTab={streamlinedTaskDetailEnabled}
-        />,
+        <IssueGalleryContext.Provider value={openIssueGallery}>
+          <TaskSidePanel
+            key={panelIssue.id}
+            {...sharedProps}
+            accountScope={currentUserId ?? "anonymous"}
+            fileTabsEnabled={fileViewerEnabled}
+            streamlinedTabs={streamlinedTaskDetailEnabled}
+            showSubtasksTab={streamlinedTaskDetailEnabled}
+          />
+        </IssueGalleryContext.Provider>,
         { contentMode: "full-bleed" },
       );
     } else {
-      openPanel(<IssueProperties {...sharedProps} />);
+      openPanel(
+        <IssueGalleryContext.Provider value={openIssueGallery}>
+          <IssueProperties {...sharedProps} />
+        </IssueGalleryContext.Provider>,
+      );
     }
     return () => closePanel();
   }, [
     closePanel,
+    openIssueGallery,
     handleIssuePropertiesUpdate,
     issuePanelKey,
     openNewSubIssue,
@@ -5751,77 +5847,6 @@ export function IssueDetail() {
       ),
     [attachments, promotedOutputAttachmentIds],
   );
-  const mediaGalleryItems = useMemo<GalleryMediaItem[]>(() => {
-    const items: GalleryMediaItem[] = [];
-    const seen = new Set<string>();
-
-    const mark = (
-      attachmentId: string | null | undefined,
-      contentPath: string,
-    ) => {
-      if (attachmentId) seen.add(`attachment:${attachmentId}`);
-      seen.add(`content:${contentPath}`);
-    };
-
-    const hasSeen = (
-      attachmentId: string | null | undefined,
-      contentPath: string,
-    ) =>
-      Boolean(attachmentId && seen.has(`attachment:${attachmentId}`)) ||
-      seen.has(`content:${contentPath}`);
-
-    for (const attachment of attachments ?? []) {
-      if (!isImageAttachment(attachment) && !isVideoAttachment(attachment))
-        continue;
-      items.push(attachment);
-      mark(attachment.id, attachment.contentPath);
-    }
-
-    for (const item of getIssueOutputs(workProducts).items) {
-      const meta = item.metadata;
-      if (!meta) continue;
-      const isMedia =
-        isImageContentType(meta.contentType) ||
-        isVideoLikeOutput(meta.contentType, meta.originalFilename);
-      if (!isMedia || hasSeen(meta.attachmentId, meta.contentPath)) continue;
-      items.push({
-        id: `work-product-${item.id}`,
-        contentPath: meta.contentPath,
-        openPath: meta.openPath,
-        downloadPath: meta.downloadPath,
-        contentType: meta.contentType,
-        originalFilename: meta.originalFilename ?? item.title,
-      });
-      mark(meta.attachmentId, meta.contentPath);
-    }
-
-    return items;
-  }, [attachments, workProducts]);
-
-  const handleChatImageClick = useCallback(
-    (src: string) => {
-      // Try exact contentPath match first
-      let idx = mediaGalleryItems.findIndex((a) => a.contentPath === src);
-      if (idx < 0) {
-        // Try matching by asset ID extracted from /api/assets/{assetId}/content URLs
-        const assetMatch = src.match(/\/api\/assets\/([^/]+)\/content/);
-        if (assetMatch) {
-          idx = mediaGalleryItems.findIndex(
-            (a) => "assetId" in a && a.assetId === assetMatch[1],
-          );
-        }
-      }
-      if (idx >= 0) {
-        setGalleryIndex(idx);
-        setGalleryOpen(true);
-      } else {
-        // Image not in attachment list — open in new tab
-        window.open(src, "_blank");
-      }
-    },
-    [mediaGalleryItems],
-  );
-
   const copyIssueToClipboard = async () => {
     if (!issue) return;
     const decodeEntities = (text: string) => {
@@ -7244,6 +7269,7 @@ export function IssueDetail() {
 
   return (
     <FileViewerProvider issueId={issue.id} enabled={fileViewerEnabled}>
+      <IssueGalleryContext.Provider value={openIssueGallery}>
       <div
         data-task-chat-shell={taskChatShellEnabled ? "" : undefined}
         className={
@@ -8262,6 +8288,7 @@ export function IssueDetail() {
         ) : null}
         <ScrollToBottom />
       </div>
+      </IssueGalleryContext.Provider>
     </FileViewerProvider>
   );
 }

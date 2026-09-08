@@ -13,6 +13,8 @@ import type {
   TaskChatRuntimeRequestDecision,
 } from "./task-chat-model";
 import type { IssueWorkProduct } from "@paperclipai/shared";
+import { IssueGalleryContext } from "@/context/IssueGalleryContext";
+import { RichWorkProductCard } from "./RichWorkProductCard";
 import { stateChipFor } from "./RichWorkProductCard";
 
 function workProduct(overrides: Partial<IssueWorkProduct> = {}): IssueWorkProduct {
@@ -177,6 +179,41 @@ describe("TaskChatProtocolCard", () => {
     expect(chip?.className).toContain("border-dashed");
     expect(container.textContent).toContain("Image · 2.0 KB");
     expect(container.textContent).toContain("Open gallery");
+  });
+
+  it.each(["image/png", "video/webm"])("opens %s artifacts in the task gallery", (contentType) => {
+    const openGallery = vi.fn(() => true);
+    const contentPath = "/api/attachments/media/content";
+    flushSync(() => root.render(
+      <IssueGalleryContext.Provider value={openGallery}>
+        <RichWorkProductCard
+          workProduct={workProduct({ type: "artifact", metadata: { contentType, contentPath } })}
+          href={contentPath}
+          variant="compact"
+        />
+      </IssueGalleryContext.Provider>,
+    ));
+    const button = container.querySelector<HTMLButtonElement>('button[aria-label^="Open gallery:"]');
+    expect(button).not.toBeNull();
+    expect(container.querySelector("a")).toBeNull();
+    flushSync(() => button!.click());
+    expect(openGallery).toHaveBeenCalledWith(contentPath);
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+  });
+
+  it("opens standalone artifact media in a modal with a download", async () => {
+    const contentPath = "/api/attachments/media/content";
+    flushSync(() => root.render(
+      <RichWorkProductCard
+        workProduct={workProduct({ type: "artifact", title: "Screenshot", metadata: { contentType: "image/png", contentPath, originalFilename: "proof.png", downloadPath: `${contentPath}?download=1` } })}
+        href={contentPath}
+      />,
+    ));
+    await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="Open gallery: Screenshot"]')!.click());
+    expect(document.querySelector('[role="dialog"] img')?.getAttribute("src")).toBe(contentPath);
+    expect(document.querySelector('a[aria-label="Download proof.png"]')?.getAttribute("href")).toBe(`${contentPath}?download=1`);
+    await act(async () => document.querySelector<HTMLButtonElement>('button[title="Close"]')!.click());
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
   });
 
   it("keeps completed and approved states out of the state-chip policy", () => {
