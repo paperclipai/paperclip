@@ -193,10 +193,12 @@ function makeComment(overrides: Record<string, unknown> = {}) {
 
 describe.sequential("issue comment cancel routes", () => {
   const routeModules = hoistModuleGraph(registerModuleMocks, async () => {
-    const [{ issueRoutes }, { errorHandler }] = await Promise.all([
-      vi.importActual<typeof import("../routes/issues.js")>("../routes/issues.js"),
-      vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
-    ]);
+    // Sequential on purpose: concurrent vi.importActual() calls can drop a
+    // factory mock, because Vitest keeps one shared mock-resolution callstack.
+    const [{ issueRoutes }, { errorHandler }] = [
+      await vi.importActual<typeof import("../routes/issues.js")>("../routes/issues.js"),
+      await vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+    ];
     return { issueRoutes, errorHandler };
   });
 

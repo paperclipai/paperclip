@@ -272,11 +272,15 @@ describe.sequential("adapter management route authorization", () => {
       vi.importActual("../routes/authz.js"),
     );
 
-    const [routes, middleware, registry] = await Promise.all([
-      import("../routes/adapters.js"),
-      import("../middleware/index.js"),
-      import("../adapters/registry.js"),
-    ]);
+    // Sequential on purpose: these graphs pull in the ../routes/authz.js
+    // factory mock above, whose factory calls vi.importActual(). Vitest keeps
+    // one shared mock-resolution callstack, so importing them concurrently can
+    // drop that factory mock.
+    const [routes, middleware, registry] = [
+      await import("../routes/adapters.js"),
+      await import("../middleware/index.js"),
+      await import("../adapters/registry.js"),
+    ];
     adapterRoutes = routes.adapterRoutes;
     errorHandler = middleware.errorHandler;
     registerServerAdapter = registry.registerServerAdapter;
