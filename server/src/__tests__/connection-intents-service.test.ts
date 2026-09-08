@@ -614,6 +614,174 @@ describeEmbeddedPostgres("connectionIntentService", () => {
     }
   });
 
+  async function setUpComposioSlugFixture(companyLabel: string) {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const goalId = randomUUID();
+    const issueId = randomUUID();
+    const fixtureRunId = randomUUID();
+    const userId = `${companyLabel}-user-${randomUUID()}`;
+    await db.insert(companies).values({
+      id: companyId,
+      name: `Composio toolkit slug test (${companyLabel})`,
+      issuePrefix: `${companyLabel.slice(0, 4).toUpperCase()}${randomUUID().slice(0, 4).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(companyMemberships).values({
+      companyId,
+      principalType: "user",
+      principalId: userId,
+      status: "active",
+      membershipRole: "member",
+    });
+    await db.insert(goals).values({
+      id: goalId,
+      companyId,
+      title: "Read Gmail via Composio",
+      level: "task",
+      status: "active",
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Gmail agent",
+      role: "researcher",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      goalId,
+      title: "Read Gmail",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: agentId,
+    });
+    await db.insert(heartbeatRuns).values({
+      id: fixtureRunId,
+      companyId,
+      agentId,
+      status: "running",
+      responsibleUserId: userId,
+      contextSnapshot: { issueId },
+    });
+    const fixtureClaims: RuntimeToolsTokenClaims = {
+      sub: agentId,
+      company_id: companyId,
+      run_id: fixtureRunId,
+      responsible_user_id: userId,
+      scope: "connection_intents",
+      iat: 1,
+      exp: 2,
+      instance_id: "test",
+    };
+
+    // The generic Composio app-store entry every proxied connection inherits
+    // applicationId from - not the real first-party "gmail" app definition.
+    const [composioApp] = await db.insert(toolApplications).values({
+      companyId,
+      applicationKey: `composio-${randomUUID()}`,
+      name: "Composio",
+      type: "mcp_http",
+      status: "active",
+      metadata: { sourceTemplateKey: "composio" },
+    }).returning();
+    const [composioGmailChild] = await db.insert(toolConnections).values({
+      companyId,
+      applicationId: composioApp!.id,
+      name: "Gmail (via Composio)",
+      uid: `composio/${randomUUID()}`,
+      transport: "mcp_remote",
+      authKind: "none",
+      credentialPolicy: "shared",
+      status: "active",
+      enabled: true,
+      healthStatus: "ok",
+      config: {
+        provider: "composio",
+        parentConnectionId: randomUUID(),
+        toolkitSlug: "gmail",
+        connectedAccountId: randomUUID(),
+      },
+      transportConfig: {},
+    }).returning();
+    await db.insert(connectionGrants).values({
+      companyId,
+      connectionId: composioGmailChild!.id,
+      kind: "organization",
+      credentialSecretRefs: [],
+      status: "active",
+      isDefault: true,
+    });
+    await db.insert(toolConnectionInstalls).values({
+      companyId,
+      connectionId: composioGmailChild!.id,
+      targetType: "agent",
+      targetId: agentId,
+    });
+
+    return { companyId, fixtureClaims, fixtureRunId, composioGmailChild: composioGmailChild! };
+  }
+
+  it("resolves a Composio-proxied connection for its underlying service slug", async () => {
+    const { fixtureClaims, fixtureRunId, composioGmailChild } = await setUpComposioSlugFixture("solo");
+    const service = connectionIntentService(db);
+
+    const searchResult = await service.search(fixtureClaims, "gmail");
+    expect(searchResult.results).toEqual(expect.arrayContaining([
+      expect.objectContaining({ service: "gmail", state: "ready", connectionId: composioGmailChild.id }),
+    ]));
+
+    const requestResult = await service.request(fixtureClaims, "gmail");
+    expect(requestResult).toMatchObject({
+      state: "ready",
+      connectionId: composioGmailChild.id,
+      interactionId: null,
+    });
+    // No connection_intent card should have been raised - the working
+    // Composio connection was found directly.
+    expect(await db.select().from(issueThreadInteractions).where(
+      eq(issueThreadInteractions.sourceRunId, fixtureRunId),
+    )).toHaveLength(0);
+  });
+
+  it("does not let an archived native connection degrade a ready Composio-proxied match", async () => {
+    const { companyId, fixtureClaims, composioGmailChild } = await setUpComposioSlugFixture("archived");
+
+    const [nativeGmailApp] = await db.insert(toolApplications).values({
+      companyId,
+      applicationKey: `gmail-${randomUUID()}`,
+      name: "Gmail",
+      type: "mcp_http",
+      status: "active",
+      metadata: { sourceTemplateKey: "gmail" },
+    }).returning();
+    await db.insert(toolConnections).values({
+      companyId,
+      applicationId: nativeGmailApp!.id,
+      name: "Legacy Gmail OAuth",
+      uid: `gmail/${randomUUID()}`,
+      transport: "mcp_remote",
+      authKind: "oauth",
+      credentialPolicy: "shared",
+      status: "archived",
+      enabled: false,
+      healthStatus: "error",
+      config: { sourceTemplateKey: "gmail" },
+      transportConfig: { sourceTemplateKey: "gmail" },
+    });
+
+    const service = connectionIntentService(db);
+    const searchResult = await service.search(fixtureClaims, "gmail");
+    expect(searchResult.results).toEqual(expect.arrayContaining([
+      expect.objectContaining({ service: "gmail", state: "ready", connectionId: composioGmailChild.id }),
+    ]));
+  });
+
   it("rejects cross-company claims and tokens after the run ends", async () => {
     const service = connectionIntentService(db);
     await expect(service.search({ ...claims, company_id: randomUUID() }, "notion"))
