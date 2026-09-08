@@ -206,20 +206,18 @@ export const queryKeys = {
     instructionsFile: (id: string, relativePath: string) =>
       ["agents", "instructions-bundle", id, "file", relativePath] as const,
     keys: (agentId: string) => ["agents", "keys", agentId] as const,
-    configRevisions: (agentId: string) =>
-      ["agents", "config-revisions", agentId] as const,
+    configRevisions: (agentId: string) => ["agents", "config-revisions", agentId] as const,
     adapterModels: (
       companyId: string,
       adapterType: string,
       environmentId?: string | null,
+      agentId?: string | null,
     ) =>
-      [
-        "agents",
-        companyId,
-        "adapter-models",
-        adapterType,
-        environmentId ?? null,
-      ] as const,
+      // agentId is part of the key: discovery resolves that agent's secrets, so
+      // two agents of the same adapter type can see different model lists.
+      ["agents", companyId, "adapter-models", adapterType, environmentId ?? null, agentId ?? null] as const,
+    adapterModelProfiles: (companyId: string, adapterType: string) =>
+      ["agents", companyId, "adapter-model-profiles", adapterType] as const,
     detectModel: (companyId: string, adapterType: string) =>
       ["agents", companyId, "detect-model", adapterType] as const,
     authSignal: (companyId: string, adapterType: string, environmentId?: string | null) =>
