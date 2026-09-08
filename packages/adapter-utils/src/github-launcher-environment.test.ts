@@ -106,6 +106,17 @@ describe("managed GitHub launcher environment", () => {
     expect(env.PATH).toBe(`${env.PAPERCLIP_GITHUB_LAUNCHER_DIR}:${fixture.remotePath}`);
   });
 
+  it("keeps an explicit empty remote PATH empty apart from the managed wrappers", async () => {
+    const fixture = await sandbox("nvm/bin");
+    const env = await prepareGitHubOperationLaunchers({
+      runId: "run-empty", target: fixture.target, cwd: fixture.root, env: { PATH: "" },
+    });
+    expect(env.PATH).toBe(env.PAPERCLIP_GITHUB_LAUNCHER_DIR);
+    expect(fixture.runner.execute.mock.calls.every(([input]) => !input.args?.join(" ").includes("$PATH"))).toBe(true);
+    const result = await fixture.runner.execute({ command: "/bin/sh", args: ["-c", "command -v claude"], env });
+    expect(result.exitCode).not.toBe(0);
+  });
+
   it("reads the SSH target PATH and ignores login banners", async () => {
     const fixture = await sandbox("ssh-toolchain/bin");
     fixture.runner.execute.mockResolvedValueOnce({ exitCode: 0, timedOut: false, signal: null,

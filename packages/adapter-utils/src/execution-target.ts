@@ -1534,7 +1534,7 @@ async function githubOperationLauncherBasePath(
 ): Promise<string> {
   if (!target) return env.PATH || process.env.PATH || "/usr/bin:/bin";
   const configuredPath = sanitizeRemoteExecutionEnv(env).PATH;
-  if (configuredPath) return configuredPath;
+  if (configuredPath !== undefined) return configuredPath;
 
   // The provider owns login/profile setup. Query its effective PATH before
   // staging BASH_ENV, rather than substituting the controller's toolchain or
@@ -1561,7 +1561,7 @@ export async function prepareGitHubOperationLaunchers(input: {
   const directory = githubOperationLauncherDirectory(input);
   const configDirectory = path.posix.join(directory, "gh-config");
   const basePath = await githubOperationLauncherBasePath(remote, input.env);
-  const managedPath = `${directory}:${basePath}`;
+  const managedPath = basePath ? `${directory}:${basePath}` : directory;
   // Login shells may reorder PATH through /etc/profile or path_helper. Restore
   // the managed launchers after startup without loading a host user's profile.
   const profile = `export PATH=${shellQuote(managedPath)}\n`;
