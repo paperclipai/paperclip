@@ -3,6 +3,7 @@ import path from "node:path";
 import type { PaperclipConfig } from "../config/schema.js";
 import {
   HEALTH_PROBE_TOKEN_HEADER,
+  expandHomePrefix,
   resolveInstanceHealthToken,
   resolvePaperclipInstanceId,
 } from "../config/home.js";
@@ -27,7 +28,7 @@ export type ServiceCheckDependencies = {
 
 export function resolveInstanceIdFromConfigPath(configPath?: string): string | null {
   if (!configPath) return null;
-  const normalized = path.resolve(configPath);
+  const normalized = path.resolve(expandHomePrefix(configPath));
   const parent = path.dirname(normalized);
   const grandParent = path.dirname(parent);
   if (path.basename(grandParent) === "instances") {
@@ -45,12 +46,12 @@ export function resolveSelectedServiceInstanceId(
   if (dependencies.instanceId?.trim()) {
     return dependencies.instanceId.trim();
   }
-  if (process.env.PAPERCLIP_INSTANCE_ID?.trim()) {
-    return process.env.PAPERCLIP_INSTANCE_ID.trim();
-  }
   const fromConfig = resolveInstanceIdFromConfigPath(dependencies.configPath);
   if (fromConfig) {
     return fromConfig;
+  }
+  if (process.env.PAPERCLIP_INSTANCE_ID?.trim()) {
+    return process.env.PAPERCLIP_INSTANCE_ID.trim();
   }
   return resolvePaperclipInstanceId();
 }

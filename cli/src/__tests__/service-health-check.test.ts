@@ -24,10 +24,12 @@ const config = {
 
 let previousPaperclipHome: string | undefined;
 let previousServiceManaged: string | undefined;
+let previousInstanceId: string | undefined;
 
 beforeEach(() => {
   previousPaperclipHome = process.env.PAPERCLIP_HOME;
   previousServiceManaged = process.env.PAPERCLIP_SERVICE_MANAGED;
+  previousInstanceId = process.env.PAPERCLIP_INSTANCE_ID;
   process.env.PAPERCLIP_HOME = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-service-restart-"));
 });
 
@@ -36,6 +38,8 @@ afterEach(() => {
   else process.env.PAPERCLIP_HOME = previousPaperclipHome;
   if (previousServiceManaged === undefined) delete process.env.PAPERCLIP_SERVICE_MANAGED;
   else process.env.PAPERCLIP_SERVICE_MANAGED = previousServiceManaged;
+  if (previousInstanceId === undefined) delete process.env.PAPERCLIP_INSTANCE_ID;
+  else process.env.PAPERCLIP_INSTANCE_ID = previousInstanceId;
 });
 
 function managerFixture(active = true) {
@@ -240,9 +244,21 @@ describe("service runtime shim awareness", () => {
 
   it("resolves instance ID and passes it to detect and probe when configPath is supplied", async () => {
     expect(resolveInstanceIdFromConfigPath("/home/user/.paperclip/instances/foo/config.json")).toBe("foo");
+    expect(resolveInstanceIdFromConfigPath("~/.paperclip/instances/foo/config.json")).toBe("foo");
     expect(resolveInstanceIdFromConfigPath("/var/paperclip/instances/worktree-123/config.json")).toBe("worktree-123");
     expect(resolveInstanceIdFromConfigPath("/etc/paperclip/config.json")).toBe(null);
     expect(resolveInstanceIdFromConfigPath(undefined)).toBe(null);
+
+    process.env.PAPERCLIP_INSTANCE_ID = "ambient-instance";
+
+    expect(resolveSelectedServiceInstanceId({ configPath: "/home/user/.paperclip/instances/foo/config.json" })).toBe("foo");
+    expect(
+      resolveSelectedServiceInstanceId({
+        instanceId: "explicit",
+        configPath: "/home/user/.paperclip/instances/foo/config.json",
+      }),
+    ).toBe("explicit");
+    expect(resolveSelectedServiceInstanceId({ configPath: "/etc/paperclip/config.json" })).toBe("ambient-instance");
 
     const detect = vi.fn(async () => ({ supported: true as const, manager: inactiveManager() as never }));
     const probe = vi.fn(async () => ({ ok: true, version: "1.0.0" }));
