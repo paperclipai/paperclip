@@ -105,14 +105,40 @@ function fingerprintStartupFault(
   return `startup_fault:v1:${kind}:${digest}`;
 }
 
+function readConfigObject(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+}
+
+export function readStartupFaultIssueAdapterConfig(assigneeAdapterOverrides: unknown) {
+  return readConfigObject(readConfigObject(assigneeAdapterOverrides).adapterConfig);
+}
+
+export function readStartupFaultModelProfileAdapterConfig(
+  runtimeConfig: unknown,
+  assigneeAdapterOverrides: unknown,
+) {
+  const profileKey = readConfigObject(assigneeAdapterOverrides).modelProfile;
+  if (typeof profileKey !== "string" || profileKey.trim().length === 0) return {};
+  const profiles = readConfigObject(readConfigObject(runtimeConfig).modelProfiles);
+  return readConfigObject(readConfigObject(profiles[profileKey]).adapterConfig);
+}
+
 export function hashStartupFaultConfigIdentity(input: {
   adapterType?: string | null;
   adapterConfig?: unknown;
+  modelProfileAdapterConfig?: unknown;
+  issueAdapterConfig?: unknown;
 }) {
   return createHash("sha256")
     .update(JSON.stringify({
       adapterType: readNonEmpty(input.adapterType) ?? "",
-      adapterConfig: input.adapterConfig ?? {},
+      adapterConfig: {
+        ...readConfigObject(input.adapterConfig),
+        ...readConfigObject(input.modelProfileAdapterConfig),
+        ...readConfigObject(input.issueAdapterConfig),
+      },
     }))
     .digest("hex")
     .slice(0, 24);

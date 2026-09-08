@@ -3,6 +3,8 @@ import {
   ADAPTER_STARTUP_FAULT_ERROR_CODE,
   classifyAdapterStartupOutput,
   hashStartupFaultConfigIdentity,
+  readStartupFaultIssueAdapterConfig,
+  readStartupFaultModelProfileAdapterConfig,
 } from "./startup-fault.js";
 
 describe("classifyAdapterStartupOutput", () => {
@@ -172,5 +174,34 @@ describe("hashStartupFaultConfigIdentity", () => {
     });
     expect(before).toBe(unchanged);
     expect(after).not.toBe(before);
+  });
+
+  it("treats issue adapterConfig as effective identity over raw adapterConfig", () => {
+    const issueOnly = hashStartupFaultConfigIdentity({
+      adapterType: "codex_local",
+      adapterConfig: {},
+      issueAdapterConfig: { cwd: "/issue-cwd" },
+    });
+    const rawUnchanged = hashStartupFaultConfigIdentity({
+      adapterType: "codex_local",
+      adapterConfig: { cwd: "/raw-changed" },
+      issueAdapterConfig: { cwd: "/issue-cwd" },
+    });
+    const rawOnly = hashStartupFaultConfigIdentity({
+      adapterType: "codex_local",
+      adapterConfig: {},
+    });
+    expect(issueOnly).toBe(rawUnchanged);
+    expect(issueOnly).not.toBe(rawOnly);
+  });
+
+  it("reads issue and model-profile adapterConfig overlays", () => {
+    expect(readStartupFaultIssueAdapterConfig({
+      adapterConfig: { cwd: "/issue-cwd" },
+    })).toEqual({ cwd: "/issue-cwd" });
+    expect(readStartupFaultModelProfileAdapterConfig(
+      { modelProfiles: { cheap: { adapterConfig: { model: "cheap-model" } } } },
+      { modelProfile: "cheap" },
+    )).toEqual({ model: "cheap-model" });
   });
 });

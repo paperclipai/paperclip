@@ -86,7 +86,11 @@ import {
   withRecoveryModelProfileHint,
 } from "./model-profile-hint.js";
 import { isAutomaticRecoverySuppressedByPauseHold } from "./pause-hold-guard.js";
-import { hashStartupFaultConfigIdentity } from "@paperclipai/adapter-utils";
+import {
+  hashStartupFaultConfigIdentity,
+  readStartupFaultIssueAdapterConfig,
+  readStartupFaultModelProfileAdapterConfig,
+} from "@paperclipai/adapter-utils";
 import { blockedOwnerDeliveryMatchesIssue, blockedOwnerNotificationIdempotencyKey, deliverBlockedOwnerNotification } from "../routable-blocked.js";
 import {
   collectDispositionRepairSourceState,
@@ -2787,13 +2791,22 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       .select({
         adapterType: agents.adapterType,
         adapterConfig: agents.adapterConfig,
+        runtimeConfig: agents.runtimeConfig,
       })
       .from(agents)
       .where(eq(agents.id, issue.assigneeAgentId))
       .limit(1);
     if (!agent) return {};
     return {
-      startupFaultConfigIdentity: hashStartupFaultConfigIdentity(agent),
+      startupFaultConfigIdentity: hashStartupFaultConfigIdentity({
+        adapterType: agent.adapterType,
+        adapterConfig: agent.adapterConfig,
+        modelProfileAdapterConfig: readStartupFaultModelProfileAdapterConfig(
+          agent.runtimeConfig,
+          issue.assigneeAdapterOverrides,
+        ),
+        issueAdapterConfig: readStartupFaultIssueAdapterConfig(issue.assigneeAdapterOverrides),
+      }),
     };
   }
 

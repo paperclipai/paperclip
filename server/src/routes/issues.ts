@@ -157,7 +157,11 @@ import {
 } from "../services/task-watchdog-scope.js";
 import type { TaskWatchdogServiceDeps, taskWatchdogService } from "../services/task-watchdogs.js";
 import { logger } from "../middleware/logger.js";
-import { hashStartupFaultConfigIdentity } from "@paperclipai/adapter-utils";
+import {
+  hashStartupFaultConfigIdentity,
+  readStartupFaultIssueAdapterConfig,
+  readStartupFaultModelProfileAdapterConfig,
+} from "@paperclipai/adapter-utils";
 import { badRequest, conflict, forbidden, HttpError, notFound, unauthorized, unprocessable } from "../errors.js";
 import { privateJsonEtag } from "../middleware/private-json-etag.js";
 import { createRequestPromiseMemo } from "../lib/request-promise-memo.js";
@@ -6898,11 +6902,25 @@ export function issueRoutes(
             .select({
               adapterType: agents.adapterType,
               adapterConfig: agents.adapterConfig,
+              runtimeConfig: agents.runtimeConfig,
             })
             .from(agents)
             .where(eq(agents.id, lockedIssue.assigneeAgentId))
             .limit(1);
-          if (assignee && hashStartupFaultConfigIdentity(assignee) === storedIdentity) {
+          const currentIdentity = assignee
+            ? hashStartupFaultConfigIdentity({
+                adapterType: assignee.adapterType,
+                adapterConfig: assignee.adapterConfig,
+                modelProfileAdapterConfig: readStartupFaultModelProfileAdapterConfig(
+                  assignee.runtimeConfig,
+                  lockedIssue.assigneeAdapterOverrides,
+                ),
+                issueAdapterConfig: readStartupFaultIssueAdapterConfig(
+                  lockedIssue.assigneeAdapterOverrides,
+                ),
+              })
+            : null;
+          if (currentIdentity === storedIdentity) {
             throw unprocessable(
               "Startup-fault retry bound is exhausted until adapter or effective configuration changes",
             );

@@ -668,6 +668,7 @@ async function waitForRecoveryRestoreRun(agentId: string) {
 
 async function escalateStartupFaultIssueToBlocked(
   fingerprint = "startup_fault:v1:worktree_requires_git_repository:deadbeefdeadbeefdeadbeef",
+  options?: { assigneeAdapterOverrides?: Record<string, unknown> },
 ) {
   mockAdapterExecute.mockReset();
   mockAdapterExecute
@@ -675,6 +676,11 @@ async function escalateStartupFaultIssueToBlocked(
     .mockResolvedValueOnce(startupFaultAdapterResult(fingerprint));
 
   const fixture = await seedQueuedIssueRunFixture();
+  if (options?.assigneeAdapterOverrides) {
+    await db.update(issues).set({
+      assigneeAdapterOverrides: options.assigneeAdapterOverrides,
+    }).where(eq(issues.id, fixture.issueId));
+  }
   const heartbeat = heartbeatService(db);
 
   await Promise.all([
@@ -8258,6 +8264,73 @@ async function escalateStartupFaultIssueToBlocked(
     }
 
     expect(mockAdapterExecute).toHaveBeenCalledTimes(2);
+    expect(await db.select().from(activityLog).where(and(
+      eq(activityLog.companyId, companyId),
+      eq(activityLog.entityId, issueId),
+      eq(activityLog.action, "issue.blocked_owner_notification_delivered"),
+    ))).toHaveLength(1);
+  });
+
+  it("repairs startup-fault through issue-only adapterConfig cwd override", async () => {
+    const fingerprint = "startup_fault:v1:worktree_requires_git_repository:cccccccccccccccccccccccc";
+    const { agentId, issueId, recoveryAction, heartbeat } = await escalateStartupFaultIssueToBlocked(fingerprint);
+    const app = createIssueRoutesApp(
+      { type: "board", source: "local_implicit" },
+      { recoveryActionEnqueueWakeup: heartbeat.wakeup.bind(heartbeat) },
+    );
+
+    await db.update(issues).set({
+      assigneeAdapterOverrides: { adapterConfig: { cwd: "/repaired/issue-cwd" } },
+    }).where(eq(issues.id, issueId));
+    mockAdapterExecute.mockResolvedValueOnce(successfulAdapterResult("Completed after issue-only cwd repair."));
+
+    const resolved = await request(app)
+      .post(`/api/issues/${issueId}/recovery-actions/resolve`)
+      .send({
+        actionId: recoveryAction!.id,
+        outcome: "restored",
+        sourceIssueStatus: "todo",
+        resolutionNote: "Repaired issue assigneeAdapterOverrides cwd.",
+      })
+      .expect(200);
+    expect(resolved.body.issue).toMatchObject({ id: issueId, status: "todo" });
+
+    const recoveryRun = await waitForRecoveryRestoreRun(agentId);
+    expect(recoveryRun).toBeTruthy();
+    await waitForRunToSettle(heartbeat, recoveryRun!.id);
+    expect(mockAdapterExecute).toHaveBeenCalledTimes(3);
+    const issueAfterSuccess = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issueAfterSuccess?.status).not.toBe("blocked");
+  });
+
+  it("rejects shadowed raw adapterConfig change when issue override keeps effective identity", async () => {
+    const fingerprint = "startup_fault:v1:worktree_requires_git_repository:dddddddddddddddddddddddd";
+    const { companyId, agentId, issueId, recoveryAction, heartbeat } = await escalateStartupFaultIssueToBlocked(
+      fingerprint,
+      { assigneeAdapterOverrides: { adapterConfig: { cwd: "/issue-cwd" } } },
+    );
+    const app = createIssueRoutesApp(
+      { type: "board", source: "local_implicit" },
+      { recoveryActionEnqueueWakeup: heartbeat.wakeup.bind(heartbeat) },
+    );
+
+    await db.update(agents).set({
+      adapterConfig: { cwd: "/raw-changed-but-shadowed" },
+      updatedAt: new Date(),
+    }).where(eq(agents.id, agentId));
+
+    const shadowed = await request(app)
+      .post(`/api/issues/${issueId}/recovery-actions/resolve`)
+      .send({
+        actionId: recoveryAction!.id,
+        outcome: "restored",
+        sourceIssueStatus: "todo",
+        resolutionNote: "Changed raw adapter cwd that the issue override still shadows.",
+      })
+      .expect(422);
+    expect(shadowed.body.error).toContain("Startup-fault retry bound is exhausted");
+    expect(mockAdapterExecute).toHaveBeenCalledTimes(2);
+    expect(await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]?.status)).toBe("blocked");
     expect(await db.select().from(activityLog).where(and(
       eq(activityLog.companyId, companyId),
       eq(activityLog.entityId, issueId),
