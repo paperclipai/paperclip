@@ -1,0 +1,1 @@
+ALTER TABLE "projects" ADD COLUMN "automation_policy" jsonb;

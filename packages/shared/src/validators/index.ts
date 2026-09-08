@@ -392,12 +392,16 @@ export {
   createProjectWorkspaceSchema,
   updateProjectWorkspaceSchema,
   projectExecutionWorkspacePolicySchema,
+  projectAutomationPolicySchema,
+  issueAutoLabelRuleSchema,
   projectWorkspaceRuntimeConfigSchema,
   type CreateProject,
   type UpdateProject,
   type CreateProjectWorkspace,
   type UpdateProjectWorkspace,
   type ProjectExecutionWorkspacePolicy,
+  type ProjectAutomationPolicy,
+  type IssueAutoLabelRule,
 } from "./project.js";
 
 export {

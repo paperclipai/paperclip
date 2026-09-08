@@ -110,6 +110,7 @@ import {
   summarizeIssueWatchdog,
   upsertIssueWatchdogForIssue,
 } from "./task-watchdogs.js";
+import { resolveProjectAutoLabels } from "./issue-automation.js";
 import {
   isVerifiedIssueTreeControlInteractionWake,
   issueTreeControlService,
@@ -7476,8 +7477,18 @@ export function issueService(db: Db) {
             },
           });
         }
-        if (inputLabelIds) {
-          await syncIssueLabels(issue.id, companyId, inputLabelIds, tx);
+        // Project automation (Plane auto-label port): union rule-matched
+        // labels with the caller's explicit labels. Stale rule ids resolve
+        // to nothing, so automation can never break creation.
+        const autoLabelIds = await resolveProjectAutoLabels(tx, {
+          companyId,
+          projectId: issueData.projectId ?? null,
+          title: issue.title,
+          description: issueData.description ?? null,
+        });
+        const mergedLabelIds = [...(inputLabelIds ?? []), ...autoLabelIds];
+        if (inputLabelIds || autoLabelIds.length > 0) {
+          await syncIssueLabels(issue.id, companyId, mergedLabelIds, tx);
         }
         if (blockedByIssueIds !== undefined) {
           await syncBlockedByIssueIds(

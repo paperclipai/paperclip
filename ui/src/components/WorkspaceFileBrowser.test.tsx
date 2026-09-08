@@ -163,6 +163,7 @@ function createProject(overrides: Partial<Project> = {}): Project {
     pauseReason: null,
     pausedAt: null,
     executionWorkspacePolicy: null,
+    automationPolicy: null,
     codebase: {
       workspaceId: workspace.id,
       repoUrl: null,
