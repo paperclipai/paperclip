@@ -1342,7 +1342,11 @@ registry.registerPath({
   path: "/api/companies",
   tags: ["companies"],
   summary: "List companies",
-  responses: { 200: r.ok(), 401: r.unauthorized },
+  description: "Requires a board user. Instance admins can list the full directory; scope=accessible limits the list to companies the caller can enter.",
+  request: {
+    query: z.object({ scope: z.enum(["accessible"]).optional() }),
+  },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
 });
 
 registry.registerPath({
