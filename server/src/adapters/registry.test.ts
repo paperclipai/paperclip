@@ -1,8 +1,11 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { assertValidAdapterLoginCapability } from "@paperclipai/adapter-utils";
 import { listServerAdapters, requireServerAdapter } from "./registry.js";
 import * as executionTarget from "@paperclipai/adapter-utils/execution-target";
 import { BUILTIN_ADAPTER_TYPES } from "./builtin-adapter-types.js";
+
+const { probeInstallation } = vi.hoisted(() => ({ probeInstallation: vi.fn() }));
+vi.mock("@paperclipai/paperclip-runner/live", () => ({ probeAcpxClaudeInstallation: probeInstallation }));
 
 // The registry registers a login capability for the two built-in interactive
 // adapters. The test checks the scalar values and the presence of the required
@@ -83,6 +86,7 @@ describe("built-in runtime connection tool delivery", () => {
 
 
 describe("native ACPX environment checks", () => {
+  beforeEach(() => { probeInstallation.mockReset().mockResolvedValue(undefined); });
   afterEach(() => vi.restoreAllMocks());
 
   const context = {
@@ -92,20 +96,21 @@ describe("native ACPX environment checks", () => {
   };
 
   it("reports unsupported local platforms before a successful CLI login can mask them", async () => {
-    vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    probeInstallation.mockRejectedValue(new Error("ACPX Claude requires a supported runtime platform"));
     const result = await requireServerAdapter("paperclip_runner").testEnvironment!(context);
     expect(result.status).toBe("fail");
     expect(result.checks).toEqual([expect.objectContaining({
-      code: "acpx_runtime_platform_unsupported",
+      code: "acpx_runtime_unavailable",
       level: "error",
     })]);
   });
 
-  it("keeps the qualified Linux x64 profile available", async () => {
-    vi.spyOn(process, "platform", "get").mockReturnValue("linux");
-    vi.spyOn(process, "arch", "get").mockReturnValue("x64");
+  it.each([["linux", "x64"], ["darwin", "arm64"], ["darwin", "x64"]] as const)("requires the installed runtime probe on %s %s", async (platform, arch) => {
+    vi.spyOn(process, "platform", "get").mockReturnValue(platform);
+    vi.spyOn(process, "arch", "get").mockReturnValue(arch);
     const result = await requireServerAdapter("paperclip_runner").testEnvironment!(context);
     expect(result.status).toBe("pass");
+    expect(probeInstallation).toHaveBeenCalledWith(context.config.model);
   });
 
   it("does not use the host platform to reject a remote environment", async () => {
@@ -117,7 +122,9 @@ describe("native ACPX environment checks", () => {
         runner: { execute: vi.fn().mockResolvedValue({ exitCode: 0, timedOut: false, stdout: "Linux\nx86_64\n" }) },
       },
     });
-    expect(result.status).toBe("pass");
+    expect(result.status).toBe("warn");
+    expect(result.checks[0].code).toBe("acpx_remote_runtime_unverified");
+    expect(probeInstallation).not.toHaveBeenCalled();
   });
 
   const sshTarget = {
@@ -129,8 +136,9 @@ describe("native ACPX environment checks", () => {
   };
 
   it.each([
-    ["Linux\nx86_64\n", "pass"],
-    ["Darwin\nx86_64\n", "fail"],
+    ["Linux\nx86_64\n", "warn"],
+    ["Darwin\nx86_64\n", "warn"],
+    ["Darwin\narm64\n", "warn"],
     ["Linux\naarch64\n", "fail"],
     ["", "fail"],
   ])("qualifies the SSH platform from its own uname output %j", async (stdout, status) => {
@@ -155,6 +163,6 @@ describe("native ACPX environment checks", () => {
     });
     const result = await requireServerAdapter("paperclip_runner").testEnvironment!({ ...context, executionTarget: sshTarget });
     expect(result.status).toBe("fail");
-    expect(result.checks[0].code).toBe("acpx_runtime_platform_unverified");
+    expect(result.checks[0].code).toBe("acpx_runtime_unavailable");
   });
 });
