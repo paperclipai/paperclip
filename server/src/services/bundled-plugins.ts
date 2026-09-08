@@ -62,6 +62,11 @@ export interface BundledPluginCatalogEntry {
  */
 export const BUNDLED_PLUGIN_CATALOG: readonly BundledPluginCatalogEntry[] = [
   {
+    key: "createos",
+    pluginKey: "paperclip.createos-sandbox-provider",
+    relativePath: "sandbox-providers/createos",
+  },
+  {
     key: "cloudflare",
     pluginKey: "paperclip.cloudflare-sandbox-provider",
     relativePath: "sandbox-providers/cloudflare",
