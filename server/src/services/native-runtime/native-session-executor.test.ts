@@ -5,6 +5,7 @@ import {
   mkdtemp,
   readdir,
   readFile,
+  rename,
   rm,
   symlink,
   writeFile,
@@ -5101,6 +5102,314 @@ describe("runnerd provider runtime wiring", () => {
       await rm(stateBase, { recursive: true, force: true });
     }
   });
+
+  it.each([
+    "quarantined",
+    "empty retry shell",
+    "unsuspended current",
+    "live runner",
+    "live group",
+    "missing process identity",
+    "active prior run",
+    "wrong checkpoint",
+    "active goal",
+    "active provider turn",
+    "pending command",
+    "multiple checkpoints",
+    "corrupt current authority",
+    "wrong scope",
+    "provider mismatch",
+    "unacknowledged events",
+    "runtime request",
+    "wrong company",
+    "permission denied process",
+    "ambiguous turn start",
+    "state symlink",
+    "newer provider checkpoint",
+  ])(
+    "automatically recovers only a proven settled local session: %s",
+    async (scenario) => {
+      const stateBase = await mkdtemp(
+        join(tmpdir(), "paperclip-quiescent-recovery-"),
+      );
+      const previousStateDirectory = process.env.PAPERCLIP_RUNNER_STATE_DIR;
+      process.env.PAPERCLIP_RUNNER_STATE_DIR = stateBase;
+      const priorExecution = {
+        ...execution,
+        binding: {
+          ...execution.binding,
+          runId: "recovery-prior",
+          executionWorkspaceId: "recovery-workspace",
+        },
+        session: {
+          ...execution.session,
+          normalizedSessionId: "recovery-session",
+        },
+      } as NativeExecutionInputV1;
+      const currentExecution = {
+        ...priorExecution,
+        binding: { ...priorExecution.binding, runId: "recovery-current" },
+      };
+      const identity = {
+        runId: priorExecution.binding.runId,
+        normalizedSessionId: priorExecution.session.normalizedSessionId,
+        runnerInstanceId: "recovery-runner",
+        environmentLeaseId: "recovery-lease",
+        turnId: "recovery-turn",
+        itemId: "recovery-item",
+      };
+      const processKill = vi.spyOn(process, "kill").mockImplementation(() => {
+        throw Object.assign(new Error("gone"), { code: "ESRCH" });
+      });
+      if (scenario === "live runner" || scenario === "live group") {
+        processKill.mockImplementation((pid) => {
+          if (pid === (scenario === "live runner" ? 90000001 : -90000001))
+            return true;
+          throw Object.assign(new Error("gone"), { code: "ESRCH" });
+        });
+      }
+      if (scenario === "permission denied process") {
+        processKill.mockImplementation(() => {
+          throw Object.assign(new Error("denied"), { code: "EPERM" });
+        });
+      }
+      const onLog = vi.fn(async () => {});
+      const profile = {
+        nativeExecutionInput:
+          scenario === "wrong scope"
+            ? {
+                ...priorExecution,
+                binding: { ...priorExecution.binding, agentId: "other-agent" },
+              }
+            : scenario === "provider mismatch"
+              ? {
+                  ...priorExecution,
+                  provider: {
+                    ...priorExecution.provider,
+                    model: "other-model",
+                  },
+                }
+              : priorExecution,
+        sessionCheckpoint: {
+          identity: {
+            runId: identity.runId,
+            sessionId: identity.normalizedSessionId,
+            companyId:
+              scenario === "wrong company"
+                ? "other-company"
+                : priorExecution.binding.companyId,
+            agentId: priorExecution.binding.agentId,
+            issueId: priorExecution.binding.issueId,
+          },
+          driverKind: priorExecution.session.driverKind,
+          providerSessionId:
+            scenario === "wrong checkpoint"
+              ? "other-thread"
+              : "recovery-thread",
+          activeTurnId: null,
+          pendingRuntimeRequests:
+            scenario === "runtime request" ? [{ id: "pending" }] : [],
+        },
+      };
+      let recoveryReads = 0;
+      const db = {
+        select: () => ({
+          from: () => ({
+            where: () => ({
+              limit: () =>
+                Promise.resolve([
+                  {
+                    status:
+                      scenario === "active prior run" ? "running" : "succeeded",
+                    runnerProfileJson:
+                      ++recoveryReads === 2 &&
+                      scenario === "newer provider checkpoint"
+                        ? {
+                            ...profile,
+                            sessionCheckpoint: {
+                              ...profile.sessionCheckpoint,
+                              providerSessionId: "newer-thread",
+                            },
+                          }
+                        : profile,
+                    processPid:
+                      scenario === "missing process identity" ? null : 90000001,
+                    processGroupId: 90000001,
+                    contextSnapshot: {
+                      paperclipEnvironment: { driver: "local" },
+                    },
+                  },
+                ]),
+            }),
+          }),
+        }),
+      } as unknown as Db;
+      try {
+        state.createBackend.mockClear();
+        state.createTransport.mockClear();
+        await createRunnerdBackend({
+          db: leaseDb(priorExecution),
+          execution: priorExecution,
+          runnerInstanceId: identity.runnerInstanceId,
+        });
+        state.createBackend.mock.calls[0]![1].codexTransportFactory!();
+        const scopedRoot =
+          state.createTransport.mock.calls[0]![0].stateDirectory!;
+        const quarantineRoot = join(stateBase, "quarantine");
+        await mkdir(quarantineRoot, { recursive: true });
+        const candidate =
+          scenario === "unsuspended current"
+            ? scopedRoot
+            : join(
+                quarantineRoot,
+                `${scopedRoot.split("/").at(-1)}.identity_indeterminate.1`,
+              );
+        if (candidate !== scopedRoot) await rename(scopedRoot, candidate);
+        const writeCandidate = async (root: string) => {
+          await mkdir(join(root, "runner"), { recursive: true });
+          await mkdir(join(root, "control-plane"), { recursive: true });
+          await writeFile(
+            join(root, "runner", "runner-state.json"),
+            JSON.stringify({
+              ...durableRunnerState(identity, "ready"),
+              outbox:
+                scenario === "unacknowledged events" ? [{ sourceSeq: 10 }] : [],
+              pendingTerminalDelivery: null,
+            }),
+          );
+          await writeFile(
+            join(root, "runner", "codex-provider-state.json"),
+            JSON.stringify({
+              schema: "paperclip.runner.codex-provider-state.v1",
+              lifecycle: "session_open",
+              config: { provider: "codex", driver: "codex_app_server" },
+              threadId: "recovery-thread",
+              activeProviderTurnId:
+                scenario === "active provider turn" ? "still-working" : null,
+              ambiguousTurnStartPending: scenario === "ambiguous turn start",
+              completedTurnAuthoritative: true,
+              goal: scenario === "active goal" ? { status: "active" } : null,
+            }),
+          );
+          await writeFile(
+            join(root, "control-plane", "control-plane-state.json"),
+            JSON.stringify({
+              ...durableControlPlaneState(identity),
+              commands: [
+                {
+                  type: "turn.start",
+                  status:
+                    scenario === "pending command" ? "pending" : "completed",
+                },
+              ],
+              committedEvents: [
+                { eventType: "run.terminal", envelope: identity },
+              ],
+            }),
+          );
+          await mkdir(join(root, "codex-home", "sessions"), {
+            recursive: true,
+          });
+          await writeFile(
+            join(root, "codex-home", "sessions", "history.jsonl"),
+            "existing conversation",
+          );
+        };
+        await writeCandidate(candidate);
+        if (scenario === "state symlink") {
+          await rename(
+            join(candidate, "runner", "runner-state.json"),
+            join(candidate, "original-state.json"),
+          );
+          await symlink(
+            join(candidate, "original-state.json"),
+            join(candidate, "runner", "runner-state.json"),
+          );
+        }
+        if (scenario === "multiple checkpoints")
+          await writeCandidate(`${candidate}.duplicate`);
+        if (
+          scenario === "empty retry shell" ||
+          scenario === "corrupt current authority"
+        )
+          await mkdir(scopedRoot);
+        if (scenario === "corrupt current authority")
+          await writeFile(
+            join(scopedRoot, "unrecognized-state"),
+            "do not replace",
+          );
+        state.createBackend.mockClear();
+        state.createTransport.mockClear();
+        const shouldRecover = [
+          "quarantined",
+          "empty retry shell",
+          "unsuspended current",
+          "active goal",
+        ].includes(scenario);
+        if (shouldRecover) {
+          await createRunnerdBackend({
+            db,
+            execution: currentExecution,
+            runnerInstanceId: "new-runner",
+            onLog,
+          });
+          expect(
+            JSON.parse(
+              await readFile(
+                join(scopedRoot, "runner", "runner-state.json"),
+                "utf8",
+              ),
+            ).lifecycle,
+          ).toBe("suspended");
+          expect(
+            await readFile(
+              join(scopedRoot, "codex-home", "sessions", "history.jsonl"),
+              "utf8",
+            ),
+          ).toBe("existing conversation");
+          if (scenario === "active goal") {
+            expect(
+              JSON.parse(
+                await readFile(
+                  join(scopedRoot, "runner", "codex-provider-state.json"),
+                  "utf8",
+                ),
+              ).goal,
+            ).toEqual({ status: "active" });
+          }
+          expect(onLog).toHaveBeenCalledWith(
+            "stdout",
+            expect.stringContaining("Automatically recovered settled session"),
+          );
+        } else {
+          // A quarantined checkpoint that fails verification must not be used
+          // even if a new backend can initialize its otherwise empty root.
+          await createRunnerdBackend({
+            db,
+            execution: currentExecution,
+            runnerInstanceId: "new-runner",
+            onLog,
+          }).catch(() => {});
+          expect(
+            JSON.parse(
+              await readFile(
+                join(candidate, "runner", "runner-state.json"),
+                "utf8",
+              ),
+            ).lifecycle,
+          ).toBe("ready");
+          expect(onLog).not.toHaveBeenCalled();
+          expect(state.createBackend).not.toHaveBeenCalled();
+        }
+      } finally {
+        processKill.mockRestore();
+        if (previousStateDirectory === undefined)
+          delete process.env.PAPERCLIP_RUNNER_STATE_DIR;
+        else process.env.PAPERCLIP_RUNNER_STATE_DIR = previousStateDirectory;
+        await rm(stateBase, { recursive: true, force: true });
+      }
+    },
+  );
 
   it("quarantines scoped prior-run state when the heartbeat is terminal but runnerd is not suspended", async () => {
     const stateBase = await mkdtemp(

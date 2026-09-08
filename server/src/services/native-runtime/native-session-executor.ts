@@ -1585,9 +1585,14 @@ async function migrateRunnerdStateRootForExecution(input: {
   execution: NativeExecutionInput;
   allowVerifiedBackup: boolean;
   allowRetainedWarmRunner: boolean;
+  allowLocalRecovery: boolean;
+  onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
   restartRecovery?: NativeRestartRecoveryClaim;
 }): Promise<void> {
   const scoped = scopedRunnerdStateRoot(input.execution);
+  if (input.allowLocalRecovery && !input.allowRetainedWarmRunner && !input.restartRecovery) {
+    await recoverQuiescentRunnerdState({ ...input, scoped });
+  }
   if (existsSync(scoped)) {
     if (!isSafeNativeStateDirectory(scoped)) {
       throw new Error("runner_state_directory_unsafe");
@@ -1702,6 +1707,294 @@ async function migrateRunnerdStateRootForExecution(input: {
       ...(verifiedPriorRunId ? { verifiedPriorRunId } : {}),
     });
     return;
+  }
+}
+
+// A terminal warm run can lose its controller before session.suspend. Older
+// controllers quarantined even fully settled state in that case. Recover the
+// exact provider thread, never bootstrap a replacement from an ambiguous root.
+async function recoverQuiescentRunnerdState(input: {
+  db: Db;
+  execution: NativeExecutionInput;
+  scoped: string;
+  onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
+}): Promise<void> {
+  if (input.execution.provider.kind !== "codex") return;
+  const quarantine = resolve(runnerdStateBase(), "quarantine");
+  const scopedExists = existsSync(input.scoped);
+  if (scopedExists && !isSafeNativeStateDirectory(input.scoped)) return;
+  // Never hide corrupt or contradictory current authority behind an older
+  // checkpoint. Only an absent/empty root may recover from quarantine.
+  const currentEmpty = !scopedExists || readdirSync(input.scoped).length === 0;
+  const candidates = currentEmpty
+    ? isSafeNativeStateDirectory(quarantine)
+      ? readdirSync(quarantine)
+          .filter((name) =>
+            name.startsWith(
+              `${basename(input.scoped)}.identity_indeterminate.`,
+            ),
+          )
+          .map((name) => resolve(quarantine, name))
+      : []
+    : [input.scoped];
+  if (
+    currentEmpty &&
+    candidates.filter(
+      (root) =>
+        isSafeNativeStateDirectory(root) && readdirSync(root).length > 0,
+    ).length > 1
+  ) {
+    // Do not roll back to an older valid checkpoint when a newer quarantined
+    // root contains unconfirmed work, even if the newer root is unreadable.
+    throw new Error("runner_state_identity_mismatch");
+  }
+  const verified: Array<{
+    root: string;
+    runnerBytes: string;
+    controlBytes: string;
+    providerBytes: string;
+    runner: Record<string, unknown>;
+    runId: string;
+    processPid: number;
+    processGroupId: number;
+  }> = [];
+  for (const root of candidates) {
+    if (!isSafeNativeStateDirectory(root)) continue;
+    const identity = readRunnerdDurableIdentity(root);
+    if (!durableIdentityMatchesSession(identity, input.execution)) continue;
+    if (identity.runId === input.execution.binding.runId) continue;
+    try {
+      const readState = (directory: string, name: string) => {
+        if (!isSafeNativeStateDirectory(resolve(root, directory)))
+          throw new Error("unsafe_recovery_state");
+        return readBoundedNativeFile(
+          resolve(root, directory, name),
+          NATIVE_RUNNER_STATE_MAX_BYTES,
+          "recovery_state_too_large",
+        ).toString("utf8");
+      };
+      const runnerBytes = readState("runner", "runner-state.json");
+      const controlBytes = readState(
+        "control-plane",
+        "control-plane-state.json",
+      );
+      const providerBytes = readState("runner", "codex-provider-state.json");
+      const runner = record(JSON.parse(runnerBytes));
+      const control = record(JSON.parse(controlBytes));
+      const provider = record(JSON.parse(providerBytes));
+      const commands = control.commands;
+      const events = control.committedEvents;
+      const terminalEnvelope = record(
+        record(Array.isArray(events) ? events.at(-1) : null).envelope,
+      );
+      if (
+        runner.schema !== RUNNERD_STATE_SCHEMA ||
+        !["ready", "suspended"].includes(String(runner.lifecycle)) ||
+        (!currentEmpty && runner.lifecycle === "suspended") ||
+        [
+          "runId",
+          "normalizedSessionId",
+          "runnerInstanceId",
+          "environmentLeaseId",
+          "turnId",
+          "itemId",
+        ].some((key) => runner[key] !== identity[key]) ||
+        !Array.isArray(runner.outbox) ||
+        runner.outbox.length !== 0 ||
+        runner.pendingTerminalDelivery !== null ||
+        !Array.isArray(commands) ||
+        commands.some((command) => record(command).status !== "completed") ||
+        !Array.isArray(events) ||
+        record(events.at(-1)).eventType !== "run.terminal" ||
+        terminalEnvelope.runId !== identity.runId ||
+        terminalEnvelope.normalizedSessionId !== identity.normalizedSessionId ||
+        provider.completedTurnAuthoritative !== true
+      )
+        continue;
+      const providerIdentity = providerSessionIdentityFromDurableProviderState({
+        execution: input.execution,
+        providerState: provider,
+      });
+      if (!providerIdentity.providerSessionId) continue;
+      const prior = await input.db
+        .select({
+          status: heartbeatRuns.status,
+          runnerProfileJson: heartbeatRuns.runnerProfileJson,
+          processPid: heartbeatRuns.processPid,
+          processGroupId: heartbeatRuns.processGroupId,
+          contextSnapshot: heartbeatRuns.contextSnapshot,
+        })
+        .from(heartbeatRuns)
+        .where(
+          and(
+            eq(heartbeatRuns.id, identity.runId),
+            eq(heartbeatRuns.companyId, input.execution.binding.companyId),
+            eq(heartbeatRuns.agentId, input.execution.binding.agentId),
+          ),
+        )
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      if (!prior || !TERMINAL_HEARTBEAT_RUN_STATUSES.has(prior.status))
+        continue;
+      const profile = record(prior.runnerProfileJson);
+      const previous = parseNativeExecutionInput(profile.nativeExecutionInput);
+      const checkpoint = record(profile.sessionCheckpoint);
+      const checkpointIdentity = record(checkpoint.identity);
+      const current = await input.db
+        .select({ runnerProfileJson: heartbeatRuns.runnerProfileJson })
+        .from(heartbeatRuns)
+        .where(
+          and(
+            eq(heartbeatRuns.id, input.execution.binding.runId),
+            eq(heartbeatRuns.companyId, input.execution.binding.companyId),
+            eq(heartbeatRuns.agentId, input.execution.binding.agentId),
+          ),
+        )
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      const latestCheckpoint = record(
+        record(current?.runnerProfileJson).sessionCheckpoint,
+      );
+      const latestIdentity = record(latestCheckpoint.identity);
+      if (
+        previous.binding.runId !== identity.runId ||
+        previous.binding.issueId !== input.execution.binding.issueId ||
+        nativeSessionScopeKey(previous) !==
+          nativeSessionScopeKey(input.execution) ||
+        nativeSessionConfigDigest(previous) !==
+          nativeSessionConfigDigest(input.execution) ||
+        record(record(prior.contextSnapshot).paperclipEnvironment).driver !==
+          "local" ||
+        checkpointIdentity.runId !== identity.runId ||
+        checkpointIdentity.sessionId !== identity.normalizedSessionId ||
+        checkpointIdentity.companyId !== previous.binding.companyId ||
+        checkpointIdentity.agentId !== previous.binding.agentId ||
+        checkpointIdentity.issueId !== previous.binding.issueId ||
+        checkpoint.driverKind !== previous.session.driverKind ||
+        checkpoint.providerSessionId !== providerIdentity.providerSessionId ||
+        latestCheckpoint.providerSessionId !==
+          providerIdentity.providerSessionId ||
+        latestIdentity.sessionId !== identity.normalizedSessionId ||
+        latestIdentity.companyId !== previous.binding.companyId ||
+        latestIdentity.agentId !== previous.binding.agentId ||
+        latestIdentity.issueId !== previous.binding.issueId ||
+        checkpoint.activeTurnId !== null ||
+        !Array.isArray(checkpoint.pendingRuntimeRequests) ||
+        checkpoint.pendingRuntimeRequests.length !== 0 ||
+        !localProcessDefinitelyGone(prior.processPid) ||
+        !localProcessDefinitelyGone(prior.processGroupId, true)
+      )
+        continue;
+      // Provider processes are normally inside the runner group. Check any
+      // independently recorded child identities too, including detached ones.
+      const processIds = [
+        ...Object.entries(record(checkpoint.process))
+          .filter(([key]) => /^(provider|codex|sidecar|agent)Pid$/.test(key))
+          .map(([, value]) => value),
+        ...events
+          .map(
+            (event) => record(record(record(event).envelope).payload).payload,
+          )
+          .map((payload) => record(payload).processId)
+          .filter((pid) => pid !== undefined),
+      ];
+      if (processIds.some((pid) => !localProcessDefinitelyGone(pid))) continue;
+      // No mutation if any evidence changed while the database was read.
+      if (
+        runnerBytes !== readState("runner", "runner-state.json") ||
+        controlBytes !==
+          readState("control-plane", "control-plane-state.json") ||
+        providerBytes !== readState("runner", "codex-provider-state.json")
+      )
+        continue;
+      verified.push({
+        root,
+        runnerBytes,
+        controlBytes,
+        providerBytes,
+        runner,
+        runId: identity.runId,
+        processPid: prior.processPid!,
+        processGroupId: prior.processGroupId!,
+      });
+    } catch {
+      // Unreadable, unsafe, unscoped, or unprovable state stays quarantined.
+    }
+  }
+  if (verified.length !== 1) {
+    if (
+      currentEmpty &&
+      candidates.some(
+        (root) =>
+          isSafeNativeStateDirectory(root) && readdirSync(root).length > 0,
+      )
+    ) {
+      // Known provider history is not permission to start a replacement when
+      // recovery cannot prove a unique, settled owner.
+      throw new Error("runner_state_identity_mismatch");
+    }
+    return;
+  }
+  const candidate = verified[0]!;
+  // Candidate enumeration can await other database reads. Revalidate the
+  // selected evidence and dead owner immediately before the atomic moves.
+  for (const [relativePath, expected] of [
+    ["runner/runner-state.json", candidate.runnerBytes],
+    ["runner/codex-provider-state.json", candidate.providerBytes],
+    ["control-plane/control-plane-state.json", candidate.controlBytes],
+  ]) {
+    if (
+      readBoundedNativeFile(
+        resolve(candidate.root, relativePath!),
+        NATIVE_RUNNER_STATE_MAX_BYTES,
+        "recovery_state_too_large",
+      ).toString("utf8") !== expected
+    ) {
+      throw new Error("runner_state_identity_mismatch");
+    }
+  }
+  if (
+    !localProcessDefinitelyGone(candidate.processPid) ||
+    !localProcessDefinitelyGone(candidate.processGroupId, true)
+  ) {
+    throw new Error("runner_state_identity_mismatch");
+  }
+  if (candidate.root !== input.scoped) {
+    if (existsSync(input.scoped)) {
+      if (
+        !isSafeNativeStateDirectory(input.scoped) ||
+        readdirSync(input.scoped).length !== 0
+      )
+        return;
+      quarantineRunnerdStateRoot(input.scoped, "identity_indeterminate");
+    }
+    renameSync(candidate.root, input.scoped);
+  }
+  // The provider and its process group are gone and all work is settled. Seal
+  // this old authority so the standard epoch rotation archives it before the
+  // next run, retaining the provider's history and exact thread identity.
+  const statePath = resolve(input.scoped, "runner", "runner-state.json");
+  const temporary = `${statePath}.${randomUUID()}.tmp`;
+  writeFileSync(
+    temporary,
+    JSON.stringify({ ...candidate.runner, lifecycle: "suspended" }),
+    { encoding: "utf8", mode: 0o600, flag: "wx" },
+  );
+  renameSync(temporary, statePath);
+  await input.onLog?.(
+    "stdout",
+    `[paperclip-runner] Automatically recovered settled session from run ${candidate.runId}; preserving the existing provider thread.\n`,
+  );
+}
+
+function localProcessDefinitelyGone(value: unknown, group = false): boolean {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 1)
+    return false;
+  try {
+    process.kill(group ? -value : value, 0);
+    return false;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "ESRCH";
   }
 }
 
@@ -3812,6 +4105,8 @@ async function executePaperclipNativeSessionWithinScope(
       // prior-run authority; after a hard restart the map is empty and the
       // durable-state verifier continues to require a suspended runner.
       allowRetainedWarmRunner: hasIdleWarmNativeSessionOwner(input),
+      allowLocalRecovery: input.runnerExecutionTarget?.kind !== "remote",
+      onLog: input.onLog,
       restartRecovery: input.restartRecovery,
     });
   }
@@ -6287,6 +6582,8 @@ export async function createRunnerdBackend(input: {
           input.runnerExecutionTarget?.kind === "remote" &&
           input.runnerExecutionTarget.transport === "sandbox",
         allowRetainedWarmRunner: false,
+        allowLocalRecovery: input.runnerExecutionTarget?.kind !== "remote",
+        onLog: input.onLog,
         restartRecovery: input.restartRecovery,
       });
     }
