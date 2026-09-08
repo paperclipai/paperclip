@@ -67,6 +67,7 @@ export const instanceExperimentalSettingsSchema = z.object({
   enableServerInfoDebugView: z.boolean().default(false),
   enablePaperclipDeveloperMode: z.boolean().default(false),
   enableSimplifiedEnglishInteractions: z.boolean().default(false),
+  enableWakeOutputSpill: z.boolean().default(false),
   autoRestartDevServerWhenIdle: z.boolean().default(false),
   enableWorkspaceBranchReconcileForward: z.boolean().default(true),
   enableWorkspaceDirtyQuarantineRepair: z.boolean().default(true),
