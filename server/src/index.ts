@@ -1492,6 +1492,16 @@ async function startServerWithDatabaseTeardown(
           );
         }
 
+        // LUN-7056: lift issues an earlier infrastructure outage left in `blocked` with no blocker
+        // and no unblock descriptor. Nothing else can wake that state, so it needs a startup sweep.
+        const blockedRepaired = await heartbeat.repairUnroutableBlockedIssues();
+        if (blockedRepaired.repaired > 0 || blockedRepaired.unevaluated > 0) {
+          logger.warn(
+            { ...blockedRepaired },
+            "startup repaired issues left unroutable in blocked by an infrastructure failure",
+          );
+        }
+
         const dependencyWakesReconciled = await heartbeat.reconcileResolvedDependencyWakes();
         if (dependencyWakesReconciled.healed > 0) {
           logger.warn(
@@ -1732,6 +1742,17 @@ async function startServerWithDatabaseTeardown(
                 logger.warn(
                   { promotedScheduledRetries: promotion.promoted, promotedScheduledRetryRunIds: promotion.runIds, ...reconciled },
                   "periodic heartbeat recovery changed assigned issue state",
+                );
+              }
+            })
+            .then(async () => {
+              // LUN-7056: startup is not the only moment an issue can land unroutable in `blocked`.
+              // The pass throttles itself, so this tick is a cheap no-op most of the time.
+              const blockedRepaired = await heartbeat.repairUnroutableBlockedIssues({ throttle: true });
+              if (blockedRepaired.repaired > 0 || blockedRepaired.unevaluated > 0) {
+                logger.warn(
+                  { ...blockedRepaired },
+                  "periodic sweep repaired issues left unroutable in blocked by an infrastructure failure",
                 );
               }
             })

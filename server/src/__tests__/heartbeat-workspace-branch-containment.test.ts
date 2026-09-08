@@ -995,6 +995,7 @@ describeEmbeddedPostgres("heartbeat workspace branch containment", () => {
         checkoutRunId: issues.checkoutRunId,
         executionRunId: issues.executionRunId,
         executionAgentNameKey: issues.executionAgentNameKey,
+        unblockDescriptor: issues.unblockDescriptor,
       })
       .from(issues)
       .where(eq(issues.id, issueId))
@@ -1004,6 +1005,12 @@ describeEmbeddedPostgres("heartbeat workspace branch containment", () => {
       checkoutRunId: null,
       executionRunId: null,
       executionAgentNameKey: null,
+      // LUN-7056 AC3: a real configuration block, so `blocked` is right — but it has no first-class
+      // blocker, so it must name who can lift it or nothing will ever wake it.
+      unblockDescriptor: {
+        owner: { agentId },
+        action: WORKSPACE_WORKTREE_REQUIRES_PROJECT_REMEDIATION,
+      },
     });
 
     const wakeup = await db
