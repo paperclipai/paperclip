@@ -92,6 +92,7 @@ function createProject(): Project {
       defaultMode: "shared_workspace",
       allowIssueOverride: true,
     },
+    automationPolicy: null,
     codebase: {
       workspaceId: null,
       repoUrl: null,

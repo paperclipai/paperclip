@@ -16,6 +16,7 @@ import { useToastActions } from "../context/ToastContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
 import { ProjectProperties, type ProjectConfigFieldKey, type ProjectFieldSaveState } from "../components/ProjectProperties";
+import { ProjectAutomationCard } from "../components/ProjectAutomationCard";
 import { InlineEditor } from "../components/InlineEditor";
 import { StatusBadge } from "../components/StatusBadge";
 import { ProjectTile } from "../components/ProjectTile";
@@ -936,7 +937,7 @@ export function ProjectDetail() {
       ) : null}
 
       {activeTab === "configuration" && (
-        <div className="max-w-4xl">
+        <div className="max-w-4xl space-y-4">
           <ProjectProperties
             project={project}
             onUpdate={(data) => updateProject.mutate(data)}
@@ -945,6 +946,15 @@ export function ProjectDetail() {
             onArchive={(archived) => archiveProject.mutate(archived)}
             archivePending={archiveProject.isPending}
           />
+          {resolvedCompanyId ? (
+            <ProjectAutomationCard
+              companyId={resolvedCompanyId}
+              projectId={project.id}
+              automationPolicy={project.automationPolicy}
+              onSave={(policy) => updateProject.mutate({ automationPolicy: policy })}
+              isSaving={updateProject.isPending}
+            />
+          ) : null}
         </div>
       )}
 

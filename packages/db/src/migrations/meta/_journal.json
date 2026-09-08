@@ -1709,6 +1709,13 @@
       "when": 1788804969749,
       "tag": "0245_misty_nightshade",
       "breakpoints": true
+    },
+    {
+      "idx": 246,
+      "version": "7",
+      "when": 1788892549539,
+      "tag": "0246_worried_power_man",
+      "breakpoints": true
     }
   ]
 }

@@ -34,6 +34,23 @@ export const projectExecutionWorkspacePolicySchema = z
   })
   .strict();
 
+export const issueAutoLabelRuleSchema = z
+  .object({
+    id: z.string().min(1).max(64),
+    match: z.string().min(1).max(120),
+    labelId: z.string().uuid(),
+  })
+  .strict();
+
+export const projectAutomationPolicySchema = z
+  .object({
+    autoLabelRules: z.array(issueAutoLabelRuleSchema).max(25).default([]),
+  })
+  .strict();
+
+export type ProjectAutomationPolicy = z.infer<typeof projectAutomationPolicySchema>;
+export type IssueAutoLabelRule = z.infer<typeof issueAutoLabelRuleSchema>;
+
 export const projectWorkspaceRuntimeConfigSchema = z.object({
   workspaceRuntime: z.record(z.string(), z.unknown()).optional().nullable(),
   desiredState: z.enum(["running", "stopped", "manual"]).optional().nullable(),
@@ -113,6 +130,7 @@ const projectFields = {
   icon: z.enum(PROJECT_ICON_NAMES).optional().nullable(),
   env: envConfigSchema.optional().nullable(),
   executionWorkspacePolicy: projectExecutionWorkspacePolicySchema.optional().nullable(),
+  automationPolicy: projectAutomationPolicySchema.optional().nullable(),
   archivedAt: z.string().datetime().optional().nullable(),
 };
 
