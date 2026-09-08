@@ -1316,6 +1316,7 @@ type IssueDetailChatTabProps = {
     interaction: ActionableIssueThreadInteraction,
     selectedClientKeys?: string[],
     selectedOptionIds?: string[],
+    rememberAction?: boolean,
   ) => Promise<void>;
   onRejectInteraction: (
     interaction: ActionableIssueThreadInteraction,
@@ -4423,14 +4424,17 @@ export function IssueDetail() {
       interaction,
       selectedClientKeys,
       selectedOptionIds,
+      rememberAction,
     }: {
       interaction: ActionableIssueThreadInteraction;
       selectedClientKeys?: string[];
       selectedOptionIds?: string[];
+      rememberAction?: boolean;
     }) =>
       issuesApi.acceptInteraction(issueId!, interaction.id, {
         selectedClientKeys,
         selectedOptionIds,
+        rememberAction,
       }),
     onSuccess: (interaction) => {
       upsertInteractionInCache(interaction);
@@ -6054,11 +6058,13 @@ export function IssueDetail() {
       interaction: ActionableIssueThreadInteraction,
       selectedClientKeys?: string[],
       selectedOptionIds?: string[],
+    rememberAction?: boolean,
     ) => {
       await acceptInteraction.mutateAsync({
         interaction,
         selectedClientKeys,
         selectedOptionIds,
+        rememberAction,
       });
     },
     [acceptInteraction],

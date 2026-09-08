@@ -1,0 +1,95 @@
+# Connection review verification — 2026-09-08
+
+Implementation workspace: `/Users/dotta/paperclipai/branches/codex/reviews-in-task`.
+Branch: `codex/reviews-in-task`, based on `master` at `165ca56a22adb60e5fda56045442d9c8498116a8`.
+
+## Acceptance status
+
+The deterministic integration paths demonstrate both synchronization directions
+and actual scripted-agent continuation. Live Notion and the four real model-runner
+profiles are **untested dependencies**, so the full acceptance plan is not complete.
+No PR-ready claim is made while the broad repository suite is not green.
+
+## Inspect the UI
+
+Storybook is running from this worktree on port 6018:
+
+- [Interactive task](http://localhost:6018/?path=/story/chat-comments-connection-reviews--interactive-task)
+- [All card states](http://localhost:6018/?path=/story/chat-comments-connection-reviews--all-states)
+- [Connections queue](http://localhost:6018/?path=/story/chat-comments-connection-reviews--connections-queue)
+- [Narrow layout](http://localhost:6018/?path=/story/chat-comments-connection-reviews--narrow)
+
+Manual browser inspection covered light/dark presentation, expanded technical
+details, and keyboard dismissal/reopening. Narrow controls wrap without horizontal
+clipping. The shared card remains information-dense; pending history stays compact.
+The fixture queue can be resolved interactively to inspect its empty state.
+
+## Deterministic browser journeys
+
+Each journey creates a company, agent, and custom MCP connection in an isolated
+embedded database. Ask first is configured through the permissions UI. The provider
+returns fixture page names; **these are not real Notion pages**.
+
+| Journey | Observed provider calls | Verified outcome |
+| --- | ---: | --- |
+| Approve in task | 1 | Stored call executes; resumed task posts Roadmap/Meeting notes; Connections pending item clears |
+| Decline in Connections | 0 | Optional reason submitted; open task updates; resumed agent reports decline |
+| Always allow | 2 | Initial approved call and a later call with changed arguments; later task has no review |
+| Provider failure | 1 | Human approval remains recorded; task shows execution failure and resumed agent reports it |
+| Restart while waiting | 1 | Pending request survives actual server restart; approval executes once and task returns page results |
+
+All journeys also exercise takeover dismissal/reopening, an ordinary comment while
+pending, reload, and cross-tab synchronization. Review creation performs zero
+provider calls. Traces and screenshots accompany each case.
+
+[Open the evidence gallery](http://127.0.0.1:6020/) or the
+[Playwright report](http://127.0.0.1:6020/report/). The final run passed all five
+journeys in 1.4 minutes and released its port after teardown.
+
+The local evidence directory is `.paperclip-runtime/reviews-evidence/`. It contains
+the Playwright report, traces/screenshots, focused/full-check logs, baseline logs,
+and `final-journey-identifiers.json` with request, invocation, interaction, and run IDs
+from the passing port-3226 run. The report's attachments also contain
+company/task/agent IDs and provider counts for its own run.
+
+## Automated checks
+
+- 384 focused gateway, policy/service, native bridge, and card/queue tests pass.
+- 177 additional interaction route/service and policy tests pass.
+- 18 startup tests pass after updating their app mocks with recovery services.
+- 19 runner-catalog tests pass; the opt-in suite defines 16 local cells.
+- Added scope/repair regressions pass: another agent/project still asks, explicit
+  denial and changed definitions remain effective, concurrent approval executes
+  once, multiple outcomes share one durable wake, and interrupted execution is
+  never replayed.
+- Repository `pnpm -r typecheck` and `pnpm build` pass.
+- Runner harness TypeScript, token gates, migration safety, and Storybook build pass.
+- `pnpm test:run` was run, but the repository-wide result is not green. Feature
+  failures found in the initial run were corrected and their suites rerun above.
+  Thirteen unrelated failures were reproduced at the same unchanged master commit:
+  two workspace-runtime tests, four workspace-repair/control tests, three runtime
+  exposure tests, two company-skill path tests, one instance-cleanup path test,
+  and one worktree-seed spawn test.
+  The initial general-server lane ended with 5,968 passed, 39 failed, and 31
+  skipped tests across 498 files. Twenty failures were feature changes corrected
+  and verified in focused reruns; six were transient file-resource/runtime-port
+  failures that passed on rerun. The thirteen remaining failures reproduce on
+  master. The fail-fast runner did not reach later workspace/serialized lanes.
+  A complete green repository run is still required before PR-ready handoff.
+
+## Live provider dependencies
+
+The normal runner command was attempted with the opt-in flag and stopped with
+`Missing runner E2E credentials: OPENAI_API_KEY, ANTHROPIC_API_KEY`.
+
+The normal `test-drive --harness codex` command was also attempted from this
+worktree. It bootstrapped a fresh isolated instance and reached startup recovery on
+127.0.0.1:3105, then shut down with `No credential found. Set OPENAI_API_KEY`.
+No Notion OAuth connection or real Notion page read was performed. No native Codex,
+native ACPX Claude, legacy Codex CLI, or legacy Claude CLI journey is claimed as
+passed. The scripted process-adapter/browser evidence must not substitute for
+those 16 acceptance cells or the four-profile real Notion exercise.
+
+Provide the normal runner/test-drive credential setup and Notion account access
+to complete those journeys. Secrets should remain in the normal local environment
+or credential store, not in this report or chat.

@@ -1263,7 +1263,8 @@ export interface RequestConfirmationToolActionPayload {
   connectionId: string | null;
   applicationId: string | null;
   appDisplayName: string | null;
-  risk: "write" | "destructive";
+  risk: "read" | "write" | "destructive";
+  rememberActionScope?: string;
   previewMarkdown: string;
   argumentsSummaryJson: string;
   argumentsHash: string;
@@ -1288,6 +1289,7 @@ export interface RequestConfirmationSecretProposalPayload {
  */
 export interface RequestConfirmationToolActionResult {
   version: 1;
+  rememberedAction?: boolean;
   status: "approved" | "executing" | "executed" | "failed" | "expired";
   errorCode?: string | null;
   errorMessage?: string | null;

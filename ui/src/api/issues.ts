@@ -289,7 +289,7 @@ export const issuesApi = {
   acceptInteraction: (
     id: string,
     interactionId: string,
-    data?: { selectedClientKeys?: string[]; selectedOptionIds?: string[] },
+    data?: { selectedClientKeys?: string[]; selectedOptionIds?: string[]; rememberAction?: boolean },
   ) =>
     api.post<IssueThreadInteraction>(`/issues/${id}/interactions/${interactionId}/accept`, data ?? {}),
   rejectInteraction: (id: string, interactionId: string, reason?: string) =>

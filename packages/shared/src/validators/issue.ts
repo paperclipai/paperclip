@@ -1078,7 +1078,8 @@ export const requestConfirmationToolActionPayloadSchema = z.object({
   connectionId: z.string().guid().nullable(),
   applicationId: z.string().guid().nullable(),
   appDisplayName: z.string().trim().min(1).max(500).nullable(),
-  risk: z.enum(["write", "destructive"]),
+  risk: z.enum(["read", "write", "destructive"]),
+  rememberActionScope: z.string().trim().min(1).max(1000).optional(),
   previewMarkdown: z.string().trim().min(1).max(20000),
   argumentsSummaryJson: z.string().max(20000),
   argumentsHash: z.string().trim().min(1).max(255),
@@ -1225,6 +1226,7 @@ export const requestConfirmationResumeFailureSchema = z.object({
 
 export const requestConfirmationToolActionResultSchema = z.object({
   version: z.literal(1),
+  rememberedAction: z.boolean().optional(),
   status: z.enum(["approved", "executing", "executed", "failed", "expired"]),
   errorCode: z.string().trim().min(1).max(120).nullable().optional(),
   errorMessage: z.string().trim().min(1).max(4000).nullable().optional(),
@@ -1484,6 +1486,7 @@ export const createIssueThreadInteractionSchema = z.discriminatedUnion("kind", [
 export type CreateIssueThreadInteraction = z.infer<typeof createIssueThreadInteractionSchema>;
 
 export const acceptIssueThreadInteractionSchema = z.object({
+  rememberAction: z.boolean().optional(),
   selectedClientKeys: z.array(z.string().trim().min(1).max(120)).min(1).max(50).optional(),
   selectedOptionIds: z.array(z.string().trim().min(1).max(120))
     .max(REQUEST_CHECKBOX_CONFIRMATION_OPTION_LIMIT)

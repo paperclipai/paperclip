@@ -987,6 +987,7 @@ export const toolTrustRuleBatchApprovalSchema = z.object({
 });
 
 export const createToolTrustRuleFromActionRequestSchema = z.object({
+  argumentMode: z.enum(["exact", "action"]).optional(),
   name: z.string().trim().min(1).max(160).optional(),
   description: z.string().max(4000).optional().nullable(),
   priority: z.number().int().min(0).max(10000).default(40),

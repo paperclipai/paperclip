@@ -3,6 +3,8 @@ import type { NativeInteractionResponseEnvelope } from "../../vendor/paperclip-r
 import { and, asc, eq, inArray } from "drizzle-orm";
 import {
   agents,
+  toolActionRequests,
+  toolInvocations,
   heartbeatRuns,
   issues,
   issueThreadInteractions,
@@ -177,6 +179,27 @@ export async function materializeNativeInteractionResponses(input: {
         `Interaction ${interaction.id} is not bound to the native company and issue`,
       );
     }
+    if (interaction.kind === "request_confirmation" && interaction.payload.toolAction) {
+      const action = interaction.payload.toolAction;
+      if (["accepted", "rejected"].includes(interaction.status) && (interaction.resolvedByAgentId || interaction.resolvedByRunId === input.runId)) {
+        throw new NativeInteractionBridgeError("native_interaction_self_approval", "Agents cannot resolve governed tool reviews");
+      }
+      const [request] = await input.db.select().from(toolActionRequests).where(and(eq(toolActionRequests.id, action.actionRequestId), eq(toolActionRequests.companyId, input.companyId), eq(toolActionRequests.issueId, input.issueId), eq(toolActionRequests.interactionId, interaction.id), eq(toolActionRequests.invocationId, action.invocationId)));
+      const [invocation] = await input.db.select().from(toolInvocations).where(and(eq(toolInvocations.id, action.invocationId), eq(toolInvocations.companyId, input.companyId), eq(toolInvocations.issueId, input.issueId), eq(toolInvocations.agentId, input.agentId)));
+      if (!request || !invocation || request.requestedByAgentId !== input.agentId || request.canonicalArgumentsHash !== action.argumentsHash) {
+        throw new NativeInteractionBridgeError("native_interaction_governed_request_unresolved", "Tool review has no matching authoritative invocation");
+      }
+      if (["expired", "cancelled"].includes(request.status)) {
+        if (interaction.status !== request.status && !(interaction.status === "accepted" && interaction.result?.toolAction?.status === "expired")) throw new NativeInteractionBridgeError("native_interaction_governed_result_mismatch", "Tool review lifecycle does not match its request");
+        responses.push({ interactionId: interaction.id, kind: interaction.kind, response: { status: interaction.status, result: structuredClone(interaction.result), executionStatus: request.status } });
+        continue;
+      }
+      if (!request.decidedByUserId || request.decidedByUserId !== interaction.resolvedByUserId || !["executed", "failed", "rejected"].includes(request.status) || (request.status === "rejected" ? interaction.status !== "rejected" : interaction.status !== "accepted")) {
+        throw new NativeInteractionBridgeError("native_interaction_governed_request_unresolved", "Tool review must have a human decision and an authoritative terminal execution outcome");
+      }
+      const expectedInvocationStatus = request.status === "executed" ? "succeeded" : request.status === "rejected" ? "denied" : "failed";
+      if (invocation.status !== expectedInvocationStatus || (request.status !== "rejected" && interaction.result?.toolAction?.status !== request.status)) throw new NativeInteractionBridgeError("native_interaction_governed_result_mismatch", "Tool review outcome does not match its invocation");
+    }
     const interactionResult = record(interaction.result);
     const supersessionOutcome = interaction.status === "expired"
       && ["superseded_by_newer_request", "superseded_by_comment", "stale_target"].includes(String(interactionResult.outcome));
@@ -237,12 +260,6 @@ export async function materializeNativeInteractionResponses(input: {
         throw new NativeInteractionBridgeError(
           "native_interaction_self_approval",
           `Agent ${input.agentId} cannot consume a confirmation it resolved`,
-        );
-      }
-      if (interaction.kind === "request_confirmation" && interaction.payload.toolAction !== undefined) {
-        throw new NativeInteractionBridgeError(
-          "native_interaction_governed_request_unsupported",
-          "Governed tool-action confirmations cannot enter a native model envelope",
         );
       }
       if (

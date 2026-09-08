@@ -1301,6 +1301,22 @@ Board can at any time:
 - edit budgets and limits
 - approve/reject/cancel pending approvals
 
+## 12.4 Connection Tool Reviews
+
+Ask-first connection calls use a server-owned tool-action confirmation linked to
+the authoritative action request. The task feed retains a stable record; dismissal
+only hides the composer takeover. Task and Connections decisions share one
+transaction. Approval runs stored, signed arguments once; decline runs nothing.
+The human decision remains distinct from provider execution success or failure.
+
+Always allow remembers the same agent, connection, and action, restricted to the
+current project when present, with future argument values permitted. Explicit
+denials, revoked access, catalog-definition changes, and formal approval gates
+remain effective. A durable continuation receipt resumes eligible task context
+with the recorded outcome after the agent yields. Uncertain interrupted execution
+is surfaced without automatic replay. See [Task reviews](connections/TASK-REVIEWS.md)
+for contracts, recovery behavior, Storybook, and acceptance workflows.
+
 ## 13. Cost and Budget System
 
 ## 13.1 Budget Layers

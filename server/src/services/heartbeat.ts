@@ -20190,7 +20190,9 @@ export function heartbeatService(
                 issueId: issueRef.id,
                 runId: run.id,
                 agentId: agent.id,
-                interactionIds: interactionId ? [interactionId] : [],
+                interactionIds: Array.isArray(context.interactionIds)
+                  ? [...new Set([...(interactionId ? [interactionId] : []), ...context.interactionIds.filter((id): id is string => typeof id === "string")])]
+                  : interactionId ? [interactionId] : [],
               });
             const runnerAdapterConfig = parseObject(agent.adapterConfig);
             const managedProfile =

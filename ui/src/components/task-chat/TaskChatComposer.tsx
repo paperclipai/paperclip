@@ -80,6 +80,7 @@ export interface TaskChatComposerTakeover {
   onShowNext?: () => void;
   /** Places Skip inside a structured question form's action row. */
   inlineSkip?: boolean;
+  hideLabel?: boolean;
   /** Some decision surfaces already provide a non-accept path of their own. */
   hideSkip?: boolean;
 }
@@ -847,11 +848,11 @@ export function TaskChatComposer({
           data-testid="task-chat-composer-takeover"
         >
           <div
-            className="mb-3 flex min-w-0 items-center gap-2"
+            className={cn("flex min-w-0 items-center gap-2", takeover.hideLabel && takeover.pendingCount === 1 ? "absolute right-0 top-0 z-10" : "mb-3")}
             data-testid="task-chat-composer-takeover-header"
           >
             <div className="min-w-0 flex-1">
-              {!takeoverHeaderClaimed ? (
+              {!takeoverHeaderClaimed && !takeover.hideLabel ? (
                 <strong className="block truncate text-sm font-medium text-foreground">
                   {takeover.label}
                 </strong>
@@ -892,7 +893,7 @@ export function TaskChatComposer({
               </Button>
             </div>
           </div>
-          <div className="pr-1" data-testid="task-chat-composer-takeover-body">
+          <div className={takeover.hideLabel && takeover.pendingCount === 1 ? "pr-8" : "pr-1"} data-testid="task-chat-composer-takeover-body">
             <TaskChatComposerTakeoverActionsContext.Provider
               value={{
                 skipButton:

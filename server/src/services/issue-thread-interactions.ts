@@ -658,6 +658,7 @@ function shouldReturnAcceptedConfirmationToCreatorAgent(args: {
 
 function shouldSupersedeInteractionOnUserComment(interaction: UserCommentSupersedableInteraction) {
   if (interaction.kind === "connection_intent") return false;
+  if (interaction.kind === "request_confirmation" && interaction.payload.toolAction) return false;
   return interaction.payload.supersedeOnUserComment === true;
 }
 

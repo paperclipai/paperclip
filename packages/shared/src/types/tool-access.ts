@@ -1493,6 +1493,7 @@ export interface ToolTrustRuleBatchApprovalConfig {
 }
 
 export interface CreateToolTrustRuleFromActionRequest {
+  argumentMode?: "exact" | "action";
   name?: string;
   description?: string | null;
   priority?: number;

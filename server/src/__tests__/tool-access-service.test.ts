@@ -2831,7 +2831,7 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(denied.body.result).toBeUndefined();
 
     const [invocation] = await db.select().from(toolInvocations).where(eq(toolInvocations.companyId, company.id));
-    expect(invocation).toMatchObject({ status: "awaiting_approval", approvalState: "rejected" });
+    expect(invocation).toMatchObject({ status: "denied", approvalState: "rejected" });
   });
 
   it("404s a single-id test-call status fetch for a non-test-origin action request", async () => {

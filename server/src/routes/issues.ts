@@ -2923,7 +2923,16 @@ export function issueRoutes(
       options: Parameters<ReturnType<typeof heartbeatService>["wakeup"]>[1],
     ) => ReturnType<ReturnType<typeof heartbeatService>["wakeup"]>;
     issueListDiagnostics?: IssueListDiagnostics;
+    declineToolActionRequest?: (input: {
+      companyId: string;
+      issueId?: string;
+      interactionId?: string;
+      actionRequestId: string;
+      reason?: string;
+      actor: { agentId?: string | null; userId?: string | null };
+    }) => Promise<unknown>;
     approveToolActionRequest?: (input: {
+      rememberAction?: boolean;
       companyId: string;
       issueId: string;
       interactionId: string;
@@ -12607,6 +12616,13 @@ export function issueRoutes(
       if (!suggestedTaskEffectsAuthorized) return;
 
       const actor = getActorInfo(req);
+      if (current.kind === "request_confirmation" && current.payload.toolAction) {
+        if (!opts.approveToolActionRequest) throw unprocessable("Tool review resolution is unavailable");
+        await opts.approveToolActionRequest({ companyId: issue.companyId, issueId: issue.id, interactionId: current.id, actionRequestId: current.payload.toolAction.actionRequestId, rememberAction: req.body.rememberAction === true, actor: { agentId: actor.agentId, userId: actor.actorType === "user" ? actor.actorId : null } });
+        res.json(await interactionSvc.getById(current.id));
+        return;
+      }
+      if (req.body.rememberAction) throw unprocessable("Remembered permission is only supported for tool reviews");
       const { interaction, createdIssues, continuationIssue } = await interactionSvc.acceptInteraction(issue, interactionId, req.body, {
         agentId: actor.agentId,
         runId: actor.runId,
@@ -12851,6 +12867,12 @@ export function issueRoutes(
       }
 
       const actor = getActorInfo(req);
+      if (current.kind === "request_confirmation" && current.payload.toolAction) {
+        if (!opts.declineToolActionRequest) throw unprocessable("Tool review resolution is unavailable");
+        await opts.declineToolActionRequest({ companyId: issue.companyId, issueId: issue.id, interactionId: current.id, actionRequestId: current.payload.toolAction.actionRequestId, reason: req.body.reason, actor: { agentId: actor.agentId, userId: actor.actorType === "user" ? actor.actorId : null } });
+        res.json(await interactionSvc.getById(current.id));
+        return;
+      }
       const interaction = await interactionSvc.rejectInteraction(issue, interactionId, req.body, {
         agentId: actor.agentId,
         runId: actor.runId,

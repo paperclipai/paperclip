@@ -1730,6 +1730,13 @@
       "when": 1788901245075,
       "tag": "0248_small_manta",
       "breakpoints": true
+    },
+    {
+      "idx": 249,
+      "version": "7",
+      "when": 1788904803082,
+      "tag": "0249_fast_silverclaw",
+      "breakpoints": true
     }
   ]
 }
