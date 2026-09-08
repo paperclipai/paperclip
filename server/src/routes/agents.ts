@@ -1,6 +1,6 @@
 import { Router, type NextFunction, type Request, type Response } from "express";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
-import { rm } from "node:fs/promises";
+import { readFile, rm } from "node:fs/promises";
 import path from "node:path";
 import type { Db } from "@paperclipai/db";
 import { agents as agentsTable, companies, heartbeatRuns, issues as issuesTable, projects as projectsTable } from "@paperclipai/db";
@@ -86,7 +86,7 @@ import type {
   AdapterEnvironmentTestResult,
 } from "@paperclipai/adapter-utils";
 import { evaluateCodexCredentialReadiness } from "@paperclipai/adapter-codex-local/server";
-import type { AdapterAuthSignal, AdapterAuthSignalResponse } from "@paperclipai/shared";
+import type { AdapterAuthSignal, AdapterAuthSignalResponse, CodexAccountBindingClaim } from "@paperclipai/shared";
 import { getDisabledAdapterTypes } from "../services/adapter-plugin-store.js";
 import { skillVersionSelectionMap } from "../services/runtime-skill-selections.js";
 import { secretService } from "../services/secrets.js";
@@ -182,6 +182,8 @@ import {
 import {
   checkStagedCredentialReadiness,
   promoteDeviceLoginCredential,
+  readSubscriptionAccountId,
+  resolveManagedCodexHomeDir,
   withAccountHomeSecretMutationLock,
   withCodexAccountHomePromotionLock,
 } from "@paperclipai/adapter-codex-local/server";
@@ -699,8 +701,25 @@ export function agentRoutes(
   // nothing outlives one login attempt.
   const pendingAccountHomeSecretCommits = new Map<
     string,
-    { secretId: string; secretName: string; accountHomeDir: string }
+    { secretId: string; secretName: string; accountHomeDir: string; companyIdentityDiffers: boolean }
   >();
+
+  // Non-secret binding claims for AUTHENTICATED Codex logins, keyed by the
+  // internal session id and served on the owner status read. In-memory like
+  // the one-time login prompt: a restart loses the claim and the panel shows
+  // plain success with no binding offer — graceful degradation, never a
+  // wrong bind. Bounded with insertion-order eviction so reaped sessions
+  // cannot grow it forever.
+  const committedCodexAccountBindings = new Map<string, CodexAccountBindingClaim>();
+  const MAX_COMMITTED_CODEX_ACCOUNT_BINDINGS = 200;
+  function rememberCodexAccountBinding(sessionId: string, claim: CodexAccountBindingClaim): void {
+    committedCodexAccountBindings.set(sessionId, claim);
+    while (committedCodexAccountBindings.size > MAX_COMMITTED_CODEX_ACCOUNT_BINDINGS) {
+      const oldest = committedCodexAccountBindings.keys().next().value;
+      if (oldest === undefined) break;
+      committedCodexAccountBindings.delete(oldest);
+    }
+  }
 
   const adapterLoginService = createDeviceLoginService({
     store: adapterLoginStore,
@@ -806,6 +825,26 @@ export function agentRoutes(
             }
             const secretName = `CODEX_HOME_${handle}`;
             const accountHomeDir = result.accountHomeDir;
+            // Whether the company default home ended on a DIFFERENT account
+            // than this login. The promotion's own company-home write already
+            // ran (a seed or same-identity refresh landed this login there; a
+            // different account's claim was kept), so this read observes the
+            // post-promotion state. The flag rides to the owner status read,
+            // where the client offers binding the agent to this account — the
+            // only way the login can take effect while another account holds
+            // the company slot. Any read failure degrades to `false`: the
+            // client then simply offers nothing, never a wrong bind.
+            const companyIdentityDiffers = await (async () => {
+              try {
+                const companyAuthBytes = await readFile(
+                  path.join(resolveManagedCodexHomeDir(process.env, context.companyId), "auth.json"),
+                );
+                const companyIdentity = readSubscriptionAccountId(companyAuthBytes);
+                return companyIdentity !== null && companyIdentity !== result.accountId;
+              } catch {
+                return false;
+              }
+            })();
             const existingSecret = await secretsSvc.getByName(context.companyId, secretName);
             if (existingSecret) {
               // A same-name secret already exists. Confirm it still names this
@@ -827,6 +866,7 @@ export function agentRoutes(
                 secretId: existingSecret.id,
                 secretName,
                 accountHomeDir,
+                companyIdentityDiffers,
               });
               return;
             }
@@ -850,6 +890,7 @@ export function agentRoutes(
                 secretId: createdSecret.id,
                 secretName,
                 accountHomeDir,
+                companyIdentityDiffers,
               });
             } catch (err) {
               if (err instanceof HttpError && err.status === 409) {
@@ -874,6 +915,7 @@ export function agentRoutes(
                   secretId: winningSecret.id,
                   secretName,
                   accountHomeDir,
+                  companyIdentityDiffers,
                 });
                 return;
               }
@@ -935,7 +977,7 @@ export function agentRoutes(
             // the service ever reaches this call). Nothing to reconfirm.
             return commit();
           }
-          return withAccountHomeSecretMutationLock(undefined, context.companyId, async () => {
+          const committed = await withAccountHomeSecretMutationLock(undefined, context.companyId, async () => {
             // Resolve by the secret's id, not its name: a rotate changes the
             // value under the same id, so re-resolving this id picks up a
             // rotation the same way the very first check would have, with no
@@ -953,6 +995,14 @@ export function agentRoutes(
             );
             return commit();
           });
+          // Only after the terminal write is durable: an owner status read
+          // must never see a binding claim for a session that failed to
+          // authenticate.
+          rememberCodexAccountBinding(context.sessionId, {
+            secretId: pending.secretId,
+            companyIdentityDiffers: pending.companyIdentityDiffers,
+          });
+          return committed;
         },
       },
       grok_local: {
@@ -1816,7 +1866,16 @@ export function agentRoutes(
     if (!row || row.adapterType !== adapterType || row.startedByUserId !== requestingUserId) {
       return null;
     }
-    return adapterLoginService.readOwnerSession(publicSessionId, companyId, requestingUserId);
+    const session = await adapterLoginService.readOwnerSession(publicSessionId, companyId, requestingUserId);
+    if (!session) return session;
+    // Merge the non-secret account-binding claim onto an authenticated Codex
+    // owner read. The claim lives beside the terminal commit that produced it
+    // (see rememberCodexAccountBinding); a process restart simply drops it.
+    if (row.adapterType === "codex_local" && session.status === "authenticated") {
+      const claim = committedCodexAccountBindings.get(row.id);
+      if (claim) return { ...session, codexAccountBinding: claim };
+    }
+    return session;
   }
 
   async function assertCanReadConfigurations(req: Request, companyId: string) {

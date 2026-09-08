@@ -6,6 +6,7 @@ import type {
   Agent,
   AdapterAuthSessionPrompt,
   AdapterAuthSessionStatus,
+  CodexAccountBindingClaim,
   AdapterEnvironmentTestResult,
   CompanySecret,
   EnvBinding,
@@ -597,6 +598,35 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       ...buildAgentUpdatePatch(props.agent, nextOverlay),
       applyStoredClaudeLogin: true,
     });
+    invalidateUserSecretDefinitions();
+  };
+
+  // Edit mode: a Codex login that signed in to a DIFFERENT account than the
+  // company default cannot take effect through the shared company home — the
+  // promotion never displaces another account's claim there. Bind this
+  // agent's CODEX_HOME to the login's account-home secret and persist at
+  // once, the same one-step shape as the Claude stored-login bind above.
+  // Same-account logins skip the bind on purpose: the company-home refresh
+  // already carried them, and an unbound agent keeps following the company
+  // default across later credential rotations. No claim flag is needed —
+  // the secret already exists company-scoped, so this is an ordinary
+  // secret-reference binding through the normal agent-update patch.
+  const handleCodexAccountBindingEdit = async (claim: CodexAccountBindingClaim) => {
+    if (isCreate || !claim.companyIdentityDiffers) return;
+    const flushedEnv = flushEnvironmentDraft();
+    const baseEnv =
+      flushedEnv ??
+      (eff("adapterConfig", "env", (config.env ?? EMPTY_ENV) as Record<string, EnvBinding>));
+    const nextEnv: Record<string, EnvBinding> = {
+      ...baseEnv,
+      CODEX_HOME: { type: "secret_ref", secretId: claim.secretId, version: "latest" },
+    };
+    const nextOverlay: AgentConfigOverlay = {
+      ...overlay,
+      adapterConfig: { ...overlay.adapterConfig, env: nextEnv },
+    };
+    setOverlay(nextOverlay);
+    await props.onSave(buildAgentUpdatePatch(props.agent, nextOverlay));
     invalidateUserSecretDefinitions();
   };
 
@@ -1548,6 +1578,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
               onApplyStored={
                 isCreate ? handleApplyStoredClaudeLogin : handleApplyStoredClaudeLoginEdit
               }
+              onAccountBinding={isCreate ? undefined : handleCodexAccountBindingEdit}
             />
           )}
 
@@ -2101,6 +2132,14 @@ export type AdapterLoginDescriptor = {
 export type AdapterLoginPanelProps = AdapterLoginDescriptor & {
   onStored?: (storedSessionId: string) => void;
   onApplyStored?: () => void;
+  // Reports the non-secret Codex account-binding claim from an authenticated
+  // owner read: the company secret that names the signed-in account's own
+  // home, and whether the company default home stayed on a DIFFERENT account.
+  // The edit-mode form binds the agent's CODEX_HOME to the secret when the
+  // identities differ — the only case where the login cannot take effect
+  // through the shared company home. The callback never carries a token byte
+  // or an account identifier.
+  onAccountBinding?: (claim: CodexAccountBindingClaim) => void;
   // Start the login on mount instead of waiting for a press. The connect step's
   // footer button is the press — by the time the panel is rendered there, the
   // customer has already asked for this.
@@ -2162,6 +2201,7 @@ function DisplayedCodeLoginPanel({
   environmentId,
   autoStart,
   onConnected,
+  onAccountBinding,
   chrome = "panel",
   onPromptReady,
 }: AdapterLoginPanelProps) {
@@ -2355,6 +2395,20 @@ function DisplayedCodeLoginPanel({
     connectedRef.current = true;
     onConnectedRef.current?.();
   }, [status]);
+
+  // Report the account-binding claim upward once. The claim arrives on the
+  // same owner read that reports `authenticated` (or a later poll before the
+  // poll stops); it is non-secret — a company secret id plus a flag — and the
+  // caller decides whether a bind is warranted.
+  const accountBindingReportedRef = useRef(false);
+  const onAccountBindingRef = useRef(onAccountBinding);
+  onAccountBindingRef.current = onAccountBinding;
+  const accountBinding = statusQuery.data?.codexAccountBinding ?? null;
+  useEffect(() => {
+    if (status !== "authenticated" || !accountBinding || accountBindingReportedRef.current) return;
+    accountBindingReportedRef.current = true;
+    onAccountBindingRef.current?.(accountBinding);
+  }, [status, accountBinding]);
 
   // Report the prompt's URL upward, the way the submitted-browser-code panel
   // does. The caller's loading beat ends when this arrives, so without it the

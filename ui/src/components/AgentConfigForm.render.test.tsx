@@ -1746,6 +1746,62 @@ describe("AgentConfigForm environment selector", () => {
     expect(findButton(container, "Cancel")).toBeFalsy();
     expect(mockAgentsApi.cancelAdapterAuthLogin).not.toHaveBeenCalled();
   });
+  it("reports the account-binding claim upward exactly once when the session authenticates", async () => {
+    // The authenticated owner read can carry the non-secret Codex
+    // account-binding claim. The panel hands it to the caller once; the
+    // caller (the edit-mode form) decides whether a bind is warranted.
+    mockAgentsApi.startAdapterAuthLogin.mockResolvedValue({
+      sessionId: "bind-session-1",
+      environmentId: "sandbox-1",
+      status: "waiting_for_user",
+      expiresAt: null,
+      failure: null,
+      prompt: { url: "https://auth.example.test/bind", code: "BIND-1" },
+    });
+    mockAgentsApi.getAdapterAuthLoginStatus.mockResolvedValue({
+      sessionId: "bind-session-1",
+      environmentId: "sandbox-1",
+      status: "authenticated",
+      expiresAt: null,
+      failure: null,
+      prompt: null,
+      codexAccountBinding: { secretId: "secret-bind-1", companyIdentityDiffers: true },
+    });
+    const onAccountBinding = vi.fn();
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    roots.push(root);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <ToastProvider>
+            <TooltipProvider>
+              <AdapterLoginPanel
+                companyId="company-1"
+                adapterType="codex_local"
+                environmentId="sandbox-1"
+                autoStart
+                onAccountBinding={onAccountBinding}
+              />
+            </TooltipProvider>
+          </ToastProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await flushUntil(() => onAccountBinding.mock.calls.length > 0);
+
+    expect(onAccountBinding).toHaveBeenCalledTimes(1);
+    expect(onAccountBinding).toHaveBeenCalledWith({
+      secretId: "secret-bind-1",
+      companyIdentityDiffers: true,
+    });
+  });
+
   it("resumes an active login session on mount, adopting its session id and prompt", async () => {
     // A page reload loses every piece of local state, so the panel must read
     // the caller's active session and adopt it instead of starting a new one.
