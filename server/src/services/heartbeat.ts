@@ -4291,11 +4291,10 @@ export async function buildPaperclipRuntimeMcpServers(input: {
           catalogEntryId: tool.id,
         })),
     ];
-    if (entries.length > 250) {
-      throw new Error(
-        "native MCP assignment exceeds the 250-entry gateway profile limit",
-      );
-    }
+    // The 250-entry limit bounds a public profile-edit request, not the
+    // effective assignment assembled from existing profiles. Keep every exact
+    // selector here: truncating or replacing them with connection-wide grants
+    // would either lose assigned tools or authorize tools outside this snapshot.
     try {
       const created = await access.createProfile(input.agent.companyId, {
         profileKey,
