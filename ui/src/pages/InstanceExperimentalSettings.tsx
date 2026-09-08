@@ -229,6 +229,8 @@ export function InstanceExperimentalSettings() {
     experimentalQuery.data?.enablePaperclipDeveloperMode === true;
   const enableSimplifiedEnglishInteractions =
     experimentalQuery.data?.enableSimplifiedEnglishInteractions === true;
+  const enableWakeOutputSpill =
+    experimentalQuery.data?.enableWakeOutputSpill === true;
   const enableSmokeLab = experimentalQuery.data?.enableSmokeLab === true;
   const autoRestartDevServerWhenIdle = experimentalQuery.data?.autoRestartDevServerWhenIdle === true;
   return (
@@ -401,6 +403,19 @@ export function InstanceExperimentalSettings() {
           settingKey="enableSimplifiedEnglishInteractions"
           managed={managedKeys.enableSimplifiedEnglishInteractions}
           ariaLabel="Toggle simplified english interactions experimental setting"
+        />
+
+        <ExperimentalToggleCard
+          title="Wake Output Spill"
+          description="Store oversized wake comment bodies as assets and show an inline preview with a retrieval notice instead of silently truncating them."
+          checked={enableWakeOutputSpill}
+          onCheckedChange={(checked) =>
+            toggleMutation.mutate({ enableWakeOutputSpill: checked })
+          }
+          disabled={toggleMutation.isPending}
+          settingKey="enableWakeOutputSpill"
+          managed={managedKeys.enableWakeOutputSpill}
+          ariaLabel="Toggle wake output spill experimental setting"
         />
 
         <ExperimentalToggleCard

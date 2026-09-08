@@ -213,6 +213,14 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     cloudDefault: false,
     selfHostedDefault: false,
   },
+  enableWakeOutputSpill: {
+    title: "Wake Output Spill",
+    description:
+      "Store oversized wake comment bodies as assets and show an inline preview with a retrieval notice instead of silently truncating them.",
+    tier: "preference",
+    cloudDefault: false,
+    selfHostedDefault: false,
+  },
   enableServerInfoDebugView: {
     title: "Server Info Debug View",
     description:

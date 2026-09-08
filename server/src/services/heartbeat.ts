@@ -388,6 +388,7 @@ import {
   type AgentOrgRow,
 } from "./agent-invokability.js";
 import { isHeartbeatWakeOnDemandEnabled } from "./heartbeat-policy.js";
+import { spillWakeText } from "./wake-output-spill.js";
 import {
   redactQuarantinedBodyForHigherTrust,
   sanitizeQuarantinedCommentForHigherTrust,
@@ -6938,6 +6939,12 @@ export async function buildPaperclipWakePayload(input: {
     executionPolicy?: unknown;
   } | null;
   exposeLowTrustRaw?: boolean;
+  // Wake output spill (DeepSeek Harness spill-policy port). When true,
+  // oversized comment bodies are stored as spill assets with an inline
+  // preview instead of silently truncated. Requires spillAgentId/spillRunId.
+  spillEnabled?: boolean;
+  spillAgentId?: string | null;
+  spillRunId?: string | null;
   // Experimental: agents write user-interaction content in ASD-STE100
   // Simplified Technical English (rendered as a prompt directive downstream).
   simplifiedEnglishInteractions?: boolean;
@@ -7061,7 +7068,24 @@ export async function buildPaperclipWakePayload(input: {
         : fullBody;
     const bodyTruncated = body.length < fullBody.length;
     if (bodyTruncated) truncated = true;
-    remainingBodyChars -= body.length;
+    // Spill oversized bodies into asset storage with an inline preview
+    // instead of dropping the tail. Fail-safe: any spill miss keeps the
+    // truncation above.
+    let inlineBody = body;
+    if (bodyTruncated && input.spillEnabled === true && issueId) {
+      const spilled = await spillWakeText({
+        db: input.db,
+        companyId: input.companyId,
+        issueId,
+        commentId: row.id,
+        text: fullBody,
+        maxInlineChars: allowedBodyChars,
+        agentId: input.spillAgentId ?? null,
+        runId: input.spillRunId ?? null,
+      });
+      if (spilled) inlineBody = spilled.body;
+    }
+    remainingBodyChars -= inlineBody.length;
 
     comments.push({
       id: row.id,
@@ -7069,7 +7093,7 @@ export async function buildPaperclipWakePayload(input: {
       authorType:
         row.authorType ??
         (row.authorAgentId ? "agent" : row.authorUserId ? "user" : "system"),
-      body,
+      body: inlineBody,
       bodyTruncated,
       presentation: deletedAt ? null : (safeRow.presentation ?? null),
       metadata: deletedAt ? null : (safeRow.metadata ?? null),
@@ -18584,6 +18608,10 @@ export function heartbeatService(
             }
           : null,
         exposeLowTrustRaw,
+        spillEnabled:
+          experimentalInstanceSettings.enableWakeOutputSpill === true,
+        spillAgentId: agent.id,
+        spillRunId: run.id,
         simplifiedEnglishInteractions:
           experimentalInstanceSettings.enableSimplifiedEnglishInteractions ===
           true,

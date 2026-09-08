@@ -86,6 +86,12 @@ export interface InstanceExperimentalSettings {
    * behavior change outside interaction wording.
    */
   enableSimplifiedEnglishInteractions: boolean;
+  /**
+   * Spill oversized wake comment bodies into asset storage with an inline
+   * preview and retrieval notice instead of silently truncating them.
+   * Prompt-side only; off by default.
+   */
+  enableWakeOutputSpill: boolean;
   autoRestartDevServerWhenIdle: boolean;
   enableWorkspaceBranchReconcileForward: boolean;
   enableWorkspaceDirtyQuarantineRepair: boolean;

@@ -48,6 +48,7 @@ describe("instance settings service", () => {
       enableServerInfoDebugView: true,
       enablePaperclipDeveloperMode: true,
       enableSimplifiedEnglishInteractions: false,
+      enableWakeOutputSpill: false,
       autoRestartDevServerWhenIdle: true,
       enableWorkspaceBranchReconcileForward: true,
       enableWorkspaceDirtyQuarantineRepair: false,
@@ -116,6 +117,14 @@ describe("instance settings service", () => {
     expect(
       normalizeExperimentalSettings({ enableSimplifiedEnglishInteractions: true })
         .enableSimplifiedEnglishInteractions,
+    ).toBe(true);
+  });
+
+  it("defaults enableWakeOutputSpill to false for empty and legacy stored settings", () => {
+    expect(normalizeExperimentalSettings(undefined).enableWakeOutputSpill).toBe(false);
+    expect(normalizeExperimentalSettings({}).enableWakeOutputSpill).toBe(false);
+    expect(
+      normalizeExperimentalSettings({ enableWakeOutputSpill: true }).enableWakeOutputSpill,
     ).toBe(true);
   });
 
