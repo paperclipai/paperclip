@@ -333,9 +333,15 @@ export function SchemaConfigFields({
 }: AdapterConfigFieldsProps) {
   const schema = useConfigSchema(adapterType);
 
-  const [defaultsApplied, setDefaultsApplied] = useState<string | null>(null);
+  const defaultsApplied = useRef({ adapterType, applied: false });
   useEffect(() => {
-    if (!schema || !isCreate || defaultsApplied === adapterType || (section && section !== "configuration")) return;
+    // Reset on the selection change even while the next schema is loading.
+    // A -> B -> A must initialize A again after the form clears its values.
+    if (defaultsApplied.current.adapterType !== adapterType) {
+      defaultsApplied.current = { adapterType, applied: false };
+    }
+    if (!schema || !isCreate || defaultsApplied.current.applied || (section && section !== "configuration")) return;
+    defaultsApplied.current.applied = true;
     const defaults: Record<string, unknown> = {};
     for (const field of schema.fields) {
       const def = getDefaultValue(field);
@@ -345,11 +351,10 @@ export function SchemaConfigFields({
     }
     if (Object.keys(defaults).length > 0) {
       set?.({
-        adapterSchemaValues: { ...values?.adapterSchemaValues, ...defaults },
+        adapterSchemaValues: { ...defaults, ...values?.adapterSchemaValues },
       });
     }
-    setDefaultsApplied(adapterType);
-  }, [schema, adapterType, isCreate, defaultsApplied, set, values?.adapterSchemaValues, section]);
+  }, [schema, adapterType, isCreate, set, values?.adapterSchemaValues, section]);
 
   if (!schema || schema.fields.length === 0) return null;
 
