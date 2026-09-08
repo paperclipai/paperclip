@@ -26,6 +26,7 @@ import {
   toolGatewaySessions,
   toolInvocations,
   toolPolicies,
+  userSecretDeclarations,
 } from "@paperclipai/db";
 import type { PluginToolDispatcher } from "../services/plugin-tool-dispatcher.js";
 import type { VercelConnectClient } from "../services/vercel-connect.js";
@@ -187,6 +188,7 @@ describeEmbeddedPostgres("tool gateway service", () => {
     await db.delete(heartbeatRuns);
     await db.delete(issues);
     await db.delete(agents);
+    await db.delete(companyMemberships);
     await db.delete(companies);
   });
 
@@ -1252,6 +1254,41 @@ describeEmbeddedPostgres("tool gateway service", () => {
     await expect(gateway.executeTool({ sessionToken: session.token, tool: tool.name, parameters: {} }))
       .rejects.toMatchObject({ reasonCode: "grant_owner_membership_inactive" });
     expect(resolvedGrants).toHaveLength(3);
+  });
+
+  it("dispatches a personal token using its declared credential path", async () => {
+    const { company, agent, issue, run } = await createRunFixture(db);
+    const { connection } = await createRemoteMcpToolFixture(db, company.id);
+    const owner = `gateway-owner-${randomUUID()}`;
+    const credential = `personal-token-${randomUUID()}`;
+    const secrets = secretService(db);
+    const definition = await secrets.createUserSecretDefinition(company.id, { key: `github.${randomUUID()}`, name: "Personal GitHub token", provider: "local_encrypted" });
+    const secret = await secrets.createCurrentUserSecretValue(company.id, owner, { definitionId: definition.id, value: credential });
+    await db.insert(userSecretDeclarations).values({ companyId: company.id, userSecretDefinitionId: definition.id, targetType: "tool_connection", targetId: connection.id, configPath: "credentials.authorization", envKey: "authorization" });
+    await db.update(toolConnections).set({
+      authKind: "api_key", credentialSource: "paperclip_vault",
+      credentialRefs: [{ name: "credentials.authorization", placement: "header", key: "Authorization", prefix: "Bearer ", secretId: secret.id, version: "latest" }],
+      config: { ...connection.config, sourceTemplateKey: "github" },
+    }).where(eq(toolConnections.id, connection.id));
+    await db.update(connectionGrants).set({
+      kind: "user", subjectUserId: owner, isDefault: false,
+      credentialSecretRefs: [{ secretId: secret.id, configPath: "credentials.authorization", versionSelector: "latest", required: true }],
+    }).where(eq(connectionGrants.connectionId, connection.id));
+    await db.insert(toolConnectionInstalls).values({ companyId: company.id, connectionId: connection.id, targetType: "agent", targetId: agent.id });
+    await db.insert(companyMemberships).values({ companyId: company.id, principalType: "user", principalId: owner, status: "active", membershipRole: "member" });
+    await initializeRunIdentity(db, { companyId: company.id, runId: run.id, issueId: issue.id, responsibleUserId: owner, cause: "instruction" });
+    await db.insert(toolPolicies).values({ companyId: company.id, name: "Allow authenticated read", policyType: "allow", selectors: { riskLevel: "read" } });
+    const gateway = createTestToolGatewayService(db, {
+      remoteHttpRequest: async (_url, init) => {
+        if (new Headers(init.headers).get("authorization") !== `Bearer ${credential}`) return new Response(null, { status: 401 });
+        return new Response(JSON.stringify({ jsonrpc: "2.0", id: JSON.parse(String(init.body)).id, result: { content: [{ type: "text", text: "credential authenticated" }] } }), { status: 200, headers: { "content-type": "application/json" } });
+      },
+    });
+    const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+    const tool = (await gateway.listToolsForSession(session.token)).find(candidate => candidate.providerType === "mcp_remote_http")!;
+    const result = await gateway.executeTool({ sessionToken: session.token, tool: tool.name, parameters: {} });
+    expect(result).toMatchObject({ status: "completed", result: { content: "credential authenticated" } });
+    expect(JSON.stringify(result)).not.toContain(credential);
   });
 
   it("refreshes a customer OAuth grant once and retries after an upstream 401", async () => {
