@@ -13,6 +13,7 @@ import {
   issueComments,
   issueDocuments,
   issues,
+  issueThreadInteractions,
 } from "@paperclipai/db";
 import { ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY } from "@paperclipai/shared";
 import {
@@ -1505,6 +1506,48 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     expect(wakeup?.status).toBe("skipped");
     expect(wakeup?.error).toContain("assignee changed");
     expect(countExecuteCallsForRun(runId)).toBe(0);
+  });
+
+  it.each([
+    { name: "pending addressed review", status: "pending", wrongRecipient: false, humanOnly: false, dispatched: true },
+    { name: "resolved review", status: "accepted", wrongRecipient: false, humanOnly: false, dispatched: false },
+    { name: "different recipient", status: "pending", wrongRecipient: true, humanOnly: false, dispatched: false },
+    { name: "human-only review", status: "pending", wrongRecipient: false, humanOnly: true, dispatched: false },
+  ])("checks persisted review authority before dispatch: $name", async ({ status, wrongRecipient, humanOnly, dispatched }) => {
+    const { companyId, agentId } = await seedCompanyAndAgent({ agentName: "Reviewer" });
+    const authorId = randomUUID();
+    await db.insert(agents).values({
+      id: authorId, companyId, name: "Author", role: "engineer", status: "active",
+      adapterType: "codex_local", adapterConfig: {},
+      runtimeConfig: { heartbeat: { wakeOnDemand: false } }, permissions: {},
+    });
+    const issueId = randomUUID();
+    const interactionId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId, companyId, title: "Review without transferring implementation",
+      status: "in_review", priority: "medium", assigneeAgentId: authorId,
+    });
+    await db.insert(issueThreadInteractions).values({
+      id: interactionId, companyId, issueId, kind: "request_confirmation", status,
+      createdByAgentId: authorId, addresseeAgentId: wrongRecipient ? authorId : agentId,
+      effectiveResolverPolicy: humanOnly ? "human_only" : "anyone",
+      payload: { version: 1, prompt: "Review the committed implementation" },
+    });
+    const { runId } = await seedQueuedRun({
+      companyId, agentId, issueId, wakeReason: "interaction_pending",
+      contextExtras: { interactionId, interactionKind: "request_confirmation" },
+    });
+    await heartbeat.resumeQueuedRuns();
+    await waitForCondition(async () => {
+      const [run] = await db.select({ status: heartbeatRuns.status }).from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+      return run?.status === "succeeded" || run?.status === "cancelled" || run?.status === "failed";
+    });
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    expect(run.status).toBe(dispatched ? "succeeded" : "cancelled");
+    expect(countExecuteCallsForRun(runId)).toBe(dispatched ? 1 : 0);
+    const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(issue.assigneeAgentId).toBe(authorId);
+    expect(issue.status).toBe("in_review");
   });
 
   it("cancels queued runs when the issue reaches a terminal status before the run starts", async () => {

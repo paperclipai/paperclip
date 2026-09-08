@@ -281,6 +281,7 @@ import {
   isVerifiedIssueTreeControlInteractionWake,
   issueTreeControlService,
 } from "./issue-tree-control.js";
+import { issueThreadInteractionAttentionAgentAllowed } from "./issue-thread-interaction-resolution.js";
 import {
   continuationSummaryParksExecutor,
   getIssueContinuationSummaryDocument,
@@ -5265,6 +5266,34 @@ function allowsIssueInteractionWake(
   )
     return false;
   return Boolean(deriveCommentId(contextSnapshot, null));
+}
+
+// Review attention belongs to the persisted addressee, not necessarily the
+// issue assignee. Never trust a wakeReason/interactionId supplied in isolation.
+async function allowsAddressedInteractionWake(
+  dbOrTx: Pick<Db, "select">,
+  companyId: string,
+  issueId: string,
+  agentId: string,
+  context: Record<string, unknown>,
+) {
+  if (readNonEmptyString(context.wakeReason) !== "interaction_pending") return false;
+  const interactionId = readNonEmptyString(context.interactionId);
+  if (!interactionId) return false;
+  const interaction = await dbOrTx.select().from(issueThreadInteractions).where(and(
+    eq(issueThreadInteractions.id, interactionId),
+    eq(issueThreadInteractions.companyId, companyId),
+    eq(issueThreadInteractions.issueId, issueId),
+    eq(issueThreadInteractions.addresseeAgentId, agentId),
+    eq(issueThreadInteractions.status, "pending"),
+  )).limit(1).then((rows) => rows[0] ?? null);
+  if (!interaction) return false;
+  const payload = parseObject(interaction.payload);
+  return issueThreadInteractionAttentionAgentAllowed({
+    agentId,
+    interaction,
+    governedAction: Boolean(payload.toolAction || payload.secretProposal),
+  });
 }
 
 async function listUnresolvedBlockerSummaries(
@@ -15607,7 +15636,8 @@ export function heartbeatService(
       );
       const readiness = dependencyReadiness.get(issueId);
       const unresolvedBlockerCount = readiness?.unresolvedBlockerCount ?? 0;
-      if (unresolvedBlockerCount > 0 && !allowsIssueInteractionWake(context)) {
+      if (unresolvedBlockerCount > 0 && !allowsIssueInteractionWake(context)
+          && !await allowsAddressedInteractionWake(db, run.companyId, issueId, run.agentId, context)) {
         await cancelQueuedRunForBlockedDependencies(
           run,
           issueId,
@@ -16109,6 +16139,7 @@ export function heartbeatService(
 
     const wakeCommentId = deriveCommentId(context, null);
     const isInteractionWake = allowsIssueInteractionWake(context);
+    const isAddressedInteractionWake = await allowsAddressedInteractionWake(dbOrTx, run.companyId, issueId, run.agentId, context);
     const resumeIntent =
       context.resumeIntent === true || context.followUpRequested === true;
     const wakeReason = readNonEmptyString(context.wakeReason);
@@ -16220,6 +16251,7 @@ export function heartbeatService(
     if (
       issue.assigneeAgentId !== run.agentId &&
       !isInteractionWake &&
+      !isAddressedInteractionWake &&
       !isCurrentReviewParticipant &&
       !authorizedSourceScopedRecovery &&
       !isNonAssigneeWorkspaceBusyRetry(retryReason, context)
@@ -16288,7 +16320,7 @@ export function heartbeatService(
         const participantMatches =
           currentParticipant.type === "agent" &&
           currentParticipant.agentId === run.agentId;
-        if (!participantMatches && !wakeCommentId) {
+        if (!participantMatches && !wakeCommentId && !isAddressedInteractionWake) {
           return {
             stale: true,
             errorCode: "issue_review_participant_changed",
@@ -24679,7 +24711,8 @@ export function heartbeatService(
         const blockedInteractionWake =
           dependencyReadiness &&
           !dependencyReadiness.isDependencyReady &&
-          allowsIssueInteractionWake(enrichedContextSnapshot);
+          (allowsIssueInteractionWake(enrichedContextSnapshot)
+            || await allowsAddressedInteractionWake(tx, issue.companyId, issue.id, agent.id, enrichedContextSnapshot));
 
         if (blockedInteractionWake) {
           enrichedContextSnapshot.dependencyBlockedInteraction = true;
