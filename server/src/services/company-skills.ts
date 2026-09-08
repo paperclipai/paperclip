@@ -1,3 +1,4 @@
+import { removeRuntimeSkillCache, resolveRuntimeSkillCache, runtimeSkillCacheSpec } from "./runtime-skill-cache.js";
 import { createHash, randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
@@ -3153,6 +3154,7 @@ export function companySkillService(db: Db) {
         .delete(companySkills)
         .where(eq(companySkills.id, skill.id));
       await fs.rm(resolveRuntimeSkillMaterializedPath(companyId, skill), { recursive: true, force: true });
+      await removeRuntimeSkillCache(resolveManagedSkillsRoot(companyId), skill.id);
     }
   }
 
@@ -4159,6 +4161,8 @@ export function companySkillService(db: Db) {
       { recursive: true, force: true },
     );
 
+    await removeRuntimeSkillCache(managedRoot, skill.id);
+
     const renamed = await getById(companyId, skill.id);
     if (!renamed) throw notFound("Renamed skill not found");
     return { skill: renamed, previousName, previousSlug, previousKey, reassignments: plannedReassignments };
@@ -4273,6 +4277,10 @@ export function companySkillService(db: Db) {
     const skill = await getById(companyId, skillId);
     if (!skill) return null;
 
+    return readLoadedSkillFile(skill, relativePath);
+  }
+
+  async function readLoadedSkillFile(skill: CompanySkill, relativePath: string): Promise<CompanySkillFileDetail> {
     const normalizedPath = normalizePortablePath(relativePath || "SKILL.md");
     const fileEntry = skill.fileInventory.find((entry) => entry.path === normalizedPath);
     if (!fileEntry) {
@@ -5672,10 +5680,12 @@ export function companySkillService(db: Db) {
     let wroteSkillFile = false;
     for (const entry of skill.fileInventory) {
       const normalizedPath = normalizePortablePath(entry.path);
-      const detail = await readFile(companyId, skill.id, normalizedPath).catch(() => null);
+      const detail = await readLoadedSkillFile(skill, normalizedPath);
       const content = detail?.content ?? (normalizedPath === "SKILL.md" ? skill.markdown : null);
-      if (content === null) continue;
-      const targetPath = path.resolve(skillDir, entry.path);
+      if (content === null) throw unprocessable("Declared skill file is unavailable");
+      const resolved = resolveVersionSnapshotPath(skillDir, entry.path);
+      if (!resolved) throw unprocessable("Invalid skill file path");
+      const targetPath = resolved.targetPath;
       await fs.mkdir(path.dirname(targetPath), { recursive: true });
       await fs.writeFile(targetPath, content, "utf8");
       if (normalizedPath === "SKILL.md") wroteSkillFile = true;
@@ -5816,6 +5826,23 @@ export function companySkillService(db: Db) {
 
     const source = await resolveExistingSkillDirectory(normalizeSkillDirectory(skill));
     if (source) return { status: "available", source };
+
+    try {
+      const cache = runtimeSkillCacheSpec(resolveManagedSkillsRoot(companyId), skill);
+      if (cache) {
+        const cachedSource = await resolveRuntimeSkillCache(cache,
+          async (relativePath) => (await readLoadedSkillFile(skill, relativePath)).content,
+          options.materializeMissing !== false);
+        return cachedSource
+          ? { status: "available", source: cachedSource }
+          : { status: "missing", source: path.join(cache.entry, "files"), detail: buildMissingRuntimeSourceDetail(skill) };
+      }
+    } catch (error) {
+      return {
+        status: "missing", source: resolveRuntimeSkillMaterializedPath(companyId, skill),
+        detail: `Failed to materialize skill files: ${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
 
     if (options.materializeMissing === false) {
       const materializedPath = resolveRuntimeSkillMaterializedPath(companyId, skill);
@@ -6944,6 +6971,7 @@ export function companySkillService(db: Db) {
 
     // Clean up materialized runtime files
     await fs.rm(resolveRuntimeSkillMaterializedPath(companyId, skill), { recursive: true, force: true });
+    await removeRuntimeSkillCache(resolveManagedSkillsRoot(companyId), skill.id);
 
     return skill;
   }

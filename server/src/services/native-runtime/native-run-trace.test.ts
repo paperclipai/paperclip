@@ -128,6 +128,17 @@ describe("native runner performance trace", () => {
     });
   });
 
+  it("records skills.prepare beneath preparation with no attributes and tolerates a failed log sink", async () => {
+    const { traceContext, spans } = createRecordingTraceContext();
+    const trace = createNativeRunTrace({ runId: "skills-run", startedAtMs: 100,
+      traceContext, onEvent: async () => { throw new Error("run log unavailable"); } });
+    const preparation = trace.start("task.prepare", { parentName: "task.run", startedAtMs: 100 });
+    await expect(trace.record({ name: "skills.prepare", parentName: "task.prepare", startedAtMs: 120, endedAtMs: 170 })).resolves.toBeUndefined();
+    await trace.end(preparation, { endedAtMs: 200 });
+    expect(spans.find((span) => span.name === "skills.prepare")).toMatchObject({ name: "skills.prepare", parentName: "task.prepare", endedAtMs: 170 });
+    await expect(trace.finish("ok")).resolves.toBeUndefined();
+  });
+
   it("never fails runner control flow when its event sink fails", async () => {
     const trace = createNativeRunTrace({
       runId: "run-1",

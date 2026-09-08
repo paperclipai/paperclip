@@ -18916,6 +18916,8 @@ export function heartbeatService(
       const runtimeSkillPreference = readPaperclipSkillSyncPreference(
         effectiveResolvedConfig,
       );
+      const nativeRunnerPreparationSpans: NativeRunHistoricalSpan[] = [];
+      const skillsPrepareStartedAtMs = Date.now();
       const runtimeSkillEntries = await companySkills.listRuntimeSkillEntries(
         agent.companyId,
         {
@@ -18928,6 +18930,12 @@ export function heartbeatService(
           ),
         },
       );
+      nativeRunnerPreparationSpans.push({
+        name: "skills.prepare",
+        parentName: "task.prepare",
+        startedAtMs: skillsPrepareStartedAtMs,
+        endedAtMs: Date.now(),
+      });
       let runtimeConfig: Record<string, unknown> = {
         ...effectiveResolvedConfig,
         paperclipRuntimeSkills: runtimeSkillEntries,
@@ -19611,7 +19619,6 @@ export function heartbeatService(
           })
           .where(eq(heartbeatRuns.id, run.id));
       }
-      const nativeRunnerPreparationSpans: NativeRunHistoricalSpan[] = [];
       const environmentAcquireStartedAtMs = Date.now();
       let acquiredEnvironment: Awaited<
         ReturnType<typeof envOrchestrator.acquireForRun>
