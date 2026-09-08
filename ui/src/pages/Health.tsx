@@ -47,6 +47,14 @@ import {
   useDeleteNutritionLog,
   type NutritionLog,
 } from "../hooks/useNutrition";
+import {
+  useSymptomHistory,
+  useLogSymptom,
+  useDeleteSymptomLog,
+  VALID_SYMPTOMS,
+  type SymptomLog,
+  type SymptomType,
+} from "../hooks/useSymptoms";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { EmptyState } from "../components/EmptyState";
@@ -1879,12 +1887,227 @@ function NutritionView({ companyId }: { companyId: string }) {
   );
 }
 
+// ---- Symptoms ----
+
+const SYMPTOM_LABEL: Record<SymptomType, string> = {
+  headache: "Headache",
+  fatigue: "Fatigue",
+  nausea: "Nausea",
+  sore_throat: "Sore Throat",
+  runny_nose: "Runny Nose",
+  cough: "Cough",
+  chest_pain: "Chest Pain",
+  shortness_of_breath: "Shortness of Breath",
+  dizziness: "Dizziness",
+  body_aches: "Body Aches",
+  fever: "Fever",
+  chills: "Chills",
+  stomach_pain: "Stomach Pain",
+  back_pain: "Back Pain",
+  anxiety: "Anxiety",
+  insomnia: "Insomnia",
+  other: "Other",
+};
+
+const SEVERITY_LABEL: Record<number, string> = {
+  1: "Mild",
+  2: "Slight",
+  3: "Moderate",
+  4: "Severe",
+  5: "Very Severe",
+};
+
+function SymptomRow({ log, onDelete }: { log: SymptomLog; onDelete: (id: string) => void }) {
+  const [confirming, setConfirming] = useState(false);
+
+  return (
+    <div className="flex items-start gap-3 py-3">
+      <div className="flex-1 min-w-0">
+        <p className="text-sm font-medium">{log.symptomDate}</p>
+        <div className="flex flex-wrap gap-x-4 gap-y-0.5 mt-0.5">
+          <span className="text-xs text-muted-foreground flex items-center gap-1">
+            <Heart className="w-3 h-3" />
+            {SYMPTOM_LABEL[log.symptom] ?? log.symptom}
+          </span>
+          {log.severity !== null && (
+            <span className="text-xs text-muted-foreground">
+              {SEVERITY_LABEL[log.severity] ?? `Severity ${log.severity}`}
+            </span>
+          )}
+        </div>
+        {log.notes && (
+          <p className="text-xs text-muted-foreground mt-0.5 truncate">{log.notes}</p>
+        )}
+      </div>
+      <div className="shrink-0">
+        {confirming ? (
+          <div className="flex gap-1">
+            <button
+              className="text-[10px] text-destructive font-medium px-1.5 py-0.5 rounded border border-destructive/30 hover:bg-destructive/10 transition-colors"
+              onClick={() => onDelete(log.id)}
+            >
+              Delete
+            </button>
+            <button
+              className="text-[10px] text-muted-foreground px-1.5 py-0.5 rounded border border-border hover:bg-muted transition-colors"
+              onClick={() => setConfirming(false)}
+            >
+              Cancel
+            </button>
+          </div>
+        ) : (
+          <button
+            className="text-muted-foreground hover:text-destructive transition-colors"
+            onClick={() => setConfirming(true)}
+          >
+            <Trash2 className="w-3.5 h-3.5" />
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function SymptomsView({ companyId }: { companyId: string }) {
+  const today = new Date().toISOString().slice(0, 10);
+  const fourteenDaysAgo = new Date(Date.now() - 13 * 86_400_000).toISOString().slice(0, 10);
+
+  const { data, isLoading, error } = useSymptomHistory(companyId, fourteenDaysAgo, today);
+  const logMutation = useLogSymptom();
+  const deleteMutation = useDeleteSymptomLog();
+
+  const [formDate, setFormDate] = useState(today);
+  const [formSymptom, setFormSymptom] = useState<SymptomType>("headache");
+  const [formSeverity, setFormSeverity] = useState("");
+  const [formNotes, setFormNotes] = useState("");
+  const [showForm, setShowForm] = useState(false);
+  const [formError, setFormError] = useState<string | null>(null);
+
+  function resetForm() {
+    setFormDate(today);
+    setFormSymptom("headache");
+    setFormSeverity("");
+    setFormNotes("");
+    setFormError(null);
+  }
+
+  async function handleSubmit() {
+    setFormError(null);
+    const severity = formSeverity ? parseInt(formSeverity, 10) : undefined;
+    try {
+      await logMutation.mutateAsync({
+        companyId,
+        symptomDate: formDate,
+        symptom: formSymptom,
+        severity: severity ?? null,
+        notes: formNotes.trim() || null,
+      });
+      resetForm();
+      setShowForm(false);
+    } catch (e) {
+      setFormError(e instanceof Error ? e.message : "Failed to log symptom");
+    }
+  }
+
+  if (isLoading) return <PageSkeleton />;
+  if (error) return <EmptyState icon={Heart} message={`Failed to load symptoms: ${error.message}`} />;
+
+  const logs = data?.logs ?? [];
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <p className="text-sm text-muted-foreground">Last 14 days</p>
+        <Button size="sm" variant="outline" onClick={() => { resetForm(); setShowForm(true); }}>
+          <Plus className="w-3.5 h-3.5 mr-1" />
+          Log Symptom
+        </Button>
+      </div>
+
+      <Dialog open={showForm} onOpenChange={(open) => { if (!open) { resetForm(); setShowForm(false); } }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Log Symptom</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3 py-2">
+            <div>
+              <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Date</label>
+              <input
+                type="date"
+                className="mt-1 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                value={formDate}
+                max={today}
+                onChange={(e) => setFormDate(e.target.value)}
+              />
+            </div>
+            <div>
+              <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Symptom</label>
+              <select
+                className="mt-1 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                value={formSymptom}
+                onChange={(e) => setFormSymptom(e.target.value as SymptomType)}
+              >
+                {VALID_SYMPTOMS.map((s) => (
+                  <option key={s} value={s}>{SYMPTOM_LABEL[s]}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Severity (optional)</label>
+              <select
+                className="mt-1 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                value={formSeverity}
+                onChange={(e) => setFormSeverity(e.target.value)}
+              >
+                <option value="">—</option>
+                {[1, 2, 3, 4, 5].map((n) => (
+                  <option key={n} value={n}>{n} — {SEVERITY_LABEL[n]}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Notes (optional)</label>
+              <textarea
+                className="mt-1 w-full rounded-md border border-input bg-background px-3 py-2 text-sm resize-none"
+                rows={2}
+                value={formNotes}
+                onChange={(e) => setFormNotes(e.target.value)}
+              />
+            </div>
+            {formError && <p className="text-xs text-destructive">{formError}</p>}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => { resetForm(); setShowForm(false); }}>Cancel</Button>
+            <Button onClick={handleSubmit} disabled={logMutation.isPending}>
+              {logMutation.isPending ? "Saving…" : "Save"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {logs.length === 0 ? (
+        <EmptyState icon={Heart} message="No symptoms logged in the last 14 days." />
+      ) : (
+        <div className="divide-y divide-border rounded-lg border bg-card px-4">
+          {logs.map((l) => (
+            <SymptomRow
+              key={l.id}
+              log={l}
+              onDelete={(id) => deleteMutation.mutate({ id, companyId })}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ---- Page ----
 
 export function Health() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
-  const [view, setView] = useState<"score" | "locations" | "sleep" | "exercise" | "biometrics" | "mood" | "nutrition">("score");
+  const [view, setView] = useState<"score" | "locations" | "sleep" | "exercise" | "biometrics" | "mood" | "nutrition" | "symptoms">("score");
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Health" }]);
@@ -1960,6 +2183,15 @@ export function Health() {
         >
           Nutrition
         </button>
+        <button
+          className={cn(
+            "px-3 py-1 text-xs font-medium rounded transition-colors",
+            view === "symptoms" ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground",
+          )}
+          onClick={() => setView("symptoms")}
+        >
+          Symptoms
+        </button>
       </div>
 
       {view === "score" ? (
@@ -1974,8 +2206,10 @@ export function Health() {
         <BiometricsView companyId={selectedCompanyId} />
       ) : view === "mood" ? (
         <MoodView companyId={selectedCompanyId} />
-      ) : (
+      ) : view === "nutrition" ? (
         <NutritionView companyId={selectedCompanyId} />
+      ) : (
+        <SymptomsView companyId={selectedCompanyId} />
       )}
     </div>
   );

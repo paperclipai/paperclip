@@ -477,6 +477,27 @@
       "when": 1757462400000,
       "tag": "0067_biometrics",
       "breakpoints": true
+    },
+    {
+      "idx": 68,
+      "version": "7",
+      "when": 1757548800000,
+      "tag": "0068_mood_logs",
+      "breakpoints": true
+    },
+    {
+      "idx": 69,
+      "version": "7",
+      "when": 1757635200000,
+      "tag": "0069_nutrition_logs",
+      "breakpoints": true
+    },
+    {
+      "idx": 70,
+      "version": "7",
+      "when": 1757721600000,
+      "tag": "0070_symptom_logs",
+      "breakpoints": true
     }
   ]
 }
