@@ -470,6 +470,13 @@
       "when": 1757376000000,
       "tag": "0066_exercise_logs",
       "breakpoints": true
+    },
+    {
+      "idx": 67,
+      "version": "7",
+      "when": 1757462400000,
+      "tag": "0067_biometrics",
+      "breakpoints": true
     }
   ]
 }

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Activity, AlertCircle, ChevronDown, ChevronUp, Dumbbell, Leaf, MapPin, Moon, Pencil, Plus, Sun, Thermometer, Trash2, Wind } from "lucide-react";
+import { Activity, AlertCircle, ChevronDown, ChevronUp, Dumbbell, Heart, Leaf, MapPin, Moon, Pencil, Plus, Sun, Thermometer, Trash2, Weight, Wind } from "lucide-react";
 import {
   usePersonalEnvironmentalScore,
   type ColorTier,
@@ -29,6 +29,12 @@ import {
   type IntensityLevel,
   type ExerciseLog,
 } from "../hooks/useExercise";
+import {
+  useBiometricsHistory,
+  useLogBiometrics,
+  useDeleteBiometricReading,
+  type BiometricReading,
+} from "../hooks/useBiometrics";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { EmptyState } from "../components/EmptyState";
@@ -1115,12 +1121,293 @@ function ExerciseView({ companyId }: { companyId: string }) {
   );
 }
 
+// ---- Biometrics ----
+
+function BiometricRow({
+  reading,
+  onDelete,
+}: {
+  reading: BiometricReading;
+  onDelete: (id: string) => void;
+}) {
+  const [confirming, setConfirming] = useState(false);
+
+  const bpLabel =
+    reading.systolicBp !== null && reading.diastolicBp !== null
+      ? `${reading.systolicBp}/${reading.diastolicBp} mmHg`
+      : null;
+
+  return (
+    <div className="flex items-start gap-3 py-3">
+      <div className="flex-1 min-w-0">
+        <p className="text-sm font-medium tabular-nums">{reading.measurementDate}</p>
+        <div className="flex flex-wrap gap-x-4 gap-y-0.5 mt-0.5">
+          {reading.weightKg !== null && (
+            <span className="text-xs text-muted-foreground flex items-center gap-1">
+              <Weight className="w-3 h-3" />
+              {reading.weightKg.toFixed(1)} kg
+            </span>
+          )}
+          {bpLabel && (
+            <span className="text-xs text-muted-foreground flex items-center gap-1">
+              <Activity className="w-3 h-3" />
+              {bpLabel}
+            </span>
+          )}
+          {reading.restingHeartRate !== null && (
+            <span className="text-xs text-muted-foreground flex items-center gap-1">
+              <Heart className="w-3 h-3" />
+              {reading.restingHeartRate} bpm
+            </span>
+          )}
+        </div>
+        {reading.notes && (
+          <p className="text-xs text-muted-foreground mt-0.5 truncate">{reading.notes}</p>
+        )}
+      </div>
+      <div className="shrink-0">
+        {confirming ? (
+          <div className="flex gap-1">
+            <button
+              className="text-[10px] text-destructive font-medium px-1.5 py-0.5 rounded border border-destructive/30 hover:bg-destructive/10 transition-colors"
+              onClick={() => onDelete(reading.id)}
+            >
+              Delete
+            </button>
+            <button
+              className="text-[10px] text-muted-foreground px-1.5 py-0.5 rounded border border-border hover:bg-muted transition-colors"
+              onClick={() => setConfirming(false)}
+            >
+              Cancel
+            </button>
+          </div>
+        ) : (
+          <button
+            className="text-muted-foreground hover:text-destructive transition-colors"
+            onClick={() => setConfirming(true)}
+          >
+            <Trash2 className="w-3.5 h-3.5" />
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function BiometricsView({ companyId }: { companyId: string }) {
+  const today = new Date().toISOString().slice(0, 10);
+  const fourteenDaysAgo = new Date(Date.now() - 13 * 86_400_000).toISOString().slice(0, 10);
+
+  const { data, isLoading, error } = useBiometricsHistory(companyId, fourteenDaysAgo, today);
+  const logMutation = useLogBiometrics();
+  const deleteMutation = useDeleteBiometricReading();
+
+  const [showForm, setShowForm] = useState(false);
+  const [formDate, setFormDate] = useState(today);
+  const [formWeight, setFormWeight] = useState("");
+  const [formSystolic, setFormSystolic] = useState("");
+  const [formDiastolic, setFormDiastolic] = useState("");
+  const [formHr, setFormHr] = useState("");
+  const [formNotes, setFormNotes] = useState("");
+  const [formError, setFormError] = useState<string | null>(null);
+
+  const readings = data?.readings ?? [];
+
+  function resetForm() {
+    setFormDate(today);
+    setFormWeight("");
+    setFormSystolic("");
+    setFormDiastolic("");
+    setFormHr("");
+    setFormNotes("");
+    setFormError(null);
+    setShowForm(false);
+  }
+
+  function handleSubmit() {
+    setFormError(null);
+    const weightKg = formWeight !== "" ? parseFloat(formWeight) : undefined;
+    const systolicBp = formSystolic !== "" ? parseInt(formSystolic, 10) : undefined;
+    const diastolicBp = formDiastolic !== "" ? parseInt(formDiastolic, 10) : undefined;
+    const restingHeartRate = formHr !== "" ? parseInt(formHr, 10) : undefined;
+
+    if (weightKg === undefined && systolicBp === undefined && restingHeartRate === undefined) {
+      setFormError("Enter at least one measurement.");
+      return;
+    }
+    if (weightKg !== undefined && (isNaN(weightKg) || weightKg <= 0)) {
+      setFormError("Weight must be a positive number.");
+      return;
+    }
+    if (systolicBp !== undefined && (isNaN(systolicBp) || systolicBp <= 0)) {
+      setFormError("Systolic BP must be a positive number.");
+      return;
+    }
+    if (diastolicBp !== undefined && (isNaN(diastolicBp) || diastolicBp <= 0)) {
+      setFormError("Diastolic BP must be a positive number.");
+      return;
+    }
+    if (restingHeartRate !== undefined && (isNaN(restingHeartRate) || restingHeartRate <= 0)) {
+      setFormError("Heart rate must be a positive number.");
+      return;
+    }
+
+    logMutation.mutate(
+      {
+        companyId,
+        measurementDate: formDate,
+        weightKg,
+        systolicBp,
+        diastolicBp,
+        restingHeartRate,
+        notes: formNotes.trim() || null,
+      },
+      { onSuccess: resetForm, onError: (e) => setFormError(e.message) },
+    );
+  }
+
+  if (isLoading) return <PageSkeleton />;
+  if (error) {
+    return (
+      <div className="flex items-center gap-2 text-sm text-destructive">
+        <AlertCircle className="w-4 h-4" />
+        {error.message}
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <p className="text-xs text-muted-foreground">Last 14 days</p>
+        <Button size="sm" variant="outline" onClick={() => setShowForm((s) => !s)}>
+          <Plus className="w-3.5 h-3.5 mr-1" />
+          Log
+        </Button>
+      </div>
+
+      {showForm && (
+        <div className="rounded-md border border-border p-4 space-y-3 bg-muted/30">
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1 col-span-2 sm:col-span-1">
+              <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                Date
+              </label>
+              <input
+                type="date"
+                className="w-full text-sm border border-border rounded px-2 py-1 bg-background"
+                value={formDate}
+                max={today}
+                onChange={(e) => setFormDate(e.target.value)}
+              />
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                Weight (kg)
+              </label>
+              <input
+                type="number"
+                step="0.1"
+                min="1"
+                placeholder="e.g. 75.5"
+                className="w-full text-sm border border-border rounded px-2 py-1 bg-background"
+                value={formWeight}
+                onChange={(e) => setFormWeight(e.target.value)}
+              />
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                Systolic BP
+              </label>
+              <input
+                type="number"
+                min="1"
+                placeholder="e.g. 120"
+                className="w-full text-sm border border-border rounded px-2 py-1 bg-background"
+                value={formSystolic}
+                onChange={(e) => setFormSystolic(e.target.value)}
+              />
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                Diastolic BP
+              </label>
+              <input
+                type="number"
+                min="1"
+                placeholder="e.g. 80"
+                className="w-full text-sm border border-border rounded px-2 py-1 bg-background"
+                value={formDiastolic}
+                onChange={(e) => setFormDiastolic(e.target.value)}
+              />
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                Heart Rate (bpm)
+              </label>
+              <input
+                type="number"
+                min="1"
+                placeholder="e.g. 62"
+                className="w-full text-sm border border-border rounded px-2 py-1 bg-background"
+                value={formHr}
+                onChange={(e) => setFormHr(e.target.value)}
+              />
+            </div>
+            <div className="space-y-1 col-span-2">
+              <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                Notes
+              </label>
+              <input
+                type="text"
+                placeholder="Optional note"
+                className="w-full text-sm border border-border rounded px-2 py-1 bg-background"
+                value={formNotes}
+                onChange={(e) => setFormNotes(e.target.value)}
+              />
+            </div>
+          </div>
+          {formError && <p className="text-xs text-destructive">{formError}</p>}
+          <div className="flex gap-2">
+            <Button
+              size="sm"
+              onClick={handleSubmit}
+              disabled={logMutation.isPending}
+            >
+              {logMutation.isPending ? "Saving…" : "Save"}
+            </Button>
+            <Button size="sm" variant="ghost" onClick={resetForm}>
+              Cancel
+            </Button>
+          </div>
+        </div>
+      )}
+
+      <div className="rounded-md border border-border divide-y divide-border/30">
+        {readings.length === 0 ? (
+          <p className="text-sm text-muted-foreground py-2 px-3">No readings in the last 14 days.</p>
+        ) : (
+          <div className="divide-y divide-border/30 px-3">
+            {readings.map((r) => (
+              <BiometricRow
+                key={r.id}
+                reading={r}
+                onDelete={(id) => deleteMutation.mutate({ id, companyId })}
+              />
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ---- Page ----
 
 export function Health() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
-  const [view, setView] = useState<"score" | "locations" | "sleep" | "exercise">("score");
+  const [view, setView] = useState<"score" | "locations" | "sleep" | "exercise" | "biometrics">("score");
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Health" }]);
@@ -1169,6 +1456,15 @@ export function Health() {
         >
           Exercise
         </button>
+        <button
+          className={cn(
+            "px-3 py-1 text-xs font-medium rounded transition-colors",
+            view === "biometrics" ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground",
+          )}
+          onClick={() => setView("biometrics")}
+        >
+          Biometrics
+        </button>
       </div>
 
       {view === "score" ? (
@@ -1177,8 +1473,10 @@ export function Health() {
         <LocationsView companyId={selectedCompanyId} />
       ) : view === "sleep" ? (
         <SleepView companyId={selectedCompanyId} />
-      ) : (
+      ) : view === "exercise" ? (
         <ExerciseView companyId={selectedCompanyId} />
+      ) : (
+        <BiometricsView companyId={selectedCompanyId} />
       )}
     </div>
   );

@@ -92,3 +92,4 @@ export {
 export { supplements, supplementIntakes } from "./supplements.js";
 export { sleepRecords } from "./sleep_records.js";
 export { exerciseLogs } from "./exercise_logs.js";
+export { biometricReadings } from "./biometrics.js";
