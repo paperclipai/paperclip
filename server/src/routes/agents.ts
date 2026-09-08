@@ -68,6 +68,7 @@ import {
 import { badRequest, conflict, forbidden, HttpError, notFound, unprocessable } from "../errors.js";
 import { PAPERCLIP_CORE_SKILL_KEYS } from "../services/company-skills.js";
 import { createRunSecretRedactionRegistry } from "../services/run-secret-redaction.js";
+import { searchRunRecall } from "../services/run-recall.js";
 import { assertAuthenticated, assertBoard, assertCompanyAccess, assertInstanceAdmin, buildActorSecretContext, getAccessibleResource, getActorInfo, hasCompanyAccess } from "./authz.js";
 import { runAdapterLoginStartSpine } from "./adapter-login-route-spine.js";
 import { isLoginCommandSupportedAdapterType } from "../services/login-command.js";
@@ -5915,6 +5916,33 @@ export function agentRoutes(
     const summary = req.query.summary === "true" || req.query.summary === "1";
     const runs = await heartbeat.list(companyId, agentId, limit, { summary });
     res.json(await Promise.all(runs.map((run) => runRedactions.redactForRun(companyId, run.id, run))));
+  });
+
+  router.get("/companies/:companyId/heartbeat-runs/search", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    if (!(await assertRunTelemetryReadAllowed(req, res, companyId))) return;
+    const q = typeof req.query.q === "string" ? req.query.q : "";
+    const agentId = typeof req.query.agentId === "string" && req.query.agentId.length > 0
+      ? req.query.agentId
+      : undefined;
+    const status = typeof req.query.status === "string" && req.query.status.length > 0
+      ? req.query.status
+      : undefined;
+    const limitParam = req.query.limit as string | undefined;
+    const limit = limitParam ? Number.parseInt(limitParam, 10) : undefined;
+    if (q.trim().length < 2) {
+      res.status(400).json({ error: "A search query of at least 2 characters is required." });
+      return;
+    }
+    const result = await searchRunRecall(db, { companyId, query: q, agentId, status, limit });
+    res.json({
+      query: result.query,
+      runs: await Promise.all(
+        result.runs.map((match) => runRedactions.redactForRun(companyId, match.runId, match)),
+      ),
+      activity: result.activity,
+    });
   });
 
   router.get("/companies/:companyId/provider-traces", async (req, res) => {

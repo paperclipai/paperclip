@@ -380,6 +380,19 @@ export {
   COMPANY_SEARCH_SORTS,
   COMPANY_SEARCH_UPDATED_WITHIN_OPTIONS,
 } from "./search.js";
+export {
+  RUN_RECALL_DEFAULT_LIMIT,
+  RUN_RECALL_MAX_LIMIT,
+  RUN_RECALL_MAX_QUERY_LENGTH,
+  RUN_RECALL_MAX_TOKENS,
+  RUN_RECALL_SNIPPET_MAX_CHARS,
+} from "./run-recall.js";
+export type {
+  RunRecallActivityMatch,
+  RunRecallResponse,
+  RunRecallRunMatch,
+  RunRecallRunMatchedField,
+} from "./run-recall.js";
 export type {
   ExecutionWorkspace,
   ExecutionWorkspaceSummary,

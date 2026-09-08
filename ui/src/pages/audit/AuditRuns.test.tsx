@@ -11,6 +11,7 @@ import { AuditRuns } from "./AuditRuns";
 const listAgentsMock = vi.hoisted(() => vi.fn());
 const listRunsMock = vi.hoisted(() => vi.fn());
 const listRoutineRunsMock = vi.hoisted(() => vi.fn());
+const searchRunsMock = vi.hoisted(() => vi.fn());
 const setSearchParamsMock = vi.hoisted(() => vi.fn());
 let currentSearch = "";
 
@@ -22,6 +23,7 @@ vi.mock("@/api/heartbeats", () => ({
   heartbeatsApi: {
     list: (companyId: string, agentId?: string, limit?: number, options?: unknown) =>
       listRunsMock(companyId, agentId, limit, options),
+    searchRuns: (companyId: string, params: unknown) => searchRunsMock(companyId, params),
   },
 }));
 
@@ -150,5 +152,63 @@ describe("AuditRuns", () => {
     expect(container.textContent).toContain("Publish forecast");
     expect(container.textContent).toContain("Daily forecast");
     expect(container.querySelector('a[href="/issues/TES-42"]')).toBeTruthy();
+  });
+
+  it("searches runs and activity when q has 2 or more characters", async () => {
+    currentSearch = "q=release";
+    searchRunsMock.mockResolvedValue({
+      query: "release",
+      runs: [
+        {
+          runId: "run-12345678",
+          status: "failed",
+          agentId: "agent-1",
+          agentName: "Fable",
+          issueId: "issue-1",
+          issueIdentifier: "TES-42",
+          issueTitle: "Publish forecast",
+          startedAt: "2026-08-31T18:00:00.000Z",
+          finishedAt: "2026-08-31T18:01:05.000Z",
+          createdAt: "2026-08-31T18:00:00.000Z",
+          matchedField: "error",
+          snippet: "connection reset while pushing the release artifact",
+        },
+      ],
+      activity: [
+        {
+          id: "activity-1",
+          action: "heartbeat.run_failed",
+          entityType: "heartbeat_run",
+          entityId: "run-12345678",
+          actorType: "agent",
+          actorId: "agent-1",
+          agentId: "agent-1",
+          runId: "run-12345678",
+          createdAt: "2026-08-31T18:01:05.000Z",
+        },
+      ],
+    });
+    await render();
+
+    expect(searchRunsMock).toHaveBeenCalledWith("company-1", {
+      q: "release",
+      agentId: undefined,
+      status: undefined,
+    });
+    expect(container.textContent).toContain("connection reset while pushing the release artifact");
+    expect(container.textContent).toContain("matched error");
+    expect(container.textContent).toContain("TES-42");
+    expect(container.textContent).toContain("Matching activity");
+    expect(container.textContent).toContain("heartbeat.run_failed");
+    expect(container.textContent).toContain("JSON");
+    expect(container.querySelector('ul[aria-label="Recent runs"]')).toBeFalsy();
+  });
+
+  it("keeps the flat list for single-character queries", async () => {
+    currentSearch = "q=x";
+    await render();
+
+    expect(searchRunsMock).not.toHaveBeenCalled();
+    expect(container.querySelector('ul[aria-label="Recent runs"]')).toBeTruthy();
   });
 });
