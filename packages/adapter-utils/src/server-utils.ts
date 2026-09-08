@@ -730,6 +730,9 @@ type PaperclipWakePayload = {
   planReviewContext: PaperclipWakePlanReviewContext | null;
   documentReviewContext: PaperclipWakeDocumentReviewContext | null;
   livenessContinuation: PaperclipWakeLivenessContinuation | null;
+  // Advisory repeat-run notice from the heartbeat loop guard. Null when
+  // recent runs show no repeat streak. Advisory only, never a block.
+  loopGuardNotice: string | null;
   taskWatchdog: PaperclipWakeTaskWatchdogContext | null;
   interactionKind: string | null;
   interactionStatus: string | null;
@@ -1378,6 +1381,7 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
         .filter((entry): entry is PaperclipWakeAnnotationDelta => Boolean(entry))
     : [];
   const livenessContinuation = normalizePaperclipWakeLivenessContinuation(payload.livenessContinuation);
+  const loopGuardNotice = asString(payload.loopGuardNotice, "").trim() || null;
   const taskWatchdog = normalizePaperclipWakeTaskWatchdog(payload.taskWatchdog);
   const recovery = normalizePaperclipWakeRecovery(payload.recovery);
   const childIssueSummaries = Array.isArray(payload.childIssueSummaries)
@@ -1413,7 +1417,7 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
     : null;
   const executionWorkspace = normalizePaperclipWakeExecutionWorkspace(payload.executionWorkspace);
   const agentMessage = normalizePaperclipWakeAgentMessage(payload.agentMessage);
-  if (comments.length === 0 && commentIds.length === 0 && annotationDeltas.length === 0 && childIssueSummaries.length === 0 && unresolvedBlockerIssueIds.length === 0 && unresolvedBlockerSummaries.length === 0 && !activeTreeHold && !executionStage && !continuationSummary && !planReviewContext && !documentReviewContext && !livenessContinuation && !taskWatchdog && !checkboxSelection && !questionResponse && !executionWorkspace && !agentMessage && !recovery && !normalizePaperclipWakeIssue(payload.issue)) {
+  if (comments.length === 0 && commentIds.length === 0 && annotationDeltas.length === 0 && childIssueSummaries.length === 0 && unresolvedBlockerIssueIds.length === 0 && unresolvedBlockerSummaries.length === 0 && !activeTreeHold && !executionStage && !continuationSummary && !planReviewContext && !documentReviewContext && !livenessContinuation && !loopGuardNotice && !taskWatchdog && !checkboxSelection && !questionResponse && !executionWorkspace && !agentMessage && !recovery && !normalizePaperclipWakeIssue(payload.issue)) {
     return null;
   }
 
@@ -1434,6 +1438,7 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
     documentReviewContext,
     annotationDeltas,
     livenessContinuation,
+    loopGuardNotice,
     taskWatchdog,
     interactionKind: asString(payload.interactionKind, "").trim() || null,
     interactionStatus: asString(payload.interactionStatus, "").trim() || null,
@@ -2046,6 +2051,10 @@ export function renderPaperclipWakePrompt(
     if (continuation.instruction) {
       lines.push(`- instruction: ${continuation.instruction}`);
     }
+  }
+
+  if (normalized.loopGuardNotice) {
+    lines.push("", "Loop guard notice:", normalized.loopGuardNotice);
   }
 
   if (normalized.childIssueSummaries.length > 0) {

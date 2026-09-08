@@ -2767,6 +2767,54 @@ describe("renderPaperclipWakePrompt - task watchdog", () => {
   });
 });
 
+describe("renderPaperclipWakePrompt - loop guard", () => {
+  const baseLoopGuardPayload = {
+    reason: "issue_assigned",
+    issue: {
+      id: "loop-issue-1",
+      identifier: "PAP-9101",
+      title: "Flaky deploy step",
+      status: "in_progress",
+      workMode: "standard",
+    },
+    commentWindow: { requestedCount: 0, includedCount: 0, missingCount: 0 },
+    comments: [],
+    fallbackFetchNeeded: false,
+  };
+
+  it("renders the loop guard notice when present and omits the section when absent", () => {
+    const notice =
+      "Loop guard: repeated runs are not making progress. 5 consecutive runs ended with status \"failed\".";
+    const prompt = renderPaperclipWakePrompt({
+      ...baseLoopGuardPayload,
+      loopGuardNotice: notice,
+    });
+    expect(prompt).toContain("Loop guard notice:");
+    expect(prompt).toContain(notice);
+
+    const without = renderPaperclipWakePrompt(baseLoopGuardPayload);
+    expect(without).not.toContain("Loop guard notice:");
+
+    const parsed = JSON.parse(
+      stringifyPaperclipWakePayload({
+        ...baseLoopGuardPayload,
+        loopGuardNotice: notice,
+      }) ?? "{}",
+    );
+    expect(parsed.loopGuardNotice).toBe(notice);
+  });
+
+  it("drops a blank loop guard notice during normalization", () => {
+    const parsed = JSON.parse(
+      stringifyPaperclipWakePayload({
+        ...baseLoopGuardPayload,
+        loopGuardNotice: "   ",
+      }) ?? "{}",
+    );
+    expect(parsed.loopGuardNotice).toBeNull();
+  });
+});
+
 describe("applyPaperclipWorkspaceEnv", () => {
   it("adds shared workspace env vars including AGENT_HOME", () => {
     const env = applyPaperclipWorkspaceEnv(
