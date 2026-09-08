@@ -1,7 +1,7 @@
 import { useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Landmark, Home, TrendingUp, Car, Gem, Cpu, Package, AlertCircle, CheckCircle2, Circle } from "lucide-react";
-import { estateApi, type AssetType, type PlanStatusCheckKey, type PlanStatusResult, type NetWorthProjectionResult } from "../api/estate";
+import { Landmark, Home, TrendingUp, Car, Gem, Cpu, Package, AlertCircle, CheckCircle2, Circle, Users } from "lucide-react";
+import { estateApi, type AssetType, type PlanStatusCheckKey, type PlanStatusResult, type NetWorthProjectionResult, type EstateBeneficiary } from "../api/estate";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { EmptyState } from "../components/EmptyState";
@@ -252,6 +252,74 @@ function PlanStatusSection({ status }: { status: PlanStatusResult }) {
   );
 }
 
+const DESIGNATION_LABELS: Record<string, string> = {
+  primary: "Primary",
+  contingent: "Contingent",
+  per_stirpes: "Per Stirpes",
+};
+
+function BeneficiariesSection({ beneficiaries }: { beneficiaries: EstateBeneficiary[] }) {
+  const primary = beneficiaries.filter((b) => b.designationType === "primary");
+  const contingent = beneficiaries.filter((b) => b.designationType !== "primary");
+
+  return (
+    <div className="rounded-lg border border-border bg-card overflow-hidden">
+      <div className="px-4 py-3 border-b border-border bg-muted/30 flex items-center gap-2">
+        <Users className="h-3.5 w-3.5 text-muted-foreground" />
+        <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+          Beneficiaries
+        </p>
+        <span className="ml-auto text-xs text-muted-foreground">{beneficiaries.length} total</span>
+      </div>
+      {beneficiaries.length === 0 ? (
+        <div className="px-4 py-8 text-center text-sm text-muted-foreground">
+          No beneficiaries designated yet.
+        </div>
+      ) : (
+        <div>
+          {[
+            { label: "Primary", items: primary },
+            { label: "Contingent / Per Stirpes", items: contingent },
+          ]
+            .filter((group) => group.items.length > 0)
+            .map((group) => (
+              <div key={group.label}>
+                <div className="px-4 py-1.5 bg-muted/20 border-b border-border/50">
+                  <p className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide">
+                    {group.label}
+                  </p>
+                </div>
+                {group.items.map((b) => (
+                  <div
+                    key={b.id}
+                    className="flex items-center gap-3 px-4 py-2.5 border-b border-border last:border-b-0"
+                  >
+                    <div className="h-7 w-7 rounded-full bg-muted flex items-center justify-center shrink-0 text-xs font-semibold text-muted-foreground">
+                      {b.name.charAt(0).toUpperCase()}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium truncate">{b.name}</p>
+                      <p className="text-xs text-muted-foreground">
+                        {[b.relationship, DESIGNATION_LABELS[b.designationType]]
+                          .filter(Boolean)
+                          .join(" · ")}
+                      </p>
+                    </div>
+                    {b.allocationPercentage != null && (
+                      <span className="text-sm tabular-nums font-medium shrink-0">
+                        {parseFloat(b.allocationPercentage).toFixed(0)}%
+                      </span>
+                    )}
+                  </div>
+                ))}
+              </div>
+            ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function Estate() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
@@ -286,6 +354,13 @@ export function Estate() {
   const planStatusQuery = useQuery({
     queryKey: ["estate", "plan-status", primaryEstateId],
     queryFn: () => estateApi.planStatus(primaryEstateId!),
+    enabled: !!primaryEstateId,
+    staleTime: 5 * 60 * 1000,
+  });
+
+  const beneficiariesQuery = useQuery({
+    queryKey: ["estate", "beneficiaries", primaryEstateId],
+    queryFn: () => estateApi.listBeneficiaries(primaryEstateId!),
     enabled: !!primaryEstateId,
     staleTime: 5 * 60 * 1000,
   });
@@ -434,6 +509,11 @@ export function Estate() {
       {/* Estate plan completeness */}
       {planStatusQuery.data && (
         <PlanStatusSection status={planStatusQuery.data} />
+      )}
+
+      {/* Beneficiaries */}
+      {beneficiariesQuery.data && (
+        <BeneficiariesSection beneficiaries={beneficiariesQuery.data.beneficiaries} />
       )}
     </div>
   );

@@ -91,6 +91,23 @@ export interface NetWorthProjectionResult {
   projections: ProjectionYear[];
 }
 
+export type DesignationType = "primary" | "contingent" | "per_stirpes";
+
+export interface EstateBeneficiary {
+  id: string;
+  estateId: string;
+  companyId: string;
+  name: string;
+  relationship: string | null;
+  email: string | null;
+  phone: string | null;
+  allocationPercentage: string | null;
+  designationType: DesignationType;
+  notes: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
 function qs(params: Record<string, string | undefined>): string {
   const parts = Object.entries(params)
     .filter((e): e is [string, string] => e[1] !== undefined)
@@ -125,4 +142,7 @@ export const estateApi = {
     api.get<NetWorthProjectionResult>(
       `/estate/projection${qs({ companyId, years: years?.toString() })}`,
     ),
+
+  listBeneficiaries: (estateId: string) =>
+    api.get<{ beneficiaries: EstateBeneficiary[] }>(`/estates/${estateId}/beneficiaries`),
 };
