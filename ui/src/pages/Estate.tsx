@@ -1,7 +1,7 @@
 import { useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Landmark, Home, TrendingUp, Car, Gem, Cpu, Package, AlertCircle, CheckCircle2, Circle, Users, Shield } from "lucide-react";
-import { estateApi, type AssetType, type PlanStatusCheckKey, type PlanStatusResult, type NetWorthProjectionResult, type EstateBeneficiary, type EstateTrust } from "../api/estate";
+import { Landmark, Home, TrendingUp, Car, Gem, Cpu, Package, AlertCircle, CheckCircle2, Circle, Users, Shield, Receipt } from "lucide-react";
+import { estateApi, type AssetType, type PlanStatusCheckKey, type PlanStatusResult, type NetWorthProjectionResult, type EstateBeneficiary, type EstateTrust, type EstateTaxSummary } from "../api/estate";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { EmptyState } from "../components/EmptyState";
@@ -252,6 +252,54 @@ function PlanStatusSection({ status }: { status: PlanStatusResult }) {
   );
 }
 
+function TaxSummarySection({ tax }: { tax: EstateTaxSummary }) {
+  const taxable = tax.taxableEstateDollars > 0;
+
+  return (
+    <div className="rounded-lg border border-border bg-card overflow-hidden">
+      <div className="px-4 py-3 border-b border-border bg-muted/30 flex items-center gap-2">
+        <Receipt className="h-3.5 w-3.5 text-muted-foreground" />
+        <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+          Estate Tax Estimate
+        </p>
+        <span className="ml-auto text-[10px] text-muted-foreground">{tax.exemptionLaw}</span>
+      </div>
+      <div className="px-4 py-3 grid grid-cols-2 gap-x-6 gap-y-3">
+        <div>
+          <p className="text-[10px] uppercase tracking-wide text-muted-foreground">Gross Estate</p>
+          <p className="text-sm font-semibold tabular-nums mt-0.5">{formatDollars(tax.grossEstateDollars)}</p>
+        </div>
+        <div>
+          <p className="text-[10px] uppercase tracking-wide text-muted-foreground">Federal Exemption ({tax.exemptionYear})</p>
+          <p className="text-sm font-semibold tabular-nums mt-0.5 text-green-700">{formatDollars(tax.federalExemptionDollars)}</p>
+        </div>
+        <div>
+          <p className="text-[10px] uppercase tracking-wide text-muted-foreground">Taxable Estate</p>
+          <p className={cn("text-sm font-semibold tabular-nums mt-0.5", taxable ? "text-amber-700" : "text-green-700")}>
+            {taxable ? formatDollars(tax.taxableEstateDollars) : "None"}
+          </p>
+        </div>
+        <div>
+          <p className="text-[10px] uppercase tracking-wide text-muted-foreground">
+            Est. Federal Tax ({Math.round(tax.taxRate * 100)}%)
+          </p>
+          <p className={cn("text-sm font-semibold tabular-nums mt-0.5", taxable ? "text-destructive" : "text-green-700")}>
+            {taxable ? formatDollars(tax.estimatedFederalTaxDollars) : "$0"}
+          </p>
+        </div>
+      </div>
+      {!taxable && (
+        <div className="px-4 pb-3 -mt-1">
+          <p className="text-xs text-green-700 flex items-center gap-1">
+            <CheckCircle2 className="h-3 w-3" />
+            Estate is below the federal exemption threshold — no federal estate tax estimated.
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
 const TRUST_TYPE_LABELS: Record<string, string> = {
   revocable: "Revocable",
   irrevocable: "Irrevocable",
@@ -431,6 +479,13 @@ export function Estate() {
     staleTime: 5 * 60 * 1000,
   });
 
+  const taxSummaryQuery = useQuery({
+    queryKey: ["estate", "tax-summary", primaryEstateId],
+    queryFn: () => estateApi.taxSummary(primaryEstateId!),
+    enabled: !!primaryEstateId,
+    staleTime: 10 * 60 * 1000,
+  });
+
   const projectionQuery = useQuery({
     queryKey: ["estate", "projection", selectedCompanyId],
     queryFn: () => estateApi.netWorthProjection(selectedCompanyId!),
@@ -565,6 +620,11 @@ export function Estate() {
             </div>
           ))}
         </div>
+      )}
+
+      {/* Estate tax estimate */}
+      {taxSummaryQuery.data && (
+        <TaxSummarySection tax={taxSummaryQuery.data} />
       )}
 
       {/* Net worth projection */}

@@ -91,6 +91,20 @@ export interface NetWorthProjectionResult {
   projections: ProjectionYear[];
 }
 
+export interface EstateTaxSummary {
+  estateId: string;
+  estateName: string;
+  maritalStatus: string | null;
+  grossEstateDollars: number;
+  federalExemptionDollars: number;
+  taxableEstateDollars: number;
+  estimatedFederalTaxDollars: number;
+  taxRate: number;
+  exemptionYear: number;
+  exemptionLaw: string;
+  asOfDate: string;
+}
+
 export type TrustType = "revocable" | "irrevocable" | "testamentary" | "special_needs";
 export type TrustFundingStatus = "unfunded" | "partially_funded" | "fully_funded";
 
@@ -165,4 +179,7 @@ export const estateApi = {
 
   listTrusts: (estateId: string) =>
     api.get<{ trusts: EstateTrust[] }>(`/estates/${estateId}/trusts`),
+
+  taxSummary: (estateId: string) =>
+    api.get<EstateTaxSummary>(`/estates/${estateId}/tax-summary`),
 };
