@@ -1035,8 +1035,16 @@ function invalidateActivityQueries(
             ...invalidationOptions,
           });
         }
-        if (action?.startsWith("issue.thread_interaction_")) {
-          queryClient.invalidateQueries({ queryKey: queryKeys.issues.interactions(ref), ...invalidationOptions });
+        if (
+          action?.startsWith("issue.thread_interaction_")
+          || ((action === "issue.updated" || action === "issue.status_decision_recorded")
+            && readString(details?.source) === "native_status_decision")
+        ) {
+          // Native status decisions may materialize a review interaction in the
+          // same transaction. Unlike run/activity rows, that card is not present
+          // in the streamed PRP projection, so inactive-only invalidation leaves
+          // the visible task stale until a full reload.
+          queryClient.invalidateQueries({ queryKey: queryKeys.issues.interactions(ref) });
         }
       }
     }

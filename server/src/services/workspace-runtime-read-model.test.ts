@@ -146,4 +146,63 @@ describe("selectConfiguredRuntimeServiceRows", () => {
       }),
     ]);
   });
+
+  it("can fall back to legacy execution-workspace scope for directly configured services", () => {
+    const projectScopedHistory = runtimeServiceRow({
+      serviceName: "worker",
+      command: "pnpm worker",
+    });
+    const legacyExecutionScopedWeb = runtimeServiceRow({
+      executionWorkspaceId: randomUUID(),
+      scopeType: "execution_workspace",
+      scopeId: randomUUID(),
+      serviceName: "web",
+      command: "pnpm dev",
+    });
+
+    const selected = selectConfiguredRuntimeServiceRows(
+      [projectScopedHistory, legacyExecutionScopedWeb],
+      { services: [{ name: "web", command: "pnpm dev" }] },
+      { fallbackScopeTypes: ["execution_workspace"] },
+    );
+
+    expect(selected).toEqual([
+      expect.objectContaining({
+        id: legacyExecutionScopedWeb.id,
+        configIndex: 0,
+      }),
+    ]);
+  });
+
+  it("selects the row for the configured port instead of newer history on another port", () => {
+    const previousPort = runtimeServiceRow({
+      port: 42013,
+      updatedAt: new Date("2026-07-31T10:00:00.000Z"),
+    });
+    const configuredPort = runtimeServiceRow({
+      port: 42001,
+      updatedAt: new Date("2026-07-30T10:00:00.000Z"),
+    });
+
+    const selected = selectConfiguredRuntimeServiceRows(
+      [previousPort, configuredPort],
+      {
+        services: [
+          {
+            name: "web",
+            command: "pnpm dev",
+            port: { type: "fixed", value: 42001 },
+          },
+        ],
+      },
+    );
+
+    expect(selected).toEqual([
+      expect.objectContaining({
+        id: configuredPort.id,
+        port: 42001,
+        configIndex: 0,
+      }),
+    ]);
+  });
 });

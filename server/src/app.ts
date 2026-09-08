@@ -19,6 +19,7 @@ import {
 } from "./services/company-import-transfers.js";
 import { companyTransferRunService } from "./services/company-transfer-runs.js";
 import { healthRoutes } from "./routes/health.js";
+import { cloudRuntimeIdentityMiddleware } from "./middleware/cloud-runtime-identity.js";
 import { cloudRoutes } from "./routes/cloud.js";
 import { companyRoutes } from "./routes/companies.js";
 import { companySkillRoutes } from "./routes/company-skills.js";
@@ -82,7 +83,13 @@ import { assetRoutes } from "./routes/assets.js";
 import { accessRoutes } from "./routes/access.js";
 import { pluginRoutes } from "./routes/plugins.js";
 import { mcpGatewayProtocolRoutes, toolGatewayRoutes } from "./routes/tool-gateway.js";
+import {
+  connectionIntentBoardRoutes,
+  runtimeConnectionIntentRoutes,
+} from "./routes/connection-intents.js";
 import { adapterRoutes } from "./routes/adapters.js";
+import { managedAgentProfileRoutes } from "./routes/managed-agent-profiles.js";
+import { remoteAgentProfileRoutes } from "./routes/remote-agent-profiles.js";
 import { pluginUiStaticRoutes } from "./routes/plugin-ui-static.js";
 import { readBrandedStaticIndexHtml } from "./static-index-html.js";
 import { staticUiCacheControl } from "./static-ui-cache.js";
@@ -100,6 +107,8 @@ import { createPluginJobScheduler } from "./services/plugin-job-scheduler.js";
 import { pluginJobStore } from "./services/plugin-job-store.js";
 import { createPluginToolDispatcher } from "./services/plugin-tool-dispatcher.js";
 import { createToolGatewayService } from "./services/tool-gateway.js";
+import { toolAccessService } from "./services/tool-access.js";
+import { heartbeatService } from "./services/heartbeat.js";
 import { pluginLifecycleManager } from "./services/plugin-lifecycle.js";
 import { createPluginJobCoordinator } from "./services/plugin-job-coordinator.js";
 import { buildHostServices, flushPluginLogBuffer } from "./services/plugin-host-services.js";
@@ -356,6 +365,11 @@ export async function createApp(
       bindHost: opts.bindHost,
     }),
   );
+  app.use(cloudRuntimeIdentityMiddleware(db));
+  // Connection-intent tools carry their own short-lived, run-bound bearer and
+  // must be reachable by remote adapters that intentionally do not receive an
+  // agent API key. Every request revalidates the active heartbeat row.
+  app.use(runtimeConnectionIntentRoutes(db));
   app.use(
     actorMiddleware(db, {
       deploymentMode: opts.deploymentMode,
@@ -524,6 +538,8 @@ export async function createApp(
   api.use(boardChatRoutes(db, { deploymentMode: opts.deploymentMode }));
   api.use(approvalRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(secretRoutes(db));
+  api.use(managedAgentProfileRoutes(db));
+  api.use(remoteAgentProfileRoutes(db));
   const trustedLocalStdioRuntimeHost =
     process.env.PAPERCLIP_TRUSTED_MCP_RUNTIME_HOST
     ?? process.env.PAPERCLIP_TOOL_RUNTIME_TRUSTED_HOST
@@ -559,11 +575,17 @@ export async function createApp(
     lifecycleManager: lifecycle,
     db,
   });
+  const gatewayOAuthAccess = toolAccessService(db, {
+    deploymentMode: opts.deploymentMode,
+    deploymentExposure: opts.deploymentExposure,
+    trustedLocalStdioRuntimeHost,
+  });
   const toolGateway = createToolGatewayService(db, {
     pluginToolDispatcher: toolDispatcher,
     deploymentMode: opts.deploymentMode,
     deploymentExposure: opts.deploymentExposure,
     trustedLocalStdioRuntimeHost,
+    oauthGrantRefresher: (input) => gatewayOAuthAccess.refreshOAuthGrantCredentials(input),
   });
   // Issue routes are intentionally mounted after the gateway is constructed because
   // issue approval endpoints delegate to it. The intervening routers use distinct
@@ -574,12 +596,18 @@ export async function createApp(
     approveToolActionRequest: (input) => toolGateway.approveActionRequest(input),
   }));
   app.use(mcpGatewayProtocolRoutes(toolGateway));
+  const connectionIntentHeartbeat = heartbeatService(db, {
+    pluginWorkerManager: workerManager,
+  });
   api.use(toolAccessRoutes(db, {
     deploymentMode: opts.deploymentMode,
     deploymentExposure: opts.deploymentExposure,
+    authPublicBaseUrl: opts.authPublicBaseUrl,
     trustedLocalStdioRuntimeHost,
     toolGateway,
+    connectionIntentHeartbeat,
   }));
+  api.use(connectionIntentBoardRoutes(db, connectionIntentHeartbeat));
   api.use(smokeLabRoutes(db, {
     deploymentMode: opts.deploymentMode,
     deploymentExposure: opts.deploymentExposure,
@@ -720,6 +748,19 @@ export async function createApp(
     } else {
       console.warn("[paperclip] UI dist not found; running in API-only mode");
     }
+    if (process.env.PAPERCLIP_MANAGED_RUNTIME_EXPOSURE === "tailscale_https") {
+      // The managed-runtime supervisor waits for the app port AND its derived
+      // Vite HMR companion port to bind before publishing the service. Static
+      // mode has no Vite, so bind the same placeholder listener dev mode uses
+      // or the supervisor kills a healthy server at the readiness deadline
+      // (PAP-18043).
+      const hmrServer = createHttpServer((_req, res) => {
+        res.writeHead(426, { "Content-Type": "text/plain" });
+        res.end("Upgrade Required");
+      });
+      await listenViteHmrServer(hmrServer, resolveViteHmrPort(opts.serverPort), opts.bindHost);
+      viteHmrServer = hmrServer;
+    }
   }
 
   if (opts.uiMode === "vite-dev") {
@@ -733,9 +774,18 @@ export async function createApp(
       res.end("Upgrade Required");
     });
     const { createServer: createViteServer } = await import("vite");
+    const configuredViteCacheDir = process.env.PAPERCLIP_VITE_CACHE_DIR?.trim();
     const vite = await createViteServer({
       root: uiRoot,
+      ...(configuredViteCacheDir
+        ? { cacheDir: path.resolve(configuredViteCacheDir) }
+        : {}),
       appType: "custom",
+      // Vite otherwise discovers every HTML entry below the UI root. Generated
+      // Storybook output can reference dependencies that are intentionally not
+      // part of the application install, poisoning a clean embedded dev-server
+      // cache before the browser opens. The embedded UI has one real entry.
+      optimizeDeps: { entries: [path.resolve(uiRoot, "index.html")] },
       server: {
         // Listener binding and browser HMR hostname are deliberately separate:
         // exposed branch runtimes stay loopback-only while the browser uses the
@@ -929,6 +979,8 @@ export async function createApp(
   const shutdownAppServices = (): Promise<void> => {
     if (appServicesShutdown) return appServicesShutdown;
     appServicesShutdown = (async () => {
+      scheduler.stop();
+      jobCoordinator.stop();
       disableFeedbackExportFlushes();
       if (importTransferSweepTimer) {
         clearInterval(importTransferSweepTimer);

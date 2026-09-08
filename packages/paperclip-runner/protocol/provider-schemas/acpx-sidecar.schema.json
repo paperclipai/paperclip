@@ -1,0 +1,110 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://paperclip.dev/schemas/acpx-sidecar/v2/message.schema.json",
+  "title": "Paperclip ACPX sidecar message",
+  "oneOf": [
+    { "$ref": "#/$defs/request" },
+    { "$ref": "#/$defs/response" },
+    { "$ref": "#/$defs/event" }
+  ],
+  "$defs": {
+    "protocolVersion": { "const": 2 },
+    "command": {
+      "enum": [
+        "initialize",
+        "session.open",
+        "run.attach",
+        "turn.start",
+        "turn.cancel",
+        "permission.resolve",
+        "input.resolve",
+        "tool.resolve",
+        "session.read",
+        "session.snapshot",
+        "session.suspend",
+        "session.close"
+      ]
+    },
+    "eventType": {
+      "enum": [
+        "runtime.event",
+        "runtime.permission_requested",
+        "runtime.input_requested",
+        "runtime.tool_called",
+        "runtime.turn_terminal",
+        "runtime.process",
+        "runtime.diagnostic"
+      ]
+    },
+    "request": {
+      "type": "object",
+      "required": ["protocolVersion", "id", "command", "params"],
+      "properties": {
+        "protocolVersion": { "$ref": "#/$defs/protocolVersion" },
+        "id": { "type": "integer", "minimum": 1 },
+        "command": { "$ref": "#/$defs/command" },
+        "params": { "type": "object" }
+      },
+      "additionalProperties": false
+    },
+    "response": {
+      "type": "object",
+      "required": ["protocolVersion", "id", "ok"],
+      "oneOf": [
+        {
+          "properties": {
+            "ok": { "const": true },
+            "result": { "type": "object" },
+            "error": false
+          },
+          "required": ["result"]
+        },
+        {
+          "properties": {
+            "ok": { "const": false },
+            "result": false,
+            "error": { "type": "object" }
+          },
+          "required": ["error"]
+        }
+      ],
+      "properties": {
+        "protocolVersion": { "$ref": "#/$defs/protocolVersion" },
+        "id": { "type": "integer", "minimum": 1 },
+        "ok": { "type": "boolean" },
+        "result": { "type": "object" },
+        "error": {
+          "type": "object",
+          "required": ["code", "message", "retryable"],
+          "properties": {
+            "code": { "type": "string", "minLength": 1, "maxLength": 160 },
+            "message": { "type": "string", "maxLength": 8192 },
+            "retryable": { "type": "boolean" }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "event": {
+      "type": "object",
+      "required": [
+        "protocolVersion",
+        "sequence",
+        "eventType",
+        "runId",
+        "turnId",
+        "payload"
+      ],
+      "properties": {
+        "protocolVersion": { "$ref": "#/$defs/protocolVersion" },
+        "sequence": { "type": "integer", "minimum": 1 },
+        "eventType": { "$ref": "#/$defs/eventType" },
+        "runId": { "type": ["string", "null"], "maxLength": 160, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$" },
+        "turnId": { "type": ["string", "null"], "maxLength": 240, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$" },
+        "payload": { "type": "object" }
+      },
+      "additionalProperties": false
+    }
+  }
+}

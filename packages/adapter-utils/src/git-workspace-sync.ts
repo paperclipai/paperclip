@@ -41,6 +41,19 @@ export type ExpensiveWorkspaceGitExecutor = (
 let expensiveWorkspaceGitExecutor: ExpensiveWorkspaceGitExecutor | null = null;
 
 /**
+ * The workspace Git scan scheduler's typed code for a saturated queue
+ * (`server/src/services/workspace-git-operation-scheduler.ts`,
+ * `WORKSPACE_GIT_SCAN_ERROR_CODES.saturated`). Declared again here because
+ * `adapter-utils` cannot import from `server` (the reverse direction is
+ * allowed, not this one); `server` carries a test that asserts the two
+ * literals stay equal. `resolveReferencedSourceIgnore` in
+ * `sandbox-managed-runtime.ts` reads this code off a caught error's `code`
+ * property, never off its message text, to retry only a saturated queue and
+ * fail closed on every other Git scan error.
+ */
+export const WORKSPACE_GIT_SCAN_SATURATED_CODE = "workspace_git_scan_saturated";
+
+/**
  * Lets a host process apply its process-wide admission policy to the adapter
  * package's full-tree Git walks. Standalone adapter-utils consumers retain the
  * existing timeout/buffer-bounded fallback.
@@ -161,7 +174,16 @@ export async function readGitWorkspaceSnapshot(localDir: string): Promise<GitWor
     ]);
 
     const branchName = branchResult.stdout.trim();
-    const splitNul = (value: string) => value.split("\0").map((entry) => entry.trim()).filter(Boolean);
+    // `-z` already delimits each record with a NUL byte, so a leading or
+    // trailing space in a record is part of the path itself, not padding to
+    // remove — trimming it would resolve to a path that does not exist. A
+    // length check finds the one genuinely empty record `-z` appends after
+    // the last NUL, without eating a real path's own leading or trailing
+    // whitespace. This applies to all four NUL-delimited outputs below (the
+    // overlay diff, the untracked list, the deleted list, and the ignored
+    // list); `branchName` and `headCommit` come from non-`-z` commands and
+    // keep their own `.trim()` above and below, which is safe.
+    const splitNul = (value: string) => value.split("\0").filter((entry) => entry.length > 0);
     return {
       headCommit: headCommitResult.stdout.trim(),
       branchName: branchName && branchName !== "HEAD" ? branchName : null,
@@ -180,7 +202,7 @@ export async function readGitWorkspaceSnapshot(localDir: string): Promise<GitWor
   }
 }
 
-/** The `git status --ignored` output for one directory, read by {@link readReferencedSourceGitIgnoredPaths}. */
+/** The `git ls-files --others --ignored` output for one directory, read by {@link readReferencedSourceGitIgnoredPaths}. */
 export interface ReferencedSourceGitIgnoreScan {
   /** The absolute repository top level `git rev-parse --show-toplevel` reports. */
   toplevel: string;
@@ -261,6 +283,43 @@ function isNotAGitRepositoryError(error: unknown): boolean {
   return /not a git repository/i.test(stderr) || /not a git repository/i.test(message);
 }
 
+/** Bound on the number of parsed ignored entries `readReferencedSourceGitIgnoredPaths` accepts before it fails closed. */
+export const REFERENCED_SOURCE_IGNORE_MAX_ENTRY_COUNT = 10_000;
+
+/** Bound on the summed UTF-8 byte length of the resolved ignored-path strings `readReferencedSourceGitIgnoredPaths` accepts before it fails closed. */
+export const REFERENCED_SOURCE_IGNORE_MAX_TOTAL_BYTES = 2 * 1024 * 1024;
+
+/**
+ * Bound on the raw `git ls-files --others --ignored` output
+ * `readReferencedSourceGitIgnoredPaths` lets Node buffer, kept proportionate
+ * to {@link REFERENCED_SOURCE_IGNORE_MAX_TOTAL_BYTES} instead of the far
+ * larger allowance the anchor workspace's general-purpose full-tree reads
+ * use. The command reports only ignored entries (see the invocation below),
+ * so this raw allowance is not exposed to an unrelated tracked-change or
+ * ordinary-untracked record count — a repository with a huge diff or a huge
+ * untracked set never grows this command's output. The parser below still
+ * enforces the real entry-count and byte bounds while it reads each record,
+ * so this value only needs headroom for the NUL delimiter and the trailing
+ * slash on every entry, not room for an oversized ignored-path list to land
+ * in memory in the first place.
+ */
+const REFERENCED_SOURCE_IGNORE_MAX_RAW_BUFFER = REFERENCED_SOURCE_IGNORE_MAX_TOTAL_BYTES * 2;
+
+/**
+ * Thrown by {@link readReferencedSourceGitIgnoredPaths} when the parsed
+ * ignored-path list breaches {@link REFERENCED_SOURCE_IGNORE_MAX_ENTRY_COUNT}
+ * or {@link REFERENCED_SOURCE_IGNORE_MAX_TOTAL_BYTES}, so the caller can
+ * classify the failure as a bound breach instead of a plain Git read error.
+ * The message never leaves this package: `resolveReferencedSourceIgnore`
+ * replaces it with a fixed category before the failure reaches any consumer.
+ */
+export class ReferencedSourceIgnoreScanLimitExceededError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ReferencedSourceIgnoreScanLimitExceededError";
+  }
+}
+
 /**
  * Read the Git-ignored paths of a referenced-project host directory, for the
  * staging path to exclude them (see `resolveReferencedSourceIgnore` in
@@ -270,8 +329,10 @@ function isNotAGitRepositoryError(error: unknown): boolean {
  *
  * Returns `null` when `localDir` is not a Git work tree — the caller keeps
  * today's fixed excludes for that case. Throws on any other Git error, a
- * timeout, or malformed output, so the caller can fail closed and skip
- * staging that one project instead of shipping it unfiltered.
+ * timeout, malformed output, or a bound breach (see
+ * {@link ReferencedSourceIgnoreScanLimitExceededError}), so the caller can
+ * fail closed and skip staging that one project instead of shipping it
+ * unfiltered.
  */
 export async function readReferencedSourceGitIgnoredPaths(
   localDir: string,
@@ -295,24 +356,70 @@ export async function readReferencedSourceGitIgnoredPaths(
     throw new Error(`git rev-parse --show-toplevel returned an empty path for ${localDir}`);
   }
 
+  // `ls-files --others --ignored --exclude-standard` reports only ignored
+  // entries — unlike `git status --ignored`, it never also reports a tracked
+  // change or an ordinary untracked file. A repository with a huge diff or a
+  // huge untracked set (unrelated to what is ignored) cannot inflate this
+  // command's raw output, so the raw buffer bound below only ever has to
+  // cover the declared ignored-set limits, not an unbounded amount of
+  // unrelated status noise ahead of them.
+  // `--directory` collapses an entirely ignored directory into one entry with
+  // a trailing slash, matching `git status --ignored`'s traditional mode.
+  // `--full-name` reports paths relative to the repository toplevel, so this
+  // still matches the toplevel-relative shape `resolveReferencedSourceIgnore`
+  // re-relativizes against, regardless of `localDir`'s position under it.
   const ignoredResult = await runHardenedReadOnlyGit(
     localDir,
-    ["status", "--ignored", "--porcelain=v1", "-z", "--untracked-files=normal"],
+    ["ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "--full-name", "-z"],
     "referenced_source.ignored_files",
-    { timeout: 60_000, maxBuffer: 16 * 1024 * 1024 },
+    { timeout: 60_000, maxBuffer: REFERENCED_SOURCE_IGNORE_MAX_RAW_BUFFER },
   );
-  // Do not trim each entry: `git status -z` already delimits entries with a
-  // NUL byte, so a leading or trailing space in an entry is part of the path
-  // itself, not padding to remove. A length check finds the one genuinely
-  // empty entry `-z` appends after the last NUL, without eating a real path's
-  // own leading or trailing whitespace.
-  const ignoredPaths = ignoredResult.stdout
-    .split("\0")
-    .filter((entry) => entry.length > 0)
-    .filter((entry) => entry.startsWith("!! "))
-    .map((entry) => entry.slice(3).replace(/\/+$/, ""))
-    .filter((entry) => entry.length > 0)
-    .sort((left, right) => left.localeCompare(right));
+
+  // Read one NUL-delimited record at a time and enforce both bounds while the
+  // ignored-entry list accumulates, instead of splitting and mapping the
+  // whole response into a list first and only then checking its size. A
+  // pathologically large ignore set (a huge repository, or one crafted to
+  // hold many ignored entries) must fail closed the moment it breaches a
+  // bound, without this scan first retaining and transforming the full
+  // oversized response.
+  //
+  // Do not trim each entry: `-z` already delimits entries with a NUL byte, so
+  // a leading or trailing space in an entry is part of the path itself, not
+  // padding to remove. A length check finds the one genuinely empty record
+  // `-z` appends after the last NUL, without eating a real path's own
+  // leading or trailing whitespace.
+  const rawIgnored = ignoredResult.stdout;
+  const parsedIgnoredEntries: string[] = [];
+  let totalIgnoredBytes = 0;
+  let recordStart = 0;
+  while (recordStart < rawIgnored.length) {
+    const nulIndex = rawIgnored.indexOf("\0", recordStart);
+    const recordEnd = nulIndex === -1 ? rawIgnored.length : nulIndex;
+    const record = rawIgnored.slice(recordStart, recordEnd);
+    recordStart = nulIndex === -1 ? rawIgnored.length : nulIndex + 1;
+
+    const entry = record.replace(/\/+$/, "");
+    if (entry.length === 0) {
+      continue;
+    }
+
+    if (parsedIgnoredEntries.length + 1 > REFERENCED_SOURCE_IGNORE_MAX_ENTRY_COUNT) {
+      throw new ReferencedSourceIgnoreScanLimitExceededError(
+        `referenced project ignore scan found more than ${REFERENCED_SOURCE_IGNORE_MAX_ENTRY_COUNT} ignored entries`,
+      );
+    }
+    totalIgnoredBytes += Buffer.byteLength(entry, "utf8");
+    if (totalIgnoredBytes > REFERENCED_SOURCE_IGNORE_MAX_TOTAL_BYTES) {
+      throw new ReferencedSourceIgnoreScanLimitExceededError(
+        `referenced project ignore scan exceeded ${REFERENCED_SOURCE_IGNORE_MAX_TOTAL_BYTES} UTF-8 bytes of ignored paths`,
+      );
+    }
+    parsedIgnoredEntries.push(entry);
+  }
+
+  // The list is bounded by both checks above, so sorting and re-relativizing
+  // it here never costs more than the accepted bounds allow.
+  const ignoredPaths = parsedIgnoredEntries.sort((left, right) => left.localeCompare(right));
 
   return { toplevel, ignoredPaths };
 }

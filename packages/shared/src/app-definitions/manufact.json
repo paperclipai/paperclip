@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "slug": "manufact",
+  "name": "Manufact",
+  "description": "Connect Manufact's provider-hosted MCP server.",
+  "categories": [
+    "productivity"
+  ],
+  "featured": false,
+  "branding": {
+    "logoUrl": "/brands/apps/manufact.svg"
+  },
+  "urlPatterns": [
+    "https://mcp.manufact.com/*"
+  ],
+  "docsUrl": "https://docs.manufact.com/mcp",
+  "redirectConstraints": "https-or-loopback-http",
+  "methods": [
+    {
+      "key": "mcp-oauth",
+      "transport": "mcp_remote",
+      "auth": "oauth",
+      "ownershipModes": [
+        "dcr"
+      ],
+      "whenToUse": "Use browser sign-in for the provider-hosted MCP server.",
+      "defaults": {
+        "serverUrl": "https://mcp.manufact.com/mcp"
+      },
+      "guidanceMd": "Connect Manufact in the browser. A Manufact account with MCP access.",
+      "riskTier": "S3",
+      "label": "Sign in with Manufact",
+      "consoleLinks": {
+        "docs": "https://docs.manufact.com/mcp"
+      },
+      "warnings": [
+        "A Manufact account with MCP access."
+      ]
+    }
+  ]
+}

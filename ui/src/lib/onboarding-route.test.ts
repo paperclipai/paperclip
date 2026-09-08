@@ -272,6 +272,43 @@ describe("resolveRouteOnboardingOptions — the agent step", () => {
     expect(resolved!.initialStep).not.toBe(ONBOARDING_MISSION_STEP);
   });
 
+  it("never resolves into the create wizard on a managed stack", () => {
+    // POST /companies is a 403 floor on Cloud-managed stacks — a create wizard
+    // there is a dead end wearing a form. A managed stack holds exactly one
+    // company, so the useful reading of a bare or unmatched onboarding path is
+    // that company's agent arc.
+    const one = [{ id: "c1", issuePrefix: "PC1" }];
+    expect(
+      resolveRouteOnboardingOptions({
+        pathname: "/onboarding",
+        companies: one,
+        cloudManaged: true,
+      }),
+    ).toEqual({ initialStep: ONBOARDING_AGENT_STEP, companyId: "c1" });
+    expect(
+      resolveRouteOnboardingOptions({
+        pathname: "/NOPE/onboarding",
+        companyPrefix: "NOPE",
+        companies: one,
+        cloudManaged: true,
+      }),
+    ).toEqual({ initialStep: ONBOARDING_AGENT_STEP, companyId: "c1" });
+  });
+
+  it("opens nothing on a managed stack whose companies are not exactly one", () => {
+    // Zero companies means the list is still loading or errored — offering
+    // creation would 403; opening an arc would name nobody. Do neither.
+    for (const companies of [[], [{ id: "c1", issuePrefix: "PC1" }, { id: "c2", issuePrefix: "PC2" }]]) {
+      expect(
+        resolveRouteOnboardingOptions({
+          pathname: "/onboarding",
+          companies,
+          cloudManaged: true,
+        }),
+      ).toBeNull();
+    }
+  });
+
   it("keeps sending an unmatched prefix to company creation", () => {
     expect(
       resolveRouteOnboardingOptions({

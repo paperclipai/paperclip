@@ -79,12 +79,26 @@ export function resolveRouteOnboardingOptions(params: {
   pathname: string;
   companyPrefix?: string;
   companies: OnboardingRouteCompany[];
+  /**
+   * Whether this instance is a Cloud-managed stack. Company creation lives on
+   * Cloud there — POST /companies is a 403 floor — so a route that cannot name
+   * an existing company must never open the create wizard: it would be a dead
+   * end wearing a form. A managed stack holds exactly one company, so the
+   * useful reading of a bare `/onboarding` is that company's agent arc.
+   */
+  cloudManaged?: boolean;
 }): { initialStep: 1 | ExistingCompanyOnboardingStep; companyId?: string } | null {
-  const { pathname, companyPrefix, companies } = params;
+  const { pathname, companyPrefix, companies, cloudManaged } = params;
 
   if (!isOnboardingPath(pathname)) return null;
 
+  const managedFallback = (): { initialStep: ExistingCompanyOnboardingStep; companyId?: string } | null =>
+    companies.length === 1
+      ? { initialStep: onboardingStepForCompany(), companyId: companies[0]!.id }
+      : null;
+
   if (!companyPrefix) {
+    if (cloudManaged) return managedFallback();
     return { initialStep: 1 };
   }
 
@@ -95,6 +109,7 @@ export function resolveRouteOnboardingOptions(params: {
     ) ?? null;
 
   if (!matchedCompany) {
+    if (cloudManaged) return managedFallback();
     return { initialStep: 1 };
   }
 

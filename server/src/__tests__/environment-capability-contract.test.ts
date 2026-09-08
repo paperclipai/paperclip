@@ -401,11 +401,16 @@ describe("general runtime capability resolver — four-driver matrix", () => {
     incrementalSessionOutput: true,
     concurrentSyncOperations: true,
     duplexCommandStream: true,
+    runnerWebSocketIngress: true,
   };
-  const VERIFY_ALL = [...ALL_PLUGIN_METHODS, "duplexChannelOpen"];
+  const VERIFY_ALL = [
+    ...ALL_PLUGIN_METHODS,
+    "duplexChannelOpen",
+    "environmentRunnerIngressEndpoint",
+  ];
 
   it("test_local_and_ssh_drivers_support_no_capability_regardless_of_declaration_or_worker", () => {
-    // The `local` and `ssh` static support definitions name none of the eight
+    // The `local` and `ssh` static support definitions name none of the
     // capabilities, so the classifier resolves every field `false` even with a
     // full declaration and a fully verified worker.
     for (const driver of ["local", "ssh"] as const) {

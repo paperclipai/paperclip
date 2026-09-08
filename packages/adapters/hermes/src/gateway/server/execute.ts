@@ -872,6 +872,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   let runId: string | null = null;
   try {
+    // This adapter has no local child process, so crossing into the first
+    // remote create request is its dispatch boundary. Report it before the
+    // request can block so continuation gates may release their issue lock.
+    ctx.onDispatch?.();
     const created = await fetchJson(createRunUrl, {
       method: "POST",
       headers: runHeaders,

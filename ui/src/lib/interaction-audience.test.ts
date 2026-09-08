@@ -79,14 +79,14 @@ describe("describeInteractionAudience", () => {
     expect(audience.narrowedBy).toBeNull();
     expect(audience.narrowedNote).toBeNull();
     expect(audience.summary).toBe(
-      "Anyone in the company can respond — the board or any agent, including the one that asked.",
+      "Anyone in the organization can respond — the board or any agent, including the one that asked.",
     );
   });
 
   it("does not present an open card as board-required", () => {
     const audience = describeInteractionAudience({ interaction: confirmation() });
     expect(audience.summary).not.toMatch(/only .*board/i);
-    expect(audience.summary).toMatch(/anyone in the company/i);
+    expect(audience.summary).toMatch(/anyone in the organization/i);
   });
 
   it("names the excluded creator for an explicit not_creator restriction", () => {
@@ -102,9 +102,33 @@ describe("describeInteractionAudience", () => {
     expect(audience.isOpen).toBe(false);
     expect(audience.label).toBe("Anyone except creator");
     expect(audience.narrowedBy).toBe("requested");
-    expect(audience.summary).toBe("Anyone in the company except ClaudeCoder can respond.");
+    expect(audience.summary).toBe("Anyone in the organization except ClaudeCoder can respond.");
     // An explicitly requested restriction needs no extra explanation.
     expect(audience.narrowedNote).toBeNull();
+  });
+
+  /**
+   * PAP-17859, caught by rendering the card rather than reading it:
+   * `formatAssigneeUserLabel` returns the display-cased "You" for the signed-in
+   * reader, which is correct in a badge and wrong inside a sentence.
+   */
+  it("lowercases a self-referring label inside the summary sentence", () => {
+    const addressed = describeInteractionAudience({
+      interaction: confirmation({ addresseeUserId: "user-me" }),
+      addresseeLabel: "You",
+    });
+    expect(addressed.summary).toBe("Only you can respond.");
+    expect(addressed.shortSummary).toBe("Only you can respond");
+
+    const excluded = describeInteractionAudience({
+      interaction: confirmation({
+        requestedResolverPolicy: "not_creator",
+        effectiveResolverPolicy: "not_creator",
+        resolverPolicyProvenance: "explicit",
+      }),
+      creatorLabel: "You",
+    });
+    expect(excluded.summary).toBe("Anyone in the organization except you can respond.");
   });
 
   it("falls back to a generic creator phrase when the creator label is unknown", () => {
@@ -116,7 +140,7 @@ describe("describeInteractionAudience", () => {
       }),
     });
     expect(audience.summary).toBe(
-      "Anyone in the company except the agent that created it can respond.",
+      "Anyone in the organization except the agent that created it can respond.",
     );
   });
 
@@ -148,7 +172,7 @@ describe("describeInteractionAudience", () => {
     expect(audience.label).toBe("Addressed");
   });
 
-  it("lets human_only win over a named addressee", () => {
+  it("keeps named ownership visible while human_only controls authorization", () => {
     const audience = describeInteractionAudience({
       interaction: confirmation({
         addresseeAgentId: "agent-release",
@@ -158,9 +182,24 @@ describe("describeInteractionAudience", () => {
       addresseeLabel: "ReleaseBot",
     });
     expect(audience.summary).toBe(
-      "Only a person on the board can respond — agents cannot resolve this card.",
+      "Assigned to ReleaseBot. Only a person on the board can respond — agents cannot resolve this card.",
     );
+    expect(audience.shortSummary).toBe("Assigned to ReleaseBot · board only");
     expect(audience.label).toBe("Human only");
+  });
+
+  it("names one addressed user instead of the whole board", () => {
+    const audience = describeInteractionAudience({
+      interaction: confirmation({
+        addresseeUserId: "user-alice",
+        requestedResolverPolicy: "human_only",
+        effectiveResolverPolicy: "human_only",
+      }),
+      addresseeLabel: "Alice",
+    });
+    expect(audience.summary).toBe("Only Alice can respond.");
+    expect(audience.shortSummary).toBe("Only Alice can respond");
+    expect(audience.label).toBe("Addressed");
   });
 
   it("explains a governed-action clamp", () => {
@@ -189,7 +228,7 @@ describe("describeInteractionAudience", () => {
     });
     expect(audience.narrowedBy).toBe("company_cap");
     expect(audience.narrowedNote).toBe(
-      "Company interaction governance narrowed this from Anyone to Human only.",
+      "Organization interaction governance narrowed this from Anyone to Human only.",
     );
   });
 
@@ -206,7 +245,7 @@ describe("describeInteractionAudience", () => {
     expect(audience.narrowedNote).toBe(
       "Created before Anyone became the default, so it stays restricted. A new card would be open.",
     );
-    expect(audience.summary).toBe("Anyone in the company except ClaudeCoder can respond.");
+    expect(audience.summary).toBe("Anyone in the organization except ClaudeCoder can respond.");
   });
 });
 
@@ -294,7 +333,7 @@ describe("describeAttentionResolverAudience", () => {
     })));
     expect(audience?.narrowedBy).toBe("company_cap");
     expect(audience?.narrowedNote).toBe(
-      "Company interaction governance narrowed this from Anyone to Human only.",
+      "Organization interaction governance narrowed this from Anyone to Human only.",
     );
   });
 

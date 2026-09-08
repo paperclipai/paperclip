@@ -5,6 +5,7 @@
 import type { SshRemoteExecutionSpec } from "./ssh.js";
 import type { AdapterExecutionTarget } from "./execution-target.js";
 import type { RuntimeStatusSink } from "./runtime-progress.js";
+import type { NativeFinalizationResult } from "@paperclipai/shared";
 
 export interface AdapterAgent {
   id: string;
@@ -128,6 +129,8 @@ export interface AdapterExecutionResult {
       description?: string;
     }>;
   } | null;
+  /** Present only for a persisted native-mode run; legacy adapters omit it. */
+  nativeFinalization?: NativeFinalizationResult;
 }
 
 export interface AdapterSessionCodec {
@@ -159,6 +162,22 @@ export interface AdapterRuntimeMcpAccess {
   getServers(): AdapterRuntimeMcpServer[];
 }
 
+export type AdapterRuntimeToolDelivery = "native_mcp" | "environment" | "invocation_context";
+
+export interface AdapterRuntimeToolAccess {
+  version: 1;
+  /** Provider-neutral instructions shared by every delivery strategy. */
+  guidance: string;
+  mcpEndpoint: string;
+  rest: {
+    connectionsSearch: string;
+    connectionRequest: string;
+  };
+  bearerToken: string;
+  expiresAt: string;
+  tools: readonly ["connections_search", "connection_request"];
+}
+
 export interface AdapterRuntimeEvent {
   eventType: string;
   stream?: "system" | "stdout" | "stderr";
@@ -184,10 +203,18 @@ export interface AdapterExecutionContext {
     remoteExecution?: Record<string, unknown> | null;
   };
   runtimeMcp?: AdapterRuntimeMcpAccess;
+  runtimeTools?: AdapterRuntimeToolAccess;
   onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
   onMeta?: (meta: AdapterInvocationMeta) => Promise<void>;
   onEvent?: (event: AdapterRuntimeEvent) => Promise<void>;
   onRuntimeProgress?: RuntimeStatusSink;
+  /**
+   * Reports that execution has crossed the adapter's dispatch boundary.
+   * Process-backed adapters normally report this through `onSpawn`; adapters
+   * without a local process should call this immediately before starting the
+   * remote operation.
+   */
+  onDispatch?: () => void;
   onSpawn?: (meta: { pid: number; processGroupId: number | null; startedAt: string }) => Promise<void>;
   authToken?: string;
   /**
@@ -203,16 +230,6 @@ export interface AdapterExecutionContext {
 export interface AdapterModel {
   id: string;
   label: string;
-}
-
-export type AdapterModelProfileKey = "cheap";
-
-export interface AdapterModelProfileDefinition {
-  key: AdapterModelProfileKey;
-  label: string;
-  description?: string;
-  adapterConfig: Record<string, unknown>;
-  source?: "adapter_default" | "discovered";
 }
 
 export type AdapterEnvironmentCheckLevel = "info" | "warn" | "error";
@@ -427,10 +444,10 @@ export interface ServerAdapterModule {
   sessionCodec?: AdapterSessionCodec;
   sessionManagement?: import("./session-compaction.js").AdapterSessionManagement;
   supportsLocalAgentJwt?: boolean;
+  /** How this adapter receives Paperclip's run-scoped control tools. */
+  runtimeToolDelivery?: AdapterRuntimeToolDelivery;
   models?: AdapterModel[];
   listModels?: () => Promise<AdapterModel[]>;
-  modelProfiles?: AdapterModelProfileDefinition[];
-  listModelProfiles?: () => Promise<AdapterModelProfileDefinition[]>;
   /**
    * Optional explicit refresh hook for model discovery.
    * Use this when the adapter caches discovered models and needs a bypass path
@@ -515,18 +532,109 @@ export interface ServerAdapterModule {
 // UI types (moved from ui/src/adapters/types.ts)
 // ---------------------------------------------------------------------------
 
+export type ProviderActivityFamily =
+  | "plan"
+  | "tool_execution"
+  | "research"
+  | "delegation"
+  | "model_identity"
+  | "context"
+  | "artifact"
+  | "review"
+  | "hook"
+  | "memory"
+  | "safety"
+  | "terminal"
+  | "wait"
+  | "provider_notice";
+
+export type ProviderActivityStatus =
+  | "running"
+  | "completed"
+  | "failed"
+  | "interrupted"
+  | "informational";
+
+export interface TranscriptWorkspaceChangeFile {
+  path: string;
+  operation: "create" | "modify" | "delete" | "rename" | "mode_change";
+  previousPath: string | null;
+  additions: number | null;
+  deletions: number | null;
+  binary: boolean;
+  diff: string | null;
+}
+
+export interface TranscriptRunVerification {
+  commandOrCheck: string;
+  status: "passed" | "failed" | "not_run";
+  detail?: string;
+  artifactRef?: string;
+}
+
+export interface TranscriptRunArtifact {
+  kind: string;
+  ref: string;
+  title?: string;
+}
+
+export interface PaperclipQuestionOption {
+  id: string;
+  label: string;
+  description?: string;
+  recommended?: boolean;
+}
+
+export interface PaperclipQuestion {
+  id: string;
+  header?: string;
+  prompt: string;
+  helpText?: string;
+  required: boolean;
+  answerMode: "single_select" | "multi_select" | "text";
+  options?: PaperclipQuestionOption[];
+  customAnswer?: { enabled: true; label?: string; placeholder?: string };
+  textValidation?: {
+    minLength?: number;
+    maxLength?: number;
+    pattern?: string;
+    inputType?: "text" | "number" | "integer";
+    minimum?: number;
+    maximum?: number;
+  };
+}
+
+export interface PaperclipQuestionSet {
+  schema: "paperclip.question_set.v1";
+  title?: string;
+  description?: string;
+  submitLabel?: string;
+  questions: PaperclipQuestion[];
+}
+
+export interface PaperclipQuestionResponse {
+  schema: "paperclip.question_response.v1";
+  answers: Record<string, { selectedOptionIds?: string[]; text?: string; customText?: string }>;
+}
+
 export type TranscriptEntry =
-  | { kind: "assistant"; ts: string; text: string; delta?: boolean }
-  | { kind: "thinking"; ts: string; text: string; delta?: boolean }
+  | { kind: "assistant"; ts: string; text: string; delta?: boolean; channel?: "progress" | "final" | "unknown"; itemId?: string }
+  | { kind: "thinking"; ts: string; text: string; delta?: boolean; lifecycle?: "started" | "completed"; channel?: "summary" | "detail" | "unknown"; itemId?: string }
   | { kind: "user"; ts: string; text: string }
   | { kind: "tool_call"; ts: string; name: string; input: unknown; toolUseId?: string; invocationId?: string; actionRequestId?: string }
-  | { kind: "tool_result"; ts: string; toolUseId: string; toolName?: string; content: string; isError: boolean }
+  | { kind: "tool_result"; ts: string; toolUseId: string; toolName?: string; content: string; isError: boolean; delta?: boolean }
   | { kind: "init"; ts: string; model: string; sessionId: string }
   | { kind: "result"; ts: string; text: string; inputTokens: number; outputTokens: number; cachedTokens: number; costUsd: number; subtype: string; isError: boolean; errors: string[] }
   | { kind: "stderr"; ts: string; text: string }
   | { kind: "system"; ts: string; text: string }
   | { kind: "stdout"; ts: string; text: string }
-  | { kind: "diff"; ts: string; changeType: "add" | "remove" | "context" | "hunk" | "file_header" | "truncation"; text: string };
+  | { kind: "diff"; ts: string; changeType: "add" | "remove" | "context" | "hunk" | "file_header" | "truncation"; text: string }
+  | { kind: "provider_activity"; ts: string; family: ProviderActivityFamily; eventType: string; status: ProviderActivityStatus; title: string; summary: string; payload: Record<string, unknown> }
+  | { kind: "workspace_change"; ts: string; changeSetId: string; revision: number; source: "harness_reported" | "runner_verified"; complete: boolean; files: TranscriptWorkspaceChangeFile[]; totals: { files: number; additions: number | null; deletions: number | null }; patchArtifactRef: string | null }
+  | { kind: "workspace_file_reference"; ts: string; referenceId: string; source: "harness_reported" | "runner_verified"; path: string; displayName: string; mediaType: string | null; presentation: "document" | "code" | "image" | "generic"; line: number | null; preview: string | null; previewTruncated: boolean; contentDigest: string | null }
+  | { kind: "runtime_request"; ts: string; requestId: string; requestKind: "runtime" | "command_approval" | "file_approval" | "permission_approval" | "user_input" | "elicitation" | null; turnId: string | null; requestType: "permission" | "input"; status: "pending" | "resolved" | "expired" | "cancelled"; prompt: string; choices: Array<{ key: string; label: string }>; fields: Array<{ name: string; label: string; placeholder: string | null }>; questionSet?: PaperclipQuestionSet | null; resolvedAction?: string | null; response?: PaperclipQuestionResponse | null }
+  | { kind: "run_result"; ts: string; disposition: "done" | "blocked" | "needs_review" | "yielded"; summary: string; objectiveSatisfied: boolean | null; verification: TranscriptRunVerification[]; remainingWork: Array<{ description: string; blocksCompletion: boolean }>; blocker: { reasonCode: string; unblockAction: string; scope: "current_track" | "task_wide" } | null; artifacts: TranscriptRunArtifact[] }
+  | { kind: "run_terminal"; ts: string; turnState: "completed" | "failed" | "interrupted" | "cancelled"; runState: "succeeded" | "failed" | "cancelled"; disposition: "done" | "blocked" | "needs_review" | "yielded"; stopReason?: string };
 
 export type StdoutLineParser = (line: string, ts: string) => TranscriptEntry[];
 
@@ -545,19 +653,14 @@ export interface CLIAdapterModule {
 
 export interface CreateConfigValues {
   adapterType: string;
+  codexPermissionMode?: "never" | "on-request" | "untrusted";
+  paperclipRunnerLifecycleMode?: "per_turn" | "warm";
+  paperclipRunnerIdleTimeoutMs?: number;
   cwd: string;
   instructionsFilePath?: string;
   promptTemplate: string;
   model: string;
   thinkingEffort: string;
-  /**
-   * Optional cheap model profile config for new agents on adapters that
-   * support model profiles. Persisted under
-   * `runtimeConfig.modelProfiles.cheap.adapterConfig`, never on the primary
-   * `adapterConfig`.
-   */
-  cheapModel?: string;
-  cheapModelEnabled?: boolean;
   chrome: boolean;
   dangerouslySkipPermissions: boolean;
   claudeEngine?: "auto" | "cli" | "acp";

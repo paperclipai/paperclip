@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
@@ -167,6 +167,96 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
 
   afterAll(async () => {
     await tempDb?.cleanup();
+  });
+
+  it("dispatches and coalesces durable native status wake intents into one heartbeat run", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `N${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "NativeWakeRunner",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Resume after native child completion",
+      status: "blocked",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      responsibleUserId: "responsible-user",
+    });
+    const nativeWakePayload = {
+      issueId,
+      taskId: issueId,
+      _paperclipWakeContext: {
+        issueId,
+        taskId: issueId,
+        source: "native_status_decision",
+      },
+    };
+    const intents = await db.insert(agentWakeupRequests).values([
+      {
+        companyId,
+        agentId,
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_children_completed",
+        payload: nativeWakePayload,
+        requestedByActorType: "system",
+        requestedByActorId: "native-status-committer",
+        idempotencyKey: `native-parent:${issueId}`,
+      },
+      {
+        companyId,
+        agentId,
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_blockers_resolved",
+        payload: nativeWakePayload,
+        requestedByActorType: "system",
+        requestedByActorId: "native-status-committer",
+        idempotencyKey: `native-dependency:${issueId}`,
+      },
+    ]).returning({ id: agentWakeupRequests.id });
+
+    const result = await heartbeat.dispatchPendingNativeStatusWakeups({ companyId });
+    expect(result).toMatchObject({ scanned: 2, dispatched: 1, recovered: 1 });
+
+    await heartbeat.drainActiveRunExecutions();
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId));
+    const dispatchedRequests = await db.select().from(agentWakeupRequests).where(
+      sql`${agentWakeupRequests.requestedByActorId} like 'native-status-wake-dispatch:%'`,
+    );
+    expect(dispatchedRequests).toHaveLength(1);
+    const dispatchedRun = runs.find((run) => run.id === dispatchedRequests[0]!.runId);
+    expect(dispatchedRun).toMatchObject({ status: "succeeded", agentId });
+
+    const persistedIntents = await db.select({
+      id: agentWakeupRequests.id,
+      status: agentWakeupRequests.status,
+      runId: agentWakeupRequests.runId,
+    }).from(agentWakeupRequests).where(inArray(agentWakeupRequests.id, intents.map((intent) => intent.id)));
+    expect(persistedIntents).toHaveLength(2);
+    expect(persistedIntents).toEqual(expect.arrayContaining([
+      expect.objectContaining({ status: "coalesced", runId: dispatchedRun!.id }),
+      expect.objectContaining({ status: "coalesced", runId: dispatchedRun!.id }),
+    ]));
+    expect(dispatchedRequests[0]).toMatchObject({ runId: dispatchedRun!.id });
   });
 
   it("keeps blocked descendants idle until their blockers resolve", async () => {

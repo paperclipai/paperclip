@@ -14,11 +14,6 @@
  *   - Exact types:   "application/pdf"
  *   - Wildcards:     "image/*"  or  "application/vnd.openxmlformats-officedocument.*"
  */
-import {
-  DEFAULT_COMPANY_ATTACHMENT_MAX_BYTES,
-  MAX_COMPANY_ATTACHMENT_MAX_BYTES,
-} from "@paperclipai/shared";
-
 export const DEFAULT_ALLOWED_TYPES: readonly string[] = [
   "image/png",
   "image/jpeg",
@@ -146,12 +141,37 @@ export function isAllowedContentType(contentType: string): boolean {
   return matchesContentType(contentType, allowedPatterns);
 }
 
+/**
+ * The one attachment size ceiling for this deployment. Every upload path —
+ * assets, task attachments, cases, and company import — bounds itself by this
+ * value, so an operator raises or lowers the limit in exactly one place.
+ */
 export const MAX_ATTACHMENT_BYTES =
   Number(process.env.PAPERCLIP_ATTACHMENT_MAX_BYTES) || 10 * 1024 * 1024;
 
-export function normalizeIssueAttachmentMaxBytes(value: number | null | undefined): number {
-  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
-    return Math.min(DEFAULT_COMPANY_ATTACHMENT_MAX_BYTES, MAX_ATTACHMENT_BYTES);
+const ATTACHMENT_SIZE_UNITS: readonly string[] = ["KB", "MB", "GB"];
+
+/**
+ * Render a byte count the way a person reading an error message expects it:
+ * 1024-based steps under the conventional consumer labels, at most one decimal
+ * place, and no trailing ".0". The default cap renders as "10 MB" rather than
+ * "10485760 bytes". Sub-kilobyte values stay in bytes so a tiny configured cap
+ * does not collapse to "0 KB".
+ */
+export function formatAttachmentSize(bytes: number): string {
+  // Defensive: the cap itself can never be negative or NaN (`Number(env) || default`
+  // falls back on both), but never render "NaN bytes" at a user.
+  if (!Number.isFinite(bytes) || bytes <= 0) return "0 bytes";
+  if (bytes < 1024) return bytes === 1 ? "1 byte" : `${bytes} bytes`;
+
+  let value = bytes / 1024;
+  let unitIndex = 0;
+  while (value >= 1024 && unitIndex < ATTACHMENT_SIZE_UNITS.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
   }
-  return Math.min(Math.floor(value), MAX_COMPANY_ATTACHMENT_MAX_BYTES, MAX_ATTACHMENT_BYTES);
+
+  // toFixed(1) then strip a trailing ".0": 10.5 -> "10.5", 10.0 -> "10".
+  const rounded = value.toFixed(1).replace(/\.0$/, "");
+  return `${rounded} ${ATTACHMENT_SIZE_UNITS[unitIndex]}`;
 }

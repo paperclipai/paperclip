@@ -10,6 +10,7 @@ import {
   heartbeatRuns,
   instanceSettings,
   issueComments,
+  issueThreadInteractions,
   issues,
   pipelineAutomationExecutions,
   pipelineCaseBlockers,
@@ -68,6 +69,7 @@ describeEmbeddedPostgres("pipelineService", () => {
     await db.delete(pipelineTransitions);
     await db.delete(pipelineStages);
     await db.delete(pipelines);
+    await db.delete(issueThreadInteractions);
     await db.delete(issueComments);
     await db.delete(activityLog);
     await db.delete(routineRuns);
@@ -1707,6 +1709,27 @@ describeEmbeddedPostgres("pipelineService", () => {
       status: "failed",
       error: "boom",
     }).returning();
+    const [automationIssue] = await db.insert(issues).values({
+      companyId: company.id,
+      title: "Retry-owned automation issue",
+      status: "in_progress",
+      priority: "medium",
+    }).returning();
+    await db.insert(pipelineCaseIssueLinks).values({
+      companyId: company.id,
+      caseId: parent.case.id,
+      issueId: automationIssue!.id,
+      role: "automation",
+      automationAttemptId: attempt!.id,
+    });
+    const [pendingInteraction] = await db.insert(issueThreadInteractions).values({
+      companyId: company.id,
+      issueId: automationIssue!.id,
+      kind: "request_confirmation",
+      status: "pending",
+      continuationPolicy: "none",
+      payload: { version: 1, prompt: "Continue automation?" },
+    }).returning();
     const child = await svc.ingestCase({
       companyId: company.id,
       pipelineId: pipeline.id,
@@ -1777,6 +1800,16 @@ describeEmbeddedPostgres("pipelineService", () => {
     expect(freshParent!.stageKey).toBe("review");
     expect(freshChild!.terminalKind).toBe("cancelled");
     expect(freshChild!.retiredReason).toBe("automation_retry");
+    const [cancelledAutomationIssue] = await db
+      .select({ status: issues.status })
+      .from(issues)
+      .where(eq(issues.id, automationIssue!.id));
+    expect(cancelledAutomationIssue?.status).toBe("cancelled");
+    const [expiredInteraction] = await db
+      .select({ status: issueThreadInteractions.status })
+      .from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.id, pendingInteraction!.id));
+    expect(expiredInteraction?.status).toBe("expired");
     const events = await svc.listCaseEvents(company.id, parent.case.id);
     expect(events.filter((pipelineEvent) => pipelineEvent.type === "children_terminal")).toHaveLength(2);
   });

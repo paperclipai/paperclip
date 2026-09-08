@@ -4,6 +4,7 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { queryKeys } from "../lib/queryKeys";
 import { PluginSettings } from "./PluginSettings";
 
 const mockPluginsApi = vi.hoisted(() => ({
@@ -118,11 +119,18 @@ function folderStatus(overrides: Record<string, unknown> = {}) {
   };
 }
 
-async function renderSettings(container: HTMLDivElement) {
+async function renderSettings(
+  container: HTMLDivElement,
+  experimentalSettings: Record<string, unknown> = {},
+) {
   const root = createRoot(container);
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
+  // The local-folders section is a host-path surface, so it stays hidden until
+  // the managed-sandbox-only policy is known. Seed the policy as off; the tests
+  // below are about folder rendering, not about the gate.
+  queryClient.setQueryData(queryKeys.instance.experimentalSettings, experimentalSettings);
 
   await act(async () => {
     root.render(
@@ -165,7 +173,7 @@ describe("PluginSettings", () => {
     const root = await renderSettings(container);
 
     expect(container.textContent).toContain("Configure this plugin from Settings → Environments.");
-    expect(container.textContent).toContain("secret bindings still resolve through the selected company context");
+    expect(container.textContent).toContain("secret bindings still resolve through the selected organization context");
     const link = container.querySelector('a[href="/company/settings/instance/environments"]');
     expect(link?.textContent).toContain("Open Environments");
 
@@ -204,6 +212,39 @@ describe("PluginSettings", () => {
     expect(container.textContent).toContain("No local folder path is configured.");
     expect(container.textContent).toContain("Missing directories: raw, wiki");
     expect(container.textContent).toContain("Missing files: WIKI.md, index.md");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("hides local folders when the instance runs agents only in the platform-managed environment", async () => {
+    const declaration = wikiFolderDeclaration();
+    mockPluginsApi.get.mockResolvedValue(basePlugin({
+      pluginKey: "paperclipai.plugin-llm-wiki",
+      packageName: "@paperclipai/plugin-llm-wiki",
+      status: "ready",
+      manifestJson: {
+        displayName: "LLM Wiki",
+        version: "0.1.0",
+        description: "Local-file LLM Wiki plugin.",
+        author: "Paperclip",
+        capabilities: ["local.folders"],
+        localFolders: [declaration],
+      },
+    }));
+    mockPluginsApi.listLocalFolders.mockResolvedValue({
+      pluginId: "plugin-1",
+      companyId: "company-1",
+      declarations: [declaration],
+      folders: [folderStatus()],
+    });
+
+    const root = await renderSettings(container, { enableManagedSandboxOnly: true });
+
+    // The platform-managed environment owns the filesystem, so the whole
+    // section disappears rather than showing paths nobody can act on.
+    expect(container.textContent).not.toContain("Local folders");
 
     await act(async () => {
       root.unmount();

@@ -161,8 +161,12 @@ describe("InteractionGovernancePanel", () => {
 
   it("renders a select for every interaction kind", () => {
     const { host } = renderPanel();
-    expect(host.querySelectorAll('[data-testid$="-default"]')).toHaveLength(5);
-    expect(host.querySelectorAll('[data-testid$="-cap"]')).toHaveLength(5);
+    expect(host.querySelectorAll('[data-testid$="-default"]')).toHaveLength(
+      INTERACTION_KINDS.length,
+    );
+    expect(host.querySelectorAll('[data-testid$="-cap"]')).toHaveLength(
+      INTERACTION_KINDS.length,
+    );
   });
 
   it("surfaces a save failure", () => {

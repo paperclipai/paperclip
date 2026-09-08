@@ -629,6 +629,39 @@ describe("claude CLI local hello probe hardening", () => {
     expect(JSON.stringify(spawnedEnv)).not.toContain("caller-proxy");
   });
 
+  it("warns without executing when runtime PATH selects a different local Claude executable", async () => {
+    const runtimeDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-cli-runtime-path-"));
+    const runtimeClaudePath = path.join(runtimeDir, "claude");
+    await writeFile(runtimeClaudePath, "#!/bin/sh\nexit 0\n");
+    await chmod(runtimeClaudePath, 0o755);
+
+    try {
+      probeResult.value = { exitCode: 0, stdout: "2.1.251 (Claude Code)\n", stderr: "" };
+
+      const result = await testEnvironment({
+        companyId: "company-1",
+        adapterType: "claude_local",
+        config: {
+          engine: "cli",
+          command: "claude",
+          model: "claude-fable-5-1",
+          env: { PATH: runtimeDir },
+        },
+        executionTarget: null,
+        environmentName: null,
+      });
+
+      expect(result.status).toBe("warn");
+      expect(result.checks).toContainEqual(expect.objectContaining({
+        code: "claude_cli_version_probe_mismatch",
+        level: "warn",
+      }));
+      expect(runAdapterExecutionTargetProcess).not.toHaveBeenCalled();
+    } finally {
+      await rm(runtimeDir, { recursive: true, force: true });
+    }
+  });
+
   it("names the local host target on every result", async () => {
     probeResult.value = { exitCode: 0, stdout: successStdout, stderr: "" };
 

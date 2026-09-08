@@ -9,6 +9,7 @@ import {
   workspaceGitSchedulerOptionsFromEnv,
   type WorkspaceGitRunner,
 } from "./workspace-git-operation-scheduler.js";
+import { WORKSPACE_GIT_SCAN_SATURATED_CODE } from "@paperclipai/adapter-utils/git-workspace-sync";
 
 const tempPaths: string[] = [];
 
@@ -427,5 +428,15 @@ describe("WorkspaceGitOperationScheduler", () => {
 
     expect({ calls, peakActive }).toEqual({ calls: 2, peakActive: 2 });
     expect(scheduler.snapshot()).toMatchObject({ activeCount: 0, queuedCount: 0, inFlightCount: 0 });
+  });
+});
+
+describe("WORKSPACE_GIT_SCAN_SATURATED_CODE parity", () => {
+  it("stays equal to WORKSPACE_GIT_SCAN_ERROR_CODES.saturated", () => {
+    // `adapter-utils` cannot import this module (the reverse direction is
+    // allowed, not this one), so `resolveReferencedSourceIgnore` declares its
+    // own copy of the saturation code to key its retry off. This test is the
+    // one place both literals meet, so the two copies cannot drift apart.
+    expect(WORKSPACE_GIT_SCAN_SATURATED_CODE).toBe(WORKSPACE_GIT_SCAN_ERROR_CODES.saturated);
   });
 });

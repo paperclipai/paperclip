@@ -105,7 +105,6 @@ describe("InviteLandingPage", () => {
       companyId: "company-1",
       companyName: "Acme Robotics",
       companyLogoUrl: "/api/invites/pcp_invite_test/logo",
-      companyBrandColor: "#114488",
       inviteType: "company_join",
       allowedJoinTypes: "both",
       humanRole: "operator",
@@ -128,6 +127,50 @@ describe("InviteLandingPage", () => {
     container.remove();
     document.body.innerHTML = "";
     vi.clearAllMocks();
+  });
+
+  it("keeps agent-invite onboarding on legacy adapters", async () => {
+    getInviteMock.mockResolvedValue({
+      id: "invite-1",
+      companyId: "company-1",
+      companyName: "Acme Robotics",
+      companyLogoUrl: null,
+      inviteType: "company_join",
+      allowedJoinTypes: "agent",
+      humanRole: null,
+      expiresAt: "2027-03-07T00:10:00.000Z",
+      inviteMessage: null,
+    });
+
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <MemoryRouter initialEntries={["/invite/pcp_invite_test"]}>
+          <QueryClientProvider client={queryClient}>
+            <Routes>
+              <Route path="/invite/:token" element={<InviteLandingPage />} />
+            </Routes>
+          </QueryClientProvider>
+        </MemoryRouter>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    const adapterSelect = Array.from(container.querySelectorAll("select")).find((select) =>
+      Array.from(select.options).some((option) => option.value === "claude_local"),
+    );
+    expect(adapterSelect).toBeTruthy();
+    expect(Array.from(adapterSelect!.options).map((option) => option.value))
+      .not.toContain("paperclip_runner");
+
+    await act(async () => {
+      root.unmount();
+    });
   });
 
   it("defaults invite auth to account creation and guides existing users back to sign in", async () => {
@@ -547,7 +590,7 @@ describe("InviteLandingPage", () => {
 
     expect(acceptInviteMock).toHaveBeenCalledWith("pcp_invite_test", { requestType: "human" });
     expect(container.textContent).toContain("Request to join Acme Robotics");
-    expect(container.textContent).toContain("A company admin must approve your request to join.");
+    expect(container.textContent).toContain("An organization admin must approve your request to join.");
     expect(container.textContent).toContain(
       "Ask them to visit Settings → Members to approve your request.",
     );
@@ -578,7 +621,6 @@ describe("InviteLandingPage", () => {
       companyId: "company-1",
       companyName: "Acme Robotics",
       companyLogoUrl: "/api/invites/pcp_invite_test/logo",
-      companyBrandColor: "#114488",
       inviteType: "company_join",
       allowedJoinTypes: "both",
       humanRole: "operator",
@@ -645,7 +687,6 @@ describe("InviteLandingPage", () => {
       companyId: "company-1",
       companyName: "Acme Robotics",
       companyLogoUrl: "/api/invites/pcp_invite_test/logo",
-      companyBrandColor: "#114488",
       inviteType: "company_join",
       allowedJoinTypes: "human",
       humanRole: "operator",
@@ -918,7 +959,7 @@ describe("InviteLandingPage", () => {
       await flushReact();
 
       expect(listCompaniesMock).toHaveBeenCalled();
-      expect(container.textContent).not.toContain("Already in this company");
+      expect(container.textContent).not.toContain("Already in this organization");
       expect(acceptInviteMock).toHaveBeenCalledWith("pcp_invite_test", { requestType: "human" });
       expect(container.textContent).toContain("Request to join Acme Robotics");
 
@@ -983,7 +1024,7 @@ describe("InviteLandingPage", () => {
       await flushReact();
       await flushReact();
 
-      expect(container.textContent).toContain("Already in this company");
+      expect(container.textContent).toContain("Already in this organization");
       expect(acceptInviteMock).not.toHaveBeenCalled();
 
       await act(async () => {
@@ -1024,12 +1065,12 @@ describe("InviteLandingPage", () => {
     await flushReact();
 
     expect(container.textContent).toContain("Join Acme Robotics");
-    expect(container.textContent).toContain("Already in this company");
+    expect(container.textContent).toContain("Already in this organization");
     expect(container.textContent).toContain("This account already belongs to Acme Robotics.");
     expect(acceptInviteMock).not.toHaveBeenCalled();
 
     const openButton = Array.from(container.querySelectorAll("button")).find(
-      (button) => button.textContent === "Open company",
+      (button) => button.textContent === "Open organization",
     );
     expect(openButton).not.toBeNull();
 
@@ -1173,7 +1214,7 @@ describe("InviteLandingPage", () => {
     await flushReact();
 
     expect(container.textContent).toContain("Checking your access...");
-    expect(container.textContent).not.toContain("Accept company invite");
+    expect(container.textContent).not.toContain("Accept organization invite");
     expect(acceptInviteMock).not.toHaveBeenCalled();
 
     await act(async () => {

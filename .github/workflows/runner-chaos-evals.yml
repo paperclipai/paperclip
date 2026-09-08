@@ -1,0 +1,83 @@
+name: Runner Chaos Evals
+
+on:
+  schedule:
+    - cron: "43 7 * * 0"
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      ref:
+        description: Commit SHA, branch, or tag to verify before release
+        required: false
+        type: string
+
+concurrency:
+  group: runner-chaos-evals-${{ inputs.ref || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  chaos_and_recovery:
+    name: Restart, replay, trace, and recovery faults
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        with:
+          version: 9.15.4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build eval and Runner contracts
+        run: |
+          pnpm --filter @paperclipai/paperclip-eval-kernel build
+          pnpm --filter @paperclipai/paperclip-runner report:runner-chaos-evals
+
+      - name: Run Runner fault and replay suites
+        run: |
+          pnpm --filter @paperclipai/paperclip-runner exec vitest run \
+            src/eval/workflow-evals.test.ts \
+            src/native-session-runtime.test.ts \
+            src/live/live-session.test.ts \
+            src/live/turn-stream.test.ts \
+            src/protocol/replay-contract.test.ts \
+            src/drivers/opencode/mcp-bridge.test.ts \
+            src/drivers/acpx/runtime-host.test.ts
+
+      - name: Build server test dependencies
+        run: pnpm --filter @paperclipai/plugin-sdk ensure-build-deps
+
+      - name: Run server finalization and recovery suites
+        run: |
+          pnpm --filter @paperclipai/server exec vitest run \
+            src/__tests__/native-finalization-recovery.test.ts \
+            src/__tests__/heartbeat-process-recovery.test.ts \
+            src/__tests__/heartbeat-comment-wake-batching.test.ts \
+            src/__tests__/heartbeat-dependency-scheduling.test.ts \
+            src/__tests__/provider-trace-store.test.ts \
+            src/services/issue-thread-interaction-resolution.test.ts \
+            src/services/recovery/successful-run-handoff.test.ts
+
+      - name: Upload chaos eval bundle
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: runner-chaos-evals-${{ github.run_id }}
+          path: packages/paperclip-runner/.paperclip-local/evals/workflows/
+          retention-days: 30
+          if-no-files-found: error

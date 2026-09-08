@@ -11,10 +11,13 @@ import { PasteConfigTab } from "./PasteConfigTab";
 const toolsApiMock = vi.hoisted(() => ({
   importMcpJson: vi.fn(),
   connectApp: vi.fn(),
+  startOAuth: vi.fn(),
   finishApp: vi.fn(),
 }));
 const mockNavigate = vi.hoisted(() => vi.fn());
+const navigateTopLevelMock = vi.hoisted(() => vi.fn());
 vi.mock("@/api/tools", () => ({ toolsApi: toolsApiMock }));
+vi.mock("@/lib/browserNavigation", () => ({ navigateTopLevel: navigateTopLevelMock }));
 // The tab uses `useNavigate` from the app router (PAP-11088 draft hand-off),
 // which needs CompanyProvider; stub it so the copy hint renders in isolation.
 vi.mock("@/lib/router", () => ({ useNavigate: () => mockNavigate }));
@@ -87,6 +90,8 @@ function connectResult(overrides: Partial<ConnectToolAppResult> = {}): ConnectTo
       ownership: "customer",
       transport: "mcp_remote",
       authKind: "none",
+      credentialSource: "paperclip_vault",
+      credentialPolicy: "shared",
       status: "draft",
       enabled: false,
       config: { url: "http://127.0.0.1:8848/mcp" },
@@ -119,8 +124,49 @@ function connectResult(overrides: Partial<ConnectToolAppResult> = {}): ConnectTo
       }],
       canMakeChanges: [],
     },
-    suggestedDefaults: { access: "all_agents", askFirstRiskLevels: ["write", "destructive"] },
+    suggestedDefaults: { access: "all_agents", askFirstRiskLevels: [] },
     ...overrides,
+  };
+}
+
+const NOTION_CONFIG = '{ "mcpServers": { "notion": { "url": "https://mcp.notion.com/mcp" } } }';
+
+const NOTION_PREVIEW: McpJsonImportPreview = {
+  drafts: [{
+    name: "notion",
+    transport: "mcp_remote",
+    status: "draft",
+    config: { url: "https://mcp.notion.com/mcp" },
+    credentialRefs: [],
+    credentialFields: [],
+    warnings: [],
+  }],
+};
+
+function oauthConnectResult(startUrl: string | null = null): ConnectToolAppResult {
+  const base = connectResult();
+  return {
+    ...base,
+    application: {
+      ...base.application,
+      applicationKey: "app-gallery:link:notion-generic-test",
+      name: "notion",
+      metadata: { source: "link" },
+    },
+    connection: {
+      ...base.connection,
+      authKind: "oauth",
+      config: { url: "https://mcp.notion.com/mcp", unverifiedServer: true },
+      transportConfig: { url: "https://mcp.notion.com/mcp", unverifiedServer: true },
+    },
+    catalog: [],
+    actions: { readOnly: [], canMakeChanges: [] },
+    auth: {
+      kind: "oauth",
+      startUrl,
+      resource: "https://mcp.notion.com/mcp",
+      registrationSource: "cimd",
+    },
   };
 }
 
@@ -135,6 +181,7 @@ describe("PasteConfigTab — discoverability copy (PAP-11091)", () => {
   afterEach(() => {
     document.body.removeChild(container);
     document.body.innerHTML = "";
+    vi.restoreAllMocks();
     vi.clearAllMocks();
   });
 
@@ -176,6 +223,7 @@ describe("PasteConfigTab — activation handoff (PAP-11092)", () => {
   afterEach(() => {
     document.body.removeChild(container);
     document.body.innerHTML = "";
+    vi.restoreAllMocks();
     vi.clearAllMocks();
   });
 
@@ -246,6 +294,42 @@ describe("PasteConfigTab — activation handoff (PAP-11092)", () => {
     expect(container.textContent).not.toContain("Next, you'll add the keys");
   });
 
+  it("activates imported write actions as allowed by default", async () => {
+    await pasteAndCheck(NOTION_PREVIEW, NOTION_CONFIG);
+    const result = connectResult();
+    result.actions.canMakeChanges = [{
+      catalogEntryId: "cat-write",
+      toolName: "create_page",
+      title: "Create page",
+      description: "Create a page.",
+      riskLevel: "write",
+      isReadOnly: false,
+      isWrite: true,
+      isDestructive: false,
+      status: "active",
+    }];
+    toolsApiMock.connectApp.mockResolvedValue(result);
+    toolsApiMock.finishApp.mockResolvedValue({ connection: result.connection });
+
+    await act(async () => {
+      buttonStartingWith("Check actions")!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    const activateButton = buttonStartingWith("Activate 2 of 2");
+    expect(activateButton).toBeTruthy();
+    await act(async () => {
+      activateButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(toolsApiMock.finishApp).toHaveBeenCalledWith("company-1", "conn-1", {
+      enabledCatalogEntryIds: ["cat-read", "cat-write"],
+      askFirstCatalogEntryIds: [],
+      access: "all_agents",
+    });
+  });
+
   it("collects imported headers as secret replacement fields before checking actions", async () => {
     await pasteAndCheck(
       {
@@ -291,6 +375,138 @@ describe("PasteConfigTab — activation handoff (PAP-11092)", () => {
       name: "secure-demo",
       credentialValues: { "headers.Authorization": "Bearer new" },
     });
+  });
+
+  it("starts OAuth for the original generic connection instead of rendering an empty catalog", async () => {
+    await pasteAndCheck(NOTION_PREVIEW, NOTION_CONFIG);
+    const nameInput = container.querySelector('input[placeholder="notion"]') as HTMLInputElement;
+    await act(async () => setInputValue(nameInput, "Notion generic self-test 2026-08-17T20:00:00Z"));
+    await flushReact();
+    toolsApiMock.connectApp.mockResolvedValue(oauthConnectResult());
+    toolsApiMock.startOAuth.mockResolvedValue({
+      connectionId: "conn-1",
+      provider: "mcp.notion.com",
+      authorizationUrl: "https://mcp.notion.com/authorize?state=redacted",
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      registrationSource: "cimd",
+    });
+
+    await act(async () => {
+      buttonStartingWith("Check actions")!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+    await flushReact();
+
+    expect(toolsApiMock.connectApp).toHaveBeenCalledTimes(1);
+    expect(toolsApiMock.connectApp).toHaveBeenCalledWith("company-1", {
+      link: "https://mcp.notion.com/mcp",
+      name: "Notion generic self-test 2026-08-17T20:00:00Z",
+      credentialValues: {},
+    });
+    expect(toolsApiMock.startOAuth).toHaveBeenCalledWith("conn-1");
+    expect(navigateTopLevelMock).toHaveBeenCalledWith(
+      "https://mcp.notion.com/authorize?state=redacted",
+    );
+    expect(container.textContent).toContain("Unverified server");
+    expect(container.textContent).toContain("mcp.notion.com");
+    expect(container.textContent).not.toContain("Review actions for notion");
+  });
+
+  it("uses the background Cloud handoff returned with an imported OAuth connection", async () => {
+    const session = "imported_background_session_1234";
+    const request = vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json({
+      authorizationUrl: "https://provider.example.test/authorize?state=imported",
+    }));
+    await pasteAndCheck(NOTION_PREVIEW, NOTION_CONFIG);
+    const result = oauthConnectResult("https://my.paperclip.app/connections/confirm?session=legacy");
+    result.auth = {
+      ...result.auth!,
+      handoff: { kind: "paperclip_cloud", session },
+    };
+    toolsApiMock.connectApp.mockResolvedValue(result);
+
+    await act(async () => {
+      buttonStartingWith("Check actions")!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+    await flushReact();
+
+    expect(request).toHaveBeenCalledWith("/cloud/connections/handoff", expect.objectContaining({
+      method: "POST",
+      body: JSON.stringify({ session }),
+    }));
+    await vi.waitFor(() => {
+      expect(navigateTopLevelMock).toHaveBeenCalledWith(
+        "https://provider.example.test/authorize?state=imported",
+      );
+    });
+    expect(navigateTopLevelMock).not.toHaveBeenCalledWith(expect.stringContaining("/connections/confirm"));
+  });
+
+  it("rejects an unsafe start URL and retries OAuth on the same connection", async () => {
+    await pasteAndCheck(NOTION_PREVIEW, NOTION_CONFIG);
+    toolsApiMock.connectApp.mockResolvedValue(oauthConnectResult("javascript:alert(1)"));
+
+    await act(async () => {
+      buttonStartingWith("Check actions")!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(navigateTopLevelMock).not.toHaveBeenCalled();
+    expect(container.textContent).toContain("couldn’t connect");
+    expect(container.textContent).not.toContain("javascript:alert(1)");
+
+    toolsApiMock.startOAuth.mockResolvedValue({
+      connectionId: "conn-1",
+      provider: "mcp.notion.com",
+      authorizationUrl: "https://mcp.notion.com/authorize?state=retry-redacted",
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      registrationSource: "cimd",
+    });
+    await act(async () => {
+      buttonStartingWith("Try again")!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+    await flushReact();
+
+    expect(toolsApiMock.connectApp).toHaveBeenCalledTimes(1);
+    expect(toolsApiMock.startOAuth).toHaveBeenCalledTimes(1);
+    expect(toolsApiMock.startOAuth).toHaveBeenCalledWith("conn-1");
+    expect(navigateTopLevelMock).toHaveBeenCalledWith(
+      "https://mcp.notion.com/authorize?state=retry-redacted",
+    );
+  });
+
+  it("backs up to the original connection setup route without creating another draft", async () => {
+    await pasteAndCheck(NOTION_PREVIEW, NOTION_CONFIG);
+    toolsApiMock.connectApp.mockResolvedValue(oauthConnectResult("javascript:alert(1)"));
+
+    await act(async () => {
+      buttonStartingWith("Check actions")!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+    await act(async () => {
+      buttonStartingWith("Back")!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(mockNavigate).toHaveBeenCalledWith("/apps/conn-1/permissions");
+    expect(toolsApiMock.connectApp).toHaveBeenCalledTimes(1);
+    expect(toolsApiMock.startOAuth).not.toHaveBeenCalled();
+  });
+
+  it("cancels the OAuth checkpoint to the apps page", async () => {
+    await pasteAndCheck(NOTION_PREVIEW, NOTION_CONFIG);
+    toolsApiMock.connectApp.mockResolvedValue(oauthConnectResult("javascript:alert(1)"));
+
+    await act(async () => {
+      buttonStartingWith("Check actions")!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+    await act(async () => {
+      buttonStartingWith("Cancel")!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(mockNavigate).toHaveBeenCalledWith("/apps");
   });
 
   it("does not offer Continue for a stdio draft (draft-only, no link to hand off)", async () => {

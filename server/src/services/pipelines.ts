@@ -50,7 +50,7 @@ import { logActivity } from "./activity-log.js";
 import { assertAssignableAgent } from "./agent-assignability.js";
 import { authorizationService } from "./authorization.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
-import { finalizeSummarySlotsForTerminalIssue } from "./summary-slot-finalization.js";
+import type { IssuePostCommitAction } from "./issues.js";
 import {
   formatPipelineCaseOutputContextMarkdown,
   pipelineCaseOutputsService,
@@ -4503,6 +4503,9 @@ export function pipelineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeu
       cleanup: PipelineAutomationRetryCleanupOptions;
       actor: PipelineActor;
     }) {
+      const postCommitIssueActions: IssuePostCommitAction[] = [];
+      const { executeIssuePostCommitActions, issueService } = await import("./issues.js");
+      const issueSvc = issueService(db);
       const result = await db.transaction(async (tx) => {
         const detail = await getCaseWithStageForUpdateOrThrow(tx, input.companyId, input.caseId);
         if (detail.case.version !== input.expectedVersion) {
@@ -4613,26 +4616,26 @@ export function pipelineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeu
           ? effects.linkedAutomationIssueIds
           : [];
         if (issueIdsToCancel.length > 0) {
-          const cancelledIssues = await tx
-            .update(issues)
-            .set({ status: "cancelled", updatedAt: now })
+          const cancellableIssues = await tx
+            .select({ id: issues.id })
+            .from(issues)
             .where(and(
               eq(issues.companyId, input.companyId),
               inArray(issues.id, issueIdsToCancel),
               ne(issues.status, "done"),
-            ))
-            .returning({
-              id: issues.id,
-              companyId: issues.companyId,
-              identifier: issues.identifier,
-              title: issues.title,
-              status: issues.status,
-            });
-          for (const issue of cancelledIssues) {
-            await finalizeSummarySlotsForTerminalIssue(tx, {
-              ...issue,
-              status: "cancelled",
-            });
+            ));
+          for (const issue of cancellableIssues) {
+            await issueSvc.update(
+              issue.id,
+              {
+                status: "cancelled",
+                actorAgentId: input.actor.type === "agent" ? input.actor.agentId : null,
+                actorUserId: input.actor.type === "user" ? input.actor.userId : null,
+              },
+              tx,
+              undefined,
+              postCommitIssueActions,
+            );
           }
           await tx
             .update(pipelineCaseIssueLinks)
@@ -4717,6 +4720,7 @@ export function pipelineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeu
           },
         };
       });
+      await executeIssuePostCommitActions(db, postCommitIssueActions);
       const automationExecution = await executeAutomationLedger(result.ledger.id, input.actor);
       const { targetStageRow: _targetStageRow, automationRoutineId: _automationRoutineId, ...plan } = result.plan;
       return {

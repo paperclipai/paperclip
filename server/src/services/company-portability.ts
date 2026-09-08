@@ -70,13 +70,13 @@ import {
 } from "@paperclipai/adapter-utils/server-utils";
 import { requireOpenCodeModelId } from "@paperclipai/adapter-opencode-local/server";
 import { findServerAdapter } from "../adapters/index.js";
-import { normalizeIssueAttachmentMaxBytes } from "../attachment-types.js";
+import { formatAttachmentSize, MAX_ATTACHMENT_BYTES } from "../attachment-types.js";
 import { forbidden, notFound, unprocessable } from "../errors.js";
 import { ghFetch, gitHubApiBase, resolveRawGitHubUrl } from "./github-fetch.js";
 import type { StorageService } from "../storage/types.js";
 import { accessService } from "./access.js";
 import { agentService } from "./agents.js";
-import { agentInstructionsService } from "./agent-instructions.js";
+import { agentInstructionsBundleMode, agentInstructionsService } from "./agent-instructions.js";
 import { assetService } from "./assets.js";
 import { generateReadme } from "./company-export-readme.js";
 import { renderOrgChartPng, type OrgNode } from "../routes/org-chart-svg.js";
@@ -96,7 +96,7 @@ import {
   readCatalogStringList,
   readPortableCatalogProvenance,
 } from "./catalog-provenance.js";
-import { readBuiltInAgentMarker } from "./built-in-agent-metadata.js";
+import { resolvePortableExportAgentSelection } from "./company-portability-agent-selection.js";
 import { normalizePortablePath } from "./portable-path.js";
 import type {
   ImportIssueRow,
@@ -105,6 +105,12 @@ import type {
   ImportIssueWorkProductRow,
   ImportIssueAttachmentRow,
 } from "./import-write-types.js";
+import {
+  PaperclipRunnerProviderProfileError,
+  resolvePaperclipRunnerProviderProfile,
+} from "./native-runtime/provider-profile.js";
+import { managedAgentProfileService } from "./managed-agent-profiles.js";
+import { remoteAgentProfileService } from "./remote-agent-profiles.js";
 
 const EXPORT_READ_CONCURRENCY = 8;
 const EXPORT_ISSUE_READ_CONCURRENCY = 2;
@@ -549,6 +555,9 @@ function buildSkillExportDirMap(skills: CompanySkill[], companyIssuePrefix: stri
 function isSensitiveEnvKey(key: string) {
   const normalized = key.trim().toLowerCase();
   return (
+    normalized === "key" ||
+    normalized.endsWith("_key") ||
+    normalized.endsWith("-key") ||
     normalized === "token" ||
     normalized.endsWith("_token") ||
     normalized.endsWith("-token") ||
@@ -1304,15 +1313,33 @@ function parseFiniteNumberLike(value: unknown): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
-function disableImportedTimerHeartbeat(runtimeConfig: unknown) {
+function sanitizeImportedAgentRuntimeConfig(runtimeConfig: unknown) {
   const next = clonePortableRecord(runtimeConfig) ?? {};
+  delete next.modelProfiles;
   const heartbeat = isPlainRecord(next.heartbeat) ? { ...next.heartbeat } : {};
   heartbeat.enabled = false;
   if (parseFiniteNumberLike(heartbeat.maxConcurrentRuns) == null) {
     heartbeat.maxConcurrentRuns = AGENT_DEFAULT_MAX_CONCURRENT_RUNS;
   }
   next.heartbeat = heartbeat;
+  if (isPlainRecord(next.debug)) {
+    const debug = { ...next.debug };
+    // Company imports are available below the instance-admin trust boundary.
+    // Never let a portable bundle enable persistent capture of raw provider
+    // traffic; an administrator can opt in afterward through the guarded
+    // agent configuration route.
+    delete debug.providerTrace;
+    if (Object.keys(debug).length === 0) delete next.debug;
+    else next.debug = debug;
+  }
   return next;
+}
+
+function sanitizeImportedIssueAssigneeAdapterOverrides(value: unknown) {
+  const next = clonePortableRecord(value);
+  if (!next) return null;
+  delete next.modelProfile;
+  return Object.keys(next).length > 0 ? next : null;
 }
 
 function normalizePortableProjectWorkspaceExtension(
@@ -2394,7 +2421,6 @@ const YAML_KEY_PRIORITY = [
   "role",
   "icon",
   "capabilities",
-  "brandColor",
   "logoPath",
   "adapter",
   "runtime",
@@ -3149,12 +3175,7 @@ function buildManifestFromPackageFiles(
       path: resolvedCompanyPath,
       name: companyName,
       description: asString(companyFrontmatter.description),
-      brandColor: asString(paperclipCompany.brandColor),
       logoPath: asString(paperclipCompany.logoPath) ?? asString(paperclipCompany.logo),
-      attachmentMaxBytes:
-        typeof paperclipCompany.attachmentMaxBytes === "number" && Number.isFinite(paperclipCompany.attachmentMaxBytes)
-          ? Math.max(1, Math.floor(paperclipCompany.attachmentMaxBytes))
-          : null,
       requireBoardApprovalForNewAgents:
         typeof paperclipCompany.requireBoardApprovalForNewAgents === "boolean"
           ? paperclipCompany.requireBoardApprovalForNewAgents
@@ -3569,9 +3590,34 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
   }
 
   async function assertImportAdapterConfigConstraints(
+    companyId: string,
     adapterType: string,
     adapterConfig: Record<string, unknown>,
   ) {
+    if (adapterType === "paperclip_runner") {
+      let profile;
+      try {
+        profile = resolvePaperclipRunnerProviderProfile(adapterConfig);
+      } catch (error) {
+        if (error instanceof PaperclipRunnerProviderProfileError) {
+          throw unprocessable(error.message, { code: error.code });
+        }
+        throw error;
+      }
+      if (profile.provider === "claude_managed") {
+        await managedAgentProfileService(db).requireQualified(
+          companyId,
+          profile.managedProfileId,
+        );
+      } else if (profile.provider === "aws_agentcore") {
+        await remoteAgentProfileService(db).requireQualified(
+          companyId,
+          profile.agentCoreProfileId,
+          "aws_bedrock_agentcore_harness",
+        );
+      }
+      return;
+    }
     if (adapterType !== "opencode_local") return;
     try {
       requireOpenCodeModelId(adapterConfig.model);
@@ -3607,7 +3653,11 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       nextAdapterConfig,
       { strictMode: strictSecretsMode, adapterType: effectiveAdapterType },
     );
-    await assertImportAdapterConfigConstraints(effectiveAdapterType, normalizedAdapterConfig);
+    await assertImportAdapterConfigConstraints(
+      companyId,
+      effectiveAdapterType,
+      normalizedAdapterConfig,
+    );
     return {
       adapterType: effectiveAdapterType,
       adapterConfig: normalizedAdapterConfig,
@@ -3787,7 +3837,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
   async function exportBundle(
     companyId: string,
     input: CompanyPortabilityExport,
-    options: { preview?: boolean } = {},
+    options: { preview?: boolean; allowExternalInstructions?: boolean } = {},
   ): Promise<CompanyPortabilityExportResult> {
     const include = normalizeInclude({
       ...input.include,
@@ -3830,67 +3880,16 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     );
 
     const allAgentRows = include.agents ? await agents.list(companyId, { includeTerminated: true }) : [];
-    const liveAgentRows = allAgentRows.filter((agent) => agent.status !== "terminated");
-    const builtInAgentRows = liveAgentRows.filter((agent) => readBuiltInAgentMarker(agent.metadata));
-    const portableAgentRows = liveAgentRows.filter((agent) => !readBuiltInAgentMarker(agent.metadata));
+    const agentSelection = resolvePortableExportAgentSelection(allAgentRows, input.agents, include.agents);
     const companySkillRowsRaw = include.skills ? await companySkills.listFull(companyId) : [];
     const managedSkillRows = companySkillRowsRaw.filter((skill) => managedSkillIds.has(skill.id));
     const companySkillRows = companySkillRowsRaw.filter((skill) => !managedSkillIds.has(skill.id));
-    if (include.agents) {
-      const skipped = allAgentRows.length - liveAgentRows.length;
-      if (skipped > 0) {
-        warnings.push(`Skipped ${skipped} terminated agent${skipped === 1 ? "" : "s"} from export.`);
-      }
-      if (builtInAgentRows.length > 0) {
-        warnings.push(`Skipped ${builtInAgentRows.length} built-in managed agent${builtInAgentRows.length === 1 ? "" : "s"} from export.`);
-      }
-    }
+    warnings.push(...agentSelection.warnings);
     if (include.skills && managedSkillRows.length > 0) {
       warnings.push(`Skipped ${managedSkillRows.length} built-in managed skill${managedSkillRows.length === 1 ? "" : "s"} from export.`);
     }
 
-    const agentByReference = new Map<string, typeof liveAgentRows[number]>();
-    const builtInAgentByReference = new Map<string, typeof liveAgentRows[number]>();
-    const addAgentReferences = (map: Map<string, typeof liveAgentRows[number]>, agent: typeof liveAgentRows[number]) => {
-      map.set(agent.id, agent);
-      map.set(agent.name, agent);
-      const normalizedName = normalizeAgentUrlKey(agent.name);
-      if (normalizedName) {
-        map.set(normalizedName, agent);
-      }
-    };
-    for (const agent of portableAgentRows) {
-      addAgentReferences(agentByReference, agent);
-    }
-    for (const agent of builtInAgentRows) {
-      addAgentReferences(builtInAgentByReference, agent);
-    }
-
-    const selectedAgents = new Map<string, typeof liveAgentRows[number]>();
-    for (const selector of input.agents ?? []) {
-      const trimmed = selector.trim();
-      if (!trimmed) continue;
-      const normalized = normalizeAgentUrlKey(trimmed) ?? trimmed;
-      const match = agentByReference.get(trimmed) ?? agentByReference.get(normalized);
-      if (!match) {
-        const builtInMatch = builtInAgentByReference.get(trimmed) ?? builtInAgentByReference.get(normalized);
-        if (builtInMatch) {
-          warnings.push(`Agent selector "${selector}" is a built-in managed agent and was skipped.`);
-          continue;
-        }
-        warnings.push(`Agent selector "${selector}" was not found and was skipped.`);
-        continue;
-      }
-      selectedAgents.set(match.id, match);
-    }
-
-    if (include.agents && selectedAgents.size === 0) {
-      for (const agent of portableAgentRows) {
-        selectedAgents.set(agent.id, agent);
-      }
-    }
-
-    const agentRows = Array.from(selectedAgents.values())
+    const agentRows = agentSelection.agents
       .sort((left, right) => left.name.localeCompare(right.name));
 
     const usedSlugs = new Set<string>();
@@ -4071,7 +4070,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       projectSlugById.set(project.id, uniqueSlug(baseSlug, usedProjectSlugs));
     }
     const sidebarOrder = requestedSidebarOrder ?? stripEmptyValues({
-      agents: sortAgentsBySidebarOrder(Array.from(selectedAgents.values()))
+      agents: sortAgentsBySidebarOrder(agentSelection.agents)
         .map((agent) => idToSlug.get(agent.id))
         .filter((slug): slug is string => Boolean(slug)),
       projects: selectedProjectRows
@@ -4180,6 +4179,12 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     }
 
     if (include.agents) {
+      if (
+        !options.allowExternalInstructions
+        && agentRows.some((agent) => agentInstructionsBundleMode(agent) === "external")
+      ) {
+        throw forbidden("Instance admin access is required to export external instruction bundles");
+      }
       const agentInstructionsById = new Map(
         await mapWithConcurrency(agentRows, EXPORT_READ_CONCURRENCY, async (agent) => (
           [agent.id, await instructions.exportFiles(agent)] as const
@@ -4688,9 +4693,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         schema: "paperclip/v1",
         schemaVersion: BUNDLE_SCHEMA_VERSION,
         company: stripEmptyValues({
-          brandColor: company.brandColor ?? null,
           logoPath: companyLogoPath,
-          attachmentMaxBytes: company.attachmentMaxBytes,
           requireBoardApprovalForNewAgents: company.requireBoardApprovalForNewAgents ? true : undefined,
           feedbackDataSharingEnabled: company.feedbackDataSharingEnabled ? true : undefined,
           feedbackDataSharingConsentAt: company.feedbackDataSharingConsentAt?.toISOString() ?? null,
@@ -4772,6 +4775,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
   async function previewExport(
     companyId: string,
     input: CompanyPortabilityExport,
+    options: { allowExternalInstructions?: boolean } = {},
   ): Promise<CompanyPortabilityExportPreviewResult> {
     const previewInput: CompanyPortabilityExport = {
       ...input,
@@ -4786,7 +4790,10 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     if (previewInput.include && previewInput.include.issues === undefined) {
       previewInput.include.issues = false;
     }
-    const exported = await exportBundle(companyId, previewInput, { preview: true });
+    const exported = await exportBundle(companyId, previewInput, {
+      preview: true,
+      allowExternalInstructions: options.allowExternalInstructions,
+    });
     return {
       ...exported,
       fileInventory: Object.keys(exported.files)
@@ -5269,7 +5276,6 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       id: string;
       name: string;
       requireBoardApprovalForNewAgents?: boolean | null;
-      attachmentMaxBytes?: number | null;
     } | null = null;
     let companyAction: "created" | "updated" | "unchanged" = "unchanged";
 
@@ -5301,10 +5307,6 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       const created = await companies.create({
         name: companyName,
         description: include.company ? (sourceManifest.company?.description ?? null) : null,
-        brandColor: include.company ? (sourceManifest.company?.brandColor ?? null) : null,
-        attachmentMaxBytes: include.company
-          ? (sourceManifest.company?.attachmentMaxBytes ?? undefined)
-          : undefined,
         requireBoardApprovalForNewAgents: include.company
           ? (sourceManifest.company?.requireBoardApprovalForNewAgents ?? false)
           : false,
@@ -5342,8 +5344,6 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         const updated = await companies.update(targetCompany.id, {
           name: sourceManifest.company.name,
           description: sourceManifest.company.description,
-          brandColor: sourceManifest.company.brandColor,
-          attachmentMaxBytes: sourceManifest.company.attachmentMaxBytes ?? undefined,
           requireBoardApprovalForNewAgents: sourceManifest.company.requireBoardApprovalForNewAgents,
           feedbackDataSharingEnabled: sourceManifest.company.feedbackDataSharingEnabled,
           feedbackDataSharingConsentAt: sourceManifest.company.feedbackDataSharingConsentAt
@@ -5596,7 +5596,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             reportsTo: null,
             adapterType: normalizedAdapter.adapterType,
             adapterConfig: normalizedAdapter.adapterConfig,
-            runtimeConfig: disableImportedTimerHeartbeat(manifestAgent.runtimeConfig),
+            runtimeConfig: sanitizeImportedAgentRuntimeConfig(manifestAgent.runtimeConfig),
             budgetMonthlyCents: manifestAgent.budgetMonthlyCents,
             permissions: manifestAgent.permissions,
             metadata: manifestAgent.metadata,
@@ -5920,7 +5920,6 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         const parentSlugBySlug = new Map<string, string>();
         let unarmedMonitorCount = 0;
         let attachmentsSkippedNoStorage = 0;
-        const attachmentMaxBytes = normalizeIssueAttachmentMaxBytes(targetCompany.attachmentMaxBytes ?? null);
 
         // Import writes every issue and its children as a single batch instead
         // of one network round-trip per row. The loop below resolves each
@@ -6196,8 +6195,8 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             if (sha256HexOfBytes(body) !== attachmentEntry.sha256) {
               throw unprocessable(`Attachment blob ${blobPath} does not match its declared sha256; the package is corrupted or was tampered with.`);
             }
-            if (body.length > attachmentMaxBytes) {
-              warnings.push(`Task ${manifestIssue.slug} attachment ${attachmentLabel} was skipped because it exceeds this board's attachment size limit of ${attachmentMaxBytes} bytes.`);
+            if (body.length > MAX_ATTACHMENT_BYTES) {
+              warnings.push(`Task ${manifestIssue.slug} attachment ${attachmentLabel} was skipped because it exceeds this deployment's attachment size limit of ${formatAttachmentSize(MAX_ATTACHMENT_BYTES)}.`);
               continue;
             }
             let issueCommentId: string | null = null;
@@ -6245,7 +6244,9 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
               ? manifestIssue.priority as typeof ISSUE_PRIORITIES[number]
               : "medium",
             billingCode: manifestIssue.billingCode ?? null,
-            assigneeAdapterOverrides: manifestIssue.assigneeAdapterOverrides ?? null,
+            assigneeAdapterOverrides: sanitizeImportedIssueAssigneeAdapterOverrides(
+              manifestIssue.assigneeAdapterOverrides,
+            ),
             executionWorkspaceSettings: manifestIssue.executionWorkspaceSettings ?? null,
             labelIds: resolvedLabelIds,
             monitorNotes,

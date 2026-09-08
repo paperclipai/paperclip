@@ -12,6 +12,9 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROUTES_DIR = path.resolve(__dirname, "../routes");
 
 const apiPrefixes: Record<string, string> = {
+  "pipelines.ts": "/api",
+  "cases.ts": "/api",
+  "smoke-lab.ts": "/api",
   "access.ts": "/api",
   "activity.ts": "/api",
   "adapters.ts": "/api",
@@ -26,6 +29,7 @@ const apiPrefixes: Record<string, string> = {
   "companies.ts": "/api/companies",
   "company-skills.ts": "/api",
   "company-skill-policy.ts": "/api",
+  "connection-intents.ts": "/api",
   "costs.ts": "/api",
   "dashboard.ts": "/api",
   "decision-queues.ts": "/api",
@@ -44,12 +48,14 @@ const apiPrefixes: Record<string, string> = {
   "issues.ts": "/api",
   "issue-tree-control.ts": "/api",
   "llms.ts": "/api",
+  "managed-agent-profiles.ts": "/api",
   "onboarding-seed.ts": "/api",
   "openapi.ts": "/api",
   "plugin-ui-static.ts": "/api",
   "plugins.ts": "/api",
   "projects.ts": "/api",
   "resource-memberships.ts": "/api",
+  "remote-agent-profiles.ts": "/api",
   "routines.ts": "/api",
   "secrets.ts": "/api",
   "sidebar-badges.ts": "/api",
@@ -65,14 +71,7 @@ const apiPrefixes: Record<string, string> = {
 const ROUTE_LITERAL_PATTERN = /router\.(get|post|put|patch|delete)\(\s*["'`]([^"'`]+)["'`]/g;
 const ROUTER_METHOD_PATTERN = /router\.(get|post|put|patch|delete)\(/;
 const HTTP_METHODS = new Set(["get", "put", "post", "delete", "options", "head", "patch", "trace"]);
-const explicitOpenApiCoverageExclusions = new Set([
-  // Pipeline routes are experimental and not yet represented in the public OpenAPI document.
-  "pipelines.ts",
-  // Case routes are experimental (enableCases flag) and not yet in the public OpenAPI document.
-  "cases.ts",
-  // Smoke lab routes are experimental and not yet represented in the public OpenAPI document.
-  "smoke-lab.ts",
-]);
+const explicitOpenApiCoverageExclusions = new Set<string>();
 
 // The set of contract-first routes whose OpenAPI document leads the mounted
 // request handler. The company-and-environment Claude setup-token login routes
@@ -106,6 +105,12 @@ function normalizeExpressPath(routePath: string) {
 
 function resolveMountedPath(file: string, prefix: string, routePath: string) {
   if (file === "tool-gateway.ts" && routePath.startsWith("/mcp/gateways/")) {
+    return routePath;
+  }
+  if (
+    file === "connection-intents.ts"
+    && (routePath.startsWith("/mcp/") || routePath.startsWith("/runtime-tools/"))
+  ) {
     return routePath;
   }
   if ((file === "companies.ts" || file === "health.ts") && routePath === "/") {
@@ -275,10 +280,23 @@ describe("openapi routes", () => {
     });
   });
 
+  it("documents board-only repository discovery and selection", () => {
+    const { spec } = loadSpecRoutes();
+    const discovery = spec.paths["/api/companies/{companyId}/project-repositories"].get;
+    const replacement = spec.paths["/api/projects/{id}/repositories"].put;
+    for (const operation of [discovery, replacement]) {
+      expect(operation["x-paperclip-authorization"]).toEqual({ actor: "board" });
+      expect(operation.security).toEqual([{ BoardSessionAuth: [] }, { BoardApiKeyAuth: [] }]);
+    }
+    expect(replacement.requestBody.content["application/json"].schema.required).toContain("repositoryIds");
+    expect(replacement.responses["422"]).toBeDefined();
+  });
+
   it("documents auth and reviewed response-code invariants", () => {
     const { spec } = loadSpecRoutes();
 
     expect(spec.paths["/api/openapi.json"].get.security).toEqual([]);
+    expect(spec.paths["/runtime-tools/github/credentials"].post.security).toEqual([{ RuntimeToolsBearerAuth: [] }]);
     expect(spec.paths["/api/plugins/install"].post.security).toEqual([
       { BoardSessionAuth: [] },
       { BoardApiKeyAuth: [] },
@@ -296,6 +314,23 @@ describe("openapi routes", () => {
     });
     expect(spec.paths["/api/companies/{companyId}/cost-events"].post.responses["201"]).toBeDefined();
     expect(spec.paths["/api/companies/{companyId}/cost-events"].post.responses["403"]).toBeDefined();
+    expect(spec.paths["/api/companies/{companyId}/managed-agent-profiles"].post.security).toEqual([
+      { BoardSessionAuth: [] },
+      { BoardApiKeyAuth: [] },
+    ]);
+    expect(spec.paths["/api/companies/{companyId}/remote-agent-profiles"].get.security).toEqual([
+      { BoardSessionAuth: [] },
+      { BoardApiKeyAuth: [] },
+    ]);
+    const remoteAgentProfileBody =
+      spec.paths["/api/companies/{companyId}/remote-agent-profiles"].post.requestBody.content[
+        "application/json"
+      ].schema;
+    expect(remoteAgentProfileBody.properties.service).toMatchObject({
+      type: "string",
+      enum: ["aws_bedrock_agentcore_harness"],
+    });
+    expect(remoteAgentProfileBody.properties.credentialSecretId).toBeUndefined();
     expect(spec.paths["/api/instance/database-backups"].post.responses["201"]).toBeDefined();
     expect(spec.paths["/api/invites/{token}/accept"].post.responses["202"]).toBeDefined();
     expect(spec.paths["/api/board-api-keys"].post.responses["201"]).toBeDefined();

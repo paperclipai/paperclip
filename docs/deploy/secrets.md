@@ -254,7 +254,7 @@ default provider — no migration is required.
 
 ### Where to configure
 
-Open `Company Settings → Secrets` in the board UI and switch to the
+Open `Organization Settings → Secrets` in the board UI and switch to the
 `Provider vaults` tab. From there you can:
 
 - Create a vault for any supported provider family.

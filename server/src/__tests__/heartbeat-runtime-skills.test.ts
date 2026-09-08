@@ -411,12 +411,20 @@ describeEmbeddedPostgres("heartbeat runtime skill version pins", () => {
     const captured = capturedRuns.find((entry) => entry.agentId === agentId);
     expect(captured?.mcpServers).toHaveLength(1);
     expect(captured?.mcpServers[0]).toMatchObject({
-      connectionId: installed!.id,
-      name: installed!.name,
+      connectionId: expect.stringMatching(/^assignment:[a-f0-9]{64}$/),
+      name: "paperclip-assigned",
       token: expect.stringMatching(/^pcgw_/),
-      url: expect.stringContaining("/api/tool-gateway/gateways/"),
+      url: expect.stringMatching(/\/mcp\/gateways\/gw_[a-f0-9]{32}$/),
     });
-    expect(captured?.mcpServers.some((server) => server.connectionId === uninstalled!.id)).toBe(false);
+    const runtimeProfiles = await db.select().from(toolProfiles);
+    const runtimeProfile = runtimeProfiles.find((entry) =>
+      entry.profileKey.startsWith(`native:${agentId}:`)
+    );
+    expect(runtimeProfile).toBeDefined();
+    const runtimeEntries = await db.select().from(toolProfileEntries)
+      .where(eq(toolProfileEntries.profileId, runtimeProfile!.id));
+    expect(runtimeEntries.map((entry) => entry.connectionId)).toEqual([installed!.id]);
+    expect(JSON.stringify(captured?.mcpServers)).not.toContain(uninstalled!.id);
     const bearer = captured?.mcpServers[0]?.token;
     expect(bearer).toMatch(/^pcgw_/);
     if (!bearer) throw new Error("Expected runtime MCP bearer");

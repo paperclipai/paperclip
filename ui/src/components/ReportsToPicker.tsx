@@ -99,7 +99,7 @@ export function ReportsToPicker({
         )}
         {unknownManager && (
           <div className="px-2 py-1.5 text-xs text-muted-foreground border-b border-border mb-0.5">
-            Saved manager is missing from this company. Choose a new manager or clear.
+            Saved manager is missing from this organization. Choose a new manager or clear.
           </div>
         )}
         {rows.map((a) => (

@@ -1,0 +1,53 @@
+{
+  "schemaVersion": 1,
+  "slug": "xero",
+  "name": "Xero",
+  "description": "Connect Xero's provider-hosted MCP server.",
+  "categories": [
+    "commerce"
+  ],
+  "featured": false,
+  "branding": {
+    "logoUrl": "/brands/apps/xero.svg"
+  },
+  "urlPatterns": [
+    "https://mcp.xero.com/*"
+  ],
+  "docsUrl": "https://developer.xero.com/ai",
+  "redirectConstraints": "https-or-loopback-http",
+  "methods": [
+    {
+      "key": "mcp-own-oauth",
+      "transport": "mcp_remote",
+      "auth": "oauth",
+      "ownershipModes": [
+        "customer"
+      ],
+      "whenToUse": "Register an OAuth app with Xero, then enter its client ID and secret.",
+      "defaults": {
+        "serverUrl": "https://mcp.xero.com/mcp",
+        "scopesHint": [
+          "openid",
+          "profile",
+          "email",
+          "offline_access",
+          "accounting.settings",
+          "accounting.invoices.read",
+          "accounting.reports.aged.read",
+          "accounting.reports.balancesheet.read",
+          "accounting.reports.profitandloss.read"
+        ]
+      },
+      "guidanceMd": "Connect Xero in the browser. Create a Xero OAuth app and confirm the applicable AI and data-use terms before connecting.",
+      "riskTier": "S4",
+      "label": "Use your own OAuth app",
+      "consoleLinks": {
+        "register": "https://developer.xero.com/ai",
+        "docs": "https://developer.xero.com/ai"
+      },
+      "warnings": [
+        "Create a Xero OAuth app and confirm the applicable AI and data-use terms before connecting."
+      ]
+    }
+  ]
+}

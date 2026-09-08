@@ -30,8 +30,11 @@ import {
 import { defaultCreateValues } from "../components/agent-config-defaults";
 import { buildFixedClaudeOAuthBinding } from "../components/environment-variables-editor/model";
 import type { EnvBinding } from "@paperclipai/shared";
-import { getUIAdapter, listUIAdapters } from "../adapters";
-import { useDisabledAdaptersSync } from "../adapters/use-disabled-adapters";
+import { getUIAdapter } from "../adapters";
+import {
+  useAdapterRegistryLoaded,
+  useDisabledAdaptersSync,
+} from "../adapters/use-disabled-adapters";
 import { isValidAdapterType } from "../adapters/metadata";
 import { ReportsToPicker } from "../components/ReportsToPicker";
 import { buildNewAgentHirePayload } from "../lib/new-agent-hire-payload";
@@ -93,6 +96,8 @@ export function NewAgent() {
     result: null,
     login: null,
   });
+  const disabledTypes = useDisabledAdaptersSync();
+  const adapterRegistryLoaded = useAdapterRegistryLoaded();
 
   const { data: agents } = useQuery({
     queryKey: queryKeys.agents.list(selectedCompanyId!),
@@ -142,12 +147,13 @@ export function NewAgent() {
   useEffect(() => {
     const requested = presetAdapterType;
     if (!requested) return;
+    if (!adapterRegistryLoaded || disabledTypes.has(requested)) return;
     if (!isValidAdapterType(requested)) return;
     setConfigValues((prev) => {
       if (prev.adapterType === requested) return prev;
       return createValuesForAdapterType(requested as CreateConfigValues["adapterType"]);
     });
-  }, [presetAdapterType]);
+  }, [adapterRegistryLoaded, disabledTypes, presetAdapterType]);
 
   const createAgent = useMutation({
     mutationFn: (data: Record<string, unknown>) =>
@@ -351,14 +357,14 @@ export function NewAgent() {
         <div className="border-t border-border px-4 py-4">
           <div className="space-y-3">
             <div>
-              <h2 className="text-sm font-medium">Company skills</h2>
+              <h2 className="text-sm font-medium">Organization skills</h2>
               <p className="mt-1 text-xs text-muted-foreground">
-                Optional skills from the company library. Built-in Paperclip runtime skills are added automatically.
+                Optional skills from the organization library. Built-in Paperclip runtime skills are added automatically.
               </p>
             </div>
             {availableSkills.length === 0 ? (
               <p className="text-xs text-muted-foreground">
-                No optional company skills installed yet.
+                No optional organization skills installed yet.
               </p>
             ) : (
               <div className="space-y-3">

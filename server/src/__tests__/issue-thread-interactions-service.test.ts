@@ -102,6 +102,43 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     return { companyId, goalId, issueId };
   }
 
+  async function attachPlanDocument(companyId: string, issueId: string) {
+    const documentId = randomUUID();
+    const revisionId = randomUUID();
+    await db.insert(documents).values({
+      id: documentId,
+      companyId,
+      title: "Plan",
+      format: "markdown",
+      latestBody: "# Plan",
+      latestRevisionId: revisionId,
+      latestRevisionNumber: 1,
+    });
+    await db.insert(issueDocuments).values({
+      companyId,
+      issueId,
+      documentId,
+      key: "plan",
+    });
+    await db.insert(documentRevisions).values({
+      id: revisionId,
+      companyId,
+      documentId,
+      revisionNumber: 1,
+      title: "Plan",
+      format: "markdown",
+      body: "# Plan",
+    });
+    return {
+      type: "issue_document" as const,
+      issueId,
+      documentId,
+      key: "plan",
+      revisionId,
+      revisionNumber: 1,
+    };
+  }
+
   async function recordReviewTransition(args: {
     companyId: string;
     issueId: string;
@@ -122,6 +159,118 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       },
     });
   }
+
+  it("creates idempotent, human-addressed connection intents and supersedes older runs", async () => {
+    const { companyId, issueId } = await seedConfirmationIssue("Connection intent");
+    const agentId = randomUUID();
+    const firstRunId = randomUUID();
+    const secondRunId = randomUUID();
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Researcher",
+      role: "researcher",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values([
+      {
+        id: firstRunId,
+        companyId,
+        agentId,
+        status: "running",
+        responsibleUserId: "user-board",
+        contextSnapshot: { issueId },
+      },
+      {
+        id: secondRunId,
+        companyId,
+        agentId,
+        status: "running",
+        responsibleUserId: "user-board",
+        contextSnapshot: { issueId },
+      },
+    ]);
+    const payload = {
+      version: 1 as const,
+      serviceSlug: "notion",
+      serviceName: "Notion",
+      serviceLogoUrl: null,
+      requestingAgentId: agentId,
+      requestingAgentName: "Researcher",
+      phase: "requested" as const,
+    };
+    const first = await interactionsSvc.createConnectionIntent(
+      { id: issueId, companyId },
+      {
+        payload,
+        sourceRunId: firstRunId,
+        addresseeUserId: "user-board",
+        idempotencyKey: `connection-intent:${firstRunId}:notion`,
+      },
+    );
+    expect(first).toMatchObject({
+      kind: "connection_intent",
+      status: "pending",
+      continuationPolicy: "wake_assignee",
+      addresseeUserId: "user-board",
+      requestedResolverPolicy: "human_only",
+      effectiveResolverPolicy: "human_only",
+      payload,
+    });
+    const repeated = await interactionsSvc.createConnectionIntent(
+      { id: issueId, companyId },
+      {
+        payload,
+        sourceRunId: firstRunId,
+        addresseeUserId: "user-board",
+        idempotencyKey: `connection-intent:${firstRunId}:notion`,
+      },
+    );
+    expect(repeated.id).toBe(first.id);
+
+    const newer = await interactionsSvc.createConnectionIntent(
+      { id: issueId, companyId },
+      {
+        payload,
+        sourceRunId: secondRunId,
+        addresseeUserId: "user-board",
+        idempotencyKey: `connection-intent:${secondRunId}:notion`,
+      },
+    );
+    const superseded = await interactionsSvc.getById(first.id);
+    expect(superseded).toMatchObject({
+      status: "expired",
+      result: {
+        version: 1,
+        outcome: "superseded",
+        supersededByInteractionId: newer.id,
+      },
+    });
+
+    const [expiredByComment] = await interactionsSvc.expireRequestConfirmationsSupersededByComment(
+      { id: issueId, companyId },
+      {
+        id: randomUUID(),
+        createdAt: new Date(Date.now() + 1_000),
+        authorUserId: "user-board",
+        createdByRunId: null,
+      },
+      { userId: "user-board" },
+    );
+    expect(expiredByComment).toMatchObject({
+      id: newer.id,
+      status: "expired",
+      result: {
+        version: 1,
+        outcome: "expired",
+        reason: "Superseded by a newer user comment",
+      },
+    });
+  });
 
   it("persists addressees without allowing them to bypass human-only governance", async () => {
     const { companyId, issueId } = await seedConfirmationIssue("Agent-addressed interaction");
@@ -903,6 +1052,81 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     })).rejects.toThrow("Interaction has already been resolved");
   });
 
+  it("skips every durable interaction kind exactly once and retains partial item verdicts", async () => {
+    const { companyId, issueId } = await seedConfirmationIssue("Universal composer Skip");
+    const inputs = [
+      {
+        kind: "suggest_tasks" as const,
+        payload: { version: 1 as const, tasks: [{ clientKey: "child", title: "Create child" }] },
+      },
+      {
+        kind: "ask_user_questions" as const,
+        payload: {
+          version: 1 as const,
+          questions: [{
+            id: "scope",
+            prompt: "Scope?",
+            selectionMode: "single" as const,
+            options: [{ id: "one", label: "One" }],
+          }],
+        },
+      },
+      {
+        kind: "request_confirmation" as const,
+        payload: { version: 1 as const, prompt: "Proceed?" },
+      },
+      {
+        kind: "request_checkbox_confirmation" as const,
+        payload: { version: 1 as const, prompt: "Select", options: [{ id: "one", label: "One" }] },
+      },
+    ];
+
+    for (const input of inputs) {
+      const created = await interactionsSvc.create({ id: issueId, companyId }, input, { userId: "local-board" });
+      const skipped = await interactionsSvc.skipInteraction(
+        { id: issueId, companyId, status: "in_progress" },
+        created.id,
+        {},
+        { userId: "local-board" },
+      );
+      expect(skipped).toMatchObject({ status: "cancelled", result: { version: 1, outcome: "skipped" } });
+      if (skipped.kind === "ask_user_questions") {
+        expect(skipped.result).toMatchObject({ answers: [], cancelled: true });
+      }
+      await expect(interactionsSvc.skipInteraction(
+        { id: issueId, companyId, status: "in_progress" },
+        created.id,
+        {},
+        { userId: "local-board" },
+      )).rejects.toThrow("Interaction has already been resolved");
+    }
+
+    const verdicts = await interactionsSvc.create({ id: issueId, companyId }, {
+      kind: "request_item_verdicts",
+      payload: {
+        version: 1,
+        prompt: "Review items",
+        items: [{ id: "one", label: "One" }, { id: "two", label: "Two" }],
+      },
+    }, { userId: "local-board" });
+    await interactionsSvc.submitItemVerdicts(
+      { id: issueId, companyId },
+      verdicts.id,
+      { verdicts: [{ id: "one", verdict: "approve" }] },
+      { userId: "local-board" },
+    );
+    const skippedVerdicts = await interactionsSvc.skipInteraction(
+      { id: issueId, companyId, status: "in_progress" },
+      verdicts.id,
+      {},
+      { userId: "local-board" },
+    );
+    expect(skippedVerdicts).toMatchObject({
+      status: "cancelled",
+      result: { outcome: "skipped", complete: false, items: [{ id: "one", verdict: "approve" }] },
+    });
+  });
+
   it("expires ask_user_questions interactions by default when a user comments after creation", async () => {
     const { companyId, issueId } = await seedConfirmationIssue("Question supersede");
     const commentId = randomUUID();
@@ -1680,6 +1904,56 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     }, requiresReason.id, {}, {
       userId: "local-board",
     })).rejects.toThrow("A decline reason is required for this confirmation");
+  });
+
+  it("reopens an in-review issue before waking the assignee after rejection", async () => {
+    const { companyId, issueId } = await seedConfirmationIssue(
+      "Continue after review rejection",
+    );
+    const created = await interactionsSvc.create(
+      { id: issueId, companyId },
+      {
+        kind: "request_confirmation",
+        continuationPolicy: "wake_assignee",
+        payload: {
+          version: 1,
+          prompt: "Continue the next turn?",
+          rejectLabel: "Continue work",
+          rejectRequiresReason: true,
+          target: {
+            type: "custom",
+            key: "warm_turn_1",
+            revisionId: "warm-turn-1",
+          },
+        },
+      },
+      {
+        userId: "local-board",
+      },
+    );
+    await db
+      .update(issues)
+      .set({ status: "in_review" })
+      .where(eq(issues.id, issueId));
+
+    await interactionsSvc.rejectInteraction(
+      {
+        id: issueId,
+        companyId,
+        status: "in_review",
+      },
+      created.id,
+      {
+        reason: "Proceed with turn two.",
+      },
+      {
+        userId: "local-board",
+      },
+    );
+
+    await expect(issuesSvc.getById(issueId)).resolves.toMatchObject({
+      status: "todo",
+    });
   });
 
   it("records an authorized agent as the review-confirmation resolver", async () => {
@@ -2469,6 +2743,142 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     });
   });
 
+  it("atomically returns an accepted Plan-mode issue to its agent in Auto mode", async () => {
+    const { companyId, goalId, issueId } = await seedConfirmationIssue("Accept a plan into Auto mode");
+    const agentId = randomUUID();
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Plan owner",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.update(issues).set({
+      status: "in_review",
+      workMode: "planning",
+      assigneeAgentId: agentId,
+    }).where(eq(issues.id, issueId));
+    const target = await attachPlanDocument(companyId, issueId);
+    const created = await interactionsSvc.create({ id: issueId, companyId }, {
+      kind: "request_confirmation",
+      continuationPolicy: "wake_assignee_on_accept",
+      payload: { version: 1, prompt: "Accept this plan?", target },
+    }, { agentId });
+
+    const accepted = await interactionsSvc.acceptInteraction({
+      id: issueId,
+      companyId,
+      goalId,
+      projectId: null,
+    }, created.id, {}, { userId: "local-board" });
+
+    expect(accepted.interaction).toMatchObject({
+      id: created.id,
+      status: "accepted",
+      result: { outcome: "accepted" },
+    });
+    expect(accepted.continuationIssue).toEqual({
+      id: issueId,
+      assigneeAgentId: agentId,
+      assigneeUserId: null,
+      status: "todo",
+      workMode: "standard",
+    });
+    await expect(db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0])).resolves.toMatchObject({
+      status: "todo",
+      workMode: "standard",
+      assigneeAgentId: agentId,
+      assigneeUserId: null,
+    });
+  });
+
+  it("keeps Plan mode for non-plan and checkbox confirmations", async () => {
+    const { companyId, goalId, issueId } = await seedConfirmationIssue("Do not auto-transition other confirmations");
+    const agentId = randomUUID();
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Plan owner",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.update(issues).set({
+      status: "in_review",
+      workMode: "planning",
+      assigneeAgentId: agentId,
+    }).where(eq(issues.id, issueId));
+
+    const nonPlan = await interactionsSvc.create({ id: issueId, companyId }, {
+      kind: "request_confirmation",
+      payload: { version: 1, prompt: "Accept this unrelated decision?" },
+    }, { agentId });
+    await interactionsSvc.acceptInteraction({ id: issueId, companyId, goalId, projectId: null }, nonPlan.id, {}, {
+      userId: "local-board",
+    });
+    await expect(db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]?.workMode))
+      .resolves.toBe("planning");
+
+    await db.update(issues).set({ status: "in_review" }).where(eq(issues.id, issueId));
+    const target = await attachPlanDocument(companyId, issueId);
+    const checkbox = await interactionsSvc.create({ id: issueId, companyId }, {
+      kind: "request_checkbox_confirmation",
+      payload: {
+        version: 1,
+        prompt: "Select approved plan sections",
+        options: [{ id: "phase-1", label: "Phase 1" }],
+        target,
+      },
+    }, { agentId });
+    await interactionsSvc.acceptInteraction({ id: issueId, companyId, goalId, projectId: null }, checkbox.id, {
+      selectedOptionIds: ["phase-1"],
+    }, { userId: "local-board" });
+    await expect(db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]?.workMode))
+      .resolves.toBe("planning");
+  });
+
+  it.each(["ask", "standard"] as const)("keeps %s mode when accepting a plan confirmation", async (workMode) => {
+    const { companyId, goalId, issueId } = await seedConfirmationIssue(`Keep ${workMode} mode`);
+    await db.update(issues).set({ workMode }).where(eq(issues.id, issueId));
+    const target = await attachPlanDocument(companyId, issueId);
+    const created = await interactionsSvc.create({ id: issueId, companyId }, {
+      kind: "request_confirmation",
+      payload: { version: 1, prompt: "Accept this plan?", target },
+    }, { userId: "local-board" });
+
+    await interactionsSvc.acceptInteraction({ id: issueId, companyId, goalId, projectId: null }, created.id, {}, {
+      userId: "local-board",
+    });
+
+    await expect(db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]?.workMode))
+      .resolves.toBe(workMode);
+  });
+
+  it("keeps Plan mode when a plan confirmation is rejected", async () => {
+    const { companyId, issueId } = await seedConfirmationIssue("Reject a plan");
+    await db.update(issues).set({ workMode: "planning" }).where(eq(issues.id, issueId));
+    const target = await attachPlanDocument(companyId, issueId);
+    const created = await interactionsSvc.create({ id: issueId, companyId }, {
+      kind: "request_confirmation",
+      payload: { version: 1, prompt: "Accept this plan?", target },
+    }, { userId: "local-board" });
+
+    const rejected = await interactionsSvc.rejectInteraction({ id: issueId, companyId }, created.id, {
+      reason: "Revise the plan",
+    }, { userId: "local-board" });
+
+    expect(rejected.status).toBe("rejected");
+    await expect(db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]?.workMode))
+      .resolves.toBe("planning");
+  });
+
   it("expires request confirmations by default when a user comments after creation", async () => {
     const { companyId, issueId } = await seedConfirmationIssue();
     const commentId = randomUUID();
@@ -3031,6 +3441,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       status: "in_progress",
       priority: "medium",
     });
+    await db.update(issues).set({ workMode: "planning" }).where(eq(issues.id, issueId));
     // Document is already at revision 2 — revision 1 is stale.
     await db.insert(documents).values({
       id: documentId,
@@ -3123,6 +3534,20 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       userId: "local-board",
     });
     expect(created).toMatchObject({ status: "pending", kind: "request_confirmation" });
+    await expect(interactionsSvc.acceptInteraction({
+      id: issueId,
+      companyId,
+      goalId,
+      projectId: null,
+    }, created.id, {}, {
+      userId: "local-board",
+    })).resolves.toMatchObject({
+      interaction: { status: "accepted" },
+      continuationIssue: { id: issueId },
+    });
+    await expect(issueService(db).getById(issueId)).resolves.toMatchObject({
+      workMode: "standard",
+    });
   });
 
   it("preserves resolved request_item_verdicts items when the watched issue document revision changes", async () => {

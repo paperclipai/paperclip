@@ -941,7 +941,7 @@ function PipelinesIndex() {
   });
 
   if (!selectedCompanyId) {
-    return <div className="mx-auto max-w-3xl py-10 text-sm text-muted-foreground">Select a company to view pipelines.</div>;
+    return <div className="mx-auto max-w-3xl py-10 text-sm text-muted-foreground">Select an organization to view pipelines.</div>;
   }
   if (pipelinesQuery.isLoading) return <PageSkeleton />;
 
@@ -4941,7 +4941,7 @@ export function ReviewQueue() {
 
   const bulkApprove = useMutation({
     mutationFn: async (targetRows: ReviewQueueRow[]) => {
-      if (!selectedCompanyId) throw new Error("Select a company first.");
+      if (!selectedCompanyId) throw new Error("Select an organization first.");
       const reviewRows = targetRows.filter((row) => row.kind === "review");
       const suggestionRows = targetRows.filter((row) => row.kind === "suggestion" && row.suggestionId);
       const tasks: Promise<unknown>[] = [];
@@ -5046,7 +5046,7 @@ export function ReviewQueue() {
   }, [activeRowId, decideRow, openItem, visibleRows]);
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={Hexagon} message="Select a company to view the review queue." />;
+    return <EmptyState icon={Hexagon} message="Select an organization to view the review queue." />;
   }
 
   if (attentionQuery.isLoading || reviewCasesQuery.isLoading) {
@@ -5170,7 +5170,7 @@ export function Learnings() {
   });
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={BookOpenText} message="Select a company to view learnings." />;
+    return <EmptyState icon={BookOpenText} message="Select an organization to view learnings." />;
   }
 
   if (learningsQuery.isLoading && !learningsQuery.data) {

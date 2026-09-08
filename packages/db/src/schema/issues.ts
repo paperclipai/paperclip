@@ -53,6 +53,8 @@ export const issues = pgTable(
     originKind: text("origin_kind").notNull().default("manual"),
     originId: text("origin_id"),
     originRunId: text("origin_run_id"),
+    originIdentityContextId: uuid("origin_identity_context_id"),
+    continuationIdentityContextId: uuid("continuation_identity_context_id"),
     originFingerprint: text("origin_fingerprint").notNull().default("default"),
     requestDepth: integer("request_depth").notNull().default(0),
     billingCode: text("billing_code"),

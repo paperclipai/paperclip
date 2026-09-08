@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { CopyText } from "./CopyText";
 import { IssuesQuicklook } from "./IssuesQuicklook";
 import type { ProjectWorkspaceLinkedIssue, ProjectWorkspaceSummary } from "../lib/project-workspaces-tab";
+import { useManagedSandboxOnly } from "../hooks/useManagedSandboxOnly";
 import { cn, projectWorkspaceUrl } from "../lib/utils";
 import { timeAgo } from "../lib/timeAgo";
 import { Copy, ExternalLink, FolderOpen, GitBranch, Loader2, Play, Square } from "lucide-react";
@@ -45,6 +46,7 @@ export function ProjectWorkspaceSummaryCard({
   onRuntimeAction,
   onCloseWorkspace,
 }: ProjectWorkspaceSummaryCardProps) {
+  const { hideHostPaths } = useManagedSandboxOnly();
   const visibleIssues = summary.issues.slice(0, 4);
   const hiddenIssueCount = Math.max(summary.linkedIssueCount - visibleIssues.length, 0);
   const workspaceHref =
@@ -173,7 +175,12 @@ export function ProjectWorkspaceSummaryCard({
               </div>
             ) : null}
 
-            {summary.cwd ? (
+            {/*
+              The path is a host filesystem path, so it disappears under the
+              managed-sandbox-only policy, and stays hidden until that policy is
+              known. Branch, service, and issue rows stay.
+            */}
+            {summary.cwd && !hideHostPaths ? (
               <div className="flex items-start gap-2">
                 <FolderOpen className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                 <div className="min-w-0 flex-1">

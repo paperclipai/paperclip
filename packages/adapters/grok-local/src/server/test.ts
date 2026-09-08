@@ -19,6 +19,7 @@ import {
 } from "@paperclipai/adapter-utils/execution-target";
 import { DEFAULT_GROK_LOCAL_MODEL } from "../index.js";
 import { parseGrokJsonl } from "./parse.js";
+import { ADAPTER_AUTH_MISSING_CHECK_CODE } from "@paperclipai/shared";
 
 export interface GrokModelsProbe {
   authenticated: boolean;
@@ -108,6 +109,7 @@ export async function testEnvironment(
   const command = asString(config.command, "grok");
   const target = ctx.executionTarget ?? null;
   const targetIsRemote = target?.kind === "remote";
+  const targetIsSandbox = target?.kind === "remote" && target.transport === "sandbox";
   const cwd = resolveAdapterExecutionTargetCwd(target, asString(config.cwd, ""), process.cwd());
   const targetLabel = targetIsRemote
     ? ctx.environmentName ?? describeAdapterExecutionTarget(target)
@@ -202,6 +204,18 @@ export async function testEnvironment(
         detail: summarizeProbeDetail(modelsProbe.stdout, modelsProbe.stderr, null),
         hint: authRequired ? "Run `grok login` on the target host, then retry." : undefined,
       });
+      if (authRequired && targetIsSandbox) {
+        // Emit the neutral canonical check so the user interface can decide
+        // login eligibility from a stable code. The user interface does not
+        // read the message text or the top-level status.
+        checks.push({
+          code: ADAPTER_AUTH_MISSING_CHECK_CODE,
+          level: "warn",
+          message: "This environment has no ready authentication for this adapter.",
+          detail: summarizeProbeDetail(modelsProbe.stdout, modelsProbe.stderr, null),
+          hint: "Provide credentials for this adapter, or start login in the environment.",
+        });
+      }
     } else {
       checks.push({
         code: "grok_models_probe_passed",
@@ -295,6 +309,18 @@ export async function testEnvironment(
         ...(detail ? { detail } : {}),
         hint: authRequired ? "Run `grok login` on the target host, then retry." : undefined,
       });
+      if (authRequired && targetIsSandbox) {
+        // Emit the neutral canonical check so the user interface can decide
+        // login eligibility from a stable code. The user interface does not
+        // read the message text or the top-level status.
+        checks.push({
+          code: ADAPTER_AUTH_MISSING_CHECK_CODE,
+          level: "warn",
+          message: "This environment has no ready authentication for this adapter.",
+          ...(detail ? { detail } : {}),
+          hint: "Provide credentials for this adapter, or start login in the environment.",
+        });
+      }
     } else if (/\bhello\b/i.test(parsed.summary)) {
       checks.push({
         code: "grok_hello_probe_passed",

@@ -188,6 +188,8 @@ export type {
   PluginEnvironmentRealizeWorkspaceResult,
   PluginEnvironmentExecuteParams,
   PluginEnvironmentExecuteResult,
+  PluginEnvironmentRunnerIngressEndpointParams,
+  PluginEnvironmentRunnerIngressEndpoint,
   PluginSyncFileMapping,
   PluginPostUploadCommand,
   PluginSyncOperation,
@@ -388,6 +390,12 @@ export type {
   PluginApiRouteMethod,
   PluginEventType,
   PluginBridgeErrorCode,
+  ConnectionIntentInteraction,
+  ConnectionIntentPayload,
+  ConnectionIntentResult,
+  ConnectionIntentSetupOptions,
+  ConnectionRequestResult,
+  ConnectionsSearchResult,
 } from "./types.js";
 
 // ---------------------------------------------------------------------------

@@ -31,6 +31,7 @@ import {
   buildEnvironmentLeaseContext,
   type EnvironmentRuntimeLeaseRecord,
   type EnvironmentRuntimeService,
+  type ProviderResourceDisposition,
 } from "./environment-runtime.js";
 import { ENVIRONMENT_DRIVER_TRAITS } from "./environment-driver-traits.js";
 import {
@@ -44,7 +45,6 @@ import {
   type AdapterWorkspaceRealization,
 } from "@paperclipai/adapter-utils/execution-target";
 import type { DuplexObservabilityRecorder } from "@paperclipai/adapter-utils/duplex-observability";
-import type { DuplexAggregateByteLedger } from "@paperclipai/adapter-utils/duplex-aggregate-byte-ledger";
 import { buildWorkspaceRealizationRequest } from "./workspace-realization.js";
 import { executionWorkspaceService } from "./execution-workspaces.js";
 import { logActivity } from "./activity-log.js";
@@ -156,14 +156,6 @@ export function environmentRunOrchestrator(
   options: {
     pluginWorkerManager?: PluginWorkerManager;
     environmentRuntime?: EnvironmentRuntimeService;
-    /**
-     * The process-owned aggregate byte ledger for the sandbox duplex channel.
-     * The server root creates one ledger per host process and injects the same
-     * object here. The orchestrator stamps it onto the sandbox execution target,
-     * so one shared gauge bounds the aggregate retained bytes across all live
-     * duplex routes. Absent keeps the bridge inert for this seam.
-     */
-    duplexAggregateByteLedger?: DuplexAggregateByteLedger | null;
   } = {},
 ) {
   const environmentsSvc = environmentService(db);
@@ -529,7 +521,6 @@ export function environmentRunOrchestrator(
         lease,
         environmentRuntime,
         duplexObservabilityRecorder: input.duplexObservabilityRecorder ?? null,
-        duplexAggregateByteLedger: options.duplexAggregateByteLedger ?? null,
       });
       const realizationMode = workspaceRealization.mode === "in_place" ? "in_place" : "copy";
       const authoritativeRoot =
@@ -593,6 +584,17 @@ export function environmentRunOrchestrator(
     agentId: string;
     status?: Extract<EnvironmentLeaseStatus, "released" | "expired" | "failed">;
     failureReason?: string;
+    /** Explicit paperclip_runner resource lifecycle. Omitted for legacy adapters. */
+    providerResourceDisposition?: ProviderResourceDisposition;
+    nativeLifecycleTelemetry?: {
+      provider: string;
+      harness: string;
+      lifecycleMode: "per_turn" | "warm";
+      sandboxResource:
+        | "keep_running"
+        | "stop_and_reuse"
+        | "destroy_after_turn";
+    };
   }): Promise<EnvironmentReleaseResult> {
     const status = input.status ?? "released";
     const result: EnvironmentReleaseResult = { released: [], errors: [] };
@@ -603,6 +605,7 @@ export function environmentRunOrchestrator(
         input.heartbeatRunId,
         status,
         (leaseId, error) => result.errors.push({ leaseId, error }),
+        input.providerResourceDisposition,
       );
     } catch (err) {
       result.errors.push({ leaseId: "*", error: err });
@@ -631,6 +634,8 @@ export function environmentRunOrchestrator(
             status: released.lease.status,
             cleanupStatus: released.lease.cleanupStatus,
             failureReason: input.failureReason ?? released.lease.failureReason,
+            providerResourceDisposition:
+              input.providerResourceDisposition ?? "legacy_default",
           },
         });
       } catch {

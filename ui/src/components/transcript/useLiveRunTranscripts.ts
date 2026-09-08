@@ -44,6 +44,7 @@ export interface RunTranscriptSource {
   id: string;
   status: string;
   adapterType: string;
+  runtimeMode?: "legacy" | "native";
   hasStoredOutput?: boolean;
   logBytes?: number | null;
   lastOutputBytes?: number | null;

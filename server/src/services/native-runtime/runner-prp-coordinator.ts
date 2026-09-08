@@ -3,7 +3,12 @@ import { resolve } from "node:path";
 import { and, eq } from "drizzle-orm";
 
 import type { Db } from "@paperclipai/db";
-import { agents, completionContracts, heartbeatRuns, issues } from "@paperclipai/db";
+import {
+  agents,
+  completionContracts,
+  heartbeatRuns,
+  issues,
+} from "@paperclipai/db";
 import {
   DurablePrpControlPlane,
   type PaperclipSemanticToolDefinition,
@@ -13,6 +18,11 @@ import {
 
 import { registerRunnerPrpAuthority } from "../../realtime/runner-prp-ws.js";
 import { NativeRunCoordinatorStore } from "./native-run-coordinator-store.js";
+import {
+  flushNativeQuestionResponses,
+  projectNativeRuntimeRequest,
+  registerNativeQuestionCommandTarget,
+} from "./native-question-bridge.js";
 import { PaperclipRunnerSemanticAuthority } from "./runner-semantic-authority.js";
 
 const UUID_PATTERN =
@@ -102,11 +112,17 @@ function validateInput(input: PrepareRunnerPrpSessionInput): void {
 }
 
 function completionCriterionIds(value: unknown): string[] | null {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  if (typeof value !== "object" || value === null || Array.isArray(value))
+    return null;
   const criteria = (value as Record<string, unknown>).criteria;
   if (!Array.isArray(criteria)) return null;
   const ids = criteria.map((criterion) => {
-    if (typeof criterion !== "object" || criterion === null || Array.isArray(criterion)) return null;
+    if (
+      typeof criterion !== "object" ||
+      criterion === null ||
+      Array.isArray(criterion)
+    )
+      return null;
     const id = (criterion as Record<string, unknown>).id;
     return typeof id === "string" && id.length > 0 ? id : null;
   });
@@ -193,7 +209,8 @@ export function runnerPrpCoordinator(
         binding.run.driverKind !== "codex" ||
         !binding.run.completionContractId ||
         !binding.run.completionContractSha256 ||
-        binding.completionContract.canonicalSha256 !== binding.run.completionContractSha256 ||
+        binding.completionContract.canonicalSha256 !==
+          binding.run.completionContractSha256 ||
         binding.issue.assigneeAgentId !== input.agentId ||
         binding.issue.executionRunId !== input.runId ||
         ["paused", "terminated", "pending_approval", "error"].includes(
@@ -214,7 +231,7 @@ export function runnerPrpCoordinator(
         agentId: input.agentId,
       });
       const semanticTools = await semanticAuthority.listAlwaysAvailableTools();
-      const nativeStore = new NativeRunCoordinatorStore(db, {
+      const storeBinding = {
         companyId: input.companyId,
         issueId: input.issueId,
         runId: input.runId,
@@ -225,7 +242,8 @@ export function runnerPrpCoordinator(
         completionContractSha256: binding.run.completionContractSha256,
         completionContractRevision: String(binding.completionContract.revision),
         completionContractCriterionIds: criterionIds,
-      });
+      } as const;
+      const nativeStore = new NativeRunCoordinatorStore(db, storeBinding);
       type StoredCompletedRun = NonNullable<Awaited<ReturnType<typeof nativeStore.readCompletedRun>>>;
       type CompletedRun = StoredCompletedRun & { readonly providerSessionId?: string };
       const withProviderSession = async (stored: StoredCompletedRun): Promise<CompletedRun> => {
@@ -237,9 +255,11 @@ export function runnerPrpCoordinator(
       };
       let completedRun: CompletedRun | null = null;
       let resolveTerminal!: (value: CompletedRun) => void;
-      const terminalEvent = new Promise<CompletedRun>((resolveTerminalPromise) => {
-        resolveTerminal = resolveTerminalPromise;
-      });
+      const terminalEvent = new Promise<CompletedRun>(
+        (resolveTerminalPromise) => {
+          resolveTerminal = resolveTerminalPromise;
+        },
+      );
       const authority = new DurablePrpControlPlane({
         stateDirectory: resolve(stateRoot, input.runId),
         identity: {
@@ -255,6 +275,9 @@ export function runnerPrpCoordinator(
         connectionLeaseTtlMs,
         onCommittedEvent: async (event) => {
           await nativeStore.appendEvent(event);
+          if (event.eventType === "runtime_request.created") {
+            await projectNativeRuntimeRequest({ db, binding: storeBinding, event });
+          }
           await nativeStore.reconcileTerminalEvent(event);
           if (event.eventType === "run.terminal") {
             const stored = await nativeStore.readCompletedRun();
@@ -274,15 +297,38 @@ export function runnerPrpCoordinator(
         },
       });
 
-      const registration = await registerRunnerPrpAuthority({
-        companyId: input.companyId,
-        runId: input.runId,
-        authority,
-      });
+      let registration: Awaited<ReturnType<typeof registerRunnerPrpAuthority>>;
+      try {
+        registration = await registerRunnerPrpAuthority({
+          companyId: input.companyId,
+          runId: input.runId,
+          authority,
+        });
+      } catch (error) {
+        authority.disconnectActiveRunner();
+        throw error;
+      }
+      let releaseQuestionTarget = () => {};
+      try {
+        releaseQuestionTarget = registerNativeQuestionCommandTarget({
+          binding: storeBinding,
+          queueCommand: (type, payload = {}, commandId) => {
+            const command = authority.queueCommand(type, payload, commandId, true);
+            return { commandId: command.commandId, controllerSeq: command.controllerSeq };
+          },
+        });
+        await flushNativeQuestionResponses(db, input.runId);
+      } catch (error) {
+        releaseQuestionTarget();
+        authority.disconnectActiveRunner();
+        await registration.release();
+        throw error;
+      }
       let bootstrapTicket: string;
       try {
         bootstrapTicket = authority.issueBootstrapTicket(bootstrapTtlMs);
       } catch (error) {
+        releaseQuestionTarget();
         authority.disconnectActiveRunner();
         await registration.release();
         throw error;
@@ -311,7 +357,11 @@ export function runnerPrpCoordinator(
         },
         waitForTerminal: async (timeoutMs = 60 * 60 * 1_000) => {
           if (released) throw new Error("runner_prp_session_released");
-          if (!Number.isInteger(timeoutMs) || timeoutMs < 1_000 || timeoutMs > 24 * 60 * 60 * 1_000) {
+          if (
+            !Number.isInteger(timeoutMs) ||
+            timeoutMs < 1_000 ||
+            timeoutMs > 24 * 60 * 60 * 1_000
+          ) {
             throw new Error("runner_prp_terminal_timeout_invalid");
           }
           if (completedRun) return completedRun;
@@ -339,6 +389,7 @@ export function runnerPrpCoordinator(
         release: async () => {
           if (released) return;
           released = true;
+          releaseQuestionTarget();
           authority.disconnectActiveRunner();
           await registration.release();
         },

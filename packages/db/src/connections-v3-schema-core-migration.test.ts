@@ -25,6 +25,8 @@ describeEmbeddedPostgres("connections v3 schema core migration", () => {
     cleanups.push(async () => sql.end());
 
     await sql`DELETE FROM "drizzle"."__drizzle_migrations" WHERE "hash" = ${await migrationHash()}`;
+    await sql`DROP TABLE IF EXISTS "connection_grant_delegations"`;
+    await sql`DROP TABLE IF EXISTS "connection_grant_members"`;
     await sql`DROP TABLE IF EXISTS "connection_grants"`;
     await sql`DROP INDEX IF EXISTS "tool_connections_company_uid_uq"`;
     await sql`ALTER TABLE "tool_connections" DROP CONSTRAINT IF EXISTS "tool_connections_company_id_uq"`;
@@ -71,6 +73,7 @@ describeEmbeddedPostgres("connections v3 schema core migration", () => {
       VALUES (${companyId}, ${connectionId}, 'user', 'user-1', true)
     `).rejects.toMatchObject({ code: "23514" });
 
+    await sql`DROP TABLE IF EXISTS "connection_grant_members"`;
     await sql`DROP TABLE "connection_grants"`;
     await sql`DROP INDEX "tool_connections_company_uid_uq"`;
     await sql`ALTER TABLE "tool_connections" DROP CONSTRAINT "tool_connections_company_id_uq"`;

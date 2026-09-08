@@ -41,6 +41,7 @@ import { registerWorkspaceCommands } from "./commands/client/workspace.js";
 import { registerAccessCommands } from "./commands/client/access.js";
 import { registerRoutineApiCommands } from "./commands/client/routine-api.js";
 import { registerAdapterCommands } from "./commands/client/adapter.js";
+import { registerManagedAgentCommands } from "./commands/managed-agent.js";
 import { registerAssetCommands } from "./commands/client/asset.js";
 import { registerSkillCommands } from "./commands/client/skill.js";
 import { cliVersion } from "./version.js";
@@ -48,6 +49,14 @@ import { installCommand } from "./commands/install.js";
 import { uninstallCommand } from "./commands/uninstall.js";
 import { updateCommand } from "./commands/update.js";
 import { registerServiceCommands } from "./commands/service.js";
+import { registerConnectionIntentCommands } from "./commands/client/connections.js";
+import {
+  assertTestDriveDatabaseIsolation,
+  prepareTestDriveEnvironment,
+  redactTestDriveArgv,
+  registerTestDriveCommand,
+  type TestDriveOptions,
+} from "./commands/test-drive.js";
 
 const program = new Command();
 const DATA_DIR_OPTION_HELP =
@@ -90,16 +99,30 @@ program
   .option("--no-backup", "Skip the pre-update database backup")
   .action(updateCommand);
 
-program.hook("preAction", (_thisCommand, actionCommand) => {
-  const options = actionCommand.optsWithGlobals() as DataDirOptionLike;
+program.hook("preAction", async (_thisCommand, actionCommand) => {
+  const options = actionCommand.optsWithGlobals() as DataDirOptionLike & TestDriveOptions;
+  let dataDirOptions: DataDirOptionLike = options;
+  if (actionCommand.name() === "test-drive") {
+    redactTestDriveArgv(options.apiKey);
+    const prepared = await prepareTestDriveEnvironment({
+      dataDir: options.dataDir,
+      apiKeyEnv: options.apiKeyEnv,
+    });
+    dataDirOptions = { ...options, dataDir: prepared.dataDir };
+  }
   const optionNames = new Set(actionCommand.options.map((option) => option.attributeName()));
-  applyDataDirOverride(options, {
+  applyDataDirOverride(dataDirOptions, {
     hasConfigOption: optionNames.has("config"),
     hasContextOption: optionNames.has("context"),
   });
   loadPaperclipEnvFile(options.config);
+  if (actionCommand.name() === "test-drive") {
+    assertTestDriveDatabaseIsolation(options.config);
+  }
   initTelemetryFromConfigFile(options.config);
 });
+
+registerTestDriveCommand(program);
 
 program
   .command("onboard")
@@ -209,6 +232,7 @@ heartbeat
 
 registerContextCommands(program);
 registerConnectCommand(program);
+registerConnectionIntentCommands(program);
 registerCompanyCommands(program);
 registerIssueCommands(program);
 registerAgentCommands(program);
@@ -224,6 +248,7 @@ registerWorkspaceCommands(program);
 registerAccessCommands(program);
 registerRoutineApiCommands(program);
 registerAdapterCommands(program);
+registerManagedAgentCommands(program);
 registerAssetCommands(program);
 registerSkillCommands(program);
 registerRoutineCommands(program);

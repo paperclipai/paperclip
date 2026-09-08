@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
@@ -12,7 +13,9 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."
 const script = path.join(repoRoot, "scripts", "e2e-shard.mjs");
 const durationsManifest = path.join(repoRoot, "scripts", "e2e-shard-durations.json");
 const playwrightConfig = path.join(repoRoot, "tests", "e2e", "playwright.config.ts");
-const prWorkflow = path.join(repoRoot, ".github", "workflows", "pr.yml");
+const prCallerWorkflow = path.join(repoRoot, ".github", "workflows", "pr.yml");
+const trustedPrWorkflowPath = ".github/workflows/pr-trusted.yml";
+const trustedPrWorkflow = path.join(repoRoot, trustedPrWorkflowPath);
 
 const SHARD_COUNT = 3;
 
@@ -20,6 +23,73 @@ function runShard(args) {
   const result = spawnSync(process.execPath, [script, ...args], { cwd: repoRoot, encoding: "utf8" });
   assert.equal(result.status, 0, `expected success for ${args.join(" ")}: ${result.stderr}`);
   return result.stdout.trim().split(/\s+/).filter(Boolean);
+}
+
+function readPinnedTrustedPrWorkflow() {
+  const caller = readFileSync(prCallerWorkflow, "utf8");
+  const pin = caller.match(
+    /uses: paperclipai\/paperclip\/\.github\/workflows\/pr-trusted\.yml@([0-9a-f]{40})/,
+  );
+  assert.ok(pin, "pr.yml must call the trusted workflow at a full commit SHA");
+
+  const result = spawnSync("git", ["show", `${pin[1]}:${trustedPrWorkflowPath}`], {
+    cwd: repoRoot,
+    encoding: "utf8",
+  });
+  assert.equal(result.status, 0, `cannot read the pinned trusted workflow: ${result.stderr}`);
+  return result.stdout;
+}
+
+function readWorkflowJobs(workflow) {
+  const jobs = new Map();
+  let current = null;
+  for (const line of workflow.split("\n")) {
+    const header = /^ {2}([A-Za-z0-9_-]+):\s*$/.exec(line);
+    if (header) {
+      current = header[1];
+      jobs.set(current, []);
+      continue;
+    }
+    if (current && /^\S/.test(line)) current = null;
+    if (current) jobs.get(current).push(line);
+  }
+  for (const [id, lines] of jobs) jobs.set(id, lines.join("\n"));
+  return jobs;
+}
+
+function runStackScope(stack, prBaseRef) {
+  const workflow = readFileSync(trustedPrWorkflow, "utf8");
+  const match = workflow.match(
+    /      - name: Select stacked PR CI scope[\s\S]*?        run: \|\n([\s\S]*?)\n\n  policy:/,
+  );
+  assert.ok(match, "trusted workflow must define the stacked PR scope script");
+  const script = match[1]
+    .split("\n")
+    .map((line) => line.replace(/^ {10}/, ""))
+    .join("\n");
+  const scratch = mkdtempSync(path.join(tmpdir(), "paperclip-stack-scope-"));
+  const output = path.join(scratch, "github-output");
+
+  try {
+    const result = spawnSync("bash", ["-c", script], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        GITHUB_OUTPUT: output,
+        PR_BASE_REF: prBaseRef,
+        STACK_JSON: JSON.stringify(stack),
+      },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    return Object.fromEntries(
+      readFileSync(output, "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => line.split("=")),
+    );
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
 }
 
 test("the e2e shards form a complete, non-overlapping partition", () => {
@@ -89,30 +159,26 @@ test("shard arguments are validated", () => {
   }
 });
 
-test("pr.yml keeps a stable aggregate check named e2e over the shard matrix", () => {
+test("pr.yml calls the trusted PR workflow at an immutable SHA", () => {
+  assert.ok(readPinnedTrustedPrWorkflow().length > 0);
+});
+
+test("the trusted PR workflow keeps a stable aggregate check named e2e over the shard matrix", () => {
   // Branch protection requires a check literally named `e2e`. The shards run
   // as `e2e shard (n/3)`, so the aggregate job below is what keeps the
   // required-check contract intact — same pattern as the `verify` aggregate.
-  const workflow = readFileSync(prWorkflow, "utf8");
-  const jobs = new Map();
-  let current = null;
-  for (const line of workflow.split("\n")) {
-    const header = /^ {2}([A-Za-z0-9_-]+):\s*$/.exec(line);
-    if (header) {
-      current = header[1];
-      jobs.set(current, []);
-      continue;
-    }
-    if (current && /^\S/.test(line)) current = null;
-    if (current) jobs.get(current).push(line);
-  }
-  for (const [id, lines] of jobs) jobs.set(id, lines.join("\n"));
+  const workflow = readPinnedTrustedPrWorkflow();
+  const jobs = readWorkflowJobs(workflow);
 
   const aggregate = jobs.get("e2e");
-  assert.ok(aggregate, "pr.yml must define an `e2e` job to satisfy branch protection");
+  assert.ok(aggregate, "pr-trusted.yml must define an `e2e` job to satisfy branch protection");
   assert.match(aggregate, /^ {4}name: e2e$/m, "the aggregate job must be named exactly `e2e`");
   assert.match(aggregate, /^ {4}if: \$\{\{ always\(\) \}\}$/m, "the aggregate must run even when a shard fails");
-  assert.match(aggregate, /^ {4}needs: \[e2e_shards\]$/m, "the aggregate must depend on the shard matrix");
+  assert.match(
+    aggregate,
+    /^ {4}needs: \[gate, (?:policy, )?e2e_shards\]$/m,
+    "the aggregate must depend on the runner gate, optional policy gate, and shard matrix",
+  );
   assert.match(
     aggregate,
     /test "\$E2E_SHARDS_RESULT" = "success"/,
@@ -120,7 +186,7 @@ test("pr.yml keeps a stable aggregate check named e2e over the shard matrix", ()
   );
 
   const shards = jobs.get("e2e_shards");
-  assert.ok(shards, "pr.yml must define the `e2e_shards` matrix job");
+  assert.ok(shards, "pr-trusted.yml must define the `e2e_shards` matrix job");
   const matrixEntries = [
     ...shards.matchAll(
       /^ {10}- shard_index: (?<shardIndex>\d+)\n {12}shard_count: (?<shardCount>\d+)\n {12}shard_label: (?<shardLabel>\d+\/\d+)$/gm,
@@ -143,17 +209,128 @@ test("pr.yml keeps a stable aggregate check named e2e over the shard matrix", ()
   }
 });
 
-test("pr.yml passes the shard's spec filter to Playwright without a literal --", () => {
+test("the trusted PR workflow limits full CI to merge-relevant stack layers", () => {
+  const workflow = readFileSync(trustedPrWorkflow, "utf8");
+  const jobs = readWorkflowJobs(workflow);
+  const gate = jobs.get("gate");
+
+  assert.match(gate, /^ {6}full_ci: \$\{\{ steps\.scope\.outputs\.full_ci \}\}$/m);
+  assert.match(gate, /STACK_JSON: \$\{\{ toJSON\(github\.event\.pull_request\.stack\) \}\}/);
+  assert.match(gate, /stack_position == stack_size/);
+  assert.match(gate, /"\$stack_base_ref" == "\$PR_BASE_REF"/);
+
+  for (const jobId of [
+    "typecheck_release_registry",
+    "general_tests",
+    "build",
+    "verify_serialized_server",
+    "canary_dry_run",
+    "e2e_shards",
+  ]) {
+    assert.match(
+      jobs.get(jobId),
+      /^ {4}if: \$\{\{ needs\.gate\.outputs\.full_ci == 'true' \}\}$/m,
+      `${jobId} must run only when the gate selects full CI`,
+    );
+  }
+
+  assert.doesNotMatch(
+    jobs.get("policy"),
+    /needs\.gate\.outputs\.full_ci/,
+    "the policy job must run on every PR layer",
+  );
+
+  const verify = jobs.get("verify");
+  assert.match(
+    verify,
+    /^ {4}needs: \[gate, policy, typecheck_release_registry, general_tests, build, docker_context_integrity\]$/m,
+  );
+  assert.match(verify, /POLICY_RESULT: \$\{\{ needs\.policy\.result \}\}/);
+  assert.match(verify, /test "\$TYPECHECK_RELEASE_REGISTRY_RESULT" = "skipped"/);
+  assert.match(verify, /test "\$GENERAL_TESTS_RESULT" = "skipped"/);
+  assert.match(verify, /test "\$BUILD_RESULT" = "skipped"/);
+  // Both halves of the docker-context lane's gating: the result must be
+  // wired into the aggregate's env AND asserted successful on full CI —
+  // dropping either would let `verify` pass after the lane fails.
+  assert.match(verify, /DOCKER_CONTEXT_INTEGRITY_RESULT: \$\{\{ needs\.docker_context_integrity\.result \}\}/);
+  assert.match(verify, /test "\$DOCKER_CONTEXT_INTEGRITY_RESULT" = "success"/);
+  assert.match(verify, /test "\$DOCKER_CONTEXT_INTEGRITY_RESULT" = "skipped"/);
+
+  const e2e = jobs.get("e2e");
+  assert.match(e2e, /^ {4}needs: \[gate, policy, e2e_shards\]$/m);
+  assert.match(e2e, /POLICY_RESULT: \$\{\{ needs\.policy\.result \}\}/);
+  assert.match(e2e, /false\) test "\$E2E_SHARDS_RESULT" = "skipped"/);
+});
+
+test("the stacked PR scope selector runs full CI only where intended", () => {
+  assert.equal(runStackScope(null, "master").full_ci, "true");
+  assert.equal(
+    runStackScope({ position: 11, size: 11, base: { ref: "master" } }, "stack-10").full_ci,
+    "true",
+  );
+  assert.equal(
+    runStackScope({ position: 1, size: 11, base: { ref: "master" } }, "master").full_ci,
+    "true",
+  );
+  assert.equal(
+    runStackScope({ position: 6, size: 11, base: { ref: "master" } }, "stack-5").full_ci,
+    "false",
+  );
+  assert.equal(
+    runStackScope({ position: "invalid", size: 11, base: { ref: "master" } }, "stack-5").full_ci,
+    "true",
+  );
+});
+
+test("the trusted PR workflow passes the shard's spec filter to Playwright without a literal --", () => {
   // `pnpm run test:e2e -- $specs` forwards the literal separator to Playwright,
   // so the specs after it are not applied as file filters.
-  const workflow = readFileSync(prWorkflow, "utf8");
+  const workflow = readPinnedTrustedPrWorkflow();
   assert.ok(
     !/pnpm run test:e2e --\s/.test(workflow),
-    "pr.yml must not insert a literal `--` between `pnpm run test:e2e` and the spec filter",
+    "pr-trusted.yml must not insert a literal `--` between `pnpm run test:e2e` and the spec filter",
   );
   assert.match(
     workflow,
     /pnpm run test:e2e \$specs/,
-    "pr.yml e2e_shards must invoke `pnpm run test:e2e $specs`",
+    "pr-trusted.yml e2e_shards must invoke `pnpm run test:e2e $specs`",
+  );
+});
+
+test("the trusted PR workflow regenerates stale stacked lockfiles", () => {
+  // Implementation PRs validate the workflow under development here. The
+  // caller remains pinned to the last merged trusted SHA until a separate
+  // activation PR advances it, so unmerged PR code never runs on trusted
+  // infrastructure.
+  const workflow = readFileSync(trustedPrWorkflow, "utf8");
+  assert.match(
+    workflow,
+    /policy:\n    needs: \[gate\][\s\S]{0,160}timeout-minutes: 10/,
+    "the unconditional resolution step needs the same timeout headroom as the lockfile refresh workflow",
+  );
+  assert.match(
+    workflow,
+    /- name: Setup Node\.js\n        uses: actions\/setup-node@[0-9a-f]+[^\n]*\n        with:\n          node-version: 24\n          cache: pnpm/,
+    "the policy job must restore the pnpm cache before dependency resolution",
+  );
+  assert.match(
+    workflow,
+    /pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile/,
+    "the policy job must resolve the complete merge tree without rewriting platform metadata",
+  );
+  assert.match(
+    workflow,
+    /cmp -s "\$RUNNER_TEMP\/pnpm-lock\.before\.yaml" pnpm-lock\.yaml/,
+    "the policy job must upload a lockfile only when regeneration changed it",
+  );
+
+  const restoreSteps = workflow.match(
+    /- name: Restore regenerated PR lockfile \(if policy uploaded one\)\n        if: needs\.policy\.outputs\.lockfile_regenerated == '1'/g,
+  ) ?? [];
+  assert.equal(restoreSteps.length, 6, "every downstream install job must restore a required regenerated artifact");
+  assert.doesNotMatch(
+    workflow,
+    /- name: Restore regenerated PR lockfile \(if policy uploaded one\)[\s\S]{0,220}continue-on-error:/,
+    "a missing artifact must fail after the policy job says it uploaded one",
   );
 });

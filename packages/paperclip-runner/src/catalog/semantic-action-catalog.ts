@@ -4,6 +4,8 @@ import type {
   PaperclipSemanticActionId,
   PaperclipSemanticActionMode,
 } from "./semantic-action-types.js";
+import { searchApiAction } from "../protocol-actions/search-api.js";
+import { callApiAction } from "../protocol-actions/call-api.js";
 
 const ALL_MODES = ["standard", "ask", "planning", "skill_test"] as const;
 const WORK_MODES = ["standard", "planning", "skill_test"] as const;
@@ -105,6 +107,17 @@ function descriptor(input: DescriptorInput): PaperclipSemanticActionDescriptor {
 }
 
 const descriptors: readonly PaperclipSemanticActionDescriptor[] = [
+  ...[searchApiAction, callApiAction].map(action => descriptor({
+    operationId: action.id,
+    title: action.live.descriptor.title,
+    description: action.live.descriptor.description,
+    placement: "optional",
+    effect: action.id === "search_api" ? "read" : "write",
+    requiredClaims: action.live.descriptor.requiredClaims,
+    allowedModes: action.live.descriptor.allowedModes,
+    inputSchema: action.live.descriptor.inputSchema,
+    outputSchema: action.live.descriptor.outputSchema,
+  })),
   descriptor({
     operationId: "get_task_context",
     title: "Get active task context",

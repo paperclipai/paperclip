@@ -614,6 +614,21 @@ export interface PluginEnvironmentLease {
   expiresAt?: string | null;
 }
 
+/** Serializable provider result. The host adds refresh/close lifecycle methods. */
+export interface PluginEnvironmentRunnerIngressEndpoint {
+  kind: "authenticated_websocket";
+  websocketUrl: string;
+  secretHeaders: Array<{ name: string; value: string }>;
+  generation: string;
+}
+
+export interface PluginEnvironmentRunnerIngressEndpointParams
+  extends PluginEnvironmentDriverBaseParams {
+  lease: PluginEnvironmentLease;
+  port: number;
+  path: string;
+}
+
 export interface PluginEnvironmentAcquireLeaseParams extends PluginEnvironmentDriverBaseParams {
   runId: string;
   workspaceMode?: string;
@@ -725,8 +740,17 @@ export interface PluginSyncFileMapping {
   kind: "file" | "directory";
   /**
    * POSIX file mode to apply at the target (e.g. `0o600` for secret material).
-   * When set, providers MUST create the target with this mode with no
-   * world-readable window (create-with-mode or chmod-before-bytes, never after).
+   * The target MUST carry this mode when the transfer completes.
+   *
+   * For a transfer to a host target, providers MUST apply the mode with no
+   * world-readable window: create the target with the mode, or apply the mode
+   * before the bytes arrive at the target path. A host file sits outside the
+   * sandbox boundary, so an open window shows the bytes to other host
+   * processes.
+   *
+   * For a transfer to a sandbox target, providers MAY apply the mode after
+   * they write the bytes. The sandbox is the trust boundary, so a short window
+   * shows the bytes only to code that already runs in that sandbox.
    */
   mode?: number;
   /** Glob patterns to exclude when `kind` is `"directory"`. */
@@ -991,7 +1015,7 @@ export interface PluginRenderCloseEvent {
  * key to a compile-time command. The open request carries no command string, so a
  * caller cannot select or override the command.
  */
-export type PluginLoginCommandKey = "claude" | "codex";
+export type PluginLoginCommandKey = "claude" | "codex" | "grok";
 
 /** The open request for one live login pseudo-terminal. The worker registers the terminal by `hostRouteId`. */
 export interface PluginLoginPtyOpenParams {
@@ -1062,6 +1086,12 @@ export interface PluginLoginPtyCloseResult {
 
 /** The worker→host pseudo-terminal output notification parameters. Modeled on `execute.log`. */
 export interface PluginLoginPtyOutputParams {
+  /**
+   * The host route identifier the open request carried. The worker echoes it,
+   * so the host can hold more than one concurrent login pseudo-terminal per
+   * worker and route each chunk to its own route.
+   */
+  hostRouteId: string;
   /** The worker session identifier that the open reply returned. */
   workerSessionId: string;
   /** The raw terminal output bytes. */
@@ -1070,6 +1100,12 @@ export interface PluginLoginPtyOutputParams {
 
 /** The worker→host pseudo-terminal exit notification parameters. */
 export interface PluginLoginPtyExitParams {
+  /**
+   * The host route identifier the open request carried. The worker echoes it,
+   * so the host can hold more than one concurrent login pseudo-terminal per
+   * worker and resolve the exit against its own route.
+   */
+  hostRouteId: string;
   /** The worker session identifier that the open reply returned. */
   workerSessionId: string;
   /** The child exit code, or null when the child ended with no code. */
@@ -1341,6 +1377,10 @@ export interface HostToWorkerMethods {
     params: PluginEnvironmentExecuteParams,
     result: PluginEnvironmentExecuteResult,
   ];
+  environmentRunnerIngressEndpoint: [
+    params: PluginEnvironmentRunnerIngressEndpointParams,
+    result: PluginEnvironmentRunnerIngressEndpoint,
+  ];
   environmentSyncIn: [
     params: PluginEnvironmentSyncInParams,
     result: PluginEnvironmentSyncResult,
@@ -1431,6 +1471,7 @@ export const HOST_TO_WORKER_OPTIONAL_METHODS: readonly HostToWorkerMethodName[] 
   "environmentDestroyLease",
   "environmentRealizeWorkspace",
   "environmentExecute",
+  "environmentRunnerIngressEndpoint",
   "environmentSyncIn",
   "environmentSyncOut",
   "environmentStartInteractiveSetup",

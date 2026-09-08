@@ -47,6 +47,10 @@ function asBoolean(value: unknown) {
   return typeof value === "boolean" ? value : null;
 }
 
+function asNonNegativeInteger(value: unknown) {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : null;
+}
+
 function asNestedString(record: Record<string, unknown>, key: string, nestedKey: string) {
   const nested = asRecord(record[key]);
   return nested ? asString(nested[nestedKey]) : null;
@@ -198,6 +202,9 @@ function pullRequestSnapshot(identity: GitHubObjectIdentity, body: Record<string
   const headSha = asNestedString(body, "head", "sha");
   const baseRef = asNestedString(body, "base", "ref");
   const reviewDecision = asString(body.review_decision);
+  const additions = asNonNegativeInteger(body.additions);
+  const deletions = asNonNegativeInteger(body.deletions);
+  const changedFiles = asNonNegativeInteger(body.changed_files);
 
   let statusKey = state;
   let statusLabel = state === "open" ? "Open" : state === "closed" ? "Closed" : "Unknown";
@@ -256,6 +263,9 @@ function pullRequestSnapshot(identity: GitHubObjectIdentity, body: Record<string
       ...(headSha ? { headSha } : {}),
       ...(baseRef ? { baseRef } : {}),
       ...(reviewDecision ? { reviewDecision } : {}),
+      ...(additions !== null ? { additions } : {}),
+      ...(deletions !== null ? { deletions } : {}),
+      ...(changedFiles !== null ? { changedFiles } : {}),
     },
   };
 }

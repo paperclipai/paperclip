@@ -15,12 +15,19 @@ const mockIssuesApi = vi.hoisted(() => ({
   ensureWorkProductReviewDocument: vi.fn(async (): Promise<unknown> => ({})),
 }));
 vi.mock("@/api/issues", () => ({ issuesApi: mockIssuesApi }));
+const mockActivityApi = vi.hoisted(() => ({ runsForIssue: vi.fn(async (): Promise<unknown[]> => []) }));
+vi.mock("@/api/activity", () => ({ activityApi: mockActivityApi }));
+const mockAgentsApi = vi.hoisted(() => ({ list: vi.fn(async (): Promise<unknown[]> => []) }));
+vi.mock("@/api/agents", () => ({ agentsApi: mockAgentsApi }));
 
 const mockUseIssueDocuments = vi.hoisted(() =>
   vi.fn((): { data: IssueDocument[] } => ({ data: [] })),
 );
 vi.mock("@/hooks/useIssueDocuments", () => ({ useIssueDocuments: mockUseIssueDocuments }));
-vi.mock("@/lib/router", () => ({ useLocation: () => ({ hash: "" }) }));
+vi.mock("@/lib/router", () => ({
+  Link: ({ to, children, ...props }: { to: string; children: React.ReactNode }) => <a href={to} {...props}>{children}</a>,
+  useLocation: () => ({ hash: "" }),
+}));
 vi.mock("@/components/MarkdownBody", () => ({
   MarkdownBody: ({ children }: { children: string }) => (
     <div data-testid="markdown-body">{children}</div>
@@ -39,7 +46,7 @@ const ATTACHMENT_ID = "00000000-0000-4000-8000-000000000001";
 const WORK_PRODUCT_ID = "11111111-1111-4111-8111-111111111111";
 const REVIEW_KEY = artifactReviewDocumentKey(WORK_PRODUCT_ID);
 
-const issue = { id: "issue-1", identifier: "PAP-1534", workMode: "standard" } as Issue;
+const issue = { id: "issue-1", companyId: "company-1", identifier: "PAP-1534", workMode: "standard" } as Issue;
 
 function makeMarkdownWorkProduct(overrides: Partial<IssueWorkProduct> = {}): IssueWorkProduct {
   const contentPath = `/api/attachments/${ATTACHMENT_ID}/content`;
@@ -160,6 +167,8 @@ describe("markdown work product review row", () => {
     Element.prototype.scrollIntoView = vi.fn();
     mockIssuesApi.listAttachments.mockResolvedValue([]);
     mockIssuesApi.listWorkProducts.mockResolvedValue([makeMarkdownWorkProduct()]);
+    mockActivityApi.runsForIssue.mockResolvedValue([]);
+    mockAgentsApi.list.mockResolvedValue([]);
     mockUseIssueDocuments.mockReturnValue({ data: [] });
   });
 
@@ -172,7 +181,10 @@ describe("markdown work product review row", () => {
     container.remove();
   });
 
-  async function renderTab(props: { documentDeepLink?: { requestId: number; documentKey: string } | null } = {}) {
+  async function renderTab(
+    props: { documentDeepLink?: { requestId: number; documentKey: string } | null } = {},
+    expectedText = "Verification report",
+  ) {
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
     });
@@ -186,7 +198,7 @@ describe("markdown work product review row", () => {
       ),
     );
     await waitForAssertion(() => {
-      expect(container.textContent).toContain("Verification report");
+      expect(container.textContent).toContain(expectedText);
     });
   }
 
@@ -211,7 +223,7 @@ describe("markdown work product review row", () => {
 
     // The proxy document maps onto the work-product row instead of a
     // standalone Documents row.
-    expect(container.textContent).not.toContain("Documents");
+    expect(container.querySelectorAll(`[data-testid="annotation-surface-${REVIEW_KEY}"]`)).toHaveLength(0);
     expect(container.querySelector(`[data-testid="annotation-count-${REVIEW_KEY}"]`)).not.toBeNull();
 
     await act(async () => expandButton().click());
@@ -333,12 +345,68 @@ describe("markdown work product review row", () => {
     await renderTab();
 
     await waitForAssertion(() => {
-      const row = Array.from(container.querySelectorAll("a")).find(
-        (anchor) => anchor.textContent?.includes("Verification report"),
-      );
-      expect(row?.getAttribute("href")).toBe(contentPath);
-      expect(row?.getAttribute("target")).toBe("_blank");
+      const row = container.querySelector('[data-testid="task-chat-rich-work-product-artifact"]');
+      const link = row?.querySelector("a");
+      expect(row?.textContent).toContain("Verification report");
+      expect(link?.getAttribute("href")).toBe(contentPath);
     });
     expect(container.querySelector("button[aria-expanded]")).toBeNull();
+  });
+
+  it("groups compact rows by producing run and filters by type", async () => {
+    const runOne = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const runTwo = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    const imagePath = `/api/attachments/${ATTACHMENT_ID}/content`;
+    mockIssuesApi.listWorkProducts.mockResolvedValue([
+      makeMarkdownWorkProduct({
+        id: "22222222-2222-4222-8222-222222222222",
+        type: "pull_request",
+        provider: "github",
+        title: "Artifact grouping PR",
+        url: "https://github.com/paperclipai/paperclip/pull/1",
+        createdByRunId: runOne,
+        metadata: { repo: "paperclipai/paperclip", number: 1, baseRef: "master", headRef: "artifacts" },
+      }),
+      makeMarkdownWorkProduct({
+        id: "33333333-3333-4333-8333-333333333333",
+        title: "Artifacts screenshot",
+        createdByRunId: runTwo,
+        metadata: {
+          attachmentId: ATTACHMENT_ID,
+          contentType: "image/png",
+          byteSize: 64,
+          contentPath: imagePath,
+          openPath: imagePath,
+          downloadPath: `${imagePath}?download=1`,
+        },
+      }),
+    ]);
+    mockActivityApi.runsForIssue.mockResolvedValue([
+      { runId: runOne, agentId: "agent-1", startedAt: "2026-09-02T10:00:00Z", createdAt: "2026-09-02T10:00:00Z" },
+      { runId: runTwo, agentId: "agent-2", startedAt: "2026-09-02T11:00:00Z", createdAt: "2026-09-02T11:00:00Z" },
+    ]);
+    mockAgentsApi.list.mockResolvedValue([
+      { id: "agent-1", name: "CodexCoder" },
+      { id: "agent-2", name: "DesignCoder" },
+    ]);
+
+    await renderTab({}, "Artifact grouping PR");
+
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("CodexCoder");
+      expect(container.textContent).toContain("DesignCoder");
+      expect(container.querySelector('article[data-variant="compact"]')).not.toBeNull();
+      expect(container.querySelector(`img[src="${imagePath}"]`)).not.toBeNull();
+      expect(container.querySelector('a[aria-label="Open on GitHub: Artifact grouping PR"]')).not.toBeNull();
+      expect(container.querySelector('a[aria-label="Open gallery: Artifacts screenshot"]')).not.toBeNull();
+    });
+
+    const typeSelect = container.querySelector('select[aria-label="Filter artifacts by type"]') as HTMLSelectElement;
+    await act(async () => {
+      typeSelect.value = "pull_request";
+      typeSelect.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    expect(container.textContent).toContain("Artifact grouping PR");
+    expect(container.textContent).not.toContain("Artifacts screenshot");
   });
 });

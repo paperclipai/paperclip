@@ -105,6 +105,33 @@ function createDbStub() {
   return { db, updateMock };
 }
 
+function createAgentInviteDbStub() {
+  const invite = {
+    id: "invite-1",
+    companyId: "company-1",
+    inviteType: "company_join",
+    allowedJoinTypes: "agent",
+    tokenHash: "hash",
+    defaultsPayload: null,
+    expiresAt: new Date("2027-03-10T00:00:00.000Z"),
+    invitedByUserId: "user-1",
+    revokedAt: null,
+    acceptedAt: null,
+    createdAt: new Date("2026-03-07T00:00:00.000Z"),
+    updatedAt: new Date("2026-03-07T00:00:00.000Z"),
+  };
+  const insert = vi.fn();
+  const update = vi.fn();
+  const db = {
+    select() {
+      return createQuery([invite]);
+    },
+    insert,
+    update,
+  };
+  return { db, insert, update };
+}
+
 function createApp(db: Record<string, unknown>) {
   return createAppWithActor(db, {
     type: "board",
@@ -313,6 +340,26 @@ describe("POST /invites/:token/accept", () => {
     expect(res.status).toBe(409);
     expect(res.body.error).toBe("You already belong to this company");
     expect(updateMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects Paperclip Runner before an agent invite creates a join request", async () => {
+    const { db, insert, update } = createAgentInviteDbStub();
+    const app = createApp(db);
+
+    const res = await request(app)
+      .post("/api/invites/pcp_invite_test/accept")
+      .send({
+        requestType: "agent",
+        agentName: "Native Agent",
+        adapterType: "paperclip_runner",
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe(
+      "Paperclip Runner is not available through agent invite onboarding.",
+    );
+    expect(insert).not.toHaveBeenCalled();
+    expect(update).not.toHaveBeenCalled();
   });
 
   it("grants company access immediately for a human invite", async () => {

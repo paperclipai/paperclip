@@ -344,10 +344,22 @@ export const providerDescriptorSchema = {
   ],
   "properties": {
     "provider": {
-      "const": "codex"
+      "enum": [
+        "codex",
+        "opencode",
+        "claude_managed",
+        "aws_agentcore",
+        "acpx"
+      ]
     },
     "driver": {
-      "const": "codex_app_server"
+      "enum": [
+        "codex_app_server",
+        "opencode_server",
+        "claude_managed_agents_api",
+        "aws_agentcore_harness_api",
+        "acpx_runtime"
+      ]
     },
     "model": {
       "type": [
@@ -357,12 +369,21 @@ export const providerDescriptorSchema = {
       "maxLength": 240
     },
     "executionKind": {
-      "const": "local_process"
+      "enum": [
+        "local_process",
+        "remote_service"
+      ]
     },
     "providerVersion": {
       "type": "string",
       "minLength": 1,
       "maxLength": 120
+    },
+    "service": {
+      "enum": [
+        "anthropic_managed_agents",
+        "aws_bedrock_agentcore_harness"
+      ]
     },
     "providerSessionId": {
       "type": [
@@ -377,9 +398,255 @@ export const providerDescriptorSchema = {
         "null"
       ],
       "minimum": 1
+    },
+    "agentProcessId": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 1
+    },
+    "endpointArn": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2048
+    },
+    "endpointQualifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 240
+    },
+    "memoryId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 240
+    },
+    "eventExpiryDays": {
+      "const": 90
+    },
+    "agent": {
+      "enum": [
+        "pi",
+        "claude",
+        "codex"
+      ]
+    },
+    "requestedModel": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 240
+    },
+    "acpProtocolVersion": {
+      "const": 1
+    },
+    "agentServerPackage": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 240
+    },
+    "agentServerVersion": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 120
+    },
+    "agentRuntimePackage": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 240
+    },
+    "agentRuntimeVersion": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 120
+    },
+    "acpxRecordId": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 240
     }
   },
-  "additionalProperties": true
+  "allOf": [
+    {
+      "oneOf": [
+        {
+          "properties": {
+            "provider": {
+              "const": "codex"
+            },
+            "driver": {
+              "const": "codex_app_server"
+            },
+            "executionKind": {
+              "const": "local_process"
+            }
+          }
+        },
+        {
+          "properties": {
+            "provider": {
+              "const": "opencode"
+            },
+            "driver": {
+              "const": "opencode_server"
+            },
+            "executionKind": {
+              "const": "local_process"
+            }
+          }
+        },
+        {
+          "properties": {
+            "provider": {
+              "const": "claude_managed"
+            },
+            "driver": {
+              "const": "claude_managed_agents_api"
+            },
+            "executionKind": {
+              "const": "remote_service"
+            }
+          }
+        },
+        {
+          "properties": {
+            "provider": {
+              "const": "aws_agentcore"
+            },
+            "driver": {
+              "const": "aws_agentcore_harness_api"
+            },
+            "executionKind": {
+              "const": "remote_service"
+            }
+          }
+        },
+        {
+          "properties": {
+            "provider": {
+              "const": "acpx"
+            },
+            "driver": {
+              "const": "acpx_runtime"
+            },
+            "executionKind": {
+              "const": "local_process"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "if": {
+        "properties": {
+          "executionKind": {
+            "const": "remote_service"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "service"
+        ],
+        "properties": {
+          "processId": {
+            "const": null
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "executionKind": {
+            "const": "local_process"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "service": false
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "provider": {
+            "const": "claude_managed"
+          }
+        },
+        "required": [
+          "provider"
+        ]
+      },
+      "then": {
+        "properties": {
+          "service": {
+            "const": "anthropic_managed_agents"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "provider": {
+            "const": "aws_agentcore"
+          }
+        },
+        "required": [
+          "provider"
+        ]
+      },
+      "then": {
+        "properties": {
+          "service": {
+            "const": "aws_bedrock_agentcore_harness"
+          }
+        },
+        "required": [
+          "service",
+          "endpointArn",
+          "endpointQualifier",
+          "memoryId",
+          "eventExpiryDays"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "provider": {
+            "const": "acpx"
+          }
+        },
+        "required": [
+          "provider"
+        ]
+      },
+      "then": {
+        "required": [
+          "agent",
+          "requestedModel",
+          "acpProtocolVersion",
+          "agentServerPackage",
+          "agentServerVersion",
+          "acpxRecordId",
+          "agentProcessId"
+        ]
+      }
+    }
+  ],
+  "additionalProperties": false
 } as const;
 
 export const providerEventSchema = {
@@ -472,6 +739,7 @@ export const providerEventSchema = {
     },
     "plan": {
       "type": "object",
+      "description": "A complete provider-authored within-turn checklist snapshot. Consumers replace the prior snapshot with the same planId in PRP sourceSeq order; this is not Paperclip's durable Plan document.",
       "required": [
         "schema",
         "planId",
@@ -527,6 +795,7 @@ export const providerEventSchema = {
           "type": "boolean"
         },
         "syncStatus": {
+          "description": "Legacy compatibility field. Within-turn checklist snapshots use not_applicable.",
           "enum": [
             "streaming",
             "pending",
@@ -536,6 +805,7 @@ export const providerEventSchema = {
           ]
         },
         "documentRevision": {
+          "description": "Legacy compatibility field. Within-turn checklist snapshots use null.",
           "type": [
             "integer",
             "null"
@@ -1596,7 +1866,8 @@ export const semanticToolSchema = {
     "phase": {
       "enum": [
         "input",
-        "result"
+        "result",
+        "reconciled"
       ]
     },
     "operationId": {
@@ -1732,9 +2003,15 @@ export const semanticToolSchema = {
       "if": {
         "properties": {
           "phase": {
-            "const": "result"
+            "enum": [
+              "result",
+              "reconciled"
+            ]
           }
-        }
+        },
+        "required": [
+          "phase"
+        ]
       },
       "then": {
         "required": [
@@ -1892,6 +2169,9 @@ export const usageSchema = {
     },
     "cumulative": {
       "$ref": "#/$defs/measurement"
+    },
+    "runDeltaAvailable": {
+      "type": "boolean"
     },
     "runDelta": {
       "$ref": "#/$defs/measurement"
@@ -2159,6 +2439,9 @@ export const questionSetSchema = {
         "description": {
           "type": "string",
           "maxLength": 4000
+        },
+        "recommended": {
+          "type": "boolean"
         }
       },
       "additionalProperties": false
@@ -2481,12 +2764,12 @@ export const requestSchema = {
         "turnId": {
           "type": "string",
           "minLength": 1,
-          "maxLength": 160
+          "maxLength": 240
         },
         "itemId": {
           "type": "string",
           "minLength": 1,
-          "maxLength": 160
+          "maxLength": 240
         }
       },
       "additionalProperties": false
@@ -2772,6 +3055,24 @@ export const resultSchema = {
         },
         "owner": {
           "type": "object",
+          "required": [
+            "kind",
+            "name"
+          ],
+          "properties": {
+            "kind": {
+              "enum": [
+                "agent",
+                "user",
+                "system",
+                "external"
+              ]
+            },
+            "name": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
           "additionalProperties": true
         },
         "unblockAction": {
@@ -2957,12 +3258,12 @@ export const eventSchema = {
     "turnId": {
       "type": "string",
       "minLength": 1,
-      "maxLength": 160
+      "maxLength": 240
     },
     "itemId": {
       "type": "string",
       "minLength": 1,
-      "maxLength": 160
+      "maxLength": 240
     },
     "eventType": {
       "enum": [
@@ -2971,6 +3272,7 @@ export const eventSchema = {
         "runner.reconciled",
         "runner.disconnected",
         "runner.draining",
+        "runner.backpressure",
         "runner.suspending",
         "runner.suspended",
         "runner.stopped",
@@ -3032,6 +3334,7 @@ export const eventSchema = {
         "usage.reported",
         "semantic_tool.input",
         "semantic_tool.result",
+        "semantic_tool.reconciled",
         "mcp_app.discovered",
         "mcp_app.resource.resolved",
         "mcp_app.initializing",
@@ -3519,6 +3822,40 @@ export const eventSchema = {
                     "properties": {
                       "phase": {
                         "const": "result"
+                      }
+                    }
+                  }
+                ]
+              }
+            },
+            "additionalProperties": true
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "eventType": {
+            "const": "semantic_tool.reconciled"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "properties": {
+              "semantic_tool": {
+                "allOf": [
+                  {
+                    "$ref": "https://paperclip.dev/schemas/prp/v1/semantic-tool.schema.json"
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "phase": {
+                        "const": "reconciled"
                       }
                     }
                   }

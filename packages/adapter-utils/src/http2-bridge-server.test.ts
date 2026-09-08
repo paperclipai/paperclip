@@ -10,6 +10,7 @@ import {
   createHttp2BridgeServer,
   parseCanonicalBridgeRequestPath,
   wrapDuplexChannelAsNodeDuplex,
+  DEFAULT_HTTP2_BRIDGE_MAX_BUFFERED_READ_BYTES,
   DEFAULT_HTTP2_BRIDGE_PING_INTERVAL_MS,
   DEFAULT_HTTP2_BRIDGE_PING_STALL_MS,
   HTTP2_BRIDGE_ENABLE_PUSH,
@@ -28,7 +29,10 @@ import {
   type Http2BridgeForwardResult,
   type Http2BridgeGoawayRecord,
 } from "./http2-bridge-server.js";
-import { createSandboxHttp2BridgeGateway } from "./sandbox-callback-bridge.js";
+import {
+  createSandboxHttp2BridgeGateway,
+  DEFAULT_SANDBOX_CALLBACK_BRIDGE_MAX_BODY_BYTES,
+} from "./sandbox-callback-bridge.js";
 import type { CommandManagedDuplexChannel } from "./command-managed-runtime.js";
 
 /**
@@ -346,6 +350,185 @@ describe("createHttp2BridgeServer + createSandboxHttp2BridgeGateway", () => {
     }
   });
 
+  it("test_the_server_aborts_the_forward_when_the_client_closes_the_stream", async () => {
+    let capturedRequest: Http2BridgeForwardRequest | undefined;
+    let releaseForward: (() => void) | undefined;
+    const forwardHeld = new Promise<void>((resolve) => {
+      releaseForward = resolve;
+    });
+    const { handle, bridgeToken, clientSide } = bindTestServer({
+      forwardRequest: async (request) => {
+        capturedRequest = request;
+        // Hold the handler open, so the test controls exactly when the
+        // client-side stream close happens relative to the forward.
+        await forwardHeld;
+        return { status: 200, body: "{}" };
+      },
+    });
+    const rawClient = connectRawClient(clientSide);
+    try {
+      const stream = rawClient.request({
+        ":method": "GET",
+        ":path": "/api/agents/me",
+        authorization: `Bearer ${bridgeToken}`,
+      });
+      const streamClosed = new Promise<void>((resolve) => {
+        stream.on("error", () => resolve());
+        stream.on("close", () => resolve());
+      });
+      stream.end();
+      // Give the request time to reach the server and enter forwardRequest.
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(capturedRequest).toBeDefined();
+      expect(capturedRequest!.signal.aborted).toBe(false);
+      stream.close(http2.constants.NGHTTP2_CANCEL);
+      await streamClosed;
+      // Give the server's own stream `close` listener a turn to run.
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(capturedRequest!.signal.aborted).toBe(true);
+      releaseForward!();
+    } finally {
+      rawClient.close();
+      await handle.close();
+    }
+  });
+
+  it("test_one_aborted_stream_leaves_the_session_and_the_other_streams_open", async () => {
+    const signalsByPath = new Map<string, AbortSignal>();
+    let releaseSurvivor: (() => void) | undefined;
+    const survivorHeld = new Promise<void>((resolve) => {
+      releaseSurvivor = resolve;
+    });
+    const { handle, bridgeToken, clientSide } = bindTestServer({
+      forwardRequest: async (request) => {
+        signalsByPath.set(request.pathname, request.signal);
+        if (request.pathname === "/api/agents/aborted") {
+          // The RST — not a manual release — is what must end this forward:
+          // it settles only when the stream's own signal fires, so the test
+          // proves the signal itself unblocks the handler.
+          await new Promise<void>((_resolve, reject) => {
+            request.signal.addEventListener("abort", () => reject(new Error("aborted")), {
+              once: true,
+            });
+          }).catch(() => undefined);
+        } else if (request.pathname === "/api/agents/survivor") {
+          await survivorHeld;
+        }
+        return { status: 200, body: JSON.stringify({ path: request.pathname }) };
+      },
+    });
+    const rawClient = connectRawClient(clientSide);
+    try {
+      const abortedStream = rawClient.request({
+        ":method": "GET",
+        ":path": "/api/agents/aborted",
+        authorization: `Bearer ${bridgeToken}`,
+      });
+      const survivorStream = rawClient.request({
+        ":method": "GET",
+        ":path": "/api/agents/survivor",
+        authorization: `Bearer ${bridgeToken}`,
+      });
+      const abortedStreamClosed = new Promise<void>((resolve) => {
+        abortedStream.on("error", () => resolve());
+        abortedStream.on("close", () => resolve());
+      });
+      // Capture the survivor stream's own response, so the test proves this
+      // exact stream — the sibling of the aborted one, on the same session —
+      // completes normally, not merely that the session admits a fresh one.
+      const survivorResponse = new Promise<{ status: number; body: string }>((resolve, reject) => {
+        let status = 0;
+        let body = "";
+        survivorStream.setEncoding("utf8");
+        survivorStream.on("response", (h) => {
+          status = Number(h[":status"]) || 0;
+        });
+        survivorStream.on("data", (chunk) => (body += chunk));
+        survivorStream.on("end", () => resolve({ status, body }));
+        survivorStream.on("error", reject);
+      });
+      abortedStream.end();
+      survivorStream.end();
+      // Give both requests time to reach the server and enter forwardRequest.
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      abortedStream.close(http2.constants.NGHTTP2_CANCEL);
+      await abortedStreamClosed;
+      // Give the server's own stream `close` listener a turn to run.
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      // The one aborted stream's signal fires. The other, still-open stream's
+      // signal stays untouched: the abort is local to its own stream.
+      expect(signalsByPath.get("/api/agents/aborted")?.aborted).toBe(true);
+      expect(signalsByPath.get("/api/agents/survivor")?.aborted).toBe(false);
+      releaseSurvivor!();
+
+      const response = await survivorResponse;
+      expect(response.status).toBe(200);
+      expect(JSON.parse(response.body)).toEqual({ path: "/api/agents/survivor" });
+    } finally {
+      rawClient.close();
+      await handle.close();
+    }
+  });
+
+  it("test_live_forward_work_never_passes_the_stream_limit", async () => {
+    // A forward that is never aborted holds open until the caller aborts it
+    // — this stands in for a forward stuck at its own long timeout. Only the
+    // per-stream abort binding this file adds can free such a forward before
+    // that timeout, so this count proves the binding, not merely the HTTP/2
+    // session's own stream-slot accounting (a stream's protocol slot frees on
+    // RST regardless of whether its forward call ever settles).
+    let liveForwards = 0;
+    let maxLiveForwards = 0;
+    const { handle, bridgeToken, clientSide } = bindTestServer({
+      forwardRequest: async (request) => {
+        liveForwards += 1;
+        maxLiveForwards = Math.max(maxLiveForwards, liveForwards);
+        try {
+          await new Promise<void>((resolve, reject) => {
+            if (request.signal.aborted) {
+              reject(new Error("aborted"));
+              return;
+            }
+            request.signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+          });
+          return { status: 200, body: JSON.stringify({ path: request.pathname }) };
+        } finally {
+          liveForwards -= 1;
+        }
+      },
+    });
+    const rawClient = connectRawClient(clientSide);
+    try {
+      const openAndCancelOneBatch = async (label: string) => {
+        const streams = Array.from({ length: HTTP2_BRIDGE_MAX_CONCURRENT_STREAMS }, (_, index) =>
+          rawClient.request({
+            ":method": "GET",
+            ":path": `/api/issues/${label}-${index}`,
+            authorization: `Bearer ${bridgeToken}`,
+          }),
+        );
+        for (const stream of streams) stream.end();
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        for (const stream of streams) stream.close(http2.constants.NGHTTP2_CANCEL);
+        await new Promise((resolve) => setTimeout(resolve, 30));
+      };
+
+      // One full batch of maximum-concurrency streams, closed while their
+      // forwards are still held open, then a second full batch opened right
+      // after. Without the abort binding, the first batch's forwards would
+      // still be alive when the second batch dispatches, doubling the live-
+      // forward count past the stream limit.
+      await openAndCancelOneBatch("first");
+      await openAndCancelOneBatch("second");
+
+      expect(maxLiveForwards).toBeLessThanOrEqual(HTTP2_BRIDGE_MAX_CONCURRENT_STREAMS);
+      expect(liveForwards).toBe(0);
+    } finally {
+      rawClient.close();
+      await handle.close();
+    }
+  });
+
   it("test_a_stalled_request_body_settles_instead_of_hanging_forever", async () => {
     const forwarderTracker = createForwarderCallTracker();
     const { handle, bridgeToken, clientSide } = bindTestServer({
@@ -630,7 +813,7 @@ describe("createHttp2BridgeServer + createSandboxHttp2BridgeGateway", () => {
       streamResetBurst: HTTP2_BRIDGE_STREAM_RESET_BURST,
     });
     expect(HTTP2_BRIDGE_ENABLE_PUSH).toBe(false);
-    expect(HTTP2_BRIDGE_MAX_CONCURRENT_STREAMS).toBe(64);
+    expect(HTTP2_BRIDGE_MAX_CONCURRENT_STREAMS).toBe(4);
     expect(HTTP2_BRIDGE_MAX_HEADER_LIST_SIZE).toBe(16384);
     expect(HTTP2_BRIDGE_HEADER_TABLE_SIZE).toBe(4096);
     expect(HTTP2_BRIDGE_MAX_SESSION_MEMORY).toBe(16);
@@ -659,6 +842,20 @@ describe("createHttp2BridgeServer + createSandboxHttp2BridgeGateway", () => {
       rawClient.close();
       await handle.close();
     }
+  });
+
+  it("test_the_host_body_budget_matches_the_stream_limit", () => {
+    // The multiplier counts every retained `Buffer` and string copy of one
+    // live forward's request and response body: four exact `Buffer` rows,
+    // plus two string rows. Each string row applies two bytes to each UTF-16
+    // code unit of the body limit (`sandbox-callback-bridge.ts`), for an
+    // accounting peak of eight times the body limit for one live forward.
+    // `test_live_forward_work_never_passes_the_stream_limit` proves the
+    // count of live forwards never passes `HTTP2_BRIDGE_MAX_CONCURRENT_STREAMS`,
+    // so this multiplier bounds live forwards, not merely open streams.
+    expect(
+      HTTP2_BRIDGE_MAX_CONCURRENT_STREAMS * 8 * DEFAULT_SANDBOX_CALLBACK_BRIDGE_MAX_BODY_BYTES,
+    ).toBe(8_388_608);
   });
 
   describe("parseCanonicalBridgeRequestPath", () => {
@@ -973,6 +1170,36 @@ describe("createHttp2BridgeServer + createSandboxHttp2BridgeGateway", () => {
     dataListener?.(Buffer.alloc(30_000, "b")); // queues: 30,000 of the 80,000-byte cap.
     dataListener?.(Buffer.alloc(30_000, "b")); // queues: 60,000 of the 80,000-byte cap.
     dataListener?.(Buffer.alloc(30_000, "b")); // 90,000 queued bytes passes the cap.
+
+    const error = await errored;
+    expect(error.message).toMatch(/backpressure/i);
+    expect(stopped).toBe(true);
+  });
+
+  it("stops the channel when the read queue passes the lowered byte bound", async () => {
+    let dataListener: ((chunk: Uint8Array) => void) | undefined;
+    let stopped = false;
+    const channel: CommandManagedDuplexChannel = {
+      write: () => undefined,
+      onData: (listener) => {
+        dataListener = listener;
+      },
+      onExit: () => undefined,
+      stop: () => {
+        stopped = true;
+      },
+      close: async () => undefined,
+    };
+    // No override: this test proves the default bound itself is the direct
+    // 524,288-byte value, no longer derived from `HTTP2_BRIDGE_MAX_SESSION_MEMORY`.
+    // No consumer ever attaches, so the readable side never drains.
+    expect(DEFAULT_HTTP2_BRIDGE_MAX_BUFFERED_READ_BYTES).toBe(524_288);
+    const duplex = wrapDuplexChannelAsNodeDuplex(channel);
+    const errored = new Promise<Error>((resolve) => duplex.on("error", resolve));
+
+    dataListener?.(Buffer.alloc(70_000, "a")); // passes the default high-water mark; still pushed directly.
+    dataListener?.(Buffer.alloc(500_000, "b")); // queues most of the 524,288-byte default cap.
+    dataListener?.(Buffer.alloc(60_000, "b")); // passes the default cap.
 
     const error = await errored;
     expect(error.message).toMatch(/backpressure/i);

@@ -718,7 +718,7 @@ PATCH /api/companies/{companyId}         — update company fields
 POST /api/companies/{companyId}/logo     — upload logo (multipart, field: "file")
 ```
 
-**CEO-allowed fields:** `name`, `description`, `brandColor` (hex e.g. `#FF5733` or null), `logoAssetId` (UUID or null).
+**CEO-allowed fields:** `name`, `description`, `logoAssetId` (UUID or null).
 
 **Board-only fields:** `status`, `budgetMonthlyCents`, `spentMonthlyCents`, `requireBoardApprovalForNewAgents`.
 

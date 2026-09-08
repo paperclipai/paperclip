@@ -6,31 +6,183 @@ exec time. The environment is a requirement, not a build step.
 
 This document states requirements. It does not state build steps.
 
-## bwrap prerequisites (advisory, optional)
+## Security boundary
 
-A sandbox provider can wrap a command with an advisory bubblewrap (`bwrap`)
-wrapper. The wrapper is advisory, best-effort, and automatic. It adds no
-security. The ephemeral sandbox model stays the only security posture. A missing
-prerequisite degrades to the plain command. It never fails the lease. Daytona is
-the current provider with bwrap support.
+Paperclip runs agent work inside a sandbox. Paperclip protects the host from
+the code in that sandbox. This section states the rule for that protection. It
+does not state the implementation.
 
-The wrapper needs three run-time prerequisites. Each prerequisite is a fact of
-the image or snapshot, not a fact of the runtime code. The runtime does not
-build the image or snapshot. The runtime only probes for the capability and
-degrades when the capability is absent. So each prerequisite is an owner
-responsibility under the requirement-not-build contract above:
+A sandbox is an untrusted execution environment. Paperclip assumes that a
+sandbox process can read or change all accessible data.
 
-- The `bubblewrap` package is installed, and the `bwrap` binary is on the PATH
-  (normally `/usr/bin/bwrap`).
-- A passwordless `sudo` rule lets the sandbox user run `bwrap` as root.
-- The host and kernel allow an unprivileged user namespace.
+Paperclip does not protect sandbox files, processes, credentials, or code from
+other code in the same sandbox.
 
-The owner supplies these prerequisites through the image or snapshot. The
-provider README states the distro-specific install commands, the exact sudoers
-rule, the user-namespace setting, and the verification command. The install and
-the sudoers change are environment provisioning at the image or snapshot layer.
-Route them to DevOps through the board. Do not add a provisioning script to the
-repository.
+This section covers sandbox providers. It does not cover a local run on the
+host. A local run has a different boundary.
+
+### What the boundary protects
+
+Paperclip protects two authorities across the boundary:
+
+- The authority to write host files
+- The authority to call the Paperclip API
+
+Sandbox code holds each authority through one surface only:
+
+1. **Outbound workspace synchronization.** Paperclip copies sandbox files to
+   host paths that the Paperclip orchestrator selects.
+2. **The Paperclip HTTP bridge.** Sandbox code calls the Paperclip API through
+   the bridge.
+
+A boundary control limits one of these two authorities. A control that only
+protects data inside the sandbox is not a boundary control. A control that only
+manages resource use is not a boundary control.
+
+### Provider isolation assumption
+
+The rule below depends on this assumption.
+
+The sandbox provider must isolate the sandbox from the host and the provider
+control plane. The provider must isolate these items from direct sandbox access:
+
+- Host files
+- Host credentials
+- Cluster credentials
+- Management sockets
+- Provider management interfaces
+
+The provider must use isolated sandbox storage for each sandbox path that
+synchronization uses. This includes workspace paths and staging paths.
+
+The provider must keep every host path outside a sandbox synchronization path.
+A host path inside a synchronization path makes host files available to sandbox
+code. Sandbox code can then change host files, and no synchronization control
+applies to the change. This removes the boundary.
+
+A transfer and sandbox code must have the same read authority over sandbox
+files. More transfer authority can turn a sandbox symbolic link into a way to
+read a protected file.
+
+This repository does not enforce these provider rules today, and Paperclip
+cannot verify them for an externally supplied sandbox.
+
+The provider and the operator set the policy for general internet access.
+Paperclip does not enforce this policy inside the sandbox.
+
+### How to apply this rule
+
+The test is authority, not location. A change is a boundary change only in one
+of these two conditions:
+
+- The change modifies one of the two authorities above.
+- The change makes the provider isolation assumption false. A change that
+  exposes a management socket to the sandbox is an example.
+
+A boundary change needs a boundary review. A reviewer must examine the change
+against this contract. This section does not remove any other review of a
+change.
+
+The test gives these results:
+
+- Code inside the sandbox can modify these authorities. The in-sandbox part of
+  synchronization and the in-sandbox part of the bridge are examples.
+- A change that meets neither condition above is not a boundary change. This is
+  true when the change removes a control inside the sandbox.
+- A developer can remove a control that only protects data inside the sandbox.
+  A developer can also change the mechanism of a boundary control. The authority
+  of sandbox code must stay the same or decrease.
+- A requested control is a boundary security requirement only if the control
+  limits one of the two authorities above.
+
+A change creates a new boundary surface in either of these conditions:
+
+- The change lets sandbox code write host files outside workspace
+  synchronization.
+- The change lets sandbox code call the Paperclip API outside the HTTP bridge.
+
+The developer must update this contract before the change is released. A
+reviewer must examine the change against this contract.
+
+### Where a boundary control must run
+
+Paperclip or the provider must enforce each boundary control outside the
+sandbox. Sandbox code can change a control that runs inside the sandbox. A
+control inside the sandbox can give an early error message, but it gives no
+protection at the boundary.
+
+This rule applies to enforcement. It does not apply to the tools that create or
+move data. A tool inside the sandbox can create data, and a control outside the
+sandbox validates that data. The outbound archive is an example. The sandbox
+creates the archive. The host validates each member before extraction.
+
+Each boundary control below must run outside the sandbox.
+
+### Surface 1: outbound workspace synchronization
+
+These boundary controls limit the authority of sandbox code over host files. The
+synchronization implementation must:
+
+- Accept only source and destination mappings that the orchestrator supplies.
+- Keep host destinations in the specified host workspace or asset roots.
+- Reject path traversal and symbolic links that escape a host destination root.
+- Validate archive member paths and link targets before extraction on the host.
+- Handle sandbox file contents only as data during synchronization.
+
+Native synchronization hooks and the command fallback must meet the same
+requirements.
+
+Synchronization also confines each sandbox source path to a synchronization
+root. A path check outside the sandbox is lexical, and only a check inside the
+sandbox resolves the symbolic links on the path. The check inside the sandbox is
+not a boundary control. It gives an early error.
+
+Sandbox source confinement is safe as an early check, because a transfer reads a
+sandbox source with the authority of sandbox code. The bytes that cross the
+boundary are bytes that sandbox code can already read. The provider isolation
+assumption above states this rule for the provider.
+
+These requirements protect host reliability and host resources. They are not
+boundary controls:
+
+- Use atomic replacement for each single-file mapping.
+- Move file data with bounded memory.
+
+### Surface 2: Paperclip HTTP bridge
+
+Sandbox code must call the Paperclip API only through the HTTP bridge.
+
+These boundary controls limit the API authority of sandbox code. The bridge
+must:
+
+- Accept only requests that have valid bridge authentication.
+- Limit bridge authentication to bridge access.
+- Use only the run agent's API authority for each request.
+- Permit only approved HTTP methods and routes.
+- Forward only approved request headers.
+- Add the correct run identity to each request.
+
+These requirements protect host reliability and host resources. They are not
+boundary controls:
+
+- Limit request size, response size, and request time.
+- Limit the queue length of the file-queue transport.
+- Limit the number of concurrent requests on the bidirectional channel.
+
+All other HTTP bridge requirements apply to both transports.
+
+### What is not a boundary surface
+
+Paperclip sends commands from the host to the sandbox. Command execution can
+return output to the host. This output does not give sandbox code authority to
+write host files or call the Paperclip API.
+
+The host records this output as run logs and reads it as agent protocol
+messages. Neither use gives sandbox code one of the two authorities above.
+
+A persistent process session stays in the sandbox. A bidirectional channel is a
+transport. Sandbox authority stays limited to outbound workspace synchronization
+and the HTTP bridge.
 
 ## Required on PATH
 

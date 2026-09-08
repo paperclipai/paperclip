@@ -1,5 +1,3 @@
-import type { AdapterModelProfileDefinition } from "@paperclipai/adapter-utils";
-
 export const type = "cursor";
 export const label = "Cursor";
 
@@ -57,18 +55,6 @@ const CURSOR_FALLBACK_MODEL_IDS = [
 ];
 
 export const models = CURSOR_FALLBACK_MODEL_IDS.map((id) => ({ id, label: id }));
-
-export const modelProfiles: AdapterModelProfileDefinition[] = [
-  {
-    key: "cheap",
-    label: "Cheap",
-    description: "Use Cursor's known Codex mini model as the budget lane instead of assuming auto is cheap.",
-    adapterConfig: {
-      model: "gpt-5.1-codex-mini",
-    },
-    source: "adapter_default",
-  },
-];
 
 export const agentConfigurationDoc = `# cursor agent configuration
 

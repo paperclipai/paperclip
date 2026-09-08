@@ -5,13 +5,96 @@
   "type": "object",
   "required": ["provider", "driver", "model", "executionKind", "providerVersion"],
   "properties": {
-    "provider": { "const": "codex" },
-    "driver": { "const": "codex_app_server" },
+    "provider": { "enum": ["codex", "opencode", "claude_managed", "aws_agentcore", "acpx"] },
+    "driver": { "enum": ["codex_app_server", "opencode_server", "claude_managed_agents_api", "aws_agentcore_harness_api", "acpx_runtime"] },
     "model": { "type": ["string", "null"], "maxLength": 240 },
-    "executionKind": { "const": "local_process" },
+    "executionKind": { "enum": ["local_process", "remote_service"] },
     "providerVersion": { "type": "string", "minLength": 1, "maxLength": 120 },
+    "service": { "enum": ["anthropic_managed_agents", "aws_bedrock_agentcore_harness"] },
     "providerSessionId": { "type": ["string", "null"], "maxLength": 240 },
-    "processId": { "type": ["integer", "null"], "minimum": 1 }
+    "processId": { "type": ["integer", "null"], "minimum": 1 },
+    "agentProcessId": { "type": ["integer", "null"], "minimum": 1 },
+    "endpointArn": { "type": "string", "minLength": 1, "maxLength": 2048 },
+    "endpointQualifier": { "type": "string", "minLength": 1, "maxLength": 240 },
+    "memoryId": { "type": "string", "minLength": 1, "maxLength": 240 },
+    "eventExpiryDays": { "const": 90 },
+    "agent": { "enum": ["pi", "claude", "codex"] },
+    "requestedModel": { "type": "string", "minLength": 1, "maxLength": 240 },
+    "acpProtocolVersion": { "const": 1 },
+    "agentServerPackage": { "type": "string", "minLength": 1, "maxLength": 240 },
+    "agentServerVersion": { "type": "string", "minLength": 1, "maxLength": 120 },
+    "agentRuntimePackage": { "type": ["string", "null"], "maxLength": 240 },
+    "agentRuntimeVersion": { "type": ["string", "null"], "maxLength": 120 },
+    "acpxRecordId": { "type": ["string", "null"], "maxLength": 240 }
   },
-  "additionalProperties": true
+  "allOf": [
+    {
+      "oneOf": [
+        {
+          "properties": {
+            "provider": { "const": "codex" },
+            "driver": { "const": "codex_app_server" },
+            "executionKind": { "const": "local_process" }
+          }
+        },
+        {
+          "properties": {
+            "provider": { "const": "opencode" },
+            "driver": { "const": "opencode_server" },
+            "executionKind": { "const": "local_process" }
+          }
+        },
+        {
+          "properties": {
+            "provider": { "const": "claude_managed" },
+            "driver": { "const": "claude_managed_agents_api" },
+            "executionKind": { "const": "remote_service" }
+          }
+        },
+        {
+          "properties": {
+            "provider": { "const": "aws_agentcore" },
+            "driver": { "const": "aws_agentcore_harness_api" },
+            "executionKind": { "const": "remote_service" }
+          }
+        },
+        {
+          "properties": {
+            "provider": { "const": "acpx" },
+            "driver": { "const": "acpx_runtime" },
+            "executionKind": { "const": "local_process" }
+          }
+        }
+      ]
+    },
+    {
+      "if": { "properties": { "executionKind": { "const": "remote_service" } } },
+      "then": {
+        "required": ["service"],
+        "properties": { "processId": { "const": null } }
+      }
+    },
+    {
+      "if": { "properties": { "executionKind": { "const": "local_process" } } },
+      "then": { "properties": { "service": false } }
+    },
+    {
+      "if": { "properties": { "provider": { "const": "claude_managed" } }, "required": ["provider"] },
+      "then": { "properties": { "service": { "const": "anthropic_managed_agents" } }, "required": ["service"] }
+    },
+    {
+      "if": { "properties": { "provider": { "const": "aws_agentcore" } }, "required": ["provider"] },
+      "then": {
+        "properties": { "service": { "const": "aws_bedrock_agentcore_harness" } },
+        "required": ["service", "endpointArn", "endpointQualifier", "memoryId", "eventExpiryDays"]
+      }
+    },
+    {
+      "if": { "properties": { "provider": { "const": "acpx" } }, "required": ["provider"] },
+      "then": {
+        "required": ["agent", "requestedModel", "acpProtocolVersion", "agentServerPackage", "agentServerVersion", "acpxRecordId", "agentProcessId"]
+      }
+    }
+  ],
+  "additionalProperties": false
 }

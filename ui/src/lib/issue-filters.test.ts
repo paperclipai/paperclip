@@ -7,6 +7,7 @@ import {
   countActiveIssueFilters,
   defaultIssueFilterState,
   resolveIssueFilterWorkspaceId,
+  searchIssueFilterOptions,
   shouldIncludeIssueFilterWorkspaceOption,
 } from "./issue-filters";
 
@@ -68,6 +69,14 @@ function makeExternalObjectSummary(overrides: Partial<ExternalObjectSummary> = {
 }
 
 describe("issue filters", () => {
+  it("searches filter options case-insensitively without mutating the source", () => {
+    const options = [{ name: "Alpha Agent" }, { name: "Release QA" }];
+    expect(searchIssueFilterOptions(options, "  qa ", (option) => option.name)).toEqual([
+      { name: "Release QA" },
+    ]);
+    expect(options).toHaveLength(2);
+  });
+
   it("filters issues by creator across agents and users", () => {
     const issues = [
       makeIssue({ id: "agent-match", createdByAgentId: "agent-1" }),

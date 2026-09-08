@@ -12,11 +12,15 @@ import {
   type SandboxRemoteExecutionSpec,
   type SandboxSyncOperation,
   type SandboxSyncResult,
+  type WorkspaceDurableSeedPaths,
+  type WorkspaceInboundMode,
 } from "./sandbox-managed-runtime.js";
 import { preferredShellForSandbox, shellCommandArgs } from "./sandbox-shell.js";
 import type { RunProcessResult } from "./server-utils.js";
 import type { RuntimeProgressSink, RuntimeStatusSink } from "./runtime-progress.js";
 import type { RuntimeSpanRunner } from "./acpx-engine/startup-timing.js";
+import type { GitWorkspaceSnapshot } from "./git-workspace-sync.js";
+import type { DirectorySnapshot } from "./workspace-restore-merge.js";
 
 /**
  * Input for a duplex channel open. The caller supplies only the command argument
@@ -208,10 +212,6 @@ function buildSyncInExtractDirectoryCommand(input: { remoteTarPath: string; targ
 function buildSyncInChmodCommand(input: { mode: number; targetPath: string }): string {
   return `chmod ${(input.mode & 0o7777).toString(8)} ${shellQuote(input.targetPath)}`;
 }
-function buildSyncInRenameCommand(input: { sourcePath: string; targetPath: string }): string {
-  return "mv -f " + shellQuote(input.sourcePath) + " " + shellQuote(input.targetPath);
-}
-
 function buildUniqueStagingPath(input: { targetPath: string; suffix: string }): string {
   return `${input.targetPath}${input.suffix}.${randomUUID()}`;
 }
@@ -444,18 +444,10 @@ export function createCommandManagedRuntimeClient(input: {
               bytesTransferred += tarBytes.byteLength;
             } else {
               const fileBytes = await fs.readFile(mapping.sourcePath);
-              const targetPathForWrite = mapping.mode != null
-                ? buildUniqueStagingPath({ targetPath: mapping.targetPath, suffix: ".paperclip-syncin" })
-                : mapping.targetPath;
-              if (mapping.mode != null) cleanupPaths.push(targetPathForWrite);
-              await client.writeFile(targetPathForWrite, bufferToArrayBuffer(fileBytes));
+              await client.writeFile(mapping.targetPath, bufferToArrayBuffer(fileBytes));
               if (mapping.mode != null) {
                 await client.run(
-                  buildSyncInChmodCommand({ mode: mapping.mode, targetPath: targetPathForWrite }),
-                  { timeoutMs: input.timeoutMs },
-                );
-                await client.run(
-                  buildSyncInRenameCommand({ sourcePath: targetPathForWrite, targetPath: mapping.targetPath }),
+                  buildSyncInChmodCommand({ mode: mapping.mode, targetPath: mapping.targetPath }),
                   { timeoutMs: input.timeoutMs },
                 );
               }
@@ -468,9 +460,9 @@ export function createCommandManagedRuntimeClient(input: {
           }
           filesTransferred += 1;
         }
-        // Ordered, fail-fast post-upload commands (C1 opaque / C4 fail-loud). Each
-        // command string is executed VERBATIM — never rewritten, concatenated, or
-        // appended to. First non-zero exit or timeout throws and stops the rest.
+        // Ordered, fail-fast post-upload commands. Each command string is
+        // executed VERBATIM — never rewritten, concatenated, or appended to.
+        // The first non-zero exit or timeout throws and stops the rest.
         for (const command of operation.postUploadCommands ?? []) {
           const result = await input.runner.execute({
             command: shellCommand,
@@ -528,6 +520,10 @@ export async function prepareCommandManagedRuntime(input: {
   workspaceLocalDir: string;
   workspaceRemoteDir?: string;
   syncWorkspace?: boolean;
+  workspaceInboundMode?: WorkspaceInboundMode;
+  workspaceDurableSeed?: WorkspaceDurableSeedPaths;
+  workspaceBaseline?: DirectorySnapshot;
+  workspaceGitSnapshot?: GitWorkspaceSnapshot | null;
   workspaceExclude?: string[];
   preserveAbsentOnRestore?: string[];
   assets?: CommandManagedRuntimeAsset[];
@@ -589,6 +585,10 @@ export async function prepareCommandManagedRuntime(input: {
           workspaceLocalDir: input.workspaceLocalDir,
           workspaceRemoteDir,
           syncWorkspace: input.syncWorkspace,
+          workspaceInboundMode: input.workspaceInboundMode,
+          workspaceDurableSeed: input.workspaceDurableSeed,
+          workspaceBaseline: input.workspaceBaseline,
+          workspaceGitSnapshot: input.workspaceGitSnapshot,
           workspaceExclude: mergeRuntimeExcludes(input.workspaceExclude),
           preserveAbsentOnRestore: input.preserveAbsentOnRestore,
           assets: input.assets,
@@ -628,6 +628,10 @@ export async function prepareCommandManagedRuntime(input: {
     workspaceLocalDir: input.workspaceLocalDir,
     workspaceRemoteDir,
     syncWorkspace: input.syncWorkspace,
+    workspaceInboundMode: input.workspaceInboundMode,
+    workspaceDurableSeed: input.workspaceDurableSeed,
+    workspaceBaseline: input.workspaceBaseline,
+    workspaceGitSnapshot: input.workspaceGitSnapshot,
     workspaceExclude: mergeRuntimeExcludes(input.workspaceExclude),
     preserveAbsentOnRestore: input.preserveAbsentOnRestore,
     assets: input.assets,

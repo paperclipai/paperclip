@@ -10,6 +10,7 @@ import {
 } from "@paperclipai/shared";
 import { Activity, ExternalLink, Loader2, Play, RotateCcw, Square } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { useManagedSandboxOnly } from "@/hooks/useManagedSandboxOnly";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { timeAgo } from "@/lib/timeAgo";
@@ -460,6 +461,11 @@ function CommandSection({
   square?: boolean;
   iconOnly?: boolean;
 }) {
+  // Managed-sandbox-only policy: the working directory is a path on the
+  // execution host, so the command rows drop it, and keep dropping it until the
+  // policy is known. The URL, the port, and the command itself stay — they
+  // describe the service, not the host filesystem.
+  const { hideHostPaths } = useManagedSandboxOnly();
   return (
     <div className="space-y-3">
       <div className="space-y-1">
@@ -502,7 +508,7 @@ function CommandSection({
                   ) : null}
                   {item.port ? <div>Port {item.port}</div> : null}
                   {item.command ? <div className="break-all font-mono">{item.command}</div> : null}
-                  {item.cwd ? <div className="break-all font-mono">{item.cwd}</div> : null}
+                  {item.cwd && !hideHostPaths ? <div className="break-all font-mono">{item.cwd}</div> : null}
                   {item.disabledReason ? <div>{item.disabledReason}</div> : null}
                 </div>
                 <ExposureFailureDetail exposure={item.exposure} />

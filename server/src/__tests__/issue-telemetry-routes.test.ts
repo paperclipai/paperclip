@@ -56,7 +56,7 @@ function registerModuleMocks() {
 
   vi.doMock("../services/index.js", () => ({
     companyService: () => ({
-      getById: vi.fn(async () => ({ id: "company-1", attachmentMaxBytes: 10 * 1024 * 1024 })),
+      getById: vi.fn(async () => ({ id: "company-1" })),
     }),
     accessService: () => ({
       canUser: vi.fn(),
@@ -215,6 +215,7 @@ describe("issue telemetry routes", () => {
         agentId: "agent-1",
         adapterType: "codex_local",
         model: "claude-sonnet-4-6",
+        taskId: "11111111-1111-4111-8111-111111111111",
       });
     });
   }, 10_000);

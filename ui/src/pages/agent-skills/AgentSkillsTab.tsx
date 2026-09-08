@@ -345,6 +345,16 @@ export function AgentSkillsTab({ agent, companyId }: { agent: Agent; companyId?:
   const releasePickerActive = betaSkillsEnabled && paperclipReleases.length > 0;
 
   const renderRow = (row: AgentSkillRowData, variant: "enabled" | "available") => {
+    // Historical assignments stay interactive so the user can remove them.
+    // The server rejects new assignments and omits stale ones from native
+    // runtime context, so disabling an enabled row would only trap stale data.
+    const legacyPaperclipBlocked = agent.adapterType === "paperclip_runner"
+      && variant === "available"
+      && row.key === PAPERCLIP_CORE_SKILL_KEY;
+    const rowDisabled = unsupported || legacyPaperclipBlocked;
+    const rowDisabledReason = legacyPaperclipBlocked
+      ? "Paperclip Runner uses native semantic coordination and cannot attach the legacy Paperclip operational skill."
+      : unsupportedMessage;
     const showReleasePicker =
       releasePickerActive && variant === "enabled" && row.key === PAPERCLIP_CORE_SKILL_KEY;
     const pinnedVersionId = versionPins[row.key] ?? null;
@@ -358,8 +368,8 @@ export function AgentSkillsTab({ agent, companyId }: { agent: Agent; companyId?:
         variant={variant}
         data={row}
         checked={variant === "enabled"}
-        disabled={unsupported}
-        disabledReason={unsupportedMessage}
+        disabled={rowDisabled}
+        disabledReason={rowDisabledReason}
         onCheckedChange={(next) => toggleSkill(row.key, next)}
         badge={
           showReleasePicker && pinnedRelease ? (
@@ -373,7 +383,7 @@ export function AgentSkillsTab({ agent, companyId }: { agent: Agent; companyId?:
             <AgentSkillReleasePicker
               releases={paperclipReleases}
               value={pinnedVersionId}
-              disabled={unsupported || syncSkills.isPending}
+              disabled={rowDisabled || syncSkills.isPending}
               onChange={(versionId) => handleReleaseChange(row.key, versionId)}
             />
           ) : undefined
@@ -452,7 +462,7 @@ export function AgentSkillsTab({ agent, companyId }: { agent: Agent; companyId?:
               className="flex items-center justify-between gap-3 border-b border-amber-300/40 bg-amber-50/60 px-3 py-2 text-xs text-amber-800 last:border-b-0 dark:border-amber-500/20 dark:bg-amber-950/20 dark:text-amber-200"
             >
               <span className="min-w-0 truncate">
-                <span className="font-medium">{key}</span> is enabled but missing from the company library.
+                <span className="font-medium">{key}</span> is enabled but missing from the organization library.
               </span>
               <button
                 type="button"
@@ -491,7 +501,7 @@ export function AgentSkillsTab({ agent, companyId }: { agent: Agent; companyId?:
                 {search
                   ? "No available skills match your search."
                   : libraryEmpty
-                    ? "Import skills into the company library to enable them here."
+                    ? "Import skills into the organization library to enable them here."
                     : "Every library skill is enabled on this agent."}
               </SectionEmpty>
             )}
@@ -604,9 +614,9 @@ function EmptyLibraryCard() {
     <div className="flex flex-col items-center gap-3 rounded-lg border border-dashed border-border px-6 py-10 text-center">
       <Store className="h-8 w-8 text-muted-foreground/60" />
       <div className="space-y-1">
-        <p className="text-sm font-medium text-foreground">No skills in the company library</p>
+        <p className="text-sm font-medium text-foreground">No skills in the organization library</p>
         <p className="text-xs text-muted-foreground">
-          Install skills to the company, then enable them on this agent.
+          Install skills to the organization, then enable them on this agent.
         </p>
       </div>
       <Button asChild variant="outline" size="sm">

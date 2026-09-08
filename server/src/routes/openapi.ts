@@ -1,3 +1,5 @@
+import { experimentalApiMetadata } from "./experimental-api-metadata.js";
+import { experimentalApiPaths, experimentalApiQueries } from "./experimental-api-paths.js";
 import { Router } from "express";
 import { z } from "zod";
 import {
@@ -146,6 +148,7 @@ import {
   acceptIssueThreadInteractionSchema,
   rejectIssueThreadInteractionSchema,
   respondIssueThreadInteractionSchema,
+  skipIssueThreadInteractionSchema,
   submitIssueThreadInteractionVerdictsSchema,
   withdrawIssueThreadInteractionSchema,
   // Auth / profile
@@ -171,7 +174,7 @@ import {
   patchInstanceGeneralSettingsSchema,
   patchInstanceExperimentalSettingsSchema,
   patchInstanceSettingsSchema,
-  issueGraphLivenessAutoRecoveryRequestSchema,
+  startTaskDrainRequestSchema,
   // Resource memberships
   updateDocumentResourceMembershipSchema,
   updateResourceMembershipSchema,
@@ -198,12 +201,15 @@ import {
   createToolApplicationSchema,
   updateToolApplicationSchema,
   createToolConnectionSchema,
+  createConnectionGrantDelegationSchema,
   connectionTokenRequestSchema,
   startConnectionAuthorizationSchema,
   createToolStdioCommandTemplateSchema,
   disableToolStdioCommandTemplateSchema,
+  finalizeOAuthAccessSchema,
   finishToolAppSchema,
   reconnectToolAppSchema,
+  startToolOAuthSchema,
   updateToolConnectionSchema,
   putToolConnectionInstallsSchema,
   toolConnectionTestCallSchema,
@@ -225,6 +231,10 @@ import {
   importMcpJsonSchema,
   toolPolicyTestRequestSchema,
   createToolMcpGatewaySchema,
+  completeConnectionIntentSchema,
+  connectionRequestInputSchema,
+  connectionsSearchInputSchema,
+  declineConnectionIntentSchema,
   startClaudeSetupTokenSessionRequestSchema,
   submitBrowserCodeRequestSchema,
   claudeSetupTokenSessionResponseSchema,
@@ -232,6 +242,7 @@ import {
   claudeSetupTokenSessionOwnerResponseSchema,
   claudeSetupTokenCompletionResponseSchema,
   claudeOAuthTokenStatusResponseSchema,
+  startAdapterAuthSessionRequestSchema,
 } from "@paperclipai/shared";
 import {
   COMPANY_IMPORT_TRANSFERS_API_PATH,
@@ -642,11 +653,12 @@ const refreshExternalObjectsBodySchema = z.object({
   objectIds: z.array(z.string().guid()).max(50).optional(),
 }).strict();
 
-// The start route reads the body directly, so document the accepted fields
-// here. A sandbox environment is required. The time-to-live is optional.
-const startAdapterLoginSessionSchema = z.object({
-  environmentId: z.string().min(1),
-  ttlSeconds: z.number().optional(),
+// The route enforces the shared strict request schema. The route spine
+// injects the adapter type from the path, so the client body never carries
+// it; derive the documented body from the shared schema and omit that field,
+// so the documented body cannot drift from the route again.
+const startAdapterLoginSessionSchema = startAdapterAuthSessionRequestSchema.omit({
+  adapterType: true,
 });
 
 const environmentCustomImageCompanyQuerySchema = z.object({
@@ -780,6 +792,7 @@ function registerCurrentRoute(input: {
 
 type OpenApiAuthLevel =
   | "public"
+  | "runtime_tools"
   | "authenticated"
   | "board"
   | "instance_admin";
@@ -787,6 +800,7 @@ type OpenApiAuthLevel =
 const BOARD_SESSION_AUTH_SCHEME = "BoardSessionAuth";
 const BOARD_API_KEY_AUTH_SCHEME = "BoardApiKeyAuth";
 const AGENT_BEARER_AUTH_SCHEME = "AgentBearerAuth";
+const RUNTIME_TOOLS_BEARER_AUTH_SCHEME = "RuntimeToolsBearerAuth";
 
 function securityRequirement(name: string): Record<string, string[]> {
   return { [name]: [] };
@@ -801,6 +815,18 @@ const AUTHENTICATED_SECURITY: Array<Record<string, string[]>> = [
   ...BOARD_SECURITY,
   securityRequirement(AGENT_BEARER_AUTH_SCHEME),
 ];
+
+const RUNTIME_TOOLS_SECURITY: Array<Record<string, string[]>> = [
+  securityRequirement(RUNTIME_TOOLS_BEARER_AUTH_SCHEME),
+];
+
+const RUNTIME_TOOLS_OPERATIONS = new Set([
+  "POST /runtime-tools/github/credentials",
+  "GET /mcp/runtime-tools",
+  "POST /mcp/runtime-tools",
+  "POST /runtime-tools/connections/search",
+  "POST /runtime-tools/connections/request",
+]);
 
 const PUBLIC_OPERATIONS = new Set([
   "GET /api/health",
@@ -832,6 +858,10 @@ const BOARD_ONLY_PREFIXES = [
 ];
 
 const BOARD_ONLY_OPERATIONS = new Set([
+  "GET /api/companies/{companyId}/project-repositories",
+  "PUT /api/projects/{id}/repositories",
+  "DELETE /api/issues/{id}/documents/{key}",
+  "GET /api/companies/{companyId}/decisions",
   "GET /api/cloud/stacks",
   "GET /api/companies",
   "POST /api/companies",
@@ -852,6 +882,10 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "POST /api/companies/{companyId}/members/{memberId}/archive",
   "PATCH /api/companies/{companyId}/members/{memberId}/permissions",
   "GET /api/companies/{companyId}/user-directory",
+  "GET /api/companies/{companyId}/managed-agent-profiles",
+  "POST /api/companies/{companyId}/managed-agent-profiles",
+  "GET /api/companies/{companyId}/remote-agent-profiles",
+  "POST /api/companies/{companyId}/remote-agent-profiles",
   "POST /api/execution-workspaces/{id}/reconcile-branch",
   "POST /api/execution-workspaces/{id}/login-handoff",
   "GET /api/board-api-keys",
@@ -893,9 +927,12 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "POST /api/issues/{id}/interactions/{interactionId}/accept",
   "POST /api/issues/{id}/interactions/{interactionId}/reject",
   "POST /api/issues/{id}/interactions/{interactionId}/respond",
+  "POST /api/issues/{id}/interactions/{interactionId}/skip",
   "POST /api/issues/{id}/interactions/{interactionId}/withdraw",
   "GET /api/companies/{companyId}/tools/gallery",
+  "GET /api/companies/{companyId}/tools/apps/{galleryKey}/preflight",
   "POST /api/companies/{companyId}/tools/apps/connect",
+  "POST /api/companies/{companyId}/tools/apps/{connectionId}/finalize-oauth-access",
   "POST /api/companies/{companyId}/tools/apps/{connectionId}/finish",
   "GET /api/companies/{companyId}/tools/apps/attention",
   "GET /api/companies/{companyId}/tools/action-requests",
@@ -912,6 +949,8 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "GET /api/tool-connections/{connectionId}",
   "GET /api/tool-connections/{connectionId}/grants",
   "POST /api/tool-connections/{connectionId}/grants/installations",
+  "POST /api/tool-connections/{connectionId}/grants/{grantId}/delegations",
+  "DELETE /api/tool-connections/{connectionId}/grants/{grantId}/delegations/{delegationId}",
   "DELETE /api/tool-connections/{connectionId}/grants/{grantId}",
   "GET /api/tool-connections/{connectionId}/usage",
   "PATCH /api/tool-connections/{connectionId}",
@@ -922,12 +961,18 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "GET /api/tool-connections/{connectionId}/catalog",
   "GET /api/tool-connections/{connectionId}/activity",
   "GET /api/tool-connections/{connectionId}/test-agents",
+  "GET /api/tool-connections/{connectionId}/test-agents/{agentId}/access",
   "POST /api/tool-connections/{connectionId}/test-calls",
   "GET /api/tool-connections/{connectionId}/test-calls/{actionRequestId}",
   "POST /api/agents/me/connections/{connectionId}/start-authorization",
   "POST /api/agents/me/connections/{connectionId}/token",
   "POST /api/tools/oauth/{connectionId}/start",
   "GET /api/tools/oauth/callback",
+  "GET /api/tools/vercel-connect/callback",
+  "GET /api/connection-intents/{interactionId}/setup-options",
+  "POST /api/connection-intents/{interactionId}/phase",
+  "POST /api/connection-intents/{interactionId}/complete",
+  "POST /api/connection-intents/{interactionId}/decline",
   "GET /api/companies/{companyId}/tools/profiles",
   "POST /api/companies/{companyId}/tools/profiles",
   "GET /api/companies/{companyId}/tools/profiles/effective/agents/{agentId}",
@@ -1063,8 +1108,9 @@ function isBoardOnlyOperation(method: string, path: string) {
 function resolveOperationAuthLevel(method: string, path: string): OpenApiAuthLevel {
   const key = operationKey(method, path);
   if (PUBLIC_OPERATIONS.has(key)) return "public";
+  if (RUNTIME_TOOLS_OPERATIONS.has(key)) return "runtime_tools";
   if (INSTANCE_ADMIN_OPERATIONS.has(key)) return "instance_admin";
-  if (isBoardOnlyOperation(method, path)) return "board";
+  if (isBoardOnlyOperation(method, path) || experimentalApiMetadata[`${method.toUpperCase()} ${path}`]?.boardOnly) return "board";
   return "authenticated";
 }
 
@@ -1102,6 +1148,13 @@ function applyDocumentFixups(document: any): any {
       description:
         "Agent API key or Paperclip-issued local agent JWT presented in the Authorization bearer header.",
     },
+    [RUNTIME_TOOLS_BEARER_AUTH_SCHEME]: {
+      type: "http",
+      scheme: "bearer",
+      bearerFormat: "Heartbeat-bound runtime tools token",
+      description:
+        "Scoped token bound to an active heartbeat run and presented in the Authorization bearer header. The GitHub credential endpoint requires the distinct github_credentials scope.",
+    },
   };
   document.security = AUTHENTICATED_SECURITY;
 
@@ -1110,6 +1163,8 @@ function applyDocumentFixups(document: any): any {
       const authLevel = resolveOperationAuthLevel(method, path);
       if (authLevel === "public") {
         operation.security = [];
+      } else if (authLevel === "runtime_tools") {
+        operation.security = RUNTIME_TOOLS_SECURITY;
       } else if (authLevel === "authenticated") {
         operation.security = AUTHENTICATED_SECURITY;
       } else {
@@ -1121,6 +1176,8 @@ function applyDocumentFixups(document: any): any {
           ? { actor: "board", instanceAdmin: true }
           : authLevel === "board"
             ? { actor: "board" }
+            : authLevel === "runtime_tools"
+              ? { actor: "runtime_tools", heartbeatBound: true }
             : authLevel === "authenticated"
               ? { actor: "board_or_agent" }
               : { actor: "public" };
@@ -2186,6 +2243,18 @@ registry.registerPath({
 });
 
 registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/adapters/{type}/auth-signal",
+  tags: ["adapters"],
+  summary: "Read the cheap host-local authentication signal for an adapter type",
+  request: {
+    params: z.object({ companyId: z.string(), type: z.string() }),
+    query: z.object({ environmentId: z.string().optional() }),
+  },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
   method: "post",
   path: "/api/companies/{companyId}/adapters/{type}/login-sessions",
   tags: ["adapters"],
@@ -2201,6 +2270,17 @@ registry.registerPath({
     403: r.forbidden,
     409: r.conflict,
   },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/adapters/{type}/login-sessions/active",
+  tags: ["adapters"],
+  summary: "Read the caller's active adapter device login session",
+  request: {
+    params: z.object({ companyId: z.string(), type: z.string() }),
+  },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
 });
 
 registry.registerPath({
@@ -2345,7 +2425,10 @@ registry.registerPath({
   path: "/api/issues/{id}/work-products",
   tags: ["issues"],
   summary: "List issue work products",
-  request: { params: z.object({ id: z.string() }) },
+  request: {
+    params: z.object({ id: z.string() }),
+    query: z.object({ refreshPullRequests: z.enum(["true"]).optional() }),
+  },
   responses: { 200: r.ok(), 401: r.unauthorized },
 });
 
@@ -2751,6 +2834,33 @@ registry.registerPath({
 
 registry.registerPath({
   method: "get",
+  path: "/api/companies/{companyId}/project-repositories",
+  tags: ["projects"],
+  summary: "Discover GitHub repositories available to the current board user",
+  description: "Deduplicates repositories across usable personal and company-shared GitHub connections. Failed connections are reported without discarding successful results.",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: {
+    200: r.ok(z.object({
+      repositories: z.array(z.object({ id: z.string(), fullName: z.string(), url: z.string(), private: z.boolean().optional(), connections: z.array(z.string()) })),
+      connectionCount: z.number().int().nonnegative(),
+      failedConnectionCount: z.number().int().nonnegative(),
+    })),
+    401: r.unauthorized, 403: r.forbidden,
+  },
+});
+
+registry.registerPath({
+  method: "put",
+  path: "/api/projects/{id}/repositories",
+  tags: ["projects"],
+  summary: "Replace selected GitHub source repositories",
+  description: "Saves provider IDs transactionally, refreshes canonical names and URLs, and preserves legacy workspace URLs. Unavailable existing selections can remain; new selections must be available to the caller.",
+  request: { params: z.object({ id: z.string() }), body: jsonBody(createProjectSchema.pick({ repositoryIds: true }).required()) },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 422: r.unprocessable },
+});
+
+registry.registerPath({
+  method: "get",
   path: "/api/companies/{companyId}/projects",
   tags: ["projects"],
   summary: "List projects in a company",
@@ -2763,11 +2873,12 @@ registry.registerPath({
   path: "/api/companies/{companyId}/projects",
   tags: ["projects"],
   summary: "Create a project",
+  description: "The optional repositoryIds field selects GitHub source repositories and requires a board caller. It cannot be combined with workspace. All selections are validated before the project and repository workspaces are created atomically.",
   request: {
     params: z.object({ companyId: z.string() }),
     body: jsonBody(createProjectSchema),
   },
-  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 422: r.unprocessable },
 });
 
 registry.registerPath({
@@ -4146,6 +4257,31 @@ registry.registerPath({
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
 });
 
+registry.registerPath({
+  method: "get",
+  path: "/api/instance/task-drain",
+  tags: ["instance"],
+  summary: "Get the task-drain status for this process only; quiescent counts in-process work, and a process restart clears it even when the database still holds running rows",
+  responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/instance/task-drain",
+  tags: ["instance"],
+  summary: "Start a task drain, so new run admission holds until active runs finish",
+  request: { body: jsonBody(startTaskDrainRequestSchema) },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
+  method: "delete",
+  path: "/api/instance/task-drain",
+  tags: ["instance"],
+  summary: "End a task drain and restore run admission",
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+});
+
 // ─── Board chat (Conference Room Chat, experimental) ──────────────────────────
 
 registry.registerPath({
@@ -4453,6 +4589,90 @@ registry.registerPath({
   responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound },
 });
 
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/managed-agent-profiles",
+  tags: ["agents"],
+  summary: "List Claude Managed Agent profiles for a company",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/managed-agent-profiles",
+  tags: ["agents"],
+  summary: "Create or operator-attest a Claude Managed Agent profile",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    body: jsonBody(z.object({
+      profileKey: z.string(),
+      displayName: z.string(),
+      anthropicAgentId: z.string(),
+      agentVersion: z.string(),
+      environmentId: z.string(),
+      defaultModel: z.literal("claude-sonnet-5").optional(),
+      defaultMaxListCostUsd: z.number().positive().optional(),
+      apiKeySecretId: z.string(),
+      enabled: z.boolean().optional(),
+      retentionAcknowledged: z.boolean().optional(),
+      qualification: z.object({
+        probedAt: z.string().datetime(),
+        betaVersion: z.literal("managed-agents-2026-04-01"),
+        environmentPolicy: z.literal("limited_no_hosts_no_packages"),
+        agentCapabilities: z.literal("no_tools_no_mcp_no_skills_no_multiagent"),
+      }).strict().optional(),
+    })),
+  },
+  responses: {
+    201: r.ok(),
+    401: r.unauthorized,
+    403: r.forbidden,
+    409: r.conflict,
+    422: r.unprocessable,
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/remote-agent-profiles",
+  tags: ["agents"],
+  summary: "List remote AgentCore profiles for a company",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    query: z.object({
+      service: z.literal("aws_bedrock_agentcore_harness").optional(),
+    }),
+  },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 422: r.unprocessable },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/remote-agent-profiles",
+  tags: ["agents"],
+  summary: "Create or operator-attest a remote AgentCore profile",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    body: jsonBody(z.object({
+      profileKey: z.string(),
+      displayName: z.string(),
+      service: z.literal("aws_bedrock_agentcore_harness"),
+      configuration: z.record(z.string(), z.unknown()),
+      enabled: z.boolean().optional(),
+      retentionAcknowledged: z.boolean().optional(),
+      qualification: z.object({ suite: z.literal("aws-agentcore-harness-context-v2") }).strict().optional(),
+    })),
+  },
+  responses: {
+    201: r.ok(),
+    401: r.unauthorized,
+    403: r.forbidden,
+    409: r.conflict,
+    422: r.unprocessable,
+  },
+});
+
 // ─── Heartbeat runs ──────────────────────────────────────────────────────────
 
 registry.registerPath({
@@ -4462,6 +4682,15 @@ registry.registerPath({
   summary: "List heartbeat runs for a company",
   request: { params: z.object({ companyId: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/provider-traces",
+  tags: ["runs"],
+  summary: "List provider trace metadata for selected runs",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
 });
 
 registry.registerPath({
@@ -4507,6 +4736,143 @@ registry.registerPath({
   summary: "Cancel a heartbeat run",
   request: { params: z.object({ runId: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/heartbeat-runs/{runId}/provider-trace",
+  tags: ["runs"],
+  summary: "Inspect a redacted provider trace",
+  request: { params: z.object({ runId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/heartbeat-runs/{runId}/provider-trace/reproject-workspace-diffs",
+  tags: ["runs"],
+  summary: "Reproject retained Codex workspace diffs into run events",
+  request: { params: z.object({ runId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/heartbeat-runs/{runId}/provider-trace/frames/{frameId}/reveal",
+  tags: ["runs"],
+  summary: "Reveal one exact provider trace frame",
+  request: { params: z.object({ runId: z.string(), frameId: z.coerce.number().int().positive() }) },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/heartbeat-runs/{runId}/provider-trace/download",
+  tags: ["runs"],
+  summary: "Download an exact provider trace as NDJSON",
+  request: { params: z.object({ runId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "delete",
+  path: "/api/heartbeat-runs/{runId}/provider-trace",
+  tags: ["runs"],
+  summary: "Permanently delete a provider trace",
+  request: { params: z.object({ runId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/issues/{id}/queued-comments",
+  tags: ["issues"],
+  summary: "List queued comments for an issue",
+  request: { params: z.object({ id: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "patch",
+  path: "/api/issues/{id}/queued-comments/{commentId}",
+  tags: ["issues"],
+  summary: "Edit a queued issue comment",
+  request: {
+    params: z.object({ id: z.string(), commentId: z.string() }),
+    body: jsonBody(z.object({
+      queueId: z.string().min(1),
+      revision: z.string().min(1),
+      body: z.string().min(1).max(200_000),
+    })),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 404: r.notFound, 409: r.conflict },
+});
+
+registry.registerPath({
+  method: "put",
+  path: "/api/issues/{id}/queued-comments/order",
+  tags: ["issues"],
+  summary: "Reorder queued issue comments",
+  request: {
+    params: z.object({ id: z.string() }),
+    body: jsonBody(z.object({
+      queueId: z.string().min(1),
+      revision: z.string().min(1),
+      orderedCommentIds: z.array(z.string().min(1)).max(500),
+    })),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 404: r.notFound, 409: r.conflict },
+});
+
+registry.registerPath({
+  method: "delete",
+  path: "/api/issues/{id}/queued-comments/{commentId}",
+  tags: ["issues"],
+  summary: "Delete a queued issue comment",
+  request: {
+    params: z.object({ id: z.string(), commentId: z.string() }),
+    body: jsonBody(z.object({
+      queueId: z.string().min(1),
+      revision: z.string().min(1),
+    })),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 404: r.notFound, 409: r.conflict },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/issues/{id}/queued-comments/{commentId}/steer",
+  tags: ["issues"],
+  summary: "Steer a queued issue comment into the active native run",
+  request: {
+    params: z.object({ id: z.string(), commentId: z.string() }),
+    body: jsonBody(z.object({
+      queueId: z.string().min(1),
+      revision: z.string().min(1),
+      targetRunId: z.string().min(1),
+    })),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/heartbeat-runs/{runId}/runtime-requests/{requestId}/resolve",
+  tags: ["runs"],
+  summary: "Resolve a pending Paperclip runner runtime request",
+  request: {
+    params: z.object({ runId: z.string(), requestId: z.string() }),
+    body: jsonBody(z.object({
+      turnId: z.string().min(1).max(160),
+      requestKind: z.enum(["command_approval", "file_approval", "permission_approval", "user_input", "elicitation"]),
+      resolution: z.union([
+        z.object({ action: z.enum(["accept", "accept_for_session", "decline", "cancel"]) }),
+        z.object({ action: z.literal("submit"), answers: z.record(z.string(), z.object({ answers: z.array(z.string()) })) }),
+        z.object({ action: z.literal("submit"), content: z.record(z.string(), z.unknown()) }),
+      ]),
+    })),
+  },
+  responses: { 202: r.ok(), 400: r.badRequest, 401: r.unauthorized, 404: r.notFound, 409: r.conflict },
 });
 
 registry.registerPath({
@@ -4634,6 +5000,20 @@ registry.registerPath({
     403: r.forbidden,
     404: r.notFound,
     503: r.serverError,
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/setup-token-login-sessions/active",
+  tags: ["companies"],
+  summary: "Read the caller's active Claude setup-token login session",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: {
+    200: r.ok(claudeSetupTokenSessionOwnerResponseSchema),
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
   },
 });
 
@@ -6603,13 +6983,6 @@ registerCurrentRoute({
 });
 
 registerCurrentRoute({
-  method: "get",
-  path: "/api/companies/{companyId}/adapters/{type}/model-profiles",
-  tags: ["adapters"],
-  summary: "List adapter model profiles for a company",
-});
-
-registerCurrentRoute({
   method: "post",
   path: "/api/health/dev-server/restart",
   tags: ["health"],
@@ -6850,22 +7223,6 @@ for (const route of [
 }
 
 registerCurrentRoute({
-  method: "post",
-  path: "/api/instance/settings/experimental/issue-graph-liveness-auto-recovery/preview",
-  tags: ["instance-settings"],
-  summary: "Preview issue graph liveness auto-recovery",
-  body: issueGraphLivenessAutoRecoveryRequestSchema,
-});
-
-registerCurrentRoute({
-  method: "post",
-  path: "/api/instance/settings/experimental/issue-graph-liveness-auto-recovery/run",
-  tags: ["instance-settings"],
-  summary: "Run issue graph liveness auto-recovery",
-  body: issueGraphLivenessAutoRecoveryRequestSchema,
-});
-
-registerCurrentRoute({
   method: "get",
   path: "/api/issues/{id}/accepted-plan-decompositions",
   tags: ["issues"],
@@ -7032,6 +7389,14 @@ registerCurrentRoute({
 
 registerCurrentRoute({
   method: "post",
+  path: "/api/issues/{id}/interactions/{interactionId}/skip",
+  tags: ["issues"],
+  summary: "Skip a pending issue thread interaction",
+  body: skipIssueThreadInteractionSchema,
+});
+
+registerCurrentRoute({
+  method: "post",
   path: "/api/issues/{id}/interactions/{interactionId}/withdraw",
   tags: ["issues"],
   summary: "Withdraw a pending issue thread interaction",
@@ -7100,6 +7465,87 @@ for (const route of [
   });
 }
 
+// --- Connection intents ------------------------------------------------------
+
+registerCurrentRoute({
+  method: "post",
+  path: "/runtime-tools/github/credentials",
+  tags: ["connection-intents"],
+  summary: "Resolve operation credentials using a run capability with github_credentials scope; browser sessions are rejected",
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 409: r.conflict },
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/mcp/runtime-tools",
+  tags: ["connection-intents"],
+  summary: "Inspect the heartbeat-bound runtime tools MCP endpoint",
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/mcp/runtime-tools",
+  tags: ["connection-intents"],
+  summary: "Call the heartbeat-bound runtime tools MCP endpoint",
+  responses: {
+    200: r.ok(),
+    202: r.ok(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    404: r.notFound,
+  },
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/runtime-tools/connections/search",
+  tags: ["connection-intents"],
+  summary: "Search connections available to the active heartbeat run",
+  body: connectionsSearchInputSchema,
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/runtime-tools/connections/request",
+  tags: ["connection-intents"],
+  summary: "Request a connection for the active heartbeat run",
+  body: connectionRequestInputSchema,
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/connection-intents/{interactionId}/setup-options",
+  tags: ["connection-intents"],
+  summary: "Get setup options for an addressed connection request",
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/connection-intents/{interactionId}/phase",
+  tags: ["connection-intents"],
+  summary: "Update the setup phase for an addressed connection request",
+  body: z.object({
+    phase: z.enum(["requested", "authorizing", "needs_retry"]),
+  }).strict(),
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 422: r.unprocessable },
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/connection-intents/{interactionId}/complete",
+  tags: ["connection-intents"],
+  summary: "Complete an addressed connection request",
+  body: completeConnectionIntentSchema,
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/connection-intents/{interactionId}/decline",
+  tags: ["connection-intents"],
+  summary: "Decline an addressed connection request",
+  body: declineConnectionIntentSchema,
+});
+
 // --- Tool access -------------------------------------------------------------
 
 registerCurrentRoute({
@@ -7107,6 +7553,13 @@ registerCurrentRoute({
   path: "/api/companies/{companyId}/tools/gallery",
   tags: ["tool-access"],
   summary: "List tool app gallery entries",
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/companies/{companyId}/tools/apps/{galleryKey}/preflight",
+  tags: ["tool-access"],
+  summary: "Inspect a curated app's public MCP and OAuth metadata without credentials or registration",
 });
 
 registerCurrentRoute({
@@ -7124,6 +7577,15 @@ registerCurrentRoute({
   tags: ["tool-access"],
   summary: "Finish a gallery app connection and profile setup",
   body: finishToolAppSchema,
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 422: r.unprocessable },
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/companies/{companyId}/tools/apps/{connectionId}/finalize-oauth-access",
+  tags: ["tool-access"],
+  summary: "Choose personal or company-wide access after OAuth sign-in",
+  body: finalizeOAuthAccessSchema,
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 422: r.unprocessable },
 });
 
@@ -7250,6 +7712,22 @@ registerCurrentRoute({
 });
 
 registerCurrentRoute({
+  method: "post",
+  path: "/api/tool-connections/{connectionId}/grants/{grantId}/delegations",
+  tags: ["tool-access"],
+  summary: "Delegate a personal tool connection grant to an agent",
+  body: createConnectionGrantDelegationSchema,
+  responses: { 201: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registerCurrentRoute({
+  method: "delete",
+  path: "/api/tool-connections/{connectionId}/grants/{grantId}/delegations/{delegationId}",
+  tags: ["tool-access"],
+  summary: "Revoke a personal tool connection grant delegation",
+});
+
+registerCurrentRoute({
   method: "delete",
   path: "/api/tool-connections/{connectionId}/grants/{grantId}",
   tags: ["tool-access"],
@@ -7261,6 +7739,41 @@ registerCurrentRoute({
   path: "/api/tool-connections/{connectionId}/usage",
   tags: ["tool-access"],
   summary: "Get tool connection usage",
+});
+
+registerCurrentRoute({
+  method: "put",
+  path: "/api/tool-connections/{connectionId}/grants/{grantId}/members",
+  tags: ["tool-access"],
+  summary: "Replace the member audience of a tool connection grant",
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/tool-connections/{connectionId}/services",
+  tags: ["tool-access"],
+  summary: "List the broker services behind a tool connection",
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/tool-connections/{connectionId}/services/{toolkitSlug}/connect",
+  tags: ["tool-access"],
+  summary: "Start a broker service connection for a toolkit",
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/tool-connections/{connectionId}/services/{toolkitSlug}/status",
+  tags: ["tool-access"],
+  summary: "Poll the connection status of a broker service",
+});
+
+registerCurrentRoute({
+  method: "delete",
+  path: "/api/tool-connections/{connectionId}/services/{toolkitSlug}",
+  tags: ["tool-access"],
+  summary: "Disconnect a broker service from a tool connection",
 });
 
 registerCurrentRoute({
@@ -7338,6 +7851,13 @@ registerCurrentRoute({
 });
 
 registerCurrentRoute({
+  method: "get",
+  path: "/api/tool-connections/{connectionId}/test-agents/{agentId}/access",
+  tags: ["tool-access"],
+  summary: "Summarize one agent's effective access to a tool connection",
+});
+
+registerCurrentRoute({
   method: "post",
   path: "/api/tool-connections/{connectionId}/test-calls",
   tags: ["tool-access"],
@@ -7359,6 +7879,7 @@ registerCurrentRoute({
   path: "/api/tools/oauth/{connectionId}/start",
   tags: ["tool-access"],
   summary: "Start OAuth sign-in for a tool connection",
+  body: startToolOAuthSchema,
 });
 
 registerCurrentRoute({
@@ -7366,6 +7887,55 @@ registerCurrentRoute({
   path: "/api/tools/oauth/callback",
   tags: ["tool-access"],
   summary: "Handle a tool app OAuth callback",
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/tools/oauth/cloud-connector/callback",
+  tags: ["tool-access"],
+  summary: "Handle a brokered Paperclip Cloud OAuth callback",
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/tools/oauth/paperclip-id/callback",
+  tags: ["tool-access"],
+  summary: "Handle a legacy brokered Paperclip ID OAuth callback",
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/tools/oauth/cloud-connector/enrollment",
+  tags: ["tool-access"],
+  summary: "Get Paperclip Cloud connector enrollment status",
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/tools/oauth/cloud-connector/enrollment",
+  tags: ["tool-access"],
+  summary: "Start Paperclip Cloud connector enrollment",
+  body: z.object({ companyId: z.string().min(1), label: z.string().optional() }).strict(),
+  responses: { 201: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 422: r.unprocessable },
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/tools/oauth/cloud-connector/enrollment-callback",
+  tags: ["tool-access"],
+  summary: "Complete Paperclip Cloud connector enrollment",
+  query: z.object({
+    enrollment_id: z.string().min(1),
+    approval_code: z.string().min(1),
+    state: z.string().min(1),
+  }).strict(),
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/tools/vercel-connect/callback",
+  tags: ["tool-access"],
+  summary: "Handle a managed Vercel Connect OAuth callback",
 });
 
 registerCurrentRoute({
@@ -7820,6 +8390,24 @@ registerCurrentRoute({
     cursor: z.string().optional(),
   }),
 });
+
+// Every experimental REST route remains discoverable while its runtime feature
+// flag and actor checks stay authoritative. Shared validators prevent drift.
+for (const [method, path, body] of experimentalApiPaths) {
+  const query = experimentalApiQueries[`${method.toUpperCase()} ${path}`];
+  const metadata = experimentalApiMetadata[`${method.toUpperCase()} ${path}`];
+  registry.registerPath({
+    method, path, tags: ["Experimental"],
+    summary: `${method.toUpperCase()} ${path.replace(/\{[^}]+\}/g, "").replace(/\/api\//, "").replaceAll("/", " ")}`,
+    description: "Experimental API; the corresponding instance feature must be enabled. Existing route authorization applies." + (path.startsWith("/api/cases/{caseId}") ? " Pipeline case resource. On overlapping /cases routes the server selects the handler by resource identity; use a pipeline case ID." : path.startsWith("/api/cases/{id}") ? " Cases resource (not a pipeline case). Overlapping /cases routes select their handler by resource identity." : ""),
+    request: {
+      params: z.object(Object.fromEntries([...path.matchAll(/\{([^}]+)\}/g)].map((match) => [match[1], z.string()]))),
+      ...(query ? { query } : {}),
+      ...(path === "/api/cases/{id}/attachments" ? { body: { required: true, content: { "multipart/form-data": { schema: { type: "object", required: ["file"], properties: { file: { type: "string", format: "binary" } } } } } } } : body ? { body: { required: true, content: { "application/json": { schema: body } } } } : {}),
+    },
+    responses: { ...Object.fromEntries((metadata?.successStatuses ?? [200]).map(status => [status, responses.ok()])), 400: responses.badRequest, 403: responses.forbidden, 404: responses.notFound },
+  });
+}
 
 // ─── Spec builder ─────────────────────────────────────────────────────────────
 

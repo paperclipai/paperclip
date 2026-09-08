@@ -4,6 +4,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ApiError } from "../api/client";
 import { queryKeys } from "../lib/queryKeys";
 import {
   ONBOARDING_AGENT_STEP,
@@ -39,6 +40,7 @@ const mockAgentsApi = vi.hoisted(() => ({
   instructionsBundle: vi.fn(),
   saveInstructionsFile: vi.fn(),
   testEnvironment: vi.fn(),
+  getClaudeOAuthTokenStatus: vi.fn(),
 }));
 const mockCompaniesApi = vi.hoisted(() => ({ create: vi.fn() }));
 // The hire path resolves the Test environment before it probes: it reads the
@@ -105,9 +107,9 @@ function currentStep(): "mission" | "agent" | "closed" | "other" {
   if (!body.querySelector("[role='dialog'], .fixed.inset-0")) return "closed";
   const headings = [...body.querySelectorAll("h3")].map((h) => h.textContent);
   if (headings.includes("Define your mission")) return "mission";
-  // Keyed on the role control rather than the name field: the name is optional
-  // and starts empty, so its placeholder is the generic "Name".
-  if (body.querySelector("#onboarding-agent-role")) return "agent";
+  // Keyed on the name field, which is the agent step's only control now that
+  // the role picker is gone.
+  if (body.querySelector("#onboarding-agent-name")) return "agent";
   return "other";
 }
 
@@ -205,6 +207,12 @@ describe("OnboardingWizard — which step it lands on", () => {
       checks: [],
       testedAt: new Date("2026-03-02T00:00:00Z").toISOString(),
     });
+    // Onboarding applies a stored Claude login automatically; this suite is
+    // not testing that path, so default to "no stored value" (the route's
+    // fixed 404) so the hire path behaves as it did before that feature.
+    mockAgentsApi.getClaudeOAuthTokenStatus.mockRejectedValue(
+      new ApiError("Not found", 404, null),
+    );
     mockEnvironmentsApi.list.mockResolvedValue([]);
     mockInstanceSettingsApi.get.mockResolvedValue({ defaultEnvironmentId: null });
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({
@@ -219,6 +227,53 @@ describe("OnboardingWizard — which step it lands on", () => {
     container.remove();
     document.body.innerHTML = "";
     vi.clearAllMocks();
+  });
+
+  /**
+   * The progress strip counts the walk the customer is actually on, and the two
+   * runs that enter on the agent step are on different walks.
+   *
+   * Both have a company already, so `entryStep` cannot tell them apart. What
+   * does is `enableManagedSandboxOnly` — the cloud-tenant shape. A cloud tenant
+   * was asked for its organization's name by Cloud, one screen earlier, so its
+   * walk is four and this is the second. A self-hosted company that simply has
+   * no agents yet was asked nothing before this, so its walk is three.
+   */
+  describe("progress strip length", () => {
+    function announcedCount(): string | null {
+      return (
+        [...document.querySelectorAll(".sr-only")]
+          .map((element) => element.textContent?.trim() ?? "")
+          .find((text) => /^Step \d+ of \d+$/.test(text)) ?? null
+      );
+    }
+
+    it("counts four on a cloud tenant, continuing the count Cloud started", async () => {
+      mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+        enableManagedSandboxOnly: true,
+      });
+      routerState.pathname = "/PC1/onboarding";
+      await render();
+      await settle();
+
+      expect(currentStep()).toBe("agent");
+      expect(announcedCount()).toBe("Step 2 of 4");
+    });
+
+    it("counts three on a self-hosted company that has no agents yet", async () => {
+      // Nothing was asked before this step here, so a fourth segment would be
+      // one the run can never fill — and it would credit the customer with a
+      // step they never walked.
+      mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+        enableManagedSandboxOnly: false,
+      });
+      routerState.pathname = "/PC1/onboarding";
+      await render();
+      await settle();
+
+      expect(currentStep()).toBe("agent");
+      expect(announcedCount()).toBe("Step 1 of 3");
+    });
   });
 
   it("opens a company that already has its mission on the agent step", async () => {
@@ -634,7 +689,7 @@ describe("OnboardingWizard — which step it lands on", () => {
       await settle();
       await click(
         [...document.body.querySelectorAll("button")].find(
-          (b) => b.textContent?.trim() === "Next",
+          (b) => b.textContent?.trim() === "Continue",
         )!,
       );
       await settle();
@@ -704,7 +759,7 @@ describe("OnboardingWizard — which step it lands on", () => {
     setControlledValue(nameInput, "Initech");
     await settle();
     const next = [...document.body.querySelectorAll("button")].find(
-      (b) => b.textContent?.trim() === "Next",
+      (b) => b.textContent?.trim() === "Continue",
     )!;
     await act(async () => {
       next.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -728,6 +783,50 @@ describe("OnboardingWizard — which step it lands on", () => {
     // here rather than read as a pass.
     expect(currentStep()).toBe("agent");
     expect(companyState.setSelectedCompanyId).not.toHaveBeenCalled();
+    expect(document.body.textContent).toContain(
+      "Organization created, but onboarding switched to another organization.",
+    );
+  });
+
+  it("finishes advancing when the returned company was already adopted", async () => {
+    // The company-created live update can make the surrounding app adopt the
+    // returned company before the POST continuation runs. That is not a
+    // different-company takeover: both signals name the same company, so
+    // dropping the continuation leaves the customer on the name step even
+    // though the organization now exists.
+    let resolveCreate: (company: { id: string; issuePrefix: string }) => void = () => {};
+    mockCompaniesApi.create.mockReturnValue(
+      new Promise<{ id: string; issuePrefix: string }>((resolve) => {
+        resolveCreate = resolve;
+      }),
+    );
+    routerState.pathname = "/onboarding";
+    await render();
+    await settle();
+
+    const nameInput = document.body.querySelector("input")! as HTMLInputElement;
+    setControlledValue(nameInput, "Initech");
+    await settle();
+    const next = [...document.body.querySelectorAll("button")].find(
+      (button) => button.textContent?.trim() === "Continue",
+    )!;
+    await act(async () => {
+      next.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    // Model the surrounding app adopting exactly the company that the pending
+    // request is about, without choosing a new step on the wizard's behalf.
+    dialogState.onboardingOpen = true;
+    dialogState.onboardingOptions = { companyId: "company-created" };
+    await rerender();
+    await settle();
+
+    await act(async () => resolveCreate({ id: "company-created", issuePrefix: "INI" }));
+    await settle();
+
+    expect(currentStep()).toBe("agent");
+    expect(companyState.setSelectedCompanyId).toHaveBeenCalledWith("company-created");
+    expect(mockCompaniesApi.create).toHaveBeenCalledTimes(1);
   });
 
   it("applies the step again when the wizard is re-opened", async () => {
@@ -776,27 +875,55 @@ describe("OnboardingWizard — which step it lands on", () => {
     }
 
     /**
-     * Choose a role, which the step now requires before it will advance — it
-     * asks rather than assuming one. Driven by keyboard because the control is
-     * a Radix listbox: its pointer path needs `hasPointerCapture`, which jsdom
-     * does not implement, while its keyboard path does not.
+     * Name the agent. The role picker is gone — the arc asks for a name and
+     * hires with the neutral `general` role — so advancing from step 3 means
+     * putting something in the one field it has.
      */
-    async function pickRole(label = "CEO") {
-      const trigger = document.getElementById("onboarding-agent-role")!;
+    async function nameAgent(name = "Ada") {
+      const field = document.getElementById("onboarding-agent-name") as HTMLInputElement;
+      expect(field, "the agent step should render its name field").toBeTruthy();
+      setControlledValue(field, name);
+      // Settle twice: the hire is guarded on the company's goal lookup
+      // (`missionUnresolvedForHire`), and a Connect that fires before that
+      // query resolves is swallowed by the guard rather than failing loudly.
+      await settle();
+      await settle();
+    }
+
+    async function press(button: Element) {
       await act(async () => {
-        trigger.dispatchEvent(
-          new KeyboardEvent("keydown", { key: "Enter", bubbles: true }),
-        );
+        button.dispatchEvent(new MouseEvent("click", { bubbles: true }));
       });
       await settle();
-      const option = [...document.body.querySelectorAll('[role="option"]')].find(
-        (o) => o.textContent?.trim() === label,
-      ) as HTMLElement | undefined;
-      expect(option).toBeDefined();
-      await act(async () => {
-        option!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    }
+
+    /**
+     * The step's own CTA. By exact text, because "Back" sits beside it.
+     *
+     * Two labels rather than one: the connect step calls its forward button
+     * "Connect", since there the press starts a sign-in rather than simply
+     * advancing. The rest of the arc still says "Next". These tests are about
+     * where a press lands, so either will do.
+     */
+    function stepCta(): HTMLButtonElement {
+      const cta = [...document.body.querySelectorAll("button")].find((b) => {
+        const text = b.textContent?.trim();
+        return text === "Next" || text === "Connect";
       });
-      await settle();
+      expect(cta, "the step should render its forward button").toBeTruthy();
+      return cta as HTMLButtonElement;
+    }
+
+    /**
+     * Pick a model source. The connect step arrives with nothing chosen, so its
+     * CTA stays disabled until a tile is pressed — found by `aria-checked`
+     * rather than by label, because this suite mocks the display registry and
+     * the tiles carry whatever it happens to return.
+     */
+    async function pickModelSource() {
+      const tiles = [...document.body.querySelectorAll("button[aria-checked]")];
+      expect(tiles.length, "the connect step should offer a source").toBeGreaterThan(0);
+      await press(tiles[0]!);
     }
 
     it("seeds the lead agent's instructions with the mission it was never asked for", async () => {
@@ -805,24 +932,13 @@ describe("OnboardingWizard — which step it lands on", () => {
       // here never types one — so the agent was hired knowing nothing of the
       // mission the customer gave at signup, and nothing reported it.
       await openOnAgentStep();
-      await pickRole();
+      await nameAgent();
 
-      const next = [...document.body.querySelectorAll("button")].find((b) =>
-        b.textContent?.includes("Next"),
-      )!;
-      await act(async () => {
-        next.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-      });
-      await settle();
+      await press(stepCta());
 
-      const connect = [...document.body.querySelectorAll("button")].find((b) =>
-        b.textContent?.includes("Connect"),
-      )!;
-      expect(connect.hasAttribute("disabled")).toBe(false);
-      await act(async () => {
-        connect.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-      });
-      await settle();
+      await pickModelSource();
+      expect(stepCta().hasAttribute("disabled")).toBe(false);
+      await press(stepCta());
 
       expect(mockAgentsApi.saveInstructionsFile).toHaveBeenCalled();
       const [, file] = mockAgentsApi.saveInstructionsFile.mock.calls[0];
@@ -837,20 +953,11 @@ describe("OnboardingWizard — which step it lands on", () => {
       // nothing — the same "retained data is not an answer" rule the draft
       // ownership gate follows.
       await openOnAgentStep();
-      await pickRole();
+      await nameAgent();
 
-      const next = [...document.body.querySelectorAll("button")].find((b) =>
-        b.textContent?.includes("Next"),
-      )!;
-      await act(async () => {
-        next.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-      });
-      await settle();
-      expect(
-        [...document.body.querySelectorAll("button")]
-          .find((b) => b.textContent?.includes("Connect"))!
-          .hasAttribute("disabled"),
-      ).toBe(false);
+      await press(stepCta());
+      await pickModelSource();
+      expect(stepCta().hasAttribute("disabled")).toBe(false);
 
       mockGoalsApi.list.mockReturnValue(new Promise(() => {}));
       await act(async () => {
@@ -860,94 +967,45 @@ describe("OnboardingWizard — which step it lands on", () => {
       });
       await settle(2);
 
-      const connect = [...document.body.querySelectorAll("button")].find((b) =>
-        b.textContent?.includes("Connect"),
-      )!;
-      expect(connect.hasAttribute("disabled")).toBe(true);
+      expect(stepCta().hasAttribute("disabled")).toBe(true);
       expect(mockAgentsApi.hire).not.toHaveBeenCalled();
     });
 
-    it("hydrates again when the same company comes back through onboarding", async () => {
-      // The hydration marker is a ref, so it outlives the state it describes.
-      // `reset()` clears the mission field; leaving the marker set would make
-      // the second run believe a mission it no longer holds was already
-      // fetched — and hire the agent without it, exactly as before this fix.
+    // Removed: "hydrates again when the same company comes back through
+    // onboarding".
+    //
+    // It closed the wizard with the X and re-opened it, which made `reset()`
+    // clear `hydratedMissionForRef` and the second pass hydrate again. The arc
+    // has no X any more — the connect step deliberately has no exit, because
+    // nothing downstream of it works until a model is connected — so `reset()`
+    // is now reachable only from a completed launch.
+    //
+    // Three substitutes were tried and all three were green against a wizard
+    // with the behaviour deleted, which is worse than no test: routing to "/"
+    // never withdraws the company; a swap to another company re-points the
+    // marker by itself, since it stores which company was hydrated rather than
+    // a bare flag; and either route dance remounts the inner wizard, so the ref
+    // does not survive to be tested. What the marker guards is still covered
+    // from the front by "seeds the lead agent's instructions with the mission it
+    // was never asked for". Restore a real version of this when the arc gains a
+    // way out.
+
+    it("hires under the neutral role, with the name the customer typed", async () => {
+      // The arc stopped asking for a role, so every onboarding hire is filed
+      // as `general` — and the hire guard returns *silently* when the role is
+      // missing, which is exactly how removing the picker could have shipped a
+      // Connect button that hires nobody. This is the test that catches that.
       await openOnAgentStep();
+      await nameAgent("Ada");
 
-      const close = [...document.body.querySelectorAll("button")].find((b) =>
-        b.querySelector(".sr-only")?.textContent?.includes("Close"),
-      );
-      expect(close).toBeDefined();
-      await act(async () => {
-        close!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-      });
-      await settle();
-      // `reset()` ran: the wizard is back at the front door with a cleared
-      // mission field, which is precisely the state the marker must not
-      // outlive.
-      expect(currentStep()).not.toBe("agent");
-
-      routerState.pathname = "/";
-      await rerender();
-      await settle();
-      routerState.pathname = "/PC1/onboarding";
-      dialogState.onboardingRouteDismissed = false;
-      await rerender();
-      await settle();
-      expect(currentStep()).toBe("agent");
-      await pickRole();
-
-      const next = [...document.body.querySelectorAll("button")].find((b) =>
-        b.textContent?.includes("Next"),
-      )!;
-      await act(async () => {
-        next.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-      });
-      await settle();
-      const connect = [...document.body.querySelectorAll("button")].find((b) =>
-        b.textContent?.includes("Connect"),
-      )!;
-      await act(async () => {
-        connect.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-      });
-      await settle();
-
-      expect(mockAgentsApi.saveInstructionsFile).toHaveBeenCalled();
-      const [, file] = mockAgentsApi.saveInstructionsFile.mock.calls.at(-1)!;
-      expect(file.content).toContain("Scale the marketplace");
-    });
-
-    it("hires the agent with the role the customer picked", async () => {
-      // The role was hardcoded to "ceo" before the role select existed. A
-      // dropdown that renders but does not reach the hire call would look
-      // entirely correct on screen and silently mis-file every agent.
-      await openOnAgentStep();
-      // Deliberately not the first option: "ceo" is what the hardcoded value
-      // was, so a test that picked it could not tell a wired dropdown from an
-      // ignored one.
-      await pickRole("Engineer");
-
-      const next = [...document.body.querySelectorAll("button")].find((b) =>
-        b.textContent?.includes("Next"),
-      )!;
-      await act(async () => {
-        next.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-      });
-      await settle();
-      const connect = [...document.body.querySelectorAll("button")].find((b) =>
-        b.textContent?.includes("Connect"),
-      )!;
-      await act(async () => {
-        connect.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-      });
-      await settle();
+      await press(stepCta());
+      await pickModelSource();
+      await press(stepCta());
 
       expect(mockAgentsApi.hire).toHaveBeenCalled();
       const [, payload] = mockAgentsApi.hire.mock.calls.at(-1)!;
-      expect(payload.role).toBe("engineer");
-      // Picking a role also renamed the agent, since the field still held the
-      // name the wizard supplied.
-      expect(payload.name).toBe("Engineer");
+      expect(payload.role).toBe("general");
+      expect(payload.name).toBe("Ada");
     });
 
     it("does not offer a way back behind the step it entered on", async () => {
@@ -973,7 +1031,7 @@ describe("OnboardingWizard — which step it lands on", () => {
       expect(segments.every((segment) => segment.disabled)).toBe(true);
 
       // And company creation is genuinely unreachable, not merely unlinked.
-      expect(document.body.textContent).not.toContain("Name your company");
+      expect(document.body.textContent).not.toContain("Name your organization");
     });
   });
 });

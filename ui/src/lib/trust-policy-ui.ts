@@ -21,7 +21,7 @@ export const TRUST_PRESET_LABELS: Record<TrustPreset, string> = {
 };
 
 export const TRUST_PRESET_DESCRIPTIONS: Record<TrustPreset, string> = {
-  standard: "Company-visible collaboration. This is the default for normal work.",
+  standard: "Organization-visible collaboration. This is the default for normal work.",
   low_trust_review:
     "Contained for hostile or untrusted input. Narrow Paperclip API, quarantined output. Use for PR review and external-content triage.",
 };
@@ -52,6 +52,10 @@ export function buildPermissionsForTrustPreset(
   if (preset === LOW_TRUST_REVIEW_PRESET) {
     return {
       ...current,
+      // Hire authority is default-on for standard-trust agents, so demoting
+      // to low-trust must drop it rather than carry the old value forward.
+      // Operators can re-enable it explicitly afterwards.
+      canCreateAgents: false,
       trustPreset: LOW_TRUST_REVIEW_PRESET,
       authorizationPolicy: buildLowTrustReviewPolicy(current.authorizationPolicy),
     };

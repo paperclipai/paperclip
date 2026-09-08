@@ -9,6 +9,12 @@ import { ThemeProvider } from "../../context/ThemeContext";
 import { RunTranscriptView, keyTranscriptBlocks, normalizeTranscript } from "./RunTranscriptView";
 
 describe("RunTranscriptView", () => {
+  it("renders provider activity semantically without dumping the payload", () => {
+    const html = renderToStaticMarkup(<RunTranscriptView entries={[{ kind: "provider_activity", ts: "2026-08-21T12:00:00.000Z", family: "plan", eventType: "plan.updated", status: "completed", title: "Plan", summary: "Plan completed", payload: { steps: [{ stepId: "s1", body: "Validate schemas", status: "completed" }], hiddenSecret: "must-not-render" } }]} />);
+    expect(html).toContain("Plan");
+    expect(html).toContain("Plan completed");
+    expect(html).not.toContain("must-not-render");
+  });
   it("folds repeated tool_call status updates for the same toolUseId into one block", () => {
     const entries: TranscriptEntry[] = [
       {

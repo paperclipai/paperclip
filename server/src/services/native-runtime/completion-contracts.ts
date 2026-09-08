@@ -2,28 +2,40 @@ import { and, desc, eq, sql } from "drizzle-orm";
 
 import type { Db } from "@paperclipai/db";
 import { completionContracts } from "@paperclipai/db";
+import type { StrictCompletionContractInput } from "../../vendor/paperclip-runner/index.js";
 
 import { nativeSha256 } from "./canonical.js";
 
 export const NATIVE_COMPLETION_CONTRACT_SCHEMA = "paperclip.completion-contract.v1";
-export const NATIVE_COMPLETION_POLICY_VERSION = "paperclip-runner-v1";
+export const NATIVE_COMPLETION_POLICY_VERSION = "phase6-v3";
 
-interface NativeCompletionContractInput {
-  revision: string;
-  objective: string;
-  criteria: Array<{ id: string; requirement: string }>;
+export function resolveNativeCompletionPolicy(issue: {
+  reviewPolicy?: string | null;
+}) {
+  const externalReviewRequired =
+    issue.reviewPolicy === "human_only" || issue.reviewPolicy === "not_creator";
+  return externalReviewRequired
+    ? { risk: "standard", completionAuthority: "server_arbiter" } as const
+    : { risk: "low", completionAuthority: "agent_claim_policy" } as const;
 }
 
-export function buildNativeCompletionContract(issue: {
-  title: string;
-  description: string | null;
-}, revision = 1): NativeCompletionContractInput {
+export function buildNativeCompletionContract(
+  issue: { title: string; description: string | null },
+  options: {
+    readonly revision?: number;
+    readonly immediateRequest?: string | null;
+  } = {},
+): StrictCompletionContractInput {
+  const followUp = options.immediateRequest?.trim();
   return {
-    revision: String(revision),
-    objective: issue.title,
+    revision: String(options.revision ?? 1),
+    objective: followUp
+      ? `Respond to the latest comment on ${issue.title}`
+      : issue.title,
     criteria: [{
       id: "objective",
-      requirement: issue.description?.trim() || `Complete: ${issue.title}`,
+      requirement:
+        followUp || issue.description?.trim() || `Complete: ${issue.title}`,
     }],
   };
 }
@@ -38,6 +50,7 @@ export async function ensureNativeCompletionContract(input: {
     reviewPolicy?: string | null;
   };
   actorId: string;
+  immediateRequest?: string | null;
 }) {
   return input.db.transaction(async (tx) => {
     await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${[
@@ -45,12 +58,7 @@ export async function ensureNativeCompletionContract(input: {
       input.companyId,
       input.issue.id,
     ].join(":")}, 0))`);
-    const externalReviewRequired = ["human_only", "not_creator"].includes(
-      input.issue.reviewPolicy ?? "",
-    );
-    const policy = externalReviewRequired
-      ? { risk: "standard", completionAuthority: "server_arbiter" }
-      : { risk: "low", completionAuthority: "agent_claim_policy" };
+    const policy = resolveNativeCompletionPolicy(input.issue);
     const latest = await tx
       .select()
       .from(completionContracts)
@@ -62,7 +70,10 @@ export async function ensureNativeCompletionContract(input: {
       .limit(1)
       .then((rows) => rows[0] ?? null);
     const latestRevision = latest?.revision ?? 1;
-    const latestCandidate = buildNativeCompletionContract(input.issue, latestRevision);
+    const latestCandidate = buildNativeCompletionContract(input.issue, {
+      revision: latestRevision,
+      immediateRequest: input.immediateRequest,
+    });
     const latestCandidateSha256 = nativeSha256({
       schemaVersion: NATIVE_COMPLETION_CONTRACT_SCHEMA,
       policyVersion: NATIVE_COMPLETION_POLICY_VERSION,
@@ -74,7 +85,10 @@ export async function ensureNativeCompletionContract(input: {
     }
 
     const nextRevision = latest ? latest.revision + 1 : 1;
-    const contract = buildNativeCompletionContract(input.issue, nextRevision);
+    const contract = buildNativeCompletionContract(input.issue, {
+      revision: nextRevision,
+      immediateRequest: input.immediateRequest,
+    });
     const canonicalSha256 = nativeSha256({
       schemaVersion: NATIVE_COMPLETION_CONTRACT_SCHEMA,
       policyVersion: NATIVE_COMPLETION_POLICY_VERSION,

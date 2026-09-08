@@ -106,6 +106,10 @@ repair_base_workspace_install() {
   [[ -f "$base_cwd/package.json" && -f "$base_cwd/pnpm-lock.yaml" ]] || return 1
   echo "Base workspace CLI at $base_cli_entry_path failed its health check (typically dangling pnpm symlinks after a partial install); repairing with pnpm install in $base_cwd." >&2
   local repair_cmd=(pnpm install --prod=false --force --frozen-lockfile --config.confirmModulesPurge=false)
+  # pnpm 9.15.4 calls the deprecated url.parse() in toNerfDart on every
+  # install. Node 24 reports that call as DEP0169. Remove this flag when the
+  # pinned pnpm no longer calls url.parse() in that path.
+  local repair_node_options="${NODE_OPTIONS:-} --disable-warning=DEP0169"
   local repair_lock_dir=""
   if command -v git >/dev/null 2>&1; then
     repair_lock_dir="$(git -C "$base_cwd" rev-parse --absolute-git-dir 2>/dev/null || true)"
@@ -122,11 +126,11 @@ repair_base_workspace_install() {
         echo "Base workspace CLI became healthy while waiting for the repair lock; skipping reinstall." >&2
         exit 0
       fi
-      env -u NODE_ENV CI=true "${repair_cmd[@]}" >&2 || exit 1
+      env -u NODE_ENV CI=true NODE_OPTIONS="$repair_node_options" "${repair_cmd[@]}" >&2 || exit 1
       base_cli_healthy
     )
   else
-    (cd "$base_cwd" && env -u NODE_ENV CI=true "${repair_cmd[@]}" >&2 && base_cli_healthy)
+    (cd "$base_cwd" && env -u NODE_ENV CI=true NODE_OPTIONS="$repair_node_options" "${repair_cmd[@]}" >&2 && base_cli_healthy)
   fi
 }
 
