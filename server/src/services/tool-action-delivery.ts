@@ -6,6 +6,8 @@ import {
   inArray,
   isNull,
   notInArray,
+  ne,
+  or,
   sql,
 } from "drizzle-orm";
 import {
@@ -74,6 +76,19 @@ export function toolActionDeliveryService(
         return false;
       }
       if (!issue.assigneeAgentId) return false;
+      // Outcomes belong to the originating assignee. Retire them after a
+      // reassignment rather than repeatedly scanning or waking the new agent.
+      await tx.update(toolActionDeliveries).set({ deliveredAt: new Date() }).where(and(
+        eq(toolActionDeliveries.companyId, source.companyId),
+        eq(toolActionDeliveries.issueId, issue.id),
+        isNull(toolActionDeliveries.deliveredAt),
+        inArray(toolActionDeliveries.actionRequestId, tx.select({ id: toolActionRequests.id }).from(toolActionRequests).where(and(
+          eq(toolActionRequests.companyId, source.companyId),
+          eq(toolActionRequests.issueId, issue.id),
+          or(isNull(toolActionRequests.requestedByAgentId), ne(toolActionRequests.requestedByAgentId, issue.assigneeAgentId)),
+          inArray(toolActionRequests.status, terminalStatuses),
+        ))),
+      ));
       const [agent] = await tx
         .select()
         .from(agents)

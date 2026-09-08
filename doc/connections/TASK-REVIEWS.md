@@ -62,7 +62,7 @@ minutes is marked failed with `tool_execution_outcome_unknown`. Its external
 outcome is uncertain: inspect the provider before retrying. It is never
 automatically replayed. This grace period exceeds the current approved-call timeout.
 
-Migrations 0240 and 0241 add the outbox and a partial unique wake-idempotency index.
+Migration 0249 adds the outbox and a partial unique wake-idempotency index.
 The index is built transactionally; migration can briefly block wake-table writes
 while PostgreSQL scans an existing large table. No external payload is added to the
 outbox.

@@ -1020,6 +1020,13 @@ describe("IssueThreadInteractionCard tool-action card", () => {
     expect(host.textContent).not.toContain("args hash");
   });
 
+  it("keeps reviewed argument values visible across preview paragraphs", () => {
+    const interaction = structuredClone(pendingToolActionWriteInteraction);
+    interaction.payload.toolAction!.previewMarkdown = "Add a row.\n\n**Title:** Launch checklist";
+    const host = renderCard({ interaction });
+    expect(host.textContent).toContain("Launch checklist");
+  });
+
   it("keeps the destructive request warning and approval styling", () => {
     const host = renderCard({ interaction: pendingToolActionDestructiveInteraction, onAcceptInteraction: vi.fn(), onRejectInteraction: vi.fn() });
     expect(host.textContent).toContain("cannot be undone");

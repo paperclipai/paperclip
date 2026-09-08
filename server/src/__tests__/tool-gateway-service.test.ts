@@ -249,7 +249,9 @@ describeEmbeddedPostgres("tool gateway service", () => {
     expect(preview).not.toMatch(/Risk:/);
     expect(preview).not.toMatch(/Arguments reviewed for execution:/);
     expect(preview).not.toMatch(/```/);
-    expect(preview).toContain("checking with you first");
+    expect(preview).toContain("Remote fixture update note");
+    expect(preview).not.toContain("checking with you first");
+    expect(preview).not.toContain("\n\n");
     // The humanized field label is surfaced (body → "Body"), the raw key is not.
     expect(preview).toContain("**Body:** short");
 
@@ -297,7 +299,12 @@ describeEmbeddedPostgres("tool gateway service", () => {
   });
 
   it("approves a pending action request directly from the review queue and preserves signed arguments", async () => {
-    const { company, agent, run } = await createRunFixture(db);
+    const { company, agent, issue, run } = await createRunFixture(db);
+    // Real runner calls carry immutable identity in their signed approval.
+    await initializeRunIdentity(db, {
+      companyId: company.id, runId: run.id, issueId: issue.id,
+      responsibleUserId: null, cause: "company_default",
+    });
     await db.insert(toolPolicies).values({
       companyId: company.id,
       name: "Review note writes",
@@ -410,6 +417,43 @@ describeEmbeddedPostgres("tool gateway service", () => {
     expect((await db.select().from(toolActionDeliveries)).every(row => row.deliveredAt)).toBe(true);
     const native = await materializeNativeInteractionResponses({ db, companyId: company.id, issueId: issue.id, runId: randomUUID(), agentId: agent.id, interactionIds: payload.interactionIds });
     expect(native).toHaveLength(2);
+  });
+
+  it("retires a former assignee's continuation after reassignment", async () => {
+    const { company, agent, issue, run } = await createRunFixture(db);
+    await db.insert(toolPolicies).values({ companyId: company.id, name: "Ask first", policyType: "require_approval", selectors: { toolName: "mcp-remote-fixture:update_note" } });
+    const gateway = createTestToolGatewayService(db);
+    const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+    await expect(gateway.executeTool({ sessionToken: session.token, tool: "mcp-remote-fixture:update_note", parameters: { noteId: "reassigned" } })).rejects.toMatchObject({ reasonCode: "approval_required" });
+    const [request] = await db.select().from(toolActionRequests);
+    await gateway.declineActionRequest({ companyId: company.id, actionRequestId: request.id, actor: { userId: "reviewer" } });
+    const [replacement] = await db.insert(agents).values({ companyId: company.id, name: "Replacement", role: "engineer", adapterType: "process" }).returning();
+    await db.update(issues).set({ assigneeAgentId: replacement.id }).where(eq(issues.id, issue.id));
+    const wakeup = vi.fn();
+    const delivery = toolActionDeliveryService(db, { wakeup });
+    await delivery.sweepPending();
+    expect((await db.select().from(toolActionDeliveries))[0].deliveredAt).not.toBeNull();
+    expect(await delivery.sweepPending()).toEqual({ scanned: 0, delivered: 0 });
+    expect(wakeup).not.toHaveBeenCalled();
+  });
+
+  it("recovers expired reviews beyond a full batch of approvals that cannot recover", async () => {
+    const { company, agent, run } = await createRunFixture(db);
+    await db.insert(toolPolicies).values({ companyId: company.id, name: "Ask first", policyType: "require_approval", selectors: { toolName: "mcp-remote-fixture:update_note" } });
+    const gateway = createTestToolGatewayService(db);
+    const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+    await expect(gateway.executeTool({ sessionToken: session.token, tool: "mcp-remote-fixture:update_note", parameters: { noteId: "expire" } })).rejects.toMatchObject({ reasonCode: "approval_required" });
+    const [request] = await db.select().from(toolActionRequests);
+    await db.update(toolActionRequests).set({ expiresAt: new Date(Date.now() - 1000) }).where(eq(toolActionRequests.id, request.id));
+    await db.insert(toolActionRequests).values(Array.from({ length: 100 }, (_, i) => ({
+      ...request, id: `00000000-0000-4000-8000-${String(i).padStart(12, "0")}`,
+      interactionId: null, status: "approved" as const,
+    })));
+    const recover = vi.spyOn(gateway, "approveActionRequest").mockRejectedValue(new Error("Unavailable approval dependency"));
+    expect(await gateway.sweepActionReviews()).toEqual({ scanned: 101 });
+    expect(recover).toHaveBeenCalledTimes(100);
+    const [settled] = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, request.interactionId!));
+    expect(settled.status).toBe("expired");
   });
 
   it("settles expired reviews and interrupted execution without replaying an uncertain external action", async () => {

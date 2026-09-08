@@ -3337,7 +3337,7 @@ rl.on("line", (line) => {
         continuationPolicy: "wake_assignee",
         payload: {
           version: 1,
-          prompt: `Approve ${approvalToolName}?`,
+          prompt: "Approve KV Set?",
           detailsMarkdown: expect.stringContaining('"value":"original"'),
           target: {
             type: "custom",
