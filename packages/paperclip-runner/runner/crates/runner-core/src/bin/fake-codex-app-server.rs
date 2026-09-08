@@ -15,6 +15,8 @@ struct FakeState {
     active_turn_id: Option<String>,
     #[serde(default)]
     next_turn: u64,
+    #[serde(default)]
+    goal: Option<Value>,
 }
 
 fn argument(args: &[String], name: &str) -> Option<String> {
@@ -81,6 +83,7 @@ fn load_state(path: &Path) -> FakeState {
             thread_id: "codex-thread-1".to_owned(),
             active_turn_id: None,
             next_turn: 0,
+            goal: None,
         })
 }
 
@@ -136,7 +139,8 @@ fn matches_task_context_result(result: &Value, expected_canonical: Option<&Value
     .all(|(actual_pointer, expected_pointer)| {
         let actual = result.pointer(actual_pointer).and_then(Value::as_str);
         let expected = expected.pointer(expected_pointer).and_then(Value::as_str);
-        actual.is_some_and(|value| !value.is_empty()) && actual == expected
+        actual.is_some_and(|value| !value.is_empty())
+            && (actual == expected || (expected_pointer == "/runId" && expected.is_none()))
     })
 }
 
@@ -690,6 +694,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let pre_response_notification = args
         .iter()
         .any(|value| value == "--notification-before-response");
+    let goal_policy_disabled = args.iter().any(|value| value == "--goal-policy-disabled");
+    let goal_autostart = args.iter().any(|value| value == "--goal-autostart");
+    let goal_autocontinue = args.iter().any(|value| value == "--goal-autocontinue");
+    let goal_item_trigger = argument(&args, "--goal-item-trigger");
+    let reject_goal_set = args.iter().any(|value| value == "--reject-goal-set");
+    let agent_created_goal = args
+        .iter()
+        .any(|value| value == "--agent-created-goal-on-open");
     if require_skill_instructions {
         let skill_path = std::env::var_os("HOME")
             .map(PathBuf::from)
@@ -870,6 +882,19 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 state.thread_id = "codex-thread-1".to_owned();
                 state.active_turn_id = None;
+                if agent_created_goal {
+                    state.goal = Some(json!({
+                        "objective": "Goal created by the Codex agent",
+                        "status": "active",
+                        "tokenBudget": null,
+                        "tokensUsed": 0,
+                        "timeUsedSeconds": 0,
+                        "iterations": 0,
+                        "createdAt": "2026-08-28T00:00:00.000Z",
+                        "updatedAt": "2026-08-28T00:00:00.000Z",
+                        "completedAt": null
+                    }));
+                }
                 save_state(&state_path, &state)?;
                 if pre_response_notification {
                     send(json!({
@@ -881,6 +906,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     "id": id,
                     "result": {"thread": {"id": state.thread_id, "sessionId": "codex-account-session"}}
                 }))?;
+                if agent_created_goal {
+                    send(json!({
+                        "method": "thread/goal/updated",
+                        "params": {"threadId": state.thread_id, "goal": state.goal}
+                    }))?;
+                }
             }
             "thread/resume" => {
                 if require_external_sandbox
@@ -942,6 +973,110 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 } else if exit_after_thread_read {
                     return Ok(());
                 }
+            }
+            "thread/goal/get" if goal_policy_disabled => send(json!({
+                "id": id,
+                "error": {"code": -32004, "message": "goal feature disabled by provider policy"}
+            }))?,
+            "thread/goal/get" => send(json!({
+                "id": id,
+                "result": {"goal": state.goal}
+            }))?,
+            "thread/goal/set" => {
+                if reject_goal_set {
+                    send(json!({
+                        "id": id,
+                        "error": {"code": -32000, "message": "goal set rejected"}
+                    }))?;
+                    continue;
+                }
+                let params = message.get("params").cloned().unwrap_or_else(|| json!({}));
+                let previous = state.goal.clone().unwrap_or_else(|| json!({}));
+                let objective = params
+                    .get("objective")
+                    .cloned()
+                    .or_else(|| previous.get("objective").cloned())
+                    .unwrap_or_else(|| json!("Fake Codex goal"));
+                let status = params
+                    .get("status")
+                    .cloned()
+                    .or_else(|| previous.get("status").cloned())
+                    .unwrap_or_else(|| json!("active"));
+                let token_budget = params
+                    .get("tokenBudget")
+                    .cloned()
+                    .or_else(|| previous.get("tokenBudget").cloned())
+                    .unwrap_or(Value::Null);
+                state.goal = Some(json!({
+                    "objective": objective,
+                    "status": status,
+                    "tokenBudget": token_budget,
+                    "tokensUsed": previous.get("tokensUsed").cloned().unwrap_or_else(|| json!(0)),
+                    "timeUsedSeconds": previous.get("timeUsedSeconds").cloned().unwrap_or_else(|| json!(0)),
+                    "iterations": previous.get("iterations").cloned().unwrap_or_else(|| json!(0)),
+                    "createdAt": previous.get("createdAt").cloned().unwrap_or_else(|| json!("2026-08-28T00:00:00.000Z")),
+                    "updatedAt": "2026-08-28T00:00:01.000Z",
+                    "completedAt": null
+                }));
+                if goal_autostart
+                    && state
+                        .goal
+                        .as_ref()
+                        .and_then(|goal| goal.get("status"))
+                        .and_then(Value::as_str)
+                        == Some("active")
+                {
+                    state.active_turn_id = Some("provider-goal-turn-1".to_owned());
+                }
+                save_state(&state_path, &state)?;
+                send(json!({"id": id, "result": {"goal": state.goal}}))?;
+                send(json!({
+                    "method": "thread/goal/updated",
+                    "params": {"threadId": state.thread_id, "goal": state.goal}
+                }))?;
+                if state.active_turn_id.is_some() {
+                    send(json!({
+                        "method": "turn/started",
+                        "params": {"turn": {"id": "provider-goal-turn-1"}}
+                    }))?;
+                    if let Some(trigger) = goal_item_trigger.clone() {
+                        let thread_id = state.thread_id.clone();
+                        thread::spawn(move || {
+                            for _ in 0..3_000 {
+                                if PathBuf::from(&trigger).is_file() {
+                                    if send(json!({"method":"item/started", "params":{
+                                        "threadId":thread_id, "turnId":"provider-goal-turn-1",
+                                        "item":{"id":"mid-recovery-item", "type":"agentMessage", "text":"Continuing after disconnect"}
+                                    }})).is_ok() {
+                                        let _ = fs::write(format!("{trigger}.sent"), "sent");
+                                    }
+                                    break;
+                                }
+                                thread::sleep(Duration::from_millis(10));
+                            }
+                        });
+                    }
+                    if goal_autocontinue {
+                        send(json!({"method":"turn/completed", "params":{
+                            "threadId":state.thread_id,
+                            "turn":{"id":"provider-goal-turn-1", "status":"completed", "items":[]}
+                        }}))?;
+                        state.active_turn_id = Some("provider-goal-turn-2".to_owned());
+                        save_state(&state_path, &state)?;
+                        send(json!({"method":"turn/started", "params":{
+                            "threadId":state.thread_id, "turn":{"id":"provider-goal-turn-2"}
+                        }}))?;
+                    }
+                }
+            }
+            "thread/goal/clear" => {
+                state.goal = None;
+                save_state(&state_path, &state)?;
+                send(json!({"id": id, "result": {"cleared": true}}))?;
+                send(json!({
+                    "method": "thread/goal/cleared",
+                    "params": {"threadId": state.thread_id}
+                }))?;
             }
             "turn/start" => {
                 if require_external_sandbox
@@ -1276,24 +1411,38 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     }
                     if emit_post_completion_foreign_turn {
-                        if let Some(gate) = post_completion_notification_gate.as_ref() {
-                            let deadline = std::time::Instant::now() + Duration::from_secs(5);
-                            while !gate.is_file() {
-                                if std::time::Instant::now() >= deadline {
-                                    return Err(
-                                        "post-completion notification gate timed out".into()
-                                    );
+                        let gate = post_completion_notification_gate.clone();
+                        let thread_id = state.thread_id.clone();
+                        // Keep serving authoritative goal reads while the test waits
+                        // for the completed turn before releasing the tail frame.
+                        thread::spawn(move || {
+                            let result = (|| -> io::Result<()> {
+                                if let Some(gate) = gate.as_ref() {
+                                    let deadline =
+                                        std::time::Instant::now() + Duration::from_secs(5);
+                                    while !gate.is_file() {
+                                        if std::time::Instant::now() >= deadline {
+                                            return Err(io::Error::new(
+                                                io::ErrorKind::TimedOut,
+                                                "post-completion notification gate timed out",
+                                            ));
+                                        }
+                                        thread::sleep(Duration::from_millis(1));
+                                    }
                                 }
-                                thread::sleep(Duration::from_millis(1));
+                                send(json!({
+                                    "method": "turn/started",
+                                    "params": {"threadId": thread_id, "turn": {"id": "unowned-turn"}}
+                                }))?;
+                                if let Some(gate) = gate.as_ref() {
+                                    fs::write(gate.with_extension("emitted"), b"emitted")?;
+                                }
+                                Ok(())
+                            })();
+                            if let Err(error) = result {
+                                eprintln!("failed to emit post-completion foreign turn: {error}");
                             }
-                        }
-                        send(json!({
-                            "method": "turn/started",
-                            "params": {"threadId": state.thread_id, "turn": {"id": "unowned-turn"}}
-                        }))?;
-                        if let Some(gate) = post_completion_notification_gate.as_ref() {
-                            fs::write(gate.with_extension("emitted"), b"emitted")?;
-                        }
+                        });
                     }
                     if fail_after_turn_completion {
                         if let Some(delay_ms) = fail_after_turn_completion_delay_ms {

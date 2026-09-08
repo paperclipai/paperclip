@@ -78,6 +78,10 @@ import {
   taskChatContentKey,
 } from "@/components/task-chat/TaskChatThreadView";
 import { TaskChatComposer } from "@/components/task-chat/TaskChatComposer";
+import {
+  RunnerGoalWidget,
+  useRunnerGoalControl,
+} from "@/components/task-chat/RunnerGoalWidget";
 import { TaskChatQueuedMessages } from "@/components/task-chat/TaskChatQueuedMessages";
 import { useWindowAutoFollow } from "@/components/task-chat/useWindowAutoFollow";
 import { useSidebar } from "@/context/SidebarContext";
@@ -100,6 +104,9 @@ import {
   workProductHref,
 } from "@/lib/issue-artifacts";
 import { heartbeatsApi, type RuntimeRequestResolution } from "@/api/heartbeats";
+import { issuesApi } from "@/api/issues";
+import { queryKeys } from "@/lib/queryKeys";
+import { useQueryClient } from "@tanstack/react-query";
 import { TaskChatPresentationProvider } from "@/components/task-chat/presentation-mode";
 
 function toMs(value: Date | string | null | undefined): number {
@@ -511,6 +518,36 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     onResumeAssignee,
     resumeAssigneePending = false,
   } = props;
+  const queryClient = useQueryClient();
+  const [pendingComposerAssignee, setPendingComposerAssignee] = useState<
+    string | null
+  >(null);
+  const effectiveGoalAgentId =
+    pendingComposerAssignee === null
+      ? issueAssigneeAgentId
+      : pendingComposerAssignee.startsWith("agent:")
+        ? pendingComposerAssignee.slice("agent:".length) || null
+        : null;
+  const runnerGoal = useRunnerGoalControl(issueId, effectiveGoalAgentId);
+
+  useEffect(() => {
+    setPendingComposerAssignee(null);
+  }, [currentAssigneeValue, issueId]);
+
+  const reassignForRunnerGoal = useCallback(
+    async (reassignment: {
+      assigneeAgentId: string | null;
+      assigneeUserId: string | null;
+    }) => {
+      if (!issueId)
+        throw new Error("The task is not available for reassignment.");
+      await issuesApi.update(issueId, { ...reassignment, deferWakeForGoal: true });
+      await queryClient.invalidateQueries({
+        queryKey: queryKeys.issues.detail(issueId),
+      });
+    },
+    [issueId, queryClient],
+  );
 
   const queuedMessageQueue =
     queuedCommentQueue && queuedCommentQueue.entries.length > 0
@@ -1402,6 +1439,13 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         });
       }
       if (entries.length === 0) {
+        // A queued continuation cancelled after the task was completed or parked
+        // never produced a provider turn. Keep its record in the run log without
+        // presenting it as a completed chat response.
+        if (source.status === "cancelled" && meta?.errorCode === "issue_not_in_progress") {
+          settledRunIds.add(source.id);
+          continue;
+        }
         if (sourceIsPaperclipRunner && sourceYielded) {
           settledRunIds.add(source.id);
           continue;
@@ -2081,6 +2125,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
       .filter(
         (interaction) =>
           interaction.status === "pending" &&
+          interaction.kind !== "connection_intent" &&
           !shouldHideInteractionCard(interaction),
       )
       .sort((left, right) => toMs(right.createdAt) - toMs(left.createdAt));
@@ -2542,6 +2587,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
             {tailTurnStatus ? (
               <TaskChatTurnStatusIsland model={tailTurnStatus} />
             ) : null}
+            <RunnerGoalWidget control={runnerGoal} />
             <div
               className="relative isolate flex flex-col"
               data-testid="task-chat-composer-stack"
@@ -2599,6 +2645,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                   agentMap={agentMap}
                   userProfileMap={userProfileMap}
                   currentAssigneeValue={currentAssigneeValue}
+                  onPendingAssigneeChange={setPendingComposerAssignee}
                   issueStatus={issueStatus}
                   mobile={isMobile}
                   draftKey={draftKey}
@@ -2606,6 +2653,9 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                   onSaveQueuedEdit={saveQueuedEdit}
                   onCancelQueuedEdit={() => setQueuedEdit(null)}
                   takeover={composerTakeover}
+                  runnerGoalCapability={runnerGoal.data?.capability ?? null}
+                  onRunnerGoalCommand={runnerGoal.executeComposerCommand}
+                  onRunnerGoalReassign={reassignForRunnerGoal}
                   pendingTakeover={
                     pendingComposerInputs.length > 0
                       ? {

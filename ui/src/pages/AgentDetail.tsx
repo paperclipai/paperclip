@@ -25,10 +25,11 @@ import { queryKeys } from "../lib/queryKeys";
 import { copyTextToClipboard } from "../lib/clipboard";
 import { AgentSkillsTab } from "./agent-skills/AgentSkillsTab";
 import { AgentConfigForm } from "../components/AgentConfigForm";
+import { PillGuy } from "../components/onboarding/PillGuy";
+import { getAdapterDisplay } from "../adapters/adapter-display-registry";
 import { adapterLabels, roleLabels, help } from "../components/agent-config-primitives";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { useAdapterCapabilities } from "@/adapters/use-adapter-capabilities";
-import { useStreamlinedUiEnabled } from "../hooks/useStreamlinedUiEnabled";
 import { redactCommandText as redactCommandSecretText } from "@paperclipai/adapter-utils";
 import { MarkdownEditor } from "../components/MarkdownEditor";
 import { assetsApi } from "../api/assets";
@@ -760,7 +761,6 @@ export function AgentDetail() {
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
-  const { enabled: streamlinedUiEnabled } = useStreamlinedUiEnabled();
   const [actionError, setActionError] = useState<string | null>(null);
   const [dismissedLeftAgentIds, setDismissedLeftAgentIds] = useState<Set<string>>(() => new Set());
   const activeView: AgentDetailView = urlRunId ? "run-detail" : parseAgentDetailView(urlTab ?? null);
@@ -959,19 +959,13 @@ export function AgentDetail() {
       }
       return;
     }
-    if (!streamlinedUiEnabled) {
-      if (routeAgentRef !== canonicalAgentRef) {
-        navigate(`/agents/${canonicalAgentRef}/${urlTab ?? "dashboard"}`, { replace: true });
-      }
-      return;
-    }
     if (legacyAuditSection) return;
     const canonicalTab = activeView === "run-detail" ? "overview" : activeView;
     if (routeAgentRef !== canonicalAgentRef || urlTab !== canonicalTab) {
       navigate(agentDetailHref(canonicalAgentRef, canonicalTab), { replace: true });
       return;
     }
-  }, [agent, routeAgentRef, canonicalAgentRef, urlRunId, urlTab, activeView, legacyAuditSection, navigate, streamlinedUiEnabled]);
+  }, [agent, routeAgentRef, canonicalAgentRef, urlRunId, urlTab, activeView, legacyAuditSection, navigate]);
 
   useEffect(() => {
     if (!agent?.companyId || agent.companyId === selectedCompanyId) return;
@@ -1149,18 +1143,18 @@ export function AgentDetail() {
   if (isLoading) return <PageSkeleton variant="detail" />;
   if (error) return <p className="text-sm text-destructive">{error.message}</p>;
   if (!agent) return null;
-  if (streamlinedUiEnabled && !urlRunId && legacyAuditSection) {
+  if (!urlRunId && legacyAuditSection) {
     return <Navigate to={agentScopedAuditHref(agent.id, legacyAuditSection)} replace />;
   }
   if (!urlRunId && !urlTab) {
-    return <Navigate to={streamlinedUiEnabled ? agentDetailHref(canonicalAgentRef) : `/agents/${canonicalAgentRef}/dashboard`} replace />;
+    return <Navigate to={agentDetailHref(canonicalAgentRef)} replace />;
   }
   const isPendingApproval = agent.status === "pending_approval";
   const hasInvalidOrgChain = agent.orgChainHealth?.status === "invalid_org_chain";
   const pausedEscalationWarning = !hasInvalidOrgChain ? agent.orgChainHealth?.escalationWarning ?? null : null;
   const showConfigActionBar = (
     activeView === "runtime" || activeView === "instructions" || activeView === "secrets"
-  ) && (configDirty || configSaving);
+  );
   const showLeftAgentNotice = agentMembershipState === "left" && !dismissedLeftAgentIds.has(agent.id);
   const agentMembershipPending =
     membershipMutation.isPending &&
@@ -1171,7 +1165,7 @@ export function AgentDetail() {
   const agentJoinLeavePending = agentMembershipPending && membershipMutation.variables?.starred === undefined;
 
   return (
-    <div className={cn("space-y-6", isMobile && showConfigActionBar && "pb-24")}>
+    <div className={cn("agent-settings-content mx-auto max-w-5xl space-y-8", `agent-settings-${activeView}`)}>
       {showLeftAgentNotice ? (
         <div className="flex items-center gap-3 border border-yellow-300/35 bg-yellow-300/10 px-3 py-2 text-sm text-yellow-900 dark:text-yellow-100">
           <p className="min-w-0 flex-1">
@@ -1237,27 +1231,23 @@ export function AgentDetail() {
         </div>
       ) : null}
       {/* Header */}
-      <div className="flex items-center justify-between gap-2">
-        <div className="flex items-center gap-3 min-w-0">
-          <AgentIconPicker
-            value={agent.icon}
-            onChange={(icon) => updateIcon.mutate(icon)}
-          >
-            <button className="shrink-0 flex items-center justify-center h-12 w-12 rounded-lg bg-accent hover:bg-accent/80 transition-colors">
-              <AgentIcon icon={agent.icon} className="h-6 w-6" />
-            </button>
-          </AgentIconPicker>
-          <div className="min-w-0">
-            <div className="flex flex-wrap items-center justify-end gap-2">
-              <h2 className="text-2xl font-bold truncate">{agent.name}</h2>
+      <header className="flex flex-wrap items-center justify-between gap-5 border-b border-border pb-6">
+        <div className="flex min-w-0 items-center gap-4">
+          <div role="img" aria-label={`${agent.name} avatar`} className="shrink-0">
+            <PillGuy state="alive" className="size-12" />
+          </div>
+          <div className="min-w-0 space-y-1">
+            <h1 className="truncate text-2xl font-semibold tracking-tight">{agent.name}</h1>
+            <div className="flex items-center gap-2 text-xs text-muted-foreground">
+              {agent.adapterType === "claude_local" || agent.adapterType === "codex_local"
+                ? <img src={`/brands/${agent.adapterType === "claude_local" ? "claude" : "codex"}-color.svg`} className="size-4" alt="" />
+                : null}
+              <span>{getAdapterDisplay(agent.adapterType).label}</span><span>·</span>
+              <span>{agent.title || roleLabels[agent.role] || agent.role}</span>
             </div>
-            <p className="text-sm text-muted-foreground truncate">
-              {roleLabels[agent.role] ?? agent.role}
-              {agent.title ? ` - ${agent.title}` : ""}
-            </p>
           </div>
         </div>
-        <div className="flex items-center gap-2 shrink-0">
+        <div className="flex flex-wrap items-center gap-2">
           <StarToggle
             size="button"
             starred={agentStarred}
@@ -1274,7 +1264,8 @@ export function AgentDetail() {
             agent={agent}
             companyId={resolvedCompanyId}
             assignLabel="Assign Task"
-            runLabel="Run Heartbeat"
+            showRun={false}
+            showStatus={false}
             canRunWithProviderTrace={canUseProviderTrace}
             actionsDisabled={agentAction.isPending}
             workActionsDisabled={hasInvalidOrgChain}
@@ -1313,7 +1304,7 @@ export function AgentDetail() {
             )}
           </AgentActionButtons>
         </div>
-      </div>
+      </header>
 
       {builtInState && (
         <InlineBanner
@@ -1363,15 +1354,6 @@ export function AgentDetail() {
         />
       )}
 
-      {!streamlinedUiEnabled && !urlRunId ? (
-        <Tabs value={legacyView} onValueChange={handleLegacyTabChange}>
-          <PageTabBar
-            items={LEGACY_AGENT_DETAIL_TABS}
-            value={legacyView}
-            onValueChange={handleLegacyTabChange}
-          />
-        </Tabs>
-      ) : null}
 
       {actionError && <p className="text-sm text-destructive">{actionError}</p>}
       {isPendingApproval && (
@@ -1389,57 +1371,10 @@ export function AgentDetail() {
         </div>
       )}
 
-      {/* Floating Save/Cancel (desktop) */}
-      {!isMobile && showConfigActionBar && (
-        <div className="fixed bottom-6 right-6 z-30">
-          <div className="flex items-center gap-2 bg-background/90 backdrop-blur-sm border border-border rounded-lg px-3 py-1.5 shadow-lg">
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => cancelConfigActionRef.current?.()}
-              disabled={configSaving}
-            >
-              Cancel
-            </Button>
-            <Button
-              size="sm"
-              onClick={() => saveConfigActionRef.current?.()}
-              disabled={configSaving}
-            >
-              {configSaving ? "Saving…" : "Save"}
-            </Button>
-          </div>
-        </div>
-      )}
-
-      {/* Mobile bottom Save/Cancel bar */}
-      {isMobile && showConfigActionBar && (
-        <div className="fixed inset-x-0 bottom-0 z-30 border-t border-border bg-background/95 backdrop-blur-sm">
-          <div
-            className="flex items-center justify-end gap-2 px-3 py-2"
-            style={{ paddingBottom: "max(env(safe-area-inset-bottom), 0.5rem)" }}
-          >
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => cancelConfigActionRef.current?.()}
-              disabled={configSaving}
-            >
-              Cancel
-            </Button>
-            <Button
-              size="sm"
-              onClick={() => saveConfigActionRef.current?.()}
-              disabled={configSaving}
-            >
-              {configSaving ? "Saving…" : "Save"}
-            </Button>
-          </div>
-        </div>
-      )}
+      {activeView !== "run-detail" && <h2 className="text-xl font-semibold">{activeView === "secrets" ? "Secrets & variables" : AGENT_DETAIL_NAVIGATION.flatMap(section => section.items).find(item => item.value === activeView)?.label}</h2>}
 
       {/* View content */}
-      {activeView === "overview" && (streamlinedUiEnabled || !legacyAuditSection) && (
+      {activeView === "overview" && (
         <AgentOverview
           agent={agent}
           runs={heartbeats ?? []}
@@ -1456,6 +1391,7 @@ export function AgentDetail() {
         <PromptsTab
           agent={agent}
           companyId={resolvedCompanyId ?? undefined}
+          showSaveNotice={false}
           onDirtyChange={setConfigDirty}
           onSaveActionChange={setSaveConfigAction}
           onCancelActionChange={setCancelConfigAction}
@@ -1464,7 +1400,7 @@ export function AgentDetail() {
       )}
 
       {activeView === "runtime" && (
-        <div className="max-w-3xl">
+        <div>
           <ConfigurationTab
             agent={agent}
             companyId={resolvedCompanyId ?? undefined}
@@ -1482,7 +1418,7 @@ export function AgentDetail() {
       )}
 
       {activeView === "secrets" && (
-        <div className="max-w-3xl">
+        <div>
           <ConfigurationTab
             agent={agent}
             companyId={resolvedCompanyId ?? undefined}
@@ -1508,7 +1444,7 @@ export function AgentDetail() {
       )}
 
       {activeView === "permissions" && (
-        <div className="max-w-3xl">
+        <div>
           <ConfigurationTab
             agent={agent}
             companyId={resolvedCompanyId ?? undefined}
@@ -1544,33 +1480,14 @@ export function AgentDetail() {
         />
       )}
 
-      {!streamlinedUiEnabled && legacyAuditSection === "runs" && (
-        <RunsTab
-          runs={heartbeats ?? []}
-          companyId={resolvedCompanyId!}
-          agentId={agent.id}
-          agentRouteId={canonicalAgentRef}
-          selectedRunId={null}
-          adapterType={agent.adapterType}
-          adapterConfig={agent.adapterConfig}
-        />
-      )}
-
-      {!streamlinedUiEnabled && legacyAuditSection === "activity" && resolvedCompanyId ? (
-        <AuditFeed companyId={resolvedCompanyId} lockedAgentId={agent.id} />
-      ) : null}
-
-      {!streamlinedUiEnabled && (legacyAuditSection === "costs" || legacyAuditSection === "budgets") ? (
-        <div className="space-y-3">
-          <h3 className="text-lg font-semibold">Agent budget</h3>
-          <p className="text-sm text-muted-foreground">
-            Review this agent&apos;s budget policy and spend in the organization costs view.
-          </p>
-          <Button variant="outline" asChild>
-            <Link to="/costs">Open costs and budgets</Link>
-          </Button>
+      {showConfigActionBar && <footer className="sticky bottom-0 z-10 flex flex-wrap items-center justify-between gap-3 border-t border-border bg-background py-4">
+        <p role="status" className="text-xs text-muted-foreground">{configSaving ? "Saving changes…" : configDirty ? "You have unsaved changes." : ""}</p>
+        <div className="flex gap-2">
+          <Button variant="ghost" disabled={!configDirty || configSaving} onClick={() => cancelConfigActionRef.current?.()}>Discard</Button>
+          <Button disabled={!configDirty || configSaving} onClick={() => {Promise.resolve(saveConfigActionRef.current?.()).catch(() => {});}}>{configSaving ? "Saving…" : "Save changes"}</Button>
         </div>
-      ) : null}
+      </footer>}
+
     </div>
   );
 }
@@ -1936,7 +1853,7 @@ export function syncAgentRouteAfterRename(
   return true;
 }
 
-function AgentRevisionsTab({
+export function AgentRevisionsTab({
   agent,
   companyId,
 }: {
@@ -2004,7 +1921,7 @@ function AgentRevisionsTab({
 
 /* ---- Configuration Tab ---- */
 
-function ConfigurationTab({
+export function ConfigurationTab({
   agent,
   companyId,
   onDirtyChange,
@@ -2123,7 +2040,7 @@ function ConfigurationTab({
             : "Disabled unless explicitly granted.";
 
   return (
-    <div className="space-y-6">
+    <div className="agent-settings-form space-y-6">
       {content !== "permissions" ? <AgentConfigForm
         mode="edit"
         agent={agent}
@@ -2138,13 +2055,13 @@ function ConfigurationTab({
         hideInstructionsFile={hideInstructionsFile}
         content={content === "runtime" ? "configuration" : "secrets"}
         sectionLayout="cards"
+        environmentVariablesPlacement="secrets"
+        compactTestFeedback
+        sectionOrder={["adapter", "permissions", "environment", "run-policy", "identity"]}
+        sectionTitles={{ adapter: "Harness", permissions: "Model & execution", identity: "Agent identity" }}
         canConfigureProviderTrace={canConfigureProviderTrace}
       /> : null}
-      {content === "runtime" ? (
-        <p className="text-xs text-muted-foreground">
-          Saved adapter config affects the next run. Active runs keep the config they started with, and config changes may start a fresh adapter session.
-        </p>
-      ) : null}
+
 
       {content === "permissions" ? <TrustPresetSection
         permissions={agent.permissions}
@@ -2244,7 +2161,9 @@ export function PromptsTab({
   onSaveActionChange,
   onCancelActionChange,
   onSavingChange,
+  showSaveNotice = true,
 }: {
+  showSaveNotice?: boolean;
   agent: Agent;
   companyId?: string;
   onDirtyChange: (dirty: boolean) => void;
@@ -2624,9 +2543,9 @@ export function PromptsTab({
           ))}
         </div>
       )}
-      <p className="text-xs text-muted-foreground">
+      {showSaveNotice && <p className="text-xs text-muted-foreground">
         Saved instructions affect the next run. Active runs keep the instructions they started with, and instruction changes may start a fresh adapter session.
-      </p>
+      </p>}
 
       <Collapsible defaultOpen={currentMode === "external"}>
         <CollapsibleTrigger className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors group">
@@ -4480,7 +4399,7 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
 
 /* ---- Keys Tab ---- */
 
-function KeysTab({ agentId, companyId }: { agentId: string; companyId?: string }) {
+export function KeysTab({ agentId, companyId }: { agentId: string; companyId?: string }) {
   const queryClient = useQueryClient();
   const { pushToast } = useToastActions();
   const [newKeyName, setNewKeyName] = useState("");

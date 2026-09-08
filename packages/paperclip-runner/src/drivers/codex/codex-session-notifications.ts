@@ -234,6 +234,9 @@ async function mapNotificationBody(state: CodexSessionState, notification: Codex
           itemId: `${threadId}:goal:update:${state.sourceSequence + 1}`,
         },
       );
+      state.emitGoalEvent("session.goal.updated", goal, {
+        workingNow: state.activeTurnId !== null,
+      });
       return;
     }
     if (notification.method === "thread/goal/cleared") {
@@ -249,6 +252,9 @@ async function mapNotificationBody(state: CodexSessionState, notification: Codex
         },
         { itemId: `${threadId}:goal:clear:${state.sourceSequence + 1}` },
       );
+      state.emitGoalEvent("session.goal.cleared", null, {
+        workingNow: state.activeTurnId !== null,
+      });
       return;
     }
     if (notification.method === "serverRequest/resolved") {
@@ -341,6 +347,20 @@ async function mapNotificationBody(state: CodexSessionState, notification: Codex
       return;
     }
     if (notification.method === "turn/started") {
+      const autonomousGoalTurn = state.currentGoal?.status === "active"
+        && state.activeTurnId === null
+        && !state.turnStartPending
+        && !state.protocolFailed
+        && !state.terminalTurns.has(turnId);
+      if (autonomousGoalTurn) {
+        state.terminal = false;
+        state.turnStarted = false;
+        state.turnStartPending = true;
+        state.result = null;
+        state.resultFingerprint = null;
+        state.resultCallId = null;
+        state.resultTurnId = null;
+      }
       if (
         turnId.length === 0 ||
         state.terminal ||
@@ -356,6 +376,7 @@ async function mapNotificationBody(state: CodexSessionState, notification: Codex
         return;
       }
       state.activeTurnId = turnId;
+      state.turnStartPending = false;
       state.turnStarted = true;
       state.emit(
         "turn.started",

@@ -59,6 +59,8 @@ const {
     reapOrphanedRuns: vi.fn(async () => ({ reaped: 0, runIds: [] })),
     promoteDueScheduledRetries: vi.fn(async () => ({ promoted: 0, runIds: [] })),
     resumeQueuedRuns: vi.fn(async () => undefined),
+    recoverPendingSessionGoalActions: vi.fn(async () => ({ scanned: 0, enqueued: 0, alreadyQueued: 0, invalid: 0 })),
+    recoverActiveSessionGoals: vi.fn(async () => ({ scanned: 0, enqueued: 0 })),
     reconcileStrandedAssignedIssues: vi.fn(async () => ({
       assignmentDispatched: 0,
       dispatchRequeued: 0,
@@ -330,6 +332,12 @@ vi.mock("../services/index.js", () => ({
       refreshed: 0,
       failed: 0,
     })),
+  })),
+}));
+
+vi.mock("../services/connection-intent-delivery.js", () => ({
+  connectionIntentDeliveryService: vi.fn(() => ({
+    sweepPending: vi.fn(async () => ({ scanned: 0, failed: 0 })),
   })),
 }));
 

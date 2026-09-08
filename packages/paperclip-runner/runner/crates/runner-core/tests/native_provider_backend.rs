@@ -15,7 +15,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 const CODEX_ACPX_DIGEST: &str =
-    "sha256:7a923b3829884d3cabcc9659d22cace3f86813e7bfffc90974b10140a45bc400";
+    "sha256:91d61bdfcb3c2830a5af690b13e355c669a483b562ce2f5d82d3e53b2378bb00";
 
 fn temporary_directory(label: &str) -> PathBuf {
     let nonce = SystemTime::now()

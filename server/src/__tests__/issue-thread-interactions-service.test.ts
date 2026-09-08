@@ -160,7 +160,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     });
   }
 
-  it("creates idempotent, human-addressed connection intents and supersedes older runs", async () => {
+  it("reuses human-addressed connection intents across runs and ordinary comments", async () => {
     const { companyId, issueId } = await seedConfirmationIssue("Connection intent");
     const agentId = randomUUID();
     const firstRunId = randomUUID();
@@ -176,6 +176,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       runtimeConfig: {},
       permissions: {},
     });
+    await db.update(issues).set({ assigneeAgentId: agentId, status: "in_progress" }).where(eq(issues.id, issueId));
     await db.insert(heartbeatRuns).values([
       {
         id: firstRunId,
@@ -241,15 +242,8 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
         idempotencyKey: `connection-intent:${secondRunId}:notion`,
       },
     );
-    const superseded = await interactionsSvc.getById(first.id);
-    expect(superseded).toMatchObject({
-      status: "expired",
-      result: {
-        version: 1,
-        outcome: "superseded",
-        supersededByInteractionId: newer.id,
-      },
-    });
+    expect(newer.id).toBe(first.id);
+    expect(await interactionsSvc.getById(first.id)).toMatchObject({ status: "pending" });
 
     const [expiredByComment] = await interactionsSvc.expireRequestConfirmationsSupersededByComment(
       { id: issueId, companyId },
@@ -261,15 +255,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       },
       { userId: "user-board" },
     );
-    expect(expiredByComment).toMatchObject({
-      id: newer.id,
-      status: "expired",
-      result: {
-        version: 1,
-        outcome: "expired",
-        reason: "Superseded by a newer user comment",
-      },
-    });
+    expect(expiredByComment).toBeUndefined();
   });
 
   it("persists addressees without allowing them to bypass human-only governance", async () => {

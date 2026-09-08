@@ -3128,6 +3128,19 @@ export function agentRoutes(
           return;
         }
 
+        // Probe-only credentials bypass storage, not authorization. The schema
+        // allows only provider key names; they never enter persisted config.
+        if (req.body.testCredentials) {
+          effectiveAdapterConfig = {
+            ...effectiveAdapterConfig,
+            env: { ...parseObject(effectiveAdapterConfig.env), ...req.body.testCredentials },
+          };
+          // Hermes authenticates the gateway itself through a top-level field.
+          // Keep its draft key out of persistence normalization, like env keys.
+          if (type === "hermes_gateway" && req.body.testCredentials.API_SERVER_KEY) {
+            effectiveAdapterConfig.apiKey = req.body.testCredentials.API_SERVER_KEY;
+          }
+        }
         const result = await adapter.testEnvironment({
           companyId,
           adapterType: type,

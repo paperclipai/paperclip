@@ -13,6 +13,7 @@ import { AppsConnect } from "./AppsConnect";
 const listGalleryMock = vi.hoisted(() => vi.fn());
 const listApplicationsMock = vi.hoisted(() => vi.fn());
 const listConnectionsMock = vi.hoisted(() => vi.fn());
+const getConnectionMock = vi.hoisted(() => vi.fn());
 const connectAppMock = vi.hoisted(() => vi.fn());
 const startOAuthMock = vi.hoisted(() => vi.fn());
 const finishAppMock = vi.hoisted(() => vi.fn());
@@ -57,6 +58,7 @@ vi.mock("@/api/tools", () => ({
     listGallery: (companyId: string) => listGalleryMock(companyId),
     listApplications: (companyId: string) => listApplicationsMock(companyId),
     listConnections: (companyId: string) => listConnectionsMock(companyId),
+    getConnection: (id: string) => getConnectionMock(id),
     connectApp: (companyId: string, input: unknown) => connectAppMock(companyId, input),
     startOAuth: (connectionId: string, input?: unknown) => startOAuthMock(connectionId, input),
     finishApp: (companyId: string, connectionId: string, input: unknown) =>
@@ -306,6 +308,44 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     const urlInput = container.querySelector<HTMLInputElement>('input[aria-label="MCP server URL"]');
     expect(urlInput).toBeTruthy();
     expect(document.activeElement).toBe(urlInput);
+  });
+
+  it.each(["config-url", "transport-url", "transport-serverUrl"] as const)("reloads a generic task reconnect endpoint from %s with selection-only card metadata", async (source) => {
+    const endpoint = "https://archive.example.test/mcp";
+    const choice = { id: "conn-archive", applicationId: "app-archive", name: "Archive", status: "active" as const, enabled: true };
+    listApplicationsMock.mockResolvedValue({ applications: [{ id: choice.applicationId, name: "Archive", applicationKey: "archive", type: "mcp_http" }] });
+    listConnectionsMock.mockResolvedValue({ connections: [{
+      ...choice, companyId: "company-1", transport: "mcp_remote", authKind: "none", credentialPolicy: "shared", credentialSource: "paperclip_vault",
+      config: source === "config-url" ? { url: endpoint } : {},
+      transportConfig: source === "transport-url" ? { url: endpoint } : source === "transport-serverUrl" ? { serverUrl: endpoint } : {},
+    }] });
+    await render(undefined, false, <ConnectionSetupFlow host="dialog" configuredConnection={choice} requestedAgentId="agent-1" />);
+    const input = container.querySelector<HTMLInputElement>('input[aria-label="MCP server URL"]');
+    expect(input?.value).toBe(endpoint);
+    expect(listConnectionsMock).toHaveBeenCalledWith("company-1");
+    await act(async () => { buttonByText("Continue")?.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+    await flushReact();
+    await passAccessStep();
+    await act(async () => { buttonByText("Check link")?.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+    await flushReact();
+    expect(connectAppMock).toHaveBeenCalledWith("company-1", expect.objectContaining({
+      link: endpoint, reconnectConnectionId: choice.id,
+    }));
+  });
+
+  it("preserves an edited task reconnect endpoint after refreshing connection data", async () => {
+    const choice = { id: "conn-archive", applicationId: "app-archive", name: "Archive", status: "active" as const, enabled: true };
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    listApplicationsMock.mockResolvedValue({ applications: [{ id: choice.applicationId, name: "Archive", applicationKey: "archive", type: "mcp_http" }] });
+    listConnectionsMock.mockResolvedValue({ connections: [{ ...choice, companyId: "company-1", transport: "mcp_remote", authKind: "none", credentialPolicy: "shared", credentialSource: "paperclip_vault", config: { url: "https://archive.example.test/mcp" } }] });
+    await render(client, false, <ConnectionSetupFlow host="dialog" configuredConnection={choice} requestedAgentId="agent-1" />);
+    const input = container.querySelector<HTMLInputElement>('input[aria-label="MCP server URL"]');
+    expect(input?.value).toBe("https://archive.example.test/mcp");
+    await act(async () => setInputValue(input!, "https://edited.example.test/mcp"));
+    listConnectionsMock.mockResolvedValue({ connections: [{ ...choice, companyId: "company-1", transport: "mcp_remote", authKind: "none", credentialPolicy: "shared", credentialSource: "paperclip_vault", config: { url: "https://refreshed.example.test/mcp" } }] });
+    await act(async () => { await client.invalidateQueries(); });
+    await flushReact();
+    expect(container.querySelector<HTMLInputElement>('input[aria-label="MCP server URL"]')?.value).toBe("https://edited.example.test/mcp");
   });
 
   it("an unrecognized URL routes to a minimal frame with the URL and key choice", async () => {
@@ -1432,6 +1472,35 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     await act(async () => dialogRoot.unmount());
   });
 
+  it("returns a standalone GitHub popup to its host only after verifying the saved connection", async () => {
+    listGalleryMock.mockResolvedValue({ apps: [GITHUB_MANAGED] });
+    connectAppMock.mockResolvedValue({
+      connectionId: "conn-github", application: { id: "app-github", name: "GitHub" },
+      connection: { id: "conn-github", credentialPolicy: "per_user" },
+      actions: { readOnly: [], canMakeChanges: [] }, catalog: [], suggestedDefaults: {},
+      auth: { kind: "oauth" },
+    });
+    const popup = { closed: false, location: { href: "about:blank", assign: vi.fn() }, focus: vi.fn(), close: vi.fn() };
+    vi.spyOn(window, "open").mockReturnValue(popup as unknown as Window);
+    const onComplete = vi.fn();
+    getConnectionMock.mockResolvedValue({ id: "conn-github", status: "active" });
+    const dialogRoot = await render(undefined, false, <ConnectionSetupFlow host="dialog" serviceSlug="github" forceNewConnection onComplete={onComplete} />);
+    await passAccessStep();
+    await act(async () => buttonByText("Continue to GitHub")!.click());
+    await flushReact();
+    await flushReact();
+    expect(connectAppMock, container.textContent ?? "").toHaveBeenCalled();
+    expect(startOAuthMock, container.textContent ?? "").toHaveBeenCalledWith("conn-github", { asCurrentUser: true });
+    expect(onComplete).not.toHaveBeenCalled();
+    popup.location.href = `${window.location.origin}/CO/apps/conn-github/permissions?success=1`;
+    await act(async () => {
+      await vi.waitFor(() => expect(onComplete).toHaveBeenCalledWith({ connectionId: "conn-github" }), { timeout: 2500 });
+    });
+    expect(getConnectionMock).toHaveBeenCalledWith("conn-github");
+    expect(popup.close).toHaveBeenCalled();
+    await act(async () => dialogRoot.unmount());
+  });
+
   it("keeps the task dialog recoverable when the browser blocks its reserved OAuth popup", async () => {
     listGalleryMock.mockResolvedValue({ apps: [NOTION] });
     connectAppMock.mockResolvedValue({
@@ -1460,9 +1529,13 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     await flushReact();
     await flushReact();
 
-    expect(container.textContent).toContain("Allow popups for this site and try again");
+    expect(container.textContent).toContain("Open sign-in in a new tab to continue");
     expect(container.textContent).toContain("Try again");
     expect(onPhaseChange).toHaveBeenCalledWith("needs_retry");
+    const fallback = container.querySelector<HTMLAnchorElement>('a[target="_blank"]');
+    expect(fallback?.textContent).toBe("Open sign-in in a new tab");
+    expect(fallback?.href).toContain("https://mcp.notion.com/authorize");
+    expect(fallback?.rel).toBe("noopener noreferrer");
 
     openSpy.mockRestore();
     await act(async () => dialogRoot.unmount());

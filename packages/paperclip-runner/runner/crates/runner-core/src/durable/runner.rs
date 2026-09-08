@@ -6,13 +6,13 @@ use serde_json::{json, Value};
 
 use super::state::{
     Command, CommandDisposition, DurableState, DurableStateStore, EventPriority,
-    PendingTerminalDelivery, StoredCommandResult,
+    PendingTerminalDelivery, StoredCommandResult, StoredOutboxEvent,
 };
 use super::transport::{
     current_unix_ms, validate_control_identity, AuthenticatedTransport, ConnectionMetadata,
     LeaseCredential, RunnerTransportEndpoint,
 };
-use super::{BootstrapTicket, DurableRunnerConfig, DurableRunnerError, PROTOCOL, PROTOCOL_VERSION};
+use super::{BootstrapTicket, DurableRunnerConfig, DurableRunnerError, PROTOCOL};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct CommandExecution {
@@ -378,9 +378,25 @@ pub fn run_durable_runner<E: CommandExecutor>(
             // mutually authenticated secure welcome exchanges it for a lease.
             bootstrap_ticket.take();
         }
+        let protocol_version = welcome.connection.protocol_version;
+        let upgrading_from_v1 =
+            protocol_version >= 2 && state.last_connection_protocol_version == Some(1);
         if let Some(acked_source_seq) = welcome.acked_source_seq {
-            state.apply_ack(acked_source_seq)?;
+            // A v2 welcome immediately following a v1 connection reports the
+            // shared cumulative cursor, including redacted placeholders. Do
+            // not interpret that cursor as acknowledgement of their native v2
+            // payloads; those are restored below with fresh source sequences.
+            let acknowledgement_protocol = if upgrading_from_v1 {
+                1
+            } else {
+                protocol_version
+            };
+            state.apply_ack(acked_source_seq, acknowledgement_protocol)?;
         }
+        if protocol_version >= 2 {
+            state.restore_v2_replay_events(&config)?;
+        }
+        state.last_connection_protocol_version = Some(protocol_version);
         let connection = welcome.connection;
         if state.pending_terminal_delivery.is_some() {
             return reconcile_pending_terminal_delivery(
@@ -414,7 +430,9 @@ pub fn run_durable_runner<E: CommandExecutor>(
                 )?;
             }
             lifecycle_after_reply = lifecycle_after_reply.merge(lifecycle);
-            if let Err(error) = transport.send_json(&command_result_envelope(&state, &result)) {
+            if let Err(error) =
+                transport.send_json(&command_result_envelope(&state, &result, protocol_version))
+            {
                 if lifecycle.durable_state().is_some() {
                     return stop_after_terminal_result_delivery_failure(
                         &mut state,
@@ -459,7 +477,12 @@ pub fn run_durable_runner<E: CommandExecutor>(
             continue;
         }
         if !disconnected {
-            if let Err(error) = send_outbox(&mut transport, &state, &mut sent_source_seq) {
+            if let Err(error) = send_outbox(
+                &mut transport,
+                &state,
+                &mut sent_source_seq,
+                protocol_version,
+            ) {
                 state.record_diagnostic(
                     "outbox delivery failed; unacknowledged suffix remains durable",
                 );
@@ -495,7 +518,12 @@ pub fn run_durable_runner<E: CommandExecutor>(
                 break;
             }
             poll_executor_events(&mut state, &store, &config, &mut executor)?;
-            if let Err(error) = send_outbox(&mut transport, &state, &mut sent_source_seq) {
+            if let Err(error) = send_outbox(
+                &mut transport,
+                &state,
+                &mut sent_source_seq,
+                connection.protocol_version,
+            ) {
                 disconnected_since.get_or_insert_with(Instant::now);
                 state.record_diagnostic(error.to_string());
                 state.reconnect_count = state.reconnect_count.saturating_add(1);
@@ -538,7 +566,7 @@ pub fn run_durable_runner<E: CommandExecutor>(
                         .pointer("/payload/ackedSourceSeq")
                         .and_then(Value::as_u64)
                         .ok_or_else(|| DurableRunnerError::invalid("ACK cursor is required"))?;
-                    state.apply_ack(acked)?;
+                    state.apply_ack(acked, connection.protocol_version)?;
                     store.save(&state)?;
                 }
                 Some("command") => {
@@ -560,9 +588,11 @@ pub fn run_durable_runner<E: CommandExecutor>(
                             &result,
                         )?;
                     }
-                    if let Err(error) =
-                        transport.send_json(&command_result_envelope(&state, &result))
-                    {
+                    if let Err(error) = transport.send_json(&command_result_envelope(
+                        &state,
+                        &result,
+                        connection.protocol_version,
+                    )) {
                         if lifecycle.durable_state().is_some() {
                             return stop_after_terminal_result_delivery_failure(
                                 &mut state,
@@ -605,7 +635,12 @@ pub fn run_durable_runner<E: CommandExecutor>(
                         disconnected_since = Some(Instant::now());
                         break;
                     }
-                    if let Err(error) = send_outbox(&mut transport, &state, &mut sent_source_seq) {
+                    if let Err(error) = send_outbox(
+                        &mut transport,
+                        &state,
+                        &mut sent_source_seq,
+                        connection.protocol_version,
+                    ) {
                         state.record_diagnostic(
                             "outbox delivery failed; unacknowledged suffix remains durable",
                         );
@@ -782,7 +817,7 @@ fn wait_for_terminal_result_ack(
                     .pointer("/payload/ackedSourceSeq")
                     .and_then(Value::as_u64)
                     .ok_or_else(|| DurableRunnerError::invalid("ACK cursor is required"))?;
-                state.apply_ack(acked)?;
+                state.apply_ack(acked, connection.protocol_version)?;
                 store.save(state)?;
             }
             Some("ping") => transport.send_json(&control_envelope(
@@ -836,7 +871,11 @@ fn reconcile_pending_terminal_delivery<E: CommandExecutor>(
                 "pending terminal command did not replay its durable lifecycle",
             ));
         }
-        if let Err(error) = transport.send_json(&command_result_envelope(state, &result)) {
+        if let Err(error) = transport.send_json(&command_result_envelope(
+            state,
+            &result,
+            connection.protocol_version,
+        )) {
             return stop_after_terminal_result_delivery_failure(state, store, executor, error);
         }
         if let Err(error) =
@@ -855,7 +894,12 @@ fn reconcile_pending_terminal_delivery<E: CommandExecutor>(
     }
 
     let mut sent_source_seq = state.acked_source_seq;
-    if let Err(error) = send_outbox(transport, state, &mut sent_source_seq) {
+    if let Err(error) = send_outbox(
+        transport,
+        state,
+        &mut sent_source_seq,
+        connection.protocol_version,
+    ) {
         state.record_diagnostic("outbox delivery failed after terminal result reconciliation");
         store.save(state)?;
         let _ = executor.shutdown();
@@ -974,25 +1018,56 @@ fn process_command<E: CommandExecutor>(
     Ok((result, CommandLifecycle::for_terminal(command)))
 }
 
+fn event_envelope_for_protocol(event: &StoredOutboxEvent, protocol_version: u64) -> Value {
+    let mut envelope = event.envelope.clone();
+    if protocol_version == 1 && envelope.pointer("/payload/schemaVersion") == Some(&json!(2)) {
+        // Preserve the source sequence on a v1 connection so its cumulative
+        // ACK can advance past an event family that only exists in PRP v2.
+        // Never copy the v2 payload because it can include a goal objective.
+        envelope["payload"]["schema"] = json!("paperclip.prp.event.v1");
+        envelope["payload"]["eventType"] = json!("runner.diagnostic");
+        envelope["payload"]["schemaVersion"] = json!(1);
+        envelope["payload"]["payload"] = json!({
+            "reasonCode": "event_requires_prp_v2",
+            "originalEventType": event.event_type,
+        });
+    }
+    envelope["version"] = json!(protocol_version);
+    envelope
+}
+
 fn send_outbox(
     transport: &mut AuthenticatedTransport,
     state: &DurableState,
     sent_source_seq: &mut u64,
+    protocol_version: u64,
 ) -> Result<(), DurableRunnerError> {
     for event in &state.outbox {
         if event.source_seq <= *sent_source_seq {
             continue;
         }
-        transport.send_json(&event.envelope)?;
+        let envelope = event_envelope_for_protocol(event, protocol_version);
+        transport.send_json(&envelope)?;
         *sent_source_seq = event.source_seq;
     }
     Ok(())
 }
 
-fn command_result_envelope(state: &DurableState, result: &StoredCommandResult) -> Value {
+fn command_result_envelope(
+    state: &DurableState,
+    result: &StoredCommandResult,
+    protocol_version: u64,
+) -> Value {
+    let mut payload = json!(result);
+    // "indeterminate" is an internal crash-recovery journal state. On the
+    // wire it is a failed command with the preserved execution_indeterminate
+    // reason so the controller can settle the command and continue replay.
+    if result.status == "indeterminate" {
+        payload["status"] = json!("failed");
+    }
     json!({
         "protocol": PROTOCOL,
-        "version": PROTOCOL_VERSION,
+        "version": protocol_version,
         "kind": "command_result",
         "runnerInstanceId": state.runner_instance_id,
         "environmentLeaseId": state.environment_lease_id,
@@ -1000,7 +1075,7 @@ fn command_result_envelope(state: &DurableState, result: &StoredCommandResult) -
         "normalizedSessionId": state.normalized_session_id,
         "turnId": state.turn_id,
         "itemId": state.item_id,
-        "payload": result,
+        "payload": payload,
     })
 }
 
@@ -1012,7 +1087,7 @@ fn control_envelope(
 ) -> Value {
     json!({
         "protocol": PROTOCOL,
-        "version": PROTOCOL_VERSION,
+        "version": connection.protocol_version,
         "kind": kind,
         "runnerInstanceId": state.runner_instance_id,
         "environmentLeaseId": state.environment_lease_id,
@@ -1153,6 +1228,73 @@ mod tests {
             precondition: None,
             payload: json!({}),
         }
+    }
+
+    #[test]
+    fn indeterminate_recovery_result_is_a_failed_wire_result() {
+        let state = DurableState::new(&config(PathBuf::from("unused")));
+        let result = StoredCommandResult {
+            command_id: "command_1".to_owned(),
+            controller_seq: 1,
+            command_type: "semantic_tool.result".to_owned(),
+            status: "indeterminate".to_owned(),
+            result: json!({"code": "execution_indeterminate"}),
+        };
+        let envelope = command_result_envelope(&state, &result, 2);
+        assert_eq!(envelope.pointer("/payload/status"), Some(&json!("failed")));
+        assert_eq!(
+            envelope.pointer("/payload/result/code"),
+            Some(&json!("execution_indeterminate")),
+        );
+    }
+
+    #[test]
+    fn v2_outbox_event_becomes_redacted_v1_diagnostic_without_losing_sequence() {
+        let config = config(PathBuf::from("unused"));
+        let mut state = DurableState::new(&config);
+        state
+            .enqueue_event(
+                &config,
+                "session.goal.updated",
+                EventPriority::P1,
+                json!({
+                    "goal": {
+                        "objective": "sensitive operator objective",
+                        "status": "active"
+                    }
+                }),
+            )
+            .unwrap();
+        let event = &state.outbox[0];
+
+        let downgraded = event_envelope_for_protocol(event, 1);
+        assert_eq!(downgraded["version"], json!(1));
+        assert_eq!(
+            downgraded.pointer("/payload/sourceSeq"),
+            Some(&json!(event.source_seq)),
+        );
+        assert_eq!(
+            downgraded.pointer("/payload/schema"),
+            Some(&json!("paperclip.prp.event.v1")),
+        );
+        assert_eq!(
+            downgraded.pointer("/payload/eventType"),
+            Some(&json!("runner.diagnostic")),
+        );
+        assert_eq!(
+            downgraded.pointer("/payload/payload/originalEventType"),
+            Some(&json!("session.goal.updated")),
+        );
+        assert!(!downgraded
+            .to_string()
+            .contains("sensitive operator objective"));
+
+        let native = event_envelope_for_protocol(event, 2);
+        assert_eq!(native["version"], json!(2));
+        assert_eq!(
+            native.pointer("/payload/eventType"),
+            Some(&json!("session.goal.updated")),
+        );
     }
 
     #[test]
@@ -1452,7 +1594,7 @@ mod tests {
         assert_eq!(state.outbox.len(), 1);
         assert_eq!(executor.events.len(), 1);
         state
-            .apply_ack(1)
+            .apply_ack(1, 2)
             .expect("controller ACK removes the durable outbox copy");
         store.save(&state).unwrap();
 

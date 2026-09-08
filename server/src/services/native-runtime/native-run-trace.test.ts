@@ -5,6 +5,7 @@ import { getActiveStepContext } from "@paperclipai/adapter-utils/acpx-engine/sta
 import type { StartupTraceContextHandle } from "../../instrumentation.js";
 import {
   createNativeRunTrace,
+  recordFailedSkillPreparation,
   NATIVE_RUN_SPAN_EVENT_TYPE,
   NATIVE_RUN_TRACE_SCHEMA_VERSION,
 } from "./native-run-trace.js";
@@ -126,6 +127,29 @@ describe("native runner performance trace", () => {
         outcome: "failed",
       },
     });
+  });
+
+  it("records skills.prepare beneath preparation with no attributes and tolerates a failed log sink", async () => {
+    const { traceContext, spans } = createRecordingTraceContext();
+    const trace = createNativeRunTrace({ runId: "skills-run", startedAtMs: 100,
+      traceContext, onEvent: async () => { throw new Error("run log unavailable"); } });
+    const preparation = trace.start("task.prepare", { parentName: "task.run", startedAtMs: 100 });
+    await expect(trace.record({ name: "skills.prepare", parentName: "task.prepare", startedAtMs: 120, endedAtMs: 170 })).resolves.toBeUndefined();
+    await trace.end(preparation, { endedAtMs: 200 });
+    expect(spans.find((span) => span.name === "skills.prepare")).toMatchObject({ name: "skills.prepare", parentName: "task.prepare", endedAtMs: 170 });
+    await expect(trace.finish("ok")).resolves.toBeUndefined();
+  });
+
+  it("emits failed skill preparation without starting execution, even when the log sink fails", async () => {
+    const events: AdapterRuntimeEvent[] = [];
+    const { traceContext, spans } = createRecordingTraceContext();
+    await recordFailedSkillPreparation({ runId: "failed-skills", startedAtMs: Date.now() - 10,
+      traceContext, onEvent: async (event) => { events.push(event); throw new Error("log unavailable"); } });
+    expect(events.find((event) => event.payload?.span === "skills.prepare")?.payload).toMatchObject({
+      span: "skills.prepare", parentSpan: "task.prepare", outcome: "failed",
+    });
+    expect(spans.find((span) => span.name === "skills.prepare")?.parentName).toBe("task.prepare");
+    expect(spans.some((span) => span.name === "native.session.execute")).toBe(false);
   });
 
   it("never fails runner control flow when its event sink fails", async () => {

@@ -63,8 +63,9 @@ describe("PaperclipRunnerToolAuthority", () => {
 
   it("advertises only real bindings and reads the bound task", async () => {
     const authority = new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId, runId });
-    expect(authority.definitions()).toHaveLength(16);
+    expect(authority.definitions()).toHaveLength(18);
     expect(authority.definitions().map((tool) => tool.name)).toEqual(expect.arrayContaining([
+      "connections_search", "connection_request",
       "get_task_context", "get_task_history", "search_tasks", "report_progress",
       "request_human_input",
       "create_task", "set_dependencies",

@@ -858,6 +858,14 @@ that classification finishes.
   signal it or spawn a replacement.
 - A persisted proposed or terminal result is reconciled before any runner or
   provider work starts, so restart recovery cannot submit a duplicate turn.
+- On the next run, a completed local Codex session whose warm controller died
+  before suspension is recovered automatically, including a uniquely verified
+  checkpoint quarantined by older controllers. Paperclip requires matching
+  database/session/provider identities, a settled terminal journal, no pending
+  commands or active provider turn, and a confirmed-dead process and process
+  group. It seals the old authority for normal epoch rotation and preserves the
+  Codex thread and goal state. Empty retry directories do not prevent recovery;
+  conflicting histories, changed profiles, and live or unverifiable owners do.
 
 Run the credential-free real-process restart suite with:
 

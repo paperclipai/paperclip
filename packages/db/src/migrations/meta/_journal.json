@@ -1709,6 +1709,27 @@
       "when": 1788804969749,
       "tag": "0245_misty_nightshade",
       "breakpoints": true
+    },
+    {
+      "idx": 246,
+      "version": "7",
+      "when": 1788812039026,
+      "tag": "0246_nostalgic_medusa",
+      "breakpoints": true
+    },
+    {
+      "idx": 247,
+      "version": "7",
+      "when": 1788812507973,
+      "tag": "0247_even_moon_knight",
+      "breakpoints": true
+    },
+    {
+      "idx": 248,
+      "version": "7",
+      "when": 1788901245075,
+      "tag": "0248_small_manta",
+      "breakpoints": true
     }
   ]
 }

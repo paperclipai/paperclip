@@ -3,6 +3,8 @@ import { and, eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agents,
+  agentWakeupRequests,
+  issueComments,
   companies,
   companyMemberships,
   companySecretBindings,
@@ -15,6 +17,8 @@ import {
   issueThreadInteractions,
   issues,
   toolApplications,
+  toolCatalogEntries,
+  connectionIntentDeliveries,
   toolConnectionInstalls,
   toolConnections,
   toolProfileBindings,
@@ -23,6 +27,10 @@ import {
 } from "@paperclipai/db";
 import type { RuntimeToolsTokenClaims } from "../runtime-tools-token.js";
 import { wakeConnectionIntentAfterResolution } from "../routes/connection-intents.js";
+import { connectionIntentDeliveryService } from "../services/connection-intent-delivery.js";
+import { issueThreadInteractionService } from "../services/issue-thread-interactions.js";
+import { PaperclipRunnerToolAuthority } from "../services/native-runtime/paperclip-runner-tool-authority.js";
+import { materializeNativeInteractionResponses } from "../services/native-runtime/native-interaction-bridge.js";
 import { connectionIntentService } from "../services/connection-intents.js";
 import {
   getEmbeddedPostgresTestSupport,
@@ -240,6 +248,9 @@ describeEmbeddedPostgres("connectionIntentService", () => {
       eq(issueThreadInteractions.id, first.interactionId!),
     )).toEqual([expect.objectContaining({ status: "pending" })]);
 
+    const [profile] = await db.insert(toolProfiles).values({ companyId: claims.company_id, name: "Notion reads", profileKey: "notion-reads", defaultAction: "allow", status: "active" }).returning();
+    await db.insert(toolProfileBindings).values({ companyId: claims.company_id, profileId: profile!.id, targetType: "agent", targetId: claims.sub });
+    await db.insert(toolCatalogEntries).values({ companyId: claims.company_id, connectionId: connection!.id, toolName: "notion-read", name: "notion-read", versionHash: "fixture-v1", status: "active", entryKind: "tool" });
     const resolved = await service.complete(
       first.interactionId!,
       connection!.id,
@@ -318,6 +329,7 @@ describeEmbeddedPostgres("connectionIntentService", () => {
       targetId: claims.sub,
     });
 
+    await db.insert(toolCatalogEntries).values({ companyId: claims.company_id, connectionId: dedicatedConnection!.id, toolName: "notion-read", name: "notion-read", versionHash: "fixture-v1", status: "active", entryKind: "tool" });
     const dedicatedSearch = await service.search(continuationClaims, "notion");
     expect(dedicatedSearch.results).toEqual([
       expect.objectContaining({ service: "notion", state: "ready", connectionId: dedicatedConnection!.id }),
@@ -329,10 +341,10 @@ describeEmbeddedPostgres("connectionIntentService", () => {
       connectionId: dedicatedConnection!.id,
     });
     expect(await db.select().from(issueThreadInteractions)).toHaveLength(1);
-    await expect(service.complete(first.interactionId!, connection!.id, claims.responsible_user_id))
-      .rejects.toThrow("already resolved");
+    await expect(service.complete(first.interactionId!, connection!.id, claims.responsible_user_id)).resolves.toMatchObject({ status: "accepted" });
+    expect(await db.select().from(connectionIntentDeliveries).where(eq(connectionIntentDeliveries.interactionId, first.interactionId!))).toHaveLength(1);
     await expect(service.request(claims, "unknown-service"))
-      .rejects.toThrow("is not available");
+      .rejects.toThrow("was not found");
     expect((await service.search(claims, "github")).results).toEqual([
       expect.objectContaining({ service: "github", state: "available" }),
     ]);
@@ -611,6 +623,127 @@ describeEmbeddedPostgres("connectionIntentService", () => {
         companyMemberships.principalId,
         claims.responsible_user_id,
       ));
+    }
+  });
+
+
+  it("native authority discovers and requests services on an empty tool snapshot", async () => {
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    const issueId = String(run!.contextSnapshot!.issueId);
+    await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, issueId));
+    await db.update(heartbeatRuns).set({ runtimeMode: "native", nativeIssueId: issueId }).where(eq(heartbeatRuns.id, runId));
+    const authority = new PaperclipRunnerToolAuthority(db, { companyId: claims.company_id, issueId, agentId: claims.sub, runId });
+    const result = await authority.execute({ tool: "connections_search", callId: "discover", arguments: { query: "github" } });
+    expect(result).toMatchObject({ results: expect.arrayContaining([expect.objectContaining({ service: "github", state: "available" })]) });
+    const request = await authority.execute({ tool: "connection_request", callId: "request", arguments: { service: "github" } });
+    expect(request).toMatchObject({ state: "needs_user_action", interactionId: expect.any(String) });
+    await expect(authority.execute({ tool: "connection_request", callId: "bad", arguments: { service: "connection:https://private.invalid" } })).rejects.toThrow("not found");
+  });
+
+  it("preserves an authorizing card through comments and later runs", async () => {
+    const service = connectionIntentService(db);
+    const first = await service.request(claims, "zapier");
+    await service.updatePhase(first.interactionId!, "authorizing", claims.responsible_user_id);
+    const loaded = await service.loadIntent(first.interactionId!);
+    await db.insert(issueComments).values({ companyId: claims.company_id, issueId: loaded.issue.id, authorUserId: claims.responsible_user_id, body: "Organize the checklist while I connect." });
+    await issueThreadInteractionService(db).getForIssue(loaded.issue, first.interactionId!);
+    const laterRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: laterRunId, companyId: claims.company_id, agentId: claims.sub, status: "running", responsibleUserId: claims.responsible_user_id, contextSnapshot: { issueId: loaded.issue.id } });
+    const repeated = await service.request({ ...claims, run_id: laterRunId }, "zapier");
+    expect(repeated.interactionId).toBe(first.interactionId);
+    expect((await service.loadIntent(first.interactionId!)).interaction).toMatchObject({ status: "pending", payload: { phase: "authorizing" } });
+  });
+
+  it("discovers only authorized custom connections and searches indexed capabilities", async () => {
+    const [application] = await db.insert(toolApplications).values({ companyId: claims.company_id, applicationKey: randomUUID(), name: "Research archive", type: "mcp_http", status: "active" }).returning();
+    const [connection] = await db.insert(toolConnections).values({ companyId: claims.company_id, applicationId: application!.id, uid: randomUUID(), name: "Archive fixture", transport: "mcp_remote", authKind: "none", enabled: true, status: "active", healthStatus: "ok" }).returning();
+    const id = `connection:${connection!.id}`;
+    const service = connectionIntentService(db);
+    await expect(service.request(claims, id)).rejects.toThrow("not found");
+    await db.insert(connectionGrants).values({ companyId: claims.company_id, connectionId: connection!.id, kind: "user", subjectUserId: claims.responsible_user_id, status: "active" });
+    await db.insert(toolCatalogEntries).values({ companyId: claims.company_id, connectionId: connection!.id, toolName: "archive_read", name: "Archive read", description: "Read the unique heliotrope launch decision", versionHash: "fixture-v1", status: "active", entryKind: "tool" });
+    expect((await service.search(claims, "heliotrope")).results).toEqual([expect.objectContaining({ service: id, source: "configured", state: "needs_user_action" })]);
+    const requested = await service.request(claims, id);
+    expect((await service.setupOptions(requested.interactionId!)).existingConnections).toEqual([expect.objectContaining({ id: connection!.id })]);
+    await expect(service.request({ ...claims, company_id: randomUUID() }, id)).rejects.toThrow();
+    await db.update(toolConnections).set({ enabled: false }).where(eq(toolConnections.id, connection!.id));
+    expect((await service.search(claims, "heliotrope")).results[0]).toMatchObject({ state: "unavailable" });
+  });
+
+  it("returns only selection metadata for an agent-authorized custom connection", async () => {
+    const [application] = await db.insert(toolApplications).values({ companyId: claims.company_id, applicationKey: randomUUID(), name: "Private archive", type: "mcp_http", status: "active" }).returning();
+    const [connection] = await db.insert(toolConnections).values({
+      companyId: claims.company_id, applicationId: application!.id, uid: randomUUID(),
+      name: "Archive identity", transport: "mcp_remote", authKind: "none", enabled: true, status: "active", healthStatus: "ok",
+      config: { oauth: { accessToken: "private-access", refreshToken: "private-refresh", clientSecret: "private-client" } },
+      transportConfig: { url: "https://private.invalid/mcp?token=private-url", headers: { Authorization: "private-header" } },
+    }).returning();
+    await db.insert(connectionGrants).values({ companyId: claims.company_id, connectionId: connection!.id,
+      kind: "agent", subjectAgentId: claims.sub, status: "active" });
+    const service = connectionIntentService(db);
+    const requested = await service.request(claims, `connection:${connection!.id}`);
+    const setup = await service.setupOptions(requested.interactionId!);
+    expect(setup.existingConnections).toEqual([{
+      id: connection!.id, applicationId: application!.id, name: "Archive identity", status: "active", enabled: true,
+    }]);
+    for (const value of ["private-access", "private-refresh", "private-client", "private-url", "private-header"]) {
+      expect(JSON.stringify(setup)).not.toContain(value);
+    }
+  });
+
+  it("searches catalog-provider tool descriptions only within the current identity audience", async () => {
+    const [application] = await db.insert(toolApplications).values({ companyId: claims.company_id, applicationKey: randomUUID(), name: "Indexed Notion", type: "mcp_http", status: "active", metadata: { sourceTemplateKey: "notion" } }).returning();
+    const [connection] = await db.insert(toolConnections).values({ companyId: claims.company_id, applicationId: application!.id, uid: randomUUID(), name: "Private Notion", transport: "mcp_remote", authKind: "none", enabled: true, status: "active", healthStatus: "ok", config: { sourceTemplateKey: "notion" } }).returning();
+    await db.insert(toolCatalogEntries).values({ companyId: claims.company_id, connectionId: connection!.id, toolName: "archive_read", name: "Archive read", description: "Read chrysanthemum workspace decisions", versionHash: "fixture-v1", status: "active", entryKind: "tool" });
+    const service = connectionIntentService(db);
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("Discovery must use the stored index"));
+    expect((await service.search(claims, "chrysanthemum")).results).toEqual([]);
+    await db.insert(connectionGrants).values({ companyId: claims.company_id, connectionId: connection!.id, kind: "user", subjectUserId: claims.responsible_user_id, status: "active" });
+    expect((await service.search(claims, "chrysanthemum")).results).toEqual([expect.objectContaining({ service: "notion", source: "catalog" })]);
+    expect(fetchSpy).not.toHaveBeenCalled();
+    fetchSpy.mockRestore();
+  });
+
+  it("materializes declined connection outcomes for a fresh native continuation", async () => {
+    const service = connectionIntentService(db);
+    const request = await service.request(claims, "linear");
+    await service.decline(request.interactionId!, claims.responsible_user_id);
+    const [issue] = await db.select().from(issues).where(eq(issues.assigneeAgentId, claims.sub));
+    const responses = await materializeNativeInteractionResponses({ db, companyId: claims.company_id,
+      agentId: claims.sub, runId: claims.run_id, issueId: issue!.id, interactionIds: [request.interactionId!] });
+    expect(responses).toEqual([expect.objectContaining({ kind: "connection_intent", response: expect.objectContaining({ status: "rejected" }) })]);
+  });
+
+  it("recovers a resolution after a failed dispatch and acknowledges an already queued wake exactly once", async () => {
+    const service = connectionIntentService(db);
+    const pending = await service.request(claims, "airtable");
+    await service.decline(pending.interactionId!, claims.responsible_user_id);
+    const wakeup = vi.fn().mockRejectedValueOnce(new Error("simulated crash before durable enqueue"));
+    const deliveries = connectionIntentDeliveryService(db, { wakeup } as never);
+    await expect(deliveries.deliver(pending.interactionId!)).rejects.toThrow("simulated crash");
+    await db.update(connectionIntentDeliveries).set({ nextAttemptAt: new Date(0) }).where(eq(connectionIntentDeliveries.interactionId, pending.interactionId!));
+    // Simulate a second worker crashing immediately after heartbeat persists its wake.
+    await db.insert(agentWakeupRequests).values({ companyId: claims.company_id, agentId: claims.sub, source: "automation", status: "queued", idempotencyKey: `connection-intent:${pending.interactionId}:rejected` });
+    await deliveries.deliver(pending.interactionId!);
+    expect(wakeup).toHaveBeenCalledTimes(1);
+    expect((await db.select().from(connectionIntentDeliveries).where(eq(connectionIntentDeliveries.interactionId, pending.interactionId!)))[0]!.deliveredAt).not.toBeNull();
+    await deliveries.deliver(pending.interactionId!);
+    expect(wakeup).toHaveBeenCalledTimes(1);
+  });
+
+  it("retires continuation delivery after assignment changes", async () => {
+    const service = connectionIntentService(db);
+    const pending = await service.request(claims, "asana");
+    const loaded = await service.loadIntent(pending.interactionId!);
+    await service.decline(pending.interactionId!, claims.responsible_user_id);
+    const wakeup = vi.fn();
+    try {
+      await db.update(issues).set({ assigneeAgentId: null }).where(eq(issues.id, loaded.issue.id));
+      await connectionIntentDeliveryService(db, { wakeup } as never).deliver(pending.interactionId!);
+      expect(wakeup).not.toHaveBeenCalled();
+      expect((await db.select().from(connectionIntentDeliveries).where(eq(connectionIntentDeliveries.interactionId, pending.interactionId!)))[0]!.deliveredAt).not.toBeNull();
+    } finally {
+      await db.update(issues).set({ assigneeAgentId: claims.sub }).where(eq(issues.id, loaded.issue.id));
     }
   });
 

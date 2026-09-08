@@ -22,6 +22,7 @@ import {
 } from "../../contracts/codex.js";
 import { providerFamilyCapabilities } from "../../provider-events.js";
 import {
+  CodexRpcError,
   ProcessCodexAppServerTransport,
   createSanitizedCodexEnvironment,
   isCodexMethodUnavailable,
@@ -50,6 +51,7 @@ import { CodexHarnessSession } from "./codex-harness-session.js";
 import type {
   CodexAppServerDriverOptions,
   CodexCapabilities,
+  CodexGoalAvailability,
   OpenedCodexThread,
 } from "./codex-driver-types.js";
 import {
@@ -122,6 +124,12 @@ function bootstrapCancellation(
 export class CodexAppServerDriver implements HarnessDriver {
   readonly #options: CodexAppServerDriverOptions;
   readonly #caps: CodexCapabilities;
+  #goalAvailability: CodexGoalAvailability;
+  #goalReasonCode: string | null = null;
+  #goalReason: string | null = null;
+  readonly #goalCapability: NonNullable<
+    CodexAppServerDriverOptions["goalCapability"]
+  >;
   readonly #persistedProcessIdentities = new WeakMap<object, string>();
 
   constructor(options: CodexAppServerDriverOptions) {
@@ -139,6 +147,19 @@ export class CodexAppServerDriver implements HarnessDriver {
       threadLineage: true,
       ...options.capabilities,
     };
+    this.#goalAvailability = this.#caps.goals ? "available" : "unsupported";
+    this.#goalCapability = options.goalCapability ?? {
+      actions: ["set", "pause", "resume", "clear"],
+      autonomousUpdates: true,
+      persistentAcrossResume: true,
+      maxObjectiveChars: 4_000,
+      tokenBudgetControl: true,
+      usageReporting: true,
+    };
+    if (!this.#caps.goals) {
+      this.#goalReasonCode = "codex_goal_api_unavailable";
+      this.#goalReason = "This Codex app-server does not expose thread goals.";
+    }
     if (!this.#caps.read) this.#caps.reconciliation = false;
   }
 
@@ -274,6 +295,9 @@ export class CodexAppServerDriver implements HarnessDriver {
         normalizedSessionId: input.normalizedSessionId,
         opened,
         goal,
+        goalAvailability: this.#goalAvailability,
+        goalReasonCode: this.#goalReasonCode,
+        goalReason: this.#goalReason,
         resumed: false,
         sourceSequence: 0,
       });
@@ -425,7 +449,33 @@ export class CodexAppServerDriver implements HarnessDriver {
         snapshot.dispositionOnlyRecoveryTurnId ?? null;
       let reconcileUncheckpointedDispositionTurn = false;
       let providerTurnIds: Set<string> | null = null;
+      const goal = await cancellation.wait(
+        this.#discoverGoal(transport, opened.threadId),
+      );
+      const recoveringAutonomousGoal = snapshot.goal?.status === "active"
+        && goal != null
+        && goal.createdAt === snapshot.goal.createdAt;
+      if (recoveringAutonomousGoal) {
+        // Goal activation and continuation have no turn/start response. The
+        // provider can advance beyond the last controller checkpoint while
+        // disconnected, so bind the single live turn from the authenticated,
+        // identity-checked thread read before draining its notifications.
+        // Never infer a turn from an arbitrary notification or another goal.
+        const turns = Array.isArray(existingThread.turns)
+          ? existingThread.turns.map(record)
+          : null;
+        const active = turns?.filter((turn) => text(turn.status) === "inProgress");
+        if (!active || active.length > 1 || (active.length === 1 && (
+          !text(active[0]?.id)
+          || (snapshot.terminalTurns ?? []).some((turn) => turn.turnId === text(active[0]?.id))
+        ))) {
+          await cancellation.wait(cancellation.close());
+          return { recovered: false, reason: "provider exposed ambiguous autonomous goal turn history" };
+        }
+        recoveredActiveTurnId = active.length === 1 ? text(active[0]?.id) : recoveredActiveTurnId;
+      }
       if (
+        !recoveringAutonomousGoal &&
         !this.#direct() &&
         snapshot.semanticResult == null &&
         recoveredActiveTurnId === null &&
@@ -516,9 +566,6 @@ export class CodexAppServerDriver implements HarnessDriver {
         dispositionOnlyRecoveryConsumed = false;
         dispositionOnlyRecoveryTurnId = null;
       }
-      const goal = await cancellation.wait(
-        this.#discoverGoal(transport, opened.threadId),
-      );
       if (opened.context.liveConsole)
         opened.context.liveConsole.goals = this.#caps.goals;
       const session = this.#session({
@@ -527,6 +574,9 @@ export class CodexAppServerDriver implements HarnessDriver {
         normalizedSessionId: snapshot.normalizedSessionId,
         opened,
         goal,
+        goalAvailability: this.#goalAvailability,
+        goalReasonCode: this.#goalReasonCode,
+        goalReason: this.#goalReason,
         resumed: true,
         activeTurnId: recoveredActiveTurnId,
         semanticResult: snapshot.semanticResult ?? null,
@@ -652,10 +702,25 @@ export class CodexAppServerDriver implements HarnessDriver {
       const response = await transport.request("thread/goal/get", { threadId });
       return parseThreadGoal(response.goal);
     } catch (error) {
-      if (isCodexMethodUnavailable(error)) {
+      const policyDisabled =
+        error instanceof CodexRpcError
+        && (error.message.toLowerCase().includes("policy")
+          || error.message.toLowerCase().includes("disabled"));
+      if (policyDisabled || isCodexMethodUnavailable(error)) {
         // The provider answered, and its answer is that this build has no goal
         // API. That is the only evidence that retires the capability.
         this.#caps.goals = false;
+        if (policyDisabled) {
+          this.#goalAvailability = "policy_disabled";
+          this.#goalReasonCode = "codex_goal_policy_disabled";
+          this.#goalReason =
+            "Session goals are disabled by the Codex provider policy.";
+        } else {
+          this.#goalAvailability = "unsupported";
+          this.#goalReasonCode = "codex_goal_api_unavailable";
+          this.#goalReason =
+            "This Codex app-server does not expose thread goals.";
+        }
         this.#options.onDiagnostic?.(
           redactCodexDiagnostic(`thread goals unavailable: ${String(error)}`),
         );
@@ -794,6 +859,9 @@ export class CodexAppServerDriver implements HarnessDriver {
     normalizedSessionId: string;
     opened: OpenedCodexThread;
     goal?: HarnessThreadGoal | null;
+    goalAvailability: CodexGoalAvailability;
+    goalReasonCode: string | null;
+    goalReason: string | null;
     resumed: boolean;
     activeTurnId?: string | null;
     semanticResult?: PersistedHarnessSemanticResult | null;
@@ -812,6 +880,7 @@ export class CodexAppServerDriver implements HarnessDriver {
       runnerInstanceId: this.#options.runnerInstanceId ?? "runner-codex",
       driverKind: this.#options.driverIdentity?.kind ?? DRIVER_KIND,
       capabilities: this.#caps,
+      goalCapability: this.#goalCapability,
       dynamicTools: this.#options.dynamicTools ?? [],
       dynamicToolHandler: this.#options.dynamicToolHandler,
     });

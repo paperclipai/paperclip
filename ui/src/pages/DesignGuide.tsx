@@ -1,3 +1,4 @@
+import { RepositoryEditor } from "@/components/RepositoryEditor";
 import { useState } from "react";
 import { ServicesList } from "./apps/app-detail/ServicesPanel";
 import { ComposioProvenanceChip } from "./apps/ComposioProvenanceChip";
@@ -2115,6 +2116,18 @@ export function DesignGuide() {
         </SubSection>
       </Section>
 
+      <Section title="Source Repositories">
+        <SubSection title="Empty and disconnected">
+          <RepositoryEditor selected={[]} onChange={() => {}} state="disconnected" onConnect={() => {}} onRetry={() => {}} />
+        </SubSection>
+        <SubSection title="Selected and searchable">
+          <RepositoryEditor selected={[{ id: "1", fullName: "paperclipai/paperclip", url: "https://github.com/paperclipai/paperclip", connections: ["Your GitHub"] }]}
+            available={[{ id: "2", fullName: "paperclipai/docs", url: "https://github.com/paperclipai/docs", connections: ["Company GitHub"] }]}
+            onChange={() => {}} onConnect={() => {}} onRetry={() => {}} />
+        </SubSection>
+        <p className="text-sm text-muted-foreground">Loading, errors, empty search, mobile, and short viewports are covered in the Project repos Storybook stories.</p>
+      </Section>
+
       <Section title="Environment Variables Editor">
         <p className="text-sm text-muted-foreground">
           Reusable env-var editor (agents, projects, environments, routines). One shared grid, an
@@ -2131,6 +2144,9 @@ export function DesignGuide() {
           The task card is the dialog host for the shared connection setup flow. Provider forms,
           validation, OAuth, access selection, and completion come from the same feature module as
           the full-page Apps setup; this card owns only audience, dialog, and task refresh behavior.
+          Pending connections stay in the timeline beside a usable composer. The independently
+          addressable Connections/In-task connections stories cover access, OAuth recovery, narrow
+          layouts, completion, and historical outcomes.
         </p>
         <div className="grid gap-4 xl:grid-cols-3">
           <IssueThreadInteractionCard

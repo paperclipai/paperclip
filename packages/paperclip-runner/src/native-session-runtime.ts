@@ -17,12 +17,13 @@ import type {
   NativeSessionBackend,
 } from "./contracts/native-session-backend.js";
 import type { PersistedNativeSession } from "./contracts/native-session-backend.js";
-import {
-  validatePrpStructuredRunResult,
-  type PrpEvent,
-  type PrpStructuredRunResult,
-  type PrpTerminalState,
+import type { HarnessThreadGoal } from "./contracts/harness-driver.js";
+import type {
+  PrpEvent,
+  PrpStructuredRunResult,
+  PrpTerminalState,
 } from "./protocol/replay-contract.js";
+import { validatePrpStructuredRunResult } from "./protocol/replay-contract.js";
 import { parsePaperclipQuestionSet } from "./contracts/question-set.js";
 
 export const DEFAULT_NATIVE_RUNTIME_INPUT_LIVE_WINDOW_MS = 120_000;
@@ -73,6 +74,13 @@ interface QuarantinedSessionCleanup {
 
 const quarantinedSessionCleanups = new Set<QuarantinedSessionCleanup>();
 
+export interface NativeSessionGoalControl {
+  requestId: string;
+  action: "create" | "edit" | "replace" | "pause" | "resume" | "clear";
+  objective?: string;
+  tokenBudget?: number | null;
+}
+
 export interface ExecuteNativeSessionOptions {
   input: NativeExecutionInput;
   backend: NativeSessionBackend;
@@ -94,6 +102,10 @@ export interface ExecuteNativeSessionOptions {
   existingSession?: NativeSession;
   persistedSession?: PersistedNativeSession | null;
   keepSessionOpen?: boolean;
+  /** Apply a structured session-goal control instead of starting an ordinary turn. */
+  sessionGoalControl?: NativeSessionGoalControl | null;
+  /** Resume the active durable session goal after a bounded heartbeat rollover. */
+  resumeSessionGoalHeartbeat?: boolean;
   /**
    * Wait for the backend's close contract before returning a durable result.
    * Use this only for backends whose close path is internally bounded and
@@ -700,6 +712,7 @@ async function retryQuarantinedSessionCleanups(
 async function consumeTurn(
   session: NativeSession,
   controlPlane: ControlPlanePort,
+  input: NativeExecutionInput,
   timeoutMs: number,
   runtimeInputLiveWindowMs: number,
   semanticResultTerminalGraceMs: number,
@@ -708,6 +721,11 @@ async function consumeTurn(
   quarantineSession: (reason: string) => void,
   resolveGovernedWait?: ExecuteNativeSessionOptions["resolveGovernedWait"],
   externalSignal?: AbortSignal,
+  sessionGoal?: {
+    input: NativeExecutionInput;
+    requestId: string;
+  },
+  initialGoal?: HarnessThreadGoal | null,
 ) {
   let timer: ReturnType<typeof setTimeout> | undefined;
   let semanticResultTimer: ReturnType<typeof setTimeout> | undefined;
@@ -756,6 +774,11 @@ async function consumeTurn(
     let eventCount = 0;
     let highestContiguousSourceSeq = 0;
     let governedResult: PrpStructuredRunResult | null = null;
+    let semanticResultProposal: PrpStructuredRunResult | null = null;
+    let sessionGoalObserved = sessionGoal !== undefined;
+    let previousGoal = initialGoal ?? null;
+    let goalControlObserved = false;
+    let latestSessionGoal: HarnessThreadGoal | null = null;
     let resultSource: "semantic_result" | "governed_wait" | null = null;
     let semanticResultEvent: PrpEvent | null = null;
     let semanticResultDeadline: Promise<
@@ -848,6 +871,36 @@ async function consumeTurn(
         highestContiguousSourceSeq,
         receipt.highestContiguousSourceSeq,
       );
+      const eventGoal = goalFromEvent(event);
+      const goalChanged = eventGoal !== undefined &&
+        goalLifecycleFingerprint(eventGoal) !== goalLifecycleFingerprint(previousGoal);
+      if (eventGoal !== undefined) previousGoal = eventGoal;
+      if (
+        eventGoal !== undefined && eventGoal !== null &&
+        (sessionGoalObserved || goalStatus(eventGoal) === "active" ||
+          (event.eventType === "session.goal.updated" && goalChanged))
+      ) {
+        // An inactive resume snapshot describes the previous goal, not the
+        // work requested by a new ordinary prompt. Only an explicit goal
+        // control, an active goal, or a new lifecycle change owns this run's
+        // lifetime. Resume can replay unchanged updates as well as snapshots;
+        // append both for the UI without mistaking them for new goal work.
+        sessionGoalObserved = true;
+        latestSessionGoal = eventGoal;
+        // A harness-created goal may arrive after a semantic result proposal.
+        // The goal owns the durable lifetime; revoke the old grace deadline.
+        if (resultSource === "semantic_result") {
+          if (semanticResultTimer !== null) clearTimeout(semanticResultTimer);
+          semanticResultDeadline = null;
+          governedResult = null;
+          resultSource = null;
+        }
+        if (sessionGoal === undefined) goalControlObserved = true;
+      }
+      if (event.eventType === "run.result.proposed") {
+        const validation = validatePrpStructuredRunResult(event.payload);
+        if (validation.ok) semanticResultProposal = validation.result;
+      }
       const request =
         payload.request &&
         typeof payload.request === "object" &&
@@ -916,6 +969,7 @@ async function consumeTurn(
       }
       if (
         governedResult === null &&
+        !sessionGoalObserved &&
         event.eventType === "run.result.proposed"
       ) {
         const validation = validatePrpStructuredRunResult(event.payload);
@@ -949,7 +1003,7 @@ async function consumeTurn(
         });
         if (governedResult !== null) resultSource = "governed_wait";
       }
-      if (governedResult !== null && !isTurnTerminal(event)) {
+      if (governedResult !== null && !isTurnTerminal(event) && !sessionGoalObserved) {
         if (resultSource === "semantic_result") {
           // Give the provider a short grace to publish its final assistant
           // message and terminal after the semantic tool returns. If no
@@ -961,6 +1015,60 @@ async function consumeTurn(
           governedResult,
           "Paperclip parked this turn on a durable governed interaction.",
         );
+      }
+      if (sessionGoalObserved) {
+        if (sessionGoal && payload.requestId === sessionGoal.requestId) {
+          goalControlObserved = true;
+        }
+        if (
+          goalControlObserved &&
+          eventGoal !== undefined &&
+          goalStatus(eventGoal) !== "active" &&
+          payload.workingNow !== true
+        ) {
+          return {
+            event,
+            eventCount,
+            highestContiguousSourceSeq,
+            governedResult:
+              governedResult ??
+              (goalStatus(eventGoal) === "complete" ? semanticResultProposal : null) ??
+              sessionGoalResult(
+                input,
+                eventGoal,
+                `Provider session goal settled as ${goalStatus(eventGoal) ?? "cleared"}.`,
+              ),
+          };
+        }
+        if (isTurnTerminal(event)) {
+          if (
+            latestSessionGoal !== null &&
+            goalStatus(latestSessionGoal) !== "active"
+          ) {
+            return {
+              event,
+              eventCount,
+              highestContiguousSourceSeq,
+              governedResult:
+                governedResult ??
+                (goalStatus(latestSessionGoal) === "complete" ? semanticResultProposal : null) ??
+                sessionGoalResult(
+                  input,
+                  latestSessionGoal,
+                  `Provider session goal settled as ${goalStatus(latestSessionGoal) ?? "cleared"}.`,
+                ),
+            };
+          }
+          if (!session.goal) throw new Error("native_session_goal_unavailable");
+          const authoritativeGoal = await session.goal({ action: "get" });
+          // `goal(get)` emits an authoritative goal snapshot. Keep consuming
+          // until that snapshot is durably appended so the server projection
+          // cannot lag behind the synthetic heartbeat result.
+          if (goalStatus(authoritativeGoal) === "active") continue;
+          goalControlObserved = true;
+          latestSessionGoal = authoritativeGoal;
+          continue;
+        }
       }
       if (isTurnTerminal(event)) {
         return {
@@ -1101,6 +1209,164 @@ async function consumeTurn(
     if (semanticResultTimer !== undefined) clearTimeout(semanticResultTimer);
     removeExternalAbort();
   }
+}
+
+function goalLifecycleFingerprint(goal: HarnessThreadGoal | null): string {
+  if (goal === null) return "cleared";
+  // Provider checkpoints can use seconds while normalized events use ISO
+  // timestamps (parsed as milliseconds). Usage/timing updates alone must not
+  // turn a completed or paused goal into ownership of an ordinary chat run.
+  const createdAt = goal.createdAt < 10_000_000_000
+    ? goal.createdAt * 1_000 : goal.createdAt;
+  return canonicalJson({ objective: goal.objective, status: goal.status, createdAt });
+}
+
+function goalStatus(goal: HarnessThreadGoal | null):
+  | "active"
+  | "paused"
+  | "blocked"
+  | "limited"
+  | "usage_limited"
+  | "budget_limited"
+  | "complete"
+  | null {
+  if (!goal) return null;
+  return goal.status === "usageLimited"
+    ? "usage_limited"
+    : goal.status === "budgetLimited"
+      ? "budget_limited"
+      : goal.status;
+}
+
+function goalFromEvent(event: PrpEvent): HarnessThreadGoal | null | undefined {
+  if (
+    event.eventType !== "session.goal.snapshot" &&
+    event.eventType !== "session.goal.updated" &&
+    event.eventType !== "session.goal.cleared"
+  ) return undefined;
+  if (event.eventType === "session.goal.cleared") return null;
+  const value = event.payload.goal;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  if (typeof record.objective !== "string" || typeof record.status !== "string") return null;
+  const providerStatus = record.status === "usage_limited"
+    ? "usageLimited"
+    : record.status === "budget_limited"
+      ? "budgetLimited"
+      : record.status;
+  if (!["active", "paused", "blocked", "limited", "usageLimited", "budgetLimited", "complete"].includes(providerStatus)) {
+    return null;
+  }
+  const epoch = (value: unknown): number => {
+    if (typeof value !== "string") return 0;
+    const parsed = Date.parse(value);
+    return Number.isFinite(parsed) ? parsed : 0;
+  };
+  return {
+    threadId: "normalized",
+    objective: record.objective,
+    status: providerStatus as HarnessThreadGoal["status"],
+    tokenBudget: typeof record.tokenBudget === "number" ? record.tokenBudget : null,
+    tokensUsed: typeof record.tokensUsed === "number" ? record.tokensUsed : 0,
+    timeUsedSeconds: typeof record.elapsedSeconds === "number" ? record.elapsedSeconds : 0,
+    createdAt: epoch(record.createdAt),
+    updatedAt: epoch(record.updatedAt),
+  };
+}
+
+export async function applyNativeSessionGoalControl(
+  session: NativeSession,
+  control: NativeSessionGoalControl,
+): Promise<HarnessThreadGoal | null> {
+  if (!session.goal) throw new Error("native_session_goal_unavailable");
+  if (control.action === "clear") {
+    return session.goal({ action: "clear", requestId: control.requestId });
+  }
+  if (control.action === "pause" || control.action === "resume") {
+    return session.goal({ action: control.action, requestId: control.requestId });
+  }
+  const objective = control.objective?.trim();
+  if (!objective) throw new Error(`native_session_goal_${control.action}_objective_required`);
+  if (control.action === "replace") {
+    await session.goal({ action: "clear", requestId: control.requestId });
+  }
+  let status: HarnessThreadGoal["status"] = "active";
+  if (control.action === "edit") {
+    const current = await session.goal({ action: "get" });
+    if (!current) throw new Error("native_session_goal_not_found");
+    status = current.status === "complete" ? "active" : current.status;
+  }
+  return session.goal({
+    action: "set",
+    objective,
+    status,
+    requestId: control.requestId,
+    ...(control.tokenBudget !== undefined
+      ? { tokenBudget: control.tokenBudget }
+      : {}),
+  });
+}
+
+function sessionGoalResult(
+  input: NativeExecutionInput,
+  goal: HarnessThreadGoal | null,
+  reason: string,
+): PrpStructuredRunResult {
+  const status = goalStatus(goal);
+  const objective = goal?.objective ?? input.completionContract.contract.objective;
+  const disposition = status === "complete"
+    ? "done"
+    : status === "blocked"
+      ? "blocked"
+      : "yielded";
+  const result: PrpStructuredRunResult = {
+    schema: "paperclip.run_result.v1",
+    reportedWorkDisposition: disposition,
+    summary: status === "complete"
+      ? `Session goal completed: ${objective}`
+      : status === "blocked"
+        ? `Session goal blocked: ${objective}`
+        : `Session goal yielded (${status ?? "cleared"}): ${objective}`,
+    completionClaim: {
+      contractRevision: input.completionContract.contract.revision,
+      objectiveSatisfied: status === "complete",
+      criteria: input.completionContract.contract.criteria.map((criterion) => ({
+        criterionId: criterion.id,
+        status: status === "complete" ? "satisfied" : "unknown",
+        evidenceRefs: status === "complete" ? ["session-goal:complete"] : [],
+        explanation: `Provider session goal status: ${status ?? "cleared"}.`,
+      })),
+      remainingWork: status === "complete"
+        ? []
+        : [{ description: reason, blocksCompletion: true }],
+    },
+    evidence: status === "complete"
+      ? [{ kind: "session_goal_status", ref: "session-goal:complete" }]
+      : [],
+    verification: [],
+    attentionRequests: [],
+    artifacts: [],
+    ...(disposition === "blocked"
+      ? {
+          blocker: {
+            reasonCode: "session_goal_blocked",
+            owner: { kind: "agent", name: "session goal provider" },
+            unblockAction: reason,
+            scope: "current_track" as const,
+          },
+        }
+      : {}),
+    ...(disposition === "yielded"
+      ? {
+          continuation: {
+            kind: "same_agent" as const,
+            summary: reason,
+            idempotencyKey: `session-goal:${input.binding.issueId}:${status ?? "cleared"}`,
+          },
+        }
+      : {}),
+  };
+  return result;
 }
 
 function checkpointCursor(cursor: string | null | undefined): number {
@@ -1735,6 +2001,9 @@ export async function executeNativeSession(
     return activeClose;
   };
   let executionSucceeded = false;
+  let goalCheckpointRequiresSuspension = Boolean(
+    options.sessionGoalControl || options.resumeSessionGoalHeartbeat || persistedSession?.goal,
+  );
   try {
     // Ownership publication is part of the execution-owned lifetime. If the
     // callback fails, the finally block below still quarantines and closes the
@@ -1880,6 +2149,7 @@ export async function executeNativeSession(
           ? consumeTurn(
               session,
               options.controlPlane,
+              input,
               options.timeoutMs ?? 900_000,
               options.runtimeInputLiveWindowMs ??
                 DEFAULT_NATIVE_RUNTIME_INPUT_LIVE_WINDOW_MS,
@@ -1892,6 +2162,13 @@ export async function executeNativeSession(
               quarantineSession,
               options.resolveGovernedWait,
               consumptionAbort.signal,
+              options.sessionGoalControl || options.resumeSessionGoalHeartbeat
+                ? {
+                    input,
+                    requestId: options.sessionGoalControl?.requestId ?? `recovery_${input.binding.runId}`,
+                  }
+                : undefined,
+              recoveredSnapshot.goal,
             )
           : Promise.resolve({
               event: recoveryTerminal,
@@ -1907,13 +2184,31 @@ export async function executeNativeSession(
       // that later rejection becomes process-fatal under Node's strict policy.
       void consuming.catch(() => undefined);
       try {
-        if (
+        const shouldStartFreshTurn =
           !recovered ||
           (!recoveredActiveTurnId &&
             !adoptedDispositionTerminal &&
             !checkpointedDispositionTerminal &&
-            !dispositionRecoveryStillOwned)
-        ) {
+            !dispositionRecoveryStillOwned);
+        if (options.sessionGoalControl) {
+          // Explicit controls remain authoritative after controller loss. In
+          // particular, pause/clear/edit must reach a recovered session even
+          // while its provider turn is still active.
+          await applyNativeSessionGoalControl(session, options.sessionGoalControl);
+          await checkpoint();
+        } else if (options.resumeSessionGoalHeartbeat && shouldStartFreshTurn) {
+          const requestId = `recovery_${input.binding.runId}`;
+          if (recoveredSnapshot.goal?.status === "active") {
+            await applyNativeSessionGoalControl(session, { requestId, action: "resume" });
+          } else {
+            // Reconcile completed/paused/cleared state without changing it.
+            // An already-delivered outbox control must not be replayed as a
+            // new resume just because the old heartbeat is being recovered.
+            if (!session.goal) throw new Error("native_session_goal_unavailable");
+            await session.goal({ action: "get", requestId });
+          }
+          await checkpoint();
+        } else if (shouldStartFreshTurn) {
           const modelEnvelope = buildNativeModelEnvelope(input);
           const dispositionOnlyRecovery = Boolean(
             recovered &&
@@ -2175,6 +2470,14 @@ export async function executeNativeSession(
         operation: async (signal) => {
           const snapshot = await session.snapshot({ signal });
           signal.throwIfAborted();
+          // A settled goal remains resumable after this controller exits. A
+          // merely idle warm runner is owned only by the in-memory supervisor;
+          // master correctly refuses that authority after a server restart.
+          // Suspend at this quiescent boundary, including active-goal rollover
+          // and clear, before returning the heartbeat result to the host. Clear
+          // deliberately leaves no goal snapshot, but its session still needs
+          // a durable handoff before the next run can create a new goal.
+          goalCheckpointRequiresSuspension ||= snapshot.goal != null;
           const completedSnapshot = {
             ...snapshot,
             semanticResult: durableExecutionResult.result,
@@ -2230,7 +2533,7 @@ export async function executeNativeSession(
     return { ...durableExecutionResult, ...enrichment };
   } finally {
     const shouldClose =
-      !options.keepSessionOpen || !executionSucceeded || sessionQuarantined;
+      !options.keepSessionOpen || !executionSucceeded || sessionQuarantined || goalCheckpointRequiresSuspension;
     if (shouldClose && options.requireSessionCloseBeforeReturn) {
       if (!failedCleanupDeferred) {
         closeSession(

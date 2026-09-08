@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
+import { createRequire } from "node:module";
+import { dirname, resolve } from "node:path";
 import test from "node:test";
 
 const runnerPackage = JSON.parse(
@@ -71,13 +74,18 @@ test("the runner pins every qualified ACPX production dependency", () => {
   );
 });
 
-test("the patched Codex ACP command digest stays aligned across launch boundaries", () => {
+test("the patched Codex ACP executable digest stays aligned across launch boundaries", async () => {
   const profileMatch =
     /agent: "codex"[\s\S]*?commandDigest:\s*"(sha256:[a-f0-9]{64})"/.exec(
       qualifiedProfiles,
     );
   assert.ok(profileMatch, "qualified Codex ACPX profile digest");
   const digest = profileMatch[1];
+  const packagePath = createRequire(import.meta.url).resolve("@agentclientprotocol/codex-acp/package.json");
+  const installed = JSON.parse(await readFile(packagePath, "utf8"));
+  const executable = await readFile(resolve(dirname(packagePath), installed.bin["codex-acp"]));
+  assert.equal(digest, `sha256:${createHash("sha256").update(executable).digest("hex")}`,
+    "the identity binds installed executable bytes, not the patch file");
 
   assert.match(runnerdAcpxBackend, new RegExp(`"codex"[\\s\\S]*?${digest}`));
   assert.match(

@@ -10,6 +10,7 @@ import { agents, companies, companyMemberships, companySecrets, connectionGrants
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { initializeRunIdentity, reserveSteeredIdentity, acceptSteeredIdentity } from "../services/run-identity.js";
 import { resolveGitHubOperationCredentials } from "../services/github-operation-credentials.js";
+import { filterResolvedGitHubConnectionsForRun, resolveManagedGitHubIdentitySelection } from "../services/git-credentials.js";
 
 const vault = vi.hoisted(() => ({
   resolveUserSecretValue: vi.fn(async (_company: string, input: { responsibleUserId: string }) => ({ value: `test-token-${input.responsibleUserId}` })),
@@ -37,9 +38,9 @@ const support = await getEmbeddedPostgresTestSupport();
     await db.insert(toolConnections).values({id:connectionId,companyId:input.companyId,applicationId,name:connectionId,uid:connectionId,transport:"mcp_remote",status:"active",enabled:true,credentialPolicy:dedicated?"per_agent":"per_user",config:{sourceTemplateKey:"github"}});
     await db.insert(toolConnectionInstalls).values({companyId:input.companyId,connectionId,targetType:"agent",targetId:input.agentId});
     if (!dedicated) await db.insert(userSecretDefinitions).values({id:definitionId,companyId:input.companyId,key:definitionId,name:"Test GitHub"});
-    await db.insert(companySecrets).values({id:secretId,companyId:input.companyId,key:secretId,name:"Test token",scope:dedicated?"company":"user",ownerUserId:dedicated?null:user,userSecretDefinitionId:dedicated?null:definitionId});
+    await db.insert(companySecrets).values({id:secretId,companyId:input.companyId,key:secretId,name:`Test token ${secretId}`,scope:dedicated?"company":"user",ownerUserId:dedicated?null:user,userSecretDefinitionId:dedicated?null:definitionId});
     await db.insert(connectionGrants).values({id,companyId:input.companyId,connectionId,kind:dedicated?"agent":"user",subjectUserId:dedicated?null:user,subjectAgentId:dedicated?input.agentId:null,status:"active",credentialSecretRefs:[{secretId,configPath:"oauth.access_token",versionSelector:"latest"}],providerTenant:{github:{userId:user,login:user,installationCount:1,repositoryCount:1,repositorySelection:"selected",installationIds:["1"],installationOwnerLogins:[user]}}});
-    return {id,connectionId};
+    return {id,connectionId,secretId,definitionId};
   }
   async function switchTo(input: Awaited<ReturnType<typeof seed>>, user:string) {
     const id=randomUUID();
@@ -67,9 +68,70 @@ const support = await getEmbeddedPostgresTestSupport();
     await db.update(companyMemberships).set({status:"inactive"}).where(eq(companyMemberships.companyId,input.companyId));
     expect((await resolveGitHubOperationCredentials(db,input)).status).toBe("unavailable");
     await db.update(companyMemberships).set({status:"active"}).where(eq(companyMemberships.companyId,input.companyId));
-    await grant(input,"A");
+    const differentAccount = await grant(input,"A");
+    await db.update(connectionGrants).set({providerTenant:{github:{userId:"other-github-id",login:"A",installationCount:1,repositoryCount:1,repositorySelection:"selected",installationIds:["1"],installationOwnerLogins:["A"]}}}).where(eq(connectionGrants.id,differentAccount.id));
     expect((await resolveGitHubOperationCredentials(db,input)).reason).toMatch(/More than one/);
     await expect(resolveGitHubOperationCredentials(db,{...input,companyId:randomUUID()})).rejects.toThrow();
+  });
+  it("uses one stable grant when the same person connects the same GitHub account twice", async () => {
+    const input = await seed();
+    const first = await grant(input, "A");
+    const second = await grant(input, "A");
+    await db.update(connectionGrants).set({createdAt:new Date("2026-01-01"),updatedAt:new Date("2027-01-01")}).where(eq(connectionGrants.id,first.id));
+    await db.update(connectionGrants).set({createdAt:new Date("2026-02-01")}).where(eq(connectionGrants.id,second.id));
+    const context = {...input,responsibleUserId:"A"};
+    expect((await resolveManagedGitHubIdentitySelection(db,input.companyId,context)).grant?.id).toBe(second.id);
+    expect(await resolveGitHubOperationCredentials(db,input)).toMatchObject({status:"available",login:"A",source:"personal"});
+    const connections = [first,second].map(row => ({id:row.connectionId,config:{sourceTemplateKey:"github"}}));
+    expect(await filterResolvedGitHubConnectionsForRun({db,...context,connections})).toEqual([connections[1]]);
+    // A newer webhook on the old connection must not change the selected policy.
+    await db.update(connectionGrants).set({updatedAt:new Date("2028-01-01")}).where(eq(connectionGrants.id,first.id));
+    expect((await resolveManagedGitHubIdentitySelection(db,input.companyId,context)).grant?.id).toBe(second.id);
+    await db.update(connectionGrants).set({status:"revoked"}).where(eq(connectionGrants.id,second.id));
+    expect((await resolveManagedGitHubIdentitySelection(db,input.companyId,context)).grant?.id).toBe(first.id);
+    await db.update(toolConnections).set({enabled:false}).where(eq(toolConnections.id,first.connectionId));
+    expect(await resolveGitHubOperationCredentials(db,input)).toMatchObject({status:"unavailable",env:{}});
+  });
+  it("does not conflate missing GitHub account IDs or another agent's connection audience", async () => {
+    const input = await seed();
+    const first = await grant(input,"A");
+    const duplicate = await grant(input,"A");
+    await db.update(connectionGrants).set({providerTenant:null}).where(eq(connectionGrants.id,duplicate.id));
+    expect(await resolveGitHubOperationCredentials(db,input)).toMatchObject({status:"unavailable",env:{}});
+    await db.update(toolConnectionInstalls).set({targetId:randomUUID()}).where(eq(toolConnectionInstalls.connectionId,duplicate.connectionId));
+    expect((await resolveManagedGitHubIdentitySelection(db,input.companyId,{...input,responsibleUserId:"A"})).grant?.id).toBe(first.id);
+    await switchTo(input,"B");
+    expect((await resolveGitHubOperationCredentials(db,input)).env).toEqual({});
+  });
+  it.each(["missing-ref", "disabled-secret", "missing-secret", "wrong-owner", "disabled-definition", "no-repositories"])(
+    "ignores an incomplete newer duplicate when the same account has an eligible grant (%s)", async (problem) => {
+      const input = await seed();
+      const first = await grant(input,"A");
+      const second = await grant(input,"A");
+      await db.update(connectionGrants).set({createdAt:new Date("2026-01-01")}).where(eq(connectionGrants.id,first.id));
+      await db.update(connectionGrants).set({createdAt:new Date("2026-02-01")}).where(eq(connectionGrants.id,second.id));
+      if (problem === "missing-ref") await db.update(connectionGrants).set({credentialSecretRefs:[]}).where(eq(connectionGrants.id,second.id));
+      if (problem === "disabled-secret") await db.update(companySecrets).set({status:"disabled"}).where(eq(companySecrets.id,second.secretId));
+      if (problem === "disabled-definition") await db.update(userSecretDefinitions).set({status:"disabled"}).where(eq(userSecretDefinitions.id,second.definitionId));
+      if (problem === "missing-secret") await db.delete(companySecrets).where(eq(companySecrets.id,second.secretId));
+      if (problem === "wrong-owner") await db.update(companySecrets).set({ownerUserId:"B"}).where(eq(companySecrets.id,second.secretId));
+      if (problem === "no-repositories") await db.update(connectionGrants).set({providerTenant:{github:{userId:"A",login:"A",installationCount:0,repositoryCount:0,repositorySelection:"none",installationIds:[],installationOwnerLogins:[]}}}).where(eq(connectionGrants.id,second.id));
+      expect((await resolveManagedGitHubIdentitySelection(db,input.companyId,{...input,responsibleUserId:"A"})).grant?.id).toBe(first.id);
+      expect(await resolveGitHubOperationCredentials(db,input)).toMatchObject({status:"available",login:"A"});
+      const connections = [first,second].map(row => ({id:row.connectionId,config:{sourceTemplateKey:"github"}}));
+      expect(await filterResolvedGitHubConnectionsForRun({db,...input,responsibleUserId:"A",connections})).toEqual([connections[0]]);
+    },
+  );
+  it("retains dedicated override semantics when the dedicated account has duplicate grants", async () => {
+    const input = await seed();
+    await grant(input,"A");
+    const first = await grant(input,"robot",true);
+    const second = await grant(input,"robot",true);
+    expect(await resolveGitHubOperationCredentials(db,input)).toMatchObject({status:"available",source:"dedicated",login:"robot"});
+    await db.update(connectionGrants).set({status:"revoked"}).where(eq(connectionGrants.id,first.id));
+    expect(await resolveGitHubOperationCredentials(db,input)).toMatchObject({status:"available",source:"dedicated",login:"robot"});
+    await db.update(connectionGrants).set({status:"revoked"}).where(eq(connectionGrants.id,second.id));
+    expect(await resolveGitHubOperationCredentials(db,input)).toMatchObject({status:"unavailable",source:"dedicated",env:{}});
   });
   it("honors dedicated overrides and never substitutes personal credentials when revoked or disabled", async () => {
     const input=await seed(); await grant(input,"A"); const dedicated=await grant(input,"robot",true);

@@ -672,6 +672,7 @@ async function awaitRunnerSuspensionBarrier(input: {
   return false;
 }
 
+
 function bridgedCodexQuestionParams(
   request: Record<string, unknown>,
   method: string,
@@ -953,6 +954,8 @@ export interface CapabilityRunnerdCodexTransportOptions {
   runnerRuntimeContext?: NativeRuntimeContextSnapshot | null;
   /** Root path visible to runnerd when it is not on the Paperclip host. */
   runnerFilesystemRoot?: string;
+  /** Workspace cwd to retain when a local provider session is reopened. */
+  resumeWorkingDirectory?: string;
   /**
    * The provider process is already confined by a sandbox execution target.
    * Codex must use its explicit external-sandbox policy because container
@@ -1074,6 +1077,38 @@ export function unwrapRunnerdProviderNotification(
   return notifications.at(-1) ?? record(input);
 }
 
+export function latestRunnerdSessionReadiness(
+  events: readonly unknown[],
+): Record<string, unknown> | null {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = record(events[index]);
+    if (
+      event.eventType !== "harness.ready" &&
+      event.eventType !== "session.started" &&
+      event.eventType !== "session.resumed"
+    ) continue;
+    return record(record(record(event.envelope).payload).payload);
+  }
+  return null;
+}
+
+export function unseenRunnerdCommittedEvents<
+  T extends { sourceSeq: number },
+>(events: readonly T[], lastSourceSeq: number): T[] {
+  const unseen = events.filter((event) => event.sourceSeq > lastSourceSeq);
+  if (unseen.length === 0) return [];
+  let expectedSourceSeq = lastSourceSeq + 1;
+  for (const event of unseen) {
+    if (event.sourceSeq !== expectedSourceSeq) {
+      throw new Error(
+        `provider_notification_window_exceeded: expected source sequence ${expectedSourceSeq}, received ${event.sourceSeq}`,
+      );
+    }
+    expectedSourceSeq += 1;
+  }
+  return unseen;
+}
+
 export function expandRunnerdCanonicalNotifications(
   method: string,
   input: unknown,
@@ -1081,6 +1116,41 @@ export function expandRunnerdCanonicalNotifications(
   const payload = record(input);
   if (!Array.isArray(payload.events)) return [{ method, params: payload }];
   return payload.events.map((event) => ({ method, params: record(event) }));
+}
+
+export function runnerdCanonicalNotificationMethod(
+  eventType: string,
+  payload: Record<string, unknown>,
+): string | undefined {
+  // An empty open/resume snapshot is already returned by thread/goal/get and
+  // is not a provider-side clear transition. Do not insert a synthetic clear
+  // ahead of the first real turn notification.
+  if (eventType === "session.goal.snapshot" && payload.goal === null) {
+    return undefined;
+  }
+  return (
+    {
+      "turn.started": "turn/started",
+      "item.started": "item/started",
+      "item.delta": "item/agentMessage/delta",
+      "item.completed": "item/completed",
+      "turn.completed": "turn/completed",
+      "turn.failed": "turn/completed",
+      "turn.interrupted": "turn/completed",
+      "turn.cancelled": "turn/completed",
+      "usage.reported": "thread/tokenUsage/updated",
+      "plan.updated": "turn/plan/updated",
+      "workspace.change.updated": "paperclip/workspaceChange/updated",
+      "run.result.proposed": "paperclip/runResult",
+      "session.goal.snapshot": "thread/goal/updated",
+      "session.goal.updated": "thread/goal/updated",
+      "session.goal.cleared": "thread/goal/cleared",
+      "session.updated":
+        payload.status === "budget_reached"
+          ? "provider/budgetReached"
+          : "provider/sessionUpdated",
+    } as Record<string, string>
+  )[eventType];
 }
 
 export function resolveRunnerdSessionIdentity(input: unknown): {
@@ -1176,6 +1246,60 @@ function record(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : {};
+}
+
+function appServerThreadGoal(
+  value: unknown,
+  threadId: string,
+): Record<string, unknown> | null {
+  const goal = record(value);
+  const objective = typeof goal.objective === "string"
+    ? goal.objective.trim()
+    : "";
+  const rawStatus = typeof goal.status === "string" ? goal.status : "";
+  const status = rawStatus === "usage_limited"
+    ? "usageLimited"
+    : rawStatus === "budget_limited"
+      ? "budgetLimited"
+      : rawStatus;
+  if (
+    objective.length === 0 ||
+    ![
+      "active",
+      "paused",
+      "blocked",
+      "limited",
+      "usageLimited",
+      "budgetLimited",
+      "complete",
+    ].includes(status)
+  ) return null;
+
+  const epochSeconds = (timestamp: unknown): number => {
+    if (typeof timestamp === "number" && Number.isFinite(timestamp)) {
+      return timestamp > 10_000_000_000 ? timestamp / 1_000 : timestamp;
+    }
+    if (typeof timestamp !== "string") return 0;
+    const milliseconds = Date.parse(timestamp);
+    return Number.isFinite(milliseconds) ? milliseconds / 1_000 : 0;
+  };
+
+  return {
+    threadId,
+    objective,
+    status,
+    tokenBudget:
+      typeof goal.tokenBudget === "number" ? goal.tokenBudget : null,
+    tokensUsed: typeof goal.tokensUsed === "number" ? goal.tokensUsed : 0,
+    timeUsedSeconds:
+      typeof goal.timeUsedSeconds === "number"
+        ? goal.timeUsedSeconds
+        : typeof goal.elapsedSeconds === "number"
+          ? goal.elapsedSeconds
+          : 0,
+    createdAt: epochSeconds(goal.createdAt),
+    updatedAt: epochSeconds(goal.updatedAt),
+  };
 }
 
 type PendingTraceRehydration = {
@@ -1511,6 +1635,21 @@ export function rehydrateRunnerdWorkspaceChangeNotification(
     // that canonical value intact instead of consulting git or the workspace
     // again in the TypeScript driver.
     workspaceChange: structuredClone(rawParams),
+  };
+}
+
+export function rehydrateRunnerdGoalNotification(
+  rawParams: Record<string, unknown>,
+  openedThreadId: string,
+  method: "thread/goal/updated" | "thread/goal/cleared",
+): Record<string, unknown> {
+  if (method === "thread/goal/cleared") {
+    return { ...rawParams, threadId: openedThreadId };
+  }
+  return {
+    ...rawParams,
+    threadId: openedThreadId,
+    goal: appServerThreadGoal(rawParams.goal, openedThreadId),
   };
 }
 
@@ -1999,6 +2138,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   #pump: NodeJS.Timeout | null = null;
   #eventSourceSeq = 0;
   #deferredTurnStartEvents: DurableRecoveryCommittedEvent[] = [];
+  #recoveryTurnBindingPending = false;
   #threadId = "";
   #sessionId: string | null = null;
   #providerIdentity: Record<string, unknown> | null = null;
@@ -2169,7 +2309,10 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       return {};
     }
     if (method === "thread/read") {
-      if (this.#core === null) await this.#resume();
+      if (this.#core === null) {
+        this.#recoveryTurnBindingPending = true;
+        await this.#resume();
+      }
       // Ask the authenticated runner for its live provider snapshot rather
       // than reading its filesystem. This both supports remote process owners
       // and proves any identity restored after PRP event compaction before the
@@ -2231,6 +2374,8 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           });
         }
       }
+      this.#recoveryTurnBindingPending = false;
+      this.#pumpEvents();
       return {
         thread: {
           id: this.#threadId,
@@ -2247,6 +2392,26 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           turns: recoveredTurns,
         },
       };
+    }
+    if (method === "thread/goal/get") {
+      const result = await this.#commandResult("session.goal.get", params);
+      return {
+        goal: appServerThreadGoal(result.goal, this.#threadId),
+      };
+    }
+    if (method === "thread/goal/set") {
+      const result = await this.#commandResult("session.goal.set", params);
+      const snapshot = record(result.snapshot);
+      return {
+        goal: appServerThreadGoal(
+          snapshot.goal ?? result.goal,
+          this.#threadId,
+        ),
+      };
+    }
+    if (method === "thread/goal/clear") {
+      await this.#commandResult("session.goal.clear", params);
+      return {};
     }
     if (method === "session/budget/increase") {
       await this.#command("session.budget.increase", params);
@@ -3956,12 +4121,14 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     );
   }
 
+
   #pumpEvents(): void {
     this.#flushPendingTraceRehydrations();
     const events = this.#core?.store.state.committedEvents ?? [];
     for (;;) {
       const deferredEvent =
-        !this.#turnStartResponsePending || this.#expectedProviderTurnId !== null
+        !this.#recoveryTurnBindingPending &&
+        (!this.#turnStartResponsePending || this.#expectedProviderTurnId !== null)
           ? this.#deferredTurnStartEvents[0]
           : undefined;
       const event =
@@ -3973,6 +4140,21 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         throw new Error(
           `PRP provider event window advanced past source sequence ${this.#eventSourceSeq + 1}`,
         );
+      }
+      if (this.#recoveryTurnBindingPending && ![
+        "harness.ready", "session.started", "session.resumed",
+      ].includes(event.eventType)) {
+        // Reconnection can deliver mid-turn items before thread/read obtains
+        // the authenticated active provider turn. Retain canonical events,
+        // not notifications rehydrated with an empty/stale turn identity.
+        // Identity events still advance startup; command results are consumed
+        // independently, so session.snapshot cannot deadlock behind this gate.
+        if (this.#deferredTurnStartEvents.length >= 4_096) {
+          throw new Error("recovery produced too many events before its turn binding");
+        }
+        this.#eventSourceSeq = event.sourceSeq;
+        this.#deferredTurnStartEvents.push(structuredClone(event));
+        continue;
       }
       const eventPayload = record(event.envelope.payload).payload;
       const turnStartWhileCommandResultPending =
@@ -4107,26 +4289,10 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         continue;
       }
       const sessionUpdatePayload = record(eventPayload);
-      const canonicalMethod = (
-        {
-          "turn.started": "turn/started",
-          "item.started": "item/started",
-          "item.delta": "item/agentMessage/delta",
-          "item.completed": "item/completed",
-          "turn.completed": "turn/completed",
-          "turn.failed": "turn/completed",
-          "turn.interrupted": "turn/completed",
-          "turn.cancelled": "turn/completed",
-          "usage.reported": "thread/tokenUsage/updated",
-          "plan.updated": "turn/plan/updated",
-          "workspace.change.updated": "paperclip/workspaceChange/updated",
-          "run.result.proposed": "paperclip/runResult",
-          "session.updated":
-            sessionUpdatePayload.status === "budget_reached"
-              ? "provider/budgetReached"
-              : "provider/sessionUpdated",
-        } as Record<string, string>
-      )[event.eventType];
+      const canonicalMethod = runnerdCanonicalNotificationMethod(
+        event.eventType,
+        sessionUpdatePayload,
+      );
       const notifications =
         event.eventType === "provider.event"
           ? unwrapRunnerdProviderNotifications(eventPayload)
@@ -4167,38 +4333,44 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
                   this.#threadId,
                   this.#turnId,
                 )
-              : method === "paperclip/workspaceChange/updated"
-                ? rehydrateRunnerdWorkspaceChangeNotification(
-                    rawParams,
-                    this.#threadId,
-                    this.#turnId,
-                  )
-                : method === "paperclip/runResult"
-                  ? rehydrateRunnerdResultNotification(
-                      rawParams,
-                      this.#threadId,
-                      this.#turnId,
-                      typeof event.envelope.itemId === "string"
-                        ? event.envelope.itemId
-                        : "semantic-result",
-                    )
-                  : event.eventType !== "provider.event" &&
-                      (method === "item/started" || method === "item/completed")
-                    ? rehydrateRunnerdItemNotification(
-                        rawParams,
-                        this.#threadId,
-                        this.#turnId,
-                      )
-                    : event.eventType !== "provider.event" &&
-                        (method === "turn/started" ||
-                          method === "turn/completed")
-                      ? rehydrateRunnerdTurnNotification(
-                          rawParams,
-                          this.#threadId,
-                          this.#turnId,
-                          method,
-                        )
-                      : rawParams;
+            : method === "paperclip/workspaceChange/updated"
+              ? rehydrateRunnerdWorkspaceChangeNotification(
+                  rawParams,
+                  this.#threadId,
+                  this.#turnId,
+                )
+            : method === "paperclip/runResult"
+              ? rehydrateRunnerdResultNotification(
+                  rawParams,
+                  this.#threadId,
+                  this.#turnId,
+                  typeof event.envelope.itemId === "string"
+                    ? event.envelope.itemId
+                    : "semantic-result",
+                )
+            : method === "thread/goal/updated" ||
+                method === "thread/goal/cleared"
+              ? rehydrateRunnerdGoalNotification(
+                  rawParams,
+                  this.#threadId,
+                  method,
+                )
+            : event.eventType !== "provider.event" &&
+                (method === "item/started" || method === "item/completed")
+              ? rehydrateRunnerdItemNotification(
+                  rawParams,
+                  this.#threadId,
+                  this.#turnId,
+                )
+            : event.eventType !== "provider.event" &&
+                (method === "turn/started" || method === "turn/completed")
+              ? rehydrateRunnerdTurnNotification(
+                  rawParams,
+                  this.#threadId,
+                  this.#turnId,
+                  method,
+                )
+              : rawParams;
         if (
           params.turnId === undefined &&
           typeof event.envelope.turnId === "string"

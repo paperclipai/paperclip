@@ -1,4 +1,23 @@
 export { agentAdapterTypeSchema, optionalAgentAdapterTypeSchema } from "./adapter-type.js";
+export {
+  RUNNER_GOAL_MAX_OBJECTIVE_CHARS,
+  runnerGoalAvailabilitySchema,
+  runnerGoalCapabilityActionSchema,
+  runnerGoalStatusSchema,
+  runnerGoalActionSchema,
+  runnerGoalPendingActionSchema,
+  runnerGoalActionRequestSchema,
+  type RunnerGoalAvailability,
+  type RunnerGoalCapabilityAction,
+  type RunnerGoalStatus,
+  type RunnerGoalAction,
+  type RunnerGoalPendingAction,
+  type RunnerGoalCapability,
+  type RunnerGoalSnapshot,
+  type RunnerGoalProjection,
+  type RunnerGoalActionRequest,
+  type RunnerGoalActionAccepted,
+} from "./runner-goal.js";
 export { ADAPTER_AUTH_MISSING_CHECK_CODE } from "./adapter-auth-check-code.js";
 export {
   CONNECTION_INTENT_AGENT_GUIDANCE,
@@ -49,6 +68,7 @@ export type {
   ConnectionsSearchResult,
   ConnectionRequestResult,
   ConnectionIntentSetupOptions,
+  ConnectionIntentSetupConnection,
   CompleteConnectionIntentInput,
   DeclineConnectionIntentInput,
 } from "./types/connection-intent.js";
@@ -928,6 +948,8 @@ export type {
   AssetImage,
   Project,
   ProjectBudgetSummary,
+  ProjectRepository,
+  ProjectRepositoryOptions,
   ProjectCodebase,
   ProjectCodebaseOrigin,
   ProjectGoalRef,

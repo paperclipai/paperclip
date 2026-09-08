@@ -39,6 +39,7 @@ import {
   restoreIssueDocumentRevisionSchema,
   upsertIssueFeedbackVoteSchema,
   upsertIssueWatchdogSchema,
+  runnerGoalActionRequestSchema,
   // Project
   createProjectSchema,
   updateProjectSchema,
@@ -858,6 +859,8 @@ const BOARD_ONLY_PREFIXES = [
 ];
 
 const BOARD_ONLY_OPERATIONS = new Set([
+  "GET /api/companies/{companyId}/project-repositories",
+  "PUT /api/projects/{id}/repositories",
   "DELETE /api/issues/{id}/documents/{key}",
   "GET /api/companies/{companyId}/decisions",
   "GET /api/cloud/stacks",
@@ -1340,7 +1343,11 @@ registry.registerPath({
   path: "/api/companies",
   tags: ["companies"],
   summary: "List companies",
-  responses: { 200: r.ok(), 401: r.unauthorized },
+  description: "Requires a board user. Instance admins can list the full directory; scope=accessible limits the list to companies the caller can enter.",
+  request: {
+    query: z.object({ scope: z.enum(["accessible"]).optional() }),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
 });
 
 registry.registerPath({
@@ -2390,6 +2397,43 @@ registry.registerPath({
 
 registry.registerPath({
   method: "get",
+  path: "/api/issues/{id}/runner-goal",
+  tags: ["issues"],
+  summary: "Get the effective agent session goal for an issue",
+  request: {
+    params: z.object({ id: z.string() }),
+    query: z.object({ agentId: z.string().optional() }),
+  },
+  responses: {
+    200: r.ok(),
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/issues/{id}/runner-goal/actions",
+  tags: ["issues"],
+  summary: "Queue a control action for an agent session goal",
+  request: {
+    params: z.object({ id: z.string() }),
+    body: jsonBody(runnerGoalActionRequestSchema),
+  },
+  responses: {
+    202: { description: "Goal control accepted" },
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    409: r.conflict,
+    422: r.unprocessable,
+  },
+});
+
+registry.registerPath({
+  method: "get",
   path: "/api/issues/{id}/watchdog",
   tags: ["issues"],
   summary: "Get active issue watchdog",
@@ -2832,6 +2876,33 @@ registry.registerPath({
 
 registry.registerPath({
   method: "get",
+  path: "/api/companies/{companyId}/project-repositories",
+  tags: ["projects"],
+  summary: "Discover GitHub repositories available to the current board user",
+  description: "Deduplicates repositories across usable personal and company-shared GitHub connections. Failed connections are reported without discarding successful results.",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: {
+    200: r.ok(z.object({
+      repositories: z.array(z.object({ id: z.string(), fullName: z.string(), url: z.string(), private: z.boolean().optional(), connections: z.array(z.string()) })),
+      connectionCount: z.number().int().nonnegative(),
+      failedConnectionCount: z.number().int().nonnegative(),
+    })),
+    401: r.unauthorized, 403: r.forbidden,
+  },
+});
+
+registry.registerPath({
+  method: "put",
+  path: "/api/projects/{id}/repositories",
+  tags: ["projects"],
+  summary: "Replace selected GitHub source repositories",
+  description: "Saves provider IDs transactionally, refreshes canonical names and URLs, and preserves legacy workspace URLs. Unavailable existing selections can remain; new selections must be available to the caller.",
+  request: { params: z.object({ id: z.string() }), body: jsonBody(createProjectSchema.pick({ repositoryIds: true }).required()) },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 422: r.unprocessable },
+});
+
+registry.registerPath({
+  method: "get",
   path: "/api/companies/{companyId}/projects",
   tags: ["projects"],
   summary: "List projects in a company",
@@ -2844,11 +2915,12 @@ registry.registerPath({
   path: "/api/companies/{companyId}/projects",
   tags: ["projects"],
   summary: "Create a project",
+  description: "The optional repositoryIds field selects GitHub source repositories and requires a board caller. It cannot be combined with workspace. All selections are validated before the project and repository workspaces are created atomically.",
   request: {
     params: z.object({ companyId: z.string() }),
     body: jsonBody(createProjectSchema),
   },
-  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 422: r.unprocessable },
 });
 
 registry.registerPath({

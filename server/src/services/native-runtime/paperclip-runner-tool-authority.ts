@@ -1,3 +1,7 @@
+import { resolveNativeRuntimeMcpSnapshot } from "./runtime-context.js";
+import { connectionIntentService } from "../connection-intents.js";
+import { RUNTIME_CONNECTION_TOOL_DEFINITIONS } from "../connection-tool-definitions.js";
+import { connectionsSearchInputSchema, connectionRequestInputSchema, CONNECTION_INTENT_AGENT_GUIDANCE } from "@paperclipai/shared";
 import { createHash } from "node:crypto";
 import { runnerApiToolsEnabled } from "./runner-api-rollout.js";
 import { openRunnerApiWorkspaceFile } from "./runner-api-files.js";
@@ -10,10 +14,11 @@ import { workspaceFileResourceService } from "../workspace-file-resources.js";
 import { badRequest, forbidden } from "../../errors.js";
 import { searchRunnerApi } from "./runner-api-catalog.js";
 import { executeRunnerApi, validateRunnerApiCall, RUNNER_API_MAX_BYTES, type RunnerApiFile } from "./runner-api-client.js";
-import { and, desc, eq, isNull } from "drizzle-orm";
+import { and, desc, eq, isNull, notInArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
+  agentWakeupRequests,
   documentRevisions,
   heartbeatRuns,
   issueApprovals,
@@ -46,6 +51,7 @@ type Binding = {
   runId: string;
   agentId: string;
   normalizedSessionId?: string;
+  pinnedMcpDigest?: string;
   /** Server-owned API origin and storage; never obtained from tool input. */
   apiUrl?: string;
   storage?: StorageService;
@@ -61,6 +67,7 @@ type Binding = {
     requestedByActorType: "agent";
     requestedByActorId: string;
     contextSnapshot: Record<string, unknown>;
+    issueStateGuard?: { statuses: string[]; assigneeAgentId: string };
   }) => Promise<unknown>;
 };
 
@@ -90,7 +97,7 @@ export class PaperclipRunnerToolAuthority {
 
   definitions(): Array<Record<string, unknown>> {
     const workMode = this.binding.workMode ?? "standard";
-    return CAPABILITY_SEMANTIC_TOOL_CATALOG
+    return [...RUNTIME_CONNECTION_TOOL_DEFINITIONS, ...CAPABILITY_SEMANTIC_TOOL_CATALOG
       .filter((descriptor) =>
         IMPLEMENTED_OPERATIONS.has(descriptor.operationId)
         && (runnerApiToolsEnabled(this.binding.companyId, this.binding.apiToolsEnabled) || !["search_api", "call_api"].includes(descriptor.operationId))
@@ -100,10 +107,42 @@ export class PaperclipRunnerToolAuthority {
         name: descriptor.operationId,
         description: descriptor.description,
         inputSchema: descriptor.inputSchema,
-      }));
+      }))];
   }
 
   async execute(call: { tool: string; callId: string; arguments: unknown }): Promise<unknown> {
+    if (RUNTIME_CONNECTION_TOOL_DEFINITIONS.some((tool) => tool.name === call.tool)) {
+      await this.#boundContext();
+      const { run } = await captureRunIdentity(this.db, this.binding);
+      if (!run.responsibleUserId) throw forbidden("This task needs a responsible user before requesting a connection");
+      const claims = {
+        sub: this.binding.agentId, company_id: this.binding.companyId,
+        run_id: this.binding.runId, responsible_user_id: run.responsibleUserId,
+      };
+      const connections = connectionIntentService(this.db);
+      if (call.tool === "connections_search") return connections.search(claims, connectionsSearchInputSchema.parse(call.arguments).query);
+      const result = await connections.request(claims, connectionRequestInputSchema.parse(call.arguments).service);
+      if (result.state === "ready" && this.binding.pinnedMcpDigest && this.binding.enqueueWakeup) {
+        const current = await resolveNativeRuntimeMcpSnapshot({ db: this.db, agent: { id: this.binding.agentId, companyId: this.binding.companyId }, runId: this.binding.runId });
+        if (current.digest !== this.binding.pinnedMcpDigest) {
+          const idempotencyKey = `connection-intent:tools:${this.binding.runId}:${current.digest}`;
+          const delivered = () => this.db.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests).where(and(
+            eq(agentWakeupRequests.companyId, this.binding.companyId), eq(agentWakeupRequests.idempotencyKey, idempotencyKey),
+            notInArray(agentWakeupRequests.status, ["skipped", "failed", "cancelled"]),
+          )).limit(1);
+          if (!(await delivered()).length) try { await this.binding.enqueueWakeup(this.binding.agentId, {
+            source: "assignment", triggerDetail: "system", reason: "issue_assigned",
+            payload: { issueId: this.binding.issueId, mutation: "connection_tools_refreshed" },
+            idempotencyKey,
+            issueStateGuard: { statuses: ["in_progress", "in_review"], assigneeAgentId: this.binding.agentId },
+            requestedByActorType: "agent", requestedByActorId: this.binding.agentId,
+            contextSnapshot: { issueId: this.binding.issueId, taskId: this.binding.issueId, forceFreshSession: true, wakeReason: "issue_assigned", source: "connection_tools.refreshed" },
+          }); } catch (error) { if (!(await delivered()).length) throw error; }
+          return { ...result, instruction: "Access is already authorized. A fresh continuation with updated tools is queued. Finish independent work, then yield. Do not request authorization again." };
+        }
+      }
+      return result;
+    }
     if (!IMPLEMENTED_OPERATIONS.has(call.tool)) throw new Error("paperclip_runner_tool_not_advertised");
     if (!runnerApiToolsEnabled(this.binding.companyId, this.binding.apiToolsEnabled) && ["search_api", "call_api"].includes(call.tool)) throw new Error("paperclip_runner_tool_not_advertised");
     const context = await this.#boundContext();
@@ -126,6 +165,7 @@ export class PaperclipRunnerToolAuthority {
           status: context.run.status,
           invocationSource: context.run.invocationSource,
         },
+        connectionGuidance: CONNECTION_INTENT_AGENT_GUIDANCE,
         acceptedPlan: await this.#acceptedPlan(context.run.contextSnapshot),
       };
       case "get_task_history": {

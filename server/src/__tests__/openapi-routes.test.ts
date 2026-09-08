@@ -190,6 +190,14 @@ describe("openapi routes", () => {
     expect(res.body.paths["/api/health"].get.security).toEqual([]);
     expect(res.body.paths["/mcp/gateways/{gatewayPublicId}"].post.security).toEqual([]);
     expect(res.body.paths["/api/mcp/gateways/{gatewayPublicId}"]).toBeUndefined();
+    expect(res.body.paths["/api/companies"].get.parameters).toContainEqual({
+      name: "scope",
+      in: "query",
+      required: false,
+      schema: { type: "string", enum: ["accessible"] },
+    });
+    expect(res.body.paths["/api/companies"].get.responses["403"]).toBeDefined();
+    expect(res.body.paths["/api/companies"].get.responses["400"]).toBeDefined();
     expect(res.body.paths["/api/companies"].post.responses["201"]).toBeDefined();
     expect(res.body.paths["/api/companies"].post.requestBody.content["application/json"].schema).toMatchObject({
       type: "object",
@@ -278,6 +286,18 @@ describe("openapi routes", () => {
       missingInSpec: [],
       extraInSpec: [],
     });
+  });
+
+  it("documents board-only repository discovery and selection", () => {
+    const { spec } = loadSpecRoutes();
+    const discovery = spec.paths["/api/companies/{companyId}/project-repositories"].get;
+    const replacement = spec.paths["/api/projects/{id}/repositories"].put;
+    for (const operation of [discovery, replacement]) {
+      expect(operation["x-paperclip-authorization"]).toEqual({ actor: "board" });
+      expect(operation.security).toEqual([{ BoardSessionAuth: [] }, { BoardApiKeyAuth: [] }]);
+    }
+    expect(replacement.requestBody.content["application/json"].schema.required).toContain("repositoryIds");
+    expect(replacement.responses["422"]).toBeDefined();
   });
 
   it("documents auth and reviewed response-code invariants", () => {
