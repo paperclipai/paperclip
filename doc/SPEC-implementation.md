@@ -263,6 +263,7 @@ Invariants:
 
 - single assignee only
 - task must trace to company goal chain via `goal_id`, `parent_id`, or project-goal linkage
+- `execution_policy.executionTarget` may pin an active environment by id or stable metadata key and require advertised capabilities; heartbeat scheduling fails closed when no single active environment satisfies every criterion
 - `in_progress` requires assignee
 - an `in_review -> done | cancelled` verdict is authorized against the current review policy while the issue row is locked; a policy change in the same request or a concurrent request cannot relax that verdict gate
 - accepting or rejecting the review-confirmation interaction locks the issue row before resolving the interaction and reauthorizes against the current review policy in that transaction
@@ -1233,6 +1234,7 @@ Behavior:
 ## 11.4 Context Delivery
 
 - `thin`: send IDs and pointers only; agent fetches context via API
+- Paperclip injects the selected execution environment id, name, driver, stable key, and capabilities into runtime context. `PAPERCLIP_API_URL` remains the control-plane endpoint and must not be replaced with an application endpoint. Connectivity diagnostics identify both endpoint role and runner environment; a private tailnet application endpoint reached from an incapable runner is rerouted to a matching environment (for example `homepc`) rather than exposed through public DNS.
 - `fat`: include current assignments, goal summary, budget snapshot, and recent comments
 
 ## 11.5 Recovery Work Classes

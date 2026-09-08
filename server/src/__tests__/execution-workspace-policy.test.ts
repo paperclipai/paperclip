@@ -10,9 +10,13 @@ import {
   isUnrunnableWorktreeCombo,
   issueExecutionWorkspaceModeForPersistedWorkspace,
   parseIssueExecutionWorkspaceSettings,
+  parseEnvironmentExecutionTargetMetadata,
   parseProjectExecutionWorkspacePolicy,
+  IssueExecutionTargetUnavailableError,
   ManagedSandboxUnavailableError,
   resolveExecutionWorkspaceEnvironmentId,
+  resolveIssueExecutionTargetEnvironment,
+  assertEnvironmentSatisfiesIssueExecutionTarget,
   resolvePinnedIssueWorkspaceStrategyType,
   resolveExecutionWorkspaceMode,
   resolveSharedWorkspaceConcurrency,
@@ -20,6 +24,70 @@ import {
 } from "../services/execution-workspace-policy.ts";
 
 describe("execution workspace policy helpers", () => {
+  const environment = (input: {
+    id: string;
+    name: string;
+    driver: "local" | "sandbox";
+    key?: string;
+    capabilities?: string[];
+  }) => ({
+    id: input.id,
+    name: input.name,
+    driver: input.driver,
+    status: "active" as const,
+    metadata: input.key || input.capabilities
+      ? {
+          executionTarget: {
+            key: input.key,
+            capabilities: input.capabilities ?? [],
+          },
+        }
+      : null,
+  });
+
+  it("routes tailnet work to the advertised homepc environment instead of the remote fallback", () => {
+    const remote = environment({ id: "remote-env", name: "Remote sandbox", driver: "sandbox" });
+    const homepc = environment({
+      id: "homepc-env",
+      name: "homePC",
+      driver: "local",
+      key: "homepc",
+      capabilities: ["tailnet"],
+    });
+
+    expect(resolveIssueExecutionTargetEnvironment({
+      target: { environmentKey: "homepc", requiredCapabilities: ["tailnet"] },
+      environments: [remote, homepc],
+      fallback: { environmentId: remote.id, source: "agent" },
+    })).toEqual({ environmentId: homepc.id, source: "issue" });
+    expect(parseEnvironmentExecutionTargetMetadata(homepc.metadata)).toEqual({
+      key: "homepc",
+      capabilities: ["tailnet"],
+    });
+  });
+
+  it("fails closed with a homepc routing instruction when a remote runner lacks tailnet", () => {
+    const remote = environment({ id: "remote-env", name: "Remote sandbox", driver: "sandbox" });
+    expect(() => resolveIssueExecutionTargetEnvironment({
+      target: { environmentKey: "homepc", requiredCapabilities: ["tailnet"] },
+      environments: [remote],
+      fallback: { environmentId: remote.id, source: "agent" },
+    })).toThrowError(IssueExecutionTargetUnavailableError);
+    expect(() => resolveIssueExecutionTargetEnvironment({
+      target: { environmentKey: "homepc", requiredCapabilities: ["tailnet"] },
+      environments: [remote],
+      fallback: { environmentId: remote.id, source: "agent" },
+    })).toThrow(/Resolved runner was "Remote sandbox".*keep the tailnet endpoint private.*do not propose public DNS/is);
+  });
+
+  it("rejects an instance-forced environment that bypasses the issue capability", () => {
+    const remote = environment({ id: "forced-env", name: "Forced sandbox", driver: "sandbox" });
+    expect(() => assertEnvironmentSatisfiesIssueExecutionTarget({
+      target: { environmentKey: "homepc", requiredCapabilities: ["tailnet"] },
+      environment: remote,
+    })).toThrow(/no eligible execution environment was selected/i);
+  });
+
   it("defaults new issue settings from enabled project policy", () => {
     expect(
       defaultIssueExecutionWorkspaceSettingsForProject({

@@ -699,6 +699,7 @@ export type {
   IssueExecutionMonitorPolicy,
   IssueExecutionMonitorState,
   IssueExecutionPolicy,
+  IssueExecutionTarget,
   IssueExecutionState,
   IssueExecutionStage,
   IssueExecutionStageParticipant,

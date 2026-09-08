@@ -581,6 +581,10 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(prompt).toContain("PAPERCLIP_API_KEY");
     expect(prompt).toContain("PAPERCLIP_WAKE_PAYLOAD_JSON");
     expect(prompt).toContain("Paperclip API access note:");
+    expect(prompt).toContain("PAPERCLIP_API_URL is the Paperclip control-plane endpoint");
+    expect(prompt).toContain("PAPERCLIP_EXECUTION_ENVIRONMENT_ID/NAME/DRIVER");
+    expect(prompt).toContain("any other failed URL as application-endpoint reachability");
+    expect(prompt).toContain("keep the endpoint private and do not propose public-DNS remediation");
     expect(prompt).toContain('PAPERCLIP_API_BASE="${PAPERCLIP_API_URL%/}"; PAPERCLIP_API_BASE="${PAPERCLIP_API_BASE%/api}"');
     expect(prompt).toContain("$PAPERCLIP_API_BASE/api/agents/me");
     expect(prompt).toContain("$PAPERCLIP_API_BASE/api/issues/$PAPERCLIP_TASK_ID");

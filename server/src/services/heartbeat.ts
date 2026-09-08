@@ -342,6 +342,9 @@ import {
   isUnrunnableWorktreeCombo,
   parseIssueExecutionWorkspaceSettings,
   parseProjectExecutionWorkspacePolicy,
+  parseEnvironmentExecutionTargetMetadata,
+  resolveIssueExecutionTargetEnvironment,
+  assertEnvironmentSatisfiesIssueExecutionTarget,
   resolveEffectiveWorkspaceStrategyType,
   resolveExecutionWorkspaceEnvironmentId,
   resolveExecutionWorkspaceMode,
@@ -17828,6 +17831,9 @@ export function heartbeatService(
         parseIssueExecutionWorkspaceSettings(
           issueContext?.executionWorkspaceSettings,
         );
+      const issueExecutionTarget = normalizeIssueExecutionPolicy(
+        issueContext?.executionPolicy,
+      )?.executionTarget ?? null;
       const issueExecutionWorkspaceSettings = isolatedWorkspacesEnabled
         ? parsedIssueExecutionWorkspaceSettings
         : null;
@@ -18236,13 +18242,18 @@ export function heartbeatService(
       const managedSandboxEnvironment = managedSandboxOnly
         ? await environmentsSvc.findManagedSandboxEnvironment(agent.companyId)
         : null;
-      const environmentResolution = resolveExecutionWorkspaceEnvironmentId({
+      let environmentResolution = resolveExecutionWorkspaceEnvironmentId({
         agentDefaultEnvironmentId: agent.defaultEnvironmentId,
         instanceDefaultEnvironmentId:
           resolvedInstanceSettings.defaultEnvironmentId ?? null,
         localDefaultEnvironmentId: localEnvironment.id,
         managedSandboxOnly,
         managedSandboxEnvironmentId: managedSandboxEnvironment?.id ?? null,
+      });
+      environmentResolution = resolveIssueExecutionTargetEnvironment({
+        target: issueExecutionTarget,
+        environments: await environmentsSvc.list({ status: "active" }),
+        fallback: environmentResolution,
       });
       const effectiveExecutionWorkspaceMode: ReturnType<
         typeof resolveExecutionWorkspaceMode
@@ -18332,6 +18343,12 @@ export function heartbeatService(
           : selectedEnvironmentId
             ? await environmentsSvc.getById(selectedEnvironmentId)
             : null;
+      if (selectedEnvironmentForConfig) {
+        assertEnvironmentSatisfiesIssueExecutionTarget({
+          target: issueExecutionTarget,
+          environment: selectedEnvironmentForConfig,
+        });
+      }
       const sharedWorkspaceConcurrency = resolveSharedWorkspaceConcurrency({
         projectPolicy: projectExecutionWorkspacePolicy,
         issueSettings: issueExecutionWorkspaceSettings,
@@ -19227,6 +19244,38 @@ export function heartbeatService(
         throw error;
       }
       const selectedEnvironment = acquiredEnvironment.environment;
+      assertEnvironmentSatisfiesIssueExecutionTarget({
+        target: issueExecutionTarget,
+        environment: selectedEnvironment,
+      });
+      const selectedEnvironmentTargetMetadata =
+        parseEnvironmentExecutionTargetMetadata(selectedEnvironment.metadata);
+      const existingRuntimeEnvironment = parseObject(runtimeConfig.env);
+      runtimeConfig = {
+        ...runtimeConfig,
+        env: {
+          ...existingRuntimeEnvironment,
+          PAPERCLIP_EXECUTION_ENVIRONMENT_ID: selectedEnvironment.id,
+          PAPERCLIP_EXECUTION_ENVIRONMENT_NAME: selectedEnvironment.name,
+          PAPERCLIP_EXECUTION_ENVIRONMENT_DRIVER: selectedEnvironment.driver,
+          PAPERCLIP_EXECUTION_ENVIRONMENT_KEY:
+            selectedEnvironmentTargetMetadata.key ?? "",
+          PAPERCLIP_EXECUTION_ENVIRONMENT_CAPABILITIES:
+            selectedEnvironmentTargetMetadata.capabilities.join(","),
+          ...(issueExecutionTarget?.environmentKey
+            ? {
+                PAPERCLIP_EXECUTION_TARGET_KEY:
+                  issueExecutionTarget.environmentKey,
+              }
+            : {}),
+          ...(issueExecutionTarget?.requiredCapabilities.length
+            ? {
+                PAPERCLIP_EXECUTION_REQUIRED_CAPABILITIES:
+                  issueExecutionTarget.requiredCapabilities.join(","),
+              }
+            : {}),
+        },
+      };
       // Defense-in-depth: re-check the actually-acquired environment against the
       // execution allowlist. Even if selection were bypassed, a denied (local/ssh/
       // non-k8s) environment FAILS the run here rather than executing untrusted.
@@ -19438,6 +19487,9 @@ export function heartbeatService(
         id: selectedEnvironment.id,
         name: selectedEnvironment.name,
         driver: selectedEnvironment.driver,
+        executionTargetKey: selectedEnvironmentTargetMetadata.key,
+        capabilities: selectedEnvironmentTargetMetadata.capabilities,
+        requiredTarget: issueExecutionTarget,
         leaseId: activeEnvironmentLease.lease.id,
         workspaceRealization,
         sandboxLeaseAcquisition:

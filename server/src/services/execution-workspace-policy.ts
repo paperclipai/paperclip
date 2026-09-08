@@ -1,6 +1,8 @@
 import type {
   ExecutionWorkspaceMode,
   ExecutionWorkspaceStrategy,
+  Environment,
+  IssueExecutionTarget,
   IssueExecutionWorkspaceSettings,
   ProjectExecutionWorkspaceDefaultMode,
   ProjectExecutionWorkspacePolicy,
@@ -233,6 +235,7 @@ export function selectEnvironmentExecutionWorkspaceSettings(
 }
 
 export type ExecutionWorkspaceEnvironmentSource =
+  | "issue"
   | "agent"
   | "instance"
   | "default"
@@ -242,6 +245,114 @@ export type ExecutionWorkspaceEnvironmentResolution = {
   environmentId: string;
   source: ExecutionWorkspaceEnvironmentSource;
 };
+
+export interface EnvironmentExecutionTargetMetadata {
+  key: string | null;
+  capabilities: string[];
+}
+
+export const ENVIRONMENT_EXECUTION_TARGET_METADATA_KEY = "executionTarget";
+
+function normalizeExecutionCapability(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const normalized = value.trim().toLowerCase();
+  return /^[a-z0-9][a-z0-9._-]{0,63}$/.test(normalized) ? normalized : null;
+}
+
+export function parseEnvironmentExecutionTargetMetadata(
+  metadata: Record<string, unknown> | null | undefined,
+): EnvironmentExecutionTargetMetadata {
+  const raw = parseObject(metadata?.[ENVIRONMENT_EXECUTION_TARGET_METADATA_KEY]);
+  const key = normalizeExecutionCapability(raw.key);
+  const capabilities = Array.isArray(raw.capabilities)
+    ? Array.from(new Set(raw.capabilities
+      .map(normalizeExecutionCapability)
+      .filter((value): value is string => value !== null)))
+    : [];
+  return { key, capabilities };
+}
+
+function environmentMatchesExecutionTarget(
+  environment: Pick<Environment, "id" | "metadata">,
+  target: IssueExecutionTarget,
+): boolean {
+  if (target.environmentId && environment.id !== target.environmentId) return false;
+  const advertised = parseEnvironmentExecutionTargetMetadata(environment.metadata);
+  if (target.environmentKey && advertised.key !== target.environmentKey) return false;
+  return target.requiredCapabilities.every((capability) =>
+    advertised.capabilities.includes(capability));
+}
+
+function executionTargetDescription(target: IssueExecutionTarget): string {
+  const parts = [
+    target.environmentKey ? `environment "${target.environmentKey}"` : null,
+    target.environmentId ? `environment id ${target.environmentId}` : null,
+    target.requiredCapabilities.length > 0
+      ? `capabilities [${target.requiredCapabilities.join(", ")}]`
+      : null,
+  ].filter((part): part is string => part !== null);
+  return parts.join(" with ");
+}
+
+export class IssueExecutionTargetUnavailableError extends Error {
+  readonly code = "issue_execution_target_unavailable";
+
+  constructor(input: {
+    target: IssueExecutionTarget;
+    fallbackEnvironment: Pick<Environment, "name" | "driver" | "metadata"> | null;
+    reason?: "missing" | "ambiguous" | "forced_environment_mismatch";
+  }) {
+    const fallback = input.fallbackEnvironment;
+    const advertised = parseEnvironmentExecutionTargetMetadata(fallback?.metadata);
+    const runner = fallback
+      ? ` Resolved runner was "${fallback.name}" (${fallback.driver}), advertising key ` +
+        `"${advertised.key ?? "none"}" and capabilities [${advertised.capabilities.join(", ")}].`
+      : "";
+    const ambiguity = input.reason === "ambiguous"
+      ? " More than one active environment matched; set executionTarget.environmentId to disambiguate."
+      : "";
+    super(
+      `Task requires ${executionTargetDescription(input.target)}, but no eligible execution environment was selected.` +
+      runner + ambiguity +
+      " Route the task to an environment that advertises the required target/capabilities. " +
+      "For a homepc/tailnet task, keep the tailnet endpoint private; do not propose public DNS or exposure changes.",
+    );
+    this.name = "IssueExecutionTargetUnavailableError";
+  }
+}
+
+export function resolveIssueExecutionTargetEnvironment(input: {
+  target: IssueExecutionTarget | null | undefined;
+  environments: Array<Pick<Environment, "id" | "name" | "driver" | "status" | "metadata">>;
+  fallback: ExecutionWorkspaceEnvironmentResolution;
+}): ExecutionWorkspaceEnvironmentResolution {
+  if (!input.target) return input.fallback;
+  const matches = input.environments.filter((environment) =>
+    environment.status === "active" && environmentMatchesExecutionTarget(environment, input.target!));
+  if (matches.length !== 1) {
+    const fallbackEnvironment = input.environments.find(
+      (environment) => environment.id === input.fallback.environmentId,
+    ) ?? null;
+    throw new IssueExecutionTargetUnavailableError({
+      target: input.target,
+      fallbackEnvironment,
+      reason: matches.length > 1 ? "ambiguous" : "missing",
+    });
+  }
+  return { environmentId: matches[0]!.id, source: "issue" };
+}
+
+export function assertEnvironmentSatisfiesIssueExecutionTarget(input: {
+  target: IssueExecutionTarget | null | undefined;
+  environment: Pick<Environment, "id" | "name" | "driver" | "metadata">;
+}): void {
+  if (!input.target || environmentMatchesExecutionTarget(input.environment, input.target)) return;
+  throw new IssueExecutionTargetUnavailableError({
+    target: input.target,
+    fallbackEnvironment: input.environment,
+    reason: "forced_environment_mismatch",
+  });
+}
 
 export class ManagedSandboxUnavailableError extends Error {
   constructor() {

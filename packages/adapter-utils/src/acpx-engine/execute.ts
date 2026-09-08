@@ -2797,6 +2797,10 @@ function renderApiAccessNote(env: Record<string, string>): string {
   const lines = [
     "Paperclip API access note:",
     "Use terminal commands with curl to make Paperclip API requests.",
+    "PAPERCLIP_API_URL is the Paperclip control-plane endpoint. Preserve it exactly; do not replace it with or infer it from an application endpoint.",
+    "On any connectivity failure, record the failed endpoint and PAPERCLIP_EXECUTION_ENVIRONMENT_ID/NAME/DRIVER before classifying DNS, routing, or exposure.",
+    "Classify a failure of PAPERCLIP_API_URL as control-plane reachability and any other failed URL as application-endpoint reachability.",
+    "If an application endpoint is tailnet-only and this runner lacks the required capability, route the task to the configured capable environment (for example homepc); keep the endpoint private and do not propose public-DNS remediation.",
     "Normalize the base URL before adding API paths:",
     `  PAPERCLIP_API_BASE="\${PAPERCLIP_API_URL%/}"; PAPERCLIP_API_BASE="\${PAPERCLIP_API_BASE%/api}"`,
     "GET example:",

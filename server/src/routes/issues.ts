@@ -9443,6 +9443,7 @@ export function issueRoutes(
       await assertCanAssignTasks(req, companyId, createAssignmentScope);
     }
     await assertIssueEnvironmentSelection(companyId, createBody.executionWorkspaceSettings?.environmentId);
+    await assertIssueEnvironmentSelection(companyId, createBody.executionPolicy?.executionTarget?.environmentId);
 
     const executionPolicy = applyActorMonitorScheduledBy(
       normalizeIssueExecutionPolicy(createBody.executionPolicy),
@@ -9703,6 +9704,7 @@ export function issueRoutes(
       await assertCanAssignTasks(req, parent.companyId, childAssignmentScope);
     }
     await assertIssueEnvironmentSelection(parent.companyId, createBody.executionWorkspaceSettings?.environmentId);
+    await assertIssueEnvironmentSelection(parent.companyId, createBody.executionPolicy?.executionTarget?.environmentId);
 
     const actor = getActorInfo(req);
     const serializationContext = await resolveWatchdogFollowUpSerializationContext(req, parent);
@@ -9879,6 +9881,7 @@ export function issueRoutes(
         });
       }
       await assertIssueEnvironmentSelection(sourceIssue.companyId, childBody.executionWorkspaceSettings?.environmentId);
+      await assertIssueEnvironmentSelection(sourceIssue.companyId, childBody.executionPolicy?.executionTarget?.environmentId);
     }
 
     const actor = getActorInfo(req);
@@ -10321,6 +10324,7 @@ export function issueRoutes(
       if (!(await assertExplicitResumeIntentAllowed(req, res, existing))) return;
     }
     await assertIssueEnvironmentSelection(existing.companyId, updateFields.executionWorkspaceSettings?.environmentId);
+    await assertIssueEnvironmentSelection(existing.companyId, updateFields.executionPolicy?.executionTarget?.environmentId);
     const requestedAssigneeAgentId =
       normalizedAssigneeAgentId === undefined ? existing.assigneeAgentId : normalizedAssigneeAgentId;
     const explicitMoveToTodoRequested = reopenRequested || resumeRequested === true;

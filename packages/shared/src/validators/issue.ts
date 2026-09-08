@@ -290,10 +290,39 @@ export const issueExecutionMonitorPolicySchema = z.object({
   recoveryPolicy: z.enum(ISSUE_EXECUTION_MONITOR_RECOVERY_POLICIES).optional().nullable().default(null),
 });
 
+const issueExecutionCapabilitySchema = z.string()
+  .trim()
+  .toLowerCase()
+  .regex(
+    /^[a-z0-9][a-z0-9._-]{0,63}$/,
+    "Execution capabilities must be lowercase identifiers",
+  );
+
+export const issueExecutionTargetSchema = z.object({
+  environmentId: z.string().guid().optional().nullable(),
+  environmentKey: issueExecutionCapabilitySchema.optional().nullable(),
+  requiredCapabilities: z.array(issueExecutionCapabilitySchema).max(32).optional().default([]),
+}).strict().superRefine((target, ctx) => {
+  if (!target.environmentId && !target.environmentKey && target.requiredCapabilities.length === 0) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Execution target requires an environmentId, environmentKey, or capability",
+    });
+  }
+  if (new Set(target.requiredCapabilities).size !== target.requiredCapabilities.length) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Execution target capabilities must be unique",
+      path: ["requiredCapabilities"],
+    });
+  }
+});
+
 export const issueExecutionPolicySchema = z.object({
   mode: z.enum(ISSUE_EXECUTION_POLICY_MODES).optional().default("normal"),
   commentRequired: z.boolean().optional().default(true),
   stages: z.array(issueExecutionStageSchema).default([]),
+  executionTarget: issueExecutionTargetSchema.optional().nullable(),
   monitor: issueExecutionMonitorPolicySchema.optional().nullable(),
   reviewPreset: lowTrustReviewPresetPolicySchema.optional(),
   authorizationPolicy: trustAuthorizationPolicySchema.optional(),
@@ -620,6 +649,7 @@ export const updateIssueSchema = objectWithoutDefaults(
 
 export type UpdateIssue = z.infer<typeof updateIssueSchema>;
 export type IssueExecutionWorkspaceSettings = z.infer<typeof issueExecutionWorkspaceSettingsSchema>;
+export type IssueExecutionTarget = z.infer<typeof issueExecutionTargetSchema>;
 
 export const stalledReviewDecisionSchema = z.object({
   action: z.enum(["approve", "request_changes", "send_back"]),

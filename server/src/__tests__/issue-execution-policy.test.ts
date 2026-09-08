@@ -34,6 +34,20 @@ function approvalOnlyPolicy() {
 }
 
 describe("normalizeIssueExecutionPolicy", () => {
+  it("persists a task execution target even without review stages", () => {
+    expect(normalizeIssueExecutionPolicy({
+      executionTarget: {
+        environmentKey: "homepc",
+        requiredCapabilities: ["tailnet"],
+      },
+    })).toMatchObject({
+      executionTarget: {
+        environmentKey: "homepc",
+        requiredCapabilities: ["tailnet"],
+      },
+    });
+  });
+
   it("returns null for null/undefined input", () => {
     expect(normalizeIssueExecutionPolicy(null)).toBeNull();
     expect(normalizeIssueExecutionPolicy(undefined)).toBeNull();
