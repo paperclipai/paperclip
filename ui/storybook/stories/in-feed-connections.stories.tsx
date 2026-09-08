@@ -221,7 +221,7 @@ export const ValidationError: Story = { ...flow("posthog", "setup", true), play:
   await expect(await dialog.findByText(/Fixture connection could not be verified/)).toBeVisible();
 }};
 export const OAuthNewTabFallback: Story = { ...oauth("error", "The sign-in window could not open. Continue in a new tab.", true), play: async ({canvasElement}) => {
-  await userEvent.click(within(canvasElement).getByRole("button", { name: "Open sign-in in a new tab" }));
+  await userEvent.click(within(canvasElement).getByRole("link", { name: "Open sign-in in a new tab" }));
 }};
 
 export const CheckingConnection: Story = { ...CustomMcpDialog, parameters: { connectionScenario: { checking: true } }, play: async (context) => {
