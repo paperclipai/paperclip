@@ -343,7 +343,7 @@ function GitHubConnectionSummary({
             ) : null}
             {configurationUrl ? (
               <Button asChild size="sm" variant="outline">
-                <a href={configurationUrl} target="_blank" rel="noreferrer">Configure on GitHub</a>
+                <a href={configurationUrl} target="_blank" rel="noreferrer">Add More Repos on GitHub</a>
               </Button>
             ) : onRefreshAccess ? (
               <Button size="sm" variant="outline" disabled={refreshPending} onClick={onRefreshAccess}>

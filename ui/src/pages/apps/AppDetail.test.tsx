@@ -1508,7 +1508,7 @@ describe("AppDetail", () => {
     await act(async () => { findButton("Load GitHub configuration")!.click(); });
     await flushReact();
     expect(checkConnectionHealthMock).toHaveBeenCalledWith("conn-1");
-    expect(container.querySelector('a[href="https://github.com/apps/paperclip-staging/installations/new"]')?.textContent).toBe("Configure on GitHub");
+    expect(container.querySelector('a[href="https://github.com/apps/paperclip-staging/installations/new"]')?.textContent).toBe("Add More Repos on GitHub");
     expect(findButton("Load GitHub configuration")).toBeUndefined();
   });
 
@@ -1537,7 +1537,7 @@ describe("AppDetail", () => {
     }
     expect(container.querySelector('[aria-label="Filter repositories by account or organization"]')).toBeNull();
     expect(container.querySelector('input[aria-label="Search GitHub repositories"]')).toBeNull();
-    expect(container.querySelector('a[href="https://github.com/apps/paperclip-test/installations/new"]')?.textContent).toBe("Configure on GitHub");
+    expect(container.querySelector('a[href="https://github.com/apps/paperclip-test/installations/new"]')?.textContent).toBe("Add More Repos on GitHub");
     expect(updateConnectionMock).not.toHaveBeenCalled();
   });
 
@@ -1564,7 +1564,7 @@ describe("AppDetail", () => {
     expect(container.querySelector('a[href="https://github.com/paperclipai/test-repo"]')?.textContent).toBe("paperclipai/test-repo");
     expect(container.querySelector(
       'a[href="https://github.com/apps/paperclip-test/installations/new"]',
-    )?.textContent).toBe("Configure on GitHub");
+    )?.textContent).toBe("Add More Repos on GitHub");
     expect(container.querySelector('button[aria-label="Refresh access"]')).toBeTruthy();
     expect(container.textContent).not.toContain("Installation");
     expect(container.textContent).not.toContain("Token continuity");
