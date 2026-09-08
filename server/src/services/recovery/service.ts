@@ -60,6 +60,10 @@ import {
   type SuccessfulRunHandoffNotice,
 } from "./successful-run-handoff.js";
 import {
+  agentLinkRow,
+  runLinkRow,
+} from "./notice-format.js";
+import {
   buildExecutionReviewParticipantRecoveryNoticeSeed,
   buildExecutionReviewParticipantUnavailableNoticeSeed,
   buildStrandedRecoveryEscalationNotice,
@@ -235,20 +239,10 @@ function recoveryNoticeMetadata(input: {
     { type: "key_value", label: "Cause", value: input.cause },
     { type: "key_value", label: "Previous status", value: input.previousStatus },
     ...(input.recoveryOwner
-      ? [{
-          type: "agent_link" as const,
-          label: "Recovery owner",
-          agentId: input.recoveryOwner.id,
-          name: input.recoveryOwner.name.slice(0, 160),
-        }]
+      ? [agentLinkRow("Recovery owner", input.recoveryOwner)]
       : [{ type: "key_value" as const, label: "Recovery owner", value: "board" }]),
     ...(input.latestRun
-      ? [{
-          type: "run_link" as const,
-          label: "Latest run",
-          runId: input.latestRun.id,
-          title: input.latestRun.status,
-        }]
+      ? [runLinkRow("Latest run", input.latestRun)]
       : []),
   ];
 
@@ -1665,12 +1659,7 @@ export function recoveryService(
               { type: "key_value", label: "Cause", value: "recovery_issue_failed" },
               { type: "key_value", label: "Previous status", value: input.previousStatus },
               ...(input.latestRun
-                ? [{
-                    type: "run_link" as const,
-                    label: "Latest run",
-                    runId: input.latestRun.id,
-                    title: input.latestRun.status,
-                  }]
+                ? [runLinkRow("Latest run", input.latestRun)]
                 : []),
             ],
           }],
