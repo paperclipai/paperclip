@@ -127,6 +127,64 @@ export function resolveSharedClaudeConfigDir(
   return fromEnv ? path.resolve(fromEnv) : path.join(os.homedir(), ".claude");
 }
 
+export function hasClaudeSdkAuthEnv(env: Record<string, string | undefined>): boolean {
+  return (
+    Boolean(nonEmpty(env.ANTHROPIC_API_KEY)) ||
+    Boolean(nonEmpty(env.ANTHROPIC_AUTH_TOKEN)) ||
+    Boolean(nonEmpty(env.CLAUDE_CODE_OAUTH_TOKEN)) ||
+    Boolean(nonEmpty(env.CLAUDE_CODE_SESSION_ACCESS_TOKEN)) ||
+    Boolean(nonEmpty(env.CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR)) ||
+    Boolean(nonEmpty(env.CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR))
+  );
+}
+
+export async function readSharedClaudeOAuthEnv(
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<{ sourcePath: string; env: Record<string, string> } | null> {
+  const sourceDir = resolveSharedClaudeConfigDir(env);
+  for (const filename of [".credentials.json", "credentials.json"]) {
+    const sourcePath = path.join(sourceDir, filename);
+    if (!(await pathExists(sourcePath))) continue;
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(await fs.readFile(sourcePath, "utf8"));
+    } catch {
+      continue;
+    }
+
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) continue;
+    const oauth = (parsed as Record<string, unknown>)["claudeAiOauth"];
+    if (!oauth || typeof oauth !== "object" || Array.isArray(oauth)) continue;
+
+    const oauthObj = oauth as Record<string, unknown>;
+    const accessToken = typeof oauthObj.accessToken === "string" ? nonEmpty(oauthObj.accessToken) : null;
+    if (!accessToken) continue;
+
+    const oauthEnv: Record<string, string> = {
+      CLAUDE_CODE_OAUTH_TOKEN: accessToken,
+    };
+    const refreshToken = typeof oauthObj.refreshToken === "string" ? nonEmpty(oauthObj.refreshToken) : null;
+    if (refreshToken) {
+      oauthEnv.CLAUDE_CODE_OAUTH_REFRESH_TOKEN = refreshToken;
+    }
+    const scopes = Array.isArray(oauthObj.scopes)
+      ? oauthObj.scopes.filter((scope): scope is string => typeof scope === "string" && scope.trim().length > 0)
+      : [];
+    if (scopes.length > 0) {
+      oauthEnv.CLAUDE_CODE_OAUTH_SCOPES = scopes.join(" ");
+    }
+    const clientId = typeof oauthObj.clientId === "string" ? nonEmpty(oauthObj.clientId) : null;
+    if (clientId) {
+      oauthEnv.CLAUDE_CODE_OAUTH_CLIENT_ID = clientId;
+    }
+
+    return { sourcePath, env: oauthEnv };
+  }
+
+  return null;
+}
+
 export function resolveManagedClaudeConfigSeedDir(
   env: NodeJS.ProcessEnv,
   companyId?: string,
