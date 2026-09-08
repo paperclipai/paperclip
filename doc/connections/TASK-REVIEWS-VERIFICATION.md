@@ -1,7 +1,8 @@
 # Connection review verification — 2026-09-08
 
 Implementation workspace: `/Users/dotta/paperclipai/branches/codex/reviews-in-task`.
-Branch: `codex/reviews-in-task`, based on `master` at `165ca56a22adb60e5fda56045442d9c8498116a8`.
+Branch: `codex/reviews-in-task`, rebased on `master` at `7ed122911`.
+The original verification below predates that rebase; final checks are recorded in the PR.
 
 ## Acceptance status
 
@@ -19,9 +20,10 @@ Storybook is running from this worktree on port 6018:
 - [Connections queue](http://localhost:6018/?path=/story/chat-comments-connection-reviews--connections-queue)
 - [Narrow layout](http://localhost:6018/?path=/story/chat-comments-connection-reviews--narrow)
 
-Manual browser inspection covered light/dark presentation, expanded technical
-details, and keyboard dismissal/reopening. Narrow controls wrap without horizontal
-clipping. The shared card remains information-dense; pending history stays compact.
+Manual browser inspection covered light/dark presentation, the split approval
+menu, keyboard approval, and dismissal/reopening. The final card shows only the app
+icon, request description, and decision controls. Optional labels and details were
+removed. Narrow controls fit without horizontal clipping.
 The fixture queue can be resolved interactively to inspect its empty state.
 
 ## Deterministic browser journeys
@@ -33,7 +35,7 @@ returns fixture page names; **these are not real Notion pages**.
 | Journey | Observed provider calls | Verified outcome |
 | --- | ---: | --- |
 | Approve in task | 1 | Stored call executes; resumed task posts Roadmap/Meeting notes; Connections pending item clears |
-| Decline in Connections | 0 | Optional reason submitted; open task updates; resumed agent reports decline |
+| Decline in Connections | 0 | One-click decline; open task updates; resumed agent reports decline |
 | Always allow | 2 | Initial approved call and a later call with changed arguments; later task has no review |
 | Provider failure | 1 | Human approval remains recorded; task shows execution failure and resumed agent reports it |
 | Restart while waiting | 1 | Pending request survives actual server restart; approval executes once and task returns page results |
@@ -93,3 +95,12 @@ those 16 acceptance cells or the four-profile real Notion exercise.
 Provide the normal runner/test-drive credential setup and Notion account access
 to complete those journeys. Secrets should remain in the normal local environment
 or credential store, not in this report or chat.
+
+## Final simplified UI verification
+
+Before the master rebase, 155 component tests and all five browser journeys passed.
+The final UI checks include the split approval menu, keyboard selection of Always
+allow, and one-click decline. Evidence is in `.paperclip-runtime/reviews-evidence/minimal/`.
+The browser run took 2.7 minutes; its restarted server required explicit process
+cleanup after the tests completed. Live provider and model-runner dependencies
+remain separate from this deterministic evidence.
