@@ -28,6 +28,8 @@ An explicit dedicated-agent grant overrides personal selection. Revoked, disable
 
 Connection setup and permissions display: “This agent uses this GitHub account for everyone's work, instead of the person giving instructions.”
 
+The GitHub permissions page shows repositories across all connected accounts in one scrollable list. It has no account filter or repository search. Repository icons, private-repository indicators, refresh, and GitHub configuration links remain available.
+
 Multiple eligible connections for the same GitHub account are treated as one
 identity, using GitHub's stable account ID rather than its login. The resolver
 selects an available grant, preferring the newest authorization with a stable
