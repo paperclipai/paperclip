@@ -5,6 +5,8 @@ import {
   agents,
   activityLog,
   companies,
+  companyMemberships,
+  connectionGrants,
   createDb,
   heartbeatRuns,
   toolAccessAuditEvents,
@@ -44,6 +46,7 @@ describeEmbeddedPostgres("heartbeat runtime MCP servers", () => {
     await db.delete(toolAccessAuditEvents);
     await db.delete(heartbeatRuns);
     await db.delete(toolMcpGateways);
+    await db.delete(connectionGrants);
     await db.delete(toolConnectionInstalls);
     await db.delete(toolProfileBindings);
     await db.delete(toolProfileEntries);
@@ -51,6 +54,7 @@ describeEmbeddedPostgres("heartbeat runtime MCP servers", () => {
     await db.delete(toolConnections);
     await db.delete(toolApplications);
     await db.delete(agents);
+    await db.delete(companyMemberships);
     await db.delete(companies);
   });
 
@@ -58,7 +62,7 @@ describeEmbeddedPostgres("heartbeat runtime MCP servers", () => {
     await tempDb?.cleanup();
   });
 
-  it("provisions one aggregate gateway and filters degraded access without blocking direct adapters", async () => {
+  it("provisions one aggregate gateway and omits unavailable access without blocking any runtime", async () => {
     process.env.PAPERCLIP_API_URL = "https://paperclip.example.test";
     const [company] = await db.insert(companies).values({
       name: `Runtime MCP ${randomUUID()}`,
@@ -158,22 +162,35 @@ describeEmbeddedPostgres("heartbeat runtime MCP servers", () => {
     }
     expect(JSON.stringify(tokens)).not.toContain(first[0]!.token);
 
-    await db.update(toolConnections)
-      .set({ healthStatus: "degraded", healthMessage: "fixture unavailable" })
-      .where(eq(toolConnections.id, installedConnection!.id));
-    await expect(
-      buildPaperclipRuntimeMcpServers({ db, agent: agent!, runId: randomUUID() }),
-    ).resolves.toEqual([]);
     await expect(
       buildPaperclipRuntimeMcpServers({
         db,
         agent: agent!,
         runId: randomUUID(),
-        failOnUnavailableAssignedConnection: true,
+        expectedAssignmentDigest: "0".repeat(64),
       }),
-    ).rejects.toThrow(
-      `assigned native MCP connection is unavailable: ${installedConnection!.id}`,
-    );
+    ).resolves.toEqual([]);
+    expect(await db.select().from(toolMcpGatewayTokens)).toHaveLength(2);
+
+    await db.update(toolConnections)
+      .set({ healthStatus: "degraded", healthMessage: "fixture unavailable" })
+      .where(eq(toolConnections.id, installedConnection!.id));
+    const unavailableReports: Array<Array<{ id: string; name: string }>> = [];
+    await expect(
+      buildPaperclipRuntimeMcpServers({
+        db,
+        agent: agent!,
+        runId: randomUUID(),
+        expectedAssignmentDigest: first[0]!.connectionId.slice("assignment:".length),
+        onUnavailableAssignedConnections: (connections) => {
+          unavailableReports.push(connections);
+        },
+      }),
+    ).resolves.toEqual([]);
+    expect(unavailableReports).toEqual([[
+      { id: installedConnection!.id, name: installedConnection!.name },
+    ]]);
+    expect(await db.select().from(toolMcpGatewayTokens)).toHaveLength(2);
     await expect(
       createManagedMcpRunConfig({
         db,
@@ -184,6 +201,132 @@ describeEmbeddedPostgres("heartbeat runtime MCP servers", () => {
         issueId: null,
       }),
     ).resolves.toBeNull();
+  });
+
+  it("exposes only the dedicated GitHub connection when a personal connection is also installed", async () => {
+    process.env.PAPERCLIP_API_URL = "https://paperclip.example.test";
+    const [company] = await db.insert(companies).values({
+      name: `Runtime GitHub identity ${randomUUID()}`,
+      issuePrefix: `RG${randomUUID().slice(0, 5).toUpperCase()}`,
+    }).returning();
+    await db.insert(companyMemberships).values({
+      companyId: company!.id,
+      principalType: "user",
+      principalId: "responsible-user",
+      status: "active",
+      membershipRole: "member",
+    });
+    const [agent] = await db.insert(agents).values({
+      companyId: company!.id,
+      name: "Dedicated GitHub Agent",
+      role: "engineer",
+      adapterType: "codex_local",
+      adapterConfig: {},
+    }).returning();
+    const [application] = await db.insert(toolApplications).values({
+      companyId: company!.id,
+      applicationKey: `github-${randomUUID().slice(0, 8)}`,
+      name: "GitHub",
+      type: "mcp_http",
+      status: "active",
+      metadata: { sourceTemplateKey: "github" },
+    }).returning();
+    const [personal, dedicated] = await db.insert(toolConnections).values([
+      {
+        companyId: company!.id,
+        applicationId: application!.id,
+        name: "Responsible user's GitHub",
+        uid: `github/${randomUUID()}`,
+        transport: "mcp_remote",
+        credentialPolicy: "per_user",
+        status: "active",
+        enabled: true,
+        healthStatus: "ok",
+        config: {},
+        transportConfig: { sourceTemplateKey: "github" },
+      },
+      {
+        companyId: company!.id,
+        applicationId: application!.id,
+        name: "Dedicated GitHub",
+        uid: `github/${randomUUID()}`,
+        transport: "mcp_remote",
+        credentialPolicy: "per_agent",
+        status: "active",
+        enabled: true,
+        healthStatus: "ok",
+        config: {},
+        transportConfig: { sourceTemplateKey: "github" },
+      },
+    ]).returning();
+    await db.insert(connectionGrants).values([
+      {
+        companyId: company!.id,
+        connectionId: personal!.id,
+        kind: "user",
+        subjectUserId: "responsible-user",
+        status: "active",
+        isDefault: false,
+      },
+      {
+        companyId: company!.id,
+        connectionId: dedicated!.id,
+        kind: "agent",
+        subjectAgentId: agent!.id,
+        status: "active",
+        isDefault: false,
+      },
+    ]);
+    await db.insert(toolConnectionInstalls).values([
+      {
+        companyId: company!.id,
+        connectionId: personal!.id,
+        targetType: "company",
+        targetId: company!.id,
+      },
+      {
+        companyId: company!.id,
+        connectionId: dedicated!.id,
+        targetType: "agent",
+        targetId: agent!.id,
+      },
+    ]);
+    const [profile] = await db.insert(toolProfiles).values({
+      companyId: company!.id,
+      profileKey: `github-identities:${agent!.id}`,
+      name: "GitHub identities",
+      defaultAction: "deny",
+    }).returning();
+    await db.insert(toolProfileEntries).values([personal!, dedicated!].map((connection) => ({
+      companyId: company!.id,
+      profileId: profile!.id,
+      selectorType: "connection" as const,
+      effect: "include" as const,
+      applicationId: application!.id,
+      connectionId: connection.id,
+    })));
+    await db.insert(toolProfileBindings).values({
+      companyId: company!.id,
+      profileId: profile!.id,
+      targetType: "agent",
+      targetId: agent!.id,
+    });
+    const [run] = await db.insert(heartbeatRuns).values({
+      companyId: company!.id,
+      agentId: agent!.id,
+      status: "running",
+      responsibleUserId: "responsible-user",
+      contextSnapshot: {},
+    }).returning();
+
+    const servers = await buildPaperclipRuntimeMcpServers({ db, agent: agent!, runId: run!.id });
+
+    expect(servers).toHaveLength(1);
+    const [runtimeGateway] = await db.select().from(toolMcpGateways);
+    expect(runtimeGateway).toBeTruthy();
+    const runtimeEntries = await db.select().from(toolProfileEntries)
+      .where(eq(toolProfileEntries.profileId, runtimeGateway!.profileId!));
+    expect(runtimeEntries.map((entry) => entry.connectionId)).toEqual([dedicated!.id]);
   });
 
   it("audits permitted remote MCP connections that were not installed when delivery is empty", async () => {

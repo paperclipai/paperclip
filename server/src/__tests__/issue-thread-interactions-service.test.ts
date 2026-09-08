@@ -102,6 +102,43 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     return { companyId, goalId, issueId };
   }
 
+  async function attachPlanDocument(companyId: string, issueId: string) {
+    const documentId = randomUUID();
+    const revisionId = randomUUID();
+    await db.insert(documents).values({
+      id: documentId,
+      companyId,
+      title: "Plan",
+      format: "markdown",
+      latestBody: "# Plan",
+      latestRevisionId: revisionId,
+      latestRevisionNumber: 1,
+    });
+    await db.insert(issueDocuments).values({
+      companyId,
+      issueId,
+      documentId,
+      key: "plan",
+    });
+    await db.insert(documentRevisions).values({
+      id: revisionId,
+      companyId,
+      documentId,
+      revisionNumber: 1,
+      title: "Plan",
+      format: "markdown",
+      body: "# Plan",
+    });
+    return {
+      type: "issue_document" as const,
+      issueId,
+      documentId,
+      key: "plan",
+      revisionId,
+      revisionNumber: 1,
+    };
+  }
+
   async function recordReviewTransition(args: {
     companyId: string;
     issueId: string;
@@ -2654,6 +2691,142 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       assigneeAgentId: agentId,
       assigneeUserId: null,
     });
+  });
+
+  it("atomically returns an accepted Plan-mode issue to its agent in Auto mode", async () => {
+    const { companyId, goalId, issueId } = await seedConfirmationIssue("Accept a plan into Auto mode");
+    const agentId = randomUUID();
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Plan owner",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.update(issues).set({
+      status: "in_review",
+      workMode: "planning",
+      assigneeAgentId: agentId,
+    }).where(eq(issues.id, issueId));
+    const target = await attachPlanDocument(companyId, issueId);
+    const created = await interactionsSvc.create({ id: issueId, companyId }, {
+      kind: "request_confirmation",
+      continuationPolicy: "wake_assignee_on_accept",
+      payload: { version: 1, prompt: "Accept this plan?", target },
+    }, { agentId });
+
+    const accepted = await interactionsSvc.acceptInteraction({
+      id: issueId,
+      companyId,
+      goalId,
+      projectId: null,
+    }, created.id, {}, { userId: "local-board" });
+
+    expect(accepted.interaction).toMatchObject({
+      id: created.id,
+      status: "accepted",
+      result: { outcome: "accepted" },
+    });
+    expect(accepted.continuationIssue).toEqual({
+      id: issueId,
+      assigneeAgentId: agentId,
+      assigneeUserId: null,
+      status: "todo",
+      workMode: "standard",
+    });
+    await expect(db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0])).resolves.toMatchObject({
+      status: "todo",
+      workMode: "standard",
+      assigneeAgentId: agentId,
+      assigneeUserId: null,
+    });
+  });
+
+  it("keeps Plan mode for non-plan and checkbox confirmations", async () => {
+    const { companyId, goalId, issueId } = await seedConfirmationIssue("Do not auto-transition other confirmations");
+    const agentId = randomUUID();
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Plan owner",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.update(issues).set({
+      status: "in_review",
+      workMode: "planning",
+      assigneeAgentId: agentId,
+    }).where(eq(issues.id, issueId));
+
+    const nonPlan = await interactionsSvc.create({ id: issueId, companyId }, {
+      kind: "request_confirmation",
+      payload: { version: 1, prompt: "Accept this unrelated decision?" },
+    }, { agentId });
+    await interactionsSvc.acceptInteraction({ id: issueId, companyId, goalId, projectId: null }, nonPlan.id, {}, {
+      userId: "local-board",
+    });
+    await expect(db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]?.workMode))
+      .resolves.toBe("planning");
+
+    await db.update(issues).set({ status: "in_review" }).where(eq(issues.id, issueId));
+    const target = await attachPlanDocument(companyId, issueId);
+    const checkbox = await interactionsSvc.create({ id: issueId, companyId }, {
+      kind: "request_checkbox_confirmation",
+      payload: {
+        version: 1,
+        prompt: "Select approved plan sections",
+        options: [{ id: "phase-1", label: "Phase 1" }],
+        target,
+      },
+    }, { agentId });
+    await interactionsSvc.acceptInteraction({ id: issueId, companyId, goalId, projectId: null }, checkbox.id, {
+      selectedOptionIds: ["phase-1"],
+    }, { userId: "local-board" });
+    await expect(db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]?.workMode))
+      .resolves.toBe("planning");
+  });
+
+  it.each(["ask", "standard"] as const)("keeps %s mode when accepting a plan confirmation", async (workMode) => {
+    const { companyId, goalId, issueId } = await seedConfirmationIssue(`Keep ${workMode} mode`);
+    await db.update(issues).set({ workMode }).where(eq(issues.id, issueId));
+    const target = await attachPlanDocument(companyId, issueId);
+    const created = await interactionsSvc.create({ id: issueId, companyId }, {
+      kind: "request_confirmation",
+      payload: { version: 1, prompt: "Accept this plan?", target },
+    }, { userId: "local-board" });
+
+    await interactionsSvc.acceptInteraction({ id: issueId, companyId, goalId, projectId: null }, created.id, {}, {
+      userId: "local-board",
+    });
+
+    await expect(db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]?.workMode))
+      .resolves.toBe(workMode);
+  });
+
+  it("keeps Plan mode when a plan confirmation is rejected", async () => {
+    const { companyId, issueId } = await seedConfirmationIssue("Reject a plan");
+    await db.update(issues).set({ workMode: "planning" }).where(eq(issues.id, issueId));
+    const target = await attachPlanDocument(companyId, issueId);
+    const created = await interactionsSvc.create({ id: issueId, companyId }, {
+      kind: "request_confirmation",
+      payload: { version: 1, prompt: "Accept this plan?", target },
+    }, { userId: "local-board" });
+
+    const rejected = await interactionsSvc.rejectInteraction({ id: issueId, companyId }, created.id, {
+      reason: "Revise the plan",
+    }, { userId: "local-board" });
+
+    expect(rejected.status).toBe("rejected");
+    await expect(db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]?.workMode))
+      .resolves.toBe("planning");
   });
 
   it("expires request confirmations by default when a user comments after creation", async () => {

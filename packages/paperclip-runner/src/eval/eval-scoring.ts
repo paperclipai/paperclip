@@ -90,7 +90,7 @@ export interface EvalEfficiencyBudget {
 export interface EvalObservation {
   caseId: string;
   provenance?: {
-    source: "deterministic_fault_harness" | "fixture";
+    source: "live_model" | "deterministic_fault_harness" | "fixture";
     behavior?: string;
     counterpart?: "green" | "red";
     faultInjection?: {

@@ -698,6 +698,7 @@ export function ProfilesTab({ companyId }: { companyId: string }) {
   const invalidateProfiles = () => {
     qc.invalidateQueries({ queryKey: queryKeys.tools.profiles(companyId) });
     qc.invalidateQueries({ queryKey: ["tools", companyId, "profiles", "effective"] });
+    qc.invalidateQueries({ queryKey: queryKeys.tools.testAgentAccesses() });
   };
 
   const resetProfileForm = () => {

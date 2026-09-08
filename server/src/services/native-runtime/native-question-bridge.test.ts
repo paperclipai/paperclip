@@ -19,6 +19,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "../../__tests__/helpers/embedded-postgres.js";
+import { drainHeartbeatRunsToQuiescence } from "../../__tests__/helpers/drain-heartbeat-runs.js";
 import { issueThreadInteractionService } from "../issue-thread-interactions.js";
 import {
   deliverNativeQuestionResponse,
@@ -64,7 +65,13 @@ describeEmbeddedPostgres("native question bridge", () => {
   }, 20_000);
 
   afterEach(async () => {
-    await heartbeat.drainActiveRunExecutions();
+    // A cancelled or reaped run can promote and dispatch its agent's next
+    // queued run fire-and-forget (see startNextQueuedRunForAgent in
+    // heartbeat.ts), so that dispatch can still be writing heartbeat_runs,
+    // issues, or activity_log rows when this hook starts. Drain every
+    // in-flight run to quiescence first, or its late write races the
+    // TRUNCATE below and can deadlock.
+    await drainHeartbeatRunsToQuiescence(db, heartbeat);
     nativeQuestionBridgeInternals.resetForTests();
     await db.execute(sql.raw(`
       TRUNCATE TABLE

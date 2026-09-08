@@ -16,6 +16,24 @@ describe("Cloud connector enrollment return path", () => {
       "/QA%20%2F%20Apps/apps/connections?cloud_connector=enrolled",
     );
   });
+
+  it("returns to the connector setup that started enrollment", () => {
+    expect(cloudConnectorEnrollmentReturnPath(
+      "APP",
+      "/apps/connect?source=google-drive&stage=setup",
+    )).toBe(
+      "/APP/apps/connect?source=google-drive&stage=setup&cloud_connector=enrolled",
+    );
+  });
+
+  it("rejects external and unrelated enrollment return paths", () => {
+    expect(cloudConnectorEnrollmentReturnPath("APP", "https://evil.example/apps/connect")).toBe(
+      "/APP/apps/connections?cloud_connector=enrolled",
+    );
+    expect(cloudConnectorEnrollmentReturnPath("APP", "/settings")).toBe(
+      "/APP/apps/connections?cloud_connector=enrolled",
+    );
+  });
 });
 
 describe("connection intent OAuth callback document", () => {

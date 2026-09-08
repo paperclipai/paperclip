@@ -18,6 +18,7 @@ const mockCompanyService = vi.hoisted(() => ({
 
 const mockAgentService = vi.hoisted(() => ({
   getById: vi.fn(),
+  list: vi.fn(),
 }));
 
 const mockAccessService = vi.hoisted(() => ({
@@ -169,6 +170,7 @@ function resetMockDefaults() {
     if (id === ceoAgentId) return { id, companyId: companyAId, role: "ceo" };
     return null;
   });
+  mockAgentService.list.mockResolvedValue([]);
   mockCompanyPortabilityService.exportBundle.mockResolvedValue(exportResult());
   mockCompanyPortabilityService.previewExport.mockResolvedValue(exportPreviewResult());
   mockCompanyPortabilityService.previewImport.mockResolvedValue({ ok: true });

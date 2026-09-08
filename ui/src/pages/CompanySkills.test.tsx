@@ -3,12 +3,13 @@
 import type { ComponentProps, ReactNode } from "react";
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
-import type { CatalogSkill, CompanySkillDetail, CompanySkillVersion, FolderListResult } from "@paperclipai/shared";
+import type { CatalogSkill, CompanySkillDetail, CompanySkillListItem, CompanySkillVersion, FolderListResult } from "@paperclipai/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   DiscoveryGrid,
   InstallPreviewDialog,
   SkillDetailPage,
+  buildDiscoveryCards,
   defaultInstallAgentSelection,
   getSkillVersionDiffSelection,
   resolveDiscoveryTab,
@@ -250,9 +251,7 @@ async function renderDiscoveryGrid(props: Partial<ComponentProps<typeof Discover
   await act(async () => {
     root?.render(
       <DiscoveryGrid
-        tab="all"
-        tabCounts={{ all: 0, installed: 0, catalog: 0, bundled: 0 }}
-        onTabChange={vi.fn()}
+        tab="installed"
         categories={[]}
         categoryTotal={0}
         activeCategory={null}
@@ -269,7 +268,7 @@ async function renderDiscoveryGrid(props: Partial<ComponentProps<typeof Discover
         onCreate={vi.fn()}
         onImport={vi.fn()}
         onImportFromProject={vi.fn()}
-        onBrowseCatalog={vi.fn()}
+        onBrowseDiscover={vi.fn()}
         onScan={vi.fn()}
         scanPending={false}
         scanStatus={null}
@@ -376,14 +375,66 @@ describe("getSkillVersionDiffSelection", () => {
   });
 });
 
-describe("DiscoveryGrid Studio entry points", () => {
-  it("links the header Studio button to Skill Studio", async () => {
-    const node = await renderDiscoveryGrid();
-    const studioLink = Array.from(node.querySelectorAll("a")).find((link) =>
-      link.textContent?.includes("Studio"),
-    );
+describe("DiscoveryGrid IA presentation", () => {
+  it("makes the search scope explicit for Installed and Discover", async () => {
+    let node = await renderDiscoveryGrid({ tab: "installed" });
+    expect(node.querySelector('input[aria-label="Search installed skills"]')).not.toBeNull();
 
-    expect(studioLink?.getAttribute("href")).toBe("/skills/studio");
+    root?.unmount();
+    container?.remove();
+    root = null;
+    container = null;
+
+    node = await renderDiscoveryGrid({ tab: "discover" });
+    expect(node.querySelector('input[aria-label="Search discoverable skills"]')).not.toBeNull();
+    expect(node.textContent).not.toContain("Catalog");
+  });
+
+  it("distinguishes installation from agent enablement on cards", async () => {
+    const installedCard = {
+      key: "installed",
+      skillId: "skill-installed",
+      catalogRef: null,
+      name: "Installed Skill",
+      slug: "installed",
+      author: "Paperclip",
+      version: null,
+      tagline: null,
+      description: null,
+      categories: [],
+      iconUrl: null,
+      color: null,
+      starCount: 0,
+      agentCount: 0,
+      forkCount: 0,
+      installed: true,
+      required: false,
+      forkedFrom: false,
+      updatedAt: 0,
+      sourceBadge: "local" as const,
+      sourceLabel: "Local workspace",
+    };
+    const availableCard = {
+      ...installedCard,
+      key: "available",
+      skillId: null,
+      catalogRef: "catalog-available",
+      name: "Available Skill",
+      slug: "available",
+      installed: false,
+      sourceBadge: "catalog" as const,
+      sourceLabel: "Paperclip catalog",
+    };
+    const node = await renderDiscoveryGrid({
+      tab: "discover",
+      cards: [installedCard, availableCard],
+      totalCount: 2,
+    });
+
+    expect(node.textContent).toContain("Not enabled for any agents");
+    expect(node.textContent).toContain("Available to install");
+    expect(node.textContent).toContain("Local workspace");
+    expect(node.textContent).toContain("Paperclip catalog");
   });
 
   it("uses the create callback from the New menu and empty state", async () => {
@@ -394,6 +445,17 @@ describe("DiscoveryGrid Studio entry points", () => {
     await click(buttonsNamed(node, "Create a skill")[0] as HTMLButtonElement);
 
     expect(onCreate).toHaveBeenCalledTimes(2);
+  });
+
+  it("uses one Discover action instead of Catalog or Bundled navigation", async () => {
+    const onBrowseDiscover = vi.fn();
+    const node = await renderDiscoveryGrid({ onBrowseDiscover });
+
+    await click(buttonsNamed(node, "Discover skills")[0] as HTMLButtonElement);
+
+    expect(onBrowseDiscover).toHaveBeenCalledOnce();
+    expect(node.textContent).not.toContain("Browse catalog");
+    expect(node.textContent).not.toContain("Bundled tab");
   });
 
   it("keeps folder creation in the compact rail control", async () => {
@@ -408,6 +470,29 @@ describe("DiscoveryGrid Studio entry points", () => {
 
     expect(props.onCreateFolderIn).toHaveBeenCalledWith(null);
     expect(props.onCreateFolder).not.toHaveBeenCalled();
+  });
+
+  it("removes category and folder browse rails while keeping search available", async () => {
+    const node = await renderDiscoveryGrid({
+      ...projectFolderGridProps(),
+      categories: [{ slug: "design", count: 1 }],
+      categoryTotal: 1,
+      showBrowseRails: false,
+    });
+
+    expect(node.querySelector('nav[aria-label="Skill folders"]')).toBeNull();
+    expect(node.querySelector("aside")).toBeNull();
+    expect(node.textContent).not.toContain("Browse by category");
+    expect(node.querySelector('input[aria-label="Search installed skills"]')).not.toBeNull();
+  });
+
+  it("omits bulk selection when its entry point is not supplied", async () => {
+    const node = await renderDiscoveryGrid({
+      ...projectFolderGridProps(),
+      onToggleSelectMode: undefined,
+    });
+
+    expect(buttonsNamed(node, "Select")).toHaveLength(0);
   });
 
   it("keeps folder creation available when no folder rail exists", async () => {
@@ -548,15 +633,74 @@ describe("DiscoveryGrid Studio entry points", () => {
 describe("skills discovery tab routing", () => {
   it("opens the folder-first installed view when the URL has no tab", () => {
     expect(resolveDiscoveryTab(null)).toBe("installed");
-    expect(resolveDiscoveryTab("all")).toBe("all");
+    expect(resolveDiscoveryTab("all")).toBe("discover");
+    expect(resolveDiscoveryTab("catalog")).toBe("discover");
+    expect(resolveDiscoveryTab("bundled")).toBe("discover");
   });
 
-  it("keeps All explicit and makes Installed the canonical default URL", () => {
-    const allParams = withDiscoveryTab(new URLSearchParams("folder=my&category=writing"), "all");
-    expect(allParams.toString()).toBe("tab=all");
+  it("uses Discover as the only explicit discovery URL and Installed as the default", () => {
+    const discoverParams = withDiscoveryTab(new URLSearchParams("folder=my&category=writing"), "discover");
+    expect(discoverParams.toString()).toBe("tab=discover");
 
     const installedParams = withDiscoveryTab(new URLSearchParams("tab=all&folder=my"), "installed");
     expect(installedParams.toString()).toBe("folder=my");
+  });
+});
+
+describe("skills discovery card reconciliation", () => {
+  it("renders one installed card when installed and catalog data share a key", () => {
+    const installed = {
+      id: "installed-new",
+      key: "PaperclipAI/Review",
+      name: "Review",
+      slug: "review",
+      updatedAt: new Date("2026-08-30T00:00:00Z"),
+      folderId: null,
+      authorName: "Paperclip",
+      packageVersion: "2.0.0",
+      sourceRef: null,
+      tagline: null,
+      description: "Installed copy",
+      categories: [],
+      iconUrl: null,
+      color: null,
+      starCount: 0,
+      attachedAgentCount: 2,
+      forkCount: 0,
+      catalogKind: "optional",
+      forkedFromSkillId: null,
+      sourceBadge: "catalog",
+      sourceLabel: "Paperclip",
+    } as unknown as CompanySkillListItem;
+    const olderDuplicate = {
+      ...installed,
+      id: "installed-old",
+      key: "paperclipai/review",
+      updatedAt: new Date("2026-08-01T00:00:00Z"),
+    } as CompanySkillListItem;
+    const catalog = {
+      id: "catalog-review",
+      key: "paperclipai/review",
+      name: "Review",
+      slug: "review",
+      kind: "optional",
+      category: "quality",
+      description: "Catalog copy",
+      packageName: "Paperclip",
+      packageVersion: "2.0.0",
+      tags: [],
+    } as unknown as CatalogSkill;
+
+    const cards = buildDiscoveryCards([olderDuplicate, installed], [catalog, { ...catalog, id: "catalog-duplicate" }]);
+
+    expect(cards).toHaveLength(1);
+    expect(cards[0]).toMatchObject({
+      skillId: "installed-new",
+      catalogRef: "catalog-review",
+      installed: true,
+      agentCount: 2,
+      sourceKind: "optional",
+    });
   });
 });
 

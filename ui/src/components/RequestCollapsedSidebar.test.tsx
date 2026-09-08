@@ -9,8 +9,6 @@ import { RequestCollapsedSidebar } from "./RequestCollapsedSidebar";
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
-const COLLAPSED_STORAGE_KEY = "paperclip.sidebar.collapsed";
-
 let capturedValue: ReturnType<typeof useSidebar> | null = null;
 
 function Capture() {
@@ -82,25 +80,24 @@ describe("RequestCollapsedSidebar", () => {
     localStorage.clear();
   });
 
-  it("requests collapsed while mounted when there is no user pin", async () => {
+  it("records the legacy route request without collapsing the global navigation", async () => {
     active = await render(true);
     expect(capturedValue?.routeRequestsCollapsed).toBe(true);
-    expect(capturedValue?.collapsed).toBe(true);
+    expect(capturedValue?.collapsed).toBe(false);
   });
 
-  it("lets an explicit user pin override the route request", async () => {
+  it("keeps the global navigation expanded when old pin APIs are called", async () => {
     active = await render(true);
-    expect(capturedValue?.collapsed).toBe(true);
+    expect(capturedValue?.collapsed).toBe(false);
 
-    // User explicitly pins expanded — must win over the route's request.
-    flushSync(() => capturedValue?.setCollapsed(false));
+    flushSync(() => capturedValue?.setCollapsed(true));
     expect(capturedValue?.routeRequestsCollapsed).toBe(true);
     expect(capturedValue?.collapsed).toBe(false);
   });
 
   it("clears the request on unmount, restoring the global default", async () => {
     active = await render(true);
-    expect(capturedValue?.collapsed).toBe(true);
+    expect(capturedValue?.collapsed).toBe(false);
 
     // Navigate away: the route (and its <RequestCollapsedSidebar/>) unmounts.
     flushSync(() => active!.root.render(<Harness onRoute={false} />));
@@ -109,15 +106,14 @@ describe("RequestCollapsedSidebar", () => {
     expect(capturedValue?.collapsed).toBe(false);
   });
 
-  it("keeps a user pin after navigating away (pin persists, request cleared)", async () => {
+  it("clears the request without persisting a retired collapsed pin", async () => {
     active = await render(true);
     flushSync(() => capturedValue?.setCollapsed(true));
-    expect(localStorage.getItem(COLLAPSED_STORAGE_KEY)).toBe("1");
+    expect(localStorage.getItem("paperclip.sidebar.collapsed")).toBeNull();
 
     flushSync(() => active!.root.render(<Harness onRoute={false} />));
     await flushReact();
-    // Route request gone, but the explicit collapsed pin still applies.
     expect(capturedValue?.routeRequestsCollapsed).toBe(false);
-    expect(capturedValue?.collapsed).toBe(true);
+    expect(capturedValue?.collapsed).toBe(false);
   });
 });

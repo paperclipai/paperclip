@@ -1,4 +1,5 @@
 import type { NativeExecutionInput } from "../contracts/native-execution.js";
+import type { PersistedHarnessSession } from "../contracts/harness-driver.js";
 import type {
   NativeSessionBackend,
   PersistedNativeSession,
@@ -6,6 +7,7 @@ import type {
 import type { CodexAppServerTransport } from "../drivers/codex/app-server-transport.js";
 import {
   createCodexNativeSessionBackend,
+  createRunnerdNativeSessionBackend,
   type CodexNativeSessionBackendOptions,
 } from "./codex-native-backend.js";
 import {
@@ -20,6 +22,13 @@ export interface NativeBackendFactoryOptions extends Omit<
 > {
   codexTransportFactory?: (context?: {
     providerRecoveryPolicy?: PersistedNativeSession["providerRecoveryPolicy"];
+    persistedSession?: Pick<
+      PersistedHarnessSession,
+      | "driverSessionId"
+      | "providerSessionId"
+      | "providerIdentity"
+      | "activeTurnId"
+    >;
   }) => CodexAppServerTransport;
   acpxRuntimeDirectory?: string;
   acpxEnvironment?: NodeJS.ProcessEnv;
@@ -39,6 +48,17 @@ export function createNativeSessionBackend(
   input: NativeExecutionInput,
   options: NativeBackendFactoryOptions = {},
 ): NativeSessionBackend {
+  if (options.codexTransportFactory) {
+    return createRunnerdNativeSessionBackend(input, {
+      runnerInstanceId: options.runnerInstanceId,
+      onSpawn: options.onSpawn,
+      dynamicTools: options.dynamicTools,
+      dynamicToolHandler: options.dynamicToolHandler,
+      environment: options.environment,
+      workingDirectoryAuthority: options.workingDirectoryAuthority,
+      transportFactory: options.codexTransportFactory,
+    });
+  }
   if (input.provider.kind === "opencode") {
     if (!options.opencodeRuntimeDirectory?.trim()) {
       throw new Error(
@@ -88,6 +108,8 @@ export function createNativeSessionBackend(
     onSpawn: options.onSpawn,
     dynamicTools: options.dynamicTools,
     dynamicToolHandler: options.dynamicToolHandler,
+    environment: options.environment,
+    workingDirectoryAuthority: options.workingDirectoryAuthority,
     transportFactory: options.codexTransportFactory,
   });
 }

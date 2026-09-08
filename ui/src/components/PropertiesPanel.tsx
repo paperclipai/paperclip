@@ -2,14 +2,24 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 import { X } from "lucide-react";
 import { usePanel } from "../context/PanelContext";
 import { useClassicTaskInterfaceEnabled } from "../hooks/useClassicTaskInterfaceEnabled";
+import { useStreamlinedUiEnabled } from "../hooks/useStreamlinedUiEnabled";
 import { cn } from "../lib/utils";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { SidePanelFrame, SidePanelWindowControls } from "@/components/side-panel";
 
-export function PropertiesPanel() {
-  const { panelContent, panelContentMode, panelVisible, setPanelVisible } = usePanel();
+export function PropertiesPanel({ taskDetailLayout = false }: { taskDetailLayout?: boolean }) {
+  const {
+    panelContent,
+    panelContentMode,
+    panelVisible,
+    setPanelVisible,
+    panelMaximizeRequested,
+    clearPanelMaximizeRequest,
+  } = usePanel();
   const { enabled: classicTaskInterfaceEnabled } = useClassicTaskInterfaceEnabled();
+  const { enabled: streamlinedUiEnabled } = useStreamlinedUiEnabled();
+  const streamlinedTaskDetailLayout = streamlinedUiEnabled && taskDetailLayout;
 
   if (!panelContent) return null;
 
@@ -36,23 +46,29 @@ export function PropertiesPanel() {
 
   return (
     <ResizablePropertiesPanel
+      key={streamlinedTaskDetailLayout ? "task-detail" : "default"}
       panelContent={panelContent}
       panelContentMode={panelContentMode}
       panelVisible={panelVisible}
       setPanelVisible={setPanelVisible}
+      taskDetailLayout={streamlinedTaskDetailLayout}
+      maximizeRequested={panelMaximizeRequested}
+      clearMaximizeRequest={clearPanelMaximizeRequest}
     />
   );
 }
 
 /* ------------------------------------------------------------------------- *
- * Chat-style (default) resizable/maximizable variant. Everything below
- * renders only when the Classic Task Interface flag is OFF.
+ * Production chat-style resizable/maximizable variant. Streamlined UI only
+ * changes its task-detail dimensions; Classic Task Interface selects the
+ * fixed panel above.
  * ------------------------------------------------------------------------- */
 
 /**
  * Portal target in the redesigned pane's header bar: hosted content (the
- * Properties | Plan | Artifacts tab strip) renders here, left of the window
- * controls. See IssueProperties' flag-ON shell.
+ * Properties | Plan | Artifacts tab strip, including the single active
+ * Properties tab) renders here, left of the window controls. See
+ * IssueProperties' flag-ON shell.
  */
 export const PROPERTIES_PANE_HEADER_SLOT_ID = "properties-pane-header-slot";
 /**
@@ -63,7 +79,9 @@ export const PROPERTIES_PANE_HEADER_SLOT_ID = "properties-pane-header-slot";
 export const PROPERTIES_PANE_FOOTER_SLOT_ID = "properties-pane-footer-slot";
 
 const WIDTH_STORAGE_KEY = "taskChatRedesign.propertiesPaneWidth";
+const TASK_DETAIL_WIDTH_STORAGE_KEY = "taskChatRedesign.taskDetailPropertiesPaneWidth";
 const DEFAULT_PANE_WIDTH = 322;
+const TASK_DETAIL_DEFAULT_PANE_WIDTH = 434;
 const MIN_PANE_WIDTH = 260;
 /** ~236px sidebar + ~420px minimum center column stay usable while resizing. */
 const RESERVED_LAYOUT_WIDTH = 656;
@@ -84,30 +102,30 @@ function clampPaneWidth(width: number): number {
   return Math.min(Math.max(Math.round(width), MIN_PANE_WIDTH), max);
 }
 
-function readStoredPaneWidth(): number {
-  if (typeof window === "undefined") return DEFAULT_PANE_WIDTH;
+function readStoredPaneWidth(storageKey: string, defaultWidth: number): number {
+  if (typeof window === "undefined") return defaultWidth;
   try {
-    const raw = window.localStorage.getItem(WIDTH_STORAGE_KEY);
+    const raw = window.localStorage.getItem(storageKey);
     const parsed = raw === null ? Number.NaN : Number(raw);
-    return Number.isFinite(parsed) ? parsed : DEFAULT_PANE_WIDTH;
+    return Number.isFinite(parsed) ? parsed : defaultWidth;
   } catch {
-    return DEFAULT_PANE_WIDTH;
+    return defaultWidth;
   }
 }
 
-function persistPaneWidth(width: number) {
+function persistPaneWidth(storageKey: string, width: number) {
   if (typeof window === "undefined") return;
   try {
-    window.localStorage.setItem(WIDTH_STORAGE_KEY, String(width));
+    window.localStorage.setItem(storageKey, String(width));
   } catch {
     // Ignore storage failures.
   }
 }
 
-function clearStoredPaneWidth() {
+function clearStoredPaneWidth(storageKey: string) {
   if (typeof window === "undefined") return;
   try {
-    window.localStorage.removeItem(WIDTH_STORAGE_KEY);
+    window.localStorage.removeItem(storageKey);
   } catch {
     // Ignore storage failures.
   }
@@ -134,6 +152,10 @@ interface ResizablePropertiesPanelProps {
   panelContentMode: "padded" | "prose" | "full-bleed";
   panelVisible: boolean;
   setPanelVisible: (visible: boolean) => void;
+  taskDetailLayout: boolean;
+  /** Pending `viewer=full` deep-link request (LOOA-2181); cleared once consumed. */
+  maximizeRequested: boolean;
+  clearMaximizeRequest: () => void;
 }
 
 function ResizablePropertiesPanel({
@@ -141,8 +163,19 @@ function ResizablePropertiesPanel({
   panelContentMode,
   panelVisible,
   setPanelVisible,
+  taskDetailLayout,
+  maximizeRequested,
+  clearMaximizeRequest,
 }: ResizablePropertiesPanelProps) {
-  const [width, setWidth] = useState(() => clampPaneWidth(readStoredPaneWidth()));
+  const defaultPaneWidth = taskDetailLayout
+    ? TASK_DETAIL_DEFAULT_PANE_WIDTH
+    : DEFAULT_PANE_WIDTH;
+  const widthStorageKey = taskDetailLayout
+    ? TASK_DETAIL_WIDTH_STORAGE_KEY
+    : WIDTH_STORAGE_KEY;
+  const [width, setWidth] = useState(() =>
+    clampPaneWidth(readStoredPaneWidth(widthStorageKey, defaultPaneWidth)),
+  );
   const [dragging, setDragging] = useState(false);
   const [maximized, setMaximized] = useState(false);
   const [fixedPane, setFixedPane] = useState<FixedPane | null>(null);
@@ -192,8 +225,8 @@ function ResizablePropertiesPanel({
     dragStateRef.current = null;
     setDragging(false);
     document.body.style.userSelect = previousBodyUserSelectRef.current;
-    if (persist) persistPaneWidth(widthRef.current);
-  }, []);
+    if (persist) persistPaneWidth(widthStorageKey, widthRef.current);
+  }, [widthStorageKey]);
 
   const handleGripPointerDown = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
     // Primary button only (touch/pen report button 0 or -1 for down events).
@@ -231,9 +264,9 @@ function ResizablePropertiesPanel({
   }, [endDrag]);
 
   const handleGripDoubleClick = useCallback(() => {
-    setWidth(DEFAULT_PANE_WIDTH);
-    clearStoredPaneWidth();
-  }, []);
+    setWidth(defaultPaneWidth);
+    clearStoredPaneWidth(widthStorageKey);
+  }, [defaultPaneWidth, widthStorageKey]);
 
   const handleMaximize = useCallback(() => {
     const aside = asideRef.current;
@@ -282,6 +315,16 @@ function ResizablePropertiesPanel({
     restoreTimerRef.current = window.setTimeout(finishRestore, RESTORE_FALLBACK_DELAY);
   }, [clearRestoreTimer, finishRestore]);
 
+  // Deep-link maximize (LOOA-2181): the request may predate this mount (the
+  // hash routes before the panel content commits), so it lives in context and
+  // is consumed here once the panel is actually visible and laid out —
+  // handleMaximize measures live geometry, which needs a committed DOM.
+  useEffect(() => {
+    if (!maximizeRequested || !panelVisible) return;
+    clearMaximizeRequest();
+    if (!maximized) handleMaximize();
+  }, [maximizeRequested, panelVisible, maximized, handleMaximize, clearMaximizeRequest]);
+
   const handleTransitionEnd = useCallback(
     (event: React.TransitionEvent<HTMLElement>) => {
       if (event.target !== asideRef.current || event.propertyName !== "left") return;
@@ -307,7 +350,8 @@ function ResizablePropertiesPanel({
       <aside
         ref={asideRef}
         className={cn(
-          "hidden md:flex border-l border-border bg-card flex-col",
+          "hidden md:flex bg-card flex-col",
+          !maximized && "border-l border-border",
           isFixed
             ? "tc-pane-glide fixed z-40 overflow-hidden"
             : cn(
@@ -361,6 +405,7 @@ function ResizablePropertiesPanel({
             presentation="docked"
             maximized={maximized}
             contentMode="full-bleed"
+            headerSize={taskDetailLayout ? "task-detail" : "default"}
             className="flex-1 border-l-0"
             header={(
               <div
@@ -371,6 +416,7 @@ function ResizablePropertiesPanel({
             trailingControls={(
               <SidePanelWindowControls
                 maximized={maximized}
+                closeControl={taskDetailLayout ? "close" : "toggle"}
                 onMaximizedChange={(next) => {
                   if (next) handleMaximize();
                   else handleRestore();

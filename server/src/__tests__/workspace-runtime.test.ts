@@ -1,5 +1,5 @@
 import { execFile, spawn } from "node:child_process";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomInt, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import fs from "node:fs/promises";
 import net from "node:net";
@@ -450,6 +450,27 @@ afterEach(async () => {
   delete process.env.DATABASE_URL;
   await resetRuntimeServicesForTests();
 });
+
+// macOS allocates ephemeral ports sequentially, often entirely above the
+// app-port + 10,000 HMR limit. Retrying listen(0) cannot guarantee this range.
+async function reserveManagedRuntimeTestPort(): Promise<number> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const port = randomInt(20_000, 40_000);
+    const probe = net.createServer();
+    const available = await new Promise<boolean>((resolve, reject) => {
+      probe.once("error", (error: NodeJS.ErrnoException) => {
+        if (error.code === "EADDRINUSE") resolve(false);
+        else reject(error);
+      });
+      probe.listen(port, "127.0.0.1", () => probe.close((error) => {
+        if (error) reject(error);
+        else resolve(true);
+      }));
+    });
+    if (available) return port;
+  }
+  throw new Error("Failed to reserve a managed runtime test port");
+}
 
 describe("sanitizeRuntimeServiceBaseEnv", () => {
   it("removes inherited Paperclip and pnpm auth flags before spawning runtime services", () => {
@@ -7734,19 +7755,7 @@ describeEmbeddedPostgres("workspace runtime startup reconciliation", () => {
     process.env.PAPERCLIP_HOME = paperclipHome;
     process.env.PAPERCLIP_INSTANCE_ID = `runtime-https-backfill-${randomUUID()}`;
 
-    const reservePort = async () => {
-      for (let attempt = 0; attempt < 100; attempt += 1) {
-        const probe = net.createServer();
-        await new Promise<void>((resolve) => probe.listen(0, "127.0.0.1", resolve));
-        const address = probe.address();
-        const port = typeof address === "object" && address ? address.port : null;
-        await new Promise<void>((resolve, reject) => {
-          probe.close((error) => error ? reject(error) : resolve());
-        });
-        if (port && port <= 55_535 && (port < 42_000 || port > 42_999)) return port;
-      }
-      throw new Error("Failed to reserve an HTTPS backfill test port outside the broker range");
-    };
+    const reservePort = reserveManagedRuntimeTestPort;
     const isLoopbackPortFree = async (port: number) => {
       const probe = net.createServer();
       return await new Promise<boolean>((resolve) => {
@@ -8075,21 +8084,7 @@ describeEmbeddedPostgres("workspace runtime startup reconciliation", () => {
     // The reconciler stores this port on the row. A port inside that range makes
     // the reconciler treat the row as an exposure reservation and report drift,
     // so the live service never reaches the adoption path this test verifies.
-    const reservePort = async () => {
-      for (let attempt = 0; attempt < 100; attempt += 1) {
-        const probe = net.createServer();
-        await new Promise<void>((resolve) => probe.listen(0, "127.0.0.1", resolve));
-        const address = probe.address();
-        const candidate = typeof address === "object" && address ? address.port : null;
-        await new Promise<void>((resolve, reject) => {
-          probe.close((error) => error ? reject(error) : resolve());
-        });
-        if (candidate && candidate <= 55_535 && (candidate < 42_000 || candidate > 42_999)) {
-          return candidate;
-        }
-      }
-      throw new Error("Failed to reserve pnpm reconciliation test port outside the broker range");
-    };
+    const reservePort = reserveManagedRuntimeTestPort;
     const port = await reservePort();
 
     const companyId = randomUUID();

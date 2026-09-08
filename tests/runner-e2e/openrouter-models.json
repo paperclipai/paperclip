@@ -1,0 +1,41 @@
+{
+  "schema": "paperclip.runner-e2e.openrouter-ranking/v1",
+  "snapshotId": "top-weekly-tools-2026-08-28",
+  "ranking": "top-weekly",
+  "requiredParameter": "tools",
+  "sourceUrl": "https://openrouter.ai/api/v1/models?sort=top-weekly&supported_parameters=tools",
+  "capturedAt": "2026-08-28T00:00:00.000Z",
+  "contentHash": "c1b564582712dd2769e4855a79bc5604e860bf7a85fb98445fff6b3c4c100a3c",
+  "models": [
+    {
+      "rank": 1,
+      "id": "deepseek/deepseek-v4-flash-0731",
+      "name": "DeepSeek V4 Flash 0731",
+      "supportedParameters": ["tools"]
+    },
+    {
+      "rank": 2,
+      "id": "xiaomi/mimo-v2.5",
+      "name": "MiMo V2.5",
+      "supportedParameters": ["tools"]
+    },
+    {
+      "rank": 3,
+      "id": "tencent/hy3",
+      "name": "Tencent HY 3",
+      "supportedParameters": ["tools"]
+    },
+    {
+      "rank": 4,
+      "id": "nvidia/nemotron-3-ultra-550b-a55b:free",
+      "name": "Nemotron 3 Ultra 550B A55B (free)",
+      "supportedParameters": ["tools"]
+    },
+    {
+      "rank": 5,
+      "id": "openai/gpt-5.6-luna",
+      "name": "GPT-5.6 Luna",
+      "supportedParameters": ["tools"]
+    }
+  ]
+}

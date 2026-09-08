@@ -1471,10 +1471,12 @@ describe("worktree helpers", () => {
     const repoRoot = path.join(tempRoot, "repo");
     const originalCwd = process.cwd();
     const originalJwtSecret = process.env.PAPERCLIP_AGENT_JWT_SECRET;
+    const originalToolActionSigningSecret = process.env.PAPERCLIP_TOOL_ACTION_SIGNING_SECRET;
 
     try {
       fs.mkdirSync(repoRoot, { recursive: true });
       process.env.PAPERCLIP_AGENT_JWT_SECRET = "worktree-shared-secret";
+      process.env.PAPERCLIP_TOOL_ACTION_SIGNING_SECRET = "worktree-tool-action-secret";
       process.chdir(repoRoot);
 
       await worktreeInitCommand({
@@ -1486,6 +1488,7 @@ describe("worktree helpers", () => {
       const envPath = path.join(repoRoot, ".paperclip", ".env");
       const envContents = fs.readFileSync(envPath, "utf8");
       expect(envContents).toContain("PAPERCLIP_AGENT_JWT_SECRET=worktree-shared-secret");
+      expect(envContents).toContain("PAPERCLIP_TOOL_ACTION_SIGNING_SECRET=worktree-tool-action-secret");
       expect(envContents).toContain("PAPERCLIP_WORKTREE_NAME=repo");
       expect(envContents).toMatch(/PAPERCLIP_WORKTREE_COLOR=\"#[0-9a-f]{6}\"/);
     } finally {
@@ -1494,6 +1497,11 @@ describe("worktree helpers", () => {
         delete process.env.PAPERCLIP_AGENT_JWT_SECRET;
       } else {
         process.env.PAPERCLIP_AGENT_JWT_SECRET = originalJwtSecret;
+      }
+      if (originalToolActionSigningSecret === undefined) {
+        delete process.env.PAPERCLIP_TOOL_ACTION_SIGNING_SECRET;
+      } else {
+        process.env.PAPERCLIP_TOOL_ACTION_SIGNING_SECRET = originalToolActionSigningSecret;
       }
       fs.rmSync(tempRoot, { recursive: true, force: true });
     }

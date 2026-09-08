@@ -374,7 +374,6 @@ describe("approval routes idempotent retries", () => {
   it("blocks status-only recovery runs from creating approvals", async () => {
     const res = await request(await createAgentApp({
       contextSnapshot: {
-        modelProfile: "cheap",
         recoveryIntent: "status_only",
         allowDeliverableWork: false,
         allowDocumentUpdates: false,
@@ -388,7 +387,7 @@ describe("approval routes idempotent retries", () => {
       });
 
     expect(res.status, JSON.stringify(res.body)).toBe(403);
-    expect(res.body.error).toContain("Cheap status-only recovery runs cannot create or modify approvals");
+    expect(res.body.error).toContain("Status-only recovery runs cannot create or modify approvals");
     expect(mockApprovalService.create).not.toHaveBeenCalled();
     expect(mockIssueApprovalService.linkManyForApproval).not.toHaveBeenCalled();
   });
@@ -405,7 +404,6 @@ describe("approval routes idempotent retries", () => {
 
     const res = await request(await createAgentApp({
       contextSnapshot: {
-        modelProfile: "cheap",
         recoveryIntent: "status_only",
         allowDeliverableWork: false,
         allowDocumentUpdates: false,
@@ -416,7 +414,7 @@ describe("approval routes idempotent retries", () => {
       .send({ payload: { title: "Retry" } });
 
     expect(res.status, JSON.stringify(res.body)).toBe(403);
-    expect(res.body.error).toContain("Cheap status-only recovery runs cannot create or modify approvals");
+    expect(res.body.error).toContain("Status-only recovery runs cannot create or modify approvals");
     expect(mockApprovalService.resubmit).not.toHaveBeenCalled();
   });
 
@@ -432,7 +430,6 @@ describe("approval routes idempotent retries", () => {
 
     const res = await request(await createAgentApp({
       contextSnapshot: {
-        modelProfile: "cheap",
         recoveryIntent: "status_only",
         allowDeliverableWork: false,
         allowDocumentUpdates: false,
@@ -443,7 +440,7 @@ describe("approval routes idempotent retries", () => {
       .send({ body: "please approve" });
 
     expect(res.status, JSON.stringify(res.body)).toBe(403);
-    expect(res.body.error).toContain("Cheap status-only recovery runs cannot create or modify approvals");
+    expect(res.body.error).toContain("Status-only recovery runs cannot create or modify approvals");
     expect(mockApprovalService.addComment).not.toHaveBeenCalled();
   });
 });

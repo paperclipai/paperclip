@@ -63,7 +63,7 @@ function capabilityForAgent(agent: AgentBinding): RunnerGoalCapability {
         autonomousUpdates: true,
         persistentAcrossResume: true,
         maxObjectiveChars: 4_000,
-        tokenBudgetControl: true,
+        tokenBudgetControl: provider === "codex",
         usageReporting: true,
         reasonCode: "support_pending_handshake",
         reason: provider === "codex"
@@ -105,36 +105,12 @@ function capabilityForAgent(agent: AgentBinding): RunnerGoalCapability {
       reason,
     };
   }
-  if (agent.adapterType === "codex_local" && engine !== "cli" && sessionMode !== "oneshot") {
-    return {
-      availability: "available",
-      verified: false,
-      actions: ["set", "pause", "resume", "clear"],
-      autonomousUpdates: true,
-      persistentAcrossResume: true,
-      maxObjectiveChars: 4_000,
-      tokenBudgetControl: true,
-      usageReporting: true,
-      reasonCode: "support_pending_handshake",
-      reason: "Support will be verified when the persistent Codex ACP session starts.",
-    };
-  }
-  if (agent.adapterType === "claude_local" && engine !== "cli" && sessionMode !== "oneshot") {
-    return {
-      availability: "available",
-      verified: false,
-      actions: ["set", "clear"],
-      autonomousUpdates: true,
-      persistentAcrossResume: true,
-      maxObjectiveChars: 4_000,
-      tokenBudgetControl: false,
-      usageReporting: false,
-      reasonCode: "support_pending_handshake",
-      reason: "Support will be verified when the persistent Claude ACP session starts.",
-    };
-  }
+  const directAcp = (agent.adapterType === "codex_local" || agent.adapterType === "claude_local")
+    && engine !== "cli" && sessionMode !== "oneshot";
   const reason = agent.adapterType === "opencode_local"
     ? "Unsupported by OpenCode."
+    : directAcp
+      ? "This direct ACP adapter has no live session goal controller. Use Paperclip Runner with a supported provider."
     : (agent.adapterType === "claude_local" || agent.adapterType === "codex_local") && sessionMode === "oneshot"
       ? "Session goals require a persistent ACP session."
     : agent.adapterType === "claude_local"
@@ -153,12 +129,15 @@ function capabilityForAgent(agent: AgentBinding): RunnerGoalCapability {
     usageReporting: false,
     reasonCode: agent.adapterType === "opencode_local"
       ? "opencode_structured_goals_unavailable"
-      : "persistent_session_goal_extension_required",
+      : directAcp ? "direct_adapter_goal_controller_unavailable" : "persistent_session_goal_extension_required",
     reason,
   };
 }
 
 function storedCapability(session: TaskSession | null, fallback: RunnerGoalCapability): RunnerGoalCapability {
+  // A saved provider capability cannot grant a controller to an execution path
+  // that no longer owns it (for example after changing the selected adapter).
+  if (fallback.availability === "unsupported") return fallback;
   const stored = asRecord(session?.goalCapabilityJson);
   if (!stored) return fallback;
   const availability = stored.availability;
@@ -824,22 +803,36 @@ export async function failRunnerGoalAction(
   requestId: string,
   errorCode: string,
 ): Promise<RunnerGoalProjection | null> {
-  const [session] = await db.select({ id: agentTaskSessions.id }).from(agentTaskSessions).where(and(
-    eq(agentTaskSessions.companyId, binding.companyId),
-    eq(agentTaskSessions.agentId, binding.agentId),
-    eq(agentTaskSessions.adapterType, binding.adapterType),
-    eq(agentTaskSessions.taskKey, binding.issueId),
-  )).limit(1);
-  if (!session) return null;
-  await db.update(agentSessionGoalActions).set({
-    status: "failed",
-    error: errorCode.slice(0, 240),
-    completedAt: new Date(),
-    updatedAt: new Date(),
-  }).where(and(
-    eq(agentSessionGoalActions.sessionId, session.id),
-    eq(agentSessionGoalActions.requestId, requestId),
-  ));
+  const changed = await db.transaction(async (tx) => {
+    const [session] = await tx.select().from(agentTaskSessions).where(and(
+      eq(agentTaskSessions.companyId, binding.companyId),
+      eq(agentTaskSessions.agentId, binding.agentId),
+      eq(agentTaskSessions.adapterType, binding.adapterType),
+      eq(agentTaskSessions.taskKey, binding.issueId),
+    )).limit(1).for("update");
+    if (!session) return false;
+    const now = new Date();
+    const failed = await tx.update(agentSessionGoalActions).set({
+      status: "failed",
+      error: errorCode.slice(0, 240),
+      completedAt: now,
+      updatedAt: now,
+    }).where(and(
+      eq(agentSessionGoalActions.sessionId, session.id),
+      eq(agentSessionGoalActions.requestId, requestId),
+      inArray(agentSessionGoalActions.status, [...OPEN_ACTION_STATUSES]),
+    )).returning({ id: agentSessionGoalActions.id });
+    if (failed.length === 0) return false;
+    // Pending-action transitions are part of the same revisioned projection as
+    // provider snapshots. Clients must not discard a failed start as a replay.
+    await tx.update(agentTaskSessions).set({
+      goalRevision: session.goalRevision + 1,
+      goalObservedAt: now,
+      updatedAt: now,
+    }).where(eq(agentTaskSessions.id, session.id));
+    return true;
+  });
+  if (!changed) return null;
   const current = await runnerGoalService(db).projection(
     binding.companyId,
     binding.issueId,

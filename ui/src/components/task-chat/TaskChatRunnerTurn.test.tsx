@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ThemeProvider } from "@/context/ThemeContext";
 import { MemoryRouter } from "@/lib/router";
 import { TaskChatRunnerTurn } from "./TaskChatRunnerTurn";
+import { transcriptToTaskChatItems } from "./transcript-adapter";
 import type {
   TaskChatItem,
   TaskChatProviderActivityFamily,
@@ -37,6 +38,8 @@ describe("TaskChatRunnerTurn", () => {
       item: TaskChatRuntimeRequestItem,
       decision: TaskChatRuntimeRequestDecision,
     ) => void,
+    suppressFinal = false,
+    continuedAfterSteering = false,
   ) =>
     act(() =>
       root.render(
@@ -48,6 +51,8 @@ describe("TaskChatRunnerTurn", () => {
               items={items}
               status={status}
               startedAtMs={Date.now() - 2_000}
+              suppressFinal={suppressFinal}
+              continuedAfterSteering={continuedAfterSteering}
               onRuntimeRequestDecision={onRuntimeRequestDecision}
             />
           </ThemeProvider>
@@ -134,6 +139,63 @@ describe("TaskChatRunnerTurn", () => {
     expect(activity?.firstElementChild?.hasAttribute("aria-hidden")).toBe(
       false,
     );
+  });
+
+  it("labels the streaming tail as a continuation after steering", () => {
+    render([], "running", "run-1", undefined, false, true);
+
+    expect(
+      container.querySelector('[data-testid="task-chat-turn-status-header"]')
+        ?.textContent,
+    ).toContain("Continued after steering · Working for");
+  });
+
+  it("renders completed progress exactly once when the live run returns to Thinking", () => {
+    const text = "Understood—I’ll use a two-second wait instead.";
+    const items = transcriptToTaskChatItems(
+      [
+        {
+          kind: "thinking",
+          ts: "2026-09-04T13:39:20.000Z",
+          text: "",
+          lifecycle: "started",
+          channel: "summary",
+          itemId: "reasoning-1",
+        },
+        {
+          kind: "thinking",
+          ts: "2026-09-04T13:39:20.100Z",
+          text: "",
+          lifecycle: "completed",
+          channel: "summary",
+          itemId: "reasoning-1",
+        },
+        {
+          kind: "assistant",
+          ts: "2026-09-04T13:39:21.100Z",
+          text,
+          channel: "progress",
+          itemId: "message-1",
+        },
+      ],
+      { runId: "run-1", agentName: "Runner", running: true },
+    );
+
+    render(items);
+
+    expect(container.textContent?.split(text)).toHaveLength(2);
+    expect(
+      container.querySelector('[data-testid="task-chat-phase-interstitial"]')
+        ?.textContent,
+    ).toContain(text);
+    expect(
+      container.querySelector('[data-testid="task-chat-live-narration"]'),
+    ).toBeNull();
+    expect(
+      container.querySelector(
+        '[data-testid="task-chat-current-activity-label"]',
+      )?.textContent,
+    ).toBe("Thinking");
   });
 
   it("keeps progress mounted above its grouped current command", () => {
@@ -314,6 +376,51 @@ describe("TaskChatRunnerTurn", () => {
     ).toContain("Reasoning");
   });
 
+  it("keeps the latest provider-authored reasoning line visible while activity is folded", () => {
+    render([
+      {
+        id: "reasoning",
+        kind: "thinking",
+        lines: ["Inspecting the task state.", "Checking the steering path."],
+        streaming: true,
+        channel: "summary",
+        transcriptIndex: 2,
+      },
+    ]);
+
+    const ticker = container.querySelector(
+      '[data-testid="task-chat-reasoning-ticker"]',
+    );
+    expect(ticker?.textContent).toContain("Checking the steering path.");
+    expect(
+      container.querySelector('[data-testid="task-chat-thinking"]'),
+    ).toBeNull();
+  });
+
+  it("surfaces native activity transport failure while retrying", () => {
+    act(() =>
+      root.render(
+        <MemoryRouter>
+          <ThemeProvider>
+            <TaskChatRunnerTurn
+              runId="run-1"
+              agentName="Runner"
+              items={[]}
+              status="running"
+              startedAtMs={Date.now() - 2_000}
+              activityUnavailable
+            />
+          </ThemeProvider>
+        </MemoryRouter>,
+      ),
+    );
+
+    expect(
+      container.querySelector('[data-testid="task-chat-activity-unavailable"]')
+        ?.textContent,
+    ).toContain("temporarily unavailable");
+  });
+
   it("starts a separate activity group at every commentary boundary", () => {
     render([
       {
@@ -407,7 +514,9 @@ describe("TaskChatRunnerTurn", () => {
     expect(rail?.classList.contains("pl-6")).toBe(true);
     expect(rail?.classList.contains("ml-4")).toBe(true);
     expect(history?.textContent).toContain("Inspect the current card.");
-    expect(history?.textContent).toContain("Keep the canonical revision atomic.");
+    expect(history?.textContent).toContain(
+      "Keep the canonical revision atomic.",
+    );
     const thinkingRows = history?.querySelectorAll(
       '[data-testid="task-chat-thinking"]',
     );
@@ -447,9 +556,9 @@ describe("TaskChatRunnerTurn", () => {
       thinkingRows?.[0]?.querySelector(".task-chat-reasoning-markdown"),
     ).toBeNull();
     expect(
-      thinkingRows?.[1]?.querySelector("button")?.classList.contains(
-        "font-normal",
-      ),
+      thinkingRows?.[1]
+        ?.querySelector("button")
+        ?.classList.contains("font-normal"),
     ).toBe(true);
   });
 
@@ -578,7 +687,8 @@ describe("TaskChatRunnerTurn", () => {
       history?.querySelector('[data-activity-family="plan"]'),
     ).not.toBeNull();
     expect(
-      history?.querySelector('[data-testid="task-chat-protocol-activity-icon"]')
+      history
+        ?.querySelector('[data-testid="task-chat-protocol-activity-icon"]')
         ?.parentElement?.classList.contains("w-5"),
     ).toBe(true);
   });
@@ -808,7 +918,9 @@ describe("TaskChatRunnerTurn", () => {
       '[data-testid="task-chat-workspace-change"]',
     );
     expect(card).not.toBeNull();
-    expect(card?.closest('[data-testid="task-chat-activity-phase"]')).toBeNull();
+    expect(
+      card?.closest('[data-testid="task-chat-activity-phase"]'),
+    ).toBeNull();
 
     render([
       {
@@ -882,9 +994,63 @@ describe("TaskChatRunnerTurn", () => {
     ).toContain("Checking.");
   });
 
-  it("uses an accepted run-result summary when a yielded run has no final message", () => {
+  it("collapses progress text repeated verbatim by the final response", () => {
+    const repeated = "BASELINE-DONE";
     render(
       [
+        {
+          id: "progress",
+          kind: "message",
+          author: "agent",
+          text: repeated,
+          interstitial: true,
+          channel: "progress",
+        },
+        {
+          id: "tool",
+          kind: "tool",
+          name: "Command",
+          status: "completed",
+        },
+        {
+          id: "final",
+          kind: "message",
+          author: "agent",
+          text: repeated,
+          channel: "final",
+        },
+      ],
+      "succeeded",
+    );
+
+    expect(container.textContent?.split(repeated)).toHaveLength(2);
+    expect(
+      container.querySelector('[data-testid="task-chat-phase-interstitial"]'),
+    ).toBeNull();
+    expect(
+      container.querySelector('[data-testid="task-chat-final-response"]')
+        ?.textContent,
+    ).toContain(repeated);
+  });
+
+  it("clears provider wait prose when the run is accepted as yielded", () => {
+    const providerWait: TaskChatItem = {
+      id: "provider-wait",
+      kind: "message",
+      author: "agent",
+      authorName: "Runner",
+      text: "Waiting for Review browser RTS plan.",
+      channel: "final",
+      streaming: false,
+    };
+    render([providerWait], "succeeded");
+    expect(
+      container.querySelector('[data-testid="task-chat-final-response"]'),
+    ).not.toBeNull();
+
+    render(
+      [
+        providerWait,
         {
           id: "result",
           kind: "protocol",
@@ -902,9 +1068,29 @@ describe("TaskChatRunnerTurn", () => {
     );
 
     expect(
-      container.querySelector('[data-testid="task-chat-final-response"]')
-        ?.textContent,
-    ).toContain("Waiting for Review browser RTS plan.");
+      container.querySelector('[data-testid="task-chat-final-response"]'),
+    ).toBeNull();
+  });
+
+  it("clears provider wait prose as soon as interaction authority is known", () => {
+    const providerWait: TaskChatItem = {
+      id: "provider-wait-before-result",
+      kind: "message",
+      author: "agent",
+      authorName: "Runner",
+      text: "Waiting for structured input.",
+      channel: "final",
+      streaming: false,
+    };
+    render([providerWait], "running");
+    expect(
+      container.querySelector('[data-testid="task-chat-final-response"]'),
+    ).not.toBeNull();
+
+    render([providerWait], "running", "run-1", undefined, true);
+    expect(
+      container.querySelector('[data-testid="task-chat-final-response"]'),
+    ).toBeNull();
   });
 
   it("waits for settlement before using a structured result fallback", () => {

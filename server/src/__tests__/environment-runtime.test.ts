@@ -4640,9 +4640,10 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     try {
       const normalizedSessionId = "native-replacement-session";
       const runnerInstanceId = "native-replacement-runner";
+      const sessionScopeId = "native-replacement-session-scope-v2";
       const sessionRoot = path.join(
         backupBase,
-        createHash("sha256").update(normalizedSessionId).digest("hex"),
+        createHash("sha256").update(sessionScopeId).digest("hex"),
       );
       const current = path.join(sessionRoot, "failover-backups", "current");
       await mkdir(path.join(current, "runner"), { recursive: true });
@@ -4681,6 +4682,8 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       await writeFile(manifestPath, JSON.stringify(manifest));
       const stamp = createNativeHarnessBackupStamp({
         manifestPath,
+        sessionScopeId,
+        authorizedProviderLeaseId: seeded.reusableLease.providerLeaseId!,
         normalizedSessionId,
         runnerInstanceId,
         completedAt: manifest.completedAt,

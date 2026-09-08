@@ -6,6 +6,8 @@ import request from "supertest";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Db } from "@paperclipai/db";
 import { healthRoutes } from "../routes/health.js";
+import * as devServerStatus from "../dev-server-status.js";
+import { resolveHotRestartIntentPath } from "../services/hot-restart.js";
 
 const tempDirs: string[] = [];
 
@@ -18,6 +20,7 @@ function createDevServerStatusFile(payload: unknown) {
 }
 
 afterEach(() => {
+  vi.restoreAllMocks();
   for (const dir of tempDirs.splice(0)) {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -138,6 +141,7 @@ describe("GET /health dev-server supervisor access", () => {
 describe("POST /health/dev-server/restart", () => {
   it("records a manual restart request for the dev runner", async () => {
     const previousFile = process.env.PAPERCLIP_DEV_SERVER_STATUS_FILE;
+    const previousHome = process.env.PAPERCLIP_HOME;
     process.env.PAPERCLIP_DEV_SERVER_STATUS_FILE = createDevServerStatusFile({
       dirty: true,
       lastChangedAt: "2026-03-20T12:00:00.000Z",
@@ -146,15 +150,29 @@ describe("POST /health/dev-server/restart", () => {
       pendingMigrations: [],
       lastRestartAt: "2026-03-20T11:30:00.000Z",
     });
+    process.env.PAPERCLIP_HOME = path.dirname(
+      process.env.PAPERCLIP_DEV_SERVER_STATUS_FILE,
+    );
 
     try {
       const app = express();
-      app.use("/health", healthRoutes(undefined));
+      const db = {
+        select: vi.fn(() => ({
+          from: vi.fn(() => ({
+            where: vi.fn().mockResolvedValue([]),
+          })),
+        })),
+      } as unknown as Db;
+      app.use("/health", healthRoutes(db));
 
       const res = await request(app).post("/health/dev-server/restart");
 
       expect(res.status).toBe(202);
-      expect(res.body).toEqual({ status: "restart_requested" });
+      expect(res.body).toMatchObject({
+        status: "restart_requested",
+        mode: "hot",
+        requestId: expect.any(String),
+      });
 
       const requestPath = path.join(
         path.dirname(process.env.PAPERCLIP_DEV_SERVER_STATUS_FILE),
@@ -163,6 +181,8 @@ describe("POST /health/dev-server/restart", () => {
       expect(existsSync(requestPath)).toBe(true);
       expect(JSON.parse(readFileSync(requestPath, "utf8"))).toMatchObject({
         reason: "manual_restart_now",
+        mode: "hot",
+        requestId: res.body.requestId,
       });
     } finally {
       if (previousFile === undefined) {
@@ -170,6 +190,47 @@ describe("POST /health/dev-server/restart", () => {
       } else {
         process.env.PAPERCLIP_DEV_SERVER_STATUS_FILE = previousFile;
       }
+      if (previousHome === undefined) delete process.env.PAPERCLIP_HOME;
+      else process.env.PAPERCLIP_HOME = previousHome;
+    }
+  });
+
+  it("rolls back the hot intent when the supervisor request cannot be written", async () => {
+    const previousFile = process.env.PAPERCLIP_DEV_SERVER_STATUS_FILE;
+    const previousHome = process.env.PAPERCLIP_HOME;
+    process.env.PAPERCLIP_DEV_SERVER_STATUS_FILE = createDevServerStatusFile({
+      dirty: true,
+      changedPathCount: 1,
+      changedPathsSample: ["server/src/routes/health.ts"],
+      pendingMigrations: [],
+    });
+    const home = mkdtempSync(path.join(os.tmpdir(), "paperclip-health-restart-home-"));
+    tempDirs.push(home);
+    process.env.PAPERCLIP_HOME = home;
+    vi.spyOn(devServerStatus, "writeDevServerRestartRequest").mockReturnValue(false);
+
+    try {
+      const app = express();
+      const db = {
+        select: vi.fn(() => ({
+          from: vi.fn(() => ({ where: vi.fn().mockResolvedValue([]) })),
+        })),
+      } as unknown as Db;
+      app.use("/health", healthRoutes(db));
+
+      const res = await request(app).post("/health/dev-server/restart");
+
+      expect(res.status).toBe(404);
+      expect(res.body).toEqual({ error: "dev_server_supervisor_unavailable" });
+      expect(existsSync(resolveHotRestartIntentPath(home))).toBe(false);
+    } finally {
+      if (previousFile === undefined) {
+        delete process.env.PAPERCLIP_DEV_SERVER_STATUS_FILE;
+      } else {
+        process.env.PAPERCLIP_DEV_SERVER_STATUS_FILE = previousFile;
+      }
+      if (previousHome === undefined) delete process.env.PAPERCLIP_HOME;
+      else process.env.PAPERCLIP_HOME = previousHome;
     }
   });
 

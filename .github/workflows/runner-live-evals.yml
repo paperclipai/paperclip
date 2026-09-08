@@ -1,0 +1,134 @@
+name: Runner Live Evals
+
+on:
+  schedule:
+    - cron: "17 6 * * 0"
+  workflow_dispatch:
+
+concurrency:
+  group: runner-live-evals-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  authorize:
+    name: Authorize paid campaign
+    if: github.event_name != 'schedule' || vars.RUNNER_LIVE_EVALS_NIGHTLY_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Require default branch and allowlisted numeric actor IDs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REF: ${{ github.ref }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          ACTOR: ${{ github.actor }}
+          ACTOR_ID: ${{ github.actor_id }}
+          TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+          ALLOWED_ACTOR_IDS: ${{ vars.RUNNER_E2E_ALLOWED_ACTOR_IDS }}
+        run: |
+          set -euo pipefail
+          if [ "$REF" != "refs/heads/$DEFAULT_BRANCH" ]; then
+            echo "Paid runner live evals may run only from the default branch." >&2
+            exit 1
+          fi
+          if ! jq -e 'type == "array" and length > 0 and all(.[]; type == "number" and . > 0 and floor == .)' <<< "${ALLOWED_ACTOR_IDS:-}" >/dev/null; then
+            echo "RUNNER_E2E_ALLOWED_ACTOR_IDS must be a non-empty JSON array of numeric GitHub user IDs." >&2
+            exit 1
+          fi
+          triggering_actor_id="$(gh api "users/$TRIGGERING_ACTOR" --jq .id)"
+          if [ "$triggering_actor_id" != "$ACTOR_ID" ] && [ "$TRIGGERING_ACTOR" = "$ACTOR" ]; then
+            echo "GitHub actor identity contexts disagree; refusing the paid run." >&2
+            exit 1
+          fi
+          candidates=("$triggering_actor_id" "$ACTOR_ID")
+          for candidate in "${candidates[@]}"; do
+            if ! jq -e --argjson candidate "$candidate" 'index($candidate) != null' <<< "$ALLOWED_ACTOR_IDS" >/dev/null; then
+              echo "The initiating GitHub account is not authorized to run paid runner live evals." >&2
+              exit 1
+            fi
+          done
+
+  live_matrix:
+    name: Balanced provider/model matrix
+    needs: authorize
+    if: github.event_name != 'schedule' || vars.RUNNER_LIVE_EVALS_NIGHTLY_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    permissions:
+      contents: read
+    environment:
+      name: runner-e2e-paid
+
+    steps:
+      - name: Reauthorize paid execution before provider access
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REF: ${{ github.ref }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          ACTOR_ID: ${{ github.actor_id }}
+          TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+          ALLOWED_ACTOR_IDS: ${{ vars.RUNNER_E2E_ALLOWED_ACTOR_IDS }}
+        run: |
+          set -euo pipefail
+          test "$REF" = "refs/heads/$DEFAULT_BRANCH"
+          jq -e 'type == "array" and length > 0 and all(.[]; type == "number" and . > 0 and floor == .)' <<< "${ALLOWED_ACTOR_IDS:-}" >/dev/null
+          triggering_actor_id="$(gh api "users/$TRIGGERING_ACTOR" --jq .id)"
+          jq -e --argjson candidate "$triggering_actor_id" 'index($candidate) != null' <<< "$ALLOWED_ACTOR_IDS" >/dev/null
+          jq -e --argjson candidate "$ACTOR_ID" 'index($candidate) != null' <<< "$ALLOWED_ACTOR_IDS" >/dev/null
+
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        with:
+          version: 9.15.4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Restore compatible weekly baseline
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: packages/paperclip-runner/.paperclip-local/evals/workflows/history
+          key: runner-live-eval-history-${{ github.ref_name }}-${{ github.run_id }}
+          restore-keys: |
+            runner-live-eval-history-${{ github.ref_name }}-
+
+      - name: Build provider-neutral eval kernel
+        run: pnpm --filter @paperclipai/paperclip-eval-kernel build
+
+      - name: Run trend-only live matrix
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          PAPERCLIP_EVAL_BASELINE_READY: "true"
+          PAPERCLIP_EVAL_RUNNER_BUILD: ${{ github.sha }}
+          PAPERCLIP_EVAL_MAX_CAMPAIGN_COST_USD: "12"
+          PAPERCLIP_EVAL_SCHEDULE_SEED: runner-live-seven-week-v1
+        run: pnpm --filter @paperclipai/paperclip-runner report:runner-live-evals
+
+      - name: Publish job summary
+        if: always()
+        run: |
+          summary=packages/paperclip-runner/.paperclip-local/evals/workflows/github-live-summary.md
+          if [ -f "$summary" ]; then
+            cat "$summary" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload safe live eval bundle
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: runner-live-evals-${{ github.run_id }}
+          path: packages/paperclip-runner/.paperclip-local/evals/workflows/
+          retention-days: 30
+          if-no-files-found: error

@@ -74,6 +74,20 @@ Use `trackInteractionCreated()` and `trackInteractionResolved()` from
 `events.ts` to emit these events. The generated contract remains the authority
 for their exact dimensions and optionality.
 
+## Agent Task Run Events
+
+`agent.task_run` records one terminal state for one agent run: `succeeded`,
+`interrupted`, `failed`, `cancelled`, or `timed_out`. Emit it once per run, at
+the run's terminal transition. Do not emit it for a run that is still active.
+
+The event's `task_id` dimension is optional and privacy-protected. Never emit
+the raw task id. Pass the raw id to `trackAgentTaskRun()` in `events.ts`. The
+helper calls `hashPrivateRef()` on `client.ts`, which derives the emitted
+value with a salted hash of the per-installation secret.
+
+Use `trackAgentTaskRun()` to emit this event. The generated contract remains
+the authority for its exact dimensions and optionality.
+
 ### Other Data Paths
 
 This document covers Paperclip Telemetry only. The generated Telemetry

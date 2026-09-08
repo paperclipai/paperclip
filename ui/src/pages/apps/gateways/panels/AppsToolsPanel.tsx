@@ -41,8 +41,8 @@ export function AppsToolsPanel({
             <tbody>
               {apps.map((app) => {
                 const href = app.connection
-                  ? `/apps/${app.connection.id}/setup`
-                  : `/apps/app/${app.application.id}/setup`;
+                  ? `/apps/${app.connection.id}/permissions`
+                  : `/apps/app/${app.application.id}/permissions`;
                 return (
                   <tr key={app.application.id} className="border-b border-border last:border-0">
                     <td className="px-4 py-3">

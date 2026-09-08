@@ -5,6 +5,7 @@ use paperclip_runner_core::acpx_provider_session::{
     AcpxPermissionMode, AcpxProviderSession, AcpxProviderSessionConfig, AcpxProviderSessionIdentity,
 };
 use paperclip_runner_core::acpx_sidecar_transport::AcpxSidecarTransportConfig;
+use paperclip_runner_core::generated_acpx_sidecar_contract::GeneratedAcpxSidecarCommand as GoalCommand;
 use paperclip_runner_core::provider_bridge::{
     authorized_tool_catalog_digest, AuthorizedTool, AuthorizedToolSet,
 };
@@ -31,6 +32,7 @@ fn config(mode: &str) -> AcpxProviderSessionConfig {
         transport: AcpxSidecarTransportConfig {
             command: PathBuf::from(env!("CARGO_BIN_EXE_fake-acpx-sidecar")),
             args: vec!["--mode".to_owned(), mode.to_owned()],
+            verified_launch: None,
             request_timeout: Duration::from_secs(1),
             shutdown_grace: Duration::from_millis(100),
         },
@@ -61,6 +63,7 @@ fn expected_identity() -> AcpxProviderSessionIdentity {
         requested_model: "gpt-5.6-sol".to_owned(),
         effective_model: "gpt-5.6-sol".to_owned(),
         permission_mode: Some(AcpxPermissionMode::ApproveReads),
+        provider_lifetime_fence_candidates: [60_001, 60_002, 60_003],
     }
 }
 
@@ -72,6 +75,43 @@ fn start_error(config: &AcpxProviderSessionConfig) -> String {
         }
         Err(error) => error.to_string(),
     }
+}
+
+#[test]
+fn controls_goals_and_observes_updates_without_an_active_prompt() {
+    let mut session = AcpxProviderSession::start(&config("goals")).unwrap();
+    let initial = session
+        .goal_control(GoalCommand::SessionGoalGet, json!({}))
+        .unwrap();
+    assert_eq!(
+        initial["sessionGoals"]["actions"],
+        json!(["set", "pause", "resume", "clear"])
+    );
+    assert!(initial["goal"].is_null());
+    for status in ["active", "paused", "active"] {
+        let result = session
+            .goal_control(
+                GoalCommand::SessionGoalSet,
+                json!({"objective":"Verify the durable goal", "status":status}),
+            )
+            .unwrap();
+        assert_eq!(result["goal"]["status"], status);
+        assert!(session.state().active_turn_id().is_none());
+        let events = session.poll_event(Duration::from_secs(1)).unwrap().unwrap();
+        assert!(
+            !events.is_empty(),
+            "out-of-prompt goal update must not disappear"
+        );
+    }
+    let cleared = session
+        .goal_control(GoalCommand::SessionGoalClear, json!({}))
+        .unwrap();
+    assert!(cleared["goal"].is_null());
+    assert!(session
+        .poll_event(Duration::from_secs(1))
+        .unwrap()
+        .is_some());
+    session.shutdown("goal test complete").unwrap();
 }
 
 #[test]
@@ -99,6 +139,12 @@ fn validates_qualified_policy_and_tool_catalog_before_spawning() {
     let mut invalid_tools = config("bootstrap");
     invalid_tools.tool_set.catalog_digest = "invalid".to_owned();
     assert!(start_error(&invalid_tools).contains("authorized tools"));
+
+    let mut invalid_lifetime_fence = config("bootstrap");
+    let mut invalid_identity = expected_identity();
+    invalid_identity.provider_lifetime_fence_candidates = [60_001, 60_001, 60_003];
+    invalid_lifetime_fence.expected_identity = Some(invalid_identity);
+    assert!(start_error(&invalid_lifetime_fence).contains("lifetime fence candidates"));
 }
 
 #[test]

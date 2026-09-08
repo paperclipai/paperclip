@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import type { Environment } from "@paperclipai/shared";
-import { supportsAdapterModelRefresh } from "./AgentConfigForm";
+import {
+  resolvePaperclipRunnerTransitionModel,
+  supportsAdapterModelRefresh,
+} from "./AgentConfigForm";
 import { resolveForcedKubernetesEnvironment } from "../lib/forced-kubernetes-environment";
 
 describe("supportsAdapterModelRefresh", () => {
@@ -13,6 +16,18 @@ describe("supportsAdapterModelRefresh", () => {
   it("keeps the refresh action hidden for adapters without a live refresh hook", () => {
     expect(supportsAdapterModelRefresh("opencode_local")).toBe(false);
     expect(supportsAdapterModelRefresh("process")).toBe(false);
+  });
+});
+
+describe("resolvePaperclipRunnerTransitionModel", () => {
+  it("preserves an explicit model from codex_local", () => {
+    expect(resolvePaperclipRunnerTransitionModel("codex_local", "gpt-5.5"))
+      .toBe("gpt-5.5");
+  });
+
+  it("uses the current Codex default when the source model is blank", () => {
+    expect(resolvePaperclipRunnerTransitionModel("codex_local", ""))
+      .toBe("gpt-5.6-sol");
   });
 });
 

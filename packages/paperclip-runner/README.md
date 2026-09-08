@@ -8,7 +8,8 @@ and conformance oracle.
 
 The package includes one coherent set of capabilities: PRP v1 validation and
 replay, a supervised local runner with a scripted fake harness, durable
-WebSocket delivery and recovery, a skillless Codex app-server driver, live
+WebSocket delivery and recovery, qualified Codex, OpenCode, ACPX, Claude
+Managed, and AWS AgentCore drivers, live
 session and issue-thread surfaces, a public browser/React SDK, a standalone
 adapter demo, and a deterministic mock control plane. None of these surfaces
 imports or starts Paperclip's server, UI, CLI, or production database.
@@ -41,15 +42,23 @@ route/service authorities; it does not copy those rules into this package.
 ## Quick start
 
 The package also builds `paperclip-runner-acpx-sidecar`. This bounded v2
-stdin/stdout bridge admits the qualified Codex ACPX profile only. It validates
-the exact model, session identity, tool catalog, structured input, and terminal
-settlement at the process boundary. Runnerd and the server do not select this
-sidecar in this slice. Other ACPX agents remain unavailable.
+stdin/stdout bridge admits the pinned Claude and Codex ACPX profiles. It
+validates the exact model, session identity, tool catalog, structured input,
+and terminal settlement at the process boundary. Pi remains unavailable.
 
-The Rust core includes a bounded client for this sidecar protocol. It enforces
+Runnerd selects only qualified provider profiles. Claude Managed and AWS
+AgentCore receive immutable company-profile snapshots with explicit retention,
+spend, and invocation limits. No provider process receives a Paperclip API
+credential or unrestricted server environment.
+
+Claude Managed resolves its API key from the company secret bound to the
+selected profile. AWS AgentCore uses workload identity only; long-lived static
+AWS access keys are intentionally removed from the runner environment.
+
+The Rust core includes a bounded client for the sidecar protocol. It enforces
 request identity, event order, frame and queue limits, timeouts, redacted
-diagnostics, and process-group cleanup. This transport remains package-local.
-It does not change runnerd provider selection in this slice.
+diagnostics, and process-group cleanup. Runnerd selects this package-local
+transport only through an exact qualified provider descriptor.
 
 Before a later provider adapter consumes a valid sidecar event, the Rust core
 also requires its optional or mandatory run and turn scope to match the active
@@ -74,14 +83,13 @@ are canonicalized, and consumers must not reinterpret the display value as
 file-access authority. Operational semantic-result and terminal events remain
 reserved for the stateful adapter rather than being duplicated.
 
-The package-local ACPX provider reducer preserves that order while it tracks one
+The ACPX provider reducer preserves that order while it tracks one
 active turn, bounded assistant text, semantic results, and pending tool or input
 correlations. Terminal events flush the final assistant message first and clear
-unresolved turn-scoped requests. This reducer still does not select ACPX in
-runnerd.
+unresolved turn-scoped requests.
 
 The package-local session bootstrap starts the bounded sidecar transport,
-verifies the Codex-only capability handshake and effective model, opens one
+verifies the qualified capability handshake and effective model, opens one
 identity-bound session, and confirms its run attachment. Any failed bootstrap
 terminates the process; session shutdown preserves persistent provider state.
 The session can then start one immutable-workspace turn, request interruption,
@@ -135,7 +143,17 @@ pnpm --filter @paperclipai/paperclip-runner verify:rootless
 The tracer's final line is stable:
 
 ```json
-{"schemaVersion":"paperclip.runner.conformance.output.v1","runIdentity":{"runId":"run_conformance_0001","sessionId":"session_conformance_0001"},"result":{"status":"succeeded","summary":"Standalone Conformance fixture accepted."}}
+{
+  "schemaVersion": "paperclip.runner.conformance.output.v1",
+  "runIdentity": {
+    "runId": "run_conformance_0001",
+    "sessionId": "session_conformance_0001"
+  },
+  "result": {
+    "status": "succeeded",
+    "summary": "Standalone Conformance fixture accepted."
+  }
+}
 ```
 
 Run only the tracer with:
@@ -172,48 +190,105 @@ Live console provider-backed routes are loopback-only and reject wildcard/LAN
 binds. Browser mutations require same-origin Fetch Metadata, matching Origin,
 and JSON content; see the protocol-server tutorial for direct `curl` examples.
 
+## Live, chaos, and AWS AgentCore operations
+
+The deterministic workflow scorer and the chaos schedule do not require
+provider credentials:
+
+```sh
+pnpm --filter @paperclipai/paperclip-runner test:runner-workflow-evals
+pnpm --filter @paperclipai/paperclip-runner report:runner-chaos-evals
+```
+
+`report:runner-live-evals` is a paid, provider-backed command. Native Codex and
+the ACPX Codex profile require `OPENAI_API_KEY`; ACPX Claude requires
+`ANTHROPIC_API_KEY`; OpenCode candidates require `OPENROUTER_API_KEY`. The live
+matrix admits no Pi profile and does not persist credential values. Set
+`PAPERCLIP_EVAL_MAX_CAMPAIGN_COST_USD` to a positive finite number to bound
+additional scheduling after the observed campaign total reaches that value:
+
+```sh
+PAPERCLIP_EVAL_MAX_CAMPAIGN_COST_USD=12 \
+  pnpm --filter @paperclipai/paperclip-runner report:runner-live-evals
+```
+
+GitHub-hosted live campaigns additionally require the default branch, an
+allowlisted numeric actor ID, the protected `runner-e2e-paid` environment, and
+an explicit repository variable before scheduled runs are enabled. Uploaded
+reports contain redacted observations and trace digests, not raw provider
+frames, prompts, credentials, tool arguments, or hidden reasoning.
+
+The AgentCore proof-of-concept uses an AWS CLI v2 profile to provision a
+dedicated invocation role and scoped resources. Its local mode-`0600` metadata
+file contains no access keys; probes assume short-lived STS credentials and
+clear them after use. Validate locally, provision or inspect the stack, run the
+bounded lab/smoke, and tear it down explicitly with:
+
+```sh
+pnpm --filter @paperclipai/paperclip-runner test:aws-agentcore-provisioning
+pnpm --filter @paperclipai/paperclip-runner aws-agentcore:provision -- --dry-run
+pnpm --filter @paperclipai/paperclip-runner aws-agentcore:provision
+pnpm --filter @paperclipai/paperclip-runner aws-agentcore:probe
+pnpm --filter @paperclipai/paperclip-runner aws-agentcore:lab
+pnpm --filter @paperclipai/paperclip-runner smoke:capability:aws-agentcore
+pnpm --filter @paperclipai/paperclip-runner aws-agentcore:destroy -- --yes
+```
+
+Provisioning can incur Bedrock, AgentCore Runtime/Memory, storage, and private
+networking charges. Provisioning refuses to modify a colliding stack unless its
+Paperclip ownership tags and template description match. A verified
+`ROLLBACK_COMPLETE` stack still requires `--replace-failed-stack` plus an
+interactive confirmation (or `--yes`) before it can be deleted and recreated.
+Destruction requires `--yes` and refuses to remove a stack with an active
+recorded lab unless `--force` is also supplied.
+
 ## Package-owned commands
 
-| Command | Purpose |
-|---|---|
-| `build` | Compile the TypeScript public surface, Rust workspace, and browser devtool. |
-| `typecheck` | Check TypeScript, Rust, generated schema sources, and browser types. |
-| `test` | Run Rust/TypeScript fixture, supervisor, fake-driver, live/replay, and boundary tests. |
-| `check:forbidden-imports` | Reject TypeScript imports and Cargo path dependencies that cross into Paperclip core. |
-| `check:tracked-imports` | Reject tracked imports and `package.json` entry points that only resolve against untracked files, so a clean checkout of any commit builds. |
-| `check:numbered-milestones` | Reject numbered construction-milestone names in tracked package paths and source. |
-| `check:package-boundaries` | Enforce the acyclic runtime/testing/eval dependency and manifest boundary. |
-| `check:clean-consumers` | Pack the runner and install its root, evals, and testing exports in a clean consumer. |
-| `test:eval-slice` | Run the credential-free eval bundle, scoring, and behavior/fault slice. |
-| `test:runner-workflow-evals` | Run the deterministic provider-neutral workflow matrix. |
-| `report:runner-workflow-evals` | Write local deterministic workflow reports without provider calls. |
-| `check:conformance-parity` | Require byte-for-byte equivalent Rust and TypeScript tracer output. |
-| `check:replay-goldens` | Require all reducer snapshots and cross-language summaries to match checked goldens. |
-| `check:replay-parity` | Run TypeScript and Rust against the same Replay fixture summaries. |
-| `check:browser-tokens` | Reject component-local visual literals and require the standalone token layer. |
-| `docs:validate` | Validate local documentation links. |
-| `trace:conformance` | Run the Rust mock-core tracer, print the stable result, and exit. |
-| `trace:conformance:typescript` | Run the TypeScript reference tracer directly. |
-| `replay:fixture` | Validate and reduce a fixture to a final snapshot. |
-| `trace:local-runner` | Run one native local session through the Rust runner and fake harness. |
-| `trace:codex` | Run the mock core with a real, local skillless Codex app-server session. |
-| `demo:live-console` | Start the package-local HTTP/SSE server with server-only Codex authentication. |
-| `console:live-console` | Start the standalone browser devtool with the Live console on `127.0.0.1:4180`. |
-| `console:sdk` | Start the public-SDK reference console and mini consumer on `127.0.0.1:4181`. |
-| `test:sdk` | Run targeted browser-client, reducer-projection, and React component contract tests. |
-| `test:browser:sdk` | Exercise both consumers with the fake driver, keyboard/a11y checks, reconnect/replay, measurements, and screenshots. |
-| `record:sdk:codex` | Run both public consumers against a safe real Codex session and capture live screenshots. |
-| `check:capability-contract` | Verify the generated capability, legacy MCP, and eval traceability contract. |
-| `check:semantic-contracts` | Verify the provider-neutral semantic tool contract is current. |
-| `trace:live-runner` | Run the real runnerd/Codex semantic loop against the mock control plane. |
-| `demo:scenarios` | Start the Capability scenario explorer over the mock control plane on `127.0.0.1:4183`. |
-| `console:issue-thread` | Start the Paperclip-style issue thread on `127.0.0.1:4184`. |
-| `test:scenarios` | Run the scenario index, run-artifact, parity, explorer component, and route tests. |
-| `test:browser:scenarios` | Exercise both the scenario explorer and issue-thread browser contracts. |
-| `browser:dev` | Start the standalone live/replay browser devtool. |
-| `test:browser` | Exercise static replay and live scenarios, then capture temporary screenshots under ignored test output. |
-| `verify` | Run the complete deterministic Conformance through SDK acceptance sequence. |
-| `verify:rootless` | Extract Debian/Ubuntu browser libraries without root, then run `verify`. |
+| Command                                                 | Purpose                                                                                                                                     |
+| ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `build`                                                 | Compile the TypeScript public surface, Rust workspace, and browser devtool.                                                                 |
+| `typecheck`                                             | Check TypeScript, Rust, generated schema sources, and browser types.                                                                        |
+| `test`                                                  | Run Rust/TypeScript fixture, supervisor, fake-driver, live/replay, and boundary tests.                                                      |
+| `check:forbidden-imports`                               | Reject TypeScript imports and Cargo path dependencies that cross into Paperclip core.                                                       |
+| `check:tracked-imports`                                 | Reject tracked imports and `package.json` entry points that only resolve against untracked files, so a clean checkout of any commit builds. |
+| `check:numbered-milestones`                             | Reject numbered construction-milestone names in tracked package paths and source.                                                           |
+| `check:package-boundaries`                              | Enforce the acyclic runtime/testing/eval dependency and manifest boundary.                                                                  |
+| `check:clean-consumers`                                 | Pack the runner and install its root, evals, and testing exports in a clean consumer.                                                       |
+| `test:eval-slice`                                       | Run the credential-free eval bundle, scoring, and behavior/fault slice.                                                                     |
+| `test:runner-workflow-evals`                            | Run the deterministic provider-neutral workflow matrix.                                                                                     |
+| `report:runner-workflow-evals`                          | Validate deterministic results and write local reports only when every scoreable result passes.                                             |
+| `report:runner-live-evals`                              | Execute the paid forty-execution provider schedule with qualification and campaign-cost guards.                                             |
+| `report:runner-chaos-evals`                             | Write the credential-free eight-scenario chaos schedule.                                                                                    |
+| `test:aws-agentcore-provisioning`                       | Validate the AgentCore template and wrapper safety contracts without provisioning.                                                          |
+| `aws-agentcore:provision` / `probe` / `lab` / `destroy` | Manage the scoped AgentCore proof-of-concept lifecycle.                                                                                     |
+| `smoke:capability:aws-agentcore`                        | Exercise the qualified AgentCore profile through the capability harness.                                                                    |
+| `check:conformance-parity`                              | Require byte-for-byte equivalent Rust and TypeScript tracer output.                                                                         |
+| `check:replay-goldens`                                  | Require all reducer snapshots and cross-language summaries to match checked goldens.                                                        |
+| `check:replay-parity`                                   | Run TypeScript and Rust against the same Replay fixture summaries.                                                                          |
+| `check:browser-tokens`                                  | Reject component-local visual literals and require the standalone token layer.                                                              |
+| `docs:validate`                                         | Validate local documentation links.                                                                                                         |
+| `trace:conformance`                                     | Run the Rust mock-core tracer, print the stable result, and exit.                                                                           |
+| `trace:conformance:typescript`                          | Run the TypeScript reference tracer directly.                                                                                               |
+| `replay:fixture`                                        | Validate and reduce a fixture to a final snapshot.                                                                                          |
+| `trace:local-runner`                                    | Run one native local session through the Rust runner and fake harness.                                                                      |
+| `trace:codex`                                           | Run the mock core with a real, local skillless Codex app-server session.                                                                    |
+| `demo:live-console`                                     | Start the package-local HTTP/SSE server with server-only Codex authentication.                                                              |
+| `console:live-console`                                  | Start the standalone browser devtool with the Live console on `127.0.0.1:4180`.                                                             |
+| `console:sdk`                                           | Start the public-SDK reference console and mini consumer on `127.0.0.1:4181`.                                                               |
+| `test:sdk`                                              | Run targeted browser-client, reducer-projection, and React component contract tests.                                                        |
+| `test:browser:sdk`                                      | Exercise both consumers with the fake driver, keyboard/a11y checks, reconnect/replay, measurements, and screenshots.                        |
+| `record:sdk:codex`                                      | Run both public consumers against a safe real Codex session and capture live screenshots.                                                   |
+| `check:capability-contract`                             | Verify the generated capability, legacy MCP, and eval traceability contract.                                                                |
+| `check:semantic-contracts`                              | Verify the provider-neutral semantic tool contract is current.                                                                              |
+| `trace:live-runner`                                     | Run the real runnerd/Codex semantic loop against the mock control plane.                                                                    |
+| `demo:scenarios`                                        | Start the Capability scenario explorer over the mock control plane on `127.0.0.1:4183`.                                                     |
+| `console:issue-thread`                                  | Start the Paperclip-style issue thread on `127.0.0.1:4184`.                                                                                 |
+| `test:scenarios`                                        | Run the scenario index, run-artifact, parity, explorer component, and route tests.                                                          |
+| `test:browser:scenarios`                                | Exercise both the scenario explorer and issue-thread browser contracts.                                                                     |
+| `browser:dev`                                           | Start the standalone live/replay browser devtool.                                                                                           |
+| `test:browser`                                          | Exercise static replay and live scenarios, then capture temporary screenshots under ignored test output.                                    |
+| `verify`                                                | Run the complete deterministic Conformance through SDK acceptance sequence.                                                                 |
+| `verify:rootless`                                       | Extract Debian/Ubuntu browser libraries without root, then run `verify`.                                                                    |
 
 ## Navigate
 

@@ -19,12 +19,14 @@ import type {
   AcpxRuntimePort,
   AcpxRuntimePortIdentity,
   AcpxRuntimePortOpenOptions,
+  AcpxRuntimeTurn,
 } from "./runtime-host.js";
 import {
   assertVerifiedAcpxProviderPlatform,
   awaitVerifiedAcpxProviderExit,
   awaitVerifiedAcpxProviderOwnership,
 } from "./installation-integrity.js";
+import type { AcpxModelStatus } from "./model-verification.js";
 import { decideAcpxPermission } from "./permission-policy.js";
 
 const VERIFIED_COMMAND_SENTINEL = "paperclip-verified-acpx-command";
@@ -52,7 +54,10 @@ export const DEFAULT_CODEX_ACPX_RUNTIME_SHUTDOWN_BOUND_MS =
 // only after the exact attempt reaches a terminal outcome.
 const activeRuntimeCleanupOwners = new Set<Promise<unknown>>();
 const activeCodexRuntimeCleanupOwners = new Set<Promise<unknown>>();
-const SESSION_HANDSHAKE_TIMEOUT_MS = 8_000;
+// Provider initialization may include a cold native app-server start on a
+// minimally provisioned runner. Keep admission finite while allowing the
+// qualified runtime enough time to complete that local handshake.
+const SESSION_HANDSHAKE_TIMEOUT_MS = 30_000;
 
 interface GoalAwareAcpRuntime extends AcpRuntime {
   requestExtension?(input: {
@@ -90,6 +95,8 @@ class AcpxRuntimeCloseFinalTimeoutError extends Error {
 }
 
 class AcpxSessionHandshakeTimeoutError extends Error {
+  readonly code = "ACPX_SESSION_HANDSHAKE_TIMEOUT";
+
   constructor() {
     super("ACPX session handshake exceeded its admission deadline");
     this.name = "AcpxSessionHandshakeTimeoutError";
@@ -331,20 +338,28 @@ export async function openQualifiedAcpxRuntime(
     runtimeCloseTimeoutMs,
   );
 
-  const handshake = Promise.resolve().then(() =>
-    runtime.ensureSession({
-      sessionKey: options.providerSessionKey,
-      agent: options.profile.agent,
-      mode: "persistent",
-      cwd: options.cwd,
-      sessionOptions: {
-        model: options.profile.qualificationModel,
-        ...(options.systemInstructions
-          ? { systemPrompt: { append: options.systemInstructions } }
-          : {}),
-      },
-    }),
-  );
+  const handshake = Promise.resolve()
+    .then(() =>
+      runtime.ensureSession({
+        sessionKey: options.providerSessionKey,
+        agent: options.profile.agent,
+        mode: "persistent",
+        cwd: options.cwd,
+        sessionOptions: {
+          // ACP session construction receives the provider-native selector.
+          // The caller-facing canonical model was already pinned when the
+          // qualified profile was resolved and is restored at the status
+          // boundary after the provider reports this selector.
+          model: options.profile.reportedModelId,
+          ...(options.systemInstructions
+            ? { systemPrompt: { append: options.systemInstructions } }
+            : {}),
+        },
+      }),
+    )
+    .catch((error: unknown) => {
+      throw classifySessionEnsureFailure(error);
+    });
   let handle: AcpRuntimeHandle | null = null;
   let lateCleanup: Promise<void> | null = null;
   try {
@@ -410,6 +425,7 @@ export async function openQualifiedAcpxRuntime(
       runtime,
       handle,
       requireIdentity(handle),
+      baseStore,
       children,
       runtimeCloseTimeoutMs,
       goalState,
@@ -435,6 +451,22 @@ export async function openQualifiedAcpxRuntime(
 
 /** Backward-compatible name retained for existing Codex-only consumers. */
 export const openCodexAcpxRuntime = openQualifiedAcpxRuntime;
+
+function classifySessionEnsureFailure(error: unknown): Error {
+  if (error instanceof Error) {
+    const details = error as Error & Record<string, unknown>;
+    if (typeof details.code !== "string" || details.code.length === 0) {
+      details.code =
+        error instanceof TypeError
+          ? "ACPX_SESSION_ENSURE_TYPE_ERROR"
+          : "ACPX_SESSION_ENSURE_FAILED";
+    }
+    return error;
+  }
+  return Object.assign(new Error("ACPX session ensure rejected a non-error"), {
+    code: "ACPX_SESSION_ENSURE_NON_ERROR",
+  });
+}
 
 function raceRuntimeHandshakeWithAbort<T>(
   handshake: Promise<T>,
@@ -819,6 +851,7 @@ function runtimePort(
   runtime: GoalAwareAcpRuntime,
   handle: AcpRuntimeHandle,
   identity: AcpxRuntimePortIdentity,
+  sessionStore: AcpSessionStore,
   children: SpawnedChildSet,
   runtimeCloseTimeoutMs: number,
   goalState: AcpxRuntimeGoalState,
@@ -879,7 +912,7 @@ function runtimePort(
     }
     if (
       lateReconciliationAttempts >=
-        MAX_LATE_RUNTIME_CLEANUP_RECONCILIATION_ATTEMPTS
+      MAX_LATE_RUNTIME_CLEANUP_RECONCILIATION_ATTEMPTS
     ) {
       return;
     }
@@ -1050,10 +1083,7 @@ function runtimePort(
       return structuredClone(identity);
     },
     async getStatus() {
-      if (!runtime.getStatus) {
-        throw new Error("The pinned ACPX runtime cannot report session status");
-      }
-      return structuredClone(await runtime.getStatus({ handle }));
+      return await persistedRuntimeStatus(sessionStore, handle, identity);
     },
     goalCapability() {
       return goalState.capability === null
@@ -1133,18 +1163,117 @@ function runtimePort(
         }
       : {}),
     startTurn(input) {
-      return runtime.startTurn({
-        handle,
-        text: input.text,
-        mode: "prompt",
-        requestId: input.requestId,
-        ...(input.signal ? { signal: input.signal } : {}),
-        ...(input.onElicitation ? { onElicitation: input.onElicitation } : {}),
-      });
+      const finishOwnershipAdmission =
+        children.beginLifetimeOwnershipAdmission();
+      let turn: AcpxRuntimeTurn;
+      try {
+        turn = runtime.startTurn({
+          handle,
+          text: input.text,
+          mode: "prompt",
+          requestId: input.requestId,
+          ...(input.signal ? { signal: input.signal } : {}),
+          ...(input.onElicitation
+            ? { onElicitation: input.onElicitation }
+            : {}),
+        });
+      } catch (error) {
+        void finishOwnershipAdmission().catch(() => undefined);
+        throw error;
+      }
+      return turnWithVerifiedLifetimeOwnership(turn, finishOwnershipAdmission);
     },
     close: closeRuntime,
   };
   return port;
+}
+
+function turnWithVerifiedLifetimeOwnership(
+  turn: AcpxRuntimeTurn,
+  finishOwnershipAdmission: () => Promise<void>,
+): AcpxRuntimeTurn {
+  // A persisted ACPX session can be loaded without starting an agent process.
+  // Keep the narrowly scoped turn admission open until either the provider has
+  // accepted the prompt or the turn has already terminalized. The synchronous
+  // stable-empty seal in SpawnedChildSet then rejects every later spawn.
+  const reachedAdmissionBoundary = Promise.race([
+    turn.promptStarted.then(
+      () => undefined,
+      () => undefined,
+    ),
+    turn.result.then(
+      () => undefined,
+      () => undefined,
+    ),
+  ]);
+  const ownershipVerified = reachedAdmissionBoundary.then(() =>
+    finishOwnershipAdmission(),
+  );
+  void ownershipVerified.catch(() => undefined);
+  return {
+    requestId: turn.requestId,
+    promptStarted: ownershipVerified.then(() => turn.promptStarted),
+    events: eventsAfterLifetimeOwnership(turn.events, ownershipVerified),
+    result: ownershipVerified.then(() => turn.result),
+    cancel: (input) => turn.cancel(input),
+    closeStream: (input) => turn.closeStream(input),
+  };
+}
+
+async function* eventsAfterLifetimeOwnership<T>(
+  events: AsyncIterable<T>,
+  ownershipVerified: Promise<void>,
+): AsyncIterable<T> {
+  await ownershipVerified;
+  yield* events;
+}
+
+async function persistedRuntimeStatus(
+  sessionStore: AcpSessionStore,
+  handle: AcpRuntimeHandle,
+  identity: AcpxRuntimePortIdentity,
+): Promise<AcpxModelStatus> {
+  const recordId = handle.acpxRecordId ?? handle.sessionKey;
+  const record = await sessionStore.load(recordId);
+  if (!record) {
+    throw Object.assign(
+      new Error("The pinned ACPX runtime omitted its persisted session record"),
+      { code: "ACPX_PERSISTED_SESSION_MISSING" },
+    );
+  }
+  const persistedAgentSessionId =
+    nonEmptyRuntimeIdentity(record.agentSessionId) ?? record.acpSessionId;
+  if (
+    record.acpxRecordId !== identity.acpxRecordId ||
+    record.acpSessionId !== identity.backendSessionId ||
+    persistedAgentSessionId !== identity.agentSessionId
+  ) {
+    throw Object.assign(
+      new Error("The persisted ACPX session identity changed after admission"),
+      { code: "ACPX_PERSISTED_SESSION_IDENTITY_MISMATCH" },
+    );
+  }
+  const currentModelId = record.acpx?.current_model_id;
+  const availableModelIds = record.acpx?.available_models;
+  return {
+    summary: [
+      `session=${record.acpxRecordId}`,
+      `backendSessionId=${record.acpSessionId}`,
+      `agentSessionId=${persistedAgentSessionId}`,
+      record.closed === true ? "closed" : "open",
+    ].join(" "),
+    acpxRecordId: record.acpxRecordId,
+    backendSessionId: record.acpSessionId,
+    agentSessionId: persistedAgentSessionId,
+    ...(currentModelId === undefined && !availableModelIds?.length
+      ? {}
+      : {
+          models: {
+            ...(currentModelId === undefined ? {} : { currentModelId }),
+            availableModelIds: availableModelIds ? [...availableModelIds] : [],
+          },
+        }),
+  };
 }
 
 function runtimeCloseOutcome(
@@ -1244,9 +1373,7 @@ function delay(timeoutMs: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, timeoutMs));
 }
 
-type ProviderExitOutcome =
-  | { exited: true }
-  | { exited: false; error: unknown };
+type ProviderExitOutcome = { exited: true } | { exited: false; error: unknown };
 
 class ProviderExitObservation {
   #outcome: ProviderExitOutcome | null = null;
@@ -1346,17 +1473,38 @@ class SpawnedChildSet {
   }
 
   async verifyLifetimeOwnership(): Promise<void> {
-    for (;;) {
-      const ownership = this.#lifetimeOwnership.splice(0);
-      if (ownership.length === 0) {
-        // This check and seal are synchronous. Any spawn added while an
-        // earlier batch was pending is observed by the next loop iteration;
-        // no later provider can race admission after the stable-empty point.
-        this.#lifetimeOwnershipSealed = true;
-        return;
+    try {
+      for (;;) {
+        const ownership = this.#lifetimeOwnership.splice(0);
+        if (ownership.length === 0) {
+          // This check and seal are synchronous. Any spawn added while an
+          // earlier batch was pending is observed by the next loop iteration;
+          // no later provider can race admission after the stable-empty point.
+          this.#lifetimeOwnershipSealed = true;
+          return;
+        }
+        await Promise.all(ownership);
       }
-      await Promise.all(ownership);
+    } catch (error) {
+      this.#lifetimeOwnershipSealed = true;
+      throw error;
     }
+  }
+
+  beginLifetimeOwnershipAdmission(): () => Promise<void> {
+    if (this.#sealed) {
+      throw new Error("ACPX provider ownership admission is closed");
+    }
+    if (!this.#lifetimeOwnershipSealed) {
+      throw new Error("ACPX provider ownership admission is already active");
+    }
+    this.#lifetimeOwnershipSealed = false;
+    let finished = false;
+    return async () => {
+      if (finished) return;
+      finished = true;
+      await this.verifyLifetimeOwnership();
+    };
   }
 
   #track(child: ChildProcess, providerExit: ProviderExitObservation): void {
@@ -1580,9 +1728,9 @@ function goalCapabilityFromAcpMessage(
     : [];
   if (
     goal.version !== 1 ||
-    typeof goal.controlMethod !== "string" ||
-    goal.controlMethod.length === 0 ||
-    actions.length === 0
+    goal.controlMethod !== "_session/goal" ||
+    !actions.includes("set") ||
+    !actions.includes("clear")
   ) {
     return null;
   }
@@ -1654,17 +1802,21 @@ function goalSnapshotFromAcpMessage(message: unknown): {
 }
 
 function requireIdentity(handle: AcpRuntimeHandle): AcpxRuntimePortIdentity {
-  const identity = {
-    acpxRecordId: handle.acpxRecordId,
-    backendSessionId: handle.backendSessionId,
-    agentSessionId: handle.agentSessionId,
-  };
-  for (const [name, value] of Object.entries(identity)) {
-    if (typeof value !== "string" || value.length === 0) {
-      throw new Error(`ACPX runtime omitted ${name}`);
-    }
+  const acpxRecordId = nonEmptyRuntimeIdentity(handle.acpxRecordId);
+  if (!acpxRecordId) throw new Error("ACPX runtime omitted acpxRecordId");
+  const backendSessionId = nonEmptyRuntimeIdentity(handle.backendSessionId);
+  if (!backendSessionId) {
+    throw new Error("ACPX runtime omitted backendSessionId");
   }
-  return identity as AcpxRuntimePortIdentity;
+  return {
+    acpxRecordId,
+    backendSessionId,
+    // ACPX agents do not all advertise a distinct native thread identity.
+    // In that case the backend ID is the real ACP protocol session, so retain
+    // it explicitly rather than inventing a Paperclip-owned identifier.
+    agentSessionId:
+      nonEmptyRuntimeIdentity(handle.agentSessionId) ?? backendSessionId,
+  };
 }
 
 function definedEnvironment(

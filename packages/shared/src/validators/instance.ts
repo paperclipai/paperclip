@@ -5,9 +5,6 @@ import {
   WEEKLY_RETENTION_PRESETS,
   MONTHLY_RETENTION_PRESETS,
   DEFAULT_BACKUP_RETENTION,
-  DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
-  MAX_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
-  MIN_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
 } from "../types/instance.js";
 import { feedbackDataSharingPreferenceSchema } from "./feedback.js";
 import { shapeWithoutDefaults } from "./partial.js";
@@ -48,12 +45,15 @@ export const instanceExperimentalSettingsSchema = z.object({
   enableManagedSandboxOnly: z.boolean().default(false),
   enableIsolatedWorkspaces: z.boolean().default(false),
   enableStreamlinedLeftNavigation: z.boolean().default(true),
-  enableApps: z.boolean().default(false),
+  enableStreamlinedUi: z.boolean().default(true),
+  // Deprecated compatibility key. Apps is a standard product surface and is
+  // always enabled; this remains accepted so older stored rows and managed
+  // configs continue to load during upgrades.
+  enableApps: z.boolean().default(true),
   enablePipelines: z.boolean().default(false),
   enableCases: z.boolean().default(false),
   enableConferenceRoomChat: z.boolean().default(false),
   enableClassicTaskInterface: z.boolean().default(false),
-  enableTaskWatchdogs: z.boolean().default(false),
   enableIssuePlanDecompositions: z.boolean().default(false),
   enableExperimentalFileViewer: z.boolean().default(false),
   enableExternalObjects: z.boolean().default(false),
@@ -68,7 +68,6 @@ export const instanceExperimentalSettingsSchema = z.object({
   enablePaperclipDeveloperMode: z.boolean().default(false),
   enableSimplifiedEnglishInteractions: z.boolean().default(false),
   autoRestartDevServerWhenIdle: z.boolean().default(false),
-  enableIssueGraphLivenessAutoRecovery: z.boolean().default(false),
   enableWorkspaceBranchReconcileForward: z.boolean().default(true),
   enableWorkspaceDirtyQuarantineRepair: z.boolean().default(true),
   enableOwnerInstanceAdmin: z.boolean().default(false),
@@ -82,12 +81,6 @@ export const instanceExperimentalSettingsSchema = z.object({
   enableWorktreeRunExecution: z.boolean().default(false),
   worktreeRunExecutionActivatedAt: z.string().datetime().nullable().default(null),
   worktreeRunExecutionActivationInstanceId: z.string().min(1).nullable().default(null),
-  issueGraphLivenessAutoRecoveryLookbackHours: z
-    .number()
-    .int()
-    .min(MIN_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS)
-    .max(MAX_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS)
-    .default(DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS),
 }).strict();
 
 export const patchInstanceExperimentalSettingsSchema = z
@@ -120,15 +113,6 @@ export const patchInstanceSettingsSchema = z.object({
   defaultEnvironmentId: z.string().guid().nullable().optional(),
 }).strict();
 
-export const issueGraphLivenessAutoRecoveryRequestSchema = z.object({
-  lookbackHours: z
-    .number()
-    .int()
-    .min(MIN_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS)
-    .max(MAX_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS)
-    .optional(),
-}).strict();
-
 // The longest time a task drain can run before it expires on its own. A
 // caller can send a shorter `ttlMs`, but not a longer one — the request must
 // fail instead of the server silently clamping the value.
@@ -150,9 +134,6 @@ export type PatchInstanceExperimentalSettings = Partial<
   >
 >;
 export type PatchInstanceSettings = z.infer<typeof patchInstanceSettingsSchema>;
-export type IssueGraphLivenessAutoRecoveryRequest = z.infer<
-  typeof issueGraphLivenessAutoRecoveryRequestSchema
->;
 export type StartTaskDrainRequest = z.infer<typeof startTaskDrainRequestSchema>;
 
 export const instanceSettingsSchema = z.object({

@@ -15,6 +15,7 @@ import {
   toolConnections,
   toolCallEvents,
   toolInvocations,
+  toolMcpGateways,
   toolPolicies,
   toolProfileBindings,
   toolProfileEntries,
@@ -1012,7 +1013,22 @@ export function toolAccessPolicyService(db: Db) {
       eq(toolProfiles.companyId, ctx.companyId),
       inArray(toolProfiles.id, candidateProfileIds),
     ));
-    const activeBindings = effectiveToolProfileBindings(matchingBindings, candidateProfiles, ctx.connectionId);
+    const [gateway] = ctx.gatewayId
+      ? await db
+          .select({ defaultProfileMode: toolMcpGateways.defaultProfileMode })
+          .from(toolMcpGateways)
+          .where(and(
+            eq(toolMcpGateways.companyId, ctx.companyId),
+            eq(toolMcpGateways.id, ctx.gatewayId),
+          ))
+          .limit(1)
+      : [];
+    const activeBindings = effectiveToolProfileBindings(
+      matchingBindings,
+      candidateProfiles,
+      ctx.connectionId,
+      { includeAdditiveAppProfiles: gateway?.defaultProfileMode !== "gateway_only" },
+    );
     const profileIds = profileIdsInBindingOrder(activeBindings);
     const profilesById = new Map(candidateProfiles.map((profile) => [profile.id, profile]));
     const activeProfiles = profileIds

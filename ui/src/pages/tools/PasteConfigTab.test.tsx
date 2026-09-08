@@ -181,6 +181,7 @@ describe("PasteConfigTab — discoverability copy (PAP-11091)", () => {
   afterEach(() => {
     document.body.removeChild(container);
     document.body.innerHTML = "";
+    vi.restoreAllMocks();
     vi.clearAllMocks();
   });
 
@@ -222,6 +223,7 @@ describe("PasteConfigTab — activation handoff (PAP-11092)", () => {
   afterEach(() => {
     document.body.removeChild(container);
     document.body.innerHTML = "";
+    vi.restoreAllMocks();
     vi.clearAllMocks();
   });
 
@@ -290,6 +292,42 @@ describe("PasteConfigTab — activation handoff (PAP-11092)", () => {
     expect(container.textContent).toContain("Review actions for kv-demo");
     // The dead-end "Next, you'll add the keys" copy is gone.
     expect(container.textContent).not.toContain("Next, you'll add the keys");
+  });
+
+  it("activates imported write actions as allowed by default", async () => {
+    await pasteAndCheck(NOTION_PREVIEW, NOTION_CONFIG);
+    const result = connectResult();
+    result.actions.canMakeChanges = [{
+      catalogEntryId: "cat-write",
+      toolName: "create_page",
+      title: "Create page",
+      description: "Create a page.",
+      riskLevel: "write",
+      isReadOnly: false,
+      isWrite: true,
+      isDestructive: false,
+      status: "active",
+    }];
+    toolsApiMock.connectApp.mockResolvedValue(result);
+    toolsApiMock.finishApp.mockResolvedValue({ connection: result.connection });
+
+    await act(async () => {
+      buttonStartingWith("Check actions")!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    const activateButton = buttonStartingWith("Activate 2 of 2");
+    expect(activateButton).toBeTruthy();
+    await act(async () => {
+      activateButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(toolsApiMock.finishApp).toHaveBeenCalledWith("company-1", "conn-1", {
+      enabledCatalogEntryIds: ["cat-read", "cat-write"],
+      askFirstCatalogEntryIds: [],
+      access: "all_agents",
+    });
   });
 
   it("collects imported headers as secret replacement fields before checking actions", async () => {
@@ -374,6 +412,37 @@ describe("PasteConfigTab — activation handoff (PAP-11092)", () => {
     expect(container.textContent).not.toContain("Review actions for notion");
   });
 
+  it("uses the background Cloud handoff returned with an imported OAuth connection", async () => {
+    const session = "imported_background_session_1234";
+    const request = vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json({
+      authorizationUrl: "https://provider.example.test/authorize?state=imported",
+    }));
+    await pasteAndCheck(NOTION_PREVIEW, NOTION_CONFIG);
+    const result = oauthConnectResult("https://my.paperclip.app/connections/confirm?session=legacy");
+    result.auth = {
+      ...result.auth!,
+      handoff: { kind: "paperclip_cloud", session },
+    };
+    toolsApiMock.connectApp.mockResolvedValue(result);
+
+    await act(async () => {
+      buttonStartingWith("Check actions")!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+    await flushReact();
+
+    expect(request).toHaveBeenCalledWith("/cloud/connections/handoff", expect.objectContaining({
+      method: "POST",
+      body: JSON.stringify({ session }),
+    }));
+    await vi.waitFor(() => {
+      expect(navigateTopLevelMock).toHaveBeenCalledWith(
+        "https://provider.example.test/authorize?state=imported",
+      );
+    });
+    expect(navigateTopLevelMock).not.toHaveBeenCalledWith(expect.stringContaining("/connections/confirm"));
+  });
+
   it("rejects an unsafe start URL and retries OAuth on the same connection", async () => {
     await pasteAndCheck(NOTION_PREVIEW, NOTION_CONFIG);
     toolsApiMock.connectApp.mockResolvedValue(oauthConnectResult("javascript:alert(1)"));
@@ -408,7 +477,7 @@ describe("PasteConfigTab — activation handoff (PAP-11092)", () => {
     );
   });
 
-  it("cancels to the original connection setup route without creating another draft", async () => {
+  it("backs up to the original connection setup route without creating another draft", async () => {
     await pasteAndCheck(NOTION_PREVIEW, NOTION_CONFIG);
     toolsApiMock.connectApp.mockResolvedValue(oauthConnectResult("javascript:alert(1)"));
 
@@ -417,12 +486,27 @@ describe("PasteConfigTab — activation handoff (PAP-11092)", () => {
     });
     await flushReact();
     await act(async () => {
-      buttonStartingWith("Back to apps")!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      buttonStartingWith("Back")!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
 
-    expect(mockNavigate).toHaveBeenCalledWith("/apps/conn-1/setup");
+    expect(mockNavigate).toHaveBeenCalledWith("/apps/conn-1/permissions");
     expect(toolsApiMock.connectApp).toHaveBeenCalledTimes(1);
     expect(toolsApiMock.startOAuth).not.toHaveBeenCalled();
+  });
+
+  it("cancels the OAuth checkpoint to the apps page", async () => {
+    await pasteAndCheck(NOTION_PREVIEW, NOTION_CONFIG);
+    toolsApiMock.connectApp.mockResolvedValue(oauthConnectResult("javascript:alert(1)"));
+
+    await act(async () => {
+      buttonStartingWith("Check actions")!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+    await act(async () => {
+      buttonStartingWith("Cancel")!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(mockNavigate).toHaveBeenCalledWith("/apps");
   });
 
   it("does not offer Continue for a stdio draft (draft-only, no link to hand off)", async () => {

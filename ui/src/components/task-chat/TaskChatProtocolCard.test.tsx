@@ -12,6 +12,34 @@ import type {
   TaskChatProviderActivityFamily,
   TaskChatRuntimeRequestDecision,
 } from "./task-chat-model";
+import type { IssueWorkProduct } from "@paperclipai/shared";
+import { stateChipFor } from "./RichWorkProductCard";
+
+function workProduct(overrides: Partial<IssueWorkProduct> = {}): IssueWorkProduct {
+  return {
+    id: "work-product-1",
+    companyId: "company-1",
+    projectId: null,
+    issueId: "issue-1",
+    executionWorkspaceId: null,
+    runtimeServiceId: null,
+    type: "pull_request",
+    provider: "github",
+    externalId: "42",
+    title: "Ship rich work-product cards",
+    url: "https://github.com/paperclipai/paperclip/pull/42",
+    status: "merged",
+    reviewState: "none",
+    isPrimary: true,
+    healthStatus: "healthy",
+    summary: null,
+    metadata: null,
+    createdByRunId: null,
+    createdAt: new Date("2026-09-02T00:00:00.000Z"),
+    updatedAt: new Date("2026-09-02T00:00:00.000Z"),
+    ...overrides,
+  };
+}
 
 vi.mock("@/components/MarkdownEditor", () => ({
   MarkdownEditor: forwardRef(function MockMarkdownEditor(
@@ -85,6 +113,200 @@ describe("TaskChatProtocolCard", () => {
   afterEach(() => {
     flushSync(() => root.unmount());
     container.remove();
+  });
+
+  it("renders a rich deliverable card without a completed chip", () => {
+    const product = workProduct({
+      metadata: {
+        repo: "paperclipai/paperclip",
+        number: 42,
+        baseRef: "master",
+        headRef: "feat/rich-cards",
+        additions: 17,
+        deletions: 5,
+        changedFiles: 3,
+        state: "merged",
+        draft: false,
+      },
+    });
+    renderCard(root, {
+      id: "resource:deliverable:work-product-1",
+      kind: "protocol",
+      surface: "resource",
+      resourceKind: "deliverable",
+      title: product.title,
+      subtitle: "pull request · merged",
+      href: product.url,
+      workProduct: product,
+    });
+
+    expect(container.querySelector('[data-testid="task-chat-rich-work-product-pull_request"]')).not.toBeNull();
+    expect(container.textContent).toContain("Open on GitHub");
+    expect(container.textContent).toContain("paperclipai/paperclip · #42 · master ← feat/rich-cards");
+    expect(container.textContent).toContain("+17 −5 · 3 files");
+    expect(container.textContent).toContain("Merged");
+    expect(container.textContent).not.toContain("Completed");
+
+    const action = container.querySelector('a[aria-label="Open on GitHub: Ship rich work-product cards"]');
+    expect(action?.querySelector("span")?.className).toContain("hidden @sm:inline");
+    const stats = Array.from(container.querySelectorAll("p")).find((node) => node.textContent === "+17 −5 · 3 files");
+    expect(stats?.className).toContain("whitespace-nowrap");
+  });
+
+  it("shows pending artifacts with a dashed Pending chip", () => {
+    const product = workProduct({
+      type: "artifact",
+      provider: "paperclip",
+      url: "/api/attachments/attachment-1/content",
+      status: "pending",
+      title: "demo.png",
+      metadata: { contentType: "image/png", byteSize: 2048 },
+    });
+    renderCard(root, {
+      id: "resource:deliverable:work-product-1",
+      kind: "protocol",
+      surface: "resource",
+      resourceKind: "deliverable",
+      title: product.title,
+      subtitle: "artifact · pending",
+      href: product.url,
+      workProduct: product,
+    });
+
+    const chip = Array.from(container.querySelectorAll("span")).find((node) => node.textContent === "Pending");
+    expect(chip?.className).toContain("border-dashed");
+    expect(container.textContent).toContain("Image · 2.0 KB");
+    expect(container.textContent).toContain("Open gallery");
+  });
+
+  it("keeps completed and approved states out of the state-chip policy", () => {
+    expect(stateChipFor("commit", "completed", "none")).toBeNull();
+    expect(stateChipFor("document", "approved", "approved")).toBeNull();
+    expect(stateChipFor("pull_request", "open", "none")).toMatchObject({ label: "Open", tone: "progress" });
+    expect(stateChipFor("pull_request", "merged", "none")).toMatchObject({ label: "Merged", tone: "success" });
+    expect(stateChipFor("pull_request", "closed", "none")).toMatchObject({ label: "Closed", tone: "neutral" });
+    expect(stateChipFor("artifact", "pending", "none")).toMatchObject({ label: "Pending", dashed: true });
+  });
+
+  it("shows the live open pull request state while preserving explicit review-state precedence", () => {
+    const product = workProduct({
+      status: "ready_for_review",
+      metadata: { state: "open" },
+    });
+    renderCard(root, {
+      id: "resource:deliverable:work-product-1",
+      kind: "protocol",
+      surface: "resource",
+      resourceKind: "deliverable",
+      title: product.title,
+      subtitle: "pull request · open",
+      href: product.url,
+      workProduct: product,
+    });
+
+    const chip = Array.from(container.querySelectorAll("span")).find((node) => node.textContent === "Open");
+    expect(chip).toBeDefined();
+    expect(container.textContent).not.toContain("Review");
+    expect(stateChipFor("pull_request", "open", "needs_board_review")).toMatchObject({
+      label: "Review",
+      tone: "review",
+    });
+  });
+
+  it("shows an unhealthy active runtime as unhealthy", () => {
+    const product = workProduct({
+      type: "runtime_service",
+      provider: "paperclip",
+      status: "active",
+      healthStatus: "unhealthy",
+      title: "Storybook",
+      metadata: { service: "storybook", port: 6006 },
+    });
+    renderCard(root, {
+      id: "resource:deliverable:work-product-1",
+      kind: "protocol",
+      surface: "resource",
+      resourceKind: "deliverable",
+      title: product.title,
+      subtitle: "runtime service · active",
+      href: product.url,
+      workProduct: product,
+    });
+
+    expect(container.textContent).toContain("Unhealthy");
+    expect(container.textContent).not.toContain("Running");
+  });
+
+  it("does not show running for an active runtime with unknown health", () => {
+    const product = workProduct({
+      type: "runtime_service",
+      provider: "paperclip",
+      status: "active",
+      healthStatus: "unknown",
+      title: "Storybook",
+      metadata: { service: "storybook", port: 6006 },
+    });
+    renderCard(root, {
+      id: "resource:deliverable:work-product-1",
+      kind: "protocol",
+      surface: "resource",
+      resourceKind: "deliverable",
+      title: product.title,
+      subtitle: "runtime service · active",
+      href: product.url,
+      workProduct: product,
+    });
+
+    expect(container.textContent).not.toContain("Running");
+    expect(container.textContent).not.toContain("Unhealthy");
+  });
+
+  it("shows an unhealthy runtime with a non-standard open status as unhealthy", () => {
+    const product = workProduct({
+      type: "runtime_service",
+      provider: "paperclip",
+      status: "open",
+      healthStatus: "unhealthy",
+      title: "Storybook",
+      metadata: { service: "storybook", port: 6006 },
+    });
+    renderCard(root, {
+      id: "resource:deliverable:work-product-1",
+      kind: "protocol",
+      surface: "resource",
+      resourceKind: "deliverable",
+      title: product.title,
+      subtitle: "runtime service · open",
+      href: product.url,
+      workProduct: product,
+    });
+
+    expect(container.textContent).toContain("Unhealthy");
+    expect(container.textContent).not.toContain("Running");
+  });
+
+  it("shows a closed runtime as stopped even when its last health check failed", () => {
+    const product = workProduct({
+      type: "runtime_service",
+      provider: "paperclip",
+      status: "closed",
+      healthStatus: "unhealthy",
+      title: "Storybook",
+      metadata: { service: "storybook", port: 6006 },
+    });
+    renderCard(root, {
+      id: "resource:deliverable:work-product-1",
+      kind: "protocol",
+      surface: "resource",
+      resourceKind: "deliverable",
+      title: product.title,
+      subtitle: "runtime service · closed",
+      href: product.url,
+      workProduct: product,
+    });
+
+    expect(container.textContent).toContain("Stopped");
+    expect(container.textContent).not.toContain("Unhealthy");
   });
 
   it("renders provider plan steps and status", () => {

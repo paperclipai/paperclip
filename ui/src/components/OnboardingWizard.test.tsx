@@ -67,6 +67,37 @@ const mockAgentsApi = vi.hoisted(() => ({
       status: "present",
     }),
   ),
+  // The sign-in routes. The connect step's Connect button starts a login rather
+  // than hiring when the signal says the source has no credential, so the two
+  // login shapes need enough of a server to reach the state the step is about:
+  // a session that is running, and a prompt to show for it.
+  startClaudeSetupTokenLogin: vi.fn(async () => ({
+    sessionId: "claude-session-1",
+    status: "pending",
+    expiresAt: new Date(Date.now() + 600_000).toISOString(),
+  })),
+  getClaudeSetupTokenLoginStatus: vi.fn(async () => ({
+    sessionId: "claude-session-1",
+    status: "pending",
+    expiresAt: new Date(Date.now() + 600_000).toISOString(),
+  })),
+  getClaudeSetupTokenLoginPrompt: vi.fn(async () => ({
+    authorizationUrl: "https://claude.ai/oauth/authorize?code=true",
+    transportAdvisory: null,
+  })),
+  cancelClaudeSetupTokenLogin: vi.fn(async () => ({})),
+  submitClaudeSetupTokenBrowserCode: vi.fn(async () => ({})),
+  completeClaudeSetupTokenLogin: vi.fn(async () => ({ storedSessionId: "stored-1" })),
+  startAdapterAuthLogin: vi.fn(async () => ({
+    sessionId: "codex-session-1",
+    status: "pending",
+  })),
+  getAdapterAuthLoginStatus: vi.fn(async () => ({
+    sessionId: "codex-session-1",
+    status: "pending",
+    prompt: { url: "https://auth.openai.com/codex/device", code: "Q2RJ-E1YIF" },
+  })),
+  cancelAdapterAuthLogin: vi.fn(async () => ({})),
 }));
 // The adapter registry mock below always returns this function, so a test
 // can shape the built adapter config (e.g. a configured ANTHROPIC_API_KEY)
@@ -90,6 +121,12 @@ const mockInstanceSettingsApi = vi.hoisted(() => ({
 }));
 const mockApprovalsApi = vi.hoisted(() => ({
   create: vi.fn(),
+}));
+const mockSecretsApi = vi.hoisted(() => ({
+  listMyUserSecrets: vi.fn(),
+  createUserSecretDefinition: vi.fn(),
+  createMyUserSecret: vi.fn(),
+  rotateMyUserSecret: vi.fn(),
 }));
 const mockIssuesApi = vi.hoisted(() => ({
   create: vi.fn(),
@@ -122,6 +159,7 @@ vi.mock("../api/companies", () => ({ companiesApi: mockCompaniesApi }));
 vi.mock("../api/goals", () => ({ goalsApi: mockGoalsApi }));
 vi.mock("../api/agents", () => ({ agentsApi: mockAgentsApi }));
 vi.mock("../api/approvals", () => ({ approvalsApi: mockApprovalsApi }));
+vi.mock("../api/secrets", () => ({ secretsApi: mockSecretsApi }));
 vi.mock("../api/issues", () => ({ issuesApi: mockIssuesApi }));
 vi.mock("../api/projects", () => ({ projectsApi: mockProjectsApi }));
 vi.mock("../api/environments", () => ({ environmentsApi: mockEnvironmentsApi }));
@@ -134,7 +172,12 @@ vi.mock("../adapters/metadata", () => ({ isVisualAdapterChoice: () => true }));
 vi.mock("../adapters/adapter-display-registry", () => ({
   getAdapterDisplay: (type: string) => ({
     type,
-    recommended: false,
+    // Mirrors the real registry, where these two and only these two are
+    // `recommended`. A blanket `false` used to be harmless because every adapter
+    // then sat in the "Advanced settings" disclosure and was reachable anyway;
+    // with the step down to a tile row built from this flag, it made that row
+    // empty in every test and hid the surface under it.
+    recommended: type === "claude_local" || type === "codex_local",
     label: type,
     description: "",
     icon: () => null,
@@ -150,20 +193,29 @@ vi.mock("../adapters/use-disabled-adapters", () => ({
   // makes it undefined and the call throws.
   useAdapterRegistryLoaded: () => true,
 }));
-// Adapters with a declared login capability, mirroring the real registry
-// closely enough for the login-panel gate: `claude_local` and `codex_local`
-// both support a sandbox login. Every other type has none, matching the
-// real `useAdapterCapabilities` fallback for an unlisted type.
-const ADAPTERS_WITH_LOGIN = new Set(["claude_local", "codex_local"]);
+// Adapters with a declared login capability, mirroring the real registry:
+// `claude_local` and `codex_local` both support a sandbox login, and every
+// other type has none, matching the real `useAdapterCapabilities` fallback for
+// an unlisted type.
+//
+// The panel modes are the real ones rather than one mode for both. They used to
+// be, back when nothing outside the panel dispatcher read them. The connect
+// step reads them now — the two logins end in different places, so its button
+// waits differently for each — and a mock that called Claude's login
+// `displayed_code` would have the step testing the wrong half of that.
+// Reconcile with KNOWN_DEFAULTS in `adapters/use-adapter-capabilities.ts`.
+const ADAPTER_LOGIN_MODES: Record<string, "displayed_code" | "submitted_browser_code"> = {
+  claude_local: "submitted_browser_code",
+  codex_local: "displayed_code",
+};
 vi.mock("../adapters/use-adapter-capabilities", () => ({
   useAdapterCapabilities: () => (type: string) => ({
     supportsInstructionsBundle: false,
     supportsSkills: false,
     supportsLocalAgentJwt: false,
     requiresMaterializedRuntimeSkills: false,
-    supportsModelProfiles: false,
-    login: ADAPTERS_WITH_LOGIN.has(type)
-      ? { panelMode: "displayed_code" as const, timeoutPolicy: "fixed" as const }
+    login: ADAPTER_LOGIN_MODES[type]
+      ? { panelMode: ADAPTER_LOGIN_MODES[type]!, timeoutPolicy: "fixed" as const }
       : undefined,
   }),
 }));
@@ -177,6 +229,7 @@ import { queryKeys } from "../lib/queryKeys";
 import { ADAPTER_AUTH_MISSING_CHECK_CODE, getEnvironmentCapabilities } from "@paperclipai/shared";
 import { CLAUDE_OAUTH_TOKEN_ENV_KEY } from "./environment-variables-editor/model";
 import { ONBOARDING_STORAGE_KEY, OnboardingWizard } from "./OnboardingWizard";
+import { CONNECTED_HOLD_MS } from "./onboarding/onboarding-motion";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
@@ -214,6 +267,38 @@ function render() {
     user: { id: SESSION_USER_ID, name: "B", email: "b@example.com", image: null },
   });
   return { container, root, queryClient };
+}
+
+/**
+ * Press the first model-source tile.
+ *
+ * By `aria-checked` rather than by label: the display registry is mocked in this
+ * suite, so a tile reads "claude_localSubscription" rather than "Claude Code",
+ * and a test that selected on the visible name would be asserting the mock.
+ *
+ * The connect step arrives with nothing chosen, so this is what opens the input
+ * surface and lets the step advance.
+ */
+async function pickFirstSource(
+  click: (match: (text: string) => boolean) => Promise<void>,
+): Promise<void> {
+  const tile = [...document.body.querySelectorAll("button[aria-checked]")][0];
+  const label = tile?.textContent?.trim() ?? "";
+  await click((text) => text === label);
+}
+
+/**
+ * The arc footer's primary button, whatever this step calls it.
+ *
+ * Step 4 calls it "Connect", because there it starts a sign-in rather than
+ * simply advancing; every other arc step calls it "Next". These tests are about
+ * what the press does, not what it reads, so they match either — restating the
+ * label at twenty call sites would make a copy change look like a behaviour
+ * regression. The label itself is pinned once, in the step test that is about
+ * the label.
+ */
+function isArcPrimary(text: string): boolean {
+  return text.startsWith("Next") || text.startsWith("Connect");
 }
 
 describe("OnboardingWizard restore-gate (stale localStorage across accounts)", () => {
@@ -290,6 +375,9 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       mockCompany.loading = false;
       mockCompaniesApi.list.mockResolvedValue([]);
 
+      // The model step needs tiles to pick from, and this suite's default
+      // registry is empty.
+      mockAdapterRegistry.list = [{ type: "claude_local" }, { type: "codex_local" }];
       const { root, queryClient } = render();
       const renderTree = () =>
         act(async () => {
@@ -356,16 +444,17 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
         setControlledValue(agentField, "Ada");
       });
       await flushReact();
-      await clickByText((t) => t.startsWith("Next"));
+      await clickByText((t) => isArcPrimary(t));
 
       expect(document.body.textContent).toContain("Connect a model");
+      await pickFirstSource(clickByText);
       expect(document.body.textContent).not.toContain("Adapter environment check");
       expect(document.body.textContent).not.toContain("Test now");
 
       // Through Connect to Review, so the Mission-row assertion runs against
       // the checklist that actually renders it — stopping at the model step
       // would let a Mission regression pass unseen.
-      await clickByText((t) => t.startsWith("Connect"));
+      await clickByText((t) => isArcPrimary(t));
       // The review step is the heading and the woken agent, nothing else: the
       // checklist that restated the walk in three rows is gone, and with it
       // the Mission row that could only render unchecked.
@@ -394,6 +483,9 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       mockCompaniesApi.list.mockResolvedValue([]);
       mockCompaniesApi.create.mockResolvedValue({ id: "company-new", issuePrefix: "INI" });
 
+      // The model step needs tiles to pick from, and this suite's default
+      // registry is empty.
+      mockAdapterRegistry.list = [{ type: "claude_local" }, { type: "codex_local" }];
       const { root, queryClient } = render();
       const renderTree = () =>
         act(async () => {
@@ -424,8 +516,9 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
         setControlledValue(agentField, "Ada");
       });
       await flushReact();
-      await clickText((t) => t.startsWith("Next"));
-      await clickText((t) => t.startsWith("Connect"));
+      await clickText((t) => isArcPrimary(t));
+      await pickFirstSource(clickText);
+      await clickText((t) => isArcPrimary(t));
 
       expect(mockAgentsApi.hire).toHaveBeenCalled();
       // The mock is declared with no parameters, so index the call rather than
@@ -458,11 +551,12 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
         setControlledValue(agentField, "Ada");
       });
       await flushReact();
-      await clickByText((t) => t.startsWith("Next"));
+      await clickByText((t) => isArcPrimary(t));
       expect(document.body.textContent).toContain("Connect a model");
+      await pickFirstSource(clickByText);
 
       const connect = [...document.body.querySelectorAll("button")].find((b) =>
-        b.textContent?.trim().startsWith("Connect"),
+        isArcPrimary(b.textContent?.trim() ?? ""),
       )!;
       await act(async () => {
         connect.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -557,7 +651,12 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
 
   describe("hire gate: adapter authentication (claude_local, the default onboarding adapter)", () => {
     /** Drives the wizard to the Connect step, agent name already filled in. */
-    async function openConnectStep() {
+    async function openConnectStep({ useApiKeys = false } = {}) {
+      // The tile row is built from this registry, and the suite's default is
+      // empty. That was survivable while the step preselected a source; now that
+      // nothing is chosen until a tile is pressed, a step with no tiles is a step
+      // that can never advance.
+      mockAdapterRegistry.list = [{ type: "claude_local" }, { type: "codex_local" }];
       mockCompaniesApi.create.mockResolvedValue({ id: "company-new", issuePrefix: "INI" });
       window.localStorage.setItem(
         ONBOARDING_STORAGE_KEY,
@@ -596,8 +695,23 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
         setControlledValue(agentField, "Ada");
       });
       await flushReact();
-      await clickByText((t) => t.startsWith("Next"));
+      await clickByText((t) => isArcPrimary(t));
       expect(document.body.textContent).toContain("Connect a model");
+
+      // The credential mode is chosen *before* a source, because picking a
+      // source starts the sequence and the mode link fades out with the row —
+      // after that it is inert, and switching would mean changing the card out
+      // from under a running sign-in.
+      if (useApiKeys) {
+        await clickByText((t) => t.startsWith("Use API key"));
+      }
+
+      // Pick a source. The step arrives with nothing chosen — `adapterType`
+      // carries a value for the hire, but that is not the same as the customer
+      // having answered — so the input surface stays closed and the step will
+      // not advance until a tile is pressed. Every case below is about what
+      // happens *after* that choice, so the helper makes it.
+      await pickFirstSource(clickByText);
 
       return { root, clickByText };
     }
@@ -617,7 +731,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       });
       const { root, clickByText } = await openConnectStep();
 
-      await clickByText((t) => t.startsWith("Connect"));
+      await clickByText((t) => isArcPrimary(t));
 
       expect(mockAgentsApi.hire).not.toHaveBeenCalled();
       expect(document.body.textContent).toContain(
@@ -642,9 +756,177 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       });
       const { root, clickByText } = await openConnectStep();
 
-      await clickByText((t) => t.startsWith("Connect"));
+      await clickByText((t) => isArcPrimary(t));
 
       expect(mockAgentsApi.hire).toHaveBeenCalled();
+
+      await act(async () => root.unmount());
+    });
+
+    // The Connect handler reuses a passing probe instead of re-running it, so the
+    // effect that clears the cache has to name every input to the configuration
+    // the probe tested. `credentialMode` and `apiKey` were missing from it, and
+    // the gap is reachable: the probe and the hire share one try/catch, so a hire
+    // that throws leaves the pass in state. Switching to a key and pressing
+    // Connect again then hired against a key nothing had tested.
+    /**
+     * Typing a key into this step must not put the key into the agent's stored
+     * configuration. That configuration is persisted and revisioned, so a plain
+     * value there is a live credential at rest in every copy of it — which is
+     * what this step did before, and what the Claude token path has always
+     * avoided by holding a `user_secret_ref` instead.
+     */
+    describe("an API key typed on the step", () => {
+      const KEY = "sk-ant-typed-by-the-customer";
+
+      // The canvas holding the key field only opens once a source is selected,
+      // and the tile row that selects one is built from this registry. The
+      // suite's default is empty, which leaves the step with no tiles, no
+      // canvas, and no field to type into.
+      beforeEach(() => {
+        mockAdapterRegistry.list = [{ type: "claude_local" }, { type: "codex_local" }];
+        // No definition and no stored value yet: the first customer to type a key.
+        mockSecretsApi.listMyUserSecrets.mockResolvedValue([]);
+        mockSecretsApi.createUserSecretDefinition.mockResolvedValue({ id: "def-1" });
+        mockSecretsApi.createMyUserSecret.mockResolvedValue({ id: "secret-abc" });
+        mockSecretsApi.rotateMyUserSecret.mockResolvedValue({ id: "secret-existing" });
+      });
+
+      async function connectWithApiKey() {
+        const handles = await openConnectStep({ useApiKeys: true });
+        const field = document.body.querySelector(
+          'input[type="password"]',
+        ) as HTMLInputElement;
+        await act(async () => {
+          setControlledValue(field, KEY);
+        });
+        await flushReact();
+        await handles.clickByText((t) => isArcPrimary(t));
+        return handles;
+      }
+
+      it("is stored as the user's own secret and referenced, never carried in the hire", async () => {
+        const { root } = await connectWithApiKey();
+
+        expect(mockSecretsApi.createMyUserSecret).toHaveBeenCalledTimes(1);
+        const [, createBody] = mockSecretsApi.createMyUserSecret.mock.calls.at(-1) as [
+          string,
+          { definitionKey: string; value: string },
+        ];
+        expect(createBody.definitionKey).toBe("ANTHROPIC_API_KEY");
+        expect(createBody.value).toBe(KEY);
+
+        const hireBody = (mockAgentsApi.hire.mock.calls.at(-1) as unknown[])[1] as {
+          adapterConfig: { env?: Record<string, unknown> };
+        };
+        // The same binding kind the subscription half of this step produces.
+        expect(hireBody.adapterConfig.env?.ANTHROPIC_API_KEY).toEqual({
+          type: "user_secret_ref",
+          key: "ANTHROPIC_API_KEY",
+          version: "latest",
+        });
+        // The whole payload, not just that one field: the point is that the key
+        // is nowhere in what gets persisted, however it might be nested.
+        expect(JSON.stringify(hireBody)).not.toContain(KEY);
+
+        await act(async () => root.unmount());
+      });
+
+      // Onboarding is the first thing to need this definition, so it creates it.
+      it("creates the definition once, then reuses it", async () => {
+        await connectWithApiKey();
+        expect(mockSecretsApi.createUserSecretDefinition).toHaveBeenCalledTimes(1);
+
+        mockSecretsApi.listMyUserSecrets.mockResolvedValue([
+          { definition: { id: "def-1", key: "ANTHROPIC_API_KEY" }, secret: null },
+        ]);
+        const { root } = await connectWithApiKey();
+
+        expect(mockSecretsApi.createUserSecretDefinition).toHaveBeenCalledTimes(1);
+
+        await act(async () => root.unmount());
+      });
+
+      // A second value against one definition is what the server refuses, so a
+      // customer who already has a key stored must rotate rather than add.
+      it("rotates an existing value instead of storing a second one", async () => {
+        mockSecretsApi.listMyUserSecrets.mockResolvedValue([
+          {
+            definition: { id: "def-1", key: "ANTHROPIC_API_KEY" },
+            secret: { id: "secret-existing" },
+          },
+        ]);
+        const { root } = await connectWithApiKey();
+
+        expect(mockSecretsApi.rotateMyUserSecret).toHaveBeenCalledWith(
+          expect.any(String),
+          "secret-existing",
+          { value: KEY },
+        );
+        expect(mockSecretsApi.createMyUserSecret).not.toHaveBeenCalled();
+
+        await act(async () => root.unmount());
+      });
+
+      // The one outcome that must never happen is a hire that falls back to
+      // embedding the key because storing it failed.
+      it("blocks the hire when the key cannot be stored", async () => {
+        mockSecretsApi.createMyUserSecret.mockRejectedValue(new Error("vault unreachable"));
+        const { root } = await connectWithApiKey();
+
+        expect(mockAgentsApi.hire).not.toHaveBeenCalled();
+        expect(document.body.textContent).toContain("Could not store the API key");
+
+        await act(async () => root.unmount());
+      });
+
+      it("stores one secret when Connect is pressed twice with the same key", async () => {
+        mockAgentsApi.hire.mockRejectedValueOnce(new Error("network went away"));
+        const { root, clickByText } = await connectWithApiKey();
+
+        await clickByText((t) => isArcPrimary(t));
+
+        expect(mockSecretsApi.createMyUserSecret).toHaveBeenCalledTimes(1);
+
+        await act(async () => root.unmount());
+      });
+    });
+
+    it("re-probes rather than reusing a pass when the credential mode changes", async () => {
+      mockAgentsApi.testEnvironment.mockResolvedValue({
+        adapterType: "claude_local",
+        status: "pass" as const,
+        checks: [],
+        testedAt: new Date().toISOString(),
+      });
+      // The hire fails, which is what leaves the passing probe behind.
+      mockAgentsApi.hire.mockRejectedValueOnce(new Error("network went away"));
+
+      const { root, clickByText } = await openConnectStep();
+
+      await clickByText((t) => isArcPrimary(t));
+      expect(mockAgentsApi.testEnvironment).toHaveBeenCalledTimes(1);
+
+      // Switching the credential mode means backing out first: the mode link
+      // fades away with the row once a source is chosen, and is inert after
+      // that, so it cannot be used to change the card out from under a running
+      // sign-in. Back unwinds to the question, and the answer is given again.
+      await clickByText((t) => t.startsWith("Back"));
+      await clickByText((t) => t.startsWith("Use API key"));
+      await pickFirstSource(clickByText);
+
+      const field = document.body.querySelector(
+        'input[type="password"]',
+      ) as HTMLInputElement;
+      await act(async () => {
+        setControlledValue(field, "sk-ant-rekey");
+      });
+      await flushReact();
+      await clickByText((t) => isArcPrimary(t));
+
+      // A different configuration, so the passing probe from before it cannot
+      // stand in for one against this one.
+      expect(mockAgentsApi.testEnvironment).toHaveBeenCalledTimes(2);
 
       await act(async () => root.unmount());
     });
@@ -664,13 +946,13 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       });
       const { root, clickByText } = await openConnectStep();
 
-      await clickByText((t) => t.startsWith("Connect"));
+      await clickByText((t) => isArcPrimary(t));
       expect(mockAgentsApi.testEnvironment).toHaveBeenCalledTimes(1);
       expect(mockAgentsApi.hire).not.toHaveBeenCalled();
 
       // A second Connect must not treat the first (cached) blocking result as
       // reusable — it re-probes, and the create path stays closed.
-      await clickByText((t) => t.startsWith("Connect"));
+      await clickByText((t) => isArcPrimary(t));
       expect(mockAgentsApi.testEnvironment).toHaveBeenCalledTimes(2);
       expect(mockAgentsApi.hire).not.toHaveBeenCalled();
 
@@ -685,7 +967,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       });
       const { root, clickByText } = await openConnectStep();
 
-      await clickByText((t) => t.startsWith("Connect"));
+      await clickByText((t) => isArcPrimary(t));
 
       expect(mockAgentsApi.hire).toHaveBeenCalled();
       const hireArgs = mockAgentsApi.hire.mock.calls.at(-1) as unknown[];
@@ -710,7 +992,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       // scenario this test is named for.
       const { root, clickByText } = await openConnectStep();
 
-      await clickByText((t) => t.startsWith("Connect"));
+      await clickByText((t) => isArcPrimary(t));
 
       expect(mockAgentsApi.hire).toHaveBeenCalled();
       const hireArgs = mockAgentsApi.hire.mock.calls.at(-1) as unknown[];
@@ -735,7 +1017,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       });
       const { root, clickByText } = await openConnectStep();
 
-      await clickByText((t) => t.startsWith("Connect"));
+      await clickByText((t) => isArcPrimary(t));
 
       expect(mockAgentsApi.hire).toHaveBeenCalled();
       // The status route must not even be asked — the conflict is decided
@@ -760,7 +1042,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       });
       const { root, clickByText } = await openConnectStep();
 
-      await clickByText((t) => t.startsWith("Connect"));
+      await clickByText((t) => isArcPrimary(t));
 
       expect(mockAgentsApi.hire).toHaveBeenCalled();
       const hireArgs = mockAgentsApi.hire.mock.calls.at(-1) as unknown[];
@@ -785,7 +1067,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       });
       const { root, clickByText } = await openConnectStep();
 
-      await clickByText((t) => t.startsWith("Connect"));
+      await clickByText((t) => isArcPrimary(t));
 
       expect(mockAgentsApi.testEnvironment).toHaveBeenCalled();
       const testArgs = mockAgentsApi.testEnvironment.mock.calls.at(-1) as unknown[];
@@ -804,7 +1086,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       // The default `beforeEach` mock already rejects with a 404 `ApiError`.
       const { root, clickByText } = await openConnectStep();
 
-      await clickByText((t) => t.startsWith("Connect"));
+      await clickByText((t) => isArcPrimary(t));
 
       expect(mockAgentsApi.testEnvironment).toHaveBeenCalled();
       const testArgs = mockAgentsApi.testEnvironment.mock.calls.at(-1) as unknown[];
@@ -858,7 +1140,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       );
       const { root, clickByText } = await openConnectStep();
 
-      await clickByText((t) => t.startsWith("Connect"));
+      await clickByText((t) => isArcPrimary(t));
 
       expect(mockAgentsApi.hire).toHaveBeenCalled();
 
@@ -881,7 +1163,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       });
       const { root, clickByText } = await openConnectStep();
 
-      await clickByText((t) => t.startsWith("Connect"));
+      await clickByText((t) => isArcPrimary(t));
 
       expect(mockAgentsApi.hire).not.toHaveBeenCalled();
       expect(document.body.textContent).toContain(
@@ -902,10 +1184,10 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       mockAgentsApi.hire.mockRejectedValue(new Error("hire failed"));
       const { root, clickByText } = await openConnectStep();
 
-      await clickByText((t) => t.startsWith("Connect"));
+      await clickByText((t) => isArcPrimary(t));
       expect(mockAgentsApi.getClaudeOAuthTokenStatus).toHaveBeenCalledTimes(1);
 
-      await clickByText((t) => t.startsWith("Connect"));
+      await clickByText((t) => isArcPrimary(t));
       expect(mockAgentsApi.getClaudeOAuthTokenStatus).toHaveBeenCalledTimes(2);
 
       await act(async () => root.unmount());
@@ -992,6 +1274,132 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
     });
   });
 
+  it("keeps the live wizard mounted while a post-create company-list refetch runs", async () => {
+    // The authorization fetch needs to delay the first mount when a draft
+    // exists. Once the customer has typed, though, invalidating that query is
+    // normal background work. Unmounting for the refetch remounted the wizard
+    // from this page-load draft and made a successful create look like a reset.
+    window.localStorage.setItem(
+      ONBOARDING_STORAGE_KEY,
+      JSON.stringify({ step: 1, companyName: "", createdCompanyId: null }),
+    );
+    let resolveRefetch: (companies: Array<{ id: string; name: string; issuePrefix: string }>) => void =
+      () => {};
+    mockCompaniesApi.list
+      .mockResolvedValueOnce([])
+      .mockImplementationOnce(
+        () =>
+          new Promise<Array<{ id: string; name: string; issuePrefix: string }>>((resolve) => {
+            resolveRefetch = resolve;
+          }),
+      );
+    mockCompaniesApi.create.mockResolvedValue({
+      id: "created",
+      name: "Created Co",
+      issuePrefix: "CRE",
+    });
+
+    const { root, queryClient } = render();
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <OnboardingWizard />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    const companyNameInput = document.querySelector("input") as HTMLInputElement;
+    setControlledValue(companyNameInput, "Created Co");
+    await act(async () => {
+      [...document.body.querySelectorAll("button")]
+        .find((button) => button.textContent?.trim() === "Continue")!
+        .dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(mockCompaniesApi.create).toHaveBeenCalledWith({ name: "Created Co" });
+    expect(mockCompaniesApi.list).toHaveBeenCalledTimes(2);
+    expect(document.querySelector("#onboarding-agent-name")).not.toBeNull();
+
+    await act(async () => {
+      resolveRefetch([{ id: "created", name: "Created Co", issuePrefix: "CRE" }]);
+    });
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("restores a draft after its initial ownership check fails and a retry succeeds", async () => {
+    // A failed first request cannot authorize the draft, so the wizard opens
+    // with safe defaults. The original gate remounted on a later successful
+    // retry so the now-verified draft could be restored; keep that recovery
+    // while preserving the post-create refetch fix above.
+    window.localStorage.setItem(
+      ONBOARDING_STORAGE_KEY,
+      JSON.stringify({
+        step: 3,
+        companyName: "Saved Co",
+        agentName: "Ops Lead",
+        createdCompanyId: "c1",
+      }),
+    );
+    const company = { id: "c1", name: "Saved Co", issuePrefix: "SC" };
+    let resolveRetry: (companies: Array<{ id: string; name: string; issuePrefix: string }>) => void =
+      () => {};
+    mockCompaniesApi.list
+      .mockRejectedValueOnce(new Error("company list unavailable"))
+      .mockImplementationOnce(
+        () =>
+          new Promise<Array<{ id: string; name: string; issuePrefix: string }>>((resolve) => {
+            resolveRetry = resolve;
+          }),
+      );
+
+    const { root, queryClient } = render();
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <OnboardingWizard />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    expect(document.querySelector("#onboarding-agent-name")).toBeNull();
+
+    mockCompany.companies = [company];
+    await act(async () => {
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.companies.list(SESSION_USER_ID),
+      });
+    });
+    await flushReact();
+
+    // The retry is intentionally still in flight. The wrapper removes the
+    // safe-default wizard so a completed validation can mount the saved draft.
+    expect(document.body.textContent).toBe("");
+
+    await act(async () => {
+      resolveRetry([company]);
+    });
+    await flushReact();
+
+    expect(mockCompaniesApi.list).toHaveBeenCalledTimes(2);
+    expect(queryClient.getQueryData(queryKeys.companies.list(SESSION_USER_ID))).toEqual({
+      companies: [company],
+      unauthorized: false,
+    });
+    const agentNameInput = document.querySelector(
+      "#onboarding-agent-name",
+    ) as HTMLInputElement | null;
+    expect(agentNameInput?.value).toBe("Ops Lead");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
   it("discards a saved draft for a company the signed-in account does not own, and wipes the stale blob", async () => {
     // The actual vulnerability this fix closes: localStorage is per-origin,
     // not per-account, so a browser that already onboarded "company-old" for
@@ -1063,7 +1471,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
     // It mounts: the companies query sets `retry: false`, and with no
     // companies the dashboard's "Get Started" button opens onboarding — a gate
     // that rendered nothing here would make that button dead.
-    expect(document.body.textContent).not.toBe("");
+    expect(document.querySelector('[data-testid="onboarding-wizard"]')).not.toBeNull();
     // The draft is not restored, because ownership cannot be verified...
     const nameInput = document.body.querySelector(
       "#onboarding-agent-name",
@@ -1108,7 +1516,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
     expect(localStorage).toHaveBeenCalled();
     // It mounted: the wizard is open with no draft, rather than the render
     // throwing on the way in.
-    expect(document.body.textContent).not.toBe("");
+    expect(document.querySelector('[data-testid="onboarding-wizard"]')).not.toBeNull();
 
     localStorage.mockRestore();
     await act(async () => {
@@ -1149,7 +1557,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
     await flushReact();
 
     // Mounted rather than blank...
-    expect(document.body.textContent).not.toBe("");
+    expect(document.querySelector('[data-testid="onboarding-wizard"]')).not.toBeNull();
     // ...but the draft was not restored, because the list cannot be trusted.
     const nameInput = document.body.querySelector(
       "#onboarding-agent-name",
@@ -1160,44 +1568,14 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       root.unmount();
     });
   });
-  it("closes without throwing when the browser denies storage access", async () => {
-    // `reset()` clears the draft and `handleClose` calls it, so the close
-    // button is a fourth storage call site. Guarding the read, the cleanup and
-    // the persist effect one at a time is how this one stayed unguarded while
-    // the others looked fixed.
-    const deny = () => {
-      throw new DOMException("The operation is insecure.", "SecurityError");
-    };
-    const localStorage = vi.spyOn(window, "localStorage", "get").mockImplementation(deny);
-    mockCompany.companies = [{ id: "c1", name: "My Co", issuePrefix: "MC" }];
-    mockCompany.loading = false;
-
-    const { root, queryClient } = render();
-    await act(async () => {
-      root.render(
-        <QueryClientProvider client={queryClient}>
-          <OnboardingWizard />
-        </QueryClientProvider>,
-      );
-    });
-    await flushReact();
-
-    const close = [...document.body.querySelectorAll("button")].find((b) =>
-      b.textContent?.includes("Close"),
-    );
-    expect(close).toBeDefined();
-    await act(async () => {
-      close!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-    await flushReact();
-
-    expect(mockDialog.closeOnboarding).toHaveBeenCalled();
-
-    localStorage.mockRestore();
-    await act(async () => {
-      root.unmount();
-    });
-  });
+  // The close-on-storage-denial case is gone with the control that reached it.
+  // Onboarding is a gate now, not a dialog: there is no X, Escape does not
+  // dismiss it, and nothing in the wizard calls `handleClose`. A test that
+  // clicked Close was asserting a path a customer no longer has.
+  //
+  // The open side of the same hazard is still covered by "renders instead of
+  // throwing when the browser denies storage access" directly above, which is
+  // the half that can still happen.
   it("leaves the draft untouched when the company query fails and onboarding is closed", async () => {
     // Mounting is safe for the draft precisely because the persist effect is
     // gated on the wizard being open. A closed wizard writes nothing, so the
@@ -1325,7 +1703,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
     await flushReact();
 
     // Mounted — so this is a real observation, not an unmounted false pass.
-    expect(document.body.textContent).not.toBe("");
+    expect(document.querySelector('[data-testid="onboarding-wizard"]')).not.toBeNull();
     expect(document.body.textContent).not.toContain("A's Lead");
     const nameInput = document.body.querySelector(
       "#onboarding-agent-name",
@@ -1399,7 +1777,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
     await flushReact();
 
     // Mounted, so this observes the real thing rather than an empty document.
-    expect(document.body.textContent).not.toBe("");
+    expect(document.querySelector('[data-testid="onboarding-wizard"]')).not.toBeNull();
     expect(document.body.textContent).not.toContain("A's Lead");
     const nameInput = document.body.querySelector(
       "#onboarding-agent-name",
@@ -1503,6 +1881,12 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableManagedSandboxOnly: false });
       mockAgentsApi.getAdapterAuthSignal.mockReset();
       mockAgentsApi.getAdapterAuthSignal.mockResolvedValue({ status: "present" });
+      // The row has to actually offer the adapter these drafts name. The login
+      // panel lives inside the input canvas, and the canvas opens for a chosen
+      // source — a saved adapter the row cannot show is not a chosen one, so
+      // without this the panel is absent for a reason that has nothing to do
+      // with the auth signal these tests are about.
+      mockAdapterRegistry.list = [{ type: "claude_local" }, { type: "codex_local" }];
     });
 
     /** Drives the wizard to the Connect step with a company already created. */
@@ -1538,8 +1922,161 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       // enough to reach the end of that chain.
       for (let i = 0; i < 5; i++) await flushReact();
       expect(document.body.textContent).toContain("Connect a model");
+      // No pick needed here: the draft this helper restores already names an
+      // adapter, which is what a run returning to this step actually carries.
       return { root, queryClient };
     }
+
+    it("names the tiles for the provider, not the adapter type", async () => {
+      // `MODEL_SOURCE_NAMES` exists so this row says "Claude" and "OpenAI" —
+      // which provider you are signing in to, the question the step's heading
+      // asks — rather than the display registry's tool names, which the agent
+      // config screens want. It was added with a long comment justifying it and
+      // then never read, so the row went on rendering whatever the registry
+      // supplied: "Claude Code" and "Codex" in the app, and the bare type here,
+      // since this suite's registry mock returns `label: type`.
+      mockAdapterRegistry.list = [{ type: "claude_local" }, { type: "codex_local" }];
+      const { root } = await openStep4({ adapterType: "claude_local" });
+
+      const labels = [...document.body.querySelectorAll("button[aria-checked]")].map(
+        (tile) => tile.textContent ?? "",
+      );
+      expect(labels.length, "both recommended sources should render").toBe(2);
+      expect(labels.some((l) => l.includes("Claude"))).toBe(true);
+      expect(labels.some((l) => l.includes("OpenAI"))).toBe(true);
+      // The negative half is the one that fails on the unwired version: the
+      // registry label is the adapter type, and it must not reach the tile.
+      expect(labels.join(" ")).not.toContain("claude_local");
+      expect(labels.join(" ")).not.toContain("codex_local");
+
+      await act(async () => root.unmount());
+    });
+
+    it("will not advance on a saved adapter the step no longer offers", async () => {
+      // A draft can name an adapter this registry does not carry — a cloud
+      // sandbox without claude_local, an adapter since disabled. The row hides
+      // it, so the step shows an unanswered question: no tile filled, no input
+      // canvas. The CTA has to agree with that.
+      //
+      // It did not. The gate asked `sourcePicked`, which only means "a draft
+      // named something", so Next stayed live on a step that had visibly asked
+      // nothing and would hire against the hidden name. Reported by Greptile on
+      // #12726.
+      mockAdapterRegistry.list = [{ type: "codex_local" }];
+      const { root } = await openStep4({ adapterType: "some_retired_adapter" });
+
+      const tiles = [...document.body.querySelectorAll("button[aria-checked]")];
+      expect(tiles.length, "the row should still offer what it has").toBeGreaterThan(0);
+      expect(
+        tiles.some((t) => t.getAttribute("aria-checked") === "true"),
+        "no tile should read as chosen",
+      ).toBe(false);
+
+      const cta = [...document.body.querySelectorAll("button")].find(
+        (b) => isArcPrimary(b.textContent?.trim() ?? ""),
+      );
+      expect(cta, "the step should render its forward button").toBeTruthy();
+      expect(
+        cta!.hasAttribute("disabled"),
+        "Connect must not advance a question the step has not visibly asked",
+      ).toBe(true);
+
+      // And it opens again the moment the customer answers it themselves.
+      await act(async () => {
+        tiles[0]!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      for (let i = 0; i < 5; i++) await flushReact();
+      const ctaAfter = [...document.body.querySelectorAll("button")].find(
+        (b) => isArcPrimary(b.textContent?.trim() ?? ""),
+      );
+      expect(ctaAfter!.hasAttribute("disabled")).toBe(false);
+
+      await act(async () => root.unmount());
+    });
+
+    it("will not advance on a saved adapter the row does not show", async () => {
+      // The other shape of the same defect, and the one the snap cannot cover.
+      //
+      // The tile row is `recommendedAdapters`; the snap's idea of "visible" is
+      // recommended *plus* the advanced list. An adapter in the second but not
+      // the first — a saved `opencode_local`, say — therefore satisfies the
+      // snap, which leaves it alone, while the row it is supposed to be chosen
+      // in never shows it. Nothing is highlighted, the canvas is shut, and with
+      // the gate on `sourcePicked` the CTA was live: one press hires against an
+      // adapter the customer has not seen on this screen.
+      mockAdapterRegistry.list = [{ type: "claude_local" }, { type: "opencode_local" }];
+      const { root } = await openStep4({ adapterType: "opencode_local" });
+
+      const tiles = [...document.body.querySelectorAll("button[aria-checked]")];
+      expect(
+        tiles.some((t) => t.getAttribute("aria-checked") === "true"),
+        "the saved adapter is not in this row, so nothing should read as chosen",
+      ).toBe(false);
+
+      const cta = [...document.body.querySelectorAll("button")].find(
+        (b) => isArcPrimary(b.textContent?.trim() ?? ""),
+      );
+      expect(
+        cta!.hasAttribute("disabled"),
+        "Connect must not hire an adapter the row never offered",
+      ).toBe(true);
+
+      await act(async () => root.unmount());
+    });
+
+    it("will not hire from the keyboard on a source nobody selected", async () => {
+      // The step has two ways forward, and gating only the visible one leaves
+      // the defect intact behind a keystroke. Cmd+Enter called
+      // `handleGiveHeartbeat` directly with its own, older list of conditions,
+      // so with the button correctly disabled the same screen still hired on
+      // Cmd+Enter. Reported by Greptile on #12726 after the button was fixed.
+      //
+      // The saved adapter is one the registry no longer carries, so the snap
+      // replaces it with `claude_local` and clears the pick: the row shows two
+      // tiles, neither chosen. A keystroke that gets through hires claude_local
+      // — a real, offerable adapter that nobody on this screen selected, which
+      // is what makes the bypass worth a test rather than a comment.
+      mockAdapterRegistry.list = [{ type: "claude_local" }, { type: "codex_local" }];
+      const { root } = await openStep4({ adapterType: "some_retired_adapter" });
+
+      const tiles = [...document.body.querySelectorAll("button[aria-checked]")];
+      expect(
+        tiles.some((t) => t.getAttribute("aria-checked") === "true"),
+        "the snap must not leave a tile reading as chosen",
+      ).toBe(false);
+
+      const wizard = document.querySelector('[data-testid="onboarding-wizard"]');
+      expect(wizard, "the wizard should be mounted").not.toBeNull();
+      for (const modifier of [{ metaKey: true }, { ctrlKey: true }]) {
+        await act(async () => {
+          wizard!.dispatchEvent(
+            new KeyboardEvent("keydown", { key: "Enter", bubbles: true, ...modifier }),
+          );
+        });
+        for (let i = 0; i < 6; i++) await flushReact();
+      }
+
+      expect(
+        mockAgentsApi.hire,
+        "no keystroke may hire a source nobody selected",
+      ).not.toHaveBeenCalled();
+
+      // And it works once the question is answered, so this is a gate rather
+      // than a dead shortcut.
+      await act(async () => {
+        tiles[0]!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      for (let i = 0; i < 6; i++) await flushReact();
+      await act(async () => {
+        wizard!.dispatchEvent(
+          new KeyboardEvent("keydown", { key: "Enter", bubbles: true, metaKey: true }),
+        );
+      });
+      for (let i = 0; i < 6; i++) await flushReact();
+      expect(mockAgentsApi.hire).toHaveBeenCalled();
+
+      await act(async () => root.unmount());
+    });
 
     it("starts no call to the test-environment route on adapter selection", async () => {
       const { root } = await openStep4();
@@ -1547,24 +2084,356 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       await act(async () => root.unmount());
     });
 
-    it("shows the login panel for claude_local when the signal reports no ready credential", async () => {
+    /**
+     * Press a source tile. This is what starts the sign-in — the row is the
+     * question, and answering it is the whole of the trigger. Nothing is
+     * selected on arrival, including from a draft that names an adapter.
+     */
+    async function pickSource(match: RegExp) {
+      const tile = [...document.body.querySelectorAll('[role="radio"]')].find((t) =>
+        match.test(t.textContent ?? ""),
+      );
+      expect(tile, "the row should offer that source").toBeTruthy();
+      await act(async () => {
+        tile!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      for (let i = 0; i < 10; i++) await flushReact();
+    }
+
+    /** Press the step's forward button and let the sign-in queries settle. */
+    async function pressArcPrimary() {
+      const cta = [...document.body.querySelectorAll("button")].find((b) =>
+        isArcPrimary(b.textContent?.trim() ?? ""),
+      );
+      expect(cta, "the step should render its forward button").toBeTruthy();
+      await act(async () => {
+        cta!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      for (let i = 0; i < 8; i++) await flushReact();
+    }
+
+    it("starts the claude_local sign-in on Connect when the signal reports no ready credential", async () => {
       mockAgentsApi.getAdapterAuthSignal.mockResolvedValue({ status: "absent" });
       const { root } = await openStep4({ adapterType: "claude_local" });
-      expect(document.body.textContent).toContain("Sign in to the environment");
+
+      // Nothing before the press. The card *is* the sign-in now, so it does not
+      // exist until the step has been asked to start one — which is the whole
+      // difference between this step and the one it replaced.
+      expect(mockAgentsApi.startClaudeSetupTokenLogin).not.toHaveBeenCalled();
+
+      await pickSource(/Claude/);
+
+      expect(mockAgentsApi.startClaudeSetupTokenLogin).toHaveBeenCalled();
+      // Connect started a sign-in rather than hiring. The ordering is the point:
+      // a hire here would create an agent with no credential to run on.
+      expect(mockAgentsApi.hire).not.toHaveBeenCalled();
+      expect(document.body.textContent).toContain(
+        "Sign in to Claude then come back and enter authorization code",
+      );
+
       await act(async () => root.unmount());
     });
 
-    it("shows the login panel for codex_local when the signal cannot decide", async () => {
+    it("collapses the row to the chosen source and walks the button through the sign-in", async () => {
+      // The sequence, end to end, as the step actually runs it: the row is the
+      // question, answering it starts the sign-in, and the button reports where
+      // that has got to rather than offering an action it cannot perform.
+      mockAgentsApi.getAdapterAuthSignal.mockResolvedValue({ status: "absent" });
+      const { root } = await openStep4({ adapterType: "claude_local" });
+
+      // Collapse is read off the row's own layout, not off how many tiles are
+      // in the DOM: the leaving tile exits through AnimatePresence, and in
+      // jsdom an exit never completes, so it stays mounted either way.
+      const rowCentred = () =>
+        document.body
+          .querySelector('[role="radiogroup"]')!
+          .className.includes("justify-center");
+      const cta = () =>
+        [...document.body.querySelectorAll("button")].pop()?.textContent?.trim();
+
+      // Nothing chosen yet on a fresh arrival: the row is a question.
+      expect(rowCentred()).toBe(false);
+
+      await pickSource(/Claude/);
+
+      // The row has been answered, so it now shows only the answer — leaving
+      // the alternative up would invite a press that has to cancel a live
+      // session to honour.
+      expect(rowCentred()).toBe(true);
+      expect(mockAgentsApi.startClaudeSetupTokenLogin).toHaveBeenCalled();
+
+      // And the button has become the sign-in rather than a step advance.
+      expect(cta()).toBe("Sign in to Claude");
+
+      // Back unwinds rather than leaving the step: the row is a question again.
+      const back = [...document.body.querySelectorAll("button")].find((b) =>
+        b.textContent?.trim().startsWith("Back"),
+      );
+      await act(async () => {
+        back!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      for (let i = 0; i < 10; i++) await flushReact();
+
+      expect(rowCentred()).toBe(false);
+      expect(cta()).toBe("Next");
+      expect(document.body.textContent).toContain("Connect a model");
+
+      await act(async () => root.unmount());
+    });
+
+    it("submits the browser code on the paste, not on the first keystroke", async () => {
+      mockAgentsApi.getAdapterAuthSignal.mockResolvedValue({ status: "absent" });
+      const { root } = await openStep4({ adapterType: "claude_local" });
+      await pickSource(/Claude/);
+
+      const field = document.body.querySelector(
+        'input[aria-label="Authorization code"]',
+      ) as HTMLInputElement | null;
+      expect(field, "the Claude card should offer a code field").toBeTruthy();
+
+      // The trap this pins. `isValidBrowserCode` reads like a completeness
+      // check and is not one — it accepts any printable ASCII from a single
+      // character up — so an auto-submit keyed off the value fires here, on the
+      // first character of anyone typing the code rather than pasting it, and
+      // clears the field they are typing into.
+      await act(async () => {
+        setControlledValue(field!, "Q");
+      });
+      for (let i = 0; i < 4; i++) await flushReact();
+      expect(mockAgentsApi.submitClaudeSetupTokenBrowserCode).not.toHaveBeenCalled();
+
+      // The paste is the answer, so it goes without a press. Order matches a
+      // real paste: the event lands before the value changes.
+      await act(async () => {
+        field!.dispatchEvent(new Event("paste", { bubbles: true }));
+        setControlledValue(field!, "Q2RJ-E1YIF-authorization-code");
+      });
+      for (let i = 0; i < 4; i++) await flushReact();
+      expect(mockAgentsApi.submitClaudeSetupTokenBrowserCode).toHaveBeenCalledWith(
+        "company-new",
+        "claude-session-1",
+        "Q2RJ-E1YIF-authorization-code",
+      );
+
+      await act(async () => root.unmount());
+    });
+
+    it("starts the sign-in on the first press, even when it changes the adapter", async () => {
+      // The regression this is here for. Picking a source sets the phase *and*
+      // the adapter, and a reset keyed on the adapter then put the phase
+      // straight back — so the first press did nothing and only a second one,
+      // which changed no adapter and so woke no effect, was allowed to stand.
+      //
+      // It only showed when the chosen source differed from the one the draft
+      // carried: picking the adapter already in state is a no-op React bails
+      // out of, so every existing case here happened to miss it.
+      mockAgentsApi.getAdapterAuthSignal.mockResolvedValue({ status: "unknown" });
+      const { root } = await openStep4({ adapterType: "claude_local" });
+
+      await pickSource(/OpenAI/);
+
+      expect(mockAgentsApi.startAdapterAuthLogin).toHaveBeenCalledTimes(1);
+      expect(
+        document.body
+          .querySelector('[role="radiogroup"]')!
+          .className.includes("justify-center"),
+        "one press should have answered the row",
+      ).toBe(true);
+
+      await act(async () => root.unmount());
+    });
+
+    it("opens the OpenAI card's sign-in once the prompt lands", async () => {
+      // The panel that shows a code owns its session and the wizard learns the
+      // prompt's URL only by being told. When it was not told, the step waited
+      // on a card that had already opened: the code sat on screen under a
+      // button still reading "Next", disabled, with nothing left to wait for.
+      //
+      // The sibling test above stops at the login having started, which is why
+      // this went unseen — and the harness could not see it either, since it
+      // supplies the prompt itself rather than going through the panel.
+      mockAgentsApi.getAdapterAuthSignal.mockResolvedValue({ status: "unknown" });
+      const { root } = await openStep4({ adapterType: "claude_local" });
+
+      await pickSource(/OpenAI/);
+      for (let i = 0; i < 6; i++) await flushReact();
+
+      // The displayed-code panel is the one under test: if the row picked a
+      // source the other panel serves, the rest of this proves nothing.
+      expect(mockAgentsApi.startAdapterAuthLogin).toHaveBeenCalled();
+      expect(mockAgentsApi.startClaudeSetupTokenLogin).not.toHaveBeenCalled();
+
+      const cta = [...document.body.querySelectorAll("button")].pop()!;
+      expect(cta.textContent?.trim()).toBe("Sign in to OpenAI");
+      // The code is the card's own content, and it arrives with the URL.
+      expect(document.body.textContent).toContain("Q2RJ-E1YIF");
+      // The button is the whole point: its destination is the URL the panel
+      // reports, so an unreported prompt leaves it reading like an offer and
+      // refusing the press. The label alone does not catch that — the phase can
+      // reach `ready` before the signal resolves, which names the button
+      // without enabling it.
+      expect(cta.hasAttribute("disabled"), "the sign-in should be pressable").toBe(
+        false,
+      );
+
+      await act(async () => root.unmount());
+    });
+
+    it("does not hire after Back interrupts the hold before step 5", async () => {
+      // "Connecting" is held for two seconds so it reads as a state rather than
+      // a flicker, and Back stays live throughout. The hire behind that hold
+      // knows nothing about the phase, so a timer left running took a customer
+      // who had just backed out to Review with an agent hired anyway.
+      mockAgentsApi.getAdapterAuthSignal.mockResolvedValue({ status: "absent" });
+      // A session the server has already authenticated, so the panel completes
+      // and reports success on its own. The paste that normally gets it there
+      // is the sibling test's subject; this one is about what the success does.
+      mockAgentsApi.getClaudeSetupTokenLoginStatus.mockResolvedValue({
+        sessionId: "claude-session-1",
+        status: "authenticated",
+        expiresAt: new Date(Date.now() + 600_000).toISOString(),
+      });
+      const { root } = await openStep4({ adapterType: "claude_local" });
+      await pickSource(/Claude/);
+      for (let i = 0; i < 8; i++) await flushReact();
+
+      const cta = () =>
+        [...document.body.querySelectorAll("button")].pop()?.textContent?.trim();
+      expect(cta(), "success should have taken the button to the hold").toBe(
+        "Connecting",
+      );
+
+      const back = [...document.body.querySelectorAll("button")].find((b) =>
+        b.textContent?.trim().startsWith("Back"),
+      );
+      await act(async () => {
+        back!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      for (let i = 0; i < 10; i++) await flushReact();
+
+      // Past the hold: whatever it was going to do, it has had its chance.
+      await act(async () => {
+        await new Promise((resolve) => window.setTimeout(resolve, CONNECTED_HOLD_MS + 400));
+      });
+      for (let i = 0; i < 6; i++) await flushReact();
+
+      expect(mockAgentsApi.hire).not.toHaveBeenCalled();
+      expect(document.body.textContent).toContain("Connect a model");
+
+      await act(async () => root.unmount());
+    });
+
+    it("starts no login when Back interrupts the collapse", async () => {
+      // Backing out before the card has opened has nothing to close. Unwinding
+      // through the card beat regardless mounted the panel — which starts a
+      // server login on mount — only for the unmount to cancel it, and a cancel
+      // that fails holds the per-owner reservation until the server deadline,
+      // so the retry the customer is about to make cannot start.
+      //
+      // The beats collapse to zero without a `matchMedia` to ask, which is why
+      // this stubs one: the collapse has to still be running when Back lands.
+      const realMatchMedia = window.matchMedia;
+      Object.defineProperty(window, "matchMedia", {
+        configurable: true,
+        writable: true,
+        value: (query: string) => ({
+          matches: false,
+          media: query,
+          onchange: null,
+          addListener: () => {},
+          removeListener: () => {},
+          addEventListener: () => {},
+          removeEventListener: () => {},
+          dispatchEvent: () => false,
+        }),
+      });
+      try {
+        mockAgentsApi.getAdapterAuthSignal.mockResolvedValue({ status: "absent" });
+        const { root } = await openStep4({ adapterType: "claude_local" });
+
+        await pickSource(/Claude/);
+        // Still collapsing: the flushes above are microtasks and 0ms timers,
+        // far inside the collapse's own duration.
+        expect(mockAgentsApi.startClaudeSetupTokenLogin).not.toHaveBeenCalled();
+
+        const back = [...document.body.querySelectorAll("button")].find((b) =>
+          b.textContent?.trim().startsWith("Back"),
+        );
+        await act(async () => {
+          back!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        });
+        for (let i = 0; i < 10; i++) await flushReact();
+        await act(async () => {
+          await new Promise((resolve) => window.setTimeout(resolve, 1200));
+        });
+        for (let i = 0; i < 6; i++) await flushReact();
+
+        expect(mockAgentsApi.startClaudeSetupTokenLogin).not.toHaveBeenCalled();
+        expect(document.body.textContent).toContain("Connect a model");
+
+        await act(async () => root.unmount());
+      } finally {
+        Object.defineProperty(window, "matchMedia", {
+          configurable: true,
+          writable: true,
+          value: realMatchMedia,
+        });
+      }
+    });
+
+    it("starts the codex_local sign-in on Connect when the signal cannot decide", async () => {
       mockAgentsApi.getAdapterAuthSignal.mockResolvedValue({ status: "unknown" });
       const { root } = await openStep4({ adapterType: "codex_local" });
-      expect(document.body.textContent).toContain("Sign in to the environment");
+
+      expect(mockAgentsApi.startAdapterAuthLogin).not.toHaveBeenCalled();
+
+      await pickSource(/OpenAI/);
+
+      expect(mockAgentsApi.startAdapterAuthLogin).toHaveBeenCalled();
+      expect(mockAgentsApi.hire).not.toHaveBeenCalled();
+      // The displayed-code login hands a code over rather than taking one back,
+      // so both halves of it have to reach the screen.
+      expect(document.body.textContent).toContain(
+        "Sign in to OpenAI by providing the authorization code below",
+      );
+      expect(document.body.textContent).toContain("Q2RJ-E1YIF");
+
+      // The link lives inside the sentence now rather than in a row of its own,
+      // and points at the same address the step's button opens — it is the
+      // path for anyone finishing the sign-in in another browser.
+      const link = document.body.querySelector('a[href*="auth.openai.com"]');
+      expect(link, "the sign-in link should be in the instruction").toBeTruthy();
+      expect(link!.textContent).toBe("Sign in to OpenAI");
+
+      // And the code sits below the sentence carrying it.
+      const code = [...document.body.querySelectorAll("span")].find(
+        (el) => el.textContent?.trim() === "Q2RJ-E1YIF",
+      );
+      expect(code, "the code row should render").toBeTruthy();
+      expect(
+        link!.compareDocumentPosition(code!) & Node.DOCUMENT_POSITION_FOLLOWING,
+        "the code should follow the sentence that links to the sign-in",
+      ).toBeTruthy();
+
       await act(async () => root.unmount());
     });
 
-    it("hides the login panel when the signal reports a ready credential", async () => {
+    it("hires on Connect, with no sign-in, when the signal reports a ready credential", async () => {
       mockAgentsApi.getAdapterAuthSignal.mockResolvedValue({ status: "present" });
       const { root } = await openStep4({ adapterType: "claude_local" });
-      expect(document.body.textContent).not.toContain("Sign in to the environment");
+
+      // Answer the row, then press: with a credential already in place there is
+      // no sign-in to run, so the button goes straight to the hire.
+      await pickSource(/Claude/);
+      await pressArcPrimary();
+
+      // The positive half is what makes this a test: a source that is already
+      // signed in goes straight to the hire, so Connect keeps its old meaning
+      // wherever there is no sign-in to do. Asserting only the absence of a
+      // card would pass just as well if the button had stopped working.
+      expect(mockAgentsApi.hire).toHaveBeenCalled();
+      expect(mockAgentsApi.startClaudeSetupTokenLogin).not.toHaveBeenCalled();
+
       await act(async () => root.unmount());
     });
 
@@ -1596,8 +2465,16 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
         await flushReact();
       };
 
-      await clickByText((t) => t.startsWith("Advanced settings"));
-      await clickByText((t) => t === "codex_local");
+      // Straight to the tile. The adapter change used to be reached through an
+      // "Advanced settings" disclosure listing every non-recommended adapter;
+      // the step now offers Claude and Codex as tiles and spends that line on
+      // the credential switch instead. What is asserted below is unchanged —
+      // changing the source re-reads the signal — only the route there is.
+      // The tile's text is the label plus its credential tag, hence the prefix.
+      // That label is the provider name now, not the adapter type: this row
+      // asks which provider you are signing in to, so it reads through
+      // `MODEL_SOURCE_NAMES` rather than the display registry.
+      await clickByText((t) => t.startsWith("OpenAI"));
 
       expect(mockAgentsApi.getAdapterAuthSignal).toHaveBeenCalledWith(
         "company-new",
@@ -1613,7 +2490,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       mockInstanceSettingsApi.get.mockResolvedValue({ defaultEnvironmentId: null });
       mockAgentsApi.getAdapterAuthSignal.mockResolvedValue({ status: "absent" });
       const { root } = await openStep4({ adapterType: "claude_local" });
-      expect(document.body.textContent).not.toContain("Sign in to the environment");
+      expect(document.body.textContent).not.toContain("Sign in to Anthropic");
       expect(mockAgentsApi.getAdapterAuthSignal).not.toHaveBeenCalled();
       await act(async () => root.unmount());
     });

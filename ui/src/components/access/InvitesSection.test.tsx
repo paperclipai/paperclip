@@ -207,7 +207,9 @@ describe("InvitesSection", () => {
       "https://paperclip.local/invite/new-token",
     );
     expect(container.textContent).toContain("Copy link");
-    expect(container.textContent).toContain("Open invite");
+    // The inviter opening their own single-use link is never what they
+    // mean, so the section deliberately offers no "Open invite" action.
+    expect(container.textContent).not.toContain("Open invite");
     expect(pushToastMock).toHaveBeenCalledWith({
       title: "Invite created",
       body: "Invite ready below and copied to clipboard.",

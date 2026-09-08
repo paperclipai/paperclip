@@ -76,7 +76,10 @@ export function ProfileDetail({
     enabled: pendingNewTools > 0,
   });
 
-  const invalidate = () => queryClient.invalidateQueries({ queryKey: queryKeys.tools.profiles(companyId) });
+  const invalidate = () => {
+    queryClient.invalidateQueries({ queryKey: queryKeys.tools.profiles(companyId) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.tools.testAgentAccesses() });
+  };
   const errorBody = (error: unknown) => String((error as Error)?.message ?? error);
 
   const allowRows = useMemo(

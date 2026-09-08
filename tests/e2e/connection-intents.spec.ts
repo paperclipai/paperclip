@@ -22,11 +22,6 @@ async function newCompany(request: APIRequestContext): Promise<Seed> {
       data: { name: `Connection intent E2E ${Date.now()}` },
     }),
   );
-  await json(
-    await request.patch("/api/instance/settings/experimental", {
-      data: { enableApps: true },
-    }),
-  );
   return { companyId: company.id, prefix: company.issuePrefix };
 }
 
@@ -208,14 +203,20 @@ test("store setup and task connection intent share one fake provider through con
 
     // Entry point one: connect and test the provider through the Connections store.
     await page.goto(`/${seed.prefix}/apps`);
-    await expect(page.getByRole("heading", { name: "Browse" })).toBeVisible({
+    await expect(page.getByRole("heading", { name: "Connectors" })).toBeVisible({
       timeout: 30_000,
     });
-    await page.getByRole("button", { name: /Connect your own tool/i }).click();
+    const customConnector = page
+      .getByRole("list", { name: "Connector list" })
+      .getByRole("listitem")
+      .filter({ hasText: "Connect your own tool" });
+    await customConnector.getByRole("button", { name: "Connect", exact: true }).click();
+    await customConnector.getByRole("button", { name: "Connect your own MCP server" }).click();
     await page
       .getByPlaceholder("https://example.com/actions")
       .fill(provider.url);
     await page.getByRole("button", { name: "Continue" }).click();
+    await page.getByRole("button", { name: "Save and continue" }).click();
     await page.getByRole("button", { name: /Check link/i }).click();
     // A no-auth read-only provider can complete the access/install defaults in
     // one commit. Other methods exercise the same intermediate steps in the
@@ -249,11 +250,12 @@ test("store setup and task connection intent share one fake provider through con
       }),
     );
 
-    await page.goto(`/${seed.prefix}/apps/${connectionId}/test`);
+    await page.goto(`/${seed.prefix}/apps/${connectionId}/permissions`);
+    const actionRow = page.locator("[data-action-id]").filter({ hasText: "List fixture pages" });
+    await actionRow.getByRole("button", { name: "Test", exact: true }).click();
     await expect(
-      page.getByRole("heading", { name: "Test an action" }),
+      page.getByRole("heading", { name: "Test List fixture pages" }),
     ).toBeVisible({ timeout: 30_000 });
-    await page.getByRole("button", { name: /List fixture pages/i }).click();
     await page.getByRole("button", { name: "Run", exact: true }).click();
     await expect(page.getByText("Fixture page inventory")).toBeVisible({
       timeout: 30_000,

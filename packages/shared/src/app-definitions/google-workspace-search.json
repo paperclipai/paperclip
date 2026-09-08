@@ -41,7 +41,8 @@
         "description": "Search Gmail, Drive, Calendar, and Chat without write access."
       },
       "grantKinds": [
-        "user"
+        "user",
+        "organization"
       ],
       "ownershipModes": [
         "platform_shared"
@@ -74,7 +75,8 @@
         "description": "Search Gmail, Drive, Calendar, and Chat without write access."
       },
       "grantKinds": [
-        "user"
+        "user",
+        "organization"
       ],
       "ownershipModes": [
         "customer"

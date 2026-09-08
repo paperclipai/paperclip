@@ -58,6 +58,13 @@ WORKDIR /app
 # version-pinned, checksum-verified installer and let the runner's own
 # rust-toolchain.toml choose the compiler — one pin, owned by the runner
 # package, shared by CI and image builds alike.
+#
+# The C toolchain is explicit: apt's cargo used to pull gcc in as a
+# dependency, and rustup does not — without it every build script dies on
+# "linker `cc` not found".
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends gcc libc6-dev pkg-config \
+  && rm -rf /var/lib/apt/lists/*
 ENV RUSTUP_HOME=/usr/local/rustup \
     CARGO_HOME=/usr/local/cargo \
     PATH=/usr/local/cargo/bin:$PATH

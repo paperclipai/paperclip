@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agentSessionGoalActions,
   agentTaskSessions,
@@ -16,6 +16,7 @@ import {
 import {
   applyRunnerGoalPrpEvent,
   blockRunnerGoalRecovery,
+  failRunnerGoalAction,
   RunnerGoalConflictError,
   runnerGoalService,
 } from "./runner-goals.js";
@@ -75,6 +76,50 @@ describeEmbeddedPostgres("runner goal service", () => {
     });
     return { companyId, agentId, issueId };
   }
+
+  it.each(["codex_local", "claude_local"])("does not convert %s into another execution path for goals", async (adapterType) => {
+    const binding = await seed();
+    await db.update(agents).set({ adapterType, adapterConfig: { engine: "acp", mode: "persistent" } });
+    const enqueueOfflineControl = vi.fn(async () => {});
+    const service = runnerGoalService(db, { enqueueOfflineControl });
+    const projection = await service.projection(binding.companyId, binding.issueId);
+    expect(projection?.capability).toMatchObject({
+      availability: "unsupported",
+      reasonCode: "direct_adapter_goal_controller_unavailable",
+      actions: [],
+    });
+    await expect(service.act(binding.companyId, binding.issueId, {
+      requestId: randomUUID(), agentId: binding.agentId, expectedRevision: 0,
+      action: "create", objective: "Never start an ordinary prompt",
+    })).rejects.toThrow();
+    expect(enqueueOfflineControl).not.toHaveBeenCalled();
+    expect(await db.select().from(agentSessionGoalActions)).toHaveLength(0);
+  });
+
+  it("revisions failed goal starts and ignores repeated failure delivery", async () => {
+    const binding = await seed();
+    const service = runnerGoalService(db, {
+      dispatchLiveControl: () => ({ runId: "run-live", completion: Promise.resolve() }),
+      queueLiveCommand: () => null,
+    });
+    const requestId = randomUUID();
+    const accepted = await service.act(binding.companyId, binding.issueId, {
+      requestId,
+      agentId: binding.agentId,
+      expectedRevision: 0,
+      action: "create",
+      objective: "Observe a failed start",
+    });
+    const failed = await failRunnerGoalAction(db, {
+      ...binding, adapterType: "paperclip_runner",
+    }, requestId, "provider_start_failed");
+    expect(failed?.pendingAction).toBeNull();
+    expect(failed?.revision).toBe(accepted.projection.revision + 1);
+    expect(await failRunnerGoalAction(db, {
+      ...binding, adapterType: "paperclip_runner",
+    }, requestId, "duplicate_failure")).toBeNull();
+    expect((await service.projection(binding.companyId, binding.issueId))?.revision).toBe(failed?.revision);
+  });
 
   it("enforces revisions, correlates acknowledgements, and fences cleared goals", async () => {
     const binding = await seed();

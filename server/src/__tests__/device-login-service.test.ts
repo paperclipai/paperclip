@@ -382,6 +382,84 @@ describe("device login service", () => {
     expect(JSON.stringify(activity)).not.toContain(PROMPT_CODE);
   });
 
+  it("wraps the terminal authenticated commit in a promotion's runTerminalCommit", async () => {
+    // A promotion that defines `runTerminalCommit` gets the chance to wrap the
+    // service's own terminal write, so it can hold a lock across a check it
+    // already ran once earlier in `promote` and the write that publishes
+    // `authenticated`.
+    const store = createMemoryStore();
+    const { runtime } = createFakeRuntime({
+      exec: execSuccess,
+      authBytes: Buffer.from('{"token":"secret"}'),
+    });
+    const companyId = randomUUID();
+    const wrapCalls: unknown[] = [];
+    const service = makeService({
+      store,
+      runtime,
+      promotion: {
+        promote: () => {},
+        async runTerminalCommit(commit, context) {
+          wrapCalls.push(context);
+          return commit();
+        },
+      },
+    });
+    const { session, completed } = await service.start({
+      companyId,
+      environmentId: randomUUID(),
+      adapterType: ADAPTER_TYPE,
+      startedByUserId: OWNER_A,
+    });
+
+    const outcome = await completed;
+    expect(outcome.status).toBe("authenticated");
+    expect(wrapCalls).toHaveLength(1);
+    const row = await store.getByPublicId(session.sessionId, companyId);
+    expect(row?.status).toBe("authenticated");
+  });
+
+  it("records a failed terminal, and never authenticates, when runTerminalCommit rejects", async () => {
+    // A promotion's `runTerminalCommit` rejects when its own re-check, run
+    // immediately before the terminal write, finds the value it validated
+    // earlier no longer holds (for example, a rotation landed in the gap).
+    // The service must fail the login the same way a `promote` rejection
+    // does, never publishing `authenticated` for the stale value.
+    const store = createMemoryStore();
+    const { runtime, deleteCalls } = createFakeRuntime({
+      exec: execSuccess,
+      authBytes: Buffer.from('{"token":"secret"}'),
+    });
+    const companyId = randomUUID();
+    const service = makeService({
+      store,
+      runtime,
+      promotion: {
+        promote: () => {},
+        async runTerminalCommit() {
+          // A real promotion would run its re-check here, find the bound
+          // value stale, and throw before ever calling `commit`.
+          throw new Error("the bound value no longer matches");
+        },
+      },
+    });
+    const { session, completed } = await service.start({
+      companyId,
+      environmentId: randomUUID(),
+      adapterType: ADAPTER_TYPE,
+      startedByUserId: OWNER_A,
+    });
+
+    const outcome = await completed;
+    expect(outcome.status).toBe("failed");
+    const row = await store.getByPublicId(session.sessionId, companyId);
+    expect(row?.status).toBe("failed");
+    expect(row?.failureReason).toBe("promotion_failed");
+    // The service still deletes the sandbox on this failure path, the same
+    // as a `promote` rejection.
+    expect(deleteCalls).toHaveLength(1);
+  });
+
   it("gives a Grok prompt to a grok_local session, and the session surfaces the Grok code and URL", async () => {
     // This proves the Grok parser ran: the profile map resolves the parser from
     // the trusted adapter type, so a `grok_local` session runs the Grok parser,

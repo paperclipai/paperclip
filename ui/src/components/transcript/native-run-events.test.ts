@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import type { HeartbeatRunEvent } from "@paperclipai/shared";
 import { nativeRunEventsToTranscript } from "./native-run-events";
@@ -72,6 +73,41 @@ function runResult(summary: string): Record<string, unknown> {
 }
 
 describe("nativeRunEventsToTranscript", () => {
+  it("projects the cross-language duplicate-delivery fixture exactly once", () => {
+    const fixture = JSON.parse(readFileSync(
+      new URL(
+        "../../../../packages/paperclip-runner/protocol/fixtures/replay/duplicate-event.json",
+        import.meta.url,
+      ),
+      "utf8",
+    )) as { events: Array<Record<string, unknown>> };
+    const persistedEvents = fixture.events.map((prpEvent, index) => ({
+      id: index + 1,
+      companyId: "company_replay",
+      runId: String(prpEvent.runId),
+      agentId: "agent_replay",
+      seq: index + 1,
+      eventType: String(prpEvent.eventType),
+      stream: "system" as const,
+      level: "info" as const,
+      color: null,
+      message: null,
+      payload: { prpEvent: structuredClone(prpEvent) },
+      createdAt: new Date(String(prpEvent.emittedAt)),
+    })) satisfies HeartbeatRunEvent[];
+
+    const transcript = nativeRunEventsToTranscript(persistedEvents);
+    expect(transcript.filter((entry) => entry.kind === "assistant")).toEqual([
+      expect.objectContaining({
+        text: "Exactly one projection.",
+        channel: "final",
+        itemId: "item_replay_duplicate",
+      }),
+    ]);
+    expect(transcript.filter((entry) => entry.kind === "run_result")).toHaveLength(1);
+    expect(transcript.filter((entry) => entry.kind === "run_terminal")).toHaveLength(1);
+  });
+
   it("projects provider-neutral messages, tools, usage, and the final reply", () => {
     const transcript = nativeRunEventsToTranscript([
       event(6, "run.result.proposed", runResult("Done safely.")),
@@ -128,12 +164,154 @@ describe("nativeRunEventsToTranscript", () => {
         isError: false,
       }),
       expect.objectContaining({
+        kind: "run_result",
+        summary: "Done safely.",
+      }),
+      expect.objectContaining({
         kind: "result",
         subtype: "paperclip_runner_usage",
         inputTokens: 12,
         outputTokens: 3,
         cachedTokens: 2,
         costUsd: 0.01,
+      }),
+    ]);
+  });
+
+  it("coalesces sparse Codex tool lifecycle events at the named write boundary", () => {
+    const transcript = nativeRunEventsToTranscript([
+      event(1, "tool.execution.started", {
+        schema: "paperclip.tool.execution.v1",
+        executionId: "exec-write-plan",
+        transport: "dynamic",
+        operation: "unknown",
+        name: null,
+        status: "running",
+        output: null,
+      }),
+      itemEvent(2, "item.started", "exec-write-plan", {
+        kind: "dynamicToolCall",
+        item: { id: "exec-write-plan" },
+      }),
+      itemEvent(3, "item.started", "exec-write-plan", {
+        kind: "dynamicToolCall",
+        item: {
+          type: "tool_use",
+          id: "exec-write-plan",
+          name: "write_document",
+          input: {
+            key: "plan",
+            title: "Plan",
+            body: "Ship the durable runner.",
+          },
+        },
+      }),
+      itemEvent(4, "item.completed", "exec-write-plan", {
+        kind: "dynamicToolCall",
+        item: {
+          type: "tool_result",
+          id: "exec-write-plan",
+          tool_use_id: "exec-write-plan",
+          result: {
+            commandKind: "write_document",
+            revisionId: "revision-1",
+          },
+        },
+      }),
+      event(5, "tool.execution.completed", {
+        schema: "paperclip.tool.execution.v1",
+        executionId: "exec-write-plan",
+        transport: "dynamic",
+        operation: "unknown",
+        name: null,
+        status: "completed",
+        output: null,
+      }),
+      itemEvent(6, "item.completed", "exec-write-plan", {
+        kind: "dynamicToolCall",
+        item: { id: "exec-write-plan", status: "completed" },
+      }),
+    ]);
+
+    expect(transcript).toEqual([
+      expect.objectContaining({
+        kind: "tool_call",
+        name: "write_document",
+        toolUseId: "exec-write-plan",
+        input: {
+          key: "plan",
+          title: "Plan",
+          body: "Ship the durable runner.",
+        },
+      }),
+      expect.objectContaining({
+        kind: "tool_result",
+        toolUseId: "exec-write-plan",
+        toolName: "write_document",
+        content: JSON.stringify({
+          commandKind: "write_document",
+          revisionId: "revision-1",
+        }),
+        isError: false,
+      }),
+    ]);
+  });
+
+  it("projects ACPX item-only tool lifecycles at the named write boundary", () => {
+    const transcript = nativeRunEventsToTranscript([
+      itemEvent(1, "item.started", "2", {
+        kind: "dynamicToolCall",
+        item: {
+          type: "tool_use",
+          id: "2",
+          name: "write_document",
+          input: {
+            key: "plan",
+            title: "Plan",
+            body: "Ship the durable runner.",
+          },
+        },
+      }),
+      itemEvent(2, "item.completed", "2", {
+        kind: "dynamicToolCall",
+        item: {
+          type: "tool_result",
+          id: "2",
+          tool_use_id: "2",
+          result: {
+            disposition: "applied",
+            document: {
+              key: "plan",
+              latestRevisionId: "revision-1",
+            },
+          },
+        },
+      }),
+    ]);
+
+    expect(transcript).toEqual([
+      expect.objectContaining({
+        kind: "tool_call",
+        name: "write_document",
+        toolUseId: "2",
+        input: {
+          key: "plan",
+          title: "Plan",
+          body: "Ship the durable runner.",
+        },
+      }),
+      expect.objectContaining({
+        kind: "tool_result",
+        toolUseId: "2",
+        toolName: "write_document",
+        content: JSON.stringify({
+          disposition: "applied",
+          document: {
+            key: "plan",
+            latestRevisionId: "revision-1",
+          },
+        }),
+        isError: false,
       }),
     ]);
   });
@@ -173,8 +351,8 @@ describe("nativeRunEventsToTranscript", () => {
     ]);
   });
 
-  it("reads the canonical PRP v1 assistant_message kind as a channel-less final reply", () => {
-    expect(nativeRunEventsToTranscript([
+  it("keeps a canonical assistant reply ahead of its semantic result card", () => {
+    const transcript = nativeRunEventsToTranscript([
       event(1, "item.completed", {
         kind: "assistant_message",
         text: "Canonical persisted reply.",
@@ -182,13 +360,19 @@ describe("nativeRunEventsToTranscript", () => {
       event(2, "run.result.proposed", runResult(
         "Structured fallback must not replace the reply.",
       )),
-    ])).toEqual([
+    ]);
+    expect(transcript).toEqual([
       expect.objectContaining({
         kind: "assistant",
         text: "Canonical persisted reply.",
         channel: "unknown",
       }),
+      expect.objectContaining({
+        kind: "run_result",
+        summary: "Structured fallback must not replace the reply.",
+      }),
     ]);
+    expect(transcript.filter((entry) => entry.kind === "assistant")).toHaveLength(1);
   });
 
   it("sums run deltas without leaking session-cumulative usage", () => {
@@ -312,6 +496,10 @@ describe("nativeRunEventsToTranscript", () => {
       event(1, "run.result.proposed", runResult("Recovered final reply.")),
     ])).toEqual([
       expect.objectContaining({
+        kind: "run_result",
+        summary: "Recovered final reply.",
+      }),
+      expect.objectContaining({
         kind: "assistant",
         text: "Recovered final reply.",
         channel: "final",
@@ -328,6 +516,10 @@ describe("nativeRunEventsToTranscript", () => {
         text: "The complete final reply.",
       }),
     ])).toEqual([
+      expect.objectContaining({
+        kind: "run_result",
+        summary: "Structured fallback.",
+      }),
       expect.objectContaining({
         kind: "assistant",
         text: "The complete final reply.",
@@ -353,6 +545,10 @@ describe("nativeRunEventsToTranscript", () => {
         delta: true,
         channel: "unknown",
       }),
+      expect.objectContaining({
+        kind: "run_result",
+        summary: "Structured fallback.",
+      }),
     ]);
   });
 
@@ -372,6 +568,10 @@ describe("nativeRunEventsToTranscript", () => {
         kind: "assistant",
         text: "Checking the implementation.",
         channel: "progress",
+      }),
+      expect.objectContaining({
+        kind: "run_result",
+        summary: "The implementation is ready.",
       }),
       expect.objectContaining({
         kind: "assistant",
@@ -493,6 +693,95 @@ describe("nativeRunEventsToTranscript", () => {
       mismatched,
       malformed,
       event(3, "extension.unknown", { explanation: "not a transcript row" }),
+    ])).toEqual([]);
+  });
+
+  it("projects structured questions through resolution without losing identity", () => {
+    expect(nativeRunEventsToTranscript([
+      event(1, "runtime_request.created", {
+        request: {
+          schema: "paperclip.runtime_request.v1",
+          requestId: "question-1",
+          requestKind: "elicitation",
+          type: "input",
+          status: "pending",
+          prompt: "Choose a rollout",
+          input: {
+            schema: "paperclip.question_set.v1",
+            questions: [{
+              id: "rollout",
+              prompt: "Which rollout?",
+              required: true,
+              answerMode: "single_select",
+              options: [{ id: "safe", label: "Safe" }],
+            }],
+          },
+        },
+      }),
+      event(2, "runtime_request.resolved", {
+        request: {
+          requestId: "question-1",
+          status: "resolved",
+          response: {
+            schema: "paperclip.question_response.v1",
+            answers: { rollout: { selectedOptionIds: ["safe"] } },
+          },
+        },
+      }),
+    ])).toEqual([
+      expect.objectContaining({
+        kind: "runtime_request",
+        requestId: "question-1",
+        status: "pending",
+        questionSet: expect.objectContaining({ schema: "paperclip.question_set.v1" }),
+      }),
+      expect.objectContaining({
+        kind: "runtime_request",
+        requestId: "question-1",
+        status: "resolved",
+        response: expect.objectContaining({ schema: "paperclip.question_response.v1" }),
+      }),
+    ]);
+  });
+
+  it.each([
+    ["failed", "failed", "failed"],
+    ["interrupted", "cancelled", "cancelled"],
+    ["cancelled", "cancelled", "cancelled"],
+  ] as const)(
+    "projects a visible %s terminal state",
+    (turnTerminalState, runTerminalState, expectedRunState) => {
+      expect(nativeRunEventsToTranscript([
+        event(1, "run.terminal", {
+          schema: "paperclip.prp.terminal.v1",
+          turnTerminalState,
+          runTerminalState,
+          reportedWorkDisposition: "needs_review",
+          stopReason: {
+            schema: "paperclip.stop_reason.v1",
+            code: "provider_failed",
+            message: "Provider could not finish the turn.",
+          },
+        }),
+      ])).toEqual([
+        expect.objectContaining({
+          kind: "run_terminal",
+          turnState: turnTerminalState,
+          runState: expectedRunState,
+          stopReason: "Provider could not finish the turn.",
+        }),
+      ]);
+    },
+  );
+
+  it("fails closed instead of presenting malformed terminal state as success", () => {
+    expect(nativeRunEventsToTranscript([
+      event(1, "run.terminal", {
+        schema: "paperclip.prp.terminal.v1",
+        turnTerminalState: "mystery",
+        runTerminalState: "successful-ish",
+        reportedWorkDisposition: "done",
+      }),
     ])).toEqual([]);
   });
 });

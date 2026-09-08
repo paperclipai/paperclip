@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { canonicalNativeRuntimeContextDigest } from "../../vendor/paperclip-runner/index.js";
 import { buildNativeExecutionInput } from "./native-execution-input.js";
-import { rebindNativeSessionCheckpoint } from "./native-session-resume.js";
+import {
+  isUnusedLegacyNativeRetryReplacement,
+  rebindNativeSessionCheckpoint,
+} from "./native-session-resume.js";
 import { nativeRuntimeContextFixture } from "./runtime-context.test-fixture.js";
 
 const companyId = "10000000-0000-4000-8000-000000000001";
@@ -87,6 +90,51 @@ function previousRun(overrides: Record<string, unknown> = {}) {
 }
 
 describe("rebindNativeSessionCheckpoint", () => {
+  it("permits legacy retry rebinding only before the replacement acquired authority", () => {
+    const source = {
+      runtimeMode: "native",
+      status: "interrupted",
+      nativeSessionId: normalizedSessionId,
+    };
+    const replacement = {
+      processPid: null,
+      processGroupId: null,
+      processStartedAt: null,
+      runnerProfileJson: {},
+    };
+    expect(
+      isUnusedLegacyNativeRetryReplacement({
+        source,
+        replacement,
+        hasProviderEvents: false,
+      }),
+    ).toBe(true);
+    expect(
+      isUnusedLegacyNativeRetryReplacement({
+        source,
+        replacement: { ...replacement, processPid: 123 },
+        hasProviderEvents: false,
+      }),
+    ).toBe(false);
+    expect(
+      isUnusedLegacyNativeRetryReplacement({
+        source,
+        replacement,
+        hasProviderEvents: true,
+      }),
+    ).toBe(false);
+    expect(
+      isUnusedLegacyNativeRetryReplacement({
+        source,
+        replacement: {
+          ...replacement,
+          runnerProfileJson: { sessionCheckpoint: { providerSessionId: "claimed" } },
+        },
+        hasProviderEvents: false,
+      }),
+    ).toBe(false);
+  });
+
   it("retains provider identity but clears prior turn and event state", () => {
     const rebound = rebindNativeSessionCheckpoint({
       previousRun: previousRun(),
@@ -259,6 +307,48 @@ describe("buildNativeExecutionInput wake projection", () => {
       model: "claude-sonnet-5",
       acpxPermissionMode: "deny-all",
     });
+    const claudeManaged = buildNativeExecutionInput({
+      ...common,
+      provider: "claude_managed",
+      model: "claude-sonnet-5",
+      managedProfile: {
+        profileId: "managed-profile",
+        anthropicAgentId: "agent-remote",
+        agentVersion: "7",
+        environmentId: "environment-remote",
+        betaVersion: "managed-agents-2026-04-01",
+      },
+      maxSessionListCostUsd: 0.75,
+    });
+    const agentCore = buildNativeExecutionInput({
+      ...common,
+      provider: "aws_agentcore",
+      model: "global.anthropic.claude-sonnet-4-6",
+      agentCoreProfile: {
+        profileId: "agentcore-profile",
+        region: "us-east-1",
+        accountId: "123456789012",
+        harnessArn: "arn:aws:bedrock-agentcore:us-east-1:123456789012:harness/h-1",
+        harnessVersion: "3",
+        endpointArn: "arn:aws:bedrock-agentcore:us-east-1:123456789012:endpoint/e-1",
+        endpointQualifier: "prod",
+        agentRuntimeArn: "arn:aws:bedrock-agentcore:us-east-1:123456789012:runtime/r-1",
+        memoryArn: "arn:aws:bedrock-agentcore:us-east-1:123456789012:memory/m-1",
+        memoryId: "m-1",
+        invocationRoleArn: "arn:aws:iam::123456789012:role/invoke",
+        contextBucket: "paperclip-context",
+        contextPrefix: "runner/",
+        contextKmsKeyArn: "arn:aws:kms:us-east-1:123456789012:key/key-1",
+        qualificationRevision: "aws-agentcore-harness-v1",
+        eventExpiryDays: 90,
+      },
+      maxEstimatedSessionCostUsd: 1.25,
+      invocationLimits: {
+        maxIterations: 8,
+        maxOutputTokens: 4_096,
+        timeoutSeconds: 300,
+      },
+    });
     const defaultOpenCode = buildNativeExecutionInput({
       ...common,
       provider: "opencode",
@@ -282,6 +372,25 @@ describe("buildNativeExecutionInput wake projection", () => {
       schema: "paperclip.native-execution-input.v4",
       provider: { kind: "acpx", permissionMode: "deny-all" },
     });
+    expect(claudeManaged).toMatchObject({
+      session: { driverKind: "claude_managed_agents_api" },
+      provider: {
+        kind: "claude_managed",
+        managedProfile: { profileId: "managed-profile" },
+        maxSessionListCostUsd: 0.75,
+      },
+    });
+    expect(agentCore).toMatchObject({
+      session: { driverKind: "aws_agentcore_harness_api" },
+      provider: {
+        kind: "aws_agentcore",
+        agentCoreProfile: {
+          profileId: "agentcore-profile",
+          eventExpiryDays: 90,
+        },
+        maxEstimatedSessionCostUsd: 1.25,
+      },
+    });
     expect(defaultOpenCode).toMatchObject({
       provider: { kind: "opencode", permissionMode: "ask" },
     });
@@ -292,7 +401,7 @@ describe("buildNativeExecutionInput wake projection", () => {
         permissionMode: "approve-reads",
       },
     });
-    expect(JSON.stringify([codex, opencode, acpx]))
+    expect(JSON.stringify([codex, opencode, claudeManaged, agentCore, acpx]))
       .not.toMatch(/OPENAI_API_KEY|ANTHROPIC_API_KEY|AWS_SECRET_ACCESS_KEY|PAPERCLIP_API_KEY/);
   });
 

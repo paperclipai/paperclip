@@ -92,6 +92,7 @@ describe("onboard", () => {
   beforeEach(() => {
     process.env = { ...ORIGINAL_ENV };
     delete process.env.PAPERCLIP_AGENT_JWT_SECRET;
+    delete process.env.PAPERCLIP_TOOL_ACTION_SIGNING_SECRET;
     delete process.env.PAPERCLIP_SECRETS_MASTER_KEY;
     delete process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE;
     delete process.env.PAPERCLIP_DB_BACKUP_DIR;
@@ -248,6 +249,8 @@ describe("onboard", () => {
     expect(raw.storage.localDisk.baseDir).toBe(path.join(instanceRoot, "data", "storage"));
     expect(raw.secrets.localEncrypted.keyFilePath).toBe(path.join(instanceRoot, "secrets", "master.key"));
     expect(fs.existsSync(path.join(instanceRoot, ".env"))).toBe(true);
+    expect(fs.readFileSync(path.join(instanceRoot, ".env"), "utf8"))
+      .toContain("PAPERCLIP_TOOL_ACTION_SIGNING_SECRET=");
     expect(fs.existsSync(path.join(instanceRoot, "secrets", "master.key"))).toBe(true);
   });
 

@@ -134,6 +134,7 @@ export interface CompletedFinalAgentMessageCandidate {
   seq: number;
   text: string;
   sourceEventId: string | null;
+  channel: "final" | "unknown";
 }
 
 /**
@@ -150,18 +151,26 @@ export function selectHeartbeatRunFinalAgentMessage(input: {
   const candidates = [...input.candidates].sort((a, b) => b.seq - a.seq);
   if (candidates.length === 0) return null;
   const boundary = input.semanticResultRecoveryAfterSeq;
-  if (typeof boundary === "number") {
-    const preRecovery = candidates.find((candidate) => candidate.seq < boundary);
-    if (preRecovery) {
-      return {
-        ...preRecovery,
-        reasonCode: "pre_semantic_result_recovery_final_agent_message",
-      };
-    }
-  }
+  const preRecovery =
+    typeof boundary === "number"
+      ? candidates.filter((candidate) => candidate.seq < boundary)
+      : [];
+  const eligible = preRecovery.length > 0 ? preRecovery : candidates;
+  const selected =
+    eligible.find((candidate) => candidate.channel === "final") ??
+    eligible.find((candidate) => candidate.channel === "unknown");
+  if (!selected) return null;
+  const beforeRecovery = preRecovery.includes(selected);
   return {
-    ...candidates[0]!,
-    reasonCode: "latest_non_empty_completed_final_agent_message",
+    ...selected,
+    reasonCode:
+      selected.channel === "final"
+        ? beforeRecovery
+          ? "pre_semantic_result_recovery_final_agent_message"
+          : "latest_non_empty_completed_final_agent_message"
+        : beforeRecovery
+          ? "pre_semantic_result_recovery_terminal_assistant_message"
+          : "latest_non_empty_completed_terminal_assistant_message",
   };
 }
 
@@ -169,6 +178,37 @@ function record(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : {};
+}
+
+/**
+ * Read only completed assistant prose that can participate in final-response
+ * presentation. A canonical `final` is authoritative; `unknown` is retained
+ * solely for the compatibility fallback selected by the resolver. Other
+ * channels and item kinds remain activity, never durable reply candidates.
+ */
+export function readCompletedAssistantMessageCandidate(input: {
+  seq: number;
+  prpEvent: unknown;
+}): CompletedFinalAgentMessageCandidate | null {
+  const prpEvent = record(input.prpEvent);
+  const payload = record(prpEvent.payload);
+  // `assistant_message` is the shipped PRP v1 spelling used by older replay
+  // fixtures and persisted native runs. New providers emit `agentMessage`,
+  // but both represent the same canonical assistant item at this boundary.
+  if (payload.kind !== "agentMessage" && payload.kind !== "assistant_message") {
+    return null;
+  }
+  if (payload.channel !== "final" && payload.channel !== "unknown") {
+    return null;
+  }
+  const text = readCommentText(payload.text);
+  if (!text) return null;
+  return {
+    seq: input.seq,
+    text,
+    sourceEventId: readCommentText(prpEvent.sourceEventId),
+    channel: payload.channel,
+  };
 }
 
 function readAcceptedSemanticSummary(resultJson: Record<string, unknown>) {
@@ -202,9 +242,11 @@ export function hasAcceptedSemanticResult(
 }
 
 function hasYieldedSemanticResult(resultJson: Record<string, unknown>) {
-  return semanticResultCandidates(resultJson).some((candidate) =>
-    candidate.schema === "paperclip.run_result.v1"
-    && candidate.reportedWorkDisposition === "yielded");
+  return semanticResultCandidates(resultJson).some(
+    (candidate) =>
+      candidate.schema === "paperclip.run_result.v1" &&
+      candidate.reportedWorkDisposition === "yielded",
+  );
 }
 
 export function projectHistoricalHeartbeatRunComment(
@@ -277,6 +319,7 @@ export function resolveHeartbeatRunResponse(input: {
   finalAgentMessage?: {
     text: string;
     sourceEventId: string | null;
+    channel: "final" | "unknown";
     reasonCode?: string;
   } | null;
 }): ResolvedHeartbeatRunResponse {
@@ -292,8 +335,30 @@ export function resolveHeartbeatRunResponse(input: {
     };
   }
 
+  const resultJson = record(input.resultJson);
+  // A governed wait is not a completed assistant turn. Provider adapters may
+  // still emit terminal-looking prose while the control plane is yielding for
+  // an interaction; keep that prose in activity and let the durable
+  // interaction own the visible waiting state.
+  if (hasYieldedSemanticResult(resultJson)) {
+    return {
+      text: null,
+      decision: decision("none", {
+        commentAction: "none",
+        reasonCodes: ["yielded_control_plane_wait"],
+      }),
+    };
+  }
+
   const finalAgentText = readCommentText(input.finalAgentMessage?.text);
-  if (finalAgentText && !isStructuredSemanticResultText(finalAgentText)) {
+  const explicitProviderFinal = input.finalAgentMessage?.channel === "final";
+  const compatibleTerminalAssistant =
+    input.finalAgentMessage?.channel === "unknown";
+  if (
+    explicitProviderFinal &&
+    finalAgentText &&
+    !isStructuredSemanticResultText(finalAgentText)
+  ) {
     return {
       text: finalAgentText,
       decision: decision("final_agent_message", {
@@ -303,18 +368,6 @@ export function resolveHeartbeatRunResponse(input: {
           input.finalAgentMessage?.reasonCode ??
             "latest_non_empty_completed_final_agent_message",
         ],
-      }),
-    };
-  }
-
-  const resultJson = record(input.resultJson);
-  const semanticSummary = readAcceptedSemanticSummary(resultJson);
-  if (semanticSummary) {
-    return {
-      text: semanticSummary,
-      decision: decision("semantic_result_summary", {
-        commentAction: "create",
-        reasonCodes: ["accepted_semantic_result_summary"],
       }),
     };
   }
@@ -330,17 +383,31 @@ export function resolveHeartbeatRunResponse(input: {
     };
   }
 
-  // Native governed waits also carry a top-level adapter summary for run-list
-  // diagnostics. Do not let that compatibility field leak back into the
-  // issue thread as an artificial "Waiting for …" assistant reply. Explicit
-  // comments, provider final messages, and marked adapter finals above retain
-  // their normal precedence.
-  if (hasYieldedSemanticResult(resultJson)) {
+  if (
+    compatibleTerminalAssistant &&
+    finalAgentText &&
+    !isStructuredSemanticResultText(finalAgentText)
+  ) {
     return {
-      text: null,
-      decision: decision("none", {
-        commentAction: "none",
-        reasonCodes: ["yielded_control_plane_wait"],
+      text: finalAgentText,
+      decision: decision("final_agent_message", {
+        sourceEventId: input.finalAgentMessage?.sourceEventId,
+        commentAction: "create",
+        reasonCodes: [
+          input.finalAgentMessage?.reasonCode ??
+            "latest_non_empty_completed_terminal_assistant_message",
+        ],
+      }),
+    };
+  }
+
+  const semanticSummary = readAcceptedSemanticSummary(resultJson);
+  if (semanticSummary) {
+    return {
+      text: semanticSummary,
+      decision: decision("semantic_result_summary", {
+        commentAction: "create",
+        reasonCodes: ["accepted_semantic_result_summary"],
       }),
     };
   }

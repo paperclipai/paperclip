@@ -30,6 +30,7 @@ import {
 import { issueRecoveryActionService } from "../issue-recovery-actions.js";
 import { issueService } from "../issues.js";
 import { nativeSha256 } from "./canonical.js";
+import { emitAgentTaskRun } from "../agent-task-run-telemetry.js";
 
 function record(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
@@ -191,6 +192,7 @@ async function recordRetryableFailure(input: {
     : acceptedRunTerminalState === "cancelled"
       ? "cancelled" as const
       : "failed" as const;
+  let terminalRunToEmit: typeof heartbeatRuns.$inferSelect | null = null;
   const outcome = await input.db.transaction(async (tx) => {
     const issue = await tx.select({
       lastStatusDecisionId: issues.lastStatusDecisionId,
@@ -253,8 +255,9 @@ async function recordRetryableFailure(input: {
       nextAttemptAt: supersededByNewerRun || exhausted ? null : nextAttemptAt,
       updatedAt: now,
     }).where(eq(nativeRunFinalizations.runId, input.run.id));
-    await tx.update(heartbeatRuns).set({
-      ...(exhausted && !supersededByNewerRun && input.projectRunStatus ? {
+    const projectsTerminalStatus = exhausted && !supersededByNewerRun && input.projectRunStatus;
+    const [updatedRun] = await tx.update(heartbeatRuns).set({
+      ...(projectsTerminalStatus ? {
         status: exhaustedRunStatus,
         finishedAt: input.run.finishedAt ?? now,
       } : {}),
@@ -268,7 +271,8 @@ async function recordRetryableFailure(input: {
         nextAttemptAt: supersededByNewerRun || exhausted ? null : nextAttemptAt.toISOString(),
       },
       updatedAt: now,
-    }).where(eq(heartbeatRuns.id, input.run.id));
+    }).where(eq(heartbeatRuns.id, input.run.id)).returning();
+    if (projectsTerminalStatus) terminalRunToEmit = updatedRun ?? null;
     if (supersededByNewerRun) {
       await issueRecoveryActionService(tx as unknown as Db).resolveActiveForIssue({
         companyId: input.run.companyId,
@@ -311,6 +315,7 @@ async function recordRetryableFailure(input: {
     }
     return { phase, failureCode, nextAttemptAt: supersededByNewerRun || exhausted ? null : nextAttemptAt };
   });
+  if (terminalRunToEmit) await emitAgentTaskRun(input.db, terminalRunToEmit);
   return {
     ...input.coordinator,
     ...outcome,
@@ -361,7 +366,7 @@ async function projectCommittedRun(input: {
     throw new Error("native_finalization_invalid");
   }
   const now = new Date();
-  await input.db.update(heartbeatRuns).set({
+  const [updatedRun] = await input.db.update(heartbeatRuns).set({
     status: projectNativeTerminalRunStatus(terminalState as "succeeded" | "failed" | "cancelled"),
     finishedAt: input.run.finishedAt ?? now,
     nativePhase: "committed",
@@ -371,7 +376,17 @@ async function projectCommittedRun(input: {
     eq(heartbeatRuns.id, input.run.id),
     eq(heartbeatRuns.runtimeMode, "native"),
     inArray(heartbeatRuns.status, ["queued", "running", "failed"]),
-  ));
+  )).returning();
+  // The WHERE clause above allows "failed" as a source status, so a run that
+  // failed before its coordinator committed can still pick up the committed
+  // terminal state. A later reconciliation replay can enter this same path
+  // and match that clause again even when the committed state is still
+  // "failed" — the write changes nothing. Emit only when the status
+  // genuinely changed, so a reconciliation replay never emits twice for one
+  // committed terminal result.
+  if (updatedRun && updatedRun.status !== input.run.status) {
+    await emitAgentTaskRun(input.db, updatedRun);
+  }
 }
 
 export async function finalizeNativeRun(input: {
@@ -515,7 +530,14 @@ export async function finalizeNativeRun(input: {
       const now = new Date();
       const finalizationFailed = decision.effects.some((effect) => effect.kind === "record_finalization_error");
       const finalizationPhase = finalizationFailed ? "retryable_failure" : "committed";
-      await input.db.update(heartbeatRuns).set({
+      // commitNativeStatusDecision() already committed its own transaction above.
+      // Its "cancel_continuations" effect (status-decision-committer.ts) writes a
+      // terminal status to this same run and emits for it. Skip the emit here in
+      // that case so one run reaching a terminal state emits exactly one event.
+      const alreadyEmittedByCommittedDecision = decision.effects.some(
+        (effect) => effect.kind === "cancel_continuations",
+      );
+      const [updatedRun] = await input.db.update(heartbeatRuns).set({
         ...(input.projectRunStatus ? {
           status: terminalState === "succeeded" ? "succeeded" : terminalState === "cancelled" ? "cancelled" : "failed",
           finishedAt: now,
@@ -539,7 +561,10 @@ export async function finalizeNativeRun(input: {
           workspaceFinalizeStatus: input.workspaceFinalizeStatus,
         },
         updatedAt: now,
-      }).where(eq(heartbeatRuns.id, run.id));
+      }).where(eq(heartbeatRuns.id, run.id)).returning();
+      if (input.projectRunStatus && !alreadyEmittedByCommittedDecision && updatedRun) {
+        await emitAgentTaskRun(input.db, updatedRun);
+      }
       return { ...coordinator, phase: finalizationPhase, assessmentId: assessmentRow.id, decisionId: committed.decision.id };
     } catch (error) {
       if (error instanceof NativeStatusRaceError && attempt < 2) {

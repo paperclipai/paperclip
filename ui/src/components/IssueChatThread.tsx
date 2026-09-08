@@ -492,6 +492,9 @@ interface IssueChatThreadProps {
   /** Requeues a blocked task after its no-live-execution-path recovery notice. */
   onTryAgainNoLiveExecutionPath?: () => Promise<void> | void;
   tryAgainNoLiveExecutionPathPending?: boolean;
+  /** Starts a fresh on-demand run for the selected failed run. */
+  onRetryFailedRun?: (runId: string) => Promise<void> | void;
+  retryFailedRunId?: string | null;
   companyId?: string | null;
   projectId?: string | null;
   issueStatus?: string;
@@ -4595,6 +4598,8 @@ export function IssueChatThread({
   resumeAssigneePending = false,
   onTryAgainNoLiveExecutionPath: _onTryAgainNoLiveExecutionPath,
   tryAgainNoLiveExecutionPathPending: _tryAgainNoLiveExecutionPathPending,
+  onRetryFailedRun: _onRetryFailedRun,
+  retryFailedRunId: _retryFailedRunId,
   externalReferences,
   linkCaseReferences = false,
 }: IssueChatThreadProps) {

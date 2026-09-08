@@ -24,12 +24,25 @@ import { hasAssignedBacklogBlocker } from "../lib/issue-blockers";
 import { ExternalObjectStatusSummary } from "./ExternalObjectStatusSummary";
 import { Badge } from "@/components/ui/badge";
 
-type UnreadState = "hidden" | "visible" | "fading";
+export type IssueRowUnreadState = "hidden" | "visible" | "fading";
+export type IssueRowPresentation = "legacy" | "task";
 
-interface IssueRowProps {
+export interface IssueRowProps {
   issue: Issue;
   issueLinkState?: unknown;
   selected?: boolean;
+  /** Opt-in canonical collection layout. Legacy remains the default until each surface migrates. */
+  presentation?: IssueRowPresentation;
+  /** Interactive disclosure or selection control before the canonical status glyph. */
+  leadingControl?: ReactNode;
+  /** Optional status override; defaults to the task's shared StatusIcon. */
+  statusSlot?: ReactNode;
+  /** Stable metadata slot before the task's optional collection columns. */
+  metadata?: ReactNode;
+  /** Stable interactive action slot before the identifier and timestamp columns. */
+  actions?: ReactNode;
+  /** Controls the canonical trailing identifier without affecting legacy layouts. */
+  showIdentifier?: boolean;
   mobileLeading?: ReactNode;
   desktopMetaLeading?: ReactNode;
   desktopLeadingSpacer?: boolean;
@@ -47,7 +60,7 @@ interface IssueRowProps {
   checklistCurrentStep?: boolean;
   checklistDependencyChips?: ReactNode;
   checklistRowId?: string;
-  unreadState?: UnreadState | null;
+  unreadState?: IssueRowUnreadState | null;
   onMarkRead?: () => void;
   onArchive?: () => void;
   archiveDisabled?: boolean;
@@ -57,21 +70,22 @@ interface IssueRowProps {
   /** Ancestor levels; renders that many vertical tree-guide slots (desktop). */
   treeGuides?: number;
   /**
-   * This row has its own collapse chevron sitting in the innermost guide
-   * column (a nested parent). Breaks the guide line there so the chevron is
-   * not crossed out by it.
+   * This nested row has its own collapse chevron aligned with the innermost
+   * guide. Breaks the guide line there so the chevron is not crossed out.
    */
   chevronInGuide?: boolean;
-  /** Opt in to a bottom divider on this row (default off; used by views that intentionally keep separators). */
+  /** Legacy-only opt in to a bottom divider; canonical task rows stay divider-free. */
   showDivider?: boolean;
 }
 
 export function InboxArchiveButton({
   onArchive,
   disabled,
+  compact = false,
 }: {
   onArchive: () => void;
   disabled?: boolean;
+  compact?: boolean;
 }) {
   return (
     <button
@@ -89,7 +103,10 @@ export function InboxArchiveButton({
         onArchive();
       }}
       disabled={disabled}
-      className="inline-flex shrink-0 items-center gap-1.5 rounded-md px-2 py-1 text-xs font-medium text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground group-hover:opacity-100 focus-visible:opacity-100 disabled:pointer-events-none disabled:opacity-30"
+      className={cn(
+        "inline-flex shrink-0 items-center gap-1.5 rounded-md px-2 text-xs font-medium text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground group-hover:opacity-100 focus-visible:opacity-100 disabled:pointer-events-none disabled:opacity-30",
+        compact ? "h-5 py-0" : "py-1",
+      )}
       aria-label="Archive"
     >
       <Archive className="h-3.5 w-3.5" />
@@ -102,6 +119,12 @@ export function IssueRow({
   issue,
   issueLinkState,
   selected = false,
+  presentation = "legacy",
+  leadingControl,
+  statusSlot,
+  metadata,
+  actions,
+  showIdentifier = true,
   mobileLeading,
   desktopMetaLeading,
   desktopLeadingSpacer = false,
@@ -127,10 +150,9 @@ export function IssueRow({
 }: IssueRowProps) {
   const issuePathId = issue.identifier ?? issue.id;
   const identifier = issue.identifier ?? issue.id.slice(0, 8);
-  // A row participates in the unread system whenever `unreadState` is supplied
-  // (inbox rows). It then reserves a fixed leading dot slot on all rows — read
-  // and unread alike — so the mark-read dot sits in the far-left gutter without
-  // shifting content, matching the sibling non-issue inbox rows.
+  // A row participates in the unread system whenever `unreadState` is supplied.
+  // Canonical rows overlay this affordance in their shared gutter, while legacy
+  // inbox rows retain their reserved slot until that presentation is migrated.
   const showUnreadSlot = unreadState != null;
   const showUnreadDot = unreadState === "visible" || unreadState === "fading";
   const unreadDotButton = (
@@ -202,6 +224,134 @@ export function IssueRow({
     </Badge>
   ) : null;
 
+  if (presentation === "task") {
+    const isUnread = unreadState === "visible" || unreadState === "fading";
+    return (
+      <div
+        onMouseEnter={onMouseEnter}
+        data-slot="task-row"
+        data-unread={isUnread ? "true" : undefined}
+        className={cn(
+          "group relative flex min-w-0 items-start gap-2 rounded-lg py-2.5 pl-4 pr-2 text-sm no-underline text-inherit sm:items-center sm:py-2",
+          "[&_button]:relative [&_button]:z-10",
+          selected ? "bg-accent/50 hover:bg-accent/50" : "hover:bg-accent/50",
+          checklistCurrentStep && "bg-primary/5",
+          className,
+        )}
+      >
+        <Link
+          to={createIssueDetailPath(issuePathId)}
+          state={detailState}
+          disableIssueQuicklook
+          issuePrefetch={issue}
+          data-inbox-issue-link
+          id={checklistRowId}
+          aria-current={checklistCurrentStep ? "step" : undefined}
+          onClickCapture={() => rememberIssueDetailLocationState(issuePathId, detailState)}
+          className="absolute inset-0 rounded-lg no-underline text-inherit focus-visible:z-10 focus-visible:outline-none focus-visible:ring-(length:--rad-3) focus-visible:ring-ring"
+        >
+          <span className="sr-only">Open {identifier}: {issue.title}</span>
+        </Link>
+
+        {showUnreadSlot ? (
+          <span
+            data-testid="issue-row-unread-slot"
+            className="absolute left-0 top-3 inline-flex h-4 w-4 items-center justify-center sm:top-1/2 sm:-translate-y-1/2"
+          >
+            {showUnreadDot ? unreadDotButton : null}
+          </span>
+        ) : null}
+
+        <span data-slot="task-row-leading" className="flex shrink-0 items-center gap-1 pt-px sm:pt-0">
+          {treeGuides > 0
+            ? Array.from({ length: treeGuides }, (_, level) => {
+              const gapForChevron = chevronInGuide && level === treeGuides - 1;
+              return (
+                <span
+                  key={`task-guide-${level}`}
+                  data-slot="task-row-tree-guide"
+                  aria-hidden="true"
+                  className="relative hidden w-4 shrink-0 self-stretch sm:block"
+                >
+                  <span
+                    data-slot="task-row-tree-connector"
+                    className="absolute -inset-y-3 left-7 w-px bg-background"
+                  >
+                    {gapForChevron ? (
+                      <span className="absolute inset-0 flex flex-col">
+                        <span className="flex-1 bg-border" />
+                        <span className="h-3.5 shrink-0" />
+                        <span className="flex-1 bg-border" />
+                      </span>
+                    ) : (
+                      <span className="absolute inset-0 bg-border" />
+                    )}
+                  </span>
+                </span>
+              );
+            })
+            : null}
+          {leadingControl}
+          {statusSlot ?? (
+            <StatusIcon
+              status={issue.status}
+              blockerAttention={issue.blockerAttention}
+              size="md"
+              className={selectedStatusClass}
+            />
+          )}
+          {productivityReviewIndicator}
+          {parkedBlockerIndicator}
+        </span>
+
+        <span className="flex min-w-0 flex-1 flex-col gap-1 sm:flex-row sm:items-center sm:gap-2">
+          <span data-slot="task-row-title-cluster" className="flex min-w-0 flex-1 items-start gap-1.5 sm:items-center">
+            <span
+              data-slot="task-row-title"
+              className={cn(
+                "min-w-0 line-clamp-2 text-sm sm:truncate sm:line-clamp-none",
+                isUnread && "font-semibold",
+                titleClassName,
+              )}
+            >
+              {issue.title}{titleSuffix}
+            </span>
+            {recoveryIndicator}
+          </span>
+          {checklistDependencyChips ? (
+            <span className="flex flex-wrap gap-1">{checklistDependencyChips}</span>
+          ) : null}
+          {mobileMeta ? (
+            <span className="text-xs text-muted-foreground sm:hidden">{mobileMeta}</span>
+          ) : null}
+        </span>
+
+        <span
+          data-slot="task-row-trailing"
+          className="ml-auto hidden min-w-0 shrink-0 items-center gap-2 sm:flex"
+        >
+          {externalObjectSummary ? (
+            <ExternalObjectStatusSummary summary={externalObjectSummary} compact />
+          ) : null}
+          {metadata ? <span data-slot="task-row-metadata" className="min-w-0">{metadata}</span> : null}
+          {desktopTrailing}
+          {actions ? <span data-slot="task-row-actions" className="flex shrink-0 items-center gap-1">{actions}</span> : null}
+          {onArchive ? <InboxArchiveButton onArchive={onArchive} disabled={archiveDisabled} compact /> : null}
+          {showIdentifier ? (
+            <span data-slot="task-row-identifier" className="w-20 shrink-0 text-right font-mono text-xs text-muted-foreground">
+              {identifier}
+            </span>
+          ) : null}
+          {trailingMeta ? (
+            <span data-slot="task-row-timestamp" className="w-24 shrink-0 truncate text-right text-xs text-muted-foreground">
+              {trailingMeta}
+            </span>
+          ) : null}
+        </span>
+      </div>
+    );
+  }
+
   return (
     <div
       onMouseEnter={onMouseEnter}
@@ -243,11 +393,16 @@ export function IssueRow({
         {mobileLeading ?? <StatusIcon status={issue.status} blockerAttention={issue.blockerAttention} size="md" className={selectedStatusClass} />}
         {productivityReviewIndicator}
         {parkedBlockerIndicator}
-        {recoveryIndicator}
       </span>
       <span className="flex min-w-0 flex-1 flex-col gap-1 sm:contents">
-        <span className={cn("line-clamp-2 text-sm sm:order-2 sm:min-w-0 sm:flex-1 sm:truncate sm:line-clamp-none", titleClassName)}>
-          {issue.title}{titleSuffix}
+        <span data-slot="task-row-title-cluster" className="flex min-w-0 items-start gap-1.5 sm:order-2 sm:flex-1 sm:items-center">
+          <span
+            data-slot="task-row-title"
+            className={cn("min-w-0 line-clamp-2 text-sm sm:truncate sm:line-clamp-none", titleClassName)}
+          >
+            {issue.title}{titleSuffix}
+          </span>
+          {recoveryIndicator}
         </span>
         {checklistDependencyChips ? (
           <span className="flex flex-wrap gap-1 sm:order-3 sm:ml-(--sz-calc-13)">
@@ -317,7 +472,6 @@ export function IssueRow({
                 {identifier}
               </span>
               {parkedBlockerIndicator}
-              {recoveryIndicator}
             </>
           )}
           {mobileMeta ? (
@@ -377,7 +531,7 @@ function renderRecoveryChip(
       role="status"
       aria-label={detail ? `${label} — ${detail}` : label}
       className={cn(
-        "ml-1.5 gap-0.5 text-(length:--text-nano)",
+        "shrink-0 gap-0.5 text-(length:--text-nano)",
         tone.className,
         selected ? "!border-muted-foreground !text-muted-foreground" : null,
       )}

@@ -36,7 +36,15 @@ export function connectionDisplayNameForOwner(
   applicationName: string,
   owner: ConnectionOwnerProfile | null,
 ): string {
-  const connectionName = humanizeConnectionDisplayName(connection);
+  const rawName = connection.name.trim();
+  // Provider account identifiers are machine values, not prose. Preserve
+  // their casing and punctuation so an email address or tenant hostname stays
+  // recognizable in the inline account list.
+  const connectionName =
+    /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(rawName) ||
+    /^(?:[a-z0-9-]+\.)+[a-z]{2,}$/i.test(rawName)
+      ? rawName
+      : humanizeConnectionDisplayName(connection);
   if (!owner) return connectionName;
   if (connectionName.trim().toLocaleLowerCase() !== applicationName.trim().toLocaleLowerCase()) {
     return connectionName;

@@ -30,6 +30,7 @@ const providerIdentity = {
   workspaceDigest: "sha256:workspace",
   requestedModel: "claude-sonnet-4-20250514",
   effectiveModel: "claude-sonnet-4-20250514",
+  providerLifetimeFenceCandidates: [60_001, 60_002, 60_003] as const,
 };
 
 function prpEvent(sourceSeq: number, eventType: PrpEvent["eventType"], payload: Record<string, unknown>): PrpEvent {

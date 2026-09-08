@@ -44,7 +44,6 @@ import {
   type AppGalleryDisplayEntry,
 } from "./app-definition-display";
 import { useReviewCount } from "./useReviewCount";
-import { AdvancedToolsLink } from "./store-cards";
 import { connectionNameForCredentialPolicy, connectionTypeLabel } from "./connection-identity";
 import {
   ConnectionOwnerIdentity,
@@ -127,12 +126,11 @@ export function Connections() {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: selectedCompany?.name ?? "Organization", href: "/dashboard" },
-      { label: "Apps", href: "/apps" },
+      { label: "Connectors", href: "/apps" },
       { label: "Connections" },
     ]);
     return () => setBreadcrumbs([]);
-  }, [setBreadcrumbs, selectedCompany?.name]);
+  }, [setBreadcrumbs]);
 
   const galleryQuery = useQuery({
     queryKey: queryKeys.apps.gallery(selectedCompanyId ?? "__none__"),
@@ -427,13 +425,13 @@ export function Connections() {
                             ? application.name
                             : null;
                   const appHref = connection
-                    ? `/apps/${connection.id}/setup`
-                    : `/apps/app/${application.id}/setup`;
+                    ? `/apps/${connection.id}/permissions`
+                    : `/apps/app/${application.id}/permissions`;
                   const actionLabel = !connection
                     ? "Connect"
                     : status.tone === "attention"
                       ? "Reconnect"
-                      : "Edit";
+                      : "Permissions";
                   return (
                     <tr
                       key={connection?.id ?? application.id}
@@ -531,11 +529,10 @@ export function Connections() {
             </table>
           </div>
 
-          <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <p className="text-xs text-muted-foreground">
               Apps you connect become available to every agent unless you change “Who can use it”.
             </p>
-            <AdvancedToolsLink />
           </div>
         </div>
       )}

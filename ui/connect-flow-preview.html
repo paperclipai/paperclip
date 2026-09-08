@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en" class="dark" style="color-scheme: dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="theme-color" content="#18181b" />
+    <title>Connect flow — Paperclip onboarding</title>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <style>
+      /*
+        Unlayered, for the same reason `connect-model-preview.html` carries the
+        same rule: index.css pins `html, body` to viewport height with
+        `overflow: hidden` inside @layer base, which is right for the app shell
+        and clips this page's footer out of reach on a short window.
+      */
+      html,
+      body {
+        height: auto;
+        min-height: 100%;
+        overflow-y: auto;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/connect-flow-preview-main.tsx"></script>
+  </body>
+</html>

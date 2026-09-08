@@ -1786,7 +1786,8 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
         issueContext.id,
       );
       const acceptedPlanStartsExecution =
-        acceptedPlanTarget?.issueId === issueContext.id
+        lockedCurrent.kind === "request_confirmation"
+        && acceptedPlanTarget?.issueId === issueContext.id
         && acceptedPlanTarget.key === "plan"
         && issueContext.workMode === "planning";
       if (isNativeCompletionReview(lockedCurrent)) {
@@ -2184,7 +2185,12 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
       await emitInteractionResolvedTelemetry(db, interaction);
       return interaction;
     },
-    sweepMergedPullRequestConfirmations: async () => {
+    sweepMergedPullRequestConfirmations: async (mergedHints: Array<{
+      companyId: string;
+      owner: string;
+      repo: string;
+      number: number;
+    }> = []) => {
       const rows = await db
         .select({
           interaction: issueThreadInteractions,
@@ -2224,6 +2230,10 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
 
       const checkedAt = now().getTime();
       const cacheTtlMs = opts.pullRequestCacheTtlMs ?? 5 * 60 * 1000;
+      for (const hint of mergedHints) {
+        const key = `${hint.companyId}:${hint.owner.toLowerCase()}/${hint.repo.toLowerCase()}#${hint.number}`;
+        setBoundedPullRequestCacheEntry(pullRequestStateCache, key, { state: "merged", checkedAt });
+      }
       const uniqueReferences = new Map<string, {
         key: string;
         companyId: string;

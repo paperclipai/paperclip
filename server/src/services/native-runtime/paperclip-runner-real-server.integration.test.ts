@@ -88,10 +88,14 @@ describe("paperclip-runner real server vertical slice", () => {
       apiUrl: `http://127.0.0.1:${address.port}`,
     });
     const stateDirectory = await mkdtemp(resolve(tmpdir(), "paperclip-runner-real-resume-"));
+    const codexArgs = [
+      "--state-file", resolve(stateDirectory, "fake-provider.json"), "--emit-tool-call", "--durable-turn-ids",
+      "--expected-canonical-task-context", JSON.stringify({ companyId, actorId: agentId, taskId: issueId }),
+    ];
     const bundle = createRunnerdCodexTransport({
       runnerBinary: defaultCapabilityRunnerdBinary(),
       codexCommand: fakeCodexAppServer,
-      codexArgs: [],
+      codexArgs,
       stateDirectory,
       lifecyclePolicy: { mode: "per_turn", idleTimeoutMs: null },
       prpIdentity: {
@@ -115,7 +119,7 @@ describe("paperclip-runner real server vertical slice", () => {
       observedResults.push(result);
       return {
         success: true,
-        contentItems: [{ type: "inputText", text: JSON.stringify({ ok: true, result }) }],
+        contentItems: [{ type: "inputText", text: JSON.stringify({ ok: true, operationId: "get_task_context", callId: params.callId, value: result }) }],
       };
     });
 
@@ -161,7 +165,7 @@ describe("paperclip-runner real server vertical slice", () => {
       const restored = createRunnerdCodexTransport({
         runnerBinary: defaultCapabilityRunnerdBinary(),
         codexCommand: fakeCodexAppServer,
-        codexArgs: [],
+        codexArgs,
         stateDirectory,
         lifecyclePolicy: { mode: "per_turn", idleTimeoutMs: null },
         resumeDynamicTools: await resumedAuthority.definitions(),
@@ -189,7 +193,7 @@ describe("paperclip-runner real server vertical slice", () => {
         observedResults.push(result);
         return {
           success: true,
-          contentItems: [{ type: "inputText", text: JSON.stringify({ ok: true, result }) }],
+          contentItems: [{ type: "inputText", text: JSON.stringify({ ok: true, operationId: "get_task_context", callId: params.callId, value: result }) }],
         };
       });
       try {
@@ -206,7 +210,7 @@ describe("paperclip-runner real server vertical slice", () => {
           run: { id: resumedRunId },
         });
         expect(restored.evidence().diagnostics).toContain(
-          "runnerd restored its durable PRP session and provider thread",
+          "runnerd attached the durable provider session to a fresh PRP run authority",
         );
       } finally {
         await restored.transport.close();

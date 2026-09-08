@@ -1,5 +1,3 @@
-import type { AdapterModelProfileDefinition } from "@paperclipai/adapter-utils";
-
 export const type = "opencode_local";
 export const label = "OpenCode";
 
@@ -62,41 +60,6 @@ export const models: Array<{ id: string; label: string }> = [
   { id: "openai/gpt-5.1-codex-max", label: "openai/gpt-5.1-codex-max" },
   { id: "openai/gpt-5.1-codex-mini", label: "openai/gpt-5.1-codex-mini" },
 ];
-
-export const DEFAULT_OPENCODE_CHEAP_MODEL = "openai/gpt-5.1-codex-mini";
-
-// The "cheap" budget profile (used for recovery retries and other low-cost lanes).
-// Defaults to OpenCode's known Codex mini model, but is overridable so a deployment
-// routing through a gateway that does not serve that model (e.g. an EU LLM gateway)
-// can point the budget lane at a gateway-served model instead -- otherwise recovery
-// retries fail with "model not found". PAPERCLIP_OPENCODE_CHEAP_MODEL takes priority;
-// PAPERCLIP_OPENCODE_SMALL_MODEL (the auxiliary/title model) is reused as a sensible
-// fallback so a single setting covers both budget lanes. The default keeps the
-// upstream behaviour (with the Codex `variant: "low"`).
-//
-// This module is shared client/server code (the UI imports it for
-// DEFAULT_OPENCODE_LOCAL_MODEL etc.), so it must not touch the global `process`
-// unguarded: in the browser (Vite dev middleware serves it untransformed)
-// a bare `process.env` throws ReferenceError at module load and takes the whole
-// app down. Guard with `typeof process` and fall back to an empty env.
-export function buildOpenCodeModelProfiles(
-  env: NodeJS.ProcessEnv = typeof process === "undefined" ? {} : process.env,
-): AdapterModelProfileDefinition[] {
-  const override = (env.PAPERCLIP_OPENCODE_CHEAP_MODEL ?? env.PAPERCLIP_OPENCODE_SMALL_MODEL)?.trim();
-  return [
-    {
-      key: "cheap",
-      label: "Cheap",
-      description: "Budget lane model for recovery retries and other low-cost tasks.",
-      adapterConfig: override
-        ? { model: override }
-        : { model: DEFAULT_OPENCODE_CHEAP_MODEL, variant: "low" },
-      source: "adapter_default",
-    },
-  ];
-}
-
-export const modelProfiles: AdapterModelProfileDefinition[] = buildOpenCodeModelProfiles();
 
 export const agentConfigurationDoc = `# opencode_local agent configuration
 

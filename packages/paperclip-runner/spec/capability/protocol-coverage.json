@@ -3561,7 +3561,7 @@
     {
       "id": "transcript-accounting",
       "requirement": "assistant transcript capture, token usage, and cost inputs",
-      "deterministicOwner": "src/live/live-session.test.ts"
+      "deterministicOwner": "src/live/live-session.test.ts; src/cli/eval-session.ts"
     },
     {
       "id": "state-reconstruction",

@@ -73,7 +73,10 @@ function ensureRunnerTestBinaries(): void {
   ], {
     cwd: runnerWorkspace,
     stdio: "inherit",
-    timeout: 180_000,
+    // A clean release build includes every qualified managed-provider SDK.
+    // Keep this below the CI job deadline while allowing that cold compile to
+    // finish on GitHub-hosted runners.
+    timeout: 600_000,
   });
 }
 
@@ -102,7 +105,7 @@ describeEmbeddedPostgres("native Codex server vertical slice", () => {
     setupRunnerPrpWebSocketServer(server, {
       apiUrl: `http://127.0.0.1:${address.port}`,
     });
-  }, 240_000);
+  }, 660_000);
 
   afterAll(async () => {
     runnerPrpWebSocketInternals.resetForTests();

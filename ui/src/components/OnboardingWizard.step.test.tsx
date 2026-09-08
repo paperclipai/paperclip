@@ -229,6 +229,53 @@ describe("OnboardingWizard — which step it lands on", () => {
     vi.clearAllMocks();
   });
 
+  /**
+   * The progress strip counts the walk the customer is actually on, and the two
+   * runs that enter on the agent step are on different walks.
+   *
+   * Both have a company already, so `entryStep` cannot tell them apart. What
+   * does is `enableManagedSandboxOnly` — the cloud-tenant shape. A cloud tenant
+   * was asked for its organization's name by Cloud, one screen earlier, so its
+   * walk is four and this is the second. A self-hosted company that simply has
+   * no agents yet was asked nothing before this, so its walk is three.
+   */
+  describe("progress strip length", () => {
+    function announcedCount(): string | null {
+      return (
+        [...document.querySelectorAll(".sr-only")]
+          .map((element) => element.textContent?.trim() ?? "")
+          .find((text) => /^Step \d+ of \d+$/.test(text)) ?? null
+      );
+    }
+
+    it("counts four on a cloud tenant, continuing the count Cloud started", async () => {
+      mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+        enableManagedSandboxOnly: true,
+      });
+      routerState.pathname = "/PC1/onboarding";
+      await render();
+      await settle();
+
+      expect(currentStep()).toBe("agent");
+      expect(announcedCount()).toBe("Step 2 of 4");
+    });
+
+    it("counts three on a self-hosted company that has no agents yet", async () => {
+      // Nothing was asked before this step here, so a fourth segment would be
+      // one the run can never fill — and it would credit the customer with a
+      // step they never walked.
+      mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+        enableManagedSandboxOnly: false,
+      });
+      routerState.pathname = "/PC1/onboarding";
+      await render();
+      await settle();
+
+      expect(currentStep()).toBe("agent");
+      expect(announcedCount()).toBe("Step 1 of 3");
+    });
+  });
+
   it("opens a company that already has its mission on the agent step", async () => {
     // The point of the change: Cloud collected the mission at signup and the
     // seed wrote it as a company-level goal, so asking for it again asks a
@@ -843,6 +890,42 @@ describe("OnboardingWizard — which step it lands on", () => {
       await settle();
     }
 
+    async function press(button: Element) {
+      await act(async () => {
+        button.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      await settle();
+    }
+
+    /**
+     * The step's own CTA. By exact text, because "Back" sits beside it.
+     *
+     * Two labels rather than one: the connect step calls its forward button
+     * "Connect", since there the press starts a sign-in rather than simply
+     * advancing. The rest of the arc still says "Next". These tests are about
+     * where a press lands, so either will do.
+     */
+    function stepCta(): HTMLButtonElement {
+      const cta = [...document.body.querySelectorAll("button")].find((b) => {
+        const text = b.textContent?.trim();
+        return text === "Next" || text === "Connect";
+      });
+      expect(cta, "the step should render its forward button").toBeTruthy();
+      return cta as HTMLButtonElement;
+    }
+
+    /**
+     * Pick a model source. The connect step arrives with nothing chosen, so its
+     * CTA stays disabled until a tile is pressed — found by `aria-checked`
+     * rather than by label, because this suite mocks the display registry and
+     * the tiles carry whatever it happens to return.
+     */
+    async function pickModelSource() {
+      const tiles = [...document.body.querySelectorAll("button[aria-checked]")];
+      expect(tiles.length, "the connect step should offer a source").toBeGreaterThan(0);
+      await press(tiles[0]!);
+    }
+
     it("seeds the lead agent's instructions with the mission it was never asked for", async () => {
       // The regression this exists for. The agent step feeds
       // `composeCeoInstructions` from the mission field, and a company entered
@@ -851,22 +934,11 @@ describe("OnboardingWizard — which step it lands on", () => {
       await openOnAgentStep();
       await nameAgent();
 
-      const next = [...document.body.querySelectorAll("button")].find((b) =>
-        b.textContent?.includes("Next"),
-      )!;
-      await act(async () => {
-        next.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-      });
-      await settle();
+      await press(stepCta());
 
-      const connect = [...document.body.querySelectorAll("button")].find((b) =>
-        b.textContent?.includes("Connect"),
-      )!;
-      expect(connect.hasAttribute("disabled")).toBe(false);
-      await act(async () => {
-        connect.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-      });
-      await settle();
+      await pickModelSource();
+      expect(stepCta().hasAttribute("disabled")).toBe(false);
+      await press(stepCta());
 
       expect(mockAgentsApi.saveInstructionsFile).toHaveBeenCalled();
       const [, file] = mockAgentsApi.saveInstructionsFile.mock.calls[0];
@@ -883,18 +955,9 @@ describe("OnboardingWizard — which step it lands on", () => {
       await openOnAgentStep();
       await nameAgent();
 
-      const next = [...document.body.querySelectorAll("button")].find((b) =>
-        b.textContent?.includes("Next"),
-      )!;
-      await act(async () => {
-        next.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-      });
-      await settle();
-      expect(
-        [...document.body.querySelectorAll("button")]
-          .find((b) => b.textContent?.includes("Connect"))!
-          .hasAttribute("disabled"),
-      ).toBe(false);
+      await press(stepCta());
+      await pickModelSource();
+      expect(stepCta().hasAttribute("disabled")).toBe(false);
 
       mockGoalsApi.list.mockReturnValue(new Promise(() => {}));
       await act(async () => {
@@ -904,62 +967,28 @@ describe("OnboardingWizard — which step it lands on", () => {
       });
       await settle(2);
 
-      const connect = [...document.body.querySelectorAll("button")].find((b) =>
-        b.textContent?.includes("Connect"),
-      )!;
-      expect(connect.hasAttribute("disabled")).toBe(true);
+      expect(stepCta().hasAttribute("disabled")).toBe(true);
       expect(mockAgentsApi.hire).not.toHaveBeenCalled();
     });
 
-    it("hydrates again when the same company comes back through onboarding", async () => {
-      // The hydration marker is a ref, so it outlives the state it describes.
-      // `reset()` clears the mission field; leaving the marker set would make
-      // the second run believe a mission it no longer holds was already
-      // fetched — and hire the agent without it, exactly as before this fix.
-      await openOnAgentStep();
-
-      const close = [...document.body.querySelectorAll("button")].find((b) =>
-        b.querySelector(".sr-only")?.textContent?.includes("Close"),
-      );
-      expect(close).toBeDefined();
-      await act(async () => {
-        close!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-      });
-      await settle();
-      // `reset()` ran: the wizard is back at the front door with a cleared
-      // mission field, which is precisely the state the marker must not
-      // outlive.
-      expect(currentStep()).not.toBe("agent");
-
-      routerState.pathname = "/";
-      await rerender();
-      await settle();
-      routerState.pathname = "/PC1/onboarding";
-      dialogState.onboardingRouteDismissed = false;
-      await rerender();
-      await settle();
-      expect(currentStep()).toBe("agent");
-      await nameAgent();
-
-      const next = [...document.body.querySelectorAll("button")].find((b) =>
-        b.textContent?.includes("Next"),
-      )!;
-      await act(async () => {
-        next.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-      });
-      await settle();
-      const connect = [...document.body.querySelectorAll("button")].find((b) =>
-        b.textContent?.includes("Connect"),
-      )!;
-      await act(async () => {
-        connect.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-      });
-      await settle();
-
-      expect(mockAgentsApi.saveInstructionsFile).toHaveBeenCalled();
-      const [, file] = mockAgentsApi.saveInstructionsFile.mock.calls.at(-1)!;
-      expect(file.content).toContain("Scale the marketplace");
-    });
+    // Removed: "hydrates again when the same company comes back through
+    // onboarding".
+    //
+    // It closed the wizard with the X and re-opened it, which made `reset()`
+    // clear `hydratedMissionForRef` and the second pass hydrate again. The arc
+    // has no X any more — the connect step deliberately has no exit, because
+    // nothing downstream of it works until a model is connected — so `reset()`
+    // is now reachable only from a completed launch.
+    //
+    // Three substitutes were tried and all three were green against a wizard
+    // with the behaviour deleted, which is worse than no test: routing to "/"
+    // never withdraws the company; a swap to another company re-points the
+    // marker by itself, since it stores which company was hydrated rather than
+    // a bare flag; and either route dance remounts the inner wizard, so the ref
+    // does not survive to be tested. What the marker guards is still covered
+    // from the front by "seeds the lead agent's instructions with the mission it
+    // was never asked for". Restore a real version of this when the arc gains a
+    // way out.
 
     it("hires under the neutral role, with the name the customer typed", async () => {
       // The arc stopped asking for a role, so every onboarding hire is filed
@@ -969,20 +998,9 @@ describe("OnboardingWizard — which step it lands on", () => {
       await openOnAgentStep();
       await nameAgent("Ada");
 
-      const next = [...document.body.querySelectorAll("button")].find((b) =>
-        b.textContent?.includes("Next"),
-      )!;
-      await act(async () => {
-        next.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-      });
-      await settle();
-      const connect = [...document.body.querySelectorAll("button")].find((b) =>
-        b.textContent?.includes("Connect"),
-      )!;
-      await act(async () => {
-        connect.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-      });
-      await settle();
+      await press(stepCta());
+      await pickModelSource();
+      await press(stepCta());
 
       expect(mockAgentsApi.hire).toHaveBeenCalled();
       const [, payload] = mockAgentsApi.hire.mock.calls.at(-1)!;

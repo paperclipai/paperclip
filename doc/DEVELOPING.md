@@ -739,6 +739,71 @@ In Vite middleware mode, Paperclip gives HMR a dedicated HTTP server bound to th
 
 When a workspace service runs Paperclip for browser OAuth QA, configure its `expose.urlTemplate` with the canonical URL the browser can reach. Paperclip preserves explicit `PAPERCLIP_PUBLIC_URL` or `BETTER_AUTH_URL` settings; otherwise it uses a valid exposed HTTPS origin (or loopback HTTP) as the managed runtime fallback for Better Auth and `/api/tools/oauth/callback`. Internal service names such as `http://paperclip-dev:<port>` are rejected unless that hostname is genuinely the browser route. Use a unique origin per isolated worktree. See [Execution Workspaces And Runtime Services](../docs/guides/board-operator/execution-workspaces-and-runtime-services.md#browser-reachable-origins-for-oauth-qa) for configuration and verification.
 
+## Paperclip Runner Adapter Conversion
+
+The experimental Paperclip Runner currently qualifies four local profiles:
+Codex, OpenCode, ACPX Claude, and ACPX Codex. Changing an existing agent to
+`paperclip_runner` remains supported only from `codex_local`; create the other
+profiles explicitly after enabling the single **Paperclip Runner** experimental
+setting. Onboarding continues to create legacy adapters. Disabling the setting
+blocks fresh native starts without hiding or corrupting persisted native runs.
+
+Native Codex is qualified only with `codexPermissionMode: "never"`. The create
+and edit surfaces do not offer `on-request` or `untrusted`, and a persisted
+unsupported value fails with remediation instead of being silently coerced.
+OpenCode retains `allow`, `ask`, and `deny`; ACPX retains `approve-all`,
+`approve-reads`, and `deny-all`. Codex conversion keeps a non-empty model and
+otherwise stores the shared `gpt-5.6-sol` default. The native execution boundary
+applies the same default to older runner rows whose model is missing or blank.
+
+For native Codex runs, Paperclip passes the resolved execution workspace as
+`PAPERCLIP_WORKSPACE_CWD` and uses it as the provider containment boundary. A
+workspace below the host `HOME` is valid, including the default projectless
+agent workspace. The host `HOME` itself, a directory that contains it, a
+filesystem root, a `CODEX_HOME` overlap, or a canonical path outside the
+assigned workspace is rejected before provider startup.
+
+### Native runner restart recovery
+
+Paperclip Runner keeps its heartbeat run, native session, logical runner, and
+provider session identities across server restarts. A coordinated hot restart
+registers a correlated recovery request before it signals the dev supervisor.
+An uncoordinated server restart uses the same durable recovery classifier
+without trusting a handoff marker.
+
+Startup binds the HTTP and PRP listener before it classifies native runs. Public
+health reports a startup state until every candidate is reattached, dispatched
+for same-run resume, finalized from durable evidence, or held for explicit
+ownership evidence. Scheduling and generic orphan recovery start only after
+that classification finishes.
+
+- A verified live runner re-registers its existing PRP authority and reconnects
+  with the same operating-system PID. Paperclip does not spawn a competing
+  runner.
+- A verified dead runner starts a replacement from the same durable root and
+  resumes the same provider checkpoint. Only the operating-system PID changes.
+- A runner that died before its first authenticated connection can restart on
+  the same run only when its durable root proves that no provider authority or
+  checkpoint exists. Paperclip quarantines the incomplete root first.
+- A live but mismatched or unverifiable process fails closed. Paperclip does not
+  signal it or spawn a replacement.
+- A persisted proposed or terminal result is reconciled before any runner or
+  provider work starts, so restart recovery cannot submit a duplicate turn.
+
+Run the credential-free real-process restart suite with:
+
+```sh
+pnpm --filter @paperclipai/paperclip-runner build:runner-binaries
+pnpm exec vitest run server/src/services/native-runtime/native-runner-restart-recovery.integration.test.ts
+pnpm --filter @paperclipai/paperclip-runner exec vitest run src/live/runnerd-codex-transport.test.ts -t 'adopts a live runner'
+```
+
+The suite uses isolated PostgreSQL state, isolated `PAPERCLIP_HOME` roots, real
+`runnerd` processes, and a deterministic fake Codex app server. It covers hot
+and hard restarts with live and dead runners, the result-finalization race,
+incomplete bootstrap, repeated crashes with steering, and fail-closed process
+identity mismatches.
+
 ## App-Shipped Skills Catalog
 
 The Paperclip app ships a curated catalog of company skills out of the box. The
@@ -971,6 +1036,24 @@ host configured by `PAPERCLIP_PAGES_API_URL` is included automatically. Every
 broker hostname is resolved once and the request is pinned to the approved
 address; IPv4 and IPv6 link-local destinations remain denied even when their
 host is allowlisted.
+
+## HTTP Adapter Private Endpoints
+
+HTTP adapters can call public HTTP(S) endpoints by default. Requests use the
+same DNS-pinning guard as remote connections, do not follow redirects, and
+reject loopback, RFC1918/private, and link-local or cloud-metadata destinations.
+
+Server owners can opt a trusted private service in with a comma-separated list
+of exact origins:
+
+```sh
+PAPERCLIP_HTTP_ADAPTER_PRIVATE_ENDPOINT_ALLOWLIST=http://hooks.internal.example:8080,https://10.0.0.42
+```
+
+Each entry must contain only a scheme, hostname, and optional port. Paths,
+credentials, query strings, fragments, and wildcards are ignored. Matching is
+by exact normalized origin, so allowing one port does not allow another.
+Link-local destinations remain denied even when explicitly listed.
 
 ## Company Deletion Toggle
 

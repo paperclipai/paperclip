@@ -2,19 +2,26 @@
 
 pub mod acpx_event_payload;
 pub mod acpx_event_scope;
+pub mod acpx_provider_backend;
 pub mod acpx_provider_checkpoint;
 pub mod acpx_provider_session;
 pub mod acpx_provider_state;
 pub mod acpx_sidecar_transport;
+pub mod aws_agentcore_provider;
+pub mod claude_managed_provider;
 pub mod codex_provider;
 pub mod durable;
 pub mod fake_harness;
 pub mod generated_acpx_sidecar_contract;
 pub mod local_runner;
+pub mod managed_provider;
+pub mod managed_provider_backend;
+pub mod native_provider_backend;
 pub mod process_supervisor;
 pub mod provider_backend;
 pub mod provider_bridge;
 pub mod provider_events;
+pub mod qualified_launch;
 pub mod question_response;
 pub mod replay;
 mod stable_identity;

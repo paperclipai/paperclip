@@ -44,8 +44,10 @@ context and server-side ownership checks.
    Slack needs channel/workspace bounds, Google Drive/Docs needs drive/folder/doc
    bounds, and equivalent broad providers need provider-specific bounds before
    agent grants are usable.
-6. **Write/admin actions are explicit opt-ins.** Read access does not imply write
-   access. Destructive or newly changed write actions default to review.
+6. **Write/admin actions stay explicit and visible.** Completing connection
+   setup is the operator's opt-in to the selected active catalog. New
+   connections default those active actions to Allowed; newly discovered or
+   changed write actions still enter quarantine for review.
 7. **Revocation is immediate and failure-closed.** Revoked secrets, disabled
    connections, expired policies, missing secret refs, or failed health checks
    block new execution and queued mutation work.
@@ -307,5 +309,6 @@ Redaction and agent safety:
   board-supervised rollout.
 - Provider OAuth/app-installation scopes may be broader than Paperclip resource
   filters. Paperclip must enforce the narrower internal filter.
-- High-risk writes still need good UX. Default them to ask-first, dry-run, or
-  draft semantics until product copy and review flows are proven.
+- High-risk writes still need good UX. Prefer provider-side dry-run or draft
+  semantics, clear action names, and narrow explicit provider policy where an
+  Allowed new-connection default would be unsafe.

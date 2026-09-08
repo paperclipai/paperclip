@@ -13,6 +13,7 @@ fn transport(mode: &str, timeout: Duration) -> AcpxSidecarTransport {
     AcpxSidecarTransport::start(&AcpxSidecarTransportConfig {
         command: PathBuf::from(env!("CARGO_BIN_EXE_fake-acpx-sidecar")),
         args: vec!["--mode".to_owned(), mode.to_owned()],
+        verified_launch: None,
         request_timeout: timeout,
         shutdown_grace: Duration::from_millis(50),
     })
@@ -161,6 +162,7 @@ fn keeps_valid_command_rejections_separate_from_protocol_failures() {
             .expect_err("fake command should be rejected");
         let message = error.to_string();
         assert!(message.contains("was rejected"));
+        assert!(message.contains("classification=unclassified"));
         assert!(!message.contains("Q7Z9"));
         assert!(!message.contains("violet-circuit-4821"));
         assert!(!message.contains("unavailable"));

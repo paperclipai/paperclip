@@ -20,22 +20,31 @@ describe("Codex security configuration", () => {
     });
   });
 
-  it("denies host roots, network access, and unlisted environment variables", () => {
-    const args = createIsolatedCodexAppServerArgs({
-      HOME: "/host/home",
-      CODEX_HOME: "/host/codex",
-      PATH: "/safe/bin",
-      LANG: "C.UTF-8",
-      OPENAI_API_KEY: "must-not-cross",
-    }, ["/runner/context"]);
+  it("keeps automatic execution inside the workspace without credential or network access", () => {
+    const args = createIsolatedCodexAppServerArgs(
+      {
+        HOME: "/host/home",
+        CODEX_HOME: "/host/codex",
+        PATH: "/safe/bin",
+        LANG: "C.UTF-8",
+        OPENAI_API_KEY: "must-not-cross",
+      },
+      ["/isolated/codex-home/skills", "/runner/context"],
+    );
     const serialized = args.join("\n");
 
+    expect(serialized).toContain('":root"="none"');
+    expect(serialized).toContain('":minimal"="read"');
+    expect(serialized).toContain('":tmpdir"="none"');
     expect(serialized).toContain('"/host/home"="none"');
     expect(serialized).toContain('"/host/codex"="none"');
+    expect(serialized).toContain('"/isolated/codex-home/skills"="read"');
+    expect(serialized).not.toContain('"/isolated/codex-home"="read"');
     expect(serialized).toContain('"/runner/context"="read"');
     expect(serialized).toContain('":workspace_roots"={"."="write"}');
     expect(serialized).toContain('":workspace_roots"={"."="read"}');
     expect(serialized).toContain("network.enabled=false");
+    expect(serialized).toContain('shell_environment_policy.inherit="none"');
     expect(serialized).toContain('PATH="/safe/bin"');
     expect(serialized).toContain('LANG="C.UTF-8"');
     expect(serialized).not.toContain("OPENAI_API_KEY");

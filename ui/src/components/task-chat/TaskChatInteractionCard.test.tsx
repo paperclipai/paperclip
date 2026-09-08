@@ -387,7 +387,7 @@ describe("TaskChatInteractionCard", () => {
     const requestChanges = Array.from(
       container.querySelectorAll<HTMLButtonElement>("button"),
     ).find((button) => button.textContent?.trim() === "Request changes");
-    await act(async () => requestChanges?.click());
+    flushSync(() => requestChanges?.click());
 
     expect(container.textContent).not.toContain("Do you accept this plan?");
     expect(container.textContent).toContain("What should change?");
@@ -400,8 +400,8 @@ describe("TaskChatInteractionCard", () => {
         .querySelector('[data-testid="mock-markdown-editor"]')
         ?.getAttribute("data-image-upload"),
     ).toBe("true");
-    expect(container.textContent).toContain("Attach image");
-    expect(container.textContent).toContain("drop/paste an image");
+    expect(container.textContent).not.toContain("Attach image");
+    expect(container.textContent).not.toContain("drop/paste an image");
     const reasonGroup = container.querySelector(
       '[data-testid="plan-revision-composer"]',
     )?.parentElement;
@@ -879,7 +879,7 @@ describe("TaskChatThreadView interaction items", () => {
     expect(
       container
         .querySelector('[data-testid="task-chat-interaction"]')
-        ?.parentElement?.classList.contains("-mt-3"),
+        ?.parentElement?.classList.contains("mt-3"),
     ).toBe(true);
   });
 

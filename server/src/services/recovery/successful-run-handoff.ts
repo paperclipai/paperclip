@@ -2,7 +2,7 @@ import { and, eq, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agentWakeupRequests, agents, heartbeatRuns, issues } from "@paperclipai/db";
 import type { IssueCommentMetadata, IssueCommentPresentation, RunLivenessState } from "@paperclipai/shared";
-import { withRecoveryModelProfileHint } from "./model-profile-hint.js";
+import { withRecoveryContext } from "./status-only-context.js";
 import {
   agentLinkRow,
   issueLinkRow,
@@ -512,7 +512,7 @@ export function decideSuccessfulRunHandoff(input: {
     nextAction: input.nextAction,
     detectedProgressSummary: input.detectedProgressSummary,
   });
-  const payload = withRecoveryModelProfileHint({
+  const payload = withRecoveryContext({
     issueId: issue.id,
     taskId: issue.id,
     sourceIssueId: issue.id,
@@ -540,7 +540,7 @@ export function decideSuccessfulRunHandoff(input: {
     }),
     payload,
     instruction,
-    contextSnapshot: withRecoveryModelProfileHint({
+    contextSnapshot: withRecoveryContext({
       ...payload,
       wakeReason: FINISH_SUCCESSFUL_RUN_HANDOFF_REASON,
       livenessState: input.livenessState,

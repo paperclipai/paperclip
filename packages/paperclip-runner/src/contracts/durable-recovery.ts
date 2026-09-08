@@ -37,7 +37,23 @@ export interface DurableRecoveryProcessedCommand {
   commandId: string;
   controllerSeq: number;
   commandDigest: string;
-  status: "completed" | "failed" | "rejected";
+  /**
+   * The runner's command journal is persisted before a command's effect and
+   * re-persisted after recovery, so a recovered trace carries the whole
+   * lifecycle, not just the settled end of it:
+   *
+   * - `pending` — journaled, effect not yet confirmed. Written by
+   *   `DurableState::begin_command` and durable from that moment.
+   * - `indeterminate` — the crash-recovery verdict.
+   *   `DurableState::reconcile_pending_commands` promotes every `pending`
+   *   entry on load and saves the state back, so the command is never
+   *   executed twice. Terminal.
+   *
+   * Both are values a consumer can read off `processedCommands`; a union that
+   * omits them tells the compiler a state the runner routinely writes is
+   * impossible.
+   */
+  status: "pending" | "completed" | "failed" | "rejected" | "indeterminate";
   logicalEffectCount: number;
   result: Record<string, unknown>;
 }
@@ -79,7 +95,13 @@ export interface DurableRecoveryCoreCommand {
   type: string;
   issuedAt: string;
   payload: Record<string, unknown>;
-  status: "pending" | "completed" | "failed" | "rejected";
+  /**
+   * `indeterminate` is the runner's crash-recovery verdict: the command was
+   * journaled but its effect was never confirmed, so the runner will not
+   * execute it a second time. It is terminal, like the other non-pending
+   * statuses.
+   */
+  status: "pending" | "completed" | "failed" | "rejected" | "indeterminate";
   result: Record<string, unknown> | null;
 }
 

@@ -1,7 +1,9 @@
 // Optional Sentry error monitoring for the server process.
 //
-// Activated only when `SENTRY_DSN` is set. When unset, no Sentry package is
-// loaded at all.
+// Activated only when the backend DSN resolves to a value — see
+// `resolveSentryDsns` in `sentry-dsn.ts` for the precedence between
+// `SENTRY_DSN_BACKEND` and the legacy `SENTRY_DSN` fallback. When it
+// resolves to `null`, no Sentry package is loaded at all.
 //
 // The import is dynamic and the package is an optional runtime dependency —
 // operators who want server-side error monitoring install `@sentry/node`
@@ -43,8 +45,19 @@
 // `instrumentation.ts`.
 
 import { checkExactPeerVersions } from "./peer-version-check.js";
+import { resolveSentryDsns } from "./sentry-dsn.js";
 
-const dsn = process.env.SENTRY_DSN;
+const { backend: dsn, legacyFallbackUsed } = resolveSentryDsns();
+
+if (legacyFallbackUsed) {
+  // eslint-disable-next-line no-console
+  console.warn(
+    "[paperclip] SENTRY_DSN_FRONTEND or SENTRY_DSN_BACKEND is not set. " +
+      "The server uses the legacy SENTRY_DSN value for the affected " +
+      "component. Set SENTRY_DSN_FRONTEND and SENTRY_DSN_BACKEND to send " +
+      "each component to its own Sentry project.",
+  );
+}
 
 /** The subset of the `@sentry/node` client surface this gate calls. */
 interface SentryHandle {
@@ -57,16 +70,17 @@ let shutdownPromise: Promise<void> | null = null;
 
 /**
  * Resolves once the Sentry SDK has started, or once bootstrap has failed and
- * logged, or at once when `SENTRY_DSN` is unset. No caller needs to await
- * this before calling `captureException` — it is a no-op until ready — but
- * `index.ts` awaits it at startup so the first real error has a live client.
+ * logged, or at once when the backend DSN resolves to `null`. No caller
+ * needs to await this before calling `captureException` — it is a no-op
+ * until ready — but `index.ts` awaits it at startup so the first real error
+ * has a live client.
  */
 export const sentryReady: Promise<void> = dsn ? bootstrapSentry(dsn) : Promise.resolve();
 
 /**
  * Report an error to Sentry. A no-op before the gate opens, when the gate
- * never opens (`SENTRY_DSN` unset), or when bootstrap failed. Never throws —
- * observability must not change control flow.
+ * never opens (the backend DSN resolves to `null`), or when bootstrap
+ * failed. Never throws — observability must not change control flow.
  */
 export function captureException(error: unknown): void {
   if (!sentryHandle) return;
@@ -165,10 +179,10 @@ async function bootstrapSentry(dsn: string): Promise<void> {
   if (!versionCheck.ok) {
     // eslint-disable-next-line no-console
     console.warn(
-      "[paperclip] SENTRY_DSN is set but the @sentry/node package is not " +
-        "installed, or is installed at an unsupported version. Install the " +
-        "declared version of @sentry/node to enable server error " +
-        "monitoring. Continuing without it.",
+      "[paperclip] The backend Sentry DSN is set, but the @sentry/node " +
+        "package is not installed, or is installed at an unsupported " +
+        "version. Install the declared version of @sentry/node to enable " +
+        "server error monitoring. Continuing without it.",
       versionCheck.detail,
     );
     return;
@@ -192,9 +206,9 @@ async function bootstrapSentry(dsn: string): Promise<void> {
     // after that point reaches this block.
     // eslint-disable-next-line no-console
     console.warn(
-      "[paperclip] SENTRY_DSN is set and @sentry/node passed the version " +
-        "check, but it failed to load or initialize. Continuing without " +
-        "error monitoring.",
+      "[paperclip] The backend Sentry DSN is set, and @sentry/node passed " +
+        "the version check, but it failed to load or initialize. " +
+        "Continuing without error monitoring.",
       err,
     );
   }

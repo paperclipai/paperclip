@@ -369,9 +369,15 @@ describe("Capability turn stream framing", () => {
     const { session, close } = await openGatedSession(gate);
     try {
       const turn = session.sendMessage("Start writing, then I will stop you.");
+      await settle(() => session.snapshot().activeTurnId !== null, 1_000);
       gate.release();
       // Wait for the first delta to reach the transcript before interrupting.
-      await new Promise((resolve) => setTimeout(resolve, 5));
+      await settle(
+        () => assistantText(
+          projectCapabilityIssueThread({ snapshot: session.snapshot() }),
+        ).trim() === DELTAS[0]!.trim(),
+        1_000,
+      );
       await session.interrupt("operator stopped the turn");
       const result = await turn;
 
