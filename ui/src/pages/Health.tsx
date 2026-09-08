@@ -55,6 +55,12 @@ import {
   type SymptomLog,
   type SymptomType,
 } from "../hooks/useSymptoms";
+import {
+  useMedicationHistory,
+  useLogMedication,
+  useDeleteMedicationLog,
+  type MedicationLog,
+} from "../hooks/useMedications";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { EmptyState } from "../components/EmptyState";
@@ -2102,12 +2108,206 @@ function SymptomsView({ companyId }: { companyId: string }) {
   );
 }
 
+// ---- Medications ----
+
+function MedicationRow({ log, onDelete }: { log: MedicationLog; onDelete: (id: string) => void }) {
+  const [confirming, setConfirming] = useState(false);
+
+  return (
+    <div className="flex items-start gap-3 py-3">
+      <div className="flex-1 min-w-0">
+        <p className="text-sm font-medium">{log.medicationDate}</p>
+        <div className="flex flex-wrap gap-x-4 gap-y-0.5 mt-0.5">
+          <span className="text-xs text-muted-foreground font-medium">{log.medicationName}</span>
+          {log.dosage && (
+            <span className="text-xs text-muted-foreground">{log.dosage}</span>
+          )}
+          <span className={cn("text-xs", log.taken ? "text-green-600" : "text-muted-foreground")}>
+            {log.taken ? "Taken" : "Skipped"}
+          </span>
+        </div>
+        {log.notes && (
+          <p className="text-xs text-muted-foreground mt-0.5 truncate">{log.notes}</p>
+        )}
+      </div>
+      <div className="shrink-0">
+        {confirming ? (
+          <div className="flex gap-1">
+            <button
+              className="text-[10px] text-destructive font-medium px-1.5 py-0.5 rounded border border-destructive/30 hover:bg-destructive/10 transition-colors"
+              onClick={() => onDelete(log.id)}
+            >
+              Delete
+            </button>
+            <button
+              className="text-[10px] text-muted-foreground px-1.5 py-0.5 rounded border border-border hover:bg-muted transition-colors"
+              onClick={() => setConfirming(false)}
+            >
+              Cancel
+            </button>
+          </div>
+        ) : (
+          <button
+            className="text-muted-foreground hover:text-destructive transition-colors"
+            onClick={() => setConfirming(true)}
+          >
+            <Trash2 className="w-3.5 h-3.5" />
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function MedicationsView({ companyId }: { companyId: string }) {
+  const today = new Date().toISOString().slice(0, 10);
+  const fourteenDaysAgo = new Date(Date.now() - 13 * 86_400_000).toISOString().slice(0, 10);
+
+  const { data, isLoading, error } = useMedicationHistory(companyId, fourteenDaysAgo, today);
+  const logMutation = useLogMedication();
+  const deleteMutation = useDeleteMedicationLog();
+
+  const [formDate, setFormDate] = useState(today);
+  const [formName, setFormName] = useState("");
+  const [formDosage, setFormDosage] = useState("");
+  const [formTaken, setFormTaken] = useState(true);
+  const [formNotes, setFormNotes] = useState("");
+  const [showForm, setShowForm] = useState(false);
+  const [formError, setFormError] = useState<string | null>(null);
+
+  function resetForm() {
+    setFormDate(today);
+    setFormName("");
+    setFormDosage("");
+    setFormTaken(true);
+    setFormNotes("");
+    setFormError(null);
+  }
+
+  async function handleSubmit() {
+    setFormError(null);
+    if (!formName.trim()) {
+      setFormError("Medication name is required");
+      return;
+    }
+    try {
+      await logMutation.mutateAsync({
+        companyId,
+        medicationDate: formDate,
+        medicationName: formName.trim(),
+        dosage: formDosage.trim() || null,
+        taken: formTaken,
+        notes: formNotes.trim() || null,
+      });
+      resetForm();
+      setShowForm(false);
+    } catch (e) {
+      setFormError(e instanceof Error ? e.message : "Failed to log medication");
+    }
+  }
+
+  if (isLoading) return <PageSkeleton />;
+  if (error) return <EmptyState icon={Activity} message="Failed to load medication logs." />;
+
+  const logs = data?.logs ?? [];
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <h2 className="text-sm font-semibold">Medications — last 14 days</h2>
+        <Button size="sm" variant="outline" onClick={() => setShowForm(true)}>
+          <Plus className="w-3.5 h-3.5 mr-1" /> Log Medication
+        </Button>
+      </div>
+
+      <Dialog open={showForm} onOpenChange={(open) => { if (!open) { resetForm(); setShowForm(false); } }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Log Medication</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3 py-2">
+            <div>
+              <label className="text-xs text-muted-foreground block mb-1">Date</label>
+              <input
+                type="date"
+                className="w-full border border-border rounded px-2 py-1 text-sm bg-background"
+                value={formDate}
+                onChange={(e) => setFormDate(e.target.value)}
+                max={today}
+              />
+            </div>
+            <div>
+              <label className="text-xs text-muted-foreground block mb-1">Medication Name *</label>
+              <input
+                type="text"
+                className="w-full border border-border rounded px-2 py-1 text-sm bg-background"
+                placeholder="e.g. Ibuprofen"
+                value={formName}
+                onChange={(e) => setFormName(e.target.value)}
+              />
+            </div>
+            <div>
+              <label className="text-xs text-muted-foreground block mb-1">Dosage</label>
+              <input
+                type="text"
+                className="w-full border border-border rounded px-2 py-1 text-sm bg-background"
+                placeholder="e.g. 200mg, 1 tablet"
+                value={formDosage}
+                onChange={(e) => setFormDosage(e.target.value)}
+              />
+            </div>
+            <div className="flex items-center gap-2">
+              <input
+                id="med-taken"
+                type="checkbox"
+                checked={formTaken}
+                onChange={(e) => setFormTaken(e.target.checked)}
+              />
+              <label htmlFor="med-taken" className="text-sm">Taken</label>
+            </div>
+            <div>
+              <label className="text-xs text-muted-foreground block mb-1">Notes</label>
+              <textarea
+                className="w-full border border-border rounded px-2 py-1 text-sm bg-background resize-none"
+                rows={2}
+                value={formNotes}
+                onChange={(e) => setFormNotes(e.target.value)}
+              />
+            </div>
+            {formError && <p className="text-xs text-destructive">{formError}</p>}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => { resetForm(); setShowForm(false); }}>Cancel</Button>
+            <Button onClick={handleSubmit} disabled={logMutation.isPending}>
+              {logMutation.isPending ? "Saving…" : "Save"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {logs.length === 0 ? (
+        <EmptyState icon={Activity} message="No medications logged in the last 14 days." />
+      ) : (
+        <div className="divide-y divide-border rounded-lg border bg-card px-4">
+          {logs.map((l) => (
+            <MedicationRow
+              key={l.id}
+              log={l}
+              onDelete={(id) => deleteMutation.mutate({ id, companyId })}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ---- Page ----
 
 export function Health() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
-  const [view, setView] = useState<"score" | "locations" | "sleep" | "exercise" | "biometrics" | "mood" | "nutrition" | "symptoms">("score");
+  const [view, setView] = useState<"score" | "locations" | "sleep" | "exercise" | "biometrics" | "mood" | "nutrition" | "symptoms" | "medications">("score");
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Health" }]);
@@ -2192,6 +2392,15 @@ export function Health() {
         >
           Symptoms
         </button>
+        <button
+          className={cn(
+            "px-3 py-1 text-xs font-medium rounded transition-colors",
+            view === "medications" ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground",
+          )}
+          onClick={() => setView("medications")}
+        >
+          Medications
+        </button>
       </div>
 
       {view === "score" ? (
@@ -2208,8 +2417,10 @@ export function Health() {
         <MoodView companyId={selectedCompanyId} />
       ) : view === "nutrition" ? (
         <NutritionView companyId={selectedCompanyId} />
-      ) : (
+      ) : view === "symptoms" ? (
         <SymptomsView companyId={selectedCompanyId} />
+      ) : (
+        <MedicationsView companyId={selectedCompanyId} />
       )}
     </div>
   );

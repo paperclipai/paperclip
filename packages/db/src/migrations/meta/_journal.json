@@ -498,6 +498,13 @@
       "when": 1757721600000,
       "tag": "0070_symptom_logs",
       "breakpoints": true
+    },
+    {
+      "idx": 71,
+      "version": "7",
+      "when": 1757808000000,
+      "tag": "0071_medications",
+      "breakpoints": true
     }
   ]
 }
