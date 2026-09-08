@@ -7,7 +7,7 @@ export type ToolResult = CallToolResult;
 export interface KvToolDefinition {
   name: string;
   description: string;
-  schema: z.ZodObject;
+  schema: z.ZodObject<z.ZodRawShape>;
   annotations: ToolAnnotations;
   execute: (input: Record<string, unknown>) => Promise<ToolResult>;
 }
