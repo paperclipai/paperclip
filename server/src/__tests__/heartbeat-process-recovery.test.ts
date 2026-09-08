@@ -3,8 +3,13 @@ import { spawn, type ChildProcess } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { and, eq, or, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, or, inArray, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import express from "express";
+import request from "supertest";
+import { errorHandler } from "../middleware/index.js";
+import { issueRoutes } from "../routes/issues.js";
+
 import {
   activityLog,
   agents,
@@ -199,6 +204,7 @@ async function waitForPidExit(pid: number, timeoutMs = 2_000) {
   }
   return !isPidAlive(pid);
 }
+
 
 async function waitForRunToSettle(
   heartbeat: ReturnType<typeof heartbeatService>,
@@ -610,6 +616,107 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
     return { companyId, agentId, runId, wakeupRequestId, issueId };
   }
+
+function createIssueRoutesApp(
+  actor: any = { type: "board", source: "local_implicit" },
+  opts: Parameters<typeof issueRoutes>[2] = {},
+) {
+  const app = express();
+  app.use(express.json());
+  app.use((req, _res, next) => {
+    (req as any).actor = actor;
+    next();
+  });
+  app.use("/api", issueRoutes(db, {} as any, opts));
+  app.use(errorHandler);
+  return app;
+}
+
+async function waitForRecoveryRestoreRun(agentId: string) {
+  return waitForValue(async () => {
+    const wakeups = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(and(
+        eq(agentWakeupRequests.agentId, agentId),
+        eq(agentWakeupRequests.reason, "issue_recovery_action_restored"),
+      ))
+      .orderBy(desc(agentWakeupRequests.requestedAt));
+    const wakeup = wakeups[0] ?? null;
+    if (!wakeup?.runId) return null;
+    const run = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, wakeup.runId))
+      .then((rows) => rows[0] ?? null);
+    if (!run || run.status === "cancelled") return null;
+    return run;
+  });
+}
+
+async function escalateStartupFaultIssueToBlocked(
+  fingerprint = "startup_fault:v1:worktree_requires_git_repository:deadbeefdeadbeefdeadbeef",
+) {
+  mockAdapterExecute.mockReset();
+  mockAdapterExecute
+    .mockResolvedValueOnce(startupFaultAdapterResult(fingerprint))
+    .mockResolvedValueOnce(startupFaultAdapterResult(fingerprint));
+
+  const fixture = await seedQueuedIssueRunFixture();
+  const heartbeat = heartbeatService(db);
+
+  await Promise.all([
+    heartbeat.resumeQueuedRuns(),
+    heartbeat.reconcileStrandedAssignedIssues(),
+    heartbeat.reconcileStrandedAssignedIssues(),
+  ]);
+  await waitForRunToSettle(heartbeat, fixture.runId);
+
+  const retryRun = await waitForValue(async () => {
+    const rows = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, fixture.agentId));
+    return rows.find((row) => row.status === "scheduled_retry") ?? null;
+  });
+  expect(retryRun?.scheduledRetryReason).toBe("startup_fault_retry");
+
+  const restarted = heartbeatService(db);
+  await restarted.promoteDueScheduledRetries(new Date(Date.now() + 60_000));
+  await Promise.all([
+    restarted.resumeQueuedRuns(),
+    restarted.reconcileStrandedAssignedIssues(),
+    restarted.resumeQueuedRuns(),
+  ]);
+  await waitForRunToSettle(restarted, retryRun!.id);
+
+  const issue = await waitForValue(async () =>
+    db.select().from(issues).where(eq(issues.id, fixture.issueId)).then((rows) => {
+      const row = rows[0] ?? null;
+      return row?.status === "blocked" && row.blockedOwnerNotifiedAt ? row : null;
+    }),
+  );
+  const recoveryAction = await waitForValue(async () =>
+    db
+      .select()
+      .from(issueRecoveryActions)
+      .where(and(eq(issueRecoveryActions.companyId, fixture.companyId), eq(issueRecoveryActions.sourceIssueId, fixture.issueId)))
+      .then((rows) => rows.find((row) => row.cause === "startup_fault" && row.status === "active") ?? null),
+  );
+
+  const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, fixture.agentId));
+  expect(runs.length).toBeLessThanOrEqual(2);
+  expect(mockAdapterExecute).toHaveBeenCalledTimes(2);
+
+  const notificationReceipts = await db
+    .select()
+    .from(activityLog)
+    .where(and(
+      eq(activityLog.companyId, fixture.companyId),
+      eq(activityLog.entityId, fixture.issueId),
+      eq(activityLog.action, "issue.blocked_owner_notification_delivered"),
+    ));
+  expect(notificationReceipts).toHaveLength(1);
+
+  return { ...fixture, heartbeat: restarted, issue, recoveryAction, retryRun };
+}
 
   async function seedEnvironmentLeaseFixture(input: {
     companyId: string;
@@ -8005,12 +8112,16 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     ))).toHaveLength(1);
   });
 
-  it("repairs startup-fault through authorized retry after corrected execution", async () => {
-    mockAdapterExecute
-      .mockResolvedValueOnce(startupFaultAdapterResult())
-      .mockResolvedValueOnce(successfulAdapterResult("Completed after workspace repair."));
+  it("repairs startup-fault through authorized recovery resolve after material configuration change", async () => {
+    const fingerprintBefore = "startup_fault:v1:worktree_requires_git_repository:aaaaaaaaaaaaaaaaaaaaaaaa";
+    const {
+      companyId,
+      agentId,
+      issueId,
+      recoveryAction,
+      heartbeat,
+    } = await escalateStartupFaultIssueToBlocked(fingerprintBefore);
 
-    const { companyId, agentId, runId, issueId } = await seedQueuedIssueRunFixture();
     const siblingIssueId = randomUUID();
     const [seedIssue] = await db.select({ issuePrefix: companies.issuePrefix }).from(companies).where(eq(companies.id, companyId));
     await db.insert(issues).values({
@@ -8025,168 +8136,171 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       identifier: `${seedIssue!.issuePrefix}-2`,
     });
 
-    const heartbeat = heartbeatService(db);
-    await Promise.all([
-      heartbeat.resumeQueuedRuns(),
-      heartbeat.reconcileStrandedAssignedIssues(),
-      heartbeat.reconcileStrandedAssignedIssues(),
-    ]);
-    await waitForRunToSettle(heartbeat, runId);
+    const boardApp = createIssueRoutesApp(
+      { type: "board", source: "local_implicit" },
+      { recoveryActionEnqueueWakeup: heartbeat.wakeup.bind(heartbeat) },
+    );
+    await request(createIssueRoutesApp({ type: "user", source: "local_implicit", userId: "wrong-user" }))
+      .post(`/api/issues/${issueId}/recovery-actions/resolve`)
+      .send({
+        actionId: recoveryAction!.id,
+        outcome: "restored",
+        sourceIssueStatus: "todo",
+        resolutionNote: "Unauthorized retry attempt.",
+      })
+      .expect(403);
+
+    await db.update(agents).set({
+      adapterConfig: { cwd: "/repaired/project-workspace" },
+      updatedAt: new Date(),
+    }).where(eq(agents.id, agentId));
+
+    mockAdapterExecute.mockResolvedValueOnce(successfulAdapterResult("Completed after authorized recovery resume."));
+
+    const resolved = await request(boardApp)
+      .post(`/api/issues/${issueId}/recovery-actions/resolve`)
+      .send({
+        actionId: recoveryAction!.id,
+        outcome: "restored",
+        sourceIssueStatus: "todo",
+        resolutionNote: "Repaired adapter cwd after startup fault.",
+      })
+      .expect(200);
+
+    expect(resolved.body.issue).toMatchObject({
+      id: issueId,
+      status: "todo",
+      activeRecoveryAction: null,
+    });
+    expect(resolved.body.recoveryAction).toMatchObject({
+      id: recoveryAction!.id,
+      status: "resolved",
+      outcome: "handed_back",
+    });
+
+    const recoveryRun = await waitForRecoveryRestoreRun(agentId);
+    expect(recoveryRun).toBeTruthy();
+    await waitForRunToSettle(heartbeat, recoveryRun!.id);
+
+    expect(mockAdapterExecute).toHaveBeenCalledTimes(3);
+
+    const issueAfterSuccess = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issueAfterSuccess?.status).not.toBe("blocked");
+    expect(issueAfterSuccess?.blockedOwnerNotifiedAt).toBeNull();
+    expect(await db.select().from(issueRecoveryActions).where(and(
+      eq(issueRecoveryActions.companyId, companyId),
+      eq(issueRecoveryActions.sourceIssueId, issueId),
+      eq(issueRecoveryActions.status, "active"),
+    ))).toHaveLength(0);
+    expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, siblingIssueId))).toHaveLength(0);
+  });
+
+  it("re-escalates startup-fault when authorized retry resumes without material configuration change", async () => {
+    const fingerprint = "startup_fault:v1:worktree_requires_git_repository:deadbeefdeadbeefdeadbeef";
+    const { agentId, issueId, recoveryAction, heartbeat } = await escalateStartupFaultIssueToBlocked(fingerprint);
+    const app = createIssueRoutesApp(
+      { type: "board", source: "local_implicit" },
+      { recoveryActionEnqueueWakeup: heartbeat.wakeup.bind(heartbeat) },
+    );
+
+    mockAdapterExecute
+      .mockResolvedValueOnce(startupFaultAdapterResult(fingerprint))
+      .mockResolvedValueOnce(startupFaultAdapterResult(fingerprint));
+
+    await request(app)
+      .post(`/api/issues/${issueId}/recovery-actions/resolve`)
+      .send({
+        actionId: recoveryAction!.id,
+        outcome: "restored",
+        sourceIssueStatus: "todo",
+        resolutionNote: "Retry without repairing adapter configuration.",
+      })
+      .expect(200);
+
+    const recoveryRun = await waitForRecoveryRestoreRun(agentId);
+    expect(recoveryRun).toBeTruthy();
+    await waitForRunToSettle(heartbeat, recoveryRun!.id);
 
     const retryRun = await waitForValue(async () => {
       const rows = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
-      const scheduled = rows.filter((row) => row.status === "scheduled_retry");
-      return scheduled.length === 1 ? scheduled[0] : null;
-    });
-    expect(retryRun?.scheduledRetryReason).toBe("startup_fault_retry");
-
-    const restarted = heartbeatService(db);
-    await restarted.promoteDueScheduledRetries(new Date(Date.now() + 60_000));
-    await Promise.all([
-      restarted.resumeQueuedRuns(),
-      restarted.reconcileStrandedAssignedIssues(),
-      restarted.resumeQueuedRuns(),
-    ]);
-    await waitForRunToSettle(restarted, retryRun!.id);
-
-    expect(mockAdapterExecute).toHaveBeenCalledTimes(2);
-    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
-    const executedRuns = runs.filter((row) => row.status === "failed" || row.status === "succeeded");
-    expect(executedRuns.length).toBeLessThanOrEqual(2);
-
-    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
-    expect(issue?.status).not.toBe("blocked");
-    expect(issue?.blockedOwnerNotifiedAt).toBeNull();
-
-    const recoveryActions = await db
-      .select()
-      .from(issueRecoveryActions)
-      .where(eq(issueRecoveryActions.sourceIssueId, issueId));
-    expect(recoveryActions).toHaveLength(0);
-
-    const siblingRecoveryActions = await db
-      .select()
-      .from(issueRecoveryActions)
-      .where(eq(issueRecoveryActions.sourceIssueId, siblingIssueId));
-    expect(siblingRecoveryActions).toHaveLength(0);
-
-    const notificationReceipts = await db
-      .select()
-      .from(activityLog)
-      .where(and(
-        eq(activityLog.companyId, companyId),
-        eq(activityLog.entityId, issueId),
-        eq(activityLog.action, "issue.blocked_owner_notification_delivered"),
-      ));
-    expect(notificationReceipts).toHaveLength(0);
-  });
-
-  it("scopes startup-fault recovery actions by adapter/effective-config fingerprint through escalation", async () => {
-    const fingerprintA = "startup_fault:v1:worktree_requires_git_repository:aaaaaaaaaaaaaaaaaaaaaaaa";
-    const fingerprintB = "startup_fault:v1:worktree_requires_git_repository:bbbbbbbbbbbbbbbbbbbbbbbb";
-
-    mockAdapterExecute
-      .mockResolvedValueOnce(startupFaultAdapterResult(fingerprintA))
-      .mockResolvedValueOnce(startupFaultAdapterResult(fingerprintA))
-      .mockResolvedValueOnce(startupFaultAdapterResult(fingerprintB))
-      .mockResolvedValueOnce(startupFaultAdapterResult(fingerprintB));
-
-    const { companyId, agentId, runId, issueId } = await seedQueuedIssueRunFixture();
-    const otherIssueId = randomUUID();
-    const [seedIssue] = await db.select({ issuePrefix: companies.issuePrefix }).from(companies).where(eq(companies.id, companyId));
-    await db.insert(issues).values({
-      id: otherIssueId,
-      companyId,
-      title: "Unrelated issue",
-      status: "in_progress",
-      priority: "medium",
-      assigneeAgentId: agentId,
-      responsibleUserId: "other-user",
-      issueNumber: 2,
-      identifier: `${seedIssue!.issuePrefix}-2`,
-    });
-
-    const heartbeat = heartbeatService(db);
-    await Promise.all([
-      heartbeat.resumeQueuedRuns(),
-      heartbeat.reconcileStrandedAssignedIssues(),
-    ]);
-    await waitForRunToSettle(heartbeat, runId);
-
-    const firstRetry = await waitForValue(async () => {
-      const rows = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
       return rows.find((row) => row.status === "scheduled_retry") ?? null;
     });
-    const restarted = heartbeatService(db);
-    await restarted.promoteDueScheduledRetries(new Date(Date.now() + 60_000));
-    await restarted.resumeQueuedRuns();
-    await waitForRunToSettle(restarted, firstRetry!.id);
+    await heartbeat.promoteDueScheduledRetries(new Date(Date.now() + 60_000));
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, retryRun!.id);
 
-    await waitForValue(async () =>
+    const blockedAgain = await waitForValue(async () =>
       db.select().from(issues).where(eq(issues.id, issueId)).then((rows) =>
         rows[0]?.status === "blocked" ? rows[0] : null,
       ),
     );
+    expect(blockedAgain?.blockedOwnerNotifiedAt).toBeTruthy();
 
-    await db.update(issues).set({
-      status: "in_progress",
-      blockedOwnerNotifiedAt: null,
-      unblockDescriptor: null,
-      updatedAt: new Date(),
-    }).where(eq(issues.id, issueId));
-
-    const secondRunId = randomUUID();
-    const secondWakeupId = randomUUID();
-    await db.insert(agentWakeupRequests).values({
-      id: secondWakeupId,
-      companyId,
-      agentId,
-      source: "assignment",
-      triggerDetail: "system",
-      reason: "issue_assigned",
-      payload: { issueId },
-      status: "queued",
-      runId: secondRunId,
-      requestedAt: new Date(),
-      updatedAt: new Date(),
-    });
-    await db.insert(heartbeatRuns).values({
-      id: secondRunId,
-      companyId,
-      agentId,
-      invocationSource: "assignment",
-      triggerDetail: "system",
-      status: "queued",
-      wakeupRequestId: secondWakeupId,
-      contextSnapshot: { issueId, taskId: issueId, wakeReason: "issue_assigned" },
-      updatedAt: new Date(),
-      createdAt: new Date(),
-    });
-    await db.update(issues).set({ executionRunId: secondRunId, checkoutRunId: secondRunId }).where(eq(issues.id, issueId));
-
-    await restarted.resumeQueuedRuns();
-    await waitForRunToSettle(restarted, secondRunId);
-
-    const secondRetry = await waitForValue(async () => {
-      const rows = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
-      return rows.find((row) => row.status === "scheduled_retry" && row.id !== firstRetry!.id) ?? null;
-    });
-    await restarted.promoteDueScheduledRetries(new Date(Date.now() + 60_000));
-    await restarted.resumeQueuedRuns();
-    await waitForRunToSettle(restarted, secondRetry!.id);
-
-    const sourceActions = await db
+    const allActions = await db
       .select()
       .from(issueRecoveryActions)
-      .where(and(eq(issueRecoveryActions.companyId, companyId), eq(issueRecoveryActions.sourceIssueId, issueId)));
-    expect(sourceActions.length).toBeGreaterThanOrEqual(2);
-    expect(new Set(sourceActions.map((row) => row.fingerprint)).size).toBeGreaterThanOrEqual(2);
+      .where(eq(issueRecoveryActions.sourceIssueId, issueId));
+    expect(allActions.filter((row) => row.cause === "startup_fault")).toHaveLength(2);
+    expect(allActions.filter((row) => row.status === "resolved")).toHaveLength(1);
+    expect(allActions.filter((row) => row.status === "active")).toHaveLength(1);
+    expect(allActions.some((row) => row.id === recoveryAction!.id && row.status === "resolved")).toBe(true);
+    expect(mockAdapterExecute).toHaveBeenCalledTimes(4);
+  });
 
-    const otherActions = await db
+  it("supersedes startup-fault recovery actions when effective configuration identity changes", async () => {
+    const fingerprintA = "startup_fault:v1:worktree_requires_git_repository:aaaaaaaaaaaaaaaaaaaaaaaa";
+    const fingerprintB = "startup_fault:v1:worktree_requires_git_repository:bbbbbbbbbbbbbbbbbbbbbbbb";
+    const first = await escalateStartupFaultIssueToBlocked(fingerprintA);
+    const app = createIssueRoutesApp(
+      { type: "board", source: "local_implicit" },
+      { recoveryActionEnqueueWakeup: first.heartbeat.wakeup.bind(first.heartbeat) },
+    );
+
+    await db.update(agents).set({
+      adapterConfig: { cwd: "/changed/effective-config" },
+      updatedAt: new Date(),
+    }).where(eq(agents.id, first.agentId));
+
+    mockAdapterExecute
+      .mockResolvedValueOnce(startupFaultAdapterResult(fingerprintB))
+      .mockResolvedValueOnce(startupFaultAdapterResult(fingerprintB));
+
+    await request(app)
+      .post(`/api/issues/${first.issueId}/recovery-actions/resolve`)
+      .send({
+        actionId: first.recoveryAction!.id,
+        outcome: "restored",
+        sourceIssueStatus: "todo",
+        resolutionNote: "Retry after changing adapter cwd.",
+      })
+      .expect(200);
+
+    const recoveryRun = await waitForRecoveryRestoreRun(first.agentId);
+    expect(recoveryRun).toBeTruthy();
+    await waitForRunToSettle(first.heartbeat, recoveryRun!.id);
+
+    const retryRun = await waitForValue(async () => {
+      const rows = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, first.agentId));
+      return rows.find((row) => row.status === "scheduled_retry") ?? null;
+    });
+    await first.heartbeat.promoteDueScheduledRetries(new Date(Date.now() + 60_000));
+    await first.heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(first.heartbeat, retryRun!.id);
+
+    await waitForValue(async () =>
+      db.select().from(issues).where(eq(issues.id, first.issueId)).then((rows) =>
+        rows[0]?.status === "blocked" ? rows[0] : null,
+      ),
+    );
+
+    const actions = await db
       .select()
       .from(issueRecoveryActions)
-      .where(eq(issueRecoveryActions.sourceIssueId, otherIssueId));
-    expect(otherActions).toHaveLength(0);
+      .where(eq(issueRecoveryActions.sourceIssueId, first.issueId));
+    expect(actions.filter((row) => row.status === "active")).toHaveLength(1);
+    expect(actions.some((row) => row.fingerprint.includes(fingerprintB))).toBe(true);
+    expect(actions.some((row) => row.status === "resolved" && row.fingerprint.includes(fingerprintA))).toBe(true);
+    expect(actions.find((row) => row.id === first.recoveryAction!.id)?.status).toBe("resolved");
   });
 
 });
