@@ -1051,6 +1051,99 @@ describeEmbeddedPostgres("heartbeat workspace branch containment", () => {
     });
   });
 
+  it("regression: the pre-dispatch guard advances a stale blockedTransitionAt on a fresh entry into blocked, instead of reusing it", async () => {
+    // Mirrors "update(): a fresh transition into blocked always advances
+    // the stamp..." in blocked-transition-stamp.test.ts, but exercised
+    // through this call site specifically: this guard's own condition
+    // (issue.status !== "done" && issue.status !== "cancelled") fires on a
+    // row that is not currently "blocked", so it is a fresh-entry site, not
+    // a self-heal site. Before the fix it routed through the idempotent
+    // deriveBlockedEntryPatch helper, which no-ops whenever *any* stamp is
+    // already present -- including a stale one left over from an earlier
+    // blocked cycle that exited without clearing it (the exact shape
+    // migration 0238 backfills). A stale stamp surviving here lets a
+    // completed wake from the old cycle match the new cycle's key (or the
+    // old-state key's requestedAt >= blockedTransitionAt fallback) in
+    // wakeCoversIssueBlockersResolvedReadyState and silently suppress the
+    // new issue_blockers_resolved wake this transition should produce.
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const issueIdentifier = `${issuePrefix}-1`;
+    const staleStamp = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+
+    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: true });
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Acme",
+      issuePrefix,
+      status: "active",
+      defaultResponsibleUserId: "responsible-user",
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {
+        heartbeat: {
+          wakeOnDemand: true,
+          maxConcurrentRuns: 1,
+        },
+      },
+      permissions: {},
+    });
+    // Seed a row that is NOT currently blocked but still carries a stamp
+    // from an earlier blocked cycle that exited without clearing it -- the
+    // shape this instance's live audit found in production data.
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Projectless isolated worktree, stale stamp from a prior cycle",
+      status: "todo",
+      workMode: "standard",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      responsibleUserId: "responsible-user",
+      issueNumber: 1,
+      identifier: issueIdentifier,
+      executionWorkspaceSettings: {
+        mode: "isolated_workspace",
+        workspaceStrategy: { type: "git_worktree" },
+      },
+      blockedTransitionAt: staleStamp,
+    });
+
+    const heartbeat = heartbeatService(db);
+    const run = await heartbeat.wakeup(agentId, {
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      payload: { issueId },
+      contextSnapshot: { issueId, wakeReason: "issue_assigned" },
+    });
+
+    expect(run).toBeNull();
+
+    const blockedIssue = await db
+      .select({
+        status: issues.status,
+        blockedTransitionAt: issues.blockedTransitionAt,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+
+    expect(blockedIssue?.status).toBe("blocked");
+    expect(blockedIssue?.blockedTransitionAt).not.toBeNull();
+    expect(blockedIssue!.blockedTransitionAt!.getTime()).not.toBe(staleStamp.getTime());
+    expect(blockedIssue!.blockedTransitionAt!.getTime()).toBeGreaterThan(staleStamp.getTime());
+  });
+
   it.each([
     ["workspace-runtime fresh worktree reuse", "fresh_realize" as const, null],
     ["workspace-runtime persisted restore", "persisted_restore" as const, "source-workspace"],

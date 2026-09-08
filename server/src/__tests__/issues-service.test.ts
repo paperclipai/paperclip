@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { asc, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { ROUTABLE_BLOCKED_ROLLOUT_AT } from "../services/routable-blocked.js";
 import { sql } from "drizzle-orm";
 import {
   activityLog,
@@ -3946,6 +3947,84 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
 
   afterAll(async () => {
     await tempDb?.cleanup();
+  });
+
+  async function seedCompanyWithAgent() {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `B${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Unblock owner",
+      role: "engineer",
+      status: "active",
+      adapterType: "claude_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    return { companyId, agentId };
+  }
+
+  // A blocked row can carry a blockedTransitionAt from before routable
+  // blocking existed -- imported historical data, or a restore. That stamp
+  // fails isProspectiveBlockedTransition's cutoff, so attaching an
+  // unblockDescriptor to such a row used to achieve nothing: the owner was
+  // never routed and no self-heal path repaired it, because a stamped row
+  // looks healthy to all of them.
+  it("advances a pre-rollout stamp when an unblockDescriptor is attached to an already-blocked issue", async () => {
+    const { companyId, agentId } = await seedCompanyWithAgent();
+    const issue = await svc.create(companyId, {
+      title: "Imported from the old system, blocked ever since",
+      description: null,
+      status: "blocked",
+      priority: "medium",
+    });
+    const preRollout = new Date(ROUTABLE_BLOCKED_ROLLOUT_AT.getTime() - 90 * 24 * 60 * 60 * 1000);
+    await db.update(issues)
+      .set({ blockedTransitionAt: preRollout, blockedOwnerNotifiedAt: null, unblockDescriptor: null })
+      .where(eq(issues.id, issue.id));
+
+    const updated = await svc.update(issue.id, {
+      unblockDescriptor: { owner: { agentId }, action: "Confirm the migrated figures" },
+    });
+
+    expect(updated?.status).toBe("blocked");
+    expect(updated?.blockedTransitionAt).not.toBeNull();
+    expect(updated!.blockedTransitionAt!.getTime()).toBeGreaterThanOrEqual(
+      ROUTABLE_BLOCKED_ROLLOUT_AT.getTime(),
+    );
+    expect(updated!.blockedTransitionAt!.getTime()).toBeGreaterThan(preRollout.getTime());
+    expect(updated?.blockedOwnerNotifiedAt).toBeNull();
+  });
+
+  it("leaves a post-rollout stamp alone when an unblockDescriptor is attached", async () => {
+    const { companyId, agentId } = await seedCompanyWithAgent();
+    const issue = await svc.create(companyId, {
+      title: "Blocked after the rollout",
+      description: null,
+      status: "blocked",
+      priority: "medium",
+    });
+    const postRollout = new Date(ROUTABLE_BLOCKED_ROLLOUT_AT.getTime() + 60_000);
+    await db.update(issues)
+      .set({ blockedTransitionAt: postRollout, blockedOwnerNotifiedAt: null, unblockDescriptor: null })
+      .where(eq(issues.id, issue.id));
+
+    const updated = await svc.update(issue.id, {
+      unblockDescriptor: { owner: { agentId }, action: "Confirm the figures" },
+    });
+
+    // The stamp is the block's own cycle key. It must not be advanced just
+    // because a descriptor arrived, or every descriptor edit would reopen the
+    // dependency-wake decision for the issue's dependents.
+    expect(updated!.blockedTransitionAt!.toISOString()).toBe(postRollout.toISOString());
   });
 
   async function seedSharedWorkspaceDependency() {
