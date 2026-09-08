@@ -473,3 +473,93 @@ describe("DELETE /supplements/intake/:date/:supplementId", () => {
     expect(res.status).toBe(400);
   });
 });
+
+// ---------------------------------------------------------------------------
+// GET /supplements/intake/history
+// ---------------------------------------------------------------------------
+
+describe("GET /supplements/intake/history", () => {
+  it("returns per-supplement day-by-day intake history (200)", async () => {
+    const sup = makeSupplement();
+    const intake = makeIntake({ intakeDate: "2026-09-01", takenAt: new Date("2026-09-01T08:10:00.000Z") });
+
+    let selectCall = 0;
+    const db = {
+      select: vi.fn().mockReturnThis(),
+      from: vi.fn().mockReturnThis(),
+      where: vi.fn().mockImplementation(() => {
+        selectCall++;
+        if (selectCall === 1) return { orderBy: vi.fn().mockResolvedValue([sup]) };
+        return Promise.resolve([intake]);
+      }),
+    } as unknown as Db;
+
+    const res = await request(createApp(db))
+      .get("/supplements/intake/history?companyId=company-1&from=2026-09-01&to=2026-09-07");
+
+    expect(res.status).toBe(200);
+    expect(res.body.from).toBe("2026-09-01");
+    expect(res.body.to).toBe("2026-09-07");
+    expect(res.body.supplements).toHaveLength(1);
+    const entry = res.body.supplements[0];
+    expect(entry.name).toBe("Vitamin D");
+    expect(entry.days).toHaveLength(7);
+    expect(entry.days[0].date).toBe("2026-09-01");
+    expect(entry.days[0].takenAt).toBeTruthy();
+    expect(entry.days[1].takenAt).toBeNull();
+  });
+
+  it("returns empty supplements array when none exist (200)", async () => {
+    let selectCall = 0;
+    const db = {
+      select: vi.fn().mockReturnThis(),
+      from: vi.fn().mockReturnThis(),
+      where: vi.fn().mockImplementation(() => {
+        selectCall++;
+        if (selectCall === 1) return { orderBy: vi.fn().mockResolvedValue([]) };
+        return Promise.resolve([]);
+      }),
+    } as unknown as Db;
+
+    const res = await request(createApp(db))
+      .get("/supplements/intake/history?companyId=company-1&from=2026-09-01&to=2026-09-07");
+
+    expect(res.status).toBe(200);
+    expect(res.body.supplements).toHaveLength(0);
+  });
+
+  it("returns 400 when companyId is missing", async () => {
+    const db = {} as unknown as Db;
+    const res = await request(createApp(db))
+      .get("/supplements/intake/history?from=2026-09-01&to=2026-09-07");
+    expect(res.status).toBe(400);
+  });
+
+  it("returns 400 when from is invalid", async () => {
+    const db = {} as unknown as Db;
+    const res = await request(createApp(db))
+      .get("/supplements/intake/history?companyId=company-1&from=bad&to=2026-09-07");
+    expect(res.status).toBe(400);
+  });
+
+  it("returns 400 when to is invalid", async () => {
+    const db = {} as unknown as Db;
+    const res = await request(createApp(db))
+      .get("/supplements/intake/history?companyId=company-1&from=2026-09-01&to=bad");
+    expect(res.status).toBe(400);
+  });
+
+  it("returns 400 when to is before from", async () => {
+    const db = {} as unknown as Db;
+    const res = await request(createApp(db))
+      .get("/supplements/intake/history?companyId=company-1&from=2026-09-07&to=2026-09-01");
+    expect(res.status).toBe(400);
+  });
+
+  it("returns 400 when range exceeds 90 days", async () => {
+    const db = {} as unknown as Db;
+    const res = await request(createApp(db))
+      .get("/supplements/intake/history?companyId=company-1&from=2026-01-01&to=2026-12-31");
+    expect(res.status).toBe(400);
+  });
+});

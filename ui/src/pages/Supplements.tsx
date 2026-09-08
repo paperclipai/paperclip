@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Pill, Check, X, RotateCcw, ChevronLeft, ChevronRight, Plus, Pencil, Trash2 } from "lucide-react";
 import {
   useSupplementsIntake,
+  useSupplementHistory,
   useTakeSupplement,
   useSkipSupplement,
   useUndoSupplement,
@@ -426,12 +427,106 @@ function DailyView({ companyId: _companyId }: DailyViewProps) {
   );
 }
 
+// ---- History view ----
+
+const HISTORY_DAYS = 14;
+
+function buildDateRange(days: number): { from: string; to: string } {
+  const to = formatIntakeDate(new Date());
+  const fromDate = new Date();
+  fromDate.setDate(fromDate.getDate() - (days - 1));
+  return { from: formatIntakeDate(fromDate), to };
+}
+
+function DayDot({ takenAt, skippedAt, date }: { takenAt: string | null; skippedAt: string | null; date: string }) {
+  const label = takenAt ? "taken" : skippedAt ? "skipped" : "missed";
+  const colorClass = takenAt
+    ? "bg-green-500"
+    : skippedAt
+      ? "bg-yellow-400"
+      : "bg-muted-foreground/20";
+  return (
+    <div className="flex flex-col items-center gap-0.5">
+      <div className={cn("h-2.5 w-2.5 rounded-full", colorClass)} title={`${date}: ${label}`} />
+    </div>
+  );
+}
+
+interface HistoryViewProps {
+  companyId: string;
+}
+
+function HistoryView({ companyId }: HistoryViewProps) {
+  const { from, to } = buildDateRange(HISTORY_DAYS);
+  const { data, isLoading, error } = useSupplementHistory(companyId, from, to);
+
+  const dates = data?.supplements[0]?.days.map((d) => d.date) ?? [];
+  const supEntries = data?.supplements ?? [];
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <p className="text-sm font-medium">Last {HISTORY_DAYS} days</p>
+        <div className="flex items-center gap-3 text-xs text-muted-foreground">
+          <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full bg-green-500" /> Taken</span>
+          <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full bg-yellow-400" /> Skipped</span>
+          <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-full bg-muted-foreground/20" /> Missed</span>
+        </div>
+      </div>
+
+      {error instanceof Error && (
+        <p className="text-sm text-destructive">{error.message}</p>
+      )}
+
+      {isLoading ? (
+        <PageSkeleton variant="list" />
+      ) : supEntries.length === 0 ? (
+        <EmptyState icon={Pill} message="No supplements to show history for." />
+      ) : (
+        <div className="rounded-lg border border-border bg-card overflow-hidden">
+          {/* Header row: dates */}
+          <div className="flex items-center gap-2 px-4 py-2 border-b border-border bg-muted/30">
+            <div className="w-32 shrink-0" />
+            <div className="flex gap-1.5 overflow-x-auto">
+              {dates.map((d) => (
+                <div key={d} className="w-5 text-center text-[9px] text-muted-foreground shrink-0">
+                  {d.slice(8)}
+                </div>
+              ))}
+            </div>
+          </div>
+          {/* Supplement rows */}
+          {supEntries.map((sup) => {
+            const takenCount = sup.days.filter((d) => !!d.takenAt).length;
+            return (
+              <div key={sup.id} className="flex items-center gap-2 px-4 py-2.5 border-b border-border last:border-0">
+                <div className="w-32 shrink-0">
+                  <p className="text-xs font-medium truncate">{sup.name}</p>
+                  <p className="text-[10px] text-muted-foreground">{sup.dose} {sup.unit}</p>
+                  <p className="text-[10px] text-muted-foreground">{takenCount}/{sup.days.length} taken</p>
+                </div>
+                <div className="flex gap-1.5 overflow-x-auto">
+                  {sup.days.map((day) => (
+                    <div key={day.date} className="w-5 flex justify-center shrink-0">
+                      <DayDot takenAt={day.takenAt} skippedAt={day.skippedAt} date={day.date} />
+                    </div>
+                  ))}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ---- Page ----
 
 export function Supplements() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
-  const [view, setView] = useState<"daily" | "manage">("daily");
+  const [view, setView] = useState<"daily" | "manage" | "history">("daily");
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Supplements" }]);
@@ -445,28 +540,24 @@ export function Supplements() {
     <div className="space-y-4">
       {/* View toggle */}
       <div className="flex gap-1 p-0.5 rounded-md bg-muted w-fit">
-        <button
-          className={cn(
-            "px-3 py-1 text-xs font-medium rounded transition-colors",
-            view === "daily" ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground",
-          )}
-          onClick={() => setView("daily")}
-        >
-          Daily
-        </button>
-        <button
-          className={cn(
-            "px-3 py-1 text-xs font-medium rounded transition-colors",
-            view === "manage" ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground",
-          )}
-          onClick={() => setView("manage")}
-        >
-          Manage
-        </button>
+        {(["daily", "history", "manage"] as const).map((v) => (
+          <button
+            key={v}
+            className={cn(
+              "px-3 py-1 text-xs font-medium rounded transition-colors capitalize",
+              view === v ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground",
+            )}
+            onClick={() => setView(v)}
+          >
+            {v}
+          </button>
+        ))}
       </div>
 
       {view === "daily" ? (
         <DailyView companyId={selectedCompanyId} />
+      ) : view === "history" ? (
+        <HistoryView companyId={selectedCompanyId} />
       ) : (
         <ManageView companyId={selectedCompanyId} />
       )}

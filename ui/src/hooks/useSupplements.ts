@@ -244,6 +244,59 @@ export function useEditSupplement() {
   });
 }
 
+export interface SupplementHistoryDay {
+  date: string;
+  takenAt: string | null;
+  skippedAt: string | null;
+}
+
+export interface SupplementHistoryEntry {
+  id: string;
+  name: string;
+  dose: string;
+  unit: string;
+  days: SupplementHistoryDay[];
+}
+
+export interface SupplementHistoryResult {
+  from: string;
+  to: string;
+  supplements: SupplementHistoryEntry[];
+}
+
+export function buildSupplementHistoryUrl(
+  apiUrl: string,
+  companyId: string,
+  from: string,
+  to: string,
+): string {
+  return `${apiUrl}/supplements/intake/history?companyId=${encodeURIComponent(companyId)}&from=${from}&to=${to}`;
+}
+
+export function useSupplementHistory(
+  companyId: string | undefined,
+  from: string,
+  to: string,
+) {
+  return useQuery<SupplementHistoryResult>({
+    queryKey: ["supplement-history", companyId, from, to],
+    queryFn: async () => {
+      if (!apiUrl || !companyId) return { from, to, supplements: [] };
+      const res = await fetch(buildSupplementHistoryUrl(apiUrl, companyId, from, to), {
+        credentials: "include",
+        headers: { Accept: "application/json" },
+      });
+      if (!res.ok) {
+        const payload = await res.json().catch(() => null) as { error?: string } | null;
+        throw new Error(payload?.error ?? `Failed to load supplement history (${res.status})`);
+      }
+      return res.json() as Promise<SupplementHistoryResult>;
+    },
+    enabled: !!companyId && !!from && !!to,
+    staleTime: 5 * 60 * 1000,
+  });
+}
+
 export function useDeleteSupplement() {
   const queryClient = useQueryClient();
   return useMutation({

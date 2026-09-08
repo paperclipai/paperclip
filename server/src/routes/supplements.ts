@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, gte, isNull, lte } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { supplements, supplementIntakes } from "@paperclipai/db";
 import { assertBoard, assertCompanyAccess } from "./authz.js";
@@ -144,6 +144,90 @@ export function supplementsRoutes(db: Db) {
    *   companyId (required)
    *   userId    (optional, defaults to actor)
    */
+  /**
+   * GET /supplements/intake/history
+   * Returns per-supplement intake status for each day in [from, to].
+   * Max range: 90 days.
+   */
+  router.get("/supplements/intake/history", async (req, res) => {
+    assertBoard(req);
+    const companyId = typeof req.query.companyId === "string" ? req.query.companyId.trim() : null;
+    if (!companyId) throw badRequest("companyId is required");
+    assertCompanyAccess(req, companyId);
+
+    const from = parseDate(req.query.from);
+    const to = parseDate(req.query.to);
+    if (!from) throw badRequest("from must be YYYY-MM-DD");
+    if (!to) throw badRequest("to must be YYYY-MM-DD");
+    if (to < from) throw badRequest("to must be >= from");
+
+    const msPerDay = 86_400_000;
+    const dayCount = Math.round((new Date(to).getTime() - new Date(from).getTime()) / msPerDay) + 1;
+    if (dayCount > 90) throw badRequest("date range must not exceed 90 days");
+
+    const userId =
+      typeof req.query.userId === "string" && req.query.userId.trim()
+        ? req.query.userId.trim()
+        : req.actor.userId ?? null;
+    if (!userId) throw badRequest("Could not resolve userId");
+
+    const activeSups = await db
+      .select()
+      .from(supplements)
+      .where(
+        and(
+          eq(supplements.companyId, companyId),
+          eq(supplements.userId, userId),
+          eq(supplements.active, true),
+        ),
+      )
+      .orderBy(supplements.scheduledTime, supplements.name);
+
+    const intakeRows = await db
+      .select()
+      .from(supplementIntakes)
+      .where(
+        and(
+          eq(supplementIntakes.companyId, companyId),
+          eq(supplementIntakes.userId, userId),
+          gte(supplementIntakes.intakeDate, from),
+          lte(supplementIntakes.intakeDate, to),
+        ),
+      );
+
+    const intakeMap = new Map<string, Map<string, (typeof intakeRows)[number]>>();
+    for (const row of intakeRows) {
+      if (!intakeMap.has(row.supplementId)) intakeMap.set(row.supplementId, new Map());
+      intakeMap.get(row.supplementId)!.set(row.intakeDate, row);
+    }
+
+    const dates: string[] = [];
+    for (let i = 0; i < dayCount; i++) {
+      const d = new Date(new Date(from).getTime() + i * msPerDay);
+      dates.push(d.toISOString().slice(0, 10));
+    }
+
+    const result = activeSups.map((sup) => {
+      const byDate = intakeMap.get(sup.id) ?? new Map();
+      return {
+        id: sup.id,
+        name: sup.name,
+        dose: sup.dose,
+        unit: sup.unit,
+        days: dates.map((date) => {
+          const intake = byDate.get(date);
+          return {
+            date,
+            takenAt: intake?.takenAt?.toISOString() ?? null,
+            skippedAt: intake?.skippedAt?.toISOString() ?? null,
+          };
+        }),
+      };
+    });
+
+    res.json({ from, to, supplements: result });
+  });
+
   router.get("/supplements/intake/:date", async (req, res) => {
     assertBoard(req);
     const { date } = req.params as { date: string };
