@@ -76,6 +76,7 @@ async function readRegularFile(filename: string): Promise<Buffer> {
 
 async function inventory(directory: string, base = ""): Promise<string[]> {
   const out: string[] = [];
+  if ((await fs.lstat(directory)).mode & 0o222) throw new Error("Writable runtime skill cache directory");
   for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
     const relative = base ? `${base}/${entry.name}` : entry.name;
     if (entry.isDirectory()) out.push(...await inventory(path.join(directory, entry.name), relative));
@@ -100,13 +101,14 @@ async function matches(spec: CacheSpec, entry = spec.entry): Promise<boolean> {
         || !Number.isSafeInteger(record.size) || record.size < 0 || !/^[a-f0-9]{64}$/.test(record.digest)) return false;
       seen.add(record.path);
       const content = await readRegularFile(path.join(entry, "files", record.path));
+      if ((await fs.lstat(path.join(entry, "files", record.path))).mode & 0o222) return false;
       if (content.length !== record.size || digest(content) !== record.digest) return false;
     }
     return true;
   } catch { return false; }
 }
 
-// Serialize the short publish/repair section across processes as well as callers.
+// Serialize builds and cleanup for one skill across processes as well as callers.
 // A hard link publishes complete lock ownership atomically; crashed owners are reported without stealing another publisher’s lock.
 async function publishLocked<T>(root: string, fingerprint: string, action: () => Promise<T>): Promise<T> {
   const lock = path.join(root, `${fingerprint}.lock`);
@@ -114,7 +116,7 @@ async function publishLocked<T>(root: string, fingerprint: string, action: () =>
   await fs.writeFile(owner, JSON.stringify({ pid: process.pid, host: os.hostname() }), { flag: "wx" });
   let acquired = false;
   try {
-    const deadline = Date.now() + 10_000;
+    const deadline = Date.now() + 60_000;
     while (!acquired) {
       try { await fs.link(owner, lock); acquired = true; }
       catch (error) {
@@ -144,39 +146,64 @@ async function publishLocked<T>(root: string, fingerprint: string, action: () =>
   }
 }
 
+async function setTreeMode(directory: string, readonly: boolean): Promise<void> {
+  const stat = await fs.lstat(directory).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  });
+  if (!stat || stat.isSymbolicLink()) return;
+  if (!stat.isDirectory()) {
+    if (readonly && stat.isFile()) await fs.chmod(directory, 0o444);
+    return;
+  }
+  if (!readonly) await fs.chmod(directory, 0o700);
+  for (const entry of await fs.readdir(directory)) await setTreeMode(path.join(directory, entry), readonly);
+  if (readonly) await fs.chmod(directory, 0o555);
+}
+
+async function removeTree(directory: string): Promise<void> {
+  await setTreeMode(directory, false);
+  await fs.rm(directory, { recursive: true, force: true });
+}
+
 export async function resolveRuntimeSkillCache(
   spec: CacheSpec, read: (relativePath: string) => Promise<string>, materialize = true,
+  stillInstalled: () => Promise<boolean> = async () => true,
 ): Promise<string | null> {
   if (await matches(spec)) return path.join(spec.entry, "files");
   if (!materialize) return null;
   const active = inFlight.get(spec.entry);
   if (active) return active;
   const build = (async () => {
-    await assertDirectories(spec.root, path.dirname(path.dirname(spec.root)), true);
-    // A preceding caller may have published between validation and taking ownership.
-    if (await matches(spec)) return path.join(spec.entry, "files");
-    const staging = await fs.mkdtemp(path.join(spec.root, ".staging-"));
-    try {
-      await fs.mkdir(path.join(staging, "files"));
-      const files: FileRecord[] = [];
-      for (const relative of spec.paths) {
-        const content = Buffer.from(await read(relative), "utf8");
-        const target = path.join(staging, "files", relative);
-        await fs.mkdir(path.dirname(target), { recursive: true });
-        await fs.writeFile(target, content, { flag: "wx" });
-        files.push({ path: relative, size: content.length, digest: digest(content) });
-      }
-      await fs.writeFile(path.join(staging, "manifest.json"), JSON.stringify({ format: FORMAT, fingerprint: spec.fingerprint, files }));
-      if (!await matches(spec, staging)) throw new Error("Runtime skill cache validation failed");
-      return await publishLocked(spec.root, spec.fingerprint, async () => {
-        if (await matches(spec)) return path.join(spec.entry, "files");
-        // Retain corrupt entries for inspection. Other valid fingerprints are never touched.
+    const namespace = path.dirname(spec.root);
+    await assertDirectories(namespace, path.dirname(namespace), true);
+    // The lock lives outside the skill directory, so cleanup cannot unlink an active lock.
+    return publishLocked(namespace, path.basename(spec.root), async () => {
+      if (!await stillInstalled()) throw new Error("Skill was renamed or removed during preparation");
+      await assertDirectories(spec.root, path.dirname(namespace), true);
+      if (await matches(spec)) return path.join(spec.entry, "files");
+      const staging = await fs.mkdtemp(path.join(spec.root, ".staging-"));
+      try {
+        await fs.mkdir(path.join(staging, "files"));
+        const files: FileRecord[] = [];
+        for (const relative of spec.paths) {
+          const content = Buffer.from(await read(relative), "utf8");
+          const target = path.join(staging, "files", relative);
+          await fs.mkdir(path.dirname(target), { recursive: true });
+          await fs.writeFile(target, content, { flag: "wx" });
+          files.push({ path: relative, size: content.length, digest: digest(content) });
+        }
+        await fs.writeFile(path.join(staging, "manifest.json"), JSON.stringify({ format: FORMAT, fingerprint: spec.fingerprint, files }));
+        await setTreeMode(staging, true);
+        if (!await matches(spec, staging)) throw new Error("Runtime skill cache validation failed");
+        // Lifecycle mutations can update the DB while this builder owns the filesystem lock.
+        if (!await stillInstalled()) throw new Error("Skill was renamed or removed during preparation");
         await fs.rename(spec.entry, path.join(spec.root, `.invalid-${spec.fingerprint}-${randomUUID()}`))
           .catch((error: NodeJS.ErrnoException) => { if (error.code !== "ENOENT") throw error; });
         await fs.rename(staging, spec.entry);
         return path.join(spec.entry, "files");
-      });
-    } finally { await fs.rm(staging, { recursive: true, force: true }); }
+      } finally { await removeTree(staging); }
+    });
   })();
   inFlight.set(spec.entry, build);
   try { return await build; } finally { if (inFlight.get(spec.entry) === build) inFlight.delete(spec.entry); }
@@ -184,7 +211,12 @@ export async function resolveRuntimeSkillCache(
 
 export async function removeRuntimeSkillCache(managedRoot: string, skillId: string): Promise<void> {
   const root = runtimeSkillCacheRoot(managedRoot, skillId);
-  try { await assertDirectories(root, managedRoot); }
+  const namespace = path.dirname(root);
+  try { await assertDirectories(namespace, managedRoot); }
   catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return; throw error; }
-  await fs.rm(root, { recursive: true, force: true });
+  await publishLocked(namespace, skillId, async () => {
+    try { await assertDirectories(root, managedRoot); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return; throw error; }
+    await removeTree(root);
+  });
 }

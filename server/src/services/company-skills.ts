@@ -5832,7 +5832,8 @@ export function companySkillService(db: Db) {
       if (cache) {
         const cachedSource = await resolveRuntimeSkillCache(cache,
           async (relativePath) => (await readLoadedSkillFile(skill, relativePath)).content,
-          options.materializeMissing !== false);
+          options.materializeMissing !== false,
+          async () => (await getById(companyId, skill.id))?.key === skill.key);
         return cachedSource
           ? { status: "available", source: cachedSource }
           : { status: "missing", source: path.join(cache.entry, "files"), detail: buildMissingRuntimeSourceDetail(skill) };

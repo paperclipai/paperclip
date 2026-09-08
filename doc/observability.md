@@ -773,6 +773,7 @@ Keep every dimension low-cardinality and free of user content.
 `skills.prepare` measures the shared inventory listing and runtime materialization
 inside `task.prepare`. It is also contained in the broader
 `heartbeat.prepare_before_environment` interval; do not add those two durations.
+Preparation failures emit a failed span even when no native session starts.
 It carries no skill contents, identifiers, locations, or credentials. It uses the
 existing run performance events and operator-configured OpenTelemetry endpoint;
 no first-party Telemetry event is added.
@@ -797,7 +798,10 @@ URL-only skills use stored Markdown. An unavailable new revision reports missing
 it never silently reuses an older revision. Stored `SKILL.md` remains a fallback,
 but missing supporting files prevent publication of a reusable partial cache.
 
-Builds use unique staging directories and atomic publication. Existing valid
+Builds publish read-only files and directories from unique staging directories.
+A skill-scoped lock serializes builds and cleanup across processes. Cold builders
+recheck that the skill still exists under its original key before reading files
+and before atomic publication. Existing valid
 revisions stay readable during updates. Invalid entries are quarantined in the
 same skill cache root for inspection; rename/removal cleans up that skill's cache.
 Read-only listings validate caches without downloading or repairing them. A

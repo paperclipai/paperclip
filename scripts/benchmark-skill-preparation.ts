@@ -7,6 +7,7 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { companies, companySkills, createDb, startEmbeddedPostgresTestDatabase } from "../packages/db/src/index.js";
+import { removeRuntimeSkillCache } from "../server/src/services/runtime-skill-cache.js";
 import { companySkillService } from "../server/src/services/company-skills.js";
 
 const child = process.argv.includes("--warm-child");
@@ -105,6 +106,9 @@ try {
 } finally {
   globalThis.fetch = originalFetch;
   fs.mkdtemp = originalMkdtemp;
+  if (!child) for (const skill of await db.select().from(companySkills)) {
+    await removeRuntimeSkillCache(path.join(home, "instances", "default", "skills", companyId), skill.id);
+  }
   await db.$client.end();
   await database?.cleanup();
   if (!child) await fs.rm(home, { recursive: true, force: true });
