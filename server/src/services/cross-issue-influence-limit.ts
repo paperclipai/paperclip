@@ -1,6 +1,6 @@
 import { and, count, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { activityLog, heartbeatRuns } from "@paperclipai/db";
+import { activityLog, heartbeatRuns, issues } from "@paperclipai/db";
 import { isUuidLike, issueWriteDenialResponse } from "@paperclipai/shared";
 import { forbidden } from "../errors.js";
 import { logger } from "../middleware/logger.js";
@@ -110,7 +110,22 @@ export async function observeCrossIssueInfluence(
     }
 
     const sourceIssueId = readRunSourceIssueId(run.contextSnapshot);
-    if (!sourceIssueId) throw crossIssueInfluenceRunContextError();
+    if (!sourceIssueId) {
+      // heartbeat_timer runs have no PAPERCLIP_TASK_ID so their contextSnapshot
+      // carries no issueId. After a successful checkout the run owns the issue
+      // via checkoutRunId — treat that as same-issue ownership so writes are
+      // allowed without counting against the cross-issue cap.
+      const checkedOut = await tx
+        .select({ checkoutRunId: issues.checkoutRunId })
+        .from(issues)
+        .where(and(
+          eq(issues.id, input.targetIssueId),
+          eq(issues.checkoutRunId, input.runId),
+        ))
+        .then((rows) => rows.length > 0);
+      if (checkedOut) return null;
+      throw crossIssueInfluenceRunContextError();
+    }
     if (
       sourceIssueId === input.targetIssueId ||
       (input.targetIssueIdentifier && sourceIssueId.toUpperCase() === input.targetIssueIdentifier.toUpperCase())
