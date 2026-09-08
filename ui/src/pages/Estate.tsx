@@ -1,7 +1,7 @@
 import { useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Landmark, Home, TrendingUp, Car, Gem, Cpu, Package, AlertCircle, CheckCircle2, Circle } from "lucide-react";
-import { estateApi, type AssetType, type PlanStatusCheckKey, type PlanStatusResult } from "../api/estate";
+import { estateApi, type AssetType, type PlanStatusCheckKey, type PlanStatusResult, type NetWorthProjectionResult } from "../api/estate";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { EmptyState } from "../components/EmptyState";
@@ -88,6 +88,122 @@ const ALL_PLAN_CHECKS: PlanStatusCheckKey[] = [
   "hasRetirementAccount", "hasBeneficiaries", "hasAnnualReview", "hasDocumentVault",
 ];
 
+const CLASS_LABELS: Record<string, string> = {
+  real_estate: "Real Estate",
+  investment: "Investments",
+  retirement: "Retirement",
+  vehicle: "Vehicles",
+  personal_property: "Personal Property",
+  digital_asset: "Digital Assets",
+  financial_account: "Accounts",
+  other: "Other",
+};
+
+const MILESTONE_YEARS = [1, 3, 5, 10];
+
+function NetWorthProjectionSection({ projection }: { projection: NetWorthProjectionResult }) {
+  const milestones = MILESTONE_YEARS
+    .map((offset) => projection.projections.find((p) => p.year === new Date().getFullYear() + offset))
+    .filter((p): p is NonNullable<typeof p> => p != null);
+
+  const maxValue = Math.max(
+    projection.currentNetWorthDollars,
+    ...milestones.map((m) => m.projectedNetWorthDollars),
+  );
+
+  const tenYear = projection.projections[projection.projections.length - 1];
+  const growthPct = projection.currentNetWorthDollars > 0
+    ? Math.round(((tenYear.projectedNetWorthDollars - projection.currentNetWorthDollars) / projection.currentNetWorthDollars) * 100)
+    : null;
+
+  const topClasses = Object.entries(tenYear.byClass)
+    .filter(([, v]) => v > 0)
+    .sort(([, a], [, b]) => b - a)
+    .slice(0, 5);
+
+  return (
+    <div className="rounded-lg border border-border bg-card overflow-hidden">
+      <div className="px-4 py-3 border-b border-border bg-muted/30 flex items-center justify-between">
+        <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+          Net Worth Projection
+        </p>
+        {growthPct != null && (
+          <span className="text-xs font-semibold text-green-700">
+            +{growthPct}% in {projection.horizonYears}y
+          </span>
+        )}
+      </div>
+
+      {/* Bar chart */}
+      <div className="px-4 pt-4 pb-2">
+        <div className="flex items-end gap-2 h-20">
+          {/* Current */}
+          <div className="flex flex-col items-center gap-1 flex-1">
+            <div className="w-full flex flex-col justify-end" style={{ height: "64px" }}>
+              <div
+                className="w-full rounded-t-sm bg-muted-foreground/30"
+                style={{ height: `${maxValue > 0 ? Math.max(4, (projection.currentNetWorthDollars / maxValue) * 100) : 4}%` }}
+              />
+            </div>
+            <span className="text-[9px] text-muted-foreground">Now</span>
+          </div>
+          {milestones.map((m) => {
+            const pct = maxValue > 0 ? Math.max(4, (m.projectedNetWorthDollars / maxValue) * 100) : 4;
+            const offset = m.year - new Date().getFullYear();
+            return (
+              <div key={m.year} className="flex flex-col items-center gap-1 flex-1">
+                <div className="w-full flex flex-col justify-end" style={{ height: "64px" }}>
+                  <div
+                    className="w-full rounded-t-sm bg-primary/60"
+                    style={{ height: `${pct}%` }}
+                  />
+                </div>
+                <span className="text-[9px] text-muted-foreground">+{offset}y</span>
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Labels under bars */}
+        <div className="flex items-start gap-2 mt-1">
+          <div className="flex-1 text-center">
+            <p className="text-[10px] tabular-nums text-muted-foreground">{formatDollars(projection.currentNetWorthDollars)}</p>
+          </div>
+          {milestones.map((m) => (
+            <div key={m.year} className="flex-1 text-center">
+              <p className="text-[10px] tabular-nums text-foreground font-medium">{formatDollars(m.projectedNetWorthDollars)}</p>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* 10-year class breakdown */}
+      {topClasses.length > 0 && (
+        <div className="px-4 pt-2 pb-3">
+          <p className="text-[10px] text-muted-foreground uppercase tracking-wide mb-2">
+            In {projection.horizonYears} years — by class
+          </p>
+          <div className="space-y-1.5">
+            {topClasses.map(([cls, val]) => {
+              const totalProjected = tenYear.projectedNetWorthDollars;
+              const pct = totalProjected > 0 ? Math.round((val / totalProjected) * 100) : 0;
+              return (
+                <div key={cls} className="flex items-center gap-2">
+                  <p className="text-xs text-muted-foreground w-28 shrink-0 truncate">{CLASS_LABELS[cls] ?? cls}</p>
+                  <div className="flex-1 h-1.5 rounded-full bg-muted overflow-hidden">
+                    <div className="h-full rounded-full bg-primary/50" style={{ width: `${pct}%` }} />
+                  </div>
+                  <p className="text-xs tabular-nums text-foreground w-16 text-right shrink-0">{formatDollars(val)}</p>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function PlanStatusSection({ status }: { status: PlanStatusResult }) {
   const pct = status.score;
   const color =
@@ -172,6 +288,13 @@ export function Estate() {
     queryFn: () => estateApi.planStatus(primaryEstateId!),
     enabled: !!primaryEstateId,
     staleTime: 5 * 60 * 1000,
+  });
+
+  const projectionQuery = useQuery({
+    queryKey: ["estate", "projection", selectedCompanyId],
+    queryFn: () => estateApi.netWorthProjection(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+    staleTime: 10 * 60 * 1000,
   });
 
   if (!selectedCompanyId) {
@@ -301,6 +424,11 @@ export function Estate() {
             </div>
           ))}
         </div>
+      )}
+
+      {/* Net worth projection */}
+      {projectionQuery.data && (
+        <NetWorthProjectionSection projection={projectionQuery.data} />
       )}
 
       {/* Estate plan completeness */}

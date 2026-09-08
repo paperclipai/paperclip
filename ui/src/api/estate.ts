@@ -76,6 +76,21 @@ export interface PlanStatusResult {
   missingItems: PlanStatusCheckKey[];
 }
 
+export interface ProjectionYear {
+  year: number;
+  projectedNetWorthDollars: number;
+  projectedNetWorthCents: number;
+  byClass: Record<string, number>;
+}
+
+export interface NetWorthProjectionResult {
+  currentNetWorthDollars: number;
+  currentNetWorthCents: number;
+  horizonYears: number;
+  growthRatesUsed: Record<string, number>;
+  projections: ProjectionYear[];
+}
+
 function qs(params: Record<string, string | undefined>): string {
   const parts = Object.entries(params)
     .filter((e): e is [string, string] => e[1] !== undefined)
@@ -105,4 +120,9 @@ export const estateApi = {
 
   planStatus: (estateId: string) =>
     api.get<PlanStatusResult>(`/estates/${estateId}/plan-status`),
+
+  netWorthProjection: (companyId: string, years?: number) =>
+    api.get<NetWorthProjectionResult>(
+      `/estate/projection${qs({ companyId, years: years?.toString() })}`,
+    ),
 };
