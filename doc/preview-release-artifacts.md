@@ -20,9 +20,10 @@ definitions that do not run from `master`.
 
 ## Outputs and reuse
 
-The image uses `ghcr.io/paperclipai/paperclip:sha-<first-seven-SHA-characters>-cloud`,
-the existing cloud image convention. Build arguments carry the full commit SHA.
-Preview builds read the normal build cache but do not overwrite it or release
+The image uses `ghcr.io/paperclipai/paperclip:sha-<FULL_SHA>-cloud`.
+Full-SHA tags keep separate commits with the same short prefix isolated. Normal
+release images retain their existing short-tag convention. Build arguments carry the full commit SHA.
+Preview builds do not import or overwrite the shared release cache or release
 aliases. Missing images are built for Linux amd64, matching managed deployments.
 
 When requested, both `@paperclipai/shared` and `@paperclipai/db` use
@@ -44,6 +45,8 @@ version 1, request ID, SHA, stage `build`, and status `ready`. It expires after
 
 Configure npm trusted publishing for **both packages** with repository
 `paperclipai/paperclip`, workflow `release.yml`, and environment `npm-canary`.
+The image publisher uses the same environment, whose deployment branch policy
+permits only master. Both publishers also check the workflow ref before running.
 This uses the existing publisher identity rather than requiring another workflow
 registration. The job uses npm with OIDC trusted publishing support and provenance.
 The environment's existing protections still apply.
@@ -57,8 +60,11 @@ fixed package tarballs.
 Publishing runs on a fresh runner with trusted tooling, without a checkout of
 the requested branch. It checks package identity and exact dependencies, rejects
 archive path aliases, and publishes with lifecycle scripts disabled and an explicit
-registry and dist-tag. Image builds receive package-publishing access but no cloud
-admin credentials; dependency resolution disables scripts and pnpmfile hooks.
+registry and dist-tag. Image builds also run without registry write access and export a Docker archive.
+A separate trusted publisher loads that archive as data, verifies its full revision,
+platform, and image ID, then pushes only the SHA tag. It never runs the image.
+Dependency resolution disables scripts and pnpmfile hooks. Preview actions are
+pinned to full commit SHAs.
 
 The deploying control plane must independently verify package integrity, source
 identity, SQL and migration journal contents, and schema compatibility. Publish

@@ -83,7 +83,7 @@ export async function imageExists(sha, fetchImpl = fetch) {
   const base = "https://ghcr.io/v2/paperclipai/paperclip";
   const headers = { Authorization: `Bearer ${token}`, Accept: "application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.docker.distribution.manifest.v2+json" };
   const get = (url) => fetchImpl(url, { headers, redirect: "error", signal: AbortSignal.timeout(30_000) });
-  let res = await get(`${base}/manifests/sha-${sha.slice(0, 7)}-cloud`);
+  let res = await get(`${base}/manifests/sha-${sha}-cloud`);
   if (res.status === 404) return false;
   if (!res.ok) throw new Error(`GHCR lookup failed: HTTP ${res.status}`);
   let manifest = await res.json();
@@ -110,6 +110,21 @@ export async function imageExists(sha, fetchImpl = fetch) {
   const config = await res.json();
   if (config.config?.Labels?.["org.opencontainers.image.revision"] !== sha) throw new Error("Existing SHA image tag does not match the requested full commit.");
   return true;
+}
+
+/** Publication loads image data, but never runs a container or source scripts. */
+export async function publishImage(file, sha, { exec = execFileSync, fetchImpl = fetch } = {}) {
+  versionFor(sha);
+  const image = `ghcr.io/paperclipai/paperclip:sha-${sha}-cloud`;
+  if (await imageExists(sha, fetchImpl)) { console.log("Reusing the verified SHA cloud image."); return; }
+  exec("docker", ["load", "--input", path.resolve(file)], { encoding: "utf8", maxBuffer: 8 * 1024 * 1024 });
+  const [metadata] = JSON.parse(exec("docker", ["image", "inspect", image], { encoding: "utf8", maxBuffer: 8 * 1024 * 1024 }));
+  if (metadata?.Config?.Labels?.["org.opencontainers.image.revision"] !== sha || metadata.Os !== "linux" || metadata.Architecture !== "amd64" ||
+      !/^sha256:[0-9a-f]{64}$/.test(metadata.Id ?? "")) throw new Error("Built image identity or platform does not match the request.");
+  // Push only this verified image ID under the one permitted tag, regardless
+  // of any additional tag names present in the untrusted Docker archive.
+  exec("docker", ["tag", metadata.Id, image], { stdio: "inherit" });
+  exec("docker", ["push", image], { stdio: "inherit" });
 }
 
 export function packPreview(source, output, sha, { exec = execFileSync } = {}) {
@@ -172,6 +187,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       appendFileSync(process.env.GITHUB_OUTPUT, `image=${image}\npackages=${packages}\n`);
     } else if (command === "pack") packPreview(...args);
     else if (command === "publish") await publishPreview(...args);
+    else if (command === "publish-image") await publishImage(...args);
     else if (command === "result") {
       const [sha, requestId] = args;
       validateRequest(sha, requestId);
@@ -179,6 +195,6 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       if (process.env.PREVIEW_MIGRATOR === "true" && !(await packageExists("@paperclipai/shared", sha) && await packageExists("@paperclipai/db", sha))) throw new Error("Preview packages are still missing.");
       mkdirSync("stack-deploy-result", { recursive: true });
       writeFileSync("stack-deploy-result/result.json", JSON.stringify({ version: 1, stage: "build", requestId, sha, status: "ready" }) + "\n");
-    } else throw new Error("Expected plan, pack, publish, or result.");
+    } else throw new Error("Expected plan, pack, publish, publish-image, or result.");
   } catch (error) { console.error(error.message); process.exitCode = 1; }
 }
