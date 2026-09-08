@@ -1,7 +1,7 @@
 import { useEffect } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Landmark, Home, TrendingUp, Car, Gem, Cpu, Package, AlertCircle, CheckCircle2, Circle, Users, Shield, Receipt } from "lucide-react";
-import { estateApi, type AssetType, type PlanStatusCheckKey, type PlanStatusResult, type NetWorthProjectionResult, type EstateBeneficiary, type EstateTrust, type EstateTaxSummary } from "../api/estate";
+import { estateApi, type AssetType, type PlanStatusCheckKey, type PlanStatusResult, type NetWorthProjectionResult, type EstateBeneficiary, type EstateTrust, type EstateTaxSummary, type EstateReview } from "../api/estate";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { EmptyState } from "../components/EmptyState";
@@ -252,6 +252,81 @@ function PlanStatusSection({ status }: { status: PlanStatusResult }) {
   );
 }
 
+const REVIEW_STATUS_LABELS: Record<string, string> = {
+  pending: "Not started",
+  in_progress: "In progress",
+  complete: "Complete",
+};
+
+const REVIEW_STATUS_COLORS: Record<string, string> = {
+  pending: "text-muted-foreground",
+  in_progress: "text-amber-700",
+  complete: "text-green-700",
+};
+
+function AnnualReviewSection({ review, companyId }: { review: EstateReview; companyId: string }) {
+  const queryClient = useQueryClient();
+  const patchMutation = useMutation({
+    mutationFn: (body: { checklistItemId: string; checklistCompleted: boolean }) =>
+      estateApi.patchReview(review.reviewYear, companyId, body),
+    onSuccess: (updated) => {
+      queryClient.setQueryData(["estate", "review", companyId, review.reviewYear], updated);
+      queryClient.invalidateQueries({ queryKey: ["estate", "plan-status"] });
+    },
+  });
+
+  const completed = review.checklist.filter((i) => i.completed).length;
+  const total = review.checklist.length;
+
+  return (
+    <div className="rounded-lg border border-border bg-card overflow-hidden">
+      <div className="px-4 py-3 border-b border-border bg-muted/30 flex items-center gap-2">
+        <CheckCircle2 className="h-3.5 w-3.5 text-muted-foreground" />
+        <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+          Annual Review — {review.reviewYear}
+        </p>
+        <span className={cn("ml-auto text-xs font-medium", REVIEW_STATUS_COLORS[review.status])}>
+          {REVIEW_STATUS_LABELS[review.status]}
+        </span>
+      </div>
+      <div className="px-4 py-2 border-b border-border/50 flex items-center gap-2">
+        <div className="flex-1 h-1.5 rounded-full bg-muted overflow-hidden">
+          <div
+            className="h-full rounded-full bg-green-500 transition-all"
+            style={{ width: total > 0 ? `${Math.round((completed / total) * 100)}%` : "0%" }}
+          />
+        </div>
+        <span className="text-[10px] text-muted-foreground shrink-0">
+          {completed}/{total}
+        </span>
+      </div>
+      <div className="divide-y divide-border/30">
+        {review.checklist.map((item) => (
+          <button
+            key={item.id}
+            className={cn(
+              "w-full flex items-center gap-3 px-4 py-2.5 text-left transition-colors hover:bg-muted/30",
+              patchMutation.isPending && "opacity-60 pointer-events-none",
+            )}
+            onClick={() =>
+              patchMutation.mutate({ checklistItemId: item.id, checklistCompleted: !item.completed })
+            }
+          >
+            {item.completed ? (
+              <CheckCircle2 className="h-4 w-4 text-green-600 shrink-0" />
+            ) : (
+              <Circle className="h-4 w-4 text-muted-foreground shrink-0" />
+            )}
+            <span className={cn("text-sm", item.completed && "line-through text-muted-foreground")}>
+              {item.label}
+            </span>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function TaxSummarySection({ tax }: { tax: EstateTaxSummary }) {
   const taxable = tax.taxableEstateDollars > 0;
 
@@ -486,6 +561,14 @@ export function Estate() {
     staleTime: 10 * 60 * 1000,
   });
 
+  const currentYear = new Date().getFullYear();
+  const reviewQuery = useQuery({
+    queryKey: ["estate", "review", selectedCompanyId, currentYear],
+    queryFn: () => estateApi.getReview(selectedCompanyId!, currentYear),
+    enabled: !!selectedCompanyId,
+    staleTime: 5 * 60 * 1000,
+  });
+
   const projectionQuery = useQuery({
     queryKey: ["estate", "projection", selectedCompanyId],
     queryFn: () => estateApi.netWorthProjection(selectedCompanyId!),
@@ -630,6 +713,11 @@ export function Estate() {
       {/* Net worth projection */}
       {projectionQuery.data && (
         <NetWorthProjectionSection projection={projectionQuery.data} />
+      )}
+
+      {/* Annual review checklist */}
+      {reviewQuery.data && selectedCompanyId && (
+        <AnnualReviewSection review={reviewQuery.data} companyId={selectedCompanyId} />
       )}
 
       {/* Estate plan completeness */}

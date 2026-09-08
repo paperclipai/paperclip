@@ -105,6 +105,28 @@ export interface EstateTaxSummary {
   asOfDate: string;
 }
 
+export type EstateReviewStatus = "pending" | "in_progress" | "complete";
+
+export interface ReviewChecklistItem {
+  id: string;
+  label: string;
+  completed: boolean;
+  completedAt?: string;
+}
+
+export interface EstateReview {
+  id: string;
+  companyId: string;
+  userId: string;
+  reviewYear: number;
+  status: EstateReviewStatus;
+  checklist: ReviewChecklistItem[];
+  notes: string | null;
+  reviewedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export type TrustType = "revocable" | "irrevocable" | "testamentary" | "special_needs";
 export type TrustFundingStatus = "unfunded" | "partially_funded" | "fully_funded";
 
@@ -182,4 +204,14 @@ export const estateApi = {
 
   taxSummary: (estateId: string) =>
     api.get<EstateTaxSummary>(`/estates/${estateId}/tax-summary`),
+
+  getReview: (companyId: string, year: number) =>
+    api.get<EstateReview>(`/estate/reviews/${year}${qs({ companyId })}`),
+
+  patchReview: (year: number, companyId: string, body: {
+    checklistItemId?: string;
+    checklistCompleted?: boolean;
+    status?: EstateReviewStatus;
+    notes?: string;
+  }) => api.patch<EstateReview>(`/estate/reviews/${year}${qs({ companyId })}`, body),
 };
