@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Activity, AlertCircle, ChevronDown, ChevronUp, Leaf, MapPin, Moon, Pencil, Plus, Sun, Thermometer, Trash2, Wind } from "lucide-react";
+import { Activity, AlertCircle, ChevronDown, ChevronUp, Dumbbell, Leaf, MapPin, Moon, Pencil, Plus, Sun, Thermometer, Trash2, Wind } from "lucide-react";
 import {
   usePersonalEnvironmentalScore,
   type ColorTier,
@@ -21,6 +21,14 @@ import {
   type SleepQuality,
   type SleepRecord,
 } from "../hooks/useSleep";
+import {
+  useExerciseHistory,
+  useLogExercise,
+  useDeleteExerciseLog,
+  type ActivityType,
+  type IntensityLevel,
+  type ExerciseLog,
+} from "../hooks/useExercise";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { EmptyState } from "../components/EmptyState";
@@ -807,12 +815,312 @@ function SleepView({ companyId }: { companyId: string }) {
   );
 }
 
+// ---- Exercise view ----
+
+const ACTIVITY_LABEL: Record<ActivityType, string> = {
+  running: "Running",
+  walking: "Walking",
+  cycling: "Cycling",
+  swimming: "Swimming",
+  strength: "Strength",
+  yoga: "Yoga",
+  hiit: "HIIT",
+  stretching: "Stretching",
+  other: "Other",
+};
+
+const ACTIVITY_TYPES: ActivityType[] = [
+  "running", "walking", "cycling", "swimming",
+  "strength", "yoga", "hiit", "stretching", "other",
+];
+
+const INTENSITY_LABEL: Record<IntensityLevel, string> = {
+  light: "Light",
+  moderate: "Moderate",
+  vigorous: "Vigorous",
+};
+
+const INTENSITY_COLOR: Record<IntensityLevel, string> = {
+  light: "text-green-600",
+  moderate: "text-yellow-600",
+  vigorous: "text-red-600",
+};
+
+function ExerciseLogRow({
+  log,
+  onDelete,
+}: {
+  log: ExerciseLog;
+  onDelete: (id: string) => void;
+}) {
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  return (
+    <div className="flex items-center justify-between py-2 border-b border-border/50 last:border-0">
+      <div className="flex items-center gap-3 min-w-0">
+        <span className="text-sm font-medium tabular-nums shrink-0">
+          {new Date(log.exerciseDate + "T00:00:00Z").toLocaleDateString(undefined, {
+            weekday: "short",
+            month: "short",
+            day: "numeric",
+          })}
+        </span>
+        <span className="text-sm font-medium shrink-0">{ACTIVITY_LABEL[log.activityType]}</span>
+        <span className="text-sm tabular-nums text-foreground/80 shrink-0">
+          {formatDuration(log.durationMinutes)}
+        </span>
+        {log.intensityLevel && (
+          <span className={cn("text-xs font-medium shrink-0", INTENSITY_COLOR[log.intensityLevel])}>
+            {INTENSITY_LABEL[log.intensityLevel]}
+          </span>
+        )}
+        {log.notes && (
+          <span className="text-xs text-muted-foreground truncate hidden sm:block">
+            {log.notes}
+          </span>
+        )}
+      </div>
+      {confirmDelete ? (
+        <div className="flex gap-1">
+          <button
+            className="text-xs text-destructive hover:underline"
+            onClick={() => onDelete(log.id)}
+          >
+            Confirm
+          </button>
+          <button
+            className="text-xs text-muted-foreground hover:underline"
+            onClick={() => setConfirmDelete(false)}
+          >
+            Cancel
+          </button>
+        </div>
+      ) : (
+        <button
+          className="text-muted-foreground hover:text-destructive ml-2 shrink-0"
+          onClick={() => setConfirmDelete(true)}
+          title="Delete"
+        >
+          <Trash2 className="h-3.5 w-3.5" />
+        </button>
+      )}
+    </div>
+  );
+}
+
+function ExerciseView({ companyId }: { companyId: string }) {
+  const today = new Date().toISOString().slice(0, 10);
+  const fourteenDaysAgo = new Date(Date.now() - 13 * 86_400_000).toISOString().slice(0, 10);
+
+  const { data, isLoading, error } = useExerciseHistory(companyId, fourteenDaysAgo, today);
+  const logMutation = useLogExercise();
+  const deleteMutation = useDeleteExerciseLog();
+
+  const [showForm, setShowForm] = useState(false);
+  const [formDate, setFormDate] = useState(today);
+  const [formActivity, setFormActivity] = useState<ActivityType>("running");
+  const [formHours, setFormHours] = useState("0");
+  const [formMinutes, setFormMinutes] = useState("30");
+  const [formIntensity, setFormIntensity] = useState<IntensityLevel | "">("");
+  const [formNotes, setFormNotes] = useState("");
+  const [formErr, setFormErr] = useState<string | null>(null);
+
+  async function handleLog(e: React.FormEvent) {
+    e.preventDefault();
+    setFormErr(null);
+    const h = parseInt(formHours, 10);
+    const m = parseInt(formMinutes, 10);
+    if (isNaN(h) || isNaN(m) || h < 0 || m < 0 || h > 23 || m > 59 || (h === 0 && m === 0)) {
+      setFormErr("Enter a valid duration.");
+      return;
+    }
+    const durationMinutes = h * 60 + m;
+    try {
+      await logMutation.mutateAsync({
+        companyId,
+        exerciseDate: formDate,
+        activityType: formActivity,
+        durationMinutes,
+        intensityLevel: formIntensity || null,
+        notes: formNotes.trim() || null,
+      });
+      setShowForm(false);
+      setFormHours("0");
+      setFormMinutes("30");
+      setFormIntensity("");
+      setFormNotes("");
+    } catch (err) {
+      setFormErr(err instanceof Error ? err.message : "Failed to log exercise");
+    }
+  }
+
+  if (isLoading) return <PageSkeleton />;
+  if (error) {
+    return (
+      <div className="flex items-center gap-2 text-sm text-destructive">
+        <AlertCircle className="h-4 w-4" />
+        {error.message}
+      </div>
+    );
+  }
+
+  const logs = data?.logs ?? [];
+
+  // Aggregate minutes per date for the bar chart
+  const minutesByDate = new Map<string, number>();
+  for (const log of logs) {
+    minutesByDate.set(log.exerciseDate, (minutesByDate.get(log.exerciseDate) ?? 0) + log.durationMinutes);
+  }
+  const chartDates = [...minutesByDate.entries()].sort(([a], [b]) => a.localeCompare(b));
+  const maxChartMinutes = Math.max(60, ...chartDates.map(([, m]) => m));
+
+  return (
+    <div className="space-y-4">
+      {/* Bar chart */}
+      {chartDates.length > 0 && (
+        <div className="rounded-lg border border-border bg-card p-4">
+          <p className="text-xs text-muted-foreground mb-3">Active minutes per day — last 14 days</p>
+          <div className="flex items-end gap-1 overflow-x-auto pb-1">
+            {chartDates.map(([date, mins]) => {
+              const pct = Math.min(100, Math.round((mins / maxChartMinutes) * 100));
+              const label = new Date(date + "T00:00:00Z").toLocaleDateString(undefined, {
+                month: "short",
+                day: "numeric",
+              });
+              const barColor = mins >= 60 ? "bg-emerald-500" : mins >= 30 ? "bg-green-400" : "bg-yellow-400";
+              return (
+                <div key={date} className="flex flex-col items-center gap-0.5 w-8 shrink-0">
+                  <span className="text-[9px] text-muted-foreground tabular-nums">
+                    {mins >= 60 ? `${Math.floor(mins / 60)}h` : `${mins}m`}
+                  </span>
+                  <div className="relative h-16 w-full flex items-end">
+                    <div className={cn("w-full rounded-t-sm", barColor)} style={{ height: `${pct}%` }} />
+                  </div>
+                  <span className="text-[9px] text-muted-foreground leading-tight text-center">{label}</span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* Log button / form */}
+      <div className="rounded-lg border border-border bg-card p-4 space-y-3">
+        <div className="flex items-center justify-between">
+          <h3 className="text-sm font-semibold flex items-center gap-2">
+            <Dumbbell className="h-4 w-4 text-emerald-500" />
+            Exercise Log
+          </h3>
+          <Button
+            size="sm"
+            variant={showForm ? "ghost" : "outline"}
+            onClick={() => setShowForm((v) => !v)}
+          >
+            {showForm ? "Cancel" : <><Plus className="h-3.5 w-3.5 mr-1" />Log workout</>}
+          </Button>
+        </div>
+
+        {showForm && (
+          <form onSubmit={handleLog} className="space-y-2 pt-1 border-t border-border/50">
+            <div className="flex flex-wrap gap-2">
+              <div className="flex flex-col gap-1">
+                <label className="text-xs text-muted-foreground">Date</label>
+                <input
+                  type="date"
+                  value={formDate}
+                  max={today}
+                  onChange={(e) => setFormDate(e.target.value)}
+                  className="h-8 rounded border border-border bg-background px-2 text-sm"
+                  required
+                />
+              </div>
+              <div className="flex flex-col gap-1">
+                <label className="text-xs text-muted-foreground">Activity</label>
+                <select
+                  value={formActivity}
+                  onChange={(e) => setFormActivity(e.target.value as ActivityType)}
+                  className="h-8 rounded border border-border bg-background px-2 text-sm"
+                >
+                  {ACTIVITY_TYPES.map((t) => (
+                    <option key={t} value={t}>{ACTIVITY_LABEL[t]}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="flex flex-col gap-1">
+                <label className="text-xs text-muted-foreground">Hours</label>
+                <input
+                  type="number"
+                  value={formHours}
+                  min={0}
+                  max={23}
+                  onChange={(e) => setFormHours(e.target.value)}
+                  className="h-8 w-16 rounded border border-border bg-background px-2 text-sm"
+                  required
+                />
+              </div>
+              <div className="flex flex-col gap-1">
+                <label className="text-xs text-muted-foreground">Minutes</label>
+                <input
+                  type="number"
+                  value={formMinutes}
+                  min={0}
+                  max={59}
+                  onChange={(e) => setFormMinutes(e.target.value)}
+                  className="h-8 w-16 rounded border border-border bg-background px-2 text-sm"
+                  required
+                />
+              </div>
+              <div className="flex flex-col gap-1">
+                <label className="text-xs text-muted-foreground">Intensity</label>
+                <select
+                  value={formIntensity}
+                  onChange={(e) => setFormIntensity(e.target.value as IntensityLevel | "")}
+                  className="h-8 rounded border border-border bg-background px-2 text-sm"
+                >
+                  <option value="">—</option>
+                  <option value="light">Light</option>
+                  <option value="moderate">Moderate</option>
+                  <option value="vigorous">Vigorous</option>
+                </select>
+              </div>
+            </div>
+            <input
+              type="text"
+              placeholder="Notes (optional)"
+              value={formNotes}
+              onChange={(e) => setFormNotes(e.target.value)}
+              className="w-full h-8 rounded border border-border bg-background px-2 text-sm"
+            />
+            {formErr && <p className="text-xs text-destructive">{formErr}</p>}
+            <Button type="submit" size="sm" disabled={logMutation.isPending}>
+              {logMutation.isPending ? "Saving..." : "Save"}
+            </Button>
+          </form>
+        )}
+
+        {logs.length === 0 ? (
+          <p className="text-sm text-muted-foreground py-2">No workouts logged in the last 14 days.</p>
+        ) : (
+          <div className="divide-y divide-border/30">
+            {logs.map((log) => (
+              <ExerciseLogRow
+                key={log.id}
+                log={log}
+                onDelete={(id) => deleteMutation.mutate({ id, companyId })}
+              />
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ---- Page ----
 
 export function Health() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
-  const [view, setView] = useState<"score" | "locations" | "sleep">("score");
+  const [view, setView] = useState<"score" | "locations" | "sleep" | "exercise">("score");
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Health" }]);
@@ -852,14 +1160,25 @@ export function Health() {
         >
           Sleep
         </button>
+        <button
+          className={cn(
+            "px-3 py-1 text-xs font-medium rounded transition-colors",
+            view === "exercise" ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground",
+          )}
+          onClick={() => setView("exercise")}
+        >
+          Exercise
+        </button>
       </div>
 
       {view === "score" ? (
         <ScoreView companyId={selectedCompanyId} />
       ) : view === "locations" ? (
         <LocationsView companyId={selectedCompanyId} />
-      ) : (
+      ) : view === "sleep" ? (
         <SleepView companyId={selectedCompanyId} />
+      ) : (
+        <ExerciseView companyId={selectedCompanyId} />
       )}
     </div>
   );

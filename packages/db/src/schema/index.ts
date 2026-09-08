@@ -91,3 +91,4 @@ export {
 } from "./estate_documents.js";
 export { supplements, supplementIntakes } from "./supplements.js";
 export { sleepRecords } from "./sleep_records.js";
+export { exerciseLogs } from "./exercise_logs.js";

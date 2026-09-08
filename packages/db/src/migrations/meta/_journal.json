@@ -463,6 +463,13 @@
       "when": 1757289600000,
       "tag": "0065_sleep_records",
       "breakpoints": true
+    },
+    {
+      "idx": 66,
+      "version": "7",
+      "when": 1757376000000,
+      "tag": "0066_exercise_logs",
+      "breakpoints": true
     }
   ]
 }
