@@ -4,8 +4,10 @@ import {
   PRP_V1_EVENT_TYPES,
   REDACTED_EVENT_VALUE,
   redactAgentAdapterConfig,
+  redactConfigurationPayload,
   redactEventPayload,
   redactSensitiveText,
+  restoreRedactedConfigurationPayload,
   sanitizeRecord,
 } from "../redaction.js";
 
@@ -43,6 +45,164 @@ describe("redaction", () => {
     }
   });
 
+  it("preserves only path-allowlisted runtime editor metadata", () => {
+    expect(redactConfigurationPayload({
+      heartbeat: {
+        enabled: true,
+        intervalSec: 300,
+        maxTurnContinuation: { enabled: true, maxAttempts: 2, delayMs: 1_000 },
+        neutralCanary: "must-not-survive",
+      },
+      modelProfiles: {
+        cheap: {
+          enabled: true,
+          label: "Cheap",
+          adapterConfig: {
+            model: "public-model-id",
+            provider: "public-provider-id",
+            neutralCanary: "must-not-survive",
+          },
+        },
+      },
+      shadow: { heartbeat: { enabled: "must-not-survive" } },
+    }, "runtime")).toEqual({
+      heartbeat: {
+        enabled: true,
+        intervalSec: 300,
+        maxTurnContinuation: { enabled: true, maxAttempts: 2, delayMs: 1_000 },
+        neutralCanary: REDACTED_EVENT_VALUE,
+      },
+      modelProfiles: {
+        cheap: {
+          enabled: true,
+          label: "Cheap",
+          adapterConfig: {
+            model: "public-model-id",
+            provider: "public-provider-id",
+            neutralCanary: REDACTED_EVENT_VALUE,
+          },
+        },
+      },
+      shadow: { heartbeat: { enabled: REDACTED_EVENT_VALUE } },
+    });
+  });
+
+  it("preserves only top-level allowlisted adapter editor metadata", () => {
+    expect(redactConfigurationPayload({
+      model: "public-model-id",
+      search: true,
+      timeoutSec: 30,
+      command: "must-not-survive",
+      nested: { model: "must-not-survive" },
+    }, "adapter")).toEqual({
+      model: "public-model-id",
+      search: true,
+      timeoutSec: 30,
+      command: REDACTED_EVENT_VALUE,
+      nested: { model: REDACTED_EVENT_VALUE },
+    });
+  });
+
+  it("redacts every element of a malformed array occupying an allowlisted scalar path", () => {
+    const secretValue = "must-not-survive-in-array";
+
+    const adapterResult = redactConfigurationPayload({
+      model: [secretValue, "another-neutral-string"],
+    }, "adapter");
+    expect(adapterResult).toEqual({
+      model: [REDACTED_EVENT_VALUE, REDACTED_EVENT_VALUE],
+    });
+    expect(JSON.stringify(adapterResult)).not.toContain(secretValue);
+
+    const runtimeResult = redactConfigurationPayload({
+      heartbeat: { enabled: [secretValue] },
+    }, "runtime");
+    expect(runtimeResult).toEqual({
+      heartbeat: { enabled: [REDACTED_EVENT_VALUE] },
+    });
+    expect(JSON.stringify(runtimeResult)).not.toContain(secretValue);
+
+    // A scalar (non-array) value at the same allowlisted paths still passes
+    // through untouched — only arrays lose the implicit public-scalar status.
+    expect(redactConfigurationPayload({ model: "public-model-id" }, "adapter")).toEqual({
+      model: "public-model-id",
+    });
+  });
+
+  it("redacts scalars nested under array-of-object elements at an allowlisted path", () => {
+    const secretValue = "must-not-survive-under-array-object";
+
+    // `heartbeat.enabled` is an allowlisted scalar path, but a malformed
+    // array of objects at `heartbeat` must not let `heartbeat[0].enabled`
+    // inherit that public status once object recursion resumes inside the
+    // array — the array's `insideArray` state must propagate to descendants.
+    const runtimeResult = redactConfigurationPayload({
+      heartbeat: [{ enabled: secretValue }],
+    }, "runtime");
+    expect(runtimeResult).toEqual({
+      heartbeat: [{ enabled: REDACTED_EVENT_VALUE }],
+    });
+    expect(JSON.stringify(runtimeResult)).not.toContain(secretValue);
+  });
+
+  it("restores round-tripped redaction markers without discarding intentional edits", () => {
+    const existing = {
+      model: "old-model",
+      env: {
+        TOKEN: { type: "plain", value: "stored-secret" },
+        ITEMS: ["stored-first", "stored-second"],
+      },
+    };
+    const payload = {
+      model: "new-model",
+      env: {
+        TOKEN: { type: "plain", value: REDACTED_EVENT_VALUE },
+        ITEMS: [REDACTED_EVENT_VALUE, "new-second"],
+      },
+    };
+
+    expect(restoreRedactedConfigurationPayload(payload, existing)).toEqual({
+      model: "new-model",
+      env: {
+        TOKEN: { type: "plain", value: "stored-secret" },
+        ITEMS: ["stored-first", "new-second"],
+      },
+    });
+  });
+
+  it.each([
+    ["secret_ref", "secretId", "11111111-1111-4111-8111-111111111111"],
+    ["user_secret_ref", "key", "user-secret-key"],
+  ] as const)("omits malformed version payloads from %s bindings", (type, identityKey, identityValue) => {
+    const binding = { type, [identityKey]: identityValue };
+    const result = redactConfigurationPayload({
+      scalar: { ...binding, version: "plaintext-that-must-not-survive" },
+      object: { ...binding, version: { nested: "plaintext-that-must-not-survive" } },
+      array: { ...binding, version: ["plaintext-that-must-not-survive"] },
+    });
+
+    expect(result).toEqual({
+      scalar: binding,
+      object: binding,
+      array: binding,
+    });
+    expect(JSON.stringify(result)).not.toContain("plaintext-that-must-not-survive");
+  });
+
+  it("preserves only supported public secret-reference versions", () => {
+    expect(redactConfigurationPayload({
+      latest: { type: "secret_ref", secretId: "11111111-1111-4111-8111-111111111111", version: "latest" },
+      numbered: { type: "user_secret_ref", key: "user-secret-key", version: 2 },
+      zero: { type: "secret_ref", secretId: "11111111-1111-4111-8111-111111111111", version: 0 },
+      fractional: { type: "user_secret_ref", key: "user-secret-key", version: 1.5 },
+    })).toEqual({
+      latest: { type: "secret_ref", secretId: "11111111-1111-4111-8111-111111111111", version: "latest" },
+      numbered: { type: "user_secret_ref", key: "user-secret-key", version: 2 },
+      zero: { type: "secret_ref", secretId: "11111111-1111-4111-8111-111111111111" },
+      fractional: { type: "user_secret_ref", key: "user-secret-key" },
+    });
+  });
+
   it("redacts sensitive keys and nested secret values", () => {
     const input = {
       apiKey: "abc123",
@@ -68,6 +228,10 @@ describe("redaction", () => {
           type: "plain",
           value: "sk-plain",
         },
+        INNOCUOUS_NAME: {
+          type: "plain",
+          value: "credential-without-a-secret-shaped-key",
+        },
         PAPERCLIP_API_URL: "http://localhost:3100",
       },
     };
@@ -90,6 +254,10 @@ describe("redaction", () => {
         key: "OPENAI_API_KEY",
       },
       OPENAI_API_KEY_PLAIN: {
+        type: "plain",
+        value: REDACTED_EVENT_VALUE,
+      },
+      INNOCUOUS_NAME: {
         type: "plain",
         value: REDACTED_EVENT_VALUE,
       },
@@ -633,7 +801,7 @@ second-line\" status=401`,
     const plaintextValue = "adapter-env-value-must-not-leak";
 
     const result = redactAgentAdapterConfig({
-      command: "pnpm agent:run",
+      command: REDACTED_EVENT_VALUE,
       env: {
         EXISTING_VALUE: plaintextValue,
         NEW_VALUE: { type: "plain", value: plaintextValue },
@@ -650,7 +818,7 @@ second-line\" status=401`,
     });
 
     expect(result).toEqual({
-      command: "pnpm agent:run",
+      command: REDACTED_EVENT_VALUE,
       env: {
         EXISTING_VALUE: { type: "plain", value: REDACTED_EVENT_VALUE },
         NEW_VALUE: { type: "plain", value: REDACTED_EVENT_VALUE },
@@ -670,7 +838,7 @@ second-line\" status=401`,
 
   it("redacts non-env adapter keys while leaving env binding shapes intact", () => {
     const result = redactAgentAdapterConfig({
-      command: "pnpm agent:run",
+      command: REDACTED_EVENT_VALUE,
       apiKey: "adapter-level-secret",
       env: {
         API_KEY: "env-level-secret",
@@ -680,7 +848,7 @@ second-line\" status=401`,
 
     // Non-env keys still go through the shared payload sanitizer.
     expect(result.apiKey).toBe(REDACTED_EVENT_VALUE);
-    expect(result.command).toBe("pnpm agent:run");
+    expect(result.command).toBe(REDACTED_EVENT_VALUE);
 
     // Env bindings keep their binding shape rather than collapsing to a bare
     // sentinel string, which is what a second sanitizer pass would produce for
@@ -692,9 +860,45 @@ second-line\" status=401`,
   });
 
   it("redacts adapter configs that have no env block", () => {
-    expect(redactAgentAdapterConfig({ command: "pnpm agent:run", apiKey: "secret" })).toEqual({
-      command: "pnpm agent:run",
+    expect(redactAgentAdapterConfig({ command: REDACTED_EVENT_VALUE, apiKey: "secret" })).toEqual({
+      command: REDACTED_EVENT_VALUE,
       apiKey: REDACTED_EVENT_VALUE,
+    });
+  });
+
+  // SEC-1790: a missing/invalid `env` shape must deny-by-default through
+  // redactConfigurationPayload rather than fall back to the legacy
+  // sanitizeRecord heuristics, which preserve scalar values under
+  // neutral/unrecognized keys unless they look secret-shaped.
+  it("denies unrecognized adapter keys by default when env is missing or invalid", () => {
+    const neutralValue = "us-east-1";
+
+    expect(redactAgentAdapterConfig({
+      model: "public-model-id",
+      region: neutralValue,
+    })).toEqual({
+      model: "public-model-id",
+      region: REDACTED_EVENT_VALUE,
+    });
+
+    expect(redactAgentAdapterConfig({
+      model: "public-model-id",
+      region: neutralValue,
+      env: "not-a-plain-object",
+    })).toEqual({
+      model: "public-model-id",
+      region: REDACTED_EVENT_VALUE,
+      env: REDACTED_EVENT_VALUE,
+    });
+
+    expect(redactAgentAdapterConfig({
+      model: "public-model-id",
+      region: neutralValue,
+      env: null,
+    })).toEqual({
+      model: "public-model-id",
+      region: REDACTED_EVENT_VALUE,
+      env: null,
     });
   });
 });

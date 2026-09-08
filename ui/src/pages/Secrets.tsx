@@ -4456,7 +4456,11 @@ function AgentAccessSection({
           : { type: "user_secret_ref", key: reference.definition.key };
       return agentsApi.update(
         agentId,
-        { adapterConfig: { ...adapterConfig, env }, replaceAdapterConfig: true },
+        {
+          adapterConfig: { ...adapterConfig, env },
+          preserveRedactedConfigValues: true,
+          replaceAdapterConfig: true,
+        },
         companyId,
       );
     },
@@ -4483,7 +4487,11 @@ function AgentAccessSection({
       for (const alias of aliases) delete adapterConfig[`${AGENT_ACCESS_CONFIG_PATH_PREFIX}${alias}`];
       return agentsApi.update(
         agentId,
-        { adapterConfig: { ...adapterConfig, env }, replaceAdapterConfig: true },
+        {
+          adapterConfig: { ...adapterConfig, env },
+          preserveRedactedConfigValues: true,
+          replaceAdapterConfig: true,
+        },
         companyId,
       );
     },

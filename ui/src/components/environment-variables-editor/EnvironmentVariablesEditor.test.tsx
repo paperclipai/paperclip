@@ -1,11 +1,11 @@
 // @vitest-environment jsdom
 
-import { useState } from "react";
+import { createRef, useState } from "react";
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CompanySecret, EnvBinding } from "@paperclipai/shared";
-import { EnvironmentVariablesEditor } from "./index";
+import { EnvironmentVariablesEditor, type EnvironmentVariablesEditorHandle } from "./index";
 import { SecretPicker } from "./SecretPicker";
 
 // Radix (DropdownMenu/Popover) relies on Pointer Capture APIs that jsdom omits.
@@ -227,6 +227,29 @@ describe("EnvironmentVariablesEditor", () => {
     saveButton().click();
     await flush();
     expect(onChange).toHaveBeenLastCalledWith({ FOO: { type: "plain", value: "bar" } });
+  });
+
+  it("retains edit intent when a nested masked value returns to its baseline", async () => {
+    const ref = createRef<EnvironmentVariablesEditorHandle>();
+    render(
+      <EnvironmentVariablesEditor
+        ref={ref}
+        value={{ TOKEN: { type: "plain", value: "***REDACTED***" } }}
+        secrets={secrets}
+        onChange={() => {}}
+        onCreateSecret={async () => secrets[0]}
+      />,
+    );
+    const valueInput = container.querySelector<HTMLInputElement>('input[aria-label="Variable value"]')!;
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+    setter.call(valueInput, "temporary");
+    valueInput.dispatchEvent(new Event("input", { bubbles: true }));
+    await flush();
+    setter.call(valueInput, "***REDACTED***");
+    valueInput.dispatchEvent(new Event("input", { bubbles: true }));
+    await flush();
+
+    expect(ref.current?.getChangedNames()).toContain("TOKEN");
   });
 
   it("flushes unsaved editor changes before an enclosing form submits", async () => {

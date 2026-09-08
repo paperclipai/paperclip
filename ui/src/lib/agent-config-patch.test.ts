@@ -66,6 +66,7 @@ describe("buildAgentUpdatePatch", () => {
     );
 
     expect(patch).toMatchObject({
+      preserveRedactedConfigValues: true,
       runtimeConfig: {
         heartbeat: { enabled: true, intervalSec: 300 },
         debug: { providerTrace: "raw" },
@@ -88,6 +89,7 @@ describe("buildAgentUpdatePatch", () => {
         model: "claude-sonnet-4-6",
         promptTemplate: "Work the issue.",
       },
+      preserveRedactedConfigValues: true,
       replaceAdapterConfig: true,
     });
   });
@@ -107,6 +109,7 @@ describe("buildAgentUpdatePatch", () => {
     );
 
     expect(patch).toEqual({
+      preserveRedactedConfigValues: true,
       runtimeConfig: {
         heartbeat: {
           enabled: true,
@@ -146,7 +149,46 @@ describe("buildAgentUpdatePatch", () => {
         model: "gpt-5.4",
         dangerouslyBypassApprovalsAndSandbox: true,
       },
+      preserveRedactedConfigValues: true,
       replaceAdapterConfig: true,
+    });
+  });
+
+  it("marks an explicitly edited existing redaction marker as literal data", () => {
+    const agent = makeAgent();
+    agent.adapterConfig = { command: "***REDACTED***" };
+
+    const patch = buildAgentUpdatePatch(
+      agent,
+      makeOverlay({ adapterConfig: { command: "***REDACTED***" } }),
+    );
+
+    expect(patch).toMatchObject({
+      adapterConfig: { command: "***REDACTED***" },
+      literalRedactedConfigPaths: [["adapterConfig", "command"]],
+      preserveRedactedConfigValues: true,
+    });
+  });
+
+  it("carries explicit nested literal-marker paths from structured editors", () => {
+    const agent = makeAgent();
+    agent.adapterConfig = {
+      env: { TOKEN: { type: "plain", value: "***REDACTED***" } },
+    };
+
+    const patch = buildAgentUpdatePatch(
+      agent,
+      makeOverlay({
+        adapterConfig: {
+          env: { TOKEN: { type: "plain", value: "***REDACTED***" } },
+        },
+        literalRedactedConfigPaths: [["adapterConfig", "env", "TOKEN", "value"]],
+      }),
+    );
+
+    expect(patch).toMatchObject({
+      literalRedactedConfigPaths: [["adapterConfig", "env", "TOKEN", "value"]],
+      preserveRedactedConfigValues: true,
     });
   });
 

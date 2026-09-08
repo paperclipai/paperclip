@@ -1521,6 +1521,7 @@ describe("Secrets page layout", () => {
         adapterConfig: {
           env: { OPENAI_API_KEY: { type: "secret_ref", secretId: "secret-openai" } },
         },
+        preserveRedactedConfigValues: true,
         replaceAdapterConfig: true,
       },
       "company-1",
@@ -1538,7 +1539,11 @@ describe("Secrets page layout", () => {
 
     expect(mockAgentsApi.update).toHaveBeenCalledWith(
       "agent-reviewer",
-      { adapterConfig: { env: {} }, replaceAdapterConfig: true },
+      {
+        adapterConfig: { env: {} },
+        preserveRedactedConfigValues: true,
+        replaceAdapterConfig: true,
+      },
       "company-1",
     );
 

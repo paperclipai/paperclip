@@ -155,6 +155,22 @@ const emptyOverlay: AgentConfigOverlay = {
 /** Stable empty object used as fallback for missing env config to avoid new-object-per-render. */
 const EMPTY_ENV: Record<string, EnvBinding> = {};
 
+function literalEnvMarkerPaths(
+  env: Record<string, EnvBinding>,
+  names: readonly string[],
+): string[][] {
+  return names.flatMap((name) => {
+    const binding = env[name];
+    if (typeof binding === "string") {
+      return binding === "***REDACTED***" ? [["adapterConfig", "env", name]] : [];
+    }
+    if (binding?.type === "plain" && binding.value === "***REDACTED***") {
+      return [["adapterConfig", "env", name, "value"]];
+    }
+    return [];
+  });
+}
+
 export function supportsAdapterModelRefresh(adapterType: string): boolean {
   return adapterType === "claude_local" || adapterType === "codex_local";
 }
@@ -445,6 +461,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
 
   const handleSave = useCallback(async () => {
     if (isCreate) return;
+    const changedEnvNames = environmentVariablesEditorRef.current?.getChangedNames() ?? [];
     const flushedEnv = flushEnvironmentDraft();
     const nextOverlay = flushedEnv
       ? {
@@ -453,10 +470,18 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             ...overlay.adapterConfig,
             env: flushedEnv,
           },
+          literalRedactedConfigPaths: [
+            ...(overlay.literalRedactedConfigPaths ?? []),
+            ...literalEnvMarkerPaths(flushedEnv, changedEnvNames),
+          ],
         }
       : overlay;
     if (!isOverlayDirty(nextOverlay)) return;
-    await props.onSave(buildAgentUpdatePatch(props.agent, nextOverlay));
+    const patch = buildAgentUpdatePatch(props.agent, nextOverlay);
+    if (!patch.literalRedactedConfigPaths) {
+      delete patch.preserveRedactedConfigValues;
+    }
+    await props.onSave(patch);
   }, [isCreate, isDirty, overlay, props]);
 
   useEffect(() => {
@@ -553,6 +578,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   // existing agent's own page fails to save the binding.
   const handleClaudeLoginStoredEdit = async () => {
     if (isCreate) return;
+    const changedEnvNames = environmentVariablesEditorRef.current?.getChangedNames() ?? [];
     const flushedEnv = flushEnvironmentDraft();
     const baseEnv =
       flushedEnv ??
@@ -561,6 +587,10 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     const nextOverlay: AgentConfigOverlay = {
       ...overlay,
       adapterConfig: { ...overlay.adapterConfig, env: nextEnv },
+      literalRedactedConfigPaths: [
+        ...(overlay.literalRedactedConfigPaths ?? []),
+        ...literalEnvMarkerPaths(nextEnv, changedEnvNames),
+      ],
     };
     setOverlay(nextOverlay);
     await props.onSave({
@@ -590,6 +620,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   // pending editor draft first and keep every unrelated binding.
   const handleApplyStoredClaudeLoginEdit = async () => {
     if (isCreate) return;
+    const changedEnvNames = environmentVariablesEditorRef.current?.getChangedNames() ?? [];
     const flushedEnv = flushEnvironmentDraft();
     const baseEnv =
       flushedEnv ??
@@ -598,6 +629,10 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     const nextOverlay: AgentConfigOverlay = {
       ...overlay,
       adapterConfig: { ...overlay.adapterConfig, env: nextEnv },
+      literalRedactedConfigPaths: [
+        ...(overlay.literalRedactedConfigPaths ?? []),
+        ...literalEnvMarkerPaths(nextEnv, changedEnvNames),
+      ],
     };
     setOverlay(nextOverlay);
     await props.onSave({
@@ -1703,7 +1738,17 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                   onChange={(env) =>
                     isCreate
                       ? set!({ envBindings: env ?? {}, envVars: "" })
-                      : mark("adapterConfig", "env", env)
+                      : setOverlay((prev) => ({
+                          ...prev,
+                          adapterConfig: { ...prev.adapterConfig, env },
+                          literalRedactedConfigPaths: [
+                            ...(prev.literalRedactedConfigPaths ?? []),
+                            ...literalEnvMarkerPaths(
+                              env ?? {},
+                              environmentVariablesEditorRef.current?.getChangedNames() ?? [],
+                            ),
+                          ],
+                        }))
                   }
                 />
               </Field>

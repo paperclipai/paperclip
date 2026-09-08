@@ -466,7 +466,7 @@ describe.sequential("agent permission routes", () => {
 
     expect(res.status).toBe(200);
     expect(res.body.adapterConfig).toMatchObject({
-      command: "pnpm agent:run",
+      command: "***REDACTED***",
       env: {
         LEGACY_VALUE: { type: "plain", value: "***REDACTED***" },
         PLAIN_VALUE: { type: "plain", value: "***REDACTED***" },
@@ -482,6 +482,69 @@ describe.sequential("agent permission routes", () => {
       heartbeat: { enabled: false },
     });
     expect(res.body.permissions).toMatchObject({ trustPreset: LOW_TRUST_REVIEW_PRESET });
+  }, 20_000);
+
+  // SEC-1790: a missing/null adapterConfig previously short-circuited
+  // redactAgentRowForResponse entirely, returning the raw row (including
+  // runtimeConfig) unredacted.
+  it("still redacts runtimeConfig when adapterConfig is missing or null", async () => {
+    const plaintextValue = "runtime-neutral-value-must-not-leak";
+    mockAgentService.getById.mockResolvedValue({
+      ...baseAgent,
+      adapterConfig: null,
+      runtimeConfig: {
+        heartbeat: { enabled: true },
+        neutralCanary: plaintextValue,
+      },
+    });
+
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl).get(`/api/agents/${agentId}`));
+
+    expect(res.status).toBe(200);
+    expect(res.body.adapterConfig).toEqual({});
+    expect(res.body.runtimeConfig).toMatchObject({ heartbeat: { enabled: true } });
+    expect(JSON.stringify(res.body)).not.toContain(plaintextValue);
+  }, 20_000);
+
+  // SEC-1790: an adapterConfig present but missing/invalid `env` previously
+  // fell back to the legacy redactEventPayload/sanitizeRecord path, which
+  // preserves scalar values under neutral/unrecognized keys.
+  it("redacts neutral adapterConfig keys when env is missing or invalid", async () => {
+    const plaintextValue = "neutral-adapter-value-must-not-leak";
+    mockAgentService.getById.mockResolvedValue({
+      ...baseAgent,
+      adapterConfig: {
+        command: "pnpm agent:run",
+        neutralCanary: plaintextValue,
+        env: "not-a-plain-object",
+      },
+    });
+
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl).get(`/api/agents/${agentId}`));
+
+    expect(res.status).toBe(200);
+    expect(res.body.adapterConfig).toMatchObject({
+      command: "***REDACTED***",
+      neutralCanary: "***REDACTED***",
+      env: "***REDACTED***",
+    });
+    expect(JSON.stringify(res.body)).not.toContain(plaintextValue);
   }, 20_000);
 
   // TEC-7032 reported the leak against the company agent-list endpoint, which
@@ -521,7 +584,7 @@ describe.sequential("agent permission routes", () => {
     expect(res.status).toBe(200);
     expect(res.body).toHaveLength(1);
     expect(res.body[0].adapterConfig).toMatchObject({
-      command: "pnpm agent:run",
+      command: "***REDACTED***",
       env: {
         LEGACY_VALUE: { type: "plain", value: "***REDACTED***" },
         PLAIN_VALUE: { type: "plain", value: "***REDACTED***" },
@@ -1928,6 +1991,56 @@ describe.sequential("agent permission routes", () => {
       expect(res.body[0].adapterConfig.env).toEqual({
         GENERIC_NAME: { type: "plain", value: "***REDACTED***" },
       });
+      expect(JSON.stringify(res.body)).not.toContain(plaintextValue);
+    });
+
+    // SEC-1808: redactAgentAdapterConfig previously returned a non-object
+    // adapterConfig unchanged (fail-open) instead of `{}`, and the `?? {}`
+    // in redactAgentConfiguration only rescues null/undefined, not a
+    // present-but-malformed value such as a raw string.
+    it("redacts a non-object adapterConfig in the single-agent configuration response", async () => {
+      const plaintextValue = "malformed-adapter-config-canary-must-not-leak";
+      mockAgentService.getById.mockResolvedValue({
+        ...baseAgent,
+        adapterConfig: plaintextValue,
+      });
+
+      const app = await createApp({
+        type: "board",
+        userId: "board-user",
+        source: "session",
+        isInstanceAdmin: false,
+        companyIds: [companyId],
+      });
+
+      const res = await request(app).get(`/api/agents/${agentId}/configuration`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.adapterConfig).toEqual({});
+      expect(JSON.stringify(res.body)).not.toContain(plaintextValue);
+    });
+
+    it("redacts a non-object adapterConfig in company configuration-list responses", async () => {
+      const plaintextValue = "malformed-adapter-config-list-canary-must-not-leak";
+      mockAgentService.list.mockResolvedValue([
+        {
+          ...baseAgent,
+          adapterConfig: plaintextValue,
+        },
+      ]);
+
+      const app = await createApp({
+        type: "board",
+        userId: "board-user",
+        source: "session",
+        isInstanceAdmin: false,
+        companyIds: [companyId],
+      });
+
+      const res = await request(app).get(`/api/companies/${companyId}/agent-configurations`);
+
+      expect(res.status).toBe(200);
+      expect(res.body[0].adapterConfig).toEqual({});
       expect(JSON.stringify(res.body)).not.toContain(plaintextValue);
     });
 
