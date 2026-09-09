@@ -11,6 +11,7 @@ import {
   decisionTriageEvents,
   heartbeatRuns,
   issueApprovals,
+  issueComments,
   issueRecoveryActions,
   issueThreadInteractions,
   issueWorkProducts,
@@ -278,6 +279,13 @@ async function sourceIssueId(
         .where(and(eq(budgetIncidents.companyId, companyId), eq(budgetIncidents.id, sourceId)))
         .then((rows) => rows[0] ?? null);
       return { exists: Boolean(row), issueId: null };
+    }
+    case "mention": {
+      const row = await db.select({ issueId: issueComments.issueId })
+        .from(issueComments)
+        .where(and(eq(issueComments.companyId, companyId), eq(issueComments.id, sourceId)))
+        .then((rows) => rows[0] ?? null);
+      return { exists: Boolean(row), issueId: row?.issueId ?? null };
     }
   }
 }

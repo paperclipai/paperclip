@@ -198,6 +198,7 @@ describe("sourceMeta + severityStyle", () => {
       "failed_run",
       "budget_alert",
       "agent_error_alert",
+      "mention",
     ];
     for (const kind of kinds) {
       expect(sourceMeta(kind).label.length).toBeGreaterThan(0);
@@ -397,6 +398,19 @@ describe("attentionDetailLine (§7)", () => {
     );
     expect(line).toContain("Deployer");
     expect(line).toContain("exit code 1");
+  });
+
+  it("renders a mention as author — excerpt", () => {
+    const line = attentionDetailLine(
+      buildItem({
+        sourceKind: "mention",
+        detail: { kind: "mention", commentId: "c1", commentExcerpt: "review this", authorLabel: "Fable", images: [] },
+      }),
+    );
+    expect(line).toContain("Fable");
+    expect(line).toContain("review this");
+    expect(sourceMeta("mention").label).toBe("Mention");
+    expect(attentionKind(buildItem({ sourceKind: "mention" }))).toBe("review");
   });
 
   it("returns null when there is no detail block", () => {

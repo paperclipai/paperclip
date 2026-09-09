@@ -26,6 +26,7 @@ import {
   invites,
   issueApprovals,
   issueAttachments,
+  issueComments,
   issueDocuments,
   issueRecoveryActions,
   issueRelations,
@@ -65,6 +66,7 @@ describeEmbeddedPostgres("attention service", () => {
 
   afterEach(async () => {
     await db.delete(inboxDismissals);
+    await db.delete(issueComments);
     await db.delete(decisionArchiveNotificationOutbox);
     await db.delete(decisionRetention);
     await db.delete(decisionTriageEvents);
@@ -1287,6 +1289,46 @@ describeEmbeddedPostgres("attention service", () => {
     const feed = await attentionService(db).list(companyId, { userId: "board-user" });
 
     expect(feed.items.some((item) => item.dedupKey === `blocker:${issueId}`)).toBe(true);
+  });
+
+  it("surfaces issue comments that mention the viewer as mention items", async () => {
+    const { companyId, workerId } = await seedCompany("ATM");
+    const issueId = await insertIssue({
+      companyId,
+      identifier: "ATM-1",
+      title: "Mention target",
+      status: "todo",
+    });
+    const [comment] = await db
+      .insert(issueComments)
+      .values({
+        companyId,
+        issueId,
+        authorAgentId: workerId,
+        body: "Hey [@board](user://board-user), review this.",
+      })
+      .returning({ id: issueComments.id });
+    await db.insert(issueComments).values({
+      companyId,
+      issueId,
+      authorUserId: "board-user",
+      body: "Note to self [@me](user://board-user).",
+    });
+
+    const feed = await attentionService(db).list(companyId, { userId: "board-user" });
+    const items = feed.items.filter((item) => item.dedupKey === `mention:${comment.id}`);
+
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({
+      sourceKind: "mention",
+      severity: "low",
+      whyNow: "Worker mentioned you in a comment.",
+    });
+    expect(items[0]?.subject).toMatchObject({ kind: "issue", id: issueId, identifier: "ATM-1" });
+    expect(items[0]?.detail).toMatchObject({ kind: "mention", commentId: comment.id });
+
+    const otherFeed = await attentionService(db).list(companyId, { userId: "other-user" });
+    expect(otherFeed.items.some((item) => item.sourceKind === "mention")).toBe(false);
   });
 
   // Regression: both blocker_attention call sites fell back to the blocked
