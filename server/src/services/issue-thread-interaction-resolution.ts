@@ -339,6 +339,49 @@ export function assertIssueThreadInteractionResolverAudience(
 }
 
 /**
+ * Additional identity restriction for a pinned code review. The broker pins one
+ * reviewer agent, so only that agent may resolve the card: never a human
+ * override, never a different agent, and never the candidate's author or the
+ * run that produced it. The pinned model itself is re-checked against the
+ * reviewer's current configuration by the caller, because that needs a
+ * database read.
+ */
+export function assertIssueThreadInteractionCodeReviewResolver(input: {
+  actor: IssueThreadInteractionResolverActor;
+  interaction: {
+    addresseeAgentId?: string | null;
+    createdByAgentId?: string | null;
+    sourceRunId?: string | null;
+  };
+}) {
+  const addresseeAgentId = input.interaction.addresseeAgentId ?? null;
+  const agentActor = input.actor.type === "agent" ? input.actor : null;
+  const agentId = agentActor?.agentId ?? null;
+  if (!agentActor || !addresseeAgentId || !agentId || addresseeAgentId !== agentId) {
+    throw issueThreadInteractionResolutionError(
+      403,
+      "interaction_addressee_mismatch",
+      "Only the addressed reviewer agent may resolve this code review",
+      { addresseeAgentId, requiredResolver: "addressed_reviewer_agent" },
+    );
+  }
+  if (
+    input.interaction.createdByAgentId === agentId
+    || (
+      Boolean(input.interaction.sourceRunId)
+      && input.interaction.sourceRunId === agentActor.runId
+    )
+  ) {
+    throw issueThreadInteractionResolutionError(
+      403,
+      "interaction_creator_excluded",
+      "The author of a code-review candidate cannot resolve its review",
+      { requiredResolver: "reviewer_other_than_author" },
+    );
+  }
+}
+
+/**
  * Resolves agent-owned attention with the same audience rules used by mutation
  * routes. Run attribution is deliberately represented by the interaction's
  * source run for the creator and by an opaque non-source run for other agents;

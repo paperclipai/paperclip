@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
@@ -4259,6 +4259,386 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
         id: created.id,
         status: "accepted",
       });
+    });
+  });
+
+  describe("pinned code review confirmations", () => {
+    const PINNED_MODEL = "claude-bridge/claude-fable-5";
+    const DRIFTED_MODEL = "codex/gpt-5.6-sol";
+    const REVISION = "0123456789abcdef0123456789abcdef01234567";
+
+    async function seedPinnedReview(options?: { reviewerModel?: string | null }) {
+      const { companyId, goalId, issueId } = await seedConfirmationIssue("Pinned code review");
+      const authorAgentId = randomUUID();
+      const reviewerAgentId = randomUUID();
+      const authorRunId = randomUUID();
+      const reviewerRunId = randomUUID();
+      await db.insert(agents).values([
+        {
+          id: authorAgentId,
+          companyId,
+          name: "Candidate author",
+          role: "engineer",
+          status: "active",
+          adapterType: "claude_local",
+          adapterConfig: { model: DRIFTED_MODEL },
+          runtimeConfig: {},
+          permissions: {},
+        },
+        {
+          id: reviewerAgentId,
+          companyId,
+          name: "Pinned reviewer",
+          role: "reviewer",
+          status: "active",
+          adapterType: "claude_local",
+          adapterConfig: options?.reviewerModel === null
+            ? {}
+            : { model: options?.reviewerModel ?? PINNED_MODEL },
+          runtimeConfig: {},
+          permissions: {},
+        },
+      ]);
+      await db.insert(heartbeatRuns).values([
+        {
+          id: authorRunId,
+          companyId,
+          agentId: authorAgentId,
+          invocationSource: "manual",
+          status: "running",
+          startedAt: new Date(),
+        },
+        {
+          id: reviewerRunId,
+          companyId,
+          agentId: reviewerAgentId,
+          invocationSource: "manual",
+          status: "running",
+          startedAt: new Date(),
+        },
+      ]);
+      return { companyId, goalId, issueId, authorAgentId, reviewerAgentId, authorRunId, reviewerRunId };
+    }
+
+    function pinnedReviewPayload(overrides?: { revision?: string; workspaceKey?: string }) {
+      return {
+        version: 1 as const,
+        prompt: "Approve the reviewed candidate?",
+        review: {
+          candidate: {
+            workspaceKey: overrides?.workspaceKey ?? "lane-7",
+            revision: overrides?.revision ?? REVISION,
+          },
+          expectedModel: PINNED_MODEL,
+        },
+      };
+    }
+
+    it("creates and accepts a pinned code review without moving the issue out of progress", async () => {
+      const { companyId, goalId, issueId, authorAgentId, reviewerAgentId, reviewerRunId } =
+        await seedPinnedReview();
+
+      const created = await interactionsSvc.create({ id: issueId, companyId }, {
+        kind: "request_confirmation",
+        addresseeAgentId: reviewerAgentId,
+        payload: pinnedReviewPayload(),
+      }, { agentId: authorAgentId });
+
+      expect(created).toMatchObject({
+        kind: "request_confirmation",
+        status: "pending",
+        addresseeAgentId: reviewerAgentId,
+        createdByAgentId: authorAgentId,
+        payload: {
+          review: {
+            candidate: { workspaceKey: "lane-7", revision: REVISION },
+            expectedModel: PINNED_MODEL,
+          },
+        },
+      });
+
+      const accepted = await interactionsSvc.acceptInteraction(
+        { id: issueId, companyId, goalId, projectId: null },
+        created.id,
+        {},
+        { agentId: reviewerAgentId, runId: reviewerRunId },
+      );
+
+      expect(accepted.interaction).toMatchObject({
+        id: created.id,
+        status: "accepted",
+        resolvedByAgentId: reviewerAgentId,
+        result: { version: 1, outcome: "accepted" },
+      });
+      expect(accepted.continuationIssue).toBeNull();
+      const [issueRow] = await db.select({ status: issues.status }).from(issues).where(eq(issues.id, issueId));
+      expect(issueRow?.status).toBe("in_progress");
+    });
+
+    it("refuses to create a pinned code review when the reviewer's configured model differs from the pin", async () => {
+      const { companyId, issueId, authorAgentId, reviewerAgentId } =
+        await seedPinnedReview({ reviewerModel: DRIFTED_MODEL });
+
+      await expect(interactionsSvc.create({ id: issueId, companyId }, {
+        kind: "request_confirmation",
+        addresseeAgentId: reviewerAgentId,
+        payload: pinnedReviewPayload(),
+      }, { agentId: authorAgentId })).rejects.toMatchObject({
+        status: 422,
+        message: expect.stringContaining("configured model does not match"),
+        details: expect.objectContaining({
+          code: "interaction_review_model_mismatch",
+          expectedModel: PINNED_MODEL,
+          configuredModel: DRIFTED_MODEL,
+        }),
+      });
+      await expect(interactionsSvc.listForIssue(issueId)).resolves.toEqual([]);
+    });
+
+    it("refuses to accept a pinned code review after the reviewer's configured model changes", async () => {
+      const { companyId, goalId, issueId, authorAgentId, reviewerAgentId, reviewerRunId } =
+        await seedPinnedReview();
+
+      const created = await interactionsSvc.create({ id: issueId, companyId }, {
+        kind: "request_confirmation",
+        addresseeAgentId: reviewerAgentId,
+        payload: pinnedReviewPayload(),
+      }, { agentId: authorAgentId });
+
+      await db.update(agents)
+        .set({ adapterConfig: { model: DRIFTED_MODEL } })
+        .where(eq(agents.id, reviewerAgentId));
+
+      await expect(interactionsSvc.acceptInteraction(
+        { id: issueId, companyId, goalId, projectId: null },
+        created.id,
+        {},
+        { agentId: reviewerAgentId, runId: reviewerRunId },
+      )).rejects.toMatchObject({
+        status: 409,
+        details: expect.objectContaining({
+          code: "interaction_stale_target",
+          expectedModel: PINNED_MODEL,
+          configuredModel: DRIFTED_MODEL,
+        }),
+      });
+
+      const [row] = await db.select().from(issueThreadInteractions)
+        .where(eq(issueThreadInteractions.id, created.id));
+      expect(row).toMatchObject({ status: "pending", result: null });
+    });
+
+    it("refuses to let the candidate author resolve their own pinned code review", async () => {
+      const { companyId, goalId, issueId, authorAgentId, authorRunId } = await seedPinnedReview();
+      const interactionId = randomUUID();
+      await db.insert(issueThreadInteractions).values({
+        id: interactionId,
+        companyId,
+        issueId,
+        kind: "request_confirmation",
+        status: "pending",
+        continuationPolicy: "none",
+        createdByAgentId: authorAgentId,
+        addresseeAgentId: authorAgentId,
+        payload: pinnedReviewPayload(),
+      });
+
+      await expect(interactionsSvc.acceptInteraction(
+        { id: issueId, companyId, goalId, projectId: null },
+        interactionId,
+        {},
+        { agentId: authorAgentId, runId: authorRunId },
+      )).rejects.toMatchObject({
+        status: 403,
+        message: expect.stringContaining("author of a code-review candidate"),
+        details: expect.objectContaining({ code: "interaction_creator_excluded" }),
+      });
+
+      const [row] = await db.select().from(issueThreadInteractions)
+        .where(eq(issueThreadInteractions.id, interactionId));
+      expect(row).toMatchObject({ status: "pending", result: null });
+    });
+
+    it("refuses a reviewer whose own run produced the candidate", async () => {
+      const { companyId, goalId, issueId, reviewerAgentId, reviewerRunId } = await seedPinnedReview();
+      const interactionId = randomUUID();
+      await db.insert(issueThreadInteractions).values({
+        id: interactionId,
+        companyId,
+        issueId,
+        kind: "request_confirmation",
+        status: "pending",
+        continuationPolicy: "none",
+        createdByUserId: "local-board",
+        addresseeAgentId: reviewerAgentId,
+        sourceRunId: reviewerRunId,
+        payload: pinnedReviewPayload(),
+      });
+
+      await expect(interactionsSvc.acceptInteraction(
+        { id: issueId, companyId, goalId, projectId: null },
+        interactionId,
+        {},
+        { agentId: reviewerAgentId, runId: reviewerRunId },
+      )).rejects.toMatchObject({
+        status: 403,
+        message: expect.stringContaining("author of a code-review candidate"),
+        details: expect.objectContaining({ code: "interaction_creator_excluded" }),
+      });
+
+      const [row] = await db.select().from(issueThreadInteractions)
+        .where(eq(issueThreadInteractions.id, interactionId));
+      expect(row).toMatchObject({ status: "pending", result: null });
+    });
+
+    it("refuses a human board override on a pinned code review", async () => {
+      const { companyId, goalId, issueId, authorAgentId, reviewerAgentId } = await seedPinnedReview();
+
+      const created = await interactionsSvc.create({ id: issueId, companyId }, {
+        kind: "request_confirmation",
+        addresseeAgentId: reviewerAgentId,
+        payload: pinnedReviewPayload(),
+      }, { agentId: authorAgentId });
+
+      await expect(interactionsSvc.acceptInteraction(
+        { id: issueId, companyId, goalId, projectId: null },
+        created.id,
+        {},
+        { userId: "local-board" },
+      )).rejects.toMatchObject({
+        status: 403,
+        message: expect.stringContaining("addressed reviewer agent"),
+        details: expect.objectContaining({ code: "interaction_addressee_mismatch" }),
+      });
+    });
+
+    it("refuses a code-review pin mixed with a target", async () => {
+      const { companyId, issueId, authorAgentId, reviewerAgentId } = await seedPinnedReview();
+
+      await expect(interactionsSvc.create({ id: issueId, companyId }, {
+        kind: "request_confirmation",
+        addresseeAgentId: reviewerAgentId,
+        payload: {
+          ...pinnedReviewPayload(),
+          target: { type: "custom", key: "plan" },
+        },
+      }, { agentId: authorAgentId })).rejects.toThrow(/cannot be combined with target/);
+    });
+
+    it("rejects path-shaped candidate fields and non-hex revisions", async () => {
+      const { companyId, issueId, authorAgentId, reviewerAgentId } = await seedPinnedReview();
+      const base = { kind: "request_confirmation" as const, addresseeAgentId: reviewerAgentId };
+      const candidate = pinnedReviewPayload().review.candidate;
+      const payloadWithHostPath = {
+        ...pinnedReviewPayload(),
+        review: {
+          ...pinnedReviewPayload().review,
+          candidate: { ...candidate, path: "/tmp/secret" },
+        },
+      };
+
+      await expect(interactionsSvc.create({ id: issueId, companyId }, {
+        ...base,
+        payload: pinnedReviewPayload({ workspaceKey: "/Users/mirko/repo" }),
+      }, { agentId: authorAgentId })).rejects.toThrow(/lane key/);
+
+      await expect(interactionsSvc.create({ id: issueId, companyId }, {
+        ...base,
+        payload: pinnedReviewPayload({ revision: "abc123" }),
+      }, { agentId: authorAgentId })).rejects.toThrow(/40- or 64-character/);
+
+      await expect(interactionsSvc.create({ id: issueId, companyId }, {
+        ...base,
+        payload: payloadWithHostPath,
+      }, { agentId: authorAgentId })).rejects.toThrow();
+    });
+
+    it("refuses a coordinator-created review addressed to the issue's current assignee", async () => {
+      const { companyId, issueId, authorAgentId, reviewerAgentId } = await seedPinnedReview();
+      await db.update(issues).set({ assigneeAgentId: reviewerAgentId }).where(eq(issues.id, issueId));
+
+      await expect(interactionsSvc.create({ id: issueId, companyId }, {
+        kind: "request_confirmation",
+        addresseeAgentId: reviewerAgentId,
+        payload: pinnedReviewPayload(),
+      }, { agentId: authorAgentId })).rejects.toMatchObject({
+        status: 422,
+        message: expect.stringContaining("current assignee"),
+        details: expect.objectContaining({
+          code: "interaction_review_assignee_independence_required",
+          reviewerAgentId,
+          assigneeAgentId: reviewerAgentId,
+        }),
+      });
+
+      await expect(interactionsSvc.listForIssue(issueId)).resolves.toEqual([]);
+    });
+
+    it("refuses accept and reject once the reviewer becomes the issue assignee", async () => {
+      const { companyId, goalId, issueId, authorAgentId, reviewerAgentId, reviewerRunId } =
+        await seedPinnedReview();
+
+      const created = await interactionsSvc.create({ id: issueId, companyId }, {
+        kind: "request_confirmation",
+        addresseeAgentId: reviewerAgentId,
+        payload: pinnedReviewPayload(),
+      }, { agentId: authorAgentId });
+      expect(created.status).toBe("pending");
+
+      await db.update(issues).set({ assigneeAgentId: reviewerAgentId }).where(eq(issues.id, issueId));
+
+      const issue = { id: issueId, companyId, goalId, projectId: null };
+      const reviewer = { agentId: reviewerAgentId, runId: reviewerRunId };
+      await expect(interactionsSvc.acceptInteraction(issue, created.id, {}, reviewer))
+        .rejects.toMatchObject({
+          status: 403,
+          message: expect.stringContaining("current assignee"),
+          details: expect.objectContaining({
+            code: "interaction_creator_excluded",
+            requiredResolver: "reviewer_other_than_issue_assignee",
+          }),
+        });
+      await expect(interactionsSvc.rejectInteraction(issue, created.id, {}, reviewer))
+        .rejects.toMatchObject({
+          status: 403,
+          details: expect.objectContaining({ requiredResolver: "reviewer_other_than_issue_assignee" }),
+        });
+
+      const [row] = await db.select().from(issueThreadInteractions)
+        .where(eq(issueThreadInteractions.id, created.id));
+      expect(row).toMatchObject({ status: "pending", result: null });
+    });
+
+    it("refuses a tampered stored review:null pin instead of downgrading it to a generic confirmation", async () => {
+      const { companyId, goalId, issueId, authorAgentId, reviewerAgentId, reviewerRunId } =
+        await seedPinnedReview();
+
+      const created = await interactionsSvc.create({ id: issueId, companyId }, {
+        kind: "request_confirmation",
+        addresseeAgentId: reviewerAgentId,
+        payload: pinnedReviewPayload(),
+      }, { agentId: authorAgentId });
+
+      await db.execute(sql`
+        update issue_thread_interactions
+        set payload = payload || '{"review": null}'::jsonb
+        where id = ${created.id}
+      `);
+
+      await expect(interactionsSvc.acceptInteraction(
+        { id: issueId, companyId, goalId, projectId: null },
+        created.id,
+        {},
+        { agentId: reviewerAgentId, runId: reviewerRunId },
+      )).rejects.toMatchObject({
+        status: 422,
+        message: expect.stringContaining("unusable code-review pin"),
+        details: expect.objectContaining({ code: "interaction_stale_target" }),
+      });
+
+      const [row] = await db.select().from(issueThreadInteractions)
+        .where(eq(issueThreadInteractions.id, created.id));
+      expect(row).toMatchObject({ status: "pending", result: null });
     });
   });
 });

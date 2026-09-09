@@ -2816,19 +2816,34 @@ export function agentRoutes(
     };
   }
 
+  /**
+   * Restricted views are for callers that may see an agent but may not read its
+   * configuration (no `agent_config:read` grant). The only adapter-config value
+   * they receive is the configured model id: routing metadata that eligibility
+   * checks and exact reviewer addressing already depend on, not a credential.
+   * Every other adapter-config key — commands, env bindings, instruction paths,
+   * workspace strategy — and the whole `runtimeConfig` stay hidden.
+   */
+  function restrictedAgentAdapterConfig(adapterConfig: unknown): Record<string, unknown> {
+    const config = asRecord(adapterConfig);
+    const model = config?.model;
+    return typeof model === "string" ? { model } : {};
+  }
+
   function redactForRestrictedAgentView(agent: Awaited<ReturnType<typeof svc.getById>>) {
     if (!agent) return null;
     return {
       ...agent,
-      adapterConfig: {},
+      adapterConfig: restrictedAgentAdapterConfig(agent.adapterConfig),
       runtimeConfig: {},
     };
   }
 
   // Single presenter for every response that emits a raw agent row. Restricted
-  // views blank the config wholesale for authorization reasons; this runs for
-  // config-reading (board) callers too, so plaintext `adapterConfig.env` values
-  // never leave the API regardless of actor scope.
+  // views withhold the configuration except the model id (see
+  // restrictedAgentAdapterConfig); this runs for config-reading (board) callers
+  // too, so plaintext `adapterConfig.env` values never leave the API regardless
+  // of actor scope.
   function redactAgentRowForResponse<T extends { adapterConfig?: unknown } | null | undefined>(
     agent: T,
   ): T {

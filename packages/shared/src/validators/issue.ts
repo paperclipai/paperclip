@@ -1094,6 +1094,27 @@ export const requestConfirmationSecretProposalPayloadSchema = z.object({
   expiresAt: z.string().datetime({ offset: true }),
 });
 
+// A pinned code review. `candidate` names the exact workspace revision the
+// approval is tied to; `expectedModel` is the reviewer model the broker pinned
+// upstream. Both are lane keys / model ids, never filesystem paths, and both
+// objects are strict so a caller cannot smuggle extra fields (e.g. a host path)
+// past the validator.
+const requestConfirmationReviewCandidateSchema = z.object({
+  workspaceKey: z.string().trim().min(1).max(255)
+    .regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/, "workspaceKey must be a single lane key, not a path"),
+  revision: z.string().trim()
+    .regex(/^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})$/, "revision must be a full 40- or 64-character hex digest"),
+}).strict();
+
+const requestConfirmationReviewSchema = z.object({
+  candidate: requestConfirmationReviewCandidateSchema,
+  expectedModel: z.string().trim().min(3).max(255)
+    .regex(
+      /^[A-Za-z0-9][A-Za-z0-9._:@+-]*(?:\/[A-Za-z0-9][A-Za-z0-9._:@+-]*)+$/,
+      "expectedModel must be an exact provider/model id",
+    ),
+}).strict();
+
 export const requestConfirmationPayloadSchema = z.object({
   version: z.literal(1),
   prompt: z.string().trim().min(1).max(1000),
@@ -1108,6 +1129,33 @@ export const requestConfirmationPayloadSchema = z.object({
   target: requestConfirmationTargetSchema.nullable().optional(),
   toolAction: requestConfirmationToolActionPayloadSchema.optional(),
   secretProposal: requestConfirmationSecretProposalPayloadSchema.optional(),
+  review: requestConfirmationReviewSchema.optional(),
+}).superRefine((value, ctx) => {
+  if (value.review === undefined) return;
+  // A pinned code review is its own approval shape. It cannot also gate a
+  // governed tool action, a secret proposal, or a document/custom target, so
+  // mixing them is rejected instead of silently widening the card's authority.
+  if (value.toolAction !== undefined) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "A pinned code review cannot be combined with toolAction",
+      path: ["toolAction"],
+    });
+  }
+  if (value.secretProposal !== undefined) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "A pinned code review cannot be combined with secretProposal",
+      path: ["secretProposal"],
+    });
+  }
+  if (value.target !== undefined && value.target !== null) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "A pinned code review cannot be combined with target",
+      path: ["target"],
+    });
+  }
 });
 
 export const requestCheckboxConfirmationOptionSchema = z.object({

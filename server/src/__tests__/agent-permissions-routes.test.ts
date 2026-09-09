@@ -406,7 +406,7 @@ describe.sequential("agent permission routes", () => {
     mockLogActivity.mockResolvedValue(undefined);
   });
 
-  it("redacts agent detail for authenticated company members without agent admin permission", async () => {
+  it("lets an authenticated company member without agent admin permission read agent detail", async () => {
     mockAccessService.canUser.mockResolvedValue(false);
     mockAccessService.decide.mockImplementation(async (input: { action?: string }) => ({
       allowed: input.action === "agent:read",
@@ -425,8 +425,73 @@ describe.sequential("agent permission routes", () => {
     const res = await requestApp(app, (baseUrl) => request(baseUrl).get(`/api/agents/${agentId}`));
 
     expect(res.status).toBe(200);
-    expect(res.body.adapterConfig).toEqual({});
-    expect(res.body.runtimeConfig).toEqual({});
+  }, 20_000);
+
+  // The broker addresses a pinned reviewer with the author agent's ordinary
+  // token, so a same-company reader without an agent_config:read grant must
+  // still receive the configured model id — and nothing else from the
+  // configuration.
+  it("exposes only the configured model in restricted agent views for a same-company agent reader", async () => {
+    const peerAgentId = "44444444-4444-4444-8444-444444444444";
+    const peerModel = "claude-bridge/claude-fable-5";
+    const secretValue = "restricted-reader-must-not-see-this";
+    const peerAgent = {
+      ...baseAgent,
+      id: peerAgentId,
+      name: "Pinned reviewer",
+      adapterConfig: {
+        model: peerModel,
+        command: "pnpm agent:run --dangerous",
+        instructionsRootPath: "/tmp/peer/instructions",
+        workspaceStrategy: { type: "git_worktree" },
+        env: {
+          PLAIN_VALUE: { type: "plain", value: secretValue },
+          SECRET_REFERENCE: {
+            type: "secret_ref",
+            secretId: "33333333-3333-4333-8333-333333333333",
+            version: "latest",
+          },
+        },
+      },
+      runtimeConfig: { heartbeat: { enabled: true, intervalSec: 60 } },
+    };
+    mockAgentService.getById.mockImplementation(async (id: string) =>
+      id === peerAgentId ? peerAgent : baseAgent);
+    mockAgentService.list.mockResolvedValue([peerAgent]);
+    mockAccessService.decide.mockImplementation(async (input: { action?: string }) => ({
+      allowed: input.action === "agent:read",
+      reason: input.action === "agent:read" ? "allow_test_read" : "deny_missing_grant",
+      explanation: input.action === "agent:read" ? "Allowed by test read grant." : "Missing test grant.",
+    }));
+
+    const app = await createApp({
+      type: "agent",
+      agentId,
+      companyId,
+      source: "agent_key",
+      runId: "run-1",
+    });
+
+    const detail = await requestApp(app, (baseUrl) =>
+      request(baseUrl).get(`/api/agents/${peerAgentId}`));
+
+    expect(detail.status).toBe(200);
+    expect(detail.body.adapterConfig).toEqual({ model: peerModel });
+    expect(detail.body.runtimeConfig).toEqual({});
+    expect(JSON.stringify(detail.body)).not.toContain(secretValue);
+    expect(JSON.stringify(detail.body)).not.toContain("pnpm agent:run");
+
+    const list = await requestApp(app, (baseUrl) =>
+      request(baseUrl).get(`/api/companies/${companyId}/agents`));
+
+    expect(list.status).toBe(200);
+    expect(list.body.map((row: { adapterConfig: unknown }) => row.adapterConfig))
+      .toEqual([{ model: peerModel }]);
+
+    const configuration = await requestApp(app, (baseUrl) =>
+      request(baseUrl).get(`/api/agents/${peerAgentId}/configuration`));
+
+    expect(configuration.status).toBe(403);
   }, 20_000);
 
   it("redacts env values in board agent detail responses", async () => {

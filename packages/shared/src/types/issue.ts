@@ -1346,6 +1346,29 @@ export interface ConnectionIntentResult {
   supersededByInteractionId?: string | null;
 }
 
+/**
+ * The exact workspace revision a pinned code review approves. `workspaceKey` is
+ * an operator-owned lane key and `revision` is a full 40- or 64-character hex
+ * digest; neither is ever a filesystem path.
+ */
+export interface RequestConfirmationReviewCandidate {
+  workspaceKey: string;
+  revision: string;
+}
+
+/**
+ * Broker-supplied pin carried on a `request_confirmation` interaction that
+ * approves a code candidate. `expectedModel` is the exact `provider/model` the
+ * broker selected from operator-owned review policy. Native code re-checks the
+ * addressee's currently configured `adapterConfig.model` against it at creation
+ * and again at resolution, so a model change after the request refuses the
+ * verdict instead of silently reviewing with a different model.
+ */
+export interface RequestConfirmationReview {
+  candidate: RequestConfirmationReviewCandidate;
+  expectedModel: string;
+}
+
 export interface RequestConfirmationPayload {
   version: 1;
   prompt: string;
@@ -1361,6 +1384,7 @@ export interface RequestConfirmationPayload {
   toolAction?: RequestConfirmationToolActionPayload;
   secretProposal?: RequestConfirmationSecretProposalPayload;
   connectionAuthorization?: RequestConfirmationConnectionAuthorizationPayload;
+  review?: RequestConfirmationReview;
 }
 
 export interface RequestCheckboxConfirmationOption {

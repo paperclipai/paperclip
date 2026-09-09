@@ -61,6 +61,7 @@ import {
   requestCheckboxConfirmationResultSchema,
   requestConfirmationPayloadSchema,
   requestConfirmationResultSchema,
+  requestConfirmationTargetSchema,
   requestItemVerdictsPayloadSchema,
   requestItemVerdictsResultSchema,
   skipIssueThreadInteractionSchema,
@@ -85,6 +86,7 @@ import {
 } from "./issues.js";
 import { questionResponseDeliveryValues } from "./question-response-delivery.js";
 import {
+  assertIssueThreadInteractionCodeReviewResolver,
   assertIssueThreadInteractionResolverAudience,
   canonicalizeStoredResolverPolicy,
   issueThreadInteractionResolutionError,
@@ -221,6 +223,9 @@ export function getMergeConfirmationPullRequestReferences(
     ? row.payload as unknown as Record<string, unknown>
     : null;
   if (!payload || payload.toolAction !== undefined || payload.secretProposal !== undefined) return [];
+  // A pinned code review is resolved only by its addressed reviewer agent, never
+  // by the merged-PR sweep, so it must not be detected as a merge confirmation.
+  if (payload.review !== undefined) return [];
 
   const target = payload.target && typeof payload.target === "object" && !Array.isArray(payload.target)
     ? payload.target as Record<string, unknown>
@@ -280,6 +285,108 @@ function isNativeCompletionReview(row: Pick<IssueThreadInteractionRow, "kind" | 
     ? payload.target as Record<string, unknown>
     : {};
   return target.type === "custom" && target.key === "native_completion_review";
+}
+
+type RequestConfirmationReview = NonNullable<
+  z.infer<typeof requestConfirmationPayloadSchema>["review"]
+>;
+
+/** The model an agent is currently configured to run, normalized to a string. */
+function readConfiguredAgentModel(adapterConfig: unknown): string | null {
+  if (!adapterConfig || typeof adapterConfig !== "object" || Array.isArray(adapterConfig)) return null;
+  const model = (adapterConfig as Record<string, unknown>).model;
+  return typeof model === "string" && model.trim() ? model.trim() : null;
+}
+
+/**
+ * Read the broker-supplied code-review pin off a stored confirmation payload.
+ *
+ * `present` keys off own-property presence, not value truthiness: a stored
+ * `review: null` is a tampered or legacy payload and must fail closed rather
+ * than downgrade into a generic confirmation anyone could resolve. A pin that
+ * fails validation — or one mixed with a target, tool action, or secret proposal
+ * — fails closed the same way.
+ */
+function readRequestConfirmationReview(payload: unknown): {
+  present: boolean;
+  review: RequestConfirmationReview | null;
+} {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return { present: false, review: null };
+  }
+  const raw = payload as Record<string, unknown>;
+  if (!Object.prototype.hasOwnProperty.call(raw, "review")) return { present: false, review: null };
+  const parsed = requestConfirmationPayloadSchema.safeParse(raw);
+  if (!parsed.success || !parsed.data.review) return { present: true, review: null };
+  return { present: true, review: parsed.data.review };
+}
+
+/**
+ * A code review is independent only when its addressed reviewer is not the
+ * issue's current assignee. The predicate is evaluated against the locked issue
+ * row at creation and again at resolution, so a reassignment between the two
+ * cannot hand the candidate to the agent that owns the work.
+ */
+function codeReviewReviewerIsIssueAssignee(
+  reviewerAgentId: string | null | undefined,
+  issueAssigneeAgentId: string | null | undefined,
+): boolean {
+  return Boolean(reviewerAgentId) && reviewerAgentId === issueAssigneeAgentId;
+}
+
+/**
+ * Creation gate: the addressed reviewer's currently configured model must equal
+ * the model the broker pinned. The pin is trusted input, but the configured
+ * model is the live metadata this instance owns.
+ */
+function assertRequestConfirmationReviewModelMatches(args: {
+  expectedModel: string;
+  reviewerAgentId: string;
+  adapterConfig: unknown;
+}) {
+  const configuredModel = readConfiguredAgentModel(args.adapterConfig);
+  if (configuredModel === args.expectedModel) return;
+  throw unprocessable("The addressed reviewer agent's configured model does not match the pinned review model", {
+    code: "interaction_review_model_mismatch",
+    reviewerAgentId: args.reviewerAgentId,
+    expectedModel: args.expectedModel,
+    configuredModel,
+  });
+}
+
+/**
+ * Resolution gate: a model change after the request refuses the verdict. The
+ * review stays attached to its exact candidate; the caller must request a new
+ * confirmation for the new model.
+ */
+async function assertRequestConfirmationReviewModelStillCurrent(
+  tx: Db,
+  interaction: Pick<IssueThreadInteractionRow, "id" | "companyId" | "addresseeAgentId">,
+  review: RequestConfirmationReview,
+) {
+  const reviewerAgentId = interaction.addresseeAgentId;
+  const reviewer = reviewerAgentId
+    ? await tx
+      .select({ id: agents.id, companyId: agents.companyId, adapterConfig: agents.adapterConfig })
+      .from(agents)
+      .where(eq(agents.id, reviewerAgentId))
+      .then((rows) => rows[0] ?? null)
+    : null;
+  const configuredModel = readConfiguredAgentModel(reviewer?.adapterConfig);
+  if (reviewer && reviewer.companyId === interaction.companyId && configuredModel === review.expectedModel) {
+    return;
+  }
+  throw issueThreadInteractionResolutionError(
+    409,
+    "interaction_stale_target",
+    "The reviewer agent's configured model no longer matches the model pinned when this review was requested",
+    {
+      interactionId: interaction.id,
+      reviewerAgentId: reviewerAgentId ?? null,
+      expectedModel: review.expectedModel,
+      configuredModel,
+    },
+  );
 }
 
 export const DEFAULT_RESOLVER_POLICY_BY_KIND: Record<
@@ -389,6 +496,43 @@ async function assertRequestConfirmationResolutionAllowedUnderLock(
     && await isIssueReviewVerdictInteraction(tx, { issue, interaction });
 
   assertInteractionResolutionAllowed(interaction, actor);
+
+  // A pinned code review narrows resolution further than the stored resolver
+  // policy: only the addressed reviewer agent may resolve it, that reviewer must
+  // not be the issue's current assignee, and the reviewer's configured model
+  // must still match the pin. A pin that cannot be parsed fails closed rather
+  // than degrading to a generic confirmation.
+  const codeReview = interaction.kind === "request_confirmation"
+    ? readRequestConfirmationReview(interaction.payload)
+    : { present: false, review: null as RequestConfirmationReview | null };
+  if (codeReview.present) {
+    if (!codeReview.review) {
+      throw issueThreadInteractionResolutionError(
+        422,
+        "interaction_stale_target",
+        "This confirmation carries an unusable code-review pin; request a new review",
+        { interactionId: interaction.id },
+      );
+    }
+    assertIssueThreadInteractionCodeReviewResolver({ actor: resolverActor(actor), interaction });
+    // Independence is re-evaluated against the locked issue row, so a
+    // reassignment after the request cannot hand the review to the assignee.
+    if (codeReviewReviewerIsIssueAssignee(interaction.addresseeAgentId, issue.assigneeAgentId)) {
+      throw issueThreadInteractionResolutionError(
+        403,
+        "interaction_creator_excluded",
+        "A code review cannot be resolved by the issue's current assignee",
+        {
+          interactionId: interaction.id,
+          reviewerAgentId: interaction.addresseeAgentId,
+          assigneeAgentId: issue.assigneeAgentId,
+          requiredResolver: "reviewer_other_than_issue_assignee",
+        },
+      );
+    }
+    await assertRequestConfirmationReviewModelStillCurrent(tx, interaction, codeReview.review);
+  }
+
   if (!isReviewVerdict) return;
 
   const verdictActor = actor.agentId
@@ -1485,15 +1629,27 @@ async function assertRequestConfirmationTargetIsCurrent(db: Db | any, args: {
   }
 }
 
+/**
+ * Tolerant read of `payload.target` for the pre-resolution staleness probe.
+ * Hydrating the whole payload here would throw on a tampered row before the
+ * resolver guards can refuse it with a typed error, and the common
+ * no-target / current-target path does not need the full payload.
+ */
+function readRequestConfirmationTargetFromPayload(payload: unknown): RequestConfirmationTarget | null {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null;
+  const parsed = requestConfirmationTargetSchema.nullable().safeParse(
+    (payload as Record<string, unknown>).target,
+  );
+  return parsed.success ? parsed.data ?? null : null;
+}
+
 async function expireStaleRequestConfirmationTarget(db: Db | any, args: {
   row: IssueThreadInteractionRow;
   actor: InteractionActor;
 }): Promise<IssueThreadInteraction | null> {
   if (!isTargetBoundInteractionKind(args.row.kind) || args.row.status !== "pending") return null;
-  const interaction = hydrateInteraction(args.row) as TargetBoundInteraction;
-  const target = interaction.payload.target ?? null;
-  if (!target) return null;
-  if (target.type !== "issue_document") return null;
+  const target = readRequestConfirmationTargetFromPayload(args.row.payload);
+  if (!target || target.type !== "issue_document") return null;
 
   const snapshot = await getIssueDocumentTargetSnapshot(db, {
     companyId: args.row.companyId,
@@ -1506,6 +1662,9 @@ async function expireStaleRequestConfirmationTarget(db: Db | any, args: {
     && (!target.revisionNumber || snapshot.latestRevisionNumber === target.revisionNumber);
   if (isCurrent) return null;
 
+  // Only the expiry write needs the full payload (to preserve it), so hydrate
+  // here rather than on every resolution attempt.
+  const interaction = hydrateInteraction(args.row) as TargetBoundInteraction;
   const now = new Date();
   const currentTarget = buildIssueDocumentTargetFromSnapshot({
     issueId: args.row.issueId,
@@ -2646,6 +2805,18 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
         throw unprocessable("An issue-thread interaction cannot address both an agent and a user");
       }
 
+      // A pinned code review is addressed to the reviewer the broker selected.
+      // The pin is trusted input; the model match below is re-checked against
+      // the addressee's live configuration, and resolution re-checks it again.
+      const review = normalizedData.kind === "request_confirmation"
+        ? normalizedData.payload.review ?? null
+        : null;
+      if (review && !normalizedData.addresseeAgentId) {
+        throw unprocessable("A pinned code review must address the reviewer agent", {
+          code: "interaction_review_addressee_required",
+        });
+      }
+
       if (normalizedData.addresseeAgentId) {
         if (normalizedData.addresseeAgentId === actor.agentId) {
           throw unprocessable("Agents cannot address issue-thread interactions to themselves");
@@ -2663,6 +2834,7 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
             name: agents.name,
             reportsTo: agents.reportsTo,
             status: agents.status,
+            adapterConfig: agents.adapterConfig,
           })
           .from(agents)
           .where(eq(agents.id, normalizedData.addresseeAgentId))
@@ -2675,6 +2847,13 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
           throw unprocessable("addresseeAgentId must reference an invokable agent", {
             reason: invokability.reason,
             ...invokability.details,
+          });
+        }
+        if (review) {
+          assertRequestConfirmationReviewModelMatches({
+            expectedModel: review.expectedModel,
+            reviewerAgentId: addressee.id,
+            adapterConfig: addressee.adapterConfig,
           });
         }
       }
@@ -2747,12 +2926,23 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
         // create keep returning the (by now expired) original.
         const result = await db.transaction(async (tx) => {
           const [issueRow] = await tx
-            .select({ status: issues.status })
+            .select({ status: issues.status, assigneeAgentId: issues.assigneeAgentId })
             .from(issues)
             .where(and(eq(issues.id, issue.id), eq(issues.companyId, issue.companyId)))
             .for("update");
           if (!issueRow || isTerminalIssueStatus(issueRow.status)) {
             throw conflict("Cannot create an interaction on a closed issue");
+          }
+          // A code review must be independent of the work it approves. The
+          // locked issue row is the authority here, so a concurrent reassignment
+          // cannot make the addressed reviewer the assignee between this check
+          // and the insert below.
+          if (review && codeReviewReviewerIsIssueAssignee(normalizedData.addresseeAgentId, issueRow.assigneeAgentId)) {
+            throw unprocessable("A code review cannot address the issue's current assignee as its reviewer", {
+              code: "interaction_review_assignee_independence_required",
+              reviewerAgentId: normalizedData.addresseeAgentId,
+              assigneeAgentId: issueRow.assigneeAgentId,
+            });
           }
           // Validate the plan/document confirmation target inside the same
           // transaction (locking the document row) so the latest-revision check
