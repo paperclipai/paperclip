@@ -38,8 +38,17 @@ export function splitRemoteUrlCredential(value: string): SplitRemoteUrlCredentia
   };
 }
 
-/** Preserve useful endpoint context in logs without retaining credentials. */
-export function redactRemoteUrlCredential(value: string): string {
+/**
+ * Preserve useful endpoint context in logs without retaining credentials.
+ *
+ * `fallback` is what a caller wants a log line to say when the value does not
+ * parse as a URL at all; it must never be the raw input, which is exactly the
+ * unvetted string this function exists to keep out of logs.
+ */
+export function redactRemoteUrlCredential(
+  value: string,
+  fallback = "configured remote MCP endpoint",
+): string {
   const input = value.trim();
   try {
     const url = new URL(input);
@@ -52,7 +61,7 @@ export function redactRemoteUrlCredential(value: string): string {
     }
     return url.toString();
   } catch {
-    return "configured remote MCP endpoint";
+    return fallback;
   }
 }
 
