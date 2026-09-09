@@ -2560,7 +2560,12 @@ async function auditInstalledSkillBytes(skill: CompanySkill): Promise<CompanySki
   if (skillFile) {
     const markdown = skillFile.bytes.toString("utf8");
     const parsed = parseFrontmatterMarkdown(markdown);
-    if (!markdown.startsWith("---\n") || !asString(parsed.frontmatter.name)) {
+    // Trust the parser's frontmatter detection instead of re-testing the raw
+    // bytes for "---\n". parseFrontmatterMarkdown normalizes CRLF to LF first,
+    // but the raw check does not, so a skill checked out with CRLF line endings
+    // (the default on Windows) failed this check on every file and surfaced as a
+    // hard-stop "invalid_frontmatter" audit finding with nothing actually wrong.
+    if (!parsed.hasFrontmatter || !asString(parsed.frontmatter.name)) {
       pushFinding(findings, "invalid_frontmatter", "error", "SKILL.md must contain valid frontmatter with a name.", "SKILL.md");
     }
   }
