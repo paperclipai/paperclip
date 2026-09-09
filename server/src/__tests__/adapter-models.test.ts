@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -8,6 +8,7 @@ import { models as codexFallbackModels } from "@paperclipai/adapter-codex-local"
 import { models as cursorFallbackModels } from "@paperclipai/adapter-cursor-local";
 import { models as opencodeFallbackModels } from "@paperclipai/adapter-opencode-local";
 import { resetOpenCodeModelsCacheForTests } from "@paperclipai/adapter-opencode-local/server";
+import { resolveManagedCodexHomeDir } from "@paperclipai/adapter-codex-local/server";
 import { listAdapterModels, listServerAdapters, refreshAdapterModels } from "../adapters/index.js";
 import { resetCodexModelsCacheForTests } from "../adapters/codex-models.js";
 import { resetCursorModelsCacheForTests, setCursorModelsRunnerForTests } from "../adapters/cursor-models.js";
@@ -22,6 +23,8 @@ vi.mock("acpx/runtime", () => ({
 describe("adapter model listing", () => {
   let codexHomeDir: string;
   let previousCodexHome: string | undefined;
+  let paperclipHomeDir: string;
+  let previousPaperclipHome: string | undefined;
 
   beforeEach(async () => {
     // Point CODEX_HOME at an empty directory so these tests never read whatever real Codex model
@@ -29,6 +32,10 @@ describe("adapter model listing", () => {
     previousCodexHome = process.env.CODEX_HOME;
     codexHomeDir = await mkdtemp(path.join(tmpdir(), "paperclip-codex-home-"));
     process.env.CODEX_HOME = codexHomeDir;
+    // Likewise for PAPERCLIP_HOME, which company-scoped managed-home discovery resolves under.
+    previousPaperclipHome = process.env.PAPERCLIP_HOME;
+    paperclipHomeDir = await mkdtemp(path.join(tmpdir(), "paperclip-home-"));
+    process.env.PAPERCLIP_HOME = paperclipHomeDir;
     delete process.env.OPENAI_API_KEY;
     delete process.env.ANTHROPIC_API_KEY;
     delete process.env.ANTHROPIC_BASE_URL;
@@ -47,11 +54,24 @@ describe("adapter model listing", () => {
     if (previousCodexHome === undefined) delete process.env.CODEX_HOME;
     else process.env.CODEX_HOME = previousCodexHome;
     await rm(codexHomeDir, { recursive: true, force: true });
+    if (previousPaperclipHome === undefined) delete process.env.PAPERCLIP_HOME;
+    else process.env.PAPERCLIP_HOME = previousPaperclipHome;
+    await rm(paperclipHomeDir, { recursive: true, force: true });
   });
 
   async function writeCodexModelsCache(payload: unknown): Promise<void> {
     await writeFile(
       path.join(codexHomeDir, "models_cache.json"),
+      typeof payload === "string" ? payload : JSON.stringify(payload),
+      "utf8",
+    );
+  }
+
+  async function writeManagedCodexModelsCache(companyId: string, payload: unknown): Promise<void> {
+    const managedHomeDir = resolveManagedCodexHomeDir(process.env, companyId);
+    await mkdir(managedHomeDir, { recursive: true });
+    await writeFile(
+      path.join(managedHomeDir, "models_cache.json"),
       typeof payload === "string" ? payload : JSON.stringify(payload),
       "utf8",
     );
@@ -313,6 +333,30 @@ describe("adapter model listing", () => {
 
     const models = await listAdapterModels("codex_local");
     expect(models).toEqual(codexFallbackModels);
+  });
+
+  it("prefers the company-managed Codex home cache over the shared host Codex home", async () => {
+    await writeCodexModelsCache({
+      models: [{ slug: "gpt-5.6-sol", display_name: "GPT-5.6-Sol", visibility: "list" }],
+    });
+    await writeManagedCodexModelsCache("company-1", {
+      models: [{ slug: "gpt-6-astra", display_name: "GPT-6-Astra", visibility: "list" }],
+    });
+
+    const models = await listAdapterModels("codex_local", "company-1");
+
+    expect(models.some((model) => model.id === "gpt-6-astra")).toBe(true);
+  });
+
+  it("falls back to the shared host Codex home when the company has no managed cache yet", async () => {
+    await writeCodexModelsCache({
+      models: [{ slug: "gpt-5.6-sol", display_name: "GPT-5.6-Sol", visibility: "list" }],
+    });
+    // No managed cache written for "company-1" — its managed CODEX_HOME does not exist yet.
+
+    const models = await listAdapterModels("codex_local", "company-1");
+
+    expect(models.some((model) => model.id === "gpt-5.6-sol")).toBe(true);
   });
 
   it("falls back to static codex models when the Codex CLI model cache lists nothing usable", async () => {

@@ -14,6 +14,7 @@ export {
   reconcileManagedCodexHome,
   isManagedCodexHomePath,
   resolveSharedCodexHomeDir,
+  resolveManagedCodexHomeDir,
   evaluateCodexCredentialReadiness,
   type ReconcileManagedCodexHomeInput,
   type ReconcileManagedCodexHomeResult,

@@ -2,7 +2,10 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import type { AdapterModel } from "./types.js";
 import { models as codexFallbackModels } from "@paperclipai/adapter-codex-local";
-import { resolveSharedCodexHomeDir } from "@paperclipai/adapter-codex-local/server";
+import {
+  resolveManagedCodexHomeDir,
+  resolveSharedCodexHomeDir,
+} from "@paperclipai/adapter-codex-local/server";
 import { readConfigFile } from "../config-file.js";
 
 const CODEX_MODELS_CACHE_FILENAME = "models_cache.json";
@@ -46,36 +49,37 @@ function resolveOpenAiApiKey(): string | null {
 }
 
 /**
- * Read the model catalog the Codex CLI maintains for itself.
+ * Candidate `CODEX_HOME` directories to look for a Codex-maintained
+ * `models_cache.json` in, most specific first.
  *
- * Codex refreshes `$CODEX_HOME/models_cache.json` from the ChatGPT backend during normal use, so it
- * is the only discovery source that works for ChatGPT-authenticated installs — which have no
- * `OPENAI_API_KEY`, making the OpenAI API path below a silent no-op for them.
- *
- * Returns `[]` for every failure mode (missing file, unreadable, malformed JSON, unexpected shape)
- * so callers fall through to the existing API and static-fallback paths.
+ * Paperclip launches `codex_local` agents against a company-scoped managed
+ * home (`resolveManagedCodexHomeDir`), not the process-wide shared home
+ * (`resolveSharedCodexHomeDir`) that only reflects whatever account last ran
+ * `codex` on this host directly. When a `companyId` is available (i.e. we are
+ * serving a request scoped to a company), that managed home is what the
+ * company's agents actually populate, so it must be checked first; the shared
+ * home remains the fallback for hosts without company-scoped runs (e.g.
+ * single-tenant/dev setups) or before a company has ever run Codex.
  */
-async function readCodexModelsCache(): Promise<AdapterModel[]> {
-  let raw: string;
-  try {
-    raw = await readFile(
-      path.join(resolveSharedCodexHomeDir(), CODEX_MODELS_CACHE_FILENAME),
-      "utf8",
-    );
-  } catch {
-    return [];
+function candidateCodexHomeDirs(companyId?: string): string[] {
+  const dirs = [resolveSharedCodexHomeDir()];
+  if (companyId) {
+    dirs.unshift(resolveManagedCodexHomeDir(process.env, companyId));
   }
+  return dirs;
+}
 
+function parseCodexModelsCachePayload(raw: string): AdapterModel[] | null {
   let payload: unknown;
   try {
     payload = JSON.parse(raw);
   } catch {
-    return [];
+    return null;
   }
-  if (typeof payload !== "object" || payload === null) return [];
+  if (typeof payload !== "object" || payload === null) return null;
 
   const entries = (payload as { models?: unknown }).models;
-  if (!Array.isArray(entries)) return [];
+  if (!Array.isArray(entries)) return null;
 
   const models: AdapterModel[] = [];
   for (const entry of entries) {
@@ -97,6 +101,35 @@ async function readCodexModelsCache(): Promise<AdapterModel[]> {
   }
 
   return dedupeModels(models);
+}
+
+/**
+ * Read the model catalog the Codex CLI maintains for itself.
+ *
+ * Codex refreshes `$CODEX_HOME/models_cache.json` from the ChatGPT backend during normal use, so it
+ * is the only discovery source that works for ChatGPT-authenticated installs — which have no
+ * `OPENAI_API_KEY`, making the OpenAI API path below a silent no-op for them.
+ *
+ * Tries each candidate home in order (see {@link candidateCodexHomeDirs}) and returns the first
+ * one whose cache file exists and parses, so a company-scoped managed home wins over the shared
+ * host default when both are available. Returns `[]` when every candidate hits a failure mode
+ * (missing file, unreadable, malformed JSON, unexpected shape) so callers fall through to the
+ * existing API and static-fallback paths.
+ */
+async function readCodexModelsCache(companyId?: string): Promise<AdapterModel[]> {
+  for (const homeDir of candidateCodexHomeDirs(companyId)) {
+    let raw: string;
+    try {
+      raw = await readFile(path.join(homeDir, CODEX_MODELS_CACHE_FILENAME), "utf8");
+    } catch {
+      continue;
+    }
+
+    const models = parseCodexModelsCachePayload(raw);
+    if (models !== null) return models;
+  }
+
+  return [];
 }
 
 async function fetchOpenAiModels(apiKey: string): Promise<AdapterModel[]> {
@@ -128,14 +161,17 @@ async function fetchOpenAiModels(apiKey: string): Promise<AdapterModel[]> {
   }
 }
 
-async function loadCodexModels(options?: { forceRefresh?: boolean }): Promise<AdapterModel[]> {
+async function loadCodexModels(
+  companyId?: string,
+  options?: { forceRefresh?: boolean },
+): Promise<AdapterModel[]> {
   const forceRefresh = options?.forceRefresh === true;
   const fallback = dedupeModels(codexFallbackModels);
 
   // Codex's own cache wins when present: it reflects what this install can actually run today,
   // including models newer than any Paperclip release. It is a cheap local file that Codex owns
   // refreshing, so it is re-read on every call rather than memoized behind the TTL below.
-  const codexCachedModels = await readCodexModelsCache();
+  const codexCachedModels = await readCodexModelsCache(companyId);
   if (codexCachedModels.length > 0) return mergedWithFallback(codexCachedModels);
 
   const apiKey = resolveOpenAiApiKey();
@@ -165,12 +201,12 @@ async function loadCodexModels(options?: { forceRefresh?: boolean }): Promise<Ad
   return fallback;
 }
 
-export async function listCodexModels(): Promise<AdapterModel[]> {
-  return loadCodexModels();
+export async function listCodexModels(companyId?: string): Promise<AdapterModel[]> {
+  return loadCodexModels(companyId);
 }
 
-export async function refreshCodexModels(): Promise<AdapterModel[]> {
-  return loadCodexModels({ forceRefresh: true });
+export async function refreshCodexModels(companyId?: string): Promise<AdapterModel[]> {
+  return loadCodexModels(companyId, { forceRefresh: true });
 }
 
 export function resetCodexModelsCacheForTests() {

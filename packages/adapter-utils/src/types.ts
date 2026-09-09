@@ -451,14 +451,21 @@ export interface ServerAdapterModule {
   /** How this adapter receives Paperclip's run-scoped control tools. */
   runtimeToolDelivery?: AdapterRuntimeToolDelivery;
   models?: AdapterModel[];
-  listModels?: () => Promise<AdapterModel[]>;
+  /**
+   * `companyId` is passed through from the request so adapters whose model
+   * discovery depends on a company-scoped runtime location (e.g. codex_local
+   * reading the managed `CODEX_HOME` a given company's agents actually run
+   * against) can resolve the right source instead of only a process-wide
+   * shared default. Adapters that do not need it can ignore the argument.
+   */
+  listModels?: (companyId?: string) => Promise<AdapterModel[]>;
   /**
    * Optional explicit refresh hook for model discovery.
    * Use this when the adapter caches discovered models and needs a bypass path
    * so the UI can fetch newly released models without waiting for cache expiry
    * or a Paperclip code update.
    */
-  refreshModels?: () => Promise<AdapterModel[]>;
+  refreshModels?: (companyId?: string) => Promise<AdapterModel[]>;
   agentConfigurationDoc?: string;
   /**
    * Optional lifecycle hook when an agent is approved/hired (join-request or hire_agent approval).

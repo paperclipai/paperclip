@@ -3006,8 +3006,8 @@ export function agentRoutes(
       return;
     }
     const models = refresh
-      ? await refreshAdapterModels(modelAdapterType)
-      : await listAdapterModels(modelAdapterType);
+      ? await refreshAdapterModels(modelAdapterType, companyId)
+      : await listAdapterModels(modelAdapterType, companyId);
     res.json(models);
   });
 
