@@ -664,6 +664,26 @@ impl SupervisedProcess {
             max_line_bytes,
             additional_environment_keys,
             None,
+            None,
+        )
+    }
+
+    pub fn spawn_in_directory_with_environment_keys(
+        program: &Path,
+        args: &[String],
+        shutdown_grace: Duration,
+        max_line_bytes: usize,
+        additional_environment_keys: &[&str],
+        cwd: &Path,
+    ) -> Result<Self, LocalRunnerError> {
+        Self::spawn_command(
+            program,
+            args,
+            shutdown_grace,
+            max_line_bytes,
+            additional_environment_keys,
+            None,
+            Some(cwd),
         )
     }
 
@@ -685,6 +705,7 @@ impl SupervisedProcess {
                 launch
                     .inherit_runtime_executable
                     .then_some(inherited.program.as_path()),
+                None,
             );
             #[cfg(target_os = "macos")]
             if let Ok(process) = result.as_mut() {
@@ -715,8 +736,12 @@ impl SupervisedProcess {
         max_line_bytes: usize,
         additional_environment_keys: &[&str],
         verified_runtime_executable: Option<&Path>,
+        cwd: Option<&Path>,
     ) -> Result<Self, LocalRunnerError> {
         let mut command = Command::new(program);
+        if let Some(cwd) = cwd {
+            command.current_dir(cwd);
+        }
         command
             .args(args)
             .env_clear()

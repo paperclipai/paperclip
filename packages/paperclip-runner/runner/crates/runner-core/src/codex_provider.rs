@@ -771,6 +771,14 @@ impl CodexProvider {
         observe: &mut dyn FnMut(ProviderStartupObservation) -> Result<(), LocalRunnerError>,
     ) -> Result<Self, LocalRunnerError> {
         config.validate()?;
+        if config.provider == "codex" {
+            if let Some(home) = std::env::var_os("CODEX_HOME") {
+                crate::codex_startup_trust::trust_startup_root(
+                    Path::new(&home),
+                    Path::new(&config.cwd),
+                )?;
+            }
+        }
         if process_generation == 0 {
             return Err(LocalRunnerError::invalid(
                 "Codex process generation must be positive",
@@ -834,12 +842,13 @@ impl CodexProvider {
                     &environment_keys,
                 )
             } else {
-                SupervisedProcess::spawn_with_environment_keys(
+                SupervisedProcess::spawn_in_directory_with_environment_keys(
                     &config.command,
                     &config.args,
                     Duration::from_secs(2),
                     CODEX_APP_SERVER_MAX_FRAME_BYTES,
                     &environment_keys,
+                    Path::new(&config.cwd),
                 )
             }
         })();

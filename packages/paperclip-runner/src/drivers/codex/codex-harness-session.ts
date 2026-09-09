@@ -107,7 +107,7 @@ export class CodexHarnessSession
       this.pendingRuntimeRequestMap.clear();
       this.eventQueue.clear();
     }
-    if (this.codexUsageBaseline) {
+    if (this.codexUsageBaseline && input.runId !== this.runId) {
       this.codexUsageBaseline = { baseline: { ...this.codexUsageBaseline.latest }, latest: { ...this.codexUsageBaseline.latest } };
       this.usageSnapshot = codexRunUsage(this.codexUsageBaseline);
     }
@@ -208,9 +208,9 @@ export class CodexHarnessSession
         threadId: this.opened.threadId,
         cwd: this.opened.context.workingDirectory,
         permissions:
-          requestedMode === "plan"
+          text(record(record(this.opened.context.sandbox).permissionProfile).id) || (requestedMode === "plan"
             ? PLANNING_PERMISSION_PROFILE
-            : SKILLLESS_PERMISSION_PROFILE,
+            : SKILLLESS_PERMISSION_PROFILE),
         runtimeWorkspaceRoots: [this.opened.context.workingDirectory],
         ...(this.opened.collaborationMode === null
           ? {}
@@ -741,6 +741,7 @@ export class CodexHarnessSession
     this.assertProtocolIntegrity();
     return {
       driverKind: this.driverKind,
+      workingDirectory: this.opened.context.workingDirectory,
       driverSessionId: this.opened.threadId,
       providerSessionId: this.opened.providerSessionId,
       ...(this.opened.providerIdentity === undefined

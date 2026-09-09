@@ -461,6 +461,8 @@ export type PersistedHarnessProviderIdentity = AcpxSessionIdentity;
 
 export interface PersistedHarnessSession {
   driverKind: string;
+  /** Execution-host startup root, revalidated before a cold provider launch. */
+  workingDirectory?: string;
   driverSessionId: string;
   providerSessionId?: string | null;
   runId?: string;

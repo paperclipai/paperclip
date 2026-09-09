@@ -1,3 +1,4 @@
+import { trustCodexStartupRoot } from "./codex-startup-trust.js";
 import { readCodexThreadState, readCodexTurnMetadata } from "./codex-history.js";
 import { codexExecutableReadOnlyRoots } from "./codex-security-config.js";
 import { resolve } from "node:path";
@@ -37,8 +38,6 @@ import {
   validateCodexWorkingDirectory as validateWorkingDirectory,
 } from "./codex-boundaries.js";
 import {
-  CODEX_PLANNING_PERMISSION_PROFILE as PLANNING_PERMISSION_PROFILE,
-  CODEX_SKILLLESS_PERMISSION_PROFILE as SKILLLESS_PERMISSION_PROFILE,
   codexCommandEnvironment,
   createIsolatedCodexAppServerArgs,
   codexNetworkAccess,
@@ -256,7 +255,7 @@ export class CodexAppServerDriver implements HarnessDriver {
       this.#options.environment,
       this.#options.workingDirectoryAuthority,
     );
-    const transport = this.#transport();
+    const transport = this.#transport({ workingDirectory });
     const cancellation = bootstrapCancellation(transport, input.signal);
     try {
       await cancellation.wait(this.#persistProcessOwnership(transport));
@@ -360,6 +359,9 @@ export class CodexAppServerDriver implements HarnessDriver {
       };
     }
     const transport = this.#transport({
+      workingDirectory: snapshot.workingDirectory
+        ? validateWorkingDirectory(snapshot.workingDirectory, this.#options.environment, this.#options.workingDirectoryAuthority)
+        : undefined,
       providerRecoveryPolicy: snapshot.providerRecoveryPolicy,
       persistedSession: {
         driverSessionId: snapshot.driverSessionId,
@@ -634,6 +636,7 @@ export class CodexAppServerDriver implements HarnessDriver {
   }
 
   #transport(context?: {
+    workingDirectory?: string;
     providerRecoveryPolicy?: PersistedHarnessSession["providerRecoveryPolicy"];
     persistedSession?: Pick<
       PersistedHarnessSession,
@@ -643,9 +646,14 @@ export class CodexAppServerDriver implements HarnessDriver {
       | "activeTurnId"
     >;
   }): CodexAppServerTransport {
+    const workingDirectory = context?.workingDirectory ?? this.#options.environment?.PAPERCLIP_WORKSPACE_CWD;
+    if (!this.#options.transportFactory && this.#options.environment?.CODEX_HOME && workingDirectory) {
+      trustCodexStartupRoot(this.#options.environment.CODEX_HOME, workingDirectory);
+    }
     return (
       this.#options.transportFactory?.(context) ??
       new ProcessCodexAppServerTransport({
+        workingDirectory,
         args: createIsolatedCodexAppServerArgs(this.#options.environment, codexExecutableReadOnlyRoots(this.#options.environment ?? process.env)),
         environment: createSanitizedCodexEnvironment(this.#options.environment),
         onDiagnostic: this.#options.onDiagnostic,
@@ -791,9 +799,7 @@ export class CodexAppServerDriver implements HarnessDriver {
     const permissionProfileId = text(activePermissionProfile.id);
     const requestedMode = this.#options.requestedCollaborationMode ?? "default";
     const requiredPermissionProfile =
-      requestedMode === "plan"
-        ? PLANNING_PERMISSION_PROFILE
-        : SKILLLESS_PERMISSION_PROFILE;
+      text(createSecuredCodexThreadParams(workingDirectory, requestedMode, true, false, this.#options.environment).permissions);
     if (
       permissionProfileId.length > 0 &&
       permissionProfileId !== requiredPermissionProfile
