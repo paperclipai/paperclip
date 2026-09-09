@@ -1798,6 +1798,69 @@ describe("TaskChatComposer", () => {
       });
     });
 
+    it("Skip on the last question returns to a required question the arrows walked past", async () => {
+      const onSubmit = vi.fn();
+      render(
+        <TaskChatComposer
+          onAdd={vi.fn()}
+          workMode="standard"
+          takeover={{
+            id: "walked-past",
+            label: "Questions",
+            pendingCount: 1,
+            inlineSkip: true,
+            content: (
+              <QuestionForm
+                id="walked-past"
+                questionSet={{
+                  schema: "paperclip.question_set.v1",
+                  questions: [
+                    {
+                      id: "env",
+                      prompt: "Where?",
+                      required: true,
+                      answerMode: "single_select",
+                      options: [{ id: "staging", label: "Staging" }],
+                    },
+                    {
+                      id: "notes",
+                      prompt: "Anything else?",
+                      required: false,
+                      answerMode: "text",
+                    },
+                  ],
+                }}
+                onSubmit={onSubmit}
+              />
+            ),
+            onDismiss: vi.fn(),
+            onSkip: vi.fn(),
+          }}
+        />,
+      );
+
+      const byLabel = (label: string) =>
+        Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find(
+          (button) => button.textContent?.trim() === label,
+        );
+      // The pagination arrow browses past the unanswered required question.
+      const arrow = container.querySelector<HTMLButtonElement>(
+        'button[aria-label="Next question"]',
+      );
+      flushSync(() => arrow?.click());
+      await flushAsync();
+      expect(container.textContent).toContain("Anything else?");
+
+      // Skip here would send; instead the form goes back and says why.
+      flushSync(() => byLabel("Skip")?.click());
+      await flushAsync();
+      expect(onSubmit).not.toHaveBeenCalled();
+      expect(container.textContent).toContain("Where?");
+      expect(container.textContent).toContain(
+        "Question 1 needs an answer before you can send.",
+      );
+    });
+
     it("Cancel closes the takeover and leaves the request pending", async () => {
       const onSubmit = vi.fn();
       const onDismiss = vi.fn();

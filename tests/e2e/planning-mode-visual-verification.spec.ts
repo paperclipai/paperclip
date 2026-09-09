@@ -8,6 +8,18 @@ import {
 const AGENT_NAME = "CEO";
 const TASK_TITLE = "Paperclip onboarding";
 
+/**
+ * The first task opens with the chief of staff's opening card sitting where
+ * the composer is. Cancel hands the plain composer back (the card stays
+ * pending), and the composer is where the mode toggle lives.
+ */
+async function dismissOpeningCard(page: import("@playwright/test").Page) {
+  const cancel = page
+    .getByTestId("task-chat-composer-takeover")
+    .getByRole("button", { name: "Cancel", exact: true });
+  if (await cancel.count()) await cancel.first().click();
+}
+
 test("captures planning mode UI for desktop and mobile", async ({ page }) => {
   const timestamp = Date.now();
   const companyName = `PAP-3413-${timestamp}`;
@@ -131,6 +143,7 @@ test("captures planning mode UI for desktop and mobile", async ({ page }) => {
   await setMode("planning");
 
   await page.goto(issuePath);
+  await dismissOpeningCard(page);
   await expect(page.getByText("Plan mode").first()).toBeVisible();
   const desktopPlanningToggle = page.getByTestId("task-chat-composer-mode");
   await expect(desktopPlanningToggle).toBeVisible();
@@ -150,6 +163,7 @@ test("captures planning mode UI for desktop and mobile", async ({ page }) => {
   });
 
   await page.goto(issuePath);
+  await dismissOpeningCard(page);
   await page.getByTestId("task-chat-composer-mode").click();
   await page.getByRole("menuitem", { name: /Auto mode/ }).click();
   await expect(page.getByTestId("task-chat-composer-mode")).toHaveAttribute("data-pending-work-mode", "standard");
@@ -161,6 +175,7 @@ test("captures planning mode UI for desktop and mobile", async ({ page }) => {
   await setMode("planning");
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(issuePath);
+  await dismissOpeningCard(page);
   await expect(page.getByText("Plan mode").first()).toBeVisible();
   const mobilePlanningToggle = page.getByTestId("task-chat-composer-mode");
   await expect(mobilePlanningToggle).toBeVisible();

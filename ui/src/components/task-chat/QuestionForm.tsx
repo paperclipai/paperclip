@@ -346,11 +346,21 @@ export function QuestionForm({
   }
 
   async function submit(responseAnswers: Record<string, Answer> = answers) {
-    const responseIsValid = questionSet.questions.every(
+    if (disabled || working || inputUploading) return;
+    const invalidIndex = questionSet.questions.findIndex(
       (candidate) =>
-        answerError(candidate, responseAnswers[candidate.id]) == null,
+        answerError(candidate, responseAnswers[candidate.id]) != null,
     );
-    if (!responseIsValid || disabled || working || inputUploading) return;
+    if (invalidIndex >= 0) {
+      // A required answer is missing: the pagination arrows browse without
+      // validating, and a restored draft can land past it. Go back to that
+      // question and say so rather than dropping the send.
+      setPage(invalidIndex);
+      setError(
+        `Question ${invalidIndex + 1} needs an answer before you can send.`,
+      );
+      return;
+    }
     setWorking("submit");
     setError(null);
     try {
@@ -430,6 +440,8 @@ export function QuestionForm({
           size="icon-xs"
           variant="ghost"
           aria-label="Next question"
+          // The arrows browse; they do not validate. A send that finds an
+          // earlier answer missing returns to that question (see submit).
           disabled={disabled || working != null || isLastPage}
           onClick={() => setPage((current) => current + 1)}
         >
