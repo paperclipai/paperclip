@@ -19,6 +19,8 @@ vi.mock("acpx/runtime", () => ({
 describe("adapter model listing", () => {
   beforeEach(() => {
     delete process.env.OPENAI_API_KEY;
+    delete process.env.OPENAI_BASE_URL;
+    delete process.env.PAPERCLIP_CODEX_PROVIDERS;
     delete process.env.ANTHROPIC_API_KEY;
     delete process.env.ANTHROPIC_BASE_URL;
     delete process.env.ANTHROPIC_BEDROCK_BASE_URL;
@@ -177,9 +179,54 @@ describe("adapter model listing", () => {
     const second = await listAdapterModels("codex_local");
 
     expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(fetchSpy.mock.calls[0]?.[0]).toBe("https://api.openai.com/v1/models");
     expect(first).toEqual(second);
     expect(first.some((model) => model.id === "gpt-5-pro")).toBe(true);
     expect(first.some((model) => model.id === "codex-mini-latest")).toBe(true);
+  });
+
+  it("discovers codex models from OPENAI_BASE_URL instead of api.openai.com", async () => {
+    process.env.OPENAI_API_KEY = "sk-test";
+    process.env.OPENAI_BASE_URL = "https://gateway.example.com/v1";
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        data: [{ id: "gateway-model-a" }],
+      }),
+    } as Response);
+
+    const models = await listAdapterModels("codex_local");
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(fetchSpy.mock.calls[0]?.[0]).toBe("https://gateway.example.com/v1/models");
+    expect(models.some((model) => model.id === "gateway-model-a")).toBe(true);
+  });
+
+  it("discovers codex models from PAPERCLIP_CODEX_PROVIDERS base_url when OPENAI_BASE_URL is unset", async () => {
+    process.env.OPENAI_API_KEY = "sk-test";
+    process.env.PAPERCLIP_CODEX_PROVIDERS = JSON.stringify({
+      providers: {
+        custom: {
+          name: "Custom gateway",
+          base_url: "https://gateway.example.com/v1/",
+          env_key: "OPENAI_API_KEY",
+          wire_api: "responses",
+        },
+      },
+      model_provider: "custom",
+    });
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        data: [{ id: "provider-model-b" }],
+      }),
+    } as Response);
+
+    const models = await listAdapterModels("codex_local");
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(fetchSpy.mock.calls[0]?.[0]).toBe("https://gateway.example.com/v1/models");
+    expect(models.some((model) => model.id === "provider-model-b")).toBe(true);
   });
 
   it("refreshes cached codex models on demand", async () => {
