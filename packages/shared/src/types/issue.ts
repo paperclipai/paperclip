@@ -410,6 +410,8 @@ export interface IssueBlockerAttention {
   state: IssueBlockerAttentionState;
   reason: IssueBlockerAttentionReason;
   unresolvedBlockerCount: number;
+  /** Present on API responses; optional for compatibility with older UI fixtures and callers. */
+  unresolvedBlockerIssueIds?: string[];
   coveredBlockerCount: number;
   stalledBlockerCount: number;
   attentionBlockerCount: number;
