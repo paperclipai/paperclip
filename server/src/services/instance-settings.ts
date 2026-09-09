@@ -364,6 +364,51 @@ export function applyCloudCatalogDefaults(
   return next;
 }
 
+/**
+ * Keep the write path from freezing a self-hosted default into a Cloud row.
+ *
+ * `updateExperimental` persists the whole normalized object, and the schema
+ * normalizes an omitted flag to its self-hosted default. Without this step an
+ * unrelated experimental write (say, turning on pipelines) would store
+ * `enableNativeRunner: true` on a managed instance whose tenant row had never
+ * mentioned the flag; every later read would then treat the stored boolean as
+ * an explicit tenant choice and stop re-asserting the Cloud default.
+ *
+ * For each guarded flag (see `applyCloudCatalogDefaults`), the stored key is
+ * left absent unless the tenant already stored a boolean or this patch sets
+ * the flag to something other than the Cloud default. A patch value equal to
+ * the Cloud default is a full-GET echo of the read-time overlay, not a
+ * choice, and is stripped the same way `stripOperatorGeneralEchoes` treats
+ * operator defaults. Self-hosted rows are returned untouched.
+ */
+export function stripCloudCatalogDefaultEchoes(
+  rawStored: unknown,
+  patch: PatchInstanceExperimentalSettings | Record<string, unknown>,
+  next: InstanceExperimentalSettings,
+  managedConfig: ManagedInstanceConfig | null,
+): Partial<InstanceExperimentalSettings> {
+  if (!managedConfig) return next;
+  const stored =
+    rawStored && typeof rawStored === "object" && !Array.isArray(rawStored)
+      ? (rawStored as Record<string, unknown>)
+      : {};
+  const patchRecord = patch as Record<string, unknown>;
+  const result: Record<string, unknown> = { ...next };
+  for (const [key, entry] of Object.entries(INSTANCE_FEATURE_CATALOG)) {
+    if (entry.cloudDefault !== false || entry.selfHostedDefault !== true) continue;
+    if (typeof stored[key] === "boolean") continue;
+    if (
+      Object.prototype.hasOwnProperty.call(patchRecord, key) &&
+      typeof patchRecord[key] === "boolean" &&
+      patchRecord[key] !== entry.cloudDefault
+    ) {
+      continue;
+    }
+    delete result[key];
+  }
+  return result as Partial<InstanceExperimentalSettings>;
+}
+
 export function instanceSettingsService(db: Db, options: InstanceSettingsServiceOptions = {}) {
   // Fail closed: a malformed PAPERCLIP_MANAGED_CONFIG throws here (and at
   // boot in index.ts) rather than silently running without the overlay.
@@ -497,7 +542,14 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
 
     updateExperimental: async (patch: PatchInstanceExperimentalSettings): Promise<InstanceSettings> => {
       const current = await getOrCreateRow();
-      const nextExperimental = applyExperimentalSettingsPatch(current.experimental, patch, options);
+      // Guarded Cloud flags stay absent from the row unless chosen, so the
+      // read-time catalog default keeps applying (see stripCloudCatalogDefaultEchoes).
+      const nextExperimental = stripCloudCatalogDefaultEchoes(
+        current.experimental,
+        patch,
+        applyExperimentalSettingsPatch(current.experimental, patch, options),
+        managedConfig,
+      );
       const now = new Date();
       const [updated] = await db
         .update(instanceSettings)

@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest";
 import { INSTANCE_FEATURE_CATALOG } from "@paperclipai/shared";
 import {
   applyCloudCatalogDefaults,
+  applyExperimentalSettingsPatch,
   applyManagedExperimentalOverlay,
   normalizeExperimentalSettings,
+  stripCloudCatalogDefaultEchoes,
 } from "../services/instance-settings.js";
 import type { ManagedInstanceConfig } from "../services/managed-config.js";
 
@@ -72,5 +74,61 @@ describe("applyCloudCatalogDefaults", () => {
       managedConfig(),
     );
     expect(experimental.enableOwnerInstanceAdmin).toBe(false);
+  });
+});
+
+describe("stripCloudCatalogDefaultEchoes", () => {
+  /** What `updateExperimental` would persist for a given row and patch. */
+  function persisted(rawStored: unknown, patch: Record<string, unknown>, config: ManagedInstanceConfig | null) {
+    return stripCloudCatalogDefaultEchoes(
+      rawStored,
+      patch,
+      applyExperimentalSettingsPatch(rawStored, patch),
+      config,
+    ) as Record<string, unknown>;
+  }
+
+  /** What a later read of that persisted row shows. */
+  function readBack(stored: Record<string, unknown>, config: ManagedInstanceConfig | null) {
+    return applyManagedExperimentalOverlay(
+      applyCloudCatalogDefaults(normalizeExperimentalSettings(stored), stored, config),
+      config,
+    ).experimental;
+  }
+
+  it("does not persist the self-hosted default on Cloud during an unrelated write", () => {
+    const config = managedConfig();
+    const stored = persisted({}, { enablePipelines: true }, config);
+    expect(stored.enablePipelines).toBe(true);
+    expect("enableNativeRunner" in stored).toBe(false);
+    // The Cloud default still applies on the next read.
+    expect(readBack(stored, config).enableNativeRunner).toBe(false);
+  });
+
+  it("treats a full-GET echo of the Cloud default as no choice", () => {
+    const config = managedConfig();
+    const stored = persisted({}, { enableNativeRunner: false, enablePipelines: true }, config);
+    expect("enableNativeRunner" in stored).toBe(false);
+    expect(readBack(stored, config).enableNativeRunner).toBe(false);
+  });
+
+  it("persists an explicit Cloud opt-in", () => {
+    const config = managedConfig();
+    const stored = persisted({}, { enableNativeRunner: true }, config);
+    expect(stored.enableNativeRunner).toBe(true);
+    expect(readBack(stored, config).enableNativeRunner).toBe(true);
+  });
+
+  it("keeps a stored tenant value across unrelated writes", () => {
+    const config = managedConfig();
+    const stored = persisted({ enableNativeRunner: true }, { enablePipelines: true }, config);
+    expect(stored.enableNativeRunner).toBe(true);
+    expect(readBack(stored, config).enableNativeRunner).toBe(true);
+  });
+
+  it("leaves the whole normalized object in place for self-hosted rows", () => {
+    const stored = persisted({}, { enablePipelines: true }, null);
+    expect(stored.enableNativeRunner).toBe(true);
+    expect(stored).toEqual(applyExperimentalSettingsPatch({}, { enablePipelines: true }));
   });
 });

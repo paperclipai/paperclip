@@ -12,12 +12,21 @@ const TASK_TITLE = "Paperclip onboarding";
  * The first task opens with the chief of staff's opening card sitting where
  * the composer is. Cancel hands the plain composer back (the card stays
  * pending), and the composer is where the mode toggle lives.
+ *
+ * The card arrives with the interactions fetch, after the composer's first
+ * paint, so a bare `count()` right after navigation sees no card and skips
+ * the click; the card then lands on top of the composer and hides the mode
+ * toggle. Wait for the card (or, if it is already dismissed, the pending
+ * strip it leaves behind) before deciding, and only return once the plain
+ * composer is back.
  */
 async function dismissOpeningCard(page: import("@playwright/test").Page) {
-  const cancel = page
-    .getByTestId("task-chat-composer-takeover")
-    .getByRole("button", { name: "Cancel", exact: true });
+  const takeover = page.getByTestId("task-chat-composer-takeover");
+  const pendingStrip = page.getByTestId("task-chat-pending-input-indicator");
+  await expect(takeover.or(pendingStrip).first()).toBeVisible({ timeout: 30_000 });
+  const cancel = takeover.getByRole("button", { name: "Cancel", exact: true });
   if (await cancel.count()) await cancel.first().click();
+  await expect(page.getByTestId("task-chat-composer-mode")).toBeVisible({ timeout: 30_000 });
 }
 
 test("captures planning mode UI for desktop and mobile", async ({ page }) => {
