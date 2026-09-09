@@ -784,35 +784,116 @@ describe("executeNativeSession recovery", () => {
     });
   });
 
-  it.each([false, true])("preserves structured provider failure even when its message mentions a model (recoverable=%s)", async (recoverable) => {
-    const capabilities = { resume: true, typedEvents: true, steering: false, interruption: false, structuredResult: true };
-    const close = vi.fn(async () => {});
-    const session: NativeSession = {
-      identity: () => identity,
-      async capabilities() { return capabilities; },
-      async *events() { yield runnerEvent(1, "turn.failed", { error: { code: "RUNTIME", recoverable, message: "There's an issue with the selected model (custom-model). It may not exist or you may not have access to it." } }); },
-      async startTurn() { return { turnId: "turn-recovery" }; },
-      async result() { return null; },
-      async snapshot() { return { backendKind: "mock", sessionId: "driver-recovery", identity, providerSessionId: "provider-recovery", cursor: null, activeTurnId: null, pendingRuntimeRequests: [], lineage: [] }; },
-      close,
-    };
-    const backend: NativeSessionBackend = {
-      async descriptor() { return { kind: "mock", name: "model-rejection", version: "1", capabilities }; },
-      async openSession() { return session; },
-    };
-    const port: ControlPlanePort = {
-      async openRun() {}, async checkpointSession() {},
-      async appendEvent() { return { cursor: 1, highestContiguousSourceSeq: 1, disposition: "committed" }; },
-      async replayEvents() { return { events: [], highestContiguousSourceSeq: 0 }; },
-      async completeRun() {},
-    };
-    const result = executeNativeSession({ input, backend, controlPlane: port, runnerInstanceId: "runner-recovery", controlPlaneInstanceId: "control-recovery" });
-    await expect(result).rejects.toThrow("There's an issue with the selected model (custom-model)");
-    await expect(result).rejects.toMatchObject({
-      code: "native_provider_terminal_failed", providerCode: "RUNTIME", recoverable,
-    });
-    expect(close).toHaveBeenCalled();
-  });
+  it.each([
+    {
+      recoverable: false,
+      message:
+        "There's an issue with the selected model (custom-model). It may not exist or you may not have access to it.",
+      modelRejected: true,
+    },
+    {
+      recoverable: true,
+      message:
+        "There's an issue with the selected model (custom-model). It may not exist or you may not have access to it.",
+      modelRejected: false,
+    },
+    {
+      recoverable: false,
+      message: "The model service failed while processing output.",
+      modelRejected: false,
+    },
+  ])(
+    "preserves structured provider failure and model retry classification ($recoverable, $modelRejected)",
+    async ({ recoverable, message, modelRejected }) => {
+      const capabilities = {
+        resume: true,
+        typedEvents: true,
+        steering: false,
+        interruption: false,
+        structuredResult: true,
+      };
+      const close = vi.fn(async () => {});
+      const session: NativeSession = {
+        identity: () => identity,
+        async capabilities() {
+          return capabilities;
+        },
+        async *events() {
+          yield runnerEvent(1, "turn.failed", {
+            error: { code: "RUNTIME", recoverable, message },
+          });
+        },
+        async startTurn() {
+          return { turnId: "turn-recovery" };
+        },
+        async result() {
+          return null;
+        },
+        async snapshot() {
+          return {
+            backendKind: "mock",
+            sessionId: "driver-recovery",
+            identity,
+            providerSessionId: "provider-recovery",
+            cursor: null,
+            activeTurnId: null,
+            pendingRuntimeRequests: [],
+            lineage: [],
+          };
+        },
+        close,
+      };
+      const backend: NativeSessionBackend = {
+        async descriptor() {
+          return {
+            kind: "mock",
+            name: "model-rejection",
+            version: "1",
+            capabilities,
+          };
+        },
+        async openSession() {
+          return session;
+        },
+      };
+      const port: ControlPlanePort = {
+        async openRun() {},
+        async checkpointSession() {},
+        async appendEvent() {
+          return {
+            cursor: 1,
+            highestContiguousSourceSeq: 1,
+            disposition: "committed",
+          };
+        },
+        async replayEvents() {
+          return { events: [], highestContiguousSourceSeq: 0 };
+        },
+        async completeRun() {},
+      };
+      const result = executeNativeSession({
+        input,
+        backend,
+        controlPlane: port,
+        runnerInstanceId: "runner-recovery",
+        controlPlaneInstanceId: "control-recovery",
+      });
+      await expect(result).rejects.toThrow(message);
+      await expect(result).rejects.toMatchObject({
+        code: "native_provider_terminal_failed",
+        providerCode: "RUNTIME",
+        recoverable,
+      });
+      if (modelRejected) {
+        await expect(result).rejects.toThrow("native_provider_model_rejected:");
+      } else {
+        await expect(result).rejects.not.toThrow(
+          "native_provider_model_rejected",
+        );
+      }
+      expect(close).toHaveBeenCalled();
+    },
+  );
 
   it("keeps governed-wait discovery synchronous", () => {
     type GovernedWaitResolver = NonNullable<

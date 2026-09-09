@@ -96,6 +96,21 @@ const defaultCapabilityRunnerdBinary = () =>
   process.env.PAPERCLIP_ATTACH_TRANSITION_RUNNER ??
   qualifiedCapabilityRunnerdBinary();
 
+async function expectTurnStarted(
+  notifications: AsyncIterator<{ method: string }>,
+) {
+  for (let index = 0; index < 32; index += 1) {
+    const next = await notifications.next();
+    expect(next.done).not.toBe(true);
+    if (next.value.method === "turn/started") return;
+    // Startup ownership and capability facts can precede the active turn.
+    expect(next.value.method).toBe("paperclip/canonicalProviderEvent");
+  }
+  throw new Error(
+    "provider turn did not start within the bounded notification prefix",
+  );
+}
+
 it("replaces an owned v1 runner with fresh v2 authorization before warm attachment", async () => {
   const directory = await mkdtemp(join(tmpdir(), "runnerd-v1-v2-replacement-"));
   const handles: durableControlPlane.RunnerProcessHandle[] = [];
@@ -4348,9 +4363,9 @@ it("rejects active work and buffered tools from a resumed stopped checkpoint", a
     await first.transport.request("turn/start", {
       input: [{ type: "text", text: "Wait for another instruction." }],
     });
-    await expect(
-      first.transport.notifications()[Symbol.asyncIterator]().next(),
-    ).resolves.toMatchObject({ value: { method: "turn/started" } });
+    await expectTurnStarted(
+      first.transport.notifications()[Symbol.asyncIterator](),
+    );
     await first.transport.close();
     const providerPath = join(
       stateDirectory,
@@ -6234,12 +6249,10 @@ it.each([
             core.disconnectActiveRunner();
             detached = first.transport.detachControllerForRestart!();
             signalLoss();
-            if (
-              lossPoint === "before-result" ||
-              lossPoint === "before-confirmation"
-            )
-              throw new Error("fixture interrupted exact result commit");
-            return;
+            // A committed confirmation is still before its ACK. Returning from
+            // this hook lets the current frame handler send that ACK even after
+            // close begins, collapsing the intended crash window on fast peers.
+            throw new Error("fixture interrupted exact result commit");
           }
           commit(candidate);
         });
@@ -8027,7 +8040,7 @@ it("rejects the notification stream promptly when runnerd exits after accepting 
     const notifications = bundle.transport
       .notifications()
       [Symbol.asyncIterator]();
-    expect((await notifications.next()).value?.method).toBe("turn/started");
+    await expectTurnStarted(notifications);
     const runnerPid = bundle.evidence().runnerPid;
     expect(runnerPid).not.toBeNull();
     process.kill(runnerPid!, "SIGKILL");
@@ -8086,9 +8099,7 @@ it("persists an active provider as settled before bounded suspension", async () 
     const notifications = bundle.transport
       .notifications()
       [Symbol.asyncIterator]();
-    await expect(notifications.next()).resolves.toMatchObject({
-      value: { method: "turn/started" },
-    });
+    await expectTurnStarted(notifications);
     await bundle.transport.close();
 
     const providerState = JSON.parse(

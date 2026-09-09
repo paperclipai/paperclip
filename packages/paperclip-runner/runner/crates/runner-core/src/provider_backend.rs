@@ -3902,7 +3902,9 @@ impl CodexCommandExecutor {
                     state.completed_turn_authoritative = false;
                     state.completed_turn_process_generation = None;
                     state.completed_provider_turn_id = None;
-                    state.settle_active_provider_turn_identity()?;
+                    if state.active_provider_turn_id.is_some() {
+                        state.settle_active_provider_turn_identity()?;
+                    }
                     state.active_provider_turn_id = None;
                     state.push_terminal_event(NormalizedProviderEvent {
                         event_type: "harness.diagnostic".to_owned(),

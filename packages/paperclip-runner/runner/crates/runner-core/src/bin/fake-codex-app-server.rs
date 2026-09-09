@@ -1121,10 +1121,26 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 "id": id,
                 "error": {"code": -32004, "message": "goal feature disabled by provider policy"}
             }))?,
-            "thread/goal/get" => send(json!({
-                "id": id,
-                "result": {"goal": state.goal}
-            }))?,
+            "thread/goal/get" => {
+                send(json!({"id": id, "result": {"goal": state.goal}}))?;
+                if args
+                    .iter()
+                    .any(|value| value == "--idle-protocol-failure-on-goal-probe")
+                {
+                    send(json!({"method": "turn/completed", "params": {
+                        "threadId": "foreign-idle-thread", "turnId": "never-started-idle-turn", "status": "completed"
+                    }}))?;
+                }
+                if args
+                    .iter()
+                    .any(|value| value == "--idle-descendant-overflow-on-goal-probe")
+                {
+                    send(json!({"method": "thread/started", "params": {"thread": {
+                        "id": "descendant-overflow",
+                        "source": {"subAgent": {"thread_spawn": {"parent_thread_id": state.thread_id}}}
+                    }}}))?;
+                }
+            }
             "thread/goal/set" => {
                 if reject_goal_set {
                     send(json!({

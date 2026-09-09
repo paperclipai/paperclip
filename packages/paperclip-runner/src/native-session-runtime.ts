@@ -2391,15 +2391,38 @@ export async function executeNativeSession(
                   turnId: terminalEvent.turnId ?? null,
                 };
           signal.throwIfAborted();
-          if (settledCompletion === null && terminalEvent.eventType === "turn.failed") {
+          if (
+            settledCompletion === null &&
+            terminalEvent.eventType === "turn.failed"
+          ) {
             await checkpoint(signal);
             const payload = terminalEvent.payload as Record<string, unknown>;
-            const failure = payload.error && typeof payload.error === "object" ? payload.error as Record<string, unknown> : payload;
-            const message = typeof failure.message === "string" ? failure.message.slice(0, 2_000) : "Provider turn failed";
+            const failure =
+              payload.error && typeof payload.error === "object"
+                ? (payload.error as Record<string, unknown>)
+                : payload;
+            const message =
+              typeof failure.message === "string"
+                ? failure.message.slice(0, 2_000)
+                : "Provider turn failed";
+            const recoverable =
+              failure.recoverable === true || payload.recoverable === true;
+            // Retain the older consumer's permanent-model classification while
+            // preserving structured provider metadata. A provider explicitly
+            // permitting retry must not become permanent merely from its text.
+            const modelRejected =
+              !recoverable &&
+              /issue with the selected model|model_not_found|invalid model|model[^\n]*(?:does not exist|not found|not supported)/i.test(
+                message,
+              );
             throw new NativeProviderTerminalFailure(
-              typeof failure.code === "string" ? failure.code : "provider_turn_failed",
-              failure.recoverable === true || payload.recoverable === true,
-              message,
+              typeof failure.code === "string"
+                ? failure.code
+                : "provider_turn_failed",
+              recoverable,
+              modelRejected
+                ? `native_provider_model_rejected: ${message}`
+                : message,
             );
           }
           if (settledCompletion === null && options.resolveMissingResult) {

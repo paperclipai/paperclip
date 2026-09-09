@@ -5627,6 +5627,102 @@ fn codex_completion_emits_the_bound_result_before_the_terminal_event() {
 }
 
 #[test]
+fn idle_integrity_failure_persists_reconciliation_and_retires_provider() {
+    assert_idle_failure_reconciled(false);
+}
+
+#[test]
+fn idle_resource_limit_persists_reconciliation_and_retires_provider() {
+    assert_idle_failure_reconciled(true);
+}
+
+fn assert_idle_failure_reconciled(resource_capacity: bool) {
+    let directory = temporary_directory(if resource_capacity {
+        "idle-capacity"
+    } else {
+        "idle-integrity"
+    });
+    let flag = if resource_capacity {
+        "--idle-descendant-overflow-on-goal-probe"
+    } else {
+        "--idle-protocol-failure-on-goal-probe"
+    };
+    let config = provider_config(&directory, &[flag, "--record-process-start"]);
+    let mut prepared = CodexCommandExecutor::new(&directory);
+    prepared
+        .execute(&command(
+            "prepare",
+            1,
+            "run.prepare",
+            json!({"provider": config}),
+        ))
+        .unwrap();
+    drop(prepared);
+    let state_path = directory.join("codex-provider-state.json");
+    if resource_capacity {
+        let mut state: Value = serde_json::from_slice(&fs::read(&state_path).unwrap()).unwrap();
+        state["descendantThreadIds"] = json!((0..4096)
+            .map(|index| format!("descendant-{index}"))
+            .collect::<Vec<_>>());
+        fs::write(&state_path, serde_json::to_vec(&state).unwrap()).unwrap();
+    }
+    let mut executor = CodexCommandExecutor::new(&directory);
+    let opened = executor
+        .execute(&command("open", 2, "session.open", json!({})))
+        .unwrap();
+    let provider_pid = opened.result["processId"].as_u64().unwrap();
+    let before: Value = serde_json::from_slice(&fs::read(&state_path).unwrap()).unwrap();
+    assert!(
+        before["activeProviderTurnId"].is_null(),
+        "the failure must occur with no dispatched turn"
+    );
+    let expected_code = if resource_capacity {
+        "provider_descendant_capacity_exhausted"
+    } else {
+        "thread_binding_mismatch"
+    };
+    let failed = wait_for_executor_event(&mut executor, "turn.failed");
+    assert_eq!(failed.payload["code"], expected_code);
+    assert_eq!(failed.payload["recoverable"], false);
+    let persisted: Value = serde_json::from_slice(&fs::read(&state_path).unwrap()).unwrap();
+    assert_eq!(persisted["lifecycle"], "reconciliation_required");
+    assert!(persisted["activeProviderTurnId"].is_null());
+    assert_eq!(call_count(&directory, "turn/start"), 0);
+    #[cfg(unix)]
+    assert!(
+        !std::process::Command::new("kill")
+            .args(["-0", &provider_pid.to_string()])
+            .status()
+            .unwrap()
+            .success(),
+        "provider must be reaped before the failure is returned"
+    );
+    executor.shutdown().unwrap();
+    drop(executor);
+    let starts = call_count(&directory, "process-start");
+    let mut restored = CodexCommandExecutor::new(&directory);
+    for (index, kind) in ["session.open", "turn.start", "run.attach"]
+        .iter()
+        .enumerate()
+    {
+        let error = restored
+            .execute(&command(
+                "denied",
+                3 + index as u64,
+                kind,
+                json!({"text":"Do not retry"}),
+            ))
+            .expect_err("idle failure must remain fenced after restart");
+        assert!(error
+            .to_string()
+            .contains("requires explicit reconciliation"));
+    }
+    assert_eq!(call_count(&directory, "process-start"), starts);
+    restored.shutdown().unwrap();
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
 fn durable_integrity_failure_preserves_code_and_stops_provider_authority() {
     let directory = temporary_directory("durable-identity-failure");
     let config = provider_config(
