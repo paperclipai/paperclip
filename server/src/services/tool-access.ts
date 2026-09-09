@@ -4972,22 +4972,21 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     const endpoint = composioSession?.url ?? await resolvedRemoteEndpoint(connection, actor);
     // Pinned to the address the guard approved: `config.url` is operator-supplied,
     // so a second DNS resolution here would reopen the rebinding window that
-    // PAP-17098 closed for the OAuth endpoints.
-    const listRequestBody = JSON.stringify({
-      jsonrpc: "2.0",
-      id: "paperclip-catalog-refresh",
-      method: "tools/list",
-      params: {},
-    });
     const sendRemote = (init: RequestInit) => requestRemoteHttpEndpoint(new URL(endpoint), init);
-    const sendToolsList = (requestHeaders: Record<string, string>) => sendRemote({
+    const sendToolsList = (requestHeaders: Record<string, string>, cursor?: string | null) => sendRemote({
       method: "POST",
       // MCP Streamable HTTP requires advertising that we accept both a JSON body
       // and an SSE stream; spec-compliant servers 406 without it (see mcp-http.ts).
       headers: mcpHttpRequestHeaders(requestHeaders),
-      body: listRequestBody,
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: "paperclip-catalog-refresh",
+        method: "tools/list",
+        params: cursor ? { cursor } : {},
+      }),
     });
     let usedInitializedSession = connection.config.mcpSessionRequired === true;
+    let activeHeaders = headers;
     let response: Response;
     if (usedInitializedSession) {
       const sessionHeaders = await initializeMcpHttpSession({
@@ -4995,6 +4994,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         headers,
         requestId: "paperclip-catalog-refresh",
       });
+      activeHeaders = sessionHeaders;
       response = await sendToolsList(sessionHeaders);
     } else {
       response = await sendToolsList(headers);
@@ -5010,6 +5010,9 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
           });
           response = await sendToolsList(sessionHeaders);
           usedInitializedSession = response.ok;
+          if (response.ok) {
+            activeHeaders = sessionHeaders;
+          }
         } catch {
           // Preserve the original HTTP failure below when this was not an MCP
           // session requirement after all.
@@ -5055,6 +5058,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         ...projectedConnectionHeaders(connection),
         ...await resolveVercelCredentialHeaders(connection, grant, { forceRefresh: true }),
       };
+      activeHeaders = headers;
       response = await sendToolsList(headers);
     }
     if (
@@ -5066,6 +5070,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         ...projectedConnectionHeaders(connection),
         ...await resolveCredentialHeaders(connection, actor, { forceRefresh: true }),
       };
+      activeHeaders = headers;
       response = await sendToolsList(headers);
       if (response.status === 401 && isPaperclipCloudConnectorStrategy(oauthConfig(connection).strategy)) {
         const grant = await vaultGrantForConnection(connection, actor);
@@ -5126,9 +5131,25 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       throw new HttpError(502, `Remote app returned HTTP ${response.status}`, { status: response.status });
     }
     const payload = parseMcpHttpResponseBody(await response.text(), response.headers.get("content-type"));
-    const result = asRecord(asRecord(payload).result);
-    const payloadTools = asRecord(payload).tools;
-    const tools: unknown[] = Array.isArray(result.tools) ? result.tools : Array.isArray(payloadTools) ? payloadTools : [];
+    let result = asRecord(asRecord(payload).result);
+    let payloadTools = asRecord(payload).tools;
+    const tools: unknown[] = Array.isArray(result.tools) ? [...result.tools] : Array.isArray(payloadTools) ? [...payloadTools] : [];
+    let nextCursor = typeof result.nextCursor === "string" && result.nextCursor.trim() ? result.nextCursor.trim() : null;
+    let pageCount = 1;
+    const maxPages = 50;
+
+    while (nextCursor && pageCount < maxPages) {
+      pageCount++;
+      const pageResponse = await sendToolsList(activeHeaders, nextCursor);
+      if (!pageResponse.ok) break;
+      const pagePayload = parseMcpHttpResponseBody(await pageResponse.text(), pageResponse.headers.get("content-type"));
+      result = asRecord(asRecord(pagePayload).result);
+      payloadTools = asRecord(pagePayload).tools;
+      const pageTools: unknown[] = Array.isArray(result.tools) ? result.tools : Array.isArray(payloadTools) ? payloadTools : [];
+      tools.push(...pageTools);
+      nextCursor = typeof result.nextCursor === "string" && result.nextCursor.trim() ? result.nextCursor.trim() : null;
+    }
+
     return tools.map((tool) => normalizeToolDescriptor(tool)).filter((tool): tool is McpToolDescriptor => Boolean(tool));
   }
 

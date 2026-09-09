@@ -4170,6 +4170,60 @@ describeEmbeddedPostgres("tool access service", () => {
       .toBe(requests.filter(({ method }) => method === "initialize").length);
   });
 
+  it("paginates remote MCP tools/list using nextCursor until all pages are retrieved", async () => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+    const requests: Array<{ method: string; params: Record<string, unknown> }> = [];
+
+    vi.stubGlobal("fetch", async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const payload = JSON.parse(String(init?.body ?? "{}"));
+      requests.push({ method: payload.method, params: payload.params ?? {} });
+
+      if (payload.method === "tools/list") {
+        if (!payload.params?.cursor) {
+          return mcpHttpResponse({
+            jsonrpc: "2.0",
+            id: payload.id,
+            result: {
+              tools: [{ name: "tool_page_1", annotations: { readOnlyHint: true } }],
+              nextCursor: "cursor-token-page-2",
+            },
+          });
+        }
+        if (payload.params.cursor === "cursor-token-page-2") {
+          return mcpHttpResponse({
+            jsonrpc: "2.0",
+            id: payload.id,
+            result: {
+              tools: [{ name: "tool_page_2", annotations: { readOnlyHint: true } }],
+            },
+          });
+        }
+      }
+      return mcpHttpResponse({
+        jsonrpc: "2.0",
+        id: payload.id,
+        result: { tools: [] },
+      });
+    });
+
+    const result = await service.connectGalleryApp(company.id, {
+      link: "https://paginated.example/mcp",
+      name: "Paginated MCP",
+    }, { actorType: "user", actorId: "board" });
+
+    expect(requests).toEqual([
+      { method: "tools/list", params: {} },
+      { method: "tools/list", params: { cursor: "cursor-token-page-2" } },
+      { method: "tools/list", params: {} },
+      { method: "tools/list", params: { cursor: "cursor-token-page-2" } },
+    ]);
+    expect(result.actions.readOnly).toEqual(expect.arrayContaining([
+      expect.objectContaining({ toolName: "tool_page_1", riskLevel: "read" }),
+      expect.objectContaining({ toolName: "tool_page_2", riskLevel: "read" }),
+    ]));
+  });
+
   it("serves persisted MCP actions until the cache expires and then refreshes them", async () => {
     const company = await createCompany(db);
     let currentTime = new Date("2026-08-20T12:00:00.000Z");
