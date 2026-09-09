@@ -538,7 +538,13 @@ for (const journey of [
           { timeout: 60_000 },
         )
         .toBe(true);
-      await page.getByText(/GMAIL-73: The launch email confirms Friday approval/).first().scrollIntoViewIfNeeded();
+      await expect(async () => {
+        const answer = page.getByText(/GMAIL-73: The launch email confirms Friday approval/).first();
+        // Refresh can replace the streamed row with its persisted transcript.
+        // Re-resolve the locator if that handoff detaches it during scrolling.
+        await answer.scrollIntoViewIfNeeded();
+        await expect(answer).toBeInViewport();
+      }).toPass({ timeout: 10_000 });
       await page.screenshot({
         path: info.outputPath(`${journey}-outcome.png`),
         fullPage: true,
@@ -572,7 +578,13 @@ for (const journey of [
           .getByText(/GMAIL-73: The launch email confirms Friday approval/)
           .first(),
       ).toBeVisible();
-      await page.getByText(/GMAIL-73: The launch email confirms Friday approval/).first().scrollIntoViewIfNeeded();
+      await expect(async () => {
+        const answer = page.getByText(/GMAIL-73: The launch email confirms Friday approval/).first();
+        // Refresh can replace the streamed row with its persisted transcript.
+        // Re-resolve the locator if that handoff detaches it during scrolling.
+        await answer.scrollIntoViewIfNeeded();
+        await expect(answer).toBeInViewport();
+      }).toPass({ timeout: 10_000 });
       await page.screenshot({
         path: info.outputPath(`${journey}-after-refresh.png`),
         fullPage: true,
