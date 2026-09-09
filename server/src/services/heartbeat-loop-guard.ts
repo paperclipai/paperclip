@@ -12,15 +12,21 @@ import { heartbeatRuns } from "@paperclipai/db";
 export const HEARTBEAT_LOOP_GUARD_THRESHOLDS = [3, 5] as const;
 export const HEARTBEAT_LOOP_GUARD_LOOKBACK = 8 as const;
 
-// Non-terminal rows never count toward a streak and never break one: they
-// are scheduler artifacts, not agent outcomes. A run the operator cancelled
-// or interrupted breaks the streak like a fresh instruction.
+// Only terminal agent outcomes count toward a streak. Scheduler rows
+// (queued, running, retries) are transparent: they neither count nor break.
+// Operator-cancelled and interrupted runs are fresh-instruction boundaries:
+// they stop the scan, so only runs newer than the latest boundary count.
+// Without this, three consecutive cancellations would warn the next agent
+// that its approach failed when the loop was the operator's, not its own.
 const LOOP_GUARD_COUNTED_STATUSES = [
   "succeeded",
   "failed",
   "timed_out",
-  "interrupted",
+] as const;
+
+const LOOP_GUARD_BOUNDARY_STATUSES = [
   "cancelled",
+  "interrupted",
 ] as const;
 
 export interface LoopGuardRunOutcome {
@@ -50,6 +56,10 @@ function isCountedStatus(status: string): boolean {
   return (LOOP_GUARD_COUNTED_STATUSES as readonly string[]).includes(status);
 }
 
+function isBoundaryStatus(status: string): boolean {
+  return (LOOP_GUARD_BOUNDARY_STATUSES as readonly string[]).includes(status);
+}
+
 export function detectRepeatHeartbeatLoop(
   newestFirst: ReadonlyArray<LoopGuardRunOutcome>,
   thresholds: ReadonlyArray<number> = HEARTBEAT_LOOP_GUARD_THRESHOLDS,
@@ -59,7 +69,11 @@ export function detectRepeatHeartbeatLoop(
   let status = "";
   let errorCode: string | null = null;
   for (const run of newestFirst) {
-    if (!isCountedStatus(run.status)) continue;
+    if (!isCountedStatus(run.status)) {
+      // A boundary ends the scannable streak; scheduler rows pass through.
+      if (isBoundaryStatus(run.status)) break;
+      continue;
+    }
     const current = fingerprintHeartbeatRunForLoopGuard(run);
     if (fingerprint === null) {
       fingerprint = current;

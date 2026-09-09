@@ -66,6 +66,23 @@ describe("heartbeat loop guard", () => {
     ).toBeNull();
   });
 
+  it("never counts cancelled or interrupted runs as streak outcomes", () => {
+    const cancelled = { status: "cancelled", errorCode: null };
+    const interrupted = { status: "interrupted", errorCode: null };
+    expect(detectRepeatHeartbeatLoop([cancelled, cancelled, cancelled])).toBeNull();
+    expect(detectRepeatHeartbeatLoop([interrupted, interrupted, interrupted])).toBeNull();
+    const failed = { status: "failed", errorCode: null };
+    // Older streaks behind a boundary stay buried: only the two recent
+    // failures count.
+    expect(
+      detectRepeatHeartbeatLoop([failed, failed, cancelled, failed, failed, failed]),
+    ).toBeNull();
+    // A boundary older than a fresh streak changes nothing.
+    expect(
+      detectRepeatHeartbeatLoop([failed, failed, failed, cancelled]),
+    ).toEqual({ repeatCount: 3, status: "failed", errorCode: null });
+  });
+
   it("escalates the notice from gentle to detailed", () => {
     const gentle = buildLoopGuardNotice({ repeatCount: 3, status: "failed", errorCode: "E_CONN" });
     expect(gentle).toContain("Loop guard");

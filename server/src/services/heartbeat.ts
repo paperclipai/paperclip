@@ -18512,16 +18512,25 @@ export function heartbeatService(
       }
       // Advisory nudge when this issue+agent pair keeps ending runs the
       // same way (DeepSeek Harness repeat-tool-reminder port). Null when
-      // there is no repeat streak. Never blocks dispatch.
-      const loopGuardNotice = issueRef
-        ? await loadLoopGuardNotice({
+      // there is no repeat streak. Fail-open by design: a lookup failure
+      // must never block wake/dispatch, so it logs and continues silent.
+      let loopGuardNotice: string | null = null;
+      if (issueRef) {
+        try {
+          loopGuardNotice = await loadLoopGuardNotice({
             db,
             companyId: agent.companyId,
             issueId: issueRef.id,
             agentId: agent.id,
             excludeRunId: run.id,
-          })
-        : null;
+          });
+        } catch (err) {
+          logger.warn(
+            { err, issueId: issueRef.id, agentId: agent.id, runId: run.id },
+            "loop guard lookup failed; continuing dispatch without a notice",
+          );
+        }
+      }
       const paperclipWakePayload = await buildPaperclipWakePayload({
         db,
         companyId: agent.companyId,
