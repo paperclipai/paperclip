@@ -147,4 +147,9 @@ export const queryKeys = {
   adapters: {
     all: ["adapters"] as const,
   },
+  webhooks: {
+    list: (companyId: string) => ["webhooks", companyId] as const,
+    detail: (id: string, companyId: string) => ["webhooks", companyId, id] as const,
+    deliveries: (webhookId: string, companyId: string) => ["webhook-deliveries", companyId, webhookId] as const,
+  },
 };

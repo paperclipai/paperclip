@@ -103,3 +103,5 @@ export { journalEntries } from "./journal_entries.js";
 export { meditationLogs } from "./meditation_logs.js";
 export { habitDefinitions, habitCompletions } from "./habits.js";
 export { annotations, annotationTypeEnum, annotationSeverityEnum, annotationVisibilityEnum } from "./annotations.js";
+export { webhookEndpoints } from "./webhook_endpoints.js";
+export { webhookDeliveries } from "./webhook_deliveries.js";

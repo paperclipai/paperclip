@@ -594,6 +594,24 @@ export {
   type ListPluginState,
 } from "./validators/index.js";
 
+export {
+  WEBHOOK_EVENT_TYPES,
+  webhookEventTypeSchema,
+  createWebhookSchema,
+  updateWebhookSchema,
+  type CreateWebhook,
+  type UpdateWebhook,
+} from "./validators/index.js";
+
+export {
+  type WebhookEventType,
+  type WebhookDeliveryStatus,
+  type WebhookEndpoint,
+  type WebhookEndpointListItem,
+  type WebhookDelivery,
+  type WebhookPayload,
+} from "./types/index.js";
+
 export { API_PREFIX, API } from "./api.js";
 export { normalizeAgentUrlKey, deriveAgentUrlKey, isUuidLike } from "./agent-url-key.js";
 export { deriveProjectUrlKey, normalizeProjectUrlKey, hasNonAsciiContent } from "./project-url-key.js";

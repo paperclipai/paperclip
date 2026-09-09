@@ -300,3 +300,12 @@ export {
   type SetPluginState,
   type ListPluginState,
 } from "./plugin.js";
+
+export {
+  WEBHOOK_EVENT_TYPES,
+  webhookEventTypeSchema,
+  createWebhookSchema,
+  updateWebhookSchema,
+  type CreateWebhook,
+  type UpdateWebhook,
+} from "./webhook.js";

@@ -48,6 +48,8 @@ import { meditationRoutes } from "./routes/meditation.js";
 import { habitsRoutes } from "./routes/habits.js";
 import { annotationRoutes } from "./routes/annotations.js";
 import { estateRoutes } from "./routes/estate.js";
+import { webhookRoutes } from "./routes/webhooks.js";
+import { createWebhookDeliveryScheduler } from "./services/webhook-delivery-scheduler.js";
 import { applyUiBranding } from "./ui-branding.js";
 import { logger } from "./middleware/logger.js";
 import { DEFAULT_LOCAL_PLUGIN_DIR, pluginLoader } from "./services/plugin-loader.js";
@@ -182,6 +184,7 @@ export async function createApp(
   api.use(habitsRoutes(db));
   api.use(annotationRoutes(db));
   api.use(estateRoutes(db));
+  api.use(webhookRoutes(db));
   api.use("/companies", companyRoutes(db, opts.storageService));
   api.use(companySkillRoutes(db));
   api.use(agentRoutes(db));
@@ -335,6 +338,8 @@ export async function createApp(
 
   jobCoordinator.start();
   scheduler.start();
+  const webhookScheduler = createWebhookDeliveryScheduler(db);
+  webhookScheduler.start();
   const feedbackExportTimer = opts.feedbackExportService
     ? setInterval(() => {
       void opts.feedbackExportService?.flushPendingFeedbackTraces().catch((err) => {
@@ -379,6 +384,7 @@ export async function createApp(
     process.off("SIGTERM", onSignal);
     process.off("SIGINT", onSignal);
     if (feedbackExportTimer) clearInterval(feedbackExportTimer);
+    webhookScheduler.stop();
     devWatcher?.close();
     hostServiceCleanup.disposeAll();
     hostServiceCleanup.teardown();
