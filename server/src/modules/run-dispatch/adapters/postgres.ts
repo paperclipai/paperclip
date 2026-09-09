@@ -201,8 +201,8 @@ export function createPostgresRunDispatchAdapter(
               and(eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.companyId, input.companyId)),
             )
             // Keep the run status stable through the semantic decision and any
-            // resulting mutation. Adapter-owned work starts only after this
-            // transaction releases the lock at the handoff boundary.
+            // resulting mutation and synchronous dispatch handoff. Never await
+            // adapter-owned work while this transaction holds the row locks.
             .for("update")
             .then((rows) => rows[0] ?? null);
           if (!run) return { kind: "missing" as const };
@@ -966,11 +966,17 @@ export function createPostgresRunDispatchAdapter(
         return { dispatched: false as const, cancellation };
       }
 
-      return { dispatched: true as const };
-
+      // Hand off while ownership is still locked, but do not await the provider
+      // promise. Bootstrap and failure finalization can update these same rows;
+      // the transaction must commit independently of either callback completing.
+      const resultPromise = input.dispatch(() => {});
+      // A synchronous rejection can precede the commit response. Observe it
+      // immediately while preserving the original promise for the caller.
+      void resultPromise.catch(() => {});
+      return { dispatched: true as const, resultPromise };
     };
 
-    const admitted = await withIssueThenRunLocks(
+    return withIssueThenRunLocks(
       input,
       () => {
         throw new RunDispatchApplicationError(
@@ -981,11 +987,6 @@ export function createPostgresRunDispatchAdapter(
       dispatchLockedRun,
     );
 
-    if (!admitted.dispatched) return admitted;
-    // Provider bootstrap, resume and finalization can all need these rows.
-    // Commit the admission transaction before entering adapter code, including
-    // adapters that fail before spawning or never report a spawn callback.
-    return { dispatched: true, resultPromise: input.dispatch(() => {}) };
   }
 
   return {

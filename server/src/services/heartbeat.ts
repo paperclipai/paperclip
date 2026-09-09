@@ -8214,7 +8214,7 @@ export interface HeartbeatServiceOptions {
     runId: string;
     issueId: string;
   }) => Promise<void>;
-  /** Test seam for racing an issue mutation after validation while its row lock is held. */
+  /** Test seam for racing an issue mutation immediately before the final dispatch gate. */
   afterResolvedInteractionContinuationDispatchCheck?: (input: {
     runId: string;
     issueId: string;
@@ -19201,22 +19201,17 @@ export function heartbeatService(
           issueId,
         });
 
+        await options.afterResolvedInteractionContinuationDispatchCheck?.({
+          runId: run.id,
+          issueId,
+        });
         const gate = await runDispatch.dispatchResolvedInteractionIfCurrent({
           runId: run.id,
           companyId: run.companyId,
           expectedStatus: "running",
-          dispatch: async (markDispatchStarted) => {
-            await options.afterResolvedInteractionContinuationDispatchCheck?.({
-              runId: run.id,
-              issueId,
-            });
-            // The adapter owns everything after this handoff, including run-log
-            // writes which allocate an event sequence by updating the run row.
-            // Release the validation locks before invoking adapter code so those
-            // callbacks cannot self-deadlock against this transaction.
-            markDispatchStarted();
-            return dispatch(markDispatchStarted);
-          },
+          // Synchronous handoff under the ownership lock; the gate commits
+          // without awaiting the adapter's asynchronous bootstrap or finalizer.
+          dispatch,
         });
 
         if (gate.dispatched) return gate;

@@ -14,7 +14,7 @@ A shared execution projection distinguishes confirmed work, recovery, scheduled 
 
 ## Reproduced failure
 
-A Codex notification named another thread. Recovery attempted an unusable checkpoint. On a later attempt, the admission transaction held the task row while waiting for provider spawn or adapter settlement. Failure finalization waited for the same row. PostgreSQL confirmed the blocking transaction. Adapter execution now starts after admission commit.
+A Codex notification named another thread. Recovery attempted an unusable checkpoint. On a later attempt, the admission transaction held the task row while waiting for provider spawn or adapter settlement. Failure finalization waited for the same row. PostgreSQL confirmed the blocking transaction. The final gate now initiates the adapter handoff while ownership is locked, then commits without awaiting provider work. Bootstrap and finalization can acquire the same rows independently; a competing owner cannot enter between the final check and handoff.
 
 A connection continuation also omitted the follow-up that requested a second service. Its old completion objective referred to the first service. The continuation envelope now preserves the source request even when the preceding run already received that message.
 
@@ -83,3 +83,5 @@ The recovery migrations were renumbered to 0250–0254 after master added sessio
 Control transitions have a 60-second deadline and a 15-second reconciliation cadence. With a healthy database and scheduler, abandoned transitions must be repaired or surfaced within 90 seconds. Healthy provider silence has no new timeout. An upgrade never automatically replays ambiguous historical work. Default CEO instructions remain unchanged.
 
 Fresh test-drive instances use local-trusted mode. Authenticated/cloud browser behavior, every legacy provider, and every deployment topology were not exercised live. Automated tests cover authorization and company boundaries. An early terminal-delivery screenshot still showed Working briefly; the final refreshed screenshot above shows the completed state.
+
+The final ownership-handoff regressions passed (42 tests across the dispatch adapter and stale-queue suites). They verify competing ownership at the handoff boundary and provider failure before a spawn callback, without retaining database locks for provider completion.

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agents,
   companies,
@@ -214,7 +214,7 @@ describeEmbeddedPostgres("run-dispatch postgres adapter", () => {
     expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, competingId)))[0]?.status).toBe("running");
   });
 
-  it("commits admission before a recovered provider fails without a spawn callback", async () => {
+  it("commits the handoff without awaiting a recovered provider that fails before spawning", async () => {
     const { companyId, agentId } = await seedCompanyAndAgent();
     const issueId = randomUUID();
     await seedIssue({ companyId, issueId, assigneeAgentId: agentId, status: "in_progress" });
@@ -237,6 +237,36 @@ describeEmbeddedPostgres("run-dispatch postgres adapter", () => {
     expect(gate.dispatched).toBe(true);
     if (gate.dispatched) expect(await gate.resultPromise).toBe("provider_checkpoint_failed_terminal");
     expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)))[0]?.status).toBe("failed");
+  });
+
+  it("initiates dispatch before admission locks can be released to a competing owner", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const issueId = randomUUID();
+    await seedIssue({ companyId, issueId, assigneeAgentId: agentId, status: "in_progress" });
+    const runId = await seedRun({ companyId, agentId, status: "running", contextSnapshot: { issueId } });
+    const competingId = await seedRun({ companyId, agentId, status: "running", contextSnapshot: { issueId } });
+    await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, issueId));
+    const transaction = db.transaction.bind(db);
+    const ordering: string[] = [];
+    // Inject a competing claim immediately after commit, before control returns
+    // to the adapter. A callback outside the transaction would run too late.
+    const transactionSpy = vi.spyOn(db, "transaction").mockImplementation(async (callback, config) => {
+      const value = await transaction(callback, config);
+      await db.update(issues).set({ executionRunId: competingId }).where(eq(issues.id, issueId));
+      ordering.push("competing-owner");
+      return value;
+    });
+    try {
+      const gate = await createPostgresRunDispatchAdapter(db).dispatchResolvedInteractionIfCurrent({
+        companyId, runId, expectedStatus: "running", now: new Date(),
+        dispatch: async () => { ordering.push("handoff"); return "started"; },
+      });
+      expect(gate.dispatched).toBe(true);
+      if (gate.dispatched) expect(await gate.resultPromise).toBe("started");
+      expect(ordering).toEqual(["handoff", "competing-owner"]);
+    } finally {
+      transactionSpy.mockRestore();
+    }
   });
 
   async function waitForBlockedForUpdate(tableName: string) {
