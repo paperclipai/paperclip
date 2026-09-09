@@ -191,6 +191,26 @@ export interface EstateBeneficiary {
   updatedAt: string;
 }
 
+export type DocumentAlertType = "insurance_renewal" | "lease_expiration" | "appraisal_due" | "license_expiration" | "tax_filing_deadline" | "other";
+export type DocumentAlertStatus = "active" | "dismissed" | "expired";
+
+export interface DocumentAlert {
+  id: string;
+  companyId: string;
+  userId: string;
+  assetId: string | null;
+  documentName: string;
+  alertType: DocumentAlertType;
+  expiresAt: string;
+  alertDaysBefore: number[];
+  lastAlertedAt: string | null;
+  status: DocumentAlertStatus;
+  notes: string | null;
+  daysUntilExpiry: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export type ValuationReminderFrequency = "monthly" | "quarterly" | "semi_annual" | "annual" | "custom";
 
 export interface ValuationReminder {
@@ -331,4 +351,14 @@ export const estateApi = {
     api.patch<ValuationReminder>(`/estate/valuation-reminders/${id}`, body),
 
   deleteValuationReminder: (id: string) => api.delete<void>(`/estate/valuation-reminders/${id}`),
+
+  listDocumentAlerts: (companyId: string, status?: DocumentAlertStatus) =>
+    api.get<{ alerts: DocumentAlert[] }>(
+      `/estate/document-alerts${qs({ companyId, status })}`,
+    ),
+
+  patchDocumentAlert: (id: string, body: { status?: DocumentAlertStatus; notes?: string; expiresAt?: string }) =>
+    api.patch<DocumentAlert>(`/estate/document-alerts/${id}`, body),
+
+  deleteDocumentAlert: (id: string) => api.delete<void>(`/estate/document-alerts/${id}`),
 };

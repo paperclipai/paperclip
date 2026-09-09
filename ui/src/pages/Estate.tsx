@@ -1,7 +1,7 @@
 import { useEffect } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Landmark, Home, TrendingUp, Car, Gem, Cpu, Package, AlertCircle, CheckCircle2, Circle, Users, Shield, Receipt, PiggyBank } from "lucide-react";
-import { estateApi, type AssetType, type PlanStatusCheckKey, type PlanStatusResult, type NetWorthProjectionResult, type EstateBeneficiary, type EstateTrust, type EstateTaxSummary, type EstateReview, type RmdSummary, type PropertyTaxBill, type ValuationReminder } from "../api/estate";
+import { estateApi, type AssetType, type PlanStatusCheckKey, type PlanStatusResult, type NetWorthProjectionResult, type EstateBeneficiary, type EstateTrust, type EstateTaxSummary, type EstateReview, type RmdSummary, type PropertyTaxBill, type ValuationReminder, type DocumentAlert } from "../api/estate";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { EmptyState } from "../components/EmptyState";
@@ -557,6 +557,84 @@ function BeneficiariesSection({ beneficiaries }: { beneficiaries: EstateBenefici
   );
 }
 
+const ALERT_TYPE_LABELS: Record<string, string> = {
+  insurance_renewal:   "Insurance Renewal",
+  lease_expiration:    "Lease Expiration",
+  appraisal_due:       "Appraisal Due",
+  license_expiration:  "License Expiration",
+  tax_filing_deadline: "Tax Filing Deadline",
+  other:               "Document Alert",
+};
+
+function DocumentAlertsSection({
+  alerts,
+  companyId,
+}: {
+  alerts: DocumentAlert[];
+  companyId: string;
+}) {
+  const queryClient = useQueryClient();
+
+  const dismissMutation = useMutation({
+    mutationFn: ({ id }: { id: string }) =>
+      estateApi.patchDocumentAlert(id, { status: "dismissed" }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["estate", "document-alerts", companyId] });
+    },
+  });
+
+  const active = alerts.filter((a) => a.status === "active");
+  if (active.length === 0) return null;
+
+  return (
+    <div className="rounded-lg border border-border bg-card overflow-hidden">
+      <div className="px-4 py-3 border-b border-border bg-muted/30 flex items-center gap-2">
+        <AlertCircle className="h-3.5 w-3.5 text-muted-foreground" />
+        <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+          Document Alerts
+        </p>
+        <span className="ml-auto text-xs text-muted-foreground">{active.length} active</span>
+      </div>
+      <div className="divide-y divide-border">
+        {active.map((a) => {
+          const isExpired = a.daysUntilExpiry <= 0;
+          const isUrgent = a.daysUntilExpiry > 0 && a.daysUntilExpiry <= 30;
+          const expiresStr = new Date(a.expiresAt).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+          return (
+            <div key={a.id} className="px-4 py-3 flex items-start gap-3">
+              <div className="flex-1 min-w-0 space-y-0.5">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="text-sm font-medium">{a.documentName}</span>
+                  <span className="text-xs text-muted-foreground">{ALERT_TYPE_LABELS[a.alertType] ?? a.alertType}</span>
+                  {isExpired ? (
+                    <span className="text-xs px-1.5 py-0.5 rounded font-medium bg-red-100/80 text-red-700">Expired</span>
+                  ) : isUrgent ? (
+                    <span className="text-xs px-1.5 py-0.5 rounded font-medium bg-yellow-100/80 text-yellow-700">Expires soon</span>
+                  ) : null}
+                </div>
+                <div className="text-xs text-muted-foreground">
+                  {isExpired
+                    ? `Expired ${expiresStr} (${Math.abs(a.daysUntilExpiry)}d ago)`
+                    : `Expires ${expiresStr} (${a.daysUntilExpiry}d remaining)`}
+                  {a.notes && <span className="ml-2 italic">{a.notes}</span>}
+                </div>
+              </div>
+              <button
+                onClick={() => dismissMutation.mutate({ id: a.id })}
+                disabled={dismissMutation.isPending}
+                className="shrink-0 text-xs text-muted-foreground hover:text-foreground font-medium disabled:opacity-50"
+                title="Dismiss alert"
+              >
+                Dismiss
+              </button>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 const FREQ_LABELS: Record<string, string> = {
   monthly: "Monthly",
   quarterly: "Quarterly",
@@ -839,6 +917,13 @@ export function Estate() {
     staleTime: 5 * 60 * 1000,
   });
 
+  const documentAlertsQuery = useQuery({
+    queryKey: ["estate", "document-alerts", selectedCompanyId],
+    queryFn: () => estateApi.listDocumentAlerts(selectedCompanyId!, "active"),
+    enabled: !!selectedCompanyId,
+    staleTime: 5 * 60 * 1000,
+  });
+
   if (!selectedCompanyId) {
     return <EmptyState icon={Landmark} message="Select a company to view estate." />;
   }
@@ -1015,6 +1100,14 @@ export function Estate() {
       {valuationRemindersQuery.data && (
         <ValuationRemindersSection
           reminders={valuationRemindersQuery.data.reminders}
+          companyId={selectedCompanyId}
+        />
+      )}
+
+      {/* Document Alerts */}
+      {documentAlertsQuery.data && (
+        <DocumentAlertsSection
+          alerts={documentAlertsQuery.data.alerts}
           companyId={selectedCompanyId}
         />
       )}
