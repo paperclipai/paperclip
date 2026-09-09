@@ -1,3 +1,6 @@
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { models as claudeFallbackModels } from "@paperclipai/adapter-claude-local";
 import { resetClaudeModelsCacheForTests } from "@paperclipai/adapter-claude-local/server";
@@ -5,6 +8,7 @@ import { models as codexFallbackModels } from "@paperclipai/adapter-codex-local"
 import { models as cursorFallbackModels } from "@paperclipai/adapter-cursor-local";
 import { models as opencodeFallbackModels } from "@paperclipai/adapter-opencode-local";
 import { resetOpenCodeModelsCacheForTests } from "@paperclipai/adapter-opencode-local/server";
+import { resolveManagedCodexHomeDir } from "@paperclipai/adapter-codex-local/server";
 import { listAdapterModels, listServerAdapters, refreshAdapterModels } from "../adapters/index.js";
 import { resetCodexModelsCacheForTests } from "../adapters/codex-models.js";
 import { resetCursorModelsCacheForTests, setCursorModelsRunnerForTests } from "../adapters/cursor-models.js";
@@ -17,7 +21,21 @@ vi.mock("acpx/runtime", () => ({
 }));
 
 describe("adapter model listing", () => {
-  beforeEach(() => {
+  let codexHomeDir: string;
+  let previousCodexHome: string | undefined;
+  let paperclipHomeDir: string;
+  let previousPaperclipHome: string | undefined;
+
+  beforeEach(async () => {
+    // Point CODEX_HOME at an empty directory so these tests never read whatever real Codex model
+    // cache the host developer's machine happens to have.
+    previousCodexHome = process.env.CODEX_HOME;
+    codexHomeDir = await mkdtemp(path.join(tmpdir(), "paperclip-codex-home-"));
+    process.env.CODEX_HOME = codexHomeDir;
+    // Likewise for PAPERCLIP_HOME, which company-scoped managed-home discovery resolves under.
+    previousPaperclipHome = process.env.PAPERCLIP_HOME;
+    paperclipHomeDir = await mkdtemp(path.join(tmpdir(), "paperclip-home-"));
+    process.env.PAPERCLIP_HOME = paperclipHomeDir;
     delete process.env.OPENAI_API_KEY;
     delete process.env.ANTHROPIC_API_KEY;
     delete process.env.ANTHROPIC_BASE_URL;
@@ -31,6 +49,33 @@ describe("adapter model listing", () => {
     resetOpenCodeModelsCacheForTests();
     vi.restoreAllMocks();
   });
+
+  afterEach(async () => {
+    if (previousCodexHome === undefined) delete process.env.CODEX_HOME;
+    else process.env.CODEX_HOME = previousCodexHome;
+    await rm(codexHomeDir, { recursive: true, force: true });
+    if (previousPaperclipHome === undefined) delete process.env.PAPERCLIP_HOME;
+    else process.env.PAPERCLIP_HOME = previousPaperclipHome;
+    await rm(paperclipHomeDir, { recursive: true, force: true });
+  });
+
+  async function writeCodexModelsCache(payload: unknown): Promise<void> {
+    await writeFile(
+      path.join(codexHomeDir, "models_cache.json"),
+      typeof payload === "string" ? payload : JSON.stringify(payload),
+      "utf8",
+    );
+  }
+
+  async function writeManagedCodexModelsCache(companyId: string, payload: unknown): Promise<void> {
+    const managedHomeDir = resolveManagedCodexHomeDir(process.env, companyId);
+    await mkdir(managedHomeDir, { recursive: true });
+    await writeFile(
+      path.join(managedHomeDir, "models_cache.json"),
+      typeof payload === "string" ? payload : JSON.stringify(payload),
+      "utf8",
+    );
+  }
 
   it("returns an empty list for unknown adapters", async () => {
     const models = await listAdapterModels("unknown_adapter");
@@ -219,6 +264,107 @@ describe("adapter model listing", () => {
     expect(models).toEqual(codexFallbackModels);
   });
 
+  it("discovers codex models from the Codex CLI model cache without an OpenAI key", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    await writeCodexModelsCache({
+      client_version: "0.153.4",
+      models: [
+        { slug: "gpt-6-astra", display_name: "GPT-6-Astra", visibility: "list" },
+        { slug: "gpt-5.6-sol", display_name: "GPT-5.6-Sol", visibility: "list" },
+      ],
+    });
+
+    const models = await listAdapterModels("codex_local");
+
+    expect(models.some((model) => model.id === "gpt-6-astra")).toBe(true);
+    // The cache's own display name wins over the static entry's bare slug label.
+    expect(models.find((model) => model.id === "gpt-6-astra")?.label).toBe("GPT-6-Astra");
+    // Static entries the cache omits are still merged in, so nothing disappears from the picker.
+    expect(models.some((model) => model.id === "codex-mini-latest")).toBe(true);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("omits codex models the CLI hides from its own picker", async () => {
+    await writeCodexModelsCache({
+      models: [
+        { slug: "gpt-6-astra", display_name: "GPT-6-Astra", visibility: "list" },
+        { slug: "gpt-reserve", display_name: "Reserve", visibility: "hide" },
+        { slug: "codex-auto-review", display_name: "Auto Review", visibility: "hide" },
+      ],
+    });
+
+    const models = await listAdapterModels("codex_local");
+
+    expect(models.some((model) => model.id === "gpt-6-astra")).toBe(true);
+    expect(models.some((model) => model.id === "gpt-reserve")).toBe(false);
+    expect(models.some((model) => model.id === "codex-auto-review")).toBe(false);
+  });
+
+  it("prefers the Codex CLI model cache over the OpenAI models API", async () => {
+    process.env.OPENAI_API_KEY = "sk-test";
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    await writeCodexModelsCache({
+      models: [{ slug: "gpt-6-astra", display_name: "GPT-6-Astra", visibility: "list" }],
+    });
+
+    const models = await listAdapterModels("codex_local");
+
+    expect(models.some((model) => model.id === "gpt-6-astra")).toBe(true);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("re-reads the Codex CLI model cache on refresh", async () => {
+    await writeCodexModelsCache({
+      models: [{ slug: "gpt-6-astra", display_name: "GPT-6-Astra", visibility: "list" }],
+    });
+    const initial = await listAdapterModels("codex_local");
+    expect(initial.some((model) => model.id === "gpt-7-nova")).toBe(false);
+
+    await writeCodexModelsCache({
+      models: [{ slug: "gpt-7-nova", display_name: "GPT-7-Nova", visibility: "list" }],
+    });
+    const refreshed = await refreshAdapterModels("codex_local");
+
+    expect(refreshed.some((model) => model.id === "gpt-7-nova")).toBe(true);
+  });
+
+  it("falls back to static codex models when the Codex CLI model cache is malformed", async () => {
+    await writeCodexModelsCache("{ not json");
+
+    const models = await listAdapterModels("codex_local");
+    expect(models).toEqual(codexFallbackModels);
+  });
+
+  it("prefers the company-managed Codex home cache over the shared host Codex home", async () => {
+    await writeCodexModelsCache({
+      models: [{ slug: "gpt-5.6-sol", display_name: "GPT-5.6-Sol", visibility: "list" }],
+    });
+    await writeManagedCodexModelsCache("company-1", {
+      models: [{ slug: "gpt-6-astra", display_name: "GPT-6-Astra", visibility: "list" }],
+    });
+
+    const models = await listAdapterModels("codex_local", "company-1");
+
+    expect(models.some((model) => model.id === "gpt-6-astra")).toBe(true);
+  });
+
+  it("falls back to the shared host Codex home when the company has no managed cache yet", async () => {
+    await writeCodexModelsCache({
+      models: [{ slug: "gpt-5.6-sol", display_name: "GPT-5.6-Sol", visibility: "list" }],
+    });
+    // No managed cache written for "company-1" — its managed CODEX_HOME does not exist yet.
+
+    const models = await listAdapterModels("codex_local", "company-1");
+
+    expect(models.some((model) => model.id === "gpt-5.6-sol")).toBe(true);
+  });
+
+  it("falls back to static codex models when the Codex CLI model cache lists nothing usable", async () => {
+    await writeCodexModelsCache({ models: [{ slug: "", visibility: "list" }, { visibility: "list" }] });
+
+    const models = await listAdapterModels("codex_local");
+    expect(models).toEqual(codexFallbackModels);
+  });
 
   it("returns cursor fallback models when CLI discovery is unavailable", async () => {
     setCursorModelsRunnerForTests(() => ({
