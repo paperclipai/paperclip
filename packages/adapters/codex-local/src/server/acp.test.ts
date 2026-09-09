@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -1037,7 +1038,7 @@ describe("codex_local ACP lane", () => {
     // `disposeStaged`, fired only when the runtime is dropped. So after a CLEAN
     // turn the engine caches the staged runtime warm and its host staged home is
     // still on disk for the next compatible resume to reuse.
-    const runId = "run-keep-staged-home";
+    const runId = `run-keep-staged-home-${randomUUID()}`;
     const root = await makeTempRoot("paperclip-codex-acp-keep-staged-");
     const localCwd = path.join(root, "worktree");
     const remoteCwd = path.join(root, "remote-workspace");
@@ -1115,7 +1116,7 @@ describe("codex_local ACP lane", () => {
     // failed turn), the one-time `disposeStaged` fires and removes the host
     // staged-home temp dir — while the per-run copy-back (`teardown`) STILL fires
     // on the unclean exit path, so a rotated sandbox credential is never lost.
-    const runId = "run-drop-staged-home";
+    const runId = `run-drop-staged-home-${randomUUID()}`;
     const root = await makeTempRoot("paperclip-codex-acp-drop-staged-");
     const localCwd = path.join(root, "worktree");
     const remoteCwd = path.join(root, "remote-workspace");
