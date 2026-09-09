@@ -191,6 +191,23 @@ export interface EstateBeneficiary {
   updatedAt: string;
 }
 
+export type ValuationReminderFrequency = "monthly" | "quarterly" | "semi_annual" | "annual" | "custom";
+
+export interface ValuationReminder {
+  id: string;
+  assetId: string;
+  companyId: string;
+  userId: string;
+  frequency: ValuationReminderFrequency;
+  frequencyDays: number;
+  lastRemindedAt: string | null;
+  nextDueAt: string;
+  isActive: boolean;
+  notes: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export type PropertyTaxStatus = "upcoming" | "paid" | "overdue" | "exempt";
 
 export interface PropertyTaxBill {
@@ -298,4 +315,20 @@ export const estateApi = {
   }) => api.patch<PropertyTaxBill>(`/estate/property-tax/${id}`, body),
 
   deletePropertyTax: (id: string) => api.delete<void>(`/estate/property-tax/${id}`),
+
+  listValuationReminders: (companyId: string) =>
+    api.get<{ reminders: ValuationReminder[] }>(`/estate/valuation-reminders${qs({ companyId })}`),
+
+  createValuationReminder: (data: {
+    companyId: string;
+    assetId: string;
+    frequency?: ValuationReminderFrequency;
+    nextDueAt: string;
+    notes?: string;
+  }) => api.post<ValuationReminder>("/estate/valuation-reminders", data),
+
+  patchValuationReminder: (id: string, body: { isActive?: boolean; nextDueAt?: string; notes?: string }) =>
+    api.patch<ValuationReminder>(`/estate/valuation-reminders/${id}`, body),
+
+  deleteValuationReminder: (id: string) => api.delete<void>(`/estate/valuation-reminders/${id}`),
 };

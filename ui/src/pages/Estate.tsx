@@ -1,7 +1,7 @@
 import { useEffect } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Landmark, Home, TrendingUp, Car, Gem, Cpu, Package, AlertCircle, CheckCircle2, Circle, Users, Shield, Receipt, PiggyBank } from "lucide-react";
-import { estateApi, type AssetType, type PlanStatusCheckKey, type PlanStatusResult, type NetWorthProjectionResult, type EstateBeneficiary, type EstateTrust, type EstateTaxSummary, type EstateReview, type RmdSummary, type PropertyTaxBill } from "../api/estate";
+import { estateApi, type AssetType, type PlanStatusCheckKey, type PlanStatusResult, type NetWorthProjectionResult, type EstateBeneficiary, type EstateTrust, type EstateTaxSummary, type EstateReview, type RmdSummary, type PropertyTaxBill, type ValuationReminder } from "../api/estate";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { EmptyState } from "../components/EmptyState";
@@ -557,6 +557,84 @@ function BeneficiariesSection({ beneficiaries }: { beneficiaries: EstateBenefici
   );
 }
 
+const FREQ_LABELS: Record<string, string> = {
+  monthly: "Monthly",
+  quarterly: "Quarterly",
+  semi_annual: "Semi-Annual",
+  annual: "Annual",
+  custom: "Custom",
+};
+
+function ValuationRemindersSection({
+  reminders,
+  companyId,
+}: {
+  reminders: ValuationReminder[];
+  companyId: string;
+}) {
+  const queryClient = useQueryClient();
+
+  const dismissMutation = useMutation({
+    mutationFn: ({ id }: { id: string }) =>
+      estateApi.patchValuationReminder(id, { isActive: false }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["estate", "valuation-reminders", companyId] });
+    },
+  });
+
+  const active = reminders.filter((r) => r.isActive);
+  if (active.length === 0) return null;
+
+  const now = Date.now();
+
+  return (
+    <div className="rounded-lg border border-border bg-card overflow-hidden">
+      <div className="px-4 py-3 border-b border-border bg-muted/30 flex items-center gap-2">
+        <TrendingUp className="h-3.5 w-3.5 text-muted-foreground" />
+        <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+          Valuation Reminders
+        </p>
+        <span className="ml-auto text-xs text-muted-foreground">{active.length} active</span>
+      </div>
+      <div className="divide-y divide-border">
+        {active.map((r) => {
+          const dueMs = new Date(r.nextDueAt).getTime();
+          const daysUntil = Math.ceil((dueMs - now) / 86_400_000);
+          const isOverdue = daysUntil < 0;
+          const dueDateStr = new Date(r.nextDueAt).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+          return (
+            <div key={r.id} className="px-4 py-3 flex items-start gap-3">
+              <div className="flex-1 min-w-0 space-y-0.5">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="text-sm font-medium">{FREQ_LABELS[r.frequency] ?? r.frequency} revaluation</span>
+                  {isOverdue ? (
+                    <span className="text-xs px-1.5 py-0.5 rounded font-medium bg-red-100/80 text-red-700">Overdue</span>
+                  ) : daysUntil <= 30 ? (
+                    <span className="text-xs px-1.5 py-0.5 rounded font-medium bg-yellow-100/80 text-yellow-700">Due soon</span>
+                  ) : null}
+                </div>
+                <div className="text-xs text-muted-foreground">
+                  Due {dueDateStr}
+                  {isOverdue ? ` (${Math.abs(daysUntil)}d overdue)` : daysUntil <= 60 ? ` (${daysUntil}d remaining)` : ""}
+                  {r.notes && <span className="ml-2 italic">{r.notes}</span>}
+                </div>
+              </div>
+              <button
+                onClick={() => dismissMutation.mutate({ id: r.id })}
+                disabled={dismissMutation.isPending}
+                className="shrink-0 text-xs text-muted-foreground hover:text-foreground font-medium disabled:opacity-50"
+                title="Dismiss reminder"
+              >
+                Dismiss
+              </button>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 const TAX_STATUS_CLASSES: Record<string, { bg: string; text: string; label: string }> = {
   upcoming: { bg: "bg-blue-100/80",  text: "text-blue-700",   label: "Upcoming" },
   paid:     { bg: "bg-green-100/80", text: "text-green-700",  label: "Paid" },
@@ -754,6 +832,13 @@ export function Estate() {
     staleTime: 5 * 60 * 1000,
   });
 
+  const valuationRemindersQuery = useQuery({
+    queryKey: ["estate", "valuation-reminders", selectedCompanyId],
+    queryFn: () => estateApi.listValuationReminders(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+    staleTime: 5 * 60 * 1000,
+  });
+
   if (!selectedCompanyId) {
     return <EmptyState icon={Landmark} message="Select a company to view estate." />;
   }
@@ -922,6 +1007,14 @@ export function Estate() {
       {propertyTaxQuery.data && (
         <PropertyTaxSection
           bills={propertyTaxQuery.data.bills}
+          companyId={selectedCompanyId}
+        />
+      )}
+
+      {/* Valuation Reminders */}
+      {valuationRemindersQuery.data && (
+        <ValuationRemindersSection
+          reminders={valuationRemindersQuery.data.reminders}
           companyId={selectedCompanyId}
         />
       )}
