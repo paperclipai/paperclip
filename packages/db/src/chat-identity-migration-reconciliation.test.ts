@@ -607,7 +607,9 @@ const support = await getEmbeddedPostgresTestSupport();
             breakpoints: boolean;
           }>;
           const priorEntries = entries
-            .filter((entry) => entry.idx < 246 || entry.idx >= 255)
+            .filter(
+              (entry) => entry.idx < 246 || (entry.idx >= 255 && entry.idx <= 268),
+            )
             .map((entry, index) => ({
               ...entry,
               idx: index,
@@ -621,6 +623,7 @@ const support = await getEmbeddedPostgresTestSupport();
                 1788934048647, 1788942847296,
               ][entry.idx - 255]!,
             }));
+          expect(priorEntries.every((entry) => Number.isFinite(entry.when))).toBe(true);
           await mkdir(join(directory, "meta"));
           for (const entry of priorEntries) {
             await writeFile(
@@ -658,9 +661,11 @@ const support = await getEmbeddedPostgresTestSupport();
           const historyBefore =
             await legacy`SELECT id,hash,created_at::text FROM drizzle.__drizzle_migrations ORDER BY id`;
           const pending = entries
-            .filter((entry) => entry.idx >= 246 && entry.idx <= 254)
+            .filter(
+              (entry) => (entry.idx >= 246 && entry.idx <= 254) || entry.idx > 268,
+            )
             .map((entry) => `${entry.tag}.sql`);
-          expect(pending).toHaveLength(9);
+          expect(pending).toHaveLength(9 + entries.filter((entry) => entry.idx > 268).length);
           expect(await inspectMigrations(legacyUrl.href)).toMatchObject({
             status: "needsMigrations",
             pendingMigrations: pending,
