@@ -173,6 +173,10 @@ When a task originates from a cross-team request, track the **depth** as an inte
 
 Tasks carry a **billing code** so that token spend during execution can be attributed upstream to the requesting task/agent. When Agent A asks Agent B to do work, the cost of B's work is tracked against A's request. This enables cost attribution across the org.
 
+#### Engineering Review Handoffs
+
+When code review is requested, the handoff identifies an exact admitted candidate rather than a mutable workspace or a prose path. Trusted operator policy selects the independent reviewer and required model. Acceptance resumes the original owner; it does not itself authorize publication, merge, deployment, or business acceptance.
+
 ### Open Questions
 
 - Is this a strict tree or can agents report to multiple managers?
@@ -289,6 +293,8 @@ Fully-instrumented Agents report token/API usage back to Paperclip. Costs are tr
 - **Per Company** — total burn rate
 
 Costs should be denominated in both **tokens and dollars**.
+
+Cost visibility distinguishes reported zero, an incomplete subtotal with unpriced usage, and no reported usage. Missing prices or missing observations are not evidence that execution is free.
 
 Billing codes on tasks (see Org Structure) enable cost attribution across teams — when Agent A requests work from Agent B, B's costs roll up to A's request.
 
@@ -427,6 +433,7 @@ When an agent crashes or disappears mid-task, Paperclip does **not** auto-reassi
 - Paperclip may perform bounded continuity repair with the same assigned agent; when that is exhausted or unsafe, it opens a board-owned recovery action without waking a substitute agent
 - Paperclip does not fail silently — the auditing and visibility tools make problems obvious
 - Recovery is handled by humans or by emergent processes (e.g. a project manager agent whose job is to monitor for stale work and surface it)
+- Multiple attention projections of the same failure generation may be combined, but distinct human decisions and recovery actions remain visible. Reading an attention feed does not repair or close its source records.
 
 **Principle: Paperclip reports problems, it doesn't silently fix them.** Automatic recovery hides failures. Good visibility lets the right entity (human or agent) decide what to do.
 

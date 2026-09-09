@@ -726,6 +726,26 @@ prompt. Neither surface may enable or disable a control on its own authority.
 Every resolution remains company-scoped, run-attributed for agent actors,
 low-trust/task-bridge contained, target-current, and exact-once. Target staleness,
 supersession, continuation idempotency, and activity attribution remain mandatory.
+
+Code-review confirmations may carry a strict `payload.review` object containing
+`candidate: { workspaceKey, revision }` and `expectedModel`. The revision is a full
+immutable commit SHA; the workspace key is resolved through the trusted project
+registry, never interpreted as a filesystem path supplied by an agent. This shape
+requires an agent addressee and cannot be combined with a document target, governed
+tool action, or secret proposal.
+
+Creation and resolution independently check the addressee's current exact model.
+The current issue assignee cannot be the candidate reviewer, including when a
+coordinator creates the interaction; resolution rechecks that separation under the
+issue lock. Existing creator/source-run exclusions also remain in force. Malformed
+stored review pins fail closed, and approval of one revision never approves a
+later revision. General confirmations and human-only plan approvals retain their
+existing contracts.
+
+Agent readers without configuration-read access may see only the string
+`adapterConfig.model` routing field; commands, environment, credentials, and
+runtime configuration remain withheld.
+
 An open audience is not an uncapped one: when an agent run resolves an interaction
 on an issue other than its own source issue, the resolution is a cross-issue
 mutation and consumes the per-run cross-issue influence budget in §9.3, charged
@@ -1098,6 +1118,7 @@ Dashboard payload must include:
 - active/running/paused/error agent counts
 - open/in-progress/blocked/done issue counts
 - month-to-date spend and budget utilization
+- month-to-date reported and unpriced cost-event counts (`monthReportedCount` and `monthUnpricedCount`), scoped to the same company and month as spend; reported zero remains zero, unpriced events mark the subtotal incomplete, and no events are displayed as no reported usage rather than complete metering
 - pending approvals count
 
 ## 10.10 Error Semantics
@@ -1144,6 +1165,17 @@ The current app also exposes V1-supporting surfaces for:
 Queue and triage mutations accept board non-viewers and active standard-scope agents, apply responsible-user intersection for run JWTs, and reject low-trust, `task_bridge`, and `skill_test` contexts. Missing, cross-company, and unauthorized attention sources share the same not-found response.
 
 The attention feed returns server-computed `shelf`, `retentionDays`, `keep`, `archivedAt`, and `retentionVersion` fields. Archived rows are excluded by default and selected with `archived=true`. Bulk archive proposals bind the exact source identities, per-item reasons, activity timestamps, and expected retention versions into the signed decisions-v1 target snapshots; acceptance re-authorizes both proposer and decider and commits all rows or none.
+
+Recovery and terminal-blocker projections coalesce only with matching source
+identity, an open recovery action, recorded cause/fingerprint and status evidence,
+and an exact match between the recorded `sourceBlockedTransitionAt` and the
+source's current blocked transition. Missing generation evidence leaves rows
+separate. A human-owned unblock descriptor remains independent of recovery.
+The descriptor's own terminal-blocker projection may fold into its gate only
+when their subject generations match, regardless of which dependent was most
+recently active. Coalescing preserves applicable actions, source provenance,
+dependent links, and impact counts before pagination; zero-dependent blockers
+are not discarded. This is a read-only projection, not source-state repair.
 
 ## 11. Heartbeat and Adapter Contract
 
