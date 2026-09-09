@@ -5064,6 +5064,28 @@ export function issueService(db: Db) {
   ) {
     const deduped = [...new Set(labelIds)];
     await assertValidLabelIds(companyId, deduped, dbOrTx);
+    // Lock the parent label rows before touching `issue_labels`, and always in
+    // the same (id) order. `deleteLabel` locks the label row FOR UPDATE and
+    // then removes that label's `issue_labels` rows; without this step the
+    // two transactions take the same locks in opposite order (this one:
+    // child rows first, then the parent via the insert's FOR KEY SHARE) and
+    // can deadlock. Locking the union of the current and requested labels
+    // covers both the rows deleted below and the rows inserted below. A
+    // label deleted concurrently simply no longer appears in the lock set —
+    // its association rows are already gone by cascade.
+    const current = await dbOrTx
+      .select({ labelId: issueLabels.labelId })
+      .from(issueLabels)
+      .where(eq(issueLabels.issueId, issueId));
+    const toLock = [...new Set([...deduped, ...current.map((row: { labelId: string }) => row.labelId)])].sort();
+    if (toLock.length > 0) {
+      await dbOrTx
+        .select({ id: labels.id })
+        .from(labels)
+        .where(inArray(labels.id, toLock))
+        .orderBy(asc(labels.id))
+        .for("key share");
+    }
     await dbOrTx.delete(issueLabels).where(eq(issueLabels.issueId, issueId));
     if (deduped.length === 0) return;
     await dbOrTx.insert(issueLabels).values(
@@ -8795,12 +8817,37 @@ export function issueService(db: Db) {
       return created;
     },
 
-    deleteLabel: async (id: string) =>
-      db
-        .delete(labels)
-        .where(eq(labels.id, id))
-        .returning()
-        .then((rows) => rows[0] ?? null),
+    deleteLabel: async (
+      id: string,
+    ): Promise<{ removed: typeof labels.$inferSelect | null; affectedIssueIds: string[] }> =>
+      db.transaction(async (tx) => {
+        // Lock the label row first. Sharing a transaction with the delete is
+        // NOT enough on its own: under READ COMMITTED a concurrent insert into
+        // `issue_labels` can commit after this transaction's read snapshot and
+        // still be removed by the cascade, so it would be stripped without
+        // appearing in the reported blast radius or in the durable
+        // `label.deleted` activity row. Taking `FOR UPDATE` on the parent
+        // closes that window: inserting an `issue_labels` row referencing this
+        // label needs a `FOR KEY SHARE` lock on the same row, which conflicts,
+        // so any such insert waits for this transaction to finish.
+        const [locked] = await tx
+          .select({ id: labels.id })
+          .from(labels)
+          .where(eq(labels.id, id))
+          .for("update");
+        if (!locked) return { removed: null, affectedIssueIds: [] };
+
+        // Delete the associations explicitly rather than letting the
+        // foreign-key cascade do it silently, so the reported ids are exactly
+        // the rows this statement removed rather than rows observed by an
+        // earlier read.
+        const affected = await tx
+          .delete(issueLabels)
+          .where(eq(issueLabels.labelId, id))
+          .returning({ issueId: issueLabels.issueId });
+        const [removed] = await tx.delete(labels).where(eq(labels.id, id)).returning();
+        return { removed: removed ?? null, affectedIssueIds: affected.map((row) => row.issueId) };
+      }),
 
     listComments: async (
       issueId: string,
