@@ -147,6 +147,7 @@ type LatestIssueRun = Pick<
   | "errorCode"
   | "contextSnapshot"
   | "livenessState"
+  | "retryOfRunId"
   | "startedAt"
   | "createdAt"
 > & {
@@ -345,6 +346,47 @@ function isTerminalIssueRun(latestRun: LatestIssueRun) {
   return TERMINAL_HEARTBEAT_RUN_STATUSES.has(latestRun.status);
 }
 
+type RecoveryLineageRun = Pick<
+  typeof heartbeatRuns.$inferSelect,
+  "status" | "contextSnapshot" | "retryOfRunId"
+>;
+
+/**
+ * A run belongs to the automatic-recovery lineage when it was enqueued as a retry
+ * of an earlier run — regardless of *which* recovery reason produced it.
+ *
+ * Real retry chains alternate reasons — the process-loss retry path writes
+ * `retryReason: "process_lost"` (`heartbeat.ts:10187`) while the stranded-issue path
+ * writes `issue_continuation_needed` — so any predicate that pins one reason is false
+ * at every other hop and lets the chain run uncapped.
+ *
+ * Lineage is the reason-agnostic signal, and it is checked column-first on purpose:
+ * `retryOfRunId` is a real column written by both enqueue paths
+ * (`heartbeat.ts:10231`, `enqueueStrandedIssueRecovery`), so lineage detection does not
+ * depend on `retryReason` surviving in the JSON context snapshot. The snapshot check is
+ * only a fallback for rows written before the column was populated.
+ */
+function isRecoveryLineageRun(run: RecoveryLineageRun | null | undefined) {
+  if (!run) return false;
+  if (readNonEmptyString(run.retryOfRunId)) return true;
+  return Boolean(readNonEmptyString(parseObject(run.contextSnapshot).retryReason));
+}
+
+function isUnsuccessfulTerminalStatus(status: string) {
+  return UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES.includes(
+    status as (typeof UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES)[number],
+  );
+}
+
+/**
+ * Reason-agnostic counterpart to {@link didAutomaticRecoveryFail}: true when the
+ * latest run was itself an automatic-recovery retry and ended unsuccessfully.
+ */
+function didRecoveryLineageRunFail(latestRun: LatestIssueRun) {
+  if (!latestRun) return false;
+  return isRecoveryLineageRun(latestRun) && isUnsuccessfulTerminalStatus(latestRun.status);
+}
+
 const TRANSIENT_INFRA_CONTINUATION_ERROR_CODES = new Set<string>([
   "adapter_failed",
   "codex_transient_upstream",
@@ -352,6 +394,23 @@ const TRANSIENT_INFRA_CONTINUATION_ERROR_CODES = new Set<string>([
   "claude_transient_upstream",
   "provider_quota",
   "timeout",
+]);
+
+// Host/control-plane faults: the run died for a reason unrelated to the issue's
+// own content, so a retry is worth making — but they arrive in bursts (a server
+// restart loses every live run at once), so they must be capped and backed off
+// rather than left in the uncapped `default` class.
+// Cap is 1 (not 3) because a second consecutive host-fault on the same issue
+// indicates a systemic problem: the host or control plane is down and retrying
+// will just produce more of the same failure. Escalating after one retry forces
+// the issue into `blocked` where it waits for a human to investigate rather than
+// burning budget in a tight crash loop.
+const HOST_FAULT_CONTINUATION_ERROR_CODES = new Set<string>([
+  "process_lost",
+  "process_detached",
+  "acpx_turn_failed",
+  "server_shutdown_interrupted",
+  "orphaned_running_run",
 ]);
 
 const NON_RETRYABLE_CONTINUATION_ERROR_CODES = new Set<string>([
@@ -363,6 +422,20 @@ const NON_RETRYABLE_CONTINUATION_ERROR_CODES = new Set<string>([
   "issue_dependencies_blocked",
 ]);
 
+// Maps an error code to the failure *class* used by the continuation retry-streak
+// cap (`match: "error_class"`). Both TRANSIENT_INFRA and HOST_FAULT are multi-code
+// buckets on purpose: a flaky adapter/network can legitimately alternate between
+// codes within the same class from one retry to the next (adapter_failed → timeout
+// → adapter_failed is still one ongoing "the adapter/network is flaky" failure, not
+// three distinct ones), and the cap must treat that as a single streak or it never
+// becomes reachable — see MAS-93 / MAS-614.
+function continuationErrorClassOf(errorCode: string | null): "transient_infra" | "host_fault" | null {
+  if (!errorCode) return null;
+  if (TRANSIENT_INFRA_CONTINUATION_ERROR_CODES.has(errorCode)) return "transient_infra";
+  if (HOST_FAULT_CONTINUATION_ERROR_CODES.has(errorCode)) return "host_fault";
+  return null;
+}
+
 // A continuation cancelled with this code is a *deliberate wait* (the latest run
 // reported it was parked for review/approval), not a lost execution path. When the
 // issue has a real waiting target we convert it into a normal dependency wait rather
@@ -371,8 +444,13 @@ const CONTINUATION_WAITING_ON_REVIEW_ERROR_CODE = "issue_continuation_waiting_on
 const INTERACTION_CONTINUATION_REQUEUE_MAX_ATTEMPTS = 3;
 
 const CONTINUATION_RECOVERY_TRANSIENT_MAX_ATTEMPTS = 3;
+const CONTINUATION_RECOVERY_HOST_FAULT_MAX_ATTEMPTS = 1;
 const CONTINUATION_RECOVERY_DEFAULT_MAX_ATTEMPTS = 1;
 const CONTINUATION_RECOVERY_TRANSIENT_BASE_BACKOFF_MS = 60_000;
+const CONTINUATION_RECOVERY_HOST_FAULT_BASE_BACKOFF_MS = 60_000;
+// How far back the retry-streak walk scans. Needs headroom above the largest cap so
+// a chain that interleaves non-lineage runs is still counted correctly.
+const CONTINUATION_RETRY_STREAK_SCAN_LIMIT = 25;
 export const PROVIDER_QUOTA_RECOVERY_DEFAULT_BACKOFF_MS = 60 * 60 * 1000;
 
 const PROVIDER_QUOTA_ERROR_RE =
@@ -491,7 +569,7 @@ export function classifyAdapterFailureForRecovery(
 }
 
 type ContinuationRetryClassification = {
-  kind: "transient_infra" | "non_retryable" | "deliberate_wait_without_target" | "default";
+  kind: "transient_infra" | "host_fault" | "non_retryable" | "deliberate_wait_without_target" | "default";
   maxAttempts: number;
   baseBackoffMs: number;
   errorCode: string | null;
@@ -515,6 +593,14 @@ export function classifyContinuationFailure(latestRun: LatestIssueRun): Continua
       kind: "transient_infra",
       maxAttempts: CONTINUATION_RECOVERY_TRANSIENT_MAX_ATTEMPTS,
       baseBackoffMs: CONTINUATION_RECOVERY_TRANSIENT_BASE_BACKOFF_MS,
+      errorCode,
+    };
+  }
+  if (errorCode && HOST_FAULT_CONTINUATION_ERROR_CODES.has(errorCode)) {
+    return {
+      kind: "host_fault",
+      maxAttempts: CONTINUATION_RECOVERY_HOST_FAULT_MAX_ATTEMPTS,
+      baseBackoffMs: CONTINUATION_RECOVERY_HOST_FAULT_BASE_BACKOFF_MS,
       errorCode,
     };
   }
@@ -682,6 +768,7 @@ export function recoveryService(
         errorCode: heartbeatRuns.errorCode,
         contextSnapshot: heartbeatRuns.contextSnapshot,
         livenessState: heartbeatRuns.livenessState,
+        retryOfRunId: heartbeatRuns.retryOfRunId,
         resultJson: heartbeatRuns.resultJson,
         startedAt: heartbeatRuns.startedAt,
         createdAt: heartbeatRuns.createdAt,
@@ -712,6 +799,7 @@ export function recoveryService(
         errorCode: heartbeatRuns.errorCode,
         contextSnapshot: heartbeatRuns.contextSnapshot,
         livenessState: heartbeatRuns.livenessState,
+        retryOfRunId: heartbeatRuns.retryOfRunId,
         resultJson: heartbeatRuns.resultJson,
         startedAt: heartbeatRuns.startedAt,
         createdAt: heartbeatRuns.createdAt,
@@ -729,19 +817,59 @@ export function recoveryService(
       .then((rows) => rows[0] ?? null);
   }
 
+  /**
+   * Counts how many automatic-recovery retries have already been burned on this
+   * (company, issue, agent) without a successful run in between.
+   *
+   * Three matching modes:
+   *  - `match: "recovery_lineage"` — reason- and error-code-agnostic. Used by the
+   *    continuation cap for `default`-class failures, because cap=1 means any single
+   *    failed lineage run exhausts the budget.
+   *  - `match: "error_class"` — pins the failure *class* (`transient_infra` or
+   *    `host_fault`), not the literal `errorCode`. Used for those two classes: they
+   *    each bundle several distinct error codes that are all the same failure mode
+   *    (a flaky adapter/network can legitimately alternate between them run to run —
+   *    MAS-93's "retry chains ran unbounded, observed depth 11" defect was exactly a
+   *    chain that alternated codes within one class and so never tripped an
+   *    exact-code match). This lets `adapter_failed` x2 → `timeout` x1 →
+   *    `adapter_failed` (latest) count as consecutive=3, still exhausting the shared
+   *    budget for the class, while a `transient_infra` run never counts against a
+   *    `host_fault` streak or vice versa (those two classes have different caps and
+   *    backoffs on purpose — see `CONTINUATION_RECOVERY_*_MAX_ATTEMPTS`).
+   *  - `match: "exact"` — pins `retryReason` and `errorCode`. Used by the
+   *    accepted-interaction requeue guard, which is deliberately counting one
+   *    specific cancellation code and nothing else.
+   *
+   * In all modes the walk stops at the first run that is not an unsuccessful
+   * terminal run. That is what protects legitimate long continuation chains: a
+   * single successful run resets the streak to zero.
+   */
   async function summarizeRecentContinuationRetries(
     companyId: string,
     issueId: string,
     agentId: string,
-    errorCodeToMatch: string | null,
-    since: Date | null = null,
+    opts: {
+      match: "recovery_lineage";
+      since?: Date | null;
+    } | {
+      match: "error_class";
+      errorClassToMatch: "transient_infra" | "host_fault";
+      since?: Date | null;
+    } | {
+      match: "exact";
+      retryReasonToMatch: string;
+      errorCodeToMatch: string | null;
+      since?: Date | null;
+    },
   ) {
+    const since = opts.since ?? null;
     const rows = await db
       .select({
         id: heartbeatRuns.id,
         status: heartbeatRuns.status,
         errorCode: heartbeatRuns.errorCode,
         contextSnapshot: heartbeatRuns.contextSnapshot,
+        retryOfRunId: heartbeatRuns.retryOfRunId,
         finishedAt: heartbeatRuns.finishedAt,
       })
       .from(heartbeatRuns)
@@ -754,29 +882,43 @@ export function recoveryService(
         ),
       )
       .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id))
-      .limit(10);
+      .limit(CONTINUATION_RETRY_STREAK_SCAN_LIMIT);
 
     let consecutive = 0;
     let latestFinishedAt: Date | null = null;
     for (const row of rows) {
-      const ctx = parseObject(row.contextSnapshot);
-      const retryReason = readNonEmptyString(ctx.retryReason);
-      if (retryReason !== "issue_continuation_needed") break;
-      if (
-        !UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES.includes(
-          row.status as (typeof UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES)[number],
-        )
-      ) {
-        break;
-      }
+      // A run that succeeded — or that is still live — ends the streak. This is the
+      // only break condition in lineage mode, and it is the one that keeps healthy
+      // long-running continuation chains out of the cap.
+      if (!isUnsuccessfulTerminalStatus(row.status)) break;
 
-      const rowErrorCode = readNonEmptyString(row.errorCode);
-      if (errorCodeToMatch !== rowErrorCode) {
-        break;
-      }
-
-      consecutive += 1;
       if (latestFinishedAt === null) latestFinishedAt = row.finishedAt ?? null;
+
+      if (opts.match === "exact") {
+        const ctx = parseObject(row.contextSnapshot);
+        if (readNonEmptyString(ctx.retryReason) !== opts.retryReasonToMatch) break;
+        if (opts.errorCodeToMatch !== readNonEmptyString(row.errorCode)) break;
+        consecutive += 1;
+        continue;
+      }
+
+      if (opts.match === "error_class") {
+        // Only lineage retries (not the original failed run) count against the cap.
+        if (!isRecoveryLineageRun(row)) continue;
+        // Bucket by failure *class*, not literal error code: a flaky adapter/network
+        // can alternate between codes in the same class run to run (adapter_failed,
+        // timeout, ...), and that is still one ongoing failure mode against the
+        // class's shared budget. A code from the *other* class (or an unclassified
+        // one) is a genuinely different failure mode and stops the streak.
+        if (continuationErrorClassOf(readNonEmptyString(row.errorCode)) !== opts.errorClassToMatch) break;
+        consecutive += 1;
+        continue;
+      }
+
+      // Lineage mode: only runs that were themselves enqueued as retries count
+      // against the cap. The original run that first died is walked past (it is a
+      // failure, so it does not reset the streak) but is not itself an attempt.
+      if (isRecoveryLineageRun(row)) consecutive += 1;
     }
     return { consecutive, latestFinishedAt };
   }
@@ -977,6 +1119,7 @@ export function recoveryService(
         errorCode: heartbeatRuns.errorCode,
         contextSnapshot: heartbeatRuns.contextSnapshot,
         livenessState: heartbeatRuns.livenessState,
+        retryOfRunId: heartbeatRuns.retryOfRunId,
         resultJson: heartbeatRuns.resultJson,
         startedAt: heartbeatRuns.startedAt,
         createdAt: heartbeatRuns.createdAt,
@@ -3174,8 +3317,12 @@ export function recoveryService(
           issue.companyId,
           issue.id,
           agentId,
-          CONTINUATION_WAITING_ON_REVIEW_ERROR_CODE,
-          acceptedInteractionResolvedAt,
+          {
+            match: "exact",
+            retryReasonToMatch: "issue_continuation_needed",
+            errorCodeToMatch: CONTINUATION_WAITING_ON_REVIEW_ERROR_CODE,
+            since: acceptedInteractionResolvedAt,
+          },
         );
         const successfulRunSinceResolution = await hasSuccessfulIssueRunSince(
           issue.companyId,
@@ -3664,12 +3811,24 @@ export function recoveryService(
           continue;
         }
 
-        if (didAutomaticRecoveryFail(latestRun, "issue_continuation_needed")) {
+        if (didRecoveryLineageRunFail(latestRun)) {
+          // `transient_infra` and `host_fault` classes pin to the failure *class*, not
+          // the exact error code, so a mixed-cause chain within one class (e.g.
+          // adapter_failed → timeout → adapter_failed) still accumulates against that
+          // class's shared cap instead of resetting on every code change (MAS-93 /
+          // MAS-614: the reset-on-change behavior made the cap unreachable for the
+          // realistic case of an alternating flaky adapter/network). `default` class
+          // uses lineage mode: cap=1 means any single failed lineage run exhausts it,
+          // so class pinning is irrelevant there, and lineage mode is simpler.
+          const streakMode: Parameters<typeof summarizeRecentContinuationRetries>[3] =
+            classification.kind === "transient_infra" || classification.kind === "host_fault"
+              ? { match: "error_class", errorClassToMatch: classification.kind }
+              : { match: "recovery_lineage" };
           const { consecutive, latestFinishedAt } = await summarizeRecentContinuationRetries(
             issue.companyId,
             issue.id,
             agentId,
-            classification.errorCode,
+            streakMode,
           );
           if (consecutive >= classification.maxAttempts) {
             const attemptCopy = consecutive <= 1 ? "" : ` (${consecutive}× attempts)`;

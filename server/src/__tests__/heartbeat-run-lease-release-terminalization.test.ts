@@ -51,7 +51,12 @@ describeEmbeddedPostgres("heartbeat terminalizeRunOnLeaseRelease", () => {
     await tempDb?.cleanup();
   });
 
-  async function seed(input: { issueStatus: string; runStatus: string }) {
+  async function seed(input: {
+    issueStatus: string;
+    runStatus: string;
+    agentStatus?: string;
+    secondRunStatus?: string;
+  }) {
     const companyId = randomUUID();
     const agentId = randomUUID();
     const issueId = randomUUID();
@@ -68,7 +73,7 @@ describeEmbeddedPostgres("heartbeat terminalizeRunOnLeaseRelease", () => {
       companyId,
       name: "Coder",
       role: "engineer",
-      status: "active",
+      status: input.agentStatus ?? "active",
       adapterType: "codex_local",
       adapterConfig: {},
       runtimeConfig: {},
@@ -91,6 +96,17 @@ describeEmbeddedPostgres("heartbeat terminalizeRunOnLeaseRelease", () => {
       startedAt: new Date(),
       contextSnapshot: { issueId },
     });
+    if (input.secondRunStatus) {
+      await db.insert(heartbeatRuns).values({
+        id: randomUUID(),
+        companyId,
+        agentId,
+        status: input.secondRunStatus,
+        invocationSource: "manual",
+        startedAt: new Date(),
+        contextSnapshot: {},
+      });
+    }
 
     const run = await db
       .select()
@@ -208,5 +224,90 @@ describeEmbeddedPostgres("heartbeat terminalizeRunOnLeaseRelease", () => {
       .where(eq(heartbeatRunEvents.runId, runId))
       .then((rows) => rows.length);
     expect(eventCount).toBe(0);
+  });
+
+  async function readAgentStatus(agentId: string) {
+    return await db
+      .select({ status: agents.status })
+      .from(agents)
+      .where(eq(agents.id, agentId))
+      .then((rows) => rows[0]?.status);
+  }
+
+  it("moves the agent off running when it terminalizes the agent's only live run", async () => {
+    // The defect: this path wrote the run row terminal and returned without
+    // touching the agent row, so the agent stayed "running" with no live run
+    // behind it until it happened to finish some later run.
+    const { agentId, run } = await seed({
+      issueStatus: "in_progress",
+      runStatus: "running",
+      agentStatus: "running",
+    });
+
+    const heartbeat = heartbeatService(db);
+    await heartbeat.terminalizeRunOnLeaseRelease(run);
+
+    expect(await readAgentStatus(agentId)).toBe("idle");
+  });
+
+  it("moves the agent off running when the terminal status is succeeded", async () => {
+    const { agentId, run } = await seed({
+      issueStatus: "done",
+      runStatus: "running",
+      agentStatus: "running",
+    });
+
+    const heartbeat = heartbeatService(db);
+    await heartbeat.terminalizeRunOnLeaseRelease(run);
+
+    // succeeded/cancelled/interrupted all map to idle, never to error.
+    expect(await readAgentStatus(agentId)).toBe("idle");
+  });
+
+  it("keeps the agent running when another run of the same agent is still live", async () => {
+    const { agentId, run } = await seed({
+      issueStatus: "in_progress",
+      runStatus: "running",
+      agentStatus: "running",
+      secondRunStatus: "running",
+    });
+
+    const heartbeat = heartbeatService(db);
+    await heartbeat.terminalizeRunOnLeaseRelease(run);
+
+    expect(await readAgentStatus(agentId)).toBe("running");
+  });
+
+  it("leaves a paused agent paused", async () => {
+    const { agentId, runId, run } = await seed({
+      issueStatus: "in_progress",
+      runStatus: "running",
+      agentStatus: "paused",
+    });
+
+    const heartbeat = heartbeatService(db);
+    await heartbeat.terminalizeRunOnLeaseRelease(run);
+
+    expect(await readAgentStatus(agentId)).toBe("paused");
+    const runStatus = await db
+      .select({ status: heartbeatRuns.status })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0]?.status);
+    expect(runStatus).toBe("interrupted");
+  });
+
+  it("does not touch the agent when the run was already terminal", async () => {
+    const { agentId, run } = await seed({
+      issueStatus: "done",
+      runStatus: "failed",
+      agentStatus: "running",
+    });
+
+    const heartbeat = heartbeatService(db);
+    await heartbeat.terminalizeRunOnLeaseRelease(run);
+
+    // Another path owns that run's finalization, including its agent write.
+    expect(await readAgentStatus(agentId)).toBe("running");
   });
 });

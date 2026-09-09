@@ -1,6 +1,6 @@
 import { and, count, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { activityLog, heartbeatRuns } from "@paperclipai/db";
+import { activityLog, heartbeatRuns, issues } from "@paperclipai/db";
 import { isUuidLike, issueWriteDenialResponse } from "@paperclipai/shared";
 import { forbidden } from "../errors.js";
 import { logger } from "../middleware/logger.js";
@@ -110,12 +110,34 @@ export async function observeCrossIssueInfluence(
     }
 
     const sourceIssueId = readRunSourceIssueId(run.contextSnapshot);
-    if (!sourceIssueId) throw crossIssueInfluenceRunContextError();
     if (
-      sourceIssueId === input.targetIssueId ||
-      (input.targetIssueIdentifier && sourceIssueId.toUpperCase() === input.targetIssueIdentifier.toUpperCase())
+      sourceIssueId &&
+      (sourceIssueId === input.targetIssueId ||
+        (input.targetIssueIdentifier && sourceIssueId.toUpperCase() === input.targetIssueIdentifier.toUpperCase()))
     ) {
       return null;
+    }
+
+    if (!sourceIssueId) {
+      // No dispatch-time issueId in contextSnapshot (ambient/manual/timer
+      // invocation). Before failing closed, check whether this run legitimately
+      // owns the TARGET issue right now via a live checkout/execution lock —
+      // that proves same-issue intent regardless of how the run was invoked.
+      const targetIssue = await tx
+        .select({
+          id: issues.id,
+          companyId: issues.companyId,
+          checkoutRunId: issues.checkoutRunId,
+          executionRunId: issues.executionRunId,
+        })
+        .from(issues)
+        .where(and(eq(issues.id, input.targetIssueId), eq(issues.companyId, input.companyId)))
+        .then((rows) => rows[0] ?? null);
+      const ownsViaLiveCheckout =
+        !!targetIssue &&
+        (targetIssue.checkoutRunId === input.runId || targetIssue.executionRunId === input.runId);
+      if (ownsViaLiveCheckout) return null;
+      throw crossIssueInfluenceRunContextError();
     }
 
     const priorCount = await tx

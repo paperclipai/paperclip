@@ -228,6 +228,101 @@ const TOKEN_USAGE_REGEX =
 /** Regex to extract cost from Hermes output. */
 const COST_REGEX = /(?:cost|spent)[:\s]*\$?([\d.]+)/i;
 
+/**
+ * Terminal API-failure markers that Hermes writes to **stdout**, not stderr.
+ *
+ * Hermes exits 0 on these paths, so a run that did zero work otherwise reaches
+ * Paperclip with no exit code and no error text and records as `succeeded`.
+ *
+ * Only the terminal emissions are listed. The retry-attempt line
+ * ("API call failed (attempt 1/3)") and the "— trying fallback..." status lines
+ * are deliberately excluded: a run that recovers on a later attempt or on a
+ * fallback provider is a success, and matching those would fail it. Each
+ * descriptive variant below is matched by its trailing colon, which the
+ * "— trying fallback..." counterpart of the same message does not have.
+ *
+ * Ordered by informativeness only incidentally — the first matching *line* in
+ * stdout wins, and Hermes emits the descriptive line just before the bare
+ * "Aborting." line.
+ */
+const STDOUT_ABORT_REGEXES: RegExp[] = [
+  // Terminal non-retryable client error, with the summarized cause.
+  /Non-retryable error \(HTTP [^)]*\):/i,
+  // Same path, content-policy and TLS variants.
+  /Provider safety filter blocked this request:/i,
+  /TLS certificate verification failed:/i,
+  // Always emitted on the non-retryable terminal path, whatever the variant.
+  /Non-retryable client error \(HTTP [^)]*\)\.\s*Aborting\./i,
+  // Retry budget exhausted with no fallback left.
+  /API call failed after \d+ retries?:/i,
+  // Billing variant of the same terminal path.
+  /Billing or credits exhausted:/i,
+];
+
+/**
+ * Lines that mark the start of Hermes's own trailing footer block
+ * (`Resume this session with:` / `Session:` / `Duration:` / `Messages:`,
+ * verbatim, see the ABORT_STDOUT fixture in execute.stdout-abort.test.ts).
+ * The earliest of these that appears is treated as the footer boundary.
+ */
+const STDOUT_FOOTER_START_REGEXES: RegExp[] = [
+  /^Resume this session with:/,
+  /^Session:\s+\S/,
+  /^Duration:\s+\S/,
+  /^Messages:\s+\S/,
+];
+
+/**
+ * How many non-empty stdout lines immediately preceding the footer boundary
+ * (or, when there is no footer, immediately preceding the end of stdout) may
+ * be scanned for a terminal abort marker. Hermes's abort line always sits a
+ * handful of lines before its own footer (see the ABORT_STDOUT fixture,
+ * where it is 4 lines before the footer's first line) — bounding the scan to
+ * that neighborhood, rather than an arbitrary count of trailing lines, is
+ * what keeps a short successful transcript that merely quotes one of these
+ * phrases (e.g. narrating a bug it just fixed, or a prior failed run it is
+ * reporting on) from being misread as Hermes's own terminal abort: such a
+ * quote sits *before* the real content, not adjacent to the footer.
+ */
+const STDOUT_ABORT_FOOTER_LOOKBACK_LINE_COUNT = 8;
+
+/**
+ * Find the first stdout line, within the window of
+ * STDOUT_ABORT_FOOTER_LOOKBACK_LINE_COUNT non-empty lines immediately
+ * preceding Hermes's trailing footer (or the end of stdout, if no footer is
+ * present), that marks a terminal Hermes API abort.
+ *
+ * Anchored to the footer rather than a fixed count of trailing lines: an
+ * abort phrase an agent quotes or narrates earlier in a long, otherwise
+ * successful transcript sits well before that boundary and is not matched,
+ * while the phrase Hermes itself emits — which always sits immediately
+ * before its own footer — is matched regardless of overall transcript length.
+ */
+function findStdoutAbortLine(stdout: string): string | undefined {
+  if (!stdout) return undefined;
+  const nonEmptyLines: string[] = [];
+  for (const rawLine of stdout.split("\n")) {
+    const line = rawLine.trim();
+    if (line) nonEmptyLines.push(line);
+  }
+  if (nonEmptyLines.length === 0) return undefined;
+
+  let footerStart = nonEmptyLines.length;
+  for (let i = 0; i < nonEmptyLines.length; i += 1) {
+    if (STDOUT_FOOTER_START_REGEXES.some((re) => re.test(nonEmptyLines[i]))) {
+      footerStart = i;
+      break;
+    }
+  }
+
+  const windowStart = Math.max(0, footerStart - STDOUT_ABORT_FOOTER_LOOKBACK_LINE_COUNT);
+  const window = nonEmptyLines.slice(windowStart, footerStart);
+  for (const line of window) {
+    if (STDOUT_ABORT_REGEXES.some((re) => re.test(line))) return line;
+  }
+  return undefined;
+}
+
 interface ParsedOutput {
   sessionId?: string;
   response?: string;
@@ -322,6 +417,16 @@ function parseHermesOutput(stdout: string, stderr: string): ParsedOutput {
       .filter((line) => !/INFO|DEBUG|warn/i.test(line)); // skip log-level noise
     if (errorLines.length > 0) {
       result.errorMessage = errorLines.slice(0, 5).join("\n");
+    }
+  }
+
+  // Hermes writes non-retryable API aborts to stdout and still exits 0, so
+  // neither the stderr scan above nor the nonzero-exit fallback in execute()
+  // sees them. Checked second so stderr stays the higher-priority source.
+  if (!result.errorMessage) {
+    const abortLine = findStdoutAbortLine(stdout);
+    if (abortLine) {
+      result.errorMessage = abortLine;
     }
   }
 
