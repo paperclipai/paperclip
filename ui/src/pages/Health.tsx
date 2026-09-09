@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useLocation } from "react-router-dom";
-import { Activity, AlertCircle, ChevronDown, ChevronUp, Dumbbell, Heart, Leaf, MapPin, Moon, Pencil, Plus, Smile, Sun, Thermometer, Trash2, Weight, Wind, Zap } from "lucide-react";
+import { Activity, AlertCircle, BookOpen, ChevronDown, ChevronUp, Dumbbell, Heart, Leaf, MapPin, Moon, Pencil, Plus, Smile, Sun, Thermometer, Trash2, Weight, Wind, Zap } from "lucide-react";
 import {
   usePersonalEnvironmentalScore,
   type ColorTier,
@@ -75,6 +75,12 @@ import {
   useDeleteHealthGoal,
   type HealthGoal,
 } from "../hooks/useHealthGoals";
+import {
+  useJournalHistory,
+  useCreateJournalEntry,
+  useDeleteJournalEntry,
+  type JournalEntry,
+} from "../hooks/useJournal";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { EmptyState } from "../components/EmptyState";
@@ -2960,13 +2966,202 @@ function GoalsView({ companyId }: { companyId: string }) {
   );
 }
 
+// ---- Journal ----
+
+function JournalView({ companyId }: { companyId: string }) {
+  const today = new Date().toISOString().slice(0, 10);
+  const thirtyDaysAgo = new Date(Date.now() - 30 * 86_400_000).toISOString().slice(0, 10);
+
+  const { data, isLoading, error } = useJournalHistory(companyId, thirtyDaysAgo, today);
+  const createMutation = useCreateJournalEntry();
+  const deleteMutation = useDeleteJournalEntry();
+
+  const [showForm, setShowForm] = useState(false);
+  const [entryDate, setEntryDate] = useState(today);
+  const [title, setTitle] = useState("");
+  const [body, setBody] = useState("");
+  const [moodScore, setMoodScore] = useState("");
+  const [tags, setTags] = useState("");
+  const [formError, setFormError] = useState<string | null>(null);
+
+  function handleCreate() {
+    if (!body.trim()) {
+      setFormError("Entry body is required.");
+      return;
+    }
+    const moodNum = moodScore ? parseInt(moodScore, 10) : undefined;
+    if (moodScore && (isNaN(moodNum!) || moodNum! < 1 || moodNum! > 10)) {
+      setFormError("Mood score must be between 1 and 10.");
+      return;
+    }
+    const tagList = tags
+      .split(",")
+      .map((t) => t.trim())
+      .filter(Boolean);
+    setFormError(null);
+    createMutation.mutate(
+      {
+        companyId,
+        entryDate,
+        body: body.trim(),
+        title: title.trim() || null,
+        moodScore: moodNum ?? null,
+        tags: tagList,
+      },
+      {
+        onSuccess: () => {
+          setShowForm(false);
+          setTitle("");
+          setBody("");
+          setMoodScore("");
+          setTags("");
+        },
+        onError: (e) => setFormError(e instanceof Error ? e.message : "Failed to save."),
+      },
+    );
+  }
+
+  const entries: JournalEntry[] = data?.entries ?? [];
+
+  if (isLoading) return <PageSkeleton variant="dashboard" />;
+  if (error)
+    return <p className="text-sm text-destructive p-4">{error instanceof Error ? error.message : "Error"}</p>;
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <h2 className="text-sm font-semibold text-foreground">Journal — Last 30 Days</h2>
+        <Button size="sm" variant="outline" onClick={() => setShowForm(true)}>
+          + New Entry
+        </Button>
+      </div>
+
+      {showForm && (
+        <Dialog open onOpenChange={(o) => !o && setShowForm(false)}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>New Journal Entry</DialogTitle>
+            </DialogHeader>
+            <div className="space-y-3 py-2">
+              <div>
+                <label className="text-xs font-medium text-muted-foreground mb-1 block">Date</label>
+                <input
+                  type="date"
+                  value={entryDate}
+                  onChange={(e) => setEntryDate(e.target.value)}
+                  className="w-full border rounded px-2 py-1 text-sm"
+                />
+              </div>
+              <div>
+                <label className="text-xs font-medium text-muted-foreground mb-1 block">Title (optional)</label>
+                <input
+                  type="text"
+                  value={title}
+                  onChange={(e) => setTitle(e.target.value)}
+                  placeholder="What's on your mind?"
+                  className="w-full border rounded px-2 py-1 text-sm"
+                />
+              </div>
+              <div>
+                <label className="text-xs font-medium text-muted-foreground mb-1 block">Entry *</label>
+                <textarea
+                  value={body}
+                  onChange={(e) => setBody(e.target.value)}
+                  rows={5}
+                  placeholder="Write your thoughts..."
+                  className="w-full border rounded px-2 py-1 text-sm resize-none"
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-xs font-medium text-muted-foreground mb-1 block">Mood (1–10)</label>
+                  <input
+                    type="number"
+                    min={1}
+                    max={10}
+                    value={moodScore}
+                    onChange={(e) => setMoodScore(e.target.value)}
+                    placeholder="Optional"
+                    className="w-full border rounded px-2 py-1 text-sm"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs font-medium text-muted-foreground mb-1 block">Tags (comma-separated)</label>
+                  <input
+                    type="text"
+                    value={tags}
+                    onChange={(e) => setTags(e.target.value)}
+                    placeholder="gratitude, goals"
+                    className="w-full border rounded px-2 py-1 text-sm"
+                  />
+                </div>
+              </div>
+              {formError && <p className="text-xs text-destructive">{formError}</p>}
+            </div>
+            <DialogFooter>
+              <Button variant="outline" size="sm" onClick={() => setShowForm(false)}>
+                Cancel
+              </Button>
+              <Button size="sm" onClick={handleCreate} disabled={createMutation.isPending}>
+                Save
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      )}
+
+      {entries.length === 0 ? (
+        <EmptyState icon={BookOpen} message="No journal entries in the last 30 days. Start writing!" />
+      ) : (
+        <div className="space-y-3">
+          {entries.map((entry) => (
+            <div key={entry.id} className="border rounded-lg p-4 space-y-2 group relative">
+              <div className="flex items-start justify-between gap-2">
+                <div>
+                  <p className="text-xs text-muted-foreground">{entry.entryDate}</p>
+                  {entry.title && <p className="text-sm font-medium text-foreground">{entry.title}</p>}
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
+                  {entry.moodScore !== null && (
+                    <span className="text-xs bg-blue-50 text-blue-700 border border-blue-200 rounded px-2 py-0.5">
+                      Mood {entry.moodScore}/10
+                    </span>
+                  )}
+                  <button
+                    onClick={() => deleteMutation.mutate({ id: entry.id, companyId })}
+                    disabled={deleteMutation.isPending}
+                    className="opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-destructive transition-colors"
+                    title="Delete entry"
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </button>
+                </div>
+              </div>
+              <p className="text-sm text-muted-foreground whitespace-pre-wrap">{entry.body}</p>
+              {entry.tags.length > 0 && (
+                <div className="flex flex-wrap gap-1">
+                  {entry.tags.map((tag) => (
+                    <span key={tag} className="text-xs bg-muted text-muted-foreground rounded px-2 py-0.5">
+                      #{tag}
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ---- Page ----
 
 export function Health() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const { pathname } = useLocation();
-  const [view, setView] = useState<"dashboard" | "score" | "locations" | "sleep" | "exercise" | "biometrics" | "mood" | "nutrition" | "symptoms" | "medications" | "lab-results" | "goals">(
+  const [view, setView] = useState<"dashboard" | "score" | "locations" | "sleep" | "exercise" | "biometrics" | "mood" | "nutrition" | "symptoms" | "medications" | "lab-results" | "goals" | "journal">(
     pathname.includes("environmental-score") ? "score" : "dashboard"
   );
 
@@ -3089,6 +3284,15 @@ export function Health() {
         >
           Goals
         </button>
+        <button
+          className={cn(
+            "px-3 py-1 text-xs font-medium rounded transition-colors",
+            view === "journal" ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground",
+          )}
+          onClick={() => setView("journal")}
+        >
+          Journal
+        </button>
       </div>
 
       {view === "dashboard" ? (
@@ -3113,8 +3317,10 @@ export function Health() {
         <MedicationsView companyId={selectedCompanyId} />
       ) : view === "lab-results" ? (
         <LabResultsView companyId={selectedCompanyId} />
-      ) : (
+      ) : view === "goals" ? (
         <GoalsView companyId={selectedCompanyId} />
+      ) : (
+        <JournalView companyId={selectedCompanyId} />
       )}
     </div>
   );
