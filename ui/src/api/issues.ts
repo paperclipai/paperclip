@@ -1,3 +1,4 @@
+import type { ExecutionReconciliation } from "@paperclipai/shared";
 import type {
   AcceptedPlanDecompositionSummary,
   AskUserQuestionsAnswer,
@@ -181,6 +182,7 @@ export const issuesApi = {
   resolveRecoveryAction: (
     id: string,
     data: {
+      executionReconciliation?: ExecutionReconciliation;
       actionId?: string;
       outcome: "restored" | "false_positive" | "blocked" | "cancelled";
       sourceIssueStatus: "todo" | "done" | "in_review" | "blocked";

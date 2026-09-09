@@ -1,3 +1,4 @@
+import { requiresExecutionReconciliation } from "@paperclipai/shared";
 import {
   useCallback,
   useEffect,
@@ -2494,14 +2495,14 @@ export function TaskChatThread(props: TaskChatThreadProps) {
               renderMessageActions={renderMessageActions}
               renderQueuedAction={renderQueuedAction}
               onTryAgainNoLiveExecutionPath={
-                issueStatus === "blocked"
+                issueStatus === "blocked" && !requiresExecutionReconciliation(props.recoveryAction?.cause) && !linkedRuns?.some(run => run.execution?.phase === "recovery_needed")
                   ? onTryAgainNoLiveExecutionPath
                   : undefined
               }
               tryAgainNoLiveExecutionPathPending={
                 tryAgainNoLiveExecutionPathPending
               }
-              onRetryFailedRun={onRetryFailedRun}
+              onRetryFailedRun={isTerminalIssueStatus(issueStatus) || interactions?.some(interaction => interaction.status === "pending") || requiresExecutionReconciliation(props.recoveryAction?.cause) || props.scheduledRetry || linkedRuns?.some(run => ["working", "retry_scheduled", "reconnecting", "finishing", "queued", "recovery_needed"].includes(run.execution?.phase ?? "")) ? undefined : onRetryFailedRun}
               retryFailedRunId={retryFailedRunId}
               tail={
                 tailRunId || optimisticRunnerStartup || bottomBlockerLinks ? (
@@ -2511,6 +2512,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                         {paperclipRunnerTail || optimisticRunnerStartup ? (
                           <TaskChatRunnerTurn
                             runId={tailRunId}
+                            execution={liveRun?.id === tailRunId ? liveRun.execution : null}
                             agentName={visibleTailAgentName}
                             agentIcon={visibleTailAgentIcon}
                             items={tailItems}
@@ -2533,6 +2535,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                           <>
                             <TaskChatLiveRunPill
                               status={tailStatus}
+                              execution={liveRun?.id === tailRunId ? liveRun.execution : null}
                               startedAtMs={tailStartedAtMs}
                               finishedAtMs={tailFinishedAtMs}
                               toolSummary={tailToolSummary}

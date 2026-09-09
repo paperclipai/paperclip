@@ -9,6 +9,7 @@
 export type RetryReasonKind =
   | "max_turn_continuation"
   | "disposition_repair"
+  | "native_safe_replacement"
   | "other";
 
 export type BudgetBlockFacts = {
@@ -90,6 +91,7 @@ export type ScheduledRetryFacts = {
   issueStatus: string | null;
   issueAssigneeAgentId: string | null;
   issueExecutionRunId: string | null;
+  issueCheckoutRunId?: string | null;
 
   isNonAssigneeWorkspaceBusyRetry: boolean;
   reviewParticipant: ReviewParticipantFacts;
@@ -101,6 +103,7 @@ export type ScheduledRetryFacts = {
 };
 
 export type QueuedRunStalenessErrorCode =
+  | "execution_reconciliation_required"
   | "issue_not_found"
   | "issue_assignee_changed"
   | "issue_terminal_status"
@@ -128,6 +131,7 @@ export type QueuedRunFacts = {
   issueStatus: string | null;
   issueAssigneeAgentId: string | null;
   issueExecutionRunId: string | null;
+  issueCheckoutRunId?: string | null;
 
   isResolvedInteractionContinuation: boolean;
   /** A connection resolution or tool refresh can resume an agent waiting in review. */
@@ -202,6 +206,7 @@ type ExecutionLockFacts = {
   requiresExecutionLock: boolean;
   runId: string;
   issueExecutionRunId: string | null;
+  issueCheckoutRunId?: string | null;
 };
 
 type ExecutionLockOutcome = "ok" | "lock_changed";
@@ -325,6 +330,11 @@ export function decideScheduledRetryGate(
     runAgentId: facts.runAgentId,
     issueAssigneeAgentId: facts.issueAssigneeAgentId,
     isNonAssigneeWorkspaceBusyRetry: facts.isNonAssigneeWorkspaceBusyRetry,
+    isCurrentReviewParticipant:
+      facts.reviewParticipant.isInReview &&
+      facts.reviewParticipant.hasParticipant &&
+      facts.reviewParticipant.participantIsAgent &&
+      facts.reviewParticipant.participantAgentId === facts.runAgentId,
   });
   if (ownership === "reassigned") {
     return {
@@ -338,6 +348,13 @@ export function decideScheduledRetryGate(
         currentAssigneeAgentId: facts.issueAssigneeAgentId,
       },
     };
+  }
+
+  if (facts.retryReasonKind === "native_safe_replacement" &&
+      [facts.issueExecutionRunId, facts.issueCheckoutRunId].some(id => id != null && id !== facts.runId)) {
+    return { allowed: false, issueId: facts.issueId, errorCode: "issue_execution_lock_changed",
+      reason: "Scheduled replacement suppressed because another run owns task execution or checkout",
+      details: { issueId: facts.issueId, currentExecutionRunId: facts.issueExecutionRunId, currentCheckoutRunId: facts.issueCheckoutRunId ?? null } };
   }
 
   const requiresInProgress = facts.retryReasonKind === "max_turn_continuation";
@@ -537,6 +554,13 @@ export function decideQueuedRunStaleness(
         currentAssigneeAgentId: facts.issueAssigneeAgentId,
       },
     };
+  }
+
+  if (facts.retryReasonKind === "native_safe_replacement" &&
+      [facts.issueExecutionRunId, facts.issueCheckoutRunId].some(id => id != null && id !== facts.runId)) {
+    return { stale: true, errorCode: "issue_execution_lock_changed",
+      reason: "Cancelled because another run owns task execution or checkout before replacement dispatch",
+      details: { issueId: facts.issueId, currentExecutionRunId: facts.issueExecutionRunId, currentCheckoutRunId: facts.issueCheckoutRunId ?? null } };
   }
 
   const requiresInProgress = facts.retryReasonKind === "max_turn_continuation";

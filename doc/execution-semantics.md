@@ -471,7 +471,7 @@ Agent-assigned `in_review` with no typed participant is only healthy when one of
 
 An `in_review` issue is stalled when it has no typed participant, no pending interaction or approval, no user owner, no active monitor, no active run, no queued wake, and no explicit recovery action. Paperclip should surface that state as recovery work rather than silently completing the issue or leaving blocker chains parked indefinitely.
 
-When an execution-policy review stage has a pending agent participant, the participant's run is part of the review path only while it is live or queued. If that participant run reaches a terminal state while `executionState.status` remains `pending`, no decision has been recorded. Paperclip should queue one bounded normal-model recovery wake for the same participant when the agent is invokable and no other review path exists. If that recovery run also finishes while the stage remains pending, or the participant cannot be invoked, Paperclip must move the source issue to an explicit blocked/recovery path instead of leaving `in_review` to drift silently.
+When an execution-policy review stage has a pending agent participant, the participant's run is part of the review path only while it is live or queued. If that participant run reaches a terminal state while `executionState.status` remains `pending`, no decision has been recorded. After a successful run with no review decision, Paperclip should queue one bounded normal-model recovery wake for the same participant when the agent is invokable and no other review path exists. A failed participant instead follows the provider-continuity rules below: positive bootstrap evidence or a validated native resume/replacement can permit bounded recovery; uncertain effects use the automatic no-replay disposition while preserving the original assignee. If that recovery run also finishes while the stage remains pending, or the participant cannot be invoked, Paperclip must move the source issue to an explicit blocked/recovery path instead of leaving `in_review` to drift silently.
 
 ### Issue monitors
 
@@ -779,11 +779,25 @@ Auto-recovery is allowed when ownership is clear and the control plane only lost
 
 Examples:
 
-- requeue one dispatch wake for an assigned `todo` issue whose latest run failed, timed out, or was cancelled
-- requeue one continuation wake for an assigned `in_progress` issue whose live execution path disappeared
+- requeue one dispatch wake for an assigned `todo` issue whose latest run failed, timed out, or was cancelled only when the provider-continuity rules establish safe recovery
+- requeue one continuation wake for an assigned `in_progress` issue whose live execution path disappeared only with the required continuity and action-outcome evidence
 - assign an orphan blocker back to its creator when that blocker is already preventing other work
 
 Auto-recovery preserves the existing owner. It does not choose a replacement agent.
+
+### Provider continuity and bounded finalization
+
+A permanently unusable established provider session may be replaced only with evidence that its predecessor is stopped and fenced, completed results and workspace state are preserved, required task history is available, and pending effects have been reconciled. A provider-native shell command or external write without a reliable outcome receipt is unknown. Unknown effects, integrity failures, and unverified process ownership never authorize speculative replay. Once automatic recovery is ruled out, Paperclip selects a conservative default: preserve recorded work, stop the affected task, and retain a durable no-replay hold. Unknown action outcomes remain unknown. No reconciliation form or user diagnosis is required.
+
+Bootstrap retries, exact-checkpoint resumes, and fresh replacement sessions share three total provider attempts, including the original attempt. Linked run IDs, controller restarts, and duplicate wakes do not reset this budget. Automatic attempts retain the 30-second delay. Replacement scheduling and predecessor lineage commit together, with one successor per predecessor and admission through the normal task locks, authorization, pause, approval, and budget gates.
+
+Provider execution and control-plane finalization have different clocks. A healthy provider can think or execute a long tool without output. Once execution settles, recovery and finalization control steps have a 60-second deadline, checked on startup and every 15 seconds. With a healthy database and scheduler, an abandoned transition must be repaired or surfaced within 90 seconds. Terminal persistence must not wait on provider cleanup or publication; a late finalizer cannot change a reassigned or closed task or release another run's locks. Historical ambiguous runs are never automatically replayed after an upgrade.
+
+Every continuation carries the triggering request, ordered user direction, interaction outcomes, completed work, and explicit history coverage. A delivered message remains part of the task's request after its connection or approval resolves. The original title is background; a completed Notion read does not satisfy a later Gmail request. Author and source-trust boundaries survive rendering into both native and legacy prompts. Missing required history must be fetched before dispatch rather than described as complete.
+
+Legacy adapters without a verified resume capability use the same automatic no-replay disposition after provider failure. An availability error family (including quota or upstream overload) is not proof that earlier actions did not happen. The compatible adapter result field `executionRecovery: { kind: "bootstrap", providerWorkStarted: false }` can establish a pre-provider retry; the server records the same evidence for failures before adapter dispatch. Bootstrap retries and process-loss bootstrap retries use the same durable counter and delay. Productive max-turn continuation remains a separate execution boundary rather than a failed provider incident. A pre-dispatch wait for a confirmed live workspace holder is also a resource wait, not a provider failure: explicit `workspace_wait` evidence preserves that wait path without consuming the failure incident budget.
+
+The server projection remains available for execution diagnostics. Normal working, finishing, and interaction waits add no badges or cards to task lists or feeds. A retry may briefly change the existing transcript header to Reconnecting; attempts, causes, and recovery decisions belong in the run log. There is no reconciliation dialog. Safe recovery remains automatic. If it cannot continue safely, the source-scoped recovery record resolves with a blocked no-replay disposition and the ordinary task status becomes blocked, preserving its owner. Resolving this record does not grant replay authority: dispatch continues enforcing the durable hold. Replacement history remains inspectable and the composer stays usable.
 
 ### Explicit Recovery Action
 

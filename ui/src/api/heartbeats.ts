@@ -1,3 +1,4 @@
+import type { IssueRecoveryAction } from "@paperclipai/shared";
 import type {
   HeartbeatRun,
   HeartbeatRunEvent,
@@ -17,6 +18,7 @@ export interface RunLivenessFields {
 }
 
 export interface ActiveRunForIssue {
+  execution?: HeartbeatRun["execution"];
   id: string;
   runtimeMode?: "legacy" | "native";
   status: string;
@@ -47,6 +49,7 @@ export interface ActiveRunForIssue {
 }
 
 export interface LiveRunForIssue {
+  execution?: HeartbeatRun["execution"];
   id: string;
   runtimeMode?: "legacy" | "native";
   status: string;
@@ -108,6 +111,7 @@ export interface ProviderTraceInspection {
 }
 
 export const heartbeatsApi = {
+  executionForIssue: (issueId: string) => api.get<{ runId: string; agentId: string; recoveryAction: IssueRecoveryAction | null; execution: HeartbeatRun["execution"] } | null>(`/issues/${issueId}/execution`),
   list: (
     companyId: string,
     agentId?: string,

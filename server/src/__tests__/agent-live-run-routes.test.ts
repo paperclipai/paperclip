@@ -22,6 +22,11 @@ const mockIssueService = vi.hoisted(() => ({
   getByIdentifier: vi.fn(),
 }));
 
+const mockExecutionProjection = vi.hoisted(() => ({
+  executionProjectionForRun: vi.fn(async () => null),
+  executionProjectionsForRuns: vi.fn(async () => new Map()),
+}));
+
 const mockInstanceSettingsService = vi.hoisted(() => ({
   get: vi.fn(),
   getExperimental: vi.fn(),
@@ -64,6 +69,7 @@ const mockWorkspaceOperationService = vi.hoisted(() => ({
 const routeAgentId = "11111111-1111-4111-8111-111111111111";
 
 function registerModuleMocks() {
+  vi.doMock("../services/execution-projection.js", () => mockExecutionProjection);
   vi.doMock("../routes/authz.js", async () =>
     vi.importActual("../routes/authz.js"),
   );
@@ -440,7 +446,11 @@ describe("agent live run routes", () => {
       expect.objectContaining({ id: "run-1", issueId: "issue-1" }),
       { companyId: "company-1", issueId: "issue-1" },
     );
+    expect(mockExecutionProjection.executionProjectionForRun).toHaveBeenCalledWith(
+      expect.anything(), "company-1", "run-1",
+    );
     expect(res.body).toMatchObject({
+      execution: null,
       currentStatusMessage: "Syncing workspace to environment",
       currentStatusUpdatedAt: "2026-04-10T09:30:05.000Z",
       currentToolName: "bash",

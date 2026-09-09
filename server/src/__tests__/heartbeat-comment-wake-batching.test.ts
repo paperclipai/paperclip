@@ -10,6 +10,7 @@ import {
   createDb,
   heartbeatRuns,
   issueComments,
+  issueRecoveryActions,
   issues,
 } from "@paperclipai/db";
 import { runningProcesses } from "../adapters/index.js";
@@ -609,7 +610,8 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
       });
       expect(String(secondPayload.message ?? "")).toContain("Second comment");
       expect(String(secondPayload.message ?? "")).toContain("Third comment");
-      expect(String(secondPayload.message ?? "")).not.toContain("First comment");
+      // A fresh gateway request receives full context; the wake delta stays bounded above.
+      expect(String(secondPayload.message ?? "")).toContain("First comment");
     } finally {
       gateway.releaseFirstWait();
       await gateway.close();
@@ -762,7 +764,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
     }
   }, 120_000);
 
-  it("promotes deferred comment wakes with their comments after the active run is cancelled", async () => {
+  it("retains deferred comments for reconciliation after cancelling an unknown provider outcome", async () => {
     const gateway = await createControlledGatewayServer();
     const companyId = randomUUID();
     const agentId = randomUUID();
@@ -886,24 +888,17 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
 
       await heartbeat.cancelRun(firstRun!.id);
 
-      await waitFor(() => gateway.getAgentPayloads().length === 2);
-      const promotedPayload = gateway.getAgentPayloads()[1] ?? {};
-      expect(promotedPayload.paperclip).toBeUndefined();
-      const promotedWake = parseWakePayloadFromMessage(promotedPayload.message);
-      expect(promotedWake).toMatchObject({
-        commentIds: [queuedComment.id],
-        latestCommentId: queuedComment.id,
-        requestedCount: 1,
-        includedCount: 1,
-        missingCount: 0,
-      });
-      expect(String(promotedPayload.message ?? "")).toContain("Queued follow-up");
-
       gateway.releaseFirstWait();
-      await waitFor(async () => {
-        const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
-        return runs.length === 2 && runs.every((run) => ["cancelled", "succeeded"].includes(run.status));
-      }, 90_000);
+      await heartbeat.reconcileStrandedAssignedIssues();
+      expect(gateway.getAgentPayloads()).toHaveLength(1);
+      const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+      expect(runs).toEqual([expect.objectContaining({ id: firstRun!.id, status: "cancelled" })]);
+      const [action] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId));
+      expect(action).toMatchObject({ cause: "legacy_execution_requires_reconciliation", ownerType: "board", returnOwnerAgentId: agentId });
+      const [retained] = await db.select().from(issueComments).where(eq(issueComments.id, queuedComment.id));
+      expect(retained?.body).toBe("Queued follow-up");
+      const wakes = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, agentId));
+      expect(wakes.some(wake => wake.payload?.commentId === queuedComment.id && wake.status === "deferred_issue_execution")).toBe(true);
     } finally {
       gateway.releaseFirstWait();
       await gateway.close();
@@ -995,6 +990,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
           .then((rows) => rows[0] ?? null);
         return run?.status === "running";
       });
+      await waitFor(() => gateway.getAgentPayloads().length === 1);
 
       const comment2 = await db
         .insert(issueComments)
@@ -1039,6 +1035,10 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         return Boolean(deferred);
       });
 
+      // Running records admission. Wait for provider acceptance before
+      // simulating completion by that provider, or startup correctly rejects
+      // the already-closed task before this scenario reaches its follow-up.
+      await waitFor(() => gateway.getAgentPayloads().length >= 1);
       await db
         .update(issues)
         .set({
@@ -1200,6 +1200,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
           .then((rows) => rows[0] ?? null);
         return run?.status === "running";
       });
+      await waitFor(() => gateway.getAgentPayloads().length === 1);
 
       const comment = await db
         .insert(issueComments)
@@ -1247,6 +1248,10 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         return Boolean(deferred);
       });
 
+      // Running records admission. Wait for provider acceptance before
+      // simulating completion by that provider, or startup correctly rejects
+      // the already-closed task before this scenario reaches its follow-up.
+      await waitFor(() => gateway.getAgentPayloads().length >= 1);
       await db
         .update(issues)
         .set({
@@ -1379,6 +1384,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
           .then((rows) => rows[0] ?? null);
         return run?.status === "running";
       });
+      await waitFor(() => gateway.getAgentPayloads().length === 1);
 
       // Local-CLI agents post comments under user auth, but stamp the heartbeat
       // run id on each comment via createdByRunId. Simulate that here: a "user"
@@ -1429,6 +1435,10 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         return Boolean(deferred);
       });
 
+      // Running records admission. Wait for provider acceptance before
+      // simulating completion by that provider, or startup correctly rejects
+      // the already-closed task before this scenario reaches its follow-up.
+      await waitFor(() => gateway.getAgentPayloads().length >= 1);
       await db
         .update(issues)
         .set({
@@ -1806,6 +1816,10 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         return Boolean(deferred);
       });
 
+      // Running records admission. Wait for provider acceptance before
+      // simulating completion by that provider, or startup correctly rejects
+      // the already-closed task before this scenario reaches its follow-up.
+      await waitFor(() => gateway.getAgentPayloads().length >= 1);
       await db
         .update(issues)
         .set({

@@ -1,3 +1,4 @@
+import { currentContinuationOrigins } from "./execution-continuation.js";
 import { connectionIntentDeliveries } from "@paperclipai/db";
 import { isDeepStrictEqual } from "node:util";
 import { and, asc, desc, eq, inArray, isNotNull, isNull, ne } from "drizzle-orm";
@@ -2088,6 +2089,10 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
           connectionIntentPayloadSchema.parse(candidate.payload).serviceSlug === payload.serviceSlug);
         if (reusable) return reusable;
 
+        const [sourceRun] = await tx.select({ context: heartbeatRuns.contextSnapshot }).from(heartbeatRuns)
+          .where(and(eq(heartbeatRuns.id, input.sourceRunId), eq(heartbeatRuns.companyId, issue.companyId)));
+        if (!sourceRun) throw unprocessable("Interaction source run is unavailable");
+        const originCommentIds = await currentContinuationOrigins(tx as unknown as Db, issue.companyId, issue.id, sourceRun.context);
         const [row] = await tx
           .insert(issueThreadInteractions)
           .values({
@@ -2102,6 +2107,7 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
             effectiveResolverPolicySource: "governed_action",
             idempotencyKey: input.idempotencyKey,
             sourceRunId: input.sourceRunId,
+            originCommentIds,
             sourceIdentityContextId: input.sourceIdentityContextId ?? null,
             title: `Connect ${payload.serviceName}`,
             summary: `${payload.requestingAgentName} needs this connection to continue.`,
@@ -2737,10 +2743,12 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
         }
       }
 
+      let originCommentIds: string[] = data.sourceCommentId ? [data.sourceCommentId] : [];
       let sourceIdentityContextId: string | null = null;
       if (data.sourceRunId) {
         const sourceRun = await db
           .select({
+            contextSnapshot: heartbeatRuns.contextSnapshot,
             companyId: heartbeatRuns.companyId,
             activeIdentityContextId: heartbeatRuns.activeIdentityContextId,
           })
@@ -2750,6 +2758,7 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
         if (!sourceRun || sourceRun.companyId !== issue.companyId) {
           throw unprocessable("sourceRunId must belong to the same company");
         }
+        originCommentIds = [...new Set([...originCommentIds, ...await currentContinuationOrigins(db, issue.companyId, issue.id, sourceRun.contextSnapshot)])];
         sourceIdentityContextId = actor.identityContextId ?? sourceRun.activeIdentityContextId;
         if (sourceIdentityContextId) {
           const [origin] = await db.select({id: runIdentityContexts.id}).from(runIdentityContexts).where(and(
@@ -2808,6 +2817,7 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
               resolverPolicyProvenance: policy.resolverPolicyProvenance,
               effectiveResolverPolicySource: policy.effectiveResolverPolicySource,
               idempotencyKey: data.idempotencyKey ?? null,
+              originCommentIds,
               sourceCommentId: data.sourceCommentId ?? null,
               sourceRunId: data.sourceRunId ?? null,
               sourceIdentityContextId,

@@ -162,6 +162,44 @@ describeEmbeddedPostgres("resetPostgresDatabase", () => {
 });
 
 describeEmbeddedPostgres("applyPendingMigrations", () => {
+  it("upgrades renumbered recovery migrations and replays their schema idempotently", async () => {
+    const connectionString = await createTempDatabase();
+    await applyPendingMigrations(connectionString);
+    const recoveryFiles = [
+      "0250_exotic_dakota_north.sql", "0251_narrow_mastermind.sql",
+      "0252_friendly_kate_bishop.sql", "0253_real_firebrand.sql",
+      "0254_military_calypso.sql",
+    ];
+    const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
+    try {
+      // An instance may have applied this identical SQL under the pre-rebase
+      // numbers, before the new session-goal and tool-action migrations existed.
+      for (const file of recoveryFiles) {
+        const hash = await migrationHash(file);
+        await sql`UPDATE "drizzle"."__drizzle_migrations" SET created_at = 1788825600000 WHERE hash = ${hash}`;
+        const source = await fs.promises.readFile(new URL(`./migrations/${file}`, import.meta.url), "utf8");
+        for (const statement of source.split("--> statement-breakpoint")) {
+          if (statement.trim()) await sql.unsafe(statement);
+        }
+      }
+      for (const file of ["0248_small_manta.sql", "0249_fast_silverclaw.sql"]) {
+        const hash = await migrationHash(file);
+        await sql`DELETE FROM "drizzle"."__drizzle_migrations" WHERE hash = ${hash}`;
+      }
+      await applyPendingMigrations(connectionString);
+      expect((await inspectMigrations(connectionString)).status).toBe("upToDate");
+      for (const file of recoveryFiles) {
+        const hash = await migrationHash(file);
+        const rows = await sql`SELECT id FROM "drizzle"."__drizzle_migrations" WHERE hash = ${hash}`;
+        expect(rows).toHaveLength(1);
+      }
+      const indexes = await sql`SELECT indexname FROM pg_indexes WHERE indexname = 'heartbeat_runs_native_replacement_predecessor_uq'`;
+      expect(indexes).toHaveLength(1);
+    } finally {
+      await sql.end();
+    }
+  }, 30_000);
+
   it("rejects unallowlisted migration backfills that bump updated_at on user-visible tables", async () => {
     const entries = await fs.promises.readdir(new URL("./migrations", import.meta.url), {
       withFileTypes: true,

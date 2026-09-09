@@ -1,4 +1,3 @@
-import { connectionIntentDeliveryService } from "./services/connection-intent-delivery.js";
 /// <reference path="./types/express.d.ts" />
 // Kicks off the OTel bootstrap as early as possible (no-op unless
 // OTEL_EXPORTER_OTLP_ENDPOINT is set). startServer() awaits
@@ -6,6 +5,12 @@ import { connectionIntentDeliveryService } from "./services/connection-intent-de
 // HTTP server, so trace coverage does not depend on incidental timing.
 import { instrumentationReady, shutdownInstrumentation } from "./instrumentation.js";
 import { sentryReady, shutdownSentry, captureException } from "./sentry.js";
+import { deliverExecutionStatuses } from "./services/execution-status-delivery.js";
+import { deliverReconciledExecutions, settleUnrecoverableExecutions } from "./services/execution-recovery-resolution.js";
+import { reconcileSafeNativeReplacements } from "./services/native-runtime/native-safe-replacement.js";
+import { reconcileAbandonedExecutionControl } from "./services/execution-control-reconciliation.js";
+import { EXECUTION_RECONCILIATION_INTERVAL_MS } from "./services/execution-control-deadline.js";
+import { connectionIntentDeliveryService } from "./services/connection-intent-delivery.js";
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { createServer } from "node:http";
 import { resolve } from "node:path";
@@ -1137,6 +1142,29 @@ async function startServerWithDatabaseTeardown(
       await Promise.allSettled([...heartbeatSchedulerInFlight]);
     }
   };
+  const executionControlSweepsInFlight = new Set<string>();
+  const executionControlSweeps = [
+    ["finalization", () => reconcileAbandonedExecutionControl(db)],
+    ["replacement", () => heartbeat ? reconcileSafeNativeReplacements(db) : undefined],
+    ["reconciliation_delivery", () => heartbeat ? deliverReconciledExecutions(db, heartbeat.wakeup) : undefined],
+    ["status_delivery", () => deliverExecutionStatuses(db)],
+    ["automatic_disposition", () => settleUnrecoverableExecutions(db)],
+  ] as const;
+  const sweepExecutionControl = () => {
+    if (heartbeatSchedulerStopped) return;
+    // Independent durable queues must not block one another. Each queue remains
+    // single-flight; a later sweep observes committed transitions from its peers.
+    for (const [queue, work] of executionControlSweeps) {
+      if (executionControlSweepsInFlight.has(queue)) continue;
+      executionControlSweepsInFlight.add(queue);
+      trackHeartbeatSchedulerWork(Promise.resolve().then(async () => { await work(); })
+        .catch(err => logger.error({ err, queue }, "execution control reconciliation failed"))
+        .finally(() => { executionControlSweepsInFlight.delete(queue); }));
+    }
+  };
+  const executionControlInterval = setInterval(sweepExecutionControl, EXECUTION_RECONCILIATION_INTERVAL_MS);
+  executionControlInterval.unref?.();
+  sweepExecutionControl();
   const startHeartbeatSchedulerInterval = (callback: () => void) => {
     heartbeatSchedulerInterval = setInterval(callback, config.heartbeatSchedulerIntervalMs);
     heartbeatSchedulerInterval?.unref?.();
@@ -1884,6 +1912,7 @@ async function startServerWithDatabaseTeardown(
   ) => {
     await systemdNotify(["--stopping", `--status=Stopping after ${signal}`]);
     heartbeatSchedulerStopped = true;
+    clearInterval(executionControlInterval);
     if (heartbeatSchedulerInterval) {
       clearInterval(heartbeatSchedulerInterval);
       heartbeatSchedulerInterval = null;

@@ -1,3 +1,4 @@
+import { requiresExecutionReconciliation } from "@paperclipai/shared";
 import type { ReactNode } from "react";
 import type { ExternalObjectSummary, Issue, IssueRecoveryAction } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
@@ -210,7 +211,7 @@ export function IssueRow({
   const recoveryAction = issue.activeRecoveryAction ?? null;
   // The row already carries the issue's own scheduled retry, so the chip can tell a retry the
   // scheduler is actually running from one whose due time simply passed.
-  const recoveryIndicator = recoveryAction
+  const recoveryIndicator = recoveryAction && !requiresExecutionReconciliation(recoveryAction.cause)
     ? renderRecoveryChip(recoveryAction, selected, { scheduledRetry: issue.scheduledRetry ?? null })
     : null;
   const parkedBlockerIndicator = hasAssignedBacklogBlocker(issue.blockedBy) ? (

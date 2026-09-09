@@ -1,0 +1,705 @@
+import { activityService } from "../activity.js";
+import { buildPaperclipWakePayload, heartbeatService } from "../heartbeat.js";
+import { legacyExecutionNeedsReconciliation, terminalizeLegacyExecution } from "../legacy-execution-recovery.js";
+import { deliverExecutionStatuses } from "../execution-status-delivery.js";
+import { publishLiveEvent } from "../live-events.js";
+import {
+  settleUnrecoverableExecutions,
+  validateExecutionReconciliation,
+  markExecutionReconciliation,
+  deliverReconciledExecutions,
+} from "../execution-recovery-resolution.js";
+import { randomUUID } from "node:crypto";
+import { tmpdir } from "node:os";
+import { and, eq, inArray } from "drizzle-orm";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import {
+  agents,
+  companies,
+  createDb,
+  heartbeatRunEvents,
+  heartbeatRuns,
+  issueRecoveryActions,
+  issues,
+  nativeRunFinalizations,
+} from "@paperclipai/db";
+import {
+  getEmbeddedPostgresTestSupport,
+  startEmbeddedPostgresTestDatabase,
+} from "../../__tests__/helpers/embedded-postgres.js";
+import { reconcileSafeNativeReplacements } from "./native-safe-replacement.js";
+import { reconcileAbandonedExecutionControl } from "../execution-control-reconciliation.js";
+const support = await getEmbeddedPostgresTestSupport();
+(support.supported ? describe : describe.skip)(
+  "durable replacement and control recovery",
+  () => {
+    let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
+    let db: ReturnType<typeof createDb>;
+    beforeAll(async () => {
+      database = await startEmbeddedPostgresTestDatabase(
+        "paperclip-safe-replacement-",
+      );
+      db = createDb(database.connectionString);
+    }, 30_000);
+    afterAll(async () => {
+      await database?.cleanup();
+    });
+    async function seed(attempt = 1) {
+      const companyId = randomUUID(),
+        agentId = randomUUID(),
+        issueId = randomUUID(),
+        runId = randomUUID();
+      await db.insert(companies).values({
+        id: companyId,
+        name: "Recovery",
+        issuePrefix: `R${companyId.slice(0, 6)}`,
+      });
+      await db.insert(agents).values({
+        id: agentId,
+        companyId,
+        name: "Executor",
+        role: "engineer",
+        adapterType: "paperclip_runner",
+      });
+      await db.insert(issues).values({
+        id: issueId,
+        companyId,
+        title: "Read fixture",
+        status: "in_progress",
+        assigneeAgentId: agentId,
+      });
+      await db.insert(heartbeatRuns).values({
+        id: runId,
+        companyId,
+        agentId,
+        nativeIssueId: issueId,
+        runtimeMode: "native",
+        status: "failed",
+        contextSnapshot: { issueId },
+        runnerProfileJson: {
+          recoveryEventInventoryVersion: 1,
+          nativeExecutionInput: {
+            provider: { kind: "codex" },
+            workspace: { cwd: tmpdir() },
+          },
+        },
+      });
+      await db.insert(nativeRunFinalizations).values({
+        runId,
+        companyId,
+        issueId,
+        phase: "terminal_failure",
+        attempt,
+        failureCode: "native_provider_terminal_failed",
+        failureDetail: { originalFailureCode: "fixture_checkpoint_unusable" },
+      });
+      return { companyId, agentId, issueId, runId };
+    }
+    it("automatically closes an exhausted incident once, preserves ownership, and records no replay", async () => {
+      const source = await seed(3);
+      await reconcileSafeNativeReplacements(db);
+      await Promise.all([settleUnrecoverableExecutions(db), settleUnrecoverableExecutions(db)]);
+      await settleUnrecoverableExecutions(db);
+      const [task] = await db.select().from(issues).where(eq(issues.id, source.issueId));
+      expect(task).toMatchObject({ status: "blocked", assigneeAgentId: source.agentId, executionRunId: null, checkoutRunId: null });
+      const actions = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, source.issueId));
+      expect(actions).toHaveLength(1);
+      expect(actions[0]).toMatchObject({ status: "resolved", outcome: "blocked", evidence: {
+        automaticRecovery: { policy: "preserve_without_replay_v1", actionOutcome: "unknown", replay: "blocked", runId: source.runId },
+      } });
+      const logs = await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, source.runId));
+      expect(logs.filter(log => log.payload?.automaticRecovery === "preserve_without_replay_v1")).toHaveLength(1);
+      const history = await activityService(db).runsForIssue(source.companyId, source.issueId);
+      expect(history.find(run => run.runId === source.runId)).toMatchObject({ execution: { phase: "recovery_needed", label: "Stopped" } });
+
+      expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, source.companyId))).toHaveLength(1);
+    });
+    it("does not let a full batch awaiting replacement starve an eligible disposition", async () => {
+      const sources: Awaited<ReturnType<typeof seed>>[] = [];
+      for (let index = 0; index < 26; index += 1) {
+        const source = await seed();
+        sources.push(source);
+        await db.insert(issueRecoveryActions).values({ companyId: source.companyId, sourceIssueId: source.issueId,
+          kind: "active_run_watchdog", ownerType: "board", returnOwnerAgentId: source.agentId,
+          cause: "native_provider_terminal_failed", fingerprint: source.runId, evidence: { runId: source.runId }, nextAction: "Checking recovery" });
+        if (index === 25) {
+          await db.update(nativeRunFinalizations).set({ failureDetail: { replacementDenied: "uncertain_external_action" } }).where(eq(nativeRunFinalizations.runId, source.runId));
+          await settleUnrecoverableExecutions(db);
+          const [task] = await db.select().from(issues).where(eq(issues.id, source.issueId));
+          expect(task.status).toBe("blocked");
+        }
+      }
+      await db.update(issueRecoveryActions).set({ status: "resolved" }).where(inArray(issueRecoveryActions.sourceIssueId, sources.map(source => source.issueId)));
+      await db.update(nativeRunFinalizations).set({ failureDetail: { replacementDenied: "fixture_closed" } }).where(inArray(nativeRunFinalizations.runId, sources.map(source => source.runId)));
+    });
+    it("rolls back a crashed automatic disposition and completes it on the next sweep", async () => {
+      const source = await seed(3);
+      await reconcileSafeNativeReplacements(db);
+      await expect(settleUnrecoverableExecutions(db, new Date(), { failpoint: () => { throw new Error("crash before commit"); } })).rejects.toThrow("crash before commit");
+      const [before] = await db.select().from(issues).where(eq(issues.id, source.issueId));
+      expect(before.status).toBe("in_progress");
+      const [pending] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, source.issueId));
+      expect(pending.status).toBe("active");
+      await settleUnrecoverableExecutions(db);
+      const [after] = await db.select().from(issues).where(eq(issues.id, source.issueId));
+      expect(after.status).toBe("blocked");
+      const logs = await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, source.runId));
+      expect(logs.filter(log => log.payload?.automaticRecovery === "preserve_without_replay_v1")).toHaveLength(1);
+    });
+    it("does not let the automatic fallback preempt a safe replacement", async () => {
+      const source = await seed();
+      await db.insert(issueRecoveryActions).values({ companyId: source.companyId, sourceIssueId: source.issueId,
+        kind: "active_run_watchdog", ownerType: "board", returnOwnerAgentId: source.agentId,
+        cause: "native_provider_terminal_failed", fingerprint: source.runId, evidence: { runId: source.runId }, nextAction: "Checking recovery" });
+      await settleUnrecoverableExecutions(db);
+      const [task] = await db.select().from(issues).where(eq(issues.id, source.issueId));
+      expect(task.status).toBe("in_progress");
+      const [action] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, source.issueId));
+      expect(action.status).toBe("active");
+    });
+    it.each(["closed", "reassigned", "new_execution"])("closes stale recovery after %s without changing task state or granting replay", async change => {
+      const source = await seed(3);
+      await reconcileSafeNativeReplacements(db);
+      const nextRun = randomUUID();
+      if (change === "new_execution") await db.insert(heartbeatRuns).values({ id: nextRun, companyId: source.companyId, agentId: source.agentId, status: "running" });
+      const patch = change === "closed" ? { status: "done" } : change === "reassigned" ? { assigneeAgentId: null } : { executionRunId: nextRun };
+      await db.update(issues).set(patch).where(eq(issues.id, source.issueId));
+      await settleUnrecoverableExecutions(db);
+      const [task] = await db.select().from(issues).where(eq(issues.id, source.issueId));
+      expect(task).toMatchObject(patch);
+      const [action] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, source.issueId));
+      expect(action).toMatchObject({ status: "resolved", outcome: "cancelled", evidence: { automaticRecovery: { replay: "blocked" } } });
+    });
+    it("cancels a durable native retry even when its previous provider is already failed", async () => {
+      const source = await seed();
+      await db.update(nativeRunFinalizations).set({ phase: "retryable_failure", nextAttemptAt: new Date(Date.now() + 30_000) }).where(eq(nativeRunFinalizations.runId, source.runId));
+      await db.update(issues).set({ executionRunId: source.runId }).where(eq(issues.id, source.issueId));
+      const heartbeat = heartbeatService(db);
+      expect(await heartbeat.cancelRun(source.runId)).toMatchObject({ status: "cancelled" });
+      expect(await heartbeat.cancelRun(source.runId)).toMatchObject({ status: "cancelled" });
+      const [coordinator] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, source.runId));
+      expect(coordinator).toMatchObject({ phase: "terminal_failure", nextAttemptAt: null, leaseOwner: null });
+      expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, source.runId))).toHaveLength(0);
+    });
+    it("atomically terminalizes unsupported legacy recovery and preserves its owner", async () => {
+      const source = await seed();
+      await db.update(heartbeatRuns).set({ runtimeMode: "legacy", status: "running" }).where(eq(heartbeatRuns.id, source.runId));
+      await db.update(issues).set({ executionRunId: source.runId, checkoutRunId: source.runId }).where(eq(issues.id, source.issueId));
+      const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, source.runId));
+      const results = await Promise.all([1, 2].map(() => terminalizeLegacyExecution({ db, run, status: "failed", fromStatuses: ["running"], patch: { errorCode: "provider_quota", finishedAt: new Date() } })));
+      expect(results.filter(Boolean)).toHaveLength(1);
+      const [task] = await db.select().from(issues).where(eq(issues.id, source.issueId));
+      expect(task).toMatchObject({ assigneeAgentId: source.agentId, executionRunId: null, checkoutRunId: null });
+      const actions = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, source.issueId));
+      expect(actions).toHaveLength(1);
+      expect(actions[0]).toMatchObject({ ownerType: "board", cause: "legacy_execution_requires_reconciliation" });
+      await db.delete(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, source.runId));
+      await settleUnrecoverableExecutions(db);
+      const [settled] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, actions[0]!.id));
+      expect(settled).toMatchObject({ status: "resolved", outcome: "blocked", evidence: { automaticRecovery: { replay: "blocked" } } });
+
+      expect(legacyExecutionNeedsReconciliation({ ...run, status: "failed", resultJson: { errorFamily: "provider_quota" } })).toBe(true);
+      expect(legacyExecutionNeedsReconciliation({ ...run, status: "failed", resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } } })).toBe(false);
+      expect(legacyExecutionNeedsReconciliation({ ...run, status: "failed", scheduledRetryAttempt: 2, resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } } })).toBe(true);
+    });
+    it("surfaces a failed current reviewer without transferring the original assignment", async () => {
+      const source = await seed();
+      const reviewerId = randomUUID();
+      await db.insert(agents).values({ id: reviewerId, companyId: source.companyId, name: "Reviewer", role: "engineer", adapterType: "process" });
+      await db.update(issues).set({ status: "in_review", executionState: {
+        status: "pending", currentStageId: randomUUID(), currentStageIndex: 0, currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: reviewerId, userId: null },
+        returnAssignee: { type: "agent", agentId: source.agentId, userId: null },
+        completedStageIds: [], lastDecisionId: null, lastDecisionOutcome: null,
+      } }).where(eq(issues.id, source.issueId));
+      const [run] = await db.update(heartbeatRuns).set({ agentId: reviewerId, runtimeMode: "legacy", status: "running" }).where(eq(heartbeatRuns.id, source.runId)).returning();
+      await terminalizeLegacyExecution({ db, run, status: "failed", patch: { finishedAt: new Date() } });
+      const [action] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, source.issueId));
+      expect(action).toMatchObject({ ownerType: "board", returnOwnerAgentId: source.agentId, evidence: { reviewParticipantAgentId: reviewerId } });
+      const input = { db, companyId: source.companyId, issueId: source.issueId, agentId: source.agentId, sourceRunId: source.runId,
+        decision: { runId: source.runId, providerStopped: true as const, actionOutcome: "not_performed" as const, outcomeEvidence: "Inspected reviewer process and verified no actions occurred." } };
+      await expect(validateExecutionReconciliation(input)).resolves.toMatchObject({ id: source.runId });
+      await db.update(issues).set({ executionState: null }).where(eq(issues.id, source.issueId));
+      await expect(validateExecutionReconciliation(input)).rejects.toThrow("source or task owner changed");
+    });
+    it("does not turn an already reconciled continuation into a recovery assignment", async () => {
+      const source = await seed();
+      const [action] = await db.insert(issueRecoveryActions).values({ companyId: source.companyId, sourceIssueId: source.issueId, kind: "active_run_watchdog", status: "resolved", ownerType: "board", returnOwnerAgentId: source.agentId, cause: "native_event_replay_conflict", fingerprint: source.runId, nextAction: "Old recovery instruction", evidence: { executionReconciliation: { runId: source.runId } } }).returning();
+      const wake = await buildPaperclipWakePayload({ db, companyId: source.companyId, contextSnapshot: { issueId: source.issueId, recoveryActionId: action.id, wakeReason: "issue_recovery_action_restored" } });
+      expect(wake?.recovery).toBeNull();
+      expect(wake?.reason).toBe("issue_recovery_action_restored");
+    });
+    it("keeps an unclassified transport terminal operator-owned", async () => {
+      const source = await seed();
+      await db
+        .update(nativeRunFinalizations)
+        .set({
+          failureDetail: {
+            originalFailureCode: "notification_transport_failed",
+          },
+        })
+        .where(eq(nativeRunFinalizations.runId, source.runId));
+      await reconcileSafeNativeReplacements(db);
+      expect(
+        await db
+          .select()
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.retryOfRunId, source.runId)),
+      ).toHaveLength(0);
+      const [coordinator] = await db
+        .select()
+        .from(nativeRunFinalizations)
+        .where(eq(nativeRunFinalizations.runId, source.runId));
+      expect(coordinator?.failureDetail?.replacementDenied).toBe(
+        "provider_failure_meaning_unverified",
+      );
+    });
+    it("persists exactly one linked successor under competing sweepers and restarts", async () => {
+      const source = await seed(2);
+      const now = new Date();
+      await Promise.all([
+        reconcileSafeNativeReplacements(db, now),
+        reconcileSafeNativeReplacements(db, now),
+      ]);
+      await reconcileSafeNativeReplacements(db, now);
+      const children = await db
+        .select()
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.retryOfRunId, source.runId));
+      expect(children).toHaveLength(1);
+      expect(children[0]).toMatchObject({
+        agentId: source.agentId,
+        status: "scheduled_retry",
+        scheduledRetryAttempt: 2,
+        contextSnapshot: {
+          forceFreshSession: true,
+          recoveryIncidentRootRunId: source.runId,
+        },
+      });
+      expect(children[0]!.scheduledRetryAt!.getTime()).toBe(
+        now.getTime() + 30_000,
+      );
+      expect(
+        (
+          await db
+            .select()
+            .from(nativeRunFinalizations)
+            .where(eq(nativeRunFinalizations.runId, source.runId))
+        )[0]?.failureDetail?.successorRunId,
+      ).toBe(children[0]!.id);
+    });
+    it("retries status publication after a crash without dispatching provider work", async () => {
+      await deliverExecutionStatuses(db);
+      const source = await seed();
+      const deliveryId = randomUUID();
+      await db
+        .update(heartbeatRuns)
+        .set({ executionStatusDeliveryId: deliveryId,
+          error: "credential-in-provider-error", errorCode: "credential-in-provider-code",
+          triggerDetail: "credential-in-trigger-detail",
+          resultJson: { summary: "credential-in-provider-summary", toolResult: "credential-in-tool-result" },
+        })
+        .where(eq(heartbeatRuns.id, source.runId));
+      await deliverExecutionStatuses(db, {
+        publish: () => {
+          throw new Error("publication unavailable");
+        },
+      });
+      expect(
+        (
+          await db
+            .select()
+            .from(heartbeatRuns)
+            .where(eq(heartbeatRuns.id, source.runId))
+        )[0]?.executionStatusDeliveryId,
+      ).toBe(deliveryId);
+      const observed: unknown[] = [];
+      const publish: typeof publishLiveEvent = (event) => {
+        observed.push(event);
+        return publishLiveEvent(event);
+      };
+      await expect(
+        deliverExecutionStatuses(db, {
+          publish,
+          failpoint: () => {
+            throw new Error("crash after publication");
+          },
+        }),
+      ).rejects.toThrow("crash after publication");
+      await deliverExecutionStatuses(db, { publish });
+      expect(JSON.stringify(observed)).not.toContain("credential-in-");
+      expect(Object.keys((observed[0] as { payload: Record<string, unknown> }).payload).sort()).toEqual(
+        ["runId", "agentId", "status", "startedAt", "finishedAt", "deliveryId"].sort(),
+      );
+      expect(observed).toEqual([
+        expect.objectContaining({
+          companyId: source.companyId,
+          payload: expect.objectContaining({
+            runId: source.runId,
+            deliveryId,
+            status: "failed",
+          }),
+        }),
+        expect.objectContaining({
+          companyId: source.companyId,
+          payload: expect.objectContaining({
+            runId: source.runId,
+            deliveryId,
+            status: "failed",
+          }),
+        }),
+      ]);
+      expect(
+        (
+          await db
+            .select()
+            .from(heartbeatRuns)
+            .where(eq(heartbeatRuns.id, source.runId))
+        )[0]?.executionStatusDeliveryId,
+      ).toBeNull();
+      expect(
+        await db
+          .select()
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.retryOfRunId, source.runId)),
+      ).toHaveLength(0);
+    });
+    it("never resets an exhausted incident by assigning another run id", async () => {
+      const source = await seed(3);
+      await reconcileSafeNativeReplacements(db);
+      expect(
+        await db
+          .select()
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.retryOfRunId, source.runId)),
+      ).toHaveLength(0);
+      expect(
+        (
+          await db
+            .select()
+            .from(issueRecoveryActions)
+            .where(eq(issueRecoveryActions.sourceIssueId, source.issueId))
+        )[0],
+      ).toMatchObject({
+        ownerType: "board",
+        cause: "execution_recovery_budget_exhausted",
+      });
+    });
+    it.each(["successor_inserted", "lineage_committed"] as const)(
+      "recovers a crash at %s without duplicate successors",
+      async (phase) => {
+        const source = await seed();
+        await expect(
+          reconcileSafeNativeReplacements(db, new Date(), {
+            failpoint: (point) => {
+              if (point === phase)
+                throw new Error("simulated coordinator crash");
+            },
+          }),
+        ).rejects.toThrow("simulated coordinator crash");
+        await reconcileSafeNativeReplacements(db);
+        expect(
+          await db
+            .select()
+            .from(heartbeatRuns)
+            .where(eq(heartbeatRuns.retryOfRunId, source.runId)),
+        ).toHaveLength(1);
+      },
+    );
+    it.each([false, true])(
+      "does not replay a provider-native command with unknown effects (PRP envelope: %s)",
+      async (wrapped) => {
+        const source = await seed();
+        await db.insert(heartbeatRunEvents).values({
+          companyId: source.companyId,
+          runId: source.runId,
+          agentId: source.agentId,
+          seq: 1,
+          eventType: "tool.execution.started",
+          stream: "system",
+          payload: wrapped
+            ? {
+                prpEvent: {
+                  payload: {
+                    transport: "process",
+                    executionId: "shell-write-1",
+                    name: "send_email",
+                  },
+                },
+              }
+            : {
+                transport: "process",
+                executionId: "shell-write-1",
+                name: "send_email",
+              },
+        });
+        await reconcileSafeNativeReplacements(db);
+        expect(
+          await db
+            .select()
+            .from(heartbeatRuns)
+            .where(eq(heartbeatRuns.retryOfRunId, source.runId)),
+        ).toHaveLength(0);
+        expect(
+          (
+            await db
+              .select()
+              .from(issueRecoveryActions)
+              .where(eq(issueRecoveryActions.sourceIssueId, source.issueId))
+          )[0]?.nextAction,
+        ).toContain("shell-write-1");
+      },
+    );
+    it("surfaces a reviewer's abandoned control transition for the operator", async () => {
+      const source = await seed();
+      const reviewerId = randomUUID();
+      await db.insert(agents).values({ id: reviewerId, companyId: source.companyId, name: "Reviewer", role: "engineer", adapterType: "process" });
+      await db.update(issues).set({ status: "in_review", executionRunId: source.runId, executionState: {
+        status: "pending", currentStageId: randomUUID(), currentStageIndex: 0, currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: reviewerId, userId: null },
+        returnAssignee: { type: "agent", agentId: source.agentId, userId: null },
+        completedStageIds: [], lastDecisionId: null, lastDecisionOutcome: null,
+      } }).where(eq(issues.id, source.issueId));
+      await db.update(heartbeatRuns).set({ agentId: reviewerId, status: "running", executionControlDeadlineAt: new Date(Date.now() - 1_000) }).where(eq(heartbeatRuns.id, source.runId));
+      await reconcileAbandonedExecutionControl(db);
+      expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, source.issueId))).toMatchObject([
+        { ownerType: "board", returnOwnerAgentId: source.agentId, evidence: { reviewParticipantAgentId: reviewerId } },
+      ]);
+      expect((await db.select().from(issues).where(eq(issues.id, source.issueId)))[0]).toMatchObject({ assigneeAgentId: source.agentId, executionRunId: null });
+    });
+    it("fences a stranded finalization and surfaces one operator action after its deadline", async () => {
+      const source = await seed();
+      const deadline = new Date("2026-09-08T10:00:00Z");
+      await db
+        .update(heartbeatRuns)
+        .set({ status: "running" })
+        .where(eq(heartbeatRuns.id, source.runId));
+      await db
+        .update(nativeRunFinalizations)
+        .set({
+          phase: "observed",
+          leaseOwner: "dead-controller",
+          controlDeadlineAt: deadline,
+        })
+        .where(eq(nativeRunFinalizations.runId, source.runId));
+      await reconcileAbandonedExecutionControl(
+        db,
+        new Date(deadline.getTime() + 15_000),
+      );
+      await reconcileAbandonedExecutionControl(
+        db,
+        new Date(deadline.getTime() + 30_000),
+      );
+      expect(
+        (
+          await db
+            .select()
+            .from(heartbeatRuns)
+            .where(eq(heartbeatRuns.id, source.runId))
+        )[0],
+      ).toMatchObject({
+        status: "failed",
+        errorCode: "execution_finalization_deadline_exceeded",
+      });
+      expect(
+        (
+          await db
+            .select()
+            .from(nativeRunFinalizations)
+            .where(eq(nativeRunFinalizations.runId, source.runId))
+        )[0],
+      ).toMatchObject({
+        leaseOwner: null,
+        controlDeadlineAt: null,
+        phase: "terminal_failure",
+      });
+      expect(
+        await db
+          .select()
+          .from(issueRecoveryActions)
+          .where(
+            and(
+              eq(issueRecoveryActions.sourceIssueId, source.issueId),
+              eq(
+                issueRecoveryActions.cause,
+                "execution_finalization_deadline_exceeded",
+              ),
+            ),
+          ),
+      ).toHaveLength(1);
+    });
+    it("bounds legacy finalization without adding a deadline to healthy provider execution", async () => {
+      const source = await seed();
+      await db
+        .delete(nativeRunFinalizations)
+        .where(eq(nativeRunFinalizations.runId, source.runId));
+      await db
+        .update(heartbeatRuns)
+        .set({
+          runtimeMode: "legacy",
+          status: "running",
+          executionControlDeadlineAt: null,
+        })
+        .where(eq(heartbeatRuns.id, source.runId));
+      await reconcileAbandonedExecutionControl(db);
+      expect(
+        (
+          await db
+            .select()
+            .from(heartbeatRuns)
+            .where(eq(heartbeatRuns.id, source.runId))
+        )[0]?.status,
+      ).toBe("running");
+      await db
+        .update(heartbeatRuns)
+        .set({ executionControlDeadlineAt: new Date(Date.now() - 1000) })
+        .where(eq(heartbeatRuns.id, source.runId));
+      await reconcileAbandonedExecutionControl(db);
+      expect(
+        (
+          await db
+            .select()
+            .from(heartbeatRuns)
+            .where(eq(heartbeatRuns.id, source.runId))
+        )[0],
+      ).toMatchObject({ status: "failed", executionControlDeadlineAt: null });
+      expect(
+        (
+          await db
+            .select()
+            .from(issueRecoveryActions)
+            .where(eq(issueRecoveryActions.sourceIssueId, source.issueId))
+        )[0]?.ownerType,
+      ).toBe("board");
+    });
+    it("does not release another run's checkout or replace a reassigned task", async () => {
+      const source = await seed();
+      const otherRunId = randomUUID();
+      await db.insert(heartbeatRuns).values({
+        id: otherRunId,
+        companyId: source.companyId,
+        agentId: source.agentId,
+        status: "running",
+      });
+      await db
+        .update(issues)
+        .set({ checkoutRunId: otherRunId })
+        .where(eq(issues.id, source.issueId));
+      await reconcileSafeNativeReplacements(db);
+      expect(
+        await db
+          .select()
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.retryOfRunId, source.runId)),
+      ).toHaveLength(0);
+      await db
+        .update(issues)
+        .set({ assigneeAgentId: null })
+        .where(eq(issues.id, source.issueId));
+      await reconcileSafeNativeReplacements(db);
+      expect(
+        await db
+          .select()
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.retryOfRunId, source.runId)),
+      ).toHaveLength(0);
+    });
+    it("requires explicit reconciled outcomes and rejects a still-running provider", async () => {
+      const source = await seed();
+      const input = {
+        db,
+        companyId: source.companyId,
+        issueId: source.issueId,
+        agentId: source.agentId,
+        sourceRunId: source.runId,
+        decision: undefined,
+      };
+      await expect(validateExecutionReconciliation(input)).rejects.toThrow(
+        "Reconcile the recorded execution",
+      );
+      const decision = {
+        runId: source.runId,
+        providerStopped: true as const,
+        actionOutcome: "not_performed" as const,
+        outcomeEvidence:
+          "Verified that the fixture emitted an event only; no external action happened.",
+      };
+      await db
+        .update(heartbeatRuns)
+        .set({ processPid: process.pid })
+        .where(eq(heartbeatRuns.id, source.runId));
+      await expect(
+        validateExecutionReconciliation({ ...input, decision }),
+      ).rejects.toThrow("still running");
+      await db
+        .update(heartbeatRuns)
+        .set({ processPid: null })
+        .where(eq(heartbeatRuns.id, source.runId));
+      await expect(
+        validateExecutionReconciliation({ ...input, decision }),
+      ).resolves.toMatchObject({ id: source.runId });
+      await expect(
+        validateExecutionReconciliation({
+          ...input,
+          companyId: randomUUID(),
+          decision,
+        }),
+      ).rejects.toThrow("source or task owner changed");
+    });
+    it("retains a reconciliation delivery across dispatch failure and invalidates stale ownership", async () => {
+      const source = await seed();
+      const [action] = await db
+        .insert(issueRecoveryActions)
+        .values({
+          companyId: source.companyId,
+          sourceIssueId: source.issueId,
+          kind: "active_run_watchdog",
+          status: "resolved",
+          ownerType: "board",
+          returnOwnerAgentId: source.agentId,
+          cause: "uncertain_provider_action",
+          fingerprint: source.runId,
+          evidence: { runId: source.runId },
+          nextAction: "Reconcile fixture action",
+        })
+        .returning();
+      const decision = {
+        runId: source.runId,
+        providerStopped: true as const,
+        actionOutcome: "not_performed" as const,
+        outcomeEvidence:
+          "The fixture was inspected and no command was executed.",
+      };
+      await markExecutionReconciliation(db, action!, decision, "operator");
+      await deliverReconciledExecutions(db, async () => {
+        throw new Error("dispatch unavailable");
+      });
+      expect(
+        (
+          await db
+            .select()
+            .from(issueRecoveryActions)
+            .where(eq(issueRecoveryActions.id, action!.id))
+        )[0]?.evidence.continuationDelivery,
+      ).toBe("pending");
+      await db
+        .update(issues)
+        .set({ assigneeAgentId: null })
+        .where(eq(issues.id, source.issueId));
+      let woke = false;
+      await deliverReconciledExecutions(db, async () => {
+        woke = true;
+        return null;
+      });
+      expect(woke).toBe(false);
+      expect(
+        (
+          await db
+            .select()
+            .from(issueRecoveryActions)
+            .where(eq(issueRecoveryActions.id, action!.id))
+        )[0]?.evidence.continuationDelivery,
+      ).toBe("invalidated");
+    });
+  },
+);

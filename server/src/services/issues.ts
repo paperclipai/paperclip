@@ -1,3 +1,5 @@
+import { executionProjectionsForRuns } from "./execution-projection.js";
+import type { ExecutionProjection } from "@paperclipai/shared";
 import { Buffer } from "node:buffer";
 import { createHash, randomUUID } from "node:crypto";
 import { and, asc, desc, eq, gt, gte, inArray, isNotNull, isNull, like, lt, ne, notInArray, or, sql, type SQL } from "drizzle-orm";
@@ -627,6 +629,7 @@ type IssueRow = typeof issues.$inferSelect;
 type IssueLabelRow = typeof labels.$inferSelect;
 type IssuePlanDecompositionRow = typeof issuePlanDecompositions.$inferSelect;
 type IssueActiveRunRow = {
+  execution?: ExecutionProjection;
   id: string;
   status: string;
   agentId: string;
@@ -2040,6 +2043,14 @@ async function activeRunMapForIssues(
 
     for (const row of rows) {
       map.set(row.id, row);
+    }
+  }
+  for (const companyId of new Set(issueRows.map(row => row.companyId))) {
+    const scopedIds = issueRows.filter(row => row.companyId === companyId).flatMap(row => row.executionRunId && map.has(row.executionRunId) ? [row.executionRunId] : []);
+    const projections = await executionProjectionsForRuns(dbOrTx, companyId, scopedIds);
+    for (const [runId, execution] of projections) {
+      const row = map.get(runId);
+      if (row) row.execution = execution;
     }
   }
   return map;

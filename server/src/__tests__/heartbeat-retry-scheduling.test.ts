@@ -105,8 +105,9 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
         errorMessage: "You've hit your session limit - resets at 4pm (America/Chicago).",
         errorCode: "provider_quota",
         errorFamily: "provider_quota",
+        executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
         retryNotBefore: "2030-04-22T21:00:00.000Z",
-        resultJson: {
+        resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
           errorFamily: "provider_quota",
           retryNotBefore: "2030-04-22T21:00:00.000Z",
           providerQuotaRetryNotBefore: "2030-04-22T21:00:00.000Z",
@@ -226,7 +227,7 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       finishedAt: input.now,
       scheduledRetryAttempt: input.scheduledRetryAttempt ?? 0,
       scheduledRetryReason: input.scheduledRetryAttempt ? "transient_failure" : null,
-      resultJson: input.resultJson ?? {
+      resultJson: input.resultJson ?? { executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
         ...(input.errorFamily ? { errorFamily: input.errorFamily } : {}),
         ...(input.retryNotBefore
           ? {
@@ -244,7 +245,36 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     });
   }
 
-  it("records provider quota failures, schedules the reset-time retry, and leaves the agent idle", async () => {
+  it("reuses one failure successor across concurrent and repeated scheduling", async () => {
+    const runId = randomUUID(), companyId = randomUUID(), agentId = randomUUID();
+    const now = new Date("2026-04-20T12:00:00.000Z");
+    await seedRetryFixture({ runId, companyId, agentId, now, errorCode: "adapter_failed" });
+    const outcomes = await Promise.all([
+      heartbeat.scheduleBoundedRetry(runId, { now, random: () => 0 }),
+      heartbeat.scheduleBoundedRetry(runId, { now, random: () => 0 }),
+    ]);
+    expect(outcomes.every((outcome) => outcome.outcome === "scheduled")).toBe(true);
+    const children = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, runId));
+    expect(children).toHaveLength(1);
+    await db.update(heartbeatRuns).set({ status: "failed" }).where(eq(heartbeatRuns.id, children[0]!.id));
+    await heartbeat.scheduleBoundedRetry(runId, { now, random: () => 0, retryReason: "execution_review_participant_recovery" });
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, runId))).toHaveLength(1);
+  });
+
+  it("retains the failure budget after many pre-provider workspace waits", async () => {
+    const runId = randomUUID(), companyId = randomUUID(), agentId = randomUUID();
+    const now = new Date("2026-04-20T12:00:00.000Z");
+    await seedRetryFixture({ runId, companyId, agentId, now, errorCode: "overloaded", errorFamily: "transient_upstream" });
+    await db.update(heartbeatRuns).set({ scheduledRetryReason: "workspace_busy", scheduledRetryAttempt: 12,
+      contextSnapshot: { failureRetriesBeforeWorkspaceWait: 1 } }).where(eq(heartbeatRuns.id, runId));
+    const scheduled = await heartbeat.scheduleBoundedRetry(runId, { now, random: () => 0 });
+    expect(scheduled).toMatchObject({ outcome: "scheduled", run: { scheduledRetryAttempt: 2, scheduledRetryReason: "transient_failure" } });
+    if (scheduled.outcome !== "scheduled") throw new Error("Expected a bounded retry");
+    await db.update(heartbeatRuns).set({ status: "failed", errorCode: "overloaded",
+      resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } } }).where(eq(heartbeatRuns.id, scheduled.run!.id));
+    expect(await heartbeat.scheduleBoundedRetry(scheduled.run!.id, { now, random: () => 0 })).toMatchObject({ outcome: "retry_exhausted" });
+  });
+  it("records pre-provider quota rejection, schedules the reset-time retry, and leaves the agent idle", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();
 
@@ -382,10 +412,11 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       status: "failed",
       error: "Maximum turns reached",
       errorCode: "adapter_failed",
+      resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } },
       finishedAt: now,
       scheduledRetryAttempt: input?.scheduledRetryAttempt ?? 0,
       scheduledRetryReason: input?.scheduledRetryAttempt ? MAX_TURN_CONTINUATION_RETRY_REASON : null,
-      resultJson: {
+      resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
         stopReason: "max_turns_exhausted",
       },
       contextSnapshot: {
@@ -453,6 +484,7 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       status: "failed",
       error: "upstream overload",
       errorCode: "adapter_failed",
+      resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } },
       finishedAt: now,
       contextSnapshot: {
         issueId: randomUUID(),
@@ -489,7 +521,7 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     expect(retryRun?.contextSnapshot as Record<string, unknown>).not.toHaveProperty("modelProfile");
     expect(retryRun?.scheduledRetryAt?.toISOString()).toBe(expectedDueAt.toISOString());
 
-    const earlyPromotion = await heartbeat.promoteDueScheduledRetries(new Date("2026-04-20T12:01:59.000Z"));
+    const earlyPromotion = await heartbeat.promoteDueScheduledRetries(new Date(expectedDueAt.getTime() - 1));
     expect(earlyPromotion).toEqual({ promoted: 0, runIds: [] });
 
     const stillScheduled = await db
@@ -572,7 +604,7 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       .set({
         error: "workspace validation failed before dispatch",
         errorCode: "workspace_validation_failed",
-        resultJson: {},
+        resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false },},
         contextSnapshot: {
           issueId,
           taskId: issueId,
@@ -656,7 +688,7 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       .set({
         error: "workspace validation failed before dispatch",
         errorCode: "workspace_validation_failed",
-        resultJson: {},
+        resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false },},
         contextSnapshot: {
           issueId,
           taskId: issueId,
@@ -784,7 +816,7 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       .set({
         error: "workspace validation failed before dispatch",
         errorCode: "workspace_validation_failed",
-        resultJson: { workspaceValidation: validation },
+        resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false }, workspaceValidation: validation },
         contextSnapshot: {
           issueId,
           taskId: issueId,
@@ -977,7 +1009,7 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       .set({
         error: "workspace validation failed before dispatch",
         errorCode: "workspace_validation_failed",
-        resultJson: { workspaceValidation: validation },
+        resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false }, workspaceValidation: validation },
         contextSnapshot: {
           issueId,
           taskId: issueId,
@@ -1105,7 +1137,7 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       .set({
         error: "workspace validation failed before dispatch",
         errorCode: "workspace_validation_failed",
-        resultJson: { workspaceValidation: validation },
+        resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false }, workspaceValidation: validation },
         contextSnapshot: {
           issueId,
           taskId: issueId,
@@ -1171,7 +1203,7 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       .set({
         error: "workspace validation failed before dispatch",
         errorCode: "workspace_validation_failed",
-        resultJson: {},
+        resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false },},
         contextSnapshot: {
           issueId,
           taskId: issueId,
@@ -1472,6 +1504,7 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       status: "failed",
       error: "upstream overload",
       errorCode: "adapter_failed",
+      resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } },
       finishedAt: now,
       contextSnapshot: {
         issueId,
@@ -1620,6 +1653,7 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       status: "failed",
       error: "still transient",
       errorCode: "adapter_failed",
+      resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } },
       finishedAt: now,
       scheduledRetryAttempt: BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS.length,
       scheduledRetryReason: "transient_failure",
@@ -1670,8 +1704,6 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     const fallbackModes = [
       "same_session",
       "safer_invocation",
-      "fresh_session",
-      "fresh_session_safer_invocation",
     ] as const;
 
     for (const [index, expectedMode] of fallbackModes.entries()) {
@@ -1719,7 +1751,7 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     }
   });
 
-  it("schedules a recovery continuation for codex harness crashes", async () => {
+  it("requires reconciliation for a classified Codex harness crash", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();
     const runId = randomUUID();
@@ -1734,24 +1766,19 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       errorFamily: "transient_upstream",
     });
 
+    await db.update(heartbeatRuns).set({ resultJson: null }).where(eq(heartbeatRuns.id, runId));
+
     const scheduled = await heartbeat.scheduleBoundedRetry(runId, {
       now,
       random: () => 0.5,
     });
 
-    expect(scheduled.outcome).toBe("scheduled");
-    if (scheduled.outcome !== "scheduled") return;
-
-    expect(scheduled.run.scheduledRetryAttempt).toBe(1);
-    expect(scheduled.run.scheduledRetryReason).toBe("transient_failure");
-    const contextSnapshot = scheduled.run.contextSnapshot as Record<string, unknown>;
-    expect(contextSnapshot.codexTransientFallbackMode).toBe("same_session");
-    expect(contextSnapshot.retryOfRunId).toBe(runId);
+    expect(scheduled).toMatchObject({ outcome: "not_scheduled", errorCode: "legacy_execution_requires_reconciliation" });
 
     await cleanupRetryFixture();
   });
 
-  it("schedules a harness-crash recovery from the error code alone when the result json lost the error family", async () => {
+  it("requires reconciliation for an error-code-only Codex harness crash", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();
     const runId = randomUUID();
@@ -1766,15 +1793,14 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       errorFamily: null,
     });
 
+    await db.update(heartbeatRuns).set({ resultJson: null }).where(eq(heartbeatRuns.id, runId));
+
     const scheduled = await heartbeat.scheduleBoundedRetry(runId, {
       now,
       random: () => 0.5,
     });
 
-    expect(scheduled.outcome).toBe("scheduled");
-    if (scheduled.outcome !== "scheduled") return;
-    expect(scheduled.run.scheduledRetryReason).toBe("transient_failure");
-    expect((scheduled.run.contextSnapshot as Record<string, unknown>).codexTransientFallbackMode).toBe("same_session");
+    expect(scheduled).toMatchObject({ outcome: "not_scheduled", errorCode: "legacy_execution_requires_reconciliation" });
 
     await cleanupRetryFixture();
   });

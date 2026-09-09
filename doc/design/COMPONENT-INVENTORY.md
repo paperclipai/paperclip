@@ -6,6 +6,8 @@ Run scope: `ui/src/components/` and `ui/src/pages/` on branch `design/token-extr
 
 ## Counts
 
+Execution recovery reuses the existing transcript header and task status. Routine phases add no list badges, status cards, or reconciliation dialogs. Only a transient reconnection changes the header text. Automatic recovery decisions remain in the local run log. Storybook **Tasks / Execution recovery** demonstrates quiet task lists, native and legacy transcript headers, and dashboard composition.
+
 | Area | Count |
 |---|---:|
 | Shared primitives (`ui/src/components/ui/`) | 24 |

@@ -68,6 +68,19 @@ function baseStalenessFacts(): QueuedRunFacts {
 }
 
 describe("decideScheduledRetryGate", () => {
+  it("allows the current reviewer and rejects a replaced participant", () => {
+    const facts: ScheduledRetryFacts = {
+      ...baseGateFacts(), issueStatus: "in_review", issueAssigneeAgentId: "implementor",
+      reviewParticipant: { isInReview: true, hasParticipant: true, participantIsAgent: true,
+        participantAgentId: "agent-1", currentStageType: "review", currentParticipant: { type: "agent", agentId: "agent-1" } },
+    };
+    expect(decideScheduledRetryGate(facts, NOW)).toEqual({ allowed: true });
+    expect(decideScheduledRetryGate({ ...facts, reviewParticipant: { ...facts.reviewParticipant, participantAgentId: "new-reviewer" } }, NOW))
+      .toMatchObject({ allowed: false, errorCode: "issue_reassigned" });
+    expect(decideScheduledRetryGate({ ...facts, reviewParticipant: NO_PARTICIPANT }, NOW))
+      .toMatchObject({ allowed: false, errorCode: "issue_reassigned" });
+  });
+
   it("allows a run with no issueId before any issue check runs", () => {
     const facts = { ...baseGateFacts(), issueId: null, issueFound: false };
     expect(decideScheduledRetryGate(facts, NOW)).toEqual({ allowed: true });
@@ -429,5 +442,22 @@ describe("decideQueuedRunStaleness", () => {
       isAuthorizedSourceScopedRecovery: true,
     };
     expect(decideQueuedRunStaleness(facts, NOW)).toEqual({ stale: false });
+  });
+});
+
+describe("native replacement execution authority", () => {
+  it.each([
+    { issueExecutionRunId: "newer-run", issueCheckoutRunId: null },
+    { issueExecutionRunId: null, issueCheckoutRunId: "newer-run" },
+  ])("rejects another owner's lock at both retry gates: %j", (locks) => {
+    expect(decideScheduledRetryGate({ ...baseGateFacts(), retryReasonKind: "native_safe_replacement", ...locks }, NOW))
+      .toMatchObject({ allowed: false, errorCode: "issue_execution_lock_changed" });
+    expect(decideQueuedRunStaleness({ ...baseStalenessFacts(), retryReasonKind: "native_safe_replacement", ...locks }, NOW))
+      .toMatchObject({ stale: true, errorCode: "issue_execution_lock_changed" });
+  });
+  it.each([null, "run-1"])("allows vacant or already-owned replacement locks: %s", (owner) => {
+    const locks = { issueExecutionRunId: owner, issueCheckoutRunId: owner };
+    expect(decideScheduledRetryGate({ ...baseGateFacts(), retryReasonKind: "native_safe_replacement", ...locks }, NOW)).toEqual({ allowed: true });
+    expect(decideQueuedRunStaleness({ ...baseStalenessFacts(), retryReasonKind: "native_safe_replacement", ...locks }, NOW)).toEqual({ stale: false });
   });
 });

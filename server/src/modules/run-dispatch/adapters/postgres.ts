@@ -1,4 +1,5 @@
-import { and, asc, eq, gte, inArray, lte } from "drizzle-orm";
+import { EXECUTION_RECONCILIATION_CAUSES } from "@paperclipai/shared";
+import { and, asc, eq, gte, inArray, lte, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agentWakeupRequests,
@@ -106,6 +107,7 @@ function readNonEmptyString(value: unknown): string | null {
 function classifyRetryReasonKind(retryReason: string | null): RetryReasonKind {
   if (retryReason === MAX_TURN_CONTINUATION_RETRY_REASON) return "max_turn_continuation";
   if (retryReason === ISSUE_DISPOSITION_REPAIR_RETRY_REASON) return "disposition_repair";
+  if (retryReason === "native_safe_replacement") return "native_safe_replacement";
   return "other";
 }
 
@@ -199,8 +201,8 @@ export function createPostgresRunDispatchAdapter(
               and(eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.companyId, input.companyId)),
             )
             // Keep the run status stable through the semantic decision and any
-            // resulting mutation. Adapter-owned work starts only after this
-            // transaction releases the lock at the handoff boundary.
+            // resulting mutation and synchronous dispatch handoff. Never await
+            // adapter-owned work while this transaction holds the row locks.
             .for("update")
             .then((rows) => rows[0] ?? null);
           if (!run) return { kind: "missing" as const };
@@ -313,6 +315,7 @@ export function createPostgresRunDispatchAdapter(
         assigneeAgentId: issues.assigneeAgentId,
         assigneeUserId: issues.assigneeUserId,
         executionRunId: issues.executionRunId,
+        checkoutRunId: issues.checkoutRunId,
         executionPolicy: issues.executionPolicy,
         executionState: issues.executionState,
         monitorNextCheckAt: issues.monitorNextCheckAt,
@@ -333,6 +336,7 @@ export function createPostgresRunDispatchAdapter(
     facts.issueStatus = issue.status;
     facts.issueAssigneeAgentId = issue.assigneeAgentId;
     facts.issueExecutionRunId = issue.executionRunId;
+    facts.issueCheckoutRunId = issue.checkoutRunId;
     facts.reviewParticipant = buildReviewParticipantFacts({
       isInReview: issue.status === "in_review",
       executionState: parseIssueExecutionState(issue.executionState),
@@ -455,6 +459,7 @@ export function createPostgresRunDispatchAdapter(
         status: issues.status,
         assigneeAgentId: issues.assigneeAgentId,
         executionRunId: issues.executionRunId,
+        checkoutRunId: issues.checkoutRunId,
         executionState: issues.executionState,
       })
       .from(issues)
@@ -526,6 +531,7 @@ export function createPostgresRunDispatchAdapter(
       issueStatus: issue?.status ?? null,
       issueAssigneeAgentId: issue?.assigneeAgentId ?? null,
       issueExecutionRunId: issue?.executionRunId ?? null,
+      issueCheckoutRunId: issue?.checkoutRunId ?? null,
       isResolvedInteractionContinuation,
       isConnectionContinuation: (isResolvedInteractionContinuation && context.interactionKind === "connection_intent")
         || context.source === "connection_tools.refreshed",
@@ -718,7 +724,8 @@ export function createPostgresRunDispatchAdapter(
       const isLegacyMissingIssueException =
         !gate.allowed &&
         gate.errorCode === "issue_not_found" &&
-        factsResult.facts.retryReasonKind !== "max_turn_continuation";
+        factsResult.facts.retryReasonKind !== "max_turn_continuation" &&
+        factsResult.facts.retryReasonKind !== "native_safe_replacement";
 
       if (!gate.allowed && !isLegacyMissingIssueException) {
         const cancelled = await cancelSuppressedRetryInTx(tx as unknown as Db, {
@@ -863,6 +870,17 @@ export function createPostgresRunDispatchAdapter(
     const contextSnapshot = parseObject(run.contextSnapshot);
     const issueId = readNonEmptyString(contextSnapshot.issueId);
     if (!issueId) return { issueId: null, decision: { stale: false as const } };
+    const [recovery] = await tx.select({ id: issueRecoveryActions.id, nextAction: issueRecoveryActions.nextAction })
+      .from(issueRecoveryActions).where(and(
+        eq(issueRecoveryActions.companyId, run.companyId), eq(issueRecoveryActions.sourceIssueId, issueId),
+        or(inArray(issueRecoveryActions.status, ["active", "escalated"]),
+          sql`${issueRecoveryActions.evidence}->'automaticRecovery'->>'replay' = 'blocked'`),
+        inArray(issueRecoveryActions.cause, [...EXECUTION_RECONCILIATION_CAUSES]),
+      )).limit(1);
+    if (recovery) return { issueId, decision: { stale: true as const,
+      errorCode: "execution_reconciliation_required" as const, reason: recovery.nextAction,
+      details: { issueId, recoveryActionId: recovery.id },
+    } };
     const facts = await loadStalenessFacts(
       {
         runId: run.id,
@@ -926,7 +944,7 @@ export function createPostgresRunDispatchAdapter(
                       stale: true as const,
                       errorCode: "issue_execution_lock_changed" as const,
                       reason:
-                        "Cancelled because resolved-interaction continuation no longer owns the issue execution lock before adapter dispatch",
+                        "Cancelled because continuation no longer owns the issue execution lock before adapter dispatch",
                       details: {
                         issueId,
                         expectedExecutionRunId: run.id,
@@ -948,19 +966,13 @@ export function createPostgresRunDispatchAdapter(
         return { dispatched: false as const, cancellation };
       }
 
-      let dispatchStarted = false;
-      let resolveDispatchStarted!: () => void;
-      const dispatchStartedPromise = new Promise<void>((resolve) => {
-        resolveDispatchStarted = resolve;
-      });
-      const markDispatchStarted = () => {
-        if (dispatchStarted) return;
-        dispatchStarted = true;
-        resolveDispatchStarted();
-      };
-      const resultPromise = input.dispatch(markDispatchStarted);
-      void resultPromise.then(markDispatchStarted, markDispatchStarted);
-      await dispatchStartedPromise;
+      // Hand off while ownership is still locked, but do not await the provider
+      // promise. Bootstrap and failure finalization can update these same rows;
+      // the transaction must commit independently of either callback completing.
+      const resultPromise = input.dispatch(() => {});
+      // A synchronous rejection can precede the commit response. Observe it
+      // immediately while preserving the original promise for the caller.
+      void resultPromise.catch(() => {});
       return { dispatched: true as const, resultPromise };
     };
 
@@ -974,6 +986,7 @@ export function createPostgresRunDispatchAdapter(
       },
       dispatchLockedRun,
     );
+
   }
 
   return {

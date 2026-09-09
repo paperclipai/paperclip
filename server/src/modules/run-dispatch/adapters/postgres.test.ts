@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agents,
   companies,
@@ -11,6 +11,7 @@ import {
   heartbeatRuns,
   issueDocuments,
   issueRelations,
+  issueRecoveryActions,
   issueTreeHolds,
   issues,
 } from "@paperclipai/db";
@@ -185,6 +186,88 @@ describeEmbeddedPostgres("run-dispatch postgres adapter", () => {
       key: ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
     });
   }
+
+  it.each(["executionRunId", "checkoutRunId"] as const)("suppresses delayed native replacement after another run acquires %s", async (lock) => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const issueId = randomUUID();
+    await seedIssue({ companyId, issueId, assigneeAgentId: agentId, status: "in_progress" });
+    const contextSnapshot = { issueId, wakeReason: "native_safe_replacement", retryReason: "native_safe_replacement", forceFreshSession: true };
+    const replacementId = await seedRun({ companyId, agentId, status: "scheduled_retry", contextSnapshot });
+    const competingId = await seedRun({ companyId, agentId, status: "running", contextSnapshot: { issueId } });
+    await db.update(issues).set({ [lock]: competingId }).where(eq(issues.id, issueId));
+    const adapter = createPostgresRunDispatchAdapter(db);
+    expect(await adapter.evaluateScheduledRetryGate({ companyId, runId: replacementId, retryReasonOverride: "native_safe_replacement", now: new Date() }))
+      .toMatchObject({ allowed: false, errorCode: "issue_execution_lock_changed" });
+    await db.update(heartbeatRuns).set({ status: "queued" }).where(eq(heartbeatRuns.id, replacementId));
+    expect(await adapter.cancelStaleQueuedRun({ companyId, runId: replacementId, expectedStatus: "queued", now: new Date() }))
+      .toMatchObject({ outcome: "cancelled", errorCode: "issue_execution_lock_changed" });
+
+    // A competing owner can also appear after queue validation. The final
+    // dispatch gate must prevent any provider call, even from a running row.
+    await db.update(heartbeatRuns).set({ status: "running" }).where(eq(heartbeatRuns.id, replacementId));
+    let dispatched = false;
+    const outcome = await adapter.dispatchResolvedInteractionIfCurrent({ companyId, runId: replacementId,
+      expectedStatus: "running", now: new Date(), dispatch: async () => { dispatched = true; } });
+    expect(outcome).toMatchObject({ dispatched: false, cancellation: { outcome: "cancelled" } });
+    expect(dispatched).toBe(false);
+    expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]![lock]).toBe(competingId);
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, competingId)))[0]?.status).toBe("running");
+  });
+
+  it("commits the handoff without awaiting a recovered provider that fails before spawning", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const issueId = randomUUID();
+    await seedIssue({ companyId, issueId, assigneeAgentId: agentId, status: "in_progress" });
+    const runId = await seedRun({ companyId, agentId, status: "running", contextSnapshot: { issueId } });
+    await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, issueId));
+    const adapter = createPostgresRunDispatchAdapter(db);
+    const gate = await adapter.dispatchResolvedInteractionIfCurrent({
+      companyId, runId, expectedStatus: "running", now: new Date(),
+      dispatch: async () => {
+        // The incident's third attempt failed here before onSpawn. A held
+        // admission lock makes this finalization fail with lock_timeout.
+        await db.transaction(async tx => {
+          await tx.execute(sql`select set_config('lock_timeout', '1000', true)`);
+          await tx.update(issues).set({ executionRunId: null }).where(eq(issues.id, issueId));
+          await tx.update(heartbeatRuns).set({ status: "failed", finishedAt: new Date() }).where(eq(heartbeatRuns.id, runId));
+        });
+        return "provider_checkpoint_failed_terminal";
+      },
+    });
+    expect(gate.dispatched).toBe(true);
+    if (gate.dispatched) expect(await gate.resultPromise).toBe("provider_checkpoint_failed_terminal");
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)))[0]?.status).toBe("failed");
+  });
+
+  it("initiates dispatch before admission locks can be released to a competing owner", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const issueId = randomUUID();
+    await seedIssue({ companyId, issueId, assigneeAgentId: agentId, status: "in_progress" });
+    const runId = await seedRun({ companyId, agentId, status: "running", contextSnapshot: { issueId } });
+    const competingId = await seedRun({ companyId, agentId, status: "running", contextSnapshot: { issueId } });
+    await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, issueId));
+    const transaction = db.transaction.bind(db);
+    const ordering: string[] = [];
+    // Inject a competing claim immediately after commit, before control returns
+    // to the adapter. A callback outside the transaction would run too late.
+    const transactionSpy = vi.spyOn(db, "transaction").mockImplementation(async (callback, config) => {
+      const value = await transaction(callback, config);
+      await db.update(issues).set({ executionRunId: competingId }).where(eq(issues.id, issueId));
+      ordering.push("competing-owner");
+      return value;
+    });
+    try {
+      const gate = await createPostgresRunDispatchAdapter(db).dispatchResolvedInteractionIfCurrent({
+        companyId, runId, expectedStatus: "running", now: new Date(),
+        dispatch: async () => { ordering.push("handoff"); return "started"; },
+      });
+      expect(gate.dispatched).toBe(true);
+      if (gate.dispatched) expect(await gate.resultPromise).toBe("started");
+      expect(ordering).toEqual(["handoff", "competing-owner"]);
+    } finally {
+      transactionSpy.mockRestore();
+    }
+  });
 
   async function waitForBlockedForUpdate(tableName: string) {
     for (let attempt = 0; attempt < 80; attempt += 1) {
@@ -612,4 +695,14 @@ describeEmbeddedPostgres("run-dispatch postgres adapter", () => {
       15_000,
     );
   });
+  it.each(["active", "resolved"])("blocks a generic retry after %s no-replay disposition", async status => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const issueId = randomUUID(), runId = randomUUID();
+    await db.insert(issues).values({ id: issueId, companyId, title: "Uncertain email", status: "in_progress", assigneeAgentId: agentId });
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, status: "queued", contextSnapshot: { issueId, wakeReason: "retry_failed_run" } });
+    await db.insert(issueRecoveryActions).values({ companyId, sourceIssueId: issueId, kind: "active_run_watchdog", ownerType: "board", cause: "uncertain_external_action", status, evidence: status === "resolved" ? { automaticRecovery: { replay: "blocked" } } : {}, fingerprint: runId, nextAction: "Verify whether email-1 was sent before continuing." });
+    const adapter = createPostgresRunDispatchAdapter(db);
+    await expect(adapter.cancelStaleQueuedRun({ companyId, runId, expectedStatus: "queued", now: new Date() })).resolves.toMatchObject({ outcome: "cancelled", errorCode: "execution_reconciliation_required" });
+  });
+
 });

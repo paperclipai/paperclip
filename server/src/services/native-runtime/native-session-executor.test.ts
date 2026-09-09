@@ -26,6 +26,12 @@ import {
 } from "@paperclipai/paperclip-runner";
 import { createHash } from "node:crypto";
 import {
+  NativeSessionCleanupQuarantinedError,
+  NativeProviderTerminalFailure,
+  NativeSessionProtocolIntegrityError,
+} from "../../vendor/paperclip-runner/index.js";
+import * as issueServiceModule from "../issues.js";
+import {
   createNativeHarnessBackupStamp,
   verifyNativeHarnessBackupStamp,
 } from "./native-harness-backup-stamp.js";
@@ -96,6 +102,7 @@ const durableRunnerState = (
 
 const state = vi.hoisted(() => ({
   execute: vi.fn(),
+  upsertRecoveryAction: vi.fn(async () => ({})),
   createTransport: vi.fn((_options: RunnerTransportOptions) => ({
     transport: {},
   })),
@@ -135,6 +142,10 @@ vi.mock("../../vendor/paperclip-runner/index.js", async (importOriginal) => ({
   createRunnerdCodexTransport: state.createTransport,
   executeNativeSession: state.execute,
   parsePaperclipQuestionSet: (value: unknown) => value,
+}));
+
+vi.mock("../issue-recovery-actions.js", () => ({
+  issueRecoveryActionService: () => ({ upsertSourceScoped: state.upsertRecoveryAction }),
 }));
 
 vi.mock("./paperclip-runner-tool-authority.js", () => ({
@@ -2329,6 +2340,8 @@ function leaseDb(
   boundExecution: NativeExecutionInputV1 = execution,
   coordinatorOverrides: Partial<LeaseCoordinator> = {},
   runResultJson: Record<string, unknown> = {},
+  updates: Array<{ table: unknown; values: Record<string, unknown> }> = [],
+  runnerProfileJson: Record<string, unknown> = {},
 ): Db {
   const coordinator: LeaseCoordinator = {
     runId: boundExecution.binding.runId,
@@ -2341,8 +2354,10 @@ function leaseDb(
     resultId: null,
     ...coordinatorOverrides,
   };
-  const update = () => ({
-    set: () => ({
+  const update = (table: unknown) => ({
+    set: (values: Record<string, unknown>) => {
+      updates.push({table, values});
+      return ({
       where: () => {
         const result = Promise.resolve([]) as unknown as Promise<unknown[]> & {
           returning: () => Promise<Array<{ runId: string }>>;
@@ -2351,26 +2366,24 @@ function leaseDb(
           Promise.resolve([{ runId: coordinator.runId }]);
         return result;
       },
-    }),
+    }); },
   });
   const tx = {
+    execute: async () => [],
     select: () => ({
       from: (table: unknown) => ({
         where: () => ({
-          for: () => ({
-            limit: () =>
-              Promise.resolve([
-                table === nativeRunFinalizations
-                  ? coordinator
-                  : {
-                      agentId: boundExecution.binding.agentId,
-                      companyId: boundExecution.binding.companyId,
-                      nativeIssueId: boundExecution.binding.issueId,
-                      resultJson: runResultJson,
-                      runtimeMode: "native",
-                    },
-              ]),
-          }),
+          limit: async () => table === heartbeatRuns ? [{ runnerProfileJson }] : [],
+          for: () => {
+            const rows = [table === nativeRunFinalizations ? coordinator : table === issues
+              ? { id: boundExecution.binding.issueId, companyId: boundExecution.binding.companyId,
+                  assigneeAgentId: boundExecution.binding.agentId, status: "in_progress",
+                  executionRunId: boundExecution.binding.runId, checkoutRunId: null }
+              : { agentId: boundExecution.binding.agentId, companyId: boundExecution.binding.companyId,
+                  nativeIssueId: boundExecution.binding.issueId, resultJson: runResultJson,
+                  runnerProfileJson, runtimeMode: "native" }];
+            return Object.assign(Promise.resolve(rows), { limit: () => Promise.resolve(rows) });
+          },
         }),
       }),
     }),
@@ -2380,6 +2393,7 @@ function leaseDb(
     transaction: async (operation: (transaction: Db) => Promise<unknown>) =>
       operation(tx as unknown as Db),
     update,
+    select: tx.select,
   } as unknown as Db;
 }
 
@@ -3761,6 +3775,248 @@ describe("native warm session supervision", () => {
 });
 
 describe("native session bounded recovery", () => {
+  it("keeps typed integrity failure permanent even if a wrapper changes its message", () => {
+    const failure = new NativeSessionProtocolIntegrityError(
+      "semantic_input_digest_mismatch",
+    );
+    failure.message = "provider_transport_failed: later cleanup failed";
+    const code = nativeSessionFailureSourceCode(failure);
+    expect(code).toBe("native_event_replay_conflict");
+    expect(nativeSessionFailureDisposition(1, new Date(), code)).toEqual({
+      phase: "terminal_failure",
+      failureCode: code,
+      nextAttemptAt: null,
+    });
+    expect(
+      nativeSessionFailureSourceCode(
+        Object.assign(new Error("ordinary disconnect"), {
+          code: failure.code,
+          recovery: failure.recovery,
+        }),
+      ),
+    ).toBe("native_session_interrupted");
+  });
+
+  it.each([
+    { checkpointExists: false, ancillaryFailure: null },
+    { checkpointExists: true, ancillaryFailure: null },
+    { checkpointExists: false, ancillaryFailure: "log" },
+    { checkpointExists: true, ancillaryFailure: "log" },
+    { checkpointExists: false, ancillaryFailure: "recovery_write" },
+    { checkpointExists: true, ancillaryFailure: "recovery_write" },
+  ] as const)(
+    "preserves integrity failure without retrying the provider (%j)",
+    async ({ checkpointExists, ancillaryFailure }) => {
+      const updates: Array<{
+        table: unknown;
+        values: Record<string, unknown>;
+      }> = [];
+      const failure = new NativeSessionProtocolIntegrityError(
+        "semantic_input_digest_mismatch",
+      );
+      state.execute.mockReset().mockRejectedValueOnce(failure);
+      state.upsertRecoveryAction.mockReset().mockResolvedValue({});
+      const secondaryFailure = new Error("temporary diagnostic storage failure");
+      const onLog = vi.fn(async (_stream: string, chunk: string) => {
+        if (
+          ancillaryFailure === "log" &&
+          chunk.includes("native session execution failed:")
+        ) {
+          throw secondaryFailure;
+        }
+      });
+      const db = leaseDb(
+        execution,
+        {},
+        {},
+        updates,
+        checkpointExists
+          ? {
+              sessionCheckpoint: {
+                providerSessionId: "provider-existing",
+              },
+            }
+          : {},
+      );
+      const transact = db.transaction.bind(db);
+      const recoveryWriteAttempt = vi.fn();
+      db.transaction = (async (operation) => {
+        if (state.execute.mock.calls.length > 0) {
+          recoveryWriteAttempt();
+          if (ancillaryFailure === "recovery_write") throw secondaryFailure;
+        }
+        return transact(operation);
+      }) as typeof db.transaction;
+      const updateIssue = vi.fn(async () => null);
+      const service = vi
+        .spyOn(issueServiceModule, "issueService")
+        .mockReturnValue({ update: updateIssue } as unknown as ReturnType<
+          typeof issueServiceModule.issueService
+        >);
+      try {
+        await expect(
+          executePaperclipNativeSession({
+            db,
+            execution,
+            runnerInstanceId: "runner",
+            onLog,
+          }),
+        ).rejects.toBe(failure);
+        expect(recoveryWriteAttempt).toHaveBeenCalledOnce();
+        expect(state.execute).toHaveBeenCalledOnce();
+        if (ancillaryFailure === "recovery_write") {
+          // The failed transaction cannot manufacture a persisted recovery or
+          // change task state, but its error must not permit a provider retry.
+          expect(
+            updates.some((entry) => entry.values.phase === "terminal_failure"),
+          ).toBe(false);
+          expect(state.upsertRecoveryAction).not.toHaveBeenCalled();
+          expect(updateIssue).not.toHaveBeenCalled();
+          expect(
+            nativeSessionFailureDisposition(
+              1,
+              new Date(),
+              nativeSessionFailureSourceCode(failure),
+            ),
+          ).toMatchObject({
+            phase: "terminal_failure",
+            nextAttemptAt: null,
+          });
+          return;
+        }
+        expect(
+          updates.find(
+            (entry) =>
+              entry.table === nativeRunFinalizations &&
+              entry.values.phase === "terminal_failure",
+          )?.values,
+        ).toMatchObject({
+          failureCode: "native_event_replay_conflict",
+          nextAttemptAt: null,
+          failureDetail: {
+            originalFailureCode: "native_event_replay_conflict",
+            recoveryMode: checkpointExists
+              ? "exact_checkpoint_resume"
+              : "ambiguous_state",
+            nextAction: expect.stringContaining(
+              checkpointExists
+                ? "automatic recovery is stopped"
+                : "replacement provider session is forbidden",
+            ),
+          },
+        });
+        expect(state.upsertRecoveryAction).toHaveBeenCalledWith(
+          expect.objectContaining({
+            cause: "native_event_replay_conflict",
+            ownerType: "board",
+            wakePolicy: null,
+          }),
+        );
+        expect(updateIssue).toHaveBeenCalledWith(
+          execution.binding.issueId,
+          { status: "in_review" },
+          expect.anything(),
+        );
+      } finally {
+        service.mockRestore();
+      }
+    },
+  );
+
+  it("makes only typed operator-required cleanup quarantine terminal on the first attempt", () => {
+    const code = nativeSessionFailureSourceCode(
+      new NativeSessionCleanupQuarantinedError(),
+    );
+    expect(code).toBe("native_session_cleanup_quarantined");
+    const disposition = nativeSessionFailureDisposition(1, new Date(), code);
+    expect(disposition).toEqual({
+      phase: "terminal_failure",
+      failureCode: code,
+      nextAttemptAt: null,
+    });
+    expect(
+      nativeSessionRecoveryProjection({ ...disposition, agentId: "agent" }),
+    ).toMatchObject({
+      recoveryOwner: { kind: "board" },
+      recoveryActionOwnerAgentId: null,
+    });
+  });
+
+  it.each([
+    new Error(
+      "native_session_cleanup_quarantined: prior session cleanup exceeded the admission grace",
+    ),
+    new Error(
+      "native_session_cleanup_quarantined: prior session cleanup remains incomplete",
+    ),
+    Object.assign(new Error("cleanup still running"), {
+      code: "native_session_cleanup_quarantined",
+      recovery: "operator_required",
+    }),
+  ])("keeps untyped cleanup failure retryable (%s)", (error) => {
+    const code = nativeSessionFailureSourceCode(error);
+    expect(code).toBe("native_session_interrupted");
+    expect(nativeSessionFailureDisposition(1, new Date(), code)).toMatchObject({
+      phase: "retryable_failure",
+      nextAttemptAt: expect.any(Date),
+    });
+  });
+
+  it("persists actionable operator recovery without an automatic cleanup wake", async () => {
+    const updates: Array<{ table: unknown; values: Record<string, unknown> }> =
+      [];
+    const failure = new NativeSessionCleanupQuarantinedError();
+    state.execute.mockReset().mockRejectedValueOnce(failure);
+    state.upsertRecoveryAction.mockReset().mockResolvedValue({});
+    const updateIssue = vi.fn(async () => null);
+    const service = vi
+      .spyOn(issueServiceModule, "issueService")
+      .mockReturnValue({ update: updateIssue } as unknown as ReturnType<
+        typeof issueServiceModule.issueService
+      >);
+    try {
+      await expect(
+        executePaperclipNativeSession({
+          db: leaseDb(execution, {}, {}, updates),
+          execution,
+          runnerInstanceId: "runner",
+        }),
+      ).rejects.toBe(failure);
+      expect(
+        updates.find(
+          (entry) =>
+            entry.table === nativeRunFinalizations &&
+            entry.values.phase === "terminal_failure",
+        )?.values,
+      ).toMatchObject({
+        failureCode: "native_session_cleanup_quarantined",
+        nextAttemptAt: null,
+        failureDetail: {
+          nextAction: expect.stringContaining(
+            "Clearing a task session does not resolve this quarantine",
+          ),
+        },
+      });
+      expect(state.upsertRecoveryAction).toHaveBeenCalledWith(
+        expect.objectContaining({
+          cause: "native_session_cleanup_quarantined",
+          ownerType: "board",
+          wakePolicy: null,
+          nextAction: expect.stringContaining(
+            "Clearing a task session does not resolve this quarantine",
+          ),
+        }),
+      );
+      expect(updateIssue).toHaveBeenCalledWith(
+        execution.binding.issueId,
+        { status: "in_review" },
+        expect.anything(),
+      );
+    } finally {
+      service.mockRestore();
+    }
+  });
+
   it("preserves stable provider and runner failure causes", () => {
     expect(
       nativeSessionFailureSourceCode(
@@ -6728,4 +6984,9 @@ describe("runnerd provider runtime wiring", () => {
       }),
     );
   });
+});
+
+// Terminal wrapping must never turn an authorization/integrity failure into a safe replacement.
+it.each(["tool_binding_mismatch", "thread_binding_mismatch", "turn_binding_mismatch", "conflicting_semantic_result", "provider_event_type_invalid"])("keeps %s operator-owned through terminal propagation", code => {
+  expect(nativeSessionFailureSourceCode(new NativeProviderTerminalFailure(code, false))).toBe("native_event_replay_conflict");
 });

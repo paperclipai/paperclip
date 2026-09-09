@@ -1,4 +1,5 @@
 import { useRef, useState, type ComponentType, type SVGProps } from "react";
+import type { ExecutionProjection } from "@paperclipai/shared";
 import { Brain, OctagonX } from "lucide-react";
 import { MarkdownBody } from "@/components/MarkdownBody";
 import { useSecondTick } from "@/hooks/useSecondTick";
@@ -289,11 +290,13 @@ function RunnerActivityMarker({ item }: { item: TaskChatMarkerItem }) {
 
 function RunnerTurnStatus({
   status,
+  execution,
   startedAtMs,
   finishedAtMs,
   continuedAfterSteering = false,
 }: {
   status: string;
+  execution?: ExecutionProjection | null;
   startedAtMs: number | null;
   finishedAtMs?: number | null;
   continuedAfterSteering?: boolean;
@@ -310,8 +313,9 @@ function RunnerTurnStatus({
   const elapsed = formatCompactDuration(elapsedMs);
 
   const failed = terminalStatusFailed(status);
-  const label = terminal ? (failed ? "Stopped" : "Worked") : "Working";
-  const semanticLabel = terminal
+  const reconnecting = execution?.phase === "reconnecting" || execution?.phase === "retry_scheduled";
+  const label = reconnecting ? "Reconnecting…" : (terminal ? (failed ? "Stopped" : "Worked") : "Working");
+  const semanticLabel = reconnecting ? label : terminal
     ? elapsed
       ? `${label} ${failed ? "after" : "for"} ${elapsed}`
       : label
@@ -425,6 +429,7 @@ export function TaskChatRunnerTurn({
   agentIcon,
   items,
   status,
+  execution,
   startedAtMs,
   finishedAtMs,
   activityUnavailable = false,
@@ -438,6 +443,7 @@ export function TaskChatRunnerTurn({
   agentIcon?: string | null;
   items: readonly TaskChatItem[];
   status: string;
+  execution?: ExecutionProjection | null;
   startedAtMs: number | null;
   finishedAtMs?: number | null;
   activityUnavailable?: boolean;
@@ -522,6 +528,7 @@ export function TaskChatRunnerTurn({
         ) : null}
         <RunnerTurnStatus
           status={status}
+          execution={execution}
           startedAtMs={startedAtMs}
           finishedAtMs={finishedAtMs}
           continuedAfterSteering={continuedAfterSteering}
@@ -601,7 +608,7 @@ export function TaskChatRunnerTurn({
           </div>
         </div>
       ) : null}
-      <RunnerCurrentActivityTail items={currentActivityItems} status={status} />
+      {(!execution || execution.phase === "working") ? <RunnerCurrentActivityTail items={currentActivityItems} status={status} /> : null}
     </div>
   );
 }

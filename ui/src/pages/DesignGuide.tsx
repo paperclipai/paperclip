@@ -2139,6 +2139,15 @@ export function DesignGuide() {
         <EnvironmentVariablesEditorShowcase />
       </Section>
 
+      <Section title="Execution recovery">
+        <p className="text-sm text-muted-foreground">
+          Recovery runs in the background. Task lists keep their ordinary status without
+          execution badges. The transcript may briefly say Reconnecting, then resumes its
+          normal presentation. Recovery decisions and attempts belong in the run log;
+          there is no execution status card or reconciliation form.
+        </p>
+      </Section>
+
       <Section title="Connection Intent">
         <p className="text-sm text-muted-foreground">
           The task card is the dialog host for the shared connection setup flow. Provider forms,

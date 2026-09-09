@@ -2295,7 +2295,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
                 {threadHeader}
                 {loadOlderButton}
               </>
-            ) : undefined
+            ) : null
           }
           issueBrief={issueBrief}
           comments={commentsForThread}
