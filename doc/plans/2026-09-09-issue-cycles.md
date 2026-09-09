@@ -23,8 +23,12 @@ proposal ports time-boxed cycles to Paperclip's issue model.
   No sprints, milestones, or cycles exist as product concepts; the words
   appear in the codebase only incidentally.
 - Activity history with action attribution exists (the shipped Activity log
-  surface), so burn-down can read durable events rather than recomputing
-  from live rows.
+  surface). It can supplement burn-down, but lifecycle timestamps alone
+  cannot reconstruct history: reopening clears `completedAt`/`cancelledAt`,
+  checkout overwrites `startedAt`, and generic updates do not record
+  previous-versus-new statuses. Durable lifecycle transition recording is
+  therefore a prerequisite for historical burn-down; until it exists, the
+  proposal is limited to current-state snapshots (see phase 1).
 - The audit area already renders run history and progress summaries,
   establishing UI idioms a cycle progress view can reuse.
 - Prior art studied in Plane (`apps/api/plane/db/models/cycle.py`):
@@ -40,18 +44,19 @@ proposal ports time-boxed cycles to Paperclip's issue model.
 Without time-boxes, operators cannot express "sprint 12" or "September
 milestone" anywhere in the product. Routines answer "every Monday", and
 `targetDate` answers one project deadline, but neither scopes a set of
-issues to a shared window with progress tracking. The roadmap asks for
-exactly this capability under Work Queues (queue-style streams are the
-continuous counterpart; cycles are the time-boxed counterpart) and it
-feeds Self-Organization (agents proposing milestone groupings need a
-milestone object to propose).
+issues to a shared window with progress tracking. The roadmap does not
+explicitly request cycles — Work Queues describes continuous routing and
+Self-Organization describes governed structural proposals — but time-boxed
+execution is our inferred counterpart to continuous queues, and milestone
+groupings are feedstock the Self-Organization direction needs.
 
 ## Goals
 
 1. Give projects named cycles with start/end dates owning a set of issues.
-2. Provide progress rollup (counts by status) plus burn-down computed from
-   durable issue timestamps and activity, cached like the reference
-   `progress_snapshot` so reads stay cheap.
+2. Provide progress rollup (counts by status) plus burn-down from cached
+   snapshots like the reference `progress_snapshot`, starting with
+   current-state snapshots; historical series wait on durable lifecycle
+   transition recording (see above).
 3. Keep cycle membership orthogonal to workflow status, assignees, and
    execution: cycles observe work, they never gate wakes, locks, or
    budgets.
@@ -77,10 +82,11 @@ milestone object to propose).
   start/end timestamps with timezone, owner references, archived flag,
   cached `progress_snapshot` JSONB. New `cycle_issues` link table
   (cycle, issue, company) with uniqueness guards.
-- Progress computation: counts by workflow status over member issues plus
-  burn-down series derived from `startedAt`/`completedAt`/`cancelledAt`
-  and activity events. Snapshot cached on the cycle row, recomputed on
-  membership changes and on a bounded schedule (not per read).
+- Progress computation: counts by workflow status over member issues.
+  Burn-down starts as current-state snapshots; historical series require
+  the lifecycle-transition recording prerequisite above. Snapshot cached
+  on the cycle row, recomputed on membership changes and on a bounded
+  schedule (not per read).
 - Membership mutations (add, remove, move between cycles) as service
   operations with actor attribution and activity entries.
 - Read API: cycle detail (members, rollup, snapshot) scoped per project.
