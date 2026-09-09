@@ -9,6 +9,7 @@ const VALID_GOAL_TYPES = [
   "water_ml",
   "sleep_minutes",
   "exercise_minutes",
+  "meditation_minutes",
   "calories",
   "protein_g",
   "steps",

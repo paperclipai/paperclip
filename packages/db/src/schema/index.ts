@@ -100,3 +100,4 @@ export { medicationLogs } from "./medication_logs.js";
 export { labResults } from "./lab_results.js";
 export { healthGoals } from "./health_goals.js";
 export { journalEntries } from "./journal_entries.js";
+export { meditationLogs } from "./meditation_logs.js";

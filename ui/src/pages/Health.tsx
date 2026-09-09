@@ -81,6 +81,12 @@ import {
   useDeleteJournalEntry,
   type JournalEntry,
 } from "../hooks/useJournal";
+import {
+  useMeditationHistory,
+  useLogMeditation,
+  useDeleteMeditationLog,
+  MEDITATION_TECHNIQUES,
+} from "../hooks/useMeditation";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { EmptyState } from "../components/EmptyState";
@@ -134,6 +140,7 @@ function DashboardView({ companyId }: { companyId: string }) {
   const { data: goalsData, isLoading: goalsLoading } = useHealthGoals(companyId);
   const { data: sleepData } = useSleepHistory(companyId, today, today);
   const { data: exerciseData } = useExerciseHistory(companyId, today, today);
+  const { data: meditationData } = useMeditationHistory(companyId, today, today);
   const { data: nutritionData } = useNutritionHistory(companyId, today, today);
   const { data: moodData } = useMoodHistory(companyId, today, today);
   const { data: biometricsData } = useBiometricsHistory(companyId, today, today);
@@ -155,6 +162,11 @@ function DashboardView({ companyId }: { companyId: string }) {
         return sleepData?.records[0]?.durationMinutes ?? null;
       case "exercise_minutes": {
         const sessions = exerciseData?.logs.filter((l) => l.exerciseDate === today) ?? [];
+        if (sessions.length === 0) return null;
+        return sessions.reduce((sum, l) => sum + l.durationMinutes, 0);
+      }
+      case "meditation_minutes": {
+        const sessions = meditationData?.logs.filter((l) => l.sessionDate === today) ?? [];
         if (sessions.length === 0) return null;
         return sessions.reduce((sum, l) => sum + l.durationMinutes, 0);
       }
@@ -2794,14 +2806,15 @@ function LabResultsView({ companyId }: { companyId: string }) {
 // ---- Goals ----
 
 const GOAL_TYPE_OPTIONS = [
-  { value: "water_ml",         label: "Daily Water",      unit: "ml" },
-  { value: "sleep_minutes",    label: "Sleep",            unit: "min" },
-  { value: "exercise_minutes", label: "Exercise",         unit: "min" },
-  { value: "calories",         label: "Calories",         unit: "kcal" },
-  { value: "protein_g",        label: "Protein",          unit: "g" },
-  { value: "steps",            label: "Steps",            unit: "steps" },
-  { value: "weight_kg",        label: "Weight",           unit: "kg" },
-  { value: "mood_score",       label: "Mood Score",       unit: "/ 10" },
+  { value: "water_ml",             label: "Daily Water",      unit: "ml" },
+  { value: "sleep_minutes",        label: "Sleep",            unit: "min" },
+  { value: "exercise_minutes",     label: "Exercise",         unit: "min" },
+  { value: "meditation_minutes",   label: "Meditation",       unit: "min" },
+  { value: "calories",             label: "Calories",         unit: "kcal" },
+  { value: "protein_g",            label: "Protein",          unit: "g" },
+  { value: "steps",                label: "Steps",            unit: "steps" },
+  { value: "weight_kg",            label: "Weight",           unit: "kg" },
+  { value: "mood_score",           label: "Mood Score",       unit: "/ 10" },
 ];
 
 function GoalCard({ goal, onDelete }: { goal: HealthGoal; onDelete: () => void }) {
@@ -2960,6 +2973,193 @@ function GoalsView({ companyId }: { companyId: string }) {
               onDelete={() => deleteMutation.mutate({ id: g.id, companyId })}
             />
           ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---- Meditation ----
+
+function MeditationView({ companyId }: { companyId: string }) {
+  const today = new Date().toISOString().slice(0, 10);
+  const thirtyDaysAgo = new Date(Date.now() - 30 * 86_400_000).toISOString().slice(0, 10);
+
+  const { data, isLoading, error } = useMeditationHistory(companyId, thirtyDaysAgo, today);
+  const logMutation = useLogMeditation();
+  const deleteMutation = useDeleteMeditationLog();
+
+  const [showForm, setShowForm] = useState(false);
+  const [sessionDate, setSessionDate] = useState(today);
+  const [durationMinutes, setDurationMinutes] = useState("");
+  const [technique, setTechnique] = useState("");
+  const [notes, setNotes] = useState("");
+  const [formError, setFormError] = useState<string | null>(null);
+
+  function handleLog() {
+    const dur = parseInt(durationMinutes, 10);
+    if (!durationMinutes || isNaN(dur) || dur < 1) {
+      setFormError("Duration must be at least 1 minute.");
+      return;
+    }
+    setFormError(null);
+    logMutation.mutate(
+      {
+        companyId,
+        sessionDate,
+        durationMinutes: dur,
+        technique: technique || null,
+        notes: notes.trim() || null,
+      },
+      {
+        onSuccess: () => {
+          setShowForm(false);
+          setDurationMinutes("");
+          setTechnique("");
+          setNotes("");
+        },
+        onError: (e) => setFormError(e instanceof Error ? e.message : "Failed to log session."),
+      },
+    );
+  }
+
+  const logs = data?.logs ?? [];
+
+  // Group logs by date for summary display
+  const byDate = new Map<string, typeof logs>();
+  for (const l of logs) {
+    if (!byDate.has(l.sessionDate)) byDate.set(l.sessionDate, []);
+    byDate.get(l.sessionDate)!.push(l);
+  }
+  const dates = [...byDate.keys()].sort((a, b) => b.localeCompare(a));
+
+  const totalMinutes = logs.reduce((sum, l) => sum + l.durationMinutes, 0);
+  const totalSessions = logs.length;
+
+  if (isLoading) return <PageSkeleton variant="dashboard" />;
+  if (error)
+    return <p className="text-sm text-destructive p-4">{error instanceof Error ? error.message : "Error"}</p>;
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-sm font-semibold text-foreground">Meditation — Last 30 Days</h2>
+          {totalSessions > 0 && (
+            <p className="text-xs text-muted-foreground">
+              {totalSessions} session{totalSessions !== 1 ? "s" : ""} · {totalMinutes} min total
+            </p>
+          )}
+        </div>
+        <Button size="sm" variant="outline" onClick={() => setShowForm(true)}>
+          + Log Session
+        </Button>
+      </div>
+
+      {showForm && (
+        <Dialog open onOpenChange={(o) => !o && setShowForm(false)}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Log Meditation Session</DialogTitle>
+            </DialogHeader>
+            <div className="space-y-3 py-2">
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-xs font-medium text-muted-foreground mb-1 block">Date</label>
+                  <input
+                    type="date"
+                    value={sessionDate}
+                    onChange={(e) => setSessionDate(e.target.value)}
+                    className="w-full border rounded px-2 py-1 text-sm"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs font-medium text-muted-foreground mb-1 block">Duration (min) *</label>
+                  <input
+                    type="number"
+                    min={1}
+                    value={durationMinutes}
+                    onChange={(e) => setDurationMinutes(e.target.value)}
+                    placeholder="e.g. 15"
+                    className="w-full border rounded px-2 py-1 text-sm"
+                  />
+                </div>
+              </div>
+              <div>
+                <label className="text-xs font-medium text-muted-foreground mb-1 block">Technique</label>
+                <select
+                  value={technique}
+                  onChange={(e) => setTechnique(e.target.value)}
+                  className="w-full border rounded px-2 py-1 text-sm"
+                >
+                  <option value="">— optional —</option>
+                  {MEDITATION_TECHNIQUES.map((t) => (
+                    <option key={t.value} value={t.value}>{t.label}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="text-xs font-medium text-muted-foreground mb-1 block">Notes</label>
+                <textarea
+                  value={notes}
+                  onChange={(e) => setNotes(e.target.value)}
+                  rows={2}
+                  placeholder="Optional notes..."
+                  className="w-full border rounded px-2 py-1 text-sm resize-none"
+                />
+              </div>
+              {formError && <p className="text-xs text-destructive">{formError}</p>}
+            </div>
+            <DialogFooter>
+              <Button variant="outline" size="sm" onClick={() => setShowForm(false)}>
+                Cancel
+              </Button>
+              <Button size="sm" onClick={handleLog} disabled={logMutation.isPending}>
+                Save
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      )}
+
+      {logs.length === 0 ? (
+        <EmptyState icon={Leaf} message="No meditation sessions in the last 30 days." />
+      ) : (
+        <div className="space-y-3">
+          {dates.map((date) => {
+            const dayLogs = byDate.get(date)!;
+            const dayTotal = dayLogs.reduce((sum, l) => sum + l.durationMinutes, 0);
+            return (
+              <div key={date} className="border rounded-lg p-3">
+                <div className="flex items-center justify-between mb-2">
+                  <p className="text-xs font-medium text-foreground">{date}</p>
+                  <p className="text-xs text-muted-foreground">{dayTotal} min total</p>
+                </div>
+                <div className="space-y-1">
+                  {dayLogs.map((l) => (
+                    <div key={l.id} className="flex items-center justify-between group">
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs text-foreground">{l.durationMinutes} min</span>
+                        {l.technique && (
+                          <span className="text-xs text-muted-foreground capitalize">{l.technique.replace("_", " ")}</span>
+                        )}
+                        {l.notes && (
+                          <span className="text-xs text-muted-foreground truncate max-w-[120px]">{l.notes}</span>
+                        )}
+                      </div>
+                      <button
+                        onClick={() => deleteMutation.mutate({ id: l.id, companyId })}
+                        disabled={deleteMutation.isPending}
+                        className="opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-destructive transition-colors"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            );
+          })}
         </div>
       )}
     </div>
@@ -3161,7 +3361,7 @@ export function Health() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const { pathname } = useLocation();
-  const [view, setView] = useState<"dashboard" | "score" | "locations" | "sleep" | "exercise" | "biometrics" | "mood" | "nutrition" | "symptoms" | "medications" | "lab-results" | "goals" | "journal">(
+  const [view, setView] = useState<"dashboard" | "score" | "locations" | "sleep" | "exercise" | "meditation" | "biometrics" | "mood" | "nutrition" | "symptoms" | "medications" | "lab-results" | "goals" | "journal">(
     pathname.includes("environmental-score") ? "score" : "dashboard"
   );
 
@@ -3220,6 +3420,15 @@ export function Health() {
           onClick={() => setView("exercise")}
         >
           Exercise
+        </button>
+        <button
+          className={cn(
+            "px-3 py-1 text-xs font-medium rounded transition-colors",
+            view === "meditation" ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground",
+          )}
+          onClick={() => setView("meditation")}
+        >
+          Meditation
         </button>
         <button
           className={cn(
@@ -3305,6 +3514,8 @@ export function Health() {
         <SleepView companyId={selectedCompanyId} />
       ) : view === "exercise" ? (
         <ExerciseView companyId={selectedCompanyId} />
+      ) : view === "meditation" ? (
+        <MeditationView companyId={selectedCompanyId} />
       ) : view === "biometrics" ? (
         <BiometricsView companyId={selectedCompanyId} />
       ) : view === "mood" ? (
