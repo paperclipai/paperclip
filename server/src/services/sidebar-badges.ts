@@ -1,6 +1,6 @@
-import { and, desc, eq, inArray, not } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, not, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { agents, approvals, heartbeatRuns } from "@paperclipai/db";
+import { agents, approvals, companies, costEvents, heartbeatRuns } from "@paperclipai/db";
 import type { SidebarBadges } from "@paperclipai/shared";
 
 const ACTIONABLE_APPROVAL_STATUSES = ["pending", "revision_requested"];
@@ -66,6 +66,35 @@ export function sidebarBadgeService(db: Db) {
         FAILED_HEARTBEAT_STATUSES.includes(row.runStatus)
         && !isDismissed(extra?.dismissals ?? new Map(), `run:${row.id}`, row.createdAt),
       ).length;
+      // Sidebar badges poll frequently, so collect only the two alert inputs
+      // instead of loading the full dashboard summary and its 14-day run chart.
+      const monthStart = new Date();
+      monthStart.setUTCDate(1);
+      monthStart.setUTCHours(0, 0, 0, 0);
+      const [errorAgentCount, monthBudgetCents, monthSpendCents] = await Promise.all([
+        db
+          .select({ count: sql<number>`count(*)` })
+          .from(agents)
+          .where(and(eq(agents.companyId, companyId), eq(agents.status, "error")))
+          .then((rows) => Number(rows[0]?.count ?? 0)),
+        db
+          .select({ monthBudgetCents: companies.budgetMonthlyCents })
+          .from(companies)
+          .where(eq(companies.id, companyId))
+          .then((rows) => Number(rows[0]?.monthBudgetCents ?? 0)),
+        db
+          .select({
+            monthSpendCents: sql<number>`coalesce(sum(${costEvents.costCents}), 0)::double precision`,
+          })
+          .from(costEvents)
+          .where(and(eq(costEvents.companyId, companyId), gte(costEvents.occurredAt, monthStart)))
+          .then((rows) => Number(rows[0]?.monthSpendCents ?? 0)),
+      ]);
+      const monthUtilizationPercent =
+        monthBudgetCents > 0 ? Number(((monthSpendCents / monthBudgetCents) * 100).toFixed(2)) : 0;
+      const alertsCount =
+        (errorAgentCount > 0 && failedRuns === 0 ? 1 : 0) +
+        (monthBudgetCents > 0 && monthUtilizationPercent >= 80 ? 1 : 0);
 
       const joinRequests = (extra?.joinRequests ?? []).filter((row) =>
         !isDismissed(
@@ -76,7 +105,7 @@ export function sidebarBadgeService(db: Db) {
       ).length;
       const unreadTouchedIssues = extra?.unreadTouchedIssues ?? 0;
       return {
-        inbox: actionableApprovals + failedRuns + joinRequests + unreadTouchedIssues,
+        inbox: actionableApprovals + failedRuns + joinRequests + unreadTouchedIssues + alertsCount,
         approvals: actionableApprovals,
         failedRuns,
         joinRequests,
