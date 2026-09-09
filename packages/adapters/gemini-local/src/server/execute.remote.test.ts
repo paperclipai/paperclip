@@ -247,11 +247,16 @@ describe("gemini remote execution", () => {
         stats: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 1 },
       }),
     ].join("\n");
+    // A valid empty tar lets the real workspace restore finish after auth setup.
+    const emptyArchive = Buffer.alloc(1024);
     const runnerExecute = vi.fn(async (input: { command: string; args?: string[] }) => ({
       exitCode: 0,
       signal: null,
       timedOut: false,
-      stdout: input.command === "gemini" ? geminiOutput : "",
+      stdout: input.command === "gemini" ? geminiOutput
+        : input.args?.some((arg) => arg.startsWith("wc -c < ")) ? String(emptyArchive.length)
+        : input.args?.some((arg) => arg.startsWith("dd if=")) ? emptyArchive.toString("base64")
+        : "",
       stderr: "",
       pid: 321,
       startedAt: new Date().toISOString(),
