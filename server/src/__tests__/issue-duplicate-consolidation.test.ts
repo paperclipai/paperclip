@@ -17,6 +17,7 @@ import { HttpError } from "../errors.js";
 import { actorMiddleware } from "../middleware/auth.js";
 import { errorHandler } from "../middleware/index.js";
 import { issueRoutes } from "../routes/issues.js";
+import { issueApprovalService } from "../services/issue-approvals.js";
 import { issueService } from "../services/issues.js";
 import {
   getEmbeddedPostgresTestSupport,
@@ -457,6 +458,43 @@ describeEmbeddedPostgres("atomic duplicate issue consolidation", () => {
     expect(await db.select().from(issues).where(and(
       eq(issues.id, ids.duplicateIssueId),
       eq(issues.status, "in_review"),
+    ))).toHaveLength(1);
+  });
+
+  it("serializes a concurrent pending approval link and never attaches it after cancellation", async () => {
+    const ids = await fixture();
+    const approvalId = randomUUID();
+    await db.insert(approvals).values({
+      id: approvalId,
+      companyId: ids.companyId,
+      type: "request_board_approval",
+      status: "pending",
+      payload: {},
+    });
+    const expected = await expectedSnapshots(db, ids.companyId, ids.canonicalIssueId, ids.duplicateIssueId);
+    let releaseConsolidation!: () => void;
+    const mayCommit = new Promise<void>((resolve) => { releaseConsolidation = resolve; });
+    let consolidationLocked!: () => void;
+    const hasLock = new Promise<void>((resolve) => { consolidationLocked = resolve; });
+    const consolidation = issueService(db).consolidateDuplicate(ids.canonicalIssueId, {
+      duplicateIssueId: ids.duplicateIssueId,
+      idempotencyKey: randomUUID(),
+      expected,
+      actor: { userId: "operator" },
+      authorizeLocked: async () => {
+        consolidationLocked();
+        await mayCommit;
+      },
+    });
+    await hasLock;
+    const linkResult = issueApprovalService(db).link(ids.duplicateIssueId, approvalId);
+    releaseConsolidation();
+    await consolidation;
+    await expect(linkResult).rejects.toMatchObject<HttpError>({ status: 409 });
+    expect(await db.select().from(issueApprovals).where(eq(issueApprovals.approvalId, approvalId))).toHaveLength(0);
+    expect(await db.select().from(issues).where(and(
+      eq(issues.id, ids.duplicateIssueId),
+      eq(issues.status, "cancelled"),
     ))).toHaveLength(1);
   });
 

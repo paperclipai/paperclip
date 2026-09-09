@@ -1099,8 +1099,11 @@ A stale graph returns `409` with
 status, or audit row is changed. A retry with the same idempotency key and the
 same issue pair returns the original activity receipt. Reuse of that key for a
 different pair returns `409`. All ordinary parent, blocker, import, child-link,
-and issue-delete paths use the same company graph lock, so the precondition also
-serializes against those writes.
+issue-delete, approval-link, and interaction-create paths use the same company
+graph lock, so the precondition also serializes against those writes. Pending
+approval links are rejected after an issue becomes terminal. Snapshots do not
+impose a relation count below the graph size accepted by ordinary issue
+mutations.
 
 ## 10.5 Projects
 

@@ -28,6 +28,7 @@ import {
   // Issue
   createIssueSchema,
   updateIssueSchema,
+  consolidateDuplicateIssueSchema,
   stalledReviewDecisionSchema,
   createIssueLabelSchema,
   addIssueCommentSchema,
@@ -2359,6 +2360,18 @@ registry.registerPath({
     body: jsonBody(updateIssueSchema.partial()),
   },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 404: r.notFound, 422: r.unprocessable },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/issues/{id}/consolidate-duplicate",
+  tags: ["issues"],
+  summary: "Consolidate a duplicate issue atomically",
+  request: {
+    params: z.object({ id: z.string() }),
+    body: jsonBody(consolidateDuplicateIssueSchema),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 404: r.notFound, 409: r.conflict },
 });
 
 registry.registerPath({

@@ -89,6 +89,7 @@ import {
 import { toolAccessPolicyService } from "./tool-access-policy.js";
 import { commitToolActionReview } from "./tool-action-review.js";
 import { issueThreadInteractionService } from "./issue-thread-interactions.js";
+import { lockIssueForPendingDecision } from "./issues.js";
 import {
   createToolRuntimeSupervisor,
   ToolRuntimeSupervisorError,
@@ -1718,6 +1719,7 @@ export function createToolGatewayService(
         },
       );
     }
+    const issueId = input.session.issueId;
 
     if (!input.actionRequest) {
       await db
@@ -1796,9 +1798,9 @@ export function createToolGatewayService(
 
     let formalApprovalId: string | null = null;
     if (toolRequiresFormalApproval(input.tool)) {
-      const [approval] = await db
-        .insert(approvals)
-        .values({
+      const approval = await db.transaction(async (tx) => {
+        await lockIssueForPendingDecision(input.session.companyId, issueId, tx);
+        const [created] = await tx.insert(approvals).values({
           companyId: input.session.companyId,
           type: "request_board_approval",
           requestedByAgentId: input.session.agentId,
@@ -1817,22 +1819,20 @@ export function createToolGatewayService(
             risk: input.tool.risk,
             argumentsHash: canonicalArgumentsHash,
           },
-        })
-        .returning();
-      formalApprovalId = approval.id;
-      await db
-        .insert(issueApprovals)
-        .values({
+        }).returning();
+        await tx.insert(issueApprovals).values({
           companyId: input.session.companyId,
-          issueId: input.session.issueId,
-          approvalId: approval.id,
+          issueId,
+          approvalId: created.id,
           linkedByAgentId: input.session.agentId,
-        })
-        .onConflictDoNothing();
+        }).onConflictDoNothing();
+        return created;
+      });
+      formalApprovalId = approval.id;
     }
 
     const interaction = await interactions.create(
-      { id: input.session.issueId, companyId: input.session.companyId },
+      { id: issueId, companyId: input.session.companyId },
       {
         kind: "request_confirmation",
         idempotencyKey: `tool-action:${actionRequest.id}`,
@@ -3151,46 +3151,53 @@ export function createToolGatewayService(
         href,
       },
     };
-    const [existing] = await db.select({ id: issueThreadInteractions.id }).from(issueThreadInteractions).where(and(
-      eq(issueThreadInteractions.companyId, session.companyId),
-      eq(issueThreadInteractions.issueId, session.issueId),
-      eq(issueThreadInteractions.idempotencyKey, idempotencyKey),
-    )).limit(1);
-    if (existing) {
-      await db.update(issueThreadInteractions).set({
+    await db.transaction(async (tx) => {
+      await lockIssueForPendingDecision(session.companyId, session.issueId!, tx);
+      const [existing] = await tx
+        .select({ id: issueThreadInteractions.id })
+        .from(issueThreadInteractions)
+        .where(and(
+          eq(issueThreadInteractions.companyId, session.companyId),
+          eq(issueThreadInteractions.issueId, session.issueId!),
+          eq(issueThreadInteractions.idempotencyKey, idempotencyKey),
+        ))
+        .limit(1);
+      if (existing) {
+        await tx.update(issueThreadInteractions).set({
+          status: "pending",
+          continuationPolicy: "wake_assignee",
+          requestedResolverPolicy: "human_only",
+          effectiveResolverPolicy: "human_only",
+          resolverPolicyProvenance: "explicit",
+          effectiveResolverPolicySource: "requested",
+          addresseeUserId: userId,
+          payload,
+          result: null,
+          resolvedAt: null,
+          updatedAt: new Date(),
+        }).where(eq(issueThreadInteractions.id, existing.id));
+        return;
+      }
+      await tx.insert(issueThreadInteractions).values({
+        companyId: session.companyId,
+        issueId: session.issueId!,
+        kind: "request_confirmation",
         status: "pending",
         continuationPolicy: "wake_assignee",
         requestedResolverPolicy: "human_only",
         effectiveResolverPolicy: "human_only",
         resolverPolicyProvenance: "explicit",
         effectiveResolverPolicySource: "requested",
+        idempotencyKey,
+        sourceRunId: session.runId,
+        title: grantKind === "organization" ? `Reconnect ${connection.name}` : `Connect your ${connection.name}`,
+        summary: grantKind === "organization"
+          ? "Organization authorization is required before this run can continue."
+          : "Personal authorization is required before this run can continue.",
+        createdByAgentId: session.agentId,
         addresseeUserId: userId,
         payload,
-        result: null,
-        resolvedAt: null,
-        updatedAt: new Date(),
-      }).where(eq(issueThreadInteractions.id, existing.id));
-      return;
-    }
-    await db.insert(issueThreadInteractions).values({
-      companyId: session.companyId,
-      issueId: session.issueId,
-      kind: "request_confirmation",
-      status: "pending",
-      continuationPolicy: "wake_assignee",
-      requestedResolverPolicy: "human_only",
-      effectiveResolverPolicy: "human_only",
-      resolverPolicyProvenance: "explicit",
-      effectiveResolverPolicySource: "requested",
-      idempotencyKey,
-      sourceRunId: session.runId,
-      title: grantKind === "organization" ? `Reconnect ${connection.name}` : `Connect your ${connection.name}`,
-      summary: grantKind === "organization"
-        ? "Organization authorization is required before this run can continue."
-        : "Personal authorization is required before this run can continue.",
-      createdByAgentId: session.agentId,
-      addresseeUserId: userId,
-      payload,
+      });
     });
   }
 

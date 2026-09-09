@@ -81,6 +81,7 @@ import {
 } from "./issue-review-policy.js";
 import {
   issueService,
+  lockCompanyIssueGraph,
   readAcceptedPlanConfirmationTarget,
   runWorkspaceIsFinalized,
 } from "./issues.js";
@@ -2065,6 +2066,7 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
 
       let inserted = false;
       const created = await db.transaction(async (tx) => {
+        await lockCompanyIssueGraph(issue.companyId, tx);
         const issueRow = await tx
           .select({ status: issues.status, assigneeAgentId: issues.assigneeAgentId })
           .from(issues)
@@ -2774,6 +2776,7 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
         // Idempotent reuse above stays allowed so retries of a pre-close
         // create keep returning the (by now expired) original.
         const result = await db.transaction(async (tx) => {
+          await lockCompanyIssueGraph(issue.companyId, tx);
           const [issueRow] = await tx
             .select({ status: issues.status })
             .from(issues)

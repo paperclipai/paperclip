@@ -128,6 +128,31 @@ import {
   type IssueLivenessFinding,
 } from "./recovery/issue-graph-liveness.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
+
+export async function lockCompanyIssueGraph(companyId: string, dbOrTx: any) {
+  await dbOrTx.execute(
+    sql`select pg_advisory_xact_lock(hashtextextended(${'issue-graph:' + companyId}, 0))`,
+  );
+}
+
+export async function lockIssueForPendingDecision(
+  companyId: string,
+  issueId: string,
+  dbOrTx: any,
+) {
+  await lockCompanyIssueGraph(companyId, dbOrTx);
+  const issue = await dbOrTx
+    .select({ id: issues.id, status: issues.status })
+    .from(issues)
+    .where(and(eq(issues.id, issueId), eq(issues.companyId, companyId)))
+    .for("update")
+    .then((rows: Array<{ id: string; status: string }>) => rows[0] ?? null);
+  if (!issue) throw notFound("Issue not found");
+  if (issue.status === "done" || issue.status === "cancelled") {
+    throw conflict("Cannot create a pending decision on a closed issue");
+  }
+  return issue;
+}
 import { finalizeStatusCardsForStalledGeneration } from "./status-card-finalization.js";
 import { finalizeSummarySlotsForTerminalIssue } from "./summary-slot-finalization.js";
 import {
@@ -5221,12 +5246,6 @@ export function issueService(db: Db) {
     }
   }
 
-  async function lockIssueGraph(companyId: string, dbOrTx: any) {
-    await dbOrTx.execute(
-      sql`select pg_advisory_xact_lock(hashtextextended(${'issue-graph:' + companyId}, 0))`,
-    );
-  }
-
   async function validateParentAssignment(
     companyId: string,
     issueId: string | null,
@@ -5267,7 +5286,7 @@ export function issueService(db: Db) {
     dbOrTx: any = db,
   ) {
     const run = async (tx: any) => {
-      await lockIssueGraph(companyId, tx);
+      await lockCompanyIssueGraph(companyId, tx);
       const deduped = [...new Set(blockedByIssueIds)];
       if (deduped.some((candidate) => candidate === issueId)) {
         throw unprocessable("Issue cannot be blocked by itself");
@@ -5324,7 +5343,7 @@ export function issueService(db: Db) {
     actor: { agentId?: string | null; userId?: string | null } = {},
   ) {
     return db.transaction(async (tx) => {
-      await lockIssueGraph(companyId, tx);
+      await lockCompanyIssueGraph(companyId, tx);
       const lockedIssueIds = [issueId, blockerIssueId].sort();
       const lockedIssues = await tx
         .select({ id: issues.id })
@@ -7267,7 +7286,7 @@ export function issueService(db: Db) {
       }
       return db.transaction(async (tx) => {
         if (issueData.parentId !== undefined || blockedByIssueIds !== undefined) {
-          await lockIssueGraph(companyId, tx);
+          await lockCompanyIssueGraph(companyId, tx);
         }
         if (issueData.parentId) {
           const parentError = await validateParentAssignment(companyId, null, issueData.parentId, tx);
@@ -7882,7 +7901,7 @@ export function issueService(db: Db) {
           });
         }
 
-        await lockIssueGraph(companyId, tx);
+        await lockCompanyIssueGraph(companyId, tx);
 
         const prior = await tx
           .select({ id: activityLog.id, details: activityLog.details })
@@ -8022,7 +8041,7 @@ export function issueService(db: Db) {
           .where(and(
             eq(issueApprovals.companyId, companyId),
             eq(issueApprovals.issueId, input.duplicateIssueId),
-            eq(approvals.status, "pending"),
+            inArray(approvals.status, ["pending", "revision_requested"]),
           ))
           .limit(1)
           .then((rows) => rows[0] ?? null);
@@ -8345,7 +8364,7 @@ export function issueService(db: Db) {
             existing.originKind === RECOVERY_ORIGIN_KINDS.issueGraphLivenessEscalation
           )
         ) {
-          await lockIssueGraph(existing.companyId, tx);
+          await lockCompanyIssueGraph(existing.companyId, tx);
         }
         // The receipt baseline must be read under the same row lock as the
         // write. Otherwise a concurrent update can be mistaken for a change
@@ -8692,7 +8711,7 @@ export function issueService(db: Db) {
           .from(issues)
           .where(eq(issues.id, id))
           .then((rows) => rows[0] ?? null);
-        if (issueCompany) await lockIssueGraph(issueCompany.companyId, tx);
+        if (issueCompany) await lockCompanyIssueGraph(issueCompany.companyId, tx);
         const attachmentAssetIds = await tx
           .select({ assetId: issueAttachments.assetId })
           .from(issueAttachments)

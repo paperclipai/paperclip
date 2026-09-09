@@ -1,5 +1,6 @@
 import { canBrowseProjectRepositoryGrant, mergeProjectRepository } from "./project-repositories.js";
 import { captureRunIdentity } from "./run-identity.js";
+import { lockIssueForPendingDecision } from "./issues.js";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, lt, max, ne, sql } from "drizzle-orm";
@@ -10605,45 +10606,52 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
           href: authorizationUrl.toString(),
         },
       };
-      const [existingInteraction] = await db.select().from(issueThreadInteractions).where(and(
-        eq(issueThreadInteractions.companyId, companyId),
-        eq(issueThreadInteractions.issueId, input.issueId),
-        eq(issueThreadInteractions.idempotencyKey, idempotencyKey),
-      )).limit(1);
-      const [interaction] = existingInteraction
-        ? await db.update(issueThreadInteractions).set({
-            status: "pending",
-            requestedResolverPolicy: "human_only",
-            effectiveResolverPolicy: "human_only",
-            resolverPolicyProvenance: "explicit",
-            effectiveResolverPolicySource: "requested",
-            addresseeUserId: authorizationSubjectUserId,
-            payload,
-            result: null,
-            resolvedAt: null,
-            updatedAt: new Date(),
-          }).where(eq(issueThreadInteractions.id, existingInteraction.id)).returning()
-        : await db.insert(issueThreadInteractions).values({
-            companyId,
-            issueId: input.issueId,
-            kind: "request_confirmation",
-            status: "pending",
-            continuationPolicy: "none",
-            requestedResolverPolicy: "human_only",
-            effectiveResolverPolicy: "human_only",
-            resolverPolicyProvenance: "explicit",
-            effectiveResolverPolicySource: "requested",
-            addresseeUserId: authorizationSubjectUserId,
-            idempotencyKey,
-            sourceRunId: binding.actorType === "agent" ? input.actor.sessionId ?? null : null,
-            title: `Connect your ${providerName} to continue`,
-            summary: `${requestingAgent?.name ?? "An agent"} needs your ${providerName} identity for work running as you.`,
-            createdByAgentId: binding.actorType === "agent" ? binding.actorId : null,
-            payload,
-          }).returning();
-      if (interaction) {
-        await db.update(toolOauthStates).set({ interactionId: interaction.id }).where(eq(toolOauthStates.state, state));
-      }
+      await db.transaction(async (tx) => {
+        await lockIssueForPendingDecision(companyId, input.issueId!, tx);
+        const [existingInteraction] = await tx
+          .select()
+          .from(issueThreadInteractions)
+          .where(and(
+            eq(issueThreadInteractions.companyId, companyId),
+            eq(issueThreadInteractions.issueId, input.issueId!),
+            eq(issueThreadInteractions.idempotencyKey, idempotencyKey),
+          ))
+          .limit(1);
+        const [interaction] = existingInteraction
+          ? await tx.update(issueThreadInteractions).set({
+              status: "pending",
+              requestedResolverPolicy: "human_only",
+              effectiveResolverPolicy: "human_only",
+              resolverPolicyProvenance: "explicit",
+              effectiveResolverPolicySource: "requested",
+              addresseeUserId: authorizationSubjectUserId,
+              payload,
+              result: null,
+              resolvedAt: null,
+              updatedAt: new Date(),
+            }).where(eq(issueThreadInteractions.id, existingInteraction.id)).returning()
+          : await tx.insert(issueThreadInteractions).values({
+              companyId,
+              issueId: input.issueId!,
+              kind: "request_confirmation",
+              status: "pending",
+              continuationPolicy: "none",
+              requestedResolverPolicy: "human_only",
+              effectiveResolverPolicy: "human_only",
+              resolverPolicyProvenance: "explicit",
+              effectiveResolverPolicySource: "requested",
+              addresseeUserId: authorizationSubjectUserId,
+              idempotencyKey,
+              sourceRunId: binding.actorType === "agent" ? input.actor.sessionId ?? null : null,
+              title: `Connect your ${providerName} to continue`,
+              summary: `${requestingAgent?.name ?? "An agent"} needs your ${providerName} identity for work running as you.`,
+              createdByAgentId: binding.actorType === "agent" ? binding.actorId : null,
+              payload,
+            }).returning();
+        if (interaction) {
+          await tx.update(toolOauthStates).set({ interactionId: interaction.id }).where(eq(toolOauthStates.state, state));
+        }
+      });
     }
 
     const nextConfig = {

@@ -626,8 +626,8 @@ export const duplicateIssueConsolidationSnapshotSchema = z.object({
   createdByUserId: z.string().nullable(),
   assigneeAgentId: z.string().guid().nullable(),
   assigneeUserId: z.string().nullable(),
-  blockedByIssueIds: z.array(z.string().guid()).max(200),
-  blocksIssueIds: z.array(z.string().guid()).max(200),
+  blockedByIssueIds: z.array(z.string().guid()),
+  blocksIssueIds: z.array(z.string().guid()),
 }).strict().superRefine((snapshot, ctx) => {
   for (const field of ["blockedByIssueIds", "blocksIssueIds"] as const) {
     const seen = new Set<string>();
@@ -647,7 +647,7 @@ export const duplicateIssueConsolidationSnapshotSchema = z.object({
 export const consolidateDuplicateIssueSchema = z.object({
   duplicateIssueId: z.string().guid(),
   idempotencyKey: z.string().trim().min(1).max(255),
-  expected: z.array(duplicateIssueConsolidationSnapshotSchema).min(2).max(202),
+  expected: z.array(duplicateIssueConsolidationSnapshotSchema).min(2),
 }).strict().superRefine((value, ctx) => {
   const seen = new Set<string>();
   for (const [index, snapshot] of value.expected.entries()) {
