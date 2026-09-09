@@ -615,8 +615,8 @@ export function recoveryEngineerService(
     };
   }
 
-  async function hasPendingHumanGate(issue: IssueRow) {
-    if (issue.assigneeUserId || issue.status === "backlog" || issue.status === "in_review") return true;
+  async function hasPendingHumanGate(issue: IssueRow, reviewAccepted = false) {
+    if (issue.assigneeUserId || issue.status === "backlog" || (issue.status === "in_review" && !reviewAccepted)) return true;
     if (issue.unblockDescriptor) return true;
     const [interaction, approval, pauseHold, unavailableOwner] = await Promise.all([
       db
@@ -1705,6 +1705,17 @@ export function recoveryEngineerService(
         eq(recoveryEngineerVerifications.status, "pending"),
       ));
     const effectiveIncident = verifiedIncident ?? incident;
+    const repairIssue = await issuesSvc.getById(verification.repairIssueId);
+    if (
+      repairIssue?.companyId === incident.companyId &&
+      repairIssue.originKind === RECOVERY_ENGINEER_ORIGIN_KINDS.repair &&
+      repairIssue.originId === incident.id &&
+      ["in_progress", "in_review"].includes(repairIssue.status) &&
+      !(await hasPendingHumanGate(repairIssue, true)) &&
+      !(await hasUnresolvedDependency(repairIssue))
+    ) {
+      await issuesSvc.update(repairIssue.id, { status: "done" });
+    }
     if (effectiveIncident.maintenanceIssueId) {
       const maintenance = await issuesSvc.getById(effectiveIncident.maintenanceIssueId);
       if (maintenance && !["done", "cancelled"].includes(maintenance.status)) {

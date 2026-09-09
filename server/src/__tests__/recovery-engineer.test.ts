@@ -569,7 +569,7 @@ describeEmbeddedPostgres("native recovery engineer", () => {
     expect(resume.status).toBe(403);
   });
 
-  it.each(["stage", "interaction", "wrong_run"] as const)("binds successful verification to its native %s review authority", async (reviewMode) => {
+  it.each(["stage", "interaction", "wrong_run", "pending_gate"] as const)("binds successful verification to its native %s review authority", async (reviewMode) => {
     const seeded = await seedCompany();
     const maintenanceIssueId = randomUUID();
     const repairIssueId = randomUUID();
@@ -671,6 +671,13 @@ describeEmbeddedPostgres("native recovery engineer", () => {
         result: { version: 1, outcome: "accepted" },
       });
     }
+    if (reviewMode === "pending_gate") {
+      await db.insert(issueThreadInteractions).values({
+        companyId: seeded.companyId, issueId: repairIssueId,
+        kind: "request_confirmation", status: "pending",
+        payload: { version: 1, prompt: "Independent operator gate", allowDeclineReason: true },
+      });
+    }
     const succeededReviewRun = await db
       .update(heartbeatRuns)
       .set({
@@ -698,10 +705,13 @@ describeEmbeddedPostgres("native recovery engineer", () => {
       .from(recoveryEngineerIncidents)
       .where(eq(recoveryEngineerIncidents.id, incidentId))
       .then((rows) => rows[0]!);
+    const repairIssue = await db.select().from(issues)
+      .where(eq(issues.id, repairIssueId)).then((rows) => rows[0]!);
     if (reviewMode === "wrong_run") {
       expect(verification.status).toBe("failed");
       expect(verification.failureReason).toBe("review_run_not_approved");
       expect(incident.verifiedAt).toBeNull();
+      expect(repairIssue.status).toBe("in_review");
       return;
     }
     expect(verification.status).toBe("verified");
@@ -713,6 +723,8 @@ describeEmbeddedPostgres("native recovery engineer", () => {
       verifiedReviewRunId: reviewerRun.id,
     });
     expect(incident.activatedAt).toBeNull();
+    expect(repairIssue.status).toBe(reviewMode === "pending_gate" ? "in_review" : "done");
+    expect(repairIssue.assigneeAgentId).toBe(seeded.repairAgentId);
   });
 
   it("requires board-confirmed activation before an authorized recovery run can resume a source", async () => {

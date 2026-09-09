@@ -98,6 +98,8 @@ Independent reviewer evidence remains pending until that exact run succeeds with
 
 For an interaction-triggered review, finalization requires the exact accepted confirmation addressed to and resolved by the configured reviewer in the bound run, created by the configured repair author/run. Stage-triggered reviews use their native approved execution decision. Approval from another run or interaction is not interchangeable.
 
+Successful finalization completes only the incident's native repair task, preserving its assignee and any unrelated pending approval, pause, or dependency gate. The incident remains blocked on operator activation; completing the verified candidate is not a claim that the live runtime or original source task is repaired.
+
 An isolated repair is not a live repair. After applying the exact independently verified commit, the operator records `repairCommit` and `activationEvidence` at `PUT /api/companies/:companyId/recovery-engineer/incidents/:incidentId/activation`. Only then can recovery request a one-shot resume for each unchanged source generation. No source task is marked Done by recovery.
 
 Verify with `pnpm exec vitest run server/src/__tests__/recovery-engineer.test.ts` against embedded PostgreSQL; skipped database tests are not acceptance evidence. Apply migration 0247 with its generated snapshot and journal together. Disabling the company configuration releases ordinary source recovery suppression without granting repair agents any additional authority.
