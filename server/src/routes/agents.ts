@@ -68,7 +68,7 @@ import {
 import { badRequest, conflict, forbidden, HttpError, notFound, unprocessable } from "../errors.js";
 import { PAPERCLIP_CORE_SKILL_KEYS } from "../services/company-skills.js";
 import { createRunSecretRedactionRegistry } from "../services/run-secret-redaction.js";
-import { searchRunRecall } from "../services/run-recall.js";
+import { searchRunRecall, tokenizeRunRecallQuery, finishRunRecallMatch } from "../services/run-recall.js";
 import { assertAuthenticated, assertBoard, assertCompanyAccess, assertInstanceAdmin, buildActorSecretContext, getAccessibleResource, getActorInfo, hasCompanyAccess } from "./authz.js";
 import { runAdapterLoginStartSpine } from "./adapter-login-route-spine.js";
 import { isLoginCommandSupportedAdapterType } from "../services/login-command.js";
@@ -5936,11 +5936,20 @@ export function agentRoutes(
       return;
     }
     const result = await searchRunRecall(db, { companyId, query: q, agentId, status, limit });
+    // Redact each candidate row first, then slice snippets from the redacted
+    // text: slicing before redaction can leave a partial secret that the
+    // exact-value replacement no longer matches. Rows left with no hit after
+    // redaction (matched only through a secret) disappear instead of leaking.
+    const tokens = tokenizeRunRecallQuery(result.query);
+    const runs = [];
+    for (const row of result.rows) {
+      const redacted = await runRedactions.redactForRun(companyId, row.id, row);
+      const match = finishRunRecallMatch(redacted, tokens);
+      if (match) runs.push(match);
+    }
     res.json({
       query: result.query,
-      runs: await Promise.all(
-        result.runs.map((match) => runRedactions.redactForRun(companyId, match.runId, match)),
-      ),
+      runs,
       activity: result.activity,
     });
   });

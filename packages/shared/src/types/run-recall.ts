@@ -7,7 +7,11 @@ export const RUN_RECALL_SNIPPET_MAX_CHARS = 240 as const;
 export type RunRecallRunMatchedField =
   | "error"
   | "errorCode"
-  | "resultSummary";
+  | "resultSummary"
+  | "resultResult"
+  | "resultMessage"
+  | "resultError"
+  | "issue";
 
 export interface RunRecallRunMatch {
   runId: string;

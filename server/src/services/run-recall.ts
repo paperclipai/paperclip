@@ -70,7 +70,7 @@ export function buildRecallSnippet(text: string, tokens: string[]): string {
   return `${prefix}${slice}${suffix}`;
 }
 
-type RunRecallRunRow = {
+export type RunRecallRunRow = {
   id: string;
   status: string;
   agentId: string;
@@ -94,11 +94,22 @@ const RUN_MATCH_SOURCES: Array<{
   pick: (row: RunRecallRunRow) => string | null;
 }> = [
   { field: "error", pick: (row) => row.error },
-  { field: "resultSummary", pick: (row) => row.resultSummary ?? row.resultResult ?? row.resultMessage ?? row.resultError },
+  { field: "resultSummary", pick: (row) => row.resultSummary },
+  { field: "resultResult", pick: (row) => row.resultResult },
+  { field: "resultMessage", pick: (row) => row.resultMessage },
+  { field: "resultError", pick: (row) => row.resultError },
   { field: "errorCode", pick: (row) => row.errorCode },
+  { field: "issue", pick: (row) => row.issueIdentifier ?? row.issueTitle },
 ];
 
-function toRunMatch(row: RunRecallRunRow, tokens: string[]): RunRecallRunMatch | null {
+/**
+ * Pick the first matching source and build its snippet. Callers must pass
+ * redacted rows: slicing happens here, so redaction has to come first or a
+ * secret split across the snippet boundary survives as a partial value.
+ * Returns null when no source matches (e.g. the row matched only through a
+ * now-redacted secret) so such rows disappear instead of leaking.
+ */
+export function finishRunRecallMatch(row: RunRecallRunRow, tokens: string[]): RunRecallRunMatch | null {
   for (const source of RUN_MATCH_SOURCES) {
     const text = source.pick(row);
     if (!text) continue;
@@ -136,12 +147,21 @@ export function resolveRunRecallLimit(limit: number | null | undefined): number 
   return Math.max(1, Math.min(RUN_RECALL_MAX_LIMIT, Math.floor(limit)));
 }
 
-export async function searchRunRecall(db: Db, input: SearchRunRecallInput): Promise<RunRecallResponse> {
+export interface RunRecallSearchResult {
+  query: string;
+  /** Raw candidate rows with unredacted source text. The route redacts each
+   * row and calls finishRunRecallMatch afterwards so snippets are sliced
+   * from redacted text, never before. */
+  rows: RunRecallRunRow[];
+  activity: RunRecallActivityMatch[];
+}
+
+export async function searchRunRecall(db: Db, input: SearchRunRecallInput): Promise<RunRecallSearchResult> {
   const query = input.query.trim().replace(/\s+/g, " ").slice(0, RUN_RECALL_MAX_QUERY_LENGTH);
   const tokens = tokenizeRunRecallQuery(query);
   const limit = resolveRunRecallLimit(input.limit);
   if (tokens.length === 0) {
-    return { query, runs: [], activity: [] };
+    return { query, rows: [], activity: [] };
   }
 
   const runTextFields: SQLWrapper[] = [
@@ -194,16 +214,11 @@ export async function searchRunRecall(db: Db, input: SearchRunRecallInput): Prom
     .orderBy(desc(heartbeatRuns.createdAt))
     .limit(limit);
 
-  const runs: RunRecallRunMatch[] = [];
-  for (const row of runRows) {
-    const match = toRunMatch(row, tokens);
-    if (match) runs.push(match);
-  }
-
   const activityTextFields: SQLWrapper[] = [
     activityLog.action,
     activityLog.entityType,
     activityLog.entityId,
+    activityLog.actorType,
     activityLog.actorId,
   ];
   const activityConditions = [
@@ -242,5 +257,5 @@ export async function searchRunRecall(db: Db, input: SearchRunRecallInput): Prom
     createdAt: row.createdAt.toISOString(),
   }));
 
-  return { query, runs, activity };
+  return { query, rows: runRows, activity };
 }

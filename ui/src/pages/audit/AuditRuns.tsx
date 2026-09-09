@@ -60,8 +60,26 @@ function RunRecallSearchInput({
   );
 }
 
-function downloadRecallJson(companyId: string, data: RunRecallResponse) {
-  const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+function recallMatchedFieldLabel(field: string): string {
+  switch (field) {
+    case "errorCode":
+      return "error code";
+    case "resultSummary":
+      return "result summary";
+    case "resultResult":
+      return "result";
+    case "resultMessage":
+      return "result message";
+    case "resultError":
+      return "result error";
+    case "issue":
+      return "linked issue";
+    default:
+      return readableSource(field);
+  }
+}
+
+function downloadRecallJson(companyId: string, data: RunRecallResponse) {  const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = url;
@@ -246,7 +264,7 @@ function RunRecallResults({
                     </span>
                     <StatusBadge status={match.status} />
                     <span className="text-(length:--text-micro) text-muted-foreground">
-                      matched {readableSource(match.matchedField)}
+                      matched {recallMatchedFieldLabel(match.matchedField)}
                     </span>
                   </div>
                   <p className="mt-1 text-sm text-muted-foreground">{match.snippet}</p>

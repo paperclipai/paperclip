@@ -14,10 +14,13 @@ import {
 } from "./helpers/embedded-postgres.js";
 import {
   buildRecallSnippet,
+  finishRunRecallMatch,
   resolveRunRecallLimit,
   searchRunRecall,
   tokenizeRunRecallQuery,
+  type RunRecallRunRow,
 } from "../services/run-recall.js";
+import type { RunRecallRunMatch } from "@paperclipai/shared";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -28,8 +31,7 @@ if (!embeddedPostgresSupport.supported) {
   );
 }
 
-describe("run recall query", () => {
-  it("tokenizes, dedupes, and floors tiny tokens", () => {
+describe("run recall query", () => {  it("tokenizes, dedupes, and floors tiny tokens", () => {
     expect(tokenizeRunRecallQuery("  ")).toEqual([]);
     expect(tokenizeRunRecallQuery("a I")).toEqual([]);
     expect(tokenizeRunRecallQuery("Deploy  deploy   FAILED")).toEqual(["deploy", "failed"]);
@@ -54,8 +56,20 @@ describe("run recall query", () => {
   });
 });
 
-describeEmbeddedPostgres("searchRunRecall", () => {
-  let db!: ReturnType<typeof createDb>;
+function finishAll(
+  result: { rows: RunRecallRunRow[] },
+  query: string,
+): RunRecallRunMatch[] {
+  const tokens = tokenizeRunRecallQuery(query);
+  const matches: RunRecallRunMatch[] = [];
+  for (const row of result.rows) {
+    const match = finishRunRecallMatch(row, tokens);
+    if (match) matches.push(match);
+  }
+  return matches;
+}
+
+describeEmbeddedPostgres("searchRunRecall", () => {  let db!: ReturnType<typeof createDb>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
 
   beforeAll(async () => {
@@ -116,14 +130,72 @@ describeEmbeddedPostgres("searchRunRecall", () => {
 
     const result = await searchRunRecall(db, { companyId, query: "release artifact" });
     expect(result.query).toBe("release artifact");
-    expect(result.runs).toHaveLength(2);
-    expect(result.runs[0]?.snippet.toLowerCase()).toContain("release artifact");
+    const matches = finishAll(result, "release artifact");
+    expect(matches).toHaveLength(2);
+    expect(matches[0]?.snippet.toLowerCase()).toContain("release artifact");
 
     const failed = await searchRunRecall(db, { companyId, query: "connection reset" });
-    expect(failed.runs).toHaveLength(1);
-    expect(failed.runs[0]?.matchedField).toBe("error");
-    expect(failed.runs[0]?.status).toBe("failed");
-    expect(failed.runs[0]?.issueId).toBe(issueId);
+    const failedMatches = finishAll(failed, "connection reset");
+    expect(failedMatches).toHaveLength(1);
+    expect(failedMatches[0]?.matchedField).toBe("error");
+    expect(failedMatches[0]?.status).toBe("failed");
+    expect(failedMatches[0]?.issueId).toBe(issueId);
+  });
+
+  it("keeps issue-only matches with an issue field", async () => {
+    const { companyId, agentId, issueId } = await seed();
+    await db.insert(heartbeatRuns).values({
+      companyId,
+      agentId,
+      status: "succeeded",
+      contextSnapshot: { issueId },
+    });
+
+    const result = await searchRunRecall(db, { companyId, query: "outage" });
+    const matches = finishAll(result, "outage");
+    expect(matches).toHaveLength(1);
+    expect(matches[0]?.matchedField).toBe("issue");
+    expect(matches[0]?.issueIdentifier).not.toBeNull();
+  });
+
+  it("matches each result field independently", async () => {
+    const { companyId, agentId } = await seed();
+    await db.insert(heartbeatRuns).values({
+      companyId,
+      agentId,
+      status: "failed",
+      resultJson: { summary: "all quiet", message: "connection reset downstream" },
+    });
+
+    const result = await searchRunRecall(db, { companyId, query: "connection reset" });
+    const matches = finishAll(result, "connection reset");
+    expect(matches).toHaveLength(1);
+    expect(matches[0]?.matchedField).toBe("resultMessage");
+  });
+
+  it("drops rows left without a hit after redaction", () => {
+    const row = {
+      id: "run-1",
+      status: "failed",
+      agentId: "agent-1",
+      agentName: null,
+      issueId: null,
+      issueIdentifier: null,
+      issueTitle: null,
+      startedAt: null,
+      finishedAt: null,
+      createdAt: new Date("2026-09-01T00:00:00.000Z"),
+      error: "[REDACTED]",
+      errorCode: null,
+      resultSummary: null,
+      resultResult: null,
+      resultMessage: null,
+      resultError: null,
+    } satisfies RunRecallRunRow;
+    expect(finishRunRecallMatch(row, ["needle"])).toBeNull();
+    expect(
+      finishRunRecallMatch({ ...row, error: "needle in plain text" }, ["needle"])?.matchedField,
+    ).toBe("error");
   });
 
   it("filters by agent and status", async () => {
@@ -134,11 +206,12 @@ describeEmbeddedPostgres("searchRunRecall", () => {
     await db.insert(heartbeatRuns).values({ companyId, agentId: otherAgentId, status: "failed", error: "recall needle" });
 
     const scoped = await searchRunRecall(db, { companyId, query: "recall needle", agentId });
-    expect(scoped.runs).toHaveLength(1);
-    expect(scoped.runs[0]?.agentId).toBe(agentId);
+    const scopedMatches = finishAll(scoped, "recall needle");
+    expect(scopedMatches).toHaveLength(1);
+    expect(scopedMatches[0]?.agentId).toBe(agentId);
 
     const byStatus = await searchRunRecall(db, { companyId, query: "recall needle", status: "succeeded" });
-    expect(byStatus.runs).toHaveLength(0);
+    expect(finishAll(byStatus, "recall needle")).toHaveLength(0);
   });
 
   it("finds activity entries and isolates companies", async () => {
@@ -166,16 +239,33 @@ describeEmbeddedPostgres("searchRunRecall", () => {
     const result = await searchRunRecall(db, { companyId, query: "heartbeat run_failed" });
     expect(result.activity).toHaveLength(1);
     expect(result.activity[0]?.entityId).toBe("run-1");
-    expect(result.runs).toHaveLength(0);
+    expect(result.rows).toHaveLength(0);
+  });
+
+  it("finds activity by actor type", async () => {
+    const { companyId, agentId } = await seed();
+    await db.insert(activityLog).values({
+      companyId,
+      actorType: "system",
+      actorId: "system",
+      action: "nightly.sweep",
+      entityType: "company",
+      entityId: companyId,
+      agentId,
+    });
+
+    const result = await searchRunRecall(db, { companyId, query: "nightly system" });
+    expect(result.activity).toHaveLength(1);
+    expect(result.activity[0]?.action).toBe("nightly.sweep");
   });
 
   it("treats SQL wildcard characters as literals", async () => {
     const { companyId, agentId } = await seed();
     await db.insert(heartbeatRuns).values({ companyId, agentId, status: "failed", error: "50_percent complete" });
     const literal = await searchRunRecall(db, { companyId, query: "50_percent" });
-    expect(literal.runs).toHaveLength(1);
+    expect(finishAll(literal, "50_percent")).toHaveLength(1);
     const wildcard = await searchRunRecall(db, { companyId, query: "50%percent" });
-    expect(wildcard.runs).toHaveLength(0);
+    expect(finishAll(wildcard, "50%percent")).toHaveLength(0);
   });
 
   it("returns empty results for blank queries", async () => {
