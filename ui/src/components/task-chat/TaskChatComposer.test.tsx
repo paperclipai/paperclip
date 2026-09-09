@@ -353,10 +353,11 @@ describe("TaskChatComposer", () => {
     );
   });
 
-  it("reserves enough mobile editor height for a wrapped two-line placeholder", () => {
+  it("uses a compact mobile editor that can grow with the message", () => {
     render(<TaskChatComposer onAdd={vi.fn()} workMode="standard" mobile />);
 
-    expect(editable().dataset.contentClassName).toContain("min-h-(--sz-72px)");
+    expect(editable().dataset.contentClassName).toContain("min-h-(--sz-48px)");
+    expect(editable().dataset.contentClassName).toContain("max-h-(--sz-28dvh)");
   });
 
   it("submits the trimmed body on Cmd+Enter and clears the draft", async () => {
