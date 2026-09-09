@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { agents, companies, createDb, heartbeatRuns } from "@paperclipai/db";
+import { agents, companies, costEvents, createDb, heartbeatRuns } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -47,6 +47,7 @@ describeEmbeddedPostgres("dashboard service", () => {
   }, 20_000);
 
   afterEach(async () => {
+    await db.delete(costEvents);
     await db.delete(heartbeatRuns);
     await db.delete(agents);
     await db.delete(companies);
@@ -54,6 +55,132 @@ describeEmbeddedPostgres("dashboard service", () => {
 
   afterAll(async () => {
     await tempDb?.cleanup();
+  });
+
+  async function insertCompanyWithAgent(name: string) {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name,
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: `${name}Agent`,
+      role: "engineer",
+      status: "running",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    return { companyId, agentId };
+  }
+
+  function costEvent(
+    companyId: string,
+    agentId: string,
+    costCents: number,
+    costStatus: "reported" | "unpriced",
+    occurredAt: Date,
+  ) {
+    return {
+      id: randomUUID(),
+      companyId,
+      agentId,
+      provider: "anthropic",
+      model: "claude-fable-5",
+      costCents,
+      costStatus,
+      occurredAt,
+    };
+  }
+
+  it("reports a genuine zero subtotal with reported coverage when priced events cost nothing", async () => {
+    const { companyId, agentId } = await insertCompanyWithAgent("Paperclip");
+    await db.insert(costEvents).values([
+      costEvent(companyId, agentId, 0, "reported", utcDay(0)),
+      costEvent(companyId, agentId, 0, "reported", utcDay(0)),
+    ]);
+
+    const summary = await dashboardService(db).summary(companyId);
+
+    // Zero spend with positive reported coverage is a measured zero, not a
+    // missing measurement.
+    expect(summary.costs).toMatchObject({
+      monthSpendCents: 0,
+      monthReportedCount: 2,
+      monthUnpricedCount: 0,
+    });
+  });
+
+  it("excludes unpriced observations from the subtotal even when they carry an amount", async () => {
+    const { companyId, agentId } = await insertCompanyWithAgent("Paperclip");
+    await db.insert(costEvents).values([
+      costEvent(companyId, agentId, 250, "reported", utcDay(0)),
+      // Unpriced rows are not assumed to be zero; their amounts must not leak
+      // into a subtotal that is presented as priced.
+      costEvent(companyId, agentId, 9_999, "unpriced", utcDay(0)),
+      costEvent(companyId, agentId, 1, "unpriced", utcDay(0)),
+    ]);
+
+    const summary = await dashboardService(db).summary(companyId);
+
+    expect(summary.costs).toMatchObject({
+      monthSpendCents: 250,
+      monthReportedCount: 1,
+      monthUnpricedCount: 2,
+    });
+  });
+
+  it("reports no observed cost usage rather than a complete zero bill", async () => {
+    const { companyId } = await insertCompanyWithAgent("Paperclip");
+
+    const summary = await dashboardService(db).summary(companyId);
+
+    expect(summary.costs).toMatchObject({
+      monthSpendCents: 0,
+      monthReportedCount: 0,
+      monthUnpricedCount: 0,
+    });
+  });
+
+  it("excludes previous-month observations from the current-month subtotal and coverage", async () => {
+    const { companyId, agentId } = await insertCompanyWithAgent("Paperclip");
+    await db.insert(costEvents).values([
+      costEvent(companyId, agentId, 300, "reported", utcDay(0)),
+      costEvent(companyId, agentId, 700, "reported", utcDay(-40)),
+      costEvent(companyId, agentId, 5_000, "unpriced", utcDay(-40)),
+    ]);
+
+    const summary = await dashboardService(db).summary(companyId);
+
+    expect(summary.costs).toMatchObject({
+      monthSpendCents: 300,
+      monthReportedCount: 1,
+      monthUnpricedCount: 0,
+    });
+  });
+
+  it("excludes other-company observations from the subtotal and coverage", async () => {
+    const mine = await insertCompanyWithAgent("Paperclip");
+    const other = await insertCompanyWithAgent("Other");
+    await db.insert(costEvents).values([
+      costEvent(mine.companyId, mine.agentId, 300, "reported", utcDay(0)),
+      costEvent(other.companyId, other.agentId, 900, "reported", utcDay(0)),
+      costEvent(other.companyId, other.agentId, 0, "unpriced", utcDay(0)),
+    ]);
+
+    const summary = await dashboardService(db).summary(mine.companyId);
+
+    expect(summary.costs).toMatchObject({
+      monthSpendCents: 300,
+      monthReportedCount: 1,
+      monthUnpricedCount: 0,
+    });
   });
 
   it("aggregates the full 14-day run activity window without recent-run truncation", async () => {

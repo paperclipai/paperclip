@@ -1,6 +1,6 @@
 import type { Agent } from "@paperclipai/shared";
 import { describe, expect, it } from "vitest";
-import { derivePausedAgentBanner } from "./Dashboard";
+import { deriveMonthCostCoverage, derivePausedAgentBanner } from "./Dashboard";
 
 function agent(overrides: Partial<Agent>): Agent {
   return {
@@ -41,5 +41,36 @@ describe("derivePausedAgentBanner", () => {
       agent({ id: "b", status: "idle" }),
     ]);
     expect(banner).toBeNull();
+  });
+});
+
+describe("deriveMonthCostCoverage", () => {
+  it("treats a month with no cost events as unmeasured, not as a zero bill", () => {
+    expect(deriveMonthCostCoverage({ monthReportedCount: 0, monthUnpricedCount: 0 })).toEqual({
+      kind: "no-usage-reported",
+    });
+  });
+
+  it("treats a zero subtotal with reported events as a genuine reported zero", () => {
+    expect(deriveMonthCostCoverage({ monthReportedCount: 3, monthUnpricedCount: 0 })).toEqual({
+      kind: "reported",
+      reportedCount: 3,
+    });
+  });
+
+  it("marks the subtotal incomplete when any observation is unpriced", () => {
+    expect(deriveMonthCostCoverage({ monthReportedCount: 2, monthUnpricedCount: 1 })).toEqual({
+      kind: "incomplete",
+      reportedCount: 2,
+      unpricedCount: 1,
+    });
+  });
+
+  it("marks an unpriced-only month incomplete instead of free", () => {
+    expect(deriveMonthCostCoverage({ monthReportedCount: 0, monthUnpricedCount: 4 })).toEqual({
+      kind: "incomplete",
+      reportedCount: 0,
+      unpricedCount: 4,
+    });
   });
 });

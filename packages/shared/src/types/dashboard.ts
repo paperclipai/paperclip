@@ -39,9 +39,31 @@ export interface DashboardSummary {
     done: number;
   };
   costs: {
+    /**
+     * Sum of provider-reported cost amounts (cost_status `reported`) for the
+     * company's current UTC month. Unpriced observations are excluded whatever
+     * amount they carry, so this is a priced subtotal, not a total bill; see
+     * `monthUnpricedCount` before presenting it as complete.
+     */
     monthSpendCents: number;
     monthBudgetCents: number;
     monthUtilizationPercent: number;
+    /**
+     * Cost observations (cost_events rows) in the current UTC month whose
+     * status is `reported`, i.e. the provider reported an amount. A positive
+     * count with `monthSpendCents === 0` is a genuine reported zero, not a
+     * missing measurement.
+     */
+    monthReportedCount: number;
+    /**
+     * Cost observations in the current UTC month whose status is `unpriced`:
+     * token usage was observed but no provider price was reported. Their
+     * recorded amount, if any, is excluded from `monthSpendCents`, so any value
+     * above zero means the subtotal does not account for all observed usage.
+     * Both counts at zero means no cost usage was reported at all — not a
+     * complete zero bill.
+     */
+    monthUnpricedCount: number;
   };
   pendingApprovals: number;
   budgets: {

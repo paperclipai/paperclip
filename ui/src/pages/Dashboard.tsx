@@ -35,7 +35,7 @@ import { PageSkeleton } from "../components/PageSkeleton";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { InlineBanner } from "../components/InlineBanner";
-import type { Agent, Issue } from "@paperclipai/shared";
+import type { Agent, DashboardSummary, Issue } from "@paperclipai/shared";
 import { PluginSlotOutlet } from "@/plugins/slots";
 import { SmokeLabDashboardCard } from "../components/SmokeLabDashboardCard";
 
@@ -68,6 +68,54 @@ export function derivePausedAgentBanner(agents: Agent[] | undefined): PausedAgen
   }
   if (agents.every((agent) => agent.status === "paused")) return { kind: "all-paused" };
   return null;
+}
+
+/**
+ * How much of the month's cost is actually accounted for, derived from the
+ * observation counts the dashboard API now returns next to the subtotal.
+ *
+ * - `no-usage-reported`: no cost events this month. The card must NOT render
+ *   `$0.00` as if usage were measured and free — nothing was reported.
+ * - `incomplete`: some events carried token usage but no provider-reported
+ *   price (that bucket also holds subscription-included usage). Their recorded
+ *   amounts are excluded from the subtotal whatever they are, so the subtotal
+ *   covers priced events only and must be labelled.
+ * - `reported`: every event this month reported a price, so a `$0.00` subtotal
+ *   is a genuine reported zero rather than a missing measurement.
+ *
+ * Only events, not runs, are counted: a month can have runs and no cost events
+ * at all, so these counts must never be read as "every run was metered".
+ */
+export type MonthCostCoverage =
+  | { kind: "no-usage-reported" }
+  | { kind: "incomplete"; reportedCount: number; unpricedCount: number }
+  | { kind: "reported"; reportedCount: number };
+
+export function deriveMonthCostCoverage(
+  costs: Pick<DashboardSummary["costs"], "monthReportedCount" | "monthUnpricedCount">,
+): MonthCostCoverage {
+  if (costs.monthReportedCount === 0 && costs.monthUnpricedCount === 0) {
+    return { kind: "no-usage-reported" };
+  }
+  if (costs.monthUnpricedCount > 0) {
+    return {
+      kind: "incomplete",
+      reportedCount: costs.monthReportedCount,
+      unpricedCount: costs.monthUnpricedCount,
+    };
+  }
+  return { kind: "reported", reportedCount: costs.monthReportedCount };
+}
+
+function monthCostCoverageNote(coverage: MonthCostCoverage): string {
+  if (coverage.kind === "no-usage-reported") {
+    return "No cost usage reported this month";
+  }
+  if (coverage.kind === "incomplete") {
+    const total = coverage.reportedCount + coverage.unpricedCount;
+    return `${coverage.unpricedCount} of ${total} cost events unpriced — subtotal covers priced events only`;
+  }
+  return `${coverage.reportedCount} cost event${coverage.reportedCount === 1 ? "" : "s"} reported`;
 }
 
 export function Dashboard() {
@@ -312,6 +360,7 @@ export function Dashboard() {
   const pausedBanner = derivePausedAgentBanner(agents);
   const pausedImportedCount =
     pausedBanner?.kind === "imported" ? pausedBanner.pausedImportedAgentIds.length : 0;
+  const costCoverage = data ? deriveMonthCostCoverage(data.costs) : null;
 
   return (
     <div className="space-y-6">
@@ -418,14 +467,23 @@ export function Dashboard() {
             />
             <MetricCard
               icon={DollarSign}
-              value={formatCents(data.costs.monthSpendCents)}
+              value={
+                costCoverage?.kind === "no-usage-reported"
+                  ? "—"
+                  : formatCents(data.costs.monthSpendCents)
+              }
               label="Month Spend"
               to="/costs"
               description={
-                <span>
-                  {data.costs.monthBudgetCents > 0
-                    ? `${data.costs.monthUtilizationPercent}% of ${formatCents(data.costs.monthBudgetCents)} budget`
-                    : "Unlimited budget"}
+                <span className="block space-y-0.5">
+                  <span className="block">
+                    {data.costs.monthBudgetCents > 0
+                      ? `${data.costs.monthUtilizationPercent}% of ${formatCents(data.costs.monthBudgetCents)} budget`
+                      : "Unlimited budget"}
+                  </span>
+                  {costCoverage && (
+                    <span className="block">{monthCostCoverageNote(costCoverage)}</span>
+                  )}
                 </span>
               }
             />
@@ -443,6 +501,24 @@ export function Dashboard() {
               }
             />
           </div>
+
+          {costCoverage?.kind === "incomplete" && (
+            <InlineBanner
+              tone="warning"
+              icon={DollarSign}
+              title="Month spend is incomplete"
+              actions={
+                <Button variant="ghost" size="sm" asChild>
+                  <Link to="/costs">Review costs</Link>
+                </Button>
+              }
+            >
+              {costCoverage.unpricedCount} of{" "}
+              {costCoverage.unpricedCount + costCoverage.reportedCount} cost events this month have
+              no provider-reported price (subscription-included usage also counts here), so the{" "}
+              {formatCents(data.costs.monthSpendCents)} subtotal covers priced events only.
+            </InlineBanner>
+          )}
 
           <SmokeLabDashboardCard companyId={selectedCompanyId!} />
 

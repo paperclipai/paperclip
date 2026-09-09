@@ -84,9 +84,18 @@ export function dashboardService(db: Db) {
       const monthStart = getUtcMonthStart(now);
       const runActivityDays = getRecentUtcDateKeys(now, DASHBOARD_RUN_ACTIVITY_DAYS);
       const runActivityStart = new Date(`${runActivityDays[0]}T00:00:00.000Z`);
-      const [{ monthSpend }] = await db
+      // Month-to-date cost coverage. The subtotal is built only from
+      // provider-reported amounts (cost_status "reported"); an unpriced row is
+      // an observation with no provider price and must not silently contribute,
+      // whatever amount it happens to carry. Grouping by cost_status yields both
+      // the subtotal and how many observations were priced vs unpriced, so a
+      // $0.00 subtotal can be told apart from an incomplete one and from a month
+      // with no cost observations at all.
+      const monthCostRows = await db
         .select({
-          monthSpend: sql<number>`coalesce(sum(${costEvents.costCents}), 0)::double precision`,
+          costStatus: costEvents.costStatus,
+          spend: sql<number>`coalesce(sum(${costEvents.costCents}), 0)::double precision`,
+          count: sql<number>`count(*)::double precision`,
         })
         .from(costEvents)
         .where(
@@ -94,9 +103,22 @@ export function dashboardService(db: Db) {
             eq(costEvents.companyId, companyId),
             gte(costEvents.occurredAt, monthStart),
           ),
-        );
+        )
+        .groupBy(costEvents.costStatus);
 
-      const monthSpendCents = Number(monthSpend);
+      let monthSpendCents = 0;
+      let monthReportedCount = 0;
+      let monthUnpricedCount = 0;
+      for (const row of monthCostRows) {
+        const count = Number(row.count);
+        // cost_status values are the COST_STATUSES enum ("reported" | "unpriced").
+        if (row.costStatus === "reported") {
+          monthSpendCents += Number(row.spend);
+          monthReportedCount += count;
+        } else if (row.costStatus === "unpriced") {
+          monthUnpricedCount += count;
+        }
+      }
       // Per-day run breakdown. A run is "recovered" when its retry chain later
       // succeeded (recovered_runs = all ancestors of a succeeded retry), so a
       // restart-killed run whose retry succeeded is pulled out of the headline
@@ -198,6 +220,8 @@ export function dashboardService(db: Db) {
           monthSpendCents,
           monthBudgetCents: company.budgetMonthlyCents,
           monthUtilizationPercent: Number(utilization.toFixed(2)),
+          monthReportedCount,
+          monthUnpricedCount,
         },
         pendingApprovals,
         budgets: {
