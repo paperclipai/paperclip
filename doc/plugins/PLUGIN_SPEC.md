@@ -892,6 +892,85 @@ If a plugin upgrade adds capabilities:
 2. the operator must explicitly approve the new capability set
 3. the new version does not become `ready` until approval completes
 
+The stored manifest is the grant of record: the host gates every worker→host
+call on the capability list persisted for the plugin, so an upgrade that adds
+capabilities must not persist its manifest before approval.
+
+`POST /api/plugins/:pluginId/upgrade` implements the approval loop:
+
+1. Called without `approveCapabilities`, an upgrade that adds capabilities
+   fetches and validates the new package, leaves the stored manifest alone,
+   moves the plugin to `upgrade_pending`, and returns
+   `upgrade: { applied: false, requiresApproval: true, addedCapabilities: [...] }`.
+2. The operator re-issues the same call with those capabilities in
+   `approveCapabilities`. The manifest is then adopted and the plugin returns
+   to `ready`.
+
+Approving fewer capabilities than the upgrade adds holds it again — the grant
+of record never carries a capability nobody approved.
+
+That call is the only approval path. A v1 manifest is an executable module, so
+loading one to read its declared capabilities means running third-party
+top-level code in the host process; that must only happen at explicit,
+operator-consented points. `upgrade()` is one of them, and the manifest it
+loads while computing the escalation is persisted as the plugin's
+`pendingManifestJson` for as long as it sits in `upgrade_pending` — cleared on
+every other status transition. A held upgrade leaves the new package on disk
+while the stored manifest keeps the previously approved grant, and activation
+adopts whatever manifest it finds on disk, so `POST /api/plugins/:pluginId/enable`
+must refuse a plugin in `upgrade_pending` whose *persisted* `pendingManifestJson`
+declares capabilities the stored grant lacks — otherwise enabling would grant
+exactly what the operator declined. It diffs that persisted snapshot in memory
+and must not re-read the package from disk to do it: the package backing a
+held upgrade is by definition unapproved, so the enable gate re-executing it
+would defeat the same boundary the upgrade approval loop exists to enforce.
+The refusal fails closed: a plugin in `upgrade_pending` with no recorded
+`pendingManifestJson` (e.g. a row predating this field) cannot be shown to
+grant nothing, so it is refused until the upgrade is re-run. An operator who
+does not want the new capabilities rejects the upgrade by uninstalling
+(`upgrade_pending → uninstalled`).
+
+### 15.4 Manifest Drift
+
+A plugin package replaced on disk without a re-activation keeps running against
+the capability set captured earlier, so calls needing a newly declared
+capability are denied even though the code on disk declares them. The
+package's `package.json` `version` field alone can also miss same-version
+content changes — a manifest hand-edited without a version bump — so the host
+additionally hashes the manifest file's raw bytes (`manifestSourceHash`) and
+compares that alongside the version.
+
+The host must make that difference observable rather than silent:
+
+- `GET /api/plugins/:pluginId` returns `manifestDrift` with the stored version,
+  the version declared by the package's `package.json`, whether the package
+  still exposes a manifest entrypoint, and whether its content hash still
+  matches the hash captured for the stored grant.
+- `GET /api/plugins/:pluginId/health` fails the `manifest_drift` check (and
+  reports `healthy: false`) whenever the package on disk is not the version — or
+  the same-version content — the stored manifest was captured from, or cannot
+  be read.
+- Activation adopts the on-disk manifest and logs a warning naming every
+  capability granted that the stored manifest did not carry.
+
+Rows written before `manifestSourceHash` existed carry `null` and have no
+baseline to compare a same-version swap against. Rather than report those as
+drift-free, both read paths treat them as unverified (`hashVerified: false`,
+`healthy: false`) and backfill the hash from the on-disk manifest's raw bytes
+— still without importing it — on that same check. This can't detect a swap
+that happened *before* the backfill, but the next check onward is conclusive,
+so the unverified state self-clears after one read.
+
+Neither read path may name the drifted capabilities, because computing that
+delta requires importing the manifest module, and read paths must never
+execute package code on an ordinary metadata or health request. They compare
+inert `package.json` data and a raw-byte hash of the manifest file only — never
+`import()` it. The exact capability delta belongs to the operations that load
+the package anyway: `POST /api/plugins/:pluginId/upgrade` reports it in
+`upgrade.addedCapabilities` and holds it for approval by persisting the loaded
+manifest as `pendingManifestJson` (§15.3); the `enable` gate then diffs that
+persisted snapshot rather than loading the package a second time.
+
 ## 16. Event System
 
 The host must emit typed domain events that plugins may subscribe to.

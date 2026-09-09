@@ -130,6 +130,20 @@ export interface PluginLifecycleEvents {
 type LifecycleEventName = keyof PluginLifecycleEvents;
 type LifecycleEventPayload<K extends LifecycleEventName> = PluginLifecycleEvents[K];
 
+/**
+ * Outcome of an upgrade attempt.
+ *
+ * `applied: false` means the new package is on disk but its manifest was not
+ * adopted because it adds capabilities the operator has not approved. The
+ * plugin sits in `upgrade_pending` and the caller should re-run the upgrade
+ * with `addedCapabilities` in `approveCapabilities` to complete it.
+ */
+export interface PluginUpgradeResult {
+  plugin: PluginRecord;
+  applied: boolean;
+  addedCapabilities: string[];
+}
+
 // ---------------------------------------------------------------------------
 // PluginLifecycleManager
 // ---------------------------------------------------------------------------
@@ -182,10 +196,16 @@ export interface PluginLifecycleManager {
    * This is a placeholder that handles the lifecycle state transition.
    * The actual package installation is handled by plugin-loader.
    *
-   * If the upgrade adds new capabilities, transitions to `upgrade_pending`.
+   * If the upgrade adds new capabilities, transitions to `upgrade_pending`
+   * and leaves the stored capability grant untouched until the operator
+   * re-runs the upgrade with those capabilities in `approveCapabilities`.
    * Otherwise, transitions to `ready` directly.
    */
-  upgrade(pluginId: string, version?: string): Promise<PluginRecord>;
+  upgrade(
+    pluginId: string,
+    version?: string,
+    options?: { approveCapabilities?: string[] },
+  ): Promise<PluginUpgradeResult>;
 
   /**
    * Start the worker process for a plugin that is already in `ready` state.
@@ -349,6 +369,13 @@ export function pluginLifecycleManager(
     to: PluginStatus,
     lastError: string | null = null,
     existingPlugin?: PluginRecord,
+    /**
+     * Manifest to record as the pending escalation when `to` is
+     * `upgrade_pending`. Ignored for every other target status — leaving it
+     * unset there clears any stale pending manifest, since one may only exist
+     * while the plugin is actually in `upgrade_pending`.
+     */
+    pendingManifest?: PaperclipPluginManifestV1 | null,
   ): Promise<PluginRecord> {
     const plugin = existingPlugin ?? await requirePlugin(pluginId);
     assertTransition(plugin, to);
@@ -358,6 +385,7 @@ export function pluginLifecycleManager(
     const updated = await registry.updateStatus(pluginId, {
       status: to,
       lastError,
+      pendingManifest,
     });
 
     if (!updated) throw notFound(`Plugin not found after status update: ${pluginId}`);
@@ -431,6 +459,57 @@ export function pluginLifecycleManager(
     }
   }
 
+  /**
+   * Refuse to enable a plugin whose held upgrade still declares capabilities
+   * the stored grant does not carry.
+   *
+   * Only called for `upgrade_pending`, where a capability escalation is known
+   * to be awaiting an operator decision. Diffs against `pendingManifestJson`
+   * — the manifest `upgrade()` captured and persisted when it parked the
+   * plugin — rather than re-reading the package from disk: the package on
+   * disk is unapproved, so this check must never execute it. That capture
+   * happened at the one legitimate point the package's code may run, an
+   * explicit operator-invoked `upgrade()` call (§15.3, §15.4).
+   *
+   * Fails closed: a plugin sitting in `upgrade_pending` with no recorded
+   * pending manifest (e.g. a row from before this field existed) cannot be
+   * shown to grant nothing, so enabling it is refused until the upgrade is
+   * re-run and repopulates it.
+   */
+  async function assertPendingUpgradeGrantsNothing(plugin: PluginRecord): Promise<void> {
+    const pending = plugin.pendingManifestJson;
+    if (!pending) {
+      throw badRequest(
+        `Cannot enable plugin '${plugin.pluginKey}': it is in 'upgrade_pending' status but has no `
+          + `recorded pending manifest to check for capability escalation. Re-run the upgrade with `
+          + `an explicit approval, or uninstall the plugin to reject it.`,
+      );
+    }
+
+    const storedCaps = new Set(plugin.manifestJson?.capabilities ?? []);
+    const pendingCaps = pending.capabilities ?? [];
+    const addedCapabilities = pendingCaps.filter((c) => !storedCaps.has(c));
+
+    if (addedCapabilities.length === 0) return;
+
+    log.warn(
+      {
+        pluginId: plugin.id,
+        pluginKey: plugin.pluginKey,
+        addedCapabilities,
+        storedVersion: plugin.version,
+        pendingVersion: pending.version,
+      },
+      "plugin lifecycle: refused to enable a pending upgrade that would grant unapproved capabilities",
+    );
+
+    throw badRequest(
+      `Cannot enable plugin '${plugin.pluginKey}': the held upgrade (v${pending.version}) declares `
+        + `capabilities that were never approved: ${addedCapabilities.join(", ")}. Approve them by `
+        + `re-running the upgrade with 'approveCapabilities', or uninstall the plugin to reject it.`,
+    );
+  }
+
   async function deactivatePluginRuntime(
     pluginId: string,
     pluginKey: string,
@@ -485,6 +564,10 @@ export function pluginLifecycleManager(
      * Similar to load(), this method transitions the plugin to 'ready' and starts
      * its worker, but it specifically targets plugins that are currently disabled.
      *
+     * Enabling never grants capabilities: a plugin parked in `upgrade_pending`
+     * by an unapproved escalation is refused here, because activation would
+     * adopt the on-disk manifest and hand over the withheld grant (§15.3).
+     *
      * @param pluginId - The UUID of the plugin to enable.
      * @returns The updated plugin record.
      */
@@ -497,6 +580,16 @@ export function pluginLifecycleManager(
           `Cannot enable plugin in status '${plugin.status}'. ` +
             `Plugin must be in 'disabled', 'error', or 'upgrade_pending' status to be enabled.`,
         );
+      }
+
+      // A held upgrade leaves the *new* package on disk while the stored
+      // manifest keeps the previously approved grant. Activation adopts the
+      // on-disk manifest, so enabling here would hand over exactly the
+      // capabilities the operator has not approved — putting the approval gate
+      // in `upgrade()` one call away from being bypassed. Approval has a single
+      // entry point: `upgrade({ approveCapabilities })`.
+      if (plugin.status === "upgrade_pending") {
+        await assertPendingUpgradeGrantsNothing(plugin);
       }
 
       const result = await transition(pluginId, "ready", null, plugin);
@@ -626,17 +719,24 @@ export function pluginLifecycleManager(
      * 1. Stops the current worker process (if running).
      * 2. Fetches and validates the new plugin package via the `PluginLoader`.
      * 3. Compares the capabilities declared in the new manifest against the old one.
-     * 4. If new capabilities are added, transitions the plugin to `upgrade_pending`
-     *    to await operator approval (worker stays stopped).
-     * 5. If no new capabilities are added, transitions the plugin back to `ready`
-     *    with the updated version and manifest metadata.
+     * 4. If new capabilities are added and were not approved by the caller,
+     *    transitions the plugin to `upgrade_pending` to await operator approval
+     *    (worker stays stopped, stored capability grant unchanged).
+     * 5. If no new capabilities are added — or the caller approved every added
+     *    capability — transitions the plugin back to `ready` with the updated
+     *    version and manifest metadata.
      *
      * @param pluginId - The UUID of the plugin to upgrade.
      * @param version - Optional target version specifier.
-     * @returns The updated `PluginRecord`.
+     * @param options.approveCapabilities - Capabilities the operator approved.
+     * @returns The updated record plus whether the new manifest was applied.
      * @throws {BadRequest} If the plugin is not in a ready or upgrade_pending state.
      */
-    async upgrade(pluginId: string, version?: string): Promise<PluginRecord> {
+    async upgrade(
+      pluginId: string,
+      version?: string,
+      options?: { approveCapabilities?: string[] },
+    ): Promise<PluginUpgradeResult> {
       const plugin = await requirePlugin(pluginId);
 
       // Can only upgrade plugins that are ready or already in upgrade_pending
@@ -654,9 +754,13 @@ export function pluginLifecycleManager(
 
       await deactivatePluginRuntime(pluginId, plugin.pluginKey);
 
-      // 1. Download and validate new package via loader
-      const { oldManifest, newManifest, discovered } =
-        await pluginLoaderInstance.upgradePlugin(pluginId, { version });
+      // 1. Download and validate new package via loader. The loader applies the
+      //    new manifest only when every added capability was approved.
+      const { oldManifest, newManifest, discovered, addedCapabilities, applied } =
+        await pluginLoaderInstance.upgradePlugin(pluginId, {
+          version,
+          approveCapabilities: options?.approveCapabilities,
+        });
 
       log.info(
         {
@@ -664,48 +768,49 @@ export function pluginLifecycleManager(
           pluginKey: plugin.pluginKey,
           oldVersion: oldManifest.version,
           newVersion: newManifest.version,
+          addedCapabilities,
+          applied,
         },
         "plugin lifecycle: package upgraded on disk",
       );
 
-      // 2. Compare capabilities
-      const addedCaps = newManifest.capabilities.filter(
-        (cap) => !oldManifest.capabilities.includes(cap),
-      );
-
-      // 3. Transition state
-      if (addedCaps.length > 0) {
-        // New capabilities require operator approval — worker stays stopped
+      // 2. Transition state
+      if (!applied) {
+        // New capabilities require operator approval — worker stays stopped and
+        // the stored manifest keeps the previously approved capability set.
         log.info(
-          { pluginId, pluginKey: plugin.pluginKey, addedCaps },
+          { pluginId, pluginKey: plugin.pluginKey, addedCapabilities },
           "plugin lifecycle: new capabilities detected, transitioning to upgrade_pending",
         );
-        // Skip the inner stopWorkerIfRunning since we already stopped above
-        const result = await transition(pluginId, "upgrade_pending", null, plugin);
+        // Skip the inner stopWorkerIfRunning since we already stopped above.
+        // `newManifest` was already loaded by this operator-invoked call, so
+        // persisting it here lets the enable gate diff the pending
+        // capability delta later without re-importing the manifest module.
+        const result = await transition(pluginId, "upgrade_pending", null, plugin, newManifest);
         emitDomain("plugin.upgrade_pending", {
           pluginId,
           pluginKey: result.pluginKey,
         });
-        return result;
-      } else {
-        const result = await transition(pluginId, "ready", null, {
-          ...plugin,
-          version: discovered.version,
-          manifestJson: newManifest,
-        } as PluginRecord);
-        await activateReadyPlugin(pluginId);
-
-        emitDomain("plugin.loaded", {
-          pluginId,
-          pluginKey: result.pluginKey,
-        });
-        emitDomain("plugin.enabled", {
-          pluginId,
-          pluginKey: result.pluginKey,
-        });
-
-        return result;
+        return { plugin: result, applied: false, addedCapabilities };
       }
+
+      const result = await transition(pluginId, "ready", null, {
+        ...plugin,
+        version: discovered.version,
+        manifestJson: newManifest,
+      } as PluginRecord);
+      await activateReadyPlugin(pluginId);
+
+      emitDomain("plugin.loaded", {
+        pluginId,
+        pluginKey: result.pluginKey,
+      });
+      emitDomain("plugin.enabled", {
+        pluginId,
+        pluginKey: result.pluginKey,
+      });
+
+      return { plugin: result, applied: true, addedCapabilities };
     },
 
     // -- startWorker ------------------------------------------------------

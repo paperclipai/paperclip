@@ -27,6 +27,7 @@
 import { existsSync } from "node:fs";
 import { readdir, readFile, rm, stat } from "node:fs/promises";
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -36,6 +37,7 @@ import { PLUGIN_RPC_ERROR_CODES } from "@paperclipai/plugin-sdk";
 import type {
   PaperclipPluginManifestV1,
   PluginLauncherDeclaration,
+  PluginManifestDrift,
   PluginRecord,
   PluginUiSlotDeclaration,
 } from "@paperclipai/shared";
@@ -332,6 +334,22 @@ export interface PluginInstallOptions {
   installDir?: string;
 }
 
+/**
+ * Difference between the manifest persisted for an installed plugin and the
+ * manifest exposed by the package currently on disk.
+ *
+ * The stored manifest is the grant of record: `buildHostHandlers` gates every
+ * host call on `manifestJson.capabilities`. A package replaced on disk without
+ * a re-activation therefore runs new code against the previously captured
+ * capability set, which the host used to report nowhere. Drift is recomputed
+ * on demand so no schema column has to track it.
+ *
+ * Declared in `@paperclipai/shared` so the route contract, the lifecycle gate
+ * and the UI client all read the same shape; re-exported here for the existing
+ * server-side importers.
+ */
+export type { PluginManifestDrift } from "@paperclipai/shared";
+
 // ---------------------------------------------------------------------------
 // Runtime options — services needed for initializing loaded plugins
 // ---------------------------------------------------------------------------
@@ -533,13 +551,53 @@ export interface PluginLoader {
    * 3. Updates the existing plugin record instead of creating a new one.
    * 4. Returns the old and new manifests for capability comparison.
    *
+   * An upgrade that adds capabilities is NOT applied unless the caller passes
+   * every added capability in `approveCapabilities`. The new package is still
+   * fetched and validated on disk, but the stored manifest — the capability
+   * grant of record — is left untouched and `applied` comes back false so the
+   * caller can park the plugin in `upgrade_pending` and ask the operator.
+   *
+   * @see PLUGIN_SPEC.md §15.3 — Upgrade Rules
    * @see PLUGIN_SPEC.md §25.3 — Upgrade Lifecycle
    */
-  upgradePlugin(pluginId: string, options: Omit<PluginInstallOptions, "installDir">): Promise<{
+  upgradePlugin(
+    pluginId: string,
+    options: Omit<PluginInstallOptions, "installDir"> & {
+      /**
+       * Capabilities the operator explicitly approved for this upgrade.
+       * Added capabilities not listed here block the upgrade from applying.
+       */
+      approveCapabilities?: string[];
+    },
+  ): Promise<{
     oldManifest: PaperclipPluginManifestV1;
     newManifest: PaperclipPluginManifestV1;
     discovered: DiscoveredPlugin;
+    /** Capabilities the new manifest declares that the old one did not. */
+    addedCapabilities: string[];
+    /** True when the new manifest was persisted as the active grant. */
+    applied: boolean;
   }>;
+
+  /**
+   * Compare the grant stored for an installed plugin against the package
+   * currently on disk.
+   *
+   * Safe on read routes: `package.json` is inert JSON, and the manifest file
+   * is only ever read as raw bytes and hashed — never imported — so this
+   * never executes plugin code. That also means it catches a package
+   * replaced in place under the *same* `package.json` version, not just a
+   * version bump. Never throws either — an unreadable or missing package
+   * comes back as `packageReadable: false` with the reason in `error`, so
+   * health checks and detail routes can report drift without failing.
+   *
+   * This does not report *which* capabilities changed: that delta needs the
+   * manifest module, and read routes must never execute it. The capability
+   * delta for a held upgrade is captured once, at the operator-invoked
+   * `upgrade()` call, and persisted on the plugin record as
+   * `pendingManifestJson` — see PLUGIN_SPEC.md §15.4.
+   */
+  inspectManifestDrift(plugin: PluginRecord): Promise<PluginManifestDrift>;
 
   /**
    * Check whether a plugin API version is supported by this host.
@@ -1365,6 +1423,105 @@ export function pluginLoader(
     return loadManifestFromPath(manifestPath);
   }
 
+  /**
+   * sha256 of the manifest module's raw source bytes, read from disk without
+   * importing (so it never executes plugin code). Captured alongside the
+   * manifest at every legitimate load point (install, approved upgrade,
+   * activation refresh) so diagnostic read routes can detect a package
+   * swapped in place under the *same* `package.json` version — a version
+   * bump alone misses that case (§15.4).
+   */
+  async function hashManifestSource(packageRoot: string): Promise<string | null> {
+    const pkgJson = await readPackageJson(packageRoot);
+    if (!pkgJson) return null;
+
+    const manifestPath = resolveManifestPath(packageRoot, pkgJson);
+    if (!manifestPath || !existsSync(manifestPath)) return null;
+
+    const bytes = await readFile(manifestPath);
+    return createHash("sha256").update(bytes).digest("hex");
+  }
+
+  /**
+   * Compare the stored grant against the package on disk without executing any
+   * plugin code: a v1 manifest is a module, and importing one from a read route
+   * would run its top-level code on an ordinary metadata or health request.
+   *
+   * `package.json` is inert JSON and safe to read directly. The manifest file
+   * itself is also read as raw bytes — never imported — and hashed, so a
+   * package replaced in place under the *same* `package.json` version is
+   * still visible as drift; comparing versions alone would miss it. The exact
+   * capability delta needs the manifest module, so it belongs to the upgrade
+   * path, which loads it under approval.
+   */
+  async function inspectManifestDriftFromPackageJson(
+    plugin: PluginRecord,
+  ): Promise<PluginManifestDrift> {
+    const base: PluginManifestDrift = {
+      packageReadable: false,
+      drifted: false,
+      storedVersion: plugin.version,
+      packageVersion: null,
+      manifestPresent: false,
+      hashVerified: false,
+    };
+
+    let pkgJson: Record<string, unknown> | null;
+    let manifestPath: string | null;
+    try {
+      const packageRoot = resolvePluginPackageRoot(plugin, localPluginDir);
+      pkgJson = await readPackageJson(packageRoot);
+      if (!pkgJson) {
+        return { ...base, error: "Package on disk has no readable package.json" };
+      }
+      manifestPath = resolveManifestPath(packageRoot, pkgJson);
+    } catch (err) {
+      return { ...base, error: err instanceof Error ? err.message : String(err) };
+    }
+
+    const rawVersion = pkgJson["version"];
+    const packageVersion = typeof rawVersion === "string" ? rawVersion : null;
+
+    if (!manifestPath || !existsSync(manifestPath)) {
+      return {
+        ...base,
+        packageReadable: true,
+        drifted: true,
+        packageVersion,
+        error: "Package on disk does not expose a Paperclip manifest",
+      };
+    }
+
+    // Rows written before `manifestSourceHash` existed carry `null`. Reading
+    // the hash never executes plugin code (see `hashManifestSource`), so
+    // rather than wait for the row's next install/upgrade/activation to
+    // backfill it, establish the baseline right here on the read path. This
+    // pass still can't rule out a swap that happened *before* the backfill —
+    // there's nothing to compare the freshly-read hash against yet — so it
+    // reports `hashVerified: false` instead of folding into `drifted`, and
+    // callers must not read `drifted: false` alone as "no drift possible".
+    let hashMismatch = false;
+    let hashVerified = plugin.manifestSourceHash != null;
+    if (plugin.manifestSourceHash != null) {
+      const currentHash = await hashManifestSource(resolvePluginPackageRoot(plugin, localPluginDir));
+      hashMismatch = currentHash !== plugin.manifestSourceHash;
+    } else if (packageVersion === plugin.version) {
+      const currentHash = await hashManifestSource(resolvePluginPackageRoot(plugin, localPluginDir));
+      if (currentHash != null) {
+        await registry.update(plugin.id, { manifestSourceHash: currentHash });
+      }
+    }
+
+    return {
+      packageReadable: true,
+      drifted: packageVersion !== plugin.version || hashMismatch,
+      hashVerified,
+      storedVersion: plugin.version,
+      packageVersion,
+      manifestPresent: true,
+    };
+  }
+
   async function refreshPluginManifestFromPackage(
     plugin: PluginRecord,
     packageRoot: string,
@@ -1379,14 +1536,44 @@ export function pluginLoader(
       );
     }
 
-    if (JSON.stringify(manifest) === JSON.stringify(plugin.manifestJson)) {
+    const manifestSourceHash = await hashManifestSource(packageRoot);
+
+    // Compare the hash too, not just the parsed manifest: it backfills
+    // `manifestSourceHash` for rows written before that column existed, on
+    // the first activation after upgrading the host, even when the manifest
+    // content itself hasn't changed.
+    if (
+      JSON.stringify(manifest) === JSON.stringify(plugin.manifestJson)
+      && manifestSourceHash === plugin.manifestSourceHash
+    ) {
       return plugin;
+    }
+
+    // Activation re-reads the package from disk, so a package swapped in place
+    // has its capability list adopted here. That grant is silent today; log it
+    // loudly so an operator can tell a routine version bump apart from a
+    // capability escalation that never went through the upgrade approval path
+    // (§15.3).
+    const storedCaps = new Set(plugin.manifestJson?.capabilities ?? []);
+    const grantedOnActivation = (manifest.capabilities ?? []).filter((c) => !storedCaps.has(c));
+    if (grantedOnActivation.length > 0) {
+      log.warn(
+        {
+          pluginId: plugin.id,
+          pluginKey: plugin.pluginKey,
+          grantedOnActivation,
+          storedVersion: plugin.version,
+          packageVersion: manifest.version,
+        },
+        "plugin-loader: package on disk declares capabilities the stored manifest did not — granting on activation",
+      );
     }
 
     await registry.update(plugin.id, {
       packageName: plugin.packageName,
       version: manifest.version,
       manifest,
+      manifestSourceHash,
     });
 
     return {
@@ -1395,6 +1582,7 @@ export function pluginLoader(
       apiVersion: manifest.apiVersion,
       categories: manifest.categories,
       manifestJson: manifest,
+      manifestSourceHash,
     };
   }
 
@@ -1711,6 +1899,7 @@ export function pluginLoader(
     async installPlugin(installOptions: PluginInstallOptions): Promise<DiscoveredPlugin> {
       const discovered = await fetchAndValidate(installOptions);
       const manifest = discovered.manifest!;
+      const manifestSourceHash = await hashManifestSource(discovered.packagePath);
 
       // Step 6: Persist install record and apply plugin-owned schema migrations
       // in one database transaction. If migration validation fails, the plugin
@@ -1725,6 +1914,7 @@ export function pluginLoader(
             packagePath: discovered.source === "local-filesystem" ? discovered.packagePath : undefined,
           },
           manifest,
+          manifestSourceHash,
         );
 
         if (!installed) {
@@ -1773,11 +1963,15 @@ export function pluginLoader(
      */
     async upgradePlugin(
       pluginId: string,
-      upgradeOptions: Omit<PluginInstallOptions, "installDir">,
+      upgradeOptions: Omit<PluginInstallOptions, "installDir"> & {
+        approveCapabilities?: string[];
+      },
     ): Promise<{
       oldManifest: PaperclipPluginManifestV1;
       newManifest: PaperclipPluginManifestV1;
       discovered: DiscoveredPlugin;
+      addedCapabilities: string[];
+      applied: boolean;
     }> {
       const plugin = (await registry.getById(pluginId)) as {
         id: string;
@@ -1823,16 +2017,41 @@ export function pluginLoader(
       const oldCaps = new Set(oldManifest.capabilities ?? []);
       const newCaps = newManifest.capabilities ?? [];
       const escalated = newCaps.filter((c) => !oldCaps.has(c));
+      const approved = new Set(upgradeOptions.approveCapabilities ?? []);
+      const unapproved = escalated.filter((c) => !approved.has(c));
+
+      if (unapproved.length > 0) {
+        // Do NOT persist the new manifest as the grant: the stored capability
+        // list is what the host enforces at runtime, so writing it here would
+        // grant the escalation. The caller (plugin-lifecycle's `upgrade()`)
+        // persists `newManifest` as `pendingManifestJson` when it parks the
+        // plugin in `upgrade_pending` — it was already loaded by this
+        // operator-invoked call, the one legitimate point where the
+        // package's code may run, so the enable gate can later diff it
+        // without re-importing the manifest module (§15.3, §15.4).
+        log.warn(
+          {
+            pluginId,
+            escalated,
+            unapproved,
+            oldVersion: oldManifest.version,
+            newVersion: newManifest.version,
+          },
+          "plugin-loader: upgrade introduces new capabilities — awaiting operator approval",
+        );
+        return {
+          oldManifest,
+          newManifest,
+          discovered,
+          addedCapabilities: escalated,
+          applied: false,
+        };
+      }
 
       if (escalated.length > 0) {
-        log.warn(
-          { pluginId, escalated, oldVersion: oldManifest.version, newVersion: newManifest.version },
-          "plugin-loader: upgrade introduces new capabilities — requires admin approval",
-        );
-        throw new Error(
-          `Upgrade for "${pluginId}" introduces new capabilities that require approval: ${escalated.join(", ")}. ` +
-            `The previous version declared [${[...oldCaps].join(", ")}]. ` +
-            `Please review and approve the capability escalation before upgrading.`,
+        log.info(
+          { pluginId, escalated, newVersion: newManifest.version },
+          "plugin-loader: applying upgrade with operator-approved capability escalation",
         );
       }
 
@@ -1841,13 +2060,27 @@ export function pluginLoader(
         packageName: discovered.packageName,
         version: discovered.version,
         manifest: newManifest,
+        manifestSourceHash: await hashManifestSource(discovered.packagePath),
+        // Approval completes the escalation this upgrade was parked for (or
+        // there was none) — no manifest is left awaiting approval.
+        pendingManifest: null,
       });
 
       return {
         oldManifest,
         newManifest,
         discovered,
+        addedCapabilities: escalated,
+        applied: true,
       };
+    },
+
+    // -----------------------------------------------------------------------
+    // inspectManifestDrift
+    // -----------------------------------------------------------------------
+
+    async inspectManifestDrift(plugin: PluginRecord): Promise<PluginManifestDrift> {
+      return inspectManifestDriftFromPackageJson(plugin);
     },
 
     // -----------------------------------------------------------------------

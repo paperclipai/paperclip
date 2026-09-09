@@ -745,6 +745,21 @@ export interface PluginRecord {
   categories: PluginCategory[];
   /** Full manifest snapshot persisted at install/upgrade time. */
   manifestJson: PaperclipPluginManifestV1;
+  /**
+   * sha256 of the manifest module's raw source bytes, captured alongside
+   * `manifestJson`. Lets diagnostic read routes detect a package swapped in
+   * place under the same `package.json` version without importing the
+   * manifest module. Null for rows written before this field existed, until
+   * their next install/upgrade/activation.
+   */
+  manifestSourceHash: string | null;
+  /**
+   * Manifest captured from an `upgrade()` call whose capability escalation is
+   * awaiting operator approval. Set only while `status` is `upgrade_pending`;
+   * null otherwise. Lets the enable gate diff the pending capability delta
+   * without re-executing the manifest module.
+   */
+  pendingManifestJson: PaperclipPluginManifestV1 | null;
   /** Current lifecycle status. */
   status: PluginStatus;
   /** Deterministic load order (null if not yet assigned). */
@@ -757,6 +772,40 @@ export interface PluginRecord {
   installedAt: Date;
   /** Timestamp of the most recent status or metadata change. */
   updatedAt: Date;
+}
+
+/**
+ * Difference between the manifest stored for a plugin — the capability grant
+ * the host enforces — and the package currently on disk.
+ *
+ * A package swapped in place leaves the stored grant untouched until the next
+ * activation, so the running code and the granted capability set can diverge.
+ * Computed from `package.json` and a hash of the manifest file's raw bytes;
+ * neither is ever imported, so this is safe on diagnostic read routes even
+ * though it also catches a package replaced under the *same* `package.json`
+ * version. See PLUGIN_SPEC.md §15.4.
+ */
+export interface PluginManifestDrift {
+  /** False when the package on disk could not be read (see `error`). */
+  packageReadable: boolean;
+  /** True when the package on disk no longer matches the stored grant. */
+  drifted: boolean;
+  storedVersion: string;
+  /** Version declared by the package's `package.json`. */
+  packageVersion: string | null;
+  /** False when the package no longer exposes a manifest entrypoint at all. */
+  manifestPresent: boolean;
+  /**
+   * False when a same-version package swap couldn't be ruled out because no
+   * source hash existed to compare against — a row written before
+   * `manifestSourceHash` existed, now backfilled from this check so the
+   * *next* check is conclusive. This pass can't see a swap that happened
+   * before the backfill, so callers should not treat `drifted: false`
+   * alongside `hashVerified: false` as a clean bill of health.
+   */
+  hashVerified: boolean;
+  /** Why the package could not be read, when `packageReadable` is false. */
+  error?: string;
 }
 
 export interface PluginDatabaseNamespaceRecord {

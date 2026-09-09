@@ -136,7 +136,11 @@ export function pluginRegistryService(db: Db) {
      * manifest from the package.  This method persists the plugin row and
      * assigns the next install order.
      */
-    install: async (input: InstallPlugin, manifest: PaperclipPluginManifestV1) => {
+    install: async (
+      input: InstallPlugin,
+      manifest: PaperclipPluginManifestV1,
+      manifestSourceHash: string | null = null,
+    ) => {
       const existing = await getByKey(manifest.id);
       if (existing) {
         if (existing.status !== "uninstalled") {
@@ -154,6 +158,7 @@ export function pluginRegistryService(db: Db) {
             apiVersion: manifest.apiVersion,
             categories: manifest.categories,
             manifestJson: manifest,
+            manifestSourceHash,
             status: "installed" as PluginStatus,
             lastError: null,
             updatedAt: new Date(),
@@ -175,6 +180,7 @@ export function pluginRegistryService(db: Db) {
             apiVersion: manifest.apiVersion,
             categories: manifest.categories,
             manifestJson: manifest,
+            manifestSourceHash,
             status: "installed" as PluginStatus,
             installOrder,
             packagePath: input.packagePath ?? null,
@@ -201,6 +207,13 @@ export function pluginRegistryService(db: Db) {
         packageName?: string;
         version?: string;
         manifest?: PaperclipPluginManifestV1;
+        /** sha256 of the manifest source, set alongside `manifest`. */
+        manifestSourceHash?: string | null;
+        /**
+         * Manifest captured from a held (`upgrade_pending`) upgrade, or
+         * `null` to clear it. Independent of `manifest`/the stored grant.
+         */
+        pendingManifest?: PaperclipPluginManifestV1 | null;
       },
     ) => {
       const plugin = await getById(id);
@@ -216,6 +229,8 @@ export function pluginRegistryService(db: Db) {
         setClause.apiVersion = data.manifest.apiVersion;
         setClause.categories = data.manifest.categories;
       }
+      if (data.manifestSourceHash !== undefined) setClause.manifestSourceHash = data.manifestSourceHash;
+      if (data.pendingManifest !== undefined) setClause.pendingManifestJson = data.pendingManifest;
 
       return db
         .update(plugins)
@@ -227,8 +242,17 @@ export function pluginRegistryService(db: Db) {
 
     // ----- Status ---------------------------------------------------------
 
-    /** Update a plugin's lifecycle status and optional error message. */
-    updateStatus: async (id: string, input: UpdatePluginStatus) => {
+    /**
+     * Update a plugin's lifecycle status and optional error message.
+     *
+     * `pendingManifest` is only ever stored while transitioning *to*
+     * `upgrade_pending` — any other target status clears it, so a held
+     * escalation can never outlive the state it was captured for.
+     */
+    updateStatus: async (
+      id: string,
+      input: UpdatePluginStatus & { pendingManifest?: PaperclipPluginManifestV1 | null },
+    ) => {
       const plugin = await getById(id);
       if (!plugin) throw notFound("Plugin not found");
 
@@ -237,6 +261,7 @@ export function pluginRegistryService(db: Db) {
         .set({
           status: input.status,
           lastError: input.lastError ?? null,
+          pendingManifestJson: input.status === "upgrade_pending" ? (input.pendingManifest ?? null) : null,
           updatedAt: new Date(),
         })
         .where(eq(plugins.id, id))

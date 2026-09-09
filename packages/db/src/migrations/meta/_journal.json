@@ -1737,6 +1737,13 @@
       "when": 1788904803082,
       "tag": "0249_fast_silverclaw",
       "breakpoints": true
+    },
+    {
+      "idx": 250,
+      "version": "7",
+      "when": 1788955435054,
+      "tag": "0250_little_clint_barton",
+      "breakpoints": true
     }
   ]
 }
