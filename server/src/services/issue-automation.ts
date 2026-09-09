@@ -1,4 +1,4 @@
-import { eq, and } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { labels, projects } from "@paperclipai/db";import {
   projectAutomationPolicySchema,
@@ -38,6 +38,12 @@ export function matchAutoLabelRules(
  * policy. Returns [] when the project has no usable rules. Stale label ids
  * (labels deleted since the rule was saved) are skipped silently so a
  * deleted label can never break issue creation.
+ *
+ * The matched rows are locked (`FOR UPDATE`) through the surrounding create
+ * transaction: a concurrent label delete either lands before this read
+ * (skipped as stale) or waits for our commit and cascades the new link away
+ * instead of failing creation. Only matched ids are read, never the whole
+ * company label set.
  */
 export async function resolveProjectAutoLabels(
   db: Pick<Db, "select">,
@@ -53,16 +59,12 @@ export async function resolveProjectAutoLabels(
   if (!policy) return [];
   const matched = matchAutoLabelRules(input.title, input.description, policy.autoLabelRules);
   if (matched.length === 0) return [];
+  const matchedIds = [...new Set(matched.map((rule) => rule.labelId))];
   const labelRows = await db
     .select({ id: labels.id })
     .from(labels)
-    .where(eq(labels.companyId, input.companyId));
+    .where(and(eq(labels.companyId, input.companyId), inArray(labels.id, matchedIds)))
+    .for("update");
   const valid = new Set(labelRows.map((row) => row.id));
-  const resolved: string[] = [];
-  for (const rule of matched) {
-    if (valid.has(rule.labelId) && !resolved.includes(rule.labelId)) {
-      resolved.push(rule.labelId);
-    }
-  }
-  return resolved;
+  return matchedIds.filter((id) => valid.has(id));
 }

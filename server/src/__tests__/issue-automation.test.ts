@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it, afterAll, afterEach, beforeAll } from "vitest";
+import { eq } from "drizzle-orm";
 import { agents, companies, createDb, issues, issueLabels, labels, projects } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -10,6 +11,7 @@ import {
   normalizeAutomationPolicy,
   resolveProjectAutoLabels,
 } from "../services/issue-automation.js";
+import { issueService } from "../services/issues.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -108,5 +110,44 @@ describeEmbeddedPostgres("resolveProjectAutoLabels", () => {
     expect(
       await resolveProjectAutoLabels(db, { companyId, projectId, title: "Calm day" }),
     ).toEqual([]);
+  });
+
+  it("merges explicit and automatic labels on issue creation", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Automation",
+      issuePrefix: `A${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    const urgentId = randomUUID();
+    const manualId = randomUUID();
+    await db.insert(labels).values([
+      { id: urgentId, companyId, name: "urgent", color: "red" },
+      { id: manualId, companyId, name: "manual", color: "blue" },
+    ]);
+    const projectId = randomUUID();
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Platform",
+      automationPolicy: {
+        autoLabelRules: [
+          { id: "r1", match: "outage", labelId: urgentId },
+          { id: "r2", match: "outage", labelId: manualId },
+        ],
+      },
+    });
+
+    const created = await issueService(db).create(companyId, {
+      title: "Outage in prod",
+      projectId,
+      labelIds: [manualId],
+    } as Parameters<ReturnType<typeof issueService>["create"]>[1]);
+    const rows = await db
+      .select({ labelId: issueLabels.labelId })
+      .from(issueLabels)
+      .where(eq(issueLabels.issueId, (created as { id: string }).id));
+    expect(rows.map((row) => row.labelId).sort()).toEqual([manualId, urgentId].sort());
   });
 });

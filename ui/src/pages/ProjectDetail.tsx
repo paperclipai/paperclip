@@ -951,7 +951,19 @@ export function ProjectDetail() {
               companyId={resolvedCompanyId}
               projectId={project.id}
               automationPolicy={project.automationPolicy}
-              onSave={(policy) => updateProject.mutate({ automationPolicy: policy })}
+              onSave={(policy) =>
+                updateProject.mutate(
+                  { automationPolicy: policy },
+                  {
+                    onError: (err) =>
+                      pushToast({
+                        title: "Could not save automation rules",
+                        body: err instanceof Error ? err.message : "Saving failed. Try again.",
+                        tone: "error",
+                      }),
+                  },
+                )
+              }
               isSaving={updateProject.isPending}
             />
           ) : null}
