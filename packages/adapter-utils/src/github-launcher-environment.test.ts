@@ -71,6 +71,11 @@ describe("managed GitHub launcher environment", () => {
     vi.stubEnv("GH_TOKEN", "controller-secret");
     await mkdir(path.join(fixture.root, ".config/gh"), { recursive: true });
     await writeFile(path.join(fixture.root, ".config/gh/hosts.yml"), "host credential fixture");
+    const execute = fixture.runner.execute.getMockImplementation()!;
+    fixture.runner.execute.mockImplementation(async (input) => {
+      const result = await execute(input);
+      return { ...result, stdout: `SSH login banner\n${result.stdout}\nlogout` };
+    });
     const env = await prepareGitHubExecutionEnvironment({
       target: fixture.target, cwd: fixture.root, env: {}, hostCredentials: true,
     });

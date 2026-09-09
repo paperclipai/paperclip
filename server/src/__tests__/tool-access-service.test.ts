@@ -5156,7 +5156,7 @@ describeEmbeddedPostgres("tool access service", () => {
     }
   }, 15_000);
 
-  it.each(["none", "event", "same-time-refresh"])("binds a managed GitHub identity and protects refresh from concurrent access changes (%s)", async (concurrentChange) => {
+  it.each(["none", "event", "same-time-refresh", "one-conflict"])("binds a managed GitHub identity and protects refresh from concurrent access changes (%s)", async (concurrentChange) => {
     const company = await createCompany(db);
     const userId = `github-manager-${randomUUID()}`;
     await grantBoardUser(db, company.id, userId, [], "owner");
@@ -5284,6 +5284,7 @@ describeEmbeddedPostgres("tool access service", () => {
       vi.mocked(connector.setWebhookBinding).mockClear();
       if (concurrentChange !== "none") {
         beforeRepositoryResponse = async () => {
+          if (concurrentChange === "one-conflict") beforeRepositoryResponse = async () => {};
           const [latest] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, grant!.id));
           await db.update(connectionGrants).set({ providerTenant: {
             ...latest!.providerTenant,
@@ -5298,6 +5299,15 @@ describeEmbeddedPostgres("tool access service", () => {
             },
           } }).where(eq(connectionGrants.id, grant!.id));
         };
+        if (concurrentChange === "one-conflict") {
+          await expect(service.checkHealth(connected.connectionId, actor))
+            .resolves.toMatchObject({ connection: { healthStatus: "ok" } });
+          expect(connector.setWebhookBinding).toHaveBeenCalled();
+          const [latest] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, grant!.id));
+          expect(latest?.status).toBe("active");
+          expect(latest?.providerTenant?.github?.repositoryCount).toBe(3);
+          return;
+        }
         await expect(service.checkHealth(connected.connectionId, actor))
           .rejects.toThrow("GitHub access changed during refresh. Try again.");
         const [latest] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, grant!.id));

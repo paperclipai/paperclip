@@ -77,15 +77,3 @@ export function githubCredentialEnvironmentKeys(
 ): string[] {
   return Object.keys(githubCredentialEnvironment(source)).sort();
 }
-
-export function hasGitHubCredentialEnvironment(
-  source: NodeJS.ProcessEnv,
-): boolean {
-  return [
-    source.PAPERCLIP_GITHUB_AUTH_MODE === "host" ? "host" : undefined,
-    source.PAPERCLIP_GITHUB_BROKER_TOKEN,
-    source.GH_TOKEN,
-    source.GITHUB_TOKEN,
-    source.PAPERCLIP_GIT_TOKEN,
-  ].some((value) => typeof value === "string" && value.trim().length > 0);
-}

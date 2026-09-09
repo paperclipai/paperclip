@@ -2,7 +2,6 @@ import { resolve, isAbsolute, join } from "node:path";
 
 import {
   githubCredentialEnvironmentKeys,
-  hasGitHubCredentialEnvironment,
 } from "../../github-credential-environment.js";
 
 export const CODEX_SKILLLESS_PERMISSION_PROFILE =
@@ -108,11 +107,11 @@ export function createIsolatedCodexAppServerArgs(
   source: NodeJS.ProcessEnv = process.env,
   readOnlyRoots: string[] = [],
 ): string[] {
-  const hasGitHubCredential = hasGitHubCredentialEnvironment(source);
   const gitRoots = gitFilesystemRoots(source);
   const networkAccess = codexNetworkAccess(source);
   const externalRunnerSandbox = usesExternalRunnerSandbox(source);
   const inheritedGitHubKeys = githubCredentialEnvironmentKeys(source);
+  const hasProjectedEnvironment = inheritedGitHubKeys.length > 0;
   if (source.PAPERCLIP_GITHUB_LAUNCHER_DIR) readOnlyRoots = [...readOnlyRoots, source.PAPERCLIP_GITHUB_LAUNCHER_DIR];
   const deniedHostRoots = [
     ...new Set(
@@ -173,15 +172,14 @@ export function createIsolatedCodexAppServerArgs(
     "-c",
     `permissions.${CODEX_PLANNING_PERMISSION_PROFILE}.network.enabled=${networkAccess}`,
     "-c",
-    `shell_environment_policy.inherit=${tomlString(hasGitHubCredential ? "all" : "none")}`,
+    `shell_environment_policy.inherit=${tomlString(hasProjectedEnvironment ? "all" : "none")}`,
     "-c",
-    `shell_environment_policy.ignore_default_excludes=${hasGitHubCredential}`,
-    ...(hasGitHubCredential
-      ? [
-          "-c",
-          `shell_environment_policy.include_only=${JSON.stringify(inheritedGitHubKeys)}`,
-        ]
-      : []),
+    `shell_environment_policy.ignore_default_excludes=${hasProjectedEnvironment}`,
+    // Codex applies include_only after inheritance. Always emit the bounded
+    // allowlist: neither host mode nor a broker enables ambient secret access.
+    // Keep values in the process environment, never in argv/config diagnostics.
+    "-c",
+    `shell_environment_policy.include_only=${JSON.stringify(inheritedGitHubKeys)}`,
     ...(commandEnv.length > 0
       ? ["-c", `shell_environment_policy.set={${commandEnv}}`]
       : []),

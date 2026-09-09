@@ -1596,7 +1596,7 @@ try {
     env.PAPERCLIP_GIT_METADATA_ROOTS = JSON.stringify(cp.execFileSync('git', ['rev-parse','--path-format=absolute','--git-common-dir','--git-dir'], {encoding:'utf8',stdio:['ignore','pipe','ignore']}).trim().split('\n').map(p => fs.realpathSync(p)));
   }
 } catch {}
-process.stdout.write(JSON.stringify(env));
+process.stdout.write("\0" + JSON.stringify(env) + "\0");
 `;
   const args = ["-e", script, input.hostCredentials ? "host" : "managed"];
   const remote = input.target?.kind === "remote" ? input.target : null;
@@ -1604,7 +1604,12 @@ process.stdout.write(JSON.stringify(env));
     ? await adapterExecutionTargetCommandRunner(remote).execute({ command: "node", args, cwd: input.cwd, timeoutMs: 15_000 })
     : await promisify(execFile)(process.execPath, args, { cwd: input.cwd, timeout: 15_000, maxBuffer: 1024 * 1024 });
   if ("exitCode" in result && result.exitCode !== 0) throw new Error("Could not read execution-target Git context");
-  const discovered = JSON.parse(result.stdout) as Record<string, string>;
+  // SSH login banners must not corrupt the credential envelope or leak it in
+  // a JSON parse error. The target writes one NUL-framed payload.
+  const payload = result.stdout.split("\0")[1];
+  let discovered: Record<string, string>;
+  try { discovered = JSON.parse(payload ?? ""); }
+  catch { throw new Error("Could not read execution-target Git context"); }
   // Controller-derived roots and mode must not be replaced by agent bindings.
   return { ...discovered, ...input.env,
     ...(input.hostCredentials ? { PAPERCLIP_GITHUB_HOST_HOME: discovered.PAPERCLIP_GITHUB_HOST_HOME } : {}),
