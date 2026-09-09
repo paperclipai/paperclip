@@ -203,7 +203,10 @@ function normalizeCloudConnectorEnrollmentReturnTo(returnTo?: string | null): st
 }
 
 export function cloudConnectorEnrollmentOutcomeHtml(issuePrefix: string, returnTo: string, issueId?: string): string {
-  const fallback = JSON.stringify(issueId ? `/${encodeURIComponent(issuePrefix)}/issues/${encodeURIComponent(issueId)}` : cloudConnectorEnrollmentReturnPath(issuePrefix, returnTo)).replaceAll("<", "\\u003c");
+  const fallbackPath = issueId
+    ? `/${encodeURIComponent(issuePrefix)}/issues/${encodeURIComponent(issueId)}`
+    : cloudConnectorEnrollmentReturnPath(issuePrefix, returnTo);
+  const fallback = JSON.stringify(fallbackPath).replaceAll("<", "\\u003c");
   // This document is served only after server-verified enrollment. The parent
   // independently re-reads enrollment status; browser messages grant no access.
   return `<!doctype html><html><head><meta charset="utf-8"><title>Paperclip connected</title></head><body><p>Paperclip is connected. Return to your task to finish connecting the app.</p><script>if(window.opener&&window.opener!==window){window.close();}else{const link=document.createElement("a");link.href=${fallback};link.textContent=${JSON.stringify(issueId ? "Return to task" : "Continue setup")};document.body.append(link);}</script></body></html>`;
@@ -1074,7 +1077,9 @@ function connectorEnrollmentPrincipal(req: Request): string {
     const returnTo = normalizeCloudConnectorEnrollmentReturnTo(pending?.returnTo);
     if (returnTo && new URL(returnTo, "http://paperclip.local").searchParams.get("enrollment_host") === "dialog") {
       res.set("Cache-Control", "no-store");
-      const interactionId = new URL(returnTo, "http://paperclip.local").searchParams.get("intent");
+      const intent = new URL(returnTo, "http://paperclip.local").searchParams.get("intent");
+      const parsedIntent = startToolOAuthSchema.safeParse({ interactionId: intent });
+      const interactionId = parsedIntent.success ? parsedIntent.data.interactionId : undefined;
       const [interaction] = interactionId ? await db.select({ issueId: issueThreadInteractions.issueId })
         .from(issueThreadInteractions)
         .where(and(

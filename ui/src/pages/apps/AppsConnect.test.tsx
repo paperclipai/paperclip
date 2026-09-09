@@ -774,10 +774,10 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     );
   });
 
-  it("keeps task enrollment in a popup and continues with the same access and interaction", async () => {
+  it.each([false, true])("retains task access and interaction through enrollment (popup blocked: %s)", async (popupBlocked) => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     const popup = { closed: false, location: { assign: vi.fn() }, focus: vi.fn(), close: vi.fn() };
-    const open = vi.spyOn(window, "open").mockReturnValue(popup as unknown as Window);
+    const open = vi.spyOn(window, "open").mockReturnValue(popupBlocked ? null : popup as unknown as Window);
     listGalleryMock.mockResolvedValue({ apps: [{
       ...GMAIL, methods: GMAIL.methods.filter((method) => !method.oauthStrategy),
       ownershipAvailability: { platform_shared: false, customer: true, dcr: true },
@@ -788,7 +788,14 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     await act(async () => buttonByText("Connect with Paperclip")?.click());
     await flushReact();
     expect(open).toHaveBeenCalled();
-    expect(popup.location.assign).toHaveBeenCalledWith("https://my-staging.paperclip.app/connections/enroll?id=enroll-test");
+    if (popupBlocked) {
+      expect(popup.location.assign).not.toHaveBeenCalled();
+    } else {
+      expect(popup.location.assign).toHaveBeenCalledWith("https://my-staging.paperclip.app/connections/enroll?id=enroll-test");
+    }
+    const fallback = container.querySelector<HTMLAnchorElement>('a[target="_blank"]');
+    expect(fallback?.textContent).toBe("Open authorization in a new tab");
+    expect(fallback?.href).toBe("https://my-staging.paperclip.app/connections/enroll?id=enroll-test");
     expect(navigateTopLevelMock).not.toHaveBeenCalled();
     expect(startCloudConnectorEnrollmentMock).toHaveBeenCalledWith("company-1", "Paperclip", "/apps/connect?source=gmail&stage=setup&intent=intent-1&enrollment_host=dialog");
     listGalleryMock.mockResolvedValue({ apps: [{ ...GMAIL, ownershipAvailability: { ...GMAIL.ownershipAvailability, platform_shared: true } }] });
@@ -796,7 +803,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     await act(async () => { await client.invalidateQueries({ queryKey: ["cloud-connector", "enrollment"] }); });
     await flushReact();
     await flushReact();
-    expect(popup.close).toHaveBeenCalled();
+    if (!popupBlocked) expect(popup.close).toHaveBeenCalled();
     expect(container.textContent).toContain("What should Paperclip be able to do?");
     expect(container.textContent).toContain("Step 2 of 2");
     connectAppMock.mockResolvedValue({ connectionId: "gmail-1", connection: { id: "gmail-1", credentialPolicy: "per_user" }, auth: { kind: "oauth", startUrl: "https://example.test/unbound" } });

@@ -96,7 +96,6 @@ describe("connection intent OAuth callback document", () => {
   });
 });
 
-
 describe("inline enrollment completion", () => {
   it("closes enrollment without redirecting the task and retains a safe setup fallback", () => {
     const html = cloudConnectorEnrollmentOutcomeHtml("GMA", "/apps/connect?source=gmail&intent=request-1&enrollment_host=dialog");
@@ -110,11 +109,11 @@ describe("inline enrollment completion", () => {
     expect(cloudConnectorEnrollmentOutcomeHtml("GMA", "https://evil.example/")).not.toContain("evil.example");
     expect(cloudConnectorEnrollmentOutcomeHtml("GMA", "/apps/connect?source=</script>")).not.toContain("source=</script>");
   });
-});
 
-it("returns a task enrollment fallback to its verified task", () => {
-  const html = cloudConnectorEnrollmentOutcomeHtml("GMA", "/apps/connect?source=gmail", "task-1");
-  expect(html).toContain("Return to task");
-  expect(html).toContain("/GMA/issues/task-1");
-  expect(html).not.toContain("/apps/connect");
+  it("returns a task enrollment fallback to its verified task", () => {
+    const html = cloudConnectorEnrollmentOutcomeHtml("GMA", "/apps/connect?source=gmail", "task-1");
+    expect(html).toContain("Return to task");
+    expect(html).toContain("/GMA/issues/task-1");
+    expect(html).not.toContain("/apps/connect");
+  });
 });
