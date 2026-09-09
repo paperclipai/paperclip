@@ -6,6 +6,10 @@ Failed provider sessions retain their structured failure meaning. Recovery uses 
 
 The server owns the continuation envelope. It includes the triggering request, subsequent user direction, interaction outcomes, completed work, and an explicit history cursor. The latest request supplies the completion objective; an old task title cannot satisfy a new follow-up.
 
+Confirmed provider descendant IDs survive restart and stay exact within a 4,096-entry inventory, with IDs bounded to 240 bytes. Capacity exhaustion stops provider work with an explicit reconciliation reason; it never evicts identities or pretends that a valid child is an integrity violation. Repeated progress diagnostics remain bounded.
+
+Local CLI run-authored comments retain their provenance in history and cannot replace the latest human objective. Scheduled replacements and the final dispatch gate reject another run's execution or checkout lock.
+
 A shared execution projection distinguishes confirmed work, recovery, scheduled retries, finalization, and real interaction waits. The composer remains usable. The failed predecessor remains inspectable after a replacement.
 
 ## Reproduced failure

@@ -187,6 +187,33 @@ describeEmbeddedPostgres("run-dispatch postgres adapter", () => {
     });
   }
 
+  it.each(["executionRunId", "checkoutRunId"] as const)("suppresses delayed native replacement after another run acquires %s", async (lock) => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const issueId = randomUUID();
+    await seedIssue({ companyId, issueId, assigneeAgentId: agentId, status: "in_progress" });
+    const contextSnapshot = { issueId, wakeReason: "native_safe_replacement", retryReason: "native_safe_replacement", forceFreshSession: true };
+    const replacementId = await seedRun({ companyId, agentId, status: "scheduled_retry", contextSnapshot });
+    const competingId = await seedRun({ companyId, agentId, status: "running", contextSnapshot: { issueId } });
+    await db.update(issues).set({ [lock]: competingId }).where(eq(issues.id, issueId));
+    const adapter = createPostgresRunDispatchAdapter(db);
+    expect(await adapter.evaluateScheduledRetryGate({ companyId, runId: replacementId, retryReasonOverride: "native_safe_replacement", now: new Date() }))
+      .toMatchObject({ allowed: false, errorCode: "issue_execution_lock_changed" });
+    await db.update(heartbeatRuns).set({ status: "queued" }).where(eq(heartbeatRuns.id, replacementId));
+    expect(await adapter.cancelStaleQueuedRun({ companyId, runId: replacementId, expectedStatus: "queued", now: new Date() }))
+      .toMatchObject({ outcome: "cancelled", errorCode: "issue_execution_lock_changed" });
+
+    // A competing owner can also appear after queue validation. The final
+    // dispatch gate must prevent any provider call, even from a running row.
+    await db.update(heartbeatRuns).set({ status: "running" }).where(eq(heartbeatRuns.id, replacementId));
+    let dispatched = false;
+    const outcome = await adapter.dispatchResolvedInteractionIfCurrent({ companyId, runId: replacementId,
+      expectedStatus: "running", now: new Date(), dispatch: async () => { dispatched = true; } });
+    expect(outcome).toMatchObject({ dispatched: false, cancellation: { outcome: "cancelled" } });
+    expect(dispatched).toBe(false);
+    expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]![lock]).toBe(competingId);
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, competingId)))[0]?.status).toBe("running");
+  });
+
   it("commits admission before a recovered provider fails without a spawn callback", async () => {
     const { companyId, agentId } = await seedCompanyAndAgent();
     const issueId = randomUUID();

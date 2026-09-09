@@ -15,7 +15,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "../__tests__/helpers/embedded-postgres.js";
-import { buildExecutionContinuation } from "./execution-continuation.js";
+import { buildExecutionContinuation, currentContinuationOrigins } from "./execution-continuation.js";
 const support = await getEmbeddedPostgresTestSupport();
 (support.supported ? describe : describe.skip)(
   "authorized continuation context",
@@ -133,6 +133,20 @@ const support = await getEmbeddedPostgresTestSupport();
         summary: "Notion read completed.",
         exposeLowTrustRaw: false,
       });
+    it("keeps Local CLI run-authored comments as history without promoting them to human direction", async () => {
+      const id = randomUUID();
+      await db.insert(issueComments).values({ id, companyId, issueId, authorType: "user",
+        authorUserId: "local-board", createdByRunId: runId, body: "Agent progress: Notion is done.",
+        createdAt: new Date("2026-09-08T11:00:00Z") });
+      try {
+        const context = await build();
+        expect(context.objective).toBe("Focus the Gmail summary on launch decisions.");
+        expect(context.messages.at(-1)).toMatchObject({ id, authorType: "user", createdByRunId: runId });
+        expect(await currentContinuationOrigins(db, companyId, issueId, {})).toEqual([laterId]);
+      } finally {
+        await db.delete(issueComments).where(eq(issueComments.id, id));
+      }
+    });
     it("retains delivered Gmail origin and later direction after Notion completion", async () => {
       const context = await build();
       expect(context.originCommentIds).toContain(gmailId);

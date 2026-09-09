@@ -444,3 +444,20 @@ describe("decideQueuedRunStaleness", () => {
     expect(decideQueuedRunStaleness(facts, NOW)).toEqual({ stale: false });
   });
 });
+
+describe("native replacement execution authority", () => {
+  it.each([
+    { issueExecutionRunId: "newer-run", issueCheckoutRunId: null },
+    { issueExecutionRunId: null, issueCheckoutRunId: "newer-run" },
+  ])("rejects another owner's lock at both retry gates: %j", (locks) => {
+    expect(decideScheduledRetryGate({ ...baseGateFacts(), retryReasonKind: "native_safe_replacement", ...locks }, NOW))
+      .toMatchObject({ allowed: false, errorCode: "issue_execution_lock_changed" });
+    expect(decideQueuedRunStaleness({ ...baseStalenessFacts(), retryReasonKind: "native_safe_replacement", ...locks }, NOW))
+      .toMatchObject({ stale: true, errorCode: "issue_execution_lock_changed" });
+  });
+  it.each([null, "run-1"])("allows vacant or already-owned replacement locks: %s", (owner) => {
+    const locks = { issueExecutionRunId: owner, issueCheckoutRunId: owner };
+    expect(decideScheduledRetryGate({ ...baseGateFacts(), retryReasonKind: "native_safe_replacement", ...locks }, NOW)).toEqual({ allowed: true });
+    expect(decideQueuedRunStaleness({ ...baseStalenessFacts(), retryReasonKind: "native_safe_replacement", ...locks }, NOW)).toEqual({ stale: false });
+  });
+});

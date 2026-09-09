@@ -49,6 +49,8 @@ export async function currentContinuationOrigins(
         eq(issueComments.companyId, companyId),
         eq(issueComments.issueId, issueId),
         isNotNull(issueComments.authorUserId),
+        isNull(issueComments.createdByRunId),
+        isNull(issueComments.authorAgentId),
         isNull(issueComments.deletedAt),
       ),
     )
@@ -153,6 +155,7 @@ export async function buildExecutionContinuation(input: {
         row.authorType ??
         (row.authorUserId ? "user" : row.authorAgentId ? "agent" : "system"),
       authorId: row.authorUserId ?? row.authorAgentId,
+      createdByRunId: row.createdByRunId,
       body: row.deletedAt ? "" : safe.body,
       createdAt: row.createdAt.toISOString(),
       updatedAt: row.updatedAt.toISOString(),
@@ -193,6 +196,7 @@ export async function buildExecutionContinuation(input: {
                   prior.body === message.body &&
                   prior.deleted === message.deleted &&
                   prior.authorId === message.authorId &&
+                  (prior.createdByRunId ?? null) === message.createdByRunId &&
                   JSON.stringify(prior.sourceTrust) ===
                     JSON.stringify(message.sourceTrust),
               ),
@@ -201,7 +205,7 @@ export async function buildExecutionContinuation(input: {
       : undefined;
   const latestRequest = messages.findLast(
     (row) =>
-      row.authorType === "user" && !row.deleted && row.body.trim().length > 0,
+      row.authorType === "user" && !row.createdByRunId && !row.deleted && row.body.trim().length > 0,
   );
   const priorRuns = await db
     .select({ id: heartbeatRuns.id, result: heartbeatRuns.resultJson })

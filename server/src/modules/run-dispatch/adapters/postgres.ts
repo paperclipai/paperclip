@@ -107,6 +107,7 @@ function readNonEmptyString(value: unknown): string | null {
 function classifyRetryReasonKind(retryReason: string | null): RetryReasonKind {
   if (retryReason === MAX_TURN_CONTINUATION_RETRY_REASON) return "max_turn_continuation";
   if (retryReason === ISSUE_DISPOSITION_REPAIR_RETRY_REASON) return "disposition_repair";
+  if (retryReason === "native_safe_replacement") return "native_safe_replacement";
   return "other";
 }
 
@@ -314,6 +315,7 @@ export function createPostgresRunDispatchAdapter(
         assigneeAgentId: issues.assigneeAgentId,
         assigneeUserId: issues.assigneeUserId,
         executionRunId: issues.executionRunId,
+        checkoutRunId: issues.checkoutRunId,
         executionPolicy: issues.executionPolicy,
         executionState: issues.executionState,
         monitorNextCheckAt: issues.monitorNextCheckAt,
@@ -334,6 +336,7 @@ export function createPostgresRunDispatchAdapter(
     facts.issueStatus = issue.status;
     facts.issueAssigneeAgentId = issue.assigneeAgentId;
     facts.issueExecutionRunId = issue.executionRunId;
+    facts.issueCheckoutRunId = issue.checkoutRunId;
     facts.reviewParticipant = buildReviewParticipantFacts({
       isInReview: issue.status === "in_review",
       executionState: parseIssueExecutionState(issue.executionState),
@@ -456,6 +459,7 @@ export function createPostgresRunDispatchAdapter(
         status: issues.status,
         assigneeAgentId: issues.assigneeAgentId,
         executionRunId: issues.executionRunId,
+        checkoutRunId: issues.checkoutRunId,
         executionState: issues.executionState,
       })
       .from(issues)
@@ -527,6 +531,7 @@ export function createPostgresRunDispatchAdapter(
       issueStatus: issue?.status ?? null,
       issueAssigneeAgentId: issue?.assigneeAgentId ?? null,
       issueExecutionRunId: issue?.executionRunId ?? null,
+      issueCheckoutRunId: issue?.checkoutRunId ?? null,
       isResolvedInteractionContinuation,
       isConnectionContinuation: (isResolvedInteractionContinuation && context.interactionKind === "connection_intent")
         || context.source === "connection_tools.refreshed",
@@ -719,7 +724,8 @@ export function createPostgresRunDispatchAdapter(
       const isLegacyMissingIssueException =
         !gate.allowed &&
         gate.errorCode === "issue_not_found" &&
-        factsResult.facts.retryReasonKind !== "max_turn_continuation";
+        factsResult.facts.retryReasonKind !== "max_turn_continuation" &&
+        factsResult.facts.retryReasonKind !== "native_safe_replacement";
 
       if (!gate.allowed && !isLegacyMissingIssueException) {
         const cancelled = await cancelSuppressedRetryInTx(tx as unknown as Db, {
@@ -937,7 +943,7 @@ export function createPostgresRunDispatchAdapter(
                       stale: true as const,
                       errorCode: "issue_execution_lock_changed" as const,
                       reason:
-                        "Cancelled because resolved-interaction continuation no longer owns the issue execution lock before adapter dispatch",
+                        "Cancelled because continuation no longer owns the issue execution lock before adapter dispatch",
                       details: {
                         issueId,
                         expectedExecutionRunId: run.id,

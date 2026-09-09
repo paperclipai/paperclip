@@ -15483,6 +15483,9 @@ export function heartbeatService(
             // Mention/context runs can touch an issue, but only the current assignee
             // owns the issue execution lock shown as the active run.
             eq(issues.assigneeAgentId, claimed.agentId),
+            claimed.scheduledRetryReason === "native_safe_replacement"
+              ? or(isNull(issues.checkoutRunId), eq(issues.checkoutRunId, claimed.id))
+              : undefined,
             or(
               isNull(issues.executionRunId),
               eq(issues.executionRunId, claimed.id),
@@ -19188,7 +19191,8 @@ export function heartbeatService(
       > => {
         if (
           !issueId ||
-          !isResolvedInteractionContinuationWakeContext(context)
+          (!isResolvedInteractionContinuationWakeContext(context)
+            && run.scheduledRetryReason !== "native_safe_replacement")
         ) {
           return { dispatched: true, resultPromise: dispatch(() => {}) };
         }
@@ -19919,7 +19923,7 @@ export function heartbeatService(
           // In particular, an upgraded checkpoint may have an intentionally
           // authored contract and no continuation envelope yet.
           const hasUpdatedRequest = executionContinuation?.messages.some((message) =>
-            message.authorType === "user" && !message.deleted &&
+            message.authorType === "user" && !message.createdByRunId && !message.deleted &&
             (!run.startedAt || new Date(message.updatedAt).getTime() > run.startedAt.getTime()));
           const completionContract = persistedContract && !hasUpdatedRequest
             ? {
