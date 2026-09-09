@@ -29,6 +29,7 @@ async function stopTestDrive(child: ChildProcess | undefined): Promise<void> {
 }
 
 test('a completion tool does not cut off a delayed final answer', async ({ page }, info) => {
+  await page.setViewportSize({ width: 1440, height: 1000 });
   const root = resolve(import.meta.dirname, '../../..');
   let child: ChildProcess | undefined;
   let logs = '';
