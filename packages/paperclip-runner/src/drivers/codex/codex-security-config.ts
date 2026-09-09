@@ -172,6 +172,10 @@ export function createIsolatedCodexAppServerArgs(
   const externalRunnerSandbox = usesExternalRunnerSandbox(source);
   const inheritedGitHubKeys = githubCredentialEnvironmentKeys(source);
   const hasProjectedEnvironment = inheritedGitHubKeys.length > 0;
+  // Codex filters the configured `set` values through include_only as well.
+  // Retain the explicit command PATH/HOME/locale settings, not ambient secrets.
+  const commandEnvironment = codexCommandEnvironment(source);
+  const shellEnvironmentKeys = [...new Set([...inheritedGitHubKeys, ...Object.keys(commandEnvironment)])].sort();
   if (source.PAPERCLIP_GITHUB_LAUNCHER_DIR) readOnlyRoots = [...readOnlyRoots, source.PAPERCLIP_GITHUB_LAUNCHER_DIR];
   const deniedHostRoots = [
     ...new Set(
@@ -206,7 +210,7 @@ export function createIsolatedCodexAppServerArgs(
       ? [`${tomlString(resolve(source.GH_CONFIG_DIR))}="write"`] : []),
     `":workspace_roots"={"."="read"}`,
   ].join(",");
-  const commandEnv = Object.entries(codexCommandEnvironment(source))
+  const commandEnv = Object.entries(commandEnvironment)
     .map(([key, value]) => `${key}=${tomlString(value)}`)
     .join(",");
   const defaultPermissionProfile = externalRunnerSandbox
@@ -239,7 +243,7 @@ export function createIsolatedCodexAppServerArgs(
     // allowlist: neither host mode nor a broker enables ambient secret access.
     // Keep values in the process environment, never in argv/config diagnostics.
     "-c",
-    `shell_environment_policy.include_only=${JSON.stringify(inheritedGitHubKeys)}`,
+    `shell_environment_policy.include_only=${JSON.stringify(shellEnvironmentKeys)}`,
     ...(commandEnv.length > 0
       ? ["-c", `shell_environment_policy.set={${commandEnv}}`]
       : []),

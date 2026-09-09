@@ -44,13 +44,13 @@ describe("Codex security configuration", () => {
 
   it("restores host Git resources without exposing the provider home", () => {
     const args = createIsolatedCodexAppServerArgs({
-      HOME: "/provider", CODEX_HOME: "/provider", PAPERCLIP_GITHUB_AUTH_MODE: "host",
+      HOME: "/provider", CODEX_HOME: "/provider", PATH: "/usr/bin:/bin", PAPERCLIP_GITHUB_AUTH_MODE: "host",
       OPENAI_API_KEY: "must-not-cross", DATABASE_URL: "must-not-cross", PAPERCLIP_API_KEY: "must-not-cross",
       PAPERCLIP_GITHUB_HOST_HOME: "/legacy", GH_CONFIG_DIR: "/legacy/.config/gh",
       SSH_AUTH_SOCK: "/agent/socket", PAPERCLIP_GIT_METADATA_ROOTS: '["/repo/.git","/repo/.git"]',
     }).join("\n");
     const allowlist = JSON.parse(args.split("\n").find((arg) => arg.startsWith("shell_environment_policy.include_only="))!.split("=", 2)[1]!);
-    expect(allowlist).toEqual(["GH_CONFIG_DIR", "PAPERCLIP_GITHUB_AUTH_MODE", "PAPERCLIP_GITHUB_HOST_HOME", "PAPERCLIP_GIT_METADATA_ROOTS", "SSH_AUTH_SOCK"]);
+    expect(allowlist).toEqual(["GH_CONFIG_DIR", "HOME", "PAPERCLIP_GITHUB_AUTH_MODE", "PAPERCLIP_GITHUB_HOST_HOME", "PAPERCLIP_GIT_METADATA_ROOTS", "PATH", "SSH_AUTH_SOCK"]);
     expect(args).not.toContain("must-not-cross");
     expect(args).not.toContain("OPENAI_API_KEY");
     expect(args).not.toContain("DATABASE_URL");
