@@ -51,6 +51,7 @@ describeEmbeddedPostgres("native project coordinator provisioning", () => {
     db = createDb(tempDb.connectionString);
   }, 20_000);
 
+
   afterEach(() => {
     if (originalTemplateAgentId === undefined) {
       delete process.env[PROJECT_COORDINATOR_TEMPLATE_AGENT_ID_ENV];
@@ -249,7 +250,7 @@ describeEmbeddedPostgres("native project coordinator provisioning", () => {
       },
     });
     expect(firstCoordinator.runtimeConfig).toMatchObject({
-      heartbeat: { enabled: false, wakeOnDemand: true, maxConcurrentRuns: 1 },
+      heartbeat: { enabled: false, wakeOnDemand: true },
       nativeRunner: { mode: "native" },
     });
     expect(isProjectCoordinatorAgentForProject(firstCoordinator.metadata, first.id)).toBe(true);

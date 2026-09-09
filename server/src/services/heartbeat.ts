@@ -260,7 +260,7 @@ import {
   readManagedWorktreeInstanceOwnership,
   WORKTREE_INSTANCE_ROOT_METADATA_KEY,
 } from "./workspace-instance-cleanup.js";
-import { issueService } from "./issues.js";
+import { issueService, type IssueDependencyReadiness } from "./issues.js";
 import { projectService } from "./projects.js";
 import {
   authorizationService,
@@ -382,6 +382,14 @@ import { productivityReviewService } from "./productivity-review.js";
 import { resolveRequiredSuccessfulRunHandoffOnValidPath } from "./successful-run-handoff-state.js";
 import { taskWatchdogService } from "./task-watchdogs.js";
 import { withAgentStartLock } from "./agent-start-lock.js";
+import {
+  readProjectCoordinatorMetadata,
+  resolveProjectCoordinatorPoolPolicy,
+} from "./project-coordinators.js";
+import {
+  canAdmitExecutionResources,
+  readExecutionResourceRequest,
+} from "./execution-resource-admission.js";
 import {
   evaluateAgentInvokability,
   evaluateAgentInvokabilityFromDb,
@@ -6857,6 +6865,14 @@ export function mergeCoalescedContextSnapshot(
     ...existing,
     ...incoming,
   };
+  if (Object.hasOwn(existing, "executionResourceReservation")) {
+    merged.executionResourceReservation =
+      existing.executionResourceReservation;
+  } else {
+    // Resource reservations come only from the trusted claim path. A
+    // coalesced wake can neither establish nor mutate one.
+    delete merged.executionResourceReservation;
+  }
   if (
     existing.forceFreshSession === true ||
     incoming.forceFreshSession === true
@@ -15509,7 +15525,8 @@ export function heartbeatService(
   async function listQueuedRunDependencyReadiness(
     companyId: string,
     queuedRuns: Array<typeof heartbeatRuns.$inferSelect>,
-  ) {
+    dbOrTx: Db = db,
+  ): Promise<Map<string, IssueDependencyReadiness>> {
     const issueIds = [
       ...new Set(
         queuedRuns
@@ -15519,13 +15536,8 @@ export function heartbeatService(
           .filter((issueId): issueId is string => Boolean(issueId)),
       ),
     ];
-    if (issueIds.length === 0) {
-      return new Map<
-        string,
-        Awaited<ReturnType<typeof issuesSvc.getDependencyReadiness>>
-      >();
-    }
-    return issuesSvc.listDependencyReadiness(companyId, issueIds);
+    if (issueIds.length === 0) return new Map();
+    return issuesSvc.listDependencyReadiness(companyId, issueIds, dbOrTx);
   }
 
   async function countRunningRunsForAgent(agentId: string) {
@@ -15541,16 +15553,23 @@ export function heartbeatService(
     return Number(count ?? 0);
   }
 
-  async function claimQueuedRun(
+  type PreparedQueuedRunClaim = {
+    run: typeof heartbeatRuns.$inferSelect;
+    context: Record<string, unknown>;
+    issueId: string | null;
+    responsibleUserId: string;
+  };
+
+  async function prepareQueuedRunClaim(
     run: typeof heartbeatRuns.$inferSelect,
     companyAgents?: AgentOrgRow[],
-  ) {
-    if (run.status !== "queued") return run;
+  ): Promise<PreparedQueuedRunClaim | null> {
+    if (run.status !== "queued") return null;
     const agent = await getAgent(run.agentId);
-    if (!agent) {
+    if (!agent || agent.companyId !== run.companyId) {
       await cancelRunInternal(
         run.id,
-        "Cancelled because the agent no longer exists",
+        "Cancelled because the agent no longer exists in the run company",
       );
       return null;
     }
@@ -15623,7 +15642,7 @@ export function heartbeatService(
           action: "issue.tree_hold_run_interrupted",
           entityType: "heartbeat_run",
           entityId: run.id,
-          issueId: issueId,
+          issueId,
           details: {
             issueId,
             holdId: activePauseHold.holdId,
@@ -15645,8 +15664,17 @@ export function heartbeatService(
       );
       const readiness = dependencyReadiness.get(issueId);
       const unresolvedBlockerCount = readiness?.unresolvedBlockerCount ?? 0;
-      if (unresolvedBlockerCount > 0 && !allowsIssueInteractionWake(context)
-          && !await allowsAddressedInteractionWake(db, run.companyId, issueId, run.agentId, context)) {
+      if (
+        unresolvedBlockerCount > 0 &&
+        !allowsIssueInteractionWake(context) &&
+        !(await allowsAddressedInteractionWake(
+          db,
+          run.companyId,
+          issueId,
+          run.agentId,
+          context,
+        ))
+      ) {
         await cancelQueuedRunForBlockedDependencies(
           run,
           issueId,
@@ -15659,7 +15687,11 @@ export function heartbeatService(
         return null;
       }
 
-      const staleness = await evaluateQueuedRunStaleness(run, issueId, context);
+      const staleness = await evaluateQueuedRunStaleness(
+        run,
+        issueId,
+        context,
+      );
       if (staleness.stale) {
         await cancelRunForStaleIssue(run, issueId, staleness);
         logger.info(
@@ -15670,7 +15702,6 @@ export function heartbeatService(
       }
     }
 
-    const claimedAt = new Date();
     const responsibleUserId = await resolveResponsibleUserIdForRun({
       run,
       contextSnapshot: context,
@@ -15683,291 +15714,373 @@ export function heartbeatService(
         responsibleUserId: null,
       },
     });
-    const queuedCommentIds = queuedCommentIdsFromRunContext(context);
-    const queuedCommentClaim =
-      issueId && run.wakeupRequestId && queuedCommentIds.length > 0
-        ? await db.transaction(async (tx) => {
-            // Match the queue-edit lock order: issue, wake, then run. Once the
-            // run becomes running, a concurrent discard must observe the
-            // claimed wake and return an explicit conflict; if discard wins,
-            // this claim observes the cancelled queue and does no work.
-            await tx
-              .select({ id: issues.id })
-              .from(issues)
+    return { run, context, issueId, responsibleUserId };
+  }
+
+  type QueuedRunClaimCommitOutcome =
+    | {
+        kind: "claimed";
+        run: typeof heartbeatRuns.$inferSelect;
+        claimedAt: Date;
+      }
+    | {
+        kind: "cancelled_queued_comments";
+        run: typeof heartbeatRuns.$inferSelect;
+      }
+    | {
+        kind: "daily_cap";
+        run: typeof heartbeatRuns.$inferSelect;
+        dailyCapBlock: {
+          reason: string;
+          observed: number;
+          limit: number;
+        };
+      }
+    | {
+        kind: "blocked_dependencies";
+        run: typeof heartbeatRuns.$inferSelect;
+        issueId: string;
+        unresolvedBlockerIssueIds: string[];
+      }
+    | {
+        kind: "stale_issue";
+        run: typeof heartbeatRuns.$inferSelect;
+        issueId: string;
+        staleness: Extract<QueuedRunStaleness, { stale: true }>;
+      }
+    | {
+        kind: "unavailable";
+        reason:
+          | "agent_missing"
+          | "execution_resources"
+          | "queue_changed"
+          | "issue_execution_owned";
+      };
+
+  async function commitPreparedQueuedRunClaim(
+    prepared: PreparedQueuedRunClaim,
+    txDb: Db,
+  ): Promise<QueuedRunClaimCommitOutcome> {
+    const { run, issueId, responsibleUserId } = prepared;
+    const claimAgent = await txDb
+      .select()
+      .from(agents)
+      .where(
+        and(
+          eq(agents.id, run.agentId),
+          eq(agents.companyId, run.companyId),
+        ),
+      )
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (!claimAgent) {
+      return { kind: "unavailable" as const, reason: "agent_missing" as const };
+    }
+
+    // Resource admission owns a host-wide advisory lock and must run before
+    // any issue/wakeup/run row lock. Coordinator admission uses the same
+    // transaction, so capacity and resource reservations commit atomically.
+    if (!(await canAdmitExecutionResources(txDb, claimAgent, runtimeEnv))) {
+      return {
+        kind: "unavailable" as const,
+        reason: "execution_resources" as const,
+      };
+    }
+
+    // Recheck the daily cap in the claim transaction. Multiple coordinator
+    // tasks can pass the read-only preflight together; claims already made by
+    // this transaction must count against later candidates in the same batch.
+    const dailyCapBlock = await getHeartbeatDailyCapBlock(
+      claimAgent,
+      parseHeartbeatPolicy(claimAgent),
+      {
+        excludeRunId: run.id,
+        checkRunCap: true,
+        checkCostCap: true,
+      },
+      txDb,
+    );
+    if (dailyCapBlock) {
+      return {
+        kind: "daily_cap" as const,
+        run,
+        dailyCapBlock,
+      };
+    }
+
+    const lockedIssue = issueId
+      ? await txDb
+          .select({
+            id: issues.id,
+            assigneeAgentId: issues.assigneeAgentId,
+            executionRunId: issues.executionRunId,
+          })
+          .from(issues)
+          .where(
+            and(
+              eq(issues.id, issueId),
+              eq(issues.companyId, run.companyId),
+            ),
+          )
+          .for("update")
+          .limit(1)
+          .then((rows) => rows[0] ?? null)
+      : null;
+
+    if (issueId) {
+      const dependencyReadiness = await issuesSvc.listDependencyReadiness(
+        run.companyId,
+        [issueId],
+        txDb,
+      );
+      const readiness = dependencyReadiness.get(issueId);
+      if (
+        (readiness?.unresolvedBlockerCount ?? 0) > 0 &&
+        !allowsIssueInteractionWake(prepared.context) &&
+        !(await allowsAddressedInteractionWake(
+          txDb,
+          run.companyId,
+          issueId,
+          run.agentId,
+          prepared.context,
+        ))
+      ) {
+        return {
+          kind: "blocked_dependencies" as const,
+          run,
+          issueId,
+          unresolvedBlockerIssueIds:
+            readiness?.unresolvedBlockerIssueIds ?? [],
+        };
+      }
+
+      const staleness = await evaluateQueuedRunStaleness(
+        run,
+        issueId,
+        prepared.context,
+        txDb,
+      );
+      if (staleness.stale) {
+        return {
+          kind: "stale_issue" as const,
+          run,
+          issueId,
+          staleness,
+        };
+      }
+    }
+
+    const wake = run.wakeupRequestId
+      ? await txDb
+          .select()
+          .from(agentWakeupRequests)
+          .where(
+            and(
+              eq(agentWakeupRequests.id, run.wakeupRequestId),
+              eq(agentWakeupRequests.companyId, run.companyId),
+              eq(agentWakeupRequests.agentId, run.agentId),
+            ),
+          )
+          .for("update")
+          .limit(1)
+          .then((rows) => rows[0] ?? null)
+      : null;
+    const lockedRun = await txDb
+      .select()
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.id, run.id),
+          eq(heartbeatRuns.companyId, run.companyId),
+          eq(heartbeatRuns.agentId, run.agentId),
+        ),
+      )
+      .for("update")
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (
+      !lockedRun ||
+      lockedRun.status !== "queued" ||
+      (run.wakeupRequestId &&
+        (!wake ||
+          wake.status !== "queued" ||
+          (wake.runId !== null && wake.runId !== run.id) ||
+          lockedRun.wakeupRequestId !== wake.id))
+    ) {
+      return {
+        kind: "unavailable" as const,
+        reason: "queue_changed" as const,
+      };
+    }
+
+    const claimedWakeReason = readNonEmptyString(
+      parseObject(lockedRun.contextSnapshot).wakeReason,
+    );
+    const ownsIssueExecution =
+      Boolean(lockedIssue) &&
+      lockedIssue!.assigneeAgentId === lockedRun.agentId &&
+      claimedWakeReason !== "source_scoped_recovery_action";
+    if (
+      ownsIssueExecution &&
+      lockedIssue!.executionRunId &&
+      lockedIssue!.executionRunId !== lockedRun.id
+    ) {
+      // A follow-up for the same issue remains queued until the current owner
+      // releases the issue. It consumes neither a coordinator nor a resource
+      // slot and cannot steal the persisted execution fence.
+      return {
+        kind: "unavailable" as const,
+        reason: "issue_execution_owned" as const,
+      };
+    }
+
+    const queuedCommentIds = queuedCommentIdsFromRunContext(
+      lockedRun.contextSnapshot,
+    );
+    let liveQueuedCommentIds: string[] | null = null;
+    if (issueId && wake && queuedCommentIds.length > 0) {
+      const authoritativeIds = queuedCommentIdsFromWakePayload(wake.payload);
+      if (authoritativeIds.length > 0) {
+        const commentRows = await txDb
+          .select({
+            id: issueComments.id,
+            deletedAt: issueComments.deletedAt,
+          })
+          .from(issueComments)
+          .where(
+            and(
+              eq(issueComments.companyId, run.companyId),
+              eq(issueComments.issueId, issueId),
+              inArray(issueComments.id, authoritativeIds),
+            ),
+          );
+        liveQueuedCommentIds = authoritativeIds.filter((commentId) => {
+          const comment = commentRows.find((row) => row.id === commentId);
+          return Boolean(comment && !comment.deletedAt);
+        });
+        if (liveQueuedCommentIds.length === 0) {
+          const claimedAt = new Date();
+          const reason = "Queued messages were discarded before dispatch";
+          const cancelled = await txDb
+            .update(heartbeatRuns)
+            .set({
+              status: "cancelled",
+              finishedAt: claimedAt,
+              error: reason,
+              errorCode: "queued_comment_discarded",
+              updatedAt: claimedAt,
+            })
+            .where(
+              and(
+                eq(heartbeatRuns.id, lockedRun.id),
+                eq(heartbeatRuns.status, "queued"),
+              ),
+            )
+            .returning()
+            .then((rows) => rows[0] ?? null);
+          await txDb
+            .update(agentWakeupRequests)
+            .set({
+              status: "cancelled",
+              finishedAt: claimedAt,
+              error: reason,
+              updatedAt: claimedAt,
+            })
+            .where(eq(agentWakeupRequests.id, wake.id));
+          if (issueId) {
+            await txDb
+              .update(issues)
+              .set({
+                executionRunId: null,
+                executionAgentNameKey: null,
+                executionLockedAt: null,
+                updatedAt: claimedAt,
+              })
               .where(
                 and(
                   eq(issues.id, issueId),
                   eq(issues.companyId, run.companyId),
-                ),
-              )
-              .for("update");
-            const wake = await tx
-              .select()
-              .from(agentWakeupRequests)
-              .where(
-                and(
-                  eq(agentWakeupRequests.id, run.wakeupRequestId!),
-                  eq(agentWakeupRequests.companyId, run.companyId),
-                  eq(agentWakeupRequests.agentId, run.agentId),
-                ),
-              )
-              .for("update")
-              .limit(1)
-              .then((rows) => rows[0] ?? null);
-            const lockedRun = await tx
-              .select()
-              .from(heartbeatRuns)
-              .where(
-                and(
-                  eq(heartbeatRuns.id, run.id),
-                  eq(heartbeatRuns.companyId, run.companyId),
-                  eq(heartbeatRuns.agentId, run.agentId),
-                ),
-              )
-              .for("update")
-              .limit(1)
-              .then((rows) => rows[0] ?? null);
-            if (
-              !wake ||
-              wake.status !== "queued" ||
-              wake.runId !== run.id ||
-              !lockedRun ||
-              lockedRun.status !== "queued" ||
-              lockedRun.wakeupRequestId !== wake.id
-            ) {
-              return { kind: "stale" as const, run: null };
-            }
-
-            const authoritativeIds = queuedCommentIdsFromWakePayload(
-              wake.payload,
-            );
-            if (authoritativeIds.length === 0) {
-              // Legacy/direct comment wakes carry comment ids in their ordinary
-              // payload and context, not in the authoritative queued-message
-              // envelope. Preserve their established claim path; only an
-              // explicitly bound queued-message envelope is subject to the
-              // live-comment discard gate below.
-              const [claimedRun] = await tx
-                .update(heartbeatRuns)
-                .set({
-                  status: "running",
-                  responsibleUserId,
-                  startedAt: lockedRun.startedAt ?? claimedAt,
-                  updatedAt: claimedAt,
-                })
-                .where(
-                  and(
-                    eq(heartbeatRuns.id, lockedRun.id),
-                    eq(heartbeatRuns.status, "queued"),
-                  ),
-                )
-                .returning();
-              return claimedRun
-                ? { kind: "claimed" as const, run: claimedRun }
-                : { kind: "stale" as const, run: null };
-            }
-            const commentRows = await tx
-              .select({
-                id: issueComments.id,
-                deletedAt: issueComments.deletedAt,
-              })
-              .from(issueComments)
-              .where(
-                and(
-                  eq(issueComments.companyId, run.companyId),
-                  eq(issueComments.issueId, issueId),
-                  inArray(issueComments.id, authoritativeIds),
+                  eq(issues.executionRunId, run.id),
                 ),
               );
-            const liveIds = authoritativeIds.filter((commentId) => {
-              const comment = commentRows.find((row) => row.id === commentId);
-              return Boolean(comment && !comment.deletedAt);
-            });
-            if (liveIds.length === 0) {
-              const reason = "Queued messages were discarded before dispatch";
-              const [cancelled] = await tx
-                .update(heartbeatRuns)
-                .set({
-                  status: "cancelled",
-                  finishedAt: claimedAt,
-                  error: reason,
-                  errorCode: "queued_comment_discarded",
-                  updatedAt: claimedAt,
-                })
-                .where(
-                  and(
-                    eq(heartbeatRuns.id, lockedRun.id),
-                    eq(heartbeatRuns.status, "queued"),
-                  ),
-                )
-                .returning();
-              await tx
-                .update(agentWakeupRequests)
-                .set({
-                  status: "cancelled",
-                  finishedAt: claimedAt,
-                  error: reason,
-                  updatedAt: claimedAt,
-                })
-                .where(eq(agentWakeupRequests.id, wake.id));
-              await tx
-                .update(issues)
-                .set({
-                  executionRunId: null,
-                  executionAgentNameKey: null,
-                  executionLockedAt: null,
-                  updatedAt: claimedAt,
-                })
-                .where(
-                  and(
-                    eq(issues.id, issueId),
-                    eq(issues.companyId, run.companyId),
-                    eq(issues.executionRunId, run.id),
-                  ),
-                );
-              return {
-                kind: "cancelled" as const,
-                run: cancelled ?? lockedRun,
-              };
-            }
+          }
+          return {
+            kind: "cancelled_queued_comments" as const,
+            run: cancelled ?? lockedRun,
+          };
+        }
+      }
+    }
 
-            await tx
-              .update(agentWakeupRequests)
-              .set({
-                status: "claimed",
-                claimedAt,
+    const claimedAt = new Date();
+    const reservation = readExecutionResourceRequest(claimAgent.runtimeConfig);
+    const claimedContext = parseObject(
+      liveQueuedCommentIds
+        ? withQueuedCommentIdsInRunContext(
+            lockedRun.contextSnapshot,
+            liveQueuedCommentIds,
+          )
+        : lockedRun.contextSnapshot,
+    );
+    claimedContext.executionResourceReservation = reservation;
+
+    if (wake) {
+      await txDb
+        .update(agentWakeupRequests)
+        .set({
+          status: "claimed",
+          claimedAt,
+          ...(liveQueuedCommentIds
+            ? {
                 payload: withQueuedCommentIdsInWakePayload(
                   wake.payload,
-                  liveIds,
+                  liveQueuedCommentIds,
                 ),
-                updatedAt: claimedAt,
-              })
-              .where(eq(agentWakeupRequests.id, wake.id));
-            const [claimedRun] = await tx
-              .update(heartbeatRuns)
-              .set({
-                status: "running",
-                responsibleUserId,
-                startedAt: lockedRun.startedAt ?? claimedAt,
-                contextSnapshot: withQueuedCommentIdsInRunContext(
-                  lockedRun.contextSnapshot,
-                  liveIds,
-                ),
-                updatedAt: claimedAt,
-              })
-              .where(
-                and(
-                  eq(heartbeatRuns.id, lockedRun.id),
-                  eq(heartbeatRuns.status, "queued"),
-                ),
-              )
-              .returning();
-            return claimedRun
-              ? { kind: "claimed" as const, run: claimedRun }
-              : { kind: "stale" as const, run: null };
-          })
-        : null;
-    if (queuedCommentClaim?.kind === "cancelled") {
-      await appendRunEvent(queuedCommentClaim.run, {
-        eventType: "lifecycle",
-        stream: "system",
-        level: "warn",
-        message:
-          queuedCommentClaim.run.error ??
-          "Queued messages were discarded before dispatch",
-      });
-      publishLiveEvent({
-        companyId: queuedCommentClaim.run.companyId,
-        type: "heartbeat.run.status",
-        payload: {
-          runId: queuedCommentClaim.run.id,
-          agentId: queuedCommentClaim.run.agentId,
-          status: queuedCommentClaim.run.status,
-          invocationSource: queuedCommentClaim.run.invocationSource,
-          triggerDetail: queuedCommentClaim.run.triggerDetail,
-          error: queuedCommentClaim.run.error ?? null,
-          errorCode: queuedCommentClaim.run.errorCode ?? null,
-          startedAt: queuedCommentClaim.run.startedAt
-            ? new Date(queuedCommentClaim.run.startedAt).toISOString()
-            : null,
-          finishedAt: queuedCommentClaim.run.finishedAt
-            ? new Date(queuedCommentClaim.run.finishedAt).toISOString()
-            : null,
-        },
-      });
-      publishRunLifecyclePluginEvent(queuedCommentClaim.run);
-      // Fire-and-forget: nothing else in this path depends on the emission,
-      // so it must not delay the return.
-      void emitAgentTaskRun(db, queuedCommentClaim.run);
-      return null;
+              }
+            : {}),
+          updatedAt: claimedAt,
+        })
+        .where(
+          and(
+            eq(agentWakeupRequests.id, wake.id),
+            eq(agentWakeupRequests.status, "queued"),
+          ),
+        );
     }
-    const claimed = queuedCommentClaim
-      ? queuedCommentClaim.run
-      : await db
-          .update(heartbeatRuns)
-          .set({
-            status: "running",
-            responsibleUserId,
-            startedAt: run.startedAt ?? claimedAt,
-            updatedAt: claimedAt,
-          })
-          .where(
-            and(
-              eq(heartbeatRuns.id, run.id),
-              eq(heartbeatRuns.status, "queued"),
-            ),
-          )
-          .returning()
-          .then((rows) => rows[0] ?? null);
-    if (!claimed) return null;
+    const claimed = await txDb
+      .update(heartbeatRuns)
+      .set({
+        status: "running",
+        responsibleUserId,
+        startedAt: lockedRun.startedAt ?? claimedAt,
+        contextSnapshot: claimedContext,
+        updatedAt: claimedAt,
+      })
+      .where(
+        and(
+          eq(heartbeatRuns.id, lockedRun.id),
+          eq(heartbeatRuns.status, "queued"),
+        ),
+      )
+      .returning()
+      .then((rows) => rows[0] ?? null);
+    if (!claimed) {
+      throw new Error("queued run changed while holding its claim lock");
+    }
 
-    publishLiveEvent({
-      companyId: claimed.companyId,
-      type: "heartbeat.run.status",
-      payload: {
-        runId: claimed.id,
-        agentId: claimed.agentId,
-        status: claimed.status,
-        invocationSource: claimed.invocationSource,
-        triggerDetail: claimed.triggerDetail,
-        error: claimed.error ?? null,
-        errorCode: claimed.errorCode ?? null,
-        startedAt: claimed.startedAt
-          ? new Date(claimed.startedAt).toISOString()
-          : null,
-        finishedAt: claimed.finishedAt
-          ? new Date(claimed.finishedAt).toISOString()
-          : null,
-      },
-    });
-    publishRunLifecyclePluginEvent(claimed);
-
-    await setWakeupStatus(claimed.wakeupRequestId, "claimed", { claimedAt });
-
-    // Fix A (lazy locking): stamp executionRunId now that the run is actually running,
-    // not at queue time. Guard is idempotent — safe if called more than once.
-    const claimedContext = parseObject(claimed.contextSnapshot);
-    const claimedIssueId = readNonEmptyString(claimedContext.issueId);
-    const claimedWakeReason = readNonEmptyString(claimedContext.wakeReason);
-    if (
-      claimedIssueId &&
-      claimedWakeReason !== "source_scoped_recovery_action"
-    ) {
-      const claimedAgent = await getAgent(claimed.agentId);
-      await db
+    if (ownsIssueExecution && issueId) {
+      await txDb
         .update(issues)
         .set({
           executionRunId: claimed.id,
-          executionAgentNameKey: normalizeAgentNameKey(claimedAgent?.name),
+          executionAgentNameKey: normalizeAgentNameKey(claimAgent.name),
           executionLockedAt: claimedAt,
           updatedAt: claimedAt,
         })
         .where(
           and(
-            eq(issues.id, claimedIssueId),
+            eq(issues.id, issueId),
             eq(issues.companyId, claimed.companyId),
-            // Mention/context runs can touch an issue, but only the current assignee
-            // owns the issue execution lock shown as the active run.
             eq(issues.assigneeAgentId, claimed.agentId),
             or(
               isNull(issues.executionRunId),
@@ -15977,7 +16090,103 @@ export function heartbeatService(
         );
     }
 
-    return claimed;
+    return { kind: "claimed" as const, run: claimed, claimedAt };
+  }
+
+
+  async function settleQueuedRunClaimOutcome(
+    outcome: QueuedRunClaimCommitOutcome,
+  ) {
+    if (outcome.kind === "claimed") {
+      publishLiveEvent({
+        companyId: outcome.run.companyId,
+        type: "heartbeat.run.status",
+        payload: {
+          runId: outcome.run.id,
+          agentId: outcome.run.agentId,
+          status: outcome.run.status,
+          invocationSource: outcome.run.invocationSource,
+          triggerDetail: outcome.run.triggerDetail,
+          error: outcome.run.error ?? null,
+          errorCode: outcome.run.errorCode ?? null,
+          startedAt: outcome.run.startedAt
+            ? new Date(outcome.run.startedAt).toISOString()
+            : null,
+          finishedAt: outcome.run.finishedAt
+            ? new Date(outcome.run.finishedAt).toISOString()
+            : null,
+        },
+      });
+      publishRunLifecyclePluginEvent(outcome.run);
+      return outcome.run;
+    }
+    if (outcome.kind === "cancelled_queued_comments") {
+      await appendRunEvent(outcome.run, {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "warn",
+        message:
+          outcome.run.error ?? "Queued messages were discarded before dispatch",
+      });
+      publishLiveEvent({
+        companyId: outcome.run.companyId,
+        type: "heartbeat.run.status",
+        payload: {
+          runId: outcome.run.id,
+          agentId: outcome.run.agentId,
+          status: outcome.run.status,
+          invocationSource: outcome.run.invocationSource,
+          triggerDetail: outcome.run.triggerDetail,
+          error: outcome.run.error ?? null,
+          errorCode: outcome.run.errorCode ?? null,
+          startedAt: outcome.run.startedAt
+            ? new Date(outcome.run.startedAt).toISOString()
+            : null,
+          finishedAt: outcome.run.finishedAt
+            ? new Date(outcome.run.finishedAt).toISOString()
+            : null,
+        },
+      });
+      publishRunLifecyclePluginEvent(outcome.run);
+      void emitAgentTaskRun(db, outcome.run);
+      return null;
+    }
+    if (outcome.kind === "daily_cap") {
+      await cancelQueuedRunForHeartbeatDailyCap(
+        outcome.run,
+        outcome.dailyCapBlock,
+      );
+      return null;
+    }
+    if (outcome.kind === "blocked_dependencies") {
+      await cancelQueuedRunForBlockedDependencies(
+        outcome.run,
+        outcome.issueId,
+        outcome.unresolvedBlockerIssueIds,
+      );
+      return null;
+    }
+    if (outcome.kind === "stale_issue") {
+      await cancelRunForStaleIssue(
+        outcome.run,
+        outcome.issueId,
+        outcome.staleness,
+      );
+      return null;
+    }
+    return null;
+  }
+
+  async function claimQueuedRun(
+    run: typeof heartbeatRuns.$inferSelect,
+    companyAgents?: AgentOrgRow[],
+  ) {
+    const prepared = await prepareQueuedRunClaim(run, companyAgents);
+    if (!prepared) return null;
+    const outcome = await db.transaction((tx) =>
+      commitPreparedQueuedRunClaim(prepared, tx as unknown as Db),
+    );
+    return settleQueuedRunClaimOutcome(outcome);
   }
 
   // startNextQueuedRunForAgent checks admission suppression once, then claims
@@ -17553,7 +17762,7 @@ export function heartbeatService(
       await finalizeAgentStatus(run.agentId, "failed", baseMessage, {
         wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run),
       });
-      await startNextQueuedRunForAgent(run.agentId);
+      await refillQueuedRunsAfterReleasedRun(run);
       runningProcesses.delete(run.id);
       reaped.push(run.id);
     }
@@ -17770,12 +17979,384 @@ export function heartbeatService(
     }
   }
 
+  type ProjectCoordinatorPoolMember = {
+    agent: typeof agents.$inferSelect;
+    projectId: string;
+  };
+
+  type ProjectCoordinatorPoolCandidate = {
+    prepared: PreparedQueuedRunClaim;
+    projectId: string;
+    taskKey: string | null;
+    ready: boolean;
+    continuation: boolean;
+    issuePriority: string | null;
+  };
+
+  function dispatchClaimedQueuedRuns(
+    claimedRuns: Array<typeof heartbeatRuns.$inferSelect>,
+  ) {
+    for (const claimedRun of claimedRuns) {
+      const execution = executeRun(claimedRun.id).catch((err) => {
+        logger.error(
+          { err, runId: claimedRun.id },
+          "queued heartbeat execution failed",
+        );
+      });
+      // Register the in-flight execution so drainActiveRunExecutions() can
+      // await every write through executeRun's final teardown.
+      activeRunExecutionPromises.add(execution);
+      void execution.finally(() => {
+        activeRunExecutionPromises.delete(execution);
+      });
+    }
+  }
+
+  function isProjectCoordinatorContinuationRun(
+    run: typeof heartbeatRuns.$inferSelect,
+    issueStatus: string | null | undefined,
+  ) {
+    const context = parseObject(run.contextSnapshot);
+    const wakeReason = readNonEmptyString(context.wakeReason);
+    const retryReason =
+      readNonEmptyString(context.retryReason) ?? run.scheduledRetryReason;
+    return (
+      issueStatus === "in_progress" ||
+      run.retryOfRunId !== null ||
+      run.continuationAttempt > 0 ||
+      run.scheduledRetryAttempt > 0 ||
+      Boolean(wakeReason?.includes("continuation")) ||
+      Boolean(retryReason?.includes("continuation"))
+    );
+  }
+
+  async function listProjectCoordinatorPoolMembers(
+    companyId: string,
+    dbOrTx: Db = db,
+  ): Promise<ProjectCoordinatorPoolMember[]> {
+    const companyAgents = await dbOrTx
+      .select()
+      .from(agents)
+      .where(eq(agents.companyId, companyId));
+    return companyAgents.flatMap((agent) => {
+      const marker = readProjectCoordinatorMetadata(agent.metadata);
+      return marker ? [{ agent, projectId: marker.projectId }] : [];
+    });
+  }
+
+  function projectCoordinatorCandidateHasScopeConflict(
+    candidate: ProjectCoordinatorPoolCandidate,
+    activeTaskKeysByAgent: Map<string, Set<string | null>>,
+  ) {
+    const activeTaskKeys = activeTaskKeysByAgent.get(
+      candidate.prepared.run.agentId,
+    );
+    if (!activeTaskKeys || activeTaskKeys.size === 0) return false;
+    // An unscoped coordinator wake can scan assigned work, so it is exclusive
+    // with every task-scoped run for that coordinator. Distinct real task keys
+    // may overlap; the same key never does.
+    return (
+      candidate.taskKey === null ||
+      activeTaskKeys.has(null) ||
+      activeTaskKeys.has(candidate.taskKey)
+    );
+  }
+
+  function compareProjectCoordinatorCandidates(
+    left: ProjectCoordinatorPoolCandidate,
+    right: ProjectCoordinatorPoolCandidate,
+    occupiedByProject: Map<string, number>,
+  ) {
+    if (left.continuation !== right.continuation) {
+      return left.continuation ? -1 : 1;
+    }
+    const occupiedDifference =
+      (occupiedByProject.get(left.projectId) ?? 0) -
+      (occupiedByProject.get(right.projectId) ?? 0);
+    if (occupiedDifference !== 0) return occupiedDifference;
+    const priorityDifference =
+      issueRunPriorityRank(left.issuePriority) -
+      issueRunPriorityRank(right.issuePriority);
+    if (priorityDifference !== 0) return priorityDifference;
+    const createdDifference =
+      left.prepared.run.createdAt.getTime() -
+      right.prepared.run.createdAt.getTime();
+    if (createdDifference !== 0) return createdDifference;
+    return left.prepared.run.id.localeCompare(right.prepared.run.id);
+  }
+
+  async function startNextQueuedRunsForProjectCoordinatorPool(
+    companyId: string,
+    cutoff: Date | null,
+  ) {
+    const companyAgentRows = await db
+      .select()
+      .from(agents)
+      .where(eq(agents.companyId, companyId));
+    const companyAgents = companyAgentRows.map(toAgentOrgRow);
+    const members = companyAgentRows.flatMap((agent) => {
+      const marker = readProjectCoordinatorMetadata(agent.metadata);
+      return marker ? [{ agent, projectId: marker.projectId }] : [];
+    });
+    if (members.length === 0) return [];
+    const policy = resolveProjectCoordinatorPoolPolicy(runtimeEnv);
+    const [{ count: runningCount }] = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, companyId),
+          inArray(
+            heartbeatRuns.agentId,
+            members.map((member) => member.agent.id),
+          ),
+          eq(heartbeatRuns.status, "running"),
+        ),
+      );
+    if (Number(runningCount ?? 0) >= policy.capacity) return [];
+
+    const queuedRuns = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, companyId),
+          inArray(
+            heartbeatRuns.agentId,
+            members.map((member) => member.agent.id),
+          ),
+          eq(heartbeatRuns.status, "queued"),
+          cutoff ? gte(heartbeatRuns.createdAt, cutoff) : undefined,
+        ),
+      )
+      .orderBy(asc(heartbeatRuns.createdAt));
+    if (queuedRuns.length === 0) return [];
+
+    // Preparing claims checks readiness and may publish lifecycle events.
+    // Keep it outside the transaction to avoid recursively waiting on the pool lock.
+    const preparedByRunId = new Map<string, PreparedQueuedRunClaim>();
+    for (const queuedRun of queuedRuns) {
+      const prepared = await prepareQueuedRunClaim(queuedRun, companyAgents);
+      if (prepared) preparedByRunId.set(queuedRun.id, prepared);
+    }
+    if (preparedByRunId.size === 0) return [];
+
+    const outcomes = await db.transaction(async (tx) => {
+      const txDb = tx as unknown as Db;
+      const lockKey = `execution-admission:${companyId}`;
+      await txDb.execute(
+        sql`select pg_advisory_xact_lock(hashtextextended(${lockKey}, 0))`,
+      );
+      if ((await getSchedulingSuppression()).suppressed) return [];
+
+      const currentMembers = await listProjectCoordinatorPoolMembers(
+        companyId,
+        txDb,
+      );
+      if (currentMembers.length === 0) return [];
+      const memberIds = currentMembers.map((member) => member.agent.id);
+      const projectIdByAgentId = new Map(
+        currentMembers.map((member) => [member.agent.id, member.projectId]),
+      );
+      const currentQueuedRuns = await txDb
+        .select()
+        .from(heartbeatRuns)
+        .where(
+          and(
+            eq(heartbeatRuns.companyId, companyId),
+            inArray(heartbeatRuns.agentId, memberIds),
+            inArray(heartbeatRuns.id, [...preparedByRunId.keys()]),
+            eq(heartbeatRuns.status, "queued"),
+            cutoff ? gte(heartbeatRuns.createdAt, cutoff) : undefined,
+          ),
+        )
+        .orderBy(asc(heartbeatRuns.createdAt));
+      if (currentQueuedRuns.length === 0) return [];
+
+      const runningRuns = await txDb
+        .select()
+        .from(heartbeatRuns)
+        .where(
+          and(
+            eq(heartbeatRuns.companyId, companyId),
+            inArray(heartbeatRuns.agentId, memberIds),
+            eq(heartbeatRuns.status, "running"),
+          ),
+        );
+      let availableSlots = Math.max(0, policy.capacity - runningRuns.length);
+      if (availableSlots === 0) return [];
+
+      const dependencyReadiness = await listQueuedRunDependencyReadiness(
+        companyId,
+        currentQueuedRuns,
+        txDb,
+      );
+      const queuedIssueIds = [
+        ...new Set(
+          currentQueuedRuns
+            .map((run) =>
+              readNonEmptyString(parseObject(run.contextSnapshot).issueId),
+            )
+            .filter((issueId): issueId is string => Boolean(issueId)),
+        ),
+      ];
+      const issueRows =
+        queuedIssueIds.length > 0
+          ? await txDb
+              .select({
+                id: issues.id,
+                status: issues.status,
+                priority: issues.priority,
+              })
+              .from(issues)
+              .where(
+                and(
+                  eq(issues.companyId, companyId),
+                  inArray(issues.id, queuedIssueIds),
+                ),
+              )
+          : [];
+      const issueById = new Map(issueRows.map((issue) => [issue.id, issue]));
+
+      const remaining: ProjectCoordinatorPoolCandidate[] = [];
+      for (const run of currentQueuedRuns) {
+        const prepared = preparedByRunId.get(run.id);
+        const projectId = projectIdByAgentId.get(run.agentId);
+        if (!prepared || !projectId) continue;
+        const currentPrepared = { ...prepared, run };
+        const context = parseObject(run.contextSnapshot);
+        const issueId = readNonEmptyString(context.issueId);
+        const readiness = issueId ? dependencyReadiness.get(issueId) : null;
+        const interactionCanBypassBlockers =
+          Boolean(issueId) &&
+          (!readiness?.isDependencyReady ||
+            (readiness?.unresolvedBlockerCount ?? 0) > 0) &&
+          (allowsIssueInteractionWake(context) ||
+            (await allowsAddressedInteractionWake(
+              txDb,
+              companyId,
+              issueId!,
+              run.agentId,
+              context,
+            )));
+        const issue = issueId ? issueById.get(issueId) : null;
+        remaining.push({
+          prepared: currentPrepared,
+          projectId,
+          taskKey: runTaskKey(run),
+          ready: issueId
+            ? (readiness?.isDependencyReady ?? true) ||
+              interactionCanBypassBlockers
+            : true,
+          continuation: isProjectCoordinatorContinuationRun(
+            run,
+            issue?.status,
+          ),
+          issuePriority: issue?.priority ?? null,
+        });
+      }
+
+      const occupiedByProject = new Map<string, number>();
+      const activeTaskKeysByAgent = new Map<string, Set<string | null>>();
+      for (const runningRun of runningRuns) {
+        const projectId = projectIdByAgentId.get(runningRun.agentId);
+        if (!projectId) continue;
+        occupiedByProject.set(
+          projectId,
+          (occupiedByProject.get(projectId) ?? 0) + 1,
+        );
+        const taskKeys =
+          activeTaskKeysByAgent.get(runningRun.agentId) ??
+          new Set<string | null>();
+        taskKeys.add(runTaskKey(runningRun));
+        activeTaskKeysByAgent.set(runningRun.agentId, taskKeys);
+      }
+
+      const admitted: QueuedRunClaimCommitOutcome[] = [];
+      while (availableSlots > 0 && remaining.length > 0) {
+        const conflictFree = remaining.filter(
+          (candidate) =>
+            !projectCoordinatorCandidateHasScopeConflict(
+              candidate,
+              activeTaskKeysByAgent,
+            ),
+        );
+        if (conflictFree.length === 0) break;
+
+        const readyCandidates = conflictFree.filter(
+          (candidate) => candidate.ready,
+        );
+        let selectable =
+          readyCandidates.length > 0 ? readyCandidates : conflictFree;
+        const readyProjects = new Set(
+          readyCandidates.map((candidate) => candidate.projectId),
+        );
+        if (readyProjects.size > 1) {
+          const belowFairCap = readyCandidates.filter(
+            (candidate) =>
+              (occupiedByProject.get(candidate.projectId) ?? 0) <
+              policy.fairCap,
+          );
+          // A project may exceed the fair cap only after no other project has
+          // ready work. This keeps the share a real anti-starvation ceiling,
+          // while a sole runnable project can borrow every idle slot.
+          if (belowFairCap.length === 0) break;
+          selectable = belowFairCap;
+        }
+        selectable.sort((left, right) =>
+          compareProjectCoordinatorCandidates(
+            left,
+            right,
+            occupiedByProject,
+          ),
+        );
+        const candidate = selectable[0]!;
+        const remainingIndex = remaining.indexOf(candidate);
+        if (remainingIndex >= 0) remaining.splice(remainingIndex, 1);
+
+        const outcome = await commitPreparedQueuedRunClaim(
+          candidate.prepared,
+          txDb,
+        );
+        admitted.push(outcome);
+        if (outcome.kind !== "claimed") continue;
+
+        availableSlots -= 1;
+        occupiedByProject.set(
+          candidate.projectId,
+          (occupiedByProject.get(candidate.projectId) ?? 0) + 1,
+        );
+        const taskKeys =
+          activeTaskKeysByAgent.get(outcome.run.agentId) ??
+          new Set<string | null>();
+        taskKeys.add(candidate.taskKey);
+        activeTaskKeysByAgent.set(outcome.run.agentId, taskKeys);
+      }
+      return admitted;
+    });
+
+    const claimedRuns: Array<typeof heartbeatRuns.$inferSelect> = [];
+    for (const outcome of outcomes) {
+      const claimed = await settleQueuedRunClaimOutcome(outcome);
+      if (claimed) claimedRuns.push(claimed);
+    }
+    dispatchClaimedQueuedRuns(claimedRuns);
+    return claimedRuns;
+  }
+
   async function startNextQueuedRunForAgent(agentId: string) {
     if ((await getSchedulingSuppression()).suppressed) return [];
     const cutoff = await getWorktreeExecutionCutoff();
+    const requestedAgent = await getAgent(agentId);
+    if (requestedAgent && readProjectCoordinatorMetadata(requestedAgent.metadata)) {
+      return startNextQueuedRunsForProjectCoordinatorPool(
+        requestedAgent.companyId,
+        cutoff,
+      );
+    }
 
     return withAgentStartLock(agentId, async () => {
-      const agent = await getAgent(agentId);
+      const agent = requestedAgent ?? (await getAgent(agentId));
       if (!agent) return [];
       const invokability = await getAgentInvokability(agent);
       if (!invokability.invokable) {
@@ -17887,28 +18468,100 @@ export function heartbeatService(
         const claimed = await claimQueuedRun(queuedRun, companyAgents);
         if (claimed) claimedRuns.push(claimed);
       }
-      if (claimedRuns.length === 0) return [];
-
-      for (const claimedRun of claimedRuns) {
-        const execution = executeRun(claimedRun.id).catch((err) => {
-          logger.error(
-            { err, runId: claimedRun.id },
-            "queued heartbeat execution failed",
-          );
-        });
-        // Register the in-flight execution so drainActiveRunExecutions() can await
-        // it. executeRun resolves only after its finally block finishes flushing
-        // run rows/events, so awaiting this promise guarantees the run's writes
-        // have landed before a caller (e.g. a test's afterEach) mutates the DB.
-        activeRunExecutionPromises.add(execution);
-        void execution.finally(() => {
-          // drainActiveRunExecutions loops on activeRunExecutionPromises.size,
-          // so an entry that never clears here would hang it forever.
-          activeRunExecutionPromises.delete(execution);
-        });
-      }
+      dispatchClaimedQueuedRuns(claimedRuns);
       return claimedRuns;
     });
+  }
+
+  async function refillQueuedRunsAfterReleasedRun(
+    releasedRun: typeof heartbeatRuns.$inferSelect,
+  ) {
+    await startNextQueuedRunForAgent(releasedRun.agentId);
+    if (releasedRun.status !== "running") return;
+
+    const releasedAgent = await getAgent(releasedRun.agentId);
+    if (!releasedAgent) return;
+    const releasedContext = parseObject(releasedRun.contextSnapshot);
+    const hasReservation = Object.hasOwn(
+      releasedContext,
+      "executionResourceReservation",
+    );
+    const reservationValue = releasedContext.executionResourceReservation;
+    const releasedDemand = hasReservation
+      ? reservationValue === null
+        ? null
+        : readExecutionResourceRequest({
+            executionResources: reservationValue,
+          })
+      : readExecutionResourceRequest(releasedAgent.runtimeConfig);
+    if (!releasedDemand) return;
+
+    // Resource pools model physical hosts and can span companies. A release
+    // therefore wakes every queued agent targeting that pool, oldest queue
+    // first. Admission remains DB-atomic in canAdmitExecutionResources.
+    const queuedAgentRows = await db
+      .select({
+        agentId: heartbeatRuns.agentId,
+        createdAt: heartbeatRuns.createdAt,
+      })
+      .from(heartbeatRuns)
+      .innerJoin(companies, eq(companies.id, heartbeatRuns.companyId))
+      .where(
+        and(
+          eq(heartbeatRuns.status, "queued"),
+          eq(companies.status, "active"),
+        ),
+      )
+      .orderBy(asc(heartbeatRuns.createdAt));
+    const queuedAgentIds = [
+      ...new Set(queuedAgentRows.map((queued) => queued.agentId)),
+    ];
+    if (queuedAgentIds.length === 0) return;
+    const queuedAgents = await db
+      .select()
+      .from(agents)
+      .where(inArray(agents.id, queuedAgentIds));
+    const agentById = new Map(queuedAgents.map((agent) => [agent.id, agent]));
+    const releasedCoordinator = readProjectCoordinatorMetadata(
+      releasedAgent.metadata,
+    );
+    const scheduledTargets = new Set([
+      releasedCoordinator
+        ? `coordinator-company:${releasedAgent.companyId}`
+        : `agent:${releasedAgent.id}`,
+    ]);
+
+    for (const queued of queuedAgentRows) {
+      const queuedAgent = agentById.get(queued.agentId);
+      if (!queuedAgent) continue;
+      let targetsReleasedPool = false;
+      try {
+        targetsReleasedPool =
+          readExecutionResourceRequest(queuedAgent.runtimeConfig)?.pool ===
+          releasedDemand.pool;
+      } catch (error) {
+        logger.warn(
+          { err: error, agentId: queuedAgent.id },
+          "skipping invalid resource request during completion refill",
+        );
+        continue;
+      }
+      if (!targetsReleasedPool) continue;
+      const coordinator = readProjectCoordinatorMetadata(queuedAgent.metadata);
+      const targetKey = coordinator
+        ? `coordinator-company:${queuedAgent.companyId}`
+        : `agent:${queuedAgent.id}`;
+      if (scheduledTargets.has(targetKey)) continue;
+      scheduledTargets.add(targetKey);
+      try {
+        await startNextQueuedRunForAgent(queuedAgent.id);
+      } catch (error) {
+        logger.error(
+          { err: error, agentId: queuedAgent.id },
+          "resource-pool completion refill failed",
+        );
+      }
+    }
   }
 
   // Await every background heartbeat execution that is currently in flight. A
@@ -22994,7 +23647,7 @@ export function heartbeatService(
         !nativeWorkspaceFinalizeScheduled &&
         !shutdownInProgress
       ) {
-        await startNextQueuedRunForAgent(run.agentId);
+        await refillQueuedRunsAfterReleasedRun(run);
       }
     }
   }
@@ -26023,7 +26676,7 @@ export function heartbeatService(
     await finalizeAgentStatus(run.agentId, "cancelled", undefined, {
       wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run),
     });
-    await startNextQueuedRunForAgent(run.agentId);
+    await refillQueuedRunsAfterReleasedRun(run);
     return cancelled;
   }
 

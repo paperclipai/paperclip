@@ -299,6 +299,41 @@ describe("mergeCoalescedContextSnapshot", () => {
     expect(merged.wakeCommentId).toBe("comment-1");
     expect(merged.wakeCommentIds).toEqual(["comment-1"]);
   });
+
+  it("keeps trusted execution resource reservations immutable across coalesced wakes", () => {
+    const reservation = {
+      pool: "paperclip-workers",
+      cpu: 2,
+      memoryMb: 4_096,
+      provider: "deepseek",
+    };
+    expect(
+      mergeCoalescedContextSnapshot(
+        { issueId: "issue-1", executionResourceReservation: reservation },
+        {
+          issueId: "issue-1",
+          executionResourceReservation: {
+            pool: "forged",
+            cpu: 1,
+            memoryMb: 1,
+            provider: "forged",
+          },
+        },
+      ).executionResourceReservation,
+    ).toEqual(reservation);
+    expect(
+      mergeCoalescedContextSnapshot(
+        { issueId: "issue-1", executionResourceReservation: null },
+        { issueId: "issue-1", executionResourceReservation: reservation },
+      ),
+    ).toHaveProperty("executionResourceReservation", null);
+    expect(
+      mergeCoalescedContextSnapshot(
+        { issueId: "issue-1" },
+        { issueId: "issue-1", executionResourceReservation: reservation },
+      ),
+    ).not.toHaveProperty("executionResourceReservation");
+  });
 });
 
 describe("summarizeHeartbeatRunContextSnapshot", () => {

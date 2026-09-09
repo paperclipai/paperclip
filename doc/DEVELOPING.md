@@ -173,6 +173,43 @@ pnpm dev:stop
 
 `pnpm dev:once` now tracks backend-relevant file changes and pending migrations. When the current boot is stale, the board UI shows a `Restart required` banner. You can also enable guarded auto-restart in `Instance Settings > Experimental`, which waits for queued/running local agent runs to finish before restarting the dev server.
 
+## Task-Scoped Coordinator Capacity
+
+Project coordinator identities remain the accountable project owners, but distinct
+tasks share a company-wide execution pool. Each task retains its own session and
+execution fence. Dispatch independent children, record the native dependency or
+interaction wait, and yield; a durable event resumes the same task.
+
+- `PAPERCLIP_PROJECT_COORDINATOR_POOL_CAPACITY`: concurrent coordinator ceiling
+  (default `3`, range `1`–`50`).
+- `PAPERCLIP_PROJECT_COORDINATOR_POOL_FAIR_CAP`: per-project ceiling while multiple
+  projects have runnable queued work (default `2`, at most the pool capacity).
+  A sole runnable project can borrow idle slots. Continuations receive priority.
+- `PAPERCLIP_EXECUTION_RESOURCE_POOLS`: operator-owned JSON keyed by physical pool,
+  with `cpu`, `memoryMb`, and per-provider concurrent-run limits in `providers`.
+  An agent opts in through trusted `runtimeConfig.executionResources` containing
+  `pool`, `cpu`, `memoryMb`, and `provider`. Missing configured capacity fails closed.
+  Claims reserve resources atomically across companies sharing that physical pool.
+  Active runs retain immutable reservations even if agent configuration changes.
+
+The delivery instance launcher can load an owner-only `execution-capacity.json`
+containing `coordinatorSlots`, `coordinatorFairShare`, and `resourcePools`.
+Ten Astra slots and twenty DeepSeek lanes are configurable ceilings, not a promise
+of thirty simultaneous containers: the physical CPU/memory budget still applies.
+Provision distinct writable lanes before increasing implementation capacity.
+
+Final integration serializes by canonical repository plus exact target branch,
+not project identity or checkout path. Integrators hold an exclusive VM target lock;
+reviewers reading the live integration checkout hold it shared. PID1 verifies the
+admitted commit after taking the lock. Conflicts or revision movement exit `91`
+and use native workspace-busy continuation. Different branches remain independent.
+
+For cutover, drain admissions and wait for quiescence, preserve role/registry
+baselines, rebuild and pin the trusted worker image, register the expanded lanes,
+apply matching native resource demands, and restart against the verified sources.
+Rebuilding the image is required: PID1 and Pi task restrictions live inside it.
+Do not overwrite existing workspaces, task histories, approvals, or holds.
+
 ## Hot-Restart Deploys
 
 Primary-instance rebuilds that restart `paperclip.service` can request one-shot live-run adoption instead of using the normal graceful shutdown drain. Before restarting the service, write the marker from the newly staged app with the current service PID:

@@ -9,6 +9,18 @@ import { logActivity, type LogActivityInput } from "./activity-log.js";
 
 export const PROJECT_COORDINATOR_TEMPLATE_AGENT_ID_ENV =
   "PAPERCLIP_PROJECT_COORDINATOR_TEMPLATE_AGENT_ID";
+export const PROJECT_COORDINATOR_POOL_CAPACITY_ENV =
+  "PAPERCLIP_PROJECT_COORDINATOR_POOL_CAPACITY";
+export const PROJECT_COORDINATOR_POOL_FAIR_CAP_ENV =
+  "PAPERCLIP_PROJECT_COORDINATOR_POOL_FAIR_CAP";
+const PROJECT_COORDINATOR_POOL_DEFAULT_CAPACITY = 3;
+const PROJECT_COORDINATOR_POOL_DEFAULT_FAIR_CAP = 2;
+const PROJECT_COORDINATOR_POOL_MAX_CAPACITY = 50;
+
+export interface ProjectCoordinatorPoolPolicy {
+  capacity: number;
+  fairCap: number;
+}
 
 export interface ProjectCoordinatorMetadata {
   projectId: string;
@@ -63,6 +75,35 @@ function readNonEmptyString(value: unknown): string | null {
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : null;
 }
+function readBoundedPoolInteger(
+  value: unknown,
+  fallback: number,
+  maximum: number,
+) {
+  if (typeof value !== "string" || value.trim().length === 0) return fallback;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed)) return fallback;
+  return Math.max(1, Math.min(maximum, parsed));
+}
+
+export function resolveProjectCoordinatorPoolPolicy(
+  env: Record<string, string | undefined> = process.env,
+): ProjectCoordinatorPoolPolicy {
+  const capacity = readBoundedPoolInteger(
+    env[PROJECT_COORDINATOR_POOL_CAPACITY_ENV],
+    PROJECT_COORDINATOR_POOL_DEFAULT_CAPACITY,
+    PROJECT_COORDINATOR_POOL_MAX_CAPACITY,
+  );
+  return {
+    capacity,
+    fairCap: readBoundedPoolInteger(
+      env[PROJECT_COORDINATOR_POOL_FAIR_CAP_ENV],
+      Math.min(PROJECT_COORDINATOR_POOL_DEFAULT_FAIR_CAP, capacity),
+      capacity,
+    ),
+  };
+}
+
 
 export function readProjectCoordinatorMetadata(metadata: unknown): ProjectCoordinatorMetadata | null {
   if (!isPlainRecord(metadata)) return null;
@@ -225,7 +266,7 @@ function buildCoordinatorRuntimeConfig(template: AgentRow): Record<string, unkno
     ...runtimeConfig,
     heartbeat: {
       ...heartbeat,
-      maxConcurrentRuns: 1,
+      maxConcurrentRuns: resolveProjectCoordinatorPoolPolicy().capacity,
     },
   };
 }
