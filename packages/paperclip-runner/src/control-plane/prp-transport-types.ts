@@ -7,6 +7,25 @@ export interface DurableRecoveryIdentity {
   itemId: string;
 }
 
+/** Private, immutable handoff evidence; never a provider/work authorization. */
+export interface DurableWarmRunTransition {
+  schema: "paperclip.runner.warm-transition.v1";
+  transitionId: string;
+  oldIdentity: DurableRecoveryIdentity;
+  newIdentity: DurableRecoveryIdentity;
+  commandId: string;
+  controllerSeq: number;
+  commandFingerprint: string;
+  resultDigest: string;
+  oldAckedSourceSeq: number;
+  connection: Record<string, unknown>;
+  runnerVersion: string;
+  runnerDigest: string;
+  leaseId: string;
+  leaseExpiresAtUnixMs: number;
+  leaseRevocationEpoch: number;
+}
+
 export interface DurableRecoveryCoreCommand {
   schema: "paperclip.prp.command.v1" | "paperclip.prp.command.v2";
   commandId: string;

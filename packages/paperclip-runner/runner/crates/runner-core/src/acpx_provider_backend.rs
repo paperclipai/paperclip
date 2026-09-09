@@ -2281,9 +2281,39 @@ mod tests {
         fs::remove_dir_all(directory).unwrap();
     }
 
+    #[test]
+    fn lifetime_fence_fixtures_do_not_reuse_a_retired_provider_quorum() {
+        let (original_candidates, original_lifetime_fence) = reserve_provider_lifetime_fence();
+        drop(original_lifetime_fence);
+        let (other_candidates, _other_lifetime_fence) = reserve_provider_lifetime_fence();
+
+        assert!(
+            original_candidates
+                .iter()
+                .all(|candidate| !other_candidates.contains(candidate)),
+            "another fixture must not impersonate a retired provider lifetime"
+        );
+        assert_eq!(
+            acquire_provider_lifetime_fence(original_candidates)
+                .expect("unrelated live fixture must not block the original cleanup proof")
+                .len(),
+            2
+        );
+    }
+
     fn reserve_provider_lifetime_fence() -> ([u16; 3], Vec<TcpListener>) {
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        // A fixture releases its original listeners before proving cleanup.
+        // Never give those candidate ports to another parallel fixture in that
+        // gap: its listeners would impersonate the original provider lifetime.
+        static NEXT_CANDIDATE_PORT: AtomicU32 = AtomicU32::new(49_152);
         let mut listeners = Vec::new();
-        for port in 49_152..=u16::MAX {
+        loop {
+            let Ok(port) = u16::try_from(NEXT_CANDIDATE_PORT.fetch_add(1, Ordering::Relaxed))
+            else {
+                break;
+            };
             if let Ok(listener) = TcpListener::bind(("127.0.0.1", port)) {
                 listeners.push(listener);
                 if listeners.len() == 3 {

@@ -15,7 +15,7 @@ use crate::durable::QualifiedLaunchArtifact;
 use crate::durable::{redact_text, OpenCodeLaunchProfile};
 use crate::local_runner::LocalRunnerError;
 use crate::process_supervisor::{
-    is_node_interpreter, BoundedLogBuffer, ProcessOutput, SupervisedProcess,
+    is_node_interpreter, BoundedLogBuffer, ProcessExitFact, ProcessOutput, SupervisedProcess,
     VerifiedProcessArgument, VerifiedProcessLaunch,
 };
 use crate::provider_bridge::{AuthorizedTool, DurableReplayFilter, ToolResult};
@@ -56,6 +56,28 @@ const OPENCODE_RUNTIME_REQUEST_METHOD: &str = "paperclip/runtimeRequest";
 pub(crate) const MAX_SETTLED_PROVIDER_TURN_IDS: usize = 4_096;
 type QuestionOptionLabels = BTreeMap<String, BTreeMap<String, String>>;
 type QuestionSetMapping = (String, Value, QuestionOptionLabels);
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ProviderStartupStage {
+    Spawn,
+    SpawnReceipt,
+    Initialize,
+    ThreadOpen,
+    ThreadRead,
+    Admission,
+}
+
+pub(crate) enum ProviderStartupObservation {
+    Spawned {
+        process_id: u32,
+        process_group_id: u32,
+    },
+    Failed {
+        stage: ProviderStartupStage,
+        child_exit: Option<ProcessExitFact>,
+    },
+}
 
 #[derive(Clone, PartialEq)]
 struct ProviderCompletionContract {
@@ -696,6 +718,26 @@ impl CodexProvider {
         opencode_launch_profile: Option<&OpenCodeLaunchProfile>,
         completion_contract: Option<(&str, &[String])>,
     ) -> Result<Self, LocalRunnerError> {
+        Self::start_with_tools_observed(
+            config,
+            authorized_tools,
+            resume_thread_id,
+            process_generation,
+            opencode_launch_profile,
+            completion_contract,
+            &mut |_| Ok(()),
+        )
+    }
+
+    pub(crate) fn start_with_tools_observed(
+        config: &CodexProviderConfig,
+        authorized_tools: impl IntoIterator<Item = AuthorizedTool>,
+        resume_thread_id: Option<&str>,
+        process_generation: u64,
+        opencode_launch_profile: Option<&OpenCodeLaunchProfile>,
+        completion_contract: Option<(&str, &[String])>,
+        observe: &mut dyn FnMut(ProviderStartupObservation) -> Result<(), LocalRunnerError>,
+    ) -> Result<Self, LocalRunnerError> {
         config.validate()?;
         if process_generation == 0 {
             return Err(LocalRunnerError::invalid(
@@ -736,36 +778,60 @@ impl CodexProvider {
             .chain(provider_environment_keys.iter().copied())
             .chain(GITHUB_CREDENTIAL_ENVIRONMENT_KEYS.iter().copied())
             .collect::<Vec<_>>();
-        let process = if config.provider == "opencode" {
-            let profile = opencode_launch_profile.ok_or_else(|| {
-                LocalRunnerError::invalid(
-                    "OpenCode runner startup omitted its qualified launch profile",
+        let runtime_request_scope = new_runtime_request_scope()?;
+        let spawn = (|| {
+            if config.provider == "opencode" {
+                let profile = opencode_launch_profile.ok_or_else(|| {
+                    LocalRunnerError::invalid(
+                        "OpenCode runner startup omitted its qualified launch profile",
+                    )
+                })?;
+                let proxy_script = profile.proxy_script.path.to_string_lossy();
+                if config.command != profile.command.path
+                    || config.args.as_slice() != [proxy_script.as_ref()]
+                {
+                    return Err(LocalRunnerError::invalid(
+                        "OpenCode launch does not match the runner-owned qualified profile",
+                    ));
+                }
+                let launch = verified_opencode_launch(profile)?;
+                SupervisedProcess::spawn_verified_with_environment_keys(
+                    &launch,
+                    Duration::from_secs(2),
+                    CODEX_APP_SERVER_MAX_FRAME_BYTES,
+                    &environment_keys,
                 )
-            })?;
-            let proxy_script = profile.proxy_script.path.to_string_lossy();
-            if config.command != profile.command.path
-                || config.args.as_slice() != [proxy_script.as_ref()]
-            {
-                return Err(LocalRunnerError::invalid(
-                    "OpenCode launch does not match the runner-owned qualified profile",
-                ));
+            } else {
+                SupervisedProcess::spawn_with_environment_keys(
+                    &config.command,
+                    &config.args,
+                    Duration::from_secs(2),
+                    CODEX_APP_SERVER_MAX_FRAME_BYTES,
+                    &environment_keys,
+                )
             }
-            let launch = verified_opencode_launch(profile)?;
-            SupervisedProcess::spawn_verified_with_environment_keys(
-                &launch,
-                Duration::from_secs(2),
-                CODEX_APP_SERVER_MAX_FRAME_BYTES,
-                &environment_keys,
-            )?
-        } else {
-            SupervisedProcess::spawn_with_environment_keys(
-                &config.command,
-                &config.args,
-                Duration::from_secs(2),
-                CODEX_APP_SERVER_MAX_FRAME_BYTES,
-                &environment_keys,
-            )?
+        })();
+        let mut process = match spawn {
+            Ok(process) => process,
+            Err(error) => {
+                let _ = observe(ProviderStartupObservation::Failed {
+                    stage: ProviderStartupStage::Spawn,
+                    child_exit: None,
+                });
+                return Err(error);
+            }
         };
+        if let Err(error) = observe(ProviderStartupObservation::Spawned {
+            process_id: process.id(),
+            process_group_id: process.process_group_id(),
+        }) {
+            let child_exit = process.terminate_group().ok();
+            let _ = observe(ProviderStartupObservation::Failed {
+                stage: ProviderStartupStage::SpawnReceipt,
+                child_exit,
+            });
+            return Err(error);
+        }
         let mut provider = Self {
             process,
             stderr_tail: BoundedLogBuffer::new(
@@ -788,7 +854,7 @@ impl CodexProvider {
             pending_tool_request_bytes: 0,
             pending_runtime_requests: BTreeMap::new(),
             pending_runtime_request_bytes: 0,
-            runtime_request_scope: new_runtime_request_scope()?,
+            runtime_request_scope,
             next_runtime_request_sequence: 1,
             expected_shutdown: false,
             process_generation,
@@ -811,86 +877,107 @@ impl CodexProvider {
             }),
             permission_profile,
         };
-        let initialized = provider.request(
-            "initialize",
-            json!({
-                "clientInfo": {
-                    "name": "paperclip-runnerd",
-                    "title": "Paperclip Runner",
-                    "version": "1",
-                },
-                "capabilities": {
-                    "experimentalApi": true,
-                    "requestAttestation": false,
-                },
-            }),
-        )?;
-        provider.send_frame(&json!({"method": "initialized"}))?;
+        let mut stage = ProviderStartupStage::Initialize;
+        let initialized_result = (|| -> Result<(), LocalRunnerError> {
+            let initialized = provider.request(
+                "initialize",
+                json!({
+                    "clientInfo": {
+                        "name": "paperclip-runnerd",
+                        "title": "Paperclip Runner",
+                        "version": "1",
+                    },
+                    "capabilities": {
+                        "experimentalApi": true,
+                        "requestAttestation": false,
+                    },
+                }),
+            )?;
+            provider.send_frame(&json!({"method": "initialized"}))?;
 
-        let mut params = json!({
-            "cwd": config.cwd,
-            "model": config.model,
-            "approvalPolicy": config.approval_policy,
-            "runtimeWorkspaceRoots": [config.cwd],
-            "baseInstructions": config.instructions,
-            "dynamicTools": dynamic_tools,
-        });
-        let params_object = params
-            .as_object_mut()
-            .expect("Codex thread parameters are an object");
-        if provider.permission_profile == "paperclip-runner-external-sandbox" {
-            // The execution target (for example Daytona) is the OS sandbox.
-            // Codex must not try to create nested user/network namespaces,
-            // which correctly fail inside an unprivileged container.
-            params_object.insert("sandbox".to_owned(), json!("danger-full-access"));
-        } else {
-            params_object.insert("permissions".to_owned(), json!(provider.permission_profile));
-        }
-        if config.provider == "opencode" {
-            if let Some(contract) = provider.completion_contract.as_ref() {
-                params_object.insert(
-                    "completionContract".to_owned(),
-                    json!({
-                        "revision": contract.revision,
-                        "criterionIds": contract.criterion_ids,
-                    }),
-                );
+            let mut params = json!({
+                "cwd": config.cwd,
+                "model": config.model,
+                "approvalPolicy": config.approval_policy,
+                "runtimeWorkspaceRoots": [config.cwd],
+                "baseInstructions": config.instructions,
+                "dynamicTools": dynamic_tools,
+            });
+            let params_object = params
+                .as_object_mut()
+                .expect("Codex thread parameters are an object");
+            if provider.permission_profile == "paperclip-runner-external-sandbox" {
+                // The execution target (for example Daytona) is the OS sandbox.
+                // Codex must not try to create nested user/network namespaces,
+                // which correctly fail inside an unprivileged container.
+                params_object.insert("sandbox".to_owned(), json!("danger-full-access"));
+            } else {
+                params_object.insert("permissions".to_owned(), json!(provider.permission_profile));
             }
-        }
-        let method = if let Some(thread_id) = resume_thread_id {
-            params_object.insert("threadId".to_owned(), json!(thread_id));
-            "thread/resume"
-        } else {
-            params_object.insert("experimentalRawEvents".to_owned(), json!(false));
-            "thread/start"
-        };
-        let opened = provider.request(method, params)?;
-        provider.thread_id = opened
-            .pointer("/thread/id")
-            .or_else(|| opened.get("threadId"))
-            .and_then(Value::as_str)
-            .filter(|value| !value.is_empty())
-            .ok_or_else(|| LocalRunnerError::invalid(format!("Codex {method} omitted thread.id")))?
-            .to_owned();
-        if resume_thread_id.is_some_and(|expected| expected != provider.thread_id) {
-            return Err(LocalRunnerError::invalid(
-                "Codex resumed a different provider thread",
-            ));
-        }
-        provider.provider_session_id = opened
-            .pointer("/thread/sessionId")
-            .or_else(|| initialized.pointer("/user/sessionId"))
-            .and_then(Value::as_str)
-            .filter(|value| !value.is_empty())
-            .map(str::to_owned);
+            if config.provider == "opencode" {
+                if let Some(contract) = provider.completion_contract.as_ref() {
+                    params_object.insert(
+                        "completionContract".to_owned(),
+                        json!({
+                            "revision": contract.revision,
+                            "criterionIds": contract.criterion_ids,
+                        }),
+                    );
+                }
+            }
+            let method = if let Some(thread_id) = resume_thread_id {
+                params_object.insert("threadId".to_owned(), json!(thread_id));
+                "thread/resume"
+            } else {
+                params_object.insert("experimentalRawEvents".to_owned(), json!(false));
+                "thread/start"
+            };
+            stage = ProviderStartupStage::ThreadOpen;
+            let opened = provider.request(method, params)?;
+            provider.thread_id = opened
+                .pointer("/thread/id")
+                .or_else(|| opened.get("threadId"))
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| {
+                    LocalRunnerError::invalid(format!("Codex {method} omitted thread.id"))
+                })?
+                .to_owned();
+            if resume_thread_id.is_some_and(|expected| expected != provider.thread_id) {
+                return Err(LocalRunnerError::invalid(
+                    "Codex resumed a different provider thread",
+                ));
+            }
+            provider.provider_session_id = opened
+                .pointer("/thread/sessionId")
+                .or_else(|| initialized.pointer("/user/sessionId"))
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+                .map(str::to_owned);
 
-        if resume_thread_id.is_some() {
-            let snapshot = provider.read_thread()?;
-            provider.active_provider_turn_id = latest_active_turn_id(&snapshot)
-                .map(|provider_turn_id| bounded_provider_turn_id(Some(&provider_turn_id)))
-                .transpose()?;
+            if resume_thread_id.is_some() {
+                stage = ProviderStartupStage::ThreadRead;
+                let snapshot = provider.read_thread()?;
+                provider.active_provider_turn_id = latest_active_turn_id(&snapshot)
+                    .map(|provider_turn_id| bounded_provider_turn_id(Some(&provider_turn_id)))
+                    .transpose()?;
+            }
+            Ok(())
+        })();
+        if let Err(error) = initialized_result {
+            let child_exit = provider.retire_failed_startup();
+            let _ = observe(ProviderStartupObservation::Failed { stage, child_exit });
+            return Err(error);
         }
         Ok(provider)
+    }
+
+    pub(crate) fn retire_failed_startup(&mut self) -> Option<ProcessExitFact> {
+        // Initialization has not admitted any work. Do not issue another RPC
+        // on the failed channel; await only this owned direct child. A process
+        // group signal is not evidence that escaped descendants are retired.
+        self.expected_shutdown = true;
+        self.process.terminate_group().ok()
     }
 
     pub fn process_id(&self) -> u32 {
@@ -1187,6 +1274,18 @@ impl CodexProvider {
     }
 
     pub(crate) fn restart_idle_identity_epoch(&mut self) -> Result<(), LocalRunnerError> {
+        if self.durable_tool_call_replays {
+            return Err(LocalRunnerError::invalid(
+                "durable provider rollover requires its startup ownership observer",
+            ));
+        }
+        self.restart_idle_identity_epoch_observed(&mut |_| Ok(()))
+    }
+
+    pub(crate) fn restart_idle_identity_epoch_observed(
+        &mut self,
+        observe: &mut dyn FnMut(ProviderStartupObservation) -> Result<(), LocalRunnerError>,
+    ) -> Result<(), LocalRunnerError> {
         if self.active_provider_turn_id.is_some() || self.ambiguous_turn_start_pending {
             return Err(LocalRunnerError::invalid(
                 "Codex provider identity epoch cannot rotate while work is active",
@@ -1209,7 +1308,7 @@ impl CodexProvider {
         // fresh process generation, then preserve prior completion authority
         // until a replacement turn identity is actually accepted.
         self.shutdown()?;
-        let mut replacement = Self::start_with_tools_for_generation(
+        let mut replacement = Self::start_with_tools_observed(
             &config,
             authorized_tools,
             Some(&thread_id),
@@ -1221,6 +1320,7 @@ impl CodexProvider {
                     contract.criterion_ids.as_slice(),
                 )
             }),
+            observe,
         )?;
         replacement.durable_tool_call_replays = durable_tool_call_replays;
         if replacement.active_provider_turn_id.is_some() {
@@ -1238,8 +1338,11 @@ impl CodexProvider {
             replacement.pending_messages.clear();
             replacement.deferred_ambiguous_messages.clear();
             replacement.pending_message_bytes = 0;
-            let _ = replacement.cancel_pending_requests();
-            let _ = replacement.process.terminate_group();
+            let child_exit = replacement.retire_failed_startup();
+            let _ = observe(ProviderStartupObservation::Failed {
+                stage: ProviderStartupStage::Admission,
+                child_exit,
+            });
             replacement.expected_shutdown = false;
             *self = replacement;
             return Err(LocalRunnerError::invalid(
@@ -1247,11 +1350,18 @@ impl CodexProvider {
             ));
         }
         if let Some(authority) = completed_turn_authority.as_ref() {
-            replacement.restore_completed_turn_authority(
+            if let Err(error) = replacement.restore_completed_turn_authority(
                 true,
                 Some(authority.process_generation),
                 Some(&authority.provider_turn_id),
-            )?;
+            ) {
+                let child_exit = replacement.retire_failed_startup();
+                let _ = observe(ProviderStartupObservation::Failed {
+                    stage: ProviderStartupStage::Admission,
+                    child_exit,
+                });
+                return Err(error);
+            }
         }
         replacement.completion_reconciliation_pending = completion_reconciliation_pending;
         *self = replacement;
@@ -3203,6 +3313,60 @@ fn codex_question_response(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[cfg(unix)]
+    fn startup_observer_failure_reaps_the_exact_child_before_any_initialization_rpc() {
+        let config = CodexProviderConfig {
+            provider: "codex".to_owned(),
+            driver: "codex_app_server".to_owned(),
+            provider_version: "fixture".to_owned(),
+            command: PathBuf::from("/bin/cat"),
+            args: Vec::new(),
+            cwd: std::env::current_dir()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned(),
+            model: None,
+            provider_session_id: None,
+            instructions: String::new(),
+            approval_policy: "never".to_owned(),
+            externally_sandboxed: false,
+        };
+        let mut spawned = None;
+        let mut failure = None;
+        let error = CodexProvider::start_with_tools_observed(
+            &config,
+            [],
+            None,
+            1,
+            None,
+            None,
+            &mut |observation| match observation {
+                ProviderStartupObservation::Spawned {
+                    process_id,
+                    process_group_id,
+                } => {
+                    assert_eq!(process_id, process_group_id);
+                    spawned = Some(process_id);
+                    Err(LocalRunnerError::invalid(
+                        "durable spawned receipt write failed",
+                    ))
+                }
+                ProviderStartupObservation::Failed { stage, child_exit } => {
+                    failure = Some((stage, child_exit));
+                    Ok(())
+                }
+            },
+        )
+        .err()
+        .expect("refuse initialization until exact spawned receipt is durable");
+        assert_eq!(error.to_string(), "durable spawned receipt write failed");
+        assert!(spawned.is_some_and(|pid| pid > 0));
+        let (stage, child_exit) = failure.expect("explicit cleanup fact after receipt failure");
+        assert_eq!(stage, ProviderStartupStage::SpawnReceipt);
+        assert!(child_exit.is_some());
+    }
 
     fn qualified_artifact(path: &Path) -> QualifiedLaunchArtifact {
         QualifiedLaunchArtifact {

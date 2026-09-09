@@ -15,9 +15,9 @@ import type {
   PersistedHarnessTurnTerminal,
 } from "../../contracts/harness-driver.js";
 import { HarnessReconciliationError } from "../../contracts/harness-driver.js";
+import { NativeSessionProtocolIntegrityError } from "../../contracts/native-session-backend.js";
 import {
   CODEX_CODEX_PROTOCOL_VERSION,
-  CODEX_SEMANTIC_TOOL_NAMES,
   CODEX_SKILLLESS_BASE_INSTRUCTIONS,
 } from "../../contracts/codex.js";
 import { providerFamilyCapabilities } from "../../provider-events.js";
@@ -167,6 +167,28 @@ export class CodexAppServerDriver implements HarnessDriver {
     return this.#options.conversationMode === "direct";
   }
 
+  #providerDynamicTools(): readonly Readonly<Record<string, unknown>>[] {
+    if (!this.#caps.dynamicTools) return [];
+    const supplied = this.#options.dynamicTools ?? [];
+    if (this.#direct()) {
+      // Direct chat deliberately excludes the general semantic/governance
+      // catalog. Keep only the server-authorized question, file handoff, and
+      // current-wake tools so the harness can ask a structured provider
+      // question or return requested files without reopening general task
+      // authority.
+      return supplied.filter(
+        (tool) =>
+          text(tool.name) === "register_deliverable" ||
+          text(tool.name) === "request_human_input" ||
+          text(tool.name) === "read_current_wake_comments" ||
+          text(tool.name) === "list_chat_attachments" ||
+          text(tool.name) === "reuse_chat_attachment" ||
+          text(tool.name) === "read_chat_attachment",
+      );
+    }
+    return [...supplied, ...codexSemanticToolSpecs()];
+  }
+
   #baseInstructions(): string {
     return this.#options.baseInstructions ?? CODEX_SKILLLESS_BASE_INSTRUCTIONS;
   }
@@ -262,14 +284,7 @@ export class CodexAppServerDriver implements HarnessDriver {
                     ),
                 },
               }),
-          dynamicTools: this.#direct()
-            ? []
-            : this.#caps.dynamicTools
-              ? [
-                  ...(this.#options.dynamicTools ?? []),
-                  ...codexSemanticToolSpecs(),
-                ]
-              : [],
+          dynamicTools: this.#providerDynamicTools(),
           experimentalRawEvents: false,
           persistExtendedHistory: false,
         }),
@@ -307,6 +322,7 @@ export class CodexAppServerDriver implements HarnessDriver {
       // work during close; when no durable provider identity exists that
       // cleanup can fail independently.
       await cancellation.close().catch(() => {});
+      if (error instanceof NativeSessionProtocolIntegrityError) throw error;
       if (input.signal?.aborted) input.signal.throwIfAborted();
       throw error;
     } finally {
@@ -386,6 +402,7 @@ export class CodexAppServerDriver implements HarnessDriver {
           baseInstructions: this.#direct() ? "" : this.#baseInstructions(),
           approvalPolicy: this.#options.approvalPolicy ?? "untrusted",
           ...(this.#options.model ? { model: this.#options.model } : {}),
+          dynamicTools: this.#providerDynamicTools(),
           persistExtendedHistory: false,
         }),
       );
@@ -587,7 +604,16 @@ export class CodexAppServerDriver implements HarnessDriver {
         lineage: snapshot.lineage,
         sourceSequence: snapshot.lastSourceSequence ?? 0,
       });
-      if (reconcileUncheckpointedDispositionTurn) {
+      // A provider may settle the checkpointed turn while this controller is
+      // disconnected (including during timeout cleanup). Reopening a thread
+      // does not replay that terminal notification. Reconcile the exact turn
+      // before exposing the session so callers neither wait on a dead turn
+      // nor submit the original work again. Missing/conflicting history still
+      // fails closed in reconcile().
+      if (
+        recoveredActiveTurnId !== null ||
+        reconcileUncheckpointedDispositionTurn
+      ) {
         await cancellation.wait(session.reconcile?.() ?? Promise.resolve({}));
       }
       return {
@@ -596,6 +622,7 @@ export class CodexAppServerDriver implements HarnessDriver {
       };
     } catch (error) {
       await cancellation.close().catch(() => {});
+      if (error instanceof NativeSessionProtocolIntegrityError) throw error;
       if (options.signal.aborted) options.signal.throwIfAborted();
       return { recovered: false, reason: redactCodexDiagnostic(String(error)) };
     } finally {
@@ -653,6 +680,7 @@ export class CodexAppServerDriver implements HarnessDriver {
         },
       };
     } catch (cause) {
+      if (cause instanceof NativeSessionProtocolIntegrityError) throw cause;
       const error = new Error(
         `planning_mode_unsupported: installed Codex app-server did not expose a usable native plan collaboration mode (${redactCodexDiagnostic(String(cause))})`,
       );
@@ -702,6 +730,7 @@ export class CodexAppServerDriver implements HarnessDriver {
       const response = await transport.request("thread/goal/get", { threadId });
       return parseThreadGoal(response.goal);
     } catch (error) {
+      if (error instanceof NativeSessionProtocolIntegrityError) throw error;
       const policyDisabled =
         error instanceof CodexRpcError
         && (error.message.toLowerCase().includes("policy")
@@ -830,16 +859,9 @@ export class CodexAppServerDriver implements HarnessDriver {
         environmentKeys: Object.keys(
           codexCommandEnvironment(this.#options.environment),
         ).sort(),
-        dynamicToolNames: this.#direct()
-          ? []
-          : this.#caps.dynamicTools
-            ? [
-                ...(this.#options.dynamicTools ?? []).map((tool) =>
-                  text(tool.name),
-                ),
-                ...CODEX_SEMANTIC_TOOL_NAMES,
-              ]
-            : [],
+        dynamicToolNames: this.#providerDynamicTools().map((tool) =>
+          text(tool.name),
+        ),
         modelInputKinds: ["text"],
         liveConsole: {
           conversationMode: this.#direct() ? "direct" : "task",
@@ -881,7 +903,7 @@ export class CodexAppServerDriver implements HarnessDriver {
       driverKind: this.#options.driverIdentity?.kind ?? DRIVER_KIND,
       capabilities: this.#caps,
       goalCapability: this.#goalCapability,
-      dynamicTools: this.#options.dynamicTools ?? [],
+      dynamicTools: this.#providerDynamicTools(),
       dynamicToolHandler: this.#options.dynamicToolHandler,
     });
   }

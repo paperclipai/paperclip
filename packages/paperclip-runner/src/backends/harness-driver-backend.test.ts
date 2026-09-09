@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { HarnessDriver, HarnessSession, PersistedHarnessSession } from "../contracts/harness-driver.js";
 import type { PrpEvent, PrpStructuredRunResult, PrpTerminalState } from "../protocol/replay-contract.js";
+import { NativeSessionProtocolIntegrityError } from "../contracts/native-session-backend.js";
 import { HarnessDriverBackend } from "./harness-driver-backend.js";
 
 const result: PrpStructuredRunResult = {
@@ -709,6 +710,121 @@ describe("HarnessDriverBackend", () => {
         resolution: { action: "accept_for_session" },
       },
     ]);
+  });
+
+  it.each(["typed", "typed-snapshot", "lookalike", "generic"] as const)(
+    "only a typed integrity fault forbids pending-input fallback: %s",
+    async (kind) => {
+      const typed = kind === "typed" || kind === "typed-snapshot";
+      const fault = typed
+        ? new NativeSessionProtocolIntegrityError(
+            "semantic_input_digest_mismatch",
+          )
+        : kind === "lookalike"
+          ? Object.assign(new Error("native_event_replay_conflict"), {
+              code: "native_event_replay_conflict",
+              reason: "semantic_input_digest_mismatch",
+            })
+          : new Error("provider transport lost");
+      class PendingInputSession extends FakeHarnessSession {
+        override async *events() {
+          yield prpEvent(1, "runtime_request.created", {
+            request: {
+              schema: "paperclip.runtime_request.v2",
+              requestKind: "runtime",
+              requestId: "input-1",
+              type: "input",
+              status: "pending",
+              turnId: "turn-1",
+              itemId: "input-1",
+              input: {
+                schema: "paperclip.question_set.v1",
+                questions: [
+                  {
+                    id: "color",
+                    prompt: "Which color?",
+                    required: true,
+                    answerMode: "text",
+                  },
+                ],
+              },
+            },
+          });
+          throw kind === "typed-snapshot"
+            ? new Error("ordinary stream failure")
+            : fault;
+        }
+        override async snapshot(): Promise<PersistedHarnessSession> {
+          if (kind === "typed-snapshot") throw fault;
+          return super.snapshot();
+        }
+      }
+      const session = await new HarnessDriverBackend({
+        ...driver,
+        openSession: async () => new PendingInputSession(),
+      }).openSession({
+        identity: {
+          runId: "run-1",
+          sessionId: "session-1",
+          companyId: "company-1",
+          issueId: "issue-1",
+          agentId: "agent-1",
+        },
+        workingDirectory: "/workspace",
+      });
+      const events: PrpEvent[] = [];
+      const consumed = (async () => {
+        for await (const event of session.events()) events.push(event);
+      })();
+      if (typed) {
+        await expect(consumed).rejects.toBe(fault);
+        expect(events.map((event) => event.eventType)).toEqual([
+          "runtime_request.created",
+        ]);
+        await expect(session.result()).rejects.toBe(fault);
+        await expect(session.snapshot()).rejects.toBe(fault);
+      } else {
+        await consumed;
+        expect(events.map((event) => event.eventType)).toEqual([
+          "runtime_request.created",
+          "runtime_request.expired",
+          "turn.interrupted",
+        ]);
+      }
+      await session.close({ reason: "fixture complete" });
+    },
+  );
+
+  it("never exposes an earlier terminal result after a later typed integrity fault", async () => {
+    const fault = new NativeSessionProtocolIntegrityError(
+      "semantic_input_digest_mismatch",
+    );
+    class TerminalThenIntegrityFailure extends FakeHarnessSession {
+      override async *events() {
+        yield* super.events();
+        throw fault;
+      }
+    }
+    const session = await new HarnessDriverBackend({
+      ...driver,
+      openSession: async () => new TerminalThenIntegrityFailure(),
+    }).openSession({
+      identity: {
+        runId: "run-1",
+        sessionId: "session-1",
+        companyId: "company-1",
+        issueId: "issue-1",
+        agentId: "agent-1",
+      },
+      workingDirectory: "/workspace",
+    });
+    const iterator = session.events()[Symbol.asyncIterator]();
+    await iterator.next();
+    await iterator.next();
+    await expect(iterator.next()).rejects.toBe(fault);
+    await expect(session.result()).rejects.toBe(fault);
+    await expect(session.snapshot()).rejects.toBe(fault);
+    await session.close({ reason: "fixture complete" });
   });
 
   it("emits one non-replayable input expiration and terminal wait after provider loss", async () => {

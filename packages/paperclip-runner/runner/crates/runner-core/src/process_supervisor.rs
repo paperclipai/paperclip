@@ -793,6 +793,10 @@ impl SupervisedProcess {
         self.child.id()
     }
 
+    pub(crate) fn process_group_id(&self) -> u32 {
+        self.process_group_id
+    }
+
     pub fn send<T: Serialize>(&mut self, value: &T) -> Result<(), LocalRunnerError> {
         let stdin = self
             .stdin
@@ -857,6 +861,11 @@ impl SupervisedProcess {
     }
 
     pub fn wait(&mut self) -> Result<ProcessExitFact, LocalRunnerError> {
+        if self.finished {
+            return self.child.wait().map(exit_fact).map_err(|error| {
+                LocalRunnerError::invalid(format!("failed to inspect retired child: {error}"))
+            });
+        }
         let status = self.child.wait().map_err(|error| {
             LocalRunnerError::invalid(format!("failed to wait for process: {error}"))
         })?;
@@ -871,6 +880,9 @@ impl SupervisedProcess {
     }
 
     pub fn terminate_group(&mut self) -> Result<ProcessExitFact, LocalRunnerError> {
+        if self.finished {
+            return self.wait();
+        }
         self.stdin.take();
         #[cfg(unix)]
         signal_process_group(self.process_group_id, "TERM");

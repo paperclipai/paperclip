@@ -1,6 +1,7 @@
 import { paperclipWorkspaceFileReferencesFromText } from "../../live/workspace-file-reference.js";
 import { canonicalProviderEventsFromCodex } from "../../provider-events.js";
 import { harnessRuntimeRequestOutcome } from "../../contracts/harness-driver.js";
+import { NativeSessionProtocolIntegrityError } from "../../contracts/native-session-backend.js";
 import { validatePrpStructuredRunResult } from "../../protocol/replay-contract.js";
 import type { CodexRpcNotification, CodexTraceInterpretation } from "./app-server-transport.js";
 import { redactCodexDiagnostic } from "./app-server-transport.js";
@@ -40,6 +41,10 @@ export async function pumpNotifications(state: CodexSessionState): Promise<void>
         await mapNotification(state, notification);
       }
     } catch (error) {
+      if (error instanceof NativeSessionProtocolIntegrityError) {
+        state.failProtocolIntegrity(error);
+        return;
+      }
       state.emit("harness.diagnostic", {
         code: "notification_transport_failed",
         message: redactCodexDiagnostic(String(error)),

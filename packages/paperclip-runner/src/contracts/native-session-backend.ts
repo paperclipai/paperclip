@@ -90,6 +90,50 @@ export interface NativeSessionSnapshotOptions {
   signal: AbortSignal;
 }
 
+/** The exact close owner has torn down its controller without proving suspension. */
+export class NativeSessionCloseUnrecoverableError extends Error {
+  readonly code = "native_session_close_unrecoverable";
+
+  constructor() {
+    super(
+      "provider_transport_failed: runner did not durably suspend before checkpoint",
+    );
+    this.name = "NativeSessionCloseUnrecoverableError";
+  }
+}
+
+/** An authenticated, exactly bound runner event failed permanent integrity checks. */
+export class NativeSessionProtocolIntegrityError extends Error {
+  readonly code = "native_event_replay_conflict";
+  readonly recovery = "operator_required";
+
+  constructor(
+    readonly reason:
+      | "semantic_input_digest_mismatch"
+      | "source_event_replay_conflict",
+  ) {
+    super(
+      reason === "semantic_input_digest_mismatch"
+        ? "native_event_replay_conflict: authenticated runner semantic input failed integrity validation; automatic recovery is stopped."
+        : "native_event_replay_conflict: authenticated runner event conflicts with committed history; automatic recovery is stopped.",
+    );
+    this.name = "NativeSessionProtocolIntegrityError";
+  }
+}
+
+/** Admission is blocked by a retained owner that has no safe automatic close retry. */
+export class NativeSessionCleanupQuarantinedError extends Error {
+  readonly code = "native_session_cleanup_quarantined";
+  readonly recovery = "operator_required";
+
+  constructor() {
+    super(
+      "native_session_cleanup_quarantined: prior session cleanup requires operator recovery; verify its retained process ownership and checkpoint before a controlled restart. Clearing a task session does not resolve this quarantine.",
+    );
+    this.name = "NativeSessionCleanupQuarantinedError";
+  }
+}
+
 export interface NativeSession {
   identity(): NativeRunIdentity;
   capabilities(): Promise<NativeSessionCapabilities>;

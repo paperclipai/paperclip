@@ -340,6 +340,14 @@ describe("Codex app-server Codex driver", () => {
     await original.close({ reason: "prepare lazy ownership recovery" });
 
     const recoveryTransport = new FakeCodexTransport();
+    recoveryTransport.readResponse = {
+      thread: {
+        id: snapshot.driverSessionId,
+        sessionId: snapshot.providerSessionId,
+        cwd: WORKSPACE,
+        turns: [{ id: "turn-recovery-race", status: "inProgress", items: [] }],
+      },
+    };
     Object.assign(recoveryTransport, {
       processInfo: () => ({
         pid: recoveryTransport.calls.some(

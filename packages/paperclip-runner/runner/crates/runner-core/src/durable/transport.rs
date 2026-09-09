@@ -733,6 +733,9 @@ pub(crate) struct Welcome {
     pub(crate) lease: Option<LeaseCredential>,
     pub(crate) acked_source_seq: Option<u64>,
     pub(crate) pending_commands: Vec<Command>,
+    pub(crate) warm_transition_version: Option<u64>,
+    pub(crate) warm_transition: Option<Value>,
+    pub(crate) warm_transition_phase: Option<String>,
 }
 
 struct SecureChannel {
@@ -982,33 +985,38 @@ impl AuthenticatedTransport {
 
         let authenticate = || -> Result<(Self, Welcome), DurableRunnerError> {
             let client_nonce = random_nonce()?;
+            let mut hello = json!({
+                "protocol": PROTOCOL,
+                "version": PROTOCOL_VERSION,
+                "kind": "auth_hello",
+                "payload": {
+                    "credentialId": credential.credential_id,
+                    "credentialKind": credential_kind,
+                    "clientNonce": client_nonce,
+                    "protocolMin": PROTOCOL_MIN_VERSION,
+                    "protocolMax": PROTOCOL_VERSION,
+                    "warmTransitionVersion": 1,
+                    "runnerInstanceId": state.runner_instance_id,
+                    "environmentLeaseId": state.environment_lease_id,
+                    "runId": state.run_id,
+                    "normalizedSessionId": state.normalized_session_id,
+                    "turnId": state.turn_id,
+                    "itemId": state.item_id,
+                    "runnerVersion": config.runner_version,
+                    "runnerDigest": config.runner_digest,
+                    "resume": {
+                        "lastControllerCommandSeq": state.last_controller_command_seq,
+                        "nextSourceEventSeq": state.next_source_seq,
+                        "ackedSourceSeq": state.acked_source_seq,
+                    },
+                },
+            });
+            if let Some(transition) = &state.warm_transition {
+                hello["payload"]["warmTransitionId"] = json!(transition.receipt.transition_id);
+            }
             send_auth_plain(
                 &mut socket,
-                &json!({
-                    "protocol": PROTOCOL,
-                    "version": PROTOCOL_VERSION,
-                    "kind": "auth_hello",
-                    "payload": {
-                        "credentialId": credential.credential_id,
-                        "credentialKind": credential_kind,
-                        "clientNonce": client_nonce,
-                        "protocolMin": PROTOCOL_MIN_VERSION,
-                        "protocolMax": PROTOCOL_VERSION,
-                        "runnerInstanceId": state.runner_instance_id,
-                        "environmentLeaseId": state.environment_lease_id,
-                        "runId": state.run_id,
-                        "normalizedSessionId": state.normalized_session_id,
-                        "turnId": state.turn_id,
-                        "itemId": state.item_id,
-                        "runnerVersion": config.runner_version,
-                        "runnerDigest": config.runner_digest,
-                        "resume": {
-                            "lastControllerCommandSeq": state.last_controller_command_seq,
-                            "nextSourceEventSeq": state.next_source_seq,
-                            "ackedSourceSeq": state.acked_source_seq,
-                        },
-                    },
-                }),
+                &hello,
                 config.max_frame_bytes,
                 connect_deadline,
             )?;
@@ -1169,6 +1177,10 @@ struct AuthChallenge {
     credential_lease_id: Option<String>,
     revocation_epoch: u64,
     server_proof: String,
+    #[serde(default)]
+    warm_transition_version: Option<u64>,
+    #[serde(default)]
+    warm_transition_id: Option<String>,
 }
 
 fn validate_challenge(
@@ -1235,6 +1247,15 @@ fn validate_challenge(
             "authentication challenge is expired or selected an unsupported protocol",
         ));
     }
+    if state.warm_transition.as_ref().is_some_and(|transition| {
+        challenge.warm_transition_version != Some(1)
+            || challenge.warm_transition_id.as_deref()
+                != Some(transition.receipt.transition_id.as_str())
+    }) {
+        return Err(DurableRunnerError::invalid(
+            "warm transition capability or receipt was not authenticated",
+        ));
+    }
     match expected_lease {
         Some(lease)
             if challenge.credential_lease_id.as_deref() == Some(lease.lease_id.as_str())
@@ -1251,7 +1272,7 @@ fn validate_challenge(
 }
 
 fn challenge_signing_bytes(challenge: &AuthChallenge) -> Vec<u8> {
-    canonical_json(&json!({
+    let mut body = json!({
         "credentialId": challenge.credential_id,
         "credentialKind": challenge.credential_kind,
         "clientNonce": challenge.client_nonce,
@@ -1269,8 +1290,14 @@ fn challenge_signing_bytes(challenge: &AuthChallenge) -> Vec<u8> {
         "credentialExpiresAt": challenge.credential_expires_at,
         "credentialExpiresAtUnixMs": challenge.credential_expires_at_unix_ms,
         "revocationEpoch": challenge.revocation_epoch,
-    }))
-    .into_bytes()
+    });
+    if let Some(version) = challenge.warm_transition_version {
+        body["warmTransitionVersion"] = json!(version);
+    }
+    if let Some(id) = &challenge.warm_transition_id {
+        body["warmTransitionId"] = json!(id);
+    }
+    canonical_json(&body).into_bytes()
 }
 
 fn canonical_json(value: &Value) -> String {
@@ -1394,6 +1421,12 @@ fn validate_welcome(
         lease,
         acked_source_seq: payload.get("ackedSourceSeq").and_then(Value::as_u64),
         pending_commands,
+        warm_transition_version: payload.get("warmTransitionVersion").and_then(Value::as_u64),
+        warm_transition: payload.get("warmTransition").cloned(),
+        warm_transition_phase: payload
+            .get("warmTransitionPhase")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
     })
 }
 
@@ -1742,6 +1775,8 @@ mod tests {
             credential_lease_id: server_credential.lease_id.map(str::to_owned),
             revocation_epoch: server_credential.revocation_epoch,
             server_proof: String::new(),
+            warm_transition_version: None,
+            warm_transition_id: None,
         };
         let signing = challenge_signing_bytes(&challenge);
         challenge.server_proof = hex_encode(&hmac_domain(
@@ -2270,6 +2305,8 @@ mod tests {
                 credential_lease_id: None,
                 revocation_epoch: 0,
                 server_proof: String::new(),
+                warm_transition_version: None,
+                warm_transition_id: None,
             };
             let signing = challenge_signing_bytes(&challenge);
             challenge.server_proof = hex_encode(&hmac_domain(
