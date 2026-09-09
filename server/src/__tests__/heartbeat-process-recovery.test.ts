@@ -1273,6 +1273,39 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     return { companyId, agentId, runId, wakeupRequestId, issueId };
   }
 
+  async function bindProjectWorkspaceToQueuedIssue(input: {
+    companyId: string;
+    issueId: string;
+    cwd: string;
+  }) {
+    const projectId = randomUUID();
+    const projectWorkspaceId = randomUUID();
+    await db.insert(projects).values({
+      id: projectId,
+      companyId: input.companyId,
+      name: "Paperclip App",
+      status: "in_progress",
+    });
+    await db.insert(projectWorkspaces).values({
+      id: projectWorkspaceId,
+      companyId: input.companyId,
+      projectId,
+      name: "Primary workspace",
+      sourceType: "local_path",
+      cwd: input.cwd,
+      isPrimary: true,
+    });
+    await db
+      .update(issues)
+      .set({
+        projectId,
+        projectWorkspaceId,
+        assigneeAdapterOverrides: { useProjectWorkspace: false },
+      })
+      .where(eq(issues.id, input.issueId));
+    return { projectId, projectWorkspaceId };
+  }
+
   it("persists the normalized failure while immediate recovery remains active", async () => {
     mockAdapterExecute.mockResolvedValueOnce({
       exitCode: 1,
@@ -4064,6 +4097,104 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       },
     });
     mockAdapterExecute.mockClear();
+  });
+
+  it("resolves a bound project workspace when the legacy assignee override selects agent-default mode", async () => {
+    mockAdapterExecute.mockClear();
+    const workspaceRoot = await fs.mkdtemp(
+      path.join(os.tmpdir(), "paperclip-bound-project-workspace-"),
+    );
+    try {
+      await fs.mkdir(path.join(workspaceRoot, ".git"));
+      const { companyId, agentId, runId, issueId } =
+        await seedQueuedIssueRunFixture();
+      await db
+        .update(agents)
+        .set({ adapterType: "claude_local" })
+        .where(eq(agents.id, agentId));
+      const { projectId, projectWorkspaceId } =
+        await bindProjectWorkspaceToQueuedIssue({
+          companyId,
+          issueId,
+          cwd: workspaceRoot,
+        });
+      const heartbeat = heartbeatService(db);
+
+      await heartbeat.resumeQueuedRuns();
+      await waitForRunToSettle(heartbeat, runId, 5_000);
+      await heartbeat.waitForRunExecutionDrain(runId);
+
+      expect(mockAdapterExecute).toHaveBeenCalledTimes(1);
+      const adapterInput = mockAdapterExecute.mock.calls[0]?.[0] as {
+        context?: { paperclipWorkspace?: Record<string, unknown> };
+      };
+      expect(adapterInput.context?.paperclipWorkspace).toMatchObject({
+        cwd: workspaceRoot,
+        source: "project_primary",
+        projectId,
+        workspaceId: projectWorkspaceId,
+      });
+      const persistedWorkspace = await db
+        .select()
+        .from(executionWorkspaces)
+        .where(eq(executionWorkspaces.sourceIssueId, issueId))
+        .then((rows) => rows[0] ?? null);
+      expect(persistedWorkspace).toMatchObject({
+        projectId,
+        projectWorkspaceId,
+        cwd: workspaceRoot,
+      });
+    } finally {
+      await fs.rm(workspaceRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects an unavailable bound project workspace without erasing its resolved identity", async () => {
+    mockAdapterExecute.mockClear();
+    const workspaceParent = await fs.mkdtemp(
+      path.join(os.tmpdir(), "paperclip-unavailable-project-workspace-"),
+    );
+    try {
+      const missingWorkspaceRoot = path.join(workspaceParent, "missing");
+      const { companyId, agentId, runId, issueId } =
+        await seedQueuedIssueRunFixture();
+      await db
+        .update(agents)
+        .set({ adapterType: "claude_local" })
+        .where(eq(agents.id, agentId));
+      const { projectWorkspaceId } = await bindProjectWorkspaceToQueuedIssue({
+        companyId,
+        issueId,
+        cwd: missingWorkspaceRoot,
+      });
+      const heartbeat = heartbeatService(db);
+
+      await heartbeat.resumeQueuedRuns();
+      await waitForRunToSettle(heartbeat, runId, 5_000);
+
+      expect(mockAdapterExecute).not.toHaveBeenCalled();
+      const failedRun = await db
+        .select()
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null);
+      expect(failedRun).toMatchObject({
+        status: "failed",
+        errorCode: "workspace_validation_failed",
+        resultJson: {
+          workspaceValidation: {
+            reason: "fallback_agent_home_cwd",
+            issueProjectWorkspaceId: projectWorkspaceId,
+            resolvedWorkspaceSource: "project_primary",
+            resolvedProjectWorkspaceId: projectWorkspaceId,
+            executionWorkspaceProjectWorkspaceId: projectWorkspaceId,
+            persistedProjectWorkspaceId: projectWorkspaceId,
+          },
+        },
+      });
+    } finally {
+      await fs.rm(workspaceParent, { recursive: true, force: true });
+    }
   });
 
   it("blocks a git-sensitive local adapter before launch when a project-workspace-linked issue is missing its project id", async () => {

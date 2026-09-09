@@ -19103,8 +19103,13 @@ export function heartbeatService(
         },
         resolveWorkspace: () =>
           resolveWorkspaceForRun(agent, context, previousSessionParams, {
+            // A concrete issue binding is authoritative even when the legacy assignee
+            // override selects agent-default mode. Ignoring it creates a contradictory
+            // execution-workspace row linked to the project workspace but rooted at the
+            // agent-home fallback, which the launch guard must (and does) reject.
             useProjectWorkspace:
-              requestedExecutionWorkspaceMode !== "agent_default",
+              requestedExecutionWorkspaceMode !== "agent_default" ||
+              Boolean(issueRef?.projectWorkspaceId),
             // Thread the selected environment driver so run-workspace resolution can tell a local
             // target from a remote one, and a confined sandbox target from an unconfined remote
             // target. A remote run resolves referenced projects only for the confined sandbox
