@@ -547,13 +547,6 @@
       "when": 1757520000000,
       "tag": "0077_annotations",
       "breakpoints": true
-    },
-    {
-      "idx": 78,
-      "version": "7",
-      "when": 1757606400000,
-      "tag": "0078_webhook_endpoints",
-      "breakpoints": true
     }
   ]
 }

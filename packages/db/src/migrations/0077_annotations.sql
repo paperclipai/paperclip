@@ -1,6 +1,6 @@
-CREATE TYPE IF NOT EXISTS "annotation_type" AS ENUM ('perimeter', 'hazard', 'resource', 'note');
-CREATE TYPE IF NOT EXISTS "annotation_severity" AS ENUM ('critical', 'warning', 'info');
-CREATE TYPE IF NOT EXISTS "annotation_visibility" AS ENUM ('org_wide', 'admin_only');
+CREATE TYPE "annotation_type" AS ENUM ('perimeter', 'hazard', 'resource', 'note');
+CREATE TYPE "annotation_severity" AS ENUM ('critical', 'warning', 'info');
+CREATE TYPE "annotation_visibility" AS ENUM ('org_wide', 'admin_only');
 
 CREATE TABLE IF NOT EXISTS "annotations" (
   "id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
