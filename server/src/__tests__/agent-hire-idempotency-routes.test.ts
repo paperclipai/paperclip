@@ -103,7 +103,8 @@ describeEmbeddedPostgres("agent hire idempotency within a run", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-agent-hire-idempotency-");
     db = createDb(tempDb.connectionString);
-  }, 20_000);
+    // Embedded Postgres cold-starts slowly on a loaded machine.
+  }, 60_000);
 
   afterEach(async () => {
     await db.delete(activityLog);
@@ -143,6 +144,50 @@ describeEmbeddedPostgres("agent hire idempotency within a run", () => {
       .from(agents)
       .where(and(eq(agents.companyId, company.id), eq(agents.role, "engineer")));
     expect(samAgents.map((row) => row.name)).toEqual(["Sam"]);
+  });
+
+  it("creates one agent when two identical retries overlap in the same run", async () => {
+    const { company, hiringAgent, run } = await seedHiringFixture(db);
+    const app = createApp(db, agentActor(company.id, hiringAgent.id, run.id));
+    const payload = { name: "Sam", role: "engineer", title: "Store Builder", adapterType: "process" as const };
+
+    // Both requests are in flight at once, so neither can see the other's
+    // activity record unless the route serializes them.
+    const [first, second] = await Promise.all([
+      request(app).post(`/api/companies/${company.id}/agent-hires`).send(payload),
+      request(app).post(`/api/companies/${company.id}/agent-hires`).send(payload),
+    ]);
+    const statuses = [first.status, second.status].sort();
+    expect(statuses, JSON.stringify([first.body, second.body])).toEqual([200, 201]);
+    const created = first.status === 201 ? first : second;
+    const replayed = first.status === 200 ? first : second;
+    expect(replayed.body.idempotent).toBe(true);
+    expect(replayed.body.agent?.id).toBe(created.body.agent?.id);
+
+    const samAgents = await db
+      .select({ name: agents.name })
+      .from(agents)
+      .where(and(eq(agents.companyId, company.id), eq(agents.role, "engineer")));
+    expect(samAgents.map((row) => row.name)).toEqual(["Sam"]);
+  });
+
+  it("treats a changed payload in the same run as a new hire, not a retry", async () => {
+    const { company, hiringAgent, run } = await seedHiringFixture(db);
+    const app = createApp(db, agentActor(company.id, hiringAgent.id, run.id));
+
+    const first = await request(app)
+      .post(`/api/companies/${company.id}/agent-hires`)
+      .send({ name: "Sam", role: "engineer", adapterType: "process" });
+    expect(first.status, JSON.stringify(first.body)).toBe(201);
+
+    // Same identity, corrected configuration: the agent meant a different hire.
+    const corrected = await request(app)
+      .post(`/api/companies/${company.id}/agent-hires`)
+      .send({ name: "Sam", role: "engineer", adapterType: "process", budgetMonthlyCents: 5000 });
+    expect(corrected.status, JSON.stringify(corrected.body)).toBe(201);
+    expect(corrected.body.idempotent).toBeUndefined();
+    expect(corrected.body.agent?.id).not.toBe(first.body.agent?.id);
+    expect(corrected.body.agent?.budgetMonthlyCents).toBe(5000);
   });
 
   it("still creates a distinct agent for a different hire in the same run", async () => {
