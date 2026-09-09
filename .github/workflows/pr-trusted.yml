@@ -549,11 +549,37 @@ jobs:
       - name: Run generated-file drift checks against the Docker build context
         run: docker buildx build --file .github/docker-context-checks.Dockerfile .
 
+  installer:
+    name: Installer (incl. bash 3.2)
+    needs: gate
+    if: ${{ needs.gate.outputs.full_ci == 'true' }}
+    runs-on: ${{ needs.gate.outputs.runner }}
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      # Same reason as the Docker context lane: not every runner the gate can
+      # select ships the Buildx plugin.
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
+
+      # install.sh is shipped to users as a curl-to-bash one-liner, so no
+      # TypeScript suite ever exercises it. It ran unguarded until 2026-09-09,
+      # when a bash 4 expansion in parse_bool made the published installer fail
+      # immediately on every stock Mac (macOS ships bash 3.2 as /bin/bash) and
+      # nothing caught it. This lane runs it under a real bash 3.2.
+      - name: Run installer checks
+        run: ./scripts/test-install-sh-docker.sh
+
   verify:
     # Preserve the legacy required-check name while the underlying work runs in parallel.
     name: verify
     if: ${{ always() }}
-    needs: [gate, policy, typecheck_release_registry, general_tests, build, docker_context_integrity]
+    needs: [gate, policy, typecheck_release_registry, general_tests, build, docker_context_integrity, installer]
     runs-on: ${{ needs.gate.outputs.runner }}
     timeout-minutes: 5
 
@@ -566,6 +592,7 @@ jobs:
           GENERAL_TESTS_RESULT: ${{ needs.general_tests.result }}
           BUILD_RESULT: ${{ needs.build.result }}
           DOCKER_CONTEXT_INTEGRITY_RESULT: ${{ needs.docker_context_integrity.result }}
+          INSTALLER_RESULT: ${{ needs.installer.result }}
         run: |
           test "$POLICY_RESULT" = "success"
           case "$FULL_CI" in
@@ -574,12 +601,14 @@ jobs:
               test "$GENERAL_TESTS_RESULT" = "success"
               test "$BUILD_RESULT" = "success"
               test "$DOCKER_CONTEXT_INTEGRITY_RESULT" = "success"
+              test "$INSTALLER_RESULT" = "success"
               ;;
             false)
               test "$TYPECHECK_RELEASE_REGISTRY_RESULT" = "skipped"
               test "$GENERAL_TESTS_RESULT" = "skipped"
               test "$BUILD_RESULT" = "skipped"
               test "$DOCKER_CONTEXT_INTEGRITY_RESULT" = "skipped"
+              test "$INSTALLER_RESULT" = "skipped"
               ;;
             *)
               echo "Invalid full_ci decision: $FULL_CI" >&2

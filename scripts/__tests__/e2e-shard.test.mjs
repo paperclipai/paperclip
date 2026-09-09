@@ -243,7 +243,7 @@ test("the trusted PR workflow limits full CI to merge-relevant stack layers", ()
   const verify = jobs.get("verify");
   assert.match(
     verify,
-    /^ {4}needs: \[gate, policy, typecheck_release_registry, general_tests, build, docker_context_integrity\]$/m,
+    /^ {4}needs: \[gate, policy, typecheck_release_registry, general_tests, build, docker_context_integrity, installer\]$/m,
   );
   assert.match(verify, /POLICY_RESULT: \$\{\{ needs\.policy\.result \}\}/);
   assert.match(verify, /test "\$TYPECHECK_RELEASE_REGISTRY_RESULT" = "skipped"/);
@@ -255,6 +255,12 @@ test("the trusted PR workflow limits full CI to merge-relevant stack layers", ()
   assert.match(verify, /DOCKER_CONTEXT_INTEGRITY_RESULT: \$\{\{ needs\.docker_context_integrity\.result \}\}/);
   assert.match(verify, /test "\$DOCKER_CONTEXT_INTEGRITY_RESULT" = "success"/);
   assert.match(verify, /test "\$DOCKER_CONTEXT_INTEGRITY_RESULT" = "skipped"/);
+  // Same both-halves check for the installer lane. install.sh ships to users as a
+  // curl-to-bash one-liner that no TypeScript suite exercises, so if this lane runs
+  // without being wired into the aggregate it fails silently and proves nothing.
+  assert.match(verify, /INSTALLER_RESULT: \$\{\{ needs\.installer\.result \}\}/);
+  assert.match(verify, /test "\$INSTALLER_RESULT" = "success"/);
+  assert.match(verify, /test "\$INSTALLER_RESULT" = "skipped"/);
 
   const e2e = jobs.get("e2e");
   assert.match(e2e, /^ {4}needs: \[gate, policy, e2e_shards\]$/m);
