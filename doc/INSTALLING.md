@@ -75,8 +75,10 @@ Node runtime after changing runtime installations, then restart the service.
 For example, put the supported Node's bin directory first on `PATH` and run
 `npx paperclipai@latest install --yes`. Do not use the old managed shim to
 re-pin Node: it intentionally continues launching its previously pinned runtime.
-Existing managed shims are upgraded in place. Global npm installs and source
-checkout services must configure their own executable and child-process `PATH`.
+Installs and updates refresh existing managed shims in place. Updates reject an
+unsupported running Node before installing or activating a payload; read-only
+update checks and rollback remain available for recovery. Global npm installs and
+source checkout services must configure their own executable and child-process `PATH`.
 
 For custom service wrappers, use an absolute, supported Node executable and put
 that executable's directory first on `PATH`. Keep required existing PATH entries.
