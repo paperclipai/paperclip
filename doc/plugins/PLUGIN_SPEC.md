@@ -337,6 +337,7 @@ export interface PaperclipPluginManifestV1 {
     displayName: string;
     description: string;
     parametersSchema: JsonSchema;
+    timeoutMs?: number;
   }>;
   database?: PluginDatabaseDeclaration;
   apiRoutes?: PluginApiRouteDeclaration[];
@@ -415,10 +416,13 @@ tools?: Array<{
   displayName: string;
   description: string;
   parametersSchema: JsonSchema;
+  timeoutMs?: number;
 }>;
 ```
 
 Tool names are automatically namespaced by plugin ID at runtime (e.g. `linear:search-issues`), so plugins cannot shadow core tools or each other's tools.
+
+A tool may declare `timeoutMs`, a positive integer up to 900000 (15 minutes). Tools without one use the transport default (30 seconds). When a call exceeds its budget, the host does not throw: it returns a result with `error` describing the timeout plus `timedOut: true` and the expired `timeoutMs`, so agents can retry, split the work, or stop instead of hanging until the run times out.
 
 ### 11.2 Tool Execution
 
