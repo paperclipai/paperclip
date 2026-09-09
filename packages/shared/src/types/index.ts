@@ -788,6 +788,7 @@ export type {
 export type {
   IssueTreeControlPreview,
   IssueTreeHold,
+  ReleaseIssueTreeHoldResponse,
   IssueTreeHoldMember,
   IssueTreeHoldReleasePolicy,
   IssueTreePreviewAgent,

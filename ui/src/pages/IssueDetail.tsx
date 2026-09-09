@@ -2814,6 +2814,7 @@ export function IssueDetail() {
   const [galleryOpen, setGalleryOpen] = useState(false);
   const [galleryIndex, setGalleryIndex] = useState(0);
   const [treeControlOpen, setTreeControlOpen] = useState(false);
+  const [treeControlWakeWarning, setTreeControlWakeWarning] = useState<string | null>(null);
   const [treeControlMode, setTreeControlMode] =
     useState<Exclude<IssueTreeControlMode, "pause">>("resume");
   const [treeControlWakeAgentsOnResume, setTreeControlWakeAgentsOnResume] =
@@ -3841,6 +3842,7 @@ export function IssueDetail() {
     },
   });
   const executeTreeControl = useMutation({
+    onMutate: () => setTreeControlWakeWarning(null),
     mutationFn: async ({
       mode,
       scope,
@@ -3903,7 +3905,10 @@ export function IssueDetail() {
         preview: created.preview,
       };
     },
-    onSuccess: () => {
+    onSuccess: (result) => {
+      if (result.kind === "release" && result.hold.wakeFailures?.length) {
+        setTreeControlWakeWarning(`Pause released, but ${result.hold.wakeFailures.length} ${result.hold.wakeFailures.length === 1 ? "task" : "tasks"} could not start. ${result.hold.wakeFailures[0].message} Check the affected agents and try starting them again.`);
+      }
       setTreeControlOpen(false);
       setTreeControlWakeAgentsOnResume(false);
     },
@@ -7136,6 +7141,7 @@ export function IssueDetail() {
             </Button> : undefined}
           />
         )}
+        {treeControlWakeWarning ? <p role="alert" className={cn("text-sm text-muted-foreground", shellSectionClass)}>{treeControlWakeWarning}</p> : null}
         {executeTreeControl.error && !treeControlOpen && executeTreeControl.variables?.feedback !== "composer" && (
           <p role="alert" className={cn("text-sm text-destructive", shellSectionClass)}>{executeTreeControl.error.message}</p>
         )}
@@ -7706,7 +7712,10 @@ export function IssueDetail() {
           pending={executeTreeControl.isPending}
           valid={canApplyTreeControl}
           wakeAgents={treeControlWakeAgentsOnResume}
-          onWakeAgentsChange={setTreeControlWakeAgentsOnResume}
+          onWakeAgentsChange={(wake) => {
+            executeTreeControl.reset();
+            setTreeControlWakeAgentsOnResume(wake);
+          }}
           onRetry={() => {
             executeTreeControl.reset();
             void refetchTreeControlPreview();

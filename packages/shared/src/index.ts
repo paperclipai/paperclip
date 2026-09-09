@@ -1220,6 +1220,7 @@ export type {
   IssueLabel,
   IssueTreeControlPreview,
   IssueTreeHold,
+  ReleaseIssueTreeHoldResponse,
   IssueTreeHoldMember,
   IssueTreeHoldReleasePolicy,
   IssueTreePreviewAgent,

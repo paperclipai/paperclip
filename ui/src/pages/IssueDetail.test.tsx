@@ -4014,7 +4014,7 @@ describe("IssueDetail", () => {
     ).toBe("blocked");
   });
 
-  it("refreshes subtree pause state after resuming a hold", async () => {
+  it.each([false, true])("refreshes a released pause and shows partial wake failure=%s inline", async (wakeFailed) => {
     const childIssue = createIssue({
       id: "child-1",
       parentId: "issue-1",
@@ -4067,7 +4067,7 @@ describe("IssueDetail", () => {
     mockAgentsApi.list.mockResolvedValue([createAgent()]);
     mockIssuesApi.releaseTreeHold.mockImplementation(() => {
       activePauseHoldState = null;
-      return Promise.resolve(releasedHold);
+      return Promise.resolve({ ...releasedHold, ...(wakeFailed ? { wakeFailures: [{ issueId: "child-1", message: "Agent unavailable" }] } : {}) });
     });
     mockAuthApi.getSession.mockResolvedValue({
       session: { userId: "user-1" },
@@ -4141,6 +4141,8 @@ describe("IssueDetail", () => {
     await waitForAssertion(() => {
       expect(container.textContent).not.toContain("Subtree is paused.");
     });
+    if (wakeFailed) expect(container.querySelector('[role="alert"]')?.textContent).toContain("Pause released");
+    else expect(container.querySelector('[role="alert"]')).toBeNull();
   });
 
   it("pauses the subtree immediately without preview or confirmation", async () => {

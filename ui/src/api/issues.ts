@@ -31,6 +31,7 @@ import type {
   RunnerGoalProjection,
   PreviewIssueTreeControl,
   ReleaseIssueTreeHold,
+  ReleaseIssueTreeHoldResponse,
   UpsertIssueWatchdog,
   UpsertIssueDocument,
 } from "@paperclipai/shared";
@@ -223,7 +224,7 @@ export const issuesApi = {
       } | null;
     }>(`/issues/${id}/tree-control/state`),
   releaseTreeHold: (id: string, holdId: string, data: ReleaseIssueTreeHold) =>
-    api.post<IssueTreeHold>(`/issues/${id}/tree-holds/${holdId}/release`, data),
+    api.post<ReleaseIssueTreeHoldResponse>(`/issues/${id}/tree-holds/${holdId}/release`, data),
   checkMonitorNow: (id: string) => api.post<{ ok: true }>(`/issues/${id}/monitor/check-now`, {}),
   retryScheduledRetryNow: (id: string) =>
     api.post<IssueRetryNowResponse>(`/issues/${id}/scheduled-retry/retry-now`, {}),

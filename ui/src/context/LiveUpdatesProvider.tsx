@@ -285,6 +285,12 @@ function resolveVisibleIssueRouteContext(
     }
   }
 
+  if (issue?.companyId) {
+    const companyRuns = queryClient.getQueryData<LiveRunForIssue[]>(queryKeys.liveRuns(issue.companyId)) ?? [];
+    for (const run of companyRuns) {
+      if (run.issueId && subtreeIssueRefs.has(run.issueId)) subtreeRunIds.add(run.id);
+    }
+  }
   return {
     routeIssueRef: issueRef,
     issueRefs,
@@ -338,8 +344,10 @@ function shouldSuppressRunStatusToastForVisibleIssue(
   const context = resolveVisibleIssueRouteContext(queryClient, pathname, options);
   if (!context) return false;
 
+  const issueId = readString(payload.issueId);
+  if (issueId) return context.subtreeIssueRefs.has(issueId);
   const runId = readString(payload.runId);
-  if (runId && context.subtreeRunIds.has(runId)) return true;
+  if (runId) return context.subtreeRunIds.has(runId);
 
   const agentId = readString(payload.agentId);
   return !!agentId && (agentId === context.assigneeAgentId || context.subtreeAgentIds.has(agentId));
@@ -1224,6 +1232,8 @@ function handleLiveEvent(
 
   const nameOf = (id: string) => resolveAgentName(queryClient, expectedCompanyId, id);
   const payload = event.payload ?? {};
+  // Resolve membership before terminal lifecycle patches remove live-run rows.
+  const suppressRunToast = event.type === "heartbeat.run.status" && shouldSuppressRunStatusToastForVisibleIssue(queryClient, pathname, payload);
   const liveStatusPatch = readRunLiveStatusPatchFromPayload(payload, event.createdAt, event.type);
   if (liveStatusPatch) {
     applyRunLiveStatusPatchToCaches(queryClient, expectedCompanyId, pathname, liveStatusPatch);
@@ -1247,7 +1257,7 @@ function handleLiveEvent(
       const toast = buildRunStatusToast(payload, nameOf);
       if (
         toast &&
-        !shouldSuppressRunStatusToastForVisibleIssue(queryClient, pathname, payload)
+        !suppressRunToast
       ) {
         gatedPushToast(gate, pushToast, "run-status", toast);
       }

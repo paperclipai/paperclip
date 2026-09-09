@@ -74,6 +74,44 @@ async function running(
   }
   return fullRun;
 }
+async function reconcileDemoExecution(
+  request: APIRequestContext,
+  issueId: string,
+  runId: string,
+) {
+  // These deterministic fixtures only print output. No external action occurred.
+  // Master requires recorded outcomes before a cancelled provider can restart.
+  const activity = await json(
+    await request.get(`/api/issues/${issueId}/activity`),
+  );
+  const settled = activity.find(
+    (entry: { action: string; runId: string }) =>
+      entry.action === "issue.execution_recovery_settled" &&
+      entry.runId === runId,
+  );
+  const recovery = await json(
+    await request.get(`/api/issues/${issueId}/recovery-actions`),
+  );
+  const actionId = recovery.active?.id ?? settled?.details?.recoveryActionId;
+  expect(actionId).toBeTruthy();
+  await json(
+    await request.post(`/api/issues/${issueId}/recovery-actions/resolve`, {
+      data: {
+        actionId,
+        outcome: "restored",
+        sourceIssueStatus: "todo",
+        executionReconciliation: {
+          runId,
+          providerStopped: true,
+          actionOutcome: "not_performed",
+          outcomeEvidence:
+            "The deterministic acceptance fixture only emits console/protocol output. The verified stopped process performed no external actions.",
+        },
+      },
+    }),
+  );
+}
+
 async function menu(page: Page, action: string) {
   await page
     .getByRole("button", { name: "More task actions", exact: true })
@@ -91,6 +129,8 @@ function processAlive(pid: number) {
     return false;
   }
 }
+
+test.setTimeout(120_000);
 
 for (const adapter of ["process", "paperclip_runner"] as const) {
   test(`${adapter}: queue, composer Stop, subtree pause/cancel, and resume`, async ({
@@ -215,7 +255,9 @@ for (const adapter of ["process", "paperclip_runner"] as const) {
       const clickedAt = Date.now();
       await stop.click();
       await expect(page.getByRole("dialog")).toHaveCount(0);
-      await expect(page.getByRole("button", { name: "Dismiss notification" })).toHaveCount(0);
+      await expect(
+        page.getByRole("button", { name: "Dismiss notification" }),
+      ).toHaveCount(0);
       for (const run of [parentRun, childRun]) {
         await expect
           .poll(
@@ -266,10 +308,16 @@ for (const adapter of ["process", "paperclip_runner"] as const) {
         (await json(await request.get(`/api/heartbeat-runs/${otherRun.id}`)))
           .status,
       ).toBe("running");
-      await expect(page.getByText("Subtree is paused.", { exact: true })).toBeVisible();
-      await expect(page.getByRole("button", { name: "Dismiss notification" })).toHaveCount(0);
+      await expect(
+        page.getByText("Subtree is paused.", { exact: true }),
+      ).toBeVisible();
+      await expect(
+        page.getByRole("button", { name: "Dismiss notification" }),
+      ).toHaveCount(0);
       if (adapter === "paperclip_runner") {
-        await expect(page.getByRole("button", { name: /^Run cancelled/ })).toHaveClass(/text-muted-foreground/);
+        await expect(
+          page.getByRole("button", { name: /^Run cancelled/ }),
+        ).toHaveClass(/text-muted-foreground/);
       }
       await page.reload();
       await expect(
@@ -291,7 +339,26 @@ for (const adapter of ["process", "paperclip_runner"] as const) {
         .getByRole("dialog")
         .getByRole("button", { name: "Resume subtree", exact: true })
         .click();
+      await expect(page.getByRole("dialog").getByRole("alert")).toContainText(
+        "until its stopped execution is reconciled",
+      );
+      expect(
+        (
+          await json(
+            await request.get(`/api/issues/${parent.id}/tree-control/state`),
+          )
+        ).activePauseHold,
+      ).toBeTruthy();
+      await page.getByRole("dialog").getByRole("checkbox").uncheck();
+      await page
+        .getByRole("dialog")
+        .getByRole("button", { name: "Resume subtree", exact: true })
+        .click();
+      await expect(page.getByRole("dialog")).toHaveCount(0);
+      await reconcileDemoExecution(request, parent.id, parentRun.id);
+      await reconcileDemoExecution(request, child.id, childRun.id);
       await running(request, parent.id, adapter);
+      await running(request, child.id, adapter);
       await menu(page, "Pause subtree");
       await expect(page.getByRole("dialog")).toHaveCount(0);
       await expect(
@@ -339,7 +406,8 @@ for (const adapter of ["process", "paperclip_runner"] as const) {
       });
       await request.patch("/api/instance/settings/experimental", {
         data: {
-          enableClassicTaskInterface: originalSettings.enableClassicTaskInterface,
+          enableClassicTaskInterface:
+            originalSettings.enableClassicTaskInterface,
           enableNativeRunner: originalSettings.enableNativeRunner,
         },
       });

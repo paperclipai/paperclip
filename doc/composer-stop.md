@@ -16,6 +16,23 @@ A saved hold with unconfirmed termination produces an error rather than a
 success claim. The cancellation dialog requires a valid preview and excludes
 terminal tasks. Resume/restore retain the optional wake-agents checkbox.
 
+## Resume and execution recovery
+
+Resume releases a hold. Waking agents is optional and only applies to tasks in
+`todo`, `in_progress`, or `in_review`; parked and terminal tasks stay untouched.
+The current execution-recovery policy requires verified outcomes before a stopped
+provider can restart. If any affected task still needs that reconciliation,
+Resume with wake enabled returns an inline error and preserves the pause. The
+operator can release the pause without waking agents, then use the existing
+execution-reconciliation flow after reviewing the stopped run. Resume does not
+claim that unknown provider actions completed or were never performed.
+
+A completed release remains successful if a best-effort wake fails. Its response
+includes optional `wakeFailures`, the page reports them inline, and remaining
+eligible tasks still receive their wake requests. No new endpoint is introduced.
+The deterministic E2E fixtures prove interruption, then record their known lack
+of external effects through the existing reconciliation API before continuing.
+
 ## Quiet task feedback
 
 The visible task/subtree does not produce duplicate state toasts. Its live

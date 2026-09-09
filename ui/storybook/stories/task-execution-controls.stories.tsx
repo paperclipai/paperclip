@@ -33,6 +33,8 @@ type ExampleProps = {
   previewLoading?: boolean;
   applying?: boolean;
   mobile?: boolean;
+  resumeBlocked?: boolean;
+  wakeFails?: boolean;
 };
 
 function TaskExecutionExample({
@@ -46,6 +48,8 @@ function TaskExecutionExample({
   previewLoading = false,
   applying = false,
   mobile = false,
+  resumeBlocked = false,
+  wakeFails = false,
 }: ExampleProps) {
   const { pushToast } = useToastActions();
   const [notificationCache] = useState(() => {
@@ -55,6 +59,9 @@ function TaskExecutionExample({
       identifier: "PAP-204",
       companyId: "demo",
       assigneeAgentId: "alex",
+    });
+    cache.setQueryData(queryKeys.issues.activeRun("PAP-204"), {
+      id: "alex-run",
     });
     cache.setQueryData(
       queryKeys.issues.listByDescendantRoot("demo", "task-parent"),
@@ -93,7 +100,9 @@ function TaskExecutionExample({
   const [state, setState] = useState(initialState);
   const [menu, setMenu] = useState(menuOpen);
   const [dialog, setDialog] = useState(confirmation);
-  const [mode, setMode] = useState<"resume" | "cancel" | "restore">("cancel");
+  const [mode, setMode] = useState<"resume" | "cancel" | "restore">(
+    resumeBlocked || wakeFails ? "resume" : "cancel",
+  );
   const [wake, setWake] = useState(true);
   const [pending, setPending] = useState(applying);
   const [cancelled, setCancelled] = useState(false);
@@ -132,13 +141,23 @@ function TaskExecutionExample({
       setError("Unable to cancel tasks. Try again.");
       return;
     }
+    if (mode === "resume" && resumeBlocked && wake) {
+      setError(
+        "Cannot wake this task until its stopped execution is reconciled. Resume without waking agents, or review the stopped run first.",
+      );
+      return;
+    }
     setDialog(false);
+    if (mode === "resume" && wakeFails && wake)
+      setError(
+        "Pause released, but 1 task could not start. Agent unavailable. Check the affected agent and try starting it again.",
+      );
     if (mode === "cancel") {
       setCancelled(true);
       setState("idle");
     } else {
       setCancelled(false);
-      setState(wake ? "running" : "idle");
+      setState(wake && !wakeFails ? "running" : "idle");
     }
   }
   return (
@@ -270,7 +289,14 @@ function TaskExecutionExample({
           })}
         />
         {error && !dialog ? (
-          <p role="alert" className="text-sm text-destructive">
+          <p
+            role="alert"
+            className={
+              wakeFails
+                ? "text-sm text-muted-foreground"
+                : "text-sm text-destructive"
+            }
+          >
             {error}
           </p>
         ) : null}
@@ -288,7 +314,7 @@ function TaskExecutionExample({
         pending={pending}
         valid={!previewLoading}
         wakeAgents={wake}
-        onWakeAgentsChange={setWake}
+        onWakeAgentsChange={(wake) => { setError(null); setWake(wake); }}
         onRetry={() => setError(null)}
         onApply={() => {
           void apply();
@@ -396,5 +422,34 @@ export const StopWithoutToasts: Story = {
     await expect(
       canvas.queryByRole("button", { name: "Dismiss notification" }),
     ).toBeNull();
+  },
+};
+
+export const ResumeNeedsReview: Story = {
+  args: { initialState: "paused", confirmation: true, resumeBlocked: true },
+  play: async () => {
+    const page = within(document.body);
+    await userEvent.click(
+      within(page.getByRole("dialog")).getByRole("button", {
+        name: "Resume subtree",
+      }),
+    );
+    await expect(await page.findByRole("alert")).toHaveTextContent(
+      "stopped execution is reconciled",
+    );
+  },
+};
+export const ResumeWakeFailure: Story = {
+  args: { initialState: "paused", confirmation: true, wakeFails: true },
+  play: async () => {
+    const page = within(document.body);
+    await userEvent.click(
+      within(page.getByRole("dialog")).getByRole("button", {
+        name: "Resume subtree",
+      }),
+    );
+    await expect(await page.findByRole("alert")).toHaveTextContent(
+      "Pause released",
+    );
   },
 };

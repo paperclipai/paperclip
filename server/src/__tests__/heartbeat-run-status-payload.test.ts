@@ -19,6 +19,11 @@ function run(status: string, resultJson: Record<string, unknown> | null) {
 }
 
 describe("buildHeartbeatRunStatusLiveEventPayload", () => {
+  it("identifies the task after its live-run cache entry has disappeared", () => {
+    expect(buildHeartbeatRunStatusLiveEventPayload({
+      ...run("cancelled", null), contextSnapshot: { issueId: "task-1" },
+    }).issueId).toBe("task-1");
+  });
   it("attaches the canonical final assistant text to terminal status events", () => {
     expect(
       buildHeartbeatRunStatusLiveEventPayload(
