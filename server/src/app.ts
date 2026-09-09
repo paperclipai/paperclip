@@ -47,6 +47,7 @@ import { journalRoutes } from "./routes/journal.js";
 import { meditationRoutes } from "./routes/meditation.js";
 import { habitsRoutes } from "./routes/habits.js";
 import { annotationRoutes } from "./routes/annotations.js";
+import { solarisAlertRoutes } from "./routes/solaris-alerts.js";
 import { estateRoutes } from "./routes/estate.js";
 import { applyUiBranding } from "./ui-branding.js";
 import { logger } from "./middleware/logger.js";
@@ -181,6 +182,7 @@ export async function createApp(
   api.use(meditationRoutes(db));
   api.use(habitsRoutes(db));
   api.use(annotationRoutes(db));
+  api.use(solarisAlertRoutes(db));
   api.use(estateRoutes(db));
   api.use("/companies", companyRoutes(db, opts.storageService));
   api.use(companySkillRoutes(db));

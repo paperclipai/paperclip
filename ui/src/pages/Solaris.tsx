@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Map, Wifi, WifiOff } from "lucide-react";
+import { Bell, Map, Settings, Wifi, WifiOff } from "lucide-react";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { PageSkeleton } from "../components/PageSkeleton";
@@ -18,6 +18,9 @@ import { viewportToBBox } from "../components/annotations/viewport-utils";
 import type { DrawTool, ViewportState } from "../components/annotations/types";
 import type { Annotation, GeoJsonGeometry } from "../api/annotations";
 import { useToast } from "../context/ToastContext";
+import { AlertsPanel } from "../components/solaris/AlertsPanel";
+import { OrgSettings } from "../components/solaris/OrgSettings";
+import { useSolarisOrgs } from "../hooks/useSolarisAlerts";
 
 // Default center: Los Angeles area (Solaris wildfire monitoring region)
 const DEFAULT_CENTER_LNG = -118.25;
@@ -143,6 +146,10 @@ export function Solaris() {
   const deleteAnnotation = useDeleteAnnotation();
   const { pushToast } = useToast();
 
+  // Right panel tab state.
+  const [rightPanel, setRightPanel] = useState<"alerts" | "orgs" | null>("alerts");
+  const { data: orgs = [] } = useSolarisOrgs(companyId);
+
   // WebSocket — reconnects when debouncedBBox changes (FIX #1).
   const { status: wsStatus } = useAnnotationWebSocket(
     companyId,
@@ -222,20 +229,38 @@ export function Solaris() {
           <span className="text-[11px] text-muted-foreground">
             {viewport.scale.toFixed(0)}px/° · {viewport.centerLat.toFixed(3)}°N {Math.abs(viewport.centerLng).toFixed(3)}°W
           </span>
+          <div className="flex rounded border border-border overflow-hidden">
+            <button
+              className={`flex items-center gap-1 px-2 py-1 text-[11px] transition-colors ${rightPanel === "alerts" ? "bg-muted text-foreground" : "text-muted-foreground hover:text-foreground"}`}
+              onClick={() => setRightPanel((p) => p === "alerts" ? null : "alerts")}
+              title="CAP Alerts"
+            >
+              <Bell className="h-3 w-3" /> Alerts
+            </button>
+            <button
+              className={`flex items-center gap-1 px-2 py-1 text-[11px] transition-colors border-l border-border ${rightPanel === "orgs" ? "bg-muted text-foreground" : "text-muted-foreground hover:text-foreground"}`}
+              onClick={() => setRightPanel((p) => p === "orgs" ? null : "orgs")}
+              title="Org Settings"
+            >
+              <Settings className="h-3 w-3" /> Orgs
+            </button>
+          </div>
         </div>
       </div>
 
-      {/* Map viewport */}
-      <div
-        ref={containerRef}
-        className="relative flex-1 bg-zinc-900 overflow-hidden select-none"
-        style={{ cursor: panRef.current ? "grabbing" : activeTool === "select" ? "grab" : "crosshair" }}
-        onMouseDown={activeTool === "select" ? handleMouseDown : undefined}
-        onMouseMove={activeTool === "select" ? handleMouseMove : undefined}
-        onMouseUp={activeTool === "select" ? handleMouseUp : undefined}
-        onMouseLeave={activeTool === "select" ? handleMouseUp : undefined}
-        onWheel={handleWheel}
-      >
+      {/* Main content: map + optional right panel */}
+      <div className="flex flex-1 min-h-0">
+        {/* Map viewport */}
+        <div
+          ref={containerRef}
+          className="relative flex-1 bg-zinc-900 overflow-hidden select-none"
+          style={{ cursor: panRef.current ? "grabbing" : activeTool === "select" ? "grab" : "crosshair" }}
+          onMouseDown={activeTool === "select" ? handleMouseDown : undefined}
+          onMouseMove={activeTool === "select" ? handleMouseMove : undefined}
+          onMouseUp={activeTool === "select" ? handleMouseUp : undefined}
+          onMouseLeave={activeTool === "select" ? handleMouseUp : undefined}
+          onWheel={handleWheel}
+        >
         {/* Grid / map background */}
         <MapBackground viewport={viewport} />
 
@@ -313,6 +338,15 @@ export function Solaris() {
             −
           </button>
         </div>
+        </div>
+
+        {/* Right panel: alerts or org settings */}
+        {rightPanel !== null && companyId && (
+          <div className="w-80 shrink-0 border-l border-border bg-background overflow-y-auto p-4">
+            {rightPanel === "alerts" && <AlertsPanel companyId={companyId} orgs={orgs} />}
+            {rightPanel === "orgs" && <OrgSettings companyId={companyId} />}
+          </div>
+        )}
       </div>
     </div>
   );

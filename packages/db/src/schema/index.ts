@@ -103,3 +103,4 @@ export { journalEntries } from "./journal_entries.js";
 export { meditationLogs } from "./meditation_logs.js";
 export { habitDefinitions, habitCompletions } from "./habits.js";
 export { annotations, annotationTypeEnum, annotationSeverityEnum, annotationVisibilityEnum } from "./annotations.js";
+export { solarisOrgs, solarisAlerts, alertSeverityEnum, alertDispatchStatusEnum } from "./solaris_alerts.js";

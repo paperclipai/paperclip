@@ -547,6 +547,13 @@
       "when": 1757520000000,
       "tag": "0077_annotations",
       "breakpoints": true
+    },
+    {
+      "idx": 78,
+      "version": "7",
+      "when": 1788961187127,
+      "tag": "0078_alert_localization",
+      "breakpoints": true
     }
   ]
 }
