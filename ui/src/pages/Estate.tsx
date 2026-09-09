@@ -1,7 +1,7 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Landmark, Home, TrendingUp, Car, Gem, Cpu, Package, AlertCircle, CheckCircle2, Circle, Users, Shield, Receipt, PiggyBank } from "lucide-react";
-import { estateApi, type AssetType, type PlanStatusCheckKey, type PlanStatusResult, type NetWorthProjectionResult, type EstateBeneficiary, type EstateTrust, type EstateTaxSummary, type EstateReview, type RmdSummary, type PropertyTaxBill, type ValuationReminder, type DocumentAlert } from "../api/estate";
+import { estateApi, type AssetType, type PlanStatusCheckKey, type PlanStatusResult, type NetWorthProjectionResult, type EstateBeneficiary, type EstateTrust, type EstateTaxSummary, type EstateReview, type RmdSummary, type PropertyTaxBill, type ValuationReminder, type DocumentAlert, type EstateCollaborator, type CollaboratorAccessLevel } from "../api/estate";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { EmptyState } from "../components/EmptyState";
@@ -822,6 +822,139 @@ function PropertyTaxSection({
   );
 }
 
+function CollaboratorsSection({
+  collaborators,
+  estateId,
+}: {
+  collaborators: EstateCollaborator[];
+  estateId: string;
+}) {
+  const queryClient = useQueryClient();
+  const [showInvite, setShowInvite] = useState(false);
+  const [email, setEmail] = useState("");
+  const [accessLevel, setAccessLevel] = useState<CollaboratorAccessLevel>("read");
+  const [formError, setFormError] = useState<string | null>(null);
+
+  const inviteMutation = useMutation({
+    mutationFn: (data: { email: string; accessLevel: CollaboratorAccessLevel }) =>
+      estateApi.inviteCollaborator(estateId, data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["estate", "collaborators", estateId] });
+      setShowInvite(false);
+      setEmail("");
+      setAccessLevel("read");
+      setFormError(null);
+    },
+    onError: () => setFormError("Failed to send invite. Please try again."),
+  });
+
+  const revokeMutation = useMutation({
+    mutationFn: ({ id }: { id: string }) => estateApi.revokeCollaborator(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["estate", "collaborators", estateId] });
+    },
+  });
+
+  function handleInvite() {
+    setFormError(null);
+    if (!email.trim() || !email.includes("@")) {
+      setFormError("A valid email address is required.");
+      return;
+    }
+    inviteMutation.mutate({ email: email.trim(), accessLevel });
+  }
+
+  return (
+    <div className="rounded-lg border border-border bg-card overflow-hidden">
+      <div className="px-4 py-3 border-b border-border bg-muted/30 flex items-center gap-2">
+        <Users className="h-3.5 w-3.5 text-muted-foreground" />
+        <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+          Collaborators
+        </p>
+        <span className="ml-auto flex items-center gap-2">
+          <span className="text-xs text-muted-foreground">{collaborators.length} invited</span>
+          <button
+            onClick={() => setShowInvite((v) => !v)}
+            className="text-xs font-medium text-primary hover:underline"
+          >
+            {showInvite ? "Cancel" : "+ Invite"}
+          </button>
+        </span>
+      </div>
+
+      {showInvite && (
+        <div className="px-4 py-3 border-b border-border bg-muted/20 space-y-2">
+          <div className="flex gap-2">
+            <input
+              type="email"
+              placeholder="advisor@example.com"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              className="flex-1 rounded-md border border-border bg-background px-3 py-1.5 text-sm"
+            />
+            <select
+              value={accessLevel}
+              onChange={(e) => setAccessLevel(e.target.value as CollaboratorAccessLevel)}
+              className="rounded-md border border-border bg-background px-2 py-1.5 text-sm"
+            >
+              <option value="read">Read</option>
+              <option value="read_write">Read & Write</option>
+            </select>
+            <button
+              onClick={handleInvite}
+              disabled={inviteMutation.isPending}
+              className="rounded-md bg-primary text-primary-foreground px-3 py-1.5 text-sm font-medium hover:bg-primary/90 disabled:opacity-50"
+            >
+              {inviteMutation.isPending ? "Sending…" : "Send"}
+            </button>
+          </div>
+          {formError && <p className="text-xs text-destructive">{formError}</p>}
+        </div>
+      )}
+
+      {collaborators.length === 0 ? (
+        <div className="px-4 py-8 text-center text-sm text-muted-foreground">
+          No collaborators invited yet.
+        </div>
+      ) : (
+        <div className="divide-y divide-border">
+          {collaborators.map((c) => {
+            const accepted = !!c.acceptedAt;
+            const expired = c.expiresAt ? new Date(c.expiresAt) < new Date() : false;
+            return (
+              <div key={c.id} className="px-4 py-3 flex items-center gap-3">
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-medium truncate">{c.email}</p>
+                  <div className="flex items-center gap-2 mt-0.5">
+                    <span className="text-xs text-muted-foreground">
+                      {c.accessLevel === "read_write" ? "Read & Write" : "Read only"}
+                    </span>
+                    {accepted ? (
+                      <span className="text-xs px-1.5 py-0.5 rounded font-medium bg-green-100/80 text-green-700">Accepted</span>
+                    ) : expired ? (
+                      <span className="text-xs px-1.5 py-0.5 rounded font-medium bg-red-100/80 text-red-700">Expired</span>
+                    ) : (
+                      <span className="text-xs px-1.5 py-0.5 rounded font-medium bg-yellow-100/80 text-yellow-700">Pending</span>
+                    )}
+                  </div>
+                </div>
+                <button
+                  onClick={() => revokeMutation.mutate({ id: c.id })}
+                  disabled={revokeMutation.isPending}
+                  className="shrink-0 text-xs text-muted-foreground hover:text-destructive transition-colors disabled:opacity-50"
+                  title="Revoke access"
+                >
+                  Revoke
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function Estate() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
@@ -870,6 +1003,13 @@ export function Estate() {
   const trustsQuery = useQuery({
     queryKey: ["estate", "trusts", primaryEstateId],
     queryFn: () => estateApi.listTrusts(primaryEstateId!),
+    enabled: !!primaryEstateId,
+    staleTime: 5 * 60 * 1000,
+  });
+
+  const collaboratorsQuery = useQuery({
+    queryKey: ["estate", "collaborators", primaryEstateId],
+    queryFn: () => estateApi.listCollaborators(primaryEstateId!),
     enabled: !!primaryEstateId,
     staleTime: 5 * 60 * 1000,
   });
@@ -1109,6 +1249,14 @@ export function Estate() {
         <DocumentAlertsSection
           alerts={documentAlertsQuery.data.alerts}
           companyId={selectedCompanyId}
+        />
+      )}
+
+      {/* Collaborators */}
+      {collaboratorsQuery.data && primaryEstateId && (
+        <CollaboratorsSection
+          collaborators={collaboratorsQuery.data.collaborators}
+          estateId={primaryEstateId}
         />
       )}
     </div>

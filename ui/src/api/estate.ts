@@ -191,6 +191,23 @@ export interface EstateBeneficiary {
   updatedAt: string;
 }
 
+export type CollaboratorAccessLevel = "read" | "read_write";
+
+export interface EstateCollaborator {
+  id: string;
+  estateId: string;
+  companyId: string;
+  advisorUserId: string | null;
+  invitedByUserId: string;
+  email: string;
+  accessLevel: CollaboratorAccessLevel;
+  inviteToken: string;
+  acceptedAt: string | null;
+  expiresAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export type DocumentAlertType = "insurance_renewal" | "lease_expiration" | "appraisal_due" | "license_expiration" | "tax_filing_deadline" | "other";
 export type DocumentAlertStatus = "active" | "dismissed" | "expired";
 
@@ -361,4 +378,13 @@ export const estateApi = {
     api.patch<DocumentAlert>(`/estate/document-alerts/${id}`, body),
 
   deleteDocumentAlert: (id: string) => api.delete<void>(`/estate/document-alerts/${id}`),
+
+  listCollaborators: (estateId: string) =>
+    api.get<{ collaborators: EstateCollaborator[] }>(`/estates/${estateId}/collaborators`),
+
+  inviteCollaborator: (estateId: string, data: { email: string; accessLevel?: CollaboratorAccessLevel }) =>
+    api.post<EstateCollaborator>(`/estates/${estateId}/collaborators`, data),
+
+  revokeCollaborator: (collaboratorId: string) =>
+    api.delete<void>(`/estate/collaborators/${collaboratorId}`),
 };
