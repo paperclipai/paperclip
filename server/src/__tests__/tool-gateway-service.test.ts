@@ -1487,6 +1487,62 @@ describeEmbeddedPostgres("tool gateway service", () => {
     expect(resolvedGrants).toHaveLength(3);
   });
 
+  it.each([false, true])("reselects a duplicate only before GitHub dispatch (upstream failure: %s)", async (upstreamFailure) => {
+    const { company, agent, issue, run } = await createRunFixture(db);
+    const first = await createRemoteMcpToolFixture(db, company.id);
+    await db.update(toolApplications).set({ name: "Older GitHub" }).where(eq(toolApplications.id, first.application.id));
+    const fixtures = [first, await createRemoteMcpToolFixture(db, company.id)];
+    const grants = [];
+    for (const [index, { connection }] of fixtures.entries()) {
+      const secret = await secretService(db).create(company.id, {
+        provider: "local_encrypted", name: `GitHub ${index}`, key: `github.${randomUUID()}`, value: `token-${index}`,
+      });
+      await db.insert(companySecretBindings).values({ companyId: company.id, secretId: secret.id,
+        targetType: "tool_connection", targetId: connection.id, configPath: "oauth.access_token" });
+      await db.update(toolConnections).set({ authKind: "oauth", credentialSource: "paperclip_vault",
+        config: { ...connection.config, sourceTemplateKey: "github" },
+      }).where(eq(toolConnections.id, connection.id));
+      await db.insert(toolConnectionInstalls).values({ companyId: company.id,
+        connectionId: connection.id, targetType: "agent", targetId: agent.id });
+      const [grant] = await db.insert(connectionGrants).values({ companyId: company.id,
+        connectionId: connection.id, kind: "agent", subjectAgentId: agent.id, status: "active",
+        createdAt: new Date(index === 0 ? "2026-01-01" : "2026-02-01"),
+        credentialSecretRefs: [{ secretId: secret.id, configPath: "oauth.access_token", versionSelector: "latest" }],
+        providerTenant: { github: { userId: "42", login: "octocat", installationCount: 1,
+          repositoryCount: 1, repositorySelection: "all", installationIds: ["101"] } },
+      }).returning();
+      grants.push(grant!);
+    }
+    await initializeRunIdentity(db, { companyId: company.id, runId: run.id, issueId: issue.id,
+      responsibleUserId: "A", cause: "instruction" });
+    await db.insert(toolPolicies).values({ companyId: company.id, name: "Allow reads",
+      policyType: "allow", selectors: { riskLevel: "read" } });
+    const refreshed: string[] = [];
+    const dispatched = vi.fn(async (_url: string, init: RequestInit) => {
+      expect(new Headers(init.headers).get("authorization")).toBe(`Bearer token-${upstreamFailure ? 1 : 0}`);
+      return new Response(JSON.stringify({ jsonrpc: "2.0", id: JSON.parse(String(init.body)).id,
+        result: { content: [{ type: "text", text: "ok" }] } }),
+      { status: upstreamFailure ? 500 : 200, headers: { "content-type": "application/json" } });
+    });
+    const gateway = createTestToolGatewayService(db, {
+      oauthGrantRefresher: async ({ grantId }) => {
+        refreshed.push(grantId);
+        if (!upstreamFailure && grantId === grants[1]!.id) {
+          await db.update(connectionGrants).set({ status: "revoked" }).where(eq(connectionGrants.id, grantId));
+          throw new Error("refresh invalidated the selected authorization");
+        }
+        return grants.find(grant => grant.id === grantId)!;
+      }, remoteHttpRequest: dispatched,
+    });
+    const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+    const tool = (await gateway.listToolsForSession(session.token)).find(t => t.providerType === "mcp_remote_http")!;
+    const execution = gateway.executeTool({ sessionToken: session.token, tool: tool.name, parameters: {} });
+    if (upstreamFailure) await expect(execution).rejects.toMatchObject({ status: 502 });
+    else expect((await execution).status).toBe("completed");
+    expect(dispatched).toHaveBeenCalledTimes(1);
+    expect(refreshed).toEqual(upstreamFailure ? [grants[1]!.id] : [grants[1]!.id, grants[0]!.id]);
+  });
+
   it("refreshes a customer OAuth grant once and retries after an upstream 401", async () => {
     const { company, agent, run } = await createRunFixture(db);
     const { connection } = await createRemoteMcpToolFixture(db, company.id);

@@ -141,6 +141,32 @@ function render(ui: ReactElement) {
   );
 }
 
+it("coordinates first reveal while keeping the composer and visible history mounted through refresh", async () => {
+  const props = { issueId: "coordinated-issue", comments: [], onAdd: async () => {} };
+  render(<TaskChatThread {...props} initialHistoryPending />);
+  const composer = container.querySelector('[data-testid="mock-editor"]');
+  expect(composer).not.toBeNull();
+  expect(container.querySelector('[aria-busy="true"]')).not.toBeNull();
+  render(<TaskChatThread {...props} initialHistoryPending={false} />);
+  await act(async () => { await new Promise((resolve) => requestAnimationFrame(resolve)); });
+  expect(container.querySelector('[aria-busy="false"]')).not.toBeNull();
+  expect(container.querySelector('[data-testid="mock-editor"]')).toBe(composer);
+  render(<TaskChatThread {...props} initialHistoryPending />);
+  expect(container.querySelector('[data-testid="task-chat-history-loading"]')).toBeNull();
+  expect(container.querySelector('[data-testid="mock-editor"]')).toBe(composer);
+});
+
+it("keeps an acknowledged optimistic bubble mounted with its canonical comment target", () => {
+  const comment = { companyId: "company", issueId: "issue", authorAgentId: null, presentation: null, metadata: null, updatedAt: new Date("2026-09-09T12:00:00Z"), id: "optimistic-one", clientId: "optimistic-one", body: "Keep this message in place", authorType: "user" as const, authorUserId: "board", createdAt: new Date("2026-09-09T12:00:00Z") };
+  render(<TaskChatThread comments={[comment]} onAdd={async () => {}} />);
+  const row = container.querySelector('[data-thread-anchor="optimistic-one"]');
+  expect(row).not.toBeNull();
+  render(<TaskChatThread comments={[{ ...comment, id: "canonical-one" }]} onAdd={async () => {}} />);
+  expect(container.querySelector('[data-thread-anchor="optimistic-one"]')).toBe(row);
+  expect(row?.id).toBe("comment-canonical-one");
+  expect(container.textContent?.match(/Keep this message in place/g)).toHaveLength(1);
+});
+
 function fakeScrollGeometry(
   element: HTMLElement,
   { scrollHeight = 1000, clientHeight = 400, scrollTop = 600 } = {},

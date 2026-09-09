@@ -15,7 +15,9 @@ import type {
   TaskChatThinkingItem,
   TaskChatToolItem,
 } from "./task-chat-model";
-import { TaskChatAgentIdentity } from "./TaskChatBubble";
+import { TaskChatAgentIdentity, TaskChatBubble } from "./TaskChatBubble";
+import { TaskChatBubbleActions } from "./TaskChatBubbleActions";
+import { formatTaskChatTimestamp } from "./task-chat-adapter";
 import { TaskChatActivityPhase } from "./TaskChatActivityPhase";
 import { TaskChatProtocolActivityRow } from "./TaskChatProtocolActivityRow";
 import { TaskChatProtocolCard } from "./TaskChatProtocolCard";
@@ -238,7 +240,7 @@ function RunnerActivityTimeline({ items }: { items: readonly TaskChatItem[] }) {
           <li className="min-w-0" key={item.id} data-activity-item-id={item.id}>
             {item.kind === "message" ? (
               <div
-                className="tc-enter-cot-line min-w-0 px-1 text-sm text-foreground/90"
+                className="min-w-0 px-1 text-sm text-foreground/90"
                 data-testid="task-chat-activity-commentary"
               >
                 <MarkdownBody softBreaks linkIssueReferences>
@@ -562,6 +564,7 @@ export function TaskChatRunnerTurn({
               key={`${runId ?? "run"}:${row.id}`}
               data-testid="task-chat-turn-timeline-row"
               data-timeline-row-id={row.id}
+              data-thread-anchor={row.id}
             >
               {row.kind === "activity_phase" ? (
                 <TaskChatActivityPhase
@@ -595,20 +598,18 @@ export function TaskChatRunnerTurn({
       ) : null}
       {final ? (
         <div
-          className="tc-enter-bubble w-full"
+          className="w-full"
           data-testid="task-chat-final-response"
         >
-          <div
-            className="break-words px-1 py-2 text-sm text-foreground"
-            data-testid="task-chat-agent-bubble"
-          >
-            <MarkdownBody softBreaks linkIssueReferences>
-              {final.text}
-            </MarkdownBody>
-          </div>
+          <TaskChatBubble
+            item={{ ...final, authorName: agentName ?? undefined, agentIcon, timestamp: final.timestamp ?? formatTaskChatTimestamp(final.atMs) }}
+            animateEntry={false}
+            hideAgentIdentity={!continuedAfterSteering}
+            actions={<TaskChatBubbleActions copyText={final.text} />}
+          />
         </div>
       ) : null}
-      {(!execution || execution.phase === "working") ? <RunnerCurrentActivityTail items={currentActivityItems} status={status} /> : null}
+      {!final && (!execution || execution.phase === "working") ? <RunnerCurrentActivityTail items={currentActivityItems} status={status} /> : null}
     </div>
   );
 }

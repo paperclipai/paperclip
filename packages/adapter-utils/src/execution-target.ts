@@ -1,4 +1,6 @@
 import fs from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -1567,6 +1569,118 @@ async function githubOperationLauncherBasePath(
     throw new Error("Could not resolve remote PATH for managed GitHub launchers");
   }
   return remotePath;
+}
+
+/** Read only execution-target Git context; never import the controller's credentials into SSH. */
+export async function prepareGitHubExecutionEnvironment(input: {
+  target: AdapterExecutionTarget | null | undefined;
+  cwd: string;
+  env: Record<string, string>;
+  hostCredentials: boolean;
+  networkAccess: boolean;
+}): Promise<Record<string, string>> {
+  const script = String.raw`
+const fs = require('node:fs');
+const path = require('node:path');
+const cp = require('node:child_process');
+const env = {};
+env.PAPERCLIP_RUNNER_NETWORK_ROOTS = JSON.stringify(['/etc/resolv.conf','/etc/hosts','/etc/nsswitch.conf','/etc/ssl/certs','/etc/ssl/cert.pem'].flatMap(p => { try { return [fs.realpathSync(p)]; } catch { return []; } }));
+if (process.argv[1] === 'host') {
+  for (const [key, value] of Object.entries(process.env)) {
+    if (/^(GH_TOKEN|GITHUB_TOKEN|GH_ENTERPRISE_TOKEN|GITHUB_ENTERPRISE_TOKEN|PAPERCLIP_GIT_TOKEN|GH_CONFIG_DIR|GIT_CONFIG_(GLOBAL|SYSTEM|NOSYSTEM|COUNT|KEY_\d+|VALUE_\d+)|GIT_(AUTHOR|COMMITTER)_(NAME|EMAIL)|GIT_ASKPASS|SSH_ASKPASS|SSH_AUTH_SOCK|GIT_SSH_COMMAND|GIT_SSH)$/.test(key)) env[key] = value;
+  }
+  env.PAPERCLIP_GITHUB_HOST_HOME = process.env.HOME || '';
+  env.GH_CONFIG_DIR ||= path.join(process.env.XDG_CONFIG_HOME || path.join(process.env.HOME || '', '.config'), 'gh');
+}
+try {
+  const top = cp.execFileSync('git', ['rev-parse', '--show-toplevel'], {encoding:'utf8',stdio:['ignore','pipe','ignore']}).trim();
+  if (fs.realpathSync(top) === fs.realpathSync(process.cwd())) {
+    env.PAPERCLIP_GIT_METADATA_ROOTS = JSON.stringify(cp.execFileSync('git', ['rev-parse','--path-format=absolute','--git-common-dir','--git-dir'], {encoding:'utf8',stdio:['ignore','pipe','ignore']}).trim().split('\n').map(p => fs.realpathSync(p)));
+  }
+} catch {}
+process.stdout.write("\0" + JSON.stringify(env) + "\0");
+`;
+  const args = ["-e", script, input.hostCredentials ? "host" : "managed"];
+  const remote = input.target?.kind === "remote" ? input.target : null;
+  let discovered: Record<string, string>;
+  if (remote) {
+    // A legacy SSH host may run a standalone agent binary without Node. Use
+    // only the shell and Git, and emit bounded, NUL-framed environment records.
+    const probe = String.raw`
+printf '\0PAPERCLIP_GIT_CONTEXT_V1\0'
+if [ "$1" = host ]; then
+  for key in GH_TOKEN GITHUB_TOKEN GH_ENTERPRISE_TOKEN GITHUB_ENTERPRISE_TOKEN PAPERCLIP_GIT_TOKEN GH_CONFIG_DIR GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM GIT_CONFIG_NOSYSTEM GIT_CONFIG_COUNT GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL GIT_ASKPASS SSH_ASKPASS SSH_AUTH_SOCK GIT_SSH_COMMAND GIT_SSH; do
+    eval 'value=${"$"}{'"$key"'-}'
+    [ -z "$value" ] || printf '%s\0%s\0' "$key" "$value"
+  done
+  index=0
+  while [ "$index" -lt 32 ]; do
+    for prefix in GIT_CONFIG_KEY_ GIT_CONFIG_VALUE_; do
+      key="$prefix$index"
+      eval 'value=${"$"}{'"$key"'-}'
+      [ -z "$value" ] || printf '%s\0%s\0' "$key" "$value"
+    done
+    index=$((index + 1))
+  done
+  printf 'PAPERCLIP_GITHUB_HOST_HOME\0%s\0' "$HOME"
+  printf 'GH_CONFIG_DIR\0%s\0' "${"$"}{GH_CONFIG_DIR:-${"$"}{XDG_CONFIG_HOME:-$HOME/.config}/gh}"
+fi
+for file in /etc/resolv.conf /etc/hosts /etc/nsswitch.conf /etc/ssl/certs /etc/ssl/cert.pem; do
+  index=0
+  while [ -L "$file" ] && [ "$index" -lt 40 ]; do
+    target=$(readlink "$file") || break
+    case "$target" in /*) file="$target" ;; *) file="$(dirname "$file")/$target" ;; esac
+    index=$((index + 1))
+  done
+  if [ -e "$file" ]; then
+    parent=$(cd "$(dirname "$file")" && pwd -P) || continue
+    printf 'PAPERCLIP_RUNNER_NETWORK_ROOT\0%s\0' "$parent/$(basename "$file")"
+  fi
+done
+cwd=$(pwd -P)
+top=$(git rev-parse --show-toplevel 2>/dev/null) || top=
+if [ -n "$top" ] && [ "$(cd "$top" && pwd -P)" = "$cwd" ]; then
+  for kind in --git-common-dir --git-dir; do
+    root=$(git rev-parse --path-format=absolute "$kind" 2>/dev/null) || continue
+    root=$(cd "$root" && pwd -P) || continue
+    printf 'PAPERCLIP_GIT_METADATA_ROOT\0%s\0' "$root"
+  done
+fi
+printf '\0PAPERCLIP_GIT_CONTEXT_END\0'
+`;
+    const result = await adapterExecutionTargetCommandRunner(remote).execute({
+      command: "sh", args: ["-c", probe, "paperclip-git-context", input.hostCredentials ? "host" : "managed"],
+      cwd: input.cwd, timeoutMs: 15_000,
+    });
+    if (result.exitCode !== 0) throw new Error("Could not read execution-target Git context");
+    const payload = result.stdout.split("\0PAPERCLIP_GIT_CONTEXT_V1\0")[1]?.split("\0PAPERCLIP_GIT_CONTEXT_END\0")[0];
+    if (payload === undefined) throw new Error("Could not read execution-target Git context");
+    discovered = {};
+    const records = payload.split("\0");
+    const roots: string[] = [];
+    const networkRoots: string[] = [];
+    for (let index = 0; index + 1 < records.length; index += 2) {
+      const key = records[index]!;
+      const value = records[index + 1]!;
+      if (key === "PAPERCLIP_GIT_METADATA_ROOT") roots.push(value);
+      else if (key === "PAPERCLIP_RUNNER_NETWORK_ROOT") networkRoots.push(value);
+      else discovered[key] = value;
+    }
+    discovered.PAPERCLIP_GIT_METADATA_ROOTS = JSON.stringify([...new Set(roots)]);
+    discovered.PAPERCLIP_RUNNER_NETWORK_ROOTS = JSON.stringify([...new Set(networkRoots)]);
+  } else {
+    const result = await promisify(execFile)(process.execPath, args, { cwd: input.cwd, timeout: 15_000, maxBuffer: 1024 * 1024 });
+    try { discovered = JSON.parse(result.stdout.split("\0")[1] ?? ""); }
+    catch { throw new Error("Could not read execution-target Git context"); }
+  }
+  // Controller-derived roots and mode must not be replaced by agent bindings.
+  return { ...discovered, ...input.env,
+    ...(input.hostCredentials ? { PAPERCLIP_GITHUB_HOST_HOME: discovered.PAPERCLIP_GITHUB_HOST_HOME } : {}),
+    PAPERCLIP_GIT_METADATA_ROOTS: discovered.PAPERCLIP_GIT_METADATA_ROOTS ?? "[]",
+    PAPERCLIP_RUNNER_NETWORK_ROOTS: discovered.PAPERCLIP_RUNNER_NETWORK_ROOTS ?? "[]",
+    PAPERCLIP_GITHUB_AUTH_MODE: input.hostCredentials ? "host" : "managed",
+    PAPERCLIP_RUNNER_NETWORK_ACCESS: input.networkAccess ? "enabled" : "disabled",
+  };
 }
 
 /** Stage token-free launchers next to the execution, not in shared global Git config. */

@@ -12,7 +12,7 @@ Delegated work and interactions persist their originating context. Retries retai
 
 ## Managed GitHub operations
 
-New executions receive token-free `git` and `gh` launchers and a run-scoped capability. Each launcher invocation requests the active context through the authenticated runtime transport and resolves one eligible credential at operation start. A `gh` command's child Git processes inherit that command's captured identity. Later steering does not change already-started operations. When a subsequent run resumes a settled native conversation, the controller starts a fresh provider process with that run’s capability and rebinds its token-free launcher paths. The durable conversation and protected provider settings remain unchanged. Local and remote durable runners complete their bounded suspension before the controller releases the session for the next run, so a queued continuation cannot race unfinished cleanup.
+Executions with managed GitHub configured receive token-free `git` and `gh` launchers and a run-scoped capability. Each launcher invocation requests the active context through the authenticated runtime transport and resolves one eligible credential at operation start. A `gh` command's child Git processes inherit that command's captured identity. Later steering does not change already-started operations. When a subsequent run resumes a settled native conversation, the controller starts a fresh provider process with that run’s capability and rebinds its token-free launcher paths. The durable conversation and protected provider settings remain unchanged. Local and remote durable runners complete their bounded suspension before the controller releases the session for the next run, so a queued continuation cannot race unfinished cleanup.
 
 The broker endpoint rejects browser origins and session cookies, validates a distinct signed runtime scope, and rechecks the company, agent, and live run. Sandboxes relay the capability through the existing authenticated callback bridge. Tokens are returned only to the managed command process. They are not persisted in identity history or injected into the long-lived provider process.
 
@@ -31,6 +31,41 @@ provider's default environment cannot pass the launch check. Failed path
 discovery stops startup instead of silently falling back to a minimal path.
 
 Scripts that previously read a persistent `GH_TOKEN` must use managed `git`, `gh`, or GitHub gateway tools. Managed execution skips legacy GitHub token bindings in agent, environment, project, and routine configuration before secret preflight. Configure personal or dedicated access through the GitHub connection instead. Directly invoking an unmanaged executable or retaining a token obtained during an earlier invocation is outside the managed invocation contract.
+
+## Legacy hosts and networking
+
+When no managed GitHub connection is installed for an agent, standard-trust
+local and SSH executions retain that execution host's existing Git and GitHub
+CLI credentials, configuration, credential helpers, and SSH agent. Paperclip
+does not import controller credentials into an SSH target. Sandbox, plugin,
+and low-trust executions do not receive this compatibility fallback. Once a
+managed connection is configured, unavailable or revoked access never falls
+back to host authentication. Switching modes replaces the provider process
+while preserving the settled conversation.
+
+Runner network access is independent of GitHub credentials. The controller
+enables networking for standard-trust execution. Low-trust runs and runners
+without a controller network decision retain a restricted default. An operator
+can set `PAPERCLIP_RUNNER_NETWORK_ACCESS=disabled` to restrict normal execution;
+user environment bindings cannot override that decision. Outer execution-
+environment network restrictions still apply. The controller projects the assigned worktree's Git metadata paths so
+Git can operate without exposing unrelated workspace or provider state. The
+sandbox also receives read access to validated provider executable resources
+and the target host's DNS and CA files, including resolver symlink targets
+outside `/etc`. Provider credential directories remain isolated.
+
+A managed broker outage does not prevent local Git operations. Launchers clear
+credentials and run the command without authentication, with a redacted error
+category identifying configuration setup, transport, or capability rejection.
+They do not retain a previous operation's token or replay a GitHub operation.
+
+Healthy eligible grants for the same stable GitHub account ID take precedence
+over duplicates with failed health checks. Credential acquisition can retry
+once against another grant for that same principal and account, before any
+GitHub operation begins. Run identity diagnostics include the selected
+connection and grant IDs, without credential values. Access-refresh conflicts
+retry once against current state and never turn a concurrency conflict into
+a reconnect requirement.
 
 ## Dedicated accounts and diagnostics
 

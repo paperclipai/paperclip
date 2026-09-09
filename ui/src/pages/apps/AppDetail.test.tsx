@@ -1172,6 +1172,17 @@ describe("AppDetail", () => {
     expect(container.textContent).toContain("Which agents can use this connection?");
   });
 
+  it("offers retry for a transient GitHub error without asking for another login", async () => {
+    mockParams.tab = "permissions";
+    getConnectionMock.mockResolvedValue(connection({
+      authKind: "oauth", healthStatus: "error", requiresReauthorization: false,
+      healthMessage: "GitHub access changed during refresh. Try again.",
+    }));
+    await renderAppDetail();
+    expect(container.textContent).toContain("Retry access");
+    expect(container.textContent).not.toContain("Reconnect required");
+  });
+
   it("shows terminal OAuth failures as reconnect-required sign-in", async () => {
     mockParams.tab = "permissions";
     getConnectionMock.mockResolvedValue(connection({

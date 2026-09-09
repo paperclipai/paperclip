@@ -3404,11 +3404,18 @@ describe("native warm session supervision", () => {
     expect(close).not.toHaveBeenCalled();
   });
 
-  it.each([false, true].flatMap((useBroker) =>
+  it.each([...[false, true].flatMap((useBroker) =>
     [false, true].flatMap((projectless) =>
-      [false, true].map((local) => ({ useBroker, projectless, local })),
+      [false, true].map((local) => ({ useBroker, projectless, local, firstMode: "host", secondMode: "host" })),
     ),
-  ))("verifies a live warm owner before refreshing run authority (broker: $useBroker, projectless: $projectless, local: $local)", async ({ useBroker, projectless, local }) => {
+  ), ...["host", "managed"].flatMap((firstMode) => [false, true].map((local) => ({
+    useBroker: false, projectless: false, local, firstMode,
+    secondMode: firstMode === "host" ? "managed" : "host",
+  }))), ...[false, true].flatMap((local) => [
+    { useBroker: false, projectless: false, local, firstMode: "host", secondMode: "host", firstNetwork: "enabled", secondNetwork: "disabled" },
+    { useBroker: false, projectless: false, local, firstMode: "managed", secondMode: "managed", firstNetwork: "disabled", secondNetwork: "enabled" },
+  ])].map((scenario) => ({ firstNetwork: "disabled", secondNetwork: "disabled", ...scenario })))("verifies a live warm owner before refreshing run authority (broker: $useBroker, projectless: $projectless, local: $local, auth: $firstMode -> $secondMode, network: $firstNetwork -> $secondNetwork)", async ({ useBroker, projectless, local, firstMode, secondMode, firstNetwork, secondNetwork }) => {
+    const replacesProvider = useBroker || firstMode !== secondMode || firstNetwork !== secondNetwork;
     const stateBase = await mkdtemp(
       join(tmpdir(), "paperclip-runnerd-warm-authority-"),
     );
@@ -3489,7 +3496,7 @@ describe("native warm session supervision", () => {
         return result;
       })
       .mockImplementationOnce(async (options) => {
-        if (useBroker) {
+        if (replacesProvider) {
           expect(options.existingSession).toBeUndefined();
           expect(options.persistedSession?.providerSessionId).toBe("provider-runnerd-warm");
           expect(options.persistedSession?.semanticResult).toBeNull();
@@ -3506,7 +3513,7 @@ describe("native warm session supervision", () => {
       await executePaperclipNativeSession({
         db: leaseDb(first),
         execution: first,
-        runnerEnvironment: useBroker ? { PAPERCLIP_GITHUB_BROKER_TOKEN: "first-run-capability" } : undefined,
+        runnerEnvironment: { PAPERCLIP_GITHUB_AUTH_MODE: firstMode, PAPERCLIP_RUNNER_NETWORK_ACCESS: firstNetwork, ...(useBroker ? { PAPERCLIP_GITHUB_BROKER_TOKEN: "first-run-capability" } : {}) },
         runnerInstanceId: "runner-runnerd-warm",
         useRunnerd: true,
         runnerExecutionTarget: remoteTarget,
@@ -3577,12 +3584,12 @@ describe("native warm session supervision", () => {
       await executePaperclipNativeSession({
         db: continuationDb,
         execution: second,
-        runnerEnvironment: useBroker ? { PAPERCLIP_GITHUB_BROKER_TOKEN: "second-run-capability" } : undefined,
+        runnerEnvironment: { PAPERCLIP_GITHUB_AUTH_MODE: secondMode, PAPERCLIP_RUNNER_NETWORK_ACCESS: secondNetwork, ...(useBroker ? { PAPERCLIP_GITHUB_BROKER_TOKEN: "second-run-capability" } : {}) },
         runnerInstanceId: "runner-runnerd-warm",
         useRunnerd: true,
         runnerExecutionTarget: remoteTarget,
       });
-      if (useBroker) {
+      if (replacesProvider) {
         expect(firstClose).toHaveBeenCalledOnce();
         expect(firstClose).toHaveBeenCalledWith({ reason: "warm native session configuration changed" });
       } else {

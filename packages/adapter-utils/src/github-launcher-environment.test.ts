@@ -9,6 +9,7 @@ import type { CommandManagedRuntimeRunner } from "./command-managed-runtime.js";
 import {
   ensureAdapterExecutionTargetCommandResolvable,
   prepareGitHubOperationLaunchers,
+  prepareGitHubExecutionEnvironment,
   runAdapterExecutionTargetProcess,
 } from "./execution-target.js";
 
@@ -65,6 +66,54 @@ async function sandbox(layout: string) {
 }
 
 describe("managed GitHub launcher environment", () => {
+  it("uses target Git configuration without importing controller credentials", async () => {
+    const fixture = await sandbox("usr/bin");
+    vi.stubEnv("GH_TOKEN", "controller-secret");
+    await mkdir(path.join(fixture.root, ".config/gh"), { recursive: true });
+    await writeFile(path.join(fixture.root, ".config/gh/hosts.yml"), "host credential fixture");
+    const execute = fixture.runner.execute.getMockImplementation()!;
+    fixture.runner.execute.mockImplementation(async (input) => {
+      expect(input.command).toBe("sh"); // No Node executable is required on the SSH host.
+      const result = await execute(input);
+      return { ...result, stdout: `SSH login banner\n${result.stdout}\nlogout` };
+    });
+    const env = await prepareGitHubExecutionEnvironment({
+      target: fixture.target, cwd: fixture.root, env: {
+        PAPERCLIP_GIT_METADATA_ROOTS: '["/injected"]',
+        PAPERCLIP_RUNNER_NETWORK_ROOTS: '["/injected"]',
+        PAPERCLIP_GITHUB_HOST_HOME: "/injected",
+        PAPERCLIP_GITHUB_AUTH_MODE: "managed",
+        PAPERCLIP_RUNNER_NETWORK_ACCESS: "disabled",
+      }, hostCredentials: true, networkAccess: true,
+    });
+    expect(env.PAPERCLIP_GIT_METADATA_ROOTS).not.toContain("/injected");
+    expect(env.PAPERCLIP_RUNNER_NETWORK_ROOTS).not.toContain("/injected");
+    expect(env.PAPERCLIP_GITHUB_AUTH_MODE).toBe("host");
+    expect(env.PAPERCLIP_RUNNER_NETWORK_ACCESS).toBe("enabled");
+    expect(env.PAPERCLIP_GITHUB_HOST_HOME).toBe(fixture.root);
+    expect(env.GH_CONFIG_DIR).toBe(path.join(fixture.root, ".config/gh"));
+    expect(env.GH_TOKEN).toBeUndefined();
+    expect(env.PAPERCLIP_GITHUB_LAUNCHER_DIR).toBeUndefined();
+  });
+
+  it("preserves local host credential helpers and validates worktree metadata", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-host-git-")); roots.push(root);
+    vi.stubEnv("HOME", root);
+    vi.stubEnv("GH_TOKEN", "legacy-token");
+    await writeFile(path.join(root, ".gitconfig"), '[credential]\n  helper = store\n');
+    await exec("git", ["init", path.join(root, "repo")]);
+    const env = await prepareGitHubExecutionEnvironment({ target: null, cwd: path.join(root, "repo"), env: {}, hostCredentials: true, networkAccess: true });
+    expect(env.GH_TOKEN).toBe("legacy-token");
+    expect(env.GIT_CONFIG_GLOBAL).toBeUndefined();
+    expect(env.PAPERCLIP_GIT_METADATA_ROOTS).toContain("/repo/.git");
+    const config = await exec("git", ["config", "credential.helper"], { cwd: root, env: { ...process.env, ...env } });
+    expect(config.stdout.trim()).toBe("store");
+    const isolated = await prepareGitHubExecutionEnvironment({ target: null, cwd: root, env: {}, hostCredentials: false, networkAccess: false });
+    expect(isolated.GH_TOKEN).toBeUndefined();
+    expect(isolated.PAPERCLIP_RUNNER_NETWORK_ACCESS).toBe("disabled");
+    expect(isolated.PAPERCLIP_GITHUB_HOST_HOME).toBeUndefined();
+  });
+
   it.each(["nvm/current/bin", "usr/local/bin", "tools with 'quotes'/bin"])(
     "preserves %s CLIs and keeps GitHub wrappers first in child shells",
     async (layout) => {

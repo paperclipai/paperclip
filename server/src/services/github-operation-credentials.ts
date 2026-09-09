@@ -10,6 +10,9 @@ export type GitHubCredentialSummary = {
   source?: "personal" | "dedicated";
   login?: string;
   reason?: string;
+  connectionId?: string;
+  grantId?: string;
+  authenticationMode?: "managed" | "host" | "anonymous";
 };
 
 /** No company secrets or ambient credentials are consulted by this path. */
@@ -28,7 +31,7 @@ export async function resolveGitHubOperationCredentials(db: Db, input: {
       issueId: typeof run.contextSnapshot?.issueId === "string" ? run.contextSnapshot.issueId : null,
     });
     if (resolved.credential) {
-      summary = { status: "available", source: resolved.credential.identitySource, login: resolved.credential.githubIdentity?.login };
+      summary = { status: "available", source: resolved.credential.identitySource, login: resolved.credential.githubIdentity?.login, connectionId: resolved.credential.connectionId, grantId: resolved.credential.grantId, authenticationMode: "managed" };
       env = buildGitAuthInvocation(resolved.credential).env;
     } else {
       summary = { status: resolved.configured ? "unavailable" : "absent", source: resolved.identitySource ?? "personal", reason: resolved.error ?? "No GitHub identity connected" };

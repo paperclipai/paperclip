@@ -1,3 +1,4 @@
+import { TaskChatScrollNavigation } from "@/components/task-chat/scroll-navigation";
 import {
   memo,
   useCallback,
@@ -1004,7 +1005,7 @@ function IssueDetailLoadingState({
     <div
       className={
         taskChatShellEnabled
-          ? "mx-auto w-full max-w-(--tc-shell-max-w) space-y-6"
+          ? "task-chat-loading-shell mx-auto flex min-h-0 w-full max-w-(--tc-shell-max-w) flex-1 flex-col gap-6"
           : "max-w-3xl space-y-6"
       }
     >
@@ -1086,7 +1087,7 @@ function IssueDetailLoadingState({
         // Chat shell: the thread is the whole surface — alternating bubble
         // placeholders followed by the docked composer, no tab strip or
         // properties-card chrome (those don't exist in the chat layout).
-        <div className="space-y-6">
+        <div className="flex min-h-0 flex-1 flex-col justify-between gap-6 overflow-hidden">
           <IssueChatSkeleton />
           <IssueChatComposerSkeleton />
         </div>
@@ -1250,6 +1251,9 @@ type IssueDetailChatTabProps = {
   } | null;
   comments: IssueDetailComment[];
   commentsInitialLoading?: boolean;
+  initialHistoryPending?: boolean;
+  initialHistoryError?: boolean;
+  onRetryInitialHistory?: () => void;
   locallyQueuedCommentRunIds: ReadonlyMap<string, string>;
   interactions: IssueThreadInteraction[];
   documents: IssueDocumentSummary[];
@@ -1377,6 +1381,9 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   legacyRecoverySourceIssue,
   comments,
   commentsInitialLoading = false,
+  initialHistoryPending = false,
+  initialHistoryError = false,
+  onRetryInitialHistory,
   locallyQueuedCommentRunIds,
   interactions,
   documents,
@@ -1443,13 +1450,15 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
     ? IssueChatThread
     : TaskChatThread;
   const queryClient = useQueryClient();
+  const scrollLocation = useLocation();
+  const scrollNavigationType = useNavigationType();
   const { pushToast } = useToastActions();
-  const { data: activity } = useQuery({
+  const { data: activity, isPending: activityPending, isError: activityError, refetch: refetchActivity } = useQuery({
     queryKey: queryKeys.issues.activity(issueId),
     queryFn: () => activityApi.forIssue(issueId),
     placeholderData: keepPreviousDataForSameQueryTail<ActivityEvent[]>(issueId),
   });
-  const { data: liveRuns, isFetched: liveRunsFetched } = useQuery({
+  const { data: liveRuns, isFetched: liveRunsFetched, isError: liveRunsError, refetch: refetchLiveRuns } = useQuery({
     queryKey: queryKeys.issues.liveRuns(issueId),
     queryFn: () => heartbeatsApi.liveRunsForIssue(issueId),
     refetchInterval: 1000,
@@ -1460,7 +1469,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   const liveRunCount = resolvedLiveRuns.length;
   const activeRunQueryEnabled =
     !!executionRunId || issueStatus === "in_progress";
-  const { data: activeRun = null, isFetched: activeRunFetched } = useQuery({
+  const { data: activeRun = null, isFetched: activeRunFetched, isError: activeRunError, refetch: refetchActiveRun } = useQuery({
     queryKey: queryKeys.issues.activeRun(issueId),
     queryFn: () => heartbeatsApi.activeRunForIssue(issueId),
     enabled: activeRunQueryEnabled,
@@ -1524,7 +1533,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
     setLocalSteeringPlacements(new Map());
   }, [issueId]);
   const hasLiveRuns = liveRunCount > 0 || !!resolvedActiveRun;
-  const { data: linkedRuns } = useQuery({
+  const { data: linkedRuns, isPending: linkedRunsPending, isError: linkedRunsError, refetch: refetchLinkedRuns } = useQuery({
     queryKey: queryKeys.issues.runs(issueId),
     queryFn: () => activityApi.runsForIssue(issueId),
     refetchInterval:
@@ -2266,26 +2275,21 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
       {/* Chat-style: the button rides inside the thread's scroll viewport with
           the header so nothing sits above the thread in the page flow. */}
       {classicTaskInterfaceEnabled ? loadOlderButton : null}
-      {commentsInitialLoading &&
-      commentsWithRunMeta.length === 0 &&
-      interactions.length === 0 ? (
-        classicTaskInterfaceEnabled ? (
-          <IssueChatSkeleton />
-        ) : (
-          // Chat shell: center the bubbles at the thread cap (mirrors
-          // TaskChatThreadView) and dock a composer placeholder beneath them.
-          <div
-            className={cn(
-              "mx-auto flex w-full max-w-(--tc-shell-max-w) flex-col gap-3 px-4 py-4",
-              streamlinedTaskDetailEnabled && "md:px-0",
-            )}
-          >
-            <IssueChatSkeleton />
-            <IssueChatComposerSkeleton className="mt-3" />
-          </div>
-        )
+      {classicTaskInterfaceEnabled && commentsInitialLoading && commentsWithRunMeta.length === 0 && interactions.length === 0 ? (
+        <IssueChatSkeleton />
       ) : (
+        <TaskChatScrollNavigation.Provider value={{ key: scrollLocation.key, restore: scrollNavigationType === "POP", hash: scrollLocation.hash }}>
         <ThreadComponent
+          key={issueId}
+          initialHistoryPending={initialHistoryPending || commentsInitialLoading || activityPending || linkedRunsPending || !runtimeSelectionKnown}
+          initialHistoryError={initialHistoryError || activityError || linkedRunsError || liveRunsError || (activeRunQueryEnabled && activeRunError)}
+          onRetryInitialHistory={() => {
+            onRetryInitialHistory?.();
+            void refetchActivity();
+            void refetchLinkedRuns();
+            void refetchLiveRuns();
+            if (activeRunQueryEnabled) void refetchActiveRun();
+          }}
           composerRef={composerRef}
           composerAccessory={composerAccessory}
           threadHeader={
@@ -2408,6 +2412,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
           externalReferences={externalReferences}
           linkCaseReferences={linkCaseReferences}
         />
+        </TaskChatScrollNavigation.Provider>
       )}
     </div>
   );
@@ -2857,6 +2862,7 @@ export function IssueDetail() {
   const lastScrollIssueIdRef = useRef<string | undefined>(undefined);
   const commentComposerRef = useRef<IssueChatComposerHandle | null>(null);
   const cancelledQueuedOptimisticCommentIdsRef = useRef(new Set<string>());
+  const commentRenderKeys = useRef(new Map<string, string>());
   const resolvedIssueDetailState = useMemo(
     () =>
       readIssueDetailLocationState(issueId, location.state, location.search),
@@ -2920,6 +2926,7 @@ export function IssueDetail() {
   const {
     data: commentPages,
     isLoading: commentsLoading,
+    isError: commentsError,
     isFetchingNextPage: commentsLoadingOlder,
     hasNextPage: hasOlderComments,
     fetchNextPage: fetchOlderComments,
@@ -2969,6 +2976,8 @@ export function IssueDetail() {
       ISSUE_DETAIL_CONTENT_MEASURE,
     );
   }, [commentsLoading, issue?.id]);
+  const linkedCommentId = location.hash.startsWith("#comment-") ? location.hash.slice("#comment-".length) : null;
+  const linkedCommentPending = Boolean(linkedCommentId && !comments.some((comment) => comment.id === linkedCommentId) && !commentsError && (commentsLoading || hasOlderComments));
   const shouldPrefetchOlderComments = useMemo(
     () =>
       shouldAutoloadOlderIssueComments({
@@ -2987,7 +2996,7 @@ export function IssueDetail() {
       hasOlderComments,
     ],
   );
-  const { data: interactions = [] } = useQuery({
+  const { data: interactions = [], isLoading: interactionsLoading, isError: interactionsError, refetch: refetchInteractions } = useQuery({
     queryKey: queryKeys.issues.interactions(issueId!),
     queryFn: () => issuesApi.listInteractions(issueId!),
     enabled: !!issueId,
@@ -2999,7 +3008,7 @@ export function IssueDetail() {
     ),
   });
 
-  const { data: attachments, isLoading: attachmentsLoading } = useQuery({
+  const { data: attachments, isLoading: attachmentsLoading, isError: attachmentsError, refetch: refetchAttachments } = useQuery({
     queryKey: queryKeys.issues.attachments(issueId!),
     queryFn: () => issuesApi.listAttachments(issueId!),
     enabled: !!issueId,
@@ -3008,16 +3017,27 @@ export function IssueDetail() {
     ),
   });
 
-  const { data: workProducts } = useQuery({
+  const { data: workProducts, isLoading: workProductsLoading, isError: workProductsError, refetch: refetchWorkProducts } = useQuery({
     queryKey: queryKeys.issues.workProducts(issueId!),
     queryFn: () =>
-      issuesApi.listWorkProducts(issueId!, { refreshPullRequests: true }),
+      issuesApi.listWorkProducts(issueId!, {
+        // Initial geometry needs stored artifacts, not a network round-trip to
+        // GitHub. Enrich PR status after the stored list has painted.
+        refreshPullRequests: queryClient.getQueryData(queryKeys.issues.workProducts(issueId!)) !== undefined,
+      }),
     enabled: !!issueId,
     refetchOnMount: "always",
     placeholderData: keepPreviousDataForSameQueryTail<IssueWorkProduct[]>(
       issueId ?? "pending",
     ),
   });
+
+  const enrichedWorkProductsIssue = useRef<string | null>(null);
+  useEffect(() => {
+    if (!issueId || enrichedWorkProductsIssue.current === issueId || !workProducts?.some((product) => product.type === "pull_request")) return;
+    enrichedWorkProductsIssue.current = issueId;
+    void refetchWorkProducts();
+  }, [issueId, workProducts, refetchWorkProducts]);
 
   const { data: liveRunCount = 0 } = useQuery<LiveRunForIssue[], Error, number>(
     {
@@ -3452,7 +3472,11 @@ export function IssueDetail() {
   );
 
   const threadComments = useMemo(
-    () => mergeIssueComments(comments ?? [], optimisticComments),
+    () => mergeIssueComments(comments ?? [], optimisticComments).map((comment) => {
+      if ("clientId" in comment && comment.clientId) commentRenderKeys.current.set(comment.id, comment.clientId);
+      const clientId = commentRenderKeys.current.get(comment.id);
+      return clientId ? { ...comment, clientId } : comment;
+    }),
     [comments, optimisticComments],
   );
   const breadcrumbTitle = issue?.title ?? issueId ?? "Task";
@@ -4365,6 +4389,9 @@ export function IssueDetail() {
           queryKey: queryKeys.issues.queuedComments(issueId!),
         });
       }
+      if (context?.optimisticCommentId) {
+        commentRenderKeys.current.set(comment.id, context.optimisticCommentId);
+      }
       queryClient.setQueryData<InfiniteData<IssueComment[], string | null>>(
         queryKeys.issues.comments(issueId!),
         (current) =>
@@ -4738,6 +4765,7 @@ export function IssueDetail() {
         });
       }
       if (comment) {
+        if (context?.optimisticCommentId) commentRenderKeys.current.set(comment.id, context.optimisticCommentId);
         queryClient.setQueryData<InfiniteData<IssueComment[], string | null>>(
           queryKeys.issues.comments(issueId!),
           (current) =>
@@ -5433,7 +5461,7 @@ export function IssueDetail() {
     [openIssueGallery],
   );
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!panelIssue || suppressPanelUntilPlan) {
       closePanel();
       return;
@@ -5989,9 +6017,9 @@ export function IssueDetail() {
     });
   }, [issueId, queryClient, refetchComments]);
   useEffect(() => {
-    if (!shouldPrefetchOlderComments) return;
+    if (!shouldPrefetchOlderComments && !(linkedCommentPending && hasOlderComments && !commentsLoadingOlder)) return;
     void fetchOlderComments();
-  }, [fetchOlderComments, shouldPrefetchOlderComments]);
+  }, [fetchOlderComments, shouldPrefetchOlderComments, linkedCommentPending, hasOlderComments, commentsLoadingOlder]);
   const handleCommentVote = useCallback(
     async (
       commentId: string,
@@ -7751,6 +7779,14 @@ export function IssueDetail() {
                 legacyRecoverySourceIssue={legacyRecoverySourceIssue}
                 comments={threadComments}
                 commentsInitialLoading={commentsLoading}
+                initialHistoryPending={linkedCommentPending || interactionsLoading || attachmentsLoading || workProductsLoading}
+                initialHistoryError={commentsError || interactionsError || attachmentsError || workProductsError}
+                onRetryInitialHistory={() => {
+                  void refetchComments();
+                  void refetchInteractions();
+                  void refetchAttachments();
+                  void refetchWorkProducts();
+                }}
                 locallyQueuedCommentRunIds={locallyQueuedCommentRunIds}
                 interactions={interactions}
                 documents={issue.documentSummaries ?? []}

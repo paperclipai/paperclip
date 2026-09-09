@@ -1598,7 +1598,7 @@ function connectorEnrollmentPrincipal(req: Request): string {
     assertBoard(req);
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    const connections = await svc.listConnections(companyId);
+    const connections = await svc.listConnections(companyId, req.actor.userId);
     const canManageConnections = await isToolConnectionManagerQuiet(req, companyId);
     res.json({
       connections: filterVisibleToolConnections(connections, {
@@ -1638,7 +1638,7 @@ function connectorEnrollmentPrincipal(req: Request): string {
     const connection = await getAccessibleResource(
       req,
       res,
-      svc.getConnection(req.params.connectionId as string),
+      svc.getConnection(req.params.connectionId as string, undefined, req.actor.userId),
       "Tool connection not found",
     );
     if (!connection) return;

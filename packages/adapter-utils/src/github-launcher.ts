@@ -19,18 +19,25 @@ if (!['git', 'gh'].includes(program) || !executable) {
 }
 async function main() {
   let env = { ...process.env };
+  const diagnostic = (code) => process.stderr.write('Paperclip: GitHub ' + code + '; continuing without managed credentials.\n');
   const configRoot = env.GH_CONFIG_DIR || os.tmpdir();
-  fs.mkdirSync(configRoot, { recursive: true, mode: 0o700 });
-  const configDirectory = fs.mkdtempSync(path.join(configRoot, 'paperclip-github-operation-'));
-  fs.chmodSync(configDirectory, 0o700);
-  const cleanup = () => fs.rmSync(configDirectory, { recursive: true, force: true });
-  process.once('exit', cleanup);
+  // A missing/unwritable scratch directory must not break local Git. The
+  // fallback deliberately cannot load the host's gh authentication files.
+  let configDirectory = path.join(directory, 'unavailable-gh-config');
+  let configReady = false;
+  try {
+    fs.mkdirSync(configRoot, { recursive: true, mode: 0o700 });
+    configDirectory = fs.mkdtempSync(path.join(configRoot, 'paperclip-github-operation-'));
+    fs.chmodSync(configDirectory, 0o700);
+    configReady = true;
+    process.once('exit', () => { try { fs.rmSync(configDirectory, { recursive: true, force: true }); } catch {} });
+  } catch { diagnostic('configuration_directory_unavailable'); }
   {
     for (const key of Object.keys(env)) {
-      if (/^(GH_TOKEN|GITHUB_TOKEN|GH_ENTERPRISE_TOKEN|GITHUB_ENTERPRISE_TOKEN|PAPERCLIP_GIT_TOKEN|GIT_AUTHOR_.*|GIT_COMMITTER_.*|GIT_CONFIG_.*|GIT_ASKPASS|SSH_ASKPASS|GIT_SSH.*)$/.test(key)) delete env[key];
+      if (/^(GH_TOKEN|GITHUB_TOKEN|GH_ENTERPRISE_TOKEN|GITHUB_ENTERPRISE_TOKEN|PAPERCLIP_GIT_TOKEN|GIT_AUTHOR_.*|GIT_COMMITTER_.*|GIT_CONFIG_.*|GIT_ASKPASS|SSH_ASKPASS|SSH_AUTH_SOCK|GIT_SSH.*)$/.test(key)) delete env[key];
     }
     Object.assign(env, {
-      GH_CONFIG_DIR: configDirectory,
+      GH_CONFIG_DIR: configDirectory, SSH_AUTH_SOCK: '',
       GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null',
       GIT_TERMINAL_PROMPT: '0',
       GIT_AUTHOR_NAME: '', GIT_AUTHOR_EMAIL: '', GIT_COMMITTER_NAME: '', GIT_COMMITTER_EMAIL: '',
@@ -39,7 +46,8 @@ async function main() {
       GIT_CONFIG_KEY_2: 'url.https://github.com/.insteadOf', GIT_CONFIG_VALUE_2: 'ssh://git@github.com/',
       GIT_CONFIG_KEY_3: 'core.askPass', GIT_CONFIG_VALUE_3: '',
     });
-    const base = env.PAPERCLIP_API_URL || env.PAPERCLIP_GITHUB_BROKER_URL;
+    const base = env.PAPERCLIP_GITHUB_BROKER_URL || env.PAPERCLIP_API_URL;
+    try {
     let response;
     if (base && env.PAPERCLIP_GITHUB_BROKER_TOKEN) {
       const url = base.replace(/\/+$/, '').replace(/\/api$/, '') + '/runtime-tools/github/credentials';
@@ -54,7 +62,9 @@ async function main() {
         await response.arrayBuffer();
         await new Promise(resolve => setTimeout(resolve, 1000));
       }
-      if (!response.ok) throw new Error('GitHub credential context unavailable; retry this operation');
+      if (!response.ok) {
+        diagnostic(response.status === 401 || response.status === 403 ? 'capability_rejected' : 'broker_response_unavailable');
+      } else {
       const result = await response.json();
       if (result.status === 'unavailable') {
         const reason = typeof result.reason === 'string'
@@ -62,12 +72,14 @@ async function main() {
           : 'Check the GitHub connection in Paperclip';
         process.stderr.write('Paperclip: GitHub access unavailable: ' + reason + '. Continuing without GitHub credentials.\n');
       }
-      if (result.status === 'available') {
+      if (result.status === 'available' && configReady) {
         for (const [key, value] of Object.entries(result.env || {})) {
           if (/^(GH_TOKEN|GITHUB_TOKEN|PAPERCLIP_GIT_TOKEN|GIT_TERMINAL_PROMPT|GIT_AUTHOR_(NAME|EMAIL)|GIT_COMMITTER_(NAME|EMAIL)|GIT_CONFIG_COUNT|GIT_CONFIG_(KEY|VALUE)_\d+)$/.test(key) && typeof value === 'string') env[key] = value;
         }
       }
-    }
+      }
+    } else { diagnostic('capability_missing'); }
+    } catch { diagnostic('broker_transport_unavailable'); }
   }
   // Only this invocation and its children inherit the captured credential.
   // Its Git children use the real binary, so steering cannot split a gh operation.
@@ -82,7 +94,7 @@ async function main() {
   child.once('error', () => { process.stderr.write('Paperclip: GitHub command could not start.\n'); process.exitCode = 1; });
   child.once('exit', (code, signal) => { process.exitCode = code === null ? 128 : code; });
 }
-main().catch(() => { process.stderr.write('Paperclip: GitHub credential context unavailable; retry this operation.\n'); process.exitCode = 1; });
+main().catch(() => { process.stderr.write('Paperclip: GitHub launcher_setup_failed.\n'); process.exitCode = 1; });
 `;
 }
 

@@ -600,6 +600,12 @@ pub struct CodexProvider {
 // entry from this static ceiling, but cannot introduce another environment
 // variable by changing GIT_CONFIG_COUNT.
 const GITHUB_CREDENTIAL_ENVIRONMENT_KEYS: &[&str] = &[
+    "PAPERCLIP_RUNNER_NETWORK_ACCESS",
+    "PAPERCLIP_RUNNER_NETWORK_ROOTS",
+    "PAPERCLIP_GITHUB_AUTH_MODE",
+    "PAPERCLIP_GITHUB_HOST_HOME",
+    "PAPERCLIP_GIT_METADATA_ROOTS",
+    "GIT_SSH",
     "ZDOTDIR",
     "BASH_ENV",
     "PAPERCLIP_GITHUB_BROKER_URL",
@@ -3715,8 +3721,14 @@ mod tests {
 
     #[test]
     fn github_credentials_cross_only_the_bounded_provider_environment() {
-        assert_eq!(GITHUB_CREDENTIAL_ENVIRONMENT_KEYS.len(), 89);
+        assert_eq!(GITHUB_CREDENTIAL_ENVIRONMENT_KEYS.len(), 95);
         for key in [
+            "PAPERCLIP_RUNNER_NETWORK_ACCESS",
+            "PAPERCLIP_RUNNER_NETWORK_ROOTS",
+            "PAPERCLIP_GITHUB_AUTH_MODE",
+            "PAPERCLIP_GITHUB_HOST_HOME",
+            "PAPERCLIP_GIT_METADATA_ROOTS",
+            "GIT_SSH",
             "PAPERCLIP_GITHUB_BROKER_URL",
             "PAPERCLIP_GITHUB_BROKER_TOKEN",
             "PAPERCLIP_GITHUB_LAUNCHER_DIR",
