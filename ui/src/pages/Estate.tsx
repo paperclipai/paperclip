@@ -1,7 +1,7 @@
 import { useEffect } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Landmark, Home, TrendingUp, Car, Gem, Cpu, Package, AlertCircle, CheckCircle2, Circle, Users, Shield, Receipt, PiggyBank } from "lucide-react";
-import { estateApi, type AssetType, type PlanStatusCheckKey, type PlanStatusResult, type NetWorthProjectionResult, type EstateBeneficiary, type EstateTrust, type EstateTaxSummary, type EstateReview, type RmdSummary } from "../api/estate";
+import { estateApi, type AssetType, type PlanStatusCheckKey, type PlanStatusResult, type NetWorthProjectionResult, type EstateBeneficiary, type EstateTrust, type EstateTaxSummary, type EstateReview, type RmdSummary, type PropertyTaxBill } from "../api/estate";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { EmptyState } from "../components/EmptyState";
@@ -557,6 +557,115 @@ function BeneficiariesSection({ beneficiaries }: { beneficiaries: EstateBenefici
   );
 }
 
+const TAX_STATUS_CLASSES: Record<string, { bg: string; text: string; label: string }> = {
+  upcoming: { bg: "bg-blue-100/80",  text: "text-blue-700",   label: "Upcoming" },
+  paid:     { bg: "bg-green-100/80", text: "text-green-700",  label: "Paid" },
+  overdue:  { bg: "bg-red-100/80",   text: "text-red-700",    label: "Overdue" },
+  exempt:   { bg: "bg-muted",        text: "text-muted-foreground", label: "Exempt" },
+};
+
+function PropertyTaxSection({
+  bills,
+  companyId,
+}: {
+  bills: PropertyTaxBill[];
+  companyId: string;
+}) {
+  const queryClient = useQueryClient();
+
+  const markPaidMutation = useMutation({
+    mutationFn: ({ id }: { id: string }) =>
+      estateApi.patchPropertyTax(id, { status: "paid" }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["estate", "property-tax", companyId] });
+    },
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: ({ id }: { id: string }) => estateApi.deletePropertyTax(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["estate", "property-tax", companyId] });
+    },
+  });
+
+  const upcoming = bills.filter((b) => b.status === "upcoming" || b.isOverdue);
+  const paid = bills.filter((b) => b.status === "paid" || b.status === "exempt");
+
+  function fmt(cents: string | null): string {
+    if (!cents) return "—";
+    return `$${(Number(cents) / 100).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  }
+
+  return (
+    <div className="rounded-lg border border-border bg-card overflow-hidden">
+      <div className="px-4 py-3 border-b border-border bg-muted/30 flex items-center gap-2">
+        <Receipt className="h-3.5 w-3.5 text-muted-foreground" />
+        <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+          Property Tax Bills
+        </p>
+        <span className="ml-auto text-xs text-muted-foreground">{bills.length} bill{bills.length !== 1 ? "s" : ""}</span>
+      </div>
+      {bills.length === 0 ? (
+        <div className="px-4 py-8 text-center text-sm text-muted-foreground">
+          No property tax bills tracked yet.
+        </div>
+      ) : (
+        <div className="divide-y divide-border">
+          {[...upcoming, ...paid].map((bill) => {
+            const statusCls = (bill.isOverdue ? TAX_STATUS_CLASSES.overdue : TAX_STATUS_CLASSES[bill.status]) ?? TAX_STATUS_CLASSES.upcoming;
+            const dueDateStr = new Date(bill.dueDate).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+            return (
+              <div key={bill.id} className="px-4 py-3 flex items-start gap-3">
+                <div className="flex-1 min-w-0 space-y-0.5">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-sm font-medium">
+                      {bill.taxYear} — {bill.state}{bill.county ? `, ${bill.county}` : ""}
+                    </span>
+                    {bill.installment > 1 && (
+                      <span className="text-xs text-muted-foreground">Installment {bill.installment}</span>
+                    )}
+                    <span className={cn("text-xs px-1.5 py-0.5 rounded font-medium", statusCls.bg, statusCls.text)}>
+                      {bill.isOverdue ? "Overdue" : statusCls.label}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-3 text-xs text-muted-foreground">
+                    <span>Due {dueDateStr}</span>
+                    <span className="font-semibold text-foreground">{fmt(bill.amountCents)}</span>
+                    {bill.status === "paid" && bill.paidAmountCents && (
+                      <span className="text-green-600">Paid {fmt(bill.paidAmountCents)}</span>
+                    )}
+                    {bill.status !== "paid" && bill.daysUntilDue > 0 && (
+                      <span>{bill.daysUntilDue}d remaining</span>
+                    )}
+                  </div>
+                </div>
+                {(bill.status === "upcoming" || bill.isOverdue) && (
+                  <button
+                    onClick={() => markPaidMutation.mutate({ id: bill.id })}
+                    disabled={markPaidMutation.isPending}
+                    className="shrink-0 text-xs text-green-600 hover:text-green-700 font-medium disabled:opacity-50"
+                    title="Mark as paid"
+                  >
+                    Mark Paid
+                  </button>
+                )}
+                <button
+                  onClick={() => deleteMutation.mutate({ id: bill.id })}
+                  disabled={deleteMutation.isPending}
+                  className="shrink-0 text-muted-foreground hover:text-destructive transition-colors disabled:opacity-50"
+                  title="Delete bill"
+                >
+                  <Receipt className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function Estate() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
@@ -636,6 +745,13 @@ export function Estate() {
     queryFn: () => estateApi.netWorthProjection(selectedCompanyId!),
     enabled: !!selectedCompanyId,
     staleTime: 10 * 60 * 1000,
+  });
+
+  const propertyTaxQuery = useQuery({
+    queryKey: ["estate", "property-tax", selectedCompanyId],
+    queryFn: () => estateApi.listPropertyTax(selectedCompanyId!, currentYear),
+    enabled: !!selectedCompanyId,
+    staleTime: 5 * 60 * 1000,
   });
 
   if (!selectedCompanyId) {
@@ -800,6 +916,14 @@ export function Estate() {
       {/* Beneficiaries */}
       {beneficiariesQuery.data && (
         <BeneficiariesSection beneficiaries={beneficiariesQuery.data.beneficiaries} />
+      )}
+
+      {/* Property Tax Bills */}
+      {propertyTaxQuery.data && (
+        <PropertyTaxSection
+          bills={propertyTaxQuery.data.bills}
+          companyId={selectedCompanyId}
+        />
       )}
     </div>
   );

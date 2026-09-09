@@ -191,6 +191,29 @@ export interface EstateBeneficiary {
   updatedAt: string;
 }
 
+export type PropertyTaxStatus = "upcoming" | "paid" | "overdue" | "exempt";
+
+export interface PropertyTaxBill {
+  id: string;
+  assetId: string;
+  companyId: string;
+  userId: string;
+  state: string;
+  county: string | null;
+  taxYear: number;
+  installment: number;
+  dueDate: string;
+  amountCents: string | null;
+  status: PropertyTaxStatus;
+  paidAt: string | null;
+  paidAmountCents: string | null;
+  notes: string | null;
+  isOverdue: boolean;
+  daysUntilDue: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
 function qs(params: Record<string, string | undefined>): string {
   const parts = Object.entries(params)
     .filter((e): e is [string, string] => e[1] !== undefined)
@@ -247,4 +270,32 @@ export const estateApi = {
 
   rmdSummary: (companyId: string, year?: number) =>
     api.get<RmdSummary>(`/estate/rmd-summary${qs({ companyId, year: year?.toString() })}`),
+
+  listPropertyTax: (companyId: string, year?: number) =>
+    api.get<{ bills: PropertyTaxBill[] }>(
+      `/estate/property-tax${qs({ companyId, year: year?.toString() })}`,
+    ),
+
+  createPropertyTax: (data: {
+    companyId: string;
+    assetId: string;
+    state: string;
+    county?: string;
+    taxYear: number;
+    installment?: number;
+    dueDate: string;
+    amountCents?: number;
+    notes?: string;
+  }) => api.post<PropertyTaxBill>("/estate/property-tax", data),
+
+  patchPropertyTax: (id: string, body: {
+    status?: PropertyTaxStatus;
+    paidAt?: string;
+    paidAmountCents?: number;
+    amountCents?: number;
+    notes?: string;
+    dueDate?: string;
+  }) => api.patch<PropertyTaxBill>(`/estate/property-tax/${id}`, body),
+
+  deletePropertyTax: (id: string) => api.delete<void>(`/estate/property-tax/${id}`),
 };
