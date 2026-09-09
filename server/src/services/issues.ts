@@ -104,6 +104,10 @@ import {
   projectHistoricalHeartbeatRunComment,
 } from "./heartbeat-run-summary.js";
 import { DEFAULT_INSERT_CHUNK_ROWS, insertRowsInChunks } from "./batch-insert.js";
+import {
+  assertCrossIssueMutationAuthority,
+  type CrossIssueInfluenceMutationAuthority,
+} from "./cross-issue-influence-limit.js";
 import type {
   ImportIssueRow,
   ImportIssueCommentRow,
@@ -7783,6 +7787,7 @@ export function issueService(db: Db) {
         blockedByIssueIds?: string[];
         actorAgentId?: string | null;
         actorUserId?: string | null;
+        crossIssueMutationAuthority?: CrossIssueInfluenceMutationAuthority | null;
       },
       dbOrTx: any = db,
       postCommitActivityPublications?: ActivityPublication[],
@@ -7804,6 +7809,7 @@ export function issueService(db: Db) {
         blockedByIssueIds,
         actorAgentId,
         actorUserId,
+        crossIssueMutationAuthority,
         ...issueData
       } = data;
       const isolatedWorkspacesEnabled = (await instanceSettings.getExperimental()).enableIsolatedWorkspaces;
@@ -7949,6 +7955,11 @@ export function issueService(db: Db) {
       }
 
       const runUpdate = async (tx: any) => {
+        await assertCrossIssueMutationAuthority(tx, {
+          companyId: existing.companyId,
+          issueId: id,
+          authority: crossIssueMutationAuthority,
+        });
         // The receipt baseline must be read under the same row lock as the
         // write. Otherwise a concurrent update can be mistaken for a change
         // made by this request.
@@ -9002,6 +9013,7 @@ export function issueService(db: Db) {
         authorizationReason?: string | null;
         sourceTrust?: typeof issueComments.$inferInsert.sourceTrust;
         createdAt?: Date | string | null;
+        crossIssueMutationAuthority?: CrossIssueInfluenceMutationAuthority | null;
       },
       dbOrTx: any = db,
     ): Promise<IssueComment> {
@@ -9026,6 +9038,11 @@ export function issueService(db: Db) {
         .then((rows: Array<{ companyId: string }>) => rows[0] ?? null);
 
       if (!issue) throw notFound("Issue not found");
+      await assertCrossIssueMutationAuthority(dbOrTx, {
+        companyId: issue.companyId,
+        issueId,
+        authority: options?.crossIssueMutationAuthority,
+      });
 
       const currentUserRedactionOptions = {
         enabled: (await instanceSettings.getGeneral()).censorUsernameInLogs,

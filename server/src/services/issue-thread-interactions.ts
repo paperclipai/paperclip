@@ -87,6 +87,10 @@ import {
 } from "./issues.js";
 import { questionResponseDeliveryValues } from "./question-response-delivery.js";
 import {
+  assertCrossIssueMutationAuthority,
+  type CrossIssueInfluenceMutationAuthority,
+} from "./cross-issue-influence-limit.js";
+import {
   assertIssueThreadInteractionResolverAudience,
   canonicalizeStoredResolverPolicy,
   issueThreadInteractionResolutionError,
@@ -114,8 +118,21 @@ type InteractionActor = {
     | IssueThreadInteractionResolverRestriction
     | null;
   suggestedTaskEffectsAuthorized?: boolean;
+  crossIssueMutationAuthority?: CrossIssueInfluenceMutationAuthority | null;
   resolutionDetails?: Record<string, unknown>;
 };
+
+async function assertInteractionMutationAuthority(
+  dbOrTx: Db | any,
+  issue: { id: string; companyId: string },
+  actor: InteractionActor,
+) {
+  await assertCrossIssueMutationAuthority(dbOrTx, {
+    companyId: issue.companyId,
+    issueId: issue.id,
+    authority: actor.crossIssueMutationAuthority,
+  });
+}
 
 type CreateInteractionOptions = {
   /** Keep independently owned pending cards actionable. Internal runtime bridges use this. */
@@ -1684,15 +1701,19 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
     interaction: IssueThreadInteraction;
     continuationIssue: IssueWakeTarget | null;
   }> {
-    const expired = await expireStaleRequestConfirmationTarget(db, {
-      row: args.current,
-      actor: args.actor,
+    const expired = await db.transaction(async (tx) => {
+      await assertInteractionMutationAuthority(tx, args.issue, args.actor);
+      return expireStaleRequestConfirmationTarget(tx, {
+        row: args.current,
+        actor: args.actor,
+      });
     });
     if (expired) throw interactionTerminalError({ status: expired.status, result: expired.result });
 
     const now = new Date();
     const postCommitActivityPublications: ActivityPublication[] = [];
     const result = await db.transaction(async (tx) => {
+      await assertInteractionMutationAuthority(tx, args.issue, args.actor);
       // Policy mutations and review transitions use the same issue-row lock,
       // so the authoritative review policy and requester are stable through
       // the verdict write. Terminal issue transitions also lock the issue
@@ -1890,9 +1911,12 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
     input: RejectIssueThreadInteraction;
     actor: InteractionActor;
   }): Promise<IssueThreadInteraction> {
-    const expired = await expireStaleRequestConfirmationTarget(db, {
-      row: args.current,
-      actor: args.actor,
+    const expired = await db.transaction(async (tx) => {
+      await assertInteractionMutationAuthority(tx, args.issue, args.actor);
+      return expireStaleRequestConfirmationTarget(tx, {
+        row: args.current,
+        actor: args.actor,
+      });
     });
     if (expired) throw interactionTerminalError({ status: expired.status, result: expired.result });
 
@@ -1904,6 +1928,7 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
 
     const now = new Date();
     const updated = await db.transaction(async (tx) => {
+      await assertInteractionMutationAuthority(tx, args.issue, args.actor);
       const issueContext = await tx
         .select({
           id: issues.id,
@@ -3027,6 +3052,7 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
       const createdWakeTargets: IssueWakeTarget[] = [];
 
       await db.transaction(async (tx) => {
+        await assertInteractionMutationAuthority(tx, issue, actor);
         const resolvedAt = new Date();
         const [claimed] = await tx
           .update(issueThreadInteractions)
@@ -3159,6 +3185,7 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
       assertIssueOpenForInteractionResolution(issue);
       const data = submitIssueThreadInteractionVerdictsSchema.parse(input);
       const submission = await db.transaction(async (tx) => {
+        await assertInteractionMutationAuthority(tx, issue, actor);
         const current = await tx
           .select()
           .from(issueThreadInteractions)
@@ -3276,31 +3303,33 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
         throw interactionTerminalError(current);
       }
 
-      const [updated] = await db
-        .update(issueThreadInteractions)
-        .set({
-          status: "rejected",
-          result: {
-            version: 1,
-            rejectionReason: input.reason?.trim() || null,
-          },
-          resolvedByAgentId: actor.agentId ?? null,
-          resolvedByRunId: actor.runId ?? null,
-          resolvedByUserId: actor.userId ?? null,
-          resolvedAt: new Date(),
-          updatedAt: new Date(),
-        })
-        .where(and(
-          eq(issueThreadInteractions.id, interactionId),
-          eq(issueThreadInteractions.status, "pending"),
-        ))
-        .returning();
+      const updated = await db.transaction(async (tx) => {
+        await assertInteractionMutationAuthority(tx, issue, actor);
+        const [row] = await tx
+          .update(issueThreadInteractions)
+          .set({
+            status: "rejected",
+            result: {
+              version: 1,
+              rejectionReason: input.reason?.trim() || null,
+            },
+            resolvedByAgentId: actor.agentId ?? null,
+            resolvedByRunId: actor.runId ?? null,
+            resolvedByUserId: actor.userId ?? null,
+            resolvedAt: new Date(),
+            updatedAt: new Date(),
+          })
+          .where(and(
+            eq(issueThreadInteractions.id, interactionId),
+            eq(issueThreadInteractions.status, "pending"),
+          ))
+          .returning();
 
-      if (!updated) {
-        throw interactionAlreadyResolvedError();
-      }
+        if (!row) throw interactionAlreadyResolvedError();
+        await touchIssue(tx, issue.id);
+        return row;
+      });
 
-      await touchIssue(db, issue.id);
       const rejected = hydrateInteraction(updated);
       await emitInteractionResolvedTelemetry(db, rejected);
       return rejected;
@@ -3807,6 +3836,7 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
       });
 
       const updated = await db.transaction(async (tx) => {
+        await assertInteractionMutationAuthority(tx, issue, actor);
         const resolvedAt = new Date();
         const [row] = await tx
           .update(issueThreadInteractions)

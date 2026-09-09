@@ -7,15 +7,19 @@ import {
   companies,
   createDb,
   heartbeatRuns,
+  issueComments,
+  issues,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import {
+  authorizeCrossIssueInfluence,
   CROSS_ISSUE_INFLUENCE_ENFORCE_AT,
   observeCrossIssueInfluence,
 } from "../services/cross-issue-influence-limit.js";
+import { issueService } from "../services/issues.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -31,6 +35,8 @@ describeEmbeddedPostgres("cross-issue influence limit PostgreSQL serialization",
 
   afterEach(async () => {
     await db.delete(activityLog);
+    await db.delete(issueComments);
+    await db.delete(issues);
     await db.delete(heartbeatRuns);
     await db.delete(agents);
     await db.delete(companies);
@@ -112,5 +118,200 @@ describeEmbeddedPostgres("cross-issue influence limit PostgreSQL serialization",
       .where(and(eq(activityLog.companyId, companyId), eq(activityLog.runId, runId)));
     expect(recorded.filter((row) => row.action === "issue.cross_issue_influence_observed")).toHaveLength(20);
     expect(recorded.filter((row) => row.action === "issue.cross_issue_influence_cap_rejected")).toHaveLength(1);
+  });
+
+  it("allows a timer run to comment and finish only the issue it checked out", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    const checkedOutIssueId = randomUUID();
+    const unrelatedIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Timer Coder",
+      role: "engineer",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      status: "running",
+      nativeIssueId: null,
+      contextSnapshot: { issueId: null, taskId: null, wakeReason: "timer" },
+    });
+    await db.insert(issues).values([
+      {
+        id: checkedOutIssueId,
+        companyId,
+        title: "Timer-selected issue",
+        status: "todo",
+        assigneeAgentId: agentId,
+        issueNumber: 1,
+        identifier: "TIM-1",
+      },
+      {
+        id: unrelatedIssueId,
+        companyId,
+        title: "Unrelated issue",
+        status: "todo",
+        assigneeAgentId: agentId,
+        issueNumber: 2,
+        identifier: "TIM-2",
+      },
+    ]);
+
+    const checkedOut = await issueService(db).checkout(
+      checkedOutIssueId,
+      agentId,
+      ["todo"],
+      runId,
+    );
+    expect(checkedOut).toMatchObject({
+      id: checkedOutIssueId,
+      status: "in_progress",
+      checkoutRunId: runId,
+    });
+
+    const guardedWrite = {
+      companyId,
+      runId,
+      agentId,
+      targetIssueId: checkedOutIssueId,
+    } as const;
+    const commentAuthorization = await authorizeCrossIssueInfluence(db, {
+      ...guardedWrite,
+      kind: "comment",
+    });
+    expect(commentAuthorization.decision).toBeNull();
+    await issueService(db).addComment(checkedOutIssueId, "Timer checkout comment", {
+      agentId,
+      runId,
+    }, {
+      crossIssueMutationAuthority: commentAuthorization.mutationAuthority,
+    });
+
+    const updateAuthorization = await authorizeCrossIssueInfluence(db, {
+      ...guardedWrite,
+      kind: "update",
+    });
+    expect(updateAuthorization.decision).toBeNull();
+    await issueService(db).update(checkedOutIssueId, {
+      status: "done",
+      actorAgentId: agentId,
+      crossIssueMutationAuthority: updateAuthorization.mutationAuthority,
+    });
+
+    await expect(observeCrossIssueInfluence(db, {
+      companyId,
+      runId,
+      agentId,
+      targetIssueId: unrelatedIssueId,
+      kind: "comment",
+    })).rejects.toMatchObject({
+      status: 403,
+      details: { code: "cross_issue_influence_run_context_required" },
+    });
+
+    const [commentRows, issueRows] = await Promise.all([
+      db.select({ issueId: issueComments.issueId }).from(issueComments),
+      db.select({ id: issues.id, status: issues.status }).from(issues),
+    ]);
+    expect(commentRows).toEqual([{ issueId: checkedOutIssueId }]);
+    expect(issueRows).toEqual(expect.arrayContaining([
+      { id: checkedOutIssueId, status: "done" },
+      { id: unrelatedIssueId, status: "todo" },
+    ]));
+  });
+
+  it("fails closed when timer checkout authority is revoked before the protected mutation", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    const issueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `R${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Timer Coder",
+      role: "engineer",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      status: "running",
+      nativeIssueId: null,
+      contextSnapshot: { issueId: null, taskId: null, wakeReason: "timer" },
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Timer-selected issue",
+      status: "in_progress",
+      assigneeAgentId: agentId,
+      checkoutRunId: runId,
+      executionRunId: runId,
+      issueNumber: 1,
+      identifier: "REV-1",
+    });
+
+    const authorization = await authorizeCrossIssueInfluence(db, {
+      companyId,
+      runId,
+      agentId,
+      targetIssueId: issueId,
+      kind: "comment",
+    });
+    expect(authorization).toMatchObject({
+      decision: null,
+      mutationAuthority: { requiredCheckoutRunId: runId },
+    });
+
+    await db.update(issues).set({ checkoutRunId: null, executionRunId: null }).where(eq(issues.id, issueId));
+
+    await expect(issueService(db).addComment(issueId, "Stale authorized comment", {
+      agentId,
+      runId,
+    }, {
+      crossIssueMutationAuthority: authorization.mutationAuthority,
+    })).rejects.toMatchObject({
+      status: 403,
+      details: { code: "cross_issue_influence_run_context_required" },
+    });
+    await expect(issueService(db).update(issueId, {
+      status: "done",
+      actorAgentId: agentId,
+      crossIssueMutationAuthority: authorization.mutationAuthority,
+    })).rejects.toMatchObject({
+      status: 403,
+      details: { code: "cross_issue_influence_run_context_required" },
+    });
+
+    const [comments, issue] = await Promise.all([
+      db.select({ id: issueComments.id }).from(issueComments).where(eq(issueComments.issueId, issueId)),
+      db.select({ status: issues.status }).from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]),
+    ]);
+    expect(comments).toEqual([]);
+    expect(issue?.status).toBe("in_progress");
   });
 });

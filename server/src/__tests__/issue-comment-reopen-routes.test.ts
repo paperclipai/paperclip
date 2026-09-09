@@ -188,6 +188,10 @@ vi.mock("../services/external-objects.js", () => ({
 }));
 
 vi.mock("../services/cross-issue-influence-limit.js", () => ({
+  authorizeCrossIssueInfluence: async (...args: unknown[]) => ({
+    decision: await mockObserveCrossIssueInfluence(...args),
+    mutationAuthority: { requiredCheckoutRunId: null },
+  }),
   observeCrossIssueInfluence: mockObserveCrossIssueInfluence,
   crossIssueInfluenceLimitError: mockCrossIssueInfluenceLimitError,
   crossIssueInfluenceRunContextError: mockCrossIssueInfluenceRunContextError,
@@ -1168,6 +1172,7 @@ describe.sequential("issue comment reopen routes", () => {
         presentation: { kind: "system_notice", tone: "warning", detailsDefaultOpen: false },
         metadata,
         sourceTrust: null,
+        crossIssueMutationAuthority: { requiredCheckoutRunId: null },
       },
     );
   });

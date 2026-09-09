@@ -44,6 +44,10 @@ const mockObserveCrossIssueInfluence = vi.hoisted(() => vi.fn(async () => null))
 
 vi.mock("../services/cross-issue-influence-limit.js", async (importOriginal) => ({
   ...await importOriginal<typeof import("../services/cross-issue-influence-limit.js")>(),
+  authorizeCrossIssueInfluence: async (...args: unknown[]) => ({
+    decision: await mockObserveCrossIssueInfluence(...args),
+    mutationAuthority: { requiredCheckoutRunId: null },
+  }),
   observeCrossIssueInfluence: mockObserveCrossIssueInfluence,
 }));
 

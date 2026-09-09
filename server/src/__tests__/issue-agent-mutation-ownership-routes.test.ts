@@ -193,6 +193,10 @@ function registerRouteMocks() {
   }));
 
   vi.doMock("../services/cross-issue-influence-limit.js", () => ({
+    authorizeCrossIssueInfluence: async (...args: unknown[]) => ({
+      decision: await mockObserveCrossIssueInfluence(...args),
+      mutationAuthority: { requiredCheckoutRunId: null },
+    }),
     observeCrossIssueInfluence: mockObserveCrossIssueInfluence,
     crossIssueInfluenceLimitError: vi.fn(),
     crossIssueInfluenceRunContextError: () => new HttpError(

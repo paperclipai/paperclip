@@ -1,6 +1,6 @@
 import { and, count, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { activityLog, heartbeatRuns } from "@paperclipai/db";
+import { activityLog, heartbeatRuns, issues } from "@paperclipai/db";
 import { isUuidLike, issueWriteDenialResponse } from "@paperclipai/shared";
 import { forbidden } from "../errors.js";
 import { logger } from "../middleware/logger.js";
@@ -27,6 +27,15 @@ export type CrossIssueInfluenceDecision = {
   enforceAt: string;
 };
 
+export type CrossIssueInfluenceMutationAuthority = {
+  requiredCheckoutRunId: string | null;
+};
+
+export type CrossIssueInfluenceObservation = {
+  decision: CrossIssueInfluenceDecision | null;
+  mutationAuthority: CrossIssueInfluenceMutationAuthority;
+};
+
 export function crossIssueInfluenceRunContextError() {
   // Copy comes from the shared issue-write denial contract (the open cross-task write design (failure UX))
   // so the agent reading this 403 is told the fix, not just the refusal.
@@ -34,7 +43,8 @@ export function crossIssueInfluenceRunContextError() {
   return forbidden(body.error, body.details);
 }
 
-function readRunSourceIssueId(contextSnapshot: unknown) {
+function readRunSourceIssueId(nativeIssueId: string | null, contextSnapshot: unknown) {
+  if (nativeIssueId) return nativeIssueId;
   if (!contextSnapshot || typeof contextSnapshot !== "object" || Array.isArray(contextSnapshot)) return null;
   const context = contextSnapshot as Record<string, unknown>;
   for (const candidate of [context.issueId, context.taskId]) {
@@ -67,7 +77,7 @@ export function evaluateCrossIssueInfluenceLimit(input: {
  * rollout reaches enforcement, failures cannot be used to race or probe past
  * the fail-closed backstop.
  */
-export async function observeCrossIssueInfluence(
+export async function authorizeCrossIssueInfluence(
   db: Db,
   input: {
     companyId: string;
@@ -79,7 +89,7 @@ export async function observeCrossIssueInfluence(
     kind: CrossIssueInfluenceKind;
     now?: Date;
   },
-): Promise<CrossIssueInfluenceDecision | null> {
+): Promise<CrossIssueInfluenceObservation> {
   // API-key callers control the run header. Reject malformed UUIDs before the
   // database can turn an untrusted identifier into a PostgreSQL cast error.
   if (!isUuidLike(input.runId)) throw crossIssueInfluenceRunContextError();
@@ -91,6 +101,7 @@ export async function observeCrossIssueInfluence(
         companyId: heartbeatRuns.companyId,
         agentId: heartbeatRuns.agentId,
         responsibleUserId: heartbeatRuns.responsibleUserId,
+        nativeIssueId: heartbeatRuns.nativeIssueId,
         contextSnapshot: heartbeatRuns.contextSnapshot,
       })
       .from(heartbeatRuns)
@@ -109,13 +120,37 @@ export async function observeCrossIssueInfluence(
       throw crossIssueInfluenceRunContextError();
     }
 
-    const sourceIssueId = readRunSourceIssueId(run.contextSnapshot);
-    if (!sourceIssueId) throw crossIssueInfluenceRunContextError();
+    const sourceIssueId = readRunSourceIssueId(run.nativeIssueId, run.contextSnapshot);
+    if (!sourceIssueId) {
+      // Timer wakes legitimately start without an issue source. Once such a run
+      // checks out an issue, the checkout row is the narrow persisted proof that
+      // writes to that exact issue are same-issue writes. Do not infer a source
+      // from assignee/company visibility: a different target must still fail
+      // closed when the run did not start with an issue.
+      const targetCheckout = await tx
+        .select({ checkoutRunId: issues.checkoutRunId })
+        .from(issues)
+        .where(and(
+          eq(issues.id, input.targetIssueId),
+          eq(issues.companyId, input.companyId),
+        ))
+        .then((rows) => rows[0] ?? null);
+      if (targetCheckout?.checkoutRunId === run.id) {
+        return {
+          decision: null,
+          mutationAuthority: { requiredCheckoutRunId: run.id },
+        };
+      }
+      throw crossIssueInfluenceRunContextError();
+    }
     if (
       sourceIssueId === input.targetIssueId ||
       (input.targetIssueIdentifier && sourceIssueId.toUpperCase() === input.targetIssueIdentifier.toUpperCase())
     ) {
-      return null;
+      return {
+        decision: null,
+        mutationAuthority: { requiredCheckoutRunId: null },
+      };
     }
 
     const priorCount = await tx
@@ -174,8 +209,49 @@ export async function observeCrossIssueInfluence(
       logger.warn(logContext, "cross-issue influence cap exceeded");
     }
 
-    return decision;
+    return {
+      decision,
+      mutationAuthority: { requiredCheckoutRunId: null },
+    };
   });
+}
+
+export async function observeCrossIssueInfluence(
+  db: Db,
+  input: Parameters<typeof authorizeCrossIssueInfluence>[1],
+): Promise<CrossIssueInfluenceDecision | null> {
+  return (await authorizeCrossIssueInfluence(db, input)).decision;
+}
+
+/**
+ * Revalidates timer-checkout authority while holding the target issue row.
+ * The protected mutation must use the same transaction so release,
+ * reassignment, and run cleanup cannot revoke the checkout between this check
+ * and the write.
+ */
+export async function assertCrossIssueMutationAuthority(
+  dbOrTx: Db | any,
+  input: {
+    companyId: string;
+    issueId: string;
+    authority?: CrossIssueInfluenceMutationAuthority | null;
+  },
+) {
+  const requiredCheckoutRunId = input.authority?.requiredCheckoutRunId ?? null;
+  if (!requiredCheckoutRunId) return;
+
+  const target = await dbOrTx
+    .select({ checkoutRunId: issues.checkoutRunId })
+    .from(issues)
+    .where(and(
+      eq(issues.id, input.issueId),
+      eq(issues.companyId, input.companyId),
+    ))
+    .for("update")
+    .then((rows: Array<{ checkoutRunId: string | null }>) => rows[0] ?? null);
+  if (target?.checkoutRunId !== requiredCheckoutRunId) {
+    throw crossIssueInfluenceRunContextError();
+  }
 }
 
 export function crossIssueInfluenceLimitError(

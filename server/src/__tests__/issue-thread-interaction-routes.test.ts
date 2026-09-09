@@ -2358,6 +2358,7 @@ describe.sequential("issue thread interaction routes", () => {
         runId: RUN_2,
         userId: null,
         resolverPolicyRestriction: "anyone",
+        crossIssueMutationAuthority: { requiredCheckoutRunId: null },
         suggestedTaskEffectsAuthorized: true,
       },
     );

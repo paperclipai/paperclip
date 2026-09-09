@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  authorizeCrossIssueInfluence,
   CROSS_ISSUE_INFLUENCE_ENFORCE_AT,
   CROSS_ISSUE_INFLUENCE_LIMIT,
   crossIssueInfluenceLimitError,
@@ -10,6 +11,7 @@ import {
 function counterDb(
   initialCount = 0,
   runOverrides: Record<string, unknown> | null = {},
+  targetCheckout: Record<string, unknown> | null = null,
 ) {
   let observedCount = initialCount;
   const inserted: Array<Record<string, unknown>> = [];
@@ -22,6 +24,11 @@ function counterDb(
               then: (resolve: (rows: unknown[]) => unknown) => resolve([{ count: observedCount }]),
             };
           }
+          if (Object.keys(selection).includes("checkoutRunId")) {
+            return {
+              then: (resolve: (rows: unknown[]) => unknown) => resolve(targetCheckout ? [targetCheckout] : []),
+            };
+          }
           return {
             for: () => ({
               then: (resolve: (rows: unknown[]) => unknown) => resolve(runOverrides === null ? [] : [{
@@ -29,6 +36,7 @@ function counterDb(
                 companyId: "22222222-2222-4222-8222-222222222222",
                 agentId: "33333333-3333-4333-8333-333333333333",
                 responsibleUserId: "user-1",
+                nativeIssueId: null,
                 contextSnapshot: { issueId: "44444444-4444-4444-8444-444444444444" },
                 ...runOverrides,
               }]),
@@ -160,6 +168,55 @@ describe("cross-issue influence limit rollout", () => {
       kind: "comment",
     })).resolves.toBeNull();
     expect(fake.inserted).toEqual([]);
+  });
+
+  it("accepts only the checked-out issue for a timer wake with no initial issue", async () => {
+    const timerRun = {
+      nativeIssueId: null,
+      contextSnapshot: { issueId: null, taskId: null, wakeReason: "timer" },
+    };
+    const checkoutAttributed = counterDb(0, timerRun, {
+      checkoutRunId: "11111111-1111-4111-8111-111111111111",
+    });
+    const input = {
+      companyId: "22222222-2222-4222-8222-222222222222",
+      runId: "11111111-1111-4111-8111-111111111111",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      targetIssueId: "55555555-5555-4555-8555-555555555555",
+    } as const;
+
+    await expect(authorizeCrossIssueInfluence(checkoutAttributed.db as never, {
+      ...input,
+      kind: "comment",
+    })).resolves.toMatchObject({
+      decision: null,
+      mutationAuthority: {
+        requiredCheckoutRunId: "11111111-1111-4111-8111-111111111111",
+      },
+    });
+
+    // These are the two guarded writes in the checkout -> comment -> terminal
+    // status flow. Neither consumes cross-issue influence after checkout.
+    await expect(observeCrossIssueInfluence(checkoutAttributed.db as never, {
+      ...input,
+      kind: "comment",
+    })).resolves.toBeNull();
+    await expect(observeCrossIssueInfluence(checkoutAttributed.db as never, {
+      ...input,
+      kind: "update",
+    })).resolves.toBeNull();
+    expect(checkoutAttributed.inserted).toEqual([]);
+
+    const unrelatedTarget = counterDb(0, timerRun, { checkoutRunId: null });
+    await expect(observeCrossIssueInfluence(unrelatedTarget.db as never, {
+      ...input,
+      targetIssueId: "66666666-6666-4666-8666-666666666666",
+      kind: "comment",
+    })).rejects.toMatchObject({
+      status: 403,
+      details: { code: "cross_issue_influence_run_context_required" },
+    });
+    expect(unrelatedTarget.inserted).toEqual([]);
   });
 
   it.each([
