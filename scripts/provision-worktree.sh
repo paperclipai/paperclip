@@ -684,7 +684,7 @@ function walk(dir) {
 
     if (
       entry.isFile()
-      && (entry.name === "package.json" || entry.name === "pnpm-lock.yaml" || entry.name === "pnpm-workspace.yaml")
+      && (entry.name === "package.json" || entry.name === "pnpm-lock.yaml" || entry.name === "pnpm-workspace.yaml" || entry.name.endsWith(".patch"))
     ) {
       files.push(absolutePath);
     }
@@ -768,7 +768,7 @@ if [[ -f "$worktree_cwd/package.json" && -f "$worktree_cwd/pnpm-lock.yaml" ]]; t
     }
 
     run_pnpm_install() {
-      local stdout_path stderr_path
+      local stdout_path stderr_path exit_code
       stdout_path="$(mktemp)"
       stderr_path="$(mktemp)"
 
@@ -783,12 +783,13 @@ if [[ -f "$worktree_cwd/package.json" && -f "$worktree_cwd/pnpm-lock.yaml" ]]; t
         cat "$stderr_path" >&2
         rm -f "$stdout_path" "$stderr_path"
         return 0
+      else
+        exit_code=$?
       fi
 
-      local exit_code=$?
       cat "$stdout_path"
       cat "$stderr_path" >&2
-      if grep -q "ERR_PNPM_OUTDATED_LOCKFILE" "$stdout_path" "$stderr_path"; then
+      if grep -Eq "ERR_PNPM_(OUTDATED_LOCKFILE|LOCKFILE_CONFIG_MISMATCH)" "$stdout_path" "$stderr_path"; then
         rm -f "$stdout_path" "$stderr_path"
         return 90
       fi

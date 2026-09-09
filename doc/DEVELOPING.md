@@ -131,6 +131,13 @@ pnpm dev:stop
 
 `pnpm dev:once` now tracks backend-relevant file changes and pending migrations. When the current boot is stale, the board UI shows a `Restart required` banner. You can also enable guarded auto-restart in `Instance Settings > Experimental`, which waits for queued/running local agent runs to finish before restarting the dev server.
 
+Worktree dependency provisioning records its fingerprint only after a successful
+install. Frozen installs with outdated lockfiles or patched-dependency hash
+mismatches retry once without `--frozen-lockfile`; other failures retain their
+exit status. Patch contents are part of the install fingerprint. Generated
+lockfile changes remain local to the worktree; the repository's lockfile bot
+owns committed updates.
+
 ## Hot-Restart Deploys
 
 Primary-instance rebuilds that restart `paperclip.service` can request one-shot live-run adoption instead of using the normal graceful shutdown drain. Before restarting the service, write the marker from the newly staged app with the current service PID:
