@@ -1076,8 +1076,16 @@ describeEmbeddedPostgres("issue list routes assigneeAgentId filter", () => {
   it("pins every UUID filter value class on both routes", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();
+    const goalId = randomUUID();
+    const projectId = randomUUID();
+    const workspaceId = randomUUID();
+    const executionWorkspaceId = randomUUID();
+    const labelId = randomUUID();
+    const rootId = randomUUID();
+    const parentId = randomUUID();
     const issueId = randomUUID();
     const blockedIssueId = randomUUID();
+    const unassignedBlockedIssueId = randomUUID();
 
     await db.insert(companies).values({
       id: companyId,
@@ -1097,33 +1105,116 @@ describeEmbeddedPostgres("issue list routes assigneeAgentId filter", () => {
       runtimeConfig: {},
       permissions: {},
     });
+    await db.insert(goals).values({
+      id: goalId,
+      companyId,
+      title: "Goal",
+      status: "active",
+      level: "company",
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Filtered project",
+      status: "in_progress",
+    });
+    await db.insert(projectWorkspaces).values({
+      id: workspaceId,
+      companyId,
+      projectId,
+      name: "Primary",
+      sourceType: "local_path",
+      cwd: "/tmp/paperclip-issue-list-value-class",
+      isPrimary: true,
+    });
+    await db.insert(executionWorkspaces).values({
+      id: executionWorkspaceId,
+      companyId,
+      projectId,
+      projectWorkspaceId: workspaceId,
+      mode: "isolated_workspace",
+      strategyType: "git_worktree",
+      name: "Execution workspace",
+      status: "active",
+      providerType: "local_fs",
+      cwd: "/tmp/paperclip-issue-list-value-class-execution",
+    });
+    await db.insert(labels).values({ id: labelId, companyId, name: "Needle", color: "#2563eb" });
+    // Both matched rows carry every filterable column, so each param below has a
+    // value that actually *selects*. Without that, `?param=<random uuid>` matches
+    // nothing, and the class-2/class-5 comparisons are empty-to-empty: they pin
+    // the status code and nothing else, and a mutation that trimmed to some other
+    // valid UUID would survive every one of them.
+    const matchedShape = {
+      companyId,
+      priority: "medium" as const,
+      assigneeAgentId: agentId,
+      createdByAgentId: agentId,
+      goalId,
+      projectId,
+      projectWorkspaceId: workspaceId,
+      executionWorkspaceId,
+      parentId,
+    };
     await db.insert(issues).values([
+      { id: rootId, companyId, title: "Root", status: "todo", priority: "medium" },
+      // Not `todo`: `descendantOf: rootId` reaches this row too, and the class-2
+      // pin below wants exactly one matched row per param.
       {
-        id: issueId,
+        id: parentId,
         companyId,
-        title: "Visible issue",
-        status: "todo",
+        title: "Parent",
+        status: "done",
         priority: "medium",
-        assigneeAgentId: agentId,
+        parentId: rootId,
       },
+      { ...matchedShape, id: issueId, title: "Visible issue", status: "todo" },
+      { ...matchedShape, id: blockedIssueId, title: "Blocked issue", status: "blocked" },
+      // Class 5 asks for `assigneeAgentId=null` on both routes, so the null-token
+      // page has to be non-empty on both. `rootId`/`parentId` cover the list side;
+      // this row is the count side.
       {
-        id: blockedIssueId,
+        id: unassignedBlockedIssueId,
         companyId,
-        title: "Blocked issue",
+        title: "Unassigned blocked issue",
         status: "blocked",
         priority: "medium",
-        assigneeAgentId: agentId,
       },
     ]);
+    await db.insert(issueLabels).values([
+      { companyId, issueId, labelId },
+      { companyId, issueId: blockedIssueId, labelId },
+    ]);
+    // participantAgentId reads activity, not a column on the issue row.
+    await db.insert(activityLog).values(
+      [issueId, blockedIssueId].map((entityId) => ({
+        companyId,
+        actorType: "agent" as const,
+        actorId: agentId,
+        action: "issue.updated",
+        entityType: "issue",
+        entityId,
+        agentId,
+      })),
+    );
     // The blocked-inbox count only counts issues carrying blocked attention, so
     // the count control needs a real `blocks` edge to be non-zero.
-    await db.insert(issueRelations).values({
-      id: randomUUID(),
-      companyId,
-      issueId,
-      relatedIssueId: blockedIssueId,
-      type: "blocks",
-    });
+    await db.insert(issueRelations).values([
+      {
+        id: randomUUID(),
+        companyId,
+        issueId,
+        relatedIssueId: blockedIssueId,
+        type: "blocks",
+      },
+      {
+        id: randomUUID(),
+        companyId,
+        issueId,
+        relatedIssueId: unassignedBlockedIssueId,
+        type: "blocks",
+      },
+    ]);
 
     const app = createApp(companyId);
     const listPath = `/api/companies/${companyId}/issues`;
@@ -1160,6 +1251,25 @@ describeEmbeddedPostgres("issue list routes assigneeAgentId filter", () => {
     ] as const;
     const errorFor = (param: string) =>
       param === "assigneeAgentId" ? "assigneeAgentId must be a UUID or 'null'" : `${param} must be a UUID`;
+    // Per param, a value that selects the seeded rows. Keyed by every name in
+    // both lists, so adding a param without a selecting value fails to compile
+    // rather than silently reintroducing an empty-to-empty comparison.
+    const selectingValue: Record<
+      (typeof listParams)[number] | (typeof countParams)[number],
+      string
+    > = {
+      assigneeAgentId: agentId,
+      participantAgentId: agentId,
+      goalId,
+      createdByAgentId: agentId,
+      projectId,
+      workspaceId,
+      executionWorkspaceId,
+      parentId,
+      descendantOf: rootId,
+      labelId,
+      parentIssueId: parentId,
+    };
 
     // The name axis is already covered by the tests above. This one walks the
     // value axis, which is where the guard actually decides: blank, padded-valid,
@@ -1168,7 +1278,9 @@ describeEmbeddedPostgres("issue list routes assigneeAgentId filter", () => {
     const listBaseline = await request(app).get(listPath).query({ status: "todo", limit: "20" });
     expect(listBaseline.status, JSON.stringify(listBaseline.body)).toBe(200);
     const baselineIds = listBaseline.body.map((issue: { id: string }) => issue.id);
-    expect(baselineIds).toEqual([issueId]);
+    // Equality, not `toContain`: a superset satisfies presence, so the class-1
+    // comparisons below would still hold for a guard that dropped a filter.
+    expect(baselineIds.slice().sort()).toEqual([issueId, rootId].sort());
 
     const countBaseline = await request(app).get(countPath).query({ attention: "blocked" });
     expect(countBaseline.status, JSON.stringify(countBaseline.body)).toBe(200);
@@ -1198,13 +1310,19 @@ describeEmbeddedPostgres("issue list routes assigneeAgentId filter", () => {
     // Class 2 — a valid UUID with surrounding whitespace. `isUuidLike` trims
     // internally and returns true, so without the guard's own `.trim()` the
     // padded string is what reaches Postgres: `22P02 invalid input syntax for
-    // type uuid`, surfaced as a 500. Compare against the unpadded response
-    // rather than an expected page, so the pin holds whatever each filter
-    // matches today.
+    // type uuid`, surfaced as a 500. Each param is sent a value that selects the
+    // seeded row, so the unpadded page is pinned by equality first and the padded
+    // one is then compared against it.
     for (const param of listParams) {
-      const value = randomUUID();
+      const value = selectingValue[param];
       const clean = await request(app).get(listPath).query({ status: "todo", [param]: value, limit: "20" });
       expect(clean.status, `${param}: ${JSON.stringify(clean.body)}`).toBe(200);
+      // The comparison below only carries selection if the compared page has
+      // rows in it. Empty-to-empty would hold for any implementation that
+      // returned nothing, including one that trimmed to a different UUID.
+      expect(clean.body.map((issue: { id: string }) => issue.id), `${param}: ${JSON.stringify(clean.body)}`).toEqual([
+        issueId,
+      ]);
       for (const padded of [`${value} `, ` ${value}`]) {
         const res = await request(app).get(listPath).query({ status: "todo", [param]: padded, limit: "20" });
         const label = `${param}=${JSON.stringify(padded)}: ${JSON.stringify(res.body)}`;
@@ -1213,9 +1331,10 @@ describeEmbeddedPostgres("issue list routes assigneeAgentId filter", () => {
       }
     }
     for (const param of countParams) {
-      const value = randomUUID();
+      const value = selectingValue[param];
       const clean = await request(app).get(countPath).query({ attention: "blocked", [param]: value });
       expect(clean.status, `${param}: ${JSON.stringify(clean.body)}`).toBe(200);
+      expect(clean.body.count, `${param}: ${JSON.stringify(clean.body)}`).toBe(1);
       for (const padded of [`${value} `, ` ${value}`]) {
         const res = await request(app).get(countPath).query({ attention: "blocked", [param]: padded });
         const label = `${param}=${JSON.stringify(padded)}: ${JSON.stringify(res.body)}`;
@@ -1279,6 +1398,18 @@ describeEmbeddedPostgres("issue list routes assigneeAgentId filter", () => {
       const base = path === listPath ? { status: "todo", limit: "20" } : { attention: "blocked" };
       const lower = await request(app).get(path).query({ ...base, assigneeAgentId: "null" });
       expect(lower.status, `${path}: ${JSON.stringify(lower.body)}`).toBe(200);
+      // Same reason as class 2, and the pin is an equality rather than a
+      // non-empty check: the null token has to mean "assignee is null", not
+      // "filter absent". Both routes seed an unassigned row and an assigned one,
+      // so an implementation that dropped the filter returns a strictly larger
+      // page and fails here.
+      if (path === listPath) {
+        expect(lower.body.map((issue: { id: string }) => issue.id), `${path}: ${JSON.stringify(lower.body)}`).toEqual([
+          rootId,
+        ]);
+      } else {
+        expect(lower.body.count, `${path}: ${JSON.stringify(lower.body)}`).toBe(1);
+      }
       for (const token of ["NULL", "Null"]) {
         const res = await request(app).get(path).query({ ...base, assigneeAgentId: token });
         const label = `${path} assigneeAgentId=${token}: ${JSON.stringify(res.body)}`;
@@ -1644,6 +1775,21 @@ describeEmbeddedPostgres("issue list routes assigneeAgentId filter", () => {
 
     expect(aliasOnlyRes.status, JSON.stringify(aliasOnlyRes.body)).toBe(400);
     expect(aliasOnlyRes.body).toMatchObject({ error: "parentIssueId must be a UUID" });
+
+    // Validating the alias is not the same as applying it. With no `parentId`
+    // to supersede it, a valid `parentIssueId` is the value that reaches the
+    // query, so the page must narrow to exactly that parent's children. Drop
+    // the alias branch's `filters[parentIdName] = trimmedAlias` and this
+    // returns the whole company list instead — a 200 the 400 pins above and
+    // the precedence assertions all still accept.
+    const aliasAppliedRes = await request(app)
+      .get(`/api/companies/${companyId}/issues`)
+      .query({ status: "todo", parentIssueId: aliasParentId, limit: "20" });
+
+    expect(aliasAppliedRes.status, JSON.stringify(aliasAppliedRes.body)).toBe(200);
+    expect(aliasAppliedRes.body.map((issue: { id: string }) => issue.id)).toEqual([
+      aliasChildIssueId,
+    ]);
   });
 
   it("filters issue lists by goalId and createdByAgentId", async () => {
