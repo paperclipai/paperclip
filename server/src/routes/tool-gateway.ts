@@ -13,7 +13,11 @@ import {
   updateToolMcpGatewaySchema,
 } from "@paperclipai/shared/validators/tool-access";
 import { assertBoard, assertBoardOrAgent, assertCompanyAccess, getActorInfo } from "./authz.js";
-import { ToolGatewayHttpError, type ToolGatewayService } from "../services/tool-gateway.js";
+import {
+  isConnectedMcpToolResultData,
+  ToolGatewayHttpError,
+  type ToolGatewayService,
+} from "../services/tool-gateway.js";
 import { forbidden, HttpError } from "../errors.js";
 import { accessService } from "../services/index.js";
 import { listConnectionLifecycleEvents } from "../services/tool-connection-activity.js";
@@ -35,6 +39,27 @@ const TOOL_GATEWAY_WINDOWS: Record<string, number | null> = {
 };
 
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+/**
+ * MCP `tools/call` results may only carry `structuredContent` when it is a JSON
+ * object; clients such as Claude Code reject `null`. Return the key only when
+ * there is an object to send so it can be spread into the result.
+ */
+function mcpStructuredContent(value: unknown): { structuredContent: Record<string, unknown> } | Record<string, never> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? { structuredContent: value as Record<string, unknown> }
+    : {};
+}
+
+/**
+ * Structured content for a `tools/call` answered by `executeTool`. Plugin and built-in
+ * tools put their structured data directly on `ToolResult.data`; connected-MCP tools
+ * return the normalization envelope there, so only the remote tool's own
+ * `structuredContent` (when present) is forwarded, never the envelope.
+ */
+function toolResultStructuredContent(data: unknown) {
+  return mcpStructuredContent(isConnectedMcpToolResultData(data) ? data.structuredContent : data);
+}
 
 function gatewayToken(req: { header(name: string): string | undefined }) {
   return req.header("x-paperclip-tool-gateway-token")?.trim() || null;
@@ -161,7 +186,15 @@ async function handleMcpGatewayProtocol(
             : {},
           callerHeaders: headers,
         });
-        res.json({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: JSON.stringify(result) }], structuredContent: result, isError: false } });
+        res.json({
+          jsonrpc: "2.0",
+          id,
+          result: {
+            content: [{ type: "text", text: JSON.stringify(result) }],
+            ...mcpStructuredContent(result),
+            isError: false,
+          },
+        });
         return;
       }
       const result = await toolGateway.executeTool({
@@ -183,7 +216,7 @@ async function handleMcpGatewayProtocol(
         id,
         result: {
           content: [{ type: "text", text: contentText }],
-          structuredContent: resultRecord?.data ?? null,
+          ...toolResultStructuredContent(resultRecord?.data),
           isError: false,
         },
       });

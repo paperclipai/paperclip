@@ -2838,6 +2838,236 @@ rl.on("line", (line) => {
     }
   });
 
+  it("omits structuredContent from normalized MCP results when the remote server returns none", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { run } = await createIssueAndRun(db, company.id, agent.id);
+    const fake = await startFakeRemoteMcpServer((fakeRequest) => ({
+      body: {
+        jsonrpc: "2.0",
+        id: fakeRequest.body?.id,
+        result: { content: [{ type: "text", text: "text only" }] },
+      },
+    }));
+    try {
+      await createRemoteMcpTool(db, company.id, {
+        applicationKey: "kv-demo",
+        connectionName: "KV Demo text-only",
+        toolName: "kv_set",
+        title: "Set KV value",
+        url: fake.url,
+        credentialRefs: [],
+        credentialSecretRefs: [],
+      });
+      await allowAllToolsForAgent(db, company.id, agent.id);
+      const gateway = createTestToolGatewayService(db);
+      const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+      const connectedTool = (await gateway.listToolsForSession(session.token))
+        .find((tool) => tool.providerType === "mcp_remote_http");
+      expect(connectedTool).toBeTruthy();
+
+      const result = await gateway.executeTool({
+        sessionToken: session.token,
+        tool: connectedTool!.name,
+        parameters: { key: "alpha", value: "one" },
+      });
+      expect(result).toMatchObject({
+        status: "completed",
+        result: { content: "text only", data: { isError: false, transport: "mcp_http" } },
+      });
+      expect(result.result as Record<string, unknown>).not.toHaveProperty("data.structuredContent");
+    } finally {
+      await fake.close();
+    }
+  });
+
+  it("forwards only the remote tool's structuredContent for connected-MCP tools over the named gateway", async () => {
+    const company = await createCompany(db);
+    const fake = await startFakeRemoteMcpServer((fakeRequest) => {
+      const args = ((fakeRequest.body?.params as Record<string, unknown> | undefined)?.arguments ?? {}) as Record<string, unknown>;
+      return {
+        body: {
+          jsonrpc: "2.0",
+          id: fakeRequest.body?.id,
+          result: args.key === "structured"
+            ? {
+                content: [{ type: "text", text: "saved structured" }],
+                structuredContent: { saved: true, key: "structured" },
+              }
+            : { content: [{ type: "text", text: "saved text only" }] },
+        },
+      };
+    });
+    try {
+      const { application, connection, catalogEntry } = await createRemoteMcpTool(db, company.id, {
+        url: fake.url,
+        applicationKey: "kv-named-gateway",
+        connectionName: "KV named gateway",
+        toolName: "kv_set",
+        title: "Set KV value",
+        riskLevel: "write",
+      });
+      const gatewayToolName = expectedConnectedToolName({
+        applicationKey: application.applicationKey,
+        connectionId: connection.id,
+        toolName: catalogEntry.toolName,
+      });
+      const [profile] = await db.insert(toolProfiles).values({
+        companyId: company.id,
+        profileKey: `connected-mcp-structured-${randomUUID()}`,
+        name: `Connected MCP structured ${randomUUID()}`,
+        defaultAction: "deny",
+      }).returning();
+      await db.insert(toolProfileEntries).values({
+        companyId: company.id,
+        profileId: profile.id,
+        selectorType: "tool_name",
+        effect: "include",
+        toolName: gatewayToolName,
+      });
+      const gateway = createTestToolGatewayService(db);
+      const created = await gateway.createNamedGateway({
+        companyId: company.id,
+        body: { name: "Connected MCP structured content", profileId: profile.id },
+      });
+      const token = await gateway.createNamedGatewayToken({
+        companyId: company.id,
+        gatewayId: created.id,
+        body: { name: "MCP client", clientLabel: "MCP client" },
+      });
+      const app = createGatewayRouteApp(db, gateway);
+      const endpoint = `/mcp/gateways/${created.gatewayPublicId}`;
+      const call = (id: number, key: string) => request(app)
+        .post(endpoint)
+        .set("authorization", `Bearer ${token.token}`)
+        .send({ jsonrpc: "2.0", id, method: "tools/call", params: { name: gatewayToolName, arguments: { key, value: "v" } } });
+
+      const structured = await call(1, "structured").expect(200);
+      expect(structured.body.result).toEqual({
+        content: [{ type: "text", text: "saved structured" }],
+        structuredContent: { saved: true, key: "structured" },
+        isError: false,
+      });
+
+      const textOnly = await call(2, "text-only").expect(200);
+      expect(textOnly.body.result).toEqual({
+        content: [{ type: "text", text: "saved text only" }],
+        isError: false,
+      });
+      expect(textOnly.body.result).not.toHaveProperty("structuredContent");
+    } finally {
+      await fake.close();
+    }
+  });
+
+  it("maps plugin ToolResult data onto MCP structuredContent and omits it when the tool returns none", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { run } = await createIssueAndRun(db, company.id, agent.id);
+    const profile = await allowToolsForAgent(db, company.id, agent.id, [
+      "demo-plugin:with_data",
+      "demo-plugin:without_data",
+      "demo-plugin:broken",
+    ]);
+    const dispatcher: PluginToolDispatcher = {
+      initialize: async () => {},
+      teardown: () => {},
+      listToolsForAgent: () => ["with_data", "without_data", "broken", "not_allowed"].map((toolName) => ({
+        name: `demo-plugin:${toolName}`,
+        displayName: toolName,
+        description: `Plugin fixture ${toolName}.`,
+        parametersSchema: { type: "object" },
+        pluginId: "demo-plugin",
+      })),
+      getTool: () => null,
+      executeTool: async (tool) => {
+        if (tool === "demo-plugin:broken") throw new Error("plugin worker is not running");
+        return {
+          pluginId: "demo-plugin",
+          toolName: tool.split(":")[1]!,
+          result: tool === "demo-plugin:with_data"
+            ? { content: "plugin ok", data: { ok: true, items: [1, 2] } }
+            : { content: "plugin text only" },
+        };
+      },
+      registerPluginTools: () => {},
+      unregisterPluginTools: () => {},
+      toolCount: () => 4,
+      getRegistry: () => {
+        throw new Error("not used");
+      },
+    };
+    const gateway = createTestToolGatewayService(db, { pluginToolDispatcher: dispatcher });
+    const namedGateway = await gateway.createNamedGateway({
+      companyId: company.id,
+      body: {
+        name: `Plugin gateway ${randomUUID()}`,
+        profileId: profile.id,
+        defaultProfileMode: "gateway_only",
+      },
+    });
+    const token = await gateway.createNamedGatewayToken({
+      companyId: company.id,
+      gatewayId: namedGateway.id,
+      body: {
+        name: "Plugin runtime token",
+        subjectType: "heartbeat_run",
+        subjectId: run.id,
+        clientLabel: "Heartbeat runtime",
+        allowedActions: ["tools/list", "tools/call"],
+        expiresAt: new Date(Date.now() + 60_000),
+      },
+      actor: { agentId: agent.id },
+    });
+    const app = createGatewayRouteApp(db, gateway);
+    const endpoint = `/api/tool-gateway/gateways/${namedGateway.id}/mcp`;
+    const call = (id: number, name: string) => request(app)
+      .post(endpoint)
+      .set("authorization", `Bearer ${token.token}`)
+      .send({ jsonrpc: "2.0", id, method: "tools/call", params: { name, arguments: {} } });
+
+    const listed = await request(app)
+      .post(endpoint)
+      .set("authorization", `Bearer ${token.token}`)
+      .send({ jsonrpc: "2.0", id: 1, method: "tools/list" })
+      .expect(200);
+    expect(listed.body.result.tools.map((tool: { name: string }) => tool.name)).toEqual(
+      expect.arrayContaining(["demo-plugin:with_data", "demo-plugin:without_data"]),
+    );
+
+    const withData = await call(2, "demo-plugin:with_data").expect(200);
+    expect(withData.body.result).toEqual({
+      content: [{ type: "text", text: "plugin ok" }],
+      structuredContent: { ok: true, items: [1, 2] },
+      isError: false,
+    });
+
+    const withoutData = await call(3, "demo-plugin:without_data").expect(200);
+    expect(withoutData.body.result).toEqual({
+      content: [{ type: "text", text: "plugin text only" }],
+      isError: false,
+    });
+    expect(withoutData.body.result).not.toHaveProperty("structuredContent");
+
+    const denied = await call(4, "demo-plugin:not_allowed").expect(403);
+    expect(denied.body).not.toHaveProperty("result");
+    expect(denied.body.error).toMatchObject({ code: -32000, data: { reasonCode: "deny_default" } });
+
+    const broken = await call(5, "demo-plugin:broken").expect(500);
+    expect(broken.body).not.toHaveProperty("result");
+    expect(broken.body.error).toBe("plugin worker is not running");
+
+    const invocations = await db
+      .select({ tool: toolInvocations.toolName, status: toolInvocations.status })
+      .from(toolInvocations)
+      .where(eq(toolInvocations.runId, run.id));
+    expect(invocations).toEqual(expect.arrayContaining([
+      { tool: "demo-plugin:with_data", status: "succeeded" },
+      { tool: "demo-plugin:without_data", status: "succeeded" },
+      { tool: "demo-plugin:broken", status: "failed" },
+    ]));
+  });
+
   it("discovers and calls the SDK-backed KV demo MCP server over Streamable HTTP", async () => {
     const company = await createCompany(db);
     const agent = await createAgent(db, company.id);

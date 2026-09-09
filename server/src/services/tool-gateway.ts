@@ -240,6 +240,33 @@ export type ToolGatewayProviderType =
   | "paperclip_plugin"
   | "paperclip_virtual";
 
+/**
+ * `ToolResult.data` for a connected-MCP tool (remote HTTP or local stdio) is the
+ * normalization envelope built by `normalizeMcpToolResult`, not the remote tool's own
+ * structured data: the remote `structuredContent` sits inside it, next to the raw
+ * content blocks and transport metadata.
+ */
+export interface ConnectedMcpToolResultData {
+  content: unknown[];
+  structuredContent?: unknown;
+  isError: boolean;
+  transport: "mcp_http" | "local_stdio";
+  spawnedLocalProcess: boolean;
+}
+
+export function isConnectedMcpToolResultData(
+  value: unknown,
+): value is ConnectedMcpToolResultData {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  return (
+    (record.transport === "mcp_http" || record.transport === "local_stdio") &&
+    Array.isArray(record.content) &&
+    typeof record.isError === "boolean" &&
+    typeof record.spawnedLocalProcess === "boolean"
+  );
+}
+
 export interface ConnectedMcpGatewayMetadata {
   applicationId: string;
   applicationKey: string | null;
@@ -5723,7 +5750,9 @@ export function createToolGatewayService(
       content,
       data: {
         content: record.content,
-        structuredContent: record.structuredContent ?? null,
+        ...(record.structuredContent !== undefined && record.structuredContent !== null
+          ? { structuredContent: record.structuredContent }
+          : {}),
         isError: record.isError === true,
         transport,
         spawnedLocalProcess,
@@ -10224,6 +10253,9 @@ export function createToolGatewayService(
         const result = connectedMcpExecution
           ? connectedMcpExecution.result
           : tool.providerType === "paperclip_plugin"
+            // Surface the plugin's ToolResult ({ content, data, error }) directly so plugin
+            // tools share the result shape of MCP and built-in tools and the MCP gateway
+            // can map `data` onto structuredContent.
             ? await runWithTimeout(
                 pluginToolDispatcher!.executeTool(
                   tool.name,
@@ -10234,7 +10266,7 @@ export function createToolGatewayService(
                     companyId: session.companyId,
                     projectId: session.projectId ?? "",
                   },
-                ),
+                ).then((execution) => execution.result),
                 executionTimeoutMs,
               )
             : await runWithTimeout(
