@@ -391,7 +391,7 @@ export async function settleUnrecoverableExecutions(
               automaticRecovery: {
                 policy: "preserve_without_replay_v1",
                 runId: run.id,
-                replay: current ? "blocked" : "invalidated",
+                replay: "blocked",
                 actionOutcome: "unknown",
                 recordedAt: now.toISOString(),
               },
@@ -428,7 +428,7 @@ export async function settleUnrecoverableExecutions(
             recoveryActionId: action.id,
             cause: action.cause,
             automaticRecovery: "preserve_without_replay_v1",
-            replay: current ? "blocked" : "invalidated",
+            replay: "blocked",
           },
         });
         options.failpoint?.("persisted");

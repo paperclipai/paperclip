@@ -135,7 +135,7 @@ const support = await getEmbeddedPostgresTestSupport();
       const [action] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, source.issueId));
       expect(action.status).toBe("active");
     });
-    it.each(["closed", "reassigned", "new_execution"])("invalidates automatic disposition after %s without changing task state", async change => {
+    it.each(["closed", "reassigned", "new_execution"])("closes stale recovery after %s without changing task state or granting replay", async change => {
       const source = await seed(3);
       await reconcileSafeNativeReplacements(db);
       const nextRun = randomUUID();
@@ -146,7 +146,7 @@ const support = await getEmbeddedPostgresTestSupport();
       const [task] = await db.select().from(issues).where(eq(issues.id, source.issueId));
       expect(task).toMatchObject(patch);
       const [action] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, source.issueId));
-      expect(action).toMatchObject({ status: "resolved", outcome: "cancelled", evidence: { automaticRecovery: { replay: "invalidated" } } });
+      expect(action).toMatchObject({ status: "resolved", outcome: "cancelled", evidence: { automaticRecovery: { replay: "blocked" } } });
     });
     it("cancels a durable native retry even when its previous provider is already failed", async () => {
       const source = await seed();
