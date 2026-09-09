@@ -3384,6 +3384,7 @@ describe("Codex app-server Codex driver", () => {
       "thread/resume",
       "thread/goal/get",
       "thread/read",
+      "thread/turns/list",
       "thread/read",
       "thread/turns/list",
     ]);
