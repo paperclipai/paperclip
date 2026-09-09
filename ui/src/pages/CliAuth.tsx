@@ -148,10 +148,10 @@ export function CliAuthPage() {
             </div>
           )}
           {challenge.requestedScopeConfig && (
-            <div className="space-y-3">
+            <div className="space-y-(--cli-auth-scope-section-gap)">
               <div>
                 <div className="text-muted-foreground">Scoped companies</div>
-                <ul className="space-y-1">
+                <ul className="space-y-(--cli-auth-scope-item-gap)">
                   {challenge.requestedScopeConfig.companyIds.map((companyId) => (
                     <li key={companyId} className="font-mono text-foreground">{companyId}</li>
                   ))}
@@ -159,7 +159,7 @@ export function CliAuthPage() {
               </div>
               <div>
                 <div className="text-muted-foreground">Permissions</div>
-                <ul className="space-y-1">
+                <ul className="space-y-(--cli-auth-scope-item-gap)">
                   {challenge.requestedScopeConfig.permissions.map((permission) => (
                     <li key={permission} className="font-mono text-foreground">{permission}</li>
                   ))}
@@ -168,7 +168,7 @@ export function CliAuthPage() {
               <div>
                 <div className="text-muted-foreground">Instance capabilities</div>
                 {challenge.requestedScopeConfig.instanceCapabilities.length > 0 ? (
-                  <ul className="space-y-1">
+                  <ul className="space-y-(--cli-auth-scope-item-gap)">
                     {challenge.requestedScopeConfig.instanceCapabilities.map((capability) => (
                       <li key={capability} className="font-mono text-foreground">{capability}</li>
                     ))}
