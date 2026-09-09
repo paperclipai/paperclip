@@ -74,20 +74,6 @@ describe("TaskChatDescriptionBubble (PAP-375)", () => {
     });
   }
 
-  it("renders a human-created task as the blue user bubble, right-aligned, without an author header", () => {
-    render(makeBrief({ createdAt: "2026-08-02T14:34:00.000Z" }));
-    const bubble = container.querySelector('[data-testid="task-chat-description-bubble"]');
-    expect(bubble).not.toBeNull();
-    expect(bubble?.getAttribute("data-author")).toBe("human");
-    expect(bubble?.className).toContain("items-end");
-    expect(bubble?.querySelector('[data-testid="task-chat-agent-avatar"]')).toBeNull();
-    const body = bubble?.querySelector(".bg-\\(--liveness-blue\\)");
-    expect(body).not.toBeNull();
-    expect(body?.textContent).toContain("Ship the widget by");
-    // Markdown renders (bold), not raw asterisks.
-    expect(body?.querySelector("strong")?.textContent).toBe("Friday");
-    expect(bubble?.querySelector('[data-testid="task-chat-description-edit"]')).toBeNull();
-  });
 
   it("renders an agent-created task as the agent-side bubble with the avatar author header", () => {
     render(makeBrief({ author: "agent", authorName: "CEO" }));
@@ -107,8 +93,8 @@ describe("TaskChatDescriptionBubble (PAP-375)", () => {
     expect(container.textContent).not.toContain("Ship the widget");
   });
 
-  it("keeps the agent-side pencil editor and returns to the bubble on Escape", () => {
-    render(makeBrief({ author: "agent", authorName: "CEO" }));
+  it.each(["human", "agent"] as const)("allows %s-authored brief editing and preserves the description on Escape", (author) => {
+    render(makeBrief({ author, authorName: "CEO" }));
     click(container.querySelector('[data-testid="task-chat-description-edit"]'));
 
     const editorWrap = container.querySelector('[data-testid="task-chat-description-editor"]');

@@ -51,9 +51,9 @@ function initialsForName(name: string) {
  * The task description as the requester's first chat bubble (PAP-375):
  * human-created tasks get the blue user bubble, agent-created tasks the
  * agent-side card with the avatar header — same chrome as TaskChatBubble. The
- * body is the live issue.description. Human-authored blue bubbles are
- * presentation-only; agent-authored descriptions retain the hover edit
- * affordance. Long descriptions fold at ~12 lines behind a Show more curtain;
+ * body is the live issue.description. Both origins retain the edit affordance
+ * so feature briefs and acceptance checklists remain maintainable.
+ * Long descriptions fold at ~12 lines behind a Show more curtain;
  * an empty description renders a muted ghost row that opens the editor — never
  * an empty bubble.
  */
@@ -159,17 +159,15 @@ export function TaskChatDescriptionBubble({ brief }: TaskChatDescriptionBubblePr
             </MarkdownBody>
           </FoldCurtain>
         </div>
-        {!isHuman ? (
           <button
             type="button"
-            className="mt-1 shrink-0 rounded-md p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-accent/50 hover:text-foreground focus-visible:opacity-100 group-hover/brief:opacity-100"
+            className="mt-1 shrink-0 rounded-md p-1 text-muted-foreground hover:bg-accent/50 hover:text-foreground"
             onClick={() => setEditing(true)}
             aria-label="Edit description"
             data-testid="task-chat-description-edit"
           >
             <Pencil className="h-3.5 w-3.5" aria-hidden />
           </button>
-        ) : null}
       </div>
       {timestamp ? (
         <span className="px-1 text-(length:--text-micro) text-muted-foreground">{timestamp}</span>
