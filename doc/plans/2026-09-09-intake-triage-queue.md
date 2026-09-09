@@ -77,20 +77,32 @@ Jira as on-ramps while Paperclip owns execution).
 
 ### Phase 1: triage state + transitions (schema + service, no UI)
 
-- New `issue_intake` table (company scope): `issueId` (unique, FK cascade),
+- New `issue_intake` table: `companyId` (FK cascade, part of every
+  uniqueness rule and index below), `issueId` (unique, FK cascade),
   `projectId`, triage status (`pending`, `accepted`, `rejected`,
   `snoozed`, `duplicate`), `snoozedTill`, `duplicateOfIssueId` (nullable FK),
   source fields (`source`, `externalSource`, `externalId`, `extra` JSONB),
-  timestamps. New issues created through intake-designated paths start
-  `pending`; all other creates are unaffected.
+  timestamps. Indexes on `(companyId, projectId, status, createdAt)` for
+  the queue read and a partial unique index on `(companyId, externalSource,
+  externalId)` where both are non-null for cross-source identity. New
+  issues created through intake-designated paths start `pending`; all
+  other creates are unaffected.
 - Transitions (`accept`, `decline`, `snooze`, `mark_duplicate`) as service
   operations with actor attribution and activity entries. Accept keeps the
   issue's workflow status flow untouched. Snooze sets `snoozedTill` and
   hides the row until then. Duplicates link, never merge, so no data is
   destroyed.
-- Scheduling guard: heartbeat wakes skip triage-pending issues (one
-  predicate at wakeup selection, mirroring existing status guards), so
-  staged work burns no budget.
+- Scheduling guard: heartbeat wakes skip triage-pending issues, so staged
+  work burns no budget. This needs a mandatory shared guard, not one
+  predicate: assignment, routine, and manual wakes enter `enqueueWakeup`
+  without its optional `issueStateGuard`, and timer wakes use separate
+  status predicates. Every wake path must be enumerated and gated, or
+  pending intake work schedules through the gaps.
+- Reuse before inventing: the decision-desk architecture already specifies
+  company-scoped decision queues with triage events, snoozing, retention,
+  and APIs. Phase 1 must reconcile intake with it — either stage triage
+  rows as a decision-queue kind or justify the separate lifecycle — rather
+  than running a second overlapping queue system.
 - Migration is additive (new table only). No existing column changes.
 
 ### Phase 2: intake queue surface (API + UI)
@@ -125,6 +137,10 @@ Jira as on-ramps while Paperclip owns execution).
 4. Should accept assign an owner, or leave assignment to existing routing?
 5. Do snoozed items need wakeups on expiry, or is queue visibility enough?
 6. Duplicate handling: link-only (proposed) or merge histories?
+7. Should triage staging reuse decision-queue infrastructure (triage
+   events, snoozing, retention, APIs) instead of a standalone table?
+8. Which wake paths does the mandatory pending-issue guard cover, and
+   where does it live so new paths cannot bypass it?
 
 ## Risks
 
@@ -135,8 +151,12 @@ Jira as on-ramps while Paperclip owns execution).
 - Un-triaged buildup if nobody watches a queue. Mitigation: per-project
   counts in existing badge surfaces plus routine-generated triage digests
   as a later step.
-- External duplication across sources. Mitigation: origin fingerprint
-  dedup at create plus explicit duplicate marking.
+- External duplication across sources. Mitigation: phase 1 adds the
+  partial unique index on `(companyId, externalSource, externalId)` plus
+  explicit duplicate marking. Note this is new capability, not existing
+  behavior: `originFingerprint` uniqueness is origin-kind-specific today,
+  and title/idempotency checks do not dedupe arbitrary external
+  fingerprints across sources.
 
 ## Alternatives Considered
 
