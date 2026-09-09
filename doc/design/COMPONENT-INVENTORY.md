@@ -6,6 +6,8 @@ Run scope: `ui/src/components/` and `ui/src/pages/` on branch `design/token-extr
 
 ## Counts
 
+September 2026 additions: `ExecutionStatus` renders the server execution projection using the shared Card and Button primitives. `IssueExecutionStatus` supplies the task query and an explicit unavailable/retry state. Independent states live under Storybook **Tasks / Execution recovery**, covering working, reconnecting, scheduled retry, finishing, replacement, exhausted recovery, uncertain actions, unavailable recovery, access/answer/workspace waits, narrow errors, and keyboard inspection. The historical audit counts below are unchanged.
+
 | Area | Count |
 |---|---:|
 | Shared primitives (`ui/src/components/ui/`) | 24 |

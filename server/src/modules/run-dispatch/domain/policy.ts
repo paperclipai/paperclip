@@ -101,6 +101,7 @@ export type ScheduledRetryFacts = {
 };
 
 export type QueuedRunStalenessErrorCode =
+  | "execution_reconciliation_required"
   | "issue_not_found"
   | "issue_assignee_changed"
   | "issue_terminal_status"
@@ -325,6 +326,11 @@ export function decideScheduledRetryGate(
     runAgentId: facts.runAgentId,
     issueAssigneeAgentId: facts.issueAssigneeAgentId,
     isNonAssigneeWorkspaceBusyRetry: facts.isNonAssigneeWorkspaceBusyRetry,
+    isCurrentReviewParticipant:
+      facts.reviewParticipant.isInReview &&
+      facts.reviewParticipant.hasParticipant &&
+      facts.reviewParticipant.participantIsAgent &&
+      facts.reviewParticipant.participantAgentId === facts.runAgentId,
   });
   if (ownership === "reassigned") {
     return {

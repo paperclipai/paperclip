@@ -11,6 +11,7 @@ import {
   heartbeatRuns,
   issueDocuments,
   issueRelations,
+  issueRecoveryActions,
   issueTreeHolds,
   issues,
 } from "@paperclipai/db";
@@ -185,6 +186,31 @@ describeEmbeddedPostgres("run-dispatch postgres adapter", () => {
       key: ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
     });
   }
+
+  it("commits admission before a recovered provider fails without a spawn callback", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const issueId = randomUUID();
+    await seedIssue({ companyId, issueId, assigneeAgentId: agentId, status: "in_progress" });
+    const runId = await seedRun({ companyId, agentId, status: "running", contextSnapshot: { issueId } });
+    await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, issueId));
+    const adapter = createPostgresRunDispatchAdapter(db);
+    const gate = await adapter.dispatchResolvedInteractionIfCurrent({
+      companyId, runId, expectedStatus: "running", now: new Date(),
+      dispatch: async () => {
+        // The incident's third attempt failed here before onSpawn. A held
+        // admission lock makes this finalization fail with lock_timeout.
+        await db.transaction(async tx => {
+          await tx.execute(sql`select set_config('lock_timeout', '1000', true)`);
+          await tx.update(issues).set({ executionRunId: null }).where(eq(issues.id, issueId));
+          await tx.update(heartbeatRuns).set({ status: "failed", finishedAt: new Date() }).where(eq(heartbeatRuns.id, runId));
+        });
+        return "provider_checkpoint_failed_terminal";
+      },
+    });
+    expect(gate.dispatched).toBe(true);
+    if (gate.dispatched) expect(await gate.resultPromise).toBe("provider_checkpoint_failed_terminal");
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)))[0]?.status).toBe("failed");
+  });
 
   async function waitForBlockedForUpdate(tableName: string) {
     for (let attempt = 0; attempt < 80; attempt += 1) {
@@ -612,4 +638,14 @@ describeEmbeddedPostgres("run-dispatch postgres adapter", () => {
       15_000,
     );
   });
+  it("blocks a generic retry while an external outcome requires reconciliation", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const issueId = randomUUID(), runId = randomUUID();
+    await db.insert(issues).values({ id: issueId, companyId, title: "Uncertain email", status: "in_progress", assigneeAgentId: agentId });
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, status: "queued", contextSnapshot: { issueId, wakeReason: "retry_failed_run" } });
+    await db.insert(issueRecoveryActions).values({ companyId, sourceIssueId: issueId, kind: "active_run_watchdog", ownerType: "board", cause: "uncertain_external_action", fingerprint: runId, nextAction: "Verify whether email-1 was sent before continuing." });
+    const adapter = createPostgresRunDispatchAdapter(db);
+    await expect(adapter.cancelStaleQueuedRun({ companyId, runId, expectedStatus: "queued", now: new Date() })).resolves.toMatchObject({ outcome: "cancelled", errorCode: "execution_reconciliation_required" });
+  });
+
 });

@@ -8,6 +8,9 @@ import { createInterface } from 'node:readline';
 if (process.argv.includes('--version')) { console.log('codex-cli 0.115.0 (in-feed fixture)'); process.exit(0); }
 let threadId = `fixture-${randomUUID()}`;
 let turnId, toolSequence = 0, declined = false;
+const recoveryFixture = process.env.PAPERCLIP_RECOVERY_FIXTURE === "1";
+let currentObjective = "";
+let emitCeoLineage = false;
 let completionContract = { revision: "1", criterionIds: ["objective"] };
 const pending = new Map();
 const send = (value) => process.stdout.write(`${JSON.stringify(value)}\n`);
@@ -52,6 +55,16 @@ async function finish(text, evidenceRef) {
     evidence: [{ ref: evidenceRef }], verification: [{ commandOrCheck: 'Fixture outcome', status: 'passed' }], attentionRequests: [], artifacts: [] });
 }
 async function execute() {
+  if (recoveryFixture) {
+    send({ method: 'item/agentMessage/delta', params: { threadId, turnId, itemId: `progress-${turnId}`, delta: 'Checking the current request and available connections.' } });
+  }
+  if (emitCeoLineage) {
+    const child = `child-${turnId}`;
+    send({ method: 'thread/started', params: { thread: { id: child, source: { subAgent: { thread_spawn: { parent_thread_id: threadId, depth: 1 } } } } } });
+    send({ method: 'turn/started', params: { threadId: child, turn: { id: `child-turn-${turnId}`, status: 'inProgress' } } });
+    send({ method: 'turn/completed', params: { threadId: child, turn: { id: `child-turn-${turnId}`, status: 'completed' } } });
+    await call('report_progress', { idempotencyKey: `lineage-${turnId}`, body: 'Provider child finished; root execution continues.' });
+  }
   if (declined) {
     const text = 'Connection declined. I will use the information already in this task and pursue alternatives.';
     await call('report_progress', { idempotencyKey: `declined-${turnId}`, body: text });
@@ -60,7 +73,8 @@ async function execute() {
     send({ method: 'turn/completed', params: { threadId, turn: { id: turnId, status: 'completed' } } });
     return;
   }
-  const discovery = unwrap(await call('connections_search', { query: 'heliotrope' }));
+  const query = recoveryFixture && /gmail/i.test(currentObjective) ? 'gmail-fixture' : 'heliotrope';
+  const discovery = unwrap(await call('connections_search', { query }));
   const service = discovery.results?.find((item) => item.source === 'configured');
   if (!service) throw new Error('Authorized Research Archive fixture was not discoverable');
   const request = unwrap(await call('connection_request', { service: service.service }));
@@ -75,12 +89,22 @@ async function execute() {
   } else {
     await mcp('initialize', { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'in-feed-fixture', version: '1' } });
     const list = await mcp('tools/list');
-    const tool = list.tools.find((item) => /heliotrope/.test(item.description ?? '') || /archive_read/.test(item.name));
+    const tool = list.tools.find((item) => (query === 'gmail-fixture' ? /gmail-fixture/.test(item.description ?? '') : /heliotrope/.test(item.description ?? '')));
     if (!tool) throw new Error('Updated native tool snapshot does not contain archive_read');
     const result = await mcp('tools/call', { name: tool.name, arguments: {} });
     if (result.isError) throw new Error(JSON.stringify(result));
     text = result.content.filter((item) => item.type === 'text').map((item) => item.text).join('\n');
-    if (!text.includes('HELIOTROPE-42')) throw new Error('Provider fixture value missing');
+    if (recoveryFixture && text.includes('RECOVERY-INJECT-')) {
+      // An unrelated informational event must not terminate the root. The next
+      // event deliberately supplies the terminal failure used by recovery tests.
+      send({ method: 'thread/status/changed', params: { threadId: 'unrelated-fixture-thread', status: { type: 'idle' } } });
+      if (text.includes('RECOVERY-INJECT-UNKNOWN-WRITE')) {
+        send({ method: 'item/started', params: { threadId, turnId, item: { id: 'uncertain-email-write', type: 'commandExecution', command: 'send_fixture_email', status: 'inProgress' } } });
+      }
+      send({ method: 'turn/completed', params: { threadId, turn: { id: turnId, status: 'failed', error: { code: 'fixture_checkpoint_unusable', message: 'Deterministic failed provider session after Gmail access' } } } });
+      return;
+    }
+    if (!text.includes(query === 'gmail-fixture' ? 'GMAIL-73' : 'HELIOTROPE-42')) throw new Error('Provider fixture value missing');
   }
   await call('report_progress', { idempotencyKey: `fixture-answer-${turnId}`, body: text });
   if (request.state === 'ready' && !refreshingTools) await finish(text, 'mcp:archive_read');
@@ -96,17 +120,23 @@ createInterface({ input: process.stdin }).on('line', (line) => {
   const { id, method } = message;
   if (method === 'initialize') send({ id, result: { user: { sessionId: threadId } } });
   else if (method === 'thread/start' || method === 'thread/resume') {
+    if (recoveryFixture) send({ method: 'configWarning', params: { message: 'Recovery fixture startup notice before the first turn' } });
     if (method === 'thread/resume' && message.params?.threadId) threadId = message.params.threadId;
     if (message.params?.completionContract) completionContract = message.params.completionContract;
     send({ id, result: { model: 'in-feed-fixture', modelProvider: 'fixture', thread: { id: threadId, sessionId: threadId } } });
   }
   else if (method === 'thread/read') send({ id, result: { thread: { id: threadId, turns: [] } } });
   else if (method === 'turn/start') {
+    emitCeoLineage = JSON.stringify(message.params).includes('CEO descendant fixture');
     declined = /connection_intent/.test(JSON.stringify(message.params)) && /rejected/.test(JSON.stringify(message.params));
     for (const part of message.params?.input ?? []) {
       try {
-        const envelope = JSON.parse(part.text);
+        const outer = JSON.parse(part.text);
+        const envelope = typeof outer.message === "string" ? JSON.parse(outer.message) : outer;
         const contract = envelope.task?.completionContract ?? envelope.completionContract;
+        for (const line of (envelope.task?.task?.prompt ?? envelope.task?.prompt ?? '').split('\n')) {
+          try { const context = JSON.parse(line); if (context.version === 1 && Array.isArray(context.messages)) currentObjective = context.objective; } catch {}
+        }
         if (contract?.revision && contract.criteria) completionContract = { revision: contract.revision, criterionIds: contract.criteria.map((criterion) => criterion.id) };
       } catch { /* Non-envelope text is ordinary task context. */ }
     }

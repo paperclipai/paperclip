@@ -4758,6 +4758,15 @@ registry.registerPath({
 
 registry.registerPath({
   method: "get",
+  path: "/api/issues/{issueId}/execution",
+  tags: ["runs"],
+  summary: "Get the current issue execution and permitted recovery actions",
+  request: { params: z.object({ issueId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "get",
   path: "/api/issues/{issueId}/active-run",
   tags: ["runs"],
   summary: "Get active run for an issue",

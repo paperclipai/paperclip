@@ -1,4 +1,5 @@
 import { RepositoryEditor } from "@/components/RepositoryEditor";
+import { ExecutionStatus } from "@/components/ExecutionStatus";
 import { useState } from "react";
 import { ServicesList } from "./apps/app-detail/ServicesPanel";
 import { ComposioProvenanceChip } from "./apps/ComposioProvenanceChip";
@@ -2137,6 +2138,20 @@ export function DesignGuide() {
           for all 10 states.
         </p>
         <EnvironmentVariablesEditorShowcase />
+      </Section>
+
+      <Section title="Execution recovery">
+        <p className="text-sm text-muted-foreground">
+          Execution status comes from the server's confirmed execution and recovery records.
+          Show the next action and attempt budget without taking over the composer. Independent
+          Tasks/Execution recovery stories cover every state and keyboard inspection.
+        </p>
+        <ExecutionStatus execution={{
+          phase: "retry_scheduled", label: "Retry scheduled", cause: "provider_interrupted",
+          lastConfirmedActivityAt: null, retryAt: null, attempt: 2, maxAttempts: 3,
+          recoveryOwner: "agent", nextAction: "The agent will resume the task after the retry delay.",
+          permittedActions: [], predecessorRunId: null, successorRunId: null,
+        }} />
       </Section>
 
       <Section title="Connection Intent">

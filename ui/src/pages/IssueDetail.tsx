@@ -1,3 +1,4 @@
+import { IssueExecutionStatus } from "../components/ExecutionStatus";
 import {
   memo,
   useCallback,
@@ -2288,15 +2289,15 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
         <ThreadComponent
           composerRef={composerRef}
           composerAccessory={composerAccessory}
-          threadHeader={
+          threadHeader={<><IssueExecutionStatus issueId={issueId} />{
             !classicTaskInterfaceEnabled &&
             (threadHeader || loadOlderButton) ? (
               <>
                 {threadHeader}
                 {loadOlderButton}
               </>
-            ) : undefined
-          }
+            ) : null
+          }</>}
           issueBrief={issueBrief}
           comments={commentsForThread}
           interactions={interactions}

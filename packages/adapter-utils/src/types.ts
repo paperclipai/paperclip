@@ -5,7 +5,7 @@
 import type { SshRemoteExecutionSpec } from "./ssh.js";
 import type { AdapterExecutionTarget } from "./execution-target.js";
 import type { RuntimeStatusSink } from "./runtime-progress.js";
-import type { NativeFinalizationResult } from "@paperclipai/shared";
+import type { ExecutionContinuationEnvelope, NativeFinalizationResult } from "@paperclipai/shared";
 
 export interface AdapterAgent {
   id: string;
@@ -75,6 +75,8 @@ export type AdapterExecutionErrorFamily =
   | "refresh_token_invalidated";
 
 export interface AdapterExecutionResult {
+  /** Positive evidence for retrying bootstrap; absent evidence never authorizes replay. */
+  executionRecovery?: { kind: "bootstrap"; providerWorkStarted: false };
   exitCode: number | null;
   signal: string | null;
   timedOut: boolean;
@@ -188,6 +190,8 @@ export interface AdapterRuntimeEvent {
 }
 
 export interface AdapterExecutionContext {
+  /** Server-owned, actor-attributed snapshot also rendered by legacy wake prompts. */
+  executionContinuation?: ExecutionContinuationEnvelope | null;
   runId: string;
   agent: AdapterAgent;
   runtime: AdapterRuntime;

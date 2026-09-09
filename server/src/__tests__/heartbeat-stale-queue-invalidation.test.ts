@@ -671,10 +671,11 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
         expect(rows).toHaveLength(1);
         ordering.push("parked");
       });
-      // Give the concurrent update a chance to reach the row lock. It must
-      // remain blocked until the adapter reports actual remote dispatch.
+      // Admission is committed before adapter-owned setup. This concurrent
+      // update must not wait on a lock held by the adapter callback.
       await new Promise((resolve) => setTimeout(resolve, 25));
-      expect(ordering).toEqual(["validated"]);
+      await parkPromise;
+      expect(ordering).toEqual(["validated", "parked"]);
     };
     mockAdapterExecute.mockImplementation(async (context) => {
       ordering.push("handed-off");
@@ -687,7 +688,7 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
       // Model asynchronous adapter setup before the child process exists.
       await new Promise((resolve) => setTimeout(resolve, 25));
       await waitForCondition(async () => ordering.includes("parked"));
-      expect(ordering.slice(0, 2)).toEqual(["validated", "handed-off"]);
+      expect(ordering.slice(0, 3)).toEqual(["validated", "parked", "handed-off"]);
       expect(ordering).toEqual(expect.arrayContaining(["metadata-recorded", "preparing", "parked"]));
       ordering.push("dispatched");
       context.onDispatch?.();
@@ -720,7 +721,7 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
       .where(eq(issues.id, issueId))
       .then((rows) => rows[0] ?? null);
     expect(issue?.status).toBe("backlog");
-    expect(ordering.slice(0, 2)).toEqual(["validated", "handed-off"]);
+    expect(ordering.slice(0, 3)).toEqual(["validated", "parked", "handed-off"]);
     expect(ordering.slice(-2)).toEqual(["dispatched", "settled"]);
     expect(ordering).toEqual(expect.arrayContaining(["metadata-recorded", "preparing", "parked"]));
     expect(countExecuteCallsForRun(runId)).toBe(1);

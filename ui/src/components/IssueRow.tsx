@@ -212,7 +212,7 @@ export function IssueRow({
   // scheduler is actually running from one whose due time simply passed.
   const recoveryIndicator = recoveryAction
     ? renderRecoveryChip(recoveryAction, selected, { scheduledRetry: issue.scheduledRetry ?? null })
-    : null;
+    : issue.activeRun?.execution ? <Badge variant="outline" className="ml-1.5 text-xs" title={issue.activeRun.execution.nextAction ?? undefined}>{issue.activeRun.execution.label}</Badge> : null;
   const parkedBlockerIndicator = hasAssignedBacklogBlocker(issue.blockedBy) ? (
     <Badge variant="outline"
       data-testid="issue-row-parked-blocker"

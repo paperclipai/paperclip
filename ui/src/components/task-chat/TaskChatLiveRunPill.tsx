@@ -1,3 +1,4 @@
+import type { ExecutionProjection } from "@paperclipai/shared";
 import { Loader2 } from "lucide-react";
 import type { TranscriptEntry } from "../../adapters";
 import { cn } from "@/lib/utils";
@@ -44,18 +45,20 @@ export function toolCountSummaryFromEntries(entries: readonly TranscriptEntry[])
  */
 export function TaskChatLiveRunPill({
   status,
+  execution,
   startedAtMs,
   finishedAtMs,
   toolSummary,
 }: {
   status: string;
+  execution?: ExecutionProjection | null;
   /** Run start (startedAt, falling back to createdAt) in ms, or null if unknown. */
   startedAtMs: number | null;
   /** Run finish in ms once terminal; drives the settled elapsed readout. */
   finishedAtMs?: number | null;
   toolSummary: string | null;
 }) {
-  const active = !isTerminalRunStatus(status);
+  const active = !isTerminalRunStatus(status) && (!execution || execution.phase === "working");
   // One shared page-wide ticker drives the live elapsed readout, matching the
   // default view's `useLiveElapsed`.
   useSecondTick(active && startedAtMs != null);
@@ -65,7 +68,7 @@ export function TaskChatLiveRunPill({
   const elapsed = elapsedMs != null
     ? formatDurationWords(elapsedMs)
     : null;
-  const verb = active ? "Working" : "Worked";
+  const verb = execution?.label ?? (active ? "Working" : "Worked");
   const suffix = elapsed ? `for ${elapsed}` : null;
 
   return (

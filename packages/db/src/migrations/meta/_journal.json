@@ -1737,6 +1737,41 @@
       "when": 1788904803082,
       "tag": "0249_fast_silverclaw",
       "breakpoints": true
+    },
+    {
+      "idx": 250,
+      "version": "7",
+      "when": 1788904803083,
+      "tag": "0250_exotic_dakota_north",
+      "breakpoints": true
+    },
+    {
+      "idx": 251,
+      "version": "7",
+      "when": 1788904803084,
+      "tag": "0251_narrow_mastermind",
+      "breakpoints": true
+    },
+    {
+      "idx": 252,
+      "version": "7",
+      "when": 1788904803085,
+      "tag": "0252_friendly_kate_bishop",
+      "breakpoints": true
+    },
+    {
+      "idx": 253,
+      "version": "7",
+      "when": 1788906513181,
+      "tag": "0253_real_firebrand",
+      "breakpoints": true
+    },
+    {
+      "idx": 254,
+      "version": "7",
+      "when": 1788906545648,
+      "tag": "0254_military_calypso",
+      "breakpoints": true
     }
   ]
 }

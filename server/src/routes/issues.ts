@@ -1,3 +1,6 @@
+import { issueRecoveryActionReadModel } from "../services/issue-recovery-actions.js";
+import { requiresExecutionReconciliation } from "@paperclipai/shared";
+import { validateExecutionReconciliation, markExecutionReconciliation } from "../services/execution-recovery-resolution.js";
 import { storedSteeringAcknowledgement, reconcileSteeredIdentity, reserveSteeredIdentity, acceptSteeredIdentity, rejectSteeredIdentity } from "../services/run-identity.js";
 import { createHash, randomUUID } from "node:crypto";
 import { Router, type Request, type Response } from "express";
@@ -19,6 +22,7 @@ import {
   issueDocuments,
   issueExecutionDecisions,
   issueRelations,
+  issueRecoveryActions,
   issueThreadInteractions,
   issues as issueRows,
   issueWorkProducts,
@@ -7576,7 +7580,7 @@ export function issueRoutes(
       if (!(await assertCrossIssueInfluenceWithinRunCap(req, res, existing, "update"))) return;
     }
 
-    const { actionId, outcome, sourceIssueStatus, resolutionNote } = req.body;
+    const { actionId, outcome, sourceIssueStatus, resolutionNote, executionReconciliation } = req.body;
     if (outcome === "false_positive" || outcome === "cancelled") {
       assertBoard(req);
     }
@@ -7599,6 +7603,17 @@ export function issueRoutes(
         lockedIssue.id,
         tx,
       );
+      if (actionId && (!activeRecoveryAction || activeRecoveryAction.id !== actionId)) {
+        const [settled] = await tx.select().from(issueRecoveryActions).where(and(
+          eq(issueRecoveryActions.id, actionId), eq(issueRecoveryActions.companyId, lockedIssue.companyId),
+          eq(issueRecoveryActions.sourceIssueId, lockedIssue.id),
+          inArray(issueRecoveryActions.status, ["resolved", "cancelled"]),
+        ));
+        if (settled) {
+          await requireRecoveryActionAuthority(req, lockedIssue, issueRecoveryActionReadModel(settled), { source: "recovery_action_resolution" });
+          return { issue: lockedIssue, recoveryAction: settled, replayed: true };
+        }
+      }
       if (!activeRecoveryAction || (actionId && activeRecoveryAction.id !== actionId)) {
         throw notFound("Active recovery action not found");
       }
@@ -7608,6 +7623,18 @@ export function issueRoutes(
         activeRecoveryAction,
         { source: "recovery_action_resolution" },
       );
+
+      if (sourceIssueStatus === "todo" && requiresExecutionReconciliation(activeRecoveryAction.cause)) {
+        assertBoard(req);
+        await validateExecutionReconciliation({ db: tx as unknown as Db,
+          companyId: lockedIssue.companyId, issueId: lockedIssue.id, agentId: lockedIssue.assigneeAgentId,
+          sourceRunId: activeRecoveryAction.evidence.runId ?? activeRecoveryAction.evidence.sourceRunId,
+          decision: executionReconciliation,
+        });
+        await markExecutionReconciliation(tx as unknown as Db, activeRecoveryAction, executionReconciliation!, actor.actorId);
+      } else if (executionReconciliation) {
+        throw conflict("An execution reconciliation must target the current execution recovery action and continue the task.");
+      }
 
       let issue = lockedIssue;
       const sourceStatusChanged = sourceIssueStatus !== lockedIssue.status;
@@ -7747,6 +7774,10 @@ export function issueRoutes(
 
       return { issue, recoveryAction };
     });
+    if (result.replayed) {
+      res.json({ issue: result.issue, recoveryAction: result.recoveryAction });
+      return;
+    }
     for (const publication of postCommitActivityPublications) publishActivity(publication);
     await flushIssuePostCommitActions(postCommitIssueActions);
 
@@ -7796,7 +7827,7 @@ export function issueRoutes(
     });
 
     if (
-      sourceIssueStatus === "todo" &&
+      !executionReconciliation && sourceIssueStatus === "todo" &&
       result.issue.assigneeAgentId &&
       (existing.status !== result.issue.status ||
         existing.assigneeAgentId !== result.issue.assigneeAgentId)

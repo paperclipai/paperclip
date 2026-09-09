@@ -38,6 +38,7 @@ import { appendHeartbeatRunEvent } from "../heartbeat-run-events.js";
 import { emitAgentTaskRun } from "../agent-task-run-telemetry.js";
 import { budgetService } from "../budgets.js";
 import { issueRecoveryActionService } from "../issue-recovery-actions.js";
+import { legacyExecutionNeedsReconciliation, terminalizeLegacyExecution } from "../legacy-execution-recovery.js";
 import { issueTreeControlService } from "../issue-tree-control.js";
 import { TERMINAL_HEARTBEAT_RUN_STATUSES, issueService } from "../issues.js";
 import {
@@ -655,6 +656,7 @@ export function recoveryService(
   db: Db,
   deps: {
     enqueueWakeup: RecoveryWakeup;
+    scheduleRecoveryRetry?: (runId: string) => Promise<typeof heartbeatRuns.$inferSelect | null>;
     liveRunExecutions?: Readonly<{ has(id: string): boolean }>;
   },
 ) {
@@ -1045,6 +1047,22 @@ export function recoveryService(
     retryOfRunId?: string | null;
     extraContext?: Record<string, unknown>;
   }) {
+    if (input.retryOfRunId) {
+      const [predecessor] = await db.select().from(heartbeatRuns).where(and(
+        eq(heartbeatRuns.id, input.retryOfRunId), eq(heartbeatRuns.agentId, input.agentId),
+      ));
+      if (predecessor && ["failed", "timed_out", "interrupted", "cancelled"].includes(predecessor.status)) {
+        // Failure recovery shares the durable incident budget and delay. It
+        // cannot fall through into the productive-work continuation queue.
+        if (predecessor.runtimeMode === "native") return null;
+        if (legacyExecutionNeedsReconciliation(predecessor)) {
+          await terminalizeLegacyExecution({ db, run: predecessor, status: predecessor.status });
+          return null;
+        }
+        if (deps.scheduleRecoveryRetry) return deps.scheduleRecoveryRetry(predecessor.id);
+        return null;
+      }
+    }
     const queued = await deps.enqueueWakeup(input.agentId, {
       source: "automation",
       triggerDetail: "system",
@@ -3052,9 +3070,22 @@ export function recoveryService(
         continue;
       }
 
-      if (isOperatorCancelledRun(latestRun)) {
+      const participantLatestRunForRecovery = issue.status === "in_review" && participantAgentId
+        ? await getLatestIssueRunForAgent(issue.companyId, issue.id, participantAgentId)
+        : null;
+      const executionRecoverySource = issue.status === "in_review" ? participantLatestRunForRecovery : latestRun;
+      if (isOperatorCancelledRun(executionRecoverySource)) {
         result.operatorCancelExempted += 1;
         continue;
+      }
+      if (executionRecoverySource && executionRecoverySource.agentId === agentId && ["failed", "timed_out", "interrupted", "cancelled"].includes(executionRecoverySource.status)) {
+        const [source] = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, issue.companyId), eq(heartbeatRuns.id, executionRecoverySource.id)));
+        if (source && legacyExecutionNeedsReconciliation(source)) {
+          await terminalizeLegacyExecution({ db, run: source, status: source.status, fromStatuses: [source.status] });
+          result.escalated += 1;
+          result.issueIds.push(issue.id);
+          continue;
+        }
       }
       if (await isInvocationBudgetBlocked(issue, agentId)) {
         const classification = classifyContinuationFailure(latestRun);
@@ -3095,9 +3126,6 @@ export function recoveryService(
         continue;
       }
       const recoveryNow = new Date();
-      const participantLatestRunForRecovery = issue.status === "in_review" && participantAgentId
-        ? await getLatestIssueRunForAgent(issue.companyId, issue.id, participantAgentId)
-        : null;
       const providerQuotaMonitorRun = issue.status === "in_review"
         ? participantLatestRunForRecovery
         : latestRun;

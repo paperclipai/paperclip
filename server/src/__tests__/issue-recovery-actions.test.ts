@@ -730,10 +730,11 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     const result = await recovery.reconcileStrandedAssignedIssues();
 
     expect(result.operatorCancelExempted).toBe(0);
-    // The system-cancelled run still flows into the pre-existing recovery
-    // behavior (a continuation requeue or escalation — either produces a
-    // wake), proving the stand-down is scoped to operator attribution.
-    expect(enqueueWakeup).toHaveBeenCalled();
+    expect(result.escalated).toBe(1);
+    expect(enqueueWakeup).not.toHaveBeenCalled();
+    expect(await db.select().from(issueRecoveryActions)).toEqual([expect.objectContaining({
+      cause: "legacy_execution_requires_reconciliation", ownerType: "board", returnOwnerAgentId: coderId,
+    })]);
   });
 
   it("schedules a provider-quota monitor for the original assignee without creating recovery work", async () => {
@@ -745,6 +746,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       agentId: coderId,
       invocationSource: "manual",
       status: "failed",
+      resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } },
       error: "You've hit your usage limit for GPT-5. Try again at 12:00 AM (UTC).",
       errorCode: "adapter_failed",
       startedAt: new Date("2026-07-15T20:00:00.000Z"),
@@ -794,6 +796,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       agentId: coderId,
       invocationSource: "manual",
       status: "failed",
+      resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } },
       error: "Provider quota exceeded for this model.",
       errorCode: "adapter_failed",
       startedAt: new Date("2026-07-15T21:00:00.000Z"),
@@ -824,6 +827,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       agentId: coderId,
       invocationSource: "manual",
       status: "failed",
+      resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } },
       error: "Provider quota exceeded for this model.",
       errorCode: "adapter_failed",
       startedAt: new Date("2026-07-15T20:00:00.000Z"),
@@ -858,6 +862,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       agentId: coderId,
       invocationSource: "manual",
       status: "failed",
+      resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } },
       error: "Provider quota exceeded for this model.",
       errorCode: "adapter_failed",
       startedAt: new Date("2026-07-15T20:00:00.000Z"),
@@ -926,6 +931,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       agentId: managerId,
       invocationSource: "automation",
       status: "failed",
+      resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } },
       error: "Provider quota exceeded for this model.",
       errorCode: "adapter_failed",
       startedAt: new Date("2026-07-15T20:00:00.000Z"),
@@ -987,6 +993,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       agentId: managerId,
       invocationSource: "automation",
       status: "failed",
+      resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } },
       error: "Provider quota exceeded for this model.",
       errorCode: "adapter_failed",
       startedAt: new Date("2026-07-15T20:00:00.000Z"),
@@ -1085,6 +1092,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       agentId: coderId,
       invocationSource: "automation",
       status: "failed",
+      resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } },
       error: "You've hit your usage limit. Try again at 11:00 PM (UTC)",
       errorCode: "adapter_failed",
       startedAt: new Date("2026-07-15T20:02:00.000Z"),
@@ -1096,7 +1104,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
 
     const result = await recovery.reconcileStrandedAssignedIssues();
 
-    expect(result).toMatchObject({ providerQuotaMonitored: 0, reviewParticipantRequeued: 1 });
+    expect(result).toMatchObject({ providerQuotaMonitored: 0, reviewParticipantRequeued: 0, escalated: 1 });
     const [updatedIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
     expect(updatedIssue).toMatchObject({
       status: "in_review",
@@ -1105,10 +1113,11 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     });
     const [assigneeRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, assigneeRunId));
     expect(assigneeRun?.errorCode).toBe("adapter_failed");
-    expect(enqueueWakeup).toHaveBeenCalledWith(managerId, expect.objectContaining({
-      reason: "execution_review_participant_recovery",
-      payload: expect.objectContaining({ issueId: sourceIssueId, retryOfRunId: participantRunId }),
-    }));
+    expect(enqueueWakeup).not.toHaveBeenCalled();
+    expect(await db.select().from(issueRecoveryActions)).toEqual([expect.objectContaining({
+      cause: "legacy_execution_requires_reconciliation", ownerType: "board", returnOwnerAgentId: coderId,
+      evidence: expect.objectContaining({ runId: participantRunId }),
+    })]);
   });
 
   it("blocks a cross-agent review participant with incomplete configuration", async () => {
@@ -1146,6 +1155,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       agentId: managerId,
       invocationSource: "automation",
       status: "failed",
+      resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } },
       error: "model_not_found: requested review model does not exist",
       errorCode: "adapter_failed",
       startedAt: new Date("2026-07-15T20:00:00.000Z"),
@@ -1185,6 +1195,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       agentId: coderId,
       invocationSource: "manual",
       status: "failed",
+      resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } },
       error: "Provider quota exceeded for this model.",
       errorCode: "adapter_failed",
       startedAt: new Date("2026-07-15T20:00:00.000Z"),
@@ -1214,6 +1225,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       agentId: coderId,
       invocationSource: "manual",
       status: "failed",
+      resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } },
       error: "model_not_found: requested model does not exist",
       errorCode: "adapter_failed",
       startedAt: new Date("2026-07-15T20:00:00.000Z"),

@@ -68,6 +68,19 @@ function baseStalenessFacts(): QueuedRunFacts {
 }
 
 describe("decideScheduledRetryGate", () => {
+  it("allows the current reviewer and rejects a replaced participant", () => {
+    const facts: ScheduledRetryFacts = {
+      ...baseGateFacts(), issueStatus: "in_review", issueAssigneeAgentId: "implementor",
+      reviewParticipant: { isInReview: true, hasParticipant: true, participantIsAgent: true,
+        participantAgentId: "agent-1", currentStageType: "review", currentParticipant: { type: "agent", agentId: "agent-1" } },
+    };
+    expect(decideScheduledRetryGate(facts, NOW)).toEqual({ allowed: true });
+    expect(decideScheduledRetryGate({ ...facts, reviewParticipant: { ...facts.reviewParticipant, participantAgentId: "new-reviewer" } }, NOW))
+      .toMatchObject({ allowed: false, errorCode: "issue_reassigned" });
+    expect(decideScheduledRetryGate({ ...facts, reviewParticipant: NO_PARTICIPANT }, NOW))
+      .toMatchObject({ allowed: false, errorCode: "issue_reassigned" });
+  });
+
   it("allows a run with no issueId before any issue check runs", () => {
     const facts = { ...baseGateFacts(), issueId: null, issueFound: false };
     expect(decideScheduledRetryGate(facts, NOW)).toEqual({ allowed: true });

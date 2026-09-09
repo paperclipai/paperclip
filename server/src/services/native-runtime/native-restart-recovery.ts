@@ -11,6 +11,7 @@ import {
 import { readProcessStartedAt } from "../hot-restart.js";
 import { getServerInfoSnapshot } from "../../server-info.js";
 import { redactSensitiveText } from "../../redaction.js";
+import { issueRecoveryActionService } from "../issue-recovery-actions.js";
 
 export type NativeControllerIdentity = {
   bootId: string;
@@ -66,8 +67,7 @@ export function nextNativeProviderAttempt(
   currentAttempt: number,
   recoveryKind?: NativeRestartRecoveryClaim["kind"],
 ): number {
-  return recoveryKind === "reattach_existing_runner" ||
-    recoveryKind === "bootstrap_incomplete"
+  return recoveryKind === "reattach_existing_runner"
     ? currentAttempt
     : currentAttempt + 1;
 }
@@ -274,10 +274,13 @@ export function classifyNativeRunnerRecoveryEvidence(input: {
   hasCheckpoint: boolean;
   checkpointIdentityMatches?: boolean;
   hasProviderEvidence: boolean;
+  checkpointFailed?: boolean;
+  providerAttempt?: number;
 }): {
   claimKind: NativeRestartRecoveryClaim["kind"] | null;
   reason: string;
 } {
+  if (input.checkpointFailed) return { claimKind: null, reason: "provider_checkpoint_permanently_failed" };
   if (input.runnerPidAlive && input.processStartMatches) {
     return {
       claimKind: "reattach_existing_runner",
@@ -304,6 +307,7 @@ export function classifyNativeRunnerRecoveryEvidence(input: {
       reason: "live_provider_process_identity_unverifiable",
     };
   }
+  if ((input.providerAttempt ?? 0) >= 3) return { claimKind: null, reason: "execution_recovery_budget_exhausted" };
   const checkpointIdentityMatches =
     input.checkpointIdentityMatches ?? input.hasCheckpoint;
   if (
@@ -422,7 +426,7 @@ export async function claimNativeRestartRecoveries(input: {
   const controller =
     input.controller ?? (await currentNativeControllerIdentity());
   const candidateQuery = input.db
-    .select({ runId: heartbeatRuns.id })
+    .select({ runId: heartbeatRuns.id, issueId: nativeRunFinalizations.issueId })
     .from(heartbeatRuns)
     .innerJoin(agents, eq(agents.id, heartbeatRuns.agentId))
     .innerJoin(
@@ -458,11 +462,15 @@ export async function claimNativeRestartRecoveries(input: {
   const dispositions: NativeRestartRecoveryDisposition[] = [];
   for (const candidate of candidates) {
     const disposition = await input.db.transaction(async (tx) => {
+      await tx.execute(sql`select set_config('statement_timeout', '15000', true), set_config('lock_timeout', '1000', true)`);
+      await tx.select({ id: issues.id }).from(issues).where(eq(issues.id, candidate.issueId)).for("update");
       const row = await tx
         .select({
           run: heartbeatRuns,
           coordinator: nativeRunFinalizations,
           issueExecutionRunId: issues.executionRunId,
+          issueAssigneeAgentId: issues.assigneeAgentId,
+          issueStatus: issues.status,
         })
         .from(heartbeatRuns)
         .innerJoin(
@@ -688,9 +696,12 @@ export async function claimNativeRestartRecoveries(input: {
         hasCheckpoint,
         checkpointIdentityMatches,
         hasProviderEvidence,
+        checkpointFailed: (checkpointRecord.terminal as Record<string, unknown> | undefined)?.runTerminalState === "failed",
+        providerAttempt: row.coordinator.attempt,
       });
-      const claimKind = classification.claimKind;
-      const reason = classification.reason;
+      const ownershipChanged = row.issueAssigneeAgentId !== row.run.agentId || ["done", "cancelled"].includes(row.issueStatus);
+      const claimKind = ownershipChanged ? null : classification.claimKind;
+      const reason = ownershipChanged ? "task_ownership_or_status_changed" : classification.reason;
 
       if (!claimKind) {
         const generation = row.coordinator.controllerGeneration;
@@ -717,6 +728,12 @@ export async function claimNativeRestartRecoveries(input: {
         await tx
           .update(nativeRunFinalizations)
           .set({
+            phase: "terminal_failure",
+            leaseOwner: null,
+            leaseExpiresAt: null,
+            nextAttemptAt: null,
+            failureCode: "native_restart_recovery_blocked",
+            failureDetail: { ...row.coordinator.failureDetail, reason, nextAction: "Inspect the preserved checkpoint and reconcile the previous execution before starting a fresh session." },
             recoveryState: "blocked",
             recoveryRequestId: input.recoveryRequestId ?? null,
             recoveryHistory: appendBoundedRecoveryHistory(event),
@@ -729,6 +746,26 @@ export async function claimNativeRestartRecoveries(input: {
               eq(nativeRunFinalizations.phase, row.coordinator.phase),
             ),
           );
+        await tx.update(heartbeatRuns).set({
+          status: "failed", nativePhase: "terminal_failure", nativePhaseUpdatedAt: now,
+          executionStatusDeliveryId: randomUUID(), finishedAt: now,
+          errorCode: "native_restart_recovery_blocked", error: reason, updatedAt: now,
+        }).where(eq(heartbeatRuns.id, row.run.id));
+        await tx.update(issues).set({ executionRunId: null, updatedAt: now }).where(and(
+          eq(issues.id, row.coordinator.issueId), eq(issues.companyId, row.run.companyId),
+          eq(issues.executionRunId, row.run.id),
+        ));
+        await tx.update(issues).set({ checkoutRunId: null, updatedAt: now }).where(and(
+          eq(issues.id, row.coordinator.issueId), eq(issues.companyId, row.run.companyId), eq(issues.checkoutRunId, row.run.id),
+        ));
+        if (row.issueAssigneeAgentId === row.run.agentId && !["done", "cancelled"].includes(row.issueStatus)) await issueRecoveryActionService(tx as unknown as Db).upsertSourceScoped({
+          companyId: row.run.companyId, sourceIssueId: row.coordinator.issueId,
+          kind: "active_run_watchdog", ownerType: "board", returnOwnerAgentId: row.run.agentId,
+          cause: "native_restart_recovery_blocked", fingerprint: `native-restart:${row.run.id}`,
+          evidence: { runId: row.run.id, reason, providerAttempt: row.coordinator.attempt },
+          nextAction: "Inspect the preserved checkpoint and reconcile the previous execution before starting a fresh session.",
+          maxAttempts: 3, wakePolicy: null, supersedeOnIdentityChange: true,
+        });
         return { kind: "blocked", runId: row.run.id, reason } as const;
       }
 

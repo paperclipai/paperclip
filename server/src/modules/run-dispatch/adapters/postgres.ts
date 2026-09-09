@@ -1,3 +1,4 @@
+import { EXECUTION_RECONCILIATION_CAUSES } from "@paperclipai/shared";
 import { and, asc, eq, gte, inArray, lte } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
@@ -863,6 +864,16 @@ export function createPostgresRunDispatchAdapter(
     const contextSnapshot = parseObject(run.contextSnapshot);
     const issueId = readNonEmptyString(contextSnapshot.issueId);
     if (!issueId) return { issueId: null, decision: { stale: false as const } };
+    const [recovery] = await tx.select({ id: issueRecoveryActions.id, nextAction: issueRecoveryActions.nextAction })
+      .from(issueRecoveryActions).where(and(
+        eq(issueRecoveryActions.companyId, run.companyId), eq(issueRecoveryActions.sourceIssueId, issueId),
+        inArray(issueRecoveryActions.status, ["active", "escalated"]),
+        inArray(issueRecoveryActions.cause, [...EXECUTION_RECONCILIATION_CAUSES]),
+      )).limit(1);
+    if (recovery) return { issueId, decision: { stale: true as const,
+      errorCode: "execution_reconciliation_required" as const, reason: recovery.nextAction,
+      details: { issueId, recoveryActionId: recovery.id },
+    } };
     const facts = await loadStalenessFacts(
       {
         runId: run.id,
@@ -948,23 +959,11 @@ export function createPostgresRunDispatchAdapter(
         return { dispatched: false as const, cancellation };
       }
 
-      let dispatchStarted = false;
-      let resolveDispatchStarted!: () => void;
-      const dispatchStartedPromise = new Promise<void>((resolve) => {
-        resolveDispatchStarted = resolve;
-      });
-      const markDispatchStarted = () => {
-        if (dispatchStarted) return;
-        dispatchStarted = true;
-        resolveDispatchStarted();
-      };
-      const resultPromise = input.dispatch(markDispatchStarted);
-      void resultPromise.then(markDispatchStarted, markDispatchStarted);
-      await dispatchStartedPromise;
-      return { dispatched: true as const, resultPromise };
+      return { dispatched: true as const };
+
     };
 
-    return withIssueThenRunLocks(
+    const admitted = await withIssueThenRunLocks(
       input,
       () => {
         throw new RunDispatchApplicationError(
@@ -974,6 +973,12 @@ export function createPostgresRunDispatchAdapter(
       },
       dispatchLockedRun,
     );
+
+    if (!admitted.dispatched) return admitted;
+    // Provider bootstrap, resume and finalization can all need these rows.
+    // Commit the admission transaction before entering adapter code, including
+    // adapters that fail before spawning or never report a spawn callback.
+    return { dispatched: true, resultPromise: input.dispatch(() => {}) };
   }
 
   return {
