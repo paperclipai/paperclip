@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { NativeProviderTerminalFailure } from "../../contracts/native-session-backend.js";
 
 import type {
   HarnessGoalOperation,
@@ -136,6 +137,9 @@ export class CodexHarnessSession
     effectiveCollaborationMode: "default" | "plan";
   }> {
     this.assertProtocolIntegrity();
+    if (this.protocolFailed && this.protocolFailureCode) {
+      throw new NativeProviderTerminalFailure(this.protocolFailureCode, false, this.protocolFailureMessage ?? undefined);
+    }
     if (
       this.terminal ||
       this.protocolFailed ||

@@ -211,3 +211,12 @@ export interface NativeSessionBackend {
     options: NativeSessionRecoveryOptions,
   ): Promise<NativeSessionRecoveryResult>;
 }
+
+/** A provider failed terminal is not a missing completion proposal. */
+export class NativeProviderTerminalFailure extends Error {
+  readonly code = "native_provider_terminal_failed";
+  constructor(readonly providerCode: string, readonly recoverable: boolean, message = "Provider session ended with a failed terminal") {
+    super(message);
+    this.name = "NativeProviderTerminalFailure";
+  }
+}

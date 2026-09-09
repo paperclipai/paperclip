@@ -159,6 +159,7 @@ export interface GitWorktreeBranchIncoherenceEvidence {
 }
 
 export interface HeartbeatRun {
+  execution?: import("./execution-projection.js").ExecutionProjection | null;
   id: string;
   companyId: string;
   agentId: string;

@@ -200,6 +200,34 @@ function highestContiguous(events: PrpEvent[]): number {
 }
 
 describe("executeNativeSession recovery", () => {
+  it.each([false, true])("preserves a durable session failure when its stream closes (throws=%s)", async throws => {
+    const capabilities = { resume: true, typedEvents: true, steering: false, interruption: true, structuredResult: true };
+    const session: NativeSession = {
+      identity: () => identity,
+      async capabilities() { return capabilities; },
+      async *events() {
+        yield runnerEvent(1, "session.failed", { error: { code: "notification_transport_failed" }, recoverable: false });
+        if (throws) throw new Error("provider stdout closed");
+      },
+      async startTurn() { return { turnId: "turn-recovery" }; },
+      async result() { return null; },
+      async snapshot() { return { backendKind: "mock", sessionId: "driver-recovery", identity, providerSessionId: "provider-recovery", cursor: null, activeTurnId: null, pendingRuntimeRequests: [], lineage: [] }; },
+      async close() {},
+    };
+    const completeRun = vi.fn();
+    const backend: NativeSessionBackend = {
+      async descriptor() { return { kind: "mock", name: "failure-fixture", version: "1", capabilities }; },
+      async openSession() { return session; },
+    };
+    const port: ControlPlanePort = {
+      async openRun() {}, async checkpointSession() {},
+      async appendEvent() { return { cursor: 1, highestContiguousSourceSeq: 1, disposition: "committed" }; },
+      async replayEvents() { return { events: [], highestContiguousSourceSeq: 0 }; }, completeRun,
+    };
+    await expect(executeNativeSession({ input, backend, controlPlane: port, runnerInstanceId: "runner-recovery", controlPlaneInstanceId: "control-recovery" }))
+      .rejects.toMatchObject({ code: "native_provider_terminal_failed", providerCode: "notification_transport_failed", recoverable: false });
+    expect(completeRun).not.toHaveBeenCalled();
+  });
   it.each((["complete", "paused", "blocked", "limited", "usageLimited", "budgetLimited"] as const)
     .flatMap((status) => [false, true].map((snapshotBeforeUpdate) => ({ status, snapshotBeforeUpdate }))))(
     "handles a new chat turn instead of completing it from an existing $status goal (snapshot: $snapshotBeforeUpdate)", async ({ status, snapshotBeforeUpdate }) => {
@@ -756,13 +784,13 @@ describe("executeNativeSession recovery", () => {
     });
   });
 
-  it("surfaces the provider's model rejection instead of missing semantic completion", async () => {
+  it.each([false, true])("preserves structured provider failure even when its message mentions a model (recoverable=%s)", async (recoverable) => {
     const capabilities = { resume: true, typedEvents: true, steering: false, interruption: false, structuredResult: true };
     const close = vi.fn(async () => {});
     const session: NativeSession = {
       identity: () => identity,
       async capabilities() { return capabilities; },
-      async *events() { yield runnerEvent(1, "turn.failed", { error: { code: "RUNTIME", message: "There's an issue with the selected model (custom-model). It may not exist or you may not have access to it." } }); },
+      async *events() { yield runnerEvent(1, "turn.failed", { error: { code: "RUNTIME", recoverable, message: "There's an issue with the selected model (custom-model). It may not exist or you may not have access to it." } }); },
       async startTurn() { return { turnId: "turn-recovery" }; },
       async result() { return null; },
       async snapshot() { return { backendKind: "mock", sessionId: "driver-recovery", identity, providerSessionId: "provider-recovery", cursor: null, activeTurnId: null, pendingRuntimeRequests: [], lineage: [] }; },
@@ -778,7 +806,11 @@ describe("executeNativeSession recovery", () => {
       async replayEvents() { return { events: [], highestContiguousSourceSeq: 0 }; },
       async completeRun() {},
     };
-    await expect(executeNativeSession({ input, backend, controlPlane: port, runnerInstanceId: "runner-recovery", controlPlaneInstanceId: "control-recovery" })).rejects.toThrow("native_provider_model_rejected: There's an issue with the selected model (custom-model)");
+    const result = executeNativeSession({ input, backend, controlPlane: port, runnerInstanceId: "runner-recovery", controlPlaneInstanceId: "control-recovery" });
+    await expect(result).rejects.toThrow("There's an issue with the selected model (custom-model)");
+    await expect(result).rejects.toMatchObject({
+      code: "native_provider_terminal_failed", providerCode: "RUNTIME", recoverable,
+    });
     expect(close).toHaveBeenCalled();
   });
 
@@ -5790,9 +5822,11 @@ describe("executeNativeSession recovery", () => {
         runnerInstanceId: "runner-constrained-recovery",
         controlPlaneInstanceId: "control-constrained-recovery",
       }),
-    ).rejects.toThrow(
-      "native_session_recovery_failed: provider session ended with a failed terminal",
-    );
+    ).rejects.toMatchObject({
+      code: "native_provider_terminal_failed",
+      providerCode: "provider_checkpoint_failed_terminal",
+      recoverable: false,
+    });
 
     expect(recoverSession).not.toHaveBeenCalled();
     expect(openSession).not.toHaveBeenCalled();

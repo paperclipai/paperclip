@@ -1097,6 +1097,15 @@ describe("Codex protocol integrity propagation", () => {
     },
   );
 
+  it("preserves a protocol failure received before turn start as a typed terminal", async () => {
+    const transport = new FakeCodexTransport();
+    const session = await makeDriver([transport]).openSession({ runId: "prestart", normalizedSessionId: "prestart-session", workingDirectory: WORKSPACE });
+    transport.queue.push({ method: "turn/completed", params: { threadId: "unrelated", turn: { id: "wrong", status: "completed" } } });
+    const events: PrpEvent[] = [];
+    for await (const event of session.events()) events.push(event);
+    await expect(session.startTurn({ message: { role: "user", text: "Work" } })).rejects.toMatchObject({ code: "native_provider_terminal_failed", providerCode: "thread_binding_mismatch", recoverable: false });
+    await session.close({ reason: "test complete" });
+  });
   it("does not promote a message-and-field lookalike transport error", async () => {
     const transport = new FakeCodexTransport();
     const session = await makeDriver([transport]).openSession({

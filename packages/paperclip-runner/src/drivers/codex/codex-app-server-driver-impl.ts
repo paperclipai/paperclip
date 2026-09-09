@@ -14,8 +14,8 @@ import type {
   PersistedHarnessSession,
   PersistedHarnessTurnTerminal,
 } from "../../contracts/harness-driver.js";
-import { HarnessReconciliationError } from "../../contracts/harness-driver.js";
 import { NativeSessionProtocolIntegrityError } from "../../contracts/native-session-backend.js";
+import { HarnessReconciliationError } from "../../contracts/harness-driver.js";
 import {
   CODEX_CODEX_PROTOCOL_VERSION,
   CODEX_SKILLLESS_BASE_INSTRUCTIONS,

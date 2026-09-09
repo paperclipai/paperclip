@@ -375,6 +375,12 @@ const RESOLVE_ISSUE_RECOVERY_ACTION_OUTCOMES = [
 ] as const;
 
 export const resolveIssueRecoveryActionSchema = z.object({
+  executionReconciliation: z.object({
+    runId: z.string().guid(),
+    providerStopped: z.literal(true),
+    actionOutcome: z.enum(["completed", "not_performed", "mixed"]),
+    outcomeEvidence: z.string().trim().min(20).max(12000),
+  }).strict().optional(),
   actionId: z.string().guid().optional(),
   outcome: z.enum(RESOLVE_ISSUE_RECOVERY_ACTION_OUTCOMES),
   sourceIssueStatus: z.enum(["todo", "done", "in_review", "blocked"]),

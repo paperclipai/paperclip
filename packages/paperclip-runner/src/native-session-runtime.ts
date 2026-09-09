@@ -19,6 +19,7 @@ import type {
 import type { PersistedNativeSession } from "./contracts/native-session-backend.js";
 import type { HarnessThreadGoal } from "./contracts/harness-driver.js";
 import {
+  NativeProviderTerminalFailure,
   NativeSessionCloseUnrecoverableError,
   NativeSessionCleanupQuarantinedError,
   NativeSessionProtocolIntegrityError,
@@ -863,6 +864,7 @@ async function consumeTurn(
       typeof semanticResultGraceExpired
     > | null = null;
     let pendingNext: ReturnType<typeof eventIterator.next> | null = null;
+    let providerFailure: NativeProviderTerminalFailure | null = null;
     const settleDurableResult = (
       event: PrpEvent,
       result: PrpStructuredRunResult,
@@ -890,7 +892,7 @@ async function consumeTurn(
       };
     };
     while (true) {
-      pendingNext ??= eventIterator.next();
+      pendingNext ??= eventIterator.next().catch(error => { throw providerFailure ?? error; });
       const next =
         semanticResultDeadline === null
           ? await pendingNext
@@ -921,6 +923,7 @@ async function consumeTurn(
             governedResult,
           };
         }
+        if (providerFailure) throw providerFailure;
         throw new Error(
           "native event stream closed before a turn terminal fact",
         );
@@ -978,6 +981,15 @@ async function consumeTurn(
       if (event.eventType === "run.result.proposed") {
         const validation = validatePrpStructuredRunResult(event.payload);
         if (validation.ok) semanticResultProposal = validation.result;
+      }
+      if (event.eventType === "session.failed") {
+        const failure = payload.error && typeof payload.error === "object"
+          ? payload.error as Record<string, unknown> : payload;
+        providerFailure = new NativeProviderTerminalFailure(
+          typeof failure.code === "string" ? failure.code : "provider_session_failed",
+          failure.recoverable === true || payload.recoverable === true,
+          typeof failure.message === "string" ? failure.message : undefined,
+        );
       }
       const request =
         payload.request &&
@@ -1889,6 +1901,9 @@ export async function executeNativeSession(
     const failedProviderSession =
       providerRecoveryCheckpoint.terminal?.runTerminalState === "failed" &&
       providerRecoveryCheckpoint.semanticResult === null;
+    if (failedProviderSession && !replacementAllowed) {
+      throw new NativeProviderTerminalFailure("provider_checkpoint_failed_terminal", false);
+    }
     const recovery = failedProviderSession
       ? {
           recovered: false as const,
@@ -2376,6 +2391,17 @@ export async function executeNativeSession(
                   turnId: terminalEvent.turnId ?? null,
                 };
           signal.throwIfAborted();
+          if (settledCompletion === null && terminalEvent.eventType === "turn.failed") {
+            await checkpoint(signal);
+            const payload = terminalEvent.payload as Record<string, unknown>;
+            const failure = payload.error && typeof payload.error === "object" ? payload.error as Record<string, unknown> : payload;
+            const message = typeof failure.message === "string" ? failure.message.slice(0, 2_000) : "Provider turn failed";
+            throw new NativeProviderTerminalFailure(
+              typeof failure.code === "string" ? failure.code : "provider_turn_failed",
+              failure.recoverable === true || payload.recoverable === true,
+              message,
+            );
+          }
           if (settledCompletion === null && options.resolveMissingResult) {
             const recoveredResult = await options.resolveMissingResult({
               turnId: terminalEvent.turnId ?? null,
@@ -2401,13 +2427,6 @@ export async function executeNativeSession(
           completed = settledCompletion;
         }
         if (settledCompletion === null) {
-          if (consumed.event?.eventType === "turn.failed") {
-            const providerError = objectRecord(objectRecord(consumed.event.payload)?.error);
-            const message = typeof providerError?.message === "string"
-              ? providerError.message.slice(0, 2_000) : "Provider turn failed";
-            const modelRejected = /issue with the selected model|model_not_found|invalid model|model[^\n]*(?:does not exist|not found|not supported)/i.test(message);
-            throw new Error(`${modelRejected ? "native_provider_model_rejected" : "native_provider_turn_failed"}: ${message}`);
-          }
           throw new Error(
             "native_finalization_missing: session returned no semantic result",
           );

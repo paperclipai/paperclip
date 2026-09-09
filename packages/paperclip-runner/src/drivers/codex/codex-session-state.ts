@@ -135,6 +135,7 @@ export class CodexSessionState {
     "progress" | "final" | "summary" | "detail" | "unknown"
   >();
   readonly pendingRuntimeRequestMap = new Map<string, PendingRuntimeRequest>();
+  notificationIdentityDiagnostics = 0;
   readonly lineageByThread = new Map<string, HarnessThreadLineageEntry>();
   currentGoal: HarnessThreadGoal | null = null;
   interruptQueued = false;
@@ -398,7 +399,7 @@ export class CodexSessionState {
       const turnId = this.activeTurnId;
       this.emit(
         "turn.failed",
-        { status: "failed", error: { code } },
+        { status: "failed", error: { code, message: this.protocolFailureMessage, recoverable: false } },
         { turnId },
       );
       this.terminalTurns.set(turnId, canonicalJson({ protocolFailure: code }));

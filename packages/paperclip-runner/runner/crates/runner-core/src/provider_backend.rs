@@ -969,6 +969,8 @@ struct CodexProviderState {
     #[serde(default)]
     settled_provider_turn_ids: std::collections::BTreeSet<String>,
     #[serde(default)]
+    descendant_thread_ids: std::collections::BTreeSet<String>,
+    #[serde(default)]
     settled_provider_turn_filter: DurableReplayFilter,
     #[serde(default)]
     receipt_limit_diagnostic_emitted: bool,
@@ -1055,6 +1057,7 @@ impl CodexProviderState {
             completed_turn_process_generation: None,
             completed_provider_turn_id: None,
             settled_provider_turn_ids: std::collections::BTreeSet::new(),
+            descendant_thread_ids: std::collections::BTreeSet::new(),
             settled_provider_turn_filter: DurableReplayFilter::default(),
             receipt_limit_diagnostic_emitted: false,
             receipt_limit_interrupt_pending: false,
@@ -1084,10 +1087,20 @@ impl CodexProviderState {
             DurableRunnerError::invalid(format!("Codex semantic tool state is invalid: {error}"))
         })?;
         let mut pending_event_ids = HashSet::new();
-        if self.schema != PROVIDER_STATE_SCHEMA
+        if self.descendant_thread_ids.len() > crate::codex_provider::MAX_DESCENDANT_THREAD_IDS
+            || self
+                .descendant_thread_ids
+                .iter()
+                .any(|id| id.is_empty() || id.len() > 240)
+            || self.schema != PROVIDER_STATE_SCHEMA
             || !matches!(
                 self.lifecycle.as_str(),
-                "prepared" | "session_open" | "turn_active" | "provider_exited" | "closed"
+                "prepared"
+                    | "session_open"
+                    | "turn_active"
+                    | "provider_exited"
+                    | "reconciliation_required"
+                    | "closed"
             )
             || self
                 .thread_id
@@ -1656,6 +1669,10 @@ impl CodexCommandExecutor {
                 })
             },
         )
+        .map(|mut provider| {
+            provider.restore_descendant_thread_identities(&state.descendant_thread_ids);
+            provider
+        })
         .map_err(|error| {
             DurableRunnerError::invalid(format!(
                 "failed to start {} provider: {error}",
@@ -2238,6 +2255,15 @@ impl CodexCommandExecutor {
 
     fn ensure_provider(&mut self) -> Result<&mut CodexProvider, DurableRunnerError> {
         self.restore_provider_if_needed()?;
+        if self
+            .state
+            .as_ref()
+            .is_some_and(|state| state.lifecycle == "reconciliation_required")
+        {
+            return Err(DurableRunnerError::invalid(
+                "Codex provider session requires explicit reconciliation and a fresh session",
+            ));
+        }
         if self.provider.is_none() {
             let state = self.state.clone().ok_or_else(|| {
                 DurableRunnerError::invalid("Codex provider has not been prepared")
@@ -3863,6 +3889,95 @@ impl CodexCommandExecutor {
                 } => {
                     self.handle_tool_call(call_id, operation_id, input)?;
                 }
+                CodexProviderEvent::ProtocolFailure { diagnostic }
+                | CodexProviderEvent::ResourceLimit { diagnostic } => {
+                    let resource_capacity = diagnostic["classification"] == "resource_capacity";
+                    let state = self
+                        .state
+                        .as_mut()
+                        .expect("Codex state available while polling");
+                    // Neither an integrity failure nor a full lineage ledger can
+                    // safely reopen this provider session, even after event ACK.
+                    state.lifecycle = "reconciliation_required".to_owned();
+                    state.completed_turn_authoritative = false;
+                    state.completed_turn_process_generation = None;
+                    state.completed_provider_turn_id = None;
+                    state.settle_active_provider_turn_identity()?;
+                    state.active_provider_turn_id = None;
+                    state.push_terminal_event(NormalizedProviderEvent {
+                        event_type: "harness.diagnostic".to_owned(),
+                        priority: EventPriority::P0,
+                        payload: diagnostic.clone(),
+                    })?;
+                    state.push_terminal_event(NormalizedProviderEvent {
+                        event_type: "turn.failed".to_owned(),
+                        priority: EventPriority::P0,
+                        payload: json!({ "provider": state.config.provider, "status": "failed",
+                            "code": diagnostic["code"], "recoverable": false,
+                            "message": diagnostic["message"], "error": diagnostic }),
+                    })?;
+                    state.extend_terminal_events(terminal_events(state, "turn.failed", None))?;
+                    // Commit the authoritative failure before best-effort provider cleanup.
+                    self.save_state()?;
+                    if let Some(mut provider) = self.provider.take() {
+                        if let Some(frame_id) = trace_frame_id {
+                            provider.record_provider_trace_interpretation(
+                                frame_id,
+                                if resource_capacity { "codex.resource_capacity" } else { "codex.identity.invalid_authoritative" },
+                                "rejected",
+                                Vec::new(),
+                                if resource_capacity { "Provider resource capacity requires explicit reconciliation" } else { "Rejected provider authority outside the root execution identity" },
+                            );
+                        }
+                        let _ = provider.shutdown();
+                    }
+                    break;
+                }
+                CodexProviderEvent::DescendantNotification { method, params } => {
+                    // Do not normalize a child's turn/completed as a root terminal.
+                    // Retain bounded lineage evidence without credential-bearing payloads.
+                    let child = params
+                        .get("threadId")
+                        .or_else(|| params.pointer("/thread/id"))
+                        .and_then(Value::as_str)
+                        .map(|id| id.chars().take(256).collect::<String>());
+                    let root_thread = self
+                        .provider
+                        .as_ref()
+                        .map(|provider| provider.thread_id().to_owned());
+                    let root_turn = self
+                        .provider
+                        .as_ref()
+                        .and_then(CodexProvider::active_provider_turn_id)
+                        .map(str::to_owned);
+                    let child_turn = params
+                        .get("turnId")
+                        .or_else(|| params.pointer("/turn/id"))
+                        .and_then(Value::as_str)
+                        .map(|id| id.chars().take(256).collect::<String>());
+                    let state = self
+                        .state
+                        .as_mut()
+                        .expect("Codex state remains available while polling");
+                    if let Some(id) = child.as_ref() {
+                        state.descendant_thread_ids.insert(id.clone());
+                    }
+                    state.extend_events(vec![NormalizedProviderEvent {
+                        event_type: "harness.diagnostic".to_owned(),
+                        priority: EventPriority::P1,
+                        payload: json!({ "code": "provider_notification_identity", "classification": "descendant",
+                            "method": method.chars().take(128).collect::<String>(), "receivedThreadId": child, "expectedThreadId": root_thread,
+                            "receivedTurnId": child_turn, "expectedTurnId": root_turn }),
+                    }])?;
+                    self.save_state()?;
+                    if let (Some(frame_id), Some(provider)) =
+                        (trace_frame_id, self.provider.as_mut())
+                    {
+                        provider.record_provider_trace_interpretation(frame_id,
+                            "codex.identity.descendant", "mapped", Vec::new(),
+                            "Provider-confirmed descendant progress has no root terminal or tool authority");
+                    }
+                }
                 CodexProviderEvent::Notification { method, params } => {
                     let active_provider_turn_id = if method == "turn/started" {
                         self.provider
@@ -4228,6 +4343,27 @@ impl CommandExecutor for CodexCommandExecutor {
         });
         let outcome = (|| {
             self.restore()?;
+            if self
+                .state
+                .as_ref()
+                .is_some_and(|state| state.lifecycle == "reconciliation_required")
+                && !matches!(
+                    command.command_type.as_str(),
+                    "session.snapshot"
+                        | "session.close"
+                        | "session.destroy"
+                        | "runner.drain"
+                        | "runner.suspend"
+                        | "runner.shutdown"
+                        | "turn.interrupt"
+                        | "run.cancel"
+                        | "turn.stop"
+                )
+            {
+                return Err(DurableRunnerError::invalid(
+                    "Codex provider session requires explicit reconciliation and a fresh session",
+                ));
+            }
             match command.command_type.as_str() {
                 "run.prepare" => self.prepare(&command.payload),
                 "run.attach" => {
@@ -5132,6 +5268,7 @@ mod tests {
             completed_turn_process_generation: None,
             completed_provider_turn_id: None,
             settled_provider_turn_ids: std::collections::BTreeSet::new(),
+            descendant_thread_ids: std::collections::BTreeSet::new(),
             settled_provider_turn_filter: DurableReplayFilter::default(),
             receipt_limit_diagnostic_emitted: false,
             receipt_limit_interrupt_pending: false,

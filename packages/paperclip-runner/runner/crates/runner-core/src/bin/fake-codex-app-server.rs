@@ -326,7 +326,7 @@ fn finish_turn_with_send(
     save_state(state_path, state)?;
     send(json!({
         "method": "item/completed",
-        "params": {"item": {
+        "params": {"threadId": state.thread_id, "turnId": turn_id, "item": {
             "id": "message-1",
             "type": "agentMessage",
             "status": "completed",
@@ -376,10 +376,10 @@ fn emit_ambiguous_turn_evidence(
     }
 }
 
-fn emit_ambiguous_turn_item() -> io::Result<()> {
+fn emit_ambiguous_turn_item(state: &FakeState) -> io::Result<()> {
     send(json!({
         "method": "item/completed",
-        "params": {"item": {
+        "params": {"threadId": state.thread_id, "item": {
             "id": "replacement-message-before-terminal",
             "type": "agentMessage",
             "status": "completed",
@@ -795,6 +795,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .any(|value| value == "--question-before-failed-turn");
     let fail_turn_immediately = args.iter().any(|value| value == "--fail-turn-immediately");
     let reuse_question_id = args.iter().any(|value| value == "--reuse-question-id");
+    let descendant_notifications = args
+        .iter()
+        .any(|value| value == "--descendant-notifications");
     let pre_response_notification = args
         .iter()
         .any(|value| value == "--notification-before-response");
@@ -1076,6 +1079,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     "id": id,
                     "result": {"thread": {"id": state.thread_id, "sessionId": "codex-account-session"}}
                 }))?;
+                if descendant_notifications {
+                    // Restoration must retain lineage without a replay of thread/started.
+                    send(json!({"method": "turn/completed", "params": {
+                        "threadId": "descendant-299", "turnId": "child-turn", "status": "completed"
+                    }}))?;
+                }
                 if emit_tool_call_on_resume {
                     if let Some(turn_id) = state.active_turn_id.as_deref() {
                         send(json!({
@@ -1309,7 +1318,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 if malformed_error_second_turn_start && turn_start_count == 2 {
                     if hold_ambiguous_second_turn_after_item {
-                        emit_ambiguous_turn_item()?;
+                        emit_ambiguous_turn_item(&state)?;
                     }
                     send(json!({"id": id, "error": {}}))?;
                     if emits_ambiguous_turn_evidence
@@ -1330,7 +1339,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         "result": {"turn": {"status": "inProgress"}}
                     }))?;
                     if hold_ambiguous_second_turn_after_item {
-                        emit_ambiguous_turn_item()?;
+                        emit_ambiguous_turn_item(&state)?;
                         continue;
                     }
                     if emits_ambiguous_turn_evidence
@@ -1360,6 +1369,23 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     "method": "turn/started",
                     "params": {"turn": {"id": provider_turn_id}}
                 }))?;
+                if descendant_notifications {
+                    for index in 0..300 {
+                        send(json!({"method": "thread/started", "params": {"thread": {
+                            "id": format!("descendant-{index}"),
+                            "source": {"subAgent": {"thread_spawn": {"parent_thread_id": state.thread_id}}}
+                        }}}))?;
+                    }
+                    send(json!({"method": "turn/completed", "params": {
+                        "threadId": "descendant-299", "turnId": "child-turn", "status": "completed"
+                    }}))?;
+                }
+                if args.iter().any(|value| value == "--descendant-overflow") {
+                    send(json!({"method": "thread/started", "params": {"thread": {
+                        "id": "descendant-overflow",
+                        "source": {"subAgent": {"thread_spawn": {"parent_thread_id": state.thread_id}}}
+                    }}}))?;
+                }
                 if fail_after_second_turn_start && turn_start_count == 2 {
                     return Err("configured failure after second turn start".into());
                 } else if fail_turn_immediately {
@@ -1526,11 +1552,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                             }),
                             json!({
                                 "method": "rawResponseItem/completed",
-                                "params": {"item": {"id": "raw-tail", "type": "reasoning"}}
+                                "params": {"threadId": state.thread_id, "turnId": provider_turn_id, "item": {"id": "raw-tail", "type": "reasoning"}}
                             }),
                             json!({
                                 "method": "rawResponse/completed",
-                                "params": {"response": {"id": "response-tail"}}
+                                "params": {"threadId": state.thread_id, "turnId": provider_turn_id, "response": {"id": "response-tail"}}
                             }),
                             json!({
                                 "method": "thread/goal/updated",

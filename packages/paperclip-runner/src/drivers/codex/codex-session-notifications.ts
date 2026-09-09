@@ -1,5 +1,6 @@
+import { classifyCodexNotification } from "./codex-notification-identity.js";
 import { paperclipWorkspaceFileReferencesFromText } from "../../live/workspace-file-reference.js";
-import { canonicalProviderEventsFromCodex } from "../../provider-events.js";
+import { canonicalProviderEventsFromCodex, isCanonicalProviderEventType } from "../../provider-events.js";
 import { harnessRuntimeRequestOutcome } from "../../contracts/harness-driver.js";
 import { NativeSessionProtocolIntegrityError } from "../../contracts/native-session-backend.js";
 import { validatePrpStructuredRunResult } from "../../protocol/replay-contract.js";
@@ -8,7 +9,6 @@ import { redactCodexDiagnostic } from "./app-server-transport.js";
 import { boundedCodexPayload as boundedPayload, boundedCodexValue, isRetainableCodexPayload } from "./codex-boundaries.js";
 import { runtimeRequestResponse } from "./codex-question-adapter.js";
 import {
-  isBoundCodexNotification,
   isSupportedCodexNotificationMethod,
   codexThreadLineage as lineageFromThread,
   codexThreadStatus as threadStatus,
@@ -105,23 +105,29 @@ async function mapNotification(state: CodexSessionState, notification: CodexRpcN
 
 async function mapNotificationBody(state: CodexSessionState, notification: CodexRpcNotification): Promise<void> {
     if (!isSupportedCodexNotificationMethod(notification.method)) return;
-    if (!isBoundCodexNotification(notification, {
-      runId: state.runId,
-      threadIds: [...state.lineageByThread.keys()],
-    })) {
-      const params = notification.params;
-      const claimedThreadId = text(
-        params.threadId,
-        text(record(params.thread).id, text(record(params.turn).threadId)),
-      );
-      const claimedRunId = text(params.runId, text(params.paperclipRunId));
-      if (claimedThreadId.length > 0 || claimedRunId.length > 0) {
-        state.failProtocol(
-          "thread_binding_mismatch",
-          `Provider ${notification.method} message did not name the active run or a known thread.`,
-        );
+    if (notification.method === "item/completed" && notification.params.kind === "steering_acknowledgement"
+      && !notification.params.threadId && !notification.params.turnId && !notification.params.thread && !notification.params.turn) return;
+    const identity = classifyCodexNotification({
+      method: notification.method, params: notification.params, runId: state.runId,
+      rootThreadId: state.opened.threadId, activeTurnId: state.activeTurnId,
+      knownThreads: new Set(state.lineageByThread.keys()), settledTurns: new Set(state.terminalTurns.keys()),
+    });
+    if (identity.classification !== "root") {
+      if (state.notificationIdentityDiagnostics < 32) {
+        state.notificationIdentityDiagnostics += 1;
+        state.emit("harness.diagnostic", {
+          code: "provider_notification_identity", method: notification.method.slice(0, 128),
+          classification: identity.classification,
+          expectedThreadId: state.opened.threadId, receivedThreadId: identity.threadId?.slice(0, 256) ?? null,
+          expectedTurnId: state.activeTurnId, receivedTurnId: identity.turnId?.slice(0, 256) ?? null,
+        });
       }
-      return;
+      if (identity.classification === "invalid_authority") {
+        state.failProtocol("thread_binding_mismatch", `Provider authoritative notification ${notification.method.slice(0, 128)} did not name its execution owner.`);
+        return;
+      }
+      if (identity.classification !== "descendant") return;
+      if (!["thread/started", "thread/status/changed", "thread/closed"].includes(notification.method)) return;
     }
     const params = notification.params;
     const turn = record(params.turn);
@@ -129,6 +135,14 @@ async function mapNotificationBody(state: CodexSessionState, notification: Codex
     const threadId = text(params.threadId);
     const turnId = text(params.turnId, text(turn.id));
     const itemId = text(item.id, text(params.itemId));
+    if (notification.method === "paperclip/canonicalProviderEvent") {
+      if (!isCanonicalProviderEventType(params.eventType)) {
+        state.failProtocol("provider_event_type_invalid", "Unknown canonical provider event type.");
+        return;
+      }
+      state.emit(params.eventType, record(params.payload), { turnId: turnId || undefined, itemId: itemId || undefined });
+      return;
+    }
     if (notification.method === "paperclip/workspaceChange/updated") {
       if (!state.notificationNamesActiveTurn(turnId, "workspace change")) return;
       if (threadId.length > 0 && threadId !== state.opened.threadId) return;

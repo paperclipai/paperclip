@@ -1,3 +1,4 @@
+import { isCanonicalProviderEventType } from "../provider-events.js";
 import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import {
@@ -1762,6 +1763,22 @@ export function rehydrateRunnerdTurnNotification(
   };
 }
 
+export function rehydrateRunnerdDeltaNotification(
+  rawParams: Record<string, unknown>,
+  openedThreadId: string,
+  activeTurnId: string,
+): Record<string, unknown> {
+  // Canonical PRP events already passed runner identity validation. Restore the
+  // provider binding just as for item starts/completions; the PRP controller
+  // turn is deliberately different from the provider's turn ID.
+  return {
+    ...rawParams,
+    threadId: openedThreadId,
+    turnId: activeTurnId,
+    delta: rawParams.delta ?? rawParams.text,
+  };
+}
+
 export function rehydrateRunnerdItemNotification(
   rawParams: Record<string, unknown>,
   openedThreadId: string,
@@ -3156,6 +3173,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   #checkpointProviderIdentityConfirmed = false;
   #turnId = "";
   #turnStartResponsePending = false;
+  #turnStartResponseSettled: Promise<void> = Promise.resolve();
   #turnStartResponseEpoch = 0;
   #observedTurnStartEpoch = 0;
   #expectedProviderTurnId: string | null = null;
@@ -5267,6 +5285,8 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       resolve: (accepted) => resolveAdmission(accepted),
     };
     this.#turnStartResponsePending = true;
+    let releaseStartResponse!: () => void;
+    this.#turnStartResponseSettled = new Promise<void>(resolve => { releaseStartResponse = resolve; });
     this.#expectedProviderTurnId = null;
     let responseReady = false;
     try {
@@ -5692,7 +5712,14 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         sessionUpdatePayload,
       );
       const notifications =
-        event.eventType === "provider.event"
+        isCanonicalProviderEventType(event.eventType) && !canonicalMethod
+          ? [{ method: "paperclip/canonicalProviderEvent", params: {
+              ...(this.#threadId ? { threadId: this.#threadId } : {}),
+              ...(this.#turnId ? { turnId: this.#turnId } : {}),
+              eventType: event.eventType, payload: eventPayload,
+              itemId: event.envelope.itemId,
+            } }]
+          : event.eventType === "provider.event"
           ? unwrapRunnerdProviderNotifications(eventPayload)
           : canonicalMethod
             ? expandRunnerdCanonicalNotifications(canonicalMethod, eventPayload)
@@ -5753,6 +5780,8 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
                   this.#threadId,
                   method,
                 )
+            : event.eventType === "item.delta"
+              ? rehydrateRunnerdDeltaNotification(rawParams, this.#threadId, this.#turnId)
             : event.eventType !== "provider.event" &&
                 (method === "item/started" || method === "item/completed")
               ? rehydrateRunnerdItemNotification(
@@ -5771,7 +5800,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
               : rawParams;
         if (
           params.turnId === undefined &&
-          typeof event.envelope.turnId === "string"
+          typeof event.envelope.turnId === "string" && event.envelope.turnId.length > 0
         ) {
           params.turnId = event.envelope.turnId;
         }

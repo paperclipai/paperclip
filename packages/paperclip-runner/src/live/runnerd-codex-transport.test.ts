@@ -68,6 +68,7 @@ import {
   latestRunnerdSessionReadiness,
   rehydrateRunnerdGoalNotification,
   rehydrateRunnerdItemNotification,
+  rehydrateRunnerdDeltaNotification,
   rehydrateRunnerdPlanNotification,
   rehydrateRunnerdResultNotification,
   rehydrateRunnerdThreadTokenUsage,
@@ -3023,6 +3024,11 @@ it("binds a durable semantic result to the active provider turn", () => {
   });
 });
 
+it("restores provider identity and streamed text from a canonical delta", () => {
+  expect(rehydrateRunnerdDeltaNotification({ text: "Reading Gmail", itemId: "message-1", turnId: "controller-turn" }, "root-thread", "provider-turn"))
+    .toMatchObject({ threadId: "root-thread", turnId: "provider-turn", delta: "Reading Gmail", itemId: "message-1" });
+});
+
 it("rehydrates a canonical agent item for the strict Codex facade", () => {
   expect(
     rehydrateRunnerdItemNotification(
@@ -4427,7 +4433,6 @@ it("rejects active work and buffered tools from a resumed stopped checkpoint", a
     await rm(stateDirectory, { recursive: true, force: true });
   }
 }, 30_000);
-
 it("does not retry a real memoized transport close whose suspension proof is unavailable", async () => {
   const identity = {
     runId: "run-recovery",
@@ -4550,6 +4555,16 @@ it("does not retry a real memoized transport close whose suspension proof is una
     lifecyclePolicy: { mode: "per_turn", idleTimeoutMs: null },
     prpIdentity: await readRunnerState(),
     readRunnerState,
+    // A checkpoint owner requires durable suspension proof. A local transport
+    // without a checkpoint can simply terminate its process on close.
+    controlPlaneRegistration: async (authority) => {
+      await authority.start();
+      return {
+        connectUrl: authority.connectUrl,
+        checkpoint: async () => {},
+        release: async () => {},
+      };
+    },
   });
   try {
     await bundle.transport.request("thread/start", {

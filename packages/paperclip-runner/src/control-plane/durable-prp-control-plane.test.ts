@@ -1233,7 +1233,6 @@ describe.sequential("DurablePrpControlPlane", () => {
     },
     15_000,
   );
-
   it.each([false, true])(
     "promptly fails the real transport request and notification paths on authenticated bad semantic input (throwing observer: %s)",
     async (throwingObserver) => {
@@ -1806,7 +1805,6 @@ describe.sequential("DurablePrpControlPlane", () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
-
   it("exchanges a one-use bootstrap for a run-bound reconnect lease", async () => {
     const root = mkdtempSync(resolve(tmpdir(), "paperclip-prp-auth-"));
     const controlPlane = new DurablePrpControlPlane({

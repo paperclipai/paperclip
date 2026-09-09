@@ -1868,11 +1868,22 @@ fn ambiguous_replacement_turn_rejects_conflicting_later_identity() {
     );
     assert_eq!(provider.active_provider_turn_id(), Some("provider-turn-2"));
 
-    let conflicting_completion = wait_for_provider_error(&mut provider);
-    assert!(
-        conflicting_completion.contains("another active turn"),
-        "unexpected conflicting-identity error: {conflicting_completion}"
-    );
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let diagnostic = loop {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "expected structured integrity failure"
+        );
+        if let Some(CodexProviderEvent::ProtocolFailure { diagnostic }) =
+            provider.poll().expect("poll identity failure")
+        {
+            break diagnostic;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    };
+    assert_eq!(diagnostic["code"], "turn_binding_mismatch");
+    assert_eq!(diagnostic["recoverable"], false);
+    assert_eq!(diagnostic["expectedTurnId"], "provider-turn-2");
     assert_eq!(provider.active_provider_turn_id(), Some("provider-turn-2"));
 
     fs::remove_dir_all(directory).expect("remove Codex integration-test directory");
@@ -5613,4 +5624,227 @@ fn codex_completion_emits_the_bound_result_before_the_terminal_event() {
 
     executor.shutdown().expect("stop provider process");
     fs::remove_dir_all(directory).expect("remove Codex integration-test directory");
+}
+
+#[test]
+fn durable_integrity_failure_preserves_code_and_stops_provider_authority() {
+    let directory = temporary_directory("durable-identity-failure");
+    let config = provider_config(
+        &directory,
+        &[
+            "--malformed-error-second-turn-start",
+            "--conflicting-ambiguous-second-turn",
+        ],
+    );
+    let mut executor = CodexCommandExecutor::new(&directory);
+    executor
+        .execute(&command(
+            "prepare",
+            1,
+            "run.prepare",
+            json!({"provider": config}),
+        ))
+        .expect("prepare");
+    executor
+        .execute(&command("open", 2, "session.open", json!({})))
+        .expect("open");
+    executor
+        .execute(&command(
+            "first",
+            3,
+            "turn.start",
+            json!({"text": "Complete the first turn."}),
+        ))
+        .expect("first turn");
+    wait_for_executor_event(&mut executor, "turn.completed");
+    executor
+        .execute(&command(
+            "second",
+            4,
+            "turn.start",
+            json!({"text": "Start replacement work."}),
+        ))
+        .expect_err("ambiguous response");
+    let failed = wait_for_executor_event(&mut executor, "turn.failed");
+    assert_eq!(failed.payload["code"], "turn_binding_mismatch");
+    assert_eq!(failed.payload["recoverable"], false);
+    let persisted: Value =
+        serde_json::from_slice(&fs::read(directory.join("codex-provider-state.json")).unwrap())
+            .unwrap();
+    assert_eq!(persisted["lifecycle"], "reconciliation_required");
+    assert_eq!(persisted["completedTurnAuthoritative"], false);
+    executor.shutdown().expect("cleanup");
+    let mut restored = CodexCommandExecutor::new(&directory);
+    let error = restored
+        .execute(&command("retry", 5, "turn.start", json!({"text":"Retry"})))
+        .expect_err("an integrity failure must also remain fenced after restart");
+    assert!(error
+        .to_string()
+        .contains("requires explicit reconciliation"));
+    restored.shutdown().expect("restored cleanup");
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn durable_descendant_lineage_survives_capacity_and_provider_restoration() {
+    let directory = temporary_directory("descendant-restoration");
+    let config = provider_config(
+        &directory,
+        &["--descendant-notifications", "--durable-turn-ids"],
+    );
+    let runner_config = durable_config(&directory);
+    let mut first = CodexCommandExecutor::with_runner_config(&directory, &runner_config);
+    first
+        .execute(&command(
+            "prepare",
+            1,
+            "run.prepare",
+            json!({
+                "provider": config, "authorizedTools": task_context_tool_set(),
+                "completionContract": {"revision": "lineage-contract", "criterionIds": ["lineage"]}
+            }),
+        ))
+        .unwrap();
+    first
+        .execute(&command("open", 2, "session.open", json!({})))
+        .unwrap();
+    first
+        .execute(&command(
+            "turn",
+            3,
+            "turn.start",
+            json!({"text": "Read test context."}),
+        ))
+        .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let mut completed = false;
+    let mut children = std::collections::BTreeSet::new();
+    while std::time::Instant::now() < deadline && !completed {
+        for event in poll_and_ack(&mut first).unwrap() {
+            assert_ne!(event.event_type, "turn.failed");
+            if event.payload["classification"] == "descendant" {
+                children.insert(
+                    event.payload["receivedThreadId"]
+                        .as_str()
+                        .unwrap()
+                        .to_owned(),
+                );
+            }
+            completed |= event.event_type == "run.terminal";
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    assert!(completed);
+    assert_eq!(children.len(), 300);
+    first.shutdown().unwrap();
+    drop(first);
+
+    let mut restored = CodexCommandExecutor::with_runner_config(&directory, &runner_config);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let mut child_seen = false;
+    while std::time::Instant::now() < deadline && !child_seen {
+        for event in poll_and_ack(&mut restored).unwrap() {
+            assert_ne!(event.event_type, "turn.failed");
+            assert_ne!(
+                event.event_type, "run.terminal",
+                "child completion cannot complete the root"
+            );
+            child_seen |= event.payload["classification"] == "descendant"
+                && event.payload["receivedThreadId"] == "descendant-299";
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    assert!(
+        child_seen,
+        "restoration must recognize an existing child's terminal without rediscovery"
+    );
+    restored.shutdown().unwrap();
+    drop(restored);
+
+    // Seed the bounded persisted inventory instead of performing thousands of
+    // redundant disk writes, then exercise the real overflow event and fencing.
+    let state_path = directory.join("codex-provider-state.json");
+    let mut persisted: Value = serde_json::from_slice(&fs::read(&state_path).unwrap()).unwrap();
+    persisted["descendantThreadIds"] = json!((0..4096)
+        .map(|index| format!("descendant-{index}"))
+        .collect::<Vec<_>>());
+    persisted["config"]["args"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!("--descendant-overflow"));
+    fs::write(&state_path, serde_json::to_vec(&persisted).unwrap()).unwrap();
+    let mut bounded = CodexCommandExecutor::with_runner_config(&directory, &runner_config);
+    bounded
+        .execute(&command(
+            "bounded-turn",
+            4,
+            "turn.start",
+            json!({"text":"Continue bounded child work."}),
+        ))
+        .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let mut capacity_failed = false;
+    while std::time::Instant::now() < deadline && !capacity_failed {
+        for event in poll_and_ack(&mut bounded).unwrap() {
+            if event.event_type == "turn.failed" {
+                assert_eq!(
+                    event.payload["code"],
+                    "provider_descendant_capacity_exhausted"
+                );
+                assert_eq!(
+                    event.payload["error"]["classification"],
+                    "resource_capacity"
+                );
+                capacity_failed = true;
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    assert!(
+        capacity_failed,
+        "capacity exhaustion must become a specific durable recovery reason"
+    );
+    let persisted: Value = serde_json::from_slice(&fs::read(&state_path).unwrap()).unwrap();
+    assert_eq!(
+        persisted["descendantThreadIds"].as_array().unwrap().len(),
+        4096
+    );
+    assert_eq!(persisted["lifecycle"], "reconciliation_required");
+    // Acknowledging all terminal events must not authorize another provider turn.
+    while !poll_and_ack(&mut bounded).unwrap().is_empty() {}
+    for kind in ["turn.start", "session.open", "run.attach"] {
+        let error = bounded
+            .execute(&command("blocked", 5, kind, json!({"text":"Retry"})))
+            .expect_err("reconciliation cannot be bypassed in the current executor");
+        assert!(error
+            .to_string()
+            .contains("requires explicit reconciliation"));
+    }
+    bounded.shutdown().unwrap();
+    let mut restored = CodexCommandExecutor::with_runner_config(&directory, &runner_config);
+    for kind in ["turn.start", "session.open", "run.attach"] {
+        let error = restored
+            .execute(&command(
+                "blocked-after-restart",
+                6,
+                kind,
+                json!({"text":"Retry"}),
+            ))
+            .expect_err("restart must retain the reconciliation fence");
+        assert!(error
+            .to_string()
+            .contains("requires explicit reconciliation"));
+    }
+    let persisted_after_restart: Value =
+        serde_json::from_slice(&fs::read(&state_path).unwrap()).unwrap();
+    assert_eq!(
+        persisted_after_restart["providerProcessGeneration"],
+        persisted["providerProcessGeneration"]
+    );
+    assert_eq!(
+        persisted_after_restart["lifecycle"],
+        "reconciliation_required"
+    );
+    restored.shutdown().unwrap();
+    fs::remove_dir_all(directory).unwrap();
 }
