@@ -28,7 +28,6 @@ import {
   // Issue
   createIssueSchema,
   updateIssueSchema,
-  consolidateDuplicateIssueSchema,
   stalledReviewDecisionSchema,
   createIssueLabelSchema,
   addIssueCommentSchema,
@@ -246,6 +245,7 @@ import {
   claudeOAuthTokenStatusResponseSchema,
   startAdapterAuthSessionRequestSchema,
 } from "@paperclipai/shared";
+import { consolidateDuplicateIssueSchema } from "@paperclipai/shared";
 import {
   COMPANY_IMPORT_TRANSFERS_API_PATH,
   companyImportTransferDeclarationSchema,
