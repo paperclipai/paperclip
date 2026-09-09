@@ -443,6 +443,55 @@ describe.sequential("plugin tool and bridge authz", () => {
     vi.clearAllMocks();
   });
 
+  it("allows an agent to subscribe to a plugin stream for its own company", async () => {
+    readyPlugin();
+    const subscribe = vi.fn(() => vi.fn());
+    const { app } = await createApp({
+      type: "agent",
+      agentId: agentA,
+      companyId: companyA,
+      runId: runA,
+    }, {}, {
+      bridgeDeps: { streamBus: { subscribe } },
+    });
+
+    const res = await request(app)
+      .get(`/api/plugins/${pluginId}/bridge/stream/events`)
+      .query({ companyId: companyA })
+      .buffer(false)
+      .parse((_res, callback) => callback(null, undefined));
+
+    expect(res.status).toBe(200);
+    expect(res.headers["content-type"]).toContain("text/event-stream");
+    expect(subscribe).toHaveBeenCalledWith(
+      pluginId,
+      "events",
+      companyA,
+      expect.any(Function),
+    );
+  });
+
+  it("rejects an agent plugin stream subscription for another company", async () => {
+    readyPlugin();
+    const subscribe = vi.fn(() => vi.fn());
+    const { app } = await createApp({
+      type: "agent",
+      agentId: agentA,
+      companyId: companyA,
+      runId: runA,
+    }, {}, {
+      bridgeDeps: { streamBus: { subscribe } },
+    });
+
+    const res = await request(app)
+      .get(`/api/plugins/${pluginId}/bridge/stream/events`)
+      .query({ companyId: companyB });
+
+    expect(res.status).toBe(403);
+    expect(res.body).toEqual({ error: "Agent key cannot access another company" });
+    expect(subscribe).not.toHaveBeenCalled();
+  });
+
   it("rejects tool execution when the board user cannot access runContext.companyId", async () => {
     const executeTool = vi.fn();
     const getTool = vi.fn();

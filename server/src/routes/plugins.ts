@@ -1365,12 +1365,11 @@ export function pluginRoutes(
    *
    * Errors:
    * - 400 if companyId is missing
+   * - 403 if an agent selects a company other than its own
    * - 404 if plugin not found
    * - 501 if bridge deps or stream bus are not configured
    */
   router.get("/plugins/:pluginId/bridge/stream/:channel", async (req, res) => {
-    assertBoardOrgAccess(req);
-
     if (!bridgeDeps?.streamBus) {
       res.status(501).json({ error: "Plugin stream bridge is not enabled" });
       return;
