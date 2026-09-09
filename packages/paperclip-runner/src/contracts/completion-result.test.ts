@@ -116,6 +116,21 @@ describe("provider-neutral completion result schema", () => {
     expect(providerValidate(providerResult)).toBe(true);
   });
 
+  it.each(["done", "needs_review", "completed"])("rejects a response-wake continuation on %s", (disposition) => {
+    const response = {
+      ...structuredClone(baseResult),
+      reportedWorkDisposition: disposition,
+      attentionRequests: disposition === "needs_review"
+        ? [{ kind: "review", summary: "Review this result.", ownerClass: "human" }]
+        : [],
+      continuation: { kind: "response_wake", summary: "Contradictory wait.", idempotencyKey: "wait-1" },
+    };
+    const providerValidate = new Ajv2020({ allErrors: true, strict: false })
+      .compile(PRP_COMPLETION_RESULT_PROVIDER_INPUT_SCHEMA);
+    expect(providerValidate(response)).toBe(false);
+    expect(validate(response)).toBe(false);
+  });
+
   it("exposes concrete completion fields while retaining response-wake validation", () => {
     // The live Codex code-mode renderer reduced a conditional-only root allOf
     // to `args: unknown`. Keep this tool object-shaped for provider discovery.

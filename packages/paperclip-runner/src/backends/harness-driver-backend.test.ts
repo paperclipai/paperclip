@@ -800,14 +800,17 @@ describe("HarnessDriverBackend", () => {
       "semantic_input_digest_mismatch",
     );
     class TerminalThenIntegrityFailure extends FakeHarnessSession {
+      goal = vi.fn(async () => null);
+      steer = vi.fn(async () => ({ correlationId: "blocked-steer" }));
       override async *events() {
         yield* super.events();
         throw fault;
       }
     }
+    const harness = new TerminalThenIntegrityFailure();
     const session = await new HarnessDriverBackend({
       ...driver,
-      openSession: async () => new TerminalThenIntegrityFailure(),
+      openSession: async () => harness,
     }).openSession({
       identity: {
         runId: "run-1",
@@ -824,6 +827,11 @@ describe("HarnessDriverBackend", () => {
     await expect(iterator.next()).rejects.toBe(fault);
     await expect(session.result()).rejects.toBe(fault);
     await expect(session.snapshot()).rejects.toBe(fault);
+    await expect(Promise.resolve().then(() => session.goal!({ action: "get" }))).rejects.toBe(fault);
+    await expect(Promise.resolve().then(() => session.steer!({ turnId: "turn-1", message: { role: "user", text: "must not send" } }))).rejects.toBe(fault);
+    await expect(Promise.resolve().then(() => session.resolveRuntimeRequest!({ requestId: "request-1", turnId: "turn-1", resolution: { type: "input", answers: [] } as never }))).rejects.toBe(fault);
+    expect(harness.goal).not.toHaveBeenCalled();
+    expect(harness.steer).not.toHaveBeenCalled();
     await session.close({ reason: "fixture complete" });
   });
 

@@ -4,7 +4,7 @@ import {
   createHash,
   createHmac,
 } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -176,6 +176,43 @@ async function authenticatedRunner(
 }
 
 describe("Codex protocol integrity propagation", () => {
+  it("blocks goal operations after an integrity fault without blocking cleanup", async () => {
+    const transport = new FakeCodexTransport();
+    const session = await makeDriver([transport]).openSession({
+      runId: "run-goal-integrity", normalizedSessionId: "session-goal-integrity", workingDirectory: WORKSPACE,
+    });
+    if (!(session instanceof CodexSessionState)) throw new Error("Expected Codex state");
+    const fault = new NativeSessionProtocolIntegrityError("semantic_input_digest_mismatch");
+    session.failProtocolIntegrity(fault);
+    const before = transport.calls.length;
+    for (const action of ["get", "clear", "resume"] as const) {
+      await expect(session.goal!({ action })).rejects.toBe(fault);
+    }
+    expect(transport.calls).toHaveLength(before);
+    await session.close({ reason: "integrity cleanup" });
+  });
+
+  it("preserves a fault that arrives while a goal read is in flight", async () => {
+    const transport = new FakeCodexTransport();
+    const session = await makeDriver([transport]).openSession({
+      runId: "run-goal-race", normalizedSessionId: "session-goal-race", workingDirectory: WORKSPACE,
+    });
+    if (!(session instanceof CodexSessionState)) throw new Error("Expected Codex state");
+    let release!: (value: Record<string, unknown>) => void;
+    const held = new Promise<Record<string, unknown>>((resolve) => { release = resolve; });
+    const request = transport.request.bind(transport);
+    const spy = vi.spyOn(transport, "request").mockImplementation((method, params) =>
+      method === "thread/goal/get" ? held : request(method, params),
+    );
+    const pending = session.goal!({ action: "get" });
+    const fault = new NativeSessionProtocolIntegrityError("semantic_input_digest_mismatch");
+    session.failProtocolIntegrity(fault);
+    release({ goal: null });
+    await expect(pending).rejects.toBe(fault);
+    spy.mockRestore();
+    await session.close({ reason: "integrity cleanup" });
+  });
+
   it.each(["matching", "foreign"] as const)(
     "defers an early %s semantic call until turn admission, then enforces its binding",
     async (binding) => {
@@ -565,7 +602,9 @@ describe("Codex protocol integrity propagation", () => {
               result,
             },
           });
-          await vi.waitFor(() => expect(command.status).toBe("completed"));
+          await vi.waitFor(() =>
+            expect(core.getCommand(command.commandId)?.status).toBe("completed"),
+          );
         };
         const event = (
           sourceSeq: number,
@@ -602,6 +641,7 @@ describe("Codex protocol integrity propagation", () => {
             runtimeIdentity: { processId: process.pid },
           }),
         );
+        await commandResult("session.goal.get", { goal: null });
         if (scenario !== "integrity-fault") {
           await vi.waitFor(() =>
             expect(
@@ -797,12 +837,21 @@ describe("Codex protocol integrity propagation", () => {
                 (entry) => entry.eventType === "run.result.proposed",
               ),
             ).toBeGreaterThan(accepted);
+            // This fixture replaces only the runner process. Model the new
+            // durable close contract explicitly instead of accepting an
+            // unreadable provider suffix as a reusable checkpoint.
+            mkdirSync(join(directory, "runner"), { recursive: true });
+            writeFileSync(
+              join(directory, "runner", "codex-provider-state.json"),
+              JSON.stringify({ pendingEvents: [], activeProviderTurnId: null }),
+            );
             client.send(
               event(4, "turn.completed", {
                 providerTurnId: "composed-provider-turn",
                 status: "completed",
               }),
             );
+            await commandResult("runner.drain", { retainedEventsDrained: true });
             await commandResult("runner.suspend");
             kill();
             expect(await execution).toMatchObject({

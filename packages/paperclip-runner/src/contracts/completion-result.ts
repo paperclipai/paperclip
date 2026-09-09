@@ -201,6 +201,7 @@ export const PRP_COMPLETION_RESULT_OUTPUT_SCHEMA = {
     {
       if: { properties: { reportedWorkDisposition: { const: "yielded" } }, required: ["reportedWorkDisposition"] },
       then: { required: ["continuation"] },
+      else: { not: { required: ["continuation"] } },
     },
   ],
 } as const;
@@ -362,6 +363,7 @@ export const PRP_COMPLETION_RESULT_PROVIDER_INPUT_SCHEMA = {
   // preserves validation without obscuring the object-shaped tool signature.
   if: { properties: { reportedWorkDisposition: { const: "yielded" } }, required: ["reportedWorkDisposition"] },
   then: { required: ["continuation"] },
+  else: { not: { required: ["continuation"] } },
 } as const;
 
 export const PRP_BLOCK_RESULT_PROVIDER_INPUT_SCHEMA = {

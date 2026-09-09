@@ -412,6 +412,18 @@ class HarnessNativeSession implements NativeSession {
     }
   }
 
+  async #withProtocolIntegrity<T>(operation: () => T | Promise<T>): Promise<T> {
+    this.#assertProtocolIntegrity();
+    try {
+      const value = await operation();
+      this.#assertProtocolIntegrity();
+      return value;
+    } catch (error) {
+      this.#rethrowProtocolIntegrity(error);
+      throw error;
+    }
+  }
+
   constructor(
     input: OpenNativeSessionInput,
     session: HarnessSession,
@@ -659,9 +671,10 @@ class HarnessNativeSession implements NativeSession {
     message: { role: "user"; text: string };
     correlationId?: string;
   }) {
+    this.#assertProtocolIntegrity();
     if (this.#session.steer === undefined)
       throw new Error("steering is unavailable");
-    return this.#session.steer(input);
+    return this.#withProtocolIntegrity(() => this.#session.steer!(input));
   }
 
   interrupt(input: { turnId?: string; reason?: string }) {
@@ -701,10 +714,11 @@ class HarnessNativeSession implements NativeSession {
       NonNullable<HarnessSession["resolveRuntimeRequest"]>
     >[0]["resolution"];
   }) {
+    this.#assertProtocolIntegrity();
     if (this.#session.resolveRuntimeRequest === undefined) {
       throw new Error("native_runtime_request_resolution_unavailable");
     }
-    return this.#session.resolveRuntimeRequest(input);
+    return this.#withProtocolIntegrity(() => this.#session.resolveRuntimeRequest!(input));
   }
 
   handoffRuntimeRequest(input: {
@@ -713,6 +727,7 @@ class HarnessNativeSession implements NativeSession {
     reason: "durable_handoff";
     signal: AbortSignal;
   }) {
+    this.#assertProtocolIntegrity();
     if (this.#session.handoffRuntimeRequest === undefined) {
       throw new Error("native_runtime_request_handoff_unavailable");
     }
@@ -720,10 +735,11 @@ class HarnessNativeSession implements NativeSession {
   }
 
   goal(input: Parameters<NonNullable<HarnessSession["goal"]>>[0]) {
+    this.#assertProtocolIntegrity();
     if (this.#session.goal === undefined) {
       throw new Error("native_session_goal_unavailable");
     }
-    return this.#session.goal(input);
+    return this.#withProtocolIntegrity(() => this.#session.goal!(input));
   }
 
   async result() {
@@ -789,7 +805,7 @@ class HarnessNativeSession implements NativeSession {
   }
 
   async usage(): Promise<Record<string, unknown> | null> {
-    return this.#session.usage?.() ?? null;
+    return this.#withProtocolIntegrity(() => this.#session.usage?.() ?? null);
   }
 
   close(input: { reason: string }) {
