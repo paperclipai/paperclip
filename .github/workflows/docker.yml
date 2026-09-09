@@ -14,9 +14,10 @@ on:
   # way.
   workflow_dispatch:
 
-permissions:
-  contents: read
-  packages: write
+# Least privilege: nothing at the workflow level; each job declares exactly
+# the token scopes it uses (checkout needs contents:read, GHCR pushes need
+# packages:write).
+permissions: {}
 
 # Serialise builds per ref without killing an in-flight one: a newer push
 # supersedes only the pending slot, so the image build that is already
@@ -74,6 +75,9 @@ jobs:
     # (The interim fix while this PR landed raised the single QEMU job's cap
     # to 120 minutes; native per-arch legs make that headroom unnecessary.)
     timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -272,11 +276,14 @@ jobs:
     needs: build-and-push
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
     steps:
       # Checked out for `packages/db` (schema labels) and the orphan-reaping
       # script the verification step pipes in.
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
 
@@ -288,14 +295,14 @@ jobs:
           merge-multiple: true
 
       - name: Login to GitHub Container Registry
-        uses: docker/login-action@v4
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
         with:
           registry: ghcr.io
           username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
 
       # Repeated from the build job rather than passed between them: job
       # outputs would have to survive a matrix, and this is two `ls` calls.
@@ -315,7 +322,7 @@ jobs:
       # so parallel canary-tag builds can never race the channel backwards.
       - name: Docker meta
         id: meta
-        uses: docker/metadata-action@v6
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6
         with:
           images: ghcr.io/${{ github.repository }}
           tags: |
@@ -366,6 +373,9 @@ jobs:
   build-and-push-cloud:
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
     steps:
       - name: Checkout
         uses: actions/checkout@v7
