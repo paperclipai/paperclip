@@ -785,6 +785,25 @@ Examples:
 
 Auto-recovery preserves the existing owner. It does not choose a replacement agent.
 
+### Codex startup and provider state
+
+Paperclip trusts the server-selected startup execution root in the isolated
+Codex configuration. Resolve that root on the execution host, including the
+main repository trust key for Git worktrees. Start the provider in that same
+root. This does not change sandbox permissions, tool authorization, secret
+access, or Codex's separate per-hook trust policy.
+
+Codex retains the model conversation. Paperclip resumes with `excludeTurns: true`,
+reads lightweight thread state, and fetches paginated turn metadata or specific
+turn items only when execution reconciliation needs them. Unsupported
+or incomplete history is an explicit error, not evidence of idle execution.
+
+The root-thread usage snapshot sent during resume belongs to its reported
+completed turn. Retain a bounded local diagnostic and use cumulative totals as
+a baseline; do not emit a warning or charge its historical `last` usage to the
+new run. Preserve the baseline across recovery of the same run and start a new
+delta when attaching a new run. Other stale-event and authority checks remain.
+
 ### Provider continuity and bounded finalization
 
 A permanently unusable established provider session may be replaced only with evidence that its predecessor is stopped and fenced, completed results and workspace state are preserved, required task history is available, and pending effects have been reconciled. A provider-native shell command or external write without a reliable outcome receipt is unknown. Unknown effects, integrity failures, and unverified process ownership never authorize speculative replay. Once automatic recovery is ruled out, Paperclip selects a conservative default: preserve recorded work, stop the affected task, and retain a durable no-replay hold. Unknown action outcomes remain unknown. No reconciliation form or user diagnosis is required.

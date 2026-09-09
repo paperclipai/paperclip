@@ -6027,3 +6027,68 @@ fn resume_usage_is_a_historical_diagnostic_not_a_warning_or_charge() {
     resumed.shutdown().unwrap();
     fs::remove_dir_all(directory).unwrap();
 }
+
+#[test]
+fn lightweight_history_pages_metadata_only_when_state_is_active() {
+    let directory = temporary_directory("lightweight-history");
+    let config = provider_config(
+        &directory,
+        &[
+            "--hold-turn",
+            "--require-lightweight-history",
+            "--paginated-history",
+        ],
+    );
+    let mut provider = CodexProvider::start(&config, None).unwrap();
+    let thread_id = provider.thread_id().to_owned();
+    assert_eq!(
+        provider.read_thread().unwrap()["thread"]["turns"],
+        json!([])
+    );
+    assert!(!fs::read_to_string(directory.join("calls.log"))
+        .unwrap()
+        .contains("thread/turns/list"));
+    provider.start_turn("Keep working", &config.cwd).unwrap();
+    let active = provider.active_provider_turn_id().unwrap().to_owned();
+    let state = provider.read_thread().unwrap();
+    assert_eq!(state["thread"]["turns"][0]["id"], active);
+    assert_eq!(state["thread"]["turns"][0]["items"], json!([]));
+    assert_eq!(
+        fs::read_to_string(directory.join("calls.log"))
+            .unwrap()
+            .matches("thread/turns/list")
+            .count(),
+        2
+    );
+    provider.shutdown().unwrap();
+    let mut resumed = CodexProvider::start(&config, Some(&thread_id)).unwrap();
+    assert_eq!(
+        resumed.read_thread().unwrap()["thread"]["turns"][0]["id"],
+        active
+    );
+    resumed.shutdown().unwrap();
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn lightweight_history_repeated_cursor_is_not_idle_evidence() {
+    let directory = temporary_directory("repeated-history-cursor");
+    let config = provider_config(
+        &directory,
+        &[
+            "--hold-turn",
+            "--require-lightweight-history",
+            "--repeat-history-cursor",
+        ],
+    );
+    let mut provider = CodexProvider::start(&config, None).unwrap();
+    provider.start_turn("Keep working", &config.cwd).unwrap();
+    assert!(provider
+        .read_thread()
+        .unwrap_err()
+        .to_string()
+        .contains("repeated turn cursor"));
+    assert!(provider.active_provider_turn_id().is_some());
+    provider.shutdown().unwrap();
+    fs::remove_dir_all(directory).unwrap();
+}
