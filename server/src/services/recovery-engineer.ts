@@ -1503,7 +1503,25 @@ export function recoveryEngineerService(
     config: ConfigRow,
     run: RunRow,
   ) {
-    if (!incident.repairIssueId || run.agentId !== config.reviewerAgentId) return false;
+    if (!incident.repairIssueId || !incident.repairRunId || run.agentId !== config.reviewerAgentId) return false;
+    const interactionId = readString(parseObject(run.contextSnapshot).interactionId);
+    if (interactionId) {
+      const interaction = await db.select({ id: issueThreadInteractions.id })
+        .from(issueThreadInteractions).where(and(
+          eq(issueThreadInteractions.id, interactionId),
+          eq(issueThreadInteractions.companyId, incident.companyId),
+          eq(issueThreadInteractions.issueId, incident.repairIssueId),
+          eq(issueThreadInteractions.kind, "request_confirmation"),
+          eq(issueThreadInteractions.status, "accepted"),
+          eq(issueThreadInteractions.createdByAgentId, config.repairAgentId),
+          eq(issueThreadInteractions.sourceRunId, incident.repairRunId),
+          eq(issueThreadInteractions.addresseeAgentId, config.reviewerAgentId),
+          eq(issueThreadInteractions.resolvedByAgentId, config.reviewerAgentId),
+          eq(issueThreadInteractions.resolvedByRunId, run.id),
+        )).limit(1).then((rows) => rows[0] ?? null);
+      // An interaction-bound run cannot borrow an unrelated stage decision.
+      return Boolean(interaction);
+    }
     const decision = await db
       .select({ id: issueExecutionDecisions.id })
       .from(issueExecutionDecisions)

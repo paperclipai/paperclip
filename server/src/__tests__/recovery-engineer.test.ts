@@ -14,6 +14,7 @@ import {
   issueExecutionDecisions,
   issueRelations,
   issues,
+  issueThreadInteractions,
   projects,
   recoveryEngineerConfigs,
   recoveryEngineerIncidents,
@@ -568,7 +569,7 @@ describeEmbeddedPostgres("native recovery engineer", () => {
     expect(resume.status).toBe(403);
   });
 
-  it("finalizes reviewer evidence only after the bound native review succeeds", async () => {
+  it.each(["stage", "interaction", "wrong_run"] as const)("binds successful verification to its native %s review authority", async (reviewMode) => {
     const seeded = await seedCompany();
     const maintenanceIssueId = randomUUID();
     const repairIssueId = randomUUID();
@@ -651,20 +652,33 @@ describeEmbeddedPostgres("native recovery engineer", () => {
         .then((rows) => rows[0]!.verifiedAt),
     ).toBeNull();
 
-    await db.insert(issueExecutionDecisions).values({
-      companyId: seeded.companyId,
-      issueId: repairIssueId,
-      stageId: randomUUID(),
-      stageType: "review",
-      actorAgentId: seeded.reviewerAgentId,
-      outcome: "approved",
-      body: "Independent reproduction passed at the submitted repair commit.",
-      createdByRunId: reviewerRun.id,
-    });
+    const interactionId = randomUUID();
+    if (reviewMode === "stage") {
+      await db.insert(issueExecutionDecisions).values({
+        companyId: seeded.companyId, issueId: repairIssueId, stageId: randomUUID(),
+        stageType: "review", actorAgentId: seeded.reviewerAgentId, outcome: "approved",
+        body: "Independent reproduction passed at the submitted repair commit.",
+        createdByRunId: reviewerRun.id,
+      });
+    } else {
+      await db.insert(issueThreadInteractions).values({
+        id: interactionId, companyId: seeded.companyId, issueId: repairIssueId,
+        kind: "request_confirmation", status: "accepted",
+        createdByAgentId: seeded.repairAgentId, sourceRunId: repairRun.id,
+        addresseeAgentId: seeded.reviewerAgentId, resolvedByAgentId: seeded.reviewerAgentId,
+        resolvedByRunId: reviewMode === "wrong_run" ? repairRun.id : reviewerRun.id,
+        payload: { version: 1, prompt: "Review exact repair", allowDeclineReason: true },
+        result: { version: 1, outcome: "accepted" },
+      });
+    }
     const succeededReviewRun = await db
       .update(heartbeatRuns)
       .set({
         status: "succeeded",
+        contextSnapshot: {
+          issueId: repairIssueId,
+          ...(reviewMode === "stage" ? {} : { interactionId }),
+        },
         finishedAt: new Date("2026-09-09T11:00:00.000Z"),
       })
       .where(eq(heartbeatRuns.id, reviewerRun.id))
@@ -684,6 +698,12 @@ describeEmbeddedPostgres("native recovery engineer", () => {
       .from(recoveryEngineerIncidents)
       .where(eq(recoveryEngineerIncidents.id, incidentId))
       .then((rows) => rows[0]!);
+    if (reviewMode === "wrong_run") {
+      expect(verification.status).toBe("failed");
+      expect(verification.failureReason).toBe("review_run_not_approved");
+      expect(incident.verifiedAt).toBeNull();
+      return;
+    }
     expect(verification.status).toBe("verified");
     expect(verification.finalizedAt).not.toBeNull();
     expect(incident).toMatchObject({
