@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ToastProvider } from "../context/ToastContext";
 import type { BuiltInAgentState } from "../api/builtInAgents";
 import { Agents } from "./Agents";
+import { Agents as ProductionAgents } from "./Agents.production";
 import type { AgentOrgChainHealth } from "@paperclipai/shared";
 
 const mockRouterState = vi.hoisted(() => ({
@@ -355,6 +356,40 @@ describe("Agents", () => {
     container.remove();
     document.body.innerHTML = "";
     vi.clearAllMocks();
+  });
+
+  it.each([
+    ["streamlined", Agents],
+    ["production", ProductionAgents],
+  ] as const)("omits the action bar from %s agent list rows", async (_mode, AgentList) => {
+    mockAgentsApi.list.mockResolvedValue([
+      makeAgent({ name: "Alpha", status: "active" }),
+      makeAgent({ id: "agent-paused", name: "Paused agent", status: "paused" }),
+    ]);
+    root = createRoot(container);
+    await act(async () => {
+      root!.render(
+        <QueryClientProvider client={queryClient}>
+          <ToastProvider>
+            <AgentList />
+          </ToastProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+    const listToggle = container.querySelector<HTMLButtonElement>('button[aria-label="List view"]');
+    await act(async () => { listToggle?.click(); });
+    await flushReact();
+
+    for (const name of ["Alpha", "Paused agent"]) {
+      const row = findAgentRow(container, name);
+      expect(row).not.toBeNull();
+      expect(row?.getAttribute("href")).toMatch(/^\/agents\//);
+      expect(row?.querySelector('button[aria-label^="Open actions for"]')).toBeNull();
+      const buttons = Array.from(row?.querySelectorAll("button") ?? []).map((button) => button.textContent);
+      expect(buttons).not.toEqual(expect.arrayContaining([expect.stringMatching(/Assign Task|Run Heartbeat|Run with provider trace|Pause|Resume/)]));
+    }
   });
 
   it("shows the configured model beside the adapter on the all agents page", async () => {

@@ -1264,7 +1264,6 @@ export function AgentDetail() {
             agent={agent}
             companyId={resolvedCompanyId}
             assignLabel="Assign Task"
-            showRun={false}
             showStatus={false}
             canRunWithProviderTrace={canUseProviderTrace}
             actionsDisabled={agentAction.isPending}
