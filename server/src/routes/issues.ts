@@ -4347,11 +4347,23 @@ export function issueRoutes(
       if (issue.status === "in_progress") {
         // Run/checkout ownership stays assignee-scoped even though writes are
         // open, so this lock clears on its own — the copy routes to comments.
-        return denyIssueWrite(req, res, issue, "issue_write_assignee_run_lock", {
-          issueId: issue.id,
-          assigneeAgentId: issue.assigneeAgentId,
-          actorAgentId,
-        });
+        //
+        // "Clears on its own" is only true of a lock a run is actually holding,
+        // so the premise is read rather than inferred from the status column.
+        // An assignee that stops without releasing leaves the row in_progress
+        // forever; inferring the lock from that made every such issue
+        // permanently unwritable by every other agent, with no expiry and no
+        // remedy short of the manage-active-checkouts grant above.
+        const runLock = await svc.resolveActiveRunLock(issue.id);
+        if (runLock) {
+          return denyIssueWrite(req, res, issue, "issue_write_assignee_run_lock", {
+            issueId: issue.id,
+            assigneeAgentId: issue.assigneeAgentId,
+            actorAgentId,
+          });
+        }
+        // No run stands behind the status, so there is no lock to respect and
+        // the issue is treated as idle by the paths below.
       }
       // Past the run lock the issue is idle, so only channels that have not
       // adopted the default-open rule still refuse another agent's issue.

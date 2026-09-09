@@ -11,6 +11,7 @@ const ownerRunId = "55555555-5555-4555-8555-555555555555";
 const mockIssueService = vi.hoisted(() => ({
   assertCheckoutOwner: vi.fn(),
   getById: vi.fn(),
+  resolveActiveRunLock: vi.fn(),
 }));
 
 const mockAccessService = vi.hoisted(() => ({
@@ -176,6 +177,11 @@ describe("external object routes", () => {
     vi.resetAllMocks();
     mockIssueService.getById.mockResolvedValue(makeIssue());
     mockIssueService.assertCheckoutOwner.mockResolvedValue({ adoptedFromRunId: null });
+    // The peer-refusal case here is premised on a live checkout; state it.
+    mockIssueService.resolveActiveRunLock.mockResolvedValue({
+      checkoutRunId: ownerRunId,
+      executionRunId: ownerRunId,
+    });
     mockAccessService.hasPermission.mockResolvedValue(false);
     mockAccessService.decide.mockImplementation(async ({ action }: { action: string }) => ({
       allowed: action === "issue:read" || action === "issue:mutate",

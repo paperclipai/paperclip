@@ -541,4 +541,153 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
       executionRunId: currentRunId,
     });
   });
+
+  // ------------------------------------------------------------------
+  // A peer agent facing a checkout lock with no run behind it.
+  //
+  // The stale-lock recovery above is assignee-only: every path that reads
+  // the lock's premise (clearExecutionRunIfTerminal / clearCheckoutRunIfTerminal,
+  // adoptStaleCheckoutRun) sits behind `issue.assigneeAgentId === actorAgentId`.
+  // A peer is refused earlier, on `status === "in_progress"` alone, so an issue
+  // whose assignee stopped without releasing it stays unwritable by everyone
+  // else for as long as the row says in_progress — with no expiry.
+  // ------------------------------------------------------------------
+
+  async function seedPeerAgent(companyId: string) {
+    const peerAgentId = randomUUID();
+    const peerRunId = randomUUID();
+    await db.insert(agents).values({
+      id: peerAgentId,
+      companyId,
+      name: "PeerCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    // The peer acts from its own live run on its own task, reaching across to
+    // the abandoned one — so the run carries a source issue, as a real
+    // cross-issue write does.
+    const peerSourceIssueId = randomUUID();
+    await db.insert(issues).values({
+      id: peerSourceIssueId,
+      companyId,
+      title: "Peer's own work",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: peerAgentId,
+    });
+    await db.insert(heartbeatRuns).values({
+      id: peerRunId,
+      companyId,
+      agentId: peerAgentId,
+      status: "running",
+      invocationSource: "manual",
+      startedAt: new Date(),
+      contextSnapshot: { issueId: peerSourceIssueId },
+    });
+    return { peerAgentId, peerRunId, peerSourceIssueId };
+  }
+
+  it("lets a peer agent write an issue left in_progress with no run behind the lock", async () => {
+    const { companyId, agentId } = await seedCompanyAgentAndRuns();
+    const { peerAgentId, peerRunId } = await seedPeerAgent(companyId);
+    const issueId = randomUUID();
+    // Exactly the abandoned shape: in_progress, assigned, and every lock
+    // column null because the assignee stopped without ever releasing it.
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Abandoned in_progress",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: agentId,
+      checkoutRunId: null,
+      executionRunId: null,
+      executionAgentNameKey: null,
+      executionLockedAt: null,
+    });
+
+    const res = await request(createApp(agentActor(companyId, peerAgentId, peerRunId)))
+      .patch(`/api/issues/${issueId}`)
+      .send({ title: "Peer recovered it" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.title).toBe("Peer recovered it");
+  });
+
+  it("lets a peer agent write once the assignee's lock run has gone terminal", async () => {
+    const { companyId, agentId, failedRunId } = await seedCompanyAgentAndRuns();
+    const { peerAgentId, peerRunId } = await seedPeerAgent(companyId);
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Lock held by a dead run",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: agentId,
+      checkoutRunId: failedRunId,
+      executionRunId: failedRunId,
+      executionAgentNameKey: "codexcoder",
+      executionLockedAt: new Date(),
+    });
+
+    const res = await request(createApp(agentActor(companyId, peerAgentId, peerRunId)))
+      .patch(`/api/issues/${issueId}`)
+      .send({ title: "Peer wrote past the dead lock" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+
+    // The dead lock is not merely ignored, it is cleared — otherwise the next
+    // reader re-derives the same false premise.
+    const row = await db
+      .select({
+        checkoutRunId: issues.checkoutRunId,
+        executionRunId: issues.executionRunId,
+        executionLockedAt: issues.executionLockedAt,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]);
+    expect(row).toEqual({ checkoutRunId: null, executionRunId: null, executionLockedAt: null });
+  });
+
+  // The control. If this ever goes green alongside the two above, the guard has
+  // stopped fencing anything and the fix has overshot into removing the lock.
+  it("still refuses a peer agent while the assignee's lock run is genuinely live", async () => {
+    const { companyId, agentId } = await seedCompanyAgentAndRuns();
+    const { peerAgentId, peerRunId } = await seedPeerAgent(companyId);
+    const liveOwnerRunId = randomUUID();
+    const issueId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: liveOwnerRunId,
+      companyId,
+      agentId,
+      status: "running",
+      invocationSource: "manual",
+      startedAt: new Date(),
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Genuinely locked",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: agentId,
+      checkoutRunId: liveOwnerRunId,
+      executionRunId: liveOwnerRunId,
+      executionAgentNameKey: "codexcoder",
+      executionLockedAt: new Date(),
+    });
+
+    const res = await request(createApp(agentActor(companyId, peerAgentId, peerRunId)))
+      .patch(`/api/issues/${issueId}`)
+      .send({ title: "Should still fail" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+    expect(res.body?.details?.code).toBe("issue_write_assignee_run_lock");
+  });
 });

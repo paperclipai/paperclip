@@ -5543,6 +5543,40 @@ export function issueService(db: Db) {
     });
   }
 
+  /**
+   * Report the run lock an issue actually holds, or null when it holds none.
+   *
+   * `status === "in_progress"` is a status, not a lock. The two helpers above
+   * already encode the rule that decides the difference — "a terminal run holds
+   * no real claim regardless of who is assigned or what status the issue is
+   * currently in" — but until now only the assignee's own paths ran them, so a
+   * caller asking "is this issue locked?" about someone else's issue had nothing
+   * to ask and inferred the answer from the status column instead.
+   *
+   * Clearing first is what makes the answer trustworthy: afterwards a non-null
+   * lock column is one a live run still stands behind, so the caller reads live
+   * state rather than a run that ended without releasing anything.
+   */
+  async function resolveActiveRunLock(issueId: string): Promise<
+    { checkoutRunId: string | null; executionRunId: string | null } | null
+  > {
+    await clearExecutionRunIfTerminal(issueId);
+    await clearCheckoutRunIfTerminal(issueId);
+
+    const current = await db
+      .select({
+        checkoutRunId: issues.checkoutRunId,
+        executionRunId: issues.executionRunId,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+
+    if (!current) return null;
+    if (current.checkoutRunId == null && current.executionRunId == null) return null;
+    return current;
+  }
+
   async function addStopRelayCommentIfNeeded(
     child: typeof issues.$inferSelect,
     dbOrTx: any = db,
@@ -5641,6 +5675,7 @@ export function issueService(db: Db) {
   return {
     clearExecutionRunIfTerminal,
     clearCheckoutRunIfTerminal,
+    resolveActiveRunLock,
     addStopRelayCommentIfNeeded,
 
     list: async (companyId: string, filters?: IssueFilters) => {
