@@ -5,7 +5,7 @@ import {
   issues as issueRows,
   type Db,
 } from "@paperclipai/db";
-import { and, eq, inArray, or, sql } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, or, sql } from "drizzle-orm";
 import { conflict } from "../errors.js";
 import {
   EXECUTION_RECONCILIATION_CAUSES,
@@ -24,6 +24,7 @@ import {
 import { assertBoard, getAccessibleResource, getActorInfo } from "./authz.js";
 
 const TREE_RUN_CANCELLATION_RESPONSE_WAIT_MS = 1_000;
+const RESUME_EXECUTABLE_STATUSES = ["todo", "in_progress", "in_review"];
 
 function errorToMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error);
@@ -400,12 +401,8 @@ export function issueTreeControlRoutes(db: Db) {
               and(
                 eq(issueRecoveryActions.companyId, root.companyId),
                 inArray(issueRecoveryActions.sourceIssueId, issueIds),
-                inArray(issueRows.status, [
-                  "todo",
-                  "in_progress",
-                  "in_review",
-                  "blocked",
-                ]),
+                inArray(issueRows.status, RESUME_EXECUTABLE_STATUSES),
+                isNotNull(issueRows.assigneeAgentId),
                 inArray(issueRecoveryActions.cause, [
                   ...EXECUTION_RECONCILIATION_CAUSES,
                 ]),
@@ -466,7 +463,7 @@ export function issueTreeControlRoutes(db: Db) {
               !issue ||
               issue.companyId !== root.companyId ||
               !issue.assigneeAgentId ||
-              !["todo", "in_progress", "in_review"].includes(issue.status)
+              !RESUME_EXECUTABLE_STATUSES.includes(issue.status)
             )
               continue;
             await heartbeat.wakeup(issue.assigneeAgentId, {

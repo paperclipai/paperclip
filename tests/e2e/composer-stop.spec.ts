@@ -339,22 +339,11 @@ for (const adapter of ["process", "paperclip_runner"] as const) {
         .getByRole("dialog")
         .getByRole("button", { name: "Resume subtree", exact: true })
         .click();
-      await expect(page.getByRole("dialog").getByRole("alert")).toContainText(
-        "until its stopped execution is reconciled",
-      );
-      expect(
-        (
-          await json(
-            await request.get(`/api/issues/${parent.id}/tree-control/state`),
-          )
-        ).activePauseHold,
-      ).toBeTruthy();
-      await page.getByRole("dialog").getByRole("checkbox").uncheck();
-      await page
-        .getByRole("dialog")
-        .getByRole("button", { name: "Resume subtree", exact: true })
-        .click();
       await expect(page.getByRole("dialog")).toHaveCount(0);
+      // The recovery policy parks these stopped tasks. Releasing the hold must
+      // leave them parked, even with Wake agents selected; no implicit replay.
+      expect(await json(await request.get(`/api/issues/${parent.id}/live-runs`))).toEqual([]);
+      expect(await json(await request.get(`/api/issues/${child.id}/live-runs`))).toEqual([]);
       await reconcileDemoExecution(request, parent.id, parentRun.id);
       await reconcileDemoExecution(request, child.id, childRun.id);
       await running(request, parent.id, adapter);

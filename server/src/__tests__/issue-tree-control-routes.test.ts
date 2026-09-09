@@ -1,4 +1,5 @@
 import express from "express";
+import { PgDialect } from "drizzle-orm/pg-core";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -17,6 +18,7 @@ const mockTreeControlService = vi.hoisted(() => ({
 }));
 
 const mockReplayBlocks = vi.hoisted(() => vi.fn());
+const mockReplayWhere = vi.hoisted(() => vi.fn());
 
 const mockLogActivity = vi.hoisted(() => vi.fn());
 const mockHeartbeatService = vi.hoisted(() => ({
@@ -45,7 +47,7 @@ async function createApp(actor: Record<string, unknown>) {
   const query = {
     from: () => query,
     innerJoin: () => query,
-    where: () => query,
+    where: (predicate: unknown) => { mockReplayWhere(predicate); return query; },
     limit: mockReplayBlocks,
   };
   app.use("/api", issueTreeControlRoutes({ select: () => query } as any));
@@ -97,13 +99,13 @@ describe("issue tree control routes", () => {
           assigneeAgentId: "agent-child",
         },
         {
-          id: "backlog",
+          id: "backlog-task",
           companyId: "company-2",
           status: "backlog",
           assigneeAgentId: "parked-agent",
         },
         {
-          id: "blocked",
+          id: "blocked-task",
           companyId: "company-2",
           status: "blocked",
           assigneeAgentId: "blocked-agent",
@@ -156,6 +158,12 @@ describe("issue tree control routes", () => {
       expect(mockHeartbeatService.wakeup.mock.calls.map(([id]) => id)).toEqual(
         wakeAgents ? ["agent-parent", "agent-child"] : [],
       );
+      if (wakeAgents) {
+        const { params } = new PgDialect().sqlToQuery(mockReplayWhere.mock.calls[0]![0]);
+        expect(params).toEqual(expect.arrayContaining(["todo", "in_progress", "in_review"]));
+        expect(params).not.toContain("blocked");
+        expect(params).not.toContain("backlog");
+      }
       if (wakeAgents)
         expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
           "agent-child",
