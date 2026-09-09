@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
 import { eq } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agentWakeupRequests,
   agents,
@@ -14,14 +14,24 @@ import {
   heartbeatRuns,
   issueComments,
   issues,
+  runIdentityContexts,
 } from "@paperclipai/db";
 import { errorHandler } from "../middleware/index.js";
 import { issueRoutes } from "../routes/issues.js";
 import { heartbeatService } from "../services/heartbeat.js";
+import { reconcileSteeredIdentity } from "../services/run-identity.js";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+
+const steerNativeSessionMock = vi.hoisted(() => vi.fn());
+vi.mock("../services/native-runtime/native-session-executor.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../services/native-runtime/native-session-executor.js")>();
+  steerNativeSessionMock.mockImplementation(actual.steerNativeSession);
+  return { ...actual, steerNativeSession: steerNativeSessionMock };
+});
+const { NativeSessionSteeringError } = await import("../services/native-runtime/native-session-executor.js");
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe.sequential : describe.skip;
@@ -679,4 +689,166 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
     }
     await heartbeat.drainActiveRunExecutions();
   }, 30_000);
+
+  async function seedDispatchIdentity(seeded: Awaited<ReturnType<typeof seedQueue>>) {
+    const [identity] = await db.insert(runIdentityContexts).values({
+      companyId: seeded.companyId,
+      runId: seeded.runId,
+      revision: 1,
+      cause: "dispatch",
+      correlationId: "dispatch",
+      status: "accepted",
+      acceptedAt: new Date("2026-08-22T15:00:00.000Z"),
+    }).returning();
+    await db.update(heartbeatRuns)
+      .set({ activeIdentityContextId: identity!.id })
+      .where(eq(heartbeatRuns.id, seeded.runId));
+    return identity!;
+  }
+
+  it("writes the identity acceptance, the wake payload, the run acknowledgement, and the activity row on a successful steering transaction", async () => {
+    const seeded = await seedQueue();
+    await seedDispatchIdentity(seeded);
+    steerNativeSessionMock.mockResolvedValueOnce({ turnId: "turn-1" });
+
+    const initial = await request(app(seeded.companyId))
+      .get(`/api/issues/${seeded.issueId}/queued-comments`);
+    const steered = await request(app(seeded.companyId))
+      .post(`/api/issues/${seeded.issueId}/queued-comments/${seeded.commentIds[0]}/steer`)
+      .send({ queueId: seeded.wakeId, targetRunId: seeded.runId, revision: initial.body.revision });
+
+    expect(steered.status, JSON.stringify(steered.body)).toBe(200);
+
+    const steeringIdentity = await db
+      .select()
+      .from(runIdentityContexts)
+      .where(eq(runIdentityContexts.messageId, seeded.commentIds[0]))
+      .then((rows) => rows[0]);
+    expect(steeringIdentity).toMatchObject({
+      status: "accepted",
+      responsibleUserId: "queue-owner",
+      cause: "steering",
+    });
+
+    const wake = await db
+      .select({ payload: agentWakeupRequests.payload })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, seeded.wakeId))
+      .then((rows) => rows[0]);
+    expect((wake?.payload as any)?._paperclipWakeContext?.wakeCommentIds).toEqual([seeded.commentIds[1]]);
+
+    const run = await db
+      .select({ resultJson: heartbeatRuns.resultJson, activeIdentityContextId: heartbeatRuns.activeIdentityContextId })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, seeded.runId))
+      .then((rows) => rows[0]);
+    expect((run?.resultJson as any)?.queuedSteeringAcknowledgements?.[seeded.commentIds[0]]).toMatchObject({
+      status: "acknowledged",
+      queueId: seeded.wakeId,
+      turnId: "turn-1",
+    });
+    expect(run?.activeIdentityContextId).toBe(steeringIdentity!.id);
+
+    const activity = await db
+      .select({ details: activityLog.details })
+      .from(activityLog)
+      .where(eq(activityLog.action, "issue.queued_comment_steered"))
+      .then((rows) => rows[0]);
+    expect(activity?.details).toMatchObject({
+      commentId: seeded.commentIds[0],
+      targetRunId: seeded.runId,
+      turnId: "turn-1",
+      duplicate: false,
+    });
+  });
+
+  it("keeps the identity pending after a steering timeout, then reconciles it on a later acknowledgement", async () => {
+    const seeded = await seedQueue();
+    await seedDispatchIdentity(seeded);
+    steerNativeSessionMock.mockRejectedValueOnce(
+      new NativeSessionSteeringError("steering_timeout", "The provider did not acknowledge steering in time."),
+    );
+
+    const initial = await request(app(seeded.companyId))
+      .get(`/api/issues/${seeded.issueId}/queued-comments`);
+    const steered = await request(app(seeded.companyId))
+      .post(`/api/issues/${seeded.issueId}/queued-comments/${seeded.commentIds[0]}/steer`)
+      .send({ queueId: seeded.wakeId, targetRunId: seeded.runId, revision: initial.body.revision });
+
+    expect(steered.status).toBe(409);
+    expect(steered.body.details).toMatchObject({ code: "steering_timeout", retryable: true });
+
+    const pending = await db
+      .select()
+      .from(runIdentityContexts)
+      .where(eq(runIdentityContexts.messageId, seeded.commentIds[0]))
+      .then((rows) => rows[0]);
+    expect(pending?.status).toBe("pending");
+
+    await reconcileSteeredIdentity(db, pending!);
+
+    const reconciled = await db
+      .select({ status: runIdentityContexts.status })
+      .from(runIdentityContexts)
+      .where(eq(runIdentityContexts.id, pending!.id))
+      .then((rows) => rows[0]);
+    expect(reconciled?.status).toBe("accepted");
+    const run = await db
+      .select({ activeIdentityContextId: heartbeatRuns.activeIdentityContextId })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, seeded.runId))
+      .then((rows) => rows[0]);
+    expect(run?.activeIdentityContextId).toBe(pending!.id);
+  });
+
+  it("sets the identity to rejected on a definite steering rejection", async () => {
+    const seeded = await seedQueue();
+    await seedDispatchIdentity(seeded);
+    steerNativeSessionMock.mockRejectedValueOnce(
+      new NativeSessionSteeringError("steering_rejected", "The provider rejected the steering message."),
+    );
+
+    const initial = await request(app(seeded.companyId))
+      .get(`/api/issues/${seeded.issueId}/queued-comments`);
+    const steered = await request(app(seeded.companyId))
+      .post(`/api/issues/${seeded.issueId}/queued-comments/${seeded.commentIds[0]}/steer`)
+      .send({ queueId: seeded.wakeId, targetRunId: seeded.runId, revision: initial.body.revision });
+
+    expect(steered.status).toBe(409);
+    expect(steered.body.details).toMatchObject({ code: "steering_rejected", retryable: true });
+
+    const rejected = await db
+      .select({ status: runIdentityContexts.status })
+      .from(runIdentityContexts)
+      .where(eq(runIdentityContexts.messageId, seeded.commentIds[0]))
+      .then((rows) => rows[0]);
+    expect(rejected?.status).toBe("rejected");
+  });
+
+  it("throws queued_comment_order_mismatch and changes no row for an invalid reorder set", async () => {
+    const seeded = await seedQueue();
+    const initial = await request(app(seeded.companyId))
+      .get(`/api/issues/${seeded.issueId}/queued-comments`);
+
+    const invalid = await request(app(seeded.companyId))
+      .put(`/api/issues/${seeded.issueId}/queued-comments/order`)
+      .send({
+        queueId: seeded.wakeId,
+        revision: initial.body.revision,
+        orderedCommentIds: [seeded.commentIds[0], randomUUID()],
+      });
+
+    expect(invalid.status, JSON.stringify(invalid.body)).toBe(409);
+    expect(invalid.body.details?.code).toBe("queued_comment_order_mismatch");
+
+    const wake = await db
+      .select({ payload: agentWakeupRequests.payload })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, seeded.wakeId))
+      .then((rows) => rows[0]);
+    expect((wake?.payload as any)?._paperclipWakeContext?.wakeCommentIds).toEqual(seeded.commentIds);
+    const after = await request(app(seeded.companyId))
+      .get(`/api/issues/${seeded.issueId}/queued-comments`);
+    expect(after.body.entries.map((entry: any) => entry.comment.id)).toEqual(seeded.commentIds);
+  });
 });
