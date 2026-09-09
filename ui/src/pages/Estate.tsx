@@ -1,6 +1,14 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Landmark, Home, TrendingUp, Car, Gem, Cpu, Package, AlertCircle, CheckCircle2, Circle, Users, Shield, Receipt, PiggyBank } from "lucide-react";
+import { Landmark, Home, TrendingUp, Car, Gem, Cpu, Package, AlertCircle, CheckCircle2, Circle, Users, Shield, Receipt, PiggyBank, Plus, Trash2 } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { estateApi, type AssetType, type PlanStatusCheckKey, type PlanStatusResult, type NetWorthProjectionResult, type EstateBeneficiary, type EstateTrust, type EstateTaxSummary, type EstateReview, type RmdSummary, type PropertyTaxBill, type ValuationReminder, type DocumentAlert, type EstateCollaborator, type CollaboratorAccessLevel, type NetWorthSnapshot } from "../api/estate";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
@@ -1148,6 +1156,8 @@ export function Estate() {
     staleTime: 5 * 60 * 1000,
   });
 
+  const queryClient = useQueryClient();
+
   if (!selectedCompanyId) {
     return <EmptyState icon={Landmark} message="Select a company to view estate." />;
   }
@@ -1158,6 +1168,58 @@ export function Estate() {
 
   const nw = netWorthQuery.data;
   const assets = assetsQuery.data?.assets ?? [];
+
+  const [showAddAsset, setShowAddAsset] = useState(false);
+  const [assetName, setAssetName] = useState("");
+  const [assetType, setAssetType] = useState<AssetType>("real_estate");
+  const [assetValueDollars, setAssetValueDollars] = useState("");
+  const [assetNotes, setAssetNotes] = useState("");
+  const [assetFormError, setAssetFormError] = useState<string | null>(null);
+
+  const createAssetMutation = useMutation({
+    mutationFn: (data: Parameters<typeof estateApi.createAsset>[0]) =>
+      estateApi.createAsset(data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["estate", "assets", selectedCompanyId] });
+      queryClient.invalidateQueries({ queryKey: ["estate", "net-worth", selectedCompanyId] });
+      setShowAddAsset(false);
+      setAssetName("");
+      setAssetValueDollars("");
+      setAssetNotes("");
+      setAssetFormError(null);
+    },
+    onError: () => setAssetFormError("Failed to create asset. Please try again."),
+  });
+
+  const deleteAssetMutation = useMutation({
+    mutationFn: (id: string) => estateApi.deleteAsset(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["estate", "assets", selectedCompanyId] });
+      queryClient.invalidateQueries({ queryKey: ["estate", "net-worth", selectedCompanyId] });
+    },
+  });
+
+  function handleCreateAsset() {
+    setAssetFormError(null);
+    if (!assetName.trim()) {
+      setAssetFormError("Asset name is required.");
+      return;
+    }
+    const valueCents = assetValueDollars.trim()
+      ? Math.round(parseFloat(assetValueDollars) * 100)
+      : undefined;
+    if (assetValueDollars.trim() && (isNaN(valueCents!) || valueCents! < 0)) {
+      setAssetFormError("Current value must be a non-negative number.");
+      return;
+    }
+    createAssetMutation.mutate({
+      companyId: selectedCompanyId!,
+      name: assetName.trim(),
+      assetType,
+      currentValueCents: valueCents,
+      notes: assetNotes.trim() || undefined,
+    });
+  }
 
   return (
     <div className="space-y-6">
@@ -1232,7 +1294,15 @@ export function Estate() {
           <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
             All assets
           </p>
-          <p className="text-xs text-muted-foreground">{assets.length} total</p>
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-muted-foreground">{assets.length} total</span>
+            <button
+              onClick={() => setShowAddAsset(true)}
+              className="flex items-center gap-1 text-xs font-medium text-primary hover:underline"
+            >
+              <Plus className="h-3 w-3" /> Add
+            </button>
+          </div>
         </div>
         {assets.length === 0 ? (
           <div className="px-4 py-8 text-center text-sm text-muted-foreground">
@@ -1240,12 +1310,23 @@ export function Estate() {
           </div>
         ) : (
           assets.slice(0, 20).map((asset) => (
-            <AssetRow
-              key={asset.id}
-              name={asset.name}
-              assetType={asset.assetType}
-              currentValueCents={asset.currentValueCents}
-            />
+            <div key={asset.id} className="flex items-center group border-b border-border last:border-b-0">
+              <div className="flex-1">
+                <AssetRow
+                  name={asset.name}
+                  assetType={asset.assetType}
+                  currentValueCents={asset.currentValueCents}
+                />
+              </div>
+              <button
+                onClick={() => deleteAssetMutation.mutate(asset.id)}
+                disabled={deleteAssetMutation.isPending}
+                className="mr-3 opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-destructive transition-opacity disabled:opacity-50"
+                title="Delete asset"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+              </button>
+            </div>
           ))
         )}
         {assets.length > 20 && (
@@ -1254,6 +1335,70 @@ export function Estate() {
           </div>
         )}
       </div>
+
+      {/* Add Asset dialog */}
+      <Dialog open={showAddAsset} onOpenChange={(open) => { if (!open) { setShowAddAsset(false); setAssetFormError(null); } }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Add Asset</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3 py-2">
+            <div className="space-y-1">
+              <label className="text-xs font-medium">Name</label>
+              <input
+                type="text"
+                value={assetName}
+                onChange={(e) => setAssetName(e.target.value)}
+                placeholder="e.g. Primary Residence"
+                className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
+              />
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs font-medium">Asset Type</label>
+              <select
+                value={assetType}
+                onChange={(e) => setAssetType(e.target.value as AssetType)}
+                className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
+              >
+                {(Object.entries(ASSET_TYPE_LABELS) as [AssetType, string][]).map(([val, label]) => (
+                  <option key={val} value={val}>{label}</option>
+                ))}
+              </select>
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs font-medium">Current Value (USD, optional)</label>
+              <input
+                type="number"
+                min={0}
+                step={0.01}
+                value={assetValueDollars}
+                onChange={(e) => setAssetValueDollars(e.target.value)}
+                placeholder="e.g. 500000"
+                className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
+              />
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs font-medium">Notes (optional)</label>
+              <input
+                type="text"
+                value={assetNotes}
+                onChange={(e) => setAssetNotes(e.target.value)}
+                placeholder="e.g. 3br/2ba, purchased 2018"
+                className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
+              />
+            </div>
+            {assetFormError && <p className="text-xs text-destructive">{assetFormError}</p>}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" size="sm" onClick={() => { setShowAddAsset(false); setAssetFormError(null); }}>
+              Cancel
+            </Button>
+            <Button size="sm" onClick={handleCreateAsset} disabled={createAssetMutation.isPending}>
+              {createAssetMutation.isPending ? "Adding…" : "Add Asset"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Financial accounts */}
       {nw && nw.accounts.length > 0 && (
