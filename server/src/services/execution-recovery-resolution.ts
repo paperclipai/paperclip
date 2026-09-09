@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { persistActivity } from "./activity-log.js";
 import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
 import { logger } from "../middleware/logger.js";
-import { and, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import {
   environmentLeases,
   heartbeatRuns,
@@ -272,9 +272,26 @@ export async function settleUnrecoverableExecutions(
   now = new Date(),
   options: { failpoint?: (phase: "persisted") => void } = {},
 ) {
+  // Filter eligibility before applying the batch limit. A queue of sessions
+  // still awaiting safe replacement must not starve settled incidents behind it.
   const candidates = await db
-    .select()
+    .select({ action: issueRecoveryActions })
     .from(issueRecoveryActions)
+    .innerJoin(
+      heartbeatRuns,
+      and(
+        eq(heartbeatRuns.companyId, issueRecoveryActions.companyId),
+        sql`${heartbeatRuns.id}::text = ${issueRecoveryActions.evidence}->>'runId'`,
+        sql`coalesce(${heartbeatRuns.nativeIssueId}::text, ${heartbeatRuns.contextSnapshot}->>'issueId') = ${issueRecoveryActions.sourceIssueId}::text`,
+      ),
+    )
+    .leftJoin(
+      nativeRunFinalizations,
+      and(
+        eq(nativeRunFinalizations.companyId, heartbeatRuns.companyId),
+        eq(nativeRunFinalizations.runId, heartbeatRuns.id),
+      ),
+    )
     .where(
       and(
         inArray(issueRecoveryActions.status, ["active", "escalated"]),
@@ -282,10 +299,25 @@ export async function settleUnrecoverableExecutions(
         inArray(issueRecoveryActions.cause, [
           ...EXECUTION_RECONCILIATION_CAUSES,
         ]),
+        inArray(heartbeatRuns.status, [
+          "failed",
+          "timed_out",
+          "interrupted",
+          "cancelled",
+        ]),
+        isNull(nativeRunFinalizations.leaseOwner),
+        isNull(nativeRunFinalizations.resultId),
+        or(
+          isNull(nativeRunFinalizations.runId),
+          eq(nativeRunFinalizations.phase, "terminal_failure"),
+        ),
+        sql`coalesce(${nativeRunFinalizations.failureDetail}->>'successorRunId', '') = ''`,
+        sql`(${heartbeatRuns.runtimeMode} <> 'native' or coalesce(${nativeRunFinalizations.failureCode}, '') <> 'native_provider_terminal_failed'
+        or coalesce(${nativeRunFinalizations.failureDetail}->>'replacementDenied', '') <> '')`,
       ),
     )
     .limit(25);
-  for (const candidate of candidates) {
+  for (const { action: candidate } of candidates) {
     const runId = candidate.evidence.runId;
     if (typeof runId !== "string") continue;
     try {

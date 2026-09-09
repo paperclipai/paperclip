@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import {
   heartbeatRuns,
   issueRecoveryActions,
@@ -10,7 +10,28 @@ import type { ExecutionProjection } from "@paperclipai/shared";
 import { EXECUTION_CONTROL_DEADLINE_MS } from "./execution-control-deadline.js";
 import { executionFailureRetryCount } from "./execution-recovery-attempt.js";
 const text = (v: unknown) => (typeof v === "string" ? v : null);
-type Run = typeof heartbeatRuns.$inferSelect;
+const executionRunColumns = {
+  id: heartbeatRuns.id,
+  errorCode: heartbeatRuns.errorCode,
+  executionControlDeadlineAt: heartbeatRuns.executionControlDeadlineAt,
+  finishedAt: heartbeatRuns.finishedAt,
+  lastOutputAt: heartbeatRuns.lastOutputAt,
+  lastUsefulActionAt: heartbeatRuns.lastUsefulActionAt,
+  nativeIssueId: heartbeatRuns.nativeIssueId,
+  nextAction: heartbeatRuns.nextAction,
+  processPid: heartbeatRuns.processPid,
+  retryOfRunId: heartbeatRuns.retryOfRunId,
+  runtimeMode: heartbeatRuns.runtimeMode,
+  scheduledRetryAt: heartbeatRuns.scheduledRetryAt,
+  scheduledRetryAttempt: heartbeatRuns.scheduledRetryAttempt,
+  scheduledRetryReason: heartbeatRuns.scheduledRetryReason,
+  startedAt: heartbeatRuns.startedAt,
+  status: heartbeatRuns.status,
+  contextSnapshot: sql<Record<string, unknown>>`jsonb_build_object(
+    'issueId', ${heartbeatRuns.contextSnapshot}->'issueId',
+    'failureRetriesBeforeWorkspaceWait', ${heartbeatRuns.contextSnapshot}->'failureRetriesBeforeWorkspaceWait')`,
+};
+type Run = Pick<typeof heartbeatRuns.$inferSelect, keyof typeof executionRunColumns>;
 type Coordinator = typeof nativeRunFinalizations.$inferSelect;
 type Recovery = Pick<
   typeof issueRecoveryActions.$inferSelect,
@@ -30,7 +51,7 @@ export async function executionProjectionsForRuns(
   const projections = new Map<string, ExecutionProjection>();
   if (!runIds.length) return projections;
   const runs = await db
-    .select()
+    .select(executionRunColumns)
     .from(heartbeatRuns)
     .where(
       and(

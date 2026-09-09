@@ -1,3 +1,4 @@
+import { activityService } from "../activity.js";
 import { buildPaperclipWakePayload, heartbeatService } from "../heartbeat.js";
 import { legacyExecutionNeedsReconciliation, terminalizeLegacyExecution } from "../legacy-execution-recovery.js";
 import { deliverExecutionStatuses } from "../execution-status-delivery.js";
@@ -10,7 +11,7 @@ import {
 } from "../execution-recovery-resolution.js";
 import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   agents,
@@ -108,7 +109,28 @@ const support = await getEmbeddedPostgresTestSupport();
       } });
       const logs = await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, source.runId));
       expect(logs.filter(log => log.payload?.automaticRecovery === "preserve_without_replay_v1")).toHaveLength(1);
+      const history = await activityService(db).runsForIssue(source.companyId, source.issueId);
+      expect(history.find(run => run.runId === source.runId)).toMatchObject({ execution: { phase: "recovery_needed", label: "Stopped" } });
+
       expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, source.companyId))).toHaveLength(1);
+    });
+    it("does not let a full batch awaiting replacement starve an eligible disposition", async () => {
+      const sources: Awaited<ReturnType<typeof seed>>[] = [];
+      for (let index = 0; index < 26; index += 1) {
+        const source = await seed();
+        sources.push(source);
+        await db.insert(issueRecoveryActions).values({ companyId: source.companyId, sourceIssueId: source.issueId,
+          kind: "active_run_watchdog", ownerType: "board", returnOwnerAgentId: source.agentId,
+          cause: "native_provider_terminal_failed", fingerprint: source.runId, evidence: { runId: source.runId }, nextAction: "Checking recovery" });
+        if (index === 25) {
+          await db.update(nativeRunFinalizations).set({ failureDetail: { replacementDenied: "uncertain_external_action" } }).where(eq(nativeRunFinalizations.runId, source.runId));
+          await settleUnrecoverableExecutions(db);
+          const [task] = await db.select().from(issues).where(eq(issues.id, source.issueId));
+          expect(task.status).toBe("blocked");
+        }
+      }
+      await db.update(issueRecoveryActions).set({ status: "resolved" }).where(inArray(issueRecoveryActions.sourceIssueId, sources.map(source => source.issueId)));
+      await db.update(nativeRunFinalizations).set({ failureDetail: { replacementDenied: "fixture_closed" } }).where(inArray(nativeRunFinalizations.runId, sources.map(source => source.runId)));
     });
     it("rolls back a crashed automatic disposition and completes it on the next sweep", async () => {
       const source = await seed(3);

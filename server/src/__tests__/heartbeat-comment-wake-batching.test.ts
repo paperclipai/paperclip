@@ -1035,6 +1035,10 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         return Boolean(deferred);
       });
 
+      // Running records admission. Wait for provider acceptance before
+      // simulating completion by that provider, or startup correctly rejects
+      // the already-closed task before this scenario reaches its follow-up.
+      await waitFor(() => gateway.getAgentPayloads().length >= 1);
       await db
         .update(issues)
         .set({
@@ -1244,6 +1248,10 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         return Boolean(deferred);
       });
 
+      // Running records admission. Wait for provider acceptance before
+      // simulating completion by that provider, or startup correctly rejects
+      // the already-closed task before this scenario reaches its follow-up.
+      await waitFor(() => gateway.getAgentPayloads().length >= 1);
       await db
         .update(issues)
         .set({
@@ -1427,6 +1435,10 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         return Boolean(deferred);
       });
 
+      // Running records admission. Wait for provider acceptance before
+      // simulating completion by that provider, or startup correctly rejects
+      // the already-closed task before this scenario reaches its follow-up.
+      await waitFor(() => gateway.getAgentPayloads().length >= 1);
       await db
         .update(issues)
         .set({
@@ -1804,6 +1816,10 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         return Boolean(deferred);
       });
 
+      // Running records admission. Wait for provider acceptance before
+      // simulating completion by that provider, or startup correctly rejects
+      // the already-closed task before this scenario reaches its follow-up.
+      await waitFor(() => gateway.getAgentPayloads().length >= 1);
       await db
         .update(issues)
         .set({

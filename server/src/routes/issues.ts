@@ -7598,7 +7598,7 @@ export function issueRoutes(
         .then((rows) => rows[0] ?? null);
       if (!lockedIssue) throw notFound("Issue not found");
 
-      const activeRecoveryAction = await recoveryActionsSvc.getActiveForIssue(
+      let activeRecoveryAction = await recoveryActionsSvc.getActiveForIssue(
         lockedIssue.companyId,
         lockedIssue.id,
         tx,
@@ -7611,7 +7611,20 @@ export function issueRoutes(
         ));
         if (settled) {
           await requireRecoveryActionAuthority(req, lockedIssue, issueRecoveryActionReadModel(settled), { source: "recovery_action_resolution" });
-          return { issue: lockedIssue, recoveryAction: settled, replayed: true };
+          const automatic = settled.evidence.automaticRecovery as { replay?: string } | undefined;
+          if (automatic?.replay === "blocked" && executionReconciliation) {
+            // An automatic no-replay disposition is final until new evidence
+            // arrives. Keep the supported evidence API usable without a dialog.
+            assertBoard(req);
+            if (activeRecoveryAction || sourceIssueStatus !== "todo" || outcome !== "restored") {
+              throw conflict("Verified outcomes must restore this source recovery without replacing another active recovery action.");
+            }
+            const [reopened] = await tx.update(issueRecoveryActions).set({ status: "active", outcome: null, resolvedAt: null })
+              .where(eq(issueRecoveryActions.id, settled.id)).returning();
+            activeRecoveryAction = issueRecoveryActionReadModel(reopened!);
+          } else {
+            return { issue: lockedIssue, recoveryAction: settled, replayed: true };
+          }
         }
       }
       if (!activeRecoveryAction || (actionId && activeRecoveryAction.id !== actionId)) {
