@@ -887,6 +887,7 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "GET /api/companies/{companyId}/remote-agent-profiles",
   "POST /api/companies/{companyId}/remote-agent-profiles",
   "POST /api/execution-workspaces/{id}/reconcile-branch",
+  "POST /api/projects/{id}/coordinator",
   "POST /api/execution-workspaces/{id}/login-handoff",
   "GET /api/board-api-keys",
   "POST /api/board-api-keys",
@@ -2863,6 +2864,43 @@ registry.registerPath({
   summary: "Get a project",
   request: { params: z.object({ id: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound },
+});
+const projectCoordinatorProvisionResponseSchema = z.object({
+  project: z.object({
+    id: z.string().guid(),
+    companyId: z.string().guid(),
+    name: z.string(),
+    leadAgentId: z.string().guid(),
+  }),
+  coordinator: z.object({
+    id: z.string().guid(),
+    companyId: z.string().guid(),
+    name: z.string(),
+    role: z.string(),
+    reportsTo: z.string().guid().nullable(),
+    adapterType: z.literal("process"),
+  }),
+  templateAgentId: z.string().guid(),
+  created: z.boolean(),
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/projects/{id}/coordinator",
+  tags: ["projects"],
+  summary: "Provision a dedicated project coordinator",
+  description:
+    "Board-only, idempotent provisioning from the operator-configured process-agent template. "
+    + "Returns the existing dedicated coordinator on replay and refuses to replace a different project lead.",
+  request: { params: z.object({ id: z.string() }) },
+  responses: {
+    200: r.ok(projectCoordinatorProvisionResponseSchema),
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    409: r.conflict,
+    422: r.unprocessable,
+  },
 });
 
 registry.registerPath({

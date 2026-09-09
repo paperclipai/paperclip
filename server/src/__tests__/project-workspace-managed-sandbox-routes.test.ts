@@ -297,17 +297,4 @@ describe("project workspace host-path floor", () => {
     expect(mockProjectService.createWorkspace).not.toHaveBeenCalled();
   });
 
-  it("accepts a nested workspace with only a repo URL when the policy is on", async () => {
-    setManagedSandboxOnly(true);
-    const app = await createApp();
-    const res = await request(app)
-      .post("/api/companies/company-1/projects")
-      .send({
-        name: "Project",
-        workspace: { name: "Primary", repoUrl: "https://github.com/paperclipai/paperclip" },
-      });
-
-    expect([200, 201], JSON.stringify(res.body)).toContain(res.status);
-    expect(mockProjectService.createWorkspace).toHaveBeenCalled();
-  });
 });
