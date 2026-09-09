@@ -3402,7 +3402,58 @@ export function recoveryService(
         continue;
       }
 
-      const restored = await issuesSvc.update(issue.id, { status: restoreTarget.status });
+      // Everything above ran on the row as the candidate page read it, several awaited round-trips
+      // ago. Writing the restore now on the strength of that stale read is the very failure this
+      // ticket exists to stop, one step later: a human or another agent who gave the issue a real
+      // `unblockDescriptor` in that window — a genuine routing decision, status still `blocked`, so
+      // `assertTransition` would wave the restore straight through — gets silently overwritten.
+      //
+      // So claim the row out of the unroutable state atomically instead of re-reading it: a single
+      // conditional UPDATE that only fires while the issue is *still* `blocked` with no descriptor.
+      // Zero rows affected means someone else decided first, and the repair skips rather than
+      // throws — it has no standing to argue with a newer decision.
+      //
+      // The descriptor the claim writes is the same shape the monitor-arming failure below writes,
+      // which is what makes the claim safe to leave behind: if the process dies between the claim
+      // and the restore, the issue is blocked but *routable*, with an owner and an action attached.
+      // That is the AC3 state, strictly better than the dead `blocked` the claim was taken from.
+      const claimed = await db
+        .update(issues)
+        .set({
+          unblockDescriptor: recoveryUnblockDescriptor(
+            issue.assigneeAgentId,
+            "An infrastructure failure blocked this issue and the automatic retry is being armed. " +
+              "Resume the work or record why it cannot proceed.",
+          ),
+          updatedAt: now,
+        })
+        .where(and(
+          eq(issues.id, issue.id),
+          eq(issues.status, "blocked"),
+          isNull(issues.unblockDescriptor),
+        ))
+        .returning({ id: issues.id });
+      if (claimed.length === 0) {
+        result.skipped += 1;
+        continue;
+      }
+
+      // `issuesSvc.update` clears the claim descriptor on any transition out of `blocked`, so a
+      // restored issue carries no trace of it. It also re-reads and re-validates the row inside its
+      // own transaction, so a decision landing even after the claim makes it throw (`assertTransition`,
+      // the `in_progress` unresolved-blocker check) rather than clobber. This pass runs at startup,
+      // so that has to end as a skip, not as a sweep that dies on its first contended row.
+      let restored: Awaited<ReturnType<typeof issuesSvc.update>> = null;
+      try {
+        restored = await issuesSvc.update(issue.id, { status: restoreTarget.status });
+      } catch (error) {
+        logger.warn(
+          { err: error, issueId: issue.id, identifier: issue.identifier, status: restoreTarget.status },
+          "recovery: unroutable-blocked repair refused by a concurrent issue decision; claim left routable",
+        );
+        result.skipped += 1;
+        continue;
+      }
       if (!restored) {
         result.skipped += 1;
         continue;

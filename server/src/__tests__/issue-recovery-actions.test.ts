@@ -1092,6 +1092,89 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       expect(untouched?.monitorNextCheckAt ?? null).toBeNull();
     });
 
+    // Otto's second must-fix: the gate above is decided on the candidate page, several awaited
+    // round-trips before the restore is written. A decision landing inside that window — a person
+    // giving the issue a real `unblockDescriptor` while leaving `status` at `blocked`, so
+    // `assertTransition` still permits the restore — used to be overwritten in silence, which is the
+    // exact failure this ticket exists to stop, moved one step later in the same function.
+    //
+    // The db handed to the service is proxied so the concurrent write lands precisely there: right
+    // after the candidate query resolves, before any of the per-issue checks run.
+    it("skips the repair when a decision lands between the candidate read and the restore", async () => {
+      const { companyId, coderId, sourceIssueId } = await seedCompany();
+      const runId = randomUUID();
+      await db.insert(heartbeatRuns).values({
+        id: runId,
+        companyId,
+        agentId: coderId,
+        invocationSource: "manual",
+        status: "failed",
+        error: "Internal error: You've hit your session limit · resets 8am (Asia/Bangkok)",
+        errorCode: "acpx_turn_failed",
+        startedAt: new Date("2026-07-15T20:00:00.000Z"),
+        finishedAt: new Date("2026-07-15T20:01:00.000Z"),
+        contextSnapshot: { issueId: sourceIssueId },
+      });
+      // Fully repairable at the moment the scan reads it — same fixture as the happy path.
+      await db.update(issues)
+        .set({ status: "blocked", unblockDescriptor: null, blockedTransitionAt: BLOCKED_JUST_AFTER_FAILURE })
+        .where(eq(issues.id, sourceIssueId));
+      await seedRecoveryProducedBlock({ companyId, sourceIssueId, runId, cause: "provider_quota" });
+
+      const humanDescriptor = {
+        owner: "board" as const,
+        action: "Waiting on the label taxonomy decision before this can resume.",
+      };
+      let selectCalls = 0;
+      // Drizzle hands back a new object at each link of the chain, so the wrapper has to follow the
+      // chain rather than assume it returns `this`. `limit` is the last link of the candidate query
+      // and the point where it is awaited, so that is where the competing decision lands.
+      const followChain = (link: any): any => new Proxy(link, {
+        get(inner, key, innerReceiver) {
+          const member = Reflect.get(inner, key, innerReceiver);
+          if (typeof member !== "function") return member;
+          if (key === "limit") {
+            return async (...limitArgs: unknown[]) => {
+              const rows = await member.apply(inner, limitArgs);
+              await db.update(issues)
+                .set({ unblockDescriptor: humanDescriptor })
+                .where(eq(issues.id, sourceIssueId));
+              return rows;
+            };
+          }
+          return (...memberArgs: unknown[]) => {
+            const next = member.apply(inner, memberArgs);
+            return next && typeof next === "object" ? followChain(next) : next;
+          };
+        },
+      });
+      const raced = new Proxy(db, {
+        get(target, prop, receiver) {
+          const value = Reflect.get(target, prop, receiver);
+          if (prop !== "select" || typeof value !== "function") {
+            return typeof value === "function" ? value.bind(target) : value;
+          }
+          return (...args: unknown[]) => {
+            selectCalls += 1;
+            const builder = (value as (...a: unknown[]) => any).apply(target, args);
+            // Only the first select of the pass is the candidate page.
+            return selectCalls === 1 ? followChain(builder) : builder;
+          };
+        },
+      });
+
+      const recovery = recoveryService(raced as typeof db, { enqueueWakeup: vi.fn(async () => null) });
+      const result = await recovery.repairUnroutableBlockedIssues({ now: new Date("2026-07-15T20:05:00.000Z") });
+
+      expect(result).toMatchObject({ repaired: 0, skipped: 1, issueIds: [] });
+      const [untouched] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+      expect(untouched?.status).toBe("blocked");
+      // The newer decision survives verbatim: the repair neither restored the status nor overwrote
+      // the descriptor with its own claim.
+      expect(untouched?.unblockDescriptor).toMatchObject(humanDescriptor);
+      expect(untouched?.monitorNextCheckAt ?? null).toBeNull();
+    });
+
     // The other half of the same gate: an action exists for this issue, but it records an *earlier*
     // escalation on a different run. Recovery did not write the block now under inspection, so the
     // stale row must not be read as proof that it did.
