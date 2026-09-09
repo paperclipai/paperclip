@@ -2649,7 +2649,11 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
       status: "failed",
       error: "Deferred wake could not be promoted: agent is not invokable",
     });
-    expect(validWake?.status).toBe("queued");
+    // The promotion writes "queued", then releaseIssueExecutionAndPromote
+    // immediately calls startNextQueuedRunForAgent for the idle promoted
+    // agent, which claims the run in the same call. Assert the settled
+    // state, not the intermediate one.
+    expect(validWake?.status).toBe("claimed");
     expect(validWake?.runId).not.toBeNull();
     expect(issueRow?.executionRunId).toBe(validWake?.runId);
   });
@@ -2892,7 +2896,9 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
       status: "cancelled",
       error: "Deferred wake suppressed by active subtree pause hold",
     });
-    expect(verifiedWake?.status).toBe("queued");
+    // Same settle-then-assert reasoning as the missing-agent test above:
+    // the idle promoted agent's run is claimed synchronously.
+    expect(verifiedWake?.status).toBe("claimed");
     const promotedRun = await db
       .select({ contextSnapshot: heartbeatRuns.contextSnapshot })
       .from(heartbeatRuns)
