@@ -519,6 +519,34 @@
       "when": 1757980800000,
       "tag": "0073_health_goals",
       "breakpoints": true
+    },
+    {
+      "idx": 74,
+      "version": "7",
+      "when": 1758067200000,
+      "tag": "0074_journal_entries",
+      "breakpoints": true
+    },
+    {
+      "idx": 75,
+      "version": "7",
+      "when": 1758153600000,
+      "tag": "0075_meditation_logs",
+      "breakpoints": true
+    },
+    {
+      "idx": 76,
+      "version": "7",
+      "when": 1758240000000,
+      "tag": "0076_habits",
+      "breakpoints": true
+    },
+    {
+      "idx": 77,
+      "version": "7",
+      "when": 1757520000000,
+      "tag": "0077_annotations",
+      "breakpoints": true
     }
   ]
 }

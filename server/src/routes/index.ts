@@ -16,3 +16,4 @@ export { llmRoutes } from "./llms.js";
 export { accessRoutes } from "./access.js";
 export { instanceSettingsRoutes } from "./instance-settings.js";
 export { onboardingRoutes } from "./onboarding.js";
+export { annotationRoutes } from "./annotations.js";
