@@ -2536,7 +2536,10 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
     const issueId = randomUUID();
     const runId = randomUUID();
     const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
-    const heartbeat = heartbeatService(db);
+    // Pin scheduling suppression off with the runtimeEnv test seam. Do not rely
+    // on the ambient PAPERCLIP_IN_WORKTREE value: startNextQueuedRunForAgent
+    // no-ops under suppression and would leave the promoted wake at "queued".
+    const heartbeat = heartbeatService(db, { runtimeEnv: {} });
 
     await db.insert(companies).values({
       id: companyId,
@@ -2770,7 +2773,10 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
     const issueId = randomUUID();
     const runId = randomUUID();
     const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
-    const heartbeat = heartbeatService(db);
+    // Pin scheduling suppression off with the runtimeEnv test seam. Do not rely
+    // on the ambient PAPERCLIP_IN_WORKTREE value: startNextQueuedRunForAgent
+    // no-ops under suppression and would leave the promoted wake at "queued".
+    const heartbeat = heartbeatService(db, { runtimeEnv: {} });
 
     await db.insert(companies).values({
       id: companyId,
