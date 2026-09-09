@@ -35,6 +35,45 @@ import { providerActivityPresentation } from "./task-chat-activity-presentation"
 
 const TS = "2026-07-31T12:00:00.000Z";
 
+describe("completion tool feed visibility", () => {
+  it("keeps the full bounded notice text available when expanded", () => {
+    const summary = `${"Configuration context. ".repeat(30)}Use the project settings to fix this.`;
+    const [notice] = transcriptToTaskChatItems([{
+      kind: "provider_activity", ts: TS, family: "provider_notice", eventType: "provider.notice.recorded",
+      status: "informational", title: "Provider notice", summary,
+      payload: { noticeId: "long-notice", summary },
+    }], { runId: "notice", running: false });
+    expect(notice.kind === "protocol" && notice.surface === "provider_activity" &&
+      notice.details.find((detail) => detail.label === "Summary")?.value).toBe(summary);
+  });
+
+  it("keeps completion events inspectable but hides both tool representations from live and settled feed activity", () => {
+    for (const running of [true, false]) {
+      const entries: TranscriptEntry[] = [
+        { kind: "tool_call", ts: TS, toolUseId: "legacy-finish", name: "paperclip_finish", input: {} },
+        ...["paperclip_finish", "search_tasks"].map((name) => ({
+          kind: "provider_activity" as const, ts: TS, family: "tool_execution" as const,
+          eventType: running ? "tool.execution.started" : "tool.execution.completed",
+          status: running ? "running" as const : "completed" as const,
+          title: "Tool execution", summary: name,
+          payload: { executionId: name, name, transport: "dynamic" },
+        })),
+        { kind: "provider_activity", ts: TS, family: "provider_notice", eventType: "provider.notice.recorded",
+          status: "informational", title: "Provider notice", summary: "Repository is not trusted",
+          payload: { noticeId: "notice", summary: "Repository is not trusted" } },
+      ];
+      const parsed = transcriptToTaskChatItems(entries, { runId: "finish-visibility", running });
+      expect(parsed).toHaveLength(4);
+      const activity = paperclipRunnerActivityItems(parsed);
+      expect(activity).toHaveLength(2);
+      expect(JSON.stringify(activity)).not.toContain("paperclip_finish");
+      expect(JSON.stringify(activity)).toContain("search_tasks");
+      expect(JSON.stringify(activity)).toContain("Repository is not trusted");
+      expect(paperclipRunnerTimelineItems(parsed)).toEqual(activity);
+    }
+  });
+});
+
 describe("omitProgressRepeatedByResponseAcrossSegments", () => {
   const progress = (id: string, text: string): TaskChatItem => ({
     id,

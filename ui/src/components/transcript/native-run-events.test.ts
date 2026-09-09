@@ -72,6 +72,26 @@ function runResult(summary: string): Record<string, unknown> {
   };
 }
 
+describe("provider notice presentation", () => {
+  it("preserves notice text as a notice rather than a synthetic tool call", () => {
+    const entries = nativeRunEventsToTranscript([
+      event(1, "provider.notice.recorded", {
+        schema: "paperclip.provider.notice.v1", noticeId: "warning-1",
+        severity: "warning", category: "configWarning", summary: "Repository is not trusted",
+      }),
+      event(2, "provider.notice.recorded", {
+        schema: "paperclip.provider.notice.v1", noticeId: "error-1",
+        severity: "error", message: "Provider connection failed",
+      }),
+    ]);
+    expect(entries).toMatchObject([
+      { kind: "provider_activity", family: "provider_notice", status: "informational", summary: "Repository is not trusted" },
+      { kind: "provider_activity", family: "provider_notice", status: "failed", summary: "Provider connection failed" },
+    ]);
+    expect(entries.some((entry) => entry.kind === "tool_call")).toBe(false);
+  });
+});
+
 describe("nativeRunEventsToTranscript", () => {
   it("projects the cross-language duplicate-delivery fixture exactly once", () => {
     const fixture = JSON.parse(readFileSync(

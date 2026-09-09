@@ -913,7 +913,9 @@ export function canonicalProviderEventsFromCodex(
               : "turn",
           recoverable: method !== "error",
           userActionable: method === "error" || method === "warning",
-          summary: text(params.message, "Provider notice").slice(0, 4000),
+          summary: [params.summary, params.message, params.details]
+            .map((value) => text(value).trim())
+            .find(Boolean)?.slice(0, 4000) || "Provider notice",
         },
         itemId,
       },
