@@ -1,4 +1,4 @@
-import { createHash, createHmac } from "node:crypto";
+import { createHash, createHmac, randomUUID } from "node:crypto";
 import { S3Client } from "@aws-sdk/client-s3";
 import type { DeploymentMode, SecretProviderConfigDiscoveryPreviewResult } from "@paperclipai/shared";
 import { unprocessable } from "../errors.js";
@@ -896,11 +896,13 @@ class AwsSecretsManagerJsonGateway implements AwsSecretsManagerGateway {
     Description?: string;
     Tags: AwsSecretsManagerTag[];
   }) {
+    // Secrets Manager requires ClientRequestToken on CreateSecret/PutSecretValue
+    // for callers that are not an AWS SDK (SDKs generate it automatically).
     return this.call<{
       ARN?: string;
       Name?: string;
       VersionId?: string;
-    }>("CreateSecret", input);
+    }>("CreateSecret", { ...input, ClientRequestToken: randomUUID() });
   }
 
   putSecretValue(input: {
@@ -912,7 +914,7 @@ class AwsSecretsManagerJsonGateway implements AwsSecretsManagerGateway {
       ARN?: string;
       Name?: string;
       VersionId?: string;
-    }>("PutSecretValue", input);
+    }>("PutSecretValue", { ...input, ClientRequestToken: randomUUID() });
   }
 
   getSecretValue(input: {
