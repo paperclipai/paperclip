@@ -412,6 +412,7 @@ import {
   type AgentOrgRow,
 } from "./agent-invokability.js";
 import { isHeartbeatWakeOnDemandEnabled } from "./heartbeat-policy.js";
+import { loadLoopGuardNotice } from "./heartbeat-loop-guard.js";
 import {
   redactQuarantinedBodyForHigherTrust,
   sanitizeQuarantinedCommentForHigherTrust,
@@ -6908,6 +6909,10 @@ export async function buildPaperclipWakePayload(input: {
     executionPolicy?: unknown;
   } | null;
   exposeLowTrustRaw?: boolean;
+  // Advisory repeat-run notice from the heartbeat loop guard (borrowed from
+  // the DeepSeek Harness repeat-tool-reminder guard). Null when recent runs
+  // show no repeat streak.
+  loopGuardNotice?: string | null;
   // Experimental: agents write user-interaction content in ASD-STE100
   // Simplified Technical English (rendered as a prompt directive downstream).
   simplifiedEnglishInteractions?: boolean;
@@ -7307,6 +7312,7 @@ export async function buildPaperclipWakePayload(input: {
       Object.keys(executionStage).length > 0 ? executionStage : null,
     taskWatchdog: (input.contextSnapshot.taskWatchdog ?? null) as unknown,
     skillTest: (input.contextSnapshot.paperclipSkillTest ?? null) as unknown,
+    loopGuardNotice: readNonEmptyString(input.loopGuardNotice) ?? null,
     continuationSummary: safeContinuationSummary
       ? {
           key: safeContinuationSummary.key,
@@ -18017,6 +18023,18 @@ export function heartbeatService(
       } else {
         delete context.paperclipSkillTest;
       }
+      // Advisory nudge when this issue+agent pair keeps ending runs the
+      // same way (DeepSeek Harness repeat-tool-reminder port). Null when
+      // there is no repeat streak. Never blocks dispatch.
+      const loopGuardNotice = issueRef
+        ? await loadLoopGuardNotice({
+            db,
+            companyId: agent.companyId,
+            issueId: issueRef.id,
+            agentId: agent.id,
+            excludeRunId: run.id,
+          })
+        : null;
       const paperclipWakePayload = await buildPaperclipWakePayload({
         db,
         companyId: agent.companyId,
@@ -18036,6 +18054,7 @@ export function heartbeatService(
             }
           : null,
         exposeLowTrustRaw,
+        loopGuardNotice,
         simplifiedEnglishInteractions:
           experimentalInstanceSettings.enableSimplifiedEnglishInteractions ===
           true,
