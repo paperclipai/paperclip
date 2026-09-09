@@ -193,6 +193,7 @@ import {
   SVG_CONTENT_TYPE,
 } from "../attachment-types.js";
 import { queueIssueAssignmentWakeup } from "../services/issue-assignment-wakeup.js";
+import { isProjectCoordinatorAgentForProject } from "../services/project-coordinators.js";
 import { createSecretProposalsService } from "../services/secret-proposals.js";
 import { notifySecretProposalResolution } from "../services/secret-proposal-notifications.js";
 import {
@@ -3929,11 +3930,66 @@ export function issueRoutes(
     projectId: string | null | undefined;
     parentIssueId?: string | null;
   }) {
-    if (input.projectId !== undefined) return input.projectId;
+    if (input.projectId != null) return input.projectId;
     if (!input.parentIssueId) return null;
     const parent = await svc.getById(input.parentIssueId);
     if (!parent || parent.companyId !== input.companyId) return null;
     return parent.projectId ?? null;
+  }
+  /**
+   * Standard native issue-create routes opt omitted assignment into the
+   * project's dedicated coordinator. Field presence, rather than nullishness,
+   * is the intent boundary: either assignee key means the caller made an
+   * explicit choice, including explicit unassignment.
+   *
+   * This stays at the route boundary so assignment authorization, activity,
+   * and wake routing all see the effective owner before persistence. Direct
+   * internal writers (imports, recovery/status-card tasks, routines, and other
+   * system-owned work) intentionally retain their existing explicit routing.
+   */
+  async function resolveCreateIssueAssigneeAgentId(input: {
+    companyId: string;
+    projectId: string | null;
+    createBody: Record<string, unknown>;
+    actorType: string;
+    allowCoordinatorDefault?: boolean;
+  }) {
+    if (
+      hasOwn(input.createBody, "assigneeAgentId")
+      || hasOwn(input.createBody, "assigneeUserId")
+      || input.allowCoordinatorDefault === false
+      || !input.projectId
+    ) {
+      return normalizeIssueAssigneeAgentReference(
+        input.companyId,
+        input.createBody.assigneeAgentId as string | null | undefined,
+        { actorType: input.actorType },
+      );
+    }
+
+    const project = await projectsSvc.getById(input.projectId);
+    if (
+      !project
+      || project.companyId !== input.companyId
+      || !project.leadAgentId
+    ) {
+      return undefined;
+    }
+
+    const leadAgent = await agentsSvc.getById(project.leadAgentId);
+    if (
+      !leadAgent
+      || leadAgent.companyId !== input.companyId
+      || !isProjectCoordinatorAgentForProject(leadAgent.metadata, project.id)
+    ) {
+      return undefined;
+    }
+
+    return normalizeIssueAssigneeAgentReference(
+      input.companyId,
+      leadAgent.id,
+      { actorType: input.actorType },
+    );
   }
 
   async function assertCanAssignTasks(
@@ -9283,11 +9339,20 @@ export function issueRoutes(
       !watchdogProductBugFollowUp &&
       !(await assertTaskWatchdogCreateIssueAllowed(req, res, companyId, createParent))
     ) return;
-    const normalizedAssigneeAgentId = await normalizeIssueAssigneeAgentReference(
+    const createProjectId = await resolveAssignmentProjectId({
       companyId,
-      rawCreateBody.assigneeAgentId as string | null | undefined,
-      { actorType: req.actor.type },
-    );
+      projectId: rawCreateBody.projectId,
+      parentIssueId: typeof effectiveParentId === "string" ? effectiveParentId : null,
+    });
+    const normalizedAssigneeAgentId = await resolveCreateIssueAssigneeAgentId({
+      companyId,
+      projectId: createProjectId,
+      createBody: rawCreateBody as Record<string, unknown>,
+      actorType: req.actor.type,
+      // Product-bug follow-ups are recovery-specific internal work even though
+      // they enter through this endpoint; preserve their explicit routing.
+      allowCoordinatorDefault: !watchdogProductBugFollowUp,
+    });
     await assertNoAgentDelegationCycle({
       actorType: req.actor.type,
       parentIssueId: typeof effectiveParentId === "string" ? effectiveParentId : null,
@@ -9342,7 +9407,7 @@ export function issueRoutes(
       assigneeUserId: rawCreateBody.assigneeUserId ?? null,
     };
     await assertTaskBridgeCreateAllowed(req, companyId, createAssignmentScope);
-    if (rawCreateBody.assigneeAgentId || rawCreateBody.assigneeUserId) {
+    if (createBody.assigneeAgentId || createBody.assigneeUserId) {
       await assertCanAssignTasks(req, companyId, createAssignmentScope);
     }
     await assertIssueEnvironmentSelection(companyId, createBody.executionWorkspaceSettings?.environmentId);
@@ -9558,11 +9623,13 @@ export function issueRoutes(
       entityId: parent.id,
     });
     if (!sanitizedBody) return;
-    const normalizedAssigneeAgentId = await normalizeIssueAssigneeAgentReference(
-      parent.companyId,
-      sanitizedBody.assigneeAgentId as string | null | undefined,
-      { actorType: req.actor.type },
-    );
+    const childProjectId = sanitizedBody.projectId ?? parent.projectId ?? null;
+    const normalizedAssigneeAgentId = await resolveCreateIssueAssigneeAgentId({
+      companyId: parent.companyId,
+      projectId: childProjectId,
+      createBody: sanitizedBody as Record<string, unknown>,
+      actorType: req.actor.type,
+    });
     await assertNoAgentDelegationCycle({
       actorType: req.actor.type,
       parentIssueId: parent.id,
@@ -9573,13 +9640,13 @@ export function issueRoutes(
       ...(normalizedAssigneeAgentId !== undefined ? { assigneeAgentId: normalizedAssigneeAgentId } : {}),
     };
     const childAssignmentScope = {
-      projectId: createBody.projectId ?? parent.projectId ?? null,
+      projectId: childProjectId,
       parentIssueId: parent.id,
       assigneeAgentId: createBody.assigneeAgentId ?? null,
       assigneeUserId: createBody.assigneeUserId ?? null,
     };
     await assertTaskBridgeCreateAllowed(req, parent.companyId, childAssignmentScope);
-    if (sanitizedBody.assigneeAgentId || sanitizedBody.assigneeUserId) {
+    if (createBody.assigneeAgentId || createBody.assigneeUserId) {
       await assertCanAssignTasks(req, parent.companyId, childAssignmentScope);
     }
     await assertIssueEnvironmentSelection(parent.companyId, createBody.executionWorkspaceSettings?.environmentId);
@@ -9744,11 +9811,13 @@ export function issueRoutes(
         entityId: sourceIssue.id,
       });
       if (!sanitizedChild) return;
-      const normalizedAssigneeAgentId = await normalizeIssueAssigneeAgentReference(
-        sourceIssue.companyId,
-        sanitizedChild.assigneeAgentId as string | null | undefined,
-        { actorType: req.actor.type },
-      );
+      const childProjectId = sanitizedChild.projectId ?? sourceIssue.projectId ?? null;
+      const normalizedAssigneeAgentId = await resolveCreateIssueAssigneeAgentId({
+        companyId: sourceIssue.companyId,
+        projectId: childProjectId,
+        createBody: sanitizedChild as Record<string, unknown>,
+        actorType: req.actor.type,
+      });
       const childBody = {
         ...sanitizedChild,
         ...(normalizedAssigneeAgentId !== undefined ? { assigneeAgentId: normalizedAssigneeAgentId } : {}),
@@ -9757,7 +9826,7 @@ export function issueRoutes(
       assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(childBody));
       if (childBody.assigneeAgentId || childBody.assigneeUserId) {
         await assertCanAssignTasks(req, sourceIssue.companyId, {
-          projectId: childBody.projectId ?? sourceIssue.projectId ?? null,
+          projectId: childProjectId,
           parentIssueId: sourceIssue.id,
           assigneeAgentId: childBody.assigneeAgentId ?? null,
           assigneeUserId: childBody.assigneeUserId ?? null,

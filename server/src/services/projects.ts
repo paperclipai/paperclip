@@ -33,6 +33,10 @@ import { listCurrentRuntimeServicesForProjectWorkspaces } from "./workspace-runt
 import { parseProjectExecutionWorkspacePolicy } from "./execution-workspace-policy.js";
 import { mergeProjectWorkspaceRuntimeConfig, readProjectWorkspaceRuntimeConfig } from "./project-workspace-runtime-config.js";
 import { resolveManagedProjectWorkspaceDir } from "../home-paths.js";
+import {
+  projectCoordinatorService,
+  type ProjectCoordinatorActivityActor,
+} from "./project-coordinators.js";
 
 type ProjectRow = typeof projects.$inferSelect;
 type ProjectWorkspaceRow = typeof projectWorkspaces.$inferSelect;
@@ -56,6 +60,14 @@ type CreateWorkspaceInput = {
   isPrimary?: boolean;
 };
 type UpdateWorkspaceInput = Partial<CreateWorkspaceInput>;
+type CreateProjectInput = Omit<typeof projects.$inferInsert, "companyId"> & {
+  goalIds?: string[];
+  workspace?: CreateWorkspaceInput;
+};
+interface ProjectServiceOptions {
+  provisionProjectCoordinator?: boolean;
+  coordinatorActivityActor?: ProjectCoordinatorActivityActor;
+}
 
 interface ProjectWithGoals extends Omit<ProjectRow, "executionWorkspacePolicy"> {
   urlKey: string;
@@ -566,40 +578,71 @@ async function ensureSinglePrimaryWorkspace(
     );
 }
 
-export function projectService(db: Db) {
+export function projectService(db: Db, options: ProjectServiceOptions = {}) {
   const createProject = async (
     companyId: string,
-    data: Omit<typeof projects.$inferInsert, "companyId"> & { goalIds?: string[] },
+    data: CreateProjectInput,
   ): Promise<ProjectWithGoals> => {
-    const { goalIds: inputGoalIds, ...projectData } = data;
+    const {
+      goalIds: inputGoalIds,
+      workspace,
+      ...projectData
+    } = data;
     const ids = resolveGoalIds({ goalIds: inputGoalIds, goalId: projectData.goalId });
-    if (ids && ids.length > 0) await assertGoalsBelongToCompany(db, companyId, ids);
 
-    // Note: color is intentionally NOT auto-assigned. New projects default to
-    // `color = null` (neutral gray) unless an explicit color is supplied. See PAP-68.
+    // Project, goal links, optional initial workspace, and the opt-in
+    // coordinator identity are one write boundary. A bad template or workspace
+    // therefore cannot leave any subset of the requested project behind.
+    const row = await db.transaction(async (tx) => {
+      const txDb = tx as unknown as Db;
+      if (ids && ids.length > 0) {
+        await assertGoalsBelongToCompany(txDb, companyId, ids);
+      }
 
-    const existingProjects = await db
-      .select({ id: projects.id, name: projects.name })
-      .from(projects)
-      .where(eq(projects.companyId, companyId));
-    projectData.name = resolveProjectNameForUniqueShortname(projectData.name, existingProjects);
+      // Note: color is intentionally NOT auto-assigned. New projects default to
+      // `color = null` (neutral gray) unless an explicit color is supplied. See PAP-68.
+      const existingProjects = await tx
+        .select({ id: projects.id, name: projects.name })
+        .from(projects)
+        .where(eq(projects.companyId, companyId));
+      projectData.name = resolveProjectNameForUniqueShortname(projectData.name, existingProjects);
 
-    // Also write goalId to the legacy column (first goal or null)
-    // The resolved set is canonical for persistence as well as validation:
-    // falling back to the raw legacy field here would write an id that
-    // skipped validation whenever `goalIds: []` and `goalId` arrive
-    // together (goalIds wins resolution, mirroring the update path).
-    const legacyGoalId = ids?.[0] ?? null;
+      // Also write goalId to the legacy column (first goal or null). The
+      // resolved set is canonical for persistence as well as validation.
+      const legacyGoalId = ids?.[0] ?? null;
+      let created = await tx
+        .insert(projects)
+        .values({ ...projectData, goalId: legacyGoalId, companyId })
+        .returning()
+        .then((rows) => rows[0]);
 
-    const row = await db
-      .insert(projects)
-      .values({ ...projectData, goalId: legacyGoalId, companyId })
-      .returning()
-      .then((rows) => rows[0]);
+      if (ids && ids.length > 0) {
+        await syncGoalLinks(txDb, created.id, companyId, ids);
+      }
 
-    if (ids && ids.length > 0) {
-      await syncGoalLinks(db, row.id, companyId, ids);
-    }
+      if (workspace) {
+        const createdWorkspace = await projectService(txDb).createWorkspace(created.id, workspace);
+        if (!createdWorkspace) {
+          throw unprocessable("Invalid project workspace payload");
+        }
+      }
+
+      if (options.provisionProjectCoordinator) {
+        const provisioned = await projectCoordinatorService(txDb).provisionForNewProject({
+          project: created,
+          actor: options.coordinatorActivityActor,
+        });
+        if (provisioned) {
+          created = await tx
+            .select()
+            .from(projects)
+            .where(and(eq(projects.id, created.id), eq(projects.companyId, companyId)))
+            .then((rows) => rows[0]!);
+        }
+      }
+
+      return created;
+    });
 
     const [withGoals] = await attachGoals(db, [row]);
     const [enriched] = withGoals ? await attachWorkspaces(db, [withGoals]) : [];

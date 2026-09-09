@@ -17,7 +17,7 @@ import { accessService, projectService, logActivity, workspaceOperationService }
 import { conflict, forbidden, unprocessable } from "../errors.js";
 import { externalObjectService } from "../services/external-objects.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
-import { assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
+import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
 import {
   buildWorkspaceRuntimeDesiredStatePatch,
   listConfiguredRuntimeServiceEntries,
@@ -36,6 +36,7 @@ import { appendWithCap } from "../adapters/utils.js";
 import { assertEnvironmentSelectionForCompany } from "./environment-selection.js";
 import { environmentService } from "../services/environments.js";
 import { secretService } from "../services/secrets.js";
+import { projectCoordinatorService } from "../services/project-coordinators.js";
 
 const WORKSPACE_CONTROL_OUTPUT_MAX_CHARS = 256 * 1024;
 const SHARED_WORKSPACE_STOP_AND_RESTART_ACTIONS = new Set(["stop", "restart"]);
@@ -43,6 +44,7 @@ const SHARED_WORKSPACE_STOP_AND_RESTART_ACTIONS = new Set(["stop", "restart"]);
 export function projectRoutes(db: Db) {
   const router = Router();
   const svc = projectService(db);
+  const projectCoordinators = projectCoordinatorService(db);
   const access = accessService(db);
   const secretsSvc = secretService(db);
   const workspaceOperations = workspaceOperationService(db);
@@ -178,6 +180,20 @@ export function projectRoutes(db: Db) {
     res.json(project);
   });
 
+  router.post("/projects/:id/coordinator", async (req, res) => {
+    assertBoard(req);
+    const id = req.params.id as string;
+    const project = await getAccessibleResource(req, res, svc.getById(id), "Project not found");
+    if (!project) return;
+
+    const result = await projectCoordinators.provisionExistingProject({
+      projectId: project.id,
+      companyId: project.companyId,
+      actor: getActorInfo(req),
+    });
+    res.json(result);
+  });
+
   router.get("/projects/:id/external-object-summary", async (req, res) => {
     const id = req.params.id as string;
     const project = await getAccessibleResource(req, res, svc.getById(id), "Project not found");
@@ -213,7 +229,15 @@ export function projectRoutes(db: Db) {
         { strictMode: strictSecretsMode, fieldPath: "env" },
       );
     }
-    const project = await svc.create(companyId, projectData);
+    const actor = getActorInfo(req);
+    const createSvc = projectService(db, {
+      provisionProjectCoordinator: true,
+      coordinatorActivityActor: actor,
+    });
+    const project = await createSvc.create(companyId, {
+      ...projectData,
+      ...(workspace ? { workspace } : {}),
+    });
     if (project.env) {
       await secretsSvc.syncEnvBindingsForTarget?.(
         companyId,
@@ -221,19 +245,10 @@ export function projectRoutes(db: Db) {
         project.env,
       );
     }
-    let createdWorkspaceId: string | null = null;
-    if (workspace) {
-      const createdWorkspace = await svc.createWorkspace(project.id, workspace);
-      if (!createdWorkspace) {
-        await svc.remove(project.id);
-        res.status(422).json({ error: "Invalid project workspace payload" });
-        return;
-      }
-      createdWorkspaceId = createdWorkspace.id;
-    }
-    const hydratedProject = workspace ? await svc.getById(project.id) : project;
 
-    const actor = getActorInfo(req);
+    const createdWorkspaceId = workspace
+      ? project.primaryWorkspace?.id ?? project.workspaces[0]?.id ?? null
+      : null;
     await logActivity(db, {
       companyId,
       actorType: actor.actorType,
@@ -252,7 +267,7 @@ export function projectRoutes(db: Db) {
     if (telemetryClient) {
       trackProjectCreated(telemetryClient);
     }
-    res.status(201).json(hydratedProject ?? project);
+    res.status(201).json(project);
   });
 
   router.patch("/projects/:id", validate(updateProjectSchema), async (req, res) => {

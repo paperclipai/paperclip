@@ -144,6 +144,7 @@ interface IssueDraft {
   status: string;
   priority: string;
   assigneeValue: string;
+  assigneeExplicitlyCleared?: boolean;
   reviewerValue: string;
   approverValue: string;
   watchdogAgentId?: string;
@@ -477,6 +478,7 @@ export function NewIssueDialog() {
   const [status, setStatus] = useState("todo");
   const [priority, setPriority] = useState("");
   const [assigneeValue, setAssigneeValue] = useState("");
+  const [assigneeExplicitlyCleared, setAssigneeExplicitlyCleared] = useState(false);
   const [reviewerValue, setReviewerValue] = useState("");
   const [approverValue, setApproverValue] = useState("");
   const [showReviewerRow, setShowReviewerRow] = useState(false);
@@ -578,7 +580,16 @@ export function NewIssueDialog() {
     userId: currentUserId,
   });
 
-  const selectedAssignee = useMemo(() => parseAssigneeValue(assigneeValue), [assigneeValue]);
+  const effectiveAssigneeValue = useMemo(() => {
+    if (assigneeValue || assigneeExplicitlyCleared || isSubIssueMode) return assigneeValue;
+    const project = orderedProjects.find((entry) => entry.id === projectId);
+    const lead = (agents ?? []).find((agent) => agent.id === project?.leadAgentId);
+    const ownership = lead?.metadata?.projectCoordinator;
+    return lead && isRecord(ownership) && ownership.projectId === projectId
+      ? assigneeValueFromSelection({ assigneeAgentId: lead.id })
+      : "";
+  }, [assigneeValue, assigneeExplicitlyCleared, isSubIssueMode, orderedProjects, projectId, agents]);
+  const selectedAssignee = useMemo(() => parseAssigneeValue(effectiveAssigneeValue), [effectiveAssigneeValue]);
   const selectedAssigneeAgentId = selectedAssignee.assigneeAgentId;
   const selectedAssigneeUserId = selectedAssignee.assigneeUserId;
 
@@ -708,6 +719,7 @@ export function NewIssueDialog() {
       status,
       priority,
       assigneeValue,
+      assigneeExplicitlyCleared,
       reviewerValue,
       approverValue,
       watchdogAgentId,
@@ -728,6 +740,7 @@ export function NewIssueDialog() {
     status,
     priority,
     assigneeValue,
+    assigneeExplicitlyCleared,
     reviewerValue,
     approverValue,
     watchdogAgentId,
@@ -766,6 +779,7 @@ export function NewIssueDialog() {
     status,
     priority,
     assigneeValue,
+    assigneeExplicitlyCleared,
     reviewerValue,
     approverValue,
     watchdogAgentId,
@@ -794,6 +808,7 @@ export function NewIssueDialog() {
     initializationKeyRef.current = initializationKey;
     setDialogCompanyId(selectedCompanyId);
     executionWorkspaceDefaultProjectId.current = null;
+    setAssigneeExplicitlyCleared(newIssueDefaults.assigneeAgentId === null || newIssueDefaults.assigneeUserId === null);
 
     const draft = loadDraft();
     if (newIssueDefaults.parentId) {
@@ -854,11 +869,17 @@ export function NewIssueDialog() {
       const hasExplicitProjectWorkspaceId = newIssueDefaults.projectWorkspaceId !== undefined;
       const hasExplicitExecutionWorkspaceId = newIssueDefaults.executionWorkspaceId !== undefined;
       const hasExplicitExecutionWorkspaceMode = newIssueDefaults.executionWorkspaceMode !== undefined;
+      const hasExplicitAssignee = newIssueDefaults.assigneeAgentId !== undefined || newIssueDefaults.assigneeUserId !== undefined;
+      if (!hasExplicitAssignee) {
+        setAssigneeExplicitlyCleared(
+          draft.assigneeExplicitlyCleared ?? !(draft.assigneeValue ?? draft.assigneeId),
+        );
+      }
       setIssueText(draft.title, draft.description);
       setStatus(draft.status || "todo");
       setPriority(draft.priority);
       setAssigneeValue(
-        newIssueDefaults.assigneeAgentId || newIssueDefaults.assigneeUserId
+        hasExplicitAssignee
           ? assigneeValueFromSelection(newIssueDefaults)
           : (draft.assigneeValue ?? draft.assigneeId ?? ""),
       );
@@ -962,6 +983,7 @@ export function NewIssueDialog() {
     setStatus("todo");
     setPriority("");
     setAssigneeValue("");
+    setAssigneeExplicitlyCleared(false);
     setReviewerValue("");
     setApproverValue("");
     setShowReviewerRow(false);
@@ -993,6 +1015,7 @@ export function NewIssueDialog() {
     if (companyId === effectiveCompanyId) return;
     setDialogCompanyId(companyId);
     setAssigneeValue("");
+    setAssigneeExplicitlyCleared(false);
     setReviewerValue("");
     setApproverValue("");
     setShowReviewerRow(false);
@@ -1057,6 +1080,9 @@ export function NewIssueDialog() {
       workMode,
       ...(selectedAssigneeAgentId ? { assigneeAgentId: selectedAssigneeAgentId } : {}),
       ...(selectedAssigneeUserId ? { assigneeUserId: selectedAssigneeUserId } : {}),
+      ...(assigneeExplicitlyCleared && !selectedAssigneeAgentId && !selectedAssigneeUserId
+        ? { assigneeAgentId: null, assigneeUserId: null }
+        : {}),
       ...(newIssueDefaults.parentId ? { parentId: newIssueDefaults.parentId } : {}),
       ...(newIssueDefaults.goalId ? { goalId: newIssueDefaults.goalId } : {}),
       ...(projectId ? { projectId } : {}),
@@ -1446,7 +1472,7 @@ export function NewIssueDialog() {
             <IssueTitleTextarea
               value={title}
               pending={createIssue.isPending}
-              assigneeValue={assigneeValue}
+              assigneeValue={effectiveAssigneeValue}
               projectId={projectId}
               descriptionEditorRef={descriptionEditorRef}
               assigneeSelectorRef={assigneeSelectorRef}
@@ -1472,7 +1498,7 @@ export function NewIssueDialog() {
               <span className="w-6 shrink-0 text-center">For</span>
               <InlineEntitySelector
                 ref={assigneeSelectorRef}
-                value={assigneeValue}
+                value={effectiveAssigneeValue}
                 options={assigneeOptions}
                 recentOptionIds={recentAssigneeOptionIds}
                 placeholder="Assignee"
@@ -1486,6 +1512,7 @@ export function NewIssueDialog() {
                     trackRecentAssignee(nextAssignee.assigneeAgentId);
                   }
                   setAssigneeValue(value);
+                  setAssigneeExplicitlyCleared(!value);
                   const hasAssignee = Boolean(nextAssignee.assigneeAgentId || nextAssignee.assigneeUserId);
                   if (hasAssignee && status === "backlog") {
                     setStatus("todo");
@@ -2260,7 +2287,7 @@ export function NewIssueDialog() {
           </Popover>
         </div>
 
-        {assigneeValue && status === "backlog" ? (
+        {effectiveAssigneeValue && status === "backlog" ? (
           <div
             data-testid="new-issue-assigned-backlog-note"
             className="mx-4 mb-2 flex items-start gap-2 rounded-md border border-amber-300/70 bg-amber-50/90 px-3 py-2 text-xs text-amber-900 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-100"
