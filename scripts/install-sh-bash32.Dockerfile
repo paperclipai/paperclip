@@ -11,8 +11,14 @@
 #     regenerated with bison rather than touched forward
 #   - config.guess predates aarch64, so the build triplet is stated explicitly
 #     instead of letting a 2006 script guess and fail
-#   - the build-time helpers use CFLAGS_FOR_BUILD rather than CFLAGS, and gcc 14
-#     turned implicit declarations into hard errors
+#   - the build-time helpers use CFLAGS_FOR_BUILD rather than CFLAGS, so the
+#     suppressions below have to be passed twice to reach both
+#
+# The warning suppressions are deliberately wider than this image needs. Bookworm
+# is gcc 12, where implicit declarations are still warnings; they became hard
+# errors in gcc 14, which is what this was developed against. -Wno-return-mismatch
+# likewise only exists in gcc 14 and is silently ignored by gcc 12. Keeping both
+# means a future base-image bump does not turn 2006-era C into a build failure.
 FROM node:24-bookworm-slim
 
 # Cross-checked against ftp.gnu.org and mirrors.kernel.org.
@@ -23,7 +29,6 @@ ARG BASH32_CFLAGS="-O1 -std=gnu89 -Wno-implicit-function-declaration -Wno-return
 RUN set -eux; \
   apt-get update; \
   apt-get install -y --no-install-recommends build-essential bison ca-certificates curl; \
-  rm -rf /var/lib/apt/lists/*; \
   cd /tmp; \
   curl --proto '=https' --tlsv1.2 -fsSL -o bash.tar.gz \
     "https://ftp.gnu.org/gnu/bash/bash-${BASH_VERSION}.tar.gz"; \
@@ -41,4 +46,5 @@ RUN set -eux; \
   rm -rf "/tmp/bash-${BASH_VERSION}" /tmp/bash.tar.gz; \
   apt-get purge -y build-essential bison; \
   apt-get autoremove -y; \
+  rm -rf /var/lib/apt/lists/*; \
   bash32 --version | head -1 | grep -q 'version 3\.2\.'
