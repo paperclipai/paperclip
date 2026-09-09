@@ -76,6 +76,8 @@ async function createIssue(
     projectId?: string | null;
     parentId?: string | null;
     assigneeAgentId?: string | null;
+    assigneeUserId?: string | null;
+    status?: "backlog" | "blocked" | "cancelled" | "done" | "in_progress" | "in_review" | "todo";
     originKind?: string | null;
     originId?: string | null;
   } = {},
@@ -86,11 +88,12 @@ async function createIssue(
       id: input.id ?? randomUUID(),
       companyId,
       title: input.title ?? `Issue ${randomUUID()}`,
-      status: "todo",
+      status: input.status ?? "todo",
       priority: "medium",
       projectId: input.projectId ?? null,
       parentId: input.parentId ?? null,
       assigneeAgentId: input.assigneeAgentId ?? null,
+      assigneeUserId: input.assigneeUserId ?? null,
       originKind: input.originKind ?? "manual",
       originId: input.originId ?? null,
     })
@@ -1746,6 +1749,174 @@ describeEmbeddedPostgres("authorization service", () => {
     })).resolves.toMatchObject({
       allowed: true,
       reason: "allow_issue_mention_grant",
+    });
+  });
+
+  it("allows user participants to read and comment on active linked issue chains without mutation access", async () => {
+    const company = await createCompany(db, "UserParticipationGrant");
+    const assigneeAgent = await createAgent(db, company.id, { role: "engineer" });
+    const qaUserId = `user-${randomUUID()}`;
+    const boardUserId = `board-${randomUUID()}`;
+    await db.insert(companyMemberships).values({
+      companyId: company.id,
+      principalType: "user",
+      principalId: boardUserId,
+      status: "active",
+      membershipRole: "member",
+    });
+    const rootIssue = await createIssue(db, company.id, {
+      title: "Active bug chain",
+      assigneeAgentId: assigneeAgent.id,
+      status: "in_review",
+    });
+    const handoffIssue = await createIssue(db, company.id, {
+      title: "QA handoff",
+      parentId: rootIssue.id,
+      assigneeAgentId: assigneeAgent.id,
+      status: "done",
+    });
+    await db.insert(issueComments).values({
+      companyId: company.id,
+      issueId: handoffIssue.id,
+      authorUserId: boardUserId,
+      authorType: "user",
+      body: `[@Anna](user://${qaUserId}) please attach the browser artifact to the active parent chain.`,
+    });
+
+    const authorization = authorizationService(db);
+    const actor = { type: "board", userId: qaUserId, companyIds: [], source: "session" } as const;
+    const resource = {
+      type: "issue",
+      companyId: company.id,
+      issueId: rootIssue.id,
+      projectId: rootIssue.projectId,
+      parentIssueId: rootIssue.parentId,
+      assigneeAgentId: rootIssue.assigneeAgentId,
+      status: rootIssue.status,
+    } as const;
+
+    await expect(authorization.decide({ actor, action: "issue:read", resource })).resolves.toMatchObject({
+      allowed: true,
+      reason: "allow_issue_user_participation_grant",
+    });
+    await expect(authorization.decide({ actor, action: "issue:comment", resource })).resolves.toMatchObject({
+      allowed: true,
+      reason: "allow_issue_user_participation_grant",
+    });
+    await expect(authorization.decide({ actor, action: "issue:mutate", resource })).resolves.toMatchObject({
+      allowed: false,
+      reason: "deny_unsupported_action",
+    });
+  });
+
+  it("does not grant user participation access to unrelated or closed issue chains", async () => {
+    const company = await createCompany(db, "UserParticipationDenied");
+    const qaUserId = `user-${randomUUID()}`;
+    const relatedClosed = await createIssue(db, company.id, {
+      title: "Closed related chain",
+      assigneeUserId: qaUserId,
+      status: "done",
+    });
+    const unrelatedActive = await createIssue(db, company.id, {
+      title: "Unrelated active chain",
+      status: "in_review",
+    });
+    const authorization = authorizationService(db);
+    const actor = { type: "board", userId: qaUserId, companyIds: [], source: "session" } as const;
+
+    await expect(authorization.decide({
+      actor,
+      action: "issue:comment",
+      resource: {
+        type: "issue",
+        companyId: company.id,
+        issueId: relatedClosed.id,
+        status: relatedClosed.status,
+      },
+    })).resolves.toMatchObject({
+      allowed: false,
+      reason: "deny_missing_membership",
+    });
+
+    await expect(authorization.decide({
+      actor,
+      action: "issue:comment",
+      resource: {
+        type: "issue",
+        companyId: company.id,
+        issueId: unrelatedActive.id,
+        status: unrelatedActive.status,
+      },
+    })).resolves.toMatchObject({
+      allowed: false,
+      reason: "deny_missing_membership",
+    });
+  });
+
+  it("does not grant user participation access across sibling branches of the same parent", async () => {
+    const company = await createCompany(db, "UserParticipationSiblings");
+    const qaUserId = `user-${randomUUID()}`;
+    const boardUserId = `board-${randomUUID()}`;
+    await db.insert(companyMemberships).values({
+      companyId: company.id,
+      principalType: "user",
+      principalId: boardUserId,
+      status: "active",
+      membershipRole: "member",
+    });
+    const parentIssue = await createIssue(db, company.id, {
+      title: "Parent chain",
+      status: "in_progress",
+    });
+    const mentionedSibling = await createIssue(db, company.id, {
+      title: "Sibling that mentions the user",
+      parentId: parentIssue.id,
+      status: "in_progress",
+    });
+    const otherSibling = await createIssue(db, company.id, {
+      title: "Unrelated sibling",
+      parentId: parentIssue.id,
+      status: "in_progress",
+    });
+    await db.insert(issueComments).values({
+      companyId: company.id,
+      issueId: mentionedSibling.id,
+      authorUserId: boardUserId,
+      authorType: "user",
+      body: `[@Anna](user://${qaUserId}) please look at this branch.`,
+    });
+
+    const authorization = authorizationService(db);
+    const actor = { type: "board", userId: qaUserId, companyIds: [], source: "session" } as const;
+
+    await expect(authorization.decide({
+      actor,
+      action: "issue:comment",
+      resource: {
+        type: "issue",
+        companyId: company.id,
+        issueId: mentionedSibling.id,
+        parentIssueId: parentIssue.id,
+        status: mentionedSibling.status,
+      },
+    })).resolves.toMatchObject({
+      allowed: true,
+      reason: "allow_issue_user_participation_grant",
+    });
+
+    await expect(authorization.decide({
+      actor,
+      action: "issue:comment",
+      resource: {
+        type: "issue",
+        companyId: company.id,
+        issueId: otherSibling.id,
+        parentIssueId: parentIssue.id,
+        status: otherSibling.status,
+      },
+    })).resolves.toMatchObject({
+      allowed: false,
+      reason: "deny_missing_membership",
     });
   });
 
