@@ -1,15 +1,16 @@
 # Connection review verification — 2026-09-08
 
 Implementation workspace: `/Users/dotta/paperclipai/branches/codex/reviews-in-task`.
-Branch: `codex/reviews-in-task`, rebased on `master` at `7ed122911`.
+Branch: `codex/reviews-in-task`, rebased on `master` at `8f099c3f8`.
 The original verification below predates that rebase; final checks are recorded in the PR.
 
 ## Acceptance status
 
 The deterministic integration paths demonstrate both synchronization directions
-and actual scripted-agent continuation. Live Notion and the four real model-runner
-profiles are **untested dependencies**, so the full acceptance plan is not complete.
-No PR-ready claim is made while the broad repository suite is not green.
+and scripted-agent continuation. A real native Codex approval and continuation
+also passed in the local test drive, as recorded below. Live Notion and the
+remaining real model-runner journeys are **untested dependencies**. The PR records
+the final repository and CI check results.
 
 ## Inspect the UI
 
@@ -87,9 +88,9 @@ The normal runner command was attempted with the opt-in flag and stopped with
 The normal `test-drive --harness codex` command was also attempted from this
 worktree. It bootstrapped a fresh isolated instance and reached startup recovery on
 127.0.0.1:3105, then shut down with `No credential found. Set OPENAI_API_KEY`.
-No Notion OAuth connection or real Notion page read was performed. No native Codex,
-native ACPX Claude, legacy Codex CLI, or legacy Claude CLI journey is claimed as
-passed. The scripted process-adapter/browser evidence must not substitute for
+No Notion OAuth connection or real Notion page read was performed. The native Codex approval journey subsequently passed using existing local
+ChatGPT authentication, as recorded below. Native ACPX Claude, legacy Codex CLI,
+and legacy Claude CLI journeys remain unverified. The scripted process-adapter/browser evidence must not substitute for
 those 16 acceptance cells or the four-profile real Notion exercise.
 
 Provide the normal runner/test-drive credential setup and Notion account access
@@ -104,3 +105,23 @@ allow, and one-click decline. Evidence is in `.paperclip-runtime/reviews-evidenc
 The browser run took 2.7 minutes; its restarted server required explicit process
 cleanup after the tests completed. Live provider and model-runner dependencies
 remain separate from this deterministic evidence.
+
+## Native Codex approval and continuation
+
+A real native Paperclip Runner agent used `gpt-5.6-sol` with existing local
+ChatGPT authentication. Its initial run discovered the installed MCP fixture
+action, called it with `query: "10 most recent pages"`, and yielded to a pending
+server-owned review. The operator approved in the browser. The server executed
+the stored request and delivered its result to a new native run.
+
+- Source run: `106278a4-5411-41ba-b2a4-c150cdf7760d`.
+- Action request: `7da846da-496f-4e6a-a151-0252e10f989c`.
+- Continuation run: `18e11fe1-bd6a-4034-996e-e635d6cd57a6`.
+- Final task status: `done`.
+- Agent response: “The most recent fixture pages are **Roadmap**, **Meeting notes**,
+  and **Product research**.”
+
+The success card keeps the raw tool result collapsed. Expanding it displays
+formatted JSON. The latest five-journey browser suite passed in 1.7 minutes and
+checks separate source/reply run IDs, readable output, and result expansion.
+This is real Codex execution against a local fixture, not live Notion evidence.
