@@ -45,8 +45,13 @@ export function IssuePlanDecompositionsSection({
 
   return (
     <div className="space-y-3">
-      <div className="flex items-center justify-between gap-2">
-        <h3 className="text-sm font-medium text-muted-foreground">Plan decomposition</h3>
+      <div className="flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between sm:gap-3">
+        <div>
+          <h3 className="text-sm font-medium text-muted-foreground">Linked execution</h3>
+          <p className="text-(length:--text-micro) text-muted-foreground/80">
+            Child tasks created from an approved exact plan revision.
+          </p>
+        </div>
         <span className="text-(length:--text-micro) text-muted-foreground/80">
           {items.length === 1 ? "1 accepted plan revision" : `${items.length} accepted plan revisions`}
         </span>

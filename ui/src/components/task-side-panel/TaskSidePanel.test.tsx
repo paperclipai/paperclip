@@ -238,13 +238,18 @@ describe("TaskSidePanel", () => {
     expect(container.querySelector('[data-side-panel-tab-target="subtasks"]')).not.toBeNull();
   });
 
-  it("does not create a Plan tab for planning mode before a plan exists", async () => {
+  it("offers the Plan surface before a planning-mode task has its first document", async () => {
     await render(panel({ issue: issue({ workMode: "planning" }) }));
     expect(container.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toContain("Properties");
     expect(container.querySelector('[data-side-panel-tab-target="document:plan"]')).toBeNull();
 
     await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="Open a new tab"]')?.click());
-    expect(Array.from(container.querySelectorAll('[role="option"]')).some((item) => item.textContent?.includes("Plan"))).toBe(false);
+    const planningItem = Array.from(document.body.querySelectorAll<HTMLElement>('[role="option"]'))
+      .find((item) => item.textContent?.includes("Create specification or plan"));
+    expect(planningItem).not.toBeUndefined();
+    await act(async () => planningItem?.click());
+    expect(container.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toContain("Plan");
+    expect(container.textContent).toContain("Plan content");
   });
 
   it("opens a newly materialized plan until the user has interacted", async () => {
@@ -290,7 +295,7 @@ describe("TaskSidePanel", () => {
     expect(container.getElementsByTagName("input")[0]?.getAttribute("aria-label")).toBe("Search tabs and resources…");
   });
 
-  it("removes a Plan tab persisted before a plan document existed", async () => {
+  it("keeps a persisted Plan tab while the task is still in planning mode", async () => {
     writeTaskSidePanelState("user-1", "company-1", "task-1", {
       state: {
         tabs: [taskPanelPropertiesTab(), taskPanelDocumentTab("plan", "Plan")],
@@ -304,8 +309,9 @@ describe("TaskSidePanel", () => {
 
     await render(panel({ issue: issue({ workMode: "planning" }) }));
 
-    expect(container.querySelector('[data-side-panel-tab-target="document:plan"]')).toBeNull();
-    expect(container.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toContain("Properties");
+    expect(container.querySelector('[data-side-panel-tab-target="document:plan"]')).not.toBeNull();
+    expect(container.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toContain("Plan");
+    expect(container.textContent).toContain("Plan content");
   });
 
   it("opens an ordinary document deep link in a deduplicated document tab", async () => {
@@ -315,6 +321,17 @@ describe("TaskSidePanel", () => {
     expect(container.textContent).toContain("Document brief");
     await render(panel({ documentDeepLink: { requestId: 2, documentKey: "brief" } }));
     expect(container.querySelectorAll('[data-side-panel-tab-target="document:brief"]')).toHaveLength(1);
+  });
+
+  it("routes specification deep links to the shared Plan surface", async () => {
+    fixture.documents = [issueDocument("specification", "Specification")];
+    await render(panel({
+      documentDeepLink: { requestId: 1, documentKey: "specification" },
+    }));
+
+    expect(container.querySelectorAll('[data-side-panel-tab-target="document:plan"]')).toHaveLength(1);
+    expect(container.textContent).toContain("Plan content");
+    expect(container.textContent).not.toContain("Document specification");
   });
 
   it("keeps Files out of the launcher when the experiment is disabled", async () => {

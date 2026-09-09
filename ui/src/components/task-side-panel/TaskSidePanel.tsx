@@ -56,7 +56,7 @@ import {
 import { useIssueDocuments } from "@/hooks/useIssueDocuments";
 import type { IssueExternalObjectGroup } from "@/hooks/useIssueExternalObjects";
 import { useIssuePlanDocument } from "@/hooks/useIssuePlanDocument";
-import { documentDisplayTitle } from "@/lib/issue-artifacts";
+import { documentDisplayTitle, isPlanningDocumentKey } from "@/lib/issue-artifacts";
 import { queryKeys } from "@/lib/queryKeys";
 import { useLocation, useNavigate } from "@/lib/router";
 import {
@@ -229,6 +229,18 @@ export function TaskSidePanel({
   const { data: documentsData } = useIssueDocuments(issue.id);
   const documents = documentsData ?? EMPTY_ISSUE_DOCUMENTS;
   const { data: planDocument } = useIssuePlanDocument(issue.id);
+  const specificationDocument = documents.find((document) => document.key === "specification");
+  const canonicalPlanDocument = planDocument
+    ?? documents.find((document) => document.key === "plan");
+  const planningDocument = canonicalPlanDocument ?? specificationDocument;
+  const planningSurfaceAvailable = issue.workMode === "planning" || Boolean(planningDocument);
+  const planningDescription = specificationDocument && canonicalPlanDocument
+    ? `Specification r${specificationDocument.latestRevisionNumber} · Plan r${canonicalPlanDocument.latestRevisionNumber}`
+    : specificationDocument
+      ? `Specification revision ${specificationDocument.latestRevisionNumber}`
+      : canonicalPlanDocument
+        ? `Plan revision ${canonicalPlanDocument.latestRevisionNumber}`
+        : "Create specification or plan";
   const restoredRef = useRef(
     readTaskSidePanelState(accountScope, issue.companyId, issue.id, fileTabsEnabled),
   );
@@ -303,34 +315,50 @@ export function TaskSidePanel({
     setPaneHeaderSlot(document.getElementById(PROPERTIES_PANE_HEADER_SLOT_ID));
   }, [inline]);
 
-  // Older clients persisted an empty Plan tab merely because the task was in
-  // planning mode. Remove that stale tab once the plan lookup confirms there
-  // is no document; a real plan will be opened by the materialization effect
-  // below when it arrives.
+  // Keep the canonical planning surface available while a task is in planning
+  // mode, even before its first document exists. Remove only a stale persisted
+  // tab for a settled non-planning task with no specification or plan.
   useEffect(() => {
-    if (planDocument !== null || !controller.tabs.some((tab) => tab.id === "document:plan")) return;
+    if (
+      issue.workMode === "planning"
+      || planningDocument
+      || planDocument !== null
+      || documentsData === undefined
+      || !controller.tabs.some((tab) => tab.id === "document:plan")
+    ) {
+      return;
+    }
     autoPlanHandledRef.current = false;
     controller.closeTab("document:plan");
-  }, [controller.closeTab, controller.tabs, planDocument]);
+  }, [
+    controller.closeTab,
+    controller.tabs,
+    documentsData,
+    issue.workMode,
+    planDocument,
+    planningDocument,
+  ]);
 
-  // Surface a newly materialized plan exactly once until the user takes manual
-  // control of the tab set. Persisted empty/custom states therefore stay put.
+  // Surface a newly materialized canonical planning document exactly once
+  // until the user takes manual control of the tab set.
   useEffect(() => {
-    if (!planDocument || autoPlanHandledRef.current || userInteractedRef.current) return;
+    if (!planningDocument || autoPlanHandledRef.current || userInteractedRef.current) return;
     autoPlanHandledRef.current = true;
-    controller.openTab(taskPanelDocumentTab("plan", documentDisplayTitle(planDocument)));
-  }, [controller.openTab, planDocument]);
+    controller.openTab(taskPanelDocumentTab("plan", "Plan"));
+  }, [controller.openTab, planningDocument]);
 
   useEffect(() => {
     if (!documentDeepLink) return;
-    if (
-      documentDeepLink.documentKey === "plan" &&
-      planDocument === null
-    ) return;
+    const planningTarget = isPlanningDocumentKey(documentDeepLink.documentKey);
     const document = documents.find((candidate) => candidate.key === documentDeepLink.documentKey);
-    const label = document ? documentDisplayTitle(document) : documentDeepLink.documentKey === "plan" ? "Plan" : documentDeepLink.documentKey;
-    controller.openTab(taskPanelDocumentTab(documentDeepLink.documentKey, label));
-  }, [controller.openTab, documentDeepLink, documents, planDocument]);
+    const tabKey = planningTarget ? "plan" : documentDeepLink.documentKey;
+    const label = planningTarget
+      ? "Plan"
+      : document
+        ? documentDisplayTitle(document)
+        : documentDeepLink.documentKey;
+    controller.openTab(taskPanelDocumentTab(tabKey, label));
+  }, [controller.openTab, documentDeepLink, documents]);
 
   // Existing URL-backed workspace links remain the external integration API.
   useEffect(() => {
@@ -423,7 +451,11 @@ export function TaskSidePanel({
 
   function openDocument(document: Pick<IssueDocument, "key" | "title">) {
     markInteracted();
-    controller.openTab(taskPanelDocumentTab(document.key, documentDisplayTitle(document)));
+    const planningDocumentTarget = isPlanningDocumentKey(document.key);
+    controller.openTab(taskPanelDocumentTab(
+      planningDocumentTarget ? "plan" : document.key,
+      planningDocumentTarget ? "Plan" : documentDisplayTitle(document),
+    ));
   }
 
   function openWorkspaceFile(ref: {
@@ -448,7 +480,10 @@ export function TaskSidePanel({
 
   const documentByKey = useMemo(() => new Map(documents.map((document) => [document.key, document])), [documents]);
   const visualTabs = useMemo<SidePanelTabItem[]>(() => controller.tabs.map((tab) => {
-    const document = tab.payload.kind === "issue-document" ? documentByKey.get(tab.payload.documentKey) : null;
+    const document = tab.payload.kind === "issue-document"
+      && !isPlanningDocumentKey(tab.payload.documentKey)
+      ? documentByKey.get(tab.payload.documentKey)
+      : null;
     return {
       id: tab.id,
       type: tab.type,
@@ -470,15 +505,17 @@ export function TaskSidePanel({
       primary.push({ id: "files", label: "Files", icon: <FolderOpen />, shortcut: "G F", alreadyOpen: controller.tabs.some((tab) => tab.id === "files") });
     }
     const documentItems: SidePanelLauncherItem[] = [
-      ...(planDocument ? [{
+      ...(planningSurfaceAvailable ? [{
         id: "document:plan",
-        label: documentDisplayTitle(planDocument),
-        description: `Revision ${planDocument.latestRevisionNumber ?? 1}`,
+        label: "Plan",
+        description: planningDescription,
         icon: <Lightbulb />,
         alreadyOpen: controller.tabs.some((tab) => tab.id === "document:plan"),
       }] : []),
       ...documents
-        .filter((document) => document.key !== "plan" && !isArtifactReviewDocumentKey(document.key))
+        .filter((document) =>
+          !isPlanningDocumentKey(document.key)
+          && !isArtifactReviewDocumentKey(document.key))
         .sort((left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime())
         .map((document) => ({
           id: `document:${document.key}`,
@@ -513,7 +550,7 @@ export function TaskSidePanel({
       });
     }
     return sections;
-  }, [childIssues.length, controller.tabs, documents, fileTabsEnabled, planDocument, recentFilesQuery.data, recentFilesQuery.isError, recentFilesQuery.isLoading, subtasksAvailable]);
+  }, [childIssues.length, controller.tabs, documents, fileTabsEnabled, planningDescription, planningSurfaceAvailable, recentFilesQuery.data, recentFilesQuery.isError, recentFilesQuery.isLoading, subtasksAvailable]);
 
   function selectLauncherItem(item: SidePanelLauncherItem) {
     markInteracted();
@@ -619,10 +656,13 @@ export function TaskSidePanel({
     );
   } else if (activeTab.payload.kind === "artifacts") {
     content = <IssuePropertiesArtifactsTab issue={issue} onOpenDocument={openDocument} />;
+  } else if (
+    activeTab.payload.kind === "issue-document"
+    && isPlanningDocumentKey(activeTab.payload.documentKey)
+  ) {
+    content = <IssuePropertiesPlansTab issue={issue} inline={inline} />;
   } else if (activeTab.payload.kind === "issue-document") {
-    content = activeTab.payload.documentKey === "plan" ? (
-      <IssuePropertiesPlansTab issue={issue} inline={inline} />
-    ) : (
+    content = (
       <TaskDocumentPanel
         issueId={issue.id}
         documentKey={activeTab.payload.documentKey}

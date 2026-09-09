@@ -756,7 +756,7 @@ describe("IssueProperties", () => {
     act(() => root.unmount());
   });
 
-  it("does not show a Plan tab for a planning-mode issue without a plan document", async () => {
+  it("shows the Plan tab before a planning-mode issue has its first document", async () => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({
       enableClassicTaskInterface: false,
     });
@@ -768,8 +768,10 @@ describe("IssueProperties", () => {
     });
 
     await waitForAssertion(() => {
-      expect(Array.from(container.querySelectorAll("button")).some((button) => button.textContent === "Plan")).toBe(false);
-      expect(container.textContent).not.toContain("This task is in plan mode but no plan document has been written yet.");
+      expect(Array.from(container.querySelectorAll("button")).some((button) => button.textContent === "Plan")).toBe(true);
+      expect(container.textContent).toContain("Approval boundaries");
+      expect(container.textContent).toContain("Add specification");
+      expect(container.textContent).toContain("Add plan");
     });
 
     act(() => root.unmount());

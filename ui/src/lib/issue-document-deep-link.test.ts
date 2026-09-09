@@ -8,11 +8,17 @@ describe("resolveIssueDocumentDeepLink", () => {
     });
   });
 
-  it("routes plan to its dedicated pane tab", () => {
+  it("routes canonical planning documents to their shared pane tab", () => {
     expect(resolveIssueDocumentDeepLink("#document-plan")).toEqual({
       kind: "properties-pane",
       tab: "plans",
       documentKey: "plan",
+      maximize: false,
+    });
+    expect(resolveIssueDocumentDeepLink("#document-specification")).toEqual({
+      kind: "properties-pane",
+      tab: "plans",
+      documentKey: "specification",
       maximize: false,
     });
   });
@@ -37,6 +43,12 @@ describe("resolveIssueDocumentDeepLink", () => {
       kind: "properties-pane",
       tab: "plans",
       documentKey: "plan",
+      maximize: true,
+    });
+    expect(resolveIssueDocumentDeepLink("#document-specification&viewer=full")).toEqual({
+      kind: "properties-pane",
+      tab: "plans",
+      documentKey: "specification",
       maximize: true,
     });
   });

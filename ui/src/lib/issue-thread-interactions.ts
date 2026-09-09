@@ -44,7 +44,9 @@ import type {
   AskUserQuestionsInteraction,
   AskUserQuestionsQuestion,
   ConnectionIntentInteraction,
+  CreateIssueThreadInteraction,
   IssueThreadInteraction,
+  IssueDocument,
   RequestCheckboxConfirmationPayload,
   RequestCheckboxConfirmationResult,
   RequestConfirmationInteraction,
@@ -57,6 +59,7 @@ import type {
   SuggestTasksInteraction,
   SuggestTasksResultCreatedTask,
 } from "@paperclipai/shared";
+import { isPlanningDocumentKey } from "./issue-artifacts";
 
 export interface SuggestedTaskTreeNode {
   task: SuggestedTaskDraft;
@@ -92,6 +95,139 @@ export function isIssueThreadInteraction(
       || candidate.kind === "request_item_verdicts"
       || candidate.kind === "connection_intent"
     );
+}
+
+type ReviewableIssueDocument = Pick<
+  IssueDocument,
+  "id" | "issueId" | "key" | "latestRevisionId" | "latestRevisionNumber"
+>;
+
+type CreateRequestConfirmationInteraction = Extract<
+  CreateIssueThreadInteraction,
+  { kind: "request_confirmation" }
+>;
+
+export function buildPlanningDocumentReviewRequest(
+  document: ReviewableIssueDocument,
+): CreateRequestConfirmationInteraction {
+  if (!isPlanningDocumentKey(document.key)) {
+    throw new Error(`Unsupported planning document key: ${document.key}`);
+  }
+  if (!document.latestRevisionId) {
+    throw new Error("Save the document before requesting review.");
+  }
+  const scopeOnly = document.key === "specification";
+  const documentLabel = scopeOnly ? "Specification" : "Plan";
+  return {
+    kind: "request_confirmation",
+    idempotencyKey: `confirmation:${document.issueId}:${document.key}:${document.latestRevisionId}`,
+    title: scopeOnly ? "Specification approval" : "Implementation plan approval",
+    summary: scopeOnly
+      ? "Human scope review only; approval does not authorize implementation."
+      : "Human review of this exact implementation plan revision.",
+    continuationPolicy: "wake_assignee",
+    resolverPolicy: "human_only",
+    payload: {
+      version: 1,
+      prompt: scopeOnly ? "Approve this specification revision?" : "Approve this implementation plan revision?",
+      acceptLabel: scopeOnly ? "Approve specification" : "Approve plan",
+      rejectLabel: "Request changes",
+      rejectRequiresReason: true,
+      rejectReasonLabel: scopeOnly
+        ? "What must change in the specification?"
+        : "What must change before implementation?",
+      allowDeclineReason: true,
+      supersedeOnUserComment: true,
+      detailsMarkdown: scopeOnly
+        ? "This approves the scope-only `specification` revision. It does not change work mode and does not authorize implementation."
+        : "On a planning-mode issue, approval of this exact `plan` revision changes work mode to standard and authorizes implementation.",
+      target: {
+        type: "issue_document",
+        issueId: document.issueId,
+        documentId: document.id,
+        key: document.key,
+        revisionId: document.latestRevisionId,
+        revisionNumber: document.latestRevisionNumber,
+        label: documentLabel,
+        href: `#document-${encodeURIComponent(document.key)}&viewer=full`,
+      },
+    },
+  };
+}
+
+export type CurrentIssueDocumentReviewState =
+  | "unreviewed"
+  | "waiting"
+  | "approved"
+  | "changes_requested"
+  | "closed";
+
+export interface CurrentIssueDocumentReview {
+  state: CurrentIssueDocumentReviewState;
+  interaction: RequestConfirmationInteraction | null;
+}
+
+export function isIssueDocumentReviewInteraction(
+  interaction: IssueThreadInteraction,
+  document: Pick<ReviewableIssueDocument, "id" | "issueId" | "key">,
+): interaction is RequestConfirmationInteraction {
+  if (interaction.kind !== "request_confirmation") return false;
+  if (interaction.issueId !== document.issueId) return false;
+  const target = interaction.payload.target;
+  if (!target || target.type !== "issue_document" || target.key !== document.key) return false;
+  if (target.issueId && target.issueId !== document.issueId) return false;
+  if (target.documentId && target.documentId !== document.id) return false;
+  return true;
+}
+
+/**
+ * Derive review state from the newest confirmation aimed at the exact latest
+ * document revision. Closed/stale newer requests intentionally suppress older
+ * approvals so a prior receipt can never masquerade as current authorization.
+ */
+export function deriveCurrentIssueDocumentReview(
+  interactions: readonly IssueThreadInteraction[] | null | undefined,
+  document: ReviewableIssueDocument,
+): CurrentIssueDocumentReview {
+  if (!document.latestRevisionId) {
+    return { state: "unreviewed", interaction: null };
+  }
+
+  let latest: RequestConfirmationInteraction | null = null;
+  let latestTimestamp = Number.NEGATIVE_INFINITY;
+  for (const interaction of interactions ?? []) {
+    if (!isIssueDocumentReviewInteraction(interaction, document)) continue;
+    const target = interaction.payload.target;
+    if (
+      target?.type !== "issue_document"
+      || target.revisionId !== document.latestRevisionId
+      || (
+        target.revisionNumber != null
+        && target.revisionNumber !== document.latestRevisionNumber
+      )
+    ) {
+      continue;
+    }
+    const parsedTimestamp = new Date(interaction.createdAt).getTime();
+    const timestamp = Number.isNaN(parsedTimestamp) ? 0 : parsedTimestamp;
+    if (!latest || timestamp >= latestTimestamp) {
+      latest = interaction;
+      latestTimestamp = timestamp;
+    }
+  }
+
+  if (!latest) return { state: "unreviewed", interaction: null };
+  if (latest.result?.outcome === "stale_target") {
+    return { state: "closed", interaction: latest };
+  }
+  if (latest.status === "pending") return { state: "waiting", interaction: latest };
+  if (latest.status === "accepted") {
+    return { state: latest.resolvedByUserId ? "approved" : "closed", interaction: latest };
+  }
+  if (latest.status === "rejected") {
+    return { state: "changes_requested", interaction: latest };
+  }
+  return { state: "closed", interaction: latest };
 }
 
 export interface ItemVerdictProgress {

@@ -21,7 +21,11 @@ import type { CompanyUserProfile } from "../lib/company-members";
 import { queryKeys } from "../lib/queryKeys";
 import { cn, relativeTime } from "../lib/utils";
 import { FoldCurtain } from "./FoldCurtain";
-import { DocumentAnnotationsCountChip, IssueDocumentAnnotations } from "./IssueDocumentAnnotations";
+import {
+  DocumentAnnotationsCountChip,
+  IssueDocumentAnnotations,
+  type IssueDocumentAnnotationsProps,
+} from "./IssueDocumentAnnotations";
 import type { DocumentAnnotationTarget } from "@/api/document-annotations";
 import { MarkdownBody, type MarkdownExternalReferenceMap } from "./MarkdownBody";
 import { MarkdownEditor, type MentionOption } from "./MarkdownEditor";
@@ -47,6 +51,7 @@ type DraftState = {
   body: string;
   baseRevisionId: string | null;
   isNew: boolean;
+  fixedKey?: boolean;
 };
 
 type DocumentConflictState = {
@@ -210,7 +215,10 @@ function makeIssueDocumentSubject(issue: Issue): DocumentSubjectConfig {
     listDocuments: () => issuesApi.listDocuments(issue.id),
     listDocumentRevisions: (key) => issuesApi.listDocumentRevisions(issue.id, key),
     getDocument: (key) => issuesApi.getDocument(issue.id, key),
-    upsertDocument: (key, data) => issuesApi.upsertDocument(issue.id, key, data),
+    upsertDocument: (key, data) => issuesApi.upsertDocument(issue.id, key, {
+      ...data,
+      changeSummary: `${data.baseRevisionId ? "Updated" : "Created"} ${key}`,
+    }),
     deleteDocument: (key) => issuesApi.deleteDocument(issue.id, key),
     restoreDocumentRevision: (key, revisionId) => issuesApi.restoreDocumentRevision(issue.id, key, revisionId),
     setDocumentLock: (key, locked) =>
@@ -259,6 +267,11 @@ export function IssueDocumentsSection({
   defaultAnnotationFocusedThreadIds,
   forceEditDocumentKey,
   externalReferences,
+  documentKeys,
+  documentCreateOptions,
+  sectionTitle,
+  annotationPanelPlacement,
+  renderDocumentFooter,
 }: {
   issue?: Issue;
   subject?: DocumentSubjectConfig;
@@ -274,6 +287,24 @@ export function IssueDocumentsSection({
     vote: FeedbackVoteValue,
     options?: { allowSharing?: boolean; reason?: string },
   ) => Promise<void>;
+  /** Limit the section to these document keys, in this display order. */
+  documentKeys?: readonly string[];
+  /** Replace free-form creation with explicit canonical document actions. */
+  documentCreateOptions?: readonly {
+    key: string;
+    label: string;
+    title?: string | null;
+  }[];
+  sectionTitle?: string;
+  annotationPanelPlacement?: IssueDocumentAnnotationsProps["panelPlacement"];
+  renderDocumentFooter?: (context: {
+    document: IssueDocument;
+    displayedRevisionNumber: number;
+    historicalPreview: boolean;
+    draftConflicted: boolean;
+    draftSaving: boolean;
+    draftUnsaved: boolean;
+  }) => ReactNode;
   extraActions?: ReactNode;
   agentMap?: ReadonlyMap<string, Pick<Agent, "id" | "name"> & Partial<Pick<Agent, "icon">>>;
   userProfileMap?: ReadonlyMap<string, CompanyUserProfile>;
@@ -327,7 +358,12 @@ export function IssueDocumentsSection({
     runSave,
   } = useAutosaveIndicator();
 
-  const { data: documents } = useQuery({
+  const {
+    data: documents,
+    isLoading: documentsLoading,
+    isError: documentsError,
+    refetch: refetchDocuments,
+  } = useQuery({
     queryKey: documentSubject.documentsQueryKey,
     queryFn: documentSubject.listDocuments,
   });
@@ -436,12 +472,19 @@ export function IssueDocumentsSection({
   });
 
   const sortedDocuments = useMemo(() => {
-    return (documents ?? []).filter((doc) => !documentSubject.hideSystemDocuments || !isSystemIssueDocumentKey(doc.key)).sort((a, b) => {
-      if (a.key === "plan" && b.key !== "plan") return -1;
-      if (a.key !== "plan" && b.key === "plan") return 1;
-      return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime();
-    });
-  }, [documentSubject.hideSystemDocuments, documents]);
+    return (documents ?? [])
+      .filter((doc) =>
+        (!documentSubject.hideSystemDocuments || !isSystemIssueDocumentKey(doc.key))
+        && (!documentKeys || documentKeys.includes(doc.key)))
+      .sort((a, b) => {
+        if (documentKeys) {
+          return documentKeys.indexOf(a.key) - documentKeys.indexOf(b.key);
+        }
+        if (a.key === "plan" && b.key !== "plan") return -1;
+        if (a.key !== "plan" && b.key === "plan") return 1;
+        return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime();
+      });
+  }, [documentKeys, documentSubject.hideSystemDocuments, documents]);
 
   const feedbackVoteByTargetId = useMemo(() => {
     const map = new Map<string, FeedbackVoteValue>();
@@ -453,7 +496,9 @@ export function IssueDocumentsSection({
   }, [feedbackVotes]);
 
   const hasRealPlan = sortedDocuments.some((doc) => doc.key === "plan");
-  const isEmpty = sortedDocuments.length === 0 && !documentSubject.legacyPlanDocument;
+  const showLegacyPlan = (!documentKeys || documentKeys.includes("plan"))
+    && Boolean(documentSubject.legacyPlanDocument);
+  const isEmpty = sortedDocuments.length === 0 && !showLegacyPlan;
   const newDocumentKeyError =
     draft?.isNew && draft.key.trim().length > 0 && !DOCUMENT_KEY_PATTERN.test(draft.key.trim())
       ? "Use lowercase letters, numbers, -, or _, and start with a letter or number."
@@ -469,15 +514,20 @@ export function IssueDocumentsSection({
     markDirty();
   }, [markDirty]);
 
-  const beginNewDocument = () => {
+  const beginNewDocument = (option?: {
+    key: string;
+    label: string;
+    title?: string | null;
+  }) => {
     resetAutosaveState();
     setDocumentConflict(null);
     setDraft({
-      key: "",
-      title: "",
+      key: option?.key ?? "",
+      title: option?.title ?? "",
       body: "",
       baseRevisionId: null,
       isNew: true,
+      fixedKey: Boolean(option),
     });
     setError(null);
   };
@@ -887,33 +937,71 @@ export function IssueDocumentsSection({
       return [...current, key];
     });
   }, []);
+  const missingDocumentCreateOptions = (documentCreateOptions ?? []).filter(
+    (option) => !sortedDocuments.some((doc) => doc.key === option.key),
+  );
+  const activeCreateOption = draft?.isNew
+    ? documentCreateOptions?.find((option) => option.key === draft.key)
+    : null;
+  const resolvedSectionTitle = sectionTitle ?? (!isEmpty || draft?.isNew ? "Documents" : null);
+  const createDisabled = Boolean(draft) || documentsLoading || documentsError;
 
   return (
     <div className="space-y-3">
-      {isEmpty && !draft?.isNew ? (
-        <div className="flex flex-wrap items-center justify-end gap-2 min-w-0">
+      <div className="flex flex-wrap items-center gap-2 min-w-0">
+        {resolvedSectionTitle ? (
+          <h3 className="w-full text-sm font-medium text-muted-foreground shrink-0 sm:w-auto">
+            {resolvedSectionTitle}
+          </h3>
+        ) : null}
+        <div className={cn(
+          "flex flex-wrap items-center gap-2 min-w-0",
+          resolvedSectionTitle ? "sm:ml-auto" : "ml-auto",
+        )}>
           {extraActions}
-          <Button variant="outline" size="sm" onClick={beginNewDocument} className="shrink-0">
-            <Plus className="mr-1.5 h-3.5 w-3.5" />
-            <span className="hidden sm:inline">New document</span>
-            <span className="sm:hidden">New</span>
-          </Button>
-        </div>
-      ) : (
-        <div className="flex flex-wrap items-center gap-2 min-w-0">
-          <h3 className="w-full text-sm font-medium text-muted-foreground shrink-0 sm:w-auto">Documents</h3>
-          <div className="flex flex-wrap items-center gap-2 min-w-0 sm:ml-auto">
-            {extraActions}
-            <Button variant="outline" size="sm" onClick={beginNewDocument} className="shrink-0">
+          {documentCreateOptions ? missingDocumentCreateOptions.map((option) => (
+            <Button
+              key={option.key}
+              variant="outline"
+              size="sm"
+              onClick={() => beginNewDocument(option)}
+              disabled={createDisabled}
+              className="shrink-0"
+            >
+              <Plus className="mr-1.5 h-3.5 w-3.5" />
+              {`Add ${option.label}`}
+            </Button>
+          )) : (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => beginNewDocument()}
+              disabled={createDisabled}
+              className="shrink-0"
+            >
               <Plus className="mr-1.5 h-3.5 w-3.5" />
               <span className="hidden sm:inline">New document</span>
               <span className="sm:hidden">New</span>
             </Button>
-          </div>
+          )}
         </div>
-      )}
+      </div>
 
-      {error && <p className="text-xs text-destructive">{error}</p>}
+      {documentsLoading ? (
+        <p className="text-xs text-muted-foreground" role="status">Loading documents…</p>
+      ) : null}
+      {documentsError ? (
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <p className="text-xs text-destructive" role="alert">
+            {documents ? "Documents could not refresh. Existing content may be out of date." : "Documents could not be loaded."}
+          </p>
+          <Button variant="ghost" size="sm" onClick={() => void refetchDocuments()}>
+            Retry
+          </Button>
+        </div>
+      ) : null}
+
+      {error && <p className="text-xs text-destructive" role="alert">{error}</p>}
 
       {draft?.isNew && (
         <div
@@ -921,18 +1009,31 @@ export function IssueDocumentsSection({
           onBlurCapture={handleDraftBlur}
           onKeyDown={handleDraftKeyDown}
         >
-          <Input
-            autoFocus
-            value={draft.key}
-            onChange={(event) =>
-              setDraft((current) => current ? { ...current, key: event.target.value.toLowerCase() } : current)
-            }
-            placeholder="Document key"
-          />
-          {newDocumentKeyError && (
-            <p className="text-xs text-destructive">{newDocumentKeyError}</p>
+          {draft.fixedKey ? (
+            <div className="min-w-0">
+              <p className="text-sm font-medium text-foreground">
+                {`New ${activeCreateOption?.label ?? draft.key}`}
+              </p>
+              <p className="truncate font-mono text-(length:--text-micro) text-muted-foreground">
+                {draft.key}
+              </p>
+            </div>
+          ) : (
+            <>
+              <Input
+                autoFocus
+                value={draft.key}
+                onChange={(event) =>
+                  setDraft((current) => current ? { ...current, key: event.target.value.toLowerCase() } : current)
+                }
+                placeholder="Document key"
+              />
+              {newDocumentKeyError && (
+                <p className="text-xs text-destructive">{newDocumentKeyError}</p>
+              )}
+            </>
           )}
-          {!isPlanKey(draft.key) && (
+          {!draft.fixedKey && !isPlanKey(draft.key) && (
             <Input
               value={draft.title}
               onChange={(event) =>
@@ -964,13 +1065,17 @@ export function IssueDocumentsSection({
               onClick={() => void commitDraft(draft, { clearAfterSave: false, trackAutosave: false })}
               disabled={upsertDocument.isPending}
             >
-              {upsertDocument.isPending ? "Saving..." : "Create document"}
+              {upsertDocument.isPending
+                ? "Saving..."
+                : activeCreateOption
+                  ? `Create ${activeCreateOption.label}`
+                  : "Create document"}
             </Button>
           </div>
         </div>
       )}
 
-      {!hasRealPlan && documentSubject.legacyPlanDocument ? (
+      {!hasRealPlan && showLegacyPlan && documentSubject.legacyPlanDocument ? (
         <div
           id="document-plan"
           className={cn(
@@ -1015,6 +1120,12 @@ export function IssueDocumentsSection({
           const canVoteOnDocument = Boolean(doc.latestRevisionId && doc.updatedByAgentId && !doc.updatedByUserId && onVote);
           const lockActionPending = setDocumentLock.isPending && setDocumentLock.variables?.key === doc.key;
           const annotationTarget = annotationTargetForKey(doc.key);
+          const draftUnsaved = documentHasUnsavedChanges(doc, activeDraft);
+          const draftSaving = (
+            upsertDocument.isPending && upsertDocument.variables?.key === doc.key
+          ) || (
+            autosaveDocumentKey === doc.key && autosaveState === "saving"
+          );
 
           return (
             <div
@@ -1306,15 +1417,13 @@ export function IssueDocumentsSection({
                           target={annotationTarget}
                           doc={doc}
                           bodyMarkdown={displayedBody}
-                          draftDirty={Boolean(activeDraft) && (
-                            (activeDraft?.body ?? doc.body) !== doc.body
-                            || (autosaveDocumentKey === doc.key && autosaveState === "saving")
-                          )}
+                          draftDirty={draftUnsaved || draftSaving}
                           draftConflicted={Boolean(activeConflict)}
                           historicalPreview={isHistoricalPreview}
                           locationHash={location.hash}
                           panelOpen={annotationPanelOpenKeys.includes(doc.key)}
                           onPanelOpenChange={(next) => setAnnotationPanelOpen(doc.key, next)}
+                          panelPlacement={annotationPanelPlacement}
                           agentMap={agentMap}
                           userProfileMap={userProfileMap}
                           defaultFocusedThreadId={defaultAnnotationFocusedThreadIds?.[doc.key]}
@@ -1363,6 +1472,14 @@ export function IssueDocumentsSection({
                       }
                     />
                   ) : null}
+                  {renderDocumentFooter?.({
+                    document: doc,
+                    displayedRevisionNumber,
+                    historicalPreview: isHistoricalPreview,
+                    draftConflicted: Boolean(activeConflict),
+                    draftSaving,
+                    draftUnsaved,
+                  })}
                 </div>
               ) : null}
 

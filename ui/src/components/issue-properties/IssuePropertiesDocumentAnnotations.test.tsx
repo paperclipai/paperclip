@@ -5,7 +5,10 @@ import { createRoot } from "react-dom/client";
 import type { Issue, IssueDocument } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IssuePropertiesArtifactsTab } from "./IssuePropertiesArtifactsTab";
-import { IssuePropertiesPlansTab } from "./IssuePropertiesPlansTab";
+
+const queryFixture = vi.hoisted(() => ({
+  documents: [] as IssueDocument[],
+}));
 
 const issueDocument: IssueDocument = {
   id: "document-1",
@@ -28,13 +31,55 @@ const issueDocument: IssueDocument = {
   updatedAt: new Date("2026-06-01T00:00:00.000Z"),
 };
 
+queryFixture.documents = [
+  issueDocument,
+  {
+    ...issueDocument,
+    id: "document-plan",
+    key: "plan",
+    title: "Plan",
+    body: "Plan annotation target",
+  },
+  {
+    ...issueDocument,
+    id: "document-specification",
+    key: "specification",
+    title: "Specification",
+    body: "Specification annotation target",
+  },
+];
+
 const issue = { id: "issue-1", identifier: "PAP-522", workMode: "standard" } as Issue;
 
-vi.mock("@tanstack/react-query", () => ({ useQuery: () => ({ data: [] }) }));
-vi.mock("@/hooks/useIssuePlanDocument", () => ({
-  useIssuePlanDocument: () => ({ data: { ...issueDocument, key: "plan" }, isLoading: false }),
+vi.mock("@tanstack/react-query", () => ({
+  useQuery: ({ queryKey }: { queryKey?: readonly unknown[] }) => ({
+    data: queryKey?.[1] === "documents" ? queryFixture.documents : [],
+    isLoading: false,
+    isError: false,
+    isFetching: false,
+    refetch: vi.fn(),
+  }),
+  useMutation: () => ({
+    mutate: vi.fn(),
+    mutateAsync: vi.fn(),
+    isPending: false,
+    variables: undefined,
+    error: null,
+  }),
+  useQueryClient: () => ({
+    invalidateQueries: vi.fn(),
+    setQueryData: vi.fn(),
+  }),
 }));
-vi.mock("@/hooks/useIssueDocuments", () => ({ useIssueDocuments: () => ({ data: [issueDocument] }) }));
+vi.mock("@/hooks/useIssuePlanDocument", () => ({
+  useIssuePlanDocument: () => ({
+    data: queryFixture.documents.find((document) => document.key === "plan"),
+    isLoading: false,
+  }),
+}));
+vi.mock("@/hooks/useIssueDocuments", () => ({
+  useIssueDocuments: () => ({ data: queryFixture.documents }),
+}));
 vi.mock("@/lib/router", () => ({
   Link: ({ children, to }: { children: React.ReactNode; to: string }) => <a href={to}>{children}</a>,
   useLocation: () => ({ hash: "" }),
@@ -64,13 +109,6 @@ describe("issue properties document annotation mounting", () => {
     container.remove();
   });
 
-  it("uses the issue document key on the Plan tab", async () => {
-    const root = createRoot(container);
-    await act(async () => root.render(<IssuePropertiesPlansTab issue={issue} />));
-    expect(container.querySelector('[data-testid="annotation-surface-plan"]')?.getAttribute("data-revision-id"))
-      .toBe("revision-1");
-    await act(async () => root.unmount());
-  });
 
   it("shows the count while collapsed and mounts the same target when expanded on Artifacts", async () => {
     const root = createRoot(container);

@@ -21,7 +21,7 @@ import { issuesApi } from "../../api/issues";
 import { useIssuePlanDocument } from "@/hooks/useIssuePlanDocument";
 import { useIssueDocuments } from "@/hooks/useIssueDocuments";
 import { useStreamlinedUiEnabled } from "@/hooks/useStreamlinedUiEnabled";
-import { selectAgentArtifactAttachments } from "@/lib/issue-artifacts";
+import { isPlanningDocumentKey, selectAgentArtifactAttachments } from "@/lib/issue-artifacts";
 import { projectsApi } from "../../api/projects";
 import { useCompany } from "../../context/CompanyContext";
 import { useSidebar } from "../../context/SidebarContext";
@@ -277,8 +277,9 @@ export function IssueProperties({
     }
     setPaneHeaderSlot(document.getElementById(PROPERTIES_PANE_HEADER_SLOT_ID));
   }, [taskChatShellEnabled, inline]);
-  // A Plan tab represents materialized plan content, not merely planning mode.
-  // Same query keys as the tab bodies, so these share their cached fetches.
+  // Planning-mode tasks need the tab before either canonical document exists
+  // so the board can author the first durable draft. These queries share cache
+  // keys with the tab body.
   const { data: paneTabPlanDocument } = useIssuePlanDocument(
     taskChatShellEnabled ? issue.id : null,
   );
@@ -298,29 +299,30 @@ export function IssueProperties({
     enabled: taskChatShellEnabled,
   });
   const { data: paneTabDocuments } = useIssueDocuments(taskChatShellEnabled ? issue.id : null);
+  const paneTabHasPlanningDocument = (paneTabDocuments ?? []).some((doc) =>
+    isPlanningDocumentKey(doc.key),
+  );
   // Proxy `artifact-review-*` documents surface only through their Work
-  // product row, so they must not summon the Plan or Documents surfaces.
-  const paneTabStandaloneDocuments = (paneTabDocuments ?? []).filter(
-    (doc) => !isArtifactReviewDocumentKey(doc.key),
+  // product row. Planning documents surface only through the Plans tab.
+  const paneTabHasArtifactDocument = (paneTabDocuments ?? []).some(
+    (doc) => !isArtifactReviewDocumentKey(doc.key) && !isPlanningDocumentKey(doc.key),
   );
   const hasPlanTab =
-    Boolean(paneTabPlanDocument)
+    issue.workMode === "planning"
+    || Boolean(paneTabPlanDocument)
     || (paneTabAcceptedPlans?.length ?? 0) > 0
-    || paneTabStandaloneDocuments.length > 0;
-  // Artifacts covers the same three sources the tab body composes: work
-  // products, documents (redundant with the Plan tab, intentionally), and
-  // agent-created attachments. User comment uploads stay thread-only and
-  // no longer summon the tab.
+    || paneTabHasPlanningDocument;
+  // Artifacts covers Work products, non-planning documents, and agent-created
+  // attachments. User comment uploads stay thread-only.
   const hasArtifactsTab =
     (paneTabWorkProducts?.length ?? 0) > 0
-    || paneTabStandaloneDocuments.length > 0
+    || paneTabHasArtifactDocument
     || selectAgentArtifactAttachments(paneTabAttachments, paneTabWorkProducts).length > 0;
   const [paneTab, setPaneTab] = useState<IssuePaneTab>("properties");
   const [closedPaneTabs, setClosedPaneTabs] = useState<Set<IssuePaneTab>>(() => new Set());
-  // Once a plan document exists, surface it: switch the pane to the Plan tab so
-  // the write-up is exposed alongside the plan-approval card, instead of leaving
-  // the user on Properties. Only auto-switch until the user picks a tab by hand —
-  // after that their choice wins. Ref-guarded so it fires once per mount.
+  // Surface planning work as soon as the mode or a canonical document makes
+  // the tab available. Only auto-switch until the user picks a tab by hand;
+  // after that their choice wins.
   const paneTabUserChosenRef = useRef(false);
   const handlePaneTabChange = useCallback((value: string) => {
     paneTabUserChosenRef.current = true;

@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   buildAnsweredQuestionsDeliveryText,
+  buildPlanningDocumentReviewRequest,
+  deriveCurrentIssueDocumentReview,
   buildIssueThreadInteractionSummary,
   buildSuggestedTaskTree,
   collectSuggestedTaskClientKeys,
@@ -19,6 +21,7 @@ import type {
   AskUserQuestionsInteraction,
   AskUserQuestionsQuestion,
   IssueThreadInteraction,
+  RequestConfirmationInteraction,
   RequestItemVerdictsInteraction,
 } from "./issue-thread-interactions";
 
@@ -711,5 +714,142 @@ describe("isSupersededByNewerSiblingInteraction", () => {
     });
     expect(isSupersededByNewerSiblingInteraction(degenerate)).toBe(false);
     expect(shouldHideInteractionCard(degenerate)).toBe(true);
+  });
+});
+
+function documentReviewInteraction(args: {
+  id: string;
+  status: RequestConfirmationInteraction["status"];
+  revisionId: string;
+  revisionNumber: number;
+  createdAt: string;
+}): RequestConfirmationInteraction {
+  return {
+    id: args.id,
+    companyId: "company-1",
+    issueId: "issue-1",
+    kind: "request_confirmation",
+    status: args.status,
+    continuationPolicy: "wake_assignee",
+    ...resolverPolicyFields,
+    resolvedByUserId: args.status === "accepted" ? "board-user" : null,
+    createdAt: args.createdAt,
+    updatedAt: args.createdAt,
+    payload: {
+      version: 1,
+      prompt: "Review this revision",
+      target: {
+        type: "issue_document",
+        issueId: "issue-1",
+        documentId: "document-1",
+        key: "plan",
+        revisionId: args.revisionId,
+        revisionNumber: args.revisionNumber,
+      },
+    },
+    result: null,
+  };
+}
+
+describe("deriveCurrentIssueDocumentReview", () => {
+  const currentDocument = {
+    id: "document-1",
+    issueId: "issue-1",
+    key: "plan",
+    latestRevisionId: "revision-2",
+    latestRevisionNumber: 2,
+  };
+
+  it("does not present agent acceptance as human approval", () => {
+    const interaction = documentReviewInteraction({
+      id: "agent-accepted",
+      status: "accepted",
+      revisionId: "revision-2",
+      revisionNumber: 2,
+      createdAt: "2026-09-09T10:00:00.000Z",
+    });
+    interaction.resolvedByUserId = null;
+    expect(deriveCurrentIssueDocumentReview([interaction], currentDocument).state).toBe("closed");
+    interaction.resolvedByUserId = "board-user";
+    expect(deriveCurrentIssueDocumentReview([interaction], currentDocument).state).toBe("approved");
+  });
+
+  it("never treats an approval for a prior revision as current", () => {
+    const priorApproval = documentReviewInteraction({
+      id: "prior-approval",
+      status: "accepted",
+      revisionId: "revision-1",
+      revisionNumber: 1,
+      createdAt: "2026-09-09T10:00:00.000Z",
+    });
+
+    expect(deriveCurrentIssueDocumentReview([priorApproval], currentDocument)).toEqual({
+      state: "unreviewed",
+      interaction: null,
+    });
+  });
+
+  it("uses the newest review aimed at the exact current revision", () => {
+    const approval = documentReviewInteraction({
+      id: "approval",
+      status: "accepted",
+      revisionId: "revision-2",
+      revisionNumber: 2,
+      createdAt: "2026-09-09T10:00:00.000Z",
+    });
+    const pending = documentReviewInteraction({
+      id: "pending",
+      status: "pending",
+      revisionId: "revision-2",
+      revisionNumber: 2,
+      createdAt: "2026-09-09T10:01:00.000Z",
+    });
+
+    const review = deriveCurrentIssueDocumentReview([pending, approval], currentDocument);
+    expect(review.state).toBe("waiting");
+    expect(review.interaction?.id).toBe("pending");
+  });
+
+  it("does not fall back to an older approval after a newer review closes", () => {
+    const approval = documentReviewInteraction({
+      id: "approval",
+      status: "accepted",
+      revisionId: "revision-2",
+      revisionNumber: 2,
+      createdAt: "2026-09-09T10:00:00.000Z",
+    });
+    const closed = documentReviewInteraction({
+      id: "closed",
+      status: "expired",
+      revisionId: "revision-2",
+      revisionNumber: 2,
+      createdAt: "2026-09-09T10:02:00.000Z",
+    });
+
+    const review = deriveCurrentIssueDocumentReview([approval, closed], currentDocument);
+    expect(review.state).toBe("closed");
+    expect(review.interaction?.id).toBe("closed");
+  });
+});
+
+describe("buildPlanningDocumentReviewRequest", () => {
+  const baseDocument = {
+    id: "document-1",
+    issueId: "issue-1",
+    latestRevisionId: "revision-4",
+    latestRevisionNumber: 4,
+  };
+
+
+  it("rejects non-canonical and unsaved document targets", () => {
+    expect(() => buildPlanningDocumentReviewRequest({
+      ...baseDocument,
+      key: "implementation-plan",
+    })).toThrow();
+    expect(() => buildPlanningDocumentReviewRequest({
+      ...baseDocument,
+      key: "plan",
+      latestRevisionId: null,
+    })).toThrow();
   });
 });

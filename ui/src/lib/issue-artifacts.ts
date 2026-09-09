@@ -79,3 +79,11 @@ export function documentDisplayTitle(
   const words = doc.key.replace(/[-_]+/g, " ").trim();
   return words.charAt(0).toUpperCase() + words.slice(1);
 }
+
+export const PLANNING_DOCUMENT_KEYS = ["specification", "plan"] as const;
+export type PlanningDocumentKey = (typeof PLANNING_DOCUMENT_KEYS)[number];
+
+/** Canonical planning documents share the Plans surface rather than Artifacts. */
+export function isPlanningDocumentKey(key: string): key is PlanningDocumentKey {
+  return (PLANNING_DOCUMENT_KEYS as readonly string[]).includes(key);
+}

@@ -5,6 +5,7 @@ import type {
   Approval,
   CompactIssue,
   CreateIssueTreeHold,
+  CreateIssueThreadInteraction,
   DocumentRevision,
   FeedbackTargetType,
   FeedbackTrace,
@@ -276,7 +277,7 @@ export const issuesApi = {
     api.get<IssueThreadInteraction[]>(`/issues/${id}/interactions`),
   listAcceptedPlanDecompositions: (id: string) =>
     api.get<AcceptedPlanDecompositionSummary[]>(`/issues/${id}/accepted-plan-decompositions`),
-  createInteraction: (id: string, data: Record<string, unknown>) =>
+  createInteraction: (id: string, data: CreateIssueThreadInteraction) =>
     api.post<IssueThreadInteraction>(`/issues/${id}/interactions`, data),
   acceptInteraction: (
     id: string,

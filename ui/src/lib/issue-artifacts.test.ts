@@ -4,6 +4,7 @@ import {
   documentDisplayTitle,
   getAttachmentBackedWorkProductAttachmentIds,
   isAgentAttachment,
+  isPlanningDocumentKey,
   selectAgentArtifactAttachments,
   workProductHref,
 } from "./issue-artifacts";
@@ -205,5 +206,14 @@ describe("documentDisplayTitle", () => {
   it("humanizes the key when no title is set", () => {
     expect(documentDisplayTitle({ key: "synthesis", title: null })).toBe("Synthesis");
     expect(documentDisplayTitle({ key: "design_notes-v2", title: "  " })).toBe("Design notes v2");
+  });
+});
+
+describe("isPlanningDocumentKey", () => {
+  it("keeps only the canonical specification and plan on the planning surface", () => {
+    expect(isPlanningDocumentKey("specification")).toBe(true);
+    expect(isPlanningDocumentKey("plan")).toBe(true);
+    expect(isPlanningDocumentKey("qa-evidence")).toBe(false);
+    expect(isPlanningDocumentKey("implementation-plan")).toBe(false);
   });
 });

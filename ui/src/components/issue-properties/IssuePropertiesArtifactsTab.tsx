@@ -29,6 +29,7 @@ import { queryKeys } from "@/lib/queryKeys";
 import { useIssueDocuments } from "@/hooks/useIssueDocuments";
 import {
   documentDisplayTitle,
+  isPlanningDocumentKey,
   selectAgentArtifactAttachments,
   workProductHref,
 } from "@/lib/issue-artifacts";
@@ -378,9 +379,12 @@ export function IssuePropertiesArtifactsTab({ issue, documentDeepLink, onOpenDoc
   });
 
   const workProductRows = workProducts ?? [];
-  // Proxy review documents (`artifact-review-*`) present only through their
-  // originating Work product row, never as standalone Documents rows.
-  const documentRows = (documents ?? []).filter((doc) => !isArtifactReviewDocumentKey(doc.key));
+  // Proxy reviews stay attached to their Work product. Canonical specification
+  // and plan documents live together on the Plans surface, not as duplicate
+  // rows in Artifacts.
+  const documentRows = (documents ?? []).filter(
+    (doc) => !isArtifactReviewDocumentKey(doc.key) && !isPlanningDocumentKey(doc.key),
+  );
   const reviewDocsByKey = new Map((documents ?? []).map((doc) => [doc.key, doc]));
   const fileRows = selectAgentArtifactAttachments(attachments, workProducts);
   const runsById = useMemo(() => new Map((runs ?? []).map((run) => [run.runId, run])), [runs]);
