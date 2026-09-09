@@ -33,6 +33,7 @@ import type {
 import {
   asNumber,
   asString,
+  asStringArray,
   parseObject,
 } from "@paperclipai/adapter-utils/server-utils";
 import { createWorkspaceRestoreTeardown } from "@paperclipai/adapter-utils/workspace-restore-teardown";
@@ -137,8 +138,17 @@ export function buildCodexAcpConfig(config: Record<string, unknown>): Record<str
     typeof config.model === "string" ? config.model : "",
   );
 
+  const env = parseObject(config.env);
+  let networkAccess = env.PAPERCLIP_CODEX_ACP_NETWORK_ACCESS !== "false";
+  const extraArgs = asStringArray(config.extraArgs);
+  for (const arg of extraArgs.length > 0 ? extraArgs : asStringArray(config.args)) {
+    const match = /^(?:(?:--config=|-c=?)\s*)?sandbox_workspace_write\.network_access\s*=\s*(true|false)\s*$/.exec(arg);
+    if (match) networkAccess = match[1] === "true";
+  }
+
   return {
     ...config,
+    env: { ...env, PAPERCLIP_CODEX_ACP_NETWORK_ACCESS: String(networkAccess) },
     agent: "codex",
     mode,
     permissionMode,

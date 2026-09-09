@@ -61,6 +61,12 @@ the same origin as the artifact as an independent trust anchor.
 Each installer flag also has a `PAPERCLIP_INSTALL_*` environment-variable
 equivalent. This helps where passing arguments through a pipe is awkward.
 
+Codex ACP workspace sessions enable networking so agents can report task outcomes.
+To disable it explicitly, set `extraArgs` to
+`["-c", "sandbox_workspace_write.network_access=false"]`, or set
+`env.PAPERCLIP_CODEX_ACP_NETWORK_ACCESS="false"`. Execution-target network denial
+also remains enforced. Read-only ACP mode remains read-only.
+
 ## Node runtime used by background services
 
 Check the Node executable used by the running service, not only `node --version`

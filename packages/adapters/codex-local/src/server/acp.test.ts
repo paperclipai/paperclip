@@ -464,6 +464,24 @@ describe("codex_local ACP lane", () => {
     });
   });
 
+  it("enables workspace networking for ACP without changing other env settings", () => {
+    expect(buildCodexAcpConfig({ env: { CUSTOM: "kept" } })).toMatchObject({
+      env: { CUSTOM: "kept", PAPERCLIP_CODEX_ACP_NETWORK_ACCESS: "true" },
+    });
+  });
+
+  it.each([
+    { env: { PAPERCLIP_CODEX_ACP_NETWORK_ACCESS: "false" } },
+    { extraArgs: ["-c", "sandbox_workspace_write.network_access=false"] },
+    { extraArgs: ["--config=sandbox_workspace_write.network_access=false"] },
+    { args: ["-csandbox_workspace_write.network_access=false"] },
+    { extraArgs: ["-c", "sandbox_workspace_write.network_access=true", "-c", "sandbox_workspace_write.network_access=false"] },
+  ])("preserves explicit ACP network denial %j", (config) => {
+    expect(buildCodexAcpConfig(config)).toMatchObject({
+      env: { PAPERCLIP_CODEX_ACP_NETWORK_ACCESS: "false" },
+    });
+  });
+
   it("maps Codex config to the ACPX Codex target", () => {
     expect(buildCodexAcpConfig({
       engine: "acp",
