@@ -201,13 +201,22 @@ grep -q '^3\.2\.' "$RESULTS_DIR/bash32.version" || {
 }
 
 # If this ever succeeds, the lane is running a newer bash and every assertion
-# below has quietly stopped testing anything.
+# below has quietly stopped testing anything. Match the error text rather than
+# just a non-zero exit: docker failing to start (125) or a missing binary (127)
+# would also "fail" here without proving the shell rejected the expansion.
 echo "==> bash 4 expansions fail under this shell"
 # shellcheck disable=SC2016 # the bash 4 expansion is the payload, not a bug
-if run_with_bash32 bash32-canary bash32 -c 'value=ABC; printf "%s" "${value,,}"' 2>/dev/null; then
+if run_with_bash32 bash32-canary bash32 -c 'value=ABC; printf "%s" "${value,,}"' \
+  >"$RESULTS_DIR/bash32-canary.out" 2>&1; then
   echo "Expected \${value,,} to be a bad substitution under bash 3.2" >&2
+  cat "$RESULTS_DIR/bash32-canary.out" >&2
   exit 1
 fi
+grep -qi 'bad substitution' "$RESULTS_DIR/bash32-canary.out" || {
+  echo "Canary failed, but not with 'bad substitution' — the lane may be broken rather than proving anything" >&2
+  cat "$RESULTS_DIR/bash32-canary.out" >&2
+  exit 1
+}
 
 echo "==> installer runs end-to-end under bash 3.2"
 run_with_bash32 bash32-install bash32 /paperclip-scripts/install.sh --no-prompt --no-onboard
