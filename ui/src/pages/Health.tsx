@@ -61,6 +61,13 @@ import {
   useDeleteMedicationLog,
   type MedicationLog,
 } from "../hooks/useMedications";
+import {
+  useLabResults,
+  useLogLabResult,
+  useDeleteLabResult,
+  LAB_MARKER_PRESETS,
+  type LabResult,
+} from "../hooks/useLabResults";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { EmptyState } from "../components/EmptyState";
@@ -2302,12 +2309,311 @@ function MedicationsView({ companyId }: { companyId: string }) {
   );
 }
 
+// ---- Lab Results ----
+
+function inRange(result: LabResult): boolean | null {
+  const val = parseFloat(result.value);
+  const min = result.optimalMin !== null ? parseFloat(result.optimalMin) : null;
+  const max = result.optimalMax !== null ? parseFloat(result.optimalMax) : null;
+  if (min === null && max === null) return null;
+  if (min !== null && val < min) return false;
+  if (max !== null && val > max) return false;
+  return true;
+}
+
+function LabResultRow({ result, onDelete }: { result: LabResult; onDelete: (id: string) => void }) {
+  const status = inRange(result);
+  return (
+    <div className="flex items-center gap-3 py-3">
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-2">
+          <span className="text-sm font-medium truncate">{result.markerName}</span>
+          {status === true && (
+            <span className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-400 shrink-0">
+              In range
+            </span>
+          )}
+          {status === false && (
+            <span className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-400 shrink-0">
+              Out of range
+            </span>
+          )}
+        </div>
+        <p className="text-xs text-muted-foreground">
+          {result.measuredDate}
+          {result.source && ` · ${result.source}`}
+          {result.optimalMin !== null && result.optimalMax !== null && (
+            <> · optimal {result.optimalMin}–{result.optimalMax} {result.unit}</>
+          )}
+          {result.optimalMin !== null && result.optimalMax === null && (
+            <> · optimal ≥ {result.optimalMin} {result.unit}</>
+          )}
+          {result.optimalMin === null && result.optimalMax !== null && (
+            <> · optimal ≤ {result.optimalMax} {result.unit}</>
+          )}
+        </p>
+        {result.notes && <p className="text-xs text-muted-foreground mt-0.5 italic">{result.notes}</p>}
+      </div>
+      <span className="text-sm font-medium tabular-nums shrink-0">
+        {result.value} <span className="text-muted-foreground font-normal">{result.unit}</span>
+      </span>
+      <button
+        className="text-muted-foreground hover:text-destructive transition-colors shrink-0"
+        onClick={() => onDelete(result.id)}
+        aria-label="Delete lab result"
+      >
+        <Trash2 className="w-3.5 h-3.5" />
+      </button>
+    </div>
+  );
+}
+
+function LabResultsView({ companyId }: { companyId: string }) {
+  const today = new Date().toISOString().slice(0, 10);
+  const oneYearAgo = new Date(Date.now() - 364 * 86_400_000).toISOString().slice(0, 10);
+
+  const { data, isLoading, error } = useLabResults(companyId, oneYearAgo, today);
+  const logMutation = useLogLabResult();
+  const deleteMutation = useDeleteLabResult();
+
+  const [showForm, setShowForm] = useState(false);
+  const [formDate, setFormDate] = useState(today);
+  const [formMarker, setFormMarker] = useState("");
+  const [formCustomMarker, setFormCustomMarker] = useState("");
+  const [formValue, setFormValue] = useState("");
+  const [formUnit, setFormUnit] = useState("");
+  const [formOptimalMin, setFormOptimalMin] = useState("");
+  const [formOptimalMax, setFormOptimalMax] = useState("");
+  const [formSource, setFormSource] = useState("");
+  const [formNotes, setFormNotes] = useState("");
+  const [formError, setFormError] = useState<string | null>(null);
+
+  const isCustomMarker = formMarker === "__custom__";
+  const effectiveMarkerName = isCustomMarker ? formCustomMarker.trim() : formMarker;
+
+  function applyPreset(name: string) {
+    const preset = LAB_MARKER_PRESETS.find((p) => p.name === name);
+    if (preset) {
+      setFormUnit(preset.unit);
+      setFormOptimalMin(preset.optimalMin !== null ? String(preset.optimalMin) : "");
+      setFormOptimalMax(preset.optimalMax !== null ? String(preset.optimalMax) : "");
+    } else {
+      setFormUnit("");
+      setFormOptimalMin("");
+      setFormOptimalMax("");
+    }
+  }
+
+  function handleMarkerChange(name: string) {
+    setFormMarker(name);
+    if (name !== "__custom__") applyPreset(name);
+  }
+
+  function resetForm() {
+    setFormDate(today);
+    setFormMarker("");
+    setFormCustomMarker("");
+    setFormValue("");
+    setFormUnit("");
+    setFormOptimalMin("");
+    setFormOptimalMax("");
+    setFormSource("");
+    setFormNotes("");
+    setFormError(null);
+  }
+
+  async function handleSubmit() {
+    setFormError(null);
+    if (!effectiveMarkerName) {
+      setFormError("Marker name is required");
+      return;
+    }
+    const numValue = parseFloat(formValue);
+    if (!formValue || isNaN(numValue)) {
+      setFormError("Value must be a number");
+      return;
+    }
+    if (!formUnit.trim()) {
+      setFormError("Unit is required");
+      return;
+    }
+    const preset = LAB_MARKER_PRESETS.find((p) => p.name === formMarker);
+    try {
+      await logMutation.mutateAsync({
+        companyId,
+        measuredDate: formDate,
+        markerName: effectiveMarkerName,
+        value: numValue,
+        unit: formUnit.trim(),
+        loincCode: preset?.loincCode ?? null,
+        optimalMin: formOptimalMin ? parseFloat(formOptimalMin) : null,
+        optimalMax: formOptimalMax ? parseFloat(formOptimalMax) : null,
+        source: formSource.trim() || null,
+        notes: formNotes.trim() || null,
+      });
+      resetForm();
+      setShowForm(false);
+    } catch (e) {
+      setFormError(e instanceof Error ? e.message : "Failed to log lab result");
+    }
+  }
+
+  if (isLoading) return <PageSkeleton />;
+  if (error) return <EmptyState icon={Activity} message="Failed to load lab results." />;
+
+  const results = data?.results ?? [];
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <h2 className="text-sm font-semibold">Lab Results — last 12 months</h2>
+        <Button size="sm" variant="outline" onClick={() => setShowForm(true)}>
+          <Plus className="w-3.5 h-3.5 mr-1" /> Log Result
+        </Button>
+      </div>
+
+      <Dialog open={showForm} onOpenChange={(open) => { if (!open) { resetForm(); setShowForm(false); } }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Log Lab Result</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3 py-2">
+            <div>
+              <label className="text-xs text-muted-foreground block mb-1">Date *</label>
+              <input
+                type="date"
+                className="w-full border border-border rounded px-2 py-1 text-sm bg-background"
+                value={formDate}
+                onChange={(e) => setFormDate(e.target.value)}
+                max={today}
+              />
+            </div>
+            <div>
+              <label className="text-xs text-muted-foreground block mb-1">Biomarker *</label>
+              <select
+                className="w-full border border-border rounded px-2 py-1 text-sm bg-background"
+                value={formMarker}
+                onChange={(e) => handleMarkerChange(e.target.value)}
+              >
+                <option value="">Select a marker…</option>
+                {LAB_MARKER_PRESETS.map((p) => (
+                  <option key={p.name} value={p.name}>{p.name}</option>
+                ))}
+                <option value="__custom__">Custom marker…</option>
+              </select>
+            </div>
+            {isCustomMarker && (
+              <div>
+                <label className="text-xs text-muted-foreground block mb-1">Custom Marker Name *</label>
+                <input
+                  type="text"
+                  className="w-full border border-border rounded px-2 py-1 text-sm bg-background"
+                  placeholder="e.g. Total Cholesterol"
+                  value={formCustomMarker}
+                  onChange={(e) => setFormCustomMarker(e.target.value)}
+                />
+              </div>
+            )}
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <label className="text-xs text-muted-foreground block mb-1">Value *</label>
+                <input
+                  type="number"
+                  step="any"
+                  className="w-full border border-border rounded px-2 py-1 text-sm bg-background"
+                  placeholder="e.g. 5.2"
+                  value={formValue}
+                  onChange={(e) => setFormValue(e.target.value)}
+                />
+              </div>
+              <div>
+                <label className="text-xs text-muted-foreground block mb-1">Unit *</label>
+                <input
+                  type="text"
+                  className="w-full border border-border rounded px-2 py-1 text-sm bg-background"
+                  placeholder="e.g. %"
+                  value={formUnit}
+                  onChange={(e) => setFormUnit(e.target.value)}
+                />
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <label className="text-xs text-muted-foreground block mb-1">Optimal Min</label>
+                <input
+                  type="number"
+                  step="any"
+                  className="w-full border border-border rounded px-2 py-1 text-sm bg-background"
+                  placeholder="optional"
+                  value={formOptimalMin}
+                  onChange={(e) => setFormOptimalMin(e.target.value)}
+                />
+              </div>
+              <div>
+                <label className="text-xs text-muted-foreground block mb-1">Optimal Max</label>
+                <input
+                  type="number"
+                  step="any"
+                  className="w-full border border-border rounded px-2 py-1 text-sm bg-background"
+                  placeholder="optional"
+                  value={formOptimalMax}
+                  onChange={(e) => setFormOptimalMax(e.target.value)}
+                />
+              </div>
+            </div>
+            <div>
+              <label className="text-xs text-muted-foreground block mb-1">Lab / Source</label>
+              <input
+                type="text"
+                className="w-full border border-border rounded px-2 py-1 text-sm bg-background"
+                placeholder="e.g. Quest, LabCorp"
+                value={formSource}
+                onChange={(e) => setFormSource(e.target.value)}
+              />
+            </div>
+            <div>
+              <label className="text-xs text-muted-foreground block mb-1">Notes</label>
+              <textarea
+                className="w-full border border-border rounded px-2 py-1 text-sm bg-background resize-none"
+                rows={2}
+                value={formNotes}
+                onChange={(e) => setFormNotes(e.target.value)}
+              />
+            </div>
+            {formError && <p className="text-xs text-destructive">{formError}</p>}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => { resetForm(); setShowForm(false); }}>Cancel</Button>
+            <Button onClick={handleSubmit} disabled={logMutation.isPending}>
+              {logMutation.isPending ? "Saving…" : "Save"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {results.length === 0 ? (
+        <EmptyState icon={Activity} message="No lab results logged in the last 12 months." />
+      ) : (
+        <div className="divide-y divide-border rounded-lg border bg-card px-4">
+          {results.map((r) => (
+            <LabResultRow
+              key={r.id}
+              result={r}
+              onDelete={(id) => deleteMutation.mutate({ id, companyId })}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ---- Page ----
 
 export function Health() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
-  const [view, setView] = useState<"score" | "locations" | "sleep" | "exercise" | "biometrics" | "mood" | "nutrition" | "symptoms" | "medications">("score");
+  const [view, setView] = useState<"score" | "locations" | "sleep" | "exercise" | "biometrics" | "mood" | "nutrition" | "symptoms" | "medications" | "lab-results">("score");
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Health" }]);
@@ -2401,6 +2707,15 @@ export function Health() {
         >
           Medications
         </button>
+        <button
+          className={cn(
+            "px-3 py-1 text-xs font-medium rounded transition-colors",
+            view === "lab-results" ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground",
+          )}
+          onClick={() => setView("lab-results")}
+        >
+          Lab Results
+        </button>
       </div>
 
       {view === "score" ? (
@@ -2419,8 +2734,10 @@ export function Health() {
         <NutritionView companyId={selectedCompanyId} />
       ) : view === "symptoms" ? (
         <SymptomsView companyId={selectedCompanyId} />
-      ) : (
+      ) : view === "medications" ? (
         <MedicationsView companyId={selectedCompanyId} />
+      ) : (
+        <LabResultsView companyId={selectedCompanyId} />
       )}
     </div>
   );
