@@ -120,16 +120,28 @@ describeEmbeddedPostgres("productivity review service", () => {
     count: number;
     now: Date;
     withRunComments?: boolean;
+    // Stamp each run with an infra termination code so tests can seed runs the
+    // platform killed rather than runs the agent completed.
+    errorCodes?: readonly string[];
+    // The other shape the platform produces: a generic error code with the
+    // infrastructure cause recorded only in the run result.
+    stopReasons?: readonly string[];
   }) {
     const runs: Array<typeof heartbeatRuns.$inferInsert> = [];
     for (let index = 0; index < input.count; index += 1) {
       const runId = randomUUID();
       const createdAt = new Date(input.now.getTime() - index * 60_000);
+      const errorCode = input.errorCodes?.[index % input.errorCodes.length];
+      const stopReason = input.stopReasons?.[index % input.stopReasons.length];
       runs.push({
         id: runId,
         companyId: input.companyId,
         agentId: input.agentId,
-        status: "succeeded",
+        ...(errorCode ? { errorCode, error: `${errorCode} termination` } : {}),
+        ...(stopReason
+          ? { errorCode: "run_failed", error: "run ended without a result", resultJson: { stopReason } }
+          : {}),
+        status: errorCode || stopReason ? "failed" : "succeeded",
         invocationSource: "assignment",
         triggerDetail: "system",
         startedAt: createdAt,
@@ -208,6 +220,84 @@ describeEmbeddedPostgres("productivity review service", () => {
     expect(reviews[0]?.description).toContain("No-comment completed-run streak: 10");
 
     expect(await listRefreshComments(reviews[0]!.id)).toHaveLength(0);
+  });
+
+  // The false positive this fixes: a no_comment_streak review raised against an
+  // engineer whose ten runs were all reaped by host restarts before they could
+  // comment.
+  it("does not review an agent whose sampled runs were all terminated by infrastructure", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue();
+    await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS,
+      now,
+      errorCodes: ["process_lost", "server_shutdown_interrupted", "orphaned_running_run"],
+    });
+
+    const service = productivityReviewService(db);
+    const result = await service.reconcileProductivityReviews({ now, companyId: seeded.companyId });
+
+    expect(result.created).toBe(0);
+    expect(result.infraSuppressed).toBe(1);
+    expect(result.infraSuppressedIssueIds).toEqual([seeded.issueId]);
+    expect(await listProductivityReviews(seeded.companyId)).toHaveLength(0);
+  });
+
+  // The same false positive reached through the other representation: the reaper
+  // could not name a specific error code, so the platform cause exists only in
+  // the run result. The sample has to carry result_json for this to be visible.
+  it("does not review an agent whose runs record the infra cause only in the run result", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue();
+    await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS,
+      now,
+      stopReasons: ["process_lost", "server_shutdown_interrupted", "orphaned_running_run"],
+    });
+
+    const service = productivityReviewService(db);
+    const result = await service.reconcileProductivityReviews({ now, companyId: seeded.companyId });
+
+    expect(result.created).toBe(0);
+    expect(result.infraSuppressed).toBe(1);
+    expect(result.infraSuppressedIssueIds).toEqual([seeded.issueId]);
+    expect(await listProductivityReviews(seeded.companyId)).toHaveLength(0);
+  });
+
+  it("still reviews a no-comment streak that only contains infra runs the agent survived", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue();
+    // A full streak of ordinary silent runs, plus older infra kills. The infra
+    // runs must be ignored, not treated as a blanket amnesty for the issue.
+    await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS,
+      now,
+    });
+    await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: 3,
+      now: new Date(now.getTime() - 60 * 60_000),
+      errorCodes: ["process_lost"],
+    });
+
+    const service = productivityReviewService(db);
+    const result = await service.reconcileProductivityReviews({ now, companyId: seeded.companyId });
+
+    expect(result.infraSuppressed).toBe(0);
+    expect(result.created).toBe(1);
+    const reviews = await listProductivityReviews(seeded.companyId);
+    expect(reviews[0]?.description).toContain("No-comment completed-run streak: 10");
   });
 
   it("refreshes open productivity reviews only once per interval and caps refresh comments", async () => {
@@ -731,6 +821,74 @@ describeEmbeddedPostgres("productivity review service", () => {
       .where(eq(activityLog.action, "issue.productivity_review_continuation_held"));
     expect(activities).toHaveLength(1);
     expect(activities[0]?.entityId).toBe(seeded.issueId);
+  });
+
+  // The exact false-positive shape: a sub-threshold run of genuine silence that
+  // only reached the streak threshold because host restarts padded it out. The infra
+  // runs must not extend the streak, and no review may be raised.
+  it("does not count infra-terminated runs toward the no-comment streak", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue();
+    const belowThreshold = DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS - 1;
+    await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: belowThreshold,
+      now: new Date(now.getTime() - 30 * 60_000),
+    });
+    // Ten host-restart kills on top. Counted naively these would push the streak
+    // well past the threshold; excluded, the streak stays at nine.
+    await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: 10,
+      now,
+      errorCodes: ["process_lost", "server_shutdown_interrupted", "orphaned_running_run"],
+    });
+
+    const service = productivityReviewService(db);
+    const result = await service.reconcileProductivityReviews({ now, companyId: seeded.companyId });
+
+    expect(result.created).toBe(0);
+    expect(await listProductivityReviews(seeded.companyId)).toHaveLength(0);
+  });
+
+  // The mirror-image failure: excluding infra runs must not cost the agent's own
+  // runs their place in the bounded sample. A long-lived issue can hold more runs
+  // than the sample takes, so a burst of host restarts would otherwise push the
+  // silent agent runs out of the window and hide a real streak.
+  it("keeps the full agent-run sample when recent infra kills exceed the sample bound", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue();
+    // A genuine, complete silent streak, then enough platform kills on top to
+    // fill the sample bound on their own.
+    await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS,
+      now: new Date(now.getTime() - 120 * 60_000),
+    });
+    await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: 95,
+      now,
+      errorCodes: ["process_lost", "server_shutdown_interrupted", "orphaned_running_run"],
+    });
+
+    const service = productivityReviewService(db);
+    const result = await service.reconcileProductivityReviews({ now, companyId: seeded.companyId });
+
+    expect(result.infraSuppressed).toBe(0);
+    expect(result.created).toBe(1);
+    const reviews = await listProductivityReviews(seeded.companyId);
+    expect(reviews[0]?.description).toContain(
+      `No-comment completed-run streak: ${DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS}`,
+    );
   });
 
   it("clamps poisoned requestDepth metadata instead of aborting productivity reconciliation", async () => {
