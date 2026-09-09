@@ -1176,6 +1176,17 @@ interface AgentAdapter {
 }
 ```
 
+### Local adapter engine availability
+
+For the legacy Codex, Claude, Gemini, and Kimi local adapters, an omitted engine
+or legacy `auto` value selects ACP deterministically. Missing prerequisites or
+ACP execution failures fail the run; they must not launch a different engine
+with different session, permission, or sandbox semantics. CLI execution requires
+explicit selection. Environment tests report the same engine availability error
+as execution. Codex CLI defaults permit workspace writes and network access for
+Paperclip coordination without disabling its sandbox; explicit operator
+restrictions and execution-target network denials remain effective.
+
 ## 11.2 Process Adapter
 
 Config shape:

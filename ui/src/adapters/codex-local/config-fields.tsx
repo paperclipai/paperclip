@@ -161,7 +161,7 @@ export function CodexLocalConfigFields({
       {!hideEngineChoice && (
         <Field
           label="Execution engine"
-          hint="Auto uses ACP when prerequisites pass and falls back to Codex CLI with diagnostics."
+          hint="Default uses ACP. If ACP is unavailable, the run fails with a setup error. Choose CLI explicitly to use it."
         >
           <select
             className={inputClass}
@@ -182,7 +182,7 @@ export function CodexLocalConfigFields({
                   );
             }}
           >
-            <option value="auto">Auto (ACP preferred)</option>
+            <option value="auto">Default (ACP)</option>
             <option value="cli">Codex CLI</option>
             <option value="acp">ACP</option>
           </select>

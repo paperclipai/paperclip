@@ -209,6 +209,12 @@ Agent configuration includes an **adapter** that defines how Paperclip invokes t
 
 The `process` and `http` adapters ship as generic defaults. Additional built-in adapters cover common local coding runtimes (see list above), and new adapter types can be registered via the plugin system (see Plugin / Extension Architecture).
 
+An adapter's selected execution engine is part of its permission and session
+contract. Missing prerequisites or engine failures must be surfaced without
+silently launching a different engine. A default local engine must support
+normal task work and control-plane coordination; explicit operator restrictions
+remain authoritative.
+
 ### Adapter Interface
 
 Every adapter implements three methods:

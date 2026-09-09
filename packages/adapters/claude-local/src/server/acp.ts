@@ -64,7 +64,7 @@ export type ClaudeExecutionEngine = "cli" | "acp";
 export interface ClaudeEngineSelection {
   engine: ClaudeExecutionEngine;
   explicit: boolean;
-  fallbackReason?: string;
+  unavailableReason?: string;
 }
 
 type ClaudeEngineResolutionInput =
@@ -93,29 +93,20 @@ export async function resolveClaudeExecutionEngineForRun(
   input: ClaudeEngineResolutionInput,
 ): Promise<ClaudeEngineSelection> {
   const selection = normalizeEngine(input.config.engine);
+  // Engine availability must never change the agent's execution or permission contract.
+  if (selection.engine === "cli") return selection;
+  const unavailable = (reason: string): ClaudeEngineSelection => ({
+    ...selection,
+    unavailableReason: `${reason} Repair the ACP setup, or explicitly set engine=cli to use the CLI engine.`,
+  });
   const filesystemScope = parseLocalProcessFilesystemScope(input.config.filesystemScope);
   const networkScope = parseLocalProcessNetworkScope(input.config.networkScope);
   if (filesystemScope || networkScope) {
-    if (selection.explicit && selection.engine === "acp") {
-      throw new Error("Local filesystem/network confinement requires the Claude CLI engine; ACP confinement is not supported.");
-    }
-    return {
-      engine: "cli",
-      explicit: selection.explicit,
-      ...(!selection.explicit
-        ? { fallbackReason: "Local filesystem/network scope requires spawn-level confinement in the CLI lane." }
-        : {}),
-    };
+    return unavailable("Local filesystem/network confinement requires the Claude CLI engine; ACP confinement is not supported.");
   }
-  if (selection.explicit || selection.engine !== "acp") return selection;
 
-  const fallbackReason = await defaultClaudeAcpFallbackReason(input);
-  if (!fallbackReason) return selection;
-  return { engine: "cli", explicit: false, fallbackReason };
-}
-
-export function formatClaudeAcpFallbackMessage(reason: string): string {
-  return `[paperclip] Claude ACP default unavailable; falling back to Claude CLI. ${reason} Set engine=acp to require ACP or engine=cli to silence this fallback.\n`;
+  const reason = await claudeAcpUnavailableReason(input);
+  return reason ? unavailable(reason) : selection;
 }
 
 function firstNonEmptyString(...values: unknown[]): string | undefined {
@@ -470,7 +461,7 @@ async function resolveClaudeAcpCommandForTarget(
   return resolveClaudeAcpCommand(config);
 }
 
-async function defaultClaudeAcpFallbackReason(
+async function claudeAcpUnavailableReason(
   input: ClaudeEngineResolutionInput,
 ): Promise<string | null> {
   const target = readAdapterExecutionTarget({
@@ -484,7 +475,7 @@ async function defaultClaudeAcpFallbackReason(
     return "Claude ACP supports sandbox remote targets only; this run targets a non-sandbox remote environment.";
   }
   if (!nodeVersionMeetsClaudeAcpMinimum()) {
-    return `Node ${process.version} does not satisfy Claude ACP's Node >=${MIN_ACP_NODE_VERSION} prerequisite.`;
+    return `Node ${process.version} (${process.execPath}) does not satisfy Claude ACP's Node >=${MIN_ACP_NODE_VERSION} prerequisite.`;
   }
   const command = await resolveClaudeAcpCommandForTarget(input.config, target);
   if (!(await commandIsResolvable(command, input))) {
@@ -733,7 +724,7 @@ export async function testClaudeAcpEnvironment(
     level: nodeVersionMeetsClaudeAcpMinimum() ? "info" : "error",
     message: nodeVersionMeetsClaudeAcpMinimum()
       ? `Node ${process.version} satisfies Claude ACP runtime requirements.`
-      : `Node ${process.version} does not satisfy Claude ACP runtime requirements.`,
+      : `Node ${process.version} (${process.execPath}) does not satisfy Claude ACP runtime requirements.`,
     hint: nodeVersionMeetsClaudeAcpMinimum()
       ? undefined
       : `Run Claude ACP with Node >=${MIN_ACP_NODE_VERSION} or switch engine=cli.`,

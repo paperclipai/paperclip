@@ -125,6 +125,7 @@ describe("gemini remote execution", () => {
         taskKey: null,
       },
       config: {
+        engine: "cli",
         command: "gemini",
         env: {
           GEMINI_API_KEY: "test-key",
@@ -337,6 +338,7 @@ describe("gemini remote execution", () => {
         taskKey: null,
       },
       config: {
+        engine: "cli",
         command: "gemini",
       },
       context: {
@@ -388,6 +390,7 @@ describe("gemini remote execution", () => {
         taskKey: null,
       },
       config: {
+        engine: "cli",
         command: "gemini",
       },
       context: {
