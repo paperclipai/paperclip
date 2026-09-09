@@ -3862,6 +3862,43 @@ export function agentRoutes(
     res.json(rows);
   });
 
+  router.get("/agents/:id/control-evidence", async (req, res) => {
+    const id = req.params.id as string;
+    const agent = await getAccessibleResource(req, res, svc.getById(id), "Agent not found");
+    if (!agent) return;
+    if (!(await assertAgentReadAllowed(req, res, agent))) return;
+
+    const adapterConfig = asRecord(agent.adapterConfig) ?? {};
+    const runtimeConfig = asRecord(agent.runtimeConfig) ?? {};
+    const heartbeat = asRecord(runtimeConfig.heartbeat) ?? {};
+    const permissions = asRecord(agent.permissions) ?? {};
+    const metadata = asRecord(agent.metadata) ?? {};
+    const accessState = await buildAgentAccessState(agent);
+
+    // This deliberately exposes only the controls an independent reviewer needs
+    // to validate a bounded worker. It must never become a configuration view.
+    res.json({
+      id: agent.id,
+      status: agent.status,
+      adapterType: agent.adapterType,
+      adapter: {
+        cwd: typeof adapterConfig.cwd === "string" ? adapterConfig.cwd : null,
+        hermesCommand: typeof adapterConfig.hermesCommand === "string" ? adapterConfig.hermesCommand : null,
+      },
+      heartbeat: {
+        enabled: heartbeat.enabled === true,
+        intervalSec: typeof heartbeat.intervalSec === "number" ? heartbeat.intervalSec : null,
+        wakeOnDemand: heartbeat.wakeOnDemand === true,
+        maxConcurrentRuns: typeof heartbeat.maxConcurrentRuns === "number" ? heartbeat.maxConcurrentRuns : null,
+      },
+      permissions: { canCreateAgents: permissions.canCreateAgents === true },
+      access: { canAssignTasks: accessState.canAssignTasks },
+      metadata: {
+        sourceIssueId: typeof metadata.sourceIssueId === "string" ? metadata.sourceIssueId : null,
+      },
+    });
+  });
+
   router.get("/agents/:id", async (req, res) => {
     const id = req.params.id as string;
     const agent = await getAccessibleResource(req, res, svc.getById(id), "Agent not found");

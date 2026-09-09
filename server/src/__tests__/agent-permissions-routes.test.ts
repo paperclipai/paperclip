@@ -429,6 +429,55 @@ describe.sequential("agent permission routes", () => {
     expect(res.body.runtimeConfig).toEqual({});
   }, 20_000);
 
+  it("returns a non-secret control-evidence view to an agent-read actor", async () => {
+    mockAccessService.canUser.mockResolvedValue(false);
+    mockAccessService.decide.mockImplementation(async (input: { action?: string }) => ({
+      allowed: input.action === "agent:read",
+      reason: input.action === "agent:read" ? "allow_test_read" : "deny_missing_grant",
+      explanation: input.action === "agent:read" ? "Allowed by test read grant." : "Missing test grant.",
+    }));
+    mockAgentService.getById.mockResolvedValue({
+      ...baseAgent,
+      adapterType: "hermes_local",
+      adapterConfig: {
+        cwd: "/srv/worker/workspace",
+        hermesCommand: "/srv/worker/run",
+        env: { PAPERCLIP_API_KEY: { type: "plain", value: "secret-must-not-leak" } },
+      },
+      runtimeConfig: {
+        heartbeat: { enabled: true, intervalSec: 0, wakeOnDemand: true, maxConcurrentRuns: 1 },
+      },
+      permissions: { canCreateAgents: false },
+      metadata: { sourceIssueId: "source-issue-1", unrelated: "must-not-leak" },
+    });
+
+    const app = await createApp({
+      type: "board",
+      userId: "member-user",
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl).get(`/api/agents/${agentId}/control-evidence`),
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      id: agentId,
+      status: baseAgent.status,
+      adapterType: "hermes_local",
+      adapter: { cwd: "/srv/worker/workspace", hermesCommand: "/srv/worker/run" },
+      heartbeat: { enabled: true, intervalSec: 0, wakeOnDemand: true, maxConcurrentRuns: 1 },
+      permissions: { canCreateAgents: false },
+      access: { canAssignTasks: true },
+      metadata: { sourceIssueId: "source-issue-1" },
+    });
+    expect(JSON.stringify(res.body)).not.toContain("secret-must-not-leak");
+    expect(JSON.stringify(res.body)).not.toContain("must-not-leak");
+  }, 20_000);
+
   it("redacts env values in board agent detail responses", async () => {
     const plaintextValue = "plain-value-must-not-leak";
     mockAgentService.getById.mockResolvedValue({
