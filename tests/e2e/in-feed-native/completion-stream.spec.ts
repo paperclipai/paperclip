@@ -2,6 +2,37 @@ import { expect, test } from '@playwright/test';
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
+
+async function stopTestDrive(child: ChildProcess | undefined): Promise<void> {
+  if (!child?.pid) return;
+  const group = -child.pid;
+  const alive = () => {
+    try { process.kill(group, 0); return true; }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ESRCH') return false;
+      throw error;
+    }
+  };
+  const signal = (name: NodeJS.Signals) => {
+    try { process.kill(group, name); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error;
+    }
+  };
+  const waitForExit = async (timeoutMs: number) => {
+    const deadline = Date.now() + timeoutMs;
+    while (alive() || (child.exitCode === null && child.signalCode === null)) {
+      if (Date.now() >= deadline) return false;
+      await delay(50);
+    }
+    return true;
+  };
+  signal('SIGTERM');
+  if (await waitForExit(15_000)) return;
+  signal('SIGKILL');
+  if (!(await waitForExit(5_000))) throw new Error('test-drive process group did not exit');
+}
 
 test('a completion tool does not cut off a delayed final answer', async ({ page }, info) => {
   const root = resolve(import.meta.dirname, '../../..');
@@ -71,7 +102,7 @@ test('a completion tool does not cut off a delayed final answer', async ({ page 
       runId: run.id, dependency: 'deterministic Codex app-server fixture', delayMs: 31000,
       dataDir: logs.match(/Data directory: ([^\n\r]+)/)?.[1], presentation: run.resultJson.presentationDecision }, null, 2));
   } finally {
-    await writeFile(info.outputPath('test-drive.log'), logs);
-    if (child?.pid) { try { process.kill(-child.pid, 'SIGTERM'); } catch {} }
+    try { await stopTestDrive(child); }
+    finally { await writeFile(info.outputPath('test-drive.log'), logs); }
   }
 });
