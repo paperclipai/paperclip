@@ -101,6 +101,8 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     originFingerprint?: string | null;
     executionState?: Record<string, unknown> | null;
     description?: string | null;
+    monitorNextCheckAt?: Date | null;
+    monitorAttemptCount?: number | null;
   }) {
     const id = input.id ?? randomUUID();
     await db.insert(issues).values({
@@ -118,8 +120,23 @@ describeEmbeddedPostgres("issue blocker attention", () => {
       originFingerprint: input.originFingerprint ?? "default",
       executionState: input.executionState ?? null,
       description: input.description ?? null,
+      monitorNextCheckAt: input.monitorNextCheckAt ?? null,
+      ...(input.monitorAttemptCount == null ? {} : { monitorAttemptCount: input.monitorAttemptCount }),
     });
     return id;
+  }
+
+  function monitorState(input: { timeoutAt: Date; maxAttempts?: number; attemptCount?: number }) {
+    return {
+      monitor: {
+        kind: "external_service",
+        status: "scheduled",
+        serviceName: "github-checks",
+        timeoutAt: input.timeoutAt.toISOString(),
+        maxAttempts: input.maxAttempts ?? 12,
+        attemptCount: input.attemptCount ?? 0,
+      },
+    } satisfies Record<string, unknown>;
   }
 
   async function block(input: { companyId: string; blockerIssueId: string; blockedIssueId: string }) {
@@ -640,6 +657,257 @@ describeEmbeddedPostgres("issue blocker attention", () => {
       coveredBlockerCount: 0,
       attentionBlockerCount: 1,
       sampleBlockerIdentifier: "PBY-2",
+    });
+  });
+
+  it("treats an in_progress blocker with a scheduled monitor as a covered waiting path", async () => {
+    const { companyId, agentId } = await createCompany("PBMO");
+    const parentId = await insertIssue({ companyId, identifier: "PBMO-1", title: "Parent", status: "blocked" });
+    const blockerId = await insertIssue({
+      companyId,
+      identifier: "PBMO-2",
+      title: "Monitored blocker",
+      status: "in_progress",
+      assigneeAgentId: agentId,
+      monitorNextCheckAt: new Date(Date.now() + 60 * 60 * 1000),
+      executionState: monitorState({ timeoutAt: new Date(Date.now() + 24 * 60 * 60 * 1000) }),
+    });
+    await block({ companyId, blockerIssueId: blockerId, blockedIssueId: parentId });
+
+    const parent = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === parentId);
+
+    expect(parent?.blockerAttention).toMatchObject({
+      state: "covered",
+      reason: "active_dependency",
+      unresolvedBlockerCount: 1,
+      coveredBlockerCount: 1,
+      stalledBlockerCount: 0,
+      attentionBlockerCount: 0,
+      sampleBlockerIdentifier: "PBMO-2",
+    });
+  });
+
+  it("covers a monitored blocker alongside a cancelled child on the same root", async () => {
+    const { companyId, agentId } = await createCompany("PBMC");
+    const parentId = await insertIssue({ companyId, identifier: "PBMC-1", title: "Parent", status: "blocked" });
+    const blockerId = await insertIssue({
+      companyId,
+      identifier: "PBMC-2",
+      title: "Monitored blocker",
+      status: "in_progress",
+      assigneeAgentId: agentId,
+      monitorNextCheckAt: new Date(Date.now() + 60 * 60 * 1000),
+      executionState: monitorState({ timeoutAt: new Date(Date.now() + 24 * 60 * 60 * 1000) }),
+    });
+    await insertIssue({
+      companyId,
+      identifier: "PBMC-3",
+      title: "Cancelled child",
+      status: "cancelled",
+      parentId,
+      assigneeAgentId: agentId,
+    });
+    await block({ companyId, blockerIssueId: blockerId, blockedIssueId: parentId });
+
+    const parent = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === parentId);
+
+    expect(parent?.blockerAttention).toMatchObject({
+      state: "covered",
+      unresolvedBlockerCount: 1,
+      coveredBlockerCount: 1,
+      stalledBlockerCount: 0,
+      attentionBlockerCount: 0,
+    });
+  });
+
+  // `in_review` leaves the shared covered/attention path early and lands in its own
+  // `stalled` branch, so it needs the monitor pinned separately from `in_progress`:
+  // a scheduled monitor is the standard re-review path for a review with no human
+  // reviewer, and without this it reads as a dead chain.
+  it("treats an in_review blocker with a scheduled monitor as a covered waiting path", async () => {
+    const { companyId, agentId } = await createCompany("PBMR");
+    const parentId = await insertIssue({ companyId, identifier: "PBMR-1", title: "Parent", status: "blocked" });
+    const reviewLeafId = await insertIssue({
+      companyId,
+      identifier: "PBMR-2",
+      title: "Monitored review leaf",
+      status: "in_review",
+      assigneeAgentId: agentId,
+      monitorNextCheckAt: new Date(Date.now() + 60 * 60 * 1000),
+      executionState: monitorState({ timeoutAt: new Date(Date.now() + 24 * 60 * 60 * 1000) }),
+    });
+    await block({ companyId, blockerIssueId: reviewLeafId, blockedIssueId: parentId });
+
+    const parent = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === parentId);
+
+    expect(parent?.blockerAttention).toMatchObject({
+      state: "covered",
+      unresolvedBlockerCount: 1,
+      coveredBlockerCount: 1,
+      stalledBlockerCount: 0,
+      attentionBlockerCount: 0,
+      sampleStalledBlockerIdentifier: null,
+    });
+  });
+
+  it("still flags an in_review blocker whose monitor has elapsed or was never scheduled as stalled", async () => {
+    const { companyId, agentId } = await createCompany("PBMS");
+    const elapsedParentId = await insertIssue({ companyId, identifier: "PBMS-1", title: "Elapsed parent", status: "blocked" });
+    const elapsedLeafId = await insertIssue({
+      companyId,
+      identifier: "PBMS-2",
+      title: "Review leaf whose monitor is already due",
+      status: "in_review",
+      assigneeAgentId: agentId,
+      monitorNextCheckAt: new Date(Date.now() - 60 * 60 * 1000),
+      executionState: monitorState({ timeoutAt: new Date(Date.now() + 24 * 60 * 60 * 1000) }),
+    });
+    await block({ companyId, blockerIssueId: elapsedLeafId, blockedIssueId: elapsedParentId });
+
+    const unmonitoredParentId = await insertIssue({ companyId, identifier: "PBMS-3", title: "Unmonitored parent", status: "blocked" });
+    const unmonitoredLeafId = await insertIssue({
+      companyId,
+      identifier: "PBMS-4",
+      title: "Review leaf with no monitor at all",
+      status: "in_review",
+      assigneeAgentId: agentId,
+    });
+    await block({ companyId, blockerIssueId: unmonitoredLeafId, blockedIssueId: unmonitoredParentId });
+
+    const blocked = await svc.list(companyId, { status: "blocked" });
+
+    expect(blocked.find((issue) => issue.id === elapsedParentId)?.blockerAttention).toMatchObject({
+      state: "stalled",
+      reason: "stalled_review",
+      coveredBlockerCount: 0,
+      stalledBlockerCount: 1,
+      sampleStalledBlockerIdentifier: "PBMS-2",
+    });
+    expect(blocked.find((issue) => issue.id === unmonitoredParentId)?.blockerAttention).toMatchObject({
+      state: "stalled",
+      reason: "stalled_review",
+      coveredBlockerCount: 0,
+      stalledBlockerCount: 1,
+      sampleStalledBlockerIdentifier: "PBMS-4",
+    });
+  });
+
+  it("does not treat an elapsed or exhausted monitor as a covered waiting path", async () => {
+    const { companyId, agentId } = await createCompany("PBME");
+    const elapsedParentId = await insertIssue({ companyId, identifier: "PBME-1", title: "Elapsed parent", status: "blocked" });
+    const elapsedBlockerId = await insertIssue({
+      companyId,
+      identifier: "PBME-2",
+      title: "Monitor already due",
+      status: "in_progress",
+      assigneeAgentId: agentId,
+      monitorNextCheckAt: new Date(Date.now() - 60 * 60 * 1000),
+      executionState: monitorState({ timeoutAt: new Date(Date.now() + 24 * 60 * 60 * 1000) }),
+    });
+    await block({ companyId, blockerIssueId: elapsedBlockerId, blockedIssueId: elapsedParentId });
+
+    const exhaustedParentId = await insertIssue({ companyId, identifier: "PBME-3", title: "Exhausted parent", status: "blocked" });
+    const exhaustedBlockerId = await insertIssue({
+      companyId,
+      identifier: "PBME-4",
+      title: "Monitor attempts exhausted",
+      status: "in_progress",
+      assigneeAgentId: agentId,
+      monitorNextCheckAt: new Date(Date.now() + 60 * 60 * 1000),
+      monitorAttemptCount: 12,
+      executionState: monitorState({ timeoutAt: new Date(Date.now() + 24 * 60 * 60 * 1000), maxAttempts: 12 }),
+    });
+    await block({ companyId, blockerIssueId: exhaustedBlockerId, blockedIssueId: exhaustedParentId });
+
+    const blocked = await svc.list(companyId, { status: "blocked" });
+
+    expect(blocked.find((issue) => issue.id === elapsedParentId)?.blockerAttention).toMatchObject({
+      state: "needs_attention",
+      coveredBlockerCount: 0,
+      attentionBlockerCount: 1,
+      sampleBlockerIdentifier: "PBME-2",
+    });
+    expect(blocked.find((issue) => issue.id === exhaustedParentId)?.blockerAttention).toMatchObject({
+      state: "needs_attention",
+      coveredBlockerCount: 0,
+      attentionBlockerCount: 1,
+      sampleBlockerIdentifier: "PBME-4",
+    });
+  });
+
+  it("does not treat a cancelled blocker's retained monitor as a covered waiting path", async () => {
+    const { companyId, agentId } = await createCompany("PBMX");
+    const parentId = await insertIssue({ companyId, identifier: "PBMX-1", title: "Parent", status: "blocked" });
+    // Tree cancellation leaves monitorNextCheckAt/executionState in place, so this
+    // blocker still looks monitored. tickDueIssueMonitors only dispatches
+    // in_progress/in_review issues, so the monitor can never fire again.
+    const blockerId = await insertIssue({
+      companyId,
+      identifier: "PBMX-2",
+      title: "Cancelled blocker with retained monitor",
+      status: "cancelled",
+      assigneeAgentId: agentId,
+      monitorNextCheckAt: new Date(Date.now() + 60 * 60 * 1000),
+      executionState: monitorState({ timeoutAt: new Date(Date.now() + 24 * 60 * 60 * 1000) }),
+    });
+    await block({ companyId, blockerIssueId: blockerId, blockedIssueId: parentId });
+
+    const parent = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === parentId);
+
+    expect(parent?.blockerAttention).toMatchObject({
+      state: "needs_attention",
+      coveredBlockerCount: 0,
+      attentionBlockerCount: 1,
+      sampleBlockerIdentifier: "PBMX-2",
+    });
+  });
+
+  it("does not treat a cancelled blocker's pending approval as a covered waiting path", async () => {
+    const { companyId, agentId } = await createCompany("PBCA");
+    const parentId = await insertIssue({ companyId, identifier: "PBCA-1", title: "Parent", status: "blocked" });
+    // Cancelling an issue does not cancel an approval already linked to it, so the
+    // approval row stays `pending` and remains resolvable by the board. Resolving it
+    // still cannot move this blocker to `done`, so the parent's edge stays dead and a
+    // human has to clear it — which is what needs_attention means. This matches the
+    // guard master already applies one branch below, where even a human assignee does
+    // not cover a cancelled node (`node.assigneeUserId && node.status !== "cancelled"`).
+    const blockerId = await insertIssue({
+      companyId,
+      identifier: "PBCA-2",
+      title: "Cancelled blocker with a pending approval",
+      status: "cancelled",
+      assigneeAgentId: agentId,
+    });
+    const approvalId = randomUUID();
+    await db.insert(approvals).values({
+      id: approvalId,
+      companyId,
+      type: "request_board_approval",
+      status: "pending",
+      payload: { title: "Approve the cancelled blocker's work" },
+    });
+    await db.insert(issueApprovals).values([{ companyId, issueId: blockerId, approvalId }]);
+    await block({ companyId, blockerIssueId: blockerId, blockedIssueId: parentId });
+
+    const parent = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === parentId);
+
+    expect(parent?.blockerAttention).toMatchObject({
+      state: "needs_attention",
+      coveredBlockerCount: 0,
+      attentionBlockerCount: 1,
+      sampleBlockerIdentifier: "PBCA-2",
+    });
+  });
+
+  it("keeps a blocked issue without any blocker at needs_attention", async () => {
+    const { companyId } = await createCompany("PBNB");
+    const parentId = await insertIssue({ companyId, identifier: "PBNB-1", title: "Blocked with no blocker", status: "blocked" });
+
+    const parent = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === parentId);
+
+    expect(parent?.blockerAttention).toMatchObject({
+      state: "needs_attention",
+      reason: "attention_required",
     });
   });
 
