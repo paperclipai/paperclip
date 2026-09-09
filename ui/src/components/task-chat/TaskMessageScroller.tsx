@@ -48,6 +48,7 @@ export function TaskMessageScroller({ children, contentKey, className }: TaskMes
   const streamlined = useStreamlinedTaskChatPresentation();
   const navigation = useTaskChatScrollNavigation();
   const initialPositionApplied = useRef(false);
+  const appliedNavigation = useRef({ key: navigation.key, hash: navigation.hash });
   const ref = useRef<HTMLDivElement>(null);
   const anchorRef = useRef<ThreadScrollAnchor | null>(null);
   const pinnedRef = useRef(true);
@@ -121,7 +122,7 @@ export function TaskMessageScroller({ children, contentKey, className }: TaskMes
     const rect = el.getBoundingClientRect();
     anchorRef.current = readThreadScrollAnchor(el, rect.top, rect.bottom);
     if (initialPositionApplied.current) navigation.remember(el.scrollTop, anchorRef.current);
-  }, [navigation.key, navigation.ready]);
+  }, [navigation.key, navigation.hash, navigation.ready]);
 
   const reconcileContent = useCallback(() => {
     const el = ref.current;
@@ -241,6 +242,10 @@ export function TaskMessageScroller({ children, contentKey, className }: TaskMes
   // Follow new content only when already pinned; otherwise hold position.
   useLayoutEffect(() => {
     const el = ref.current;
+    if (appliedNavigation.current.key !== navigation.key || appliedNavigation.current.hash !== navigation.hash) {
+      appliedNavigation.current = { key: navigation.key, hash: navigation.hash };
+      initialPositionApplied.current = false;
+    }
     if (el && navigation.ready && !initialPositionApplied.current) {
       const top = navigation.initialPosition(el, el.getBoundingClientRect().top, el.scrollTop);
       if (top !== null) {
@@ -251,7 +256,7 @@ export function TaskMessageScroller({ children, contentKey, className }: TaskMes
       initialPositionApplied.current = true;
     }
     reconcileContent();
-  }, [contentKey, reconcileContent, navigation.ready]);
+  }, [contentKey, reconcileContent, navigation.key, navigation.hash, navigation.ready]);
 
   return (
     <div className="relative min-h-0 flex-1">

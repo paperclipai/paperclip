@@ -24,7 +24,7 @@ test.beforeAll(async ({ request }) => {
   other = await createIssue("Rapid navigation destination");
   for (let i = 0; i < 160; i++) {
     const response = await request.post(`/api/issues/${issue.id}/comments`, {
-      data: { body: `## Historical message ${i}\n\n${"Long Markdown with **emphasis**, detail, and enough text to wrap across several lines. ".repeat(8)}\n\n\`\`\`js\nconsole.log(${i});\n\`\`\`\n\n| State | Result |\n|---|---|\n| Complete | Stable |` },
+      data: { body: `## Historical message ${i}\n\n${"Long Markdown with **emphasis**, detail, and enough text to wrap across several lines. ".repeat(8)}\n\n\`\`\`js\nconsole.log(${i});\n\`\`\`\n\n| State | Result |\n|---|---|\n| Complete | Stable |${i === 159 ? `\n\n[Read the oldest message](#comment-${oldestCommentId})` : ""}` },
     });
     expect(response.ok()).toBeTruthy();
     if (i === 0) oldestCommentId = (await response.json()).id;
@@ -179,4 +179,62 @@ test("mobile reduced-motion cold open and rapid task switching", async ({ page }
   await ready(page);
   await expect(page.getByText("Historical message 159", { exact: true })).not.toBeAttached();
   expect(saved).toBe(1200);
+});
+
+for (const mobile of [false, true]) {
+  test(`same-task comment links and Back restore the mounted ${mobile ? "mobile" : "desktop"} conversation`, async ({ page }) => {
+    if (mobile) await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto(`/${prefix}/issues/${issue.identifier}`);
+    await ready(page);
+    await page.getByText("Historical message 10", { exact: true }).waitFor({ state: "attached" });
+    await expect(page.locator(`[id="comment-${oldestCommentId}"]`)).toHaveCount(0);
+    const originalThread = await page.getByTestId("task-chat-thread").elementHandle();
+    const before = await page.evaluate((mobile) => {
+      const root = document.querySelector(mobile ? '[data-testid="task-chat-thread"]' : '[data-testid="task-chat-scroller"]')!;
+      const top = mobile ? 0 : root.getBoundingClientRect().top;
+      const row = [...root.querySelectorAll<HTMLElement>("[data-thread-anchor]")].find((el) => el.getBoundingClientRect().bottom > top)!;
+      return { id: row.dataset.threadAnchor!, offset: row.getBoundingClientRect().top - top };
+    }, mobile);
+    await page.getByRole("link", { name: "Read the oldest message", exact: true }).click();
+    const target = page.locator(`[id="comment-${oldestCommentId}"]`);
+    await expect(target).toBeAttached();
+    const targetOffset = () => target.evaluate((el, mobile) => el.getBoundingClientRect().top - (mobile ? 0 : document.querySelector('[data-testid="task-chat-scroller"]')!.getBoundingClientRect().top), mobile);
+    await expect.poll(async () => Math.abs(await targetOffset())).toBeLessThanOrEqual(2);
+    expect(await originalThread!.evaluate((el) => el === document.querySelector('[data-testid="task-chat-thread"]'))).toBe(true);
+    await page.goBack();
+    await expect.poll(async () => Math.abs(await page.evaluate(({ mobile, before }) => {
+      const root = document.querySelector(mobile ? '[data-testid="task-chat-thread"]' : '[data-testid="task-chat-scroller"]')!;
+      const row = [...root.querySelectorAll<HTMLElement>("[data-thread-anchor]")].find((el) => el.dataset.threadAnchor === before.id)!;
+      return row.getBoundingClientRect().top - (mobile ? 0 : root.getBoundingClientRect().top) - before.offset;
+    }, { mobile, before }))).toBeLessThanOrEqual(2);
+  });
+}
+
+test("stalled native and log history reveal loaded content with Retry after the request deadline", async ({ page }) => {
+  const runId = "20000000-0000-4000-8000-000000000001";
+  const at = new Date().toISOString();
+  await page.route("**/api/issues/*/runs", (route) => route.fulfill({ json: [{ runId, runtimeMode: "native", status: "succeeded", agentId: "20000000-0000-4000-8000-000000000002", adapterType: "paperclip_runner", createdAt: at, startedAt: at, finishedAt: at }] }));
+  let stalled = true;
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  await page.route(`**/api/heartbeat-runs/${runId}/events?*`, async (route) => {
+    if (stalled) await held;
+    await route.fulfill({ json: [] }).catch(() => {});
+  });
+  await page.route(`**/api/heartbeat-runs/${runId}/log?*`, async (route) => {
+    if (stalled) await held;
+    await route.fulfill({ json: { runId, content: "", nextOffset: 0 } }).catch(() => {});
+  });
+  try {
+    await page.goto(`/${prefix}/issues/${issue.identifier}`);
+    await expect(page.getByTestId("task-chat-history-loading")).toBeVisible();
+    await expect(page.getByText("Some task history could not be loaded.")).toBeVisible({ timeout: 25_000 });
+    await ready(page);
+    await expect(page.getByText("Historical message 159", { exact: true })).toBeVisible();
+    stalled = false;
+    await page.getByRole("button", { name: "Retry", exact: true }).click();
+    await expect(page.getByText("Some task history could not be loaded.")).not.toBeVisible();
+  } finally {
+    release();
+  }
 });

@@ -3,6 +3,7 @@ import type { HeartbeatRunEvent } from "@paperclipai/shared";
 import type { TranscriptEntry } from "@/adapters";
 import { heartbeatsApi } from "@/api/heartbeats";
 import { nativeRunEventsToTranscript } from "./native-run-events";
+import { readTranscriptRequest } from "./read-transcript-request";
 
 const EVENT_PAGE_SIZE = 1_000;
 const EVENT_POLL_INTERVAL_MS = 2_000;
@@ -44,6 +45,7 @@ export function useNativeRunTranscripts(runs: readonly NativeRunTranscriptSource
 
   useEffect(() => {
     let cancelled = false;
+    const controller = new AbortController();
     const timers = new Set<number>();
     const retainedIds = new Set(nativeRuns.map((run) => run.id));
     const retainMap = <T,>(previous: Map<string, T>) => {
@@ -66,7 +68,10 @@ export function useNativeRunTranscripts(runs: readonly NativeRunTranscriptSource
         let cursor = cursorByRunRef.current.get(run.id) ?? 0;
         const incoming: HeartbeatRunEvent[] = [];
         for (;;) {
-          const page = await heartbeatsApi.events(run.id, cursor, EVENT_PAGE_SIZE);
+          const page = await readTranscriptRequest(
+            (signal) => heartbeatsApi.events(run.id, cursor, EVENT_PAGE_SIZE, { signal }),
+            controller.signal,
+          );
           if (cancelled) return;
           const last = page.at(-1);
           const nextCursor = last ? Math.max(cursor, last.seq) : cursor;
@@ -117,6 +122,7 @@ export function useNativeRunTranscripts(runs: readonly NativeRunTranscriptSource
     for (const run of nativeRuns) void refreshRun(run);
     return () => {
       cancelled = true;
+      controller.abort();
       for (const timer of timers) window.clearTimeout(timer);
     };
   }, [nativeRuns, retryGeneration]);

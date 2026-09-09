@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { readTranscriptRequest } from "./read-transcript-request";
 import { useQuery } from "@tanstack/react-query";
 import type { LiveEvent } from "@paperclipai/shared";
 import { ApiError } from "../../api/client";
@@ -296,14 +297,20 @@ export function useLiveRunTranscripts({
     if (readableRuns.length === 0) return;
 
     let cancelled = false;
+    const controller = new AbortController();
+    const inFlightRunIds = new Set<string>();
 
     const readRunLog = async (run: RunTranscriptSource) => {
-      if (missingTerminalLogRunIdsRef.current.has(run.id)) {
+      if (missingTerminalLogRunIdsRef.current.has(run.id) || inFlightRunIds.has(run.id)) {
         return;
       }
+      inFlightRunIds.add(run.id);
       const offset = logOffsetByRunRef.current.get(run.id) ?? resolveInitialLogOffset(run, logReadLimitBytes);
       try {
-        const result = await heartbeatsApi.log(run.id, offset, logReadLimitBytes);
+        const result = await readTranscriptRequest(
+          (signal) => heartbeatsApi.log(run.id, offset, logReadLimitBytes, { signal }),
+          controller.signal,
+        );
         if (cancelled) return;
 
         setErrorsByRun((previous) => {
@@ -341,6 +348,7 @@ export function useLiveRunTranscripts({
           });
         }
       } finally {
+        inFlightRunIds.delete(run.id);
         if (!cancelled) {
           setHydratedRunIds((prev) => {
             if (prev.has(run.id)) return prev;
@@ -372,6 +380,7 @@ export function useLiveRunTranscripts({
 
     return () => {
       cancelled = true;
+      controller.abort();
       if (interval !== null) window.clearInterval(interval);
     };
   }, [enableRealtimeUpdates, logPollIntervalMs, logReadLimitBytes, normalizedRuns, runIdsKey, retryGeneration]);

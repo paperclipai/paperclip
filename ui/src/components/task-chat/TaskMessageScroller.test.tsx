@@ -4,6 +4,7 @@ import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TaskMessageScroller } from "./TaskMessageScroller";
+import { TaskChatScrollNavigation } from "./scroll-navigation";
 
 const PILL_SELECTOR = 'button[aria-label="Scroll to latest"]';
 
@@ -122,6 +123,39 @@ describe("TaskMessageScroller", () => {
     document.documentElement.style.removeProperty("--motion-scrollbar-idle-delay");
     vi.useRealTimers();
     vi.unstubAllGlobals();
+  });
+
+  it("applies same-task hash changes and restores each history entry without remounting", async () => {
+    let initialized = false;
+    function navigate(key: string, hash: string, restore = false) {
+      flushSync(() => root.render(
+        <TaskChatScrollNavigation.Provider value={{ key, hash, restore }}>
+          <TaskMessageScroller contentKey="unchanged">
+            <div ref={(node) => {
+              if (node && !initialized) {
+                fakeGeometry(node.parentElement!);
+                initialized = true;
+              }
+            }}>
+              {[100, 500].map((top, index) => <div key={index} id={`nav-comment-${index}`} data-thread-anchor={`nav-comment-${index}`} ref={(node) => {
+                if (node) node.getBoundingClientRect = () => ({ top: top - scroller().scrollTop, bottom: top + 100 - scroller().scrollTop, height: 100 } as DOMRect);
+              }}>Comment {index}</div>)}
+            </div>
+          </TaskMessageScroller>
+        </TaskChatScrollNavigation.Provider>,
+      ));
+    }
+    navigate("desktop-entry-one", "#nav-comment-0");
+    const viewport = scroller();
+    expect(viewport.scrollTop).toBe(100);
+    await scrollTo(viewport, 150);
+    navigate("desktop-entry-two", "#nav-comment-1");
+    expect(scroller()).toBe(viewport);
+    expect(viewport.scrollTop).toBe(500);
+    navigate("desktop-entry-one", "#nav-comment-0", true);
+    expect(viewport.scrollTop).toBe(150);
+    navigate("desktop-entry-one", "#nav-comment-1", true);
+    expect(viewport.scrollTop).toBe(500);
   });
 
   it("renders children inside the scroll container, pill hidden, scrolled to bottom on mount", () => {

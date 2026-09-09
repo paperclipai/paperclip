@@ -11,13 +11,17 @@ const positions = new Map<string, { top: number; anchor: ThreadScrollAnchor | nu
 export function useTaskChatScrollNavigation() {
   const navigation = useContext(TaskChatScrollNavigation);
   const ready = useContext(TaskChatScrollReady);
+  // Native hash links can reuse React Router's history key. Keep those entries
+  // separate so their POP event does not restore the previous hash's position.
+  const positionKey = navigation ? JSON.stringify([navigation.key, navigation.hash]) : null;
   return {
     key: navigation?.key,
+    hash: navigation?.hash,
     ready,
     initialPosition(root: Element, viewportTop: number, scrollTop: number): number | null {
       if (!navigation) return null;
-      if (navigation.restore && positions.has(navigation.key)) {
-        const saved = positions.get(navigation.key)!;
+      if (navigation.restore && positionKey && positions.has(positionKey)) {
+        const saved = positions.get(positionKey)!;
         if (saved.anchor && [...root.querySelectorAll<HTMLElement>("[data-thread-anchor]")].some((row) => row.dataset.threadAnchor === saved.anchor?.id)) {
           return scrollTop + threadScrollAnchorDelta(root, saved.anchor, viewportTop);
         }
@@ -32,8 +36,8 @@ export function useTaskChatScrollNavigation() {
       return null;
     },
     remember(top: number, anchor: ThreadScrollAnchor | null) {
-      if (!navigation || !ready) return;
-      positions.set(navigation.key, { top, anchor });
+      if (!positionKey || !ready) return;
+      positions.set(positionKey, { top, anchor });
       if (positions.size > 100) positions.delete(positions.keys().next().value!);
     },
   };

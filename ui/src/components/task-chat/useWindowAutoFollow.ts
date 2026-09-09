@@ -34,6 +34,7 @@ export function useWindowAutoFollow(contentKey: unknown, enabled: boolean): void
   const pinnedRef = useRef(true);
   const navigation = useTaskChatScrollNavigation();
   const initialPositionApplied = useRef(false);
+  const appliedNavigation = useRef({ key: navigation.key, hash: navigation.hash });
   const anchorRef = useRef<ThreadScrollAnchor | null>(null);
   const rememberAnchor = () => {
     const root = document.querySelector('[data-testid="task-chat-thread"]');
@@ -60,7 +61,7 @@ export function useWindowAutoFollow(contentKey: unknown, enabled: boolean): void
     };
     window.addEventListener("scroll", onScroll, { passive: true });
     return () => window.removeEventListener("scroll", onScroll);
-  }, [enabled]);
+  }, [enabled, navigation.key, navigation.hash, navigation.ready]);
 
   useLayoutEffect(() => {
     if (!enabled || typeof ResizeObserver === "undefined") return;
@@ -79,12 +80,16 @@ export function useWindowAutoFollow(contentKey: unknown, enabled: boolean): void
     });
     observer.observe(observed);
     return () => observer.disconnect();
-  }, [enabled]);
+  }, [enabled, navigation.key, navigation.hash, navigation.ready]);
 
   // Follow new content only when already pinned; otherwise hold position.
   useLayoutEffect(() => {
     if (!enabled) return;
-    if (!initialPositionApplied.current) {
+    if (appliedNavigation.current.key !== navigation.key || appliedNavigation.current.hash !== navigation.hash) {
+      appliedNavigation.current = { key: navigation.key, hash: navigation.hash };
+      initialPositionApplied.current = false;
+    }
+    if (navigation.ready && !initialPositionApplied.current) {
       const root = document.querySelector('[data-testid="task-chat-thread"]');
       const top = root ? navigation.initialPosition(root, 0, window.scrollY) : null;
       if (top !== null) {
@@ -95,12 +100,24 @@ export function useWindowAutoFollow(contentKey: unknown, enabled: boolean): void
       initialPositionApplied.current = true;
     }
     reconcile();
-  }, [contentKey, enabled]);
+  }, [contentKey, enabled, navigation.key, navigation.hash, navigation.ready]);
 
   useLayoutEffect(() => {
     if (!enabled) return;
     // One owner for document-flow compensation, as on the desktop viewport.
+    const previousRestoration = window.history.scrollRestoration;
+    window.history.scrollRestoration = "manual";
     document.documentElement.classList.add("task-chat-window-scroll");
-    return () => document.documentElement.classList.remove("task-chat-window-scroll");
+    return () => {
+      document.documentElement.classList.remove("task-chat-window-scroll");
+      window.history.scrollRestoration = previousRestoration;
+    };
   }, [enabled]);
+}
+
+/** Mount below TaskChatScrollReady so mobile navigation also waits for targets
+ * fetched after the conversation's first reveal. */
+export function TaskChatWindowScroll({ contentKey, enabled }: { contentKey: unknown; enabled: boolean }) {
+  useWindowAutoFollow(contentKey, enabled);
+  return null;
 }

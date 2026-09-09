@@ -33,6 +33,9 @@ navigation, with 160 Markdown comments and a resolved interaction. It delays
 initial comments, tests failures and retry, tracks a reading anchor across
 media growth, composer resizing, properties toggles, older-page loading and
 Back navigation, and covers mobile reduced motion and explicit comment links.
+The eight scenarios also exercise same-task hash navigation without remounting
+on desktop and mobile, and stalled native/log reads that expose Retry after
+the 15-second request deadline.
 Videos and per-frame `layout.json` measurements are written under each test's
 output directory. The two-pixel assertion measures a logical row's viewport
 offset; total scroll offset legitimately changes when history is prepended.

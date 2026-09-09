@@ -86,7 +86,7 @@ import {
   useRunnerGoalControl,
 } from "@/components/task-chat/RunnerGoalWidget";
 import { TaskChatQueuedMessages } from "@/components/task-chat/TaskChatQueuedMessages";
-import { useWindowAutoFollow } from "@/components/task-chat/useWindowAutoFollow";
+import { TaskChatWindowScroll } from "@/components/task-chat/useWindowAutoFollow";
 import { useSidebar } from "@/context/SidebarContext";
 import { useStreamlinedUiEnabled } from "@/hooks/useStreamlinedUiEnabled";
 import { cn } from "@/lib/utils";
@@ -2499,7 +2499,6 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     const frame = requestAnimationFrame(() => setRevealedIssue(issueId));
     return () => cancelAnimationFrame(frame);
   }, [historyPending, historyRevealed, issueId]);
-  useWindowAutoFollow(isMobile ? autoFollowContentKey : 0, isMobile && historyRevealed);
   const retryHistory = () => {
     onRetryInitialHistory?.();
     retryLogs?.();
@@ -2510,6 +2509,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
   return (
     <TaskChatExpansionState.Provider value={expansionState.current}>
     <TaskChatScrollReady.Provider value={!historyPending}>
+    <TaskChatWindowScroll contentKey={isMobile ? autoFollowContentKey : 0} enabled={isMobile && historyRevealed} />
     <TaskChatPresentationProvider
       mode={streamlinedUiEnabled ? "streamlined" : "production"}
     >
