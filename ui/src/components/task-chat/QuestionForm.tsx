@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Check,
   ChevronLeft,
@@ -18,6 +18,13 @@ import {
   loadStructuredDraft,
   saveStructuredDraft,
 } from "@/lib/composer-draft";
+import {
+  draftAnswersKey,
+  draftAnswersToQuestionResponse,
+  questionDraftStatusCopy,
+  questionResponseToDraftAnswers,
+  useQuestionDraftPersistence,
+} from "@/lib/interaction-question-draft";
 import { cn } from "@/lib/utils";
 import {
   TaskChatComposerTakeoverControls,
@@ -35,6 +42,12 @@ export interface QuestionFormProps {
   initialResponse?: PaperclipQuestionResponse | null;
   implicitCustomAnswer?: boolean;
   draftKey?: string;
+  /**
+   * Durable private server draft identity. When present, the form restores
+   * the caller's server draft once and autosaves through the shared draft
+   * persistence hook; the local `draftKey` behavior is unchanged.
+   */
+  questionDraft?: { issueId: string; interactionId: string } | null;
   disabled?: boolean;
   imageUploadHandler?: (file: File) => Promise<string>;
   mentions?: MentionOption[];
@@ -220,6 +233,7 @@ export function QuestionForm({
   initialResponse,
   implicitCustomAnswer = false,
   draftKey,
+  questionDraft = null,
   disabled = false,
   imageUploadHandler,
   mentions,
@@ -227,7 +241,7 @@ export function QuestionForm({
   onCancel,
 }: QuestionFormProps) {
   const takeoverActions = useTaskChatComposerTakeoverActions();
-  const initialDraft = draftKey
+  const initialDraft = draftKey && !questionDraft
     ? loadStructuredDraft<{
         page: number;
         answers: Record<string, Answer>;
@@ -261,15 +275,66 @@ export function QuestionForm({
   const [error, setError] = useState<string | null>(null);
   const [filters, setFilters] = useState<Record<string, string>>({});
 
+  const draftEnabled = Boolean(questionDraft) && !disabled;
+  const draft = useQuestionDraftPersistence({
+    issueId: questionDraft?.issueId,
+    interactionId: questionDraft?.interactionId,
+    enabled: draftEnabled,
+  });
+  const hydratedRef = useRef(false);
+  const lastSyncedKeyRef = useRef<string | null>(null);
+  const pristineKeyRef = useRef<string | null>(null);
+  if (pristineKeyRef.current === null) {
+    pristineKeyRef.current = draftAnswersKey(questionResponseToDraftAnswers(questionSet, answers));
+  }
+  const draftIdentity = questionDraft ? `${questionDraft.issueId}:${questionDraft.interactionId}` : null;
+  // Native forms are keyed by issue+interaction at their rendering boundary.
+  // Browser-local drafts remain exclusively for runtime/harness forms.
+
+  // Restore the durable server draft once per identity. A server draft only
+  // replaces pristine form state; caller edits made before the restore
+  // landed win and keep the fresh revision for the next autosave.
+  const { loaded: draftLoaded, draft: serverDraft } = draft;
+  useEffect(() => {
+    if (!draftLoaded || hydratedRef.current || !draftEnabled) return;
+    hydratedRef.current = true;
+    const restored = serverDraft ?? [];
+    if (serverDraft === null) {
+      lastSyncedKeyRef.current = pristineKeyRef.current;
+      return;
+    }
+    const currentKey = draftAnswersKey(questionResponseToDraftAnswers(questionSet, answers));
+    if (currentKey !== pristineKeyRef.current) {
+      lastSyncedKeyRef.current = draftAnswersKey(restored);
+      return;
+    }
+    const form = draftAnswersToQuestionResponse(questionSet, restored);
+    lastSyncedKeyRef.current = draftAnswersKey(restored);
+    setAnswers(form.responseAnswers);
+    setCustomActive(form.customActive);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draftLoaded, serverDraft, draftIdentity]);
+
+  // Autosave debounced through the shared persistence hook.
+  const { scheduleSave } = draft;
+  useEffect(() => {
+    if (!draftLoaded || !hydratedRef.current || !draftEnabled) return;
+    const canonical = questionResponseToDraftAnswers(questionSet, answers);
+    const key = draftAnswersKey(canonical);
+    if (lastSyncedKeyRef.current === key) return;
+    lastSyncedKeyRef.current = key;
+    scheduleSave(canonical);
+  }, [answers, draftLoaded, draftEnabled, questionSet, scheduleSave]);
+
   useEffect(() => {
     setPage((current) =>
       Math.min(current, Math.max(questionSet.questions.length - 1, 0)),
     );
   }, [questionSet.questions.length]);
   useEffect(() => {
-    if (draftKey)
+    if (draftKey && !questionDraft)
       saveStructuredDraft(draftKey, { page, answers, customActive });
-  }, [answers, customActive, draftKey, page]);
+  }, [answers, customActive, draftKey, page, questionDraft]);
 
   const question = questionSet.questions[page];
   const validationErrors = useMemo(
@@ -351,10 +416,15 @@ export function QuestionForm({
     setWorking("submit");
     setError(null);
     try {
+      // Flush pending keystrokes before the authoritative submit so a
+      // debounced save cannot restore pre-submit content afterwards.
+      await draft.flush();
       await onSubmit({
         schema: "paperclip.question_response.v1",
         answers: structuredClone(responseAnswers),
       });
+      draft.markSubmitted();
+      await draft.clear();
       if (draftKey) clearDraft(draftKey);
     } catch (cause) {
       setError(
@@ -373,6 +443,8 @@ export function QuestionForm({
     setError(null);
     try {
       await onCancel();
+      draft.markSubmitted();
+      await draft.clear();
       if (draftKey) clearDraft(draftKey);
     } catch (cause) {
       setError(
@@ -386,6 +458,10 @@ export function QuestionForm({
   }
 
   const currentError = validationErrors[question.id];
+  const draftStatusCopy = draftEnabled
+    ? (questionDraftStatusCopy(draft.status, { hasDraft: draft.revision > 0 })
+      ?? (draft.status === "failed" ? (draft.error ?? "Draft couldn't be saved.") : null))
+    : null;
   const isLastPage = page === questionSet.questions.length - 1;
   const showQuestionActionButton =
     multiple ||
@@ -599,6 +675,20 @@ export function QuestionForm({
           </div>
         ) : null}
       </div>
+      {draftEnabled && (draftStatusCopy || draft.status === "failed") ? (
+        <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
+          <span role="status" aria-live="polite">{draftStatusCopy}</span>
+          {draft.status === "failed" ? (
+            <button
+              type="button"
+              className="font-medium underline underline-offset-4 hover:text-foreground"
+              onClick={() => draft.retry()}
+            >
+              Retry
+            </button>
+          ) : null}
+        </div>
+      ) : null}
       {showActionRow ? (
         <div className="mt-3 flex flex-wrap items-center justify-end gap-2">
           {takeoverActions?.skipButton}

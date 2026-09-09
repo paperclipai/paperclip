@@ -63,6 +63,7 @@ import {
   rejectIssueThreadInteractionSchema,
   restoreIssueDocumentRevisionSchema,
   respondIssueThreadInteractionSchema,
+  putQuestionDraftRequestSchema,
   stalledReviewDecisionSchema,
   submitIssueThreadInteractionVerdictsSchema,
   updateIssueWorkProductSchema,
@@ -129,6 +130,7 @@ import {
   issueApprovalService,
   issueRecoveryActionService,
   issueThreadInteractionService,
+  questionDraftService,
   inboxAgentPolicyService,
   ISSUE_LIST_DEFAULT_LIMIT,
   ISSUE_LIST_MAX_LIMIT,
@@ -254,6 +256,7 @@ import {
   resolveIssueReviewRequester,
 } from "../services/issue-review-policy.js";
 import {
+  assertIssueThreadInteractionResolverAudience,
   evaluateIssueThreadInteractionResolverAudience,
   issueThreadInteractionAttentionAgentAllowed,
   type IssueThreadInteractionResolverAudienceDecision,
@@ -12707,6 +12710,111 @@ export function issueRoutes(
       });
 
       res.json(interaction);
+    },
+  );
+
+  /**
+   * Durable private per-human drafts for pending `ask_user_questions`
+   * interactions (COD-69). Draft writes never trigger continuation, submit,
+   * or activity entries — they only upsert the caller's own draft row.
+   * Agent actors are rejected on every draft route, including reads.
+   */
+  async function resolveQuestionDraftContext(
+    req: Request,
+    issue: { id: string; companyId: string },
+    interactionId: string,
+  ) {
+    const interactionSvc = issueThreadInteractionService(db);
+    const current = await interactionSvc.getForIssue(issue, interactionId);
+    if (current.kind !== "ask_user_questions") {
+      throw unprocessable("Only ask_user_questions interactions support drafts");
+    }
+    const actor = getActorInfo(req);
+    if (actor.actorType !== "user") {
+      throw forbidden("Question drafts are private to the responding human");
+    }
+    assertIssueThreadInteractionResolverAudience({
+      actor: { type: "user", userId: actor.actorId },
+      interaction: {
+        createdByAgentId: current.createdByAgentId ?? null,
+        createdByUserId: current.createdByUserId ?? null,
+        sourceRunId: current.sourceRunId ?? null,
+        addresseeAgentId: current.addresseeAgentId ?? null,
+        addresseeUserId: current.addresseeUserId ?? null,
+        effectiveResolverPolicy: current.effectiveResolverPolicy,
+        resolverPolicyProvenance: current.resolverPolicyProvenance ?? null,
+      },
+    });
+    return { current, userId: actor.actorId };
+  }
+
+  router.get(
+    "/issues/:id/interactions/:interactionId/draft",
+    async (req, res) => {
+      const id = req.params.id as string;
+      const interactionId = req.params.interactionId as string;
+      const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+      if (!issue) return;
+      const { current, userId } = await resolveQuestionDraftContext(req, issue, interactionId);
+      // Terminal interactions ignore drafts: the submitted result is
+      // authoritative, so there is nothing to restore.
+      if (current.status !== "pending") {
+        throw notFound("Question draft not found");
+      }
+      const draft = await questionDraftService(db).get({
+        companyId: issue.companyId,
+        issueId: issue.id,
+        interactionId: current.id,
+        userId,
+      });
+      if (!draft) {
+        throw notFound("Question draft not found");
+      }
+      res.json(draft);
+    },
+  );
+
+  router.put(
+    "/issues/:id/interactions/:interactionId/draft",
+    validate(putQuestionDraftRequestSchema),
+    async (req, res) => {
+      const id = req.params.id as string;
+      const interactionId = req.params.interactionId as string;
+      const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+      if (!issue) return;
+      const { current, userId } = await resolveQuestionDraftContext(req, issue, interactionId);
+      if (current.status !== "pending") {
+        throw conflict("Question is no longer pending; drafts are closed", {
+          code: "question_draft_terminal",
+          interactionStatus: current.status,
+        });
+      }
+      const draft = await questionDraftService(db).upsert({
+        companyId: issue.companyId,
+        issueId: issue.id,
+        interaction: current,
+        userId,
+        input: req.body,
+      });
+      res.json(draft);
+    },
+  );
+
+  router.delete(
+    "/issues/:id/interactions/:interactionId/draft",
+    async (req, res) => {
+      const id = req.params.id as string;
+      const interactionId = req.params.interactionId as string;
+      const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+      if (!issue) return;
+      const { current, userId } = await resolveQuestionDraftContext(req, issue, interactionId);
+      await questionDraftService(db).remove({
+        companyId: issue.companyId,
+        issueId: issue.id,
+        interactionId: current.id,
+        userId,
+      });
+      res.status(204).end();
     },
   );
 

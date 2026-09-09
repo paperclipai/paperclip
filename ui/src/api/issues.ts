@@ -1,6 +1,7 @@
 import type {
   AcceptedPlanDecompositionSummary,
   AskUserQuestionsAnswer,
+  QuestionDraftResponse,
   Approval,
   CompactIssue,
   CreateIssueTreeHold,
@@ -295,6 +296,17 @@ export const issuesApi = {
     data: { answers: AskUserQuestionsAnswer[]; summaryMarkdown?: string | null },
   ) =>
     api.post<IssueThreadInteraction>(`/issues/${id}/interactions/${interactionId}/respond`, data),
+  getQuestionDraft: (id: string, interactionId: string, options?: RequestOptions) =>
+    api.get<QuestionDraftResponse>(`/issues/${id}/interactions/${interactionId}/draft`, options),
+  putQuestionDraft: (
+    id: string,
+    interactionId: string,
+    data: { answers: AskUserQuestionsAnswer[]; expectedRevision?: number | null },
+    options?: RequestOptions,
+  ) =>
+    api.put<QuestionDraftResponse>(`/issues/${id}/interactions/${interactionId}/draft`, data, options),
+  deleteQuestionDraft: (id: string, interactionId: string, options?: RequestOptions) =>
+    api.delete<void>(`/issues/${id}/interactions/${interactionId}/draft`, options),
   submitInteractionVerdicts: (
     id: string,
     interactionId: string,

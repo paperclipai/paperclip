@@ -142,6 +142,7 @@ export function AttentionInteractionResolver({
   return (
     <IssueThreadInteractionCard
       interaction={interaction}
+      issueId={issueId}
       agentMap={agentMap}
       currentUserId={currentUserId}
       userLabelMap={userLabelMap}

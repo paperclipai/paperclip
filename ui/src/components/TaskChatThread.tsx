@@ -2263,6 +2263,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     (item: TaskChatInteractionItem) => (
       <TaskChatInteractionCard
         item={item}
+        issueId={issueId}
         planDocument={planDocument}
         showPlanPreview={
           !threadOwnsPlanPreview(
@@ -2298,6 +2299,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
       imageUploadHandler,
       mentions,
       externalReferences,
+      issueId,
       planDocument,
       planDocumentSourceRunId,
       settledRunIds,
@@ -2328,6 +2330,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
           kind: "interaction",
           interaction: selectedPendingInput.interaction,
         }}
+        issueId={issueId}
         presentation="takeover"
         draftKey={interactionDraftKey}
         planDocument={planDocument}
@@ -2337,6 +2340,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         onAcceptInteraction={onAcceptInteraction}
         onRejectInteraction={onRejectInteraction}
         onSubmitInteractionAnswers={onSubmitInteractionAnswers}
+        onCancelInteraction={onCancelInteraction}
         onSubmitInteractionVerdicts={onSubmitInteractionVerdicts}
         onUploadImage={imageUploadHandler}
         mentions={mentions}
@@ -2364,7 +2368,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                 Boolean(selectedPendingInput.item.questionSet),
           hideSkip:
             selectedPendingInput.kind === "durable"
-              ? interactionReplacesComposerSkip(
+              ? selectedPendingInput.interaction.kind === "ask_user_questions" || interactionReplacesComposerSkip(
                   selectedPendingInput.interaction,
                 )
               : runtimeRequestReplacesComposerSkip(selectedPendingInput.item),

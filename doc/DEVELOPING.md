@@ -62,6 +62,16 @@ pnpm dev:stop --data-dir ./tmp/paperclip-dev
 
 Issue execution may also use project execution workspace policies and workspace runtime services for per-project worktrees, preview servers, and managed dev commands. Configure those through the project workspace/runtime surfaces rather than starting long-running unmanaged processes when a task needs a reusable service.
 
+### Durable human-question drafts
+
+Pending native `ask_user_questions` interactions use private PostgreSQL drafts in both the task-chat questionnaire and the classic thread form. Runtime-only forms retain their browser-local storage behavior.
+
+- `GET`, `PUT`, and `DELETE /api/issues/:issueId/interactions/:interactionId/draft` require an authenticated human who can resolve the interaction. Agent credentials cannot access drafts.
+- Drafts are keyed by company, interaction, and human. They preserve partial choices and exact text without submitting an answer, creating activity, or waking an agent.
+- Every PUT requires `expectedRevision`: use zero when GET returns no draft, otherwise the returned revision. Concurrent or stale writes return 409 rather than overwriting a newer draft. Retry preserves unsaved edits and does not bypass this guard.
+- Answer submission remains the existing `/respond` operation and its native durable continuation. Cancellation uses `/cancel`; closing the composer does not submit or approve anything. Closed interactions neither restore drafts nor accept delayed draft writes.
+- Verification: run `pnpm exec vitest run server/src/services/question-drafts.test.ts server/src/__tests__/issue-question-draft-routes.test.ts packages/shared/src/validators/issue-question-drafts.test.ts ui/src/lib/interaction-question-draft.test.ts`, then exercise reload/restart, failed-save retry, and native answer continuation in the browser.
+
 ### Mobile-friendly preview (`pnpm dev:mobile`)
 
 The vite dev server serves an unbundled module graph. This is fast to reload on a local machine but too heavy for phones and tablets on slow links (airplane wifi, mobile data, distant tailnet peers). `pnpm dev:mobile` builds the UI once and serves the small production bundle on port `3101` via `vite preview`, proxying `/api` requests to the dev API on `3100`.

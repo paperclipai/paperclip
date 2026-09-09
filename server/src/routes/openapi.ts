@@ -148,6 +148,8 @@ import {
   acceptIssueThreadInteractionSchema,
   rejectIssueThreadInteractionSchema,
   respondIssueThreadInteractionSchema,
+  putQuestionDraftRequestSchema,
+  questionDraftResponseSchema,
   skipIssueThreadInteractionSchema,
   submitIssueThreadInteractionVerdictsSchema,
   withdrawIssueThreadInteractionSchema,
@@ -927,6 +929,9 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "POST /api/issues/{id}/interactions/{interactionId}/respond",
   "POST /api/issues/{id}/interactions/{interactionId}/skip",
   "POST /api/issues/{id}/interactions/{interactionId}/withdraw",
+  "GET /api/issues/{id}/interactions/{interactionId}/draft",
+  "PUT /api/issues/{id}/interactions/{interactionId}/draft",
+  "DELETE /api/issues/{id}/interactions/{interactionId}/draft",
   "GET /api/companies/{companyId}/tools/gallery",
   "GET /api/companies/{companyId}/tools/apps/{galleryKey}/preflight",
   "POST /api/companies/{companyId}/tools/apps/connect",
@@ -5151,6 +5156,40 @@ registry.registerPath({
     body: jsonBody(withdrawIssueThreadInteractionSchema),
   },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/issues/{id}/interactions/{interactionId}/draft",
+  tags: ["issues"],
+  summary: "Get the caller's private question draft",
+  request: {
+    params: z.object({ id: z.string(), interactionId: z.string() }),
+  },
+  responses: { 200: r.ok(questionDraftResponseSchema), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "put",
+  path: "/api/issues/{id}/interactions/{interactionId}/draft",
+  tags: ["issues"],
+  summary: "Save the caller's private question draft",
+  request: {
+    params: z.object({ id: z.string(), interactionId: z.string() }),
+    body: jsonBody(putQuestionDraftRequestSchema),
+  },
+  responses: { 200: r.ok(questionDraftResponseSchema), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict, 422: r.unprocessable },
+});
+
+registry.registerPath({
+  method: "delete",
+  path: "/api/issues/{id}/interactions/{interactionId}/draft",
+  tags: ["issues"],
+  summary: "Delete the caller's private question draft",
+  request: {
+    params: z.object({ id: z.string(), interactionId: z.string() }),
+  },
+  responses: { 204: r.noContent, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
 });
 
 registry.registerPath({

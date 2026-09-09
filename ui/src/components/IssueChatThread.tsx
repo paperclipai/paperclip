@@ -197,6 +197,7 @@ import { resolveCommentAttribution } from "../lib/comment-attribution";
 interface IssueChatMessageContext {
   feedbackDataSharingPreference: FeedbackDataSharingPreference;
   feedbackTermsUrl: string | null;
+  issueId?: string | null;
   agentMap?: Map<string, Agent>;
   currentUserId?: string | null;
   userLabelMap?: ReadonlyMap<string, string> | null;
@@ -2456,6 +2457,7 @@ function ExpiredRequestConfirmationActivity({
     agentMap,
     currentUserId,
     userLabelMap,
+    issueId,
     onAcceptInteraction,
     onRejectInteraction,
     onCancelInteraction,
@@ -2534,6 +2536,7 @@ function ExpiredRequestConfirmationActivity({
         <div id={detailsId} className="mt-2">
           <IssueThreadInteractionCard
             interaction={interaction}
+            issueId={issueId}
             agentMap={agentMap}
             currentUserId={currentUserId}
             userLabelMap={userLabelMap}
@@ -3062,6 +3065,7 @@ function IssueChatSystemMessage({ message }: { message: ThreadMessage }) {
     agentMap,
     currentUserId,
     userLabelMap,
+    issueId,
     onAcceptInteraction,
     onRejectInteraction,
     onSubmitInteractionAnswers,
@@ -3122,6 +3126,7 @@ function IssueChatSystemMessage({ message }: { message: ThreadMessage }) {
         <div className="py-1.5">
           <IssueThreadInteractionCard
             interaction={interaction}
+            issueId={issueId}
             agentMap={agentMap}
             currentUserId={currentUserId}
             userLabelMap={userLabelMap}
@@ -5145,6 +5150,7 @@ export function IssueChatThread({
     () => ({
       feedbackDataSharingPreference,
       feedbackTermsUrl,
+      issueId,
       agentMap,
       currentUserId,
       userLabelMap,
@@ -5174,6 +5180,7 @@ export function IssueChatThread({
     [
       feedbackDataSharingPreference,
       feedbackTermsUrl,
+      issueId,
       agentMap,
       currentUserId,
       userLabelMap,

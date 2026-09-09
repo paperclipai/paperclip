@@ -30,6 +30,13 @@ import {
   type SuggestedTaskTreeNode,
 } from "../lib/issue-thread-interactions";
 import { cn, formatDateTime, formatShortDate } from "../lib/utils";
+import {
+  draftAnswersKey,
+  draftAnswersToLegacyForm,
+  legacyFormToDraftAnswers,
+  questionDraftStatusCopy,
+  useQuestionDraftPersistence,
+} from "../lib/interaction-question-draft";
 import { InteractionAudienceLine } from "./InteractionAudienceLine";
 import { MarkdownBody, type MarkdownExternalReferenceMap } from "./MarkdownBody";
 import { Button } from "./ui/button";
@@ -122,6 +129,12 @@ interface IssueThreadInteractionCardProps {
   ) => Promise<void> | void;
   onUploadImage?: (file: File) => Promise<string>;
   externalReferences?: MarkdownExternalReferenceMap;
+  /**
+   * Owning issue id. When present, pending question forms restore and
+   * autosave the caller's private server draft; when absent the form stays
+   * purely in-memory (e.g. preview surfaces without an issue context).
+   */
+  issueId?: string | null;
 }
 
 function resolveActorLabel(args: {
@@ -1065,11 +1078,13 @@ function QuestionOptionButton({
 
 function AskUserQuestionsCard({
   interaction,
+  issueId,
   onSubmitInteractionAnswers,
   onCancelInteraction,
   externalReferences,
 }: {
   interaction: AskUserQuestionsInteraction;
+  issueId?: string | null;
   onSubmitInteractionAnswers?: (
     interaction: AskUserQuestionsInteraction,
     answers: AskUserQuestionsAnswer[],
@@ -1079,6 +1094,15 @@ function AskUserQuestionsCard({
   ) => Promise<void> | void;
   externalReferences?: MarkdownExternalReferenceMap;
 }) {
+  const questions = interaction.payload.questions;
+  const draftEnabled = interaction.status === "pending"
+    && Boolean(issueId)
+    && Boolean(onSubmitInteractionAnswers);
+  const draft = useQuestionDraftPersistence({
+    issueId,
+    interactionId: interaction.id,
+    enabled: draftEnabled,
+  });
   const [draftAnswers, setDraftAnswers] = useState<Record<string, string[]>>(() =>
     Object.fromEntries(
       (interaction.result?.answers ?? []).map((answer) => [
@@ -1106,7 +1130,25 @@ function AskUserQuestionsCard({
   const [actionError, setActionError] = useState<string | null>(null);
   const resolutionErrorMessage = useResolutionErrorMessage();
 
+  // Guard the result sync so a background interaction refetch (new object
+  // identity, same content) never erases in-memory edits. A new
+  // interaction id or genuinely changed answers still reset the form.
+  const lastIdentityRef = useRef(interaction.id);
+  const lastResultKeyRef = useRef<string | null>(null);
+  const hydratedRef = useRef(false);
+  const lastSyncedKeyRef = useRef<string | null>(null);
+
   useEffect(() => {
+    hydratedRef.current = false;
+    lastSyncedKeyRef.current = null;
+  }, [interaction.id]);
+
+  useEffect(() => {
+    const identityChanged = lastIdentityRef.current !== interaction.id;
+    const resultKey = JSON.stringify(interaction.result?.answers ?? null);
+    if (!identityChanged && lastResultKeyRef.current === resultKey) return;
+    lastIdentityRef.current = interaction.id;
+    lastResultKeyRef.current = resultKey;
     setDraftAnswers(
       Object.fromEntries(
         (interaction.result?.answers ?? []).map((answer) => [
@@ -1129,9 +1171,53 @@ function AskUserQuestionsCard({
           .map((answer) => [answer.questionId, true]),
       ),
     );
-  }, [interaction.result?.answers]);
+  }, [interaction.id, interaction.result?.answers]);
 
-  const questions = interaction.payload.questions;
+  // Restore the durable server draft once per identity. When the caller
+  // already typed edits before the restore landed, the edits win and the
+  // fresh revision is adopted so the next autosave still carries a guard.
+  const { loaded: draftLoaded, draft: serverDraft } = draft;
+  useEffect(() => {
+    if (!draftLoaded || hydratedRef.current || !draftEnabled) return;
+    hydratedRef.current = true;
+    const restored = serverDraft ?? [];
+    const currentKey = draftAnswersKey(legacyFormToDraftAnswers({
+      questions,
+      draftAnswers,
+      draftOtherAnswers,
+      otherActive: otherActiveQuestions,
+    }));
+    const pristineKey = draftAnswersKey(interaction.result?.answers ?? []);
+    if (serverDraft === null || currentKey !== pristineKey) {
+      lastSyncedKeyRef.current = serverDraft === null ? pristineKey : draftAnswersKey(restored);
+      return;
+    }
+    const form = draftAnswersToLegacyForm(restored);
+    lastSyncedKeyRef.current = draftAnswersKey(restored);
+    setDraftAnswers(form.draftAnswers);
+    setDraftOtherAnswers(form.draftOtherAnswers);
+    setOtherActiveQuestions(form.otherActive);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draftLoaded, serverDraft, interaction.id]);
+
+  // Autosave debounced through the shared persistence hook. The synced-key
+  // guard skips the save-back of a just-restored draft.
+  const { scheduleSave } = draft;
+  useEffect(() => {
+    if (!draftLoaded || !hydratedRef.current || !draftEnabled) return;
+    if (interaction.status !== "pending") return;
+    const canonical = legacyFormToDraftAnswers({
+      questions,
+      draftAnswers,
+      draftOtherAnswers,
+      otherActive: otherActiveQuestions,
+    });
+    const key = draftAnswersKey(canonical);
+    if (lastSyncedKeyRef.current === key) return;
+    lastSyncedKeyRef.current = key;
+    scheduleSave(canonical);
+  }, [draftAnswers, draftOtherAnswers, otherActiveQuestions, draftLoaded, draftEnabled, interaction.status, questions, scheduleSave]);
+
   const requiredQuestions = questions.filter((question) => question.required);
   const canSubmit = requiredQuestions.every(
     (question) =>
@@ -1182,6 +1268,9 @@ function AskUserQuestionsCard({
     setWorking(true);
     setActionError(null);
     try {
+      // Persist the latest keystrokes before the authoritative submit so a
+      // debounced save cannot restore pre-submit content afterwards.
+      await draft.flush();
       await onSubmitInteractionAnswers(
         interaction,
         questions.map((question) => {
@@ -1195,6 +1284,8 @@ function AskUserQuestionsCard({
           };
         }),
       );
+      draft.markSubmitted();
+      await draft.clear();
     } catch (error) {
       setActionError(resolutionErrorMessage(error));
     } finally {
@@ -1208,12 +1299,19 @@ function AskUserQuestionsCard({
     setActionError(null);
     try {
       await onCancelInteraction(interaction);
+      draft.markSubmitted();
+      await draft.clear();
     } catch (error) {
       setActionError(resolutionErrorMessage(error));
     } finally {
       setCancelling(false);
     }
   }
+
+  const draftStatusCopy = draftEnabled
+    ? (questionDraftStatusCopy(draft.status, { hasDraft: draft.revision > 0 })
+      ?? (draft.status === "failed" ? (draft.error ?? "Draft couldn't be saved.") : null))
+    : null;
 
   return (
     <div className="space-y-4">
@@ -1385,6 +1483,21 @@ function AskUserQuestionsCard({
               </Button>
             </div>
           </div>
+
+          {draftStatusCopy || draft.status === "failed" ? (
+            <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
+              <span role="status" aria-live="polite">{draftStatusCopy}</span>
+              {draftEnabled && draft.status === "failed" ? (
+                <button
+                  type="button"
+                  className="font-medium underline underline-offset-4 transition-colors outline-none hover:text-foreground focus-visible:ring-(length:--rad-3) focus-visible:ring-ring/50"
+                  onClick={() => draft.retry()}
+                >
+                  Retry
+                </button>
+              ) : null}
+            </div>
+          ) : null}
 
           <InteractionActionError message={actionError} />
         </div>
@@ -3868,6 +3981,7 @@ function VerdictProgressBadge({
 
 export function IssueThreadInteractionCard({
   interaction,
+  issueId,
   agentMap,
   currentUserId,
   userLabelMap,
@@ -4120,6 +4234,7 @@ export function IssueThreadInteractionCard({
           ) : interaction.kind === "ask_user_questions" ? (
             <AskUserQuestionsCard
               interaction={interaction}
+              issueId={issueId}
               onSubmitInteractionAnswers={onSubmitInteractionAnswers}
               onCancelInteraction={onCancelInteraction}
               externalReferences={externalReferences}

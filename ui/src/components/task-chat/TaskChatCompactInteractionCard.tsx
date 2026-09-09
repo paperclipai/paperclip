@@ -721,6 +721,7 @@ function questionResponseForInteraction(
 
 function AskUserQuestionsCard({
   interaction,
+  issueId,
   onSubmitInteractionAnswers,
   onCancelInteraction,
   errorMessage,
@@ -729,6 +730,7 @@ function AskUserQuestionsCard({
   mentions,
 }: {
   interaction: AskUserQuestionsInteraction;
+  issueId?: string | null;
   onSubmitInteractionAnswers?: SharedInteractionProps["onSubmitInteractionAnswers"];
   onCancelInteraction?: SharedInteractionProps["onCancelInteraction"];
   errorMessage: (error: unknown) => string;
@@ -743,11 +745,13 @@ function AskUserQuestionsCard({
   );
   return (
     <QuestionForm
+      key={`${issueId ?? ""}:${interaction.id}`}
       id={interaction.id}
       questionSet={questionSet}
       initialResponse={initialResponse}
       implicitCustomAnswer={interaction.payload.questionSet === undefined}
       draftKey={draftKey}
+      questionDraft={issueId ? { issueId, interactionId: interaction.id } : null}
       disabled={!onSubmitInteractionAnswers}
       imageUploadHandler={onUploadImage}
       mentions={mentions}
@@ -1870,6 +1874,7 @@ function ItemVerdictsCard({
 
 export function TaskChatCompactInteractionCard({
   interaction,
+  issueId,
   planDocument,
   showPlanPreview = true,
   agentMap,
@@ -1969,10 +1974,9 @@ export function TaskChatCompactInteractionCard({
       ) : interaction.kind === "ask_user_questions" ? (
         <AskUserQuestionsCard
           interaction={interaction}
+          issueId={issueId}
           onSubmitInteractionAnswers={onSubmitInteractionAnswers}
-          onCancelInteraction={
-            presentation === "timeline" ? onCancelInteraction : undefined
-          }
+          onCancelInteraction={onCancelInteraction}
           errorMessage={errorMessage}
           draftKey={draftKey}
           onUploadImage={onUploadImage}

@@ -1541,6 +1541,33 @@ export const respondIssueThreadInteractionSchema = z.object({
 });
 export type RespondIssueThreadInteraction = z.infer<typeof respondIssueThreadInteractionSchema>;
 
+/**
+ * Durable private per-human drafts for pending `ask_user_questions`
+ * interactions (COD-69). Drafts are partial by design: required-question
+ * completeness is only enforced by the submit path, while question/option id
+ * validity against the immutable payload is enforced by the draft service.
+ */
+export const questionDraftAnswersSchema = z.array(askUserQuestionsAnswerSchema.extend({
+  // Preserve in-progress whitespace; submission has its own normalization.
+  otherText: z.string().max(100000).nullable().optional(),
+})).max(64);
+
+export const putQuestionDraftRequestSchema = z.object({
+  answers: questionDraftAnswersSchema,
+  /** Revision read by this editor; zero creates a previously absent draft. */
+  expectedRevision: z.number().int().min(0),
+});
+export type PutQuestionDraftRequest = z.infer<typeof putQuestionDraftRequestSchema>;
+
+export const questionDraftResponseSchema = z.object({
+  interactionId: z.string().guid(),
+  issueId: z.string().guid(),
+  revision: z.number().int().min(1),
+  answers: questionDraftAnswersSchema,
+  updatedAt: z.string().datetime({ offset: true }),
+});
+export type QuestionDraftResponse = z.infer<typeof questionDraftResponseSchema>;
+
 export const submitIssueThreadInteractionVerdictsSchema = z.object({
   verdicts: z.array(z.object({
     id: z.string().trim().min(1).max(120),

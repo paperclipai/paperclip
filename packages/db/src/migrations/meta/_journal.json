@@ -1709,6 +1709,13 @@
       "when": 1788804969749,
       "tag": "0245_misty_nightshade",
       "breakpoints": true
+    },
+    {
+      "idx": 246,
+      "version": "7",
+      "when": 1788944495586,
+      "tag": "0246_faithful_whistler",
+      "breakpoints": true
     }
   ]
 }
