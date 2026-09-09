@@ -20,6 +20,7 @@ import {
   approvals,
   heartbeatRuns,
   issueApprovals,
+  issueComments,
   issueExecutionDecisions,
   issues,
   issueThreadInteractions,
@@ -442,6 +443,58 @@ export function recoveryEngineerService(
     await getActorRun(actor, config, incident, ["recovery", "repair", "reviewer"]);
   }
 
+  async function readSourceContext(source: typeof recoveryEngineerIncidentSources.$inferSelect) {
+    const issue = await db.select().from(issues).where(and(
+      eq(issues.id, source.sourceIssueId),
+      eq(issues.companyId, source.companyId),
+    )).then((rows) => rows[0] ?? null);
+    if (!issue) return null;
+    const [comments, latestRun, owner, humanGate, dependencyGate] = await Promise.all([
+      db.select({
+        id: issueComments.id, body: issueComments.body, createdAt: issueComments.createdAt,
+      }).from(issueComments).where(and(
+        eq(issueComments.companyId, source.companyId),
+        eq(issueComments.issueId, source.sourceIssueId),
+        isNull(issueComments.deletedAt),
+      )).orderBy(desc(issueComments.createdAt), desc(issueComments.id)).limit(21),
+      latestIssueRun(issue),
+      issue.assigneeAgentId
+        ? db.select().from(agents).where(and(
+          eq(agents.id, issue.assigneeAgentId), eq(agents.companyId, source.companyId),
+        )).then((rows) => rows[0] ?? null)
+        : Promise.resolve(null),
+      hasPendingHumanGate(issue),
+      hasUnresolvedDependency(issue),
+    ]);
+    const invokability = owner ? await evaluateAgentInvokabilityFromDb(db, owner) : null;
+    return {
+      // This is current diagnostic evidence, not a replacement for the captured
+      // failure generation or authorization to resume it.
+      issueId: issue.id,
+      status: issue.status,
+      statusVersion: issue.statusVersion,
+      updatedAt: issue.updatedAt,
+      ownerChanged: issue.assigneeAgentId !== source.originalOwnerAgentId ||
+        issue.assigneeUserId !== source.originalOwnerUserId,
+      owner: owner ? {
+        id: owner.id, status: owner.status, invokable: invokability?.invokable ?? false,
+      } : null,
+      gates: {
+        human: humanGate,
+        dependency: dependencyGate,
+        executionLocked: Boolean(issue.checkoutRunId || issue.executionRunId || issue.executionLockedAt),
+      },
+      comments: comments.slice(0, 20).map((comment) => {
+        const body = redactSensitiveText(comment.body);
+        return { ...comment, body: body.slice(0, 20_000), truncated: body.length > 20_000 };
+      }),
+      commentsHasMore: comments.length > 20,
+      latestRun: latestRun
+        ? buildRecoveryRunEvidence(latestRun, owner?.adapterType ?? "unknown", issue.id).evidence
+        : null,
+    };
+  }
+
   async function readContext(input: {
     issueId: string;
     actor: RecoveryEngineerActor;
@@ -531,7 +584,10 @@ export function recoveryEngineerService(
     return {
       config: publicConfig(config),
       incident: resolved.incident,
-      sources: visibleSources,
+      sources: await Promise.all(visibleSources.map(async (source) => ({
+        ...source,
+        currentContext: await readSourceContext(source),
+      }))),
       sourcesPage: {
         limit: input.sourceLimit,
         hasMore: sourceHasMore,

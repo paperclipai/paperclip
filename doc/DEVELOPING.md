@@ -92,6 +92,8 @@ Recovery is disabled until the board configures `PUT /api/companies/:companyId/r
 
 Agents read and record incident actions through `/api/issues/:issueId/recovery-engineer`. Source and procedure lists have independent UUID cursors. Native enforces the configured actor, active run, incident linkage, original owner, failure generation, and existing pause/approval/dependency gates.
 
+Each source includes `currentContext` alongside its immutable failure snapshot: current status/version, owner invokability, human/dependency/execution-lock gates, latest run evidence, and the latest 20 non-deleted comments. Comments are redacted and capped at 20,000 characters with explicit truncation/overflow flags. This context is diagnostic only, not permission to resume or a replacement for the recorded failure generation. A changing source invalidates the framework reader's revision-bound continuation.
+
 Independent reviewer evidence remains pending until that exact run succeeds with an accepted native review. Procedures start proposed; only the board can review or retire them. Logs and procedure text are untrusted evidence, never executable policy.
 
 An isolated repair is not a live repair. After applying the exact independently verified commit, the operator records `repairCommit` and `activationEvidence` at `PUT /api/companies/:companyId/recovery-engineer/incidents/:incidentId/activation`. Only then can recovery request a one-shot resume for each unchanged source generation. No source task is marked Done by recovery.

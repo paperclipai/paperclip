@@ -10,6 +10,7 @@ import {
   createDb,
   heartbeatRuns,
   issueCreateIdempotencyKeys,
+  issueComments,
   issueExecutionDecisions,
   issueRelations,
   issues,
@@ -270,6 +271,37 @@ describeEmbeddedPostgres("native recovery engineer", () => {
     app.use(errorHandler);
     return app;
   }
+
+  it("supplies source blocking evidence and current gates without granting source access", async () => {
+    const seeded = await seedCompany();
+    const recovery = recoveryEngineerService(db, { enqueueWakeup: async () => null });
+    const run = await seedRun({
+      companyId: seeded.companyId, agentId: seeded.ownerAgentId,
+      issueId: seeded.sourceIssueId, status: "failed",
+      errorCode: "adapter_failed", stderrExcerpt: "workspace resolution failed",
+    });
+    await recovery.observeRunTerminal(run);
+    await db.insert(issueComments).values({
+      companyId: seeded.companyId, issueId: seeded.sourceIssueId,
+      body: "Waiting on missing workspace. Authorization: Bearer secret-source-token",
+    });
+    await db.update(agents).set({ status: "paused" }).where(eq(agents.id, seeded.ownerAgentId));
+    const context = await recovery.readContext({
+      issueId: seeded.sourceIssueId,
+      actor: { actorType: "user", agentId: null, userId: "board", runId: null, board: true },
+      sourceLimit: 10, procedureLimit: 10,
+    });
+    expect(context.sources[0]).toMatchObject({
+      currentContext: {
+        owner: { id: seeded.ownerAgentId, status: "paused", invokable: false },
+        gates: { human: true },
+        latestRun: { runId: run.id },
+        comments: [{ body: expect.stringContaining("Waiting on missing workspace") }],
+      },
+    });
+    expect(JSON.stringify(context)).not.toContain("secret-source-token");
+    expect(context.resumeGate.status).toBe("verification_required");
+  });
 
   it("deduplicates repeated terminal events and escalates its own failed diagnosis once", async () => {
     const seeded = await seedCompany();
