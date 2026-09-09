@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import { findMissingVendorDependencies } from "./bundle-runner-vendor.mjs";
+import { findMissingVendorDependencies } from "./verify-runner-vendor-dependencies.mjs";
 
 describe("findMissingVendorDependencies", () => {
-  it("returns nothing when every external the bundle needs is already declared", () => {
+  it("returns nothing when every runner dependency is already declared on server", () => {
     const missing = findMissingVendorDependencies(
       new Set(["acpx", "ajv", "smol-toml"]),
       new Set(["acpx", "ajv", "smol-toml", "express"]),
@@ -12,11 +12,11 @@ describe("findMissingVendorDependencies", () => {
     expect(missing).toEqual([]);
   });
 
-  it("flags a bundle external that isn't declared as a server dependency", () => {
+  it("flags a runner dependency that isn't mirrored into server/package.json", () => {
     // This is the exact shape of the incident this check exists to catch:
     // packages/paperclip-runner/package.json grew a new runtime dependency
     // (smol-toml) that never got mirrored into server/package.json, so the
-    // vendored bundle would fail to resolve it at runtime (#13110, #13116).
+    // vendored `cp -R` copy failed to resolve it at runtime (#13110, #13116).
     const missing = findMissingVendorDependencies(
       new Set(["acpx", "ajv", "smol-toml"]),
       new Set(["acpx", "ajv"]),
