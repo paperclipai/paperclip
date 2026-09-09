@@ -17,6 +17,21 @@ Validate this change against the existing master consumers independently. Run
 repository types, tests, and build, the historical database upgrade checks, and
 the release patch-packaging checks. Exact-head CI and code review are required.
 
+The foundation exports the connection-purpose type needed by the schema, but
+does not add the channel transport or application kind to existing consumers.
+Durable command-registration and Teams transfer stores remain in the second
+change alongside their service authorization. Tenant foreign keys bind task,
+agent, comment, delivery, and action references to their company. Nullable
+deletion uses an ID-only `SET NULL` action plus a tenant `NO ACTION` constraint,
+so deleting a parent cannot clear the required company ID. Action references to
+conversation and principal retain history instead of silently detaching it.
+These corrections use forward migrations; historical SQL remains unchanged.
+
+The runtime registry retires the prior endpoint owner before exposing a
+replacement, and fences initialization against removal or shutdown. It does not
+initialize providers itself: the service caller must install current guarded
+callback context before starting a Gateway connection.
+
 ## Second change: gated service and Board integration
 
 Add company-scoped durable admission, identity and reach authorization, leases,

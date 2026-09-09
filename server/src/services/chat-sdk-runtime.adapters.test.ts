@@ -2352,6 +2352,137 @@ describe("Chat SDK published adapter integration", () => {
     },
   );
 
+  it.each(["personal", "channel", "groupChat"] as const)(
+    "Teams close text replaces only the selected progress activity without retaining card controls (%s)",
+    async (scope) => {
+      // Transport proof only: the service must independently select a currently
+      // owned plain progress lane and veto authored/uncertain final messages.
+      // Actual installed adapter, App.send and Connector API serialization;
+      // only the final HTTP methods are replaced. No live tenant/UI claim.
+      const runtime = createChatSdkEndpointRuntime({
+        callbacks: { onMessage() {} },
+        companyId: "company-teams-close-edit",
+        endpointId: `endpoint-teams-close-${scope}`,
+        logger: "silent",
+        persistence: memoryPersistence(),
+        providerConfig: {
+          provider: "microsoft-teams",
+          userName: "maya",
+          credentials: {
+            appId: "00000000-0000-4000-8000-000000000000",
+            appPassword: "synthetic-password",
+          },
+        },
+      });
+      const network = vi.fn(async () => {
+        throw new Error("Unexpected network");
+      });
+      vi.stubGlobal("fetch", network);
+      const adapter = runtime.getProviderAdapter();
+      const app = (
+        adapter as unknown as {
+          app: {
+            api: {
+              serviceUrl: string;
+              http: {
+                put(url: string, body: unknown): Promise<{ data: unknown }>;
+              };
+            };
+            activitySender: {
+              client: {
+                post(url: string, body: unknown): Promise<{ data: unknown }>;
+              };
+            };
+          };
+        }
+      ).app;
+      const post = vi
+        .spyOn(app.activitySender.client, "post")
+        .mockResolvedValueOnce({ data: { id: "authored-answer" } })
+        .mockResolvedValueOnce({ data: { id: "owned-progress" } });
+      const put = vi
+        .spyOn(app.api.http, "put")
+        .mockResolvedValue({ data: { id: "owned-progress" } });
+      const conversation =
+        scope === "personal"
+          ? "a:close-personal"
+          : "19:close-channel@thread.tacv2";
+      const route = "https://smba.trafficmanager.net/emea/";
+      const threadId = `teams:${Buffer.from(conversation).toString("base64url")}:${Buffer.from(route).toString("base64url")}:${scope}`;
+      const originalApi = app.api;
+      try {
+        await runtime.initialize();
+        await adapter.postMessage(threadId, {
+          markdown: "The actual completed answer must remain unchanged.",
+        });
+        await adapter.postMessage(threadId, {
+          card: {
+            type: "card",
+            title: "Working",
+            children: [
+              {
+                type: "actions",
+                children: [
+                  { type: "button", id: "synthetic-stop", label: "Stop" },
+                ],
+              },
+            ],
+          },
+        });
+        expect(JSON.stringify(post.mock.calls[1]?.[1])).toContain(
+          "Action.Submit",
+        );
+        expect(JSON.stringify(post.mock.calls[1]?.[1])).toContain(
+          "synthetic-stop",
+        );
+        const edited = await adapter.editMessage(threadId, "owned-progress", {
+          markdown:
+            "This chat conversation is closed. The Paperclip task remains available.",
+        });
+        expect(edited).toMatchObject({ id: "owned-progress", threadId });
+        expect(put).toHaveBeenCalledTimes(1);
+        expect(put.mock.calls[0]?.[0]).toBe(
+          `${route}v3/conversations/${conversation}/activities/owned-progress`,
+        );
+        const body = JSON.parse(JSON.stringify(put.mock.calls[0]?.[1]));
+        expect(body).toMatchObject({
+          type: "message",
+          textFormat: "markdown",
+          text: "This chat conversation is closed. The Paperclip task remains available.",
+        });
+        expect(body.attachments ?? []).toEqual([]);
+        expect(body.suggestedActions).toBeUndefined();
+        expect(JSON.stringify(body)).not.toMatch(
+          /Action\.Submit|synthetic-stop|Working|authored-answer/,
+        );
+        expect(post).toHaveBeenCalledTimes(2);
+        expect(app.api).toBe(originalApi);
+        expect(network).not.toHaveBeenCalled();
+
+        // An uncertain edit is surfaced; the adapter must not post a second
+        // message, edit a different ID, or fall back to the authored answer.
+        put.mockRejectedValueOnce(
+          Object.assign(new Error("Synthetic connection lost"), {
+            code: "ECONNRESET",
+          }),
+        );
+        await expect(
+          adapter.editMessage(threadId, "owned-progress", {
+            markdown: "This chat conversation is closed.",
+          }),
+        ).rejects.toThrow();
+        expect(put).toHaveBeenCalledTimes(2);
+        expect(put.mock.calls[1]?.[0]).toBe(put.mock.calls[0]?.[0]);
+        expect(post).toHaveBeenCalledTimes(2);
+        expect(network).not.toHaveBeenCalled();
+      } finally {
+        await runtime.shutdown();
+        vi.restoreAllMocks();
+        vi.unstubAllGlobals();
+      }
+    },
+  );
+
   it("parses verified Teams edit, delete, and restore envelopes through the public adapter contract", async () => {
     const runtime = createChatSdkEndpointRuntime({
       callbacks: { onMessage() {} },

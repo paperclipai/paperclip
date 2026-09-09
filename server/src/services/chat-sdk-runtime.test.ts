@@ -870,6 +870,450 @@ describe("Chat SDK endpoint runtime", () => {
     expect(registry.list()).toHaveLength(0);
   });
 
+  describe("registry lifecycle serialization", () => {
+    function registryOptions(endpointId = "endpoint-1") {
+      return {
+        ...baseOptions({
+          provider: "slack",
+          userName: "agent",
+          credentials: { botToken: "token", signingSecret: "secret" },
+        }),
+        endpointId,
+      };
+    }
+
+    it.each(["remove", "replace", "shutdown"] as const)(
+      "joins held initialization before %s and cannot start a retired Discord gateway",
+      async (operation) => {
+        const registry = createChatSdkRuntime();
+        const options = {
+          ...baseOptions({
+            provider: "discord",
+            userName: "agent",
+            credentials: {
+              botToken: "token",
+              applicationId: "app",
+              guildId: "guild",
+            },
+          }),
+          enableDiscordGateway: true,
+        };
+        const first = await registry.replaceEndpoint(options);
+        const chat = captures.chats[0] as unknown as {
+          initialize(): Promise<void>;
+          shutdown(): Promise<void>;
+        };
+        const held = deferred();
+        const initialize = vi
+          .spyOn(chat, "initialize")
+          .mockReturnValue(held.promise);
+        const sdkShutdown = vi.spyOn(chat, "shutdown");
+        const shutdown = vi.spyOn(first, "shutdown");
+        const initializing = first.initialize().then(
+          () => "initialized",
+          (error: Error) => error.message,
+        );
+        let retired = false;
+        let retirement: Promise<unknown> | undefined;
+        try {
+          await vi.waitFor(() => expect(initialize).toHaveBeenCalledOnce());
+          retirement = (
+            operation === "remove"
+              ? registry.removeEndpoint(options.endpointId)
+              : operation === "replace"
+                ? registry.replaceEndpoint(options)
+                : registry.shutdown()
+          ).then((value) => {
+            retired = true;
+            return value;
+          });
+          await vi.waitFor(() => expect(shutdown).toHaveBeenCalledOnce());
+          await new Promise<void>((resolve) => setTimeout(resolve, 0));
+          const beforeInitializationSettled = {
+            retired,
+            shutdownCalls: sdkShutdown.mock.calls.length,
+          };
+          held.resolve();
+          const initializationResult = await initializing;
+          await retirement;
+          expect(beforeInitializationSettled).toEqual({
+            retired: false,
+            shutdownCalls: 0,
+          });
+          expect(initializationResult).toMatch(/retired/);
+          expect(captures.discordGatewayDurations).toEqual([]);
+          expect(sdkShutdown).toHaveBeenCalledOnce();
+          await expect(first.initialize()).rejects.toThrow(/retired/);
+          await expect(
+            first.handleWebhook(new Request("https://paperclip.test/webhook")),
+          ).rejects.toThrow(/retired/);
+          expect(initialize).toHaveBeenCalledOnce();
+          if (operation === "replace") {
+            expect(registry.get(options.endpointId)).not.toBe(first);
+            expect(captures.chats[1]).toMatchObject({ initializeCalls: 0 });
+          } else expect(registry.get(options.endpointId)).toBeNull();
+        } finally {
+          held.resolve();
+          await Promise.allSettled([initializing, retirement ?? Promise.resolve()]);
+          await first.shutdown();
+          await registry.shutdown();
+        }
+      },
+    );
+
+    it("joins failed initialization and retains a failed shutdown owner for explicit retry", async () => {
+      const registry = createChatSdkRuntime();
+      const options = registryOptions();
+      const first = await registry.replaceEndpoint(options);
+      const chat = captures.chats[0] as unknown as {
+        initialize(): Promise<void>;
+        shutdown(): Promise<void>;
+      };
+      const held = deferred();
+      const initialize = vi.spyOn(chat, "initialize").mockReturnValue(held.promise);
+      const shutdown = vi
+        .spyOn(chat, "shutdown")
+        .mockRejectedValueOnce(new Error("SDK disconnect failed"))
+        .mockResolvedValue(undefined);
+      const initializing = first.initialize().then(
+        () => "initialized",
+        (error: Error) => error.message,
+      );
+      const removing = registry.removeEndpoint(options.endpointId).then(
+        () => "removed",
+        (error: Error) => error.message,
+      );
+      try {
+        held.reject(new Error("SDK initialization failed"));
+        expect(await initializing).toBe("SDK initialization failed");
+        expect(await removing).toBe("SDK disconnect failed");
+        expect(registry.get(options.endpointId)).toBeNull();
+        expect(captures.chats).toHaveLength(1);
+        await expect(first.initialize()).rejects.toThrow(/retired/);
+        const next = await registry.replaceEndpoint(options);
+        expect(registry.get(options.endpointId)).toBe(next);
+        expect(shutdown).toHaveBeenCalledTimes(2);
+        expect(initialize).toHaveBeenCalledOnce();
+        expect(captures.chats[1]).toMatchObject({ initializeCalls: 0 });
+      } finally {
+        held.reject(new Error("SDK initialization failed"));
+        await Promise.allSettled([initializing, removing]);
+        await registry.shutdown();
+      }
+    });
+
+    it("joins implicit webhook initialization instead of allowing it to reconnect a retired runtime", async () => {
+      const registry = createChatSdkRuntime();
+      const first = await registry.replaceEndpoint(registryOptions());
+      const chat = captures.chats[0] as unknown as {
+        initialize(): Promise<void>;
+        shutdown(): Promise<void>;
+        webhooks: Record<string, () => Promise<Response>>;
+      };
+      const held = deferred();
+      const initialize = vi.spyOn(chat, "initialize").mockReturnValue(held.promise);
+      const shutdown = vi.spyOn(chat, "shutdown");
+      // The pinned SDK's webhook entry automatically initializes its adapter.
+      chat.webhooks.slack = async () => {
+        await chat.initialize();
+        return new Response("accepted", { status: 202 });
+      };
+      const ingress = first
+        .handleWebhook(new Request("https://paperclip.test/webhook"))
+        .then(
+          (response) => response.status,
+          (error: Error) => error.message,
+        );
+      let retired = false;
+      let removing: Promise<unknown> | undefined;
+      try {
+        await vi.waitFor(() => expect(initialize).toHaveBeenCalledOnce());
+        removing = registry.removeEndpoint("endpoint-1").then((value) => {
+          retired = true;
+          return value;
+        });
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+        const beforeSettlement = {
+          retired,
+          shutdownCalls: shutdown.mock.calls.length,
+        };
+        held.resolve();
+        const outcome = await ingress;
+        await removing;
+        expect(beforeSettlement).toEqual({ retired: false, shutdownCalls: 0 });
+        expect(outcome).toMatch(/retired/);
+        expect(shutdown).toHaveBeenCalledOnce();
+      } finally {
+        held.resolve();
+        await Promise.allSettled([ingress, removing ?? Promise.resolve()]);
+        await registry.shutdown();
+      }
+    });
+
+    it("rechecks retirement between SDK initialization settlement and Gateway startup", async () => {
+      const runtime = createChatSdkEndpointRuntime({
+        ...baseOptions({
+          provider: "discord",
+          userName: "agent",
+          credentials: {
+            botToken: "gateway-fatal",
+            applicationId: "app",
+            guildId: "guild",
+          },
+        }),
+        enableDiscordGateway: true,
+      });
+      const initialized = runtime.initialize().then(
+        () => "initialized",
+        (error: Error) => error.message,
+      );
+      const retired = new Promise<void>((resolve, reject) => {
+        queueMicrotask(() => {
+          void runtime.shutdown().then(resolve, reject);
+        });
+      });
+      try {
+        const outcome = await initialized;
+        await retired;
+        expect(outcome).toMatch(/retired/);
+        expect(captures.discordGatewayDurations).toEqual([]);
+      } finally {
+        await runtime.shutdown();
+      }
+    });
+
+    it("rechecks retirement after the initialization deadline wrapper before webhook admission", async () => {
+      const runtime = createChatSdkEndpointRuntime(registryOptions());
+      const chat = captures.chats[0] as unknown as {
+        webhooks: Record<string, () => Promise<Response>>;
+      };
+      const handler = vi.fn(async () => new Response("accepted", { status: 202 }));
+      chat.webhooks.slack = handler;
+      const boundary = runtime as unknown as { initializeChat(): Promise<void> };
+      const initializeChat = boundary.initializeChat.bind(runtime);
+      let retiring: Promise<void> | undefined;
+      vi.spyOn(boundary, "initializeChat").mockImplementation(async () => {
+        await initializeChat();
+        // Initialization has already passed its internal fence. Retirement
+        // wins before the outer deadline wrapper can admit the handler.
+        retiring = runtime.shutdown();
+      });
+      try {
+        const outcome = await runtime
+          .handleWebhook(new Request("https://paperclip.test/webhook"))
+          .then(
+            (response) => response.status,
+            (error: Error) => error.message,
+          );
+        expect(outcome).toMatch(/retired/);
+        expect(handler).not.toHaveBeenCalled();
+      } finally {
+        await retiring;
+        await runtime.shutdown();
+      }
+    });
+
+    it("does not expose a replacement while its predecessor drains and leaves initialization to its caller", async () => {
+      const registry = createChatSdkRuntime();
+      const first = await registry.replaceEndpoint(registryOptions());
+      const drain = deferred();
+      const shutdown = vi
+        .spyOn(first, "shutdown")
+        .mockReturnValue(drain.promise);
+      const replacement = registry.replaceEndpoint(registryOptions());
+      await vi.waitFor(() => expect(shutdown).toHaveBeenCalledTimes(1));
+      const whileDraining = {
+        current: registry.get("endpoint-1"),
+        listed: registry.list(),
+        constructed: captures.chats.length,
+      };
+      const webhook = await registry
+        .handleWebhook(
+          "endpoint-1",
+          new Request("https://paperclip.test/webhook"),
+        )
+        .then(
+          () => "accepted",
+          (error: Error) => error.name,
+        );
+      drain.resolve();
+      const next = await replacement;
+
+      expect(whileDraining).toEqual({
+        current: null,
+        listed: [],
+        constructed: 1,
+      });
+      expect(webhook).toBe("ChatSdkEndpointNotRegisteredError");
+      expect(registry.get("endpoint-1")).toBe(next);
+      expect(captures.chats[1]).toMatchObject({ initializeCalls: 0 });
+      await next.initialize();
+      expect(captures.chats[1]).toMatchObject({ initializeCalls: 1 });
+      await registry.shutdown();
+    });
+
+    it("retains failed retirement ownership and only constructs a replacement after an explicit successful retry", async () => {
+      const registry = createChatSdkRuntime();
+      const first = await registry.replaceEndpoint(registryOptions());
+      const shutdown = vi
+        .spyOn(first, "shutdown")
+        .mockRejectedValueOnce(new Error("shutdown uncertain"))
+        .mockResolvedValue(undefined);
+      await expect(registry.replaceEndpoint(registryOptions())).rejects.toThrow(
+        "shutdown uncertain",
+      );
+      const afterFailure = {
+        current: registry.get("endpoint-1"),
+        constructed: captures.chats.length,
+      };
+      const next = await registry.replaceEndpoint(registryOptions());
+
+      expect(afterFailure).toEqual({ current: null, constructed: 1 });
+      expect(shutdown).toHaveBeenCalledTimes(2);
+      expect(registry.get("endpoint-1")).toBe(next);
+      expect(captures.chats).toHaveLength(2);
+      await registry.shutdown();
+    });
+
+    it("publishes only the latest requested replacement after a held predecessor drains", async () => {
+      const registry = createChatSdkRuntime();
+      const first = await registry.replaceEndpoint(registryOptions());
+      const drain = deferred();
+      const shutdown = vi
+        .spyOn(first, "shutdown")
+        .mockReturnValue(drain.promise);
+      const superseded = registry.replaceEndpoint(registryOptions()).then(
+        () => "published",
+        (error: Error) => error.message,
+      );
+      await vi.waitFor(() => expect(shutdown).toHaveBeenCalledTimes(1));
+      const latest = registry.replaceEndpoint(registryOptions());
+      drain.resolve();
+
+      expect(await superseded).toMatch(/superseded/);
+      const next = await latest;
+      expect(registry.get("endpoint-1")).toBe(next);
+      expect(shutdown).toHaveBeenCalledTimes(1);
+      expect(captures.chats).toHaveLength(2);
+      await registry.shutdown();
+    });
+
+    it("cannot resurrect a pending replacement after removal", async () => {
+      const registry = createChatSdkRuntime();
+      const first = await registry.replaceEndpoint(registryOptions());
+      const drain = deferred();
+      const shutdown = vi
+        .spyOn(first, "shutdown")
+        .mockReturnValue(drain.promise);
+      const replacement = registry.replaceEndpoint(registryOptions()).then(
+        () => "published",
+        (error: Error) => error.message,
+      );
+      await vi.waitFor(() => expect(shutdown).toHaveBeenCalledTimes(1));
+      const removal = registry.removeEndpoint("endpoint-1");
+      drain.resolve();
+      const result = await replacement;
+      await removal;
+
+      expect(result).toMatch(/superseded/);
+      expect(registry.get("endpoint-1")).toBeNull();
+      expect(registry.list()).toEqual([]);
+      expect(captures.chats).toHaveLength(1);
+      expect(shutdown).toHaveBeenCalledTimes(1);
+    });
+
+    it("allows a later explicit replacement after removal without blocking unrelated endpoints", async () => {
+      const registry = createChatSdkRuntime();
+      const first = await registry.replaceEndpoint(registryOptions());
+      const drain = deferred();
+      const shutdown = vi
+        .spyOn(first, "shutdown")
+        .mockReturnValue(drain.promise);
+      const removal = registry.removeEndpoint("endpoint-1");
+      await vi.waitFor(() => expect(shutdown).toHaveBeenCalledTimes(1));
+      let replacementSettled = false;
+      const replacement = registry
+        .replaceEndpoint(registryOptions())
+        .then((next) => {
+          replacementSettled = true;
+          return next;
+        });
+      const other = await registry.replaceEndpoint(registryOptions("other"));
+      const settledBeforeDrain = replacementSettled;
+      drain.resolve();
+
+      expect(await removal).toBe(true);
+      const next = await replacement;
+      expect(settledBeforeDrain).toBe(false);
+      expect(registry.get("endpoint-1")).toBe(next);
+      expect(registry.get("other")).toBe(other);
+      expect(shutdown).toHaveBeenCalledTimes(1);
+      await registry.shutdown();
+    });
+
+    it("fences pending and future replacements once whole-registry shutdown starts", async () => {
+      const registry = createChatSdkRuntime();
+      const first = await registry.replaceEndpoint(registryOptions());
+      const drain = deferred();
+      const shutdown = vi
+        .spyOn(first, "shutdown")
+        .mockReturnValue(drain.promise);
+      const replacement = registry.replaceEndpoint(registryOptions()).then(
+        () => "published",
+        (error: Error) => error.message,
+      );
+      await vi.waitFor(() => expect(shutdown).toHaveBeenCalledTimes(1));
+      const closing = registry.shutdown();
+      drain.resolve();
+      const result = await replacement;
+      await closing;
+
+      expect(result).toMatch(/shutting down/);
+      expect(registry.list()).toEqual([]);
+      await expect(registry.replaceEndpoint(registryOptions())).rejects.toThrow(
+        /shutting down/,
+      );
+      expect(captures.chats).toHaveLength(1);
+      expect(shutdown).toHaveBeenCalledTimes(1);
+    });
+
+    it("waits for every shutdown even when one fails and retains failed owners for a retry", async () => {
+      const registry = createChatSdkRuntime();
+      const first = await registry.replaceEndpoint(registryOptions("first"));
+      const second = await registry.replaceEndpoint(registryOptions("second"));
+      const drain = deferred();
+      const firstShutdown = vi
+        .spyOn(first, "shutdown")
+        .mockRejectedValueOnce(new Error("first shutdown failed"))
+        .mockResolvedValue(undefined);
+      const secondShutdown = vi
+        .spyOn(second, "shutdown")
+        .mockReturnValue(drain.promise);
+      let settled = false;
+      const closing = registry.shutdown().then(
+        () => {
+          settled = true;
+          return "closed";
+        },
+        (error: Error) => {
+          settled = true;
+          return error.message;
+        },
+      );
+      await vi.waitFor(() => expect(secondShutdown).toHaveBeenCalledTimes(1));
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      const settledBeforeDrain = settled;
+      drain.resolve();
+
+      expect(await closing).toBe("first shutdown failed");
+      expect(settledBeforeDrain).toBe(false);
+      expect(registry.list()).toEqual([]);
+      await registry.shutdown();
+      expect(firstShutdown).toHaveBeenCalledTimes(2);
+      expect(secondShutdown).toHaveBeenCalledTimes(1);
+    });
+  });
+
   it("waits for every SDK background callback without an external waitUntil", async () => {
     const runtime = createChatSdkEndpointRuntime(
       baseOptions({

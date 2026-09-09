@@ -64,8 +64,19 @@ for (const version of ["0.12.0", "0.13.1"]) {
       if (!header) continue;
       hunkCount += 1;
       const body = [];
-      while (index + 1 < lines.length && /^[ +\-]/.test(lines[index + 1])) {
-        body.push(lines[++index]);
+      let oldLines = 0;
+      let newLines = 0;
+      while (index + 1 < lines.length && (oldLines < Number(header[2] ?? 1) || newLines < Number(header[4] ?? 1))) {
+        const line = lines[++index];
+        // Unified diff's EOF marker is metadata, not a source/destination
+        // line, and may occur between the removed and added final lines.
+        if (line === "\\ No newline at end of file") continue;
+        // Git accepts an empty context line with its optional space omitted.
+        assert.ok(line === "" || /^[ +\-]/.test(line), `invalid unified hunk line: ${line}`);
+        const normalized = line === "" ? " " : line;
+        body.push(normalized);
+        if (!normalized.startsWith("+")) oldLines += 1;
+        if (!normalized.startsWith("-")) newLines += 1;
       }
       assert.equal(
         body.filter((line) => !line.startsWith("+")).length,

@@ -2021,6 +2021,10 @@ export class ChatSdkEndpointRuntime {
   private discordGatewayAbort: AbortController | null = null;
   private discordGatewayTask: Promise<void> | null = null;
   private discordGatewayFatal = false;
+  private initialization: Promise<void> | null = null;
+  private retired = false;
+  private shutdownTask: Promise<void> | null = null;
+  private shutdownCompleted = false;
 
   constructor(options: CreateChatSdkEndpointRuntimeOptions) {
     this.companyId = options.companyId;
@@ -2250,13 +2254,28 @@ export class ChatSdkEndpointRuntime {
   }
 
   async initialize(): Promise<void> {
-    await this.chat.initialize();
+    await this.initializeChat();
+    this.assertNotRetired();
     if (this.provider === "discord" && this.discordGatewayEnabled) {
       this.startDiscordGateway();
     }
   }
 
+  private async initializeChat(): Promise<void> {
+    this.assertNotRetired();
+    // The service still chooses when to initialize, after installing callback
+    // context. Retirement owns the settlement of that exact SDK operation.
+    this.initialization ??= this.chat.initialize();
+    await this.initialization;
+    this.assertNotRetired();
+  }
+
+  private assertNotRetired(): void {
+    if (this.retired) throw new Error("Chat SDK endpoint runtime was retired");
+  }
+
   private startDiscordGateway(): void {
+    this.assertNotRetired();
     if (this.discordGatewayTask) return;
     const adapter = this.adapter as DiscordAdapter;
     if (typeof adapter.startGatewayListener !== "function") return;
@@ -2318,6 +2337,7 @@ export class ChatSdkEndpointRuntime {
     responseDeadlineAt?: number,
     serviceReceivedAtMs?: number,
   ): Promise<Response> {
+    this.assertNotRetired();
     // A body read, identity initialization or durable queue wait cannot mint
     // a fresh provider response window for an already received callback.
     const runtimeReceivedAtMs = Date.now();
@@ -2376,6 +2396,12 @@ export class ChatSdkEndpointRuntime {
       return result;
     };
     return await this.webhookIngress.run(attempt, async () => {
+      // The SDK also auto-initializes through its webhook entry. Keep that
+      // operation inside the ingress deadline and the same retirement fence,
+      // without starting the caller-owned Discord Gateway here.
+      if (!(await beforeDeadline(this.initializeChat())).completed)
+        return retryableTimeout();
+      this.assertNotRetired();
       const handlerResult = await beforeDeadline(
         handler(request, {
           ...options,
@@ -3048,10 +3074,29 @@ export class ChatSdkEndpointRuntime {
   }
 
   async shutdown(): Promise<void> {
+    // Set synchronously: an already-resolving initialize must not start a
+    // Gateway after retirement, and this runtime can never be reinitialized.
+    this.retired = true;
+    if (this.shutdownCompleted) return;
+    if (this.shutdownTask) return await this.shutdownTask;
     this.discordGatewayAbort?.abort();
-    await this.discordGatewayTask?.catch(() => undefined);
-    this.discordGatewayAbort = null;
-    await this.chat.shutdown();
+    const task = (async () => {
+      // Even a rejected initialization may have connected state or partially
+      // initialized an adapter. Join it before disconnecting that ownership.
+      await this.initialization?.catch(() => undefined);
+      await this.discordGatewayTask?.catch(() => undefined);
+      this.discordGatewayAbort = null;
+      await this.chat.shutdown();
+      this.shutdownCompleted = true;
+    })();
+    this.shutdownTask = task;
+    try {
+      await task;
+    } finally {
+      // A failed disconnect retains a permanently retired owner, allowing the
+      // registry to retry shutdown without permitting another initialization.
+      if (this.shutdownTask === task) this.shutdownTask = null;
+    }
   }
 }
 
@@ -3074,31 +3119,98 @@ export class ChatSdkEndpointNotRegisteredError extends Error {
 /** Process-local lifecycle registry; durable state remains in Paperclip persistence. */
 export class ChatSdkRuntime {
   private readonly endpoints = new Map<string, ChatSdkEndpointRuntime>();
+  private readonly retiringEndpoints = new Map<
+    string,
+    ChatSdkEndpointRuntime
+  >();
+  private readonly lifecycleTails = new Map<string, Promise<void>>();
+  private readonly replacementGenerations = new Map<string, number>();
+  private shuttingDown = false;
 
   get(endpointId: string): ChatSdkEndpointRuntime | null {
+    if (this.shuttingDown) return null;
     return this.endpoints.get(endpointId) ?? null;
   }
 
   list(): ChatSdkEndpointRuntime[] {
+    if (this.shuttingDown) return [];
     return [...this.endpoints.values()];
+  }
+
+  private enqueueLifecycle<T>(
+    endpointId: string,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    const previous = this.lifecycleTails.get(endpointId) ?? Promise.resolve();
+    const result = previous.then(operation);
+    // A failed shutdown must not poison the queue or release ownership of a
+    // possibly still-running predecessor. Only an explicit later operation
+    // retries retirement; callers still receive the original failure.
+    const settled = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    this.lifecycleTails.set(endpointId, settled);
+    void settled.then(() => {
+      if (this.lifecycleTails.get(endpointId) === settled) {
+        this.lifecycleTails.delete(endpointId);
+      }
+    });
+    return result;
+  }
+
+  private async retireEndpoint(endpointId: string): Promise<boolean> {
+    const previous =
+      this.endpoints.get(endpointId) ?? this.retiringEndpoints.get(endpointId);
+    if (!previous) return false;
+    this.endpoints.delete(endpointId);
+    this.retiringEndpoints.set(endpointId, previous);
+    await previous.shutdown();
+    this.retiringEndpoints.delete(endpointId);
+    return true;
+  }
+
+  private nextReplacementGeneration(endpointId: string): number {
+    const next = (this.replacementGenerations.get(endpointId) ?? 0) + 1;
+    this.replacementGenerations.set(endpointId, next);
+    return next;
+  }
+
+  private assertReplacementCurrent(
+    endpointId: string,
+    generation: number,
+  ): void {
+    if (this.shuttingDown) throw new Error("Chat SDK runtime is shutting down");
+    if (this.replacementGenerations.get(endpointId) !== generation) {
+      throw new Error(
+        `Chat SDK runtime replacement for endpoint ${endpointId} was superseded`,
+      );
+    }
   }
 
   async replaceEndpoint(
     options: CreateChatSdkEndpointRuntimeOptions,
   ): Promise<ChatSdkEndpointRuntime> {
-    const next = createChatSdkEndpointRuntime(options);
-    const previous = this.endpoints.get(options.endpointId);
-    this.endpoints.set(options.endpointId, next);
-    await previous?.shutdown();
-    return next;
+    if (this.shuttingDown) throw new Error("Chat SDK runtime is shutting down");
+    const generation = this.nextReplacementGeneration(options.endpointId);
+    return await this.enqueueLifecycle(options.endpointId, async () => {
+      this.assertReplacementCurrent(options.endpointId, generation);
+      await this.retireEndpoint(options.endpointId);
+      this.assertReplacementCurrent(options.endpointId, generation);
+      const next = createChatSdkEndpointRuntime(options);
+      this.endpoints.set(options.endpointId, next);
+      // The service installs callback context before initialize() starts the
+      // Discord gateway. Preserve that caller-owned initialization boundary.
+      return next;
+    });
   }
 
   async removeEndpoint(endpointId: string): Promise<boolean> {
-    const runtime = this.endpoints.get(endpointId);
-    if (!runtime) return false;
-    this.endpoints.delete(endpointId);
-    await runtime.shutdown();
-    return true;
+    this.nextReplacementGeneration(endpointId);
+    return await this.enqueueLifecycle(
+      endpointId,
+      async () => await this.retireEndpoint(endpointId),
+    );
   }
 
   async handleWebhook(
@@ -3107,17 +3219,29 @@ export class ChatSdkRuntime {
     options?: WebhookOptions,
     responseDeadlineAt?: number,
   ): Promise<Response> {
-    const runtime = this.endpoints.get(endpointId);
+    const runtime = this.get(endpointId);
     if (!runtime) throw new ChatSdkEndpointNotRegisteredError(endpointId);
     return await runtime.handleWebhook(request, options, responseDeadlineAt);
   }
 
   async shutdown(): Promise<void> {
-    const runtimes = [...this.endpoints.values()];
-    this.endpoints.clear();
-    await Promise.all(
-      runtimes.map(async (runtime) => await runtime.shutdown()),
+    this.shuttingDown = true;
+    const endpointIds = new Set([
+      ...this.endpoints.keys(),
+      ...this.retiringEndpoints.keys(),
+      ...this.lifecycleTails.keys(),
+    ]);
+    const results = await Promise.allSettled(
+      [...endpointIds].map(
+        async (endpointId) =>
+          await this.enqueueLifecycle(
+            endpointId,
+            async () => await this.retireEndpoint(endpointId),
+          ),
+      ),
     );
+    const failure = results.find((result) => result.status === "rejected");
+    if (failure?.status === "rejected") throw failure.reason;
   }
 }
 

@@ -68,6 +68,7 @@ export type {
 
 export type ToolActorType = "agent" | "user" | "system" | "plugin";
 export type ToolConnectionTransport = "mcp_remote" | "rest_api" | "local_stdio";
+export type ToolConnectionPurpose = "tool" | "channel";
 export type ToolConnectionAuthKind = "oauth" | "api_key" | "none";
 export type ToolConnectionOwnership = "platform_shared" | "platform_provisioned" | "customer" | "dcr";
 export type ToolConnectionCredentialSource = "paperclip_vault" | "vercel_connect";
