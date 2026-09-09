@@ -222,6 +222,7 @@ import {
   buildHeartbeatRunStopMetadata,
   mergeHeartbeatRunStopMetadata,
   normalizeMaxTurnStopReason,
+  resolveAdapterRunOutcome,
 } from "./heartbeat-stop-metadata.js";
 import {
   classifyRunLiveness,
@@ -21428,15 +21429,12 @@ export function heartbeatService(
               : nativeTerminal === "cancelled"
                 ? "cancelled"
                 : "failed";
-        } else if (adapterResult.timedOut) {
-          outcome = "timed_out";
-        } else if (
-          (adapterResult.exitCode ?? 0) === 0 &&
-          !adapterResult.errorMessage
-        ) {
-          outcome = "succeeded";
         } else {
-          outcome = "failed";
+          outcome = resolveAdapterRunOutcome({
+            timedOut: adapterResult.timedOut,
+            exitCode: adapterResult.exitCode,
+            errorMessage: adapterResult.errorMessage,
+          });
         }
 
         const nextSessionState = resolveNextSessionState({

@@ -49,6 +49,23 @@ export function normalizeMaxTurnStopReason(value: unknown): Extract<HeartbeatRun
     : null;
 }
 
+// Decides succeeded/timed_out/failed for a completed adapter run. The adapter
+// is the authority on pass/fail: it already accounts for exit codes that
+// don't mean failure (e.g. a clean result killed by our own
+// terminalResultCleanup once a terminal result was already observed — see
+// RunProcessResult.terminalResultCleanup in server-utils.ts). Gating success
+// on exitCode here as well would override that verdict with the raw exit
+// code of a process we ourselves just SIGTERM'd.
+export function resolveAdapterRunOutcome(input: {
+  timedOut: boolean;
+  exitCode: number | null;
+  errorMessage?: string | null;
+}): Extract<HeartbeatRunOutcome, "succeeded" | "timed_out" | "failed"> {
+  if (input.timedOut) return "timed_out";
+  if (!input.errorMessage) return "succeeded";
+  return "failed";
+}
+
 export function resolveHeartbeatRunTimeoutPolicy(
   adapterType: string,
   adapterConfig: Record<string, unknown> | null | undefined,
