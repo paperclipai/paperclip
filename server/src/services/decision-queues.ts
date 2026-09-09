@@ -281,11 +281,13 @@ async function sourceIssueId(
       return { exists: Boolean(row), issueId: null };
     }
     case "mention": {
-      const row = await db.select({ issueId: issueComments.issueId })
-        .from(issueComments)
-        .where(and(eq(issueComments.companyId, companyId), eq(issueComments.id, sourceId)))
+      // Mention rows address issues (subject.id), not comments: queue and
+      // decision reads pass the subject id, so gate on the issue itself.
+      const row = await db.select({ id: issues.id })
+        .from(issues)
+        .where(and(eq(issues.companyId, companyId), eq(issues.id, sourceId), isNull(issues.hiddenAt)))
         .then((rows) => rows[0] ?? null);
-      return { exists: Boolean(row), issueId: row?.issueId ?? null };
+      return { exists: Boolean(row), issueId: row?.id ?? null };
     }
   }
 }

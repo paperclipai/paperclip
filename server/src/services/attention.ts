@@ -4,6 +4,7 @@ import {
   agents,
   approvals,
   assets,
+  authUsers,
   companies,
   decisionBundles,
   decisionQueueItems,
@@ -28,7 +29,7 @@ import {
   projects,
   projectWorkspaces,
 } from "@paperclipai/db";
-import { deriveProjectUrlKey, extractUserMentionIds } from "@paperclipai/shared";
+import { deriveProjectUrlKey, extractUserMentionIds, ATTENTION_SOURCE_KINDS } from "@paperclipai/shared";
 import type {
   AttentionDecisionVerb,
   AttentionFeed,
@@ -67,20 +68,6 @@ import {
   decisionRetentionService,
   DEFAULT_DECISION_SHELF_DAYS,
 } from "./decision-retention.js";
-
-const ATTENTION_SOURCE_KINDS: AttentionSourceKind[] = [
-  "approval",
-  "decision",
-  "issue_thread_interaction",
-  "join_request",
-  "recovery_action",
-  "productivity_review",
-  "blocker_attention",
-  "review",
-  "failed_run",
-  "budget_alert",
-  "agent_error_alert",
-];
 
 const SEVERITY_RANK: Record<AttentionSeverity, number> = {
   critical: 0,
@@ -425,6 +412,24 @@ function createItem(input: CreateAttentionItemInput): AttentionItem {
 export const MENTION_ATTENTION_LOOKBACK_DAYS = 30 as const;
 export const MENTION_ATTENTION_ROW_LIMIT = 200 as const;
 
+function escapeMentionLikeLiteral(value: string): string {
+  return value.replace(/[\\%_]/g, "\\$&");
+}
+
+/** Display labels (name, else email) for board users, keyed by user id. */
+async function resolveUserDisplayLabels(db: Db, userIds: ReadonlyArray<string>): Promise<Map<string, string>> {
+  const rows = await db
+    .select({ id: authUsers.id, name: authUsers.name, email: authUsers.email })
+    .from(authUsers)
+    .where(inArray(authUsers.id, [...userIds]));
+  const labels = new Map<string, string>();
+  for (const row of rows) {
+    const label = row.name?.trim() || row.email?.trim() || null;
+    if (label) labels.set(row.id, label);
+  }
+  return labels;
+}
+
 export interface MentionAttentionComment {
   id: string;
   issueId: string;
@@ -432,6 +437,7 @@ export interface MentionAttentionComment {
   authorAgentId: string | null;
   authorUserId: string | null;
   authorAgentName: string | null;
+  authorUserLabel: string | null;
   issueIdentifier: string | null;
   issueTitle: string;
   issueStatus: string | null;
@@ -461,7 +467,7 @@ export function buildMentionAttentionItems(input: {
       continue;
     }
     if (!mentioned) continue;
-    const authorLabel = comment.authorAgentName ?? null;
+    const authorLabel = comment.authorAgentName ?? comment.authorUserLabel ?? null;
     items.push({
       companyId: input.companyId,
       sourceKind: "mention",
@@ -2040,6 +2046,10 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
       // attention key flow via dedupKey below.
       if (options.userId) {
         const mentionCutoff = new Date(now - MENTION_ATTENTION_LOOKBACK_DAYS * 24 * 60 * 60 * 1000);
+        // Prefilter in SQL so the row cap applies to candidate mentions,
+        // not to all recent company comments. ILIKE keeps the rare
+        // uppercase-scheme variant; the exact user-id check stays in JS.
+        const mentionPattern = `%user://${escapeMentionLikeLiteral(options.userId)}%`;
         const mentionRows = await db
           .select({
             id: issueComments.id,
@@ -2064,20 +2074,31 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
             eq(issueComments.companyId, companyId),
             isNull(issueComments.deletedAt),
             gt(issueComments.createdAt, mentionCutoff),
+            sql<boolean>`${issueComments.body} ILIKE ${mentionPattern} ESCAPE '\\'`,
           ))
           .orderBy(desc(issueComments.createdAt), desc(issueComments.id))
           .limit(MENTION_ATTENTION_ROW_LIMIT);
+        const mentionAuthorIds = [...new Set(
+          mentionRows.map((row) => row.authorUserId).filter((id): id is string => typeof id === "string" && id.length > 0),
+        )];
+        const mentionAuthorLabels = mentionAuthorIds.length > 0
+          ? await resolveUserDisplayLabels(db, mentionAuthorIds)
+          : new Map<string, string>();
         for (const input of buildMentionAttentionItems({
           companyId,
           prefix,
           userId: options.userId,
-          comments: mentionRows,
+          comments: mentionRows.map((row) => ({
+            ...row,
+            authorUserLabel: row.authorUserId ? mentionAuthorLabels.get(row.authorUserId) ?? null : null,
+          })),
         })) {
           add(createItem(input));
         }
       }
 
-      const deduped = new Map<string, AttentionItem>();      for (const item of collected) {
+      const deduped = new Map<string, AttentionItem>();
+      for (const item of collected) {
         const current = deduped.get(item.dedupKey);
         deduped.set(item.dedupKey, current ? betterDuplicate(current, item) : item);
       }

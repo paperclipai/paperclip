@@ -13,6 +13,7 @@ function comment(overrides: Record<string, unknown> = {}) {
     authorAgentId: null,
     authorUserId: null,
     authorAgentName: null,
+    authorUserLabel: null,
     issueIdentifier: "TES-42",
     issueTitle: "Publish forecast",
     issueStatus: "todo",
@@ -61,8 +62,7 @@ describe("mention attention items", () => {
     expect(typeof (items[0]?.detail as { commentExcerpt?: unknown })?.commentExcerpt).toBe("string");
   });
 
-  it("attributes agent authors and skips self-mentions", () => {
-    const items = buildMentionAttentionItems({
+  it("attributes agent authors and skips self-mentions", () => {    const items = buildMentionAttentionItems({
       ...base,
       comments: [
         comment({
@@ -81,6 +81,23 @@ describe("mention attention items", () => {
     expect(items).toHaveLength(1);
     expect(items[0]?.whyNow).toBe("Fable mentioned you in a comment.");
     expect(items[0]?.detail).toMatchObject({ authorLabel: "Fable" });
+  });
+
+  it("attributes human authors by resolved label", () => {
+    const items = buildMentionAttentionItems({
+      ...base,
+      comments: [
+        comment({
+          id: "c5",
+          body: "[@tejas](user://user-1) please see",
+          authorUserId: "user-9",
+          authorUserLabel: "Tejas G",
+        }),
+      ],
+    });
+    expect(items).toHaveLength(1);
+    expect(items[0]?.whyNow).toBe("Tejas G mentioned you in a comment.");
+    expect(items[0]?.detail).toMatchObject({ authorLabel: "Tejas G" });
   });
 
   it("falls back to the issue id when no identifier exists", () => {
