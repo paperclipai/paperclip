@@ -125,3 +125,10 @@ and legacy wake prompts render those fields as fenced JSON with an explicit
 untrusted-data boundary. Embedded provider instructions cannot grant permission
 or change the task's continuation policy. Wake materialization redacts secrets
 and bounds each text field before rendering.
+
+A continuation includes at most eight shortened result records and caps the
+serialized wake context at 32 KB. It links to the task interaction API for all
+full outcomes and instructs the agent to retrieve omitted or incomplete results
+before finishing. A committed receipt cutoff preserves acknowledgement of that
+referenced set across restart, without putting an unbounded ID list in the wake.
+Task review queries reconcile every 20 seconds if a live event is missed.

@@ -423,6 +423,36 @@ describeEmbeddedPostgres("tool gateway service", () => {
     expect(native).toHaveLength(2);
   });
 
+  it("bounds many outcomes and recovers their full-result reference after wake commit", async () => {
+    const { company, agent, run } = await createRunFixture(db);
+    await db.insert(toolPolicies).values({ companyId: company.id, name: "Ask first", policyType: "require_approval", selectors: { toolName: "mcp-remote-fixture:update_note" } });
+    const gateway = createTestToolGatewayService(db);
+    const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+    for (let n = 0; n < 12; n++) {
+      await expect(gateway.executeTool({ sessionToken: session.token, tool: "mcp-remote-fixture:update_note", parameters: { noteId: `note-${n}`, body: "review me" } })).rejects.toMatchObject({ reasonCode: "approval_required" });
+    }
+    const requests = await db.select().from(toolActionRequests);
+    for (const request of requests) await gateway.declineActionRequest({ companyId: company.id, actionRequestId: request.id, actor: { userId: "reviewer" }, reason: "😀\n\\".repeat(4000) });
+    await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, run.id));
+    const wakeup = vi.fn(async (agentId: string, input: any) => {
+      await db.insert(agentWakeupRequests).values({ companyId: company.id, agentId, source: input.source, idempotencyKey: input.idempotencyKey, payload: input.payload });
+      throw new Error("crash after durable wake commit");
+    });
+    const delivery = toolActionDeliveryService(db, { wakeup });
+    await expect(delivery.sweepPending()).rejects.toThrow("crash after durable wake commit");
+    await delivery.sweepPending();
+    expect(wakeup).toHaveBeenCalledTimes(1);
+    const payload = wakeup.mock.calls[0][1].payload;
+    expect(Buffer.byteLength(JSON.stringify(payload), "utf8")).toBeLessThan(32_768);
+    expect(payload.toolActions.length).toBeLessThanOrEqual(8);
+    expect(payload.interactionIds.length).toBe(payload.toolActions.length);
+    expect(payload.toolActionOutcomeCount).toBe(12);
+    expect(payload.paperclipAgentMessage.text).toContain(payload.toolActionResultsUrl);
+    expect((await db.select().from(toolActionDeliveries)).every(row => row.deliveredAt)).toBe(true);
+    // The reference retains all outcomes and their full notes, not just snippets.
+    expect((await db.select().from(issueThreadInteractions)).every(row => JSON.stringify(row.result).length > 12_000)).toBe(true);
+  });
+
   it("retires a former assignee's continuation after reassignment", async () => {
     const { company, agent, issue, run } = await createRunFixture(db);
     await db.insert(toolPolicies).values({ companyId: company.id, name: "Ask first", policyType: "require_approval", selectors: { toolName: "mcp-remote-fixture:update_note" } });

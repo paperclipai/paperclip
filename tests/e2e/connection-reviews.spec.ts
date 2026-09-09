@@ -110,6 +110,26 @@ for (const journey of [
       journey === "restart" && !process.env.PAPERCLIP_REVIEW_RESTART_FILE,
       "Use connection-reviews.config.ts for controlled server restart",
     );
+    let suppressReviewEvents = journey === "decline";
+    if (journey === "decline") {
+      // Reproduce a review arriving between the initial fetch and subscription:
+      // return an empty first snapshot and drop its live creation notification.
+      const initialSnapshots = new Set<string>();
+      await page.route("**/api/issues/*/interactions", async (route) => {
+        const url = route.request().url();
+        if (route.request().method() === "GET" && !initialSnapshots.has(url)) {
+          initialSnapshots.add(url);
+          await route.fulfill({ json: [] });
+        } else await route.continue();
+      });
+      await page.routeWebSocket("**/api/companies/*/events/ws", (socket) => {
+        const server = socket.connectToServer();
+        server.onMessage((message) => {
+          if (suppressReviewEvents && String(message).includes("issue.thread_interaction_")) return;
+          socket.send(message);
+        });
+      });
+    }
     const provider = await startReviewProvider();
     try {
       const seed = await newCompany(request);
@@ -178,6 +198,7 @@ for (const journey of [
       await expect(
         page.getByRole("button", { name: "Approve & run", exact: true }),
       ).toBeVisible({ timeout: 45_000 });
+      suppressReviewEvents = false;
       const originatingReviews = await json<Array<{ id: string; sourceRunId: string | null }>>(await request.get(`/api/issues/${issue.id}/interactions`));
       const originatingReview = originatingReviews[0];
       const calls = () =>

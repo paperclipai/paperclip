@@ -794,14 +794,14 @@ function normalizePaperclipWakeAgentMessage(value: unknown): PaperclipWakeAgentM
     pluginKey: asString(message.pluginKey, "").trim() || null,
     sessionId: asString(message.sessionId, "").trim() || null,
     ...(Array.isArray(message.untrustedToolResults) ? {
-      untrustedToolResults: message.untrustedToolResults.map((value) => {
+      untrustedToolResults: message.untrustedToolResults.slice(0, 8).map((value) => {
         const result = parseObject(value);
         return {
-          actionRequestId: asString(result.actionRequestId, ""),
-          toolName: asString(result.toolName, ""),
-          resultSummary: asString(result.resultSummary, ""),
-          error: typeof result.error === "string" ? result.error : null,
-          declineReason: typeof result.declineReason === "string" ? result.declineReason : null,
+          actionRequestId: asString(result.actionRequestId, "").slice(0, 100),
+          toolName: asString(result.toolName, "").slice(0, 256),
+          resultSummary: asString(result.resultSummary, "").slice(0, 1024),
+          error: typeof result.error === "string" ? result.error.slice(0, 256) : null,
+          declineReason: typeof result.declineReason === "string" ? result.declineReason.slice(0, 256) : null,
         };
       }),
     } : {}),

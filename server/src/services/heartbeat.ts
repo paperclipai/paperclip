@@ -7231,7 +7231,7 @@ export async function buildPaperclipWakePayload(input: {
           pluginKey: readNonEmptyString(agentMessage.pluginKey),
           sessionId: readNonEmptyString(agentMessage.sessionId),
           ...(Array.isArray(agentMessage.untrustedToolResults) ? {
-            untrustedToolResults: agentMessage.untrustedToolResults.map((value) => {
+            untrustedToolResults: agentMessage.untrustedToolResults.slice(0, 8).map((value) => {
               const result = parseObject(value);
               return {
                 actionRequestId: sanitizeAgentSessionMessageText(result.actionRequestId) ?? "",

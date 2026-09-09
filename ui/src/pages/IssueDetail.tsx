@@ -2990,6 +2990,9 @@ export function IssueDetail() {
     queryKey: queryKeys.issues.interactions(issueId!),
     queryFn: () => issuesApi.listInteractions(issueId!),
     enabled: !!issueId,
+    // A review can be committed between the initial fetch and live-socket
+    // subscription. Reconcile even after its originating run has ended.
+    refetchInterval: 20_000,
     placeholderData: keepPreviousDataForSameQueryTail<IssueThreadInteraction[]>(
       issueId ?? "pending",
     ),
