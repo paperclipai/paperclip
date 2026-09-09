@@ -475,14 +475,6 @@ describeEmbeddedPostgres("companySkillService.installFromCatalog", { timeout: 30
     const companyId = await createCompany();
     mockCatalogService.getCatalogSkillOrThrow.mockReturnValue(crlfCatalogSkill);
     mockCatalogService.resolveCatalogSkillReference.mockReturnValue({ skill: crlfCatalogSkill, ambiguous: false });
-    mockCatalogService.readCatalogSkillFile.mockImplementation(async (_ref: string, filePath: string) => ({
-      catalogSkillId: crlfCatalogSkill.id,
-      path: filePath,
-      kind: filePath === "SKILL.md" ? "skill" : "reference",
-      content: filePath === "SKILL.md" ? crlfSkillMarkdown : sampleReferenceMarkdown,
-      language: "markdown",
-      markdown: true,
-    }));
     mockCatalogService.copyCatalogSkillFile.mockImplementation(async (_ref: string, filePath: string, targetPath: string) => {
       const content = filePath === "SKILL.md" ? crlfSkillMarkdown : sampleReferenceMarkdown;
       await fs.writeFile(targetPath, content, "utf8");
