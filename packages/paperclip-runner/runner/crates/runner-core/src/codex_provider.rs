@@ -578,6 +578,11 @@ pub struct CodexProvider {
 // entry from this static ceiling, but cannot introduce another environment
 // variable by changing GIT_CONFIG_COUNT.
 const GITHUB_CREDENTIAL_ENVIRONMENT_KEYS: &[&str] = &[
+    "PAPERCLIP_RUNNER_NETWORK_ACCESS",
+    "PAPERCLIP_GITHUB_AUTH_MODE",
+    "PAPERCLIP_GITHUB_HOST_HOME",
+    "PAPERCLIP_GIT_METADATA_ROOTS",
+    "GIT_SSH",
     "ZDOTDIR",
     "BASH_ENV",
     "PAPERCLIP_GITHUB_BROKER_URL",

@@ -73,6 +73,29 @@ const support = await getEmbeddedPostgresTestSupport();
     expect((await resolveGitHubOperationCredentials(db,input)).reason).toMatch(/More than one/);
     await expect(resolveGitHubOperationCredentials(db,{...input,companyId:randomUUID()})).rejects.toThrow();
   });
+  it.each([true, false])("prefers the healthy duplicate regardless of grant age (%s)", async (healthyNewer) => {
+    const input = await seed();
+    const healthy = await grant(input, "A");
+    const broken = await grant(input, "A");
+    await db.update(toolConnections).set({ healthStatus: "ok" }).where(eq(toolConnections.id, healthy.connectionId));
+    await db.update(toolConnections).set({ healthStatus: "error", healthMessage: "GitHub access changed during refresh. Try again." }).where(eq(toolConnections.id, broken.connectionId));
+    await db.update(connectionGrants).set({ createdAt: new Date(healthyNewer ? "2026-02-01" : "2026-01-01") }).where(eq(connectionGrants.id, healthy.id));
+    await db.update(connectionGrants).set({ createdAt: new Date(healthyNewer ? "2026-01-01" : "2026-02-01") }).where(eq(connectionGrants.id, broken.id));
+    expect(await resolveGitHubOperationCredentials(db, input)).toMatchObject({
+      status: "available", connectionId: healthy.connectionId, grantId: healthy.id, authenticationMode: "managed",
+    });
+  });
+
+  it("retries credential acquisition once using another grant for the same account", async () => {
+    const input = await seed();
+    const older = await grant(input, "A");
+    const newer = await grant(input, "A");
+    await db.update(connectionGrants).set({ createdAt: new Date("2026-01-01") }).where(eq(connectionGrants.id, older.id));
+    await db.update(connectionGrants).set({ createdAt: new Date("2026-02-01") }).where(eq(connectionGrants.id, newer.id));
+    vault.resolveUserSecretValue.mockRejectedValueOnce(new Error("secret provider failed"));
+    expect(await resolveGitHubOperationCredentials(db, input)).toMatchObject({ status: "available", grantId: older.id });
+  });
+
   it("uses one stable grant when the same person connects the same GitHub account twice", async () => {
     const input = await seed();
     const first = await grant(input, "A");

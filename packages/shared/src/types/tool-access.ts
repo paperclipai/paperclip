@@ -177,6 +177,8 @@ export interface ToolConnection {
   credentialSecretRefs: ToolCredentialSecretRef[];
   credentialRefs?: McpConnectionCredentialRef[];
   healthStatus: ToolConnectionHealthStatus;
+  /** Managed GitHub grant state; transient health failures do not require sign-in. */
+  requiresReauthorization?: boolean;
   healthMessage?: string | null;
   healthCheckedAt: Date | null;
   lastHealthAt?: Date | string | null;

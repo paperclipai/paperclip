@@ -40,6 +40,7 @@ import {
   CODEX_SKILLLESS_PERMISSION_PROFILE as SKILLLESS_PERMISSION_PROFILE,
   codexCommandEnvironment,
   createIsolatedCodexAppServerArgs,
+  codexNetworkAccess,
   createSecuredCodexThreadParams,
   createSkilllessCodexThreadConfig,
 } from "./codex-security-config.js";
@@ -812,7 +813,8 @@ export class CodexAppServerDriver implements HarnessDriver {
           rootAccess: "none",
           minimalRuntimeAccess: "read",
           workspaceAccess: requestedMode === "plan" ? "read" : "write",
-          networkAccess: false,
+          networkAccess: codexNetworkAccess(this.#options.environment),
+          githubAuthenticationMode: this.#options.environment?.PAPERCLIP_GITHUB_AUTH_MODE ?? "managed",
         },
         approvalPolicy: boundedCodexValue(
           response.approvalPolicy ??

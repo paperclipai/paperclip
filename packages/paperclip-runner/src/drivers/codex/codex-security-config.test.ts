@@ -7,6 +7,31 @@ import {
 } from "./codex-security-config.js";
 
 describe("Codex security configuration", () => {
+  it("honors an explicit network restriction independently of GitHub", () => {
+    for (const GH_TOKEN of [undefined, "managed-token"]) {
+      const args = createIsolatedCodexAppServerArgs({ GH_TOKEN, PAPERCLIP_RUNNER_NETWORK_ACCESS: "disabled" }).join("\n");
+      expect(args).toContain("network.enabled=false");
+      expect(args).not.toContain("network.enabled=true");
+    }
+  });
+
+  it("restores host Git resources without exposing the provider home", () => {
+    const args = createIsolatedCodexAppServerArgs({
+      HOME: "/provider", CODEX_HOME: "/provider", PAPERCLIP_GITHUB_AUTH_MODE: "host",
+      PAPERCLIP_GITHUB_HOST_HOME: "/legacy", GH_CONFIG_DIR: "/legacy/.config/gh",
+      SSH_AUTH_SOCK: "/agent/socket", PAPERCLIP_GIT_METADATA_ROOTS: '["/repo/.git","/repo/.git"]',
+    }).join("\n");
+    expect(args).toContain('HOME="/legacy"');
+    expect(args).toContain('"/legacy/.gitconfig"="read"');
+    expect(args).toContain('"/legacy/.ssh"="read"');
+    expect(args).toContain('"/agent/socket"="read"');
+    expect(args).toContain('"/repo/.git"="write"');
+    expect(args).toContain('"/repo/.git"="read"');
+    expect(args).toContain('"/provider"="none"');
+    expect(args).not.toContain('"/legacy"="read"');
+    expect(args.match(/"\/legacy\/.config\/gh"="read"/g)).toHaveLength(2);
+  });
+
   it("disables host extensions and makes collaboration instructions explicit", () => {
     expect(createSkilllessCodexThreadConfig("/workspace", {}, false)).toEqual({
       "skills.include_instructions": false,
@@ -20,7 +45,7 @@ describe("Codex security configuration", () => {
     });
   });
 
-  it("keeps automatic execution inside the workspace without credential or network access", () => {
+  it("keeps automatic execution inside the workspace without host credentials and with normal network access", () => {
     const args = createIsolatedCodexAppServerArgs(
       {
         HOME: "/host/home",
@@ -43,7 +68,7 @@ describe("Codex security configuration", () => {
     expect(serialized).toContain('"/runner/context"="read"');
     expect(serialized).toContain('":workspace_roots"={"."="write"}');
     expect(serialized).toContain('":workspace_roots"={"."="read"}');
-    expect(serialized).toContain("network.enabled=false");
+    expect(serialized).toContain("network.enabled=true");
     expect(serialized).toContain('shell_environment_policy.inherit="none"');
     expect(serialized).toContain('PATH="/safe/bin"');
     expect(serialized).toContain('LANG="C.UTF-8"');

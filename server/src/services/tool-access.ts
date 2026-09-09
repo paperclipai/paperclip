@@ -5435,6 +5435,19 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     return localTools(connection);
   }
 
+  async function annotateGitHubAuthorization(connections: ToolConnection[]) {
+    const github = connections.filter((connection) => asRecord(connection.config).sourceTemplateKey === "github");
+    if (!github.length) return;
+    const grants = await db.select({ connectionId: connectionGrants.connectionId, status: connectionGrants.status })
+      .from(connectionGrants).where(and(
+        eq(connectionGrants.companyId, github[0].companyId),
+        inArray(connectionGrants.connectionId, github.map((connection) => connection.id)),
+      ));
+    for (const connection of github) {
+      connection.requiresReauthorization = !grants.some((grant) => grant.connectionId === connection.id && grant.status === "active");
+    }
+  }
+
   async function updateConnectionHealth(
     connection: typeof toolConnections.$inferSelect,
     status: ToolConnectionHealthStatus,
@@ -5517,6 +5530,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       });
       return { connection: toConnection(updated), runtimeSlot };
     } catch (error) {
+      if (error instanceof HttpError && asRecord(error.details).code === "github_access_changed") throw error;
       const failure = sanitizeHttpFailure(error);
       const updated = await updateConnectionHealth(connection, failure.status, failure.message);
       const runtimeSlot = connection.transport === "local_stdio" ? await ensureRuntimeSlot(updated) : null;
@@ -5557,6 +5571,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     try {
       descriptors = await discoverTools(connection, refreshOptions.credentialHeaders, actor);
     } catch (error) {
+      if (error instanceof HttpError && asRecord(error.details).code === "github_access_changed") throw error;
       const failure = sanitizeHttpFailure(error);
       const updated = await updateConnectionHealth(connection, failure.status, failure.message);
       await audit({
@@ -8591,6 +8606,24 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
   }
 
   async function refreshManagedGitHubGrantAccess(
+    connection: typeof toolConnections.$inferSelect,
+    initialGrant: typeof connectionGrants.$inferSelect,
+    actor?: ActorInfo,
+  ) {
+    try {
+      return await refreshManagedGitHubGrantAccessOnce(connection, initialGrant, actor);
+    } catch (error) {
+      if (!(error instanceof HttpError) || asRecord(error.details).code !== "github_access_changed") throw error;
+      const [current] = await db.select().from(connectionGrants).where(and(
+        eq(connectionGrants.id, initialGrant.id), eq(connectionGrants.companyId, connection.companyId),
+        eq(connectionGrants.connectionId, connection.id),
+      ));
+      if (!current || current.status !== "active") throw error;
+      return refreshManagedGitHubGrantAccessOnce(connection, current, actor);
+    }
+  }
+
+  async function refreshManagedGitHubGrantAccessOnce(
     connection: typeof toolConnections.$inferSelect,
     initialGrant: typeof connectionGrants.$inferSelect,
     actor?: ActorInfo,
@@ -12539,6 +12572,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       for (const connection of connections) {
         connection.lastUsedAt = lastUsedByConnection.get(connection.id) ?? null;
       }
+      await annotateGitHubAuthorization(connections);
       return connections;
     },
 
@@ -12619,6 +12653,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     getConnection: async (connectionId: string, companyId?: string): Promise<ToolConnection> => {
       const connection = toConnection(await getConnectionRow(connectionId, companyId));
       connection.installs = await listConnectionInstalls(connection.id, connection.companyId);
+      await annotateGitHubAuthorization([connection]);
       return connection;
     },
 

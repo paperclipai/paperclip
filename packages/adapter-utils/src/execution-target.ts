@@ -1,4 +1,6 @@
 import fs from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -1567,6 +1569,48 @@ async function githubOperationLauncherBasePath(
     throw new Error("Could not resolve remote PATH for managed GitHub launchers");
   }
   return remotePath;
+}
+
+/** Read only execution-target Git context; never import the controller's credentials into SSH. */
+export async function prepareGitHubExecutionEnvironment(input: {
+  target: AdapterExecutionTarget | null | undefined;
+  cwd: string;
+  env: Record<string, string>;
+  hostCredentials: boolean;
+}): Promise<Record<string, string>> {
+  const script = String.raw`
+const fs = require('node:fs');
+const path = require('node:path');
+const cp = require('node:child_process');
+const env = {};
+if (process.argv[1] === 'host') {
+  for (const [key, value] of Object.entries(process.env)) {
+    if (/^(GH_TOKEN|GITHUB_TOKEN|GH_ENTERPRISE_TOKEN|GITHUB_ENTERPRISE_TOKEN|PAPERCLIP_GIT_TOKEN|GH_CONFIG_DIR|GIT_CONFIG_(GLOBAL|SYSTEM|NOSYSTEM|COUNT|KEY_\d+|VALUE_\d+)|GIT_(AUTHOR|COMMITTER)_(NAME|EMAIL)|GIT_ASKPASS|SSH_ASKPASS|SSH_AUTH_SOCK|GIT_SSH_COMMAND|GIT_SSH)$/.test(key)) env[key] = value;
+  }
+  env.PAPERCLIP_GITHUB_HOST_HOME = process.env.HOME || '';
+  env.GH_CONFIG_DIR ||= path.join(process.env.XDG_CONFIG_HOME || path.join(process.env.HOME || '', '.config'), 'gh');
+}
+try {
+  const top = cp.execFileSync('git', ['rev-parse', '--show-toplevel'], {encoding:'utf8',stdio:['ignore','pipe','ignore']}).trim();
+  if (fs.realpathSync(top) === fs.realpathSync(process.cwd())) {
+    env.PAPERCLIP_GIT_METADATA_ROOTS = JSON.stringify(cp.execFileSync('git', ['rev-parse','--path-format=absolute','--git-common-dir','--git-dir'], {encoding:'utf8',stdio:['ignore','pipe','ignore']}).trim().split('\n').map(p => fs.realpathSync(p)));
+  }
+} catch {}
+process.stdout.write(JSON.stringify(env));
+`;
+  const args = ["-e", script, input.hostCredentials ? "host" : "managed"];
+  const remote = input.target?.kind === "remote" ? input.target : null;
+  const result = remote
+    ? await adapterExecutionTargetCommandRunner(remote).execute({ command: "node", args, cwd: input.cwd, timeoutMs: 15_000 })
+    : await promisify(execFile)(process.execPath, args, { cwd: input.cwd, timeout: 15_000, maxBuffer: 1024 * 1024 });
+  if ("exitCode" in result && result.exitCode !== 0) throw new Error("Could not read execution-target Git context");
+  const discovered = JSON.parse(result.stdout) as Record<string, string>;
+  // Controller-derived roots and mode must not be replaced by agent bindings.
+  return { ...discovered, ...input.env,
+    ...(input.hostCredentials ? { PAPERCLIP_GITHUB_HOST_HOME: discovered.PAPERCLIP_GITHUB_HOST_HOME } : {}),
+    PAPERCLIP_GIT_METADATA_ROOTS: discovered.PAPERCLIP_GIT_METADATA_ROOTS ?? "[]",
+    PAPERCLIP_GITHUB_AUTH_MODE: input.hostCredentials ? "host" : "managed",
+  };
 }
 
 /** Stage token-free launchers next to the execution, not in shared global Git config. */

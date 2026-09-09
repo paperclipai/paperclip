@@ -1,6 +1,6 @@
 import { initializeRunIdentity } from "./run-identity.js";
 import { githubBrokerEnvironment } from "@paperclipai/adapter-utils/github-launcher";
-import { cleanupGitHubOperationLaunchers, prepareGitHubOperationLaunchers, startAdapterExecutionTargetPaperclipBridge } from "@paperclipai/adapter-utils/execution-target";
+import { cleanupGitHubOperationLaunchers, prepareGitHubOperationLaunchers, prepareGitHubExecutionEnvironment, startAdapterExecutionTargetPaperclipBridge } from "@paperclipai/adapter-utils/execution-target";
 import { agentService } from "./agents.js";
 import { normalizeLegacyRunnerProvider } from "@paperclipai/adapter-utils";
 import fs from "node:fs/promises";
@@ -107,6 +107,7 @@ import { incrementToolRuntimeMetricCounter } from "./tool-runtime-metrics.js";
 import { logger } from "../middleware/logger.js";
 import {
   createGitRemoteAuthProvider,
+  resolveManagedGitHubIdentitySelection,
   describeGitAuthFailure,
   filterResolvedGitHubConnectionsForRun,
   scrubGitCredentialText,
@@ -1255,7 +1256,11 @@ const LOW_TRUST_SENSITIVE_ENV_KEY_RE =
 //    binding; adapters enforce this at env-merge time.
 // 3. Any other PAPERCLIP_*-named binding is user data and flows through to
 //    the run env like any non-prefixed binding.
-const FORBIDDEN_ENV_BINDING_KEYS = new Set(["PAPERCLIP_API_KEY"]);
+const FORBIDDEN_ENV_BINDING_KEYS = new Set([
+  "PAPERCLIP_API_KEY", "PAPERCLIP_GITHUB_AUTH_MODE", "PAPERCLIP_GITHUB_HOST_HOME",
+  "PAPERCLIP_GIT_METADATA_ROOTS", "PAPERCLIP_GITHUB_BROKER_TOKEN", "PAPERCLIP_GITHUB_BROKER_URL",
+  "PAPERCLIP_GITHUB_BRIDGE_TOKEN", "PAPERCLIP_GITHUB_LAUNCHER_DIR",
+]);
 const MANAGED_GITHUB_TOKEN_KEYS = new Set([
   "GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN", "PAPERCLIP_GIT_TOKEN",
 ]);
@@ -18395,9 +18400,14 @@ export function heartbeatService(
         !acceptedPlanWakeRoutingDecision?.suppressAcceptedContinuation
           ? [...runScopedMentionedSkillKeys, ACCEPTED_PLAN_CONVERSION_SKILL_KEY]
           : runScopedMentionedSkillKeys;
+      const githubSelection = await resolveManagedGitHubIdentitySelection(db, agent.companyId, {
+        agentId: agent.id, responsibleUserId, allowStandingDelegation: false,
+      });
+      const useHostGitHub = !githubSelection.configured && trustPreset.kind === "standard"
+        && ["local", "ssh"].includes(selectedEnvironmentForConfig?.driver ?? "local");
       const { resolvedConfig, secretKeys, secretManifest } =
         await resolveExecutionRunAdapterConfig({
-          managedGitHubCredentials: true,
+          managedGitHubCredentials: !useHostGitHub,
           companyId: agent.companyId,
           agentId: agent.id,
           adapterType: agent.adapterType,
@@ -19364,19 +19374,29 @@ export function heartbeatService(
       } else {
         delete context.paperclipScratch;
       }
-      const githubBrokerToken = createRuntimeToolsToken({
-        agentId: agent.id, companyId: agent.companyId, runId: run.id,
-        responsibleUserId: responsibleUserId ?? "", scope: "github_credentials",
+      const gitExecutionEnv = await prepareGitHubExecutionEnvironment({
+        target: executionTarget, cwd: executionWorkspace.cwd,
+        env: Object.fromEntries(Object.entries(parseObject(runtimeConfig.env)).filter((entry): entry is [string, string] => typeof entry[1] === "string")),
+        hostCredentials: useHostGitHub,
       });
-      const githubBrokerEnv = githubBrokerEnvironment(parseObject(runtimeConfig.env), {
-        url: configuredPaperclipApiBaseUrl() ?? "", token: githubBrokerToken?.token ?? "",
-      });
-      githubLauncherLocation = { runId: run.id, target: executionTarget };
-      runtimeConfig = { ...runtimeConfig, env: await prepareGitHubOperationLaunchers({
-        runId: run.id, target: executionTarget, cwd: executionWorkspace.cwd,
-        env: githubBrokerEnv,
-      }) };
-      secretKeys.add("PAPERCLIP_GITHUB_BROKER_TOKEN");
+      runtimeConfig = { ...runtimeConfig, env: gitExecutionEnv };
+      for (const key of MANAGED_GITHUB_TOKEN_KEYS) secretKeys.add(key);
+      context.githubAuthenticationMode = useHostGitHub ? "host" : "managed";
+      if (!useHostGitHub) {
+        const githubBrokerToken = createRuntimeToolsToken({
+          agentId: agent.id, companyId: agent.companyId, runId: run.id,
+          responsibleUserId: responsibleUserId ?? "", scope: "github_credentials",
+        });
+        const githubBrokerEnv = githubBrokerEnvironment(gitExecutionEnv, {
+          url: configuredPaperclipApiBaseUrl() ?? "", token: githubBrokerToken?.token ?? "",
+        });
+        githubLauncherLocation = { runId: run.id, target: executionTarget };
+        runtimeConfig = { ...runtimeConfig, env: await prepareGitHubOperationLaunchers({
+          runId: run.id, target: executionTarget, cwd: executionWorkspace.cwd,
+          env: githubBrokerEnv,
+        }) };
+        secretKeys.add("PAPERCLIP_GITHUB_BROKER_TOKEN");
+      }
       context.paperclipEnvironment = {
         id: selectedEnvironment.id,
         name: selectedEnvironment.name,

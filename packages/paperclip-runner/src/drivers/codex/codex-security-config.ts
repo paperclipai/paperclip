@@ -1,4 +1,4 @@
-import { resolve } from "node:path";
+import { resolve, isAbsolute, join } from "node:path";
 
 import {
   githubCredentialEnvironmentKeys,
@@ -11,6 +11,30 @@ export const CODEX_PLANNING_PERMISSION_PROFILE =
   "paperclip-runner-workspace-read-only";
 export const CODEX_EXTERNAL_SANDBOX_PERMISSION_PROFILE =
   "paperclip-runner-external-sandbox";
+
+export function codexNetworkAccess(source: NodeJS.ProcessEnv = process.env): boolean {
+  return source.PAPERCLIP_RUNNER_NETWORK_ACCESS !== "disabled";
+}
+
+function gitFilesystemRoots(source: NodeJS.ProcessEnv): { read: string[]; write: string[] } {
+  const read: string[] = [];
+  const write: string[] = [];
+  try {
+    const roots: unknown = JSON.parse(source.PAPERCLIP_GIT_METADATA_ROOTS ?? "[]");
+    if (Array.isArray(roots)) for (const root of roots) {
+      if (typeof root === "string" && isAbsolute(root) && resolve(root) !== "/") write.push(resolve(root));
+    }
+  } catch { /* Older controllers do not project Git metadata roots. */ }
+  if (source.PAPERCLIP_GITHUB_AUTH_MODE === "host" && source.PAPERCLIP_GITHUB_HOST_HOME) {
+    for (const relative of [".gitconfig", ".git-credentials", ".config/git", ".config/gh", ".ssh"]) {
+      read.push(join(source.PAPERCLIP_GITHUB_HOST_HOME, relative));
+    }
+    for (const root of [source.GH_CONFIG_DIR, source.GIT_CONFIG_GLOBAL, source.GIT_CONFIG_SYSTEM, source.SSH_AUTH_SOCK]) {
+      if (root && isAbsolute(root) && resolve(root) !== "/") read.push(resolve(root));
+    }
+  }
+  return { read: [...new Set(read)], write: [...new Set(write)] };
+}
 
 function usesExternalRunnerSandbox(source: NodeJS.ProcessEnv): boolean {
   return source.PAPERCLIP_RUNNER_EXTERNAL_SANDBOX === "1";
@@ -42,7 +66,9 @@ export function codexCommandEnvironment(
     const value = source[key];
     if (value !== undefined) environment[key] = value;
   }
-  if (source.PAPERCLIP_GITHUB_LAUNCHER_DIR) {
+  if (source.PAPERCLIP_GITHUB_AUTH_MODE === "host" && source.PAPERCLIP_GITHUB_HOST_HOME) {
+    environment.HOME = source.PAPERCLIP_GITHUB_HOST_HOME;
+  } else if (source.PAPERCLIP_GITHUB_LAUNCHER_DIR) {
     environment.HOME = source.PAPERCLIP_GITHUB_LAUNCHER_DIR;
     environment.ZDOTDIR = source.PAPERCLIP_GITHUB_LAUNCHER_DIR;
     environment.BASH_ENV = `${source.PAPERCLIP_GITHUB_LAUNCHER_DIR}/.bashrc`;
@@ -83,6 +109,8 @@ export function createIsolatedCodexAppServerArgs(
   readOnlyRoots: string[] = [],
 ): string[] {
   const hasGitHubCredential = hasGitHubCredentialEnvironment(source);
+  const gitRoots = gitFilesystemRoots(source);
+  const networkAccess = codexNetworkAccess(source);
   const externalRunnerSandbox = usesExternalRunnerSandbox(source);
   const inheritedGitHubKeys = githubCredentialEnvironmentKeys(source);
   if (source.PAPERCLIP_GITHUB_LAUNCHER_DIR) readOnlyRoots = [...readOnlyRoots, source.PAPERCLIP_GITHUB_LAUNCHER_DIR];
@@ -102,6 +130,8 @@ export function createIsolatedCodexAppServerArgs(
     `":tmpdir"="none"`,
     ...deniedHostRoots.map((path) => `${tomlString(path)}="none"`),
     ...readOnlyRoots.map((path) => `${tomlString(resolve(path))}="read"`),
+    ...gitRoots.read.map((path) => `${tomlString(path)}="read"`),
+    ...gitRoots.write.map((path) => `${tomlString(path)}="write"`),
     ...(source.PAPERCLIP_GITHUB_BROKER_TOKEN && source.GH_CONFIG_DIR
       ? [`${tomlString(resolve(source.GH_CONFIG_DIR))}="write"`] : []),
     `":workspace_roots"={"."="write"}`,
@@ -112,6 +142,7 @@ export function createIsolatedCodexAppServerArgs(
     `":tmpdir"="none"`,
     ...deniedHostRoots.map((path) => `${tomlString(path)}="none"`),
     ...readOnlyRoots.map((path) => `${tomlString(resolve(path))}="read"`),
+    ...[...gitRoots.read, ...gitRoots.write].map((path) => `${tomlString(path)}="read"`),
     ...(source.PAPERCLIP_GITHUB_BROKER_TOKEN && source.GH_CONFIG_DIR
       ? [`${tomlString(resolve(source.GH_CONFIG_DIR))}="write"`] : []),
     `":workspace_roots"={"."="read"}`,
@@ -128,19 +159,19 @@ export function createIsolatedCodexAppServerArgs(
     "-c",
     `permissions.${CODEX_SKILLLESS_PERMISSION_PROFILE}.filesystem={${filesystemRules}}`,
     "-c",
-    `permissions.${CODEX_SKILLLESS_PERMISSION_PROFILE}.network.enabled=${hasGitHubCredential}`,
+    `permissions.${CODEX_SKILLLESS_PERMISSION_PROFILE}.network.enabled=${networkAccess}`,
     ...(externalRunnerSandbox
       ? [
           "-c",
           `permissions.${CODEX_EXTERNAL_SANDBOX_PERMISSION_PROFILE}.filesystem={":root"="write"}`,
           "-c",
-          `permissions.${CODEX_EXTERNAL_SANDBOX_PERMISSION_PROFILE}.network.enabled=true`,
+          `permissions.${CODEX_EXTERNAL_SANDBOX_PERMISSION_PROFILE}.network.enabled=${networkAccess}`,
         ]
       : []),
     "-c",
     `permissions.${CODEX_PLANNING_PERMISSION_PROFILE}.filesystem={${planningFilesystemRules}}`,
     "-c",
-    `permissions.${CODEX_PLANNING_PERMISSION_PROFILE}.network.enabled=${hasGitHubCredential}`,
+    `permissions.${CODEX_PLANNING_PERMISSION_PROFILE}.network.enabled=${networkAccess}`,
     "-c",
     `shell_environment_policy.inherit=${tomlString(hasGitHubCredential ? "all" : "none")}`,
     "-c",
