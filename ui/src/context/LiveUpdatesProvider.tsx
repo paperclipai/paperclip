@@ -1045,6 +1045,9 @@ function invalidateActivityQueries(
           // in the streamed PRP projection, so inactive-only invalidation leaves
           // the visible task stale until a full reload.
           queryClient.invalidateQueries({ queryKey: queryKeys.issues.interactions(ref) });
+          queryClient.invalidateQueries({ queryKey: queryKeys.tools.actionRequests(companyId, "pending") });
+          queryClient.invalidateQueries({ queryKey: queryKeys.apps.attention(companyId) });
+          queryClient.invalidateQueries({ queryKey: queryKeys.tools.trustRules(companyId) });
         }
       }
     }

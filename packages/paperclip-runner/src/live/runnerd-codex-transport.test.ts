@@ -43,6 +43,8 @@ import {
   createRunnerdCodexAppServerArgs,
   defaultCapabilityRunnerdBinary,
   expandRunnerdCanonicalNotifications,
+  latestRunnerdSessionReadiness,
+  rehydrateRunnerdGoalNotification,
   rehydrateRunnerdItemNotification,
   rehydrateRunnerdPlanNotification,
   rehydrateRunnerdResultNotification,
@@ -50,12 +52,14 @@ import {
   rehydrateRunnerdTurnNotification,
   rehydrateRunnerdUsageNotification,
   rehydrateRunnerdWorkspaceChangeNotification,
+  runnerdCanonicalNotificationMethod,
   runnerdLaunchProfileInternals,
   runnerdRecoveryInternals,
   resolveRunnerdAcpxPermissionMode,
   resolveRunnerdSessionIdentity,
   resolveSourceCodexHome,
   trustedRuntimeReadOnlyRoots,
+  unseenRunnerdCommittedEvents,
   unwrapRunnerdProviderNotification,
   unwrapRunnerdProviderNotifications,
   withCodexCollaborationRuntimeInstructions,
@@ -1350,6 +1354,73 @@ it("rehydrates canonical workspace changes without reconstructing the diff", () 
   });
 });
 
+it("rehydrates canonical session goals into Codex goal notifications", () => {
+  expect(
+    rehydrateRunnerdGoalNotification(
+      {
+        goal: {
+          objective: "Finish the browser lifecycle",
+          status: "complete",
+          tokenBudget: 20_000,
+          tokensUsed: 12_345,
+          elapsedSeconds: 42,
+        },
+        workingNow: false,
+      },
+      "thread-1",
+      "thread/goal/updated",
+    ),
+  ).toEqual({
+    threadId: "thread-1",
+    goal: {
+      threadId: "thread-1",
+      objective: "Finish the browser lifecycle",
+      status: "complete",
+      tokenBudget: 20_000,
+      tokensUsed: 12_345,
+      timeUsedSeconds: 42,
+      createdAt: 0,
+      updatedAt: 0,
+    },
+    workingNow: false,
+  });
+  expect(
+    rehydrateRunnerdGoalNotification(
+      { revision: 7, workingNow: false },
+      "thread-1",
+      "thread/goal/cleared",
+    ),
+  ).toEqual({ revision: 7, threadId: "thread-1", workingNow: false });
+});
+
+it("routes canonical session goals back through the Codex notification facade", () => {
+  expect(
+    runnerdCanonicalNotificationMethod("session.goal.updated", {
+      goal: { status: "complete" },
+    }),
+  ).toBe("thread/goal/updated");
+  expect(
+    runnerdCanonicalNotificationMethod("session.goal.snapshot", { goal: null }),
+  ).toBeUndefined();
+  expect(runnerdCanonicalNotificationMethod("session.goal.cleared", {})).toBe(
+    "thread/goal/cleared",
+  );
+});
+
+it("continues consuming after the durable committed-event window rolls", () => {
+  const rollingWindow = Array.from({ length: 64 }, (_, index) => ({
+    sourceSeq: index + 65,
+    eventType: index === 62 ? "session.goal.updated" : "item.delta",
+  }));
+  expect(unseenRunnerdCommittedEvents(rollingWindow, 64)).toEqual(
+    rollingWindow,
+  );
+  expect(unseenRunnerdCommittedEvents(rollingWindow, 128)).toEqual([]);
+  expect(() => unseenRunnerdCommittedEvents(rollingWindow, 63)).toThrow(
+    "provider_notification_window_exceeded",
+  );
+});
+
 it("resolves canonical and legacy durable session identities", () => {
   expect(
     resolveRunnerdSessionIdentity({
@@ -1385,6 +1456,36 @@ it("resolves canonical and legacy durable session identities", () => {
     threadId: "legacy-thread-1",
     sessionId: "legacy-session-1",
   });
+});
+
+it("recovers provider readiness from an already-committed journal without replay", () => {
+  const persistedReady = {
+    provider: "codex",
+    providerSessionId: "provider-thread-persisted",
+    providerAccountSessionId: "provider-account-persisted",
+    processId: 4242,
+    runtimeIdentity: { executionKind: "local_process" },
+    providerDescriptor: {
+      driver: "codex_app_server",
+      providerVersion: "persisted-version",
+    },
+    providerIdentity: {
+      kind: "codex_thread",
+      threadId: "provider-thread-persisted",
+    },
+  };
+  expect(
+    latestRunnerdSessionReadiness([
+      {
+        eventType: "harness.ready",
+        envelope: { payload: { payload: persistedReady } },
+      },
+      {
+        eventType: "session.goal.snapshot",
+        envelope: { payload: { payload: { goal: { status: "paused" } } } },
+      },
+    ]),
+  ).toEqual(persistedReady);
 });
 
 const fakeCodex = resolve(
@@ -1565,6 +1666,199 @@ it("runs the lab provider boundary through authenticated durable PRP", async () 
       "runnerd authenticated to the durable PRP control plane",
     );
   } finally {
+    await bundle.transport.close();
+    await rm(stateDirectory, { recursive: true, force: true });
+  }
+  expect(bundle.evidence()).toMatchObject({
+    runnerExited: true,
+    runnerExitCode: 0,
+  });
+}, 30_000);
+
+it("controls a Codex session goal end to end through durable PRP v2", async () => {
+  const stateDirectory = await mkdtemp(join(tmpdir(), "runnerd-goal-provider-"));
+  const bundle = createCapabilityRunnerdCodexTransport({
+    runnerBinary: defaultCapabilityRunnerdBinary(),
+    codexCommand: fakeCodex,
+    codexArgs: fakeCodexArgs(stateDirectory, "--goal-autostart"),
+    stateDirectory,
+  });
+  bundle.transport.setServerRequestHandler(async () => ({
+    success: true,
+    contentItems: [],
+  }));
+  try {
+    await bundle.transport.request("initialize", {});
+    const opened = await bundle.transport.request("thread/start", {
+      cwd: tmpdir(),
+      dynamicTools: [
+        {
+          name: "get_task_context",
+          description: "Read the active task.",
+          inputSchema: {
+            type: "object",
+            properties: {},
+            additionalProperties: false,
+          },
+        },
+      ],
+    });
+    const threadId = opened.thread.id;
+
+    await expect(
+      bundle.transport.request("thread/goal/set", {
+        threadId,
+        objective: "Finish the durable PRP goal test",
+        status: "active",
+        tokenBudget: 12_000,
+      }),
+    ).resolves.toMatchObject({
+      goal: {
+        threadId,
+        objective: "Finish the durable PRP goal test",
+        status: "active",
+        tokenBudget: 12_000,
+      },
+    });
+    let durableGoalEvent: Record<string, unknown> | null = null;
+    let durableTurnStarted = false;
+    const deliveryDeadline = Date.now() + 5_000;
+    while (Date.now() < deliveryDeadline) {
+      const controlState = JSON.parse(
+        await readFile(
+          join(stateDirectory, "control-plane", "control-plane-state.json"),
+          "utf8",
+        ),
+      ) as {
+        committedEvents?: Array<Record<string, unknown>>;
+      };
+      durableGoalEvent =
+        controlState.committedEvents?.find(
+          (event) => event.eventType === "session.goal.updated",
+        ) ?? null;
+      durableTurnStarted =
+        controlState.committedEvents?.some(
+          (event) => event.eventType === "turn.started",
+        ) ?? false;
+      if (durableGoalEvent !== null && durableTurnStarted) break;
+      await new Promise((resolveWait) => setTimeout(resolveWait, 20));
+    }
+    expect(durableGoalEvent).not.toBeNull();
+    expect(durableTurnStarted).toBe(true);
+    expect(durableGoalEvent).toMatchObject({
+      envelope: {
+        payload: {
+          payload: {
+            goal: { lastReason: null },
+          },
+        },
+      },
+    });
+    await expect(
+      bundle.transport.request("thread/goal/get", { threadId }),
+    ).resolves.toMatchObject({
+      goal: {
+        threadId,
+        objective: "Finish the durable PRP goal test",
+        status: "active",
+      },
+    });
+    await expect(
+      bundle.transport.request("thread/goal/set", {
+        threadId,
+        status: "paused",
+      }),
+    ).resolves.toMatchObject({ goal: { status: "paused" } });
+    await expect(
+      bundle.transport.request("thread/goal/set", {
+        threadId,
+        status: "active",
+      }),
+    ).resolves.toMatchObject({ goal: { status: "active" } });
+    await expect(
+      bundle.transport.request("thread/goal/clear", { threadId }),
+    ).resolves.toEqual({});
+    await expect(
+      bundle.transport.request("thread/goal/get", { threadId }),
+    ).resolves.toEqual({ goal: null });
+  } finally {
+    await bundle.transport.close();
+    await rm(stateDirectory, { recursive: true, force: true });
+  }
+  expect(bundle.evidence()).toMatchObject({
+    runnerExited: true,
+    runnerExitCode: 0,
+  });
+}, 30_000);
+
+it.each([false, true])("binds goal turns through the full Codex harness (autonomous continuation: %s)", async (autocontinue) => {
+  const stateDirectory = await mkdtemp(join(tmpdir(), "runnerd-goal-harness-"));
+  const bundle = createCapabilityRunnerdCodexTransport({
+    runnerBinary: defaultCapabilityRunnerdBinary(),
+    codexCommand: fakeCodex,
+    codexArgs: fakeCodexArgs(stateDirectory, "--goal-autostart", ...(autocontinue ? ["--goal-autocontinue"] : [])),
+    stateDirectory,
+  });
+  const driver = new CodexAppServerDriver({
+    taskEnvelope: {
+      schema: "paperclip.skillless_task.v1",
+      objective: "Finish the durable goal harness test.",
+      completionContract: {
+        revision: "goal-harness-v1",
+        criteria: [{ id: "goal", requirement: "The goal turn starts." }],
+      },
+      constraints: [],
+      expectedResultSchema: "paperclip.run_result.v1",
+    },
+    approvalPolicy: "never",
+    includeCollaborationModeInstructions: false,
+    environment: {
+      PATH: process.env.PATH ?? "/usr/bin:/bin",
+      HOME: "/isolated/home",
+      CODEX_HOME: "/isolated/codex-home",
+      LANG: "C.UTF-8",
+    },
+    transportFactory: () => bundle.transport,
+    requireProviderSessionIdentity: true,
+  });
+  let session: Awaited<ReturnType<typeof driver.openSession>> | null = null;
+  try {
+    session = await driver.openSession({
+      runId: "run-goal-harness-autostart",
+      normalizedSessionId: "normalized-goal-harness-autostart",
+      workingDirectory: tmpdir(),
+    });
+    const observed: Array<{ eventType: string }> = [];
+    const turnStarted = Promise.race([
+      (async () => {
+        for await (const event of session!.events()) {
+          observed.push(event);
+          if (event.eventType === "turn.started" && event.turnId === (autocontinue ? "provider-goal-turn-2" : "provider-goal-turn-1")) return event;
+          if (event.eventType === "session.failed") {
+            throw new Error(`goal autostart failed: ${JSON.stringify(event.payload)}`);
+          }
+        }
+        throw new Error("goal autostart event stream closed");
+      })(),
+      new Promise<never>((_resolve, reject) => {
+        setTimeout(() => reject(new Error("goal autostart timed out")), 5_000);
+      }),
+    ]);
+    await expect(
+      session.goal?.({
+        action: "set",
+        objective: "Finish the durable goal harness test.",
+        status: "active",
+        requestId: "goal-harness-autostart",
+      }),
+    ).resolves.toMatchObject({ status: "active" });
+    await expect(turnStarted).resolves.toMatchObject({
+      eventType: "turn.started",
+      turnId: autocontinue ? "provider-goal-turn-2" : "provider-goal-turn-1",
+    });
+    expect(observed.some((event) => event.eventType === "session.failed")).toBe(false);
+  } finally {
+    await session?.close();
     await bundle.transport.close();
     await rm(stateDirectory, { recursive: true, force: true });
   }
@@ -2723,9 +3017,12 @@ it("cold-restores a suspended provider session under its durable run binding", a
       stateDirectory,
       "--include-skill-instructions",
       "--durable-turn-ids",
+      "-c",
+      'shell_environment_policy.set={PATH="/run/A"}',
     ),
     stateDirectory,
     environment: {
+      PAPERCLIP_GITHUB_BROKER_TOKEN: "test-run-A-capability",
       PAPERCLIP_PROVIDER_TRACE_PATH: tracePath,
       PAPERCLIP_PROVIDER_TRACE_MAX_BYTES: String(64 * 1024 * 1024),
     },
@@ -2798,6 +3095,8 @@ it("cold-restores a suspended provider session under its durable run binding", a
   };
   const rotated = createCapabilityRunnerdCodexTransport({
     ...options,
+    environment: { ...options.environment, PAPERCLIP_GITHUB_BROKER_TOKEN: "test-run-B-capability" },
+    codexArgs: options.codexArgs.map((arg) => arg.replace('/run/A', '/run/B')),
     resumeDynamicTools: dynamicTools,
     resumeCompletionContract: {
       revision: "contract-second",
@@ -2811,6 +3110,9 @@ it("cold-restores a suspended provider session under its durable run binding", a
   }));
   try {
     const read = await rotated.transport.request("thread/read", {});
+    const persistedProvider = JSON.parse(await readFile(join(stateDirectory, "runner", "codex-provider-state.json"), "utf8"));
+    expect(persistedProvider.config.args.join("\n")).toContain('/run/B');
+    expect(JSON.stringify(persistedProvider)).not.toContain("test-run-B-capability");
     expect(read.thread).toMatchObject({
       id: firstProviderThread.id,
       sessionId: firstProviderThread.sessionId,
@@ -3048,7 +3350,7 @@ it("cold-restores a suspended provider session under its durable run binding", a
   }
 }, 30_000);
 
-async function verifyLiveRunnerAdoption(mismatchedCheckpoint: boolean) {
+async function verifyLiveRunnerAdoption(mismatchedCheckpoint: boolean, goalMidTurn = false) {
   const stateDirectory = await mkdtemp(join(tmpdir(), "runnerd-live-adopt-"));
   const server = createServer();
   let authority: DurablePrpControlPlane | null = null;
@@ -3085,7 +3387,7 @@ async function verifyLiveRunnerAdoption(mismatchedCheckpoint: boolean) {
   const sharedOptions = {
     runnerBinary: defaultCapabilityRunnerdBinary(),
     codexCommand: fakeCodex,
-    codexArgs: fakeCodexArgs(stateDirectory),
+    codexArgs: fakeCodexArgs(stateDirectory, ...(goalMidTurn ? ["--goal-autostart", "--goal-item-trigger", join(stateDirectory, "emit-goal-item")] : [])),
     stateDirectory,
     prpIdentity: identity,
     lifecyclePolicy: { mode: "warm" as const, idleTimeoutMs: 60_000 },
@@ -3114,8 +3416,24 @@ async function verifyLiveRunnerAdoption(mismatchedCheckpoint: boolean) {
     runnerPid = first.evidence().runnerPid;
     expect(runnerPid).toEqual(expect.any(Number));
 
+    if (goalMidTurn) {
+      await first.transport.request("thread/goal/set", { objective: "Recover a live goal", status: "active" });
+      for await (const event of first.transport.notifications()) {
+        if (event.method === "turn/started") break;
+      }
+    }
+
     await first.detachControllerForRestart();
     expect(() => process.kill(runnerPid!, 0)).not.toThrow();
+    if (goalMidTurn) {
+      await writeFile(join(stateDirectory, "emit-goal-item"), "emit");
+      // runnerd need not poll the provider into its PRP outbox while disconnected.
+      // Wait for flushed provider output, not a platform-dependent final poll
+      // racing the disconnect. Adoption must still bind that buffered item.
+      await vi.waitFor(async () => {
+        expect(await readFile(join(stateDirectory, "emit-goal-item.sent"), "utf8")).toBe("sent");
+      }, { timeout: 5_000 });
+    }
 
     const controlPlaneStatePath = join(
       stateDirectory,
@@ -3183,6 +3501,18 @@ async function verifyLiveRunnerAdoption(mismatchedCheckpoint: boolean) {
       }),
     );
     expect(adopted.evidence().runnerPid).toBe(runnerPid);
+    if (goalMidTurn) {
+      const observed = await Promise.race([
+        (async () => {
+          for await (const notification of adopted!.transport.notifications()) {
+            if (notification.method === "item/started") return notification;
+          }
+          throw new Error("recovered goal item was lost");
+        })(),
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error("recovered item timed out")), 5_000)),
+      ]);
+      expect(observed.params).toMatchObject({ threadId: "codex-thread-1", turnId: "provider-goal-turn-1" });
+    }
     expect(duplicateLauncher).not.toHaveBeenCalled();
     expect(adopted.evidence().diagnostics).toContain(
       `adopted runner ${runnerPid} authenticated to its durable PRP authority`,
@@ -3223,6 +3553,8 @@ it(
   () => verifyLiveRunnerAdoption(true),
   30_000,
 );
+
+it("binds buffered mid-goal items only after the authenticated recovery snapshot", () => verifyLiveRunnerAdoption(false, true), 30_000);
 
 it("surfaces a runner exit while provider-ingress readiness is still pending", async () => {
   const neverReady = new Promise<void>(() => undefined);

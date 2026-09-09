@@ -404,3 +404,16 @@ Per-component rationale:
 ### 7.3 Interactive-card affordance (Run 3 review feedback)
 
 `Card` gained an `interactive` prop — pointer cursor, quiet hover (border→foreground/20 + shadow-md lift), focus-visible ring — used when the whole card is a click target (e.g. Companies selector). Skills tiles (CompanySkills `SkillCard`) and artifact cards (`ArtifactCard`/`ArtifactGroupCard`) apply the same recipe verbatim since they cannot render through Card (button/Link semantics). Static container Cards stay affordance-free by design.
+
+
+## In-task connections — 2026-09-07
+
+| Reusable surface | Production owner | Hosts / coverage |
+|---|---|---|
+| Connection request card | `ui/src/features/connections/ConnectionIntentInteractionBody.tsx` | Task timeline, interaction card, design guide; pending, reuse, authorizing, retry, resolved, audience and error stories |
+| Connection setup flow | `ui/src/features/connections/ConnectionSetupFlow.tsx` | Connections page and task dialog share provider forms, OAuth, validation and additive installs |
+| OAuth handoff | `OAuthConnectStateScreen` in the shared setup module | Entry, starting, open window, blocked popup, closure, callback failure, retry and new-tab fallback |
+| Identity and agent access | `AccessStep` in the shared setup module | Personal, organization, dedicated agent, unavailable identity and loading; task host fixes install reach to the requester |
+| Setup completion | `ConnectionSetupCompletionScreen` in the shared setup module | Page and dialog; identity, granted agent access and enabled actions |
+
+Independently addressable examples live under `Connections/In-task connections` in Storybook. The task composer remains available while a card is pending. These components use the existing token and primitive layers.

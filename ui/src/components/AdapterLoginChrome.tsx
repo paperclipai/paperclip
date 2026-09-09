@@ -57,8 +57,8 @@ export function connectSourceName(adapterType: string): string {
 }
 
 /**
- * The connect step's login card: an instruction with a Cancel beside it, then
- * the rows the customer works through.
+ * The connect step's login card: an instruction, then the rows the customer
+ * works through.
  *
  * The rows are the caller's, because the two login modes genuinely differ in
  * the last one — Claude takes a code back, OpenAI hands one out — while
@@ -67,7 +67,6 @@ export function connectSourceName(adapterType: string): string {
  */
 export function OnboardingLoginCard({
   instruction,
-  onCancel,
   loading = false,
   children,
 }: {
@@ -77,7 +76,6 @@ export function OnboardingLoginCard({
    * be mono to read as a name rather than as prose.
    */
   instruction: ReactNode;
-  onCancel?: () => void;
   /**
    * Show a spinner instead of the contents, at the same height.
    *
@@ -104,41 +102,25 @@ export function OnboardingLoginCard({
 
   return (
     <div className="flex min-h-(--sz-108px) flex-col gap-4 rounded-xl bg-muted/40 p-4">
-      {/* No `gap`: `justify-between` already holds the two apart, and the eight
-          pixels a gap reserves are eight the instruction does not have. The
-          longest of these strings needs the full width between the inset and
-          Cancel to stay on one line, which is how the design draws it — a gap
-          here wrapped it onto a second.
+      {/* The row is the instruction alone. It shared this line with a Cancel
+          until that button went — it repeated the footer's Back, which is the
+          step's one way out.
 
-          It is still allowed to wrap rather than being pinned to one line: a
-          translation longer than the English will not fit however the row is
-          divided, and two lines is a better failure than an overflow. */}
-      {/* The instruction is a step down from Cancel, which is the hierarchy the
-          design draws — the label describes, the button acts.
+          12px, not 14. The frame's own label measures 281px and this string at
+          12px Inter measures 280px, where at 14px it needs 327px in a row that
+          has 327px to give and wraps on the rounding. Matching the width the
+          design actually renders is the closer reading of it than matching a
+          nominal size in a font it was not drawn in.
 
-          It is also what keeps the longest of these strings on one line. The
-          frame's own label measures 281px, and this string at 12px Inter
-          measures 280px, where at 14px it needs 327px in a row that has 327px
-          to give and wraps on the rounding. Matching the width the design
-          actually renders is the closer reading of it than matching a nominal
-          size in a font it was not drawn in. */}
+          Still allowed to wrap: a translation longer than the English will not
+          fit however the row is divided, and two lines is a better failure
+          than an overflow. */}
       <motion.div
-        className="flex items-center justify-between pl-2"
+        className="flex items-center pl-2"
         initial={{ opacity: 0, y: CARD_REVEAL_TRAVEL }}
         animate={{ opacity: 1, y: 0, transition: CARD_REVEAL_INSTRUCTION }}
       >
         <span className="text-xs text-muted-foreground">{instruction}</span>
-        {onCancel && (
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            className="h-7 shrink-0 px-2.5 text-sm font-medium"
-            onClick={onCancel}
-          >
-            Cancel
-          </Button>
-        )}
       </motion.div>
       {/* A beat behind the sentence above it, so the card reads as one thing
           unfolding and the instruction has been read by the time the field is

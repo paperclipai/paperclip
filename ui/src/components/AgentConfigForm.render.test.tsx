@@ -262,6 +262,11 @@ async function renderForm(
   options: {
     showAdapterTestEnvironmentButton?: boolean;
     content?: "configuration" | "secrets";
+    environmentVariablesPlacement?: "configuration" | "secrets";
+    hideInlineSave?: boolean;
+    onDirtyChange?: (dirty: boolean) => void;
+    onSaveActionChange?: (save: (() => void) | null) => void;
+    onCancelActionChange?: (cancel: (() => void) | null) => void;
   } = {},
 ) {
   mockEnvironmentsApi.list.mockResolvedValue(environments);
@@ -288,6 +293,11 @@ async function renderForm(
               onSave={onSave}
               hidePromptTemplate
               content={options.content}
+              environmentVariablesPlacement={options.environmentVariablesPlacement}
+              hideInlineSave={options.hideInlineSave}
+              onDirtyChange={options.onDirtyChange}
+              onSaveActionChange={options.onSaveActionChange}
+              onCancelActionChange={options.onCancelActionChange}
               showAdapterTypeField={false}
               showAdapterTestEnvironmentButton={options.showAdapterTestEnvironmentButton ?? false}
             />
@@ -729,6 +739,51 @@ describe("AgentConfigForm environment selector", () => {
     vi.clearAllMocks();
   });
 
+  it("promotes environment drafts through the page Save action and discards them through the page Discard action", async () => {
+    const dirty = vi.fn();
+    let save: (() => void) | null = null;
+    let discard: (() => void) | null = null;
+    const result = await renderForm([], {}, {
+      content: "secrets", environmentVariablesPlacement: "secrets", hideInlineSave: true,
+      onDirtyChange: dirty,
+      onSaveActionChange: action => { save = action; },
+      onCancelActionChange: action => { discard = action; },
+    });
+    roots.push(result.root);
+    const add = [...result.container.querySelectorAll("button")].find(button => button.textContent?.trim() === "Add variable")!;
+    await act(async () => add.click());
+    await act(async () => {
+      setInputValue(result.container.querySelector<HTMLInputElement>('input[aria-label="Variable name"]')!, "ONBOARDING_SMOKE");
+      setInputValue(result.container.querySelector<HTMLInputElement>('input[aria-label="Variable value"]')!, "true");
+    });
+    await flushReact();
+    expect(dirty).toHaveBeenLastCalledWith(true);
+    expect([...result.container.querySelectorAll("button")].some(button => button.textContent?.trim() === "Save")).toBe(false);
+    await act(async () => { await save?.(); });
+    expect(result.onSave).toHaveBeenCalledWith(expect.objectContaining({ adapterConfig: expect.objectContaining({ env: { ONBOARDING_SMOKE: { type: "plain", value: "true" } } }) }));
+    await act(async () => discard?.());
+    await flushReact();
+    expect(dirty).toHaveBeenLastCalledWith(false);
+    expect(result.container.querySelector('input[aria-label="Variable name"]')).toBeNull();
+  });
+
+  it("reads and saves Pi thinking effort using the Pi runtime key", async () => {
+    const result = await renderForm([], { adapterType: "pi_local", adapterConfig: { model: "openrouter/anthropic/claude-sonnet-4.6", thinking: "high" } });
+    roots.push(result.root);
+    const effort = [...result.container.querySelectorAll("button")].find(button => button.textContent?.trim() === "high")!;
+    expect(effort).toBeTruthy();
+    await act(async () => effort.click());
+    await flushReact();
+    const low = [...document.querySelectorAll("button")].find(button => button.textContent?.trim() === "lowlow")!;
+    expect(low).toBeTruthy();
+    await act(async () => low.click());
+    await flushReact();
+    const save = [...result.container.querySelectorAll("button")].find(button => button.textContent?.trim() === "Save")!;
+    await act(async () => save.click());
+    expect(result.onSave).toHaveBeenCalledWith(expect.objectContaining({ adapterConfig: expect.objectContaining({ thinking: "low" }) }));
+    expect(result.onSave.mock.calls[0][0].adapterConfig.effort).toBeUndefined();
+  });
+
   it("hides the environment override when Local is the only configured environment", async () => {
     const result = await renderForm([
       makeEnvironment({ id: "local-1", name: "Local", driver: "local" }),
@@ -815,6 +870,17 @@ describe("AgentConfigForm environment selector", () => {
       adapterConfig: { model: "gpt-6-astra" },
       replaceAdapterConfig: true,
     });
+  });
+
+  it("names the Claude default for new and existing agents without pinning it", async () => {
+    const environments = [makeEnvironment({ id: "local-1", name: "Local", driver: "local" })];
+    const existing = await renderForm(environments, { adapterType: "claude_local", adapterConfig: {} });
+    roots.push(existing.root);
+    const created = await renderCreateForm(environments, { adapterType: "claude_local", model: "" });
+    roots.push(created.root);
+    expect(existing.container.textContent).toContain("Default (claude-opus-5)");
+    expect(created.container.textContent).toContain("Default (claude-opus-5)");
+    expect(existing.onSave).not.toHaveBeenCalled();
   });
 
   it("keeps secret access out of the main Configuration content", async () => {
@@ -1640,10 +1706,13 @@ describe("AgentConfigForm environment selector", () => {
     expect(mockAgentsApi.cancelAdapterAuthLogin).not.toHaveBeenCalled();
   });
 
-  it("shows a reachable Cancel control in the onboarding chrome and cancels the session", async () => {
-    mockAgentsApi.testEnvironment.mockResolvedValue(AUTH_MISSING_RESULT);
-    const onCancel = vi.fn();
-
+  it("offers no Cancel in the onboarding chrome", async () => {
+    // The card carried a Cancel beside its instruction, directly above the
+    // step's own Back. Two ways out of one screen is one too many, so the
+    // button went — and with it the only explicit release, since unmounting
+    // deliberately keeps the session alive for a later resume. An abandoned
+    // login is now collected by the server deadline, the same as one abandoned
+    // by closing the tab.
     const container = document.createElement("div");
     document.body.appendChild(container);
     const root = createRoot(container);
@@ -1663,25 +1732,20 @@ describe("AgentConfigForm environment selector", () => {
                 environmentId="sandbox-1"
                 chrome="onboarding"
                 autoStart
-                onCancel={onCancel}
               />
             </TooltipProvider>
           </ToastProvider>
         </QueryClientProvider>,
       );
     });
-    await flushUntil(() => Boolean(findButton(container, "Cancel")));
+    // Wait for the card itself, then assert it is actually there: an absence
+    // check over an empty render passes for the wrong reason.
+    await flushUntil(() => container.textContent?.includes("authorization code") ?? false);
+    expect(container.textContent).toContain("authorization code");
 
-    await clickByText(container, "Cancel");
-
-    expect(mockAgentsApi.cancelAdapterAuthLogin).toHaveBeenCalledWith(
-      "company-1",
-      "codex_local",
-      "session-1",
-    );
-    expect(onCancel).toHaveBeenCalledTimes(1);
+    expect(findButton(container, "Cancel")).toBeFalsy();
+    expect(mockAgentsApi.cancelAdapterAuthLogin).not.toHaveBeenCalled();
   });
-
   it("resumes an active login session on mount, adopting its session id and prompt", async () => {
     // A page reload loses every piece of local state, so the panel must read
     // the caller's active session and adopt it instead of starting a new one.
@@ -2191,9 +2255,13 @@ describe("AgentConfigForm environment selector", () => {
     expect(onStored).toHaveBeenCalledWith("stored-session-1");
   });
 
-  it("shows a reachable Cancel control in the onboarding chrome and cancels the session", async () => {
-    const onCancel = vi.fn();
-
+  it("offers no Cancel in the onboarding chrome", async () => {
+    // The card carried a Cancel beside its instruction, directly above the
+    // step's own Back. Two ways out of one screen is one too many, so the
+    // button went — and with it the only explicit release, since unmounting
+    // deliberately keeps the session alive for a later resume. An abandoned
+    // login is now collected by the server deadline, the same as one abandoned
+    // by closing the tab.
     const container = document.createElement("div");
     document.body.appendChild(container);
     const root = createRoot(container);
@@ -2213,24 +2281,20 @@ describe("AgentConfigForm environment selector", () => {
                 environmentId="sandbox-1"
                 chrome="onboarding"
                 autoStart
-                onCancel={onCancel}
               />
             </TooltipProvider>
           </ToastProvider>
         </QueryClientProvider>,
       );
     });
-    await flushUntil(() => Boolean(findButton(container, "Cancel")));
+    // Wait for the card itself, then assert it is actually there: an absence
+    // check over an empty render passes for the wrong reason.
+    await flushUntil(() => container.textContent?.includes("authorization code") ?? false);
+    expect(container.textContent).toContain("authorization code");
 
-    await clickByText(container, "Cancel");
-
-    expect(mockAgentsApi.cancelClaudeSetupTokenLogin).toHaveBeenCalledWith(
-      "company-1",
-      "claude-session-1",
-    );
-    expect(onCancel).toHaveBeenCalledTimes(1);
+    expect(findButton(container, "Cancel")).toBeFalsy();
+    expect(mockAgentsApi.cancelClaudeSetupTokenLogin).not.toHaveBeenCalled();
   });
-
   it("offers an apply-existing affordance when the status route reports a stored value", async () => {
     mockAgentsApi.getClaudeOAuthTokenStatus.mockResolvedValue({
       secretId: "secret-1",
@@ -3216,6 +3280,12 @@ describe("AgentConfigForm managed-sandbox-only host surfaces", () => {
     );
     roots.push(result.root);
 
+    await act(async () => {
+      for (const button of result.container.querySelectorAll("button")) {
+        if (["Advanced", "Advanced Run Policy"].includes(button.textContent?.trim() ?? "")) button.click();
+      }
+    });
+    await flushReact();
     const labels = fieldLabels(result.container);
     expect(labels).toContain("Working directory (deprecated)");
     expect(labels).toContain("Command");
@@ -3237,6 +3307,12 @@ describe("AgentConfigForm managed-sandbox-only host surfaces", () => {
     );
     roots.push(result.root);
 
+    await act(async () => {
+      for (const button of result.container.querySelectorAll("button")) {
+        if (["Advanced", "Advanced Run Policy"].includes(button.textContent?.trim() ?? "")) button.click();
+      }
+    });
+    await flushReact();
     const labels = fieldLabels(result.container);
     expect(labels).not.toContain("Working directory (deprecated)");
     expect(labels).not.toContain("Command");
@@ -3257,6 +3333,12 @@ describe("AgentConfigForm managed-sandbox-only host surfaces", () => {
     );
     roots.push(result.root);
 
+    await act(async () => {
+      for (const button of result.container.querySelectorAll("button")) {
+        if (["Advanced", "Advanced Run Policy"].includes(button.textContent?.trim() ?? "")) button.click();
+      }
+    });
+    await flushReact();
     const labels = fieldLabels(result.container);
     expect(labels).toContain("ACP session mode");
     expect(labels).toContain("ACP non-interactive permissions");
@@ -3272,6 +3354,12 @@ describe("AgentConfigForm managed-sandbox-only host surfaces", () => {
     );
     roots.push(result.root);
 
+    await act(async () => {
+      for (const button of result.container.querySelectorAll("button")) {
+        if (["Advanced", "Advanced Run Policy"].includes(button.textContent?.trim() ?? "")) button.click();
+      }
+    });
+    await flushReact();
     const labels = fieldLabels(result.container);
     expect(labels).not.toContain("Working directory (deprecated)");
     expect(labels).not.toContain("Command");
@@ -3288,6 +3376,12 @@ describe("AgentConfigForm managed-sandbox-only host surfaces", () => {
     );
     roots.push(result.root);
 
+    await act(async () => {
+      for (const button of result.container.querySelectorAll("button")) {
+        if (["Advanced", "Advanced Run Policy"].includes(button.textContent?.trim() ?? "")) button.click();
+      }
+    });
+    await flushReact();
     const labels = fieldLabels(result.container);
     expect(labels).not.toContain("Working directory (deprecated)");
     expect(labels).not.toContain("Command");

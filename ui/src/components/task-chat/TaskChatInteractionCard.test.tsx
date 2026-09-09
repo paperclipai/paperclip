@@ -437,6 +437,12 @@ describe("TaskChatInteractionCard", () => {
         button.textContent?.includes("Only collapse hidden descendants"),
     );
     await act(async () => firstAnswer?.click());
+    // Picking only selects; Next moves to the second question.
+    expect(container.textContent).toContain("1 of 2");
+    const next = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "Next",
+    );
+    await act(async () => next?.click());
 
     expect(container.textContent).toContain("2 of 2");
     expect(container.textContent).toContain(

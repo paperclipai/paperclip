@@ -8,7 +8,7 @@ import {
   buildAgentMentionHref,
   buildSkillMentionHref,
 } from "@paperclipai/shared";
-import { TaskChatComposer } from "./TaskChatComposer";
+import { parseRunnerGoalCommand, TaskChatComposer } from "./TaskChatComposer";
 import { QuestionForm } from "./QuestionForm";
 import { DRAFT_DEBOUNCE_MS } from "../../lib/composer-draft";
 
@@ -860,6 +860,175 @@ describe("TaskChatComposer", () => {
     expect(editable().textContent).toBe(`[/deploy](${SLASH_HREF}) `);
   });
 
+  describe("/goal action commands", () => {
+    const capability = {
+      availability: "available" as const,
+      verified: true,
+      actions: ["set", "pause", "resume", "clear"] as Array<
+        "set" | "pause" | "resume" | "clear"
+      >,
+      autonomousUpdates: true,
+      persistentAcrossResume: true,
+      maxObjectiveChars: 4_000,
+      tokenBudgetControl: true,
+      usageReporting: true,
+    };
+
+    it("matches only an exact first /goal token", () => {
+      expect(parseRunnerGoalCommand(" /goal Ship the feature ")).toEqual({
+        matched: true,
+        command: { action: "create", objective: "Ship the feature" },
+      });
+      expect(
+        parseRunnerGoalCommand(
+          "[/goal\u00a0](</goal Ship the feature across turns.>)",
+        ),
+      ).toEqual({
+        matched: true,
+        command: {
+          action: "create",
+          objective: "Ship the feature across turns.",
+        },
+      });
+      expect(
+        parseRunnerGoalCommand(
+          "[/go](</goal Return one concise confirmation, then complete.>)",
+        ),
+      ).toEqual({
+        matched: true,
+        command: {
+          action: "create",
+          objective: "Return one concise confirmation, then complete.",
+        },
+      });
+      expect(
+        parseRunnerGoalCommand("[/](/goal%20Confirm%20the%20goal%20state.)"),
+      ).toEqual({
+        matched: true,
+        command: {
+          action: "create",
+          objective: "Confirm the goal state.",
+        },
+      });
+      expect(
+        parseRunnerGoalCommand("[/goal](/goal%20pause)"),
+      ).toEqual({ matched: true, command: { action: "pause" } });
+      expect(parseRunnerGoalCommand("/goal pause extra")).toEqual({
+        matched: true,
+        error: "/goal pause does not accept extra arguments.",
+      });
+      expect(parseRunnerGoalCommand("[goal](/goal Ship it)")).toEqual({
+        matched: false,
+      });
+      expect(parseRunnerGoalCommand("\\/goal ordinary text")).toEqual({ matched: false });
+      expect(parseRunnerGoalCommand("/goalkeeper ordinary text")).toEqual({ matched: false });
+    });
+
+    it("dispatches a goal action without posting a comment", async () => {
+      const onAdd = vi.fn().mockResolvedValue(undefined);
+      const onRunnerGoalCommand = vi.fn().mockResolvedValue(undefined);
+      render(
+        <TaskChatComposer
+          onAdd={onAdd}
+          workMode="standard"
+          runnerGoalCapability={capability}
+          onRunnerGoalCommand={onRunnerGoalCommand}
+        />,
+      );
+
+      typeText("/goal Ship the feature");
+      pressKey("Enter", { metaKey: true });
+      await flushAsync();
+
+      expect(onRunnerGoalCommand).toHaveBeenCalledWith({
+        action: "create",
+        objective: "Ship the feature",
+      });
+      expect(onAdd).not.toHaveBeenCalled();
+      expect(editable().textContent).toBe("");
+    });
+
+    it("commits a pending agent reassignment before starting the goal", async () => {
+      const order: string[] = [];
+      const onAdd = vi.fn().mockResolvedValue(undefined);
+      const onPendingAssigneeChange = vi.fn();
+      const onRunnerGoalReassign = vi.fn().mockImplementation(async () => {
+        order.push("reassign");
+      });
+      const onRunnerGoalCommand = vi.fn().mockImplementation(async () => {
+        order.push("goal");
+      });
+      render(
+        <TaskChatComposer
+          onAdd={onAdd}
+          workMode="standard"
+          enableReassign
+          reassignOptions={[{ id: "agent:a1", label: "Clippy" }]}
+          currentAssigneeValue=""
+          onPendingAssigneeChange={onPendingAssigneeChange}
+          runnerGoalCapability={capability}
+          onRunnerGoalReassign={onRunnerGoalReassign}
+          onRunnerGoalCommand={onRunnerGoalCommand}
+        />,
+      );
+
+      const trigger = container.querySelector<HTMLButtonElement>(
+        '[data-testid="task-chat-composer-assignee"]',
+      )!;
+      flushSync(() => trigger.click());
+      await flushAsync();
+      const option = [...document.body.querySelectorAll<HTMLButtonElement>("button")].find(
+        (button) => button.textContent?.trim() === "Clippy",
+      );
+      expect(option).toBeDefined();
+      flushSync(() => option!.click());
+      await flushAsync();
+
+      typeText("/goal Ship the feature");
+      pressKey("Enter", { metaKey: true });
+      await flushAsync();
+
+      expect(onPendingAssigneeChange).toHaveBeenCalledWith("agent:a1");
+      expect(onRunnerGoalReassign).toHaveBeenCalledWith({
+        assigneeAgentId: "a1",
+        assigneeUserId: null,
+      });
+      expect(onRunnerGoalCommand).toHaveBeenCalledWith({
+        action: "create",
+        objective: "Ship the feature",
+      });
+      expect(order).toEqual(["reassign", "goal"]);
+      expect(onAdd).not.toHaveBeenCalled();
+    });
+
+    it("preserves unsupported goal text and shows the provider reason", async () => {
+      const onAdd = vi.fn().mockResolvedValue(undefined);
+      render(
+        <TaskChatComposer
+          onAdd={onAdd}
+          workMode="standard"
+          runnerGoalCapability={{
+            ...capability,
+            availability: "unsupported",
+            actions: [],
+            reason: "Unsupported by OpenCode.",
+          }}
+          onRunnerGoalCommand={vi.fn()}
+        />,
+      );
+
+      typeText("/goal Ship the feature");
+      pressKey("Enter", { metaKey: true });
+      await flushAsync();
+
+      expect(onAdd).not.toHaveBeenCalled();
+      expect(editable().textContent).toBe("/goal Ship the feature");
+      expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+        "Unsupported by OpenCode",
+      );
+    });
+  });
+
   it("shows the assignee combobox only when reassign is enabled, with the current label", () => {
     render(<TaskChatComposer onAdd={vi.fn()} workMode="standard" />);
     expect(
@@ -1415,6 +1584,331 @@ describe("TaskChatComposer", () => {
       ).toBeNull();
     });
 
+    it("waits for the submit button on a single-select question", async () => {
+      const onSubmit = vi.fn();
+      render(
+        <TaskChatComposer
+          onAdd={vi.fn()}
+          workMode="standard"
+          takeover={{
+            id: "opening-question",
+            label: "Questions",
+            pendingCount: 1,
+            inlineSkip: true,
+            content: (
+              <QuestionForm
+                id="first-task-opening"
+                questionSet={{
+                  schema: "paperclip.question_set.v1",
+                  submitLabel: "Continue",
+                  questions: [
+                    {
+                      id: "first-task-opening",
+                      prompt: "What would you like to do?",
+                      required: true,
+                      answerMode: "single_select",
+                      options: [
+                        { id: "interview", label: "Interview me" },
+                        { id: "task", label: "I have a task in mind" },
+                      ],
+                    },
+                  ],
+                }}
+                onSubmit={onSubmit}
+              />
+            ),
+            onDismiss: vi.fn(),
+            onSkip: vi.fn(),
+          }}
+        />,
+      );
+
+      const buttons = () =>
+        Array.from(container.querySelectorAll<HTMLButtonElement>("button"));
+      const interview = buttons().find((button) =>
+        button.textContent?.includes("Interview me"),
+      );
+      expect(interview).not.toBeUndefined();
+
+      // Picking the option only selects it: nothing is sent yet.
+      flushSync(() => interview?.click());
+      await flushAsync();
+      expect(interview?.getAttribute("data-selected")).toBe("true");
+      expect(onSubmit).not.toHaveBeenCalled();
+
+      // A required question cannot be skipped.
+      expect(
+        buttons().find((button) => button.textContent?.trim() === "Skip"),
+      ).toBeUndefined();
+
+      // The submit button carries the card's label and does the sending.
+      const submit = buttons().find(
+        (button) => button.textContent?.trim() === "Continue",
+      );
+      expect(submit).not.toBeUndefined();
+      expect(submit?.disabled).toBe(false);
+      flushSync(() => submit?.click());
+      await flushAsync();
+      expect(onSubmit).toHaveBeenCalledTimes(1);
+      expect(onSubmit.mock.calls[0]?.[0]).toMatchObject({
+        answers: { "first-task-opening": { selectedOptionIds: ["interview"] } },
+      });
+    });
+
+    it("moves through questions with Next, Skip leaves one unanswered, Submit answers sends", async () => {
+      const onSubmit = vi.fn();
+      render(
+        <TaskChatComposer
+          onAdd={vi.fn()}
+          workMode="standard"
+          takeover={{
+            id: "interview",
+            label: "Questions",
+            pendingCount: 1,
+            inlineSkip: true,
+            content: (
+              <QuestionForm
+                id="interview"
+                questionSet={{
+                  schema: "paperclip.question_set.v1",
+                  questions: [
+                    {
+                      id: "env",
+                      prompt: "Where?",
+                      required: true,
+                      answerMode: "single_select",
+                      options: [{ id: "staging", label: "Staging" }],
+                    },
+                    {
+                      id: "when",
+                      prompt: "When?",
+                      required: false,
+                      answerMode: "single_select",
+                      options: [{ id: "today", label: "Today" }],
+                    },
+                    {
+                      id: "who",
+                      prompt: "Who?",
+                      required: false,
+                      answerMode: "single_select",
+                      options: [{ id: "me", label: "Me" }],
+                    },
+                  ],
+                }}
+                onSubmit={onSubmit}
+              />
+            ),
+            onDismiss: vi.fn(),
+            onSkip: vi.fn(),
+          }}
+        />,
+      );
+
+      const buttons = () =>
+        Array.from(container.querySelectorAll<HTMLButtonElement>("button"));
+      const byLabel = (label: string) =>
+        buttons().find((button) => button.textContent?.trim() === label);
+
+      // Page 1: required, so no Skip; Next waits for an answer.
+      expect(byLabel("Skip")).toBeUndefined();
+      expect(byLabel("Next")?.disabled).toBe(true);
+      flushSync(() => byLabel("Staging")?.click());
+      await flushAsync();
+      expect(onSubmit).not.toHaveBeenCalled();
+      expect(byLabel("Next")?.disabled).toBe(false);
+      flushSync(() => byLabel("Next")?.click());
+      await flushAsync();
+      expect(container.textContent).toContain("When?");
+
+      // Page 2: optional. Pick, then Skip anyway — the pick is dropped.
+      flushSync(() => byLabel("Today")?.click());
+      await flushAsync();
+      flushSync(() => byLabel("Skip")?.click());
+      await flushAsync();
+      expect(container.textContent).toContain("Who?");
+      expect(onSubmit).not.toHaveBeenCalled();
+
+      // Last page: primary reads Submit answers and sends everything.
+      expect(byLabel("Next")).toBeUndefined();
+      flushSync(() => byLabel("Me")?.click());
+      await flushAsync();
+      flushSync(() => byLabel("Submit answers")?.click());
+      await flushAsync();
+      expect(onSubmit).toHaveBeenCalledTimes(1);
+      const response = onSubmit.mock.calls[0]?.[0];
+      expect(response.answers.env).toEqual({ selectedOptionIds: ["staging"] });
+      expect(response.answers.when).toBeUndefined();
+      expect(response.answers.who).toEqual({ selectedOptionIds: ["me"] });
+    });
+
+    it("Skip on the last question submits the other answers", async () => {
+      const onSubmit = vi.fn();
+      render(
+        <TaskChatComposer
+          onAdd={vi.fn()}
+          workMode="standard"
+          takeover={{
+            id: "optional-tail",
+            label: "Questions",
+            pendingCount: 1,
+            inlineSkip: true,
+            content: (
+              <QuestionForm
+                id="optional-tail"
+                questionSet={{
+                  schema: "paperclip.question_set.v1",
+                  questions: [
+                    {
+                      id: "env",
+                      prompt: "Where?",
+                      required: false,
+                      answerMode: "single_select",
+                      options: [{ id: "staging", label: "Staging" }],
+                    },
+                    {
+                      id: "notes",
+                      prompt: "Anything else?",
+                      required: false,
+                      answerMode: "text",
+                    },
+                  ],
+                }}
+                onSubmit={onSubmit}
+              />
+            ),
+            onDismiss: vi.fn(),
+            onSkip: vi.fn(),
+          }}
+        />,
+      );
+
+      const byLabel = (label: string) =>
+        Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find(
+          (button) => button.textContent?.trim() === label,
+        );
+      flushSync(() => byLabel("Staging")?.click());
+      flushSync(() => byLabel("Next")?.click());
+      await flushAsync();
+      expect(container.textContent).toContain("Anything else?");
+      flushSync(() => byLabel("Skip")?.click());
+      await flushAsync();
+      expect(onSubmit).toHaveBeenCalledTimes(1);
+      expect(onSubmit.mock.calls[0]?.[0]).toMatchObject({
+        answers: { env: { selectedOptionIds: ["staging"] } },
+      });
+    });
+
+    it("Skip on the last question returns to a required question the arrows walked past", async () => {
+      const onSubmit = vi.fn();
+      render(
+        <TaskChatComposer
+          onAdd={vi.fn()}
+          workMode="standard"
+          takeover={{
+            id: "walked-past",
+            label: "Questions",
+            pendingCount: 1,
+            inlineSkip: true,
+            content: (
+              <QuestionForm
+                id="walked-past"
+                questionSet={{
+                  schema: "paperclip.question_set.v1",
+                  questions: [
+                    {
+                      id: "env",
+                      prompt: "Where?",
+                      required: true,
+                      answerMode: "single_select",
+                      options: [{ id: "staging", label: "Staging" }],
+                    },
+                    {
+                      id: "notes",
+                      prompt: "Anything else?",
+                      required: false,
+                      answerMode: "text",
+                    },
+                  ],
+                }}
+                onSubmit={onSubmit}
+              />
+            ),
+            onDismiss: vi.fn(),
+            onSkip: vi.fn(),
+          }}
+        />,
+      );
+
+      const byLabel = (label: string) =>
+        Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find(
+          (button) => button.textContent?.trim() === label,
+        );
+      // The pagination arrow browses past the unanswered required question.
+      const arrow = container.querySelector<HTMLButtonElement>(
+        'button[aria-label="Next question"]',
+      );
+      flushSync(() => arrow?.click());
+      await flushAsync();
+      expect(container.textContent).toContain("Anything else?");
+
+      // Skip here would send; instead the form goes back and says why.
+      flushSync(() => byLabel("Skip")?.click());
+      await flushAsync();
+      expect(onSubmit).not.toHaveBeenCalled();
+      expect(container.textContent).toContain("Where?");
+      expect(container.textContent).toContain(
+        "Question 1 needs an answer before you can send.",
+      );
+    });
+
+    it("Cancel closes the takeover and leaves the request pending", async () => {
+      const onSubmit = vi.fn();
+      const onDismiss = vi.fn();
+      const onSkip = vi.fn();
+      render(
+        <TaskChatComposer
+          onAdd={vi.fn()}
+          workMode="standard"
+          takeover={{
+            id: "cancelable",
+            label: "Questions",
+            pendingCount: 1,
+            inlineSkip: true,
+            content: (
+              <QuestionForm
+                id="cancelable"
+                questionSet={{
+                  schema: "paperclip.question_set.v1",
+                  questions: [
+                    {
+                      id: "env",
+                      prompt: "Where?",
+                      required: true,
+                      answerMode: "single_select",
+                      options: [{ id: "staging", label: "Staging" }],
+                    },
+                  ],
+                }}
+                onSubmit={onSubmit}
+              />
+            ),
+            onDismiss,
+            onSkip,
+          }}
+        />,
+      );
+
+      const cancel = Array.from(
+        container.querySelectorAll<HTMLButtonElement>("button"),
+      ).find((button) => button.textContent?.trim() === "Cancel");
+      expect(cancel).not.toBeUndefined();
+      flushSync(() => cancel?.click());
+      await flushAsync();
+      expect(onDismiss).toHaveBeenCalledTimes(1);
+      expect(onSkip).not.toHaveBeenCalled();
+      expect(onSubmit).not.toHaveBeenCalled();
+    });
+
     it("places Skip beside Submit answers for structured questions", () => {
       render(
         <TaskChatComposer
@@ -1434,7 +1928,7 @@ describe("TaskChatComposer", () => {
                     {
                       id: "environment",
                       prompt: "Which environment should receive this?",
-                      required: true,
+                      required: false,
                       answerMode: "multi_select",
                       options: [
                         { id: "staging", label: "Staging", recommended: true },

@@ -13,7 +13,7 @@ import {
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
-const OPENCODE_VERSION = "1.18.17";
+const OPENCODE_VERSION = "1.18.29";
 const BASELINE_PACKAGE = "opencode-linux-x64-baseline";
 
 function readPackage(path) {

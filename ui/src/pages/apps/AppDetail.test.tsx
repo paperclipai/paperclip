@@ -25,6 +25,7 @@ const finishAppMock = vi.hoisted(() => vi.fn());
 const finalizeOAuthAccessMock = vi.hoisted(() => vi.fn());
 const putConnectionInstallsMock = vi.hoisted(() => vi.fn());
 const refreshCatalogMock = vi.hoisted(() => vi.fn());
+const checkConnectionHealthMock = vi.hoisted(() => vi.fn());
 const startOAuthMock = vi.hoisted(() => vi.fn());
 const listConnectionGrantsMock = vi.hoisted(() => vi.fn());
 const revokeConnectionGrantMock = vi.hoisted(() => vi.fn());
@@ -67,6 +68,7 @@ vi.mock("@/api/tools", () => ({
       putConnectionInstallsMock(connectionId, installs),
     archiveConnection: vi.fn(),
     refreshCatalog: (connectionId: string) => refreshCatalogMock(connectionId),
+    checkConnectionHealth: (connectionId: string) => checkConnectionHealthMock(connectionId),
     startOAuth: (connectionId: string, input?: unknown) => input === undefined
       ? startOAuthMock(connectionId)
       : startOAuthMock(connectionId, input),
@@ -281,6 +283,8 @@ function dedicatedGitHubGrant(
         repositorySelection: "selected",
         installationIds: ["456"],
         installationOwnerLogins: ["paperclipai"],
+        repositories: [{ id: "789", fullName: "paperclipai/test-repo", installationId: "456" }],
+        installationUrl: "https://github.com/apps/paperclip-test/installations/new",
         managementUrl: "https://github.com/settings/installations/456",
         webhookHealth: "pending",
         lastWebhookAt: null,
@@ -408,6 +412,7 @@ describe("AppDetail", () => {
     finishAppMock.mockResolvedValue({});
     finalizeOAuthAccessMock.mockResolvedValue({});
     putConnectionInstallsMock.mockResolvedValue({ connectionId: "conn-1", installs: [] });
+    checkConnectionHealthMock.mockResolvedValue({ connection: connection(), healthStatus: "ok" });
     refreshCatalogMock.mockResolvedValue({ discoveredCount: 0, quarantinedCount: 0, catalog: [] });
     startOAuthMock.mockResolvedValue({
       connectionId: "conn-1",
@@ -1455,6 +1460,87 @@ describe("AppDetail", () => {
     expect(findButton("Revoke")).toBeUndefined();
   });
 
+  it("shows the personal GitHub username and every accessible repository", async () => {
+    mockParams.tab = "permissions";
+    getConnectionMock.mockResolvedValue(perUserConnection());
+    listConnectionGrantsMock.mockResolvedValue({
+      connection: { id: "conn-1", uid: "conn-1" },
+      grants: [dedicatedGitHubGrant({ kind: "user", subjectAgentId: null, subjectUserId: "user-1" }, {
+        repositoryCount: 2,
+        repositories: [
+          { id: "1", fullName: "paperclipai/first", installationId: "456", private: true },
+          { id: "2", fullName: "paperclipai/second", installationId: "456", private: false },
+        ],
+      })],
+      capabilities: fullCapabilities(), currentUserId: "user-1", members: [],
+    });
+    await renderAppDetail();
+    expect(container.textContent).toContain("@dottabot");
+    expect(container.textContent).toContain("2 selected repositories");
+    expect(container.querySelectorAll('ul[aria-label="Accessible GitHub repositories"] li')).toHaveLength(2);
+    expect(container.textContent).toContain("paperclipai/first");
+    expect(container.textContent).toContain("paperclipai/second");
+    expect(container.querySelector('a[href="https://github.com/paperclipai/first"] [aria-label="Private repository"]')).toBeTruthy();
+    expect(container.querySelector('a[href="https://github.com/paperclipai/second"] [aria-label="Private repository"]')).toBeNull();
+    const configureHint = [...container.querySelectorAll("p a")].find((link) => link.textContent === "Configure access on GitHub");
+    expect(configureHint?.getAttribute("href")).toBe("https://github.com/apps/paperclip-test/installations/new");
+  });
+
+  it.each([undefined, "https://github.com/settings/installations"])("loads missing GitHub app configuration instead of linking legacy settings (%s)", async (installationUrl) => {
+    mockParams.tab = "permissions";
+    getConnectionMock.mockResolvedValue(perUserConnection());
+    listConnectionGrantsMock.mockResolvedValue({
+      connection: { id: "conn-1", uid: "conn-1" },
+      grants: [dedicatedGitHubGrant({ kind: "user", subjectAgentId: null, subjectUserId: "user-1" }, { installationUrl })],
+      capabilities: fullCapabilities(), currentUserId: "user-1", members: [],
+    });
+    await renderAppDetail();
+    expect(findButton("Load GitHub configuration")).toBeTruthy();
+    expect(container.querySelector('a[href="https://github.com/settings/installations/456"]')).toBeNull();
+    expect(container.querySelector('a[href="https://github.com/settings/installations"]')).toBeNull();
+    listConnectionGrantsMock.mockResolvedValue({
+      connection: { id: "conn-1", uid: "conn-1" },
+      grants: [dedicatedGitHubGrant({ kind: "user", subjectAgentId: null, subjectUserId: "user-1" }, {
+        appSlug: "paperclip-staging", installationUrl: "https://github.com/apps/paperclip-staging/installations/new",
+      })],
+      capabilities: fullCapabilities(), currentUserId: "user-1", members: [],
+    });
+    await act(async () => { findButton("Load GitHub configuration")!.click(); });
+    await flushReact();
+    expect(checkConnectionHealthMock).toHaveBeenCalledWith("conn-1");
+    expect(container.querySelector('a[href="https://github.com/apps/paperclip-staging/installations/new"]')?.textContent).toBe("Add More Repos on GitHub");
+    expect(findButton("Load GitHub configuration")).toBeUndefined();
+  });
+
+  it.each([false, true])("shows repositories across accounts without filter controls (empty: %s)", async (empty) => {
+    mockParams.tab = "permissions";
+    getConnectionMock.mockResolvedValue(perUserConnection());
+    listConnectionGrantsMock.mockResolvedValue({
+      connection: { id: "conn-1", uid: "conn-1" },
+      grants: [dedicatedGitHubGrant({ kind: "user", subjectAgentId: null, subjectUserId: "user-1" }, {
+        repositoryCount: empty ? 0 : 3,
+        installationOwnerLogins: ["paperclipai", "dottabot", "empty-org"],
+        repositories: empty ? [] : [
+          { id: "1", fullName: "paperclipai/first", installationId: "456" },
+          { id: "2", fullName: "paperclipai/second", installationId: "456" },
+          { id: "3", fullName: "dottabot/first", installationId: "789" },
+        ],
+      })],
+      capabilities: fullCapabilities(), currentUserId: "user-1", members: [],
+    });
+    await renderAppDetail();
+    const repositoryNames = () => [...container.querySelectorAll('ul[aria-label="Accessible GitHub repositories"] a')].map((link) => link.textContent);
+    expect(repositoryNames()).toEqual(empty ? [] : ["paperclipai/first", "paperclipai/second", "dottabot/first"]);
+    if (empty) {
+      expect(container.querySelector('p[role="status"]')?.textContent?.trim()).toBe("No accessible repositories.");
+      expect(container.textContent).not.toContain("Refresh access to load the current repository list.");
+    }
+    expect(container.querySelector('[aria-label="Filter repositories by account or organization"]')).toBeNull();
+    expect(container.querySelector('input[aria-label="Search GitHub repositories"]')).toBeNull();
+    expect(container.querySelector('a[href="https://github.com/apps/paperclip-test/installations/new"]')?.textContent).toBe("Add More Repos on GitHub");
+    expect(updateConnectionMock).not.toHaveBeenCalled();
+  });
+
   it("shows dedicated GitHub access as compact action rows and links to the agent", async () => {
     mockParams.tab = "permissions";
     getConnectionMock.mockResolvedValue(connection({
@@ -1473,11 +1559,13 @@ describe("AppDetail", () => {
 
     expect(container.querySelector('a[href="/agents/coder"]')?.textContent).toContain("Used only by Coder");
     expect(container.textContent).toContain("Repositories");
-    expect(container.textContent).toContain("1 selected repositories");
+    expect(container.textContent).toContain("1 selected repository");
+    expect(container.querySelector('a[href="https://github.com/dottabot"]')?.textContent).toBe("@dottabot");
+    expect(container.querySelector('a[href="https://github.com/paperclipai/test-repo"]')?.textContent).toBe("paperclipai/test-repo");
     expect(container.querySelector(
-      'a[href="https://github.com/settings/installations/456"]',
-    )?.textContent).toBe("Manage repositories on GitHub");
-    expect(findButton("Refresh access")).toBeTruthy();
+      'a[href="https://github.com/apps/paperclip-test/installations/new"]',
+    )?.textContent).toBe("Add More Repos on GitHub");
+    expect(container.querySelector('button[aria-label="Refresh access"]')).toBeTruthy();
     expect(container.textContent).not.toContain("Installation");
     expect(container.textContent).not.toContain("Token continuity");
     expect(container.textContent).not.toContain("Webhook health");

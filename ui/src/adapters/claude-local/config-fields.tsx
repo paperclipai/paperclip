@@ -1,3 +1,4 @@
+import { configFieldsForSection } from "../config-sections";
 import type { AdapterConfigFieldsProps } from "../types";
 import {
   Field,
@@ -16,6 +17,7 @@ const instructionsFileHint =
   "Absolute path to a markdown file (e.g. AGENTS.md) that defines this agent's behavior. Injected into the system prompt at runtime.";
 
 export function ClaudeLocalConfigFields({
+  section,
   mode,
   isCreate,
   adapterType,
@@ -27,7 +29,7 @@ export function ClaudeLocalConfigFields({
   models,
   hideInstructionsFile,
 }: AdapterConfigFieldsProps) {
-  return (
+  return configFieldsForSection(section, (
     <>
       {!hideInstructionsFile && (
         <Field label="Agent instructions file" hint={instructionsFileHint}>
@@ -67,10 +69,11 @@ export function ClaudeLocalConfigFields({
         models={models}
       />
     </>
-  );
+  ));
 }
 
 export function ClaudeLocalAdvancedFields({
+  section,
   isCreate,
   values,
   set,
@@ -85,7 +88,7 @@ export function ClaudeLocalAdvancedFields({
   const engine = rawEngine === "acp" || rawEngine === "cli" ? rawEngine : "auto";
   const acpSelected = engine === "acp";
 
-  return (
+  return configFieldsForSection(section, (
     <>
       {/*
         The execution engine picks which binary runs on the execution host, and
@@ -112,7 +115,7 @@ export function ClaudeLocalAdvancedFields({
       {acpSelected && (
         <>
           {!managedSandboxOnly && (
-            <Field
+            <Field configSection="advanced"
               label="ACP server command"
               hint="Optional override for the Claude ACP server command. Defaults to the package-local claude-agent-acp binary."
             >
@@ -133,7 +136,7 @@ export function ClaudeLocalAdvancedFields({
               />
             </Field>
           )}
-          <Field label="ACP session mode" hint="Persistent keeps ACP session state between runs. One-shot starts fresh each run.">
+          <Field configSection="runPolicy" label="ACP session mode" hint="Persistent keeps ACP session state between runs. One-shot starts fresh each run.">
             <select
               className={inputClass}
               value={
@@ -199,7 +202,7 @@ export function ClaudeLocalAdvancedFields({
               </div>
             </Field>
           )}
-          <Field
+          <Field configSection="runPolicy"
             label="ACP warm process idle ms"
             hint="Defaults to 0, which closes the ACP process after each run while retaining persistent session state."
           >
@@ -279,5 +282,5 @@ export function ClaudeLocalAdvancedFields({
         )}
       </Field>
     </>
-  );
+  ));
 }

@@ -16,6 +16,7 @@ import {
 import {
   activityLog,
   agents,
+  agentTaskSessions,
   agentRuntimeState,
   agentWakeupRequests,
   authUsers,
@@ -114,6 +115,7 @@ import {
   INTERACTION_CONTINUATION_INFRA_RETRY_REASON,
   INTERACTION_CONTINUATION_INFRA_WAKE_REASON,
   heartbeatService,
+  parseSandboxProviderPluginNotReadyFailureMessage,
   redactDetectedSuccessfulRunProgressSummaryForBoard,
   redactSuccessfulRunHandoffEvidence,
 } from "../services/heartbeat.ts";
@@ -440,6 +442,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     await db.delete(issueRecoveryActions);
     await db.delete(issueTreeHoldMembers);
     await db.delete(issueTreeHolds);
+    await db.delete(agentTaskSessions);
     await db.delete(nativeRunFinalizations);
     for (let attempt = 0; attempt < 5; attempt += 1) {
       await db.delete(issueComments);
@@ -3795,6 +3798,189 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     mockAdapterExecute.mockClear();
   });
 
+  it("classifies only the installed-but-not-ready sandbox provider plugin message as a configuration gap", () => {
+    expect(
+      parseSandboxProviderPluginNotReadyFailureMessage(
+        'Sandbox provider "kubernetes" is installed via plugin "paperclip.kubernetes-sandbox-provider", but that plugin is currently error.',
+      ),
+    ).toEqual({
+      provider: "kubernetes",
+      pluginKey: "paperclip.kubernetes-sandbox-provider",
+      pluginStatus: "error",
+    });
+    expect(
+      parseSandboxProviderPluginNotReadyFailureMessage(
+        'Failed to acquire lease: Sandbox provider "daytona" is installed via plugin "paperclip.daytona-sandbox-provider", but that plugin is currently upgrade_pending.',
+      ),
+    ).toMatchObject({ pluginStatus: "upgrade_pending" });
+    expect(
+      parseSandboxProviderPluginNotReadyFailureMessage(
+        'Sandbox provider "kubernetes" is installed via plugin "x", but that plugin is currently disabled.',
+      ),
+    ).toMatchObject({ pluginStatus: "disabled" });
+    // The transient worker-restart message keeps its retryable classification.
+    expect(
+      parseSandboxProviderPluginNotReadyFailureMessage(
+        'Sandbox provider "kubernetes" is installed via plugin "paperclip.kubernetes-sandbox-provider", but its worker is not running.',
+      ),
+    ).toBeNull();
+    // The permanent "not installed" message is a different condition.
+    expect(
+      parseSandboxProviderPluginNotReadyFailureMessage(
+        'Sandbox provider "kubernetes" is not installed or its plugin worker is not running.',
+      ),
+    ).toBeNull();
+    expect(parseSandboxProviderPluginNotReadyFailureMessage(null)).toBeNull();
+  });
+
+  it("blocks the issue instead of re-dispatching when the sandbox provider plugin is stuck in error", async () => {
+    // Reproduces a production incident: the bundled Kubernetes sandbox
+    // provider plugin was marked `error` after one failed activation and
+    // nothing ever cleared it. Every run for every agent on that provider
+    // failed lease acquisition before dispatch with "that plugin is currently
+    // error", and because that message matched neither retry classifier the
+    // scheduler re-dispatched the same failing run every tick for days. The
+    // condition needs an operator, so the setup catch must record it as a
+    // `configuration_incomplete` gap that routes the issue to `blocked` with
+    // one recovery action, not as a retryable `setup_failed`.
+    const { companyId, agentId, runId, issueId } =
+      await seedQueuedIssueRunFixture();
+    const pluginId = randomUUID();
+    const environmentId = randomUUID();
+
+    await db.insert(plugins).values({
+      id: pluginId,
+      pluginKey: "paperclip.kubernetes-sandbox-provider",
+      packageName: "@paperclipai/kubernetes-sandbox-provider",
+      version: "1.0.0",
+      apiVersion: 1,
+      categories: ["automation"],
+      manifestJson: {
+        id: "paperclip.kubernetes-sandbox-provider",
+        apiVersion: 1,
+        version: "1.0.0",
+        displayName: "Kubernetes Sandbox Provider",
+        description: "Test Kubernetes sandbox provider stuck in error",
+        author: "Paperclip",
+        categories: ["automation"],
+        capabilities: ["environment.drivers.register"],
+        entrypoints: { worker: "dist/worker.js" },
+        environmentDrivers: [
+          {
+            driverKey: "kubernetes",
+            kind: "sandbox_provider",
+            displayName: "Kubernetes Sandbox",
+            configSchema: { type: "object" },
+          },
+        ],
+      },
+      status: "error",
+      lastError: 'RPC call "initialize" timed out after 15000ms',
+      installOrder: 1,
+      updatedAt: new Date(),
+    } as any);
+    await db.insert(environments).values({
+      id: environmentId,
+      companyId,
+      name: "Kubernetes Sandbox",
+      driver: "sandbox",
+      status: "active",
+      config: {
+        provider: "kubernetes",
+        image: "fake:test",
+        timeoutMs: 1234,
+        reuseLease: false,
+      },
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    await db
+      .update(agents)
+      .set({ defaultEnvironmentId: environmentId })
+      .where(eq(agents.id, agentId));
+
+    const heartbeat = heartbeatService(db);
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId, 5_000);
+
+    // The lease never succeeded, so the adapter was never dispatched.
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+
+    const failedRun = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0] ?? null);
+    expect(failedRun).toMatchObject({
+      status: "failed",
+      errorCode: "configuration_incomplete",
+    });
+    expect(failedRun?.error).toContain("that plugin is currently error");
+    expect(failedRun?.resultJson).toMatchObject({
+      configurationIncomplete: {
+        reason: "sandbox_provider_plugin_not_ready",
+        sandboxProvider: "kubernetes",
+        pluginKey: "paperclip.kubernetes-sandbox-provider",
+        pluginStatus: "error",
+        fingerprint:
+          "sandbox_provider_plugin:paperclip.kubernetes-sandbox-provider:error",
+      },
+    });
+
+    const issue = await waitForValue(async () =>
+      db
+        .select()
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => {
+          const row = rows[0] ?? null;
+          return row?.status === "blocked" ? row : null;
+        }),
+    );
+    expect(issue?.executionRunId).toBeNull();
+
+    // No scheduled retry and no fresh dispatch: the failed run is the only
+    // run this agent has.
+    const agentRuns = await db
+      .select({ id: heartbeatRuns.id, status: heartbeatRuns.status })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    expect(agentRuns).toEqual([{ id: runId, status: "failed" }]);
+
+    const recoveryAction = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(
+        and(
+          eq(issueRecoveryActions.companyId, companyId),
+          eq(issueRecoveryActions.sourceIssueId, issueId),
+        ),
+      )
+      .then((rows) => rows[0] ?? null);
+    expect(recoveryAction).toMatchObject({
+      kind: "configuration_validation",
+      cause: "configuration_incomplete",
+      status: "active",
+      ownerType: "board",
+    });
+    expect(recoveryAction?.nextAction).toContain("sandbox provider plugin");
+    expect(recoveryAction?.nextAction).toContain("enable the plugin");
+
+    const notice = await waitForValue(async () => {
+      const rows = await db
+        .select()
+        .from(issueComments)
+        .where(eq(issueComments.issueId, issueId));
+      return (
+        rows.find((comment) =>
+          comment.body.includes("paperclip.kubernetes-sandbox-provider"),
+        ) ?? null
+      );
+    });
+    expect(notice?.body).toContain("is in status `error`");
+    expect(notice?.body).not.toContain("secret/env bindings");
+  });
+
   it("escalates (does not retry) an accepted-interaction-continuation setup failure whose message matches neither retryable pattern", async () => {
     // Negative-case counterpart to "schedules an infra retry for a setup
     // failure caused by a transient sandbox provider worker restart" above.
@@ -6335,6 +6521,174 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     }
   });
 
+  it("leaves the onboarding first task idle until the user comments", async () => {
+    const { companyId, agentId, issueId } =
+      await seedAssignedTodoNoRunFixture();
+    await db
+      .update(issues)
+      .set({ originKind: "onboarding_first_task" })
+      .where(eq(issues.id, issueId));
+    // The server-seeded greeting is agent-authored; it must not count as the
+    // user having typed.
+    await db.insert(issueComments).values({
+      id: randomUUID(),
+      companyId,
+      issueId,
+      authorAgentId: agentId,
+      authorType: "agent",
+      body: "Welcome to Paperclip!",
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.onboardingFirstTaskExempted).toBe(1);
+    expect(result.assignmentDispatched).toBe(0);
+    expect(result.issueIds).toEqual([]);
+
+    const wakeups = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId));
+    expect(wakeups).toHaveLength(0);
+    const runs = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(0);
+  });
+
+  it("keeps the onboarding first task idle while the seeded opening card is unanswered", async () => {
+    const { companyId, agentId, issueId } =
+      await seedAssignedTodoNoRunFixture();
+    await db
+      .update(issues)
+      .set({ originKind: "onboarding_first_task" })
+      .where(eq(issues.id, issueId));
+    await db.insert(issueThreadInteractions).values({
+      id: randomUUID(),
+      companyId,
+      issueId,
+      kind: "ask_user_questions",
+      status: "pending",
+      continuationPolicy: "wake_assignee",
+      createdByAgentId: agentId,
+      payload: {
+        version: 1,
+        questions: [
+          {
+            id: "first-task-opening",
+            prompt: "What would you like to do?",
+            selectionMode: "single",
+            options: [
+              { id: "interview", label: "Interview me" },
+              { id: "task", label: "I have a task in mind", freeText: true },
+            ],
+          },
+        ],
+      },
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    // A pending wake-policy card is a durable wait path of its own, so the
+    // sweep skips the issue before it even reaches the onboarding exemption.
+    expect(result.assignmentDispatched).toBe(0);
+    expect(result.continuationRequeued).toBe(0);
+    expect(result.issueIds).toEqual([]);
+    expect(result.skipped).toBe(1);
+    const runs = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(0);
+  });
+
+  it("dispatches the onboarding first task once the user answered the opening card", async () => {
+    const { companyId, agentId, issueId } =
+      await seedAssignedTodoNoRunFixture();
+    await db
+      .update(issues)
+      .set({ originKind: "onboarding_first_task" })
+      .where(eq(issues.id, issueId));
+    await db.insert(issueThreadInteractions).values({
+      id: randomUUID(),
+      companyId,
+      issueId,
+      kind: "ask_user_questions",
+      status: "answered",
+      continuationPolicy: "wake_assignee",
+      createdByAgentId: agentId,
+      resolvedByUserId: "local-board",
+      resolvedAt: new Date(),
+      payload: {
+        version: 1,
+        questions: [
+          {
+            id: "first-task-opening",
+            prompt: "What would you like to do?",
+            selectionMode: "single",
+            options: [
+              { id: "interview", label: "Interview me" },
+              { id: "task", label: "I have a task in mind", freeText: true },
+            ],
+          },
+        ],
+      },
+      result: {
+        version: 1,
+        answers: [{ questionId: "first-task-opening", optionIds: ["interview"] }],
+      },
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    // The answered wake-policy card with no run after it is a lost
+    // continuation: the sweep re-queues the assignee rather than leaving the
+    // first task idle. The onboarding exemption must not swallow it.
+    expect(result.onboardingFirstTaskExempted).toBe(0);
+    expect(result.assignmentDispatched + result.continuationRequeued).toBe(1);
+    expect(result.issueIds).toEqual([issueId]);
+
+    const runs = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    if (runs[0]?.id) {
+      await waitForRunToSettle(heartbeat, runs[0].id);
+    }
+  });
+
+  it("dispatches the onboarding first task once a user comment exists", async () => {
+    const { companyId, agentId, issueId } =
+      await seedAssignedTodoNoRunFixture();
+    await db
+      .update(issues)
+      .set({ originKind: "onboarding_first_task" })
+      .where(eq(issues.id, issueId));
+    await db.insert(issueComments).values({
+      id: randomUUID(),
+      companyId,
+      issueId,
+      authorUserId: "local-board",
+      authorType: "user",
+      body: "Let's start with a landing page.",
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.onboardingFirstTaskExempted).toBe(0);
+    expect(result.assignmentDispatched).toBe(1);
+    expect(result.issueIds).toEqual([issueId]);
+
+    const runs = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    if (runs[0]?.id) {
+      await waitForRunToSettle(heartbeat, runs[0].id);
+    }
+  });
+
   it("does not duplicate initial assigned todo dispatch when a queued wake already exists", async () => {
     const { companyId, agentId, issueId } =
       await seedAssignedTodoNoRunFixture();
@@ -8487,6 +8841,44 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     if (retryRun) {
       await waitForRunToSettle(heartbeat, retryRun.id);
     }
+  });
+
+  it("does not run generic continuation recovery for a paused unfinished session goal", async () => {
+    const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+    });
+    await db.insert(agentTaskSessions).values({
+      companyId,
+      agentId,
+      adapterType: "paperclip_runner",
+      taskKey: issueId,
+      lastRunId: runId,
+      goalJson: {
+        objective: "Wait here until the user explicitly resumes me.",
+        status: "paused",
+      },
+      goalStatus: "paused",
+      goalDesiredState: "paused",
+      goalRevision: 2,
+    });
+
+    const result = await heartbeatService(db).reconcileStrandedAssignedIssues();
+
+    expect(result.continuationRequeued).toBe(0);
+    expect(result.escalated).toBe(0);
+    expect(result.skipped).toBeGreaterThanOrEqual(1);
+    const runs = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(1);
+    const wakeups = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId));
+    expect(wakeups).toHaveLength(1);
+    expect(wakeups[0]?.runId).toBe(runId);
   });
 
   it("does not continue seeded in-progress work that has no run linkage", async () => {

@@ -15,7 +15,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 const CODEX_ACPX_DIGEST: &str =
-    "sha256:7a923b3829884d3cabcc9659d22cace3f86813e7bfffc90974b10140a45bc400";
+    "sha256:91d61bdfcb3c2830a5af690b13e355c669a483b562ce2f5d82d3e53b2378bb00";
 
 fn temporary_directory(label: &str) -> PathBuf {
     let nonce = SystemTime::now()
@@ -144,7 +144,7 @@ fn prepare_payload(directory: &Path, agent: &str) -> Value {
 fn prepare_payload_with_mode(directory: &Path, agent: &str, mode: &str) -> Value {
     let operations = Vec::new();
     let (runtime_package, runtime_version) = if agent == "codex" {
-        (json!("@openai/codex"), json!("0.148.0"))
+        (json!("@openai/codex"), json!("0.153.4"))
     } else {
         (Value::Null, Value::Null)
     };
@@ -240,7 +240,7 @@ fn opencode_prepare_payload(directory: &Path) -> Value {
             "kind": "opencode",
             "provider": "opencode",
             "driver": "opencode_server",
-            "providerVersion": "1.18.17",
+            "providerVersion": "1.18.29",
             "command": directory.join("qualified-opencode-proxy-command"),
             "args": [directory.join("qualified-opencode-proxy-script")],
             "cwd": directory,

@@ -104,6 +104,14 @@ fn install_diagnostic_panic_hook(directory: Option<PathBuf>) {
     }));
 }
 
+fn install_crypto_provider() {
+    // The production dependency graph enables both rustls crypto backends.
+    // Select the backend declared by this workspace before any TLS builder
+    // asks rustls for the process-level default. An embedding process may have
+    // already selected a provider, which is also a valid initialized state.
+    let _ = rustls::crypto::ring::default_provider().install_default();
+}
+
 fn build_metadata() -> serde_json::Value {
     json!({
         "schema": RUNNERD_BUILD_METADATA_SCHEMA,
@@ -116,7 +124,7 @@ fn build_metadata() -> serde_json::Value {
         "prp": {
             "name": "paperclip.runner",
             "minimumVersion": 1,
-            "maximumVersion": 1
+            "maximumVersion": 2
         },
         "prpTransportModes": ["dial_ws_loopback", "dial_wss", "listen_ws"]
     })
@@ -132,6 +140,16 @@ fn value(args: &[String], name: &str) -> Result<String, LocalRunnerError> {
         .ok_or_else(|| LocalRunnerError::invalid(format!("missing value for {name}")))
 }
 
+fn optional_value(args: &[String], name: &str) -> Result<Option<String>, LocalRunnerError> {
+    let Some(index) = args.iter().position(|argument| argument == name) else {
+        return Ok(None);
+    };
+    args.get(index + 1)
+        .cloned()
+        .map(Some)
+        .ok_or_else(|| LocalRunnerError::invalid(format!("missing value for {name}")))
+}
+
 fn optional_u64(args: &[String], name: &str) -> Result<Option<u64>, LocalRunnerError> {
     let Some(index) = args.iter().position(|argument| argument == name) else {
         return Ok(None);
@@ -143,16 +161,6 @@ fn optional_u64(args: &[String], name: &str) -> Result<Option<u64>, LocalRunnerE
         .parse::<u64>()
         .map(Some)
         .map_err(|error| LocalRunnerError::invalid(format!("invalid {name}: {error}")))
-}
-
-fn optional_value(args: &[String], name: &str) -> Result<Option<String>, LocalRunnerError> {
-    let Some(index) = args.iter().position(|argument| argument == name) else {
-        return Ok(None);
-    };
-    args.get(index + 1)
-        .cloned()
-        .map(Some)
-        .ok_or_else(|| LocalRunnerError::invalid(format!("missing value for {name}")))
 }
 
 fn acpx_launch_profile(args: &[String]) -> Result<Option<AcpxLaunchProfile>, LocalRunnerError> {
@@ -359,6 +367,28 @@ fn run(args: &[String]) -> Result<(), LocalRunnerError> {
     })
 }
 
+fn run_main(args: Vec<String>) -> ExitCode {
+    let diagnostics_directory = diagnostic_directory(&args);
+    install_diagnostic_panic_hook(diagnostics_directory.clone());
+    install_crypto_provider();
+    match run(&args) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            let message = format!("paperclip-runnerd: {error}");
+            if let Some(directory) = diagnostics_directory {
+                if let Err(persist_error) = persist_runner_diagnostic(&directory, &message) {
+                    eprintln!(
+                        "paperclip-runnerd: failed to persist bounded diagnostic: {persist_error}"
+                    );
+                }
+            } else {
+                eprintln!("{message}");
+            }
+            ExitCode::FAILURE
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -372,6 +402,17 @@ mod tests {
             metadata["prpTransportModes"],
             json!(["dial_ws_loopback", "dial_wss", "listen_ws"])
         );
+    }
+
+    #[test]
+    fn startup_installs_a_crypto_provider_before_tls_initialization() {
+        let _ = run_main(vec!["--build-metadata".to_owned()]);
+        assert!(rustls::crypto::CryptoProvider::get_default().is_some());
+
+        // Startup is process-global. A repeated startup call must remain
+        // safe when a provider was selected earlier in the process lifetime.
+        let _ = run_main(vec!["--build-metadata".to_owned()]);
+        let _ = rustls::ClientConfig::builder();
     }
 
     #[test]
@@ -422,23 +463,5 @@ mod tests {
 }
 
 fn main() -> ExitCode {
-    let args = std::env::args().skip(1).collect::<Vec<_>>();
-    let diagnostics_directory = diagnostic_directory(&args);
-    install_diagnostic_panic_hook(diagnostics_directory.clone());
-    match run(&args) {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(error) => {
-            let message = format!("paperclip-runnerd: {error}");
-            if let Some(directory) = diagnostics_directory {
-                if let Err(persist_error) = persist_runner_diagnostic(&directory, &message) {
-                    eprintln!(
-                        "paperclip-runnerd: failed to persist bounded diagnostic: {persist_error}"
-                    );
-                }
-            } else {
-                eprintln!("{message}");
-            }
-            ExitCode::FAILURE
-        }
-    }
+    run_main(std::env::args().skip(1).collect())
 }

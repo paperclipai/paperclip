@@ -159,9 +159,9 @@ export function evalSessionProviderVersion(
   request: EvalSessionRequest,
 ): string | null {
   if (request.provider === "opencode") {
-    const version = request.opencodeVersion ?? "1.18.17";
-    if (version !== "1.18.17") {
-      throw new Error(`OpenCode evals require exact version 1.18.17; received ${version}`);
+    const version = request.opencodeVersion ?? "1.18.29";
+    if (version !== "1.18.29") {
+      throw new Error(`OpenCode evals require exact version 1.18.29; received ${version}`);
     }
     return version;
   }

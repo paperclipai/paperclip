@@ -72,6 +72,7 @@ pub enum AcpxProviderStateEvent {
         error: Option<Value>,
     },
     Process(Value),
+    Goal(Value),
     Diagnostic {
         code: String,
         message: String,
@@ -340,6 +341,7 @@ impl AcpxProviderState {
             AcpxEventPayload::Process { details } => {
                 Ok(vec![AcpxProviderStateEvent::Process(details)])
             }
+            AcpxEventPayload::Goal { details } => Ok(vec![AcpxProviderStateEvent::Goal(details)]),
             AcpxEventPayload::Diagnostic { code, message } => {
                 Ok(vec![AcpxProviderStateEvent::Diagnostic { code, message }])
             }

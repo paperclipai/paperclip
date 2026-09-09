@@ -142,6 +142,7 @@ export class HarnessDriverBackend implements NativeSessionBackend {
       dispositionOnlyRecoveryTurnId:
         snapshot.dispositionOnlyRecoveryTurnId ?? null,
       pendingRuntimeRequests: snapshot.pendingRuntimeRequests ?? [],
+      goal: snapshot.goal ?? null,
       lineage: snapshot.lineage ?? [],
     };
     const recoveryOptions: HarnessSessionRecoveryOptions = {
@@ -672,6 +673,13 @@ class HarnessNativeSession implements NativeSession {
     return this.#session.handoffRuntimeRequest(input);
   }
 
+  goal(input: Parameters<NonNullable<HarnessSession["goal"]>>[0]) {
+    if (this.#session.goal === undefined) {
+      throw new Error("native_session_goal_unavailable");
+    }
+    return this.#session.goal(input);
+  }
+
   async result() {
     if (this.#explicitlyCancelled) return null;
     const snapshot = await this.#session.snapshot();
@@ -727,6 +735,7 @@ class HarnessNativeSession implements NativeSession {
       dispositionOnlyRecoveryTurnId:
         snapshot.dispositionOnlyRecoveryTurnId ?? null,
       pendingRuntimeRequests: snapshot.pendingRuntimeRequests ?? [],
+      goal: snapshot.goal ?? null,
       lineage: snapshot.lineage ?? [],
     };
   }

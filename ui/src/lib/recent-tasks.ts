@@ -94,7 +94,8 @@ export function recordRecentTask(
     title: issue.title,
     identifier: issue.identifier,
     status: issue.status,
-    recordedAt: activityAt,
+    // A stale detail query must not undo a newer comment or activity update.
+    recordedAt: Math.max(activityAt, existing?.recordedAt ?? activityAt),
   };
   if (
     existing
@@ -135,7 +136,9 @@ export function updateRecentTaskSnapshots(
     const issue = issueById.get(entry.id);
     if (!issue || issue.companyId !== companyId) return entry;
     const activityAt = new Date(issue.updatedAt).getTime();
-    const nextRecordedAt = Number.isFinite(activityAt) ? activityAt : entry.recordedAt;
+    const nextRecordedAt = Number.isFinite(activityAt)
+      ? Math.max(activityAt, entry.recordedAt)
+      : entry.recordedAt;
     if (
       issue.title === entry.title
       && issue.identifier === entry.identifier

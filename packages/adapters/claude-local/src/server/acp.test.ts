@@ -237,6 +237,28 @@ function buildContext(root: string, overrides: Partial<AdapterExecutionContext> 
 }
 
 describe("claude_local ACP lane", () => {
+  it("uses the same default model in ACP startup and session identity", async () => {
+    const root = await makeTempRoot("paperclip-claude-acp-default-");
+    const meta: AdapterInvocationMeta[] = [];
+    const execute = createClaudeAcpExecutor({
+      createRuntime: (options: FakeRuntimeOptions) => new FakeRuntime(options) as never,
+    });
+    const result = await execute(buildContext(root, {
+      onMeta: async (payload) => { meta.push(payload); },
+    }));
+    expect(result.exitCode).toBe(0);
+    expect(meta[0]?.env?.ANTHROPIC_MODEL).toBe("claude-opus-5");
+  });
+
+  it("keeps ACP model precedence consistent with CLI and provider overrides", () => {
+    expect(buildClaudeAcpConfig({ model: "claude-sonnet-4-5", env: { ANTHROPIC_MODEL: "opus" } }))
+      .toMatchObject({ model: "claude-sonnet-4-5", env: { ANTHROPIC_MODEL: "claude-sonnet-4-5" } });
+    expect(buildClaudeAcpConfig({}, { ANTHROPIC_MODEL: "custom-model" }))
+      .toMatchObject({ model: "custom-model", env: { ANTHROPIC_MODEL: "custom-model" } });
+    expect(buildClaudeAcpConfig({}, { CLAUDE_CODE_USE_BEDROCK: "1" }).model).toBe("");
+    expect(buildClaudeAcpConfig({ env: { CLAUDE_CODE_USE_VERTEX: "1" } }).model).toBe("");
+  });
+
   it("maps Claude config to the ACPX Claude target", () => {
     expect(buildClaudeAcpConfig({
       engine: "acp",

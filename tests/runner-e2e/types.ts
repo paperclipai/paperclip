@@ -10,6 +10,7 @@ export type RunnerGeneration = "legacy" | "native";
 export type RunnerEnvironmentId = "local" | "daytona";
 export type RunnerTaskWorkMode = "standard" | "planning" | "ask";
 export type RunnerTaskFlow =
+  | "governed_tool_review"
   | "single_turn"
   | "plan_revision_acceptance"
   | "question_resume_completion"
@@ -136,6 +137,7 @@ export interface RunnerTaskFixture {
   };
   /** Restart the isolated Paperclip server after the waiting turn settles. */
   restartServerBeforeQuestionAnswer?: boolean;
+  toolReviewDecision?: "approve" | "decline" | "always" | "restart";
   buildPlanMarkers?(nonce: string): {
     draft: string;
     revised: string;

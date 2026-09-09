@@ -38,6 +38,8 @@ import {
   toolRuntimeMetricCounters,
   toolRuntimeSlots,
   toolStdioCommandTemplates,
+  userSecretDefinitions,
+  userSecretDeclarations,
 } from "@paperclipai/db";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import {
@@ -2829,7 +2831,7 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(denied.body.result).toBeUndefined();
 
     const [invocation] = await db.select().from(toolInvocations).where(eq(toolInvocations.companyId, company.id));
-    expect(invocation).toMatchObject({ status: "awaiting_approval", approvalState: "rejected" });
+    expect(invocation).toMatchObject({ status: "denied", approvalState: "rejected" });
   });
 
   it("404s a single-id test-call status fetch for a non-test-origin action request", async () => {
@@ -4627,6 +4629,27 @@ describeEmbeddedPostgres("tool access service", () => {
       .resolves.toHaveLength(1);
   });
 
+  it("reconnects an exact active custom MCP connection without duplicating its identity", async () => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+    mockToolsList([{ name: "archive_read", annotations: { readOnlyHint: true } }]);
+    const first = await service.connectGalleryApp(company.id, { link: "https://fixture.example/mcp", authMode: "none", name: "Archive" }, { actorType: "user", actorId: "board" });
+    await db.update(toolConnections).set({ status: "active", healthStatus: "error" }).where(eq(toolConnections.id, first.connectionId));
+    mockToolsList([{ name: "archive_read", annotations: { readOnlyHint: true } }]);
+    const reconnected = await service.connectGalleryApp(company.id, { link: "https://fixture.example/mcp", authMode: "none", reconnectConnectionId: first.connectionId }, { actorType: "user", actorId: "board" });
+    expect(reconnected.connectionId).toBe(first.connectionId);
+    const originalAgent = await createAgent(db, company.id);
+    const requester = await createAgent(db, company.id);
+    const ids = reconnected.actions.readOnly.map((action) => action.catalogEntryId);
+    await service.finishGalleryAppConnection(company.id, first.connectionId, { enabledCatalogEntryIds: ids, askFirstCatalogEntryIds: [], access: { agentIds: [originalAgent.id] } });
+    const additive = await service.finishGalleryAppConnection(company.id, first.connectionId, { enabledCatalogEntryIds: ids, askFirstCatalogEntryIds: [], access: { agentIds: [requester.id] }, preserveExistingAccess: true });
+    expect(additive.profileBindings.map((binding) => binding.targetId)).toEqual(expect.arrayContaining([originalAgent.id, requester.id]));
+    expect(await db.select().from(toolConnections).where(eq(toolConnections.companyId, company.id))).toHaveLength(1);
+    await expect(service.connectGalleryApp(company.id, { galleryKey: "notion", reconnectConnectionId: first.connectionId }, { actorType: "user", actorId: "board" })).rejects.toThrow("preserve the configured provider");
+    const other = await createCompany(db);
+    await expect(service.connectGalleryApp(other.id, { link: "https://fixture.example/mcp", reconnectConnectionId: first.connectionId }, { actorType: "user", actorId: "board" })).rejects.toThrow("not found");
+  });
+
   it("refuses a personal identity when no named user is making the request", async () => {
     const company = await createCompany(db);
     const service = createTestToolAccessService(db);
@@ -5001,6 +5024,36 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(activity.lifecycleEvents.map((event) => event.type)).toEqual(["app_paused"]);
   });
 
+  it("preserves all active personal OAuth declarations through pause, resume, and metadata edits", async () => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+    const [application] = await db.insert(toolApplications).values({ companyId: company.id, name: "GitHub", type: "mcp_http" }).returning();
+    const [connection] = await db.insert(toolConnections).values({
+      companyId: company.id, applicationId: application.id, name: "GitHub", uid: randomUUID(),
+      transport: "mcp_remote", status: "active", enabled: true, credentialPolicy: "per_user",
+      config: { url: "https://api.githubcopilot.com/mcp/", sourceTemplateKey: "github" },
+    }).returning();
+    const [sharedDefinition] = await db.insert(userSecretDefinitions).values({ companyId: company.id, key: randomUUID(), name: "OAuth access token" }).returning();
+    const definitionIds = [sharedDefinition.id];
+    for (const user of ["A", "B", "revoked"]) {
+      const definition = user === "revoked"
+        ? (await db.insert(userSecretDefinitions).values({ companyId: company.id, key: randomUUID(), name: "Revoked identity" }).returning())[0]
+        : sharedDefinition;
+      const [secret] = await db.insert(companySecrets).values({ companyId: company.id, key: randomUUID(), name: user,
+        scope: "user", ownerUserId: user, userSecretDefinitionId: definition.id }).returning();
+      await db.insert(connectionGrants).values({ companyId: company.id, connectionId: connection.id, kind: "user",
+        subjectUserId: user, status: user === "revoked" ? "revoked" : "active",
+        credentialSecretRefs: [{ secretId: secret.id, configPath: "oauth.access_token", versionSelector: "latest" }],
+      });
+    }
+    for (const edit of [{ enabled: false }, { enabled: true }, { name: "Renamed GitHub" }]) {
+      await service.updateConnection(connection.id, edit);
+      const declarations = await db.select().from(userSecretDeclarations).where(eq(userSecretDeclarations.targetId, connection.id));
+      expect(declarations.map((row) => row.userSecretDefinitionId).sort()).toEqual([...definitionIds].sort());
+      expect(declarations.every((row) => row.configPath === "oauth.access_token")).toBe(true);
+    }
+  });
+
   it("allows same-company Google Sheets updates and derives the env mirror from the allowlist", async () => {
     const company = await createCompany(db);
     const service = createTestToolAccessService(db);
@@ -5103,7 +5156,7 @@ describeEmbeddedPostgres("tool access service", () => {
     }
   }, 15_000);
 
-  it("binds a non-expiring managed GitHub identity and installation to one agent", async () => {
+  it.each(["none", "event", "same-time-refresh"])("binds a managed GitHub identity and protects refresh from concurrent access changes (%s)", async (concurrentChange) => {
     const company = await createCompany(db);
     const userId = `github-manager-${randomUUID()}`;
     await grantBoardUser(db, company.id, userId, [], "owner");
@@ -5114,6 +5167,7 @@ describeEmbeddedPostgres("tool access service", () => {
     const githubDefinition = getConnectableAppDefinition("github")!;
     const previousOwnershipAvailability = githubDefinition.ownershipAvailability;
     githubDefinition.ownershipAvailability = { ...previousOwnershipAvailability, platform_shared: true };
+    let beforeRepositoryResponse = async () => {};
     vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
       const href = String(url);
       if (href === "https://api.github.com/user") {
@@ -5128,7 +5182,8 @@ describeEmbeddedPostgres("tool access service", () => {
         }] });
       }
       if (href.includes("https://api.github.com/user/installations/101/repositories?")) {
-        return mcpHttpResponse({ total_count: 3, repositories: [{ full_name: "paperclipai/do-not-store" }] });
+        await beforeRepositoryResponse();
+        return mcpHttpResponse({ total_count: 3, repositories: [1, 2, 3].map((id) => ({ id, full_name: `paperclipai/repo-${id}`, description: "do-not-store" })) });
       }
       if (href === GITHUB_CONNECTOR_PROFILES["github.code"].serverUrl) {
         return mcpHttpResponse({
@@ -5226,6 +5281,33 @@ describeEmbeddedPostgres("tool access service", () => {
         eq(toolConnectionInstalls.targetType, "agent"),
         eq(toolConnectionInstalls.targetId, agent.id),
       ))).resolves.toHaveLength(1);
+      vi.mocked(connector.setWebhookBinding).mockClear();
+      if (concurrentChange !== "none") {
+        beforeRepositoryResponse = async () => {
+          const [latest] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, grant!.id));
+          await db.update(connectionGrants).set({ providerTenant: {
+            ...latest!.providerTenant,
+            github: {
+              ...latest!.providerTenant!.github!,
+              accessRevision: randomUUID(),
+              // Simulate a refresh with identical timestamps, so only the unique
+              // access revision can distinguish its newer access snapshot.
+              ...(concurrentChange === "event" ? { lastWebhookAt: new Date().toISOString() } : {}),
+              installationIds: [], installationCount: 0, repositoryCount: 0,
+              repositorySelection: "none", repositories: undefined, webhookHealth: "unhealthy",
+            },
+          } }).where(eq(connectionGrants.id, grant!.id));
+        };
+        await expect(service.checkHealth(connected.connectionId, actor))
+          .rejects.toThrow("GitHub access changed during refresh. Try again.");
+        const [latest] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, grant!.id));
+        expect(latest?.providerTenant?.github).toMatchObject({ installationIds: [], repositoryCount: 0, webhookHealth: "unhealthy" });
+        expect(latest?.providerTenant?.github?.repositories).toBeUndefined();
+        expect(connector.setWebhookBinding).not.toHaveBeenCalled();
+      } else {
+        await expect(service.checkHealth(connected.connectionId, actor)).resolves.toMatchObject({ connection: { healthStatus: "ok" } });
+        expect(connector.setWebhookBinding).toHaveBeenCalled();
+      }
     } finally {
       githubDefinition.ownershipAvailability = previousOwnershipAvailability;
     }
@@ -5261,7 +5343,7 @@ describeEmbeddedPostgres("tool access service", () => {
         }] });
       }
       if (href.includes("https://api.github.com/user/installations/101/repositories?")) {
-        return mcpHttpResponse({ total_count: 1, repositories: [] });
+        return mcpHttpResponse({ total_count: 1, repositories: [{ id: 1, full_name: "paperclipai/repo-1" }] });
       }
       if (href === GITHUB_CONNECTOR_PROFILES["github.code"].serverUrl) {
         return mcpHttpResponse({
@@ -6385,13 +6467,34 @@ describeEmbeddedPostgres("tool access service", () => {
     )).length).toBe(versionCountBeforeAccessRevocation);
   });
 
-  it("activates and discovers actions for a fresh personal OAuth callback before access is finalized", async () => {
+  it.each(["page", "task"] as const)("activates and discovers actions for a fresh personal OAuth callback from %s without widening task access", async (host) => {
     vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_ID", "slack-client-id");
     vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_SECRET", "slack-client-secret");
     const company = await createCompany(db);
     const userId = `oauth-owner-${randomUUID()}`;
     await grantBoardUser(db, company.id, userId, [], "owner");
     const agent = await createAgent(db, company.id);
+    const otherAgent = await createAgent(db, company.id);
+    const { issue, run } = await createIssueAndRun(db, company.id, agent.id);
+    const interaction = host === "task"
+      ? (await db.insert(issueThreadInteractions).values({
+          companyId: company.id,
+          issueId: issue.id,
+          sourceRunId: run.id,
+          kind: "connection_intent",
+          status: "pending",
+          createdByAgentId: agent.id,
+          addresseeUserId: userId,
+          payload: {
+            version: 1,
+            serviceSlug: "slack",
+            serviceName: "Slack",
+            requestingAgentId: agent.id,
+            requestingAgentName: agent.name,
+            phase: "authorizing",
+          },
+        }).returning())[0]
+      : undefined;
     const service = createTestToolAccessService(db);
     const connected = await service.connectGalleryApp(company.id, {
       galleryKey: "slack",
@@ -6402,6 +6505,7 @@ describeEmbeddedPostgres("tool access service", () => {
       redirectUri: "https://paperclip.example/api/tools/oauth/callback",
       actor: { actorType: "user", actorId: userId },
       subjectUserId: userId,
+      interactionId: interaction?.id,
     });
     vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
       const href = String(url);
@@ -6465,9 +6569,9 @@ describeEmbeddedPostgres("tool access service", () => {
       eq(toolPolicies.enabled, true),
     ))).resolves.toEqual([]);
     const callbackPolicy = toolAccessPolicyService(db);
-    const decide = (entry: (typeof completed.catalog)[number]) => callbackPolicy.decide({
+    const decide = (entry: (typeof completed.catalog)[number], agentId = agent.id) => callbackPolicy.decide({
       companyId: company.id,
-      actor: { actorType: "agent", actorId: agent.id, agentId: agent.id },
+      actor: { actorType: "agent", actorId: agentId, agentId },
       request: {
         connectionId: connected.connectionId,
         catalogEntryId: entry.id,
@@ -6475,14 +6579,22 @@ describeEmbeddedPostgres("tool access service", () => {
         arguments: {},
       },
     });
-    await expect(decide(searchMessagesEntry)).resolves.toMatchObject({
-      decision: "allow",
-      reasonCode: "allow_profile",
-    });
-    await expect(decide(sendMessageEntry)).resolves.toMatchObject({
-      decision: "allow",
-      reasonCode: "allow_profile",
-    });
+    for (const entry of [searchMessagesEntry, sendMessageEntry]) {
+      await expect(decide(entry)).resolves.toMatchObject(host === "task"
+        ? { decision: "deny" }
+        : { decision: "allow", reasonCode: "allow_profile" });
+    }
+    if (host === "task") {
+      await expect(db.select().from(toolProfileBindings).where(eq(
+        toolProfileBindings.profileId, callbackProfile!.id,
+      ))).resolves.toEqual([]);
+      await expect(db.select().from(toolConnectionInstalls).where(eq(
+        toolConnectionInstalls.connectionId, connected.connectionId,
+      ))).resolves.toEqual([]);
+      await expect(db.select().from(issueThreadInteractions).where(eq(
+        issueThreadInteractions.id, interaction!.id,
+      ))).resolves.toEqual([expect.objectContaining({ status: "pending", result: null })]);
+    }
     const [personalGrant] = await db.select().from(connectionGrants).where(and(
       eq(connectionGrants.connectionId, connected.connectionId),
       eq(connectionGrants.subjectUserId, userId),
@@ -6495,15 +6607,41 @@ describeEmbeddedPostgres("tool access service", () => {
 
     const finished = await service.finalizeOAuthAccess(company.id, connected.connectionId, {
       grantKind: "user",
-    }, { actorType: "user", actorId: userId });
+    }, { actorType: "user", actorId: userId }, host === "task" ? agent.id : undefined);
     expect(finished.profileEntries).toHaveLength(2);
     expect(finished.profileBindings).toEqual([
-      expect.objectContaining({ targetType: "company", targetId: company.id }),
+      expect.objectContaining(host === "task"
+        ? { targetType: "agent", targetId: agent.id }
+        : { targetType: "company", targetId: company.id }),
     ]);
     await expect(db.select().from(toolConnectionInstalls).where(and(
       eq(toolConnectionInstalls.connectionId, connected.connectionId),
       eq(toolConnectionInstalls.targetType, "company"),
-    ))).resolves.toHaveLength(1);
+    ))).resolves.toHaveLength(host === "task" ? 0 : 1);
+    if (host === "task") {
+      await expect(decide(searchMessagesEntry)).resolves.toMatchObject({ decision: "allow" });
+      await expect(decide(searchMessagesEntry, otherAgent.id)).resolves.toMatchObject({ decision: "deny" });
+      // Granting a second requester and retrying the first must preserve both installs.
+      for (const requestingAgentId of [otherAgent.id, agent.id]) {
+        await service.finalizeOAuthAccess(company.id, connected.connectionId, {
+          grantKind: "user",
+        }, { actorType: "user", actorId: userId }, requestingAgentId);
+      }
+      const bindings = await db.select().from(toolProfileBindings).where(eq(
+        toolProfileBindings.profileId, callbackProfile!.id,
+      ));
+      expect(bindings.map(({ targetType, targetId }) => ({ targetType, targetId }))).toEqual(
+        expect.arrayContaining([agent.id, otherAgent.id].map((targetId) => ({ targetType: "agent", targetId }))),
+      );
+      expect(bindings).toHaveLength(2);
+      const installs = await db.select().from(toolConnectionInstalls).where(eq(
+        toolConnectionInstalls.connectionId, connected.connectionId,
+      ));
+      expect(installs.map(({ targetType, targetId }) => ({ targetType, targetId }))).toEqual(
+        expect.arrayContaining([agent.id, otherAgent.id].map((targetId) => ({ targetType: "agent", targetId }))),
+      );
+      expect(installs).toHaveLength(2);
+    }
     await expect(service.startOAuth(company.id, connected.connectionId, {
       redirectUri: "https://paperclip.example/api/tools/oauth/callback",
       actor: { actorType: "user", actorId: `different-user-${randomUUID()}` },
@@ -6525,6 +6663,7 @@ describeEmbeddedPostgres("tool access service", () => {
     const reconnect = await service.startOAuth(company.id, connected.connectionId, {
       redirectUri: "https://paperclip.example/api/tools/oauth/callback",
       actor: { actorType: "user", actorId: userId },
+      interactionId: interaction?.id,
     });
     await expect(service.peekOAuthState(new URL(reconnect.authorizationUrl).searchParams.get("state")!))
       .resolves.toMatchObject({ subjectUserId: userId });
@@ -6549,6 +6688,16 @@ describeEmbeddedPostgres("tool access service", () => {
     ));
     expect(revivedSecrets).toHaveLength(2);
     expect(revivedSecrets.every((secret) => secret.latestVersion === 2)).toBe(true);
+    if (host === "task") {
+      const installs = await db.select().from(toolConnectionInstalls).where(eq(
+        toolConnectionInstalls.connectionId, connected.connectionId,
+      ));
+      expect(installs).toHaveLength(2);
+      expect(installs.every((install) => install.targetType === "agent")).toBe(true);
+      for (const allowedAgentId of [agent.id, otherAgent.id]) {
+        await expect(decide(searchMessagesEntry, allowedAgentId)).resolves.toMatchObject({ decision: "allow" });
+      }
+    }
   });
 
   it("promotes a personal OAuth identity only after Everyone in the company is chosen", async () => {
@@ -6873,16 +7022,22 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(location.searchParams.get("code")).toBe("oauth_authorization_denied");
   });
 
-  it("starts and completes OAuth app sign-in with PKCE state and secret-backed tokens", async () => {
+  it.each([
+    "https://paperclip-public.example",
+    "http://127.0.0.1:3200",
+    "http://localhost:3200",
+  ])("starts and completes OAuth with the same redirect URI at %s", async (origin) => {
     vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_ID", "slack-client-id");
     vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_SECRET", "slack-client-secret");
-    vi.stubEnv("PAPERCLIP_PUBLIC_URL", "https://paperclip-public.example");
+    vi.stubEnv("PAPERCLIP_PUBLIC_URL", origin.startsWith("https:") ? origin : "");
     const company = await createCompany(db);
     await grantBoardUser(db, company.id, "board-user", ["tools:manage_connections"]);
     const app = createRouteApp(db);
 
     const connectRes = await request(app)
       .post(`/api/companies/${company.id}/tools/apps/connect`)
+      .set("Host", new URL(origin).host)
+      .set("Origin", origin)
       .send({ galleryKey: "slack", name: "Slack workspace" });
 
     expect(connectRes.status).toBe(201);
@@ -6897,7 +7052,7 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(startUrl.searchParams.get("client_id")).toBe("slack-client-id");
     expect(startUrl.searchParams.get("code_challenge_method")).toBe("S256");
     expect(startUrl.searchParams.get("code_challenge")).toMatch(/^[A-Za-z0-9_-]{43}$/);
-    expect(startUrl.searchParams.get("redirect_uri")).toBe("https://paperclip-public.example/api/tools/oauth/callback");
+    expect(startUrl.searchParams.get("redirect_uri")).toBe(`${origin}/api/tools/oauth/callback`);
     const state = startUrl.searchParams.get("state");
     expect(state).toBeTruthy();
     await expect(db.select().from(toolOauthStates)).resolves.toEqual([
@@ -6919,7 +7074,7 @@ describeEmbeddedPostgres("tool access service", () => {
         expect(body.get("code")).toBe("oauth-code");
         expect(body.get("client_secret")).toBe("slack-client-secret");
         expect(body.get("code_verifier")).toBeTruthy();
-        expect(body.get("redirect_uri")).toBe("https://paperclip-public.example/api/tools/oauth/callback");
+        expect(body.get("redirect_uri")).toBe(`${origin}/api/tools/oauth/callback`);
         return {
           ok: true,
           json: async () => ({
@@ -6950,6 +7105,7 @@ describeEmbeddedPostgres("tool access service", () => {
 
     const callbackRes = await request(app)
       .get("/api/tools/oauth/callback")
+      .set("Host", new URL(origin).host)
       .query({ state, code: "oauth-code" });
 
     expect(callbackRes.status).toBe(200);
@@ -6972,12 +7128,15 @@ describeEmbeddedPostgres("tool access service", () => {
 
     const redirectConnectRes = await request(app)
       .post(`/api/companies/${company.id}/tools/apps/connect`)
+      .set("Host", new URL(origin).host)
+      .set("Origin", origin)
       .send({ galleryKey: "slack", name: "Slack redirect" })
       .expect(201);
     const redirectState = new URL(redirectConnectRes.body.auth.startUrl).searchParams.get("state");
     expect(redirectState).toBeTruthy();
     const redirectCallbackRes = await request(app)
       .get("/api/tools/oauth/callback")
+      .set("Host", new URL(origin).host)
       .set("Accept", "text/html")
       .query({ state: redirectState, code: "oauth-code" });
 

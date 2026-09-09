@@ -6,7 +6,7 @@ diff --git a/package.json b/package.json
    "dependencies": {
      "@agentclientprotocol/sdk": "^1.3.0",
 -    "@openai/codex": "^0.148.0",
-+    "@openai/codex": "0.148.0",
++    "@openai/codex": "0.153.4",
      "diff": "^9.0.0",
      "open": "^11.0.0",
      "vscode-jsonrpc": "^9.0.1",
@@ -109,3 +109,13 @@ diff --git a/dist/index.js b/dist/index.js
        forceReload: true
      });
    }
+@@ -30595,6 +30614,9 @@
+               updatedGoal
+             );
+           }
++          if (this.goalPublishIsCurrent(sessionState, sessionGeneration)) {
++            await this.publishCurrentGoal(sessionState, sessionGeneration, true);
++          }
+         } else if (methodRequest.params.action === "pause") {
+           const goal = await this.runWithProcessCheck(() => this.codexAcpClient.setGoalStatus(sessionState.sessionId, "paused"));
+           if (this.goalPublishIsCurrent(sessionState, sessionGeneration)) {

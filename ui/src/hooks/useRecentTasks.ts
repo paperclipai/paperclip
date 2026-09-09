@@ -18,6 +18,8 @@ type RecentTasksUpdatedDetail = {
   entries: RecentTaskEntry[];
 };
 
+const RECENT_TASK_ORDER_DEBOUNCE_MS = 1_000;
+
 export function useRecentTasks({
   companyId,
   userId,
@@ -57,8 +59,10 @@ export function useRecentTasks({
     };
   }, [companyId, storageKey]);
 
+  // Keep query observers in a fixed order when activity changes the display order.
+  const queryEntries = [...entries].sort((left, right) => left.id.localeCompare(right.id));
   const detailQueries = useQueries({
-    queries: entries.map((entry) => ({
+    queries: queryEntries.map((entry) => ({
       queryKey: queryKeys.issues.detail(entry.id),
       queryFn: () => issuesApi.get(entry.id),
       retry: false,
@@ -66,8 +70,9 @@ export function useRecentTasks({
     })),
   });
 
-  const refreshedEntries = entries.map((entry, index) => {
-    const issue = detailQueries[index]?.data;
+  const issueById = new Map(detailQueries.flatMap((query) => query.data ? [[query.data.id, query.data] as const] : []));
+  const refreshedEntries = entries.map((entry) => {
+    const issue = issueById.get(entry.id);
     if (!issue || issue.companyId !== companyId || issue.hiddenAt) return entry;
     return {
       ...entry,
@@ -86,7 +91,7 @@ export function useRecentTasks({
     const resolvedIssues: Issue[] = [];
     const removeIds = new Set<string>();
     detailQueries.forEach((query, index) => {
-      const entry = entries[index];
+      const entry = queryEntries[index];
       if (!entry) return;
       if (query.data) {
         if (query.data.companyId !== companyId || query.data.hiddenAt) {
@@ -105,8 +110,26 @@ export function useRecentTasks({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [companyId, entries, queryRevision, storageKey]);
 
+  const [settledOrder, setSettledOrder] = useState(() => entries.map((entry) => entry.id));
+  const membership = JSON.stringify(queryEntries.map((entry) => entry.id));
+  const activityRevision = JSON.stringify(entries.map((entry) => [entry.id, entry.recordedAt]));
+  useEffect(() => {
+    const latestOrder = (JSON.parse(activityRevision) as Array<[string, number]>).map(([id]) => id);
+    // Additions and removals are immediate. Only activity-driven moves wait for quiet.
+    if (JSON.stringify([...settledOrder].sort((a, b) => a.localeCompare(b))) !== membership) {
+      setSettledOrder(latestOrder);
+      return;
+    }
+    if (latestOrder.every((id, index) => id === settledOrder[index])) return;
+    const timeout = window.setTimeout(() => setSettledOrder(latestOrder), RECENT_TASK_ORDER_DEBOUNCE_MS);
+    return () => window.clearTimeout(timeout);
+  }, [activityRevision, membership, settledOrder, storageKey]);
+
+  const entryById = new Map(refreshedEntries.map((entry) => [entry.id, entry]));
+  const hasSameMembership = settledOrder.length === entries.length && settledOrder.every((id) => entryById.has(id));
+
   return {
-    entries: refreshedEntries,
+    entries: hasSameMembership ? settledOrder.map((id) => entryById.get(id)!) : refreshedEntries,
     storageKey,
   };
 }

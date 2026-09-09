@@ -29,6 +29,11 @@ Every Company has a **Board** that governs high-impact decisions. The Board is t
 - CEO's initial strategic breakdown (CEO proposes, Board approves before execution begins)
 - [TBD: other governance-gated actions — goal changes, firing Agents?]
 
+Connection tool reviews also appear in task history, with a composer takeover for
+human approval, decline, or scoped remembered permission. Connections and task
+views resolve the same review, and the agent continues with the server-recorded
+outcome. See [the implementation contract](SPEC-implementation.md#124-connection-tool-reviews).
+
 #### Board Powers (Always Available)
 
 The Board has **unrestricted access** to the entire system at all times:

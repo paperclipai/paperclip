@@ -3,16 +3,22 @@ import { and, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
+  agentWakeupRequests,
+  toolActionDeliveries,
   agents,
   approvals,
   companies,
   companySecretBindings,
   companySecrets,
+  companyMemberships,
+  toolConnectionInstalls,
+  issueComments,
   connectionGrants,
   createDb,
   heartbeatRuns,
   issueApprovals,
   issues,
+  projects,
   issueThreadInteractions,
   toolApplications,
   toolCatalogEntries,
@@ -26,6 +32,11 @@ import {
 } from "@paperclipai/db";
 import type { PluginToolDispatcher } from "../services/plugin-tool-dispatcher.js";
 import type { VercelConnectClient } from "../services/vercel-connect.js";
+import { initializeRunIdentity, reserveSteeredIdentity, reconcileSteeredIdentity } from "../services/run-identity.js";
+import { issueService } from "../services/issues.js";
+import { commitToolActionReview } from "../services/tool-action-review.js";
+import { materializeNativeInteractionResponses } from "../services/native-runtime/native-interaction-bridge.js";
+import { toolActionDeliveryService } from "../services/tool-action-delivery.js";
 import { secretService } from "../services/secrets.js";
 import {
   createToolGatewayService,
@@ -167,6 +178,7 @@ describeEmbeddedPostgres("tool gateway service", () => {
   afterEach(async () => {
     vi.unstubAllEnvs();
     await db.delete(activityLog);
+    await db.delete(agentWakeupRequests);
     await db.delete(toolGatewaySessions);
     await db.delete(toolCallEvents);
     await db.delete(toolAccessAuditEvents);
@@ -182,6 +194,7 @@ describeEmbeddedPostgres("tool gateway service", () => {
     await db.delete(toolPolicies);
     await db.delete(heartbeatRuns);
     await db.delete(issues);
+    await db.delete(projects);
     await db.delete(agents);
     await db.delete(companies);
   });
@@ -236,7 +249,9 @@ describeEmbeddedPostgres("tool gateway service", () => {
     expect(preview).not.toMatch(/Risk:/);
     expect(preview).not.toMatch(/Arguments reviewed for execution:/);
     expect(preview).not.toMatch(/```/);
-    expect(preview).toContain("checking with you first");
+    expect(preview).toContain("Remote fixture update note");
+    expect(preview).not.toContain("checking with you first");
+    expect(preview).not.toContain("\n\n");
     // The humanized field label is surfaced (body → "Body"), the raw key is not.
     expect(preview).toContain("**Body:** short");
 
@@ -284,7 +299,12 @@ describeEmbeddedPostgres("tool gateway service", () => {
   });
 
   it("approves a pending action request directly from the review queue and preserves signed arguments", async () => {
-    const { company, agent, run } = await createRunFixture(db);
+    const { company, agent, issue, run } = await createRunFixture(db);
+    // Real runner calls carry immutable identity in their signed approval.
+    await initializeRunIdentity(db, {
+      companyId: company.id, runId: run.id, issueId: issue.id,
+      responsibleUserId: null, cause: "company_default",
+    });
     await db.insert(toolPolicies).values({
       companyId: company.id,
       name: "Review note writes",
@@ -340,6 +360,223 @@ describeEmbeddedPostgres("tool gateway service", () => {
     });
     const [consumed] = await db.select().from(toolActionRequests);
     expect(consumed.status).toBe("executed");
+  });
+
+  it("commits one human decision and delivers once after the original run yields, including after service restart", async () => {
+    const { company, agent, issue, run } = await createRunFixture(db);
+    await db.insert(toolPolicies).values({ companyId: company.id, name: "Ask first", policyType: "require_approval", selectors: { toolName: "mcp-remote-fixture:update_note" } });
+    const wakeup = vi.fn(async (agentId: string, input: any) => {
+      const [wake] = await db.insert(agentWakeupRequests).values({ companyId: company.id, agentId, source: input.source, idempotencyKey: input.idempotencyKey, payload: input.payload }).returning();
+      return wake as any;
+    });
+    const deliveries = toolActionDeliveryService(db, { wakeup });
+    const gateway = createTestToolGatewayService(db, { onToolActionSettled: deliveries.deliver });
+    const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+    await expect(gateway.executeTool({ sessionToken: session.token, tool: "mcp-remote-fixture:update_note", parameters: { noteId: "n1", body: "receipt" } })).rejects.toMatchObject({ reasonCode: "approval_required" });
+    const [request] = await db.select().from(toolActionRequests);
+    await gateway.approveActionRequest({ companyId: company.id, actionRequestId: request.id, actor: { userId: "reviewer" } });
+    const [interaction] = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, request.interactionId!));
+    expect(interaction).toMatchObject({ issueId: issue.id, status: "accepted", resolvedByUserId: "reviewer", result: { outcome: "accepted", toolAction: { status: "executed", rememberedAction: false } } });
+    const nativeResponses = await materializeNativeInteractionResponses({ db, companyId: company.id, issueId: issue.id, runId: randomUUID(), agentId: agent.id, interactionIds: [interaction.id] });
+    expect(nativeResponses).toMatchObject([{ interactionId: interaction.id, response: { status: "accepted", result: { toolAction: { status: "executed", resultSummary: expect.stringContaining("bodyLength") } } } }]);
+    expect(wakeup).not.toHaveBeenCalled();
+    expect((await db.select().from(toolActionDeliveries))[0].deliveredAt).toBeNull();
+    await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, run.id));
+    const restarted = toolActionDeliveryService(db, { wakeup });
+    await Promise.all([restarted.sweepPending(), deliveries.sweepPending()]);
+    await gateway.approveActionRequest({ companyId: company.id, actionRequestId: request.id, actor: { userId: "second-reviewer" } });
+    await restarted.sweepPending();
+    expect(wakeup).toHaveBeenCalledTimes(1);
+    expect(wakeup.mock.calls[0][1].payload.toolAction).toMatchObject({ executionStatus: "executed", resultSummary: expect.stringContaining("bodyLength"), instructions: expect.stringContaining("Do not call it again") });
+    expect((await db.select().from(toolActionDeliveries))[0].deliveredAt).not.toBeNull();
+    expect((await db.select().from(toolActionRequests))[0].decidedByUserId).toBe("reviewer");
+    const message = wakeup.mock.calls[0][1].payload.paperclipAgentMessage;
+    expect(message.text).toContain("Do not call it again");
+    expect(message.text).not.toContain("bodyLength");
+    expect(message.untrustedToolResults).toMatchObject([{ actionRequestId: request.id, resultSummary: expect.stringContaining("bodyLength") }]);
+  });
+
+  it("waits for all reviews, then delivers both outcomes in one durable continuation", async () => {
+    const { company, agent, issue, run } = await createRunFixture(db);
+    await db.insert(toolPolicies).values({ companyId: company.id, name: "Ask first", policyType: "require_approval", selectors: { toolName: "mcp-remote-fixture:update_note" } });
+    const wakeup = vi.fn(async (agentId: string, input: any) => (await db.insert(agentWakeupRequests).values({ companyId: company.id, agentId, source: input.source, idempotencyKey: input.idempotencyKey, payload: input.payload }).returning())[0] as any);
+    const delivery = toolActionDeliveryService(db, { wakeup });
+    const gateway = createTestToolGatewayService(db, { onToolActionSettled: delivery.deliver });
+    const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+    for (const noteId of ["one", "two"]) await expect(gateway.executeTool({ sessionToken: session.token, tool: "mcp-remote-fixture:update_note", parameters: { noteId, body: "reviewed body" } })).rejects.toMatchObject({ reasonCode: "approval_required" });
+    const requests = await db.select().from(toolActionRequests);
+    expect(requests).toHaveLength(2);
+    await expect(issueService(db).update(issue.id, { status: "done", actorAgentId: agent.id })).rejects.toThrow("waiting for a connection review");
+    await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, run.id));
+    await gateway.approveActionRequest({ companyId: company.id, actionRequestId: requests[0].id, actor: { userId: "reviewer" } });
+    expect(wakeup).not.toHaveBeenCalled();
+    expect((await db.select().from(issueThreadInteractions)).filter(row => row.status === "pending")).toHaveLength(1);
+    await expect(gateway.declineActionRequest({ companyId: company.id, issueId: issue.id, interactionId: requests[0].interactionId!, actionRequestId: requests[1].id, actor: { userId: "reviewer" } })).rejects.toThrow("does not belong to this interaction");
+    await gateway.declineActionRequest({ companyId: company.id, issueId: issue.id, interactionId: requests[1].interactionId!, actionRequestId: requests[1].id, reason: "Not needed", actor: { userId: "reviewer" } });
+    await delivery.sweepPending();
+    expect(wakeup).toHaveBeenCalledTimes(1);
+    const payload = wakeup.mock.calls[0][1].payload;
+    expect(payload.interactionIds).toHaveLength(2);
+    expect(new Set(payload.toolActions.map((action: any) => action.executionStatus))).toEqual(new Set(["executed", "rejected"]));
+    expect((await db.select().from(toolActionDeliveries)).every(row => row.deliveredAt)).toBe(true);
+    const native = await materializeNativeInteractionResponses({ db, companyId: company.id, issueId: issue.id, runId: randomUUID(), agentId: agent.id, interactionIds: payload.interactionIds });
+    expect(native).toHaveLength(2);
+  });
+
+  it("bounds many outcomes and recovers their full-result reference after wake commit", async () => {
+    const { company, agent, run } = await createRunFixture(db);
+    await db.insert(toolPolicies).values({ companyId: company.id, name: "Ask first", policyType: "require_approval", selectors: { toolName: "mcp-remote-fixture:update_note" } });
+    const gateway = createTestToolGatewayService(db);
+    const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+    for (let n = 0; n < 12; n++) {
+      await expect(gateway.executeTool({ sessionToken: session.token, tool: "mcp-remote-fixture:update_note", parameters: { noteId: `note-${n}`, body: "review me" } })).rejects.toMatchObject({ reasonCode: "approval_required" });
+    }
+    const requests = await db.select().from(toolActionRequests);
+    for (const request of requests) await gateway.declineActionRequest({ companyId: company.id, actionRequestId: request.id, actor: { userId: "reviewer" }, reason: "😀\n\\".repeat(4000) });
+    await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, run.id));
+    const wakeup = vi.fn(async (agentId: string, input: any) => {
+      await db.insert(agentWakeupRequests).values({ companyId: company.id, agentId, source: input.source, idempotencyKey: input.idempotencyKey, payload: input.payload });
+      throw new Error("crash after durable wake commit");
+    });
+    const delivery = toolActionDeliveryService(db, { wakeup });
+    await expect(delivery.sweepPending()).rejects.toThrow("crash after durable wake commit");
+    await delivery.sweepPending();
+    expect(wakeup).toHaveBeenCalledTimes(1);
+    const payload = wakeup.mock.calls[0][1].payload;
+    expect(Buffer.byteLength(JSON.stringify(payload), "utf8")).toBeLessThan(32_768);
+    expect(payload.toolActions.length).toBeLessThanOrEqual(8);
+    expect(payload.interactionIds.length).toBe(payload.toolActions.length);
+    expect(payload.toolActionOutcomeCount).toBe(12);
+    expect(payload.paperclipAgentMessage.text).toContain(payload.toolActionResultsUrl);
+    expect((await db.select().from(toolActionDeliveries)).every(row => row.deliveredAt)).toBe(true);
+    // The reference retains all outcomes and their full notes, not just snippets.
+    expect((await db.select().from(issueThreadInteractions)).every(row => JSON.stringify(row.result).length > 12_000)).toBe(true);
+  });
+
+  it("retires a former assignee's continuation after reassignment", async () => {
+    const { company, agent, issue, run } = await createRunFixture(db);
+    await db.insert(toolPolicies).values({ companyId: company.id, name: "Ask first", policyType: "require_approval", selectors: { toolName: "mcp-remote-fixture:update_note" } });
+    const gateway = createTestToolGatewayService(db);
+    const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+    await expect(gateway.executeTool({ sessionToken: session.token, tool: "mcp-remote-fixture:update_note", parameters: { noteId: "reassigned" } })).rejects.toMatchObject({ reasonCode: "approval_required" });
+    const [request] = await db.select().from(toolActionRequests);
+    await gateway.declineActionRequest({ companyId: company.id, actionRequestId: request.id, actor: { userId: "reviewer" } });
+    const [replacement] = await db.insert(agents).values({ companyId: company.id, name: "Replacement", role: "engineer", adapterType: "process" }).returning();
+    await db.update(issues).set({ assigneeAgentId: replacement.id }).where(eq(issues.id, issue.id));
+    const wakeup = vi.fn();
+    const delivery = toolActionDeliveryService(db, { wakeup });
+    await delivery.sweepPending();
+    expect((await db.select().from(toolActionDeliveries))[0].deliveredAt).not.toBeNull();
+    expect(await delivery.sweepPending()).toEqual({ scanned: 0, delivered: 0 });
+    expect(wakeup).not.toHaveBeenCalled();
+  });
+
+  it("recovers expired reviews beyond a full batch of approvals that cannot recover", async () => {
+    const { company, agent, run } = await createRunFixture(db);
+    await db.insert(toolPolicies).values({ companyId: company.id, name: "Ask first", policyType: "require_approval", selectors: { toolName: "mcp-remote-fixture:update_note" } });
+    const gateway = createTestToolGatewayService(db);
+    const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+    await expect(gateway.executeTool({ sessionToken: session.token, tool: "mcp-remote-fixture:update_note", parameters: { noteId: "expire" } })).rejects.toMatchObject({ reasonCode: "approval_required" });
+    const [request] = await db.select().from(toolActionRequests);
+    await db.update(toolActionRequests).set({ expiresAt: new Date(Date.now() - 1000) }).where(eq(toolActionRequests.id, request.id));
+    await db.insert(toolActionRequests).values(Array.from({ length: 100 }, (_, i) => ({
+      ...request, id: `00000000-0000-4000-8000-${String(i).padStart(12, "0")}`,
+      interactionId: null, status: "approved" as const,
+    })));
+    const recover = vi.spyOn(gateway, "approveActionRequest").mockRejectedValue(new Error("Unavailable approval dependency"));
+    expect(await gateway.sweepActionReviews()).toEqual({ scanned: 101 });
+    expect(recover).toHaveBeenCalledTimes(100);
+    const [settled] = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, request.interactionId!));
+    expect(settled.status).toBe("expired");
+  });
+
+  it("settles expired reviews and interrupted execution without replaying an uncertain external action", async () => {
+    const { company, agent, issue, run } = await createRunFixture(db);
+    await db.insert(toolPolicies).values({ companyId: company.id, name: "Ask first", policyType: "require_approval", selectors: { toolName: "mcp-remote-fixture:update_note" } });
+    const gateway = createTestToolGatewayService(db);
+    const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+    await expect(gateway.executeTool({ sessionToken: session.token, tool: "mcp-remote-fixture:update_note", parameters: { noteId: "expire" } })).rejects.toMatchObject({ reasonCode: "approval_required" });
+    const [expiring] = await db.select().from(toolActionRequests);
+    await db.update(toolActionRequests).set({ expiresAt: new Date(Date.now() - 1000) }).where(eq(toolActionRequests.id, expiring.id));
+    await gateway.sweepActionReviews();
+    expect((await db.select().from(issueThreadInteractions))[0].status).toBe("expired");
+    expect(await materializeNativeInteractionResponses({ db, companyId: company.id, issueId: issue.id, runId: randomUUID(), agentId: agent.id, interactionIds: [expiring.interactionId!] })).toMatchObject([{ response: { status: "expired", executionStatus: "expired" } }]);
+    await expect(gateway.executeTool({ sessionToken: session.token, tool: "mcp-remote-fixture:update_note", parameters: { noteId: "uncertain" } })).rejects.toMatchObject({ reasonCode: "approval_required" });
+    const pending = (await db.select().from(toolActionRequests)).find(row => row.status === "pending")!;
+    await commitToolActionReview(db, { companyId: company.id, actionRequestId: pending.id, decision: "approved", actor: { userId: "reviewer" } });
+    await db.update(toolActionRequests).set({ status: "executing", updatedAt: new Date(Date.now() - 11 * 60_000) }).where(eq(toolActionRequests.id, pending.id));
+    await db.update(toolInvocations).set({ status: "executing" }).where(eq(toolInvocations.id, pending.invocationId));
+    await gateway.sweepActionReviews();
+    const [result] = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, pending.interactionId!));
+    expect(result).toMatchObject({ status: "accepted", result: { toolAction: { status: "failed", errorCode: "tool_execution_outcome_unknown" } } });
+    // Simulate a crash before the feed projection was saved, then repair it.
+    await db.update(issueThreadInteractions).set({ result: { version: 1, outcome: "accepted", toolAction: { version: 1, status: "executing", updatedAt: new Date().toISOString() } } }).where(eq(issueThreadInteractions.id, pending.interactionId!));
+    await gateway.sweepActionReviews();
+    const [reconciled] = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, pending.interactionId!));
+    expect(reconciled.result).toMatchObject({ toolAction: { status: "failed", errorCode: "tool_execution_outcome_unknown" } });
+    expect(await db.select().from(toolCallEvents).where(eq(toolCallEvents.reasonCode, "approved_action_executed"))).toHaveLength(0);
+  });
+
+  it("remembers a read action atomically, allows changed arguments, and preserves explicit denials and definition review", async () => {
+    const { company, agent, issue, run } = await createRunFixture(db);
+    const [project] = await db.insert(projects).values({ companyId: company.id, name: "Reviewed project" }).returning();
+    await db.update(issues).set({ projectId: project.id }).where(eq(issues.id, issue.id));
+    const { connection, catalogEntry } = await createRemoteMcpToolFixture(db, company.id);
+    await db.insert(toolPolicies).values({ companyId: company.id, name: "Ask about reads", policyType: "require_approval", selectors: { connectionId: connection.id } });
+    let calls = 0;
+    const gateway = createTestToolGatewayService(db, { remoteHttpRequest: async (_url, init) => {
+      const body = JSON.parse(String(init.body));
+      if (body.method === "tools/call") calls++;
+      return new Response(JSON.stringify({ jsonrpc: "2.0", id: body.id, result: { content: [{ type: "text", text: "Roadmap and meeting notes" }] } }), { headers: { "content-type": "application/json" } });
+    } });
+    const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+    const tool = (await gateway.listToolsForSession(session.token)).find(t => t.connectionId === connection.id)!;
+    const call = (limit: number) => gateway.executeTool({ sessionToken: session.token, tool: tool.name, parameters: { limit } });
+    await expect(call(10)).rejects.toMatchObject({ reasonCode: "approval_required" });
+    await expect(call(10)).rejects.toMatchObject({ reasonCode: "approval_required" });
+    expect(calls).toBe(0);
+    const requests = await db.select().from(toolActionRequests);
+    expect(requests).toHaveLength(1);
+    const [interaction] = await db.select().from(issueThreadInteractions);
+    expect(interaction.payload).toMatchObject({ supersedeOnUserComment: false, toolAction: { risk: "read", rememberActionScope: expect.any(String) } });
+    const approve = () => gateway.approveActionRequest({ companyId: company.id, actionRequestId: requests[0].id, rememberAction: true, actor: { userId: "reviewer" } });
+    await Promise.all([approve(), approve()]);
+    expect(calls).toBe(1);
+    const rules = await db.select().from(toolPolicies).where(eq(toolPolicies.policyType, "trust_rule"));
+    expect(rules).toHaveLength(1);
+    expect(rules[0].selectors).toMatchObject({ agentId: agent.id, projectId: project.id, connectionId: connection.id, toolName: tool.name });
+    await call(20);
+    expect(calls).toBe(2);
+    const [otherAgent] = await db.insert(agents).values({ companyId: company.id, name: "Other agent", role: "engineer", adapterType: "process" }).returning();
+    for (const boundary of [{ agentId: agent.id, projectId: null }, { agentId: otherAgent.id, projectId: project.id }]) {
+      const [otherIssue] = await db.insert(issues).values({ companyId: company.id, title: "Other scope", status: "in_progress", assigneeAgentId: boundary.agentId, projectId: boundary.projectId }).returning();
+      const [otherRun] = await db.insert(heartbeatRuns).values({ companyId: company.id, agentId: boundary.agentId, invocationSource: "assignment", status: "running", contextSnapshot: { issueId: otherIssue.id } }).returning();
+      const otherSession = await gateway.createSession({ companyId: company.id, agentId: boundary.agentId, runId: otherRun.id });
+      await expect(gateway.executeTool({ sessionToken: otherSession.token, tool: tool.name, parameters: { limit: 25 } })).rejects.toMatchObject({ reasonCode: "approval_required" });
+    }
+    expect(calls).toBe(2);
+    const [deny] = await db.insert(toolPolicies).values({ companyId: company.id, name: "Explicit denial", policyType: "block", priority: 999, selectors: { connectionId: connection.id } }).returning();
+    await expect(call(30)).rejects.toMatchObject({ status: 403 });
+    expect(calls).toBe(2);
+    await db.delete(toolPolicies).where(eq(toolPolicies.id, deny.id));
+    await db.update(toolCatalogEntries).set({ versionHash: "changed-definition" }).where(eq(toolCatalogEntries.id, catalogEntry.id));
+    await expect(call(40)).rejects.toMatchObject({ reasonCode: "approval_required" });
+    expect(calls).toBe(2);
+  });
+
+  it("rolls back approval when remembered permission cannot be saved", async () => {
+    const { company, agent, run } = await createRunFixture(db);
+    await db.insert(toolPolicies).values({ companyId: company.id, name: "Ask first", policyType: "require_approval", selectors: { toolName: "mcp-remote-fixture:update_note" } });
+    const gateway = createTestToolGatewayService(db);
+    const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+    await expect(gateway.executeTool({ sessionToken: session.token, tool: "mcp-remote-fixture:update_note", parameters: { noteId: "n1" } })).rejects.toMatchObject({ reasonCode: "approval_required" });
+    const [request] = await db.select().from(toolActionRequests);
+    // This internal fixture has no connection and cannot grant action-wide access.
+    await expect(gateway.approveActionRequest({ companyId: company.id, actionRequestId: request.id, rememberAction: true, actor: { userId: "reviewer" } })).rejects.toThrow();
+    expect((await db.select().from(toolActionRequests))[0].status).toBe("pending");
+    expect((await db.select().from(issueThreadInteractions))[0].status).toBe("pending");
+    expect((await db.select().from(toolActionDeliveries))[0].deliveredAt).toBeNull();
+    expect(await db.select().from(toolCallEvents).where(eq(toolCallEvents.reasonCode, "approved_action_executed"))).toHaveLength(0);
   });
 
   it("refuses to approve an action request through a different interaction", async () => {
@@ -1203,6 +1440,53 @@ describeEmbeddedPostgres("tool gateway service", () => {
     expect(storedGrant?.externalCredential).toMatchObject({ tokenId: "stk_fresh" });
   });
 
+  it("keeps managed GitHub personal identity even under a legacy shared policy", async () => {
+    const { company, agent, issue, run } = await createRunFixture(db);
+    const { connection } = await createRemoteMcpToolFixture(db, company.id);
+    await db.update(toolConnections).set({ authKind: "oauth", credentialSource: "paperclip_vault",
+      config: { ...connection.config, sourceTemplateKey: "github" },
+    }).where(eq(toolConnections.id, connection.id));
+    await db.insert(toolConnectionInstalls).values({ companyId: company.id,
+      connectionId: connection.id, targetType: "agent", targetId: agent.id });
+    await db.insert(companyMemberships).values(["A", "B"].map(principalId => ({ companyId: company.id,
+      principalType: "user", principalId, status: "active", membershipRole: "member" })));
+    const grants = await db.insert(connectionGrants).values(["A", "B"].map(subjectUserId => ({
+      companyId: company.id, connectionId: connection.id, kind: "user", subjectUserId,
+      status: "active", credentialSecretRefs: [],
+    }))).returning();
+    await initializeRunIdentity(db, { companyId: company.id, runId: run.id, issueId: issue.id,
+      responsibleUserId: "A", cause: "instruction" });
+    await db.insert(toolPolicies).values({ companyId: company.id, name: "Allow reads",
+      policyType: "allow", selectors: { riskLevel: "read" } });
+    const resolvedGrants: string[] = [];
+    const gateway = createTestToolGatewayService(db, {
+      oauthGrantRefresher: async ({ grantId }) => {
+        resolvedGrants.push(grantId);
+        return db.select().from(connectionGrants).where(eq(connectionGrants.id, grantId)).then(rows => rows[0]!);
+      },
+      remoteHttpRequest: async (_url, init) => new Response(JSON.stringify({ jsonrpc: "2.0",
+        id: JSON.parse(String(init.body)).id, result: { content: [{ type: "text", text: "ok" }] },
+      }), { status: 200, headers: { "content-type": "application/json" } }),
+    });
+    const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+    const tool = (await gateway.listToolsForSession(session.token)).find(t => t.providerType === "mcp_remote_http")!;
+    for (const [index, user] of ["A", "B", "A"].entries()) {
+      if (index > 0) {
+        const [message] = await db.insert(issueComments).values({ companyId: company.id, issueId: issue.id,
+          authorUserId: user, body: "Next instruction" }).returning();
+        const pending = await reserveSteeredIdentity(db, { companyId: company.id, runId: run.id,
+          issueId: issue.id, messageId: message.id });
+        await reconcileSteeredIdentity(db, pending!);
+      }
+      expect((await gateway.executeTool({ sessionToken: session.token, tool: tool.name, parameters: {} })).status).toBe("completed");
+    }
+    expect(resolvedGrants).toEqual([grants[0].id, grants[1].id, grants[0].id]);
+    await db.delete(companyMemberships).where(eq(companyMemberships.companyId, company.id));
+    await expect(gateway.executeTool({ sessionToken: session.token, tool: tool.name, parameters: {} }))
+      .rejects.toMatchObject({ reasonCode: "grant_owner_membership_inactive" });
+    expect(resolvedGrants).toHaveLength(3);
+  });
+
   it("refreshes a customer OAuth grant once and retries after an upstream 401", async () => {
     const { company, agent, run } = await createRunFixture(db);
     const { connection } = await createRemoteMcpToolFixture(db, company.id);
@@ -1222,6 +1506,7 @@ describeEmbeddedPostgres("tool gateway service", () => {
     await db.update(toolConnections).set({
       authKind: "oauth",
       credentialSource: "paperclip_vault",
+      credentialRefs: [{ name: "oauth.access_token", placement: "header", key: "Authorization", prefix: "Bearer ", secretId: accessSecret.id, versionSelector: "latest" }],
       config: {
         url: "https://example.invalid/mcp",
         oauth: {

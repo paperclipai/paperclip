@@ -6,6 +6,7 @@ import { pinoHttp } from "pino-http";
 import request from "supertest";
 import { describe, expect, it } from "vitest";
 import { HTTP_LOG_REDACT_PATHS } from "../middleware/http-log-redaction.js";
+import { testAdapterEnvironmentSchema } from "@paperclipai/shared";
 import { createHttpLogger } from "../middleware/logger.js";
 
 describe("HTTP logger redaction", () => {
@@ -163,6 +164,33 @@ describe("HTTP logger redaction", () => {
       name: "OpenAI",
       value: "[REDACTED]",
       metadata: { token: "[REDACTED]" },
+    });
+  });
+
+  it.each([400, 500])("redacts the complete probe credential container on HTTP %s", async (status) => {
+    const chunks: string[] = [];
+    const stream = new Writable({
+      write(chunk, _encoding, callback) {
+        chunks.push(chunk.toString());
+        callback();
+      },
+    });
+    const app = express();
+    app.use(express.json());
+    app.use(createHttpLogger(pino({ redact: [...HTTP_LOG_REDACT_PATHS] }, stream)));
+    app.post("/probe", (req, res) => {
+      if (status === 500) {
+        (res as any).__errorContext = { error: { message: "probe failed" }, reqBody: req.body };
+      }
+      res.status(status).json({ error: "probe failed" });
+    });
+    const keys = Object.keys(testAdapterEnvironmentSchema.shape.testCredentials.unwrap().shape);
+    const credentials = Object.fromEntries([...keys, "UNKNOWN_PROVIDER_KEY"].map((key) => [key, `canary-${key}`]));
+    await request(app).post("/probe").send({ adapterConfig: { model: "default" }, testCredentials: credentials });
+    const output = chunks.join("");
+    expect(output).not.toContain("canary-");
+    expect(JSON.parse(output.trim()).reqBody).toEqual({
+      adapterConfig: { model: "default" }, testCredentials: "[REDACTED]",
     });
   });
 });

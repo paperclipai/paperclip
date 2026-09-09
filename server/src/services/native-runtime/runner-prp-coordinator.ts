@@ -72,6 +72,8 @@ export interface PreparedRunnerPrpSession {
     readonly turnId?: string;
     readonly providerSessionId?: string;
   }>;
+  waitForCommand(commandId: string, timeoutMs?: number): Promise<Record<string, unknown> | null>;
+  waitForGoalEvent(requestId: string, timeoutMs?: number): Promise<void>;
   release(): Promise<void>;
 }
 
@@ -254,6 +256,11 @@ export function runnerPrpCoordinator(
         };
       };
       let completedRun: CompletedRun | null = null;
+      const observedGoalRequests = new Map<string, string | null>();
+      const goalEventWaiters = new Map<
+        string,
+        Set<{ resolve: () => void; reject: (error: Error) => void }>
+      >();
       let resolveTerminal!: (value: CompletedRun) => void;
       const terminalEvent = new Promise<CompletedRun>(
         (resolveTerminalPromise) => {
@@ -301,6 +308,8 @@ export function runnerPrpCoordinator(
       try {
         registration = await registerRunnerPrpAuthority({
           companyId: input.companyId,
+          issueId: input.issueId,
+          agentId: input.agentId,
           runId: input.runId,
           authority,
         });
@@ -384,6 +393,58 @@ export function runnerPrpCoordinator(
             ]);
           } finally {
             if (timer) clearTimeout(timer);
+          }
+        },
+        waitForCommand: async (commandId, timeoutMs = 30_000) => {
+          if (released) throw new Error("runner_prp_session_released");
+          const deadline = Date.now() + timeoutMs;
+          while (Date.now() < deadline) {
+            const outcome = authority.commandOutcome(commandId);
+            if (!outcome) throw new Error(`runner_prp_command_missing:${commandId}`);
+            if (outcome.status === "completed") return outcome.result;
+            if (outcome.status === "failed" || outcome.status === "rejected") {
+              const message = outcome.result && typeof outcome.result.message === "string"
+                ? outcome.result.message
+                : `runner_prp_command_${outcome.status}:${commandId}`;
+              throw new Error(message);
+            }
+            await new Promise<void>((resolve) => {
+              const timer = setTimeout(resolve, 10);
+              timer.unref();
+            });
+          }
+          throw new Error(`runner_prp_command_timeout:${commandId}`);
+        },
+        waitForGoalEvent: async (requestId, timeoutMs = 30_000) => {
+          if (released) throw new Error("runner_prp_session_released");
+          if (observedGoalRequests.has(requestId)) {
+            const error = observedGoalRequests.get(requestId);
+            if (error) throw new Error(error);
+            return;
+          }
+          let timer: NodeJS.Timeout | null = null;
+          let resolveGoalEvent!: () => void;
+          let rejectGoalEvent!: (error: Error) => void;
+          const goalEvent = new Promise<void>((resolve, reject) => {
+            resolveGoalEvent = resolve;
+            rejectGoalEvent = reject;
+          });
+          const waiter = { resolve: resolveGoalEvent, reject: rejectGoalEvent };
+          const waiters = goalEventWaiters.get(requestId) ?? new Set<typeof waiter>();
+          waiters.add(waiter);
+          goalEventWaiters.set(requestId, waiters);
+          try {
+            await Promise.race([
+              goalEvent,
+              new Promise<never>((_resolve, reject) => {
+                timer = setTimeout(() => reject(new Error("runner_prp_goal_event_timeout")), timeoutMs);
+                timer.unref();
+              }),
+            ]);
+          } finally {
+            if (timer) clearTimeout(timer);
+            waiters.delete(waiter);
+            if (waiters.size === 0) goalEventWaiters.delete(requestId);
           }
         },
         release: async () => {

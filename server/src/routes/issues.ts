@@ -1,3 +1,4 @@
+import { storedSteeringAcknowledgement, reconcileSteeredIdentity, reserveSteeredIdentity, acceptSteeredIdentity, rejectSteeredIdentity } from "../services/run-identity.js";
 import { createHash, randomUUID } from "node:crypto";
 import { Router, type Request, type Response } from "express";
 import multer from "multer";
@@ -48,6 +49,7 @@ import {
   createIssueSchema,
   resolveCreateIssueStatusDefault,
   resolveIssueRecoveryActionSchema,
+  runnerGoalActionRequestSchema,
   feedbackTargetTypeSchema,
   feedbackTraceStatusSchema,
   feedbackVoteValueSchema,
@@ -144,6 +146,12 @@ import {
   routineService,
   workProductService,
 } from "../services/index.js";
+import {
+  runnerGoalService,
+  RunnerGoalActionError,
+  RunnerGoalConflictError,
+} from "../services/runner-goals.js";
+import { queueLiveRunnerPrpCommand } from "../realtime/runner-prp-ws.js";
 import { questionResponseDeliveryService } from "../services/question-response-delivery.js";
 import { emitAgentTaskRun } from "../services/agent-task-run-telemetry.js";
 import { artifactReviewDocumentService } from "../services/artifact-review-documents.js";
@@ -185,9 +193,13 @@ import { queueIssueAssignmentWakeup } from "../services/issue-assignment-wakeup.
 import { createSecretProposalsService } from "../services/secret-proposals.js";
 import { notifySecretProposalResolution } from "../services/secret-proposal-notifications.js";
 import {
-  buildOnboardingGreeting,
+  renderOnboardingGreeting,
   ONBOARDING_GREETING_AUTHORIZATION_REASON,
 } from "../services/onboarding-greeting.js";
+import {
+  buildOnboardingFirstTaskBrief,
+  buildOnboardingFirstTaskOpeningQuestion,
+} from "../services/onboarding-first-task-assets.js";
 import {
   ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,
   buildIssueBlockersResolvedWakeStateKey,
@@ -2915,7 +2927,16 @@ export function issueRoutes(
       options: Parameters<ReturnType<typeof heartbeatService>["wakeup"]>[1],
     ) => ReturnType<ReturnType<typeof heartbeatService>["wakeup"]>;
     issueListDiagnostics?: IssueListDiagnostics;
+    declineToolActionRequest?: (input: {
+      companyId: string;
+      issueId?: string;
+      interactionId?: string;
+      actionRequestId: string;
+      reason?: string;
+      actor: { agentId?: string | null; userId?: string | null };
+    }) => Promise<unknown>;
     approveToolActionRequest?: (input: {
+      rememberAction?: boolean;
       companyId: string;
       issueId: string;
       interactionId: string;
@@ -2982,6 +3003,100 @@ export function issueRoutes(
     heartbeat,
     resolveNativeQuestion: (interaction) => deliverNativeQuestionResponse(db, interaction),
   });
+  const runnerGoals = runnerGoalService(db, {
+    enqueueOfflineControl: async ({
+      issueId,
+      agentId,
+      requestId,
+      control,
+    }) => {
+      const run = await heartbeat.wakeup(agentId, {
+        source: "on_demand",
+        triggerDetail: "manual",
+        reason: "goal_control",
+        payload: { issueId, requestId, intent: "goal_control" },
+        idempotencyKey: `goal_control:${requestId}`,
+        requestedByActorType: "system",
+        contextSnapshot: {
+          issueId,
+          taskKey: issueId,
+          resumeIntent: true,
+          goalControlRequestId: requestId,
+          runnerGoalControl: control,
+          skipIssueComment: true,
+        },
+      });
+      if (!run) {
+        throw new RunnerGoalActionError(
+          "goal_control_wake_skipped",
+          "Goal execution did not start. Check that task execution is enabled for this instance and agent, then retry.",
+        );
+      }
+    },
+  });
+  const stopRunnerGoalForOwnershipChange = async (input: {
+    companyId: string;
+    issueId: string;
+    agentId: string;
+  }) => {
+    const current = await runnerGoals.projection(
+      input.companyId,
+      input.issueId,
+      input.agentId,
+    );
+    if (current?.pendingAction) {
+      throw conflict(
+        "The current agent goal has a control action still in progress",
+        { code: "runner_goal_action_pending", projection: current },
+      );
+    }
+    if (!current?.goal || current.goal.status === "complete") return null;
+    const action = current.capability.actions.includes("pause")
+      ? ("pause" as const)
+      : current.capability.actions.includes("clear")
+        ? ("clear" as const)
+        : null;
+    if (!action) {
+      throw conflict(
+        "The current agent goal cannot be stopped safely before reassignment",
+        { code: "runner_goal_stop_unsupported", projection: current },
+      );
+    }
+    await runnerGoals.act(input.companyId, input.issueId, {
+      requestId: `ownership_${randomUUID()}`,
+      agentId: input.agentId,
+      expectedRevision: current.revision,
+      action,
+    });
+    const deadline = Date.now() + 30_000;
+    while (Date.now() < deadline) {
+      const observed = await runnerGoals.projection(
+        input.companyId,
+        input.issueId,
+        input.agentId,
+      );
+      const stopped =
+        action === "pause"
+          ? observed?.goal?.status === "paused"
+          : observed?.goal === null;
+      if (observed && stopped && observed.pendingAction === null) return action;
+      if (observed && observed.pendingAction === null && !stopped) {
+        throw conflict(
+          "The current agent goal failed to stop before reassignment",
+          { code: "runner_goal_stop_failed", projection: observed },
+        );
+      }
+      await new Promise<void>((resolve) => setTimeout(resolve, 50));
+    }
+    throw conflict("Timed out stopping the current agent goal before reassignment", {
+      code: "runner_goal_stop_timeout",
+      projection: await runnerGoals.projection(
+        input.companyId,
+        input.issueId,
+        input.agentId,
+      ),
+    });
+  };
   const flushIssuePostCommitActions = async (actions: readonly IssuePostCommitAction[]) => {
     if (actions.length === 0) return;
     const { executeIssuePostCommitActions } = await import("../services/issues.js");
@@ -6916,6 +7031,58 @@ export function issueRoutes(
     res.json(removed);
   });
 
+  router.get("/issues/:id/runner-goal", async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await getAccessibleResource(req, res, getIssueById(req, id), "Issue not found");
+    if (!issue) return;
+    if (!(await assertIssueReadAllowed(req, res, issue))) return;
+    const requestedAgentId = typeof req.query.agentId === "string" && req.query.agentId.trim()
+      ? req.query.agentId.trim()
+      : null;
+    const goal = await runnerGoals.projection(issue.companyId, issue.id, requestedAgentId);
+    if (!goal) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    res.json(goal);
+  });
+
+  router.post(
+    "/issues/:id/runner-goal/actions",
+    validate(runnerGoalActionRequestSchema),
+    async (req, res) => {
+      const id = req.params.id as string;
+      const issue = await getAccessibleResource(req, res, getIssueById(req, id), "Issue not found");
+      if (!issue) return;
+      if (req.actor.type === "agent" && req.actor.agentId !== req.body.agentId) {
+        res.status(403).json({ error: "Agent can only control its own assigned session goal" });
+        return;
+      }
+      if (req.actor.type !== "agent") assertBoard(req);
+      if (!(await assertIssueWriteInfluenceAllowed(req, res, issue))) return;
+      try {
+        const accepted = await runnerGoals.act(issue.companyId, issue.id, req.body);
+        res.status(202).json(accepted);
+      } catch (error) {
+        if (error instanceof RunnerGoalConflictError) {
+          res.status(409).json({
+            error: error.code,
+            current: error.projection,
+          });
+          return;
+        }
+        if (error instanceof RunnerGoalActionError) {
+          res.status(error.code === "issue_not_found" || error.code === "agent_not_found" ? 404 : 422).json({
+            error: error.message,
+            code: error.code,
+          });
+          return;
+        }
+        throw error;
+      }
+    },
+  );
+
   router.get("/issues/:id/heartbeat-context", async (req, res) => {
     const id = req.params.id as string;
     const issue = await getAccessibleResource(req, res, getIssueById(req, id), "Issue not found");
@@ -9159,6 +9326,23 @@ export function issueRoutes(
     const runWorkspaceInheritanceSourceIssueId = hasExplicitIssueWorkspaceCreateSelection(rawCreateBody)
       ? null
       : await resolveRunIssueWorkspaceInheritanceSource(companyId, actor);
+    // When this is genuinely the onboarding first task, the server owns the task
+    // description: assemble it from brief.md plus the proposal file the
+    // enableFirstTaskPlanProposal toggle selects, read once here at creation
+    // time, and ignore any client-supplied description. Flipping the toggle
+    // later does not change an existing first task. Best-effort: a read failure
+    // must not fail issue creation.
+    let onboardingFirstTaskDescription: string | null = null;
+    if (isOnboardingFirstTask && !watchdogProductBugFollowUp) {
+      try {
+        const experimental = await instanceSettings.getExperimental();
+        onboardingFirstTaskDescription = await buildOnboardingFirstTaskBrief({
+          usePlanProposal: experimental.enableFirstTaskPlanProposal === true,
+        });
+      } catch (err) {
+        logger.warn({ err, companyId }, "failed to assemble onboarding first-task brief");
+      }
+    }
     const createBody = {
       ...rawCreateBody,
       parentId: effectiveParentId,
@@ -9167,7 +9351,12 @@ export function issueRoutes(
         ? { inheritExecutionWorkspaceFromIssueId: runWorkspaceInheritanceSourceIssueId }
         : {}),
       ...(isOnboardingFirstTask && !watchdogProductBugFollowUp
-        ? { originKind: ONBOARDING_FIRST_TASK_ORIGIN_KIND }
+        ? {
+          originKind: ONBOARDING_FIRST_TASK_ORIGIN_KIND,
+          ...(onboardingFirstTaskDescription !== null
+            ? { description: onboardingFirstTaskDescription }
+            : {}),
+        }
         : {}),
       ...(watchdogProductBugFollowUp
         ? {
@@ -9227,6 +9416,7 @@ export function issueRoutes(
       ...(taskBridgeOriginForActor(req) ?? {}),
       id: issueId,
       originRunId: createBody.originRunId ?? actor.runId,
+      originIdentityContextId: req.actor.identityContextId ?? null,
       executionPolicy,
       ...(sourceTrust ? { sourceTrust } : {}),
       createdByAgentId: actor.agentId,
@@ -9356,15 +9546,13 @@ export function issueRoutes(
     // best-effort: a greeting failure must not fail issue creation.
     if (isOnboardingFirstTask && issue.assigneeAgentId) {
       try {
-        const [company, goal, assigneeAgent] = await Promise.all([
+        const [company, assigneeAgent] = await Promise.all([
           companiesSvc.getById(companyId),
-          createBody.goalId ? goalsSvc.getById(createBody.goalId) : Promise.resolve(null),
           agentsSvc.getById(issue.assigneeAgentId),
         ]);
-        const greetingBody = buildOnboardingGreeting({
+        const greetingBody = await renderOnboardingGreeting({
           agentName: assigneeAgent?.name ?? null,
-          teamName: company?.name ?? null,
-          goals: goal?.description ?? goal?.title ?? null,
+          organizationName: company?.name ?? null,
         });
         await svc.addComment(
           issue.id,
@@ -9381,17 +9569,47 @@ export function issueRoutes(
           "failed to seed onboarding first-task greeting",
         );
       }
+
+      // Seed the opening question card right after the greeting so the first
+      // task is not open-ended: "Interview me and propose a plan and an agent
+      // team" or "I have a task in mind" (free text). Posted as the assignee,
+      // deterministic (no LLM), and best-effort like the greeting. Answering
+      // the card wakes the assignee through the normal question-response path;
+      // typing a message instead supersedes the card and wakes on the comment.
+      try {
+        await issueThreadInteractionService(db).create(
+          issue,
+          {
+            kind: "ask_user_questions",
+            idempotencyKey: `onboarding-first-task:${issue.id}:opening-question`,
+            continuationPolicy: "wake_assignee",
+            payload: await buildOnboardingFirstTaskOpeningQuestion(),
+          },
+          { agentId: issue.assigneeAgentId },
+        );
+      } catch (err) {
+        logger.warn(
+          { err, issueId: issue.id, companyId },
+          "failed to seed onboarding first-task opening question",
+        );
+      }
     }
 
-    void queueIssueAssignmentWakeup({
-      heartbeat,
-      issue,
-      reason: "issue_assigned",
-      mutation: "create",
-      contextSource: "issue.create",
-      requestedByActorType: actor.actorType,
-      requestedByActorId: actor.actorId,
-    });
+    // Do not auto-wake the onboarding first task. Nothing should run and no
+    // token should be spent until the user types: the greeting is posted above
+    // (deterministic, no LLM) and the user's first comment wakes the assignee
+    // through the normal comment path. Every other create path keeps its wake.
+    if (!isOnboardingFirstTask) {
+      void queueIssueAssignmentWakeup({
+        heartbeat,
+        issue,
+        reason: "issue_assigned",
+        mutation: "create",
+        contextSource: "issue.create",
+        requestedByActorType: actor.actorType,
+        requestedByActorId: actor.actorId,
+      });
+    }
     await queueTaskWatchdogEvaluation(issue, actor.runId);
 
     res.status(201).json({
@@ -9997,10 +10215,18 @@ export function issueRoutes(
       reopen: reopenRequested,
       resume: resumeRequested,
       interrupt: interruptRequested,
+      deferWakeForGoal,
       hiddenAt: hiddenAtRaw,
       onBehalfOfUserId: _requestedOnBehalfOfUserId,
       ...updateFields
     } = req.body;
+    if (deferWakeForGoal === true && (
+      !normalizedAssigneeAgentId ||
+      Object.keys(req.body).some((key) => !["assigneeAgentId", "assigneeUserId", "deferWakeForGoal"].includes(key))
+    )) {
+      res.status(400).json({ error: "Deferring the goal wake requires an assignment-only agent handoff" });
+      return;
+    }
     const reviewPolicyChangeRequested =
       req.body.reviewPolicy !== undefined
       && req.body.reviewPolicy !== existing.reviewPolicy;
@@ -10403,6 +10629,68 @@ export function issueRoutes(
       }
     }
 
+    if (assigneeWillChange && existing.assigneeAgentId) {
+      await stopRunnerGoalForOwnershipChange({
+        companyId: existing.companyId,
+        issueId: existing.id,
+        agentId: existing.assigneeAgentId,
+      });
+      const runToStopForReassignment = await resolveActiveIssueRun(existing);
+      if (runToStopForReassignment) {
+        const cancelled = await heartbeat.cancelRun(
+          runToStopForReassignment.id,
+          "Cancelled before issue reassignment",
+          {
+            errorCode: "issue_reassigned",
+            resultJson: { reassignmentStopConfirmed: true },
+            eventMessage: "run cancelled before issue reassignment",
+            eventPayload: { issueId: existing.id },
+          },
+        );
+        if (!cancelled || cancelled.status !== "cancelled") {
+          throw conflict("The active agent run could not be stopped before reassignment", {
+            code: "runner_goal_reassignment_stop_unconfirmed",
+            runId: runToStopForReassignment.id,
+          });
+        }
+        interruptedRunId = cancelled.id;
+      }
+    }
+
+    const terminalizingIssue =
+      typeof updateFields.status === "string" &&
+      updateFields.status !== existing.status &&
+      isClosedIssueStatus(updateFields.status);
+    if (!assigneeWillChange && terminalizingIssue && existing.assigneeAgentId) {
+      const goalStopAction = await stopRunnerGoalForOwnershipChange({
+        companyId: existing.companyId,
+        issueId: existing.id,
+        agentId: existing.assigneeAgentId,
+      });
+      const runToStopForTerminalization = goalStopAction
+        ? await resolveActiveIssueRun(existing)
+        : null;
+      if (goalStopAction && runToStopForTerminalization) {
+        const cancelled = await heartbeat.cancelRun(
+          runToStopForTerminalization.id,
+          "Cancelled before issue terminalization",
+          {
+            errorCode: "issue_terminalized",
+            resultJson: { terminalizationStopConfirmed: true },
+            eventMessage: "run cancelled before issue terminalization",
+            eventPayload: { issueId: existing.id, status: updateFields.status },
+          },
+        );
+        if (!cancelled || cancelled.status !== "cancelled") {
+          throw conflict("The active agent run could not be stopped before terminalizing the issue", {
+            code: "runner_goal_terminalization_stop_unconfirmed",
+            runId: runToStopForTerminalization.id,
+          });
+        }
+        interruptedRunId = cancelled.id;
+      }
+    }
+
     const nextParentId = updateFields.parentId === undefined
       ? existing.parentId
       : updateFields.parentId as string | null;
@@ -10635,7 +10923,7 @@ export function issueRoutes(
     }
 
     let cancelledStatusRunId: string | null = null;
-    if (runToCancelForCancelledStatus) {
+    if (runToCancelForCancelledStatus && runToCancelForCancelledStatus.id !== interruptedRunId) {
       try {
         const cancelled = await heartbeat.cancelRun(runToCancelForCancelledStatus.id);
         if (cancelled) {
@@ -11011,6 +11299,7 @@ export function issueRoutes(
     }
 
     let comment = null;
+    let goalCommentSteered = false;
     let lostReviewPathRef: string | null = null;
     if (commentBody) {
       const commentReferenceSummaryBefore = updateReferenceSummaryAfter
@@ -11026,6 +11315,37 @@ export function issueRoutes(
       });
       await issueReferencesSvc.syncComment(comment.id);
       await externalObjectsSvc.syncCommentSafely(comment.id);
+      if (
+        issue.assigneeAgentId &&
+        !(actor.actorType === "agent" && actor.actorId === issue.assigneeAgentId)
+      ) {
+        const goalProjection = await runnerGoals.projection(
+          issue.companyId,
+          issue.id,
+          issue.assigneeAgentId,
+        );
+        if (goalProjection?.goal?.status === "active" && goalProjection.workingNow) {
+          const steer = queueLiveRunnerPrpCommand({
+            companyId: issue.companyId,
+            issueId: issue.id,
+            agentId: issue.assigneeAgentId,
+            type: "turn.steer",
+            payload: { text: comment.body },
+            commandId: `goal_comment_${comment.id}`,
+          });
+          if (steer) {
+            try {
+              await steer.completion;
+              goalCommentSteered = true;
+            } catch (err) {
+              logger.warn(
+                { err, issueId: issue.id, commentId: comment.id, runId: steer.runId },
+                "failed to steer an active session goal; falling back to a boundary wake",
+              );
+            }
+          }
+        }
+      }
       const commentReferenceSummaryAfter = await issueReferencesSvc.listIssueReferenceSummary(issue.id);
       const commentReferenceDiff = issueReferencesSvc.diffIssueReferenceSummary(
         commentReferenceSummaryBefore,
@@ -11208,9 +11528,9 @@ export function issueRoutes(
         });
       };
 
-      if (executionStageWakeup) {
+      if (executionStageWakeup && deferWakeForGoal !== true) {
         addWakeup(executionStageWakeup.agentId, executionStageWakeup.wakeup);
-      } else if (assigneeChanged && issue.assigneeAgentId && issue.status !== "backlog") {
+      } else if (assigneeChanged && issue.assigneeAgentId && issue.status !== "backlog" && deferWakeForGoal !== true) {
         addWakeup(issue.assigneeAgentId, {
           source: "assignment",
           triggerDetail: "system",
@@ -11284,7 +11604,12 @@ export function issueRoutes(
           !(selfComment && resumeRequested !== true) &&
           (reopened || !isClosedIssueStatus(issue.status));
 
-        if (assigneeId && !assigneeChanged && shouldWakeAssigneeForComment) {
+        if (
+          assigneeId &&
+          !assigneeChanged &&
+          !goalCommentSteered &&
+          shouldWakeAssigneeForComment
+        ) {
           addWakeup(assigneeId, {
             source: "automation",
             triggerDetail: "system",
@@ -11963,6 +12288,10 @@ export function issueRoutes(
       const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
       if (!issue) return;
       const actor = getActorInfo(req);
+      const steeringIdentity = await reserveSteeredIdentity(db, {
+        companyId: issue.companyId, runId: req.body.targetRunId, issueId: issue.id, messageId: commentId,
+      });
+      let steeringDeliveryAttempted = false;
       let acknowledgedTurnId: string | null = null;
       let duplicate = false;
       let queue: IssueQueuedCommentQueue;
@@ -12075,11 +12404,14 @@ export function issueRoutes(
             });
           }
 
-          const acknowledgement = await steerNativeSession({
+          steeringDeliveryAttempted = true;
+          const acknowledgement = (steeringIdentity ? await storedSteeringAcknowledgement(tx, steeringIdentity) : null) ?? await steerNativeSession({
             runId: locked.activeRun.id,
             message: entry.comment.body,
             correlationId: commentId,
+            onAcknowledged: steeringIdentity ? () => reconcileSteeredIdentity(db, steeringIdentity) : undefined,
           });
+          if (steeringIdentity) await acceptSteeredIdentity(tx, steeringIdentity);
           acknowledgedTurnId = acknowledgement.turnId;
           const remainingIds = locked.queue.entries
             .map((candidate) => candidate.comment.id)
@@ -12130,6 +12462,10 @@ export function issueRoutes(
           });
         });
       } catch (error) {
+        const uncertain = steeringDeliveryAttempted && (!(error instanceof NativeSessionSteeringError)
+          || error.code === "steering_timeout");
+        if (steeringIdentity && !uncertain) await rejectSteeredIdentity(db, steeringIdentity);
+
         if (error instanceof NativeSessionSteeringError) {
           throw conflict(error.message, { code: error.code, retryable: true });
         }
@@ -12226,6 +12562,7 @@ export function issueRoutes(
       ...req.body,
       sourceRunId: req.actor.type === "agent" ? agentSourceRunId : req.body.sourceRunId ?? null,
     }, {
+      identityContextId: req.actor.identityContextId,
       agentId: actor.agentId,
       userId: actor.actorType === "user" ? actor.actorId : null,
     });
@@ -12333,6 +12670,13 @@ export function issueRoutes(
       if (!suggestedTaskEffectsAuthorized) return;
 
       const actor = getActorInfo(req);
+      if (current.kind === "request_confirmation" && current.payload.toolAction) {
+        if (!opts.approveToolActionRequest) throw unprocessable("Tool review resolution is unavailable");
+        await opts.approveToolActionRequest({ companyId: issue.companyId, issueId: issue.id, interactionId: current.id, actionRequestId: current.payload.toolAction.actionRequestId, rememberAction: req.body.rememberAction === true, actor: { agentId: actor.agentId, userId: actor.actorType === "user" ? actor.actorId : null } });
+        res.json(await interactionSvc.getById(current.id));
+        return;
+      }
+      if (req.body.rememberAction) throw unprocessable("Remembered permission is only supported for tool reviews");
       const { interaction, createdIssues, continuationIssue } = await interactionSvc.acceptInteraction(issue, interactionId, req.body, {
         agentId: actor.agentId,
         runId: actor.runId,
@@ -12577,6 +12921,12 @@ export function issueRoutes(
       }
 
       const actor = getActorInfo(req);
+      if (current.kind === "request_confirmation" && current.payload.toolAction) {
+        if (!opts.declineToolActionRequest) throw unprocessable("Tool review resolution is unavailable");
+        await opts.declineToolActionRequest({ companyId: issue.companyId, issueId: issue.id, interactionId: current.id, actionRequestId: current.payload.toolAction.actionRequestId, reason: req.body.reason, actor: { agentId: actor.agentId, userId: actor.actorType === "user" ? actor.actorId : null } });
+        res.json(await interactionSvc.getById(current.id));
+        return;
+      }
       const interaction = await interactionSvc.rejectInteraction(issue, interactionId, req.body, {
         agentId: actor.agentId,
         runId: actor.runId,
@@ -13511,6 +13861,7 @@ export function issueRoutes(
     // Without a single transaction, a 422 (or any error) thrown by the status update after the
     // comment is inserted would leave an orphan comment without the corresponding state change.
     let comment: Awaited<ReturnType<typeof svc.addComment>>;
+    let goalCommentSteered = false;
     if (shouldAutoApproveReviewComment) {
       const transition = applyIssueExecutionPolicyTransition({
         issue: currentIssue,
@@ -13648,6 +13999,37 @@ export function issueRoutes(
 
     await issueReferencesSvc.syncComment(comment.id);
     await externalObjectsSvc.syncCommentSafely(comment.id);
+    if (
+      currentIssue.assigneeAgentId &&
+      !(actor.actorType === "agent" && actor.actorId === currentIssue.assigneeAgentId)
+    ) {
+      const goalProjection = await runnerGoals.projection(
+        currentIssue.companyId,
+        currentIssue.id,
+        currentIssue.assigneeAgentId,
+      );
+      if (goalProjection?.goal?.status === "active" && goalProjection.workingNow) {
+        const steer = queueLiveRunnerPrpCommand({
+          companyId: currentIssue.companyId,
+          issueId: currentIssue.id,
+          agentId: currentIssue.assigneeAgentId,
+          type: "turn.steer",
+          payload: { text: comment.body },
+          commandId: `goal_comment_${comment.id}`,
+        });
+        if (steer) {
+          try {
+            await steer.completion;
+            goalCommentSteered = true;
+          } catch (err) {
+            logger.warn(
+              { err, issueId: currentIssue.id, commentId: comment.id, runId: steer.runId },
+              "failed to steer an active session goal; falling back to a boundary wake",
+            );
+          }
+        }
+      }
+    }
     const commentReferenceSummaryAfter = await issueReferencesSvc.listIssueReferenceSummary(currentIssue.id);
     const commentReferenceDiff = issueReferencesSvc.diffIssueReferenceSummary(
       commentReferenceSummaryBefore,
@@ -13831,7 +14213,7 @@ export function issueRoutes(
       const shouldWakeAssigneeForComment =
         !(selfComment && resumeRequested !== true) &&
         (reopened || !isClosedIssueStatus(wakeIssueSnapshot.status));
-      if (assigneeId && shouldWakeAssigneeForComment) {
+      if (assigneeId && !goalCommentSteered && shouldWakeAssigneeForComment) {
         if (reopened) {
           addWakeup(assigneeId, {
             source: "automation",

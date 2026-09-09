@@ -92,6 +92,29 @@ function readApiKeyFromAuthPayload(authPayload: unknown): string | null {
   return typeof raw === "string" && raw.trim().length > 0 ? raw.trim() : null;
 }
 
+/**
+ * The `last_refresh` timestamp of an auth.json payload, in epoch milliseconds,
+ * or null when the bytes are unreadable or carry no parseable timestamp. This is
+ * the same freshness field the shared merge decision predicate
+ * (`codex-auth-merge-decision.cjs`) compares, read the same way, so the seeding
+ * heal below and the credential writers agree on what "fresher" means.
+ */
+function readAuthLastRefreshMs(bytes: Buffer | null): number | null {
+  if (!bytes) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(bytes.toString("utf8"));
+  } catch {
+    return null;
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return null;
+  }
+  const raw = (parsed as Record<string, unknown>).last_refresh;
+  const ms = typeof raw === "string" ? Date.parse(raw) : NaN;
+  return Number.isFinite(ms) ? ms : null;
+}
+
 export function resolveSharedCodexHomeDir(
   env: NodeJS.ProcessEnv = process.env,
 ): string {
@@ -574,10 +597,11 @@ export async function stageCodexHomeForSync(
  * stay live and single-use refresh tokens are not copied), copies the static
  * shared config files, and — when an API key is supplied — writes an API-key
  * `auth.json` instead. A promoted device-login credential — a regular-file
- * `auth.json` holding a subscription identity the shared source does not hold —
- * is kept authoritative: it is neither removed nor replaced by the shared
- * symlink. Used both for the default company home and for the per-agent home
- * set by the server isolation guard.
+ * `auth.json` holding a subscription identity the shared source does not hold,
+ * or the same identity with a `last_refresh` the shared source has not strictly
+ * moved past — is kept authoritative: it is neither removed nor replaced by the
+ * shared symlink. Used both for the default company home and for the per-agent
+ * home set by the server isolation guard.
  */
 export async function seedManagedCodexHome(
   targetHome: string,
@@ -601,14 +625,25 @@ export async function seedManagedCodexHome(
   // symlink be restored (ensureSymlink would otherwise replace it and Codex
   // would keep authenticating with the stale key).
   //
-  // The discriminator is identity-anchored, like the promotion and the cache
-  // vend: keep the file only when it holds a usable subscription identity that
-  // the shared source does not also hold. A same-identity regular file is the
-  // #5028 stale copy — the symlink serves the same account with live, rotating
-  // tokens, so it is strictly better. A different-identity (or source-less)
-  // subscription file is the promoted company credential; on a server with no
-  // shared login there is nothing to symlink at all, and deleting it would
-  // silently sign the company out right after a successful device login.
+  // The discriminator is identity- and freshness-anchored, like the promotion
+  // and the cache vend: keep the file when it holds a usable subscription
+  // identity that the shared source does not also hold, and also when it holds
+  // the SAME identity but the shared source is not strictly fresher by
+  // `last_refresh`. A device login for the account the host is also signed in
+  // to promotes a file strictly newer than the host copy; swapping that file
+  // for the symlink would sign the company back in with the very credential the
+  // login just replaced — the failing one that made the user sign in. The
+  // #5028 stale copy is the strictly-older direction of the same comparison,
+  // and it still heals: the live host credential refreshes on use, so as soon
+  // as the shared source is strictly fresher the swap applies. Ties and
+  // unparseable freshness keep the file — the same fail-closed direction the
+  // shared merge decision predicate uses — because deleting a promoted
+  // credential is irreversible while keeping it self-corrects on the next seed
+  // once the source has provably moved past it. A different-identity (or
+  // source-less) subscription file is the promoted company credential; on a
+  // server with no shared login there is nothing to symlink at all, and
+  // deleting it would silently sign the company out right after a successful
+  // device login.
   let keepPromotedAuth = false;
   if (!apiKey && seedFromShared) {
     const authPath = path.join(targetHome, "auth.json");
@@ -640,7 +675,20 @@ export async function seedManagedCodexHome(
             return null;
           });
         const sourceIdentity = sourceBytes ? readSubscriptionAccountId(sourceBytes) : null;
-        keepPromotedAuth = sourceIdentity !== targetIdentity;
+        if (sourceIdentity !== targetIdentity) {
+          keepPromotedAuth = true;
+        } else {
+          // Same identity: swap to the symlink only when the shared source is
+          // strictly fresher. A tie or an unparseable timestamp keeps the file
+          // (see the freshness rationale above).
+          const sourceLastRefresh = readAuthLastRefreshMs(sourceBytes);
+          const targetLastRefresh = readAuthLastRefreshMs(targetBytes);
+          keepPromotedAuth = !(
+            sourceLastRefresh !== null &&
+            targetLastRefresh !== null &&
+            sourceLastRefresh > targetLastRefresh
+          );
+        }
         if (keepPromotedAuth && sourceReadErrorCode) {
           // Deferred heal, made visible: seeding runs before every probe and
           // every execute, so the next call with a readable source applies
