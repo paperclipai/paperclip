@@ -311,7 +311,7 @@ describe("codex execute", () => {
       expect(configText).toContain("[mcp_servers.github]");
       expect(configText).toContain("[mcp_servers.\"paperclip-github\"]");
       expect(configText).toContain('url = "http://paperclip.local:3100/api/tool-gateway/gateways/gateway-1/mcp"');
-      expect(configText).toContain('Authorization = "Bearer pcgw_secret-managed-token"');
+      expect(configText).toContain('http_headers = { Authorization = "Bearer pcgw_secret-managed-token" }');
       expect(logs).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
