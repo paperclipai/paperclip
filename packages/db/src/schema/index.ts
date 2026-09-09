@@ -48,6 +48,20 @@ export { issueReferenceMentions } from "./issue_reference_mentions.js";
 export { externalObjects } from "./external_objects.js";
 export { externalObjectMentions } from "./external_object_mentions.js";
 export { connectionEventDeliveries } from "./connection_event_deliveries.js";
+export {
+  chatEndpoints,
+  chatEndpointResources,
+  chatExternalPrincipals,
+  chatIdentityLinks,
+  chatConversations,
+  chatDeliveries,
+  chatPublications,
+  chatMessageLinks,
+  chatActions,
+  chatAgentRoutes,
+  chatEndpointLeases,
+  chatSdkState,
+} from "./chat_channels.js";
 export { issueRelations } from "./issue_relations.js";
 export { routines, routineRevisions, routineTriggers, routineRuns } from "./routines.js";
 export { pipelines, pipelineStages, pipelineTransitions } from "./pipelines.js";
@@ -187,3 +201,6 @@ export { runIdentityContexts } from "./run_identity_contexts.js";
 export { connectionIntentDeliveries } from "./connection_intent_deliveries.js";
 
 export { toolActionDeliveries } from "./tool_action_deliveries.js";
+export { chatTeamsFileTransfers } from "./chat_teams_file_transfers.js";
+export { chatDiscordCommandOwners } from "./chat_discord_command_owners.js";
+export { chatTelegramDraftIds } from "./chat_telegram_draft_ids.js";

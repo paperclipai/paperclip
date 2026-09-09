@@ -22,6 +22,12 @@ patchedDependencies:
   "@agentclientprotocol/claude-agent-acp@0.70.0": patches/@agentclientprotocol__claude-agent-acp@0.70.0.patch
   "@agentclientprotocol/claude-agent-acp@0.73.0": patches/@agentclientprotocol__claude-agent-acp@0.73.0.patch
   "@agentclientprotocol/codex-acp@1.6.2": patches/@agentclientprotocol__codex-acp@1.6.2.patch
+  "@chat-adapter/slack@4.39.0": patches/@chat-adapter__slack@4.39.0.patch
+  "@chat-adapter/discord@4.39.0": patches/@chat-adapter__discord@4.39.0.patch
+  "@chat-adapter/telegram@4.39.0": patches/@chat-adapter__telegram@4.39.0.patch
+  "@chat-adapter/teams@4.39.0": patches/@chat-adapter__teams@4.39.0.patch
+  "@chat-adapter/github@4.39.0": patches/@chat-adapter__github@4.39.0.patch
+  "@discordjs/ws@1.2.3": patches/@discordjs__ws@1.2.3.patch
 
 # Agent CLIs share the current runtime used by the native provider pack.
 # pnpm patches change package files, but overrides control dependency resolution.
