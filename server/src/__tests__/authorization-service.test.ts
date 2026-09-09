@@ -2262,6 +2262,19 @@ describeEmbeddedPostgres("authorization service", () => {
 
     await expect(authz.decide({
       actor,
+      action: "issue:comment",
+      resource: {
+        type: "issue",
+        companyId: company.id,
+        issueId: unrelatedIssue.id,
+      },
+    })).resolves.toMatchObject({
+      allowed: false,
+      reason: "deny_scope",
+    });
+
+    await expect(authz.decide({
+      actor,
       action: "agent_config:read",
       resource: {
         type: "agent",
@@ -2308,6 +2321,19 @@ describeEmbeddedPostgres("authorization service", () => {
     await expect(authz.decide({
       actor,
       action: "issue:mutate",
+      resource: {
+        type: "issue",
+        companyId: company.id,
+        issueId: otherIssue.id,
+      },
+    })).resolves.toMatchObject({
+      allowed: false,
+      reason: "deny_scope",
+    });
+
+    await expect(authz.decide({
+      actor,
+      action: "issue:comment",
       resource: {
         type: "issue",
         companyId: company.id,
