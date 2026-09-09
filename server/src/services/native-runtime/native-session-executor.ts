@@ -270,6 +270,7 @@ function clearNativeRuntimeRequestResolutions(runId: string): void {
 type WarmNativeSession = {
   credentialRunId?: string;
   githubAuthenticationMode?: string;
+  networkAccess: boolean;
   session: NativeSession;
   ownerToken: symbol;
   configDigest: string;
@@ -4691,7 +4692,8 @@ async function executePaperclipNativeSessionWithinScope(
       const credentialRunChanged = Boolean(input.runnerEnvironment?.PAPERCLIP_GITHUB_BROKER_TOKEN)
         && entry.credentialRunId !== input.execution.binding.runId;
       if (entry.configDigest !== warmConfigDigest || credentialRunChanged
-        || entry.githubAuthenticationMode !== input.runnerEnvironment?.PAPERCLIP_GITHUB_AUTH_MODE) {
+        || entry.githubAuthenticationMode !== input.runnerEnvironment?.PAPERCLIP_GITHUB_AUTH_MODE
+        || entry.networkAccess !== (input.runnerEnvironment?.PAPERCLIP_RUNNER_NETWORK_ACCESS === "enabled")) {
         if (entry.busy) throw new Error("native_session_supervisor_busy");
         if (entry.idleTimer !== null) clearTimeout(entry.idleTimer);
         warmNativeSessions.delete(warmSessionId);
@@ -4947,6 +4949,7 @@ async function executePaperclipNativeSessionWithinScope(
                 } else
                   warmNativeSessions.set(warmSessionId, {
                     githubAuthenticationMode: input.runnerEnvironment?.PAPERCLIP_GITHUB_AUTH_MODE,
+                    networkAccess: input.runnerEnvironment?.PAPERCLIP_RUNNER_NETWORK_ACCESS === "enabled",
                     credentialRunId: input.runnerEnvironment?.PAPERCLIP_GITHUB_BROKER_TOKEN
                       ? input.execution.binding.runId : undefined,
                     session,

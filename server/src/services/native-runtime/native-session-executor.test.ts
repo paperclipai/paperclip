@@ -3397,8 +3397,11 @@ describe("native warm session supervision", () => {
   ), ...["host", "managed"].flatMap((firstMode) => [false, true].map((local) => ({
     useBroker: false, projectless: false, local, firstMode,
     secondMode: firstMode === "host" ? "managed" : "host",
-  })))])("verifies a live warm owner before refreshing run authority (broker: $useBroker, projectless: $projectless, local: $local, auth: $firstMode -> $secondMode)", async ({ useBroker, projectless, local, firstMode, secondMode }) => {
-    const replacesProvider = useBroker || firstMode !== secondMode;
+  }))), ...[false, true].flatMap((local) => [
+    { useBroker: false, projectless: false, local, firstMode: "host", secondMode: "host", firstNetwork: "enabled", secondNetwork: "disabled" },
+    { useBroker: false, projectless: false, local, firstMode: "managed", secondMode: "managed", firstNetwork: "disabled", secondNetwork: "enabled" },
+  ])].map((scenario) => ({ firstNetwork: "disabled", secondNetwork: "disabled", ...scenario })))("verifies a live warm owner before refreshing run authority (broker: $useBroker, projectless: $projectless, local: $local, auth: $firstMode -> $secondMode, network: $firstNetwork -> $secondNetwork)", async ({ useBroker, projectless, local, firstMode, secondMode, firstNetwork, secondNetwork }) => {
+    const replacesProvider = useBroker || firstMode !== secondMode || firstNetwork !== secondNetwork;
     const stateBase = await mkdtemp(
       join(tmpdir(), "paperclip-runnerd-warm-authority-"),
     );
@@ -3496,7 +3499,7 @@ describe("native warm session supervision", () => {
       await executePaperclipNativeSession({
         db: leaseDb(first),
         execution: first,
-        runnerEnvironment: { PAPERCLIP_GITHUB_AUTH_MODE: firstMode, ...(useBroker ? { PAPERCLIP_GITHUB_BROKER_TOKEN: "first-run-capability" } : {}) },
+        runnerEnvironment: { PAPERCLIP_GITHUB_AUTH_MODE: firstMode, PAPERCLIP_RUNNER_NETWORK_ACCESS: firstNetwork, ...(useBroker ? { PAPERCLIP_GITHUB_BROKER_TOKEN: "first-run-capability" } : {}) },
         runnerInstanceId: "runner-runnerd-warm",
         useRunnerd: true,
         runnerExecutionTarget: remoteTarget,
@@ -3567,7 +3570,7 @@ describe("native warm session supervision", () => {
       await executePaperclipNativeSession({
         db: continuationDb,
         execution: second,
-        runnerEnvironment: { PAPERCLIP_GITHUB_AUTH_MODE: secondMode, ...(useBroker ? { PAPERCLIP_GITHUB_BROKER_TOKEN: "second-run-capability" } : {}) },
+        runnerEnvironment: { PAPERCLIP_GITHUB_AUTH_MODE: secondMode, PAPERCLIP_RUNNER_NETWORK_ACCESS: secondNetwork, ...(useBroker ? { PAPERCLIP_GITHUB_BROKER_TOKEN: "second-run-capability" } : {}) },
         runnerInstanceId: "runner-runnerd-warm",
         useRunnerd: true,
         runnerExecutionTarget: remoteTarget,

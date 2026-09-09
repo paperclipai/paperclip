@@ -78,8 +78,16 @@ describe("managed GitHub launcher environment", () => {
       return { ...result, stdout: `SSH login banner\n${result.stdout}\nlogout` };
     });
     const env = await prepareGitHubExecutionEnvironment({
-      target: fixture.target, cwd: fixture.root, env: {}, hostCredentials: true, networkAccess: true,
+      target: fixture.target, cwd: fixture.root, env: {
+        PAPERCLIP_GIT_METADATA_ROOTS: '["/injected"]',
+        PAPERCLIP_RUNNER_NETWORK_ROOTS: '["/injected"]',
+        PAPERCLIP_GITHUB_HOST_HOME: "/injected",
+        PAPERCLIP_GITHUB_AUTH_MODE: "managed",
+        PAPERCLIP_RUNNER_NETWORK_ACCESS: "disabled",
+      }, hostCredentials: true, networkAccess: true,
     });
+    expect(env.PAPERCLIP_GIT_METADATA_ROOTS).not.toContain("/injected");
+    expect(env.PAPERCLIP_RUNNER_NETWORK_ROOTS).not.toContain("/injected");
     expect(env.PAPERCLIP_GITHUB_AUTH_MODE).toBe("host");
     expect(env.PAPERCLIP_RUNNER_NETWORK_ACCESS).toBe("enabled");
     expect(env.PAPERCLIP_GITHUB_HOST_HOME).toBe(fixture.root);
