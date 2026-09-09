@@ -11,6 +11,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   createPaperclipCloudConnector,
+  invalidatePaperclipCloudConnectorCapabilities,
   GMAIL_CONNECTOR_SCOPES,
   GOOGLE_WORKSPACE_CONNECTOR_PROFILES,
   paperclipCloudConnectorCapabilitiesFromEnv,
@@ -45,6 +46,39 @@ function config() {
 }
 
 describe("Paperclip Cloud connector", () => {
+  it("refreshes capabilities after enrollment and rejects stale cache writes", async () => {
+    const keys = config().config;
+    const env = {
+      PAPERCLIP_CLOUD_CONNECTOR_BASE_URL: keys.baseUrl,
+      PAPERCLIP_CLOUD_CONNECTOR_INSTANCE_ID: keys.instanceId,
+      PAPERCLIP_CLOUD_CONNECTOR_ENVIRONMENT: keys.environment,
+      PAPERCLIP_CLOUD_CONNECTOR_SIGN_PRIVATE_KEY: keys.signPrivateKey,
+      PAPERCLIP_CLOUD_CONNECTOR_SEAL_PRIVATE_KEY: keys.sealPrivateKey,
+    };
+    let completeOldRequest!: (response: Response) => void;
+    const request = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(Response.json({ status: "pending", active: false }))
+      .mockImplementationOnce(() => new Promise<Response>((resolve) => { completeOldRequest = resolve; }))
+      .mockResolvedValue(Response.json({ status: "active", active: true, profiles: ["gmail.read"] }));
+    invalidatePaperclipCloudConnectorCapabilities();
+    try {
+      await expect(paperclipCloudConnectorCapabilitiesFromEnv(env)).resolves.toEqual([]);
+      await expect(paperclipCloudConnectorCapabilitiesFromEnv(env)).resolves.toEqual([]);
+      expect(request).toHaveBeenCalledTimes(1);
+      invalidatePaperclipCloudConnectorCapabilities();
+      const oldRequest = paperclipCloudConnectorCapabilitiesFromEnv(env);
+      invalidatePaperclipCloudConnectorCapabilities();
+      await expect(paperclipCloudConnectorCapabilitiesFromEnv(env)).resolves.toEqual(["gmail.read"]);
+      completeOldRequest(Response.json({ status: "pending", active: false }));
+      await expect(oldRequest).resolves.toEqual([]);
+      await expect(paperclipCloudConnectorCapabilitiesFromEnv(env)).resolves.toEqual(["gmail.read"]);
+      expect(request).toHaveBeenCalledTimes(3);
+    } finally {
+      request.mockRestore();
+      invalidatePaperclipCloudConnectorCapabilities();
+    }
+  });
+
   it("starts a signed session with exact endpoint audience and scope contract", async () => {
     const keys = config();
     const request = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {

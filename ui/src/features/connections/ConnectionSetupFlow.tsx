@@ -920,6 +920,11 @@ export function ConnectionSetupFlow({
     ),
   });
   const [connectorEnrollmentError, setConnectorEnrollmentError] = useState<string | null>(null);
+  const closeEnrollmentPopup = useCallback(() => {
+    oauthPopupRef.current?.close();
+    oauthPopupRef.current = null;
+    setEnrollmentAuthorizationUrl(null);
+  }, []);
   const preserveEnrollmentAccess = useCallback(() => {
     if (!selectedCompanyId || !requestedAppKey) return;
     saveEnrollmentAccessState(selectedCompanyId, requestedAppKey, {
@@ -931,6 +936,7 @@ export function ConnectionSetupFlow({
   const openConnectorEnrollment = useCallback((verificationUrl: string) => {
     const target = resolveAuthorizationTarget(verificationUrl);
     if (!target.ok) {
+      closeEnrollmentPopup();
       setConnectorEnrollmentError(target.message);
       return;
     }
@@ -946,17 +952,15 @@ export function ConnectionSetupFlow({
       return;
     }
     navigateTopLevel(target.url);
-  }, [host]);
+  }, [host, closeEnrollmentPopup]);
   useEffect(() => {
     if (!enrollmentAuthorizationUrl || connectorEnrollmentQuery.data?.status !== "active") return;
     // Enrollment is only a prerequisite. Re-read the server catalog and keep
     // the task's access selection and interaction binding in this dialog.
-    setEnrollmentAuthorizationUrl(null);
+    closeEnrollmentPopup();
     setConnectorEnrollmentError(null);
-    oauthPopupRef.current?.close();
-    oauthPopupRef.current = null;
     void galleryQuery.refetch();
-  }, [enrollmentAuthorizationUrl, connectorEnrollmentQuery.data?.status, galleryQuery.refetch]);
+  }, [enrollmentAuthorizationUrl, connectorEnrollmentQuery.data?.status, galleryQuery.refetch, closeEnrollmentPopup]);
   const startConnectorEnrollment = useMutation({
     mutationFn: () => toolsApi.startCloudConnectorEnrollment(
       selectedCompanyId!,
@@ -971,12 +975,14 @@ export function ConnectionSetupFlow({
     ),
     onSuccess: (status) => {
       if (!status.verificationUrl) {
+        closeEnrollmentPopup();
         setConnectorEnrollmentError("Paperclip Cloud did not return an enrollment link. Try again.");
         return;
       }
       openConnectorEnrollment(status.verificationUrl);
     },
     onError: (error) => {
+      closeEnrollmentPopup();
       setConnectorEnrollmentError(
         error instanceof Error ? error.message : "Paperclip couldn’t reach Paperclip Cloud. Try again.",
       );

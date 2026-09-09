@@ -59,6 +59,7 @@ import type { ComposioClient } from "../services/composio.js";
 import type { VercelConnectClient } from "../services/vercel-connect.js";
 import {
   isPaperclipCloudConnectorStrategy,
+  invalidatePaperclipCloudConnectorCapabilities,
   type PaperclipCloudConnector,
   paperclipCloudConnectorCapabilitiesFromEnv,
 } from "../services/paperclip-cloud-connector.js";
@@ -1060,6 +1061,7 @@ function connectorEnrollmentPrincipal(req: Request): string {
     let status;
     try {
       status = await completePaperclipCloudConnectorEnrollment({ enrollmentId, approvalCode, state });
+      invalidatePaperclipCloudConnectorCapabilities();
     } catch {
       throw badRequest("Invalid or expired Paperclip Cloud enrollment callback");
     }

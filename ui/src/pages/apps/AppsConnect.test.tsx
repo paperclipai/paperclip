@@ -815,6 +815,32 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     open.mockRestore();
   });
 
+  it.each(["request", "missing-url", "invalid-url"])("closes the reserved enrollment popup after %s failure", async (failure) => {
+    const popup = { closed: false, location: { assign: vi.fn() }, focus: vi.fn(), close: vi.fn() };
+    vi.spyOn(window, "open").mockReturnValue(popup as unknown as Window);
+    listGalleryMock.mockResolvedValue({ apps: [{
+      ...GMAIL, methods: GMAIL.methods.filter((method) => !method.oauthStrategy),
+      ownershipAvailability: { platform_shared: false, customer: true, dcr: true },
+    }] });
+    getCloudConnectorEnrollmentMock.mockResolvedValue({ status: "not_configured" });
+    if (failure === "request") {
+      startCloudConnectorEnrollmentMock.mockRejectedValue(new Error("Enrollment unavailable"));
+    } else {
+      startCloudConnectorEnrollmentMock.mockResolvedValue({
+        status: "pending",
+        verificationUrl: failure === "missing-url" ? undefined : "javascript:alert(1)",
+      });
+    }
+    await render(undefined, false, <ConnectionSetupFlow host="dialog" serviceSlug="gmail" interactionId="intent-1" requestedAgentId="agent-1" />);
+    await passAccessStep();
+    await act(async () => buttonByText("Connect with Paperclip")?.click());
+    await flushReact();
+    expect(popup.close).toHaveBeenCalledOnce();
+    expect(popup.location.assign).not.toHaveBeenCalled();
+    expect(navigateTopLevelMock).not.toHaveBeenCalled();
+    expect(container.textContent).not.toContain("Finish authorization in the opened window");
+  });
+
   it("binds OAuth to the task even when setup resumes in the page host", async () => {
     mockSearch.value = "source=gmail&stage=setup&intent=intent-1";
     listGalleryMock.mockResolvedValue({ apps: [{ ...GMAIL, ownershipAvailability: { ...GMAIL.ownershipAvailability, platform_shared: true } }] });
