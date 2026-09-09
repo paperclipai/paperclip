@@ -76,6 +76,13 @@ export interface NativeEvidenceAssessment {
   ignoredAttentionRequests: PrpIgnoredAttentionRequest[];
 }
 
+const BOARD_OWNED_BLOCKER_KINDS: Record<string, true> = {
+  user: true,
+  system: true,
+  external: true,
+  board: true,
+};
+
 function record(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
     ? value as Record<string, unknown>
@@ -390,7 +397,12 @@ export async function classifyNativeEvidence(input: {
     blocker: reported === "blocked" && typeof blocker.unblockAction === "string"
       ? {
           unblockAction: blocker.unblockAction,
-          boardOwned: blockerOwner.kind === "board" || blockerOwner.owner === "board",
+          // PRP owner names are descriptive, not stable principal ids. Only
+          // an agent-owned blocker can route back to the current agent; every
+          // valid non-agent owner routes to the board's durable inbox.
+          boardOwned:
+            BOARD_OWNED_BLOCKER_KINDS[String(blockerOwner.kind)] === true ||
+            blockerOwner.owner === "board",
           scope: blocker.scope === "task_wide" ? "task_wide" : "current_track",
         }
       : null,

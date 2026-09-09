@@ -143,6 +143,19 @@ conditions before model disposition:
 | Completion evidence is incomplete and continuation is forbidden | Preserve | Record a finalization error and named next action |
 | Completion evidence is otherwise incomplete | `in_progress` | Enqueue a bounded, idempotent continuation |
 
+PRP blocker owners carry a descriptive `{kind, name}`, not a stable control-plane
+principal id. A task-wide blocker owned by `agent` routes back to the current
+agent. Owners of kind `user`, `system`, or `external` route to the board, which
+is the only durable routable owner available without an authenticated user id.
+The committer persists that projection as the issue's `unblockDescriptor`;
+comments and result prose never create or replace this state.
+
+Do not encode operator or external waits as agent-owned blockers. Agent ownership
+requests an immediate bounded wake from the current agent; it is not a
+subscription to a future configuration change. Operator work must remain
+board-owned or use a first-class approval/interaction, and automatically
+observed external work must use a persisted monitor.
+
 The output is a `NativeStatusDecision` containing:
 
 - the arbiter policy version;

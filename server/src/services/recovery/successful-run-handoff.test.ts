@@ -35,6 +35,7 @@ const issue = {
   assigneeAgentId: "agent-1",
   assigneeUserId: null,
   executionState: null,
+  unblockDescriptor: null,
 } as any;
 
 const agent = {
@@ -107,7 +108,9 @@ describe("successful run handoff decision", () => {
     expect(decision.instruction).toContain("Record the correct issue disposition.");
     expect(decision.instruction).toContain("1. Mark it `done` (scope complete) or `cancelled` (intentionally stopped).");
     expect(decision.instruction).toContain("2. Move it to `in_review` with a real reviewer path");
-    expect(decision.instruction).toContain("3. Mark it `blocked` with first-class blockers");
+    expect(decision.instruction).toContain("3. Mark it `blocked` in structured issue state");
+    expect(decision.instruction).toContain("set `unblockDescriptor` to a concrete `action` and routable `owner`");
+    expect(decision.instruction).toContain("only in a comment does not count");
     expect(decision.instruction).toContain("4. Either delegate follow-up work");
     expect(decision.instruction).toContain("This is a disposition-only recovery for the persisted source run");
     expect(decision.instruction).toContain("Do not redo implementation");
@@ -293,9 +296,36 @@ describe("successful run handoff decision", () => {
       kind: "skip",
       reason: "issue status in_review is a valid disposition",
     });
-    expect(decide({ issue: { ...issue, status: "blocked" } as any })).toEqual({
+    expect(decide({
+      issue: {
+        ...issue,
+        status: "blocked",
+        unblockDescriptor: {
+          owner: "board",
+          action: "Activate the independently verified release candidate.",
+        },
+      },
+    })).toEqual({
       kind: "skip",
-      reason: "issue status blocked is a valid disposition",
+      reason: "blocked issue has a durable waiting path",
+    });
+    expect(decide({ issue: { ...issue, status: "blocked" } })).toEqual({
+      kind: "skip",
+      reason: "blocked issue has no routable waiting path",
+    });
+    expect(decide({
+      issue: { ...issue, status: "blocked" },
+      hasExplicitBlockerPath: true,
+    })).toEqual({
+      kind: "skip",
+      reason: "blocked issue has a durable waiting path",
+    });
+    expect(decide({
+      issue: { ...issue, status: "blocked" },
+      hasPendingInteractionOrApproval: true,
+    })).toEqual({
+      kind: "skip",
+      reason: "blocked issue has a durable waiting path",
     });
     expect(decide({ hasPendingInteractionOrApproval: true })).toEqual({
       kind: "skip",
@@ -315,6 +345,55 @@ describe("successful run handoff decision", () => {
     expect(isSuccessfulRunHandoffValidPathSkip(decide({ hasActiveExecutionPath: true }))).toBe(true);
     expect(isSuccessfulRunHandoffValidPathSkip(decide({ hasQueuedWake: true }))).toBe(true);
     expect(isSuccessfulRunHandoffValidPathSkip(decide({ budgetBlocked: true }))).toBe(false);
+    expect(isSuccessfulRunHandoffValidPathSkip(decide({
+      issue: { ...issue, status: "in_review" },
+      hasPendingInteractionOrApproval: true,
+    }))).toBe(true);
+    expect(isSuccessfulRunHandoffValidPathSkip(decide({
+      issue: { ...issue, assigneeUserId: "operator-1" },
+    }))).toBe(true);
+    expect(isSuccessfulRunHandoffValidPathSkip(decide({
+      issue: { ...issue, status: "blocked" },
+    }))).toBe(false);
+  });
+
+  it("resolves a corrective handoff only from a structured operator-owned blocker", () => {
+    const correctiveRun = {
+      ...run,
+      id: "run-2",
+      contextSnapshot: {
+        issueId: "issue-1",
+        wakeReason: FINISH_SUCCESSFUL_RUN_HANDOFF_REASON,
+        handoffRequired: true,
+      },
+    };
+    const durableBlocker = decide({
+      run: correctiveRun,
+      issue: {
+        ...issue,
+        status: "blocked",
+        unblockDescriptor: {
+          owner: "board",
+          action: "Activate the independently verified release candidate.",
+        },
+      },
+    });
+    expect(durableBlocker).toEqual({
+      kind: "skip",
+      reason: "blocked issue has a durable waiting path",
+    });
+    expect(isSuccessfulRunHandoffValidPathSkip(durableBlocker)).toBe(true);
+
+    const proseOnly = decide({
+      run: correctiveRun,
+      finalReport: "Disposition: explicit continuation. Next step operator-owned.",
+      nextAction: "Operator activates the release.",
+    });
+    expect(proseOnly).toEqual({
+      kind: "skip",
+      reason: "source run is already a corrective handoff run",
+    });
+    expect(isSuccessfulRunHandoffValidPathSkip(proseOnly)).toBe(false);
   });
 
   it("does not treat killed background-task evidence as a missing live path when a durable monitor owns the wait", () => {

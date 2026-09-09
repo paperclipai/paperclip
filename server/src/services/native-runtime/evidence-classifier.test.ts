@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Db } from "@paperclipai/db";
 import { classifyNativeEvidence } from "./evidence-classifier.js";
+import { arbitrateNativeStatus } from "./status-arbiter.js";
 
 const workProductId = "00000000-0000-4000-8000-000000000001";
 const evidenceRef = `work_product:${workProductId}`;
@@ -129,6 +130,49 @@ describe("classifyNativeEvidence", () => {
       durableRecordId: interactionId,
       outcome: "accepted",
       reasonCode: "interaction_resolved",
+    });
+  });
+
+  it.each([
+    ["agent", false],
+    ["user", true],
+    ["system", true],
+    ["external", true],
+  ] as const)("routes a %s-owned blocker to a durable control-plane owner", async (kind, boardOwned) => {
+    const assessment = await classifyNativeEvidence({
+      ...input,
+      result: {
+        ...result("not_satisfied", false),
+        reportedWorkDisposition: "blocked",
+        summary: "Release activation is waiting on an operator.",
+        blocker: {
+          reasonCode: "release_activation_required",
+          owner: { kind, name: kind === "agent" ? "Current agent" : "Release operator" },
+          unblockAction: "Activate the independently verified release candidate.",
+          scope: "task_wide",
+        },
+      },
+    });
+
+    expect(assessment.blocker).toEqual({
+      unblockAction: "Activate the independently verified release candidate.",
+      boardOwned,
+      scope: "task_wide",
+    });
+
+    expect(arbitrateNativeStatus({
+      assessment,
+      terminalState: "succeeded",
+      workspaceFinalizeStatus: "succeeded",
+      agentId: "agent",
+      priorIssueStatus: "in_progress",
+    })).toMatchObject({
+      statusAction: "blocked",
+      toStatus: "blocked",
+      unblockDescriptor: {
+        owner: boardOwned ? "board" : { agentId: "agent" },
+        action: "Activate the independently verified release candidate.",
+      },
     });
   });
 });

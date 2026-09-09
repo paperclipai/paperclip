@@ -78,7 +78,7 @@ type IssueRow = Pick<
   | "assigneeAgentId"
   | "assigneeUserId"
   | "executionState"
-  | "originKind"
+  | "unblockDescriptor"
 >;
 type AgentRow = Pick<typeof agents.$inferSelect, "id" | "companyId" | "status">;
 type NoticeIssue = Pick<typeof issues.$inferSelect, "id" | "identifier" | "title" | "status">;
@@ -121,24 +121,30 @@ export type SuccessfulRunHandoffDecision =
       reason: string;
     };
 
-const SUCCESSFUL_RUN_HANDOFF_VALID_PATH_SKIP_REASONS = new Set([
-  "native semantic finalization owns the issue disposition",
-  "issue has execution policy state",
-  "active routine continuation owns the next action",
-  "issue already has an active execution path",
-  "issue already has a queued or deferred wake",
-  "pending interaction or approval owns the next action",
-  "persisted issue monitor owns the next action",
-  "explicit blocker path owns the next action",
-  "open recovery issue owns the ambiguity",
-  "issue is under an active pause hold",
-  "corrective handoff wake already exists for this source run",
-]);
+const SUCCESSFUL_RUN_HANDOFF_VALID_PATH_SKIP_REASONS: Record<string, true> = {
+  "native semantic finalization owns the issue disposition": true,
+  "issue is human-owned": true,
+  "issue status in_review is a valid disposition": true,
+  "issue status done is a valid disposition": true,
+  "issue status cancelled is a valid disposition": true,
+  "issue has execution policy state": true,
+  "active routine continuation owns the next action": true,
+  "issue already has an active execution path": true,
+  "issue already has a queued or deferred wake": true,
+  "pending interaction or approval owns the next action": true,
+  "persisted issue monitor owns the next action": true,
+  "explicit blocker path owns the next action": true,
+  "blocked issue has a durable waiting path": true,
+  "open recovery issue owns the ambiguity": true,
+  "issue is under an active pause hold": true,
+  "corrective handoff wake already exists for this source run": true,
+};
 
 export function isSuccessfulRunHandoffValidPathSkip(
   decision: SuccessfulRunHandoffDecision,
 ): decision is Extract<SuccessfulRunHandoffDecision, { kind: "skip" }> {
-  return decision.kind === "skip" && SUCCESSFUL_RUN_HANDOFF_VALID_PATH_SKIP_REASONS.has(decision.reason);
+  return decision.kind === "skip" &&
+    SUCCESSFUL_RUN_HANDOFF_VALID_PATH_SKIP_REASONS[decision.reason] === true;
 }
 
 export function isSuccessfulRunHandoffRequiredNoticeBody(body: string) {
@@ -286,6 +292,14 @@ function readString(value: unknown) {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
 
+function hasRoutableUnblockDescriptor(value: unknown) {
+  const descriptor = readRecord(value);
+  if (!readString(descriptor.action)) return false;
+  if (descriptor.owner === "board") return true;
+  const owner = readRecord(descriptor.owner);
+  return readString(owner.agentId) !== null || readString(owner.userId) !== null;
+}
+
 function ellipsize(value: string | null, maxLength: number) {
   if (!value || value.length <= maxLength) return value;
   return `${value.slice(0, maxLength - 1)}…`;
@@ -419,7 +433,7 @@ export function buildSuccessfulRunHandoffInstruction(input: {
     "2. Move it to `in_review` with a real reviewer path — `executionState.currentParticipant`, a human owner via `assigneeUserId`, a pending issue-thread interaction, or a linked pending approval.",
     "",
     "**Can it not continue right now?**",
-    "3. Mark it `blocked` with first-class blockers (`blockedByIssueIds`) or a clearly named unblock owner/action.",
+    "3. Mark it `blocked` in structured issue state with first-class `blockedByIssueIds`, or set `unblockDescriptor` to a concrete `action` and routable `owner` (`\"board\"`, `{ \"userId\": \"...\" }`, or `{ \"agentId\": \"...\" }`) through an authorized Paperclip action. Agents may name only themselves as an unblock owner; use a pending approval or issue-thread interaction for operator-owned action. Naming an operator or next step only in a comment does not count.",
     "",
     "**Is there more work to do?**",
     `4. Either delegate follow-up work (create/link a follow-up issue and block this one on it, or close this issue if its scope is independently complete) or record an explicit continuation path with \`resumeIntent: true\`, \`resumeFromRunId: ${input.sourceRunId}\`, and a concrete next action.`,
@@ -459,7 +473,6 @@ export function decideSuccessfulRunHandoff(input: {
   if (run.runtimeMode === "native" && (run.nativePhase !== null || run.completionContractId !== null)) {
     return { kind: "skip", reason: "native semantic finalization owns the issue disposition" };
   }
-  if (isCorrectiveHandoffRun(run)) return { kind: "skip", reason: "source run is already a corrective handoff run" };
   if (isRecoveryActionDrivenRun(run)) return { kind: "skip", reason: "recovery action run owns its own follow-up path" };
   if (isIssueMonitorMaintenanceRun(run)) return { kind: "skip", reason: "issue monitor run owns its own recovery path" };
   if (isCommentDrivenWake(run)) return { kind: "skip", reason: "comment-driven wake already owns the next action" };
@@ -475,7 +488,20 @@ export function decideSuccessfulRunHandoff(input: {
     return { kind: "skip", reason: "issue is no longer assigned to the source run agent" };
   }
   if (issue.assigneeUserId) return { kind: "skip", reason: "issue is human-owned" };
-  if (issue.status !== "in_progress") return { kind: "skip", reason: `issue status ${issue.status} is a valid disposition` };
+  if (issue.status === "blocked") {
+    if (
+      hasRoutableUnblockDescriptor(issue.unblockDescriptor) ||
+      input.hasPendingInteractionOrApproval ||
+      input.hasExplicitBlockerPath ||
+      input.hasOpenRecoveryIssue
+    ) {
+      return { kind: "skip", reason: "blocked issue has a durable waiting path" };
+    }
+    return { kind: "skip", reason: "blocked issue has no routable waiting path" };
+  }
+  if (issue.status !== "in_progress") {
+    return { kind: "skip", reason: `issue status ${issue.status} is a valid disposition` };
+  }
   if (issue.executionState) return { kind: "skip", reason: "issue has execution policy state" };
   if (isPluginManagedIssueLifecycle(issue)) {
     return { kind: "skip", reason: "issue lifecycle is owned by a plugin" };
@@ -486,9 +512,6 @@ export function decideSuccessfulRunHandoff(input: {
   if (input.hasActiveRoutineContinuation) {
     return { kind: "skip", reason: "active routine continuation owns the next action" };
   }
-  if (!isProductiveSuccessfulRun(input)) {
-    return { kind: "skip", reason: "successful run did not produce handoff-relevant progress" };
-  }
   if (input.hasActiveExecutionPath) return { kind: "skip", reason: "issue already has an active execution path" };
   if (input.hasQueuedWake) return { kind: "skip", reason: "issue already has a queued or deferred wake" };
   if (input.hasPendingInteractionOrApproval) {
@@ -498,6 +521,12 @@ export function decideSuccessfulRunHandoff(input: {
   if (input.hasExplicitBlockerPath) return { kind: "skip", reason: "explicit blocker path owns the next action" };
   if (input.hasOpenRecoveryIssue) return { kind: "skip", reason: "open recovery issue owns the ambiguity" };
   if (input.hasPauseHold) return { kind: "skip", reason: "issue is under an active pause hold" };
+  if (isCorrectiveHandoffRun(run)) {
+    return { kind: "skip", reason: "source run is already a corrective handoff run" };
+  }
+  if (!isProductiveSuccessfulRun(input)) {
+    return { kind: "skip", reason: "successful run did not produce handoff-relevant progress" };
+  }
   if (input.budgetBlocked) return { kind: "skip", reason: "budget hard stop blocks corrective wake" };
   if (input.idempotentWakeExists) {
     return { kind: "skip", reason: "corrective handoff wake already exists for this source run" };

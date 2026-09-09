@@ -11469,6 +11469,7 @@ export function heartbeatService(
         assigneeAgentId: issues.assigneeAgentId,
         assigneeUserId: issues.assigneeUserId,
         executionState: issues.executionState,
+        unblockDescriptor: issues.unblockDescriptor,
         monitorNextCheckAt: issues.monitorNextCheckAt,
         projectId: issues.projectId,
         originKind: issues.originKind,
