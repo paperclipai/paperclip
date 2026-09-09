@@ -2046,13 +2046,15 @@ export function IssueProperties({
   const blockedByTrigger = blockedByRelations.length > 0 ? (
     <div className="flex min-w-0 flex-col items-start gap-1">
       {blockedByRelations.slice(0, 2).map((relation) => (
-        <PropertyChip key={relation.id}>
-          {relation.identifier ?? relation.title}
-        </PropertyChip>
+        <IssueReferencePill
+          key={relation.id}
+          issue={relation}
+          onRemove={(id) => onUpdate({ blockedByIssueIds: blockedByIds.filter((candidate) => candidate !== id) })}
+        />
       ))}
       {blockedByRelations.length > 2 ? (
-        <Badge variant="outline" className="border-border text-muted-foreground">
-          +{blockedByRelations.length - 2} more
+        <Badge asChild variant="outline" className="border-border text-muted-foreground hover:bg-accent/50">
+          <button type="button" onClick={() => setBlockedByOpen(true)}>+{blockedByRelations.length - 2} more</button>
         </Badge>
       ) : null}
     </div>
@@ -2062,13 +2064,11 @@ export function IssueProperties({
   const subtasksTrigger = childIssues.length > 0 ? (
     <div className="flex min-w-0 flex-col items-start gap-1">
       {childIssues.slice(0, 2).map((child) => (
-        <PropertyChip key={child.id}>
-          {child.identifier ?? child.title}
-        </PropertyChip>
+        <IssueReferencePill variant="property" key={child.id} issue={child} className="min-w-0 max-w-full" />
       ))}
       {childIssues.length > 2 ? (
-        <Badge variant="outline" className="border-border text-muted-foreground">
-          +{childIssues.length - 2} more
+        <Badge asChild variant="outline" className="border-border text-muted-foreground hover:bg-accent/50">
+          <button type="button" onClick={() => setSubtasksOpen(true)}>+{childIssues.length - 2} more</button>
         </Badge>
       ) : null}
     </div>
@@ -2106,25 +2106,19 @@ export function IssueProperties({
   const parentIdentifier = issue.ancestors?.[0]?.identifier ?? currentParentIssue?.identifier;
   const parentTitle = issue.ancestors?.[0]?.title ?? currentParentIssue?.title ?? issue.parentId?.slice(0, 8);
   const parentTrigger = issue.parentId ? (
-    <span
-      className="text-sm truncate min-w-0"
-      title={`${parentIdentifier ? `${parentIdentifier} ` : ""}${parentTitle ?? ""}`.trim()}
-    >
-      {parentIdentifier ? `${parentIdentifier} ` : ""}
-      {parentTitle}
-    </span>
+    <IssueReferencePill
+      variant="property"
+      issue={{
+        id: issue.parentId,
+        identifier: parentIdentifier ?? issue.parentId,
+        title: parentTitle ?? "Parent task",
+        status: issue.ancestors?.[0]?.status ?? currentParentIssue?.status,
+      }}
+      className="min-w-0 max-w-full"
+    />
   ) : (
     <span className="text-sm text-muted-foreground">None</span>
   );
-  const parentLink = issue.parentId ? (
-    <Link
-      to={`/issues/${parentIdentifier ?? issue.parentId}`}
-      className="inline-flex items-center justify-center h-5 w-5 rounded hover:bg-accent/50 transition-colors text-muted-foreground hover:text-foreground"
-      onClick={(e) => e.stopPropagation()}
-    >
-      <ArrowUpRight className="h-3 w-3" />
-    </Link>
-  ) : undefined;
   const parentSearchActive = normalizedParentSearch.length > 0;
   // When the user types, search on the server. The default list caps at 500 rows
   // and sorts priority-first, so a medium-priority or low-priority match past that
@@ -2438,7 +2432,7 @@ export function IssueProperties({
           triggerContent={parentTrigger}
           triggerClassName="min-w-0 max-w-full"
           popoverClassName="w-72"
-          extra={parentLink}
+          separateTrigger={!!issue.parentId}
         >
           {parentContent}
         </PropertyPicker>
@@ -2452,6 +2446,7 @@ export function IssueProperties({
               setBlockedByOpen(open);
               if (!open) setBlockedBySearch("");
             }}
+            separateTrigger={blockedByRelations.length > 0}
             triggerContent={blockedByTrigger}
             triggerClassName="min-w-0 max-w-full"
             popoverClassName="w-72"
@@ -2517,7 +2512,7 @@ export function IssueProperties({
           {blockingIssues.length > 0 ? (
             <div className="flex flex-col items-start gap-1.5">
               {visibleBlockingIssues.map((relation) => (
-                <IssueReferencePill key={relation.id} issue={relation} />
+                <IssueReferencePill variant="property" key={relation.id} issue={relation} />
               ))}
               <ExpandRelationListButton
                 hiddenCount={hiddenBlockingIssueCount}
@@ -2536,6 +2531,7 @@ export function IssueProperties({
             label="Subtasks"
             open={subtasksOpen}
             onOpenChange={setSubtasksOpen}
+            separateTrigger={childIssues.length > 0}
             triggerContent={subtasksTrigger}
             triggerClassName="min-w-0 max-w-full"
             popoverClassName="w-72"
