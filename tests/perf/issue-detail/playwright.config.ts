@@ -4,7 +4,8 @@ import path from "node:path";
 import { defineConfig } from "@playwright/test";
 
 const PORT = Number(process.env.PAPERCLIP_ISSUE_PERF_PORT ?? 3201);
-const BASE_URL = `http://127.0.0.1:${PORT}`;
+const EXTERNAL_URL = process.env.PAPERCLIP_ISSUE_PERF_BASE_URL;
+const BASE_URL = EXTERNAL_URL ?? `http://127.0.0.1:${PORT}`;
 const PAPERCLIP_HOME = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-issue-perf-home-"));
 const PAPERCLIP_INSTANCE_ID = "playwright-issue-perf";
 const PAPERCLIP_CONFIG = path.join(PAPERCLIP_HOME, "instances", PAPERCLIP_INSTANCE_ID, "config.json");
@@ -14,7 +15,7 @@ process.env.PAPERCLIP_CONFIG = PAPERCLIP_CONFIG;
 
 export default defineConfig({
   testDir: ".",
-  testMatch: "issue-detail.perf.spec.ts",
+  testMatch: "*.spec.ts",
   timeout: 30 * 60_000,
   workers: 1,
   fullyParallel: false,
@@ -23,7 +24,7 @@ export default defineConfig({
     browserName: "chromium",
     headless: true,
   },
-  webServer: {
+  webServer: EXTERNAL_URL ? undefined : {
     command: "pnpm paperclipai onboard --yes --run",
     url: `${BASE_URL}/api/health`,
     reuseExistingServer: false,

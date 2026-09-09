@@ -266,6 +266,7 @@ describe("TaskMessageScroller", () => {
   });
 
   it("clicking the pill smooth-scrolls, ignores intermediate scroll events, re-pins on arrival", async () => {
+    vi.stubGlobal("matchMedia", vi.fn().mockReturnValue({ matches: false }));
     render(1);
     const el = scroller();
     fakeGeometry(el);
@@ -287,6 +288,7 @@ describe("TaskMessageScroller", () => {
 
     // Arrival within the threshold re-pins and hides the pill (immediately
     // here: no matchMedia in jsdom → reduced-motion/unmount-now path).
+    vi.stubGlobal("matchMedia", vi.fn().mockReturnValue({ matches: true }));
     await scrollTo(el, 600);
     expect(pill()).toBeNull();
 
@@ -295,7 +297,23 @@ describe("TaskMessageScroller", () => {
     expect(el.scrollTop).toBe(1000);
   });
 
+  it("finishes following at the new bottom when content changes during the latest glide", async () => {
+    vi.stubGlobal("matchMedia", vi.fn().mockReturnValue({ matches: false }));
+    render(1);
+    const el = scroller();
+    fakeGeometry(el);
+    el.scrollTo = vi.fn() as unknown as typeof el.scrollTo;
+    await scrollTo(el, 100);
+    await waitForPill(true);
+    pill()!.click();
+    await flushEvents();
+    await scrollTo(el, 250);
+    render(2);
+    expect(el.scrollTop).toBe(1000);
+  });
+
   it("a wheel gesture during the glide cancels easing and stays unpinned", async () => {
+    vi.stubGlobal("matchMedia", vi.fn().mockReturnValue({ matches: false }));
     render(1);
     const el = scroller();
     fakeGeometry(el);

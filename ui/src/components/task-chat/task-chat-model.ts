@@ -100,6 +100,8 @@ export interface TaskChatTokenUsage {
 
 /** A human/agent/system message bubble. */
 export interface TaskChatMessageItem {
+  /** Stable UI identity through optimistic acknowledgement; id remains canonical. */
+  renderKey?: string;
   id: string;
   kind: "message";
   author: TaskChatAuthorKind;

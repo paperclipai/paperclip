@@ -2836,3 +2836,18 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
   > div:has([role="switch"]) {
   @apply sm:col-span-2;
 }
+
+/* Task feeds own their row anchor and follow position. Browser anchoring must
+   not race the same correction after a prepend or transcript reconciliation. */
+.task-chat-scroll-viewport {
+  overflow-anchor: none;
+  scrollbar-gutter: stable;
+}
+
+.task-chat-window-scroll {
+  overflow-anchor: none;
+}
+
+.task-chat-loading-shell .animate-pulse {
+  animation: none;
+}
