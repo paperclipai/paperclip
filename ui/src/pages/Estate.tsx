@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Landmark, Home, TrendingUp, Car, Gem, Cpu, Package, AlertCircle, CheckCircle2, Circle, Users, Shield, Receipt, PiggyBank } from "lucide-react";
-import { estateApi, type AssetType, type PlanStatusCheckKey, type PlanStatusResult, type NetWorthProjectionResult, type EstateBeneficiary, type EstateTrust, type EstateTaxSummary, type EstateReview, type RmdSummary, type PropertyTaxBill, type ValuationReminder, type DocumentAlert, type EstateCollaborator, type CollaboratorAccessLevel } from "../api/estate";
+import { estateApi, type AssetType, type PlanStatusCheckKey, type PlanStatusResult, type NetWorthProjectionResult, type EstateBeneficiary, type EstateTrust, type EstateTaxSummary, type EstateReview, type RmdSummary, type PropertyTaxBill, type ValuationReminder, type DocumentAlert, type EstateCollaborator, type CollaboratorAccessLevel, type NetWorthSnapshot } from "../api/estate";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { EmptyState } from "../components/EmptyState";
@@ -822,6 +822,83 @@ function PropertyTaxSection({
   );
 }
 
+function NetWorthHistorySection({
+  snapshots,
+  companyId,
+}: {
+  snapshots: NetWorthSnapshot[];
+  companyId: string;
+}) {
+  const queryClient = useQueryClient();
+
+  const captureMutation = useMutation({
+    mutationFn: () => estateApi.captureSnapshot(companyId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["estate", "net-worth-history", companyId] });
+    },
+  });
+
+  const maxNw = snapshots.reduce((m, s) => Math.max(m, s.netWorthDollars), 0);
+
+  return (
+    <div className="rounded-lg border border-border bg-card overflow-hidden">
+      <div className="px-4 py-3 border-b border-border bg-muted/30 flex items-center gap-2">
+        <TrendingUp className="h-3.5 w-3.5 text-muted-foreground" />
+        <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+          Net Worth History
+        </p>
+        <span className="ml-auto">
+          <button
+            onClick={() => captureMutation.mutate()}
+            disabled={captureMutation.isPending}
+            className="text-xs font-medium text-primary hover:underline disabled:opacity-50"
+          >
+            {captureMutation.isPending ? "Capturing…" : "Capture Snapshot"}
+          </button>
+        </span>
+      </div>
+      {snapshots.length === 0 ? (
+        <div className="px-4 py-8 text-center text-sm text-muted-foreground">
+          No snapshots yet. Click "Capture Snapshot" to record today's net worth.
+        </div>
+      ) : (
+        <div className="px-4 py-4">
+          <div className="flex items-end gap-1 h-20">
+            {snapshots.slice(-24).map((s) => {
+              const heightPct = maxNw > 0 ? Math.max(4, Math.round((s.netWorthDollars / maxNw) * 100)) : 4;
+              const date = new Date(s.snapshotDate).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+              const formatted = `$${(s.netWorthDollars / 1000).toFixed(0)}k`;
+              return (
+                <div
+                  key={s.id}
+                  className="flex-1 flex flex-col justify-end"
+                  title={`${date}: ${formatted}`}
+                >
+                  <div
+                    className="w-full bg-primary/70 rounded-sm hover:bg-primary transition-colors"
+                    style={{ height: `${heightPct}%` }}
+                  />
+                </div>
+              );
+            })}
+          </div>
+          <div className="flex justify-between mt-1 text-xs text-muted-foreground">
+            {snapshots.length > 0 && (
+              <>
+                <span>{new Date(snapshots[0].snapshotDate).toLocaleDateString(undefined, { month: "short", year: "2-digit" })}</span>
+                <span className="font-medium text-foreground">
+                  ${(snapshots[snapshots.length - 1].netWorthDollars).toLocaleString(undefined, { maximumFractionDigits: 0 })}
+                </span>
+                <span>{new Date(snapshots[snapshots.length - 1].snapshotDate).toLocaleDateString(undefined, { month: "short", year: "2-digit" })}</span>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function CollaboratorsSection({
   collaborators,
   estateId,
@@ -1043,6 +1120,13 @@ export function Estate() {
     staleTime: 10 * 60 * 1000,
   });
 
+  const netWorthHistoryQuery = useQuery({
+    queryKey: ["estate", "net-worth-history", selectedCompanyId],
+    queryFn: () => estateApi.netWorthHistory(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+    staleTime: 5 * 60 * 1000,
+  });
+
   const propertyTaxQuery = useQuery({
     queryKey: ["estate", "property-tax", selectedCompanyId],
     queryFn: () => estateApi.listPropertyTax(selectedCompanyId!, currentYear),
@@ -1201,6 +1285,14 @@ export function Estate() {
       {/* Net worth projection */}
       {projectionQuery.data && (
         <NetWorthProjectionSection projection={projectionQuery.data} />
+      )}
+
+      {/* Net worth history */}
+      {netWorthHistoryQuery.data && (
+        <NetWorthHistorySection
+          snapshots={netWorthHistoryQuery.data.snapshots}
+          companyId={selectedCompanyId}
+        />
       )}
 
       {/* RMD summary */}

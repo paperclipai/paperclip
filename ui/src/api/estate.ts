@@ -191,6 +191,16 @@ export interface EstateBeneficiary {
   updatedAt: string;
 }
 
+export interface NetWorthSnapshot {
+  id: string;
+  snapshotDate: string;
+  netWorthDollars: number;
+  netWorthCents: number;
+  assetsTotalCents: number;
+  accountsTotalCents: number;
+  breakdown: Record<string, number>;
+}
+
 export type CollaboratorAccessLevel = "read" | "read_write";
 
 export interface EstateCollaborator {
@@ -387,4 +397,12 @@ export const estateApi = {
 
   revokeCollaborator: (collaboratorId: string) =>
     api.delete<void>(`/estate/collaborators/${collaboratorId}`),
+
+  netWorthHistory: (companyId: string, from?: string, to?: string) =>
+    api.get<{ snapshots: NetWorthSnapshot[] }>(
+      `/estate/net-worth/history${qs({ companyId, from, to })}`,
+    ),
+
+  captureSnapshot: (companyId: string) =>
+    api.post<NetWorthSnapshot>("/estate/net-worth/snapshot", { companyId }),
 };
