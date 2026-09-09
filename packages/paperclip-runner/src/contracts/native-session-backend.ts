@@ -17,6 +17,7 @@ import type {
   HarnessThreadLineageEntry,
   NativeRuntimeContextCapabilities,
   PersistedHarnessProviderIdentity,
+  PersistedHarnessSession,
   PersistedHarnessTurnTerminal,
 } from "./harness-driver.js";
 
@@ -51,6 +52,8 @@ export interface PersistedNativeSession {
   providerSessionId?: string | null;
   /** Tagged provider-owned identity required for safe driver recovery. */
   providerIdentity?: PersistedHarnessProviderIdentity;
+  workingDirectory?: string;
+  codexUsageBaseline?: PersistedHarnessSession["codexUsageBaseline"];
   providerRecoveryPolicy?:
     | "same_session_only"
     | "allow_replacement_after_governed_wait"
