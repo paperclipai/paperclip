@@ -15,6 +15,7 @@ import {
   Landmark,
   Activity,
   Heart,
+  CheckSquare,
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { SidebarSection } from "./SidebarSection";
@@ -117,6 +118,7 @@ export function Sidebar() {
 
         <SidebarSection label="Health">
           <SidebarNavItem to="/health" label="Health" icon={Heart} />
+          <SidebarNavItem to="/habits" label="Habits" icon={CheckSquare} />
           <SidebarNavItem to="/supplements" label="Supplements" icon={Pill} />
           <SidebarNavItem to="/health/environmental-score" label="Env. Score" icon={Activity} />
         </SidebarSection>

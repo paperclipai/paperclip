@@ -45,6 +45,7 @@ import { labResultsRoutes } from "./routes/lab-results.js";
 import { healthGoalsRoutes } from "./routes/health-goals.js";
 import { journalRoutes } from "./routes/journal.js";
 import { meditationRoutes } from "./routes/meditation.js";
+import { habitsRoutes } from "./routes/habits.js";
 import { estateRoutes } from "./routes/estate.js";
 import { applyUiBranding } from "./ui-branding.js";
 import { logger } from "./middleware/logger.js";
@@ -177,6 +178,7 @@ export async function createApp(
   api.use(healthGoalsRoutes(db));
   api.use(journalRoutes(db));
   api.use(meditationRoutes(db));
+  api.use(habitsRoutes(db));
   api.use(estateRoutes(db));
   api.use("/companies", companyRoutes(db, opts.storageService));
   api.use(companySkillRoutes(db));
