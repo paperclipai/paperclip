@@ -390,6 +390,10 @@ describeEmbeddedPostgres("tool gateway service", () => {
     expect(wakeup.mock.calls[0][1].payload.toolAction).toMatchObject({ executionStatus: "executed", resultSummary: expect.stringContaining("bodyLength"), instructions: expect.stringContaining("Do not call it again") });
     expect((await db.select().from(toolActionDeliveries))[0].deliveredAt).not.toBeNull();
     expect((await db.select().from(toolActionRequests))[0].decidedByUserId).toBe("reviewer");
+    const message = wakeup.mock.calls[0][1].payload.paperclipAgentMessage;
+    expect(message.text).toContain("Do not call it again");
+    expect(message.text).not.toContain("bodyLength");
+    expect(message.untrustedToolResults).toMatchObject([{ actionRequestId: request.id, resultSummary: expect.stringContaining("bodyLength") }]);
   });
 
   it("waits for all reviews, then delivers both outcomes in one durable continuation", async () => {

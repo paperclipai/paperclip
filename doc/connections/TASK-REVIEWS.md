@@ -118,3 +118,10 @@ success/failure, decline with/without a reason, expiry/cancellation, remembered
 scope/receipt, approval options, narrow layout, and queue/empty states. The global
 theme toolbar switches light/dark. Story actions simulate server responses; use the
 browser suite for integration proof.
+
+Provider output, execution errors, and review notes travel in the continuation's
+`untrustedToolResults` field, separate from its control instructions. Both native
+and legacy wake prompts render those fields as fenced JSON with an explicit
+untrusted-data boundary. Embedded provider instructions cannot grant permission
+or change the task's continuation policy. Wake materialization redacts secrets
+and bounds each text field before rendering.

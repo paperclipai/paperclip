@@ -256,9 +256,16 @@ export function toolActionDeliveryService(
             text: toolActions
               .map(
                 (action) =>
-                  `${action.toolName}: ${action.instructions}\n${action.resultSummary}\n${action.error ?? ""}\n${action.declineReason ?? ""}`,
+                  `Action request ${action.actionRequestId}: ${action.instructions}`,
               )
               .join("\n\n"),
+            untrustedToolResults: toolActions.map((action) => ({
+              actionRequestId: action.actionRequestId,
+              toolName: action.toolName,
+              resultSummary: action.resultSummary,
+              error: action.error ?? null,
+              declineReason: action.declineReason ?? null,
+            })),
             source: "tool_action_review",
             sessionId: first.interaction.id,
           },

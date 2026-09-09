@@ -7230,6 +7230,18 @@ export async function buildPaperclipWakePayload(input: {
           source: readNonEmptyString(agentMessage.source),
           pluginKey: readNonEmptyString(agentMessage.pluginKey),
           sessionId: readNonEmptyString(agentMessage.sessionId),
+          ...(Array.isArray(agentMessage.untrustedToolResults) ? {
+            untrustedToolResults: agentMessage.untrustedToolResults.map((value) => {
+              const result = parseObject(value);
+              return {
+                actionRequestId: sanitizeAgentSessionMessageText(result.actionRequestId) ?? "",
+                toolName: sanitizeAgentSessionMessageText(result.toolName) ?? "",
+                resultSummary: sanitizeAgentSessionMessageText(result.resultSummary) ?? "",
+                error: sanitizeAgentSessionMessageText(result.error),
+                declineReason: sanitizeAgentSessionMessageText(result.declineReason),
+              };
+            }),
+          } : {}),
         }
       : null,
     childIssueSummaries: Array.isArray(
