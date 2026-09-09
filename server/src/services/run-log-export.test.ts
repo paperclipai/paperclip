@@ -52,6 +52,29 @@ describe("run log export", () => {
     expect(collected.logTruncated).toBe(true);
   });
 
+  it("does not flag truncation on an exact-cap fill", async () => {
+    const total = RUN_LOG_EXPORT_MAX_EVENTS;
+    const listEvents = async (_runId: string, afterSeq: number, limit: number) =>
+      Array.from({ length: Math.min(limit, total - afterSeq) }, (_, index) => event(afterSeq + index + 1)) as never;
+    const exact = await collectRunLogExport(
+      { listEvents, readLog: async () => ({ content: "x", nextOffset: null }) },
+      run(),
+    );
+    expect(exact.events).toHaveLength(total);
+    expect(exact.eventsTruncated).toBe(false);
+
+    const overflowing = await collectRunLogExport(
+      {
+        listEvents: async (_runId: string, afterSeq: number, limit: number) =>
+          Array.from({ length: Math.min(limit, total + 1 - afterSeq) }, (_, index) => event(afterSeq + index + 1)) as never,
+        readLog: async () => ({ content: "x", nextOffset: null }),
+      },
+      run(),
+    );
+    expect(overflowing.events).toHaveLength(total);
+    expect(overflowing.eventsTruncated).toBe(true);
+  });
+
   it("ships metadata and events when the log is absent or unreadable", async () => {
     const noStore = await collectRunLogExport(
       {

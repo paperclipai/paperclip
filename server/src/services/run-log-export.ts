@@ -54,8 +54,16 @@ export async function collectRunLogExport(
     if (page.length === 0) break;
     const room = RUN_LOG_EXPORT_MAX_EVENTS - events.length;
     if (page.length >= room) {
-      events.push(...page.slice(0, Math.max(0, room)));
-      eventsTruncated = true;
+      const included = page.slice(0, Math.max(0, room));
+      events.push(...included);
+      if (page.length > room) {
+        eventsTruncated = true;
+      } else {
+        // Exact-cap fill: probe one more event instead of assuming truncation.
+        const lastSeq = included[included.length - 1]?.seq ?? afterSeq;
+        const nextPage = await deps.listEvents(run.id, lastSeq, 1);
+        eventsTruncated = nextPage.length > 0;
+      }
       break;
     }
     events.push(...page);

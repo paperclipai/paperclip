@@ -6581,7 +6581,11 @@ export function agentRoutes(
       );
       const redactedLog = collected.logContent === null
         ? null
-        : await runRedactions.redactForRun(run.companyId, run.id, collected.logContent);
+        : await runRedactions.redactForRun(
+            run.companyId,
+            run.id,
+            redactCurrentUserValue(collected.logContent, currentUserRedactionOptions),
+          );
       const files = buildRunLogArchiveFiles({
         run: redactedRun,
         events: redactedEvents,
