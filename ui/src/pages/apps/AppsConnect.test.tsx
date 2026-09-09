@@ -774,6 +774,51 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     );
   });
 
+  it("keeps task enrollment in a popup and continues with the same access and interaction", async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const popup = { closed: false, location: { assign: vi.fn() }, focus: vi.fn(), close: vi.fn() };
+    const open = vi.spyOn(window, "open").mockReturnValue(popup as unknown as Window);
+    listGalleryMock.mockResolvedValue({ apps: [{
+      ...GMAIL, methods: GMAIL.methods.filter((method) => !method.oauthStrategy),
+      ownershipAvailability: { platform_shared: false, customer: true, dcr: true },
+    }] });
+    getCloudConnectorEnrollmentMock.mockResolvedValue({ status: "not_configured" });
+    await render(client, false, <ConnectionSetupFlow host="dialog" serviceSlug="gmail" interactionId="intent-1" requestedAgentId="agent-1" />);
+    await passAccessStep();
+    await act(async () => buttonByText("Connect with Paperclip")?.click());
+    await flushReact();
+    expect(open).toHaveBeenCalled();
+    expect(popup.location.assign).toHaveBeenCalledWith("https://my-staging.paperclip.app/connections/enroll?id=enroll-test");
+    expect(navigateTopLevelMock).not.toHaveBeenCalled();
+    expect(startCloudConnectorEnrollmentMock).toHaveBeenCalledWith("company-1", "Paperclip", "/apps/connect?source=gmail&stage=setup&intent=intent-1&enrollment_host=dialog");
+    listGalleryMock.mockResolvedValue({ apps: [{ ...GMAIL, ownershipAvailability: { ...GMAIL.ownershipAvailability, platform_shared: true } }] });
+    getCloudConnectorEnrollmentMock.mockResolvedValue({ status: "active" });
+    await act(async () => { await client.invalidateQueries({ queryKey: ["cloud-connector", "enrollment"] }); });
+    await flushReact();
+    await flushReact();
+    expect(popup.close).toHaveBeenCalled();
+    expect(container.textContent).toContain("What should Paperclip be able to do?");
+    expect(container.textContent).toContain("Step 2 of 2");
+    connectAppMock.mockResolvedValue({ connectionId: "gmail-1", connection: { id: "gmail-1", credentialPolicy: "per_user" }, auth: { kind: "oauth", startUrl: "https://example.test/unbound" } });
+    await act(async () => buttonByText("Continue to sign in")?.click());
+    await flushReact();
+    expect(connectAppMock).toHaveBeenCalledWith("company-1", expect.objectContaining({ grantKind: "user" }));
+    expect(startOAuthMock).toHaveBeenCalledWith("gmail-1", { asCurrentUser: true, interactionId: "intent-1" });
+    expect(putConnectionInstallsMock).not.toHaveBeenCalled();
+    open.mockRestore();
+  });
+
+  it("binds OAuth to the task even when setup resumes in the page host", async () => {
+    mockSearch.value = "source=gmail&stage=setup&intent=intent-1";
+    listGalleryMock.mockResolvedValue({ apps: [{ ...GMAIL, ownershipAvailability: { ...GMAIL.ownershipAvailability, platform_shared: true } }] });
+    connectAppMock.mockResolvedValue({ connectionId: "gmail-1", connection: { id: "gmail-1", credentialPolicy: "shared" }, auth: { kind: "oauth", startUrl: "https://example.test/unbound" } });
+    await render();
+    await act(async () => buttonByText("Continue to sign in")?.click());
+    await flushReact();
+    expect(startOAuthMock).toHaveBeenCalledWith("gmail-1", { asCurrentUser: false, interactionId: "intent-1" });
+    expect(navigateTopLevelMock).not.toHaveBeenCalledWith("https://example.test/unbound");
+  });
+
   it.each(["2020-01-01T00:00:00.000Z", "2099-01-01T00:00:00.000Z"])(
     "revalidates a cached pending enrollment before continuing (expiry %s)",
     async (expiresAt) => {
