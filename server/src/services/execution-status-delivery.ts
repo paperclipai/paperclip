@@ -1,7 +1,6 @@
 import { and, eq, isNotNull } from "drizzle-orm";
 import { heartbeatRuns, type Db } from "@paperclipai/db";
 import { publishLiveEvent } from "./live-events.js";
-import { buildHeartbeatRunStatusLiveEventPayload } from "./heartbeat-run-status-payload.js";
 import { logger } from "../middleware/logger.js";
 
 /** Status delivery is at-least-once; clients invalidate by run id. It grants no execution authority. */
@@ -13,7 +12,9 @@ export async function deliverExecutionStatuses(
   } = {},
 ) {
   const rows = await db
-    .select()
+    .select({ id: heartbeatRuns.id, companyId: heartbeatRuns.companyId, agentId: heartbeatRuns.agentId,
+      status: heartbeatRuns.status, startedAt: heartbeatRuns.startedAt, finishedAt: heartbeatRuns.finishedAt,
+      executionStatusDeliveryId: heartbeatRuns.executionStatusDeliveryId })
     .from(heartbeatRuns)
     .where(isNotNull(heartbeatRuns.executionStatusDeliveryId))
     .limit(100);
@@ -24,7 +25,11 @@ export async function deliverExecutionStatuses(
         companyId: run.companyId,
         type: "heartbeat.run.status",
         payload: {
-          ...buildHeartbeatRunStatusLiveEventPayload(run),
+          // This retryable broadcast only invalidates caches. Provider output,
+          // errors, and tool results stay behind the run API's access/redaction policy.
+          runId: run.id, agentId: run.agentId, status: run.status,
+          startedAt: run.startedAt?.toISOString() ?? null,
+          finishedAt: run.finishedAt?.toISOString() ?? null,
           deliveryId: run.executionStatusDeliveryId,
         },
       });

@@ -68,6 +68,14 @@ Representative screenshots for the quiet presentation:
 - [Temporary reconnection in the existing transcript header](../assets/execution-recovery/quiet-retry.png)
 - [Fixture continuation after refresh](../assets/execution-recovery/fixture-completed.png)
 
+## Quiet recovery revision verification
+
+All five fresh deterministic journeys passed. The uncertain-action and legacy journeys were then rerun with assertions for the visible blocked status, absence of the reconciliation form and Retry control, and preserved draft text. Both passed. A missing execution projection in the history response was fixed so the feed does not offer a retry that the server will reject.
+
+The 72 Storybook theme/viewport combinations passed, with 16 affected combinations rerun after presentation changes. Repository typecheck, build, token gates, and Storybook build passed. Focused recovery, projection, activity-history, and UI tests passed. The full local suite exposed a fixture race that closed a task before provider acceptance; the fixture now waits for actual provider acceptance, and all 64 tests across the affected continuation and recovery-route suites pass.
+
+Recovery decisions remain visible in local run logs. The durable status broadcast contains only run/agent identifiers, status, timestamps, and delivery ID; it does not broadcast provider output or errors. New verified evidence can clear an automatically settled hold through the existing authorized evidence API. Generic retries and duplicate requests cannot clear the hold. No dialog is exposed for this path.
+
 ## Rollout and limits
 
 The recovery migrations were renumbered to 0250–0254 after master added session goals and action-delivery storage. Their SQL remains idempotent for instances that applied the earlier branch numbers. Migration snapshots include both sets of schema changes.

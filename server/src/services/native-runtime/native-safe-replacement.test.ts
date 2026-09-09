@@ -294,7 +294,11 @@ const support = await getEmbeddedPostgresTestSupport();
       const deliveryId = randomUUID();
       await db
         .update(heartbeatRuns)
-        .set({ executionStatusDeliveryId: deliveryId })
+        .set({ executionStatusDeliveryId: deliveryId,
+          error: "credential-in-provider-error", errorCode: "credential-in-provider-code",
+          triggerDetail: "credential-in-trigger-detail",
+          resultJson: { summary: "credential-in-provider-summary", toolResult: "credential-in-tool-result" },
+        })
         .where(eq(heartbeatRuns.id, source.runId));
       await deliverExecutionStatuses(db, {
         publish: () => {
@@ -323,6 +327,10 @@ const support = await getEmbeddedPostgresTestSupport();
         }),
       ).rejects.toThrow("crash after publication");
       await deliverExecutionStatuses(db, { publish });
+      expect(JSON.stringify(observed)).not.toContain("credential-in-");
+      expect(Object.keys((observed[0] as { payload: Record<string, unknown> }).payload).sort()).toEqual(
+        ["runId", "agentId", "status", "startedAt", "finishedAt", "deliveryId"].sort(),
+      );
       expect(observed).toEqual([
         expect.objectContaining({
           companyId: source.companyId,
