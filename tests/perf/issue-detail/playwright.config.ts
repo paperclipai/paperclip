@@ -5,6 +5,16 @@ import { defineConfig } from "@playwright/test";
 
 const PORT = Number(process.env.PAPERCLIP_ISSUE_PERF_PORT ?? 3201);
 const EXTERNAL_URL = process.env.PAPERCLIP_ISSUE_PERF_BASE_URL;
+if (EXTERNAL_URL) {
+  const target = new URL(EXTERNAL_URL);
+  if (
+    !["http:", "https:"].includes(target.protocol) ||
+    !["localhost", "127.0.0.1", "[::1]"].includes(target.hostname) ||
+    target.username || target.password || target.search || target.hash || target.pathname !== "/"
+  ) {
+    throw new Error("PAPERCLIP_ISSUE_PERF_BASE_URL must be a loopback origin for a disposable local instance; these tests create fixtures.");
+  }
+}
 const BASE_URL = EXTERNAL_URL ?? `http://127.0.0.1:${PORT}`;
 const PAPERCLIP_HOME = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-issue-perf-home-"));
 const PAPERCLIP_INSTANCE_ID = "playwright-issue-perf";

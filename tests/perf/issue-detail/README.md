@@ -47,8 +47,9 @@ PAPERCLIP_ISSUE_PERF_BASE_URL=http://127.0.0.1:3102 \
   pnpm exec playwright test --config tests/perf/issue-detail/playwright.config.ts layout-stability.spec.ts
 ```
 
-The suite creates its own company and fixtures. Do not point this at a shared
-or production instance. Without the override, the harness starts its own
+The suite creates its own company and fixtures. The URL override accepts only
+loopback origins and rejects remote hosts. Use a disposable local instance,
+not a shared or production instance. Without the override, the harness starts its own
 isolated instance as before. Live provider walkthroughs additionally require a
 configured native Paperclip runner and Codex authentication; deterministic
 browser fixtures do not substitute for watching an actual provider run.
