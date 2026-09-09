@@ -72,6 +72,14 @@ Pending native `ask_user_questions` interactions use private PostgreSQL drafts i
 - Answer submission remains the existing `/respond` operation and its native durable continuation. Cancellation uses `/cancel`; closing the composer does not submit or approve anything. Closed interactions neither restore drafts nor accept delayed draft writes.
 - Verification: run `pnpm exec vitest run server/src/services/question-drafts.test.ts server/src/__tests__/issue-question-draft-routes.test.ts packages/shared/src/validators/issue-question-drafts.test.ts ui/src/lib/interaction-question-draft.test.ts`, then exercise reload/restart, failed-save retry, and native answer continuation in the browser.
 
+### Canonical planning document writes
+
+The issue `plan` and `specification` documents retain their canonical keys. A locked canonical document returns 409 even when an agent requests the usual locked-document proposal-copy behavior; it never silently creates `plan-2` or `specification-2`. Other document keys retain proposal-copy behavior.
+
+Existing-document publication locks the document row before checking `baseRevisionId`. Two concurrent writers using the same base revision cannot both publish successfully: one advances the document, and the other receives 409. Exact-revision approval uses the same document-row lock boundary.
+
+Verify these invariants with `pnpm exec vitest run server/src/__tests__/documents-service.test.ts`.
+
 ### Mobile-friendly preview (`pnpm dev:mobile`)
 
 The vite dev server serves an unbundled module graph. This is fast to reload on a local machine but too heavy for phones and tablets on slow links (airplane wifi, mobile data, distant tailnet peers). `pnpm dev:mobile` builds the UI once and serves the small production bundle on port `3101` via `vite preview`, proxying `/api` requests to the dev API on `3100`.

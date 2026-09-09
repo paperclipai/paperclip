@@ -212,6 +212,10 @@ export function documentService(db: Db) {
       lockedDocumentStrategy?: "conflict" | "create_new_document";
     }) => {
       const key = normalizeDocumentKey(input.key);
+      // Canonical planning documents must retain their identity and approval history.
+      const lockedDocumentStrategy = key === "plan" || key === "specification"
+        ? "conflict"
+        : input.lockedDocumentStrategy;
       const issue = await db
         .select({ id: issues.id, companyId: issues.companyId })
         .from(issues)
@@ -219,7 +223,7 @@ export function documentService(db: Db) {
         .then((rows) => rows[0] ?? null);
       if (!issue) throw notFound("Issue not found");
 
-      const maxAttempts = input.lockedDocumentStrategy === "create_new_document" ? 3 : 1;
+      const maxAttempts = lockedDocumentStrategy === "create_new_document" ? 3 : 1;
       for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
         try {
           return await db.transaction(async (tx) => {
@@ -249,11 +253,12 @@ export function documentService(db: Db) {
             .from(issueDocuments)
             .innerJoin(documents, eq(issueDocuments.documentId, documents.id))
             .where(and(eq(issueDocuments.issueId, issue.id), eq(issueDocuments.key, key)))
+            .for("update", { of: documents })
             .then((rows) => rows[0] ?? null);
 
           if (existing) {
             if (existing.lockedAt) {
-              if (input.lockedDocumentStrategy === "create_new_document") {
+              if (lockedDocumentStrategy === "create_new_document") {
                 const issueDocumentKeys = await tx
                   .select({ key: issueDocuments.key })
                   .from(issueDocuments)
@@ -503,7 +508,7 @@ export function documentService(db: Db) {
           });
         } catch (error) {
           if (isUniqueViolation(error)) {
-            if (input.lockedDocumentStrategy === "create_new_document" && attempt < maxAttempts - 1) {
+            if (lockedDocumentStrategy === "create_new_document" && attempt < maxAttempts - 1) {
               continue;
             }
             throw conflict("Document key already exists on this issue", { key });

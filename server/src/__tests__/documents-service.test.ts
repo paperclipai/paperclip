@@ -157,40 +157,61 @@ describeEmbeddedPostgres("documentService system issue documents", () => {
     expect(updated.document.body).toBe("# Updated plan");
   });
 
-  it("creates a new document instead of updating a locked document when requested", async () => {
+  it("keeps proposal copies for non-canonical locked documents", async () => {
     const { issueId } = await createIssueWithDocuments();
-    const locked = await svc.lockIssueDocument({
-      issueId,
-      key: "plan",
-      lockedByUserId: "board-user",
+    await svc.upsertIssueDocument({
+      issueId, key: "notes", format: "markdown", body: "# Notes",
     });
-
+    const locked = await svc.lockIssueDocument({
+      issueId, key: "notes", lockedByUserId: "board-user",
+    });
     const fallback = await svc.upsertIssueDocument({
-      issueId,
-      key: "plan",
-      title: "Plan",
-      format: "markdown",
-      body: "# Agent replacement plan",
+      issueId, key: "notes", format: "markdown", body: "# Proposed notes",
       baseRevisionId: locked.document.latestRevisionId,
       lockedDocumentStrategy: "create_new_document",
     });
+    expect(fallback.document.key).toBe("notes-2");
+    expect(await svc.getIssueDocumentByKey(issueId, "notes")).toMatchObject({
+      body: "# Notes", lockedAt: expect.any(Date),
+    });
+    expect(await svc.getIssueDocumentByKey(issueId, "notes-2")).toMatchObject({
+      body: "# Proposed notes", lockedAt: null,
+    });
+  });
 
-    expect(fallback.created).toBe(true);
-    expect(fallback.document.key).toBe("plan-2");
-    expect(fallback.document.body).toBe("# Agent replacement plan");
-    expect("redirectedFromLockedDocument" in fallback ? fallback.redirectedFromLockedDocument : null)
-      .toEqual({ id: locked.document.id, key: "plan" });
+  it.each(["plan", "specification"])("never forks the locked canonical %s document", async (key) => {
+    const { issueId } = await createIssueWithDocuments();
+    if (key === "specification") {
+      await svc.upsertIssueDocument({ issueId, key, format: "markdown", body: "# Specification" });
+    }
+    const locked = await svc.lockIssueDocument({ issueId, key, lockedByUserId: "board-user" });
+    const before = await svc.listIssueDocuments(issueId);
+    await expect(svc.upsertIssueDocument({
+      issueId, key, format: "markdown", body: "# Must not become another document",
+      baseRevisionId: locked.document.latestRevisionId,
+      lockedDocumentStrategy: "create_new_document",
+    })).rejects.toMatchObject({ status: 409 });
+    expect(await svc.listIssueDocuments(issueId)).toEqual(before);
+    expect(await svc.getIssueDocumentByKey(issueId, key)).toEqual(locked.document);
+  });
 
-    const originalPlan = await svc.getIssueDocumentByKey(issueId, "plan");
-    expect(originalPlan).toEqual(expect.objectContaining({
-      body: "# Plan",
-      lockedAt: expect.any(Date),
-    }));
-
-    const newPlan = await svc.getIssueDocumentByKey(issueId, "plan-2");
-    expect(newPlan).toEqual(expect.objectContaining({
-      body: "# Agent replacement plan",
-      lockedAt: null,
-    }));
+  it("allows only one concurrent writer to advance a base revision", async () => {
+    const { issueId } = await createIssueWithDocuments();
+    const plan = await svc.getIssueDocumentByKey(issueId, "plan");
+    const results = await Promise.allSettled(["# Writer A", "# Writer B"].map((body) =>
+      svc.upsertIssueDocument({
+        issueId, key: "plan", format: "markdown", body,
+        baseRevisionId: plan!.latestRevisionId,
+      }),
+    ));
+    const successes = results.filter((result) => result.status === "fulfilled");
+    const failures = results.filter((result) => result.status === "rejected");
+    expect(successes).toHaveLength(1);
+    expect(failures).toHaveLength(1);
+    expect(failures[0].reason).toMatchObject({ status: 409 });
+    expect(await svc.getIssueDocumentByKey(issueId, "plan")).toMatchObject({
+      body: successes[0].value.document.body,
+      latestRevisionNumber: 2,
+    });
   });
 });
