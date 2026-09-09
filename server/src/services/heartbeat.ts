@@ -23572,6 +23572,9 @@ export function heartbeatService(
     };
     const reason = opts.reason ?? null;
     const payload = opts.payload ?? null;
+    const executionReconciliationWake =
+      contextSnapshot.source === "execution.reconciled" ||
+      opts.idempotencyKey?.startsWith("execution-reconciliation:") === true;
     const {
       contextSnapshot: enrichedContextSnapshot,
       issueIdFromPayload,
@@ -23586,6 +23589,7 @@ export function heartbeatService(
     });
     let issueId =
       readNonEmptyString(enrichedContextSnapshot.issueId) ?? issueIdFromPayload;
+    if (executionReconciliationWake && !issueId) return null;
 
     let agent = await getAgent(agentId);
     if (!agent) throw notFound("Agent not found");
@@ -23999,6 +24003,113 @@ export function heartbeatService(
             finishedAt: new Date(),
           });
           return { kind: "skipped" as const };
+        }
+
+        let reconciledSourceRunId: string | null = null;
+        if (executionReconciliationWake) {
+          const actionId = readNonEmptyString(
+            enrichedContextSnapshot.recoveryActionId,
+          );
+          if (
+            !actionId ||
+            !isUuidLike(actionId) ||
+            source !== "automation" ||
+            triggerDetail !== "system" ||
+            reason !== "issue_recovery_action_restored" ||
+            opts.requestedByActorType !== "system" ||
+            opts.requestedByActorId !== "execution-recovery" ||
+            opts.idempotencyKey !== `execution-reconciliation:${actionId}` ||
+            enrichedContextSnapshot.source !== "execution.reconciled" ||
+            enrichedContextSnapshot.forceFreshSession !== true ||
+            payload?.issueId !== issue.id ||
+            payload?.recoveryActionId !== actionId ||
+            issue.assigneeAgentId !== agentId ||
+            ["done", "cancelled"].includes(issue.status)
+          )
+            return { kind: "skipped" as const };
+
+          // The issue lock serializes all admissions for this source. Validate
+          // the durable operator decision, then reconcile a prior queue commit
+          // before considering a new wake (including a now-terminal successor).
+          const [action] = await tx
+            .select()
+            .from(issueRecoveryActions)
+            .where(
+              and(
+                eq(issueRecoveryActions.companyId, issue.companyId),
+                eq(issueRecoveryActions.sourceIssueId, issue.id),
+                eq(issueRecoveryActions.id, actionId),
+              ),
+            )
+            .for("update");
+          const decision = parseObject(
+            action?.evidence.executionReconciliation,
+          );
+          const sourceRunId = readNonEmptyString(decision.runId);
+          if (
+            !action ||
+            action.status !== "resolved" ||
+            action.kind !== "active_run_watchdog" ||
+            action.returnOwnerAgentId !== agentId ||
+            !sourceRunId ||
+            !isUuidLike(sourceRunId) ||
+            decision.providerStopped !== true ||
+            !["completed", "not_performed", "mixed"].includes(
+              String(decision.actionOutcome),
+            ) ||
+            !readNonEmptyString(decision.outcomeEvidence) ||
+            enrichedContextSnapshot.previousRunId !== sourceRunId ||
+            enrichedContextSnapshot.retryOfRunId !== sourceRunId ||
+            !["pending", "delivered"].includes(
+              String(action.evidence.continuationDelivery),
+            )
+          )
+            return { kind: "skipped" as const };
+
+          const [existingWake] = await tx
+            .select()
+            .from(agentWakeupRequests)
+            .where(
+              and(
+                eq(agentWakeupRequests.companyId, issue.companyId),
+                eq(agentWakeupRequests.agentId, agentId),
+                eq(agentWakeupRequests.idempotencyKey, opts.idempotencyKey),
+                ne(agentWakeupRequests.status, "skipped"),
+              ),
+            )
+            .orderBy(asc(agentWakeupRequests.requestedAt))
+            .limit(1);
+          if (existingWake) {
+            if (
+              existingWake.payload?.issueId !== issue.id ||
+              existingWake.payload?.recoveryActionId !== action.id ||
+              existingWake.requestedByActorType !== "system" ||
+              existingWake.requestedByActorId !== "execution-recovery" ||
+              !existingWake.runId
+            )
+              return { kind: "deferred" as const };
+            const [existingRun] = await tx
+              .select()
+              .from(heartbeatRuns)
+              .where(
+                and(
+                  eq(heartbeatRuns.companyId, issue.companyId),
+                  eq(heartbeatRuns.agentId, agentId),
+                  eq(heartbeatRuns.id, existingWake.runId),
+                ),
+              );
+            if (
+              !existingRun ||
+              existingRun.contextSnapshot?.issueId !== issue.id ||
+              existingRun.contextSnapshot?.recoveryActionId !== action.id ||
+              existingRun.contextSnapshot?.previousRunId !== sourceRunId
+            )
+              return { kind: "deferred" as const };
+            return { kind: "replayed" as const, run: existingRun };
+          }
+          if (action.evidence.continuationDelivery !== "pending")
+            return { kind: "skipped" as const };
+          reconciledSourceRunId = sourceRunId;
         }
 
         const issueStateGuard = opts.issueStateGuard;
@@ -24503,6 +24614,10 @@ export function heartbeatService(
         }
 
         if (activeExecutionRun) {
+          // The resolved action is already a durable retry outbox. Do not merge
+          // its fresh-session contract into unrelated work or create a second
+          // deferred wake that could later replay the same reconciliation.
+          if (reconciledSourceRunId) return { kind: "deferred" as const };
           const executionAgent = await tx
             .select({ name: agents.name })
             .from(agents)
@@ -24842,6 +24957,9 @@ export function heartbeatService(
             contextSnapshot: enrichedContextSnapshot,
             sessionIdBefore: sessionBefore,
             continuationAttempt,
+            ...(reconciledSourceRunId
+              ? { retryOfRunId: reconciledSourceRunId }
+              : {}),
           })
           .returning()
           .then((rows) => rows[0]);
@@ -24874,6 +24992,11 @@ export function heartbeatService(
       }
       if (outcome.kind === "coalesced") {
         await startNextQueuedRunForAgent(agent.id);
+        return outcome.run;
+      }
+      if (outcome.kind === "replayed") {
+        if (outcome.run.status === "queued")
+          await startNextQueuedRunForAgent(agent.id);
         return outcome.run;
       }
 

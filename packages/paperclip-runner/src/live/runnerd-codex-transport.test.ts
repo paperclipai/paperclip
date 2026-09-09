@@ -6246,6 +6246,13 @@ it.each([
               lossPoint !== "before-confirmation"
             )
               commit(candidate);
+            // A dead controller cannot accept a reconnect through the second
+            // route installed for the in-flight authority rotation. Detaching
+            // only the current route leaves that overlapping fixture listener
+            // alive; completed-receipt replay needs no further store commit.
+            for (const [path, entry] of routes) {
+              if (entry.core === core) routes.delete(path);
+            }
             core.disconnectActiveRunner();
             detached = first.transport.detachControllerForRestart!();
             signalLoss();

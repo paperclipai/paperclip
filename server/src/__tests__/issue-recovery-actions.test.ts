@@ -5,6 +5,8 @@ import { and, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agents,
+  agentRuntimeState,
+  authUsers,
   agentWakeupRequests,
   activityLog,
   companies,
@@ -24,7 +26,8 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { errorHandler } from "../middleware/index.js";
 import { issueRoutes } from "../routes/issues.js";
-import { buildPaperclipWakePayload } from "../services/heartbeat.js";
+import { buildPaperclipWakePayload, heartbeatService } from "../services/heartbeat.js";
+import { deliverReconciledExecutions } from "../services/execution-recovery-resolution.js";
 import { issueRecoveryActionService } from "../services/issue-recovery-actions.js";
 import { recoveryService } from "../services/recovery/service.js";
 import { noticeMetadataReferencesRecoveryAction } from "../services/recovery/successful-run-handoff.js";
@@ -144,8 +147,10 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     await db.delete(environments);
     await db.delete(issueInboxArchives);
     await db.delete(issues);
+    await db.delete(agentRuntimeState);
     await db.delete(agents);
     await db.delete(companies);
+    await db.delete(authUsers);
   });
 
   afterAll(async () => {
@@ -1653,6 +1658,283 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     expect(recorded!.evidence).toMatchObject({ executionReconciliation: { runId }, continuationDelivery: "pending" });
     await request(app).post(`/api/issues/${sourceIssueId}/recovery-actions/resolve`).send(body).expect(200);
     expect((await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, action!.id)))[0]).toEqual(recorded);
+  });
+
+  async function seedReconciledDelivery() {
+    const fixture = await seedCompany();
+    const { companyId, coderId, sourceIssueId } = fixture;
+    const responsibleUserId = randomUUID();
+    await db.insert(authUsers).values({
+      id: responsibleUserId,
+      name: "Recovery operator",
+      email: `${responsibleUserId}@example.test`,
+      emailVerified: true,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    await db
+      .update(companies)
+      .set({ defaultResponsibleUserId: responsibleUserId })
+      .where(eq(companies.id, companyId));
+    await db
+      .update(agents)
+      .set({ runtimeConfig: { heartbeat: { maxConcurrentRuns: 1 } } })
+      .where(eq(agents.id, coderId));
+    const previousRunId = randomUUID();
+    await seedHeartbeatRun({
+      companyId,
+      agentId: coderId,
+      runId: previousRunId,
+      issueId: sourceIssueId,
+      status: "failed",
+    });
+    // Occupy the agent's only dispatch slot, independently of this issue. These
+    // tests exercise real wake admission, but cannot launch a provider process.
+    await seedHeartbeatRun({
+      companyId,
+      agentId: coderId,
+      runId: randomUUID(),
+      status: "running",
+    });
+    const [action] = await db
+      .insert(issueRecoveryActions)
+      .values({
+        companyId,
+        sourceIssueId,
+        kind: "active_run_watchdog",
+        status: "resolved",
+        outcome: "restored",
+        ownerType: "board",
+        returnOwnerAgentId: coderId,
+        cause: "uncertain_external_action",
+        fingerprint: previousRunId,
+        nextAction: "Continue from the verified reconciliation.",
+        evidence: {
+          runId: previousRunId,
+          continuationDelivery: "pending",
+          executionReconciliation: {
+            runId: previousRunId,
+            providerStopped: true,
+            actionOutcome: "not_performed",
+            outcomeEvidence: "Verified absent provider effect.",
+          },
+        },
+      })
+      .returning();
+    return {
+      ...fixture,
+      previousRunId,
+      action: action!,
+      heartbeat: heartbeatService(db, { runtimeEnv: {} }),
+    };
+  }
+
+  it("delivers a reconciled execution once across concurrent sweeps without a deferred duplicate", async () => {
+    const { action, heartbeat } = await seedReconciledDelivery();
+    let entered = 0;
+    let release!: () => void;
+    const bothEntered = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const wake: typeof heartbeat.wakeup = async (...args) => {
+      entered += 1;
+      if (entered === 2) release();
+      await bothEntered;
+      return heartbeat.wakeup(...args);
+    };
+    await Promise.all([
+      deliverReconciledExecutions(db, wake),
+      deliverReconciledExecutions(db, wake),
+    ]);
+    const wakes = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(
+        eq(
+          agentWakeupRequests.idempotencyKey,
+          `execution-reconciliation:${action.id}`,
+        ),
+      );
+    expect(wakes).toHaveLength(1);
+    expect(wakes[0]).toMatchObject({ status: "queued" });
+    const [receipt] = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.id, action.id));
+    expect(receipt!.evidence).toMatchObject({
+      continuationDelivery: "delivered",
+      continuationRunId: wakes[0]!.runId,
+    });
+  });
+
+  it("reconciles a lost wake acknowledgement after the exact successor has already finished", async () => {
+    const { action, heartbeat, companyId, previousRunId } =
+      await seedReconciledDelivery();
+    let successorId: string | undefined;
+    await deliverReconciledExecutions(db, async (...args) => {
+      const run = await heartbeat.wakeup(...args);
+      expect(run).not.toBeNull();
+      successorId = run!.id;
+      expect(run!.retryOfRunId).toBe(previousRunId);
+      throw new Error("fixture lost post-commit wake acknowledgement");
+    });
+    expect(successorId).toBeDefined();
+    await db
+      .update(heartbeatRuns)
+      .set({ status: "succeeded", finishedAt: new Date() })
+      .where(eq(heartbeatRuns.id, successorId!));
+    await deliverReconciledExecutions(db, heartbeat.wakeup);
+    const wakes = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(
+        eq(
+          agentWakeupRequests.idempotencyKey,
+          `execution-reconciliation:${action.id}`,
+        ),
+      );
+    expect(wakes).toHaveLength(1);
+    const [successor] = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, companyId),
+          eq(heartbeatRuns.id, successorId!),
+        ),
+      );
+    expect(successor).toMatchObject({
+      status: "succeeded",
+      retryOfRunId: previousRunId,
+    });
+    const [receipt] = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.id, action.id));
+    expect(receipt!.evidence).toMatchObject({
+      continuationDelivery: "delivered",
+      continuationRunId: successorId,
+    });
+  });
+
+  it.each(["owner", "status", "decision"] as const)(
+    "rechecks the current reconciliation %s after the sweep read",
+    async (changed) => {
+      const { action, heartbeat, sourceIssueId, managerId } =
+        await seedReconciledDelivery();
+      await deliverReconciledExecutions(db, async (...args) => {
+        if (changed === "owner")
+          await db
+            .update(issues)
+            .set({ assigneeAgentId: managerId })
+            .where(eq(issues.id, sourceIssueId));
+        if (changed === "status")
+          await db
+            .update(issues)
+            .set({ status: "done" })
+            .where(eq(issues.id, sourceIssueId));
+        if (changed === "decision")
+          await db
+            .update(issueRecoveryActions)
+            .set({
+              evidence: {
+                ...action.evidence,
+                executionReconciliation: {
+                  ...(action.evidence.executionReconciliation as object),
+                  runId: randomUUID(),
+                },
+              },
+            })
+            .where(eq(issueRecoveryActions.id, action.id));
+        return heartbeat.wakeup(...args);
+      });
+      expect(
+        await db
+          .select()
+          .from(agentWakeupRequests)
+          .where(
+            eq(
+              agentWakeupRequests.idempotencyKey,
+              `execution-reconciliation:${action.id}`,
+            ),
+          ),
+      ).toHaveLength(0);
+      const [receipt] = await db
+        .select()
+        .from(issueRecoveryActions)
+        .where(eq(issueRecoveryActions.id, action.id));
+      expect(receipt!.evidence.continuationDelivery).toBe("pending");
+    },
+  );
+
+  it("keeps reconciliation pending behind unrelated issue work without creating a second deferred outbox", async () => {
+    const { action, heartbeat, sourceIssueId, companyId, coderId } =
+      await seedReconciledDelivery();
+    const occupiedRunId = randomUUID();
+    await seedHeartbeatRun({
+      companyId,
+      agentId: coderId,
+      runId: occupiedRunId,
+      issueId: sourceIssueId,
+      status: "queued",
+    });
+    await deliverReconciledExecutions(db, heartbeat.wakeup);
+    await deliverReconciledExecutions(db, heartbeat.wakeup);
+    expect(
+      await db
+        .select()
+        .from(agentWakeupRequests)
+        .where(
+          eq(
+            agentWakeupRequests.idempotencyKey,
+            `execution-reconciliation:${action.id}`,
+          ),
+        ),
+    ).toHaveLength(0);
+    const [occupied] = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, occupiedRunId));
+    expect(occupied!.contextSnapshot).toEqual({ issueId: sourceIssueId });
+    await db
+      .update(heartbeatRuns)
+      .set({ status: "succeeded", finishedAt: new Date() })
+      .where(eq(heartbeatRuns.id, occupiedRunId));
+    await deliverReconciledExecutions(db, heartbeat.wakeup);
+    const wakes = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(
+        eq(
+          agentWakeupRequests.idempotencyKey,
+          `execution-reconciliation:${action.id}`,
+        ),
+      );
+    expect(wakes).toHaveLength(1);
+    expect(wakes[0]!.runId).not.toBe(occupiedRunId);
+  });
+
+  it("does not overwrite a newer reconciliation decision after a prior wake commits", async () => {
+    const { action, heartbeat } = await seedReconciledDelivery();
+    const newerEvidence = {
+      ...action.evidence,
+      continuationDelivery: "invalidated",
+      operatorNote: "Do not continue after new evidence.",
+    };
+    await deliverReconciledExecutions(db, async (...args) => {
+      const run = await heartbeat.wakeup(...args);
+      expect(run).not.toBeNull();
+      await db
+        .update(issueRecoveryActions)
+        .set({ evidence: newerEvidence })
+        .where(eq(issueRecoveryActions.id, action.id));
+      return run;
+    });
+    const [receipt] = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.id, action.id));
+    expect(receipt!.evidence).toEqual(newerEvidence);
   });
 
   it("resolves an active recovery action and removes it from active projections", async () => {
