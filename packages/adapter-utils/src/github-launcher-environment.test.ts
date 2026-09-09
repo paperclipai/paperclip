@@ -78,9 +78,10 @@ describe("managed GitHub launcher environment", () => {
       return { ...result, stdout: `SSH login banner\n${result.stdout}\nlogout` };
     });
     const env = await prepareGitHubExecutionEnvironment({
-      target: fixture.target, cwd: fixture.root, env: {}, hostCredentials: true,
+      target: fixture.target, cwd: fixture.root, env: {}, hostCredentials: true, networkAccess: true,
     });
     expect(env.PAPERCLIP_GITHUB_AUTH_MODE).toBe("host");
+    expect(env.PAPERCLIP_RUNNER_NETWORK_ACCESS).toBe("enabled");
     expect(env.PAPERCLIP_GITHUB_HOST_HOME).toBe(fixture.root);
     expect(env.GH_CONFIG_DIR).toBe(path.join(fixture.root, ".config/gh"));
     expect(env.GH_TOKEN).toBeUndefined();
@@ -93,14 +94,15 @@ describe("managed GitHub launcher environment", () => {
     vi.stubEnv("GH_TOKEN", "legacy-token");
     await writeFile(path.join(root, ".gitconfig"), '[credential]\n  helper = store\n');
     await exec("git", ["init", path.join(root, "repo")]);
-    const env = await prepareGitHubExecutionEnvironment({ target: null, cwd: path.join(root, "repo"), env: {}, hostCredentials: true });
+    const env = await prepareGitHubExecutionEnvironment({ target: null, cwd: path.join(root, "repo"), env: {}, hostCredentials: true, networkAccess: true });
     expect(env.GH_TOKEN).toBe("legacy-token");
     expect(env.GIT_CONFIG_GLOBAL).toBeUndefined();
     expect(env.PAPERCLIP_GIT_METADATA_ROOTS).toContain("/repo/.git");
     const config = await exec("git", ["config", "credential.helper"], { cwd: root, env: { ...process.env, ...env } });
     expect(config.stdout.trim()).toBe("store");
-    const isolated = await prepareGitHubExecutionEnvironment({ target: null, cwd: root, env: {}, hostCredentials: false });
+    const isolated = await prepareGitHubExecutionEnvironment({ target: null, cwd: root, env: {}, hostCredentials: false, networkAccess: false });
     expect(isolated.GH_TOKEN).toBeUndefined();
+    expect(isolated.PAPERCLIP_RUNNER_NETWORK_ACCESS).toBe("disabled");
     expect(isolated.PAPERCLIP_GITHUB_HOST_HOME).toBeUndefined();
   });
 

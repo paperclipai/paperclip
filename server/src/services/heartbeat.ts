@@ -19379,6 +19379,10 @@ export function heartbeatService(
         target: executionTarget, cwd: executionWorkspace.cwd,
         env: Object.fromEntries(Object.entries(parseObject(runtimeConfig.env)).filter((entry): entry is [string, string] => typeof entry[1] === "string")),
         hostCredentials: useHostGitHub,
+        // Networking is a controller-owned trust decision, independent of
+        // whether GitHub is configured or a credential can be acquired.
+        networkAccess: trustPreset.kind === "standard"
+          && process.env.PAPERCLIP_RUNNER_NETWORK_ACCESS !== "disabled",
       });
       runtimeConfig = { ...runtimeConfig, env: gitExecutionEnv };
       for (const key of MANAGED_GITHUB_TOKEN_KEYS) secretKeys.add(key);

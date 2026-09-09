@@ -1577,6 +1577,7 @@ export async function prepareGitHubExecutionEnvironment(input: {
   cwd: string;
   env: Record<string, string>;
   hostCredentials: boolean;
+  networkAccess: boolean;
 }): Promise<Record<string, string>> {
   const script = String.raw`
 const fs = require('node:fs');
@@ -1678,6 +1679,7 @@ printf '\0PAPERCLIP_GIT_CONTEXT_END\0'
     PAPERCLIP_GIT_METADATA_ROOTS: discovered.PAPERCLIP_GIT_METADATA_ROOTS ?? "[]",
     PAPERCLIP_RUNNER_NETWORK_ROOTS: discovered.PAPERCLIP_RUNNER_NETWORK_ROOTS ?? "[]",
     PAPERCLIP_GITHUB_AUTH_MODE: input.hostCredentials ? "host" : "managed",
+    PAPERCLIP_RUNNER_NETWORK_ACCESS: input.networkAccess ? "enabled" : "disabled",
   };
 }
 

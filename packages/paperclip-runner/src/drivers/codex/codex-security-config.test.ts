@@ -27,11 +27,19 @@ describe("Codex security configuration", () => {
   });
 
   it("preserves target DNS symlink resources without opening all of /run", () => {
-    const source = { PAPERCLIP_RUNNER_NETWORK_ROOTS: '["/run/systemd/resolve/stub-resolv.conf","/etc/ssl/certs"]' };
+    const source = { PAPERCLIP_RUNNER_NETWORK_ACCESS: "enabled", PAPERCLIP_RUNNER_NETWORK_ROOTS: '["/run/systemd/resolve/stub-resolv.conf","/etc/ssl/certs"]' };
     const args = createIsolatedCodexAppServerArgs(source).join("\n");
     expect(args).toContain('"/run/systemd/resolve/stub-resolv.conf"="read"');
     expect(args).not.toContain('"/run"="read"');
     expect(codexNetworkReadOnlyRoots({ ...source, PAPERCLIP_RUNNER_NETWORK_ACCESS: "disabled" })).toEqual([]);
+  });
+
+  it("requires the controller's network decision even when GitHub credentials exist", () => {
+    for (const GH_TOKEN of [undefined, "managed-token"]) {
+      const args = createIsolatedCodexAppServerArgs({ GH_TOKEN }).join("\n");
+      expect(args).toContain("network.enabled=false");
+      expect(args).not.toContain("network.enabled=true");
+    }
   });
 
   it("honors an explicit network restriction independently of GitHub", () => {
@@ -85,6 +93,7 @@ describe("Codex security configuration", () => {
         HOME: "/host/home",
         CODEX_HOME: "/host/codex",
         PATH: "/safe/bin",
+        PAPERCLIP_RUNNER_NETWORK_ACCESS: "enabled",
         LANG: "C.UTF-8",
         OPENAI_API_KEY: "must-not-cross",
       },
@@ -103,7 +112,7 @@ describe("Codex security configuration", () => {
     expect(serialized).toContain('":workspace_roots"={"."="write"}');
     expect(serialized).toContain('":workspace_roots"={"."="read"}');
     expect(serialized).toContain("network.enabled=true");
-    expect(serialized).toContain('shell_environment_policy.inherit="none"');
+    expect(serialized).toContain('shell_environment_policy.include_only=["LANG","PAPERCLIP_RUNNER_NETWORK_ACCESS","PATH"]');
     expect(serialized).toContain('PATH="/safe/bin"');
     expect(serialized).toContain('LANG="C.UTF-8"');
     expect(serialized).not.toContain("OPENAI_API_KEY");
@@ -113,6 +122,7 @@ describe("Codex security configuration", () => {
   it("inherits only projected GitHub credentials without serializing their values", () => {
     const args = createIsolatedCodexAppServerArgs({
       PATH: "/safe/bin",
+      PAPERCLIP_RUNNER_NETWORK_ACCESS: "enabled",
       GH_TOKEN: "must-remain-in-process-environment",
       GITHUB_TOKEN: "must-remain-in-process-environment",
       PAPERCLIP_GIT_TOKEN: "must-remain-in-process-environment",
@@ -174,7 +184,7 @@ describe("Codex security configuration", () => {
   });
 
   it("uses the outer sandbox for default-mode commands only when the controller authorizes it", () => {
-    const source = { PAPERCLIP_RUNNER_EXTERNAL_SANDBOX: "1" };
+    const source = { PAPERCLIP_RUNNER_EXTERNAL_SANDBOX: "1", PAPERCLIP_RUNNER_NETWORK_ACCESS: "enabled" };
     const externalArgs = createIsolatedCodexAppServerArgs(source);
     const serializedExternalArgs = externalArgs.join("\n");
     expect(externalArgs).toContain(

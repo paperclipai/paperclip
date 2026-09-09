@@ -39,7 +39,7 @@ export function codexExecutableReadOnlyRoots(source: NodeJS.ProcessEnv, command 
   const candidates = isAbsolute(command) ? [command]
     : (source.PATH ?? "").split(delimiter).filter(isAbsolute).map(root => resolve(root, command));
   const executable = candidates.find(path => {
-    try { return statSync(path).isFile(); } catch { return false; }
+    try { const stat = statSync(path); return stat.isFile() && (process.platform === "win32" || (stat.mode & 0o111) !== 0); } catch { return false; }
   });
   if (!executable) return [...roots];
   add(executable);
@@ -55,9 +55,13 @@ export function codexExecutableReadOnlyRoots(source: NodeJS.ProcessEnv, command 
     const platformPackage = `@openai/codex-${process.platform}-${process.arch}`;
     if (manifest.optionalDependencies?.[platformPackage]) {
       const platformManifest = createRequire(manifestPath).resolve(`${platformPackage}/package.json`);
-      add(resolve(dirname(platformManifest), "vendor"));
+      const packageRoot = realpathSync(dirname(platformManifest));
+      const vendor = realpathSync(resolve(packageRoot, "vendor"));
+      if (vendor.startsWith(`${packageRoot}/`)) add(vendor);
     } else {
-      add(resolve(dirname(manifestPath), "vendor"));
+      const packageRoot = realpathSync(dirname(manifestPath));
+      const vendor = realpathSync(resolve(packageRoot, "vendor"));
+      if (vendor.startsWith(`${packageRoot}/`)) add(vendor);
     }
   } catch { /* Standalone executable installations need no npm resources. */ }
   return [...roots];
@@ -71,7 +75,7 @@ export const CODEX_EXTERNAL_SANDBOX_PERMISSION_PROFILE =
   "paperclip-runner-external-sandbox";
 
 export function codexNetworkAccess(source: NodeJS.ProcessEnv = process.env): boolean {
-  return source.PAPERCLIP_RUNNER_NETWORK_ACCESS !== "disabled";
+  return source.PAPERCLIP_RUNNER_NETWORK_ACCESS === "enabled";
 }
 
 function gitFilesystemRoots(source: NodeJS.ProcessEnv): { read: string[]; write: string[] } {
