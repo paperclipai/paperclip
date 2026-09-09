@@ -64,8 +64,7 @@ export function findMissingVendorDependencies(importedPackageNames, declaredDepe
     .sort();
 }
 
-async function findRunnerExternalPackages() {
-  const entryPoints = ENTRY_POINT_NAMES.map((name) => resolve(runnerDist, name));
+export async function findRunnerExternalPackages(entryPoints) {
   for (const entryPoint of entryPoints) {
     if (!existsSync(entryPoint)) {
       throw new Error(
@@ -77,10 +76,11 @@ async function findRunnerExternalPackages() {
 
   // write: false means this never touches disk -- it's a module-graph scan,
   // not a real bundle. Vendoring itself still happens via `cp -R` elsewhere
-  // in the build script.
+  // in the build script. `outdir` is required by esbuild for multiple entry
+  // points but nothing is ever written there, so any sibling path will do.
   const result = await build({
     entryPoints,
-    outdir: resolve(runnerRoot, ".vendor-dependency-scan"),
+    outdir: resolve(dirname(entryPoints[0]), ".vendor-dependency-scan"),
     bundle: true,
     write: false,
     platform: "node",
@@ -125,7 +125,8 @@ function explainMissingDependencies(missing, runnerDependencyNames) {
 }
 
 async function main() {
-  const externalPackageNames = await findRunnerExternalPackages();
+  const entryPoints = ENTRY_POINT_NAMES.map((name) => resolve(runnerDist, name));
+  const externalPackageNames = await findRunnerExternalPackages(entryPoints);
   const serverDependencyNames = readDependencyNames(resolve(serverRoot, "package.json"));
 
   const missing = findMissingVendorDependencies(
