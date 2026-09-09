@@ -313,8 +313,9 @@ function RunnerTurnStatus({
   const elapsed = formatCompactDuration(elapsedMs);
 
   const failed = terminalStatusFailed(status);
-  const label = execution?.label ?? (terminal ? (failed ? "Stopped" : "Worked") : "Working");
-  const semanticLabel = execution && execution.phase !== "working" ? label : terminal
+  const reconnecting = execution?.phase === "reconnecting" || execution?.phase === "retry_scheduled";
+  const label = reconnecting ? "Reconnecting…" : (terminal ? (failed ? "Stopped" : "Worked") : "Working");
+  const semanticLabel = reconnecting ? label : terminal
     ? elapsed
       ? `${label} ${failed ? "after" : "for"} ${elapsed}`
       : label
@@ -607,7 +608,7 @@ export function TaskChatRunnerTurn({
           </div>
         </div>
       ) : null}
-      <RunnerCurrentActivityTail items={currentActivityItems} status={status} />
+      {(!execution || execution.phase === "working") ? <RunnerCurrentActivityTail items={currentActivityItems} status={status} /> : null}
     </div>
   );
 }

@@ -2,7 +2,7 @@
 
 ## Outcome
 
-Failed provider sessions retain their structured failure meaning. Recovery uses a shared incident budget of three provider attempts, including the original attempt. A fresh replacement requires a fenced predecessor, durable completed results, preserved workspace state, authorized task history, and reconciled pending effects. Unknown external effects require an operator decision.
+Failed provider sessions retain their structured failure meaning. Recovery uses a shared incident budget of three provider attempts, including the original attempt. A fresh replacement requires a fenced predecessor, durable completed results, preserved workspace state, authorized task history, and reconciled pending effects. Unknown external effects receive an automatic preserve-without-replay disposition; they never require a reconciliation form.
 
 The server owns the continuation envelope. It includes the triggering request, subsequent user direction, interaction outcomes, completed work, and an explicit history cursor. The latest request supplies the completion objective; an old task title cannot satisfy a new follow-up.
 
@@ -20,7 +20,7 @@ A connection continuation also omitted the follow-up that requested a second ser
 
 The shared protocol-integrity and cleanup changes incorporate the relevant prerequisites from PR #13038. They do not require its chat feature.
 
-## Functional evidence
+## Functional evidence before the quiet UI revision
 
 Five independent fresh source-CLI `test-drive` instances passed these browser journeys:
 
@@ -36,7 +36,7 @@ These fixtures do not prove live provider authentication. A separate retained li
 
 The live journey required explicit operator reconciliation during diagnosis. It proves the repaired functional path, not a frictionless first attempt.
 
-## Automated checks
+## Automated checks before the quiet UI revision
 
 Before PR rebase, the repository test groups, typecheck, build, token gates, and Storybook build passed. The server test groups ran in shards, with affected suites rerun after repairs. Runner TypeScript passed 1,665 tests with eight skips; Node contracts passed 38 tests; the full Rust workspace passed. After the rebase, the PR checks verify the new head, including the session-goal changes on master.
 
@@ -54,15 +54,19 @@ RECOVERY_STORYBOOK_URL=http://127.0.0.1:6108 pnpm exec playwright test --config 
 
 Serve the built Storybook at the configured URL before the second browser command. The recovery suite creates and stops fresh test-drive instances itself. Each journey records its actual URL, data directory, checkout, task/run identifiers, provider calls, and screenshots in the Playwright output directory.
 
-There are 17 independently addressable offline stories under `tasks-execution-recovery`. The following story suffixes identify each view:
+The quiet UI revision removes the execution status card, list badges, and reconciliation dialog. Existing transcript headers may briefly show Reconnecting. The source task and composer remain visible. Unknown action outcomes receive a durable automatic no-replay disposition; no operator questionnaire is shown.
 
-`working`, `reconnecting`, `retry-scheduled`, `waiting-for-workspace`, `finalizing`, `safely-replaced`, `recovery-exhausted`, `uncertain-action`, `unavailable-recovery`, `waiting-for-access`, `waiting-for-answer`, `narrow-long-error`, `keyboard-inspection`, `reconciliation-entry`, `reconciliation-error`, `reconciliation-saving`, `reconciliation-completed`.
+Independently addressable stories under `tasks-execution-recovery`:
 
-Open a story with `?path=/story/tasks-execution-recovery--<suffix>`. All 68 combinations of state, theme, and viewport passed browser checks. Every view was visually inspected, including errors, focus return, and reduced motion.
+`working`, `reconnecting`, `retry-scheduled`, `waiting-for-workspace`, `finalizing`, `safely-replaced`, `recovery-exhausted`, `uncertain-action`, `unavailable-recovery`, `waiting-for-access`, `waiting-for-answer`, `narrow-long-error`, `composer-during-recovery`, `task-list-badges`, `task-list-badges-canonical`, `native-chat-status-labels`, `legacy-chat-status-labels`, `dashboard-status-labels`.
 
-- [Completed fixture answer after refresh](../assets/execution-recovery/fixture-completed.png)
-- [Recovery validation error](../assets/execution-recovery/reconciliation-error.png)
-- [Workspace wait](../assets/execution-recovery/workspace-wait.png)
+Open a story with `?path=/story/tasks-execution-recovery--<suffix>`. The badge story names remain stable for review links; their rows now demonstrate the absence of execution badges. Earlier screenshots of the status card and dialog are obsolete and are not acceptance evidence for this revision.
+
+Representative screenshots for the quiet presentation:
+
+- [Task lists without execution badges](../assets/execution-recovery/quiet-task-list.png)
+- [Temporary reconnection in the existing transcript header](../assets/execution-recovery/quiet-retry.png)
+- [Fixture continuation after refresh](../assets/execution-recovery/fixture-completed.png)
 
 ## Rollout and limits
 

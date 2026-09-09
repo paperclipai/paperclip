@@ -1,5 +1,5 @@
 import { EXECUTION_RECONCILIATION_CAUSES } from "@paperclipai/shared";
-import { and, asc, eq, gte, inArray, lte } from "drizzle-orm";
+import { and, asc, eq, gte, inArray, lte, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agentWakeupRequests,
@@ -873,7 +873,8 @@ export function createPostgresRunDispatchAdapter(
     const [recovery] = await tx.select({ id: issueRecoveryActions.id, nextAction: issueRecoveryActions.nextAction })
       .from(issueRecoveryActions).where(and(
         eq(issueRecoveryActions.companyId, run.companyId), eq(issueRecoveryActions.sourceIssueId, issueId),
-        inArray(issueRecoveryActions.status, ["active", "escalated"]),
+        or(inArray(issueRecoveryActions.status, ["active", "escalated"]),
+          sql`${issueRecoveryActions.evidence}->'automaticRecovery'->>'replay' = 'blocked'`),
         inArray(issueRecoveryActions.cause, [...EXECUTION_RECONCILIATION_CAUSES]),
       )).limit(1);
     if (recovery) return { issueId, decision: { stale: true as const,

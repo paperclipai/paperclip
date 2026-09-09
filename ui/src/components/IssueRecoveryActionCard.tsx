@@ -1108,6 +1108,8 @@ export function IssueRecoveryActionCard({
     showBreakGlass ||
     showRepairAction;
 
+  if (requiresExecutionReconciliation(action.cause)) return null;
+
   return (
     <section
       role="status"

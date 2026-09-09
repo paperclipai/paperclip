@@ -1087,8 +1087,8 @@ function IssueChatChainOfThought({
   let headerVerb: string;
   let headerSuffix: string | null = null;
   if (isActive) {
-    const execution = custom.execution as { label?: string } | undefined;
-    headerVerb = execution?.label ?? "Working";
+    const execution = custom.execution as { phase?: string } | undefined;
+    headerVerb = execution?.phase === "reconnecting" || execution?.phase === "retry_scheduled" ? "Reconnecting…" : "Working";
     if (liveElapsed) headerSuffix = `for ${liveElapsed}`;
   } else if (segmentTiming) {
     const durationMs = segmentTiming.endMs - segmentTiming.startMs;

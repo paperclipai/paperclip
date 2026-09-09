@@ -168,6 +168,14 @@ describe("IssueRecoveryActionCard", () => {
     );
   });
 
+  it.each(["active", "escalated", "resolved"] as const)("keeps %s runner recovery in the run log without a card", status => {
+    const node = render(<IssueRecoveryActionCard action={buildAction({
+      kind: "active_run_watchdog", cause: "uncertain_external_action", status, ownerType: "board",
+    })} />);
+    expect(node.textContent).toBe("");
+    expect(node.querySelector("section")).toBeNull();
+  });
+
   it.each(["active", "escalated"] as const)(
     "describes a %s board-owned watchdog as a human decision, not a live run",
     (status) => {

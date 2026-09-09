@@ -22720,7 +22720,8 @@ export function heartbeatService(
         && issue.assigneeAgentId === run.agentId && !["done", "cancelled"].includes(issue.status)) {
         const existing = await tx.select({ id: issueRecoveryActions.id }).from(issueRecoveryActions).where(and(
           eq(issueRecoveryActions.companyId, issue.companyId), eq(issueRecoveryActions.sourceIssueId, issue.id),
-          inArray(issueRecoveryActions.status, ["active", "escalated"]),
+          or(inArray(issueRecoveryActions.status, ["active", "escalated"]),
+            sql`${issueRecoveryActions.evidence}->'automaticRecovery'->>'runId' = ${run.id}`),
         )).limit(1);
         if (!existing.length) {
           await tx.update(nativeRunFinalizations).set({ phase: "terminal_failure", leaseOwner: null, leaseExpiresAt: null,

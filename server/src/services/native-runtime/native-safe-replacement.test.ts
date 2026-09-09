@@ -3,6 +3,7 @@ import { legacyExecutionNeedsReconciliation, terminalizeLegacyExecution } from "
 import { deliverExecutionStatuses } from "../execution-status-delivery.js";
 import { publishLiveEvent } from "../live-events.js";
 import {
+  settleUnrecoverableExecutions,
   validateExecutionReconciliation,
   markExecutionReconciliation,
   deliverReconciledExecutions,
@@ -93,6 +94,60 @@ const support = await getEmbeddedPostgresTestSupport();
       });
       return { companyId, agentId, issueId, runId };
     }
+    it("automatically closes an exhausted incident once, preserves ownership, and records no replay", async () => {
+      const source = await seed(3);
+      await reconcileSafeNativeReplacements(db);
+      await Promise.all([settleUnrecoverableExecutions(db), settleUnrecoverableExecutions(db)]);
+      await settleUnrecoverableExecutions(db);
+      const [task] = await db.select().from(issues).where(eq(issues.id, source.issueId));
+      expect(task).toMatchObject({ status: "blocked", assigneeAgentId: source.agentId, executionRunId: null, checkoutRunId: null });
+      const actions = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, source.issueId));
+      expect(actions).toHaveLength(1);
+      expect(actions[0]).toMatchObject({ status: "resolved", outcome: "blocked", evidence: {
+        automaticRecovery: { policy: "preserve_without_replay_v1", actionOutcome: "unknown", replay: "blocked", runId: source.runId },
+      } });
+      const logs = await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, source.runId));
+      expect(logs.filter(log => log.payload?.automaticRecovery === "preserve_without_replay_v1")).toHaveLength(1);
+      expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, source.companyId))).toHaveLength(1);
+    });
+    it("rolls back a crashed automatic disposition and completes it on the next sweep", async () => {
+      const source = await seed(3);
+      await reconcileSafeNativeReplacements(db);
+      await expect(settleUnrecoverableExecutions(db, new Date(), { failpoint: () => { throw new Error("crash before commit"); } })).rejects.toThrow("crash before commit");
+      const [before] = await db.select().from(issues).where(eq(issues.id, source.issueId));
+      expect(before.status).toBe("in_progress");
+      const [pending] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, source.issueId));
+      expect(pending.status).toBe("active");
+      await settleUnrecoverableExecutions(db);
+      const [after] = await db.select().from(issues).where(eq(issues.id, source.issueId));
+      expect(after.status).toBe("blocked");
+      const logs = await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, source.runId));
+      expect(logs.filter(log => log.payload?.automaticRecovery === "preserve_without_replay_v1")).toHaveLength(1);
+    });
+    it("does not let the automatic fallback preempt a safe replacement", async () => {
+      const source = await seed();
+      await db.insert(issueRecoveryActions).values({ companyId: source.companyId, sourceIssueId: source.issueId,
+        kind: "active_run_watchdog", ownerType: "board", returnOwnerAgentId: source.agentId,
+        cause: "native_provider_terminal_failed", fingerprint: source.runId, evidence: { runId: source.runId }, nextAction: "Checking recovery" });
+      await settleUnrecoverableExecutions(db);
+      const [task] = await db.select().from(issues).where(eq(issues.id, source.issueId));
+      expect(task.status).toBe("in_progress");
+      const [action] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, source.issueId));
+      expect(action.status).toBe("active");
+    });
+    it.each(["closed", "reassigned", "new_execution"])("invalidates automatic disposition after %s without changing task state", async change => {
+      const source = await seed(3);
+      await reconcileSafeNativeReplacements(db);
+      const nextRun = randomUUID();
+      if (change === "new_execution") await db.insert(heartbeatRuns).values({ id: nextRun, companyId: source.companyId, agentId: source.agentId, status: "running" });
+      const patch = change === "closed" ? { status: "done" } : change === "reassigned" ? { assigneeAgentId: null } : { executionRunId: nextRun };
+      await db.update(issues).set(patch).where(eq(issues.id, source.issueId));
+      await settleUnrecoverableExecutions(db);
+      const [task] = await db.select().from(issues).where(eq(issues.id, source.issueId));
+      expect(task).toMatchObject(patch);
+      const [action] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, source.issueId));
+      expect(action).toMatchObject({ status: "resolved", outcome: "cancelled", evidence: { automaticRecovery: { replay: "invalidated" } } });
+    });
     it("cancels a durable native retry even when its previous provider is already failed", async () => {
       const source = await seed();
       await db.update(nativeRunFinalizations).set({ phase: "retryable_failure", nextAttemptAt: new Date(Date.now() + 30_000) }).where(eq(nativeRunFinalizations.runId, source.runId));
@@ -116,6 +171,11 @@ const support = await getEmbeddedPostgresTestSupport();
       const actions = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, source.issueId));
       expect(actions).toHaveLength(1);
       expect(actions[0]).toMatchObject({ ownerType: "board", cause: "legacy_execution_requires_reconciliation" });
+      await db.delete(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, source.runId));
+      await settleUnrecoverableExecutions(db);
+      const [settled] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, actions[0]!.id));
+      expect(settled).toMatchObject({ status: "resolved", outcome: "blocked", evidence: { automaticRecovery: { replay: "blocked" } } });
+
       expect(legacyExecutionNeedsReconciliation({ ...run, status: "failed", resultJson: { errorFamily: "provider_quota" } })).toBe(true);
       expect(legacyExecutionNeedsReconciliation({ ...run, status: "failed", resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } } })).toBe(false);
       expect(legacyExecutionNeedsReconciliation({ ...run, status: "failed", scheduledRetryAttempt: 2, resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } } })).toBe(true);

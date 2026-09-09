@@ -98,7 +98,7 @@ export async function executionProjectionsForRuns(
     const matching = recovery.filter(
       (row) =>
         row.issueId === issueId &&
-        (row.status !== "resolved" || row.evidence.executionReconciliation) &&
+        (row.status !== "resolved" || row.evidence.executionReconciliation || row.evidence.automaticRecovery) &&
         (row.evidence.runId === run.id || row.evidence.sourceRunId === run.id),
     );
     const action =
@@ -160,6 +160,12 @@ export function projectExecution(
   };
   const set = (phase: ExecutionProjection["phase"], label: string) =>
     Object.assign(projection, { phase, label });
+  if (recoveryAction?.status === "resolved" && recoveryAction.evidence?.automaticRecovery) {
+    projection.cause = recoveryAction.cause;
+    projection.nextAction = recoveryAction.nextAction;
+    // Diagnostic projection only: no user decision or replay affordance.
+    return set("recovery_needed", "Stopped");
+  }
   if (
     recoveryAction?.status === "resolved" &&
     recoveryAction.evidence?.executionReconciliation

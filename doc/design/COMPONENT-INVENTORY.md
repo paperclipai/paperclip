@@ -6,7 +6,7 @@ Run scope: `ui/src/components/` and `ui/src/pages/` on branch `design/token-extr
 
 ## Counts
 
-September 2026 additions: `ExecutionStatus` renders the server execution projection using the shared Card and Button primitives. `IssueExecutionStatus` supplies the task query and an explicit unavailable/retry state. Independent states live under Storybook **Tasks / Execution recovery**, covering working, reconnecting, scheduled retry, finishing, replacement, exhausted recovery, uncertain actions, unavailable recovery, access/answer/workspace waits, narrow errors, and keyboard inspection. The historical audit counts below are unchanged.
+Execution recovery reuses the existing transcript header and task status. Routine phases add no list badges, status cards, or reconciliation dialogs. Only a transient reconnection changes the header text. Automatic recovery decisions remain in the local run log. Storybook **Tasks / Execution recovery** demonstrates quiet task lists, native and legacy transcript headers, and dashboard composition.
 
 | Area | Count |
 |---|---:|

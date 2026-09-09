@@ -14,11 +14,12 @@ const states = [
   "waiting-for-access",
   "waiting-for-answer",
   "narrow-long-error",
-  "keyboard-inspection",
-  "reconciliation-entry",
-  "reconciliation-error",
-  "reconciliation-saving",
-  "reconciliation-completed",
+  "composer-during-recovery",
+  "task-list-badges",
+  "task-list-badges-canonical",
+  "native-chat-status-labels",
+  "legacy-chat-status-labels",
+  "dashboard-status-labels",
 ];
 test.describe("offline execution recovery stories", () => {
   test.skip(
@@ -48,48 +49,17 @@ test.describe("offline execution recovery stories", () => {
           await page.goto(
             `${base}/iframe.html?id=tasks-execution-recovery--${state}&viewMode=story&globals=theme:${theme}`,
           );
-          if (state.startsWith("reconciliation-")) {
-            if (state === "reconciliation-completed") {
-              await expect(page.getByRole("status")).toHaveText(
-                "Decision recorded. Continuation is queued.",
-              );
-              await expect(
-                page.getByRole("button", {
-                  name: "Reconcile and continue",
-                  exact: true,
-                }),
-              ).toBeFocused();
-            } else {
-              const dialog = page.getByRole("dialog", {
-                name: "Reconcile execution",
-              });
-              await expect(dialog).toBeVisible();
-              if (state === "reconciliation-error")
-                await expect(dialog.getByRole("alert")).toContainText(
-                  "previous provider is still running",
-                );
-              if (state === "reconciliation-saving")
-                await expect(
-                  dialog.getByRole("button", { name: "Recording decision…" }),
-                ).toBeDisabled();
-              if (state === "reconciliation-entry")
-                await expect(
-                  dialog.getByRole("button", { name: "Record and continue" }),
-                ).toBeDisabled();
-              await expect(dialog).toHaveCSS("animation-name", "none");
-              await dialog.getByRole("button").last().scrollIntoViewIfNeeded();
+          await expect(page.locator("#storybook-root")).not.toBeEmpty();
+          await expect(page.getByRole("dialog")).toHaveCount(0);
+          await expect(page.getByRole("button", { name: /Inspect run|Reconcile and continue/ })).toHaveCount(0);
+          await expect(page.locator("[data-execution-phase]")).toHaveCount(0);
+          if (state === "composer-during-recovery") {
+            await expect(page.getByRole("textbox", { name: "Message draft" })).toHaveValue("Continue with the launch notes.");
+          }
+          if (state.startsWith("task-list-badges")) {
+            for (const label of ["Working", "Finishing", "Waiting for access", "Waiting for answer", "Reconnecting", "Retry scheduled", "Recovery needed"]) {
+              await expect(page.getByText(label, { exact: true })).toHaveCount(0);
             }
-          } else {
-            const status = page.locator(
-              "#storybook-root [data-execution-phase]",
-            );
-            await expect(status).toBeVisible();
-            for (const icon of await status.locator("svg").all())
-              await expect(icon).toHaveCSS("animation-name", "none");
-            if (state === "keyboard-inspection")
-              await expect(
-                page.getByRole("button", { name: "Inspect run" }),
-              ).toBeFocused();
           }
           expect(
             await page.evaluate(
@@ -102,16 +72,7 @@ test.describe("offline execution recovery stories", () => {
             ),
             fullPage: true,
           });
-          if (state === "reconciliation-entry") {
-            await page.keyboard.press("Escape");
-            await expect(page.getByRole("dialog")).not.toBeVisible();
-            await expect(
-              page.getByRole("button", {
-                name: "Reconcile and continue",
-                exact: true,
-              }),
-            ).toBeFocused();
-          }
+
         });
       }
 });

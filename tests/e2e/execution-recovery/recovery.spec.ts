@@ -234,8 +234,12 @@ for (const journey of [
         await page.getByRole("button", { name: agent.name, exact: true }).click();
         await page.getByRole("button", { name: "Create Task", exact: true }).click();
         await page.getByRole("complementary").getByRole("link", { name: /Read the legacy fixture report/ }).click();
-        await expect(page.getByText("Recovery needed", { exact: false }).first()).toBeVisible({ timeout: 60_000 });
-        await expect(page.getByRole("button", { name: "Reconcile and continue" })).toBeVisible();
+        await expect.poll(async () => {
+          const tasks = await api(`/companies/${company.id}/issues`);
+          return tasks.find((issue: { title: string }) => issue.title === "Read the legacy fixture report")?.status;
+        }, { timeout: 60_000 }).toBe("blocked");
+        await expect(page.getByText("Blocked", { exact: true }).first()).toBeVisible({ timeout: 30_000 });
+        await expect(page.getByRole("button", { name: "Reconcile and continue" })).toHaveCount(0);
         await expect(page.getByRole("button", { name: "Try again", exact: true })).toHaveCount(0);
         const composer = page.locator('[contenteditable="true"]').last();
         await composer.fill("Independent draft remains usable");
@@ -248,7 +252,7 @@ for (const journey of [
         expect(runs).toHaveLength(1);
         expect(await api(`/heartbeat-runs/${runs[0].id}`)).toMatchObject({ runtimeMode: "legacy", status: "failed" });
         await page.reload();
-        await expect(page.getByRole("button", { name: "Reconcile and continue" })).toBeVisible();
+        await expect(page.getByRole("button", { name: "Reconcile and continue" })).toHaveCount(0);
         await writeFile(info.outputPath("instance-and-runs.json"), JSON.stringify({ base, dataDir, health, dependency: "deterministic legacy process fixture", companyId: company.id, agentId: agent.id, runs }, null, 2));
         return;
       }
@@ -487,43 +491,18 @@ for (const journey of [
         ).toBeVisible({ timeout: 100_000 });
         expect(gmailReadCount).toBe(journey === "ceo_lineage" ? 1 : 2);
       } else {
-        await expect(
-          page.getByText(/Reconcile provider action/).first(),
-        ).toBeVisible({ timeout: 100_000 });
+        await expect.poll(async () => (await api(`/issues/${task.id}`)).status, { timeout: 100_000 }).toBe("blocked");
+        await expect(page.getByText("Blocked", { exact: true }).first()).toBeVisible({ timeout: 30_000 });
         expect(gmailReadCount).toBe(1);
         await expect(page.getByText(/GMAIL-73/)).toHaveCount(0);
-        await page.screenshot({
-          path: info.outputPath("uncertain-before-reconciliation.png"),
-          fullPage: true,
-        });
-        await expect(
-          page.getByRole("button", { name: "Try again", exact: true }),
-        ).toHaveCount(0);
-        await page
-          .getByRole("button", { name: "Reconcile and continue", exact: true })
-          .click();
-        const reconciliation = page.getByRole("dialog", {
-          name: "Reconcile execution",
-        });
-        await reconciliation
-          .getByRole("radio", { name: "The actions did not happen" })
-          .check();
-        await reconciliation
-          .getByRole("textbox", { name: "Evidence and remaining work" })
-          .fill(
-            "Verified the deterministic fixture only emitted a command-start notification. It did not execute a command or send an email. Continue the Gmail read.",
-          );
-        await reconciliation.getByRole("checkbox").check();
-        await reconciliation
-          .getByRole("button", { name: "Record and continue" })
-          .click();
-        await expect(reconciliation).not.toBeVisible();
-        await expect(
-          page
-            .getByText(/GMAIL-73: The launch email confirms Friday approval/)
-            .first(),
-        ).toBeVisible({ timeout: 60_000 });
-        expect(gmailReadCount).toBe(2);
+        await expect(page.getByRole("button", { name: /Reconcile and continue|Try again/ })).toHaveCount(0);
+        await expect(page.getByRole("dialog", { name: "Reconcile execution" })).toHaveCount(0);
+        const recovery = (await api(`/issues/${task.id}`)).activeRecoveryAction;
+        expect(recovery).toBeNull();
+        await page.screenshot({ path: info.outputPath("uncertain-automatic-no-replay.png"), fullPage: true });
+        // Past the retry delay, unknown effects still cannot be replayed.
+        await page.waitForTimeout(35_000);
+        expect(gmailReadCount).toBe(1);
       }
       await expect(composer).toHaveText(
         "An unsent draft stays available during recovery.",
@@ -538,7 +517,7 @@ for (const journey of [
           { timeout: 60_000 },
         )
         .toBe(true);
-      await expect(async () => {
+      if (journey !== "uncertain") await expect(async () => {
         const answer = page.getByText(/GMAIL-73: The launch email confirms Friday approval/).first();
         // Refresh can replace the streamed row with its persisted transcript.
         // Re-resolve the locator if that handoff detaches it during scrolling.
@@ -573,12 +552,16 @@ for (const journey of [
       await composer.fill("");
       await page.reload();
       await expect(page.getByText(/Due now/, { exact: true })).toHaveCount(0);
-      await expect(
+      if (journey !== "uncertain") await expect(
         page
           .getByText(/GMAIL-73: The launch email confirms Friday approval/)
           .first(),
       ).toBeVisible();
-      await expect(async () => {
+      else {
+        expect((await api(`/issues/${task.id}`)).status).toBe("blocked");
+        await expect(page.getByRole("button", { name: "Reconcile and continue" })).toHaveCount(0);
+      }
+      if (journey !== "uncertain") await expect(async () => {
         const answer = page.getByText(/GMAIL-73: The launch email confirms Friday approval/).first();
         // Refresh can replace the streamed row with its persisted transcript.
         // Re-resolve the locator if that handoff detaches it during scrolling.

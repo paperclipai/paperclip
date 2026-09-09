@@ -1,5 +1,8 @@
+import { randomUUID } from "node:crypto";
+import { persistActivity } from "./activity-log.js";
+import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
 import { logger } from "../middleware/logger.js";
-import { and, eq, isNull, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import {
   environmentLeases,
   heartbeatRuns,
@@ -10,7 +13,10 @@ import {
 } from "@paperclipai/db";
 import { conflict } from "../errors.js";
 import { buildExecutionContinuation } from "./execution-continuation.js";
-import type { ExecutionReconciliation } from "@paperclipai/shared";
+import {
+  EXECUTION_RECONCILIATION_CAUSES,
+  type ExecutionReconciliation,
+} from "@paperclipai/shared";
 import { parseIssueExecutionState } from "./issue-execution-policy.js";
 
 /** An operator records observed outcomes; this is not permission to blindly retry. */
@@ -37,15 +43,22 @@ export async function validateExecutionReconciliation(input: {
         eq(heartbeatRuns.id, decision.runId),
       ),
     );
-  const [task] = await db.select().from(issues).where(and(
-    eq(issues.companyId, companyId), eq(issues.id, issueId),
-  ));
-  const review = task?.status === "in_review" ? parseIssueExecutionState(task.executionState) : null;
-  const isCurrentReviewer = review?.status === "pending" &&
-    review.currentParticipant?.type === "agent" && review.currentParticipant.agentId === run?.agentId;
+  const [task] = await db
+    .select()
+    .from(issues)
+    .where(and(eq(issues.companyId, companyId), eq(issues.id, issueId)));
+  const review =
+    task?.status === "in_review"
+      ? parseIssueExecutionState(task.executionState)
+      : null;
+  const isCurrentReviewer =
+    review?.status === "pending" &&
+    review.currentParticipant?.type === "agent" &&
+    review.currentParticipant.agentId === run?.agentId;
   if (
     !run ||
-    !task || task.assigneeAgentId !== agentId ||
+    !task ||
+    task.assigneeAgentId !== agentId ||
     (run.agentId !== agentId && !isCurrentReviewer) ||
     (run.nativeIssueId ?? run.contextSnapshot?.issueId) !== issueId ||
     !["failed", "interrupted", "timed_out", "cancelled"].includes(run.status)
@@ -137,6 +150,7 @@ export async function markExecutionReconciliation(
     .set({
       evidence: {
         ...action.evidence,
+        automaticRecovery: undefined,
         executionReconciliation: {
           ...decision,
           actorId,
@@ -242,6 +256,188 @@ export async function deliverReconciledExecutions(
       logger.warn(
         { recoveryActionId: action.id },
         "Reconciled execution continuation remains pending for retry",
+      );
+    }
+  }
+}
+
+/**
+ * Failed execution is a system responsibility, not a user questionnaire. After
+ * automatic recovery is ruled out, preserve evidence and stop without replay.
+ * This is NOT evidence that an external action succeeded or never happened.
+ * The resolved record retains a dispatch hold until actual evidence clears it.
+ */
+export async function settleUnrecoverableExecutions(
+  db: Db,
+  now = new Date(),
+  options: { failpoint?: (phase: "persisted") => void } = {},
+) {
+  const candidates = await db
+    .select()
+    .from(issueRecoveryActions)
+    .where(
+      and(
+        inArray(issueRecoveryActions.status, ["active", "escalated"]),
+        eq(issueRecoveryActions.kind, "active_run_watchdog"),
+        inArray(issueRecoveryActions.cause, [
+          ...EXECUTION_RECONCILIATION_CAUSES,
+        ]),
+      ),
+    )
+    .limit(25);
+  for (const candidate of candidates) {
+    const runId = candidate.evidence.runId;
+    if (typeof runId !== "string") continue;
+    try {
+      await db.transaction(async (tx) => {
+        await tx.execute(
+          sql`select set_config('statement_timeout', '15000', true), set_config('lock_timeout', '1000', true)`,
+        );
+        // Same issue -> coordinator -> run ordering as replacement/finalization.
+        const [task] = await tx
+          .select()
+          .from(issues)
+          .where(
+            and(
+              eq(issues.companyId, candidate.companyId),
+              eq(issues.id, candidate.sourceIssueId),
+            ),
+          )
+          .for("update");
+        const [coordinator] = await tx
+          .select()
+          .from(nativeRunFinalizations)
+          .where(
+            and(
+              eq(nativeRunFinalizations.companyId, candidate.companyId),
+              eq(nativeRunFinalizations.runId, runId),
+            ),
+          )
+          .for("update");
+        const [run] = await tx
+          .select()
+          .from(heartbeatRuns)
+          .where(
+            and(
+              eq(heartbeatRuns.companyId, candidate.companyId),
+              eq(heartbeatRuns.id, runId),
+            ),
+          )
+          .for("update");
+        const [action] = await tx
+          .select()
+          .from(issueRecoveryActions)
+          .where(eq(issueRecoveryActions.id, candidate.id))
+          .for("update");
+        if (
+          !task ||
+          !run ||
+          !action ||
+          action.evidence.runId !== runId ||
+          !EXECUTION_RECONCILIATION_CAUSES.includes(
+            action.cause as (typeof EXECUTION_RECONCILIATION_CAUSES)[number],
+          ) ||
+          !["active", "escalated"].includes(action.status) ||
+          (run.nativeIssueId ?? run.contextSnapshot?.issueId) !== task.id ||
+          !["failed", "timed_out", "interrupted", "cancelled"].includes(
+            run.status,
+          )
+        )
+          return;
+        // Give durable native recovery its chance; never preempt a resume,
+        // replacement, result finalizer, or still-owned execution.
+        if (
+          coordinator?.leaseOwner ||
+          coordinator?.resultId ||
+          coordinator?.failureDetail?.successorRunId ||
+          (coordinator && coordinator.phase !== "terminal_failure") ||
+          (run.runtimeMode === "native" &&
+            coordinator?.failureCode === "native_provider_terminal_failed" &&
+            !coordinator.failureDetail?.replacementDenied)
+        )
+          return;
+        const current =
+          action.returnOwnerAgentId !== null &&
+          task.assigneeAgentId === action.returnOwnerAgentId &&
+          !["done", "cancelled"].includes(task.status) &&
+          (!task.executionRunId || task.executionRunId === run.id) &&
+          (!task.checkoutRunId || task.checkoutRunId === run.id);
+        const note = current
+          ? "Automatic recovery stopped. Recorded work is preserved; actions with unverified outcomes will not be repeated."
+          : "Recovery closed because the task's owner, execution, or status changed. No work was replayed.";
+        if (current)
+          await tx
+            .update(issues)
+            .set({
+              status: "blocked",
+              executionRunId: null,
+              checkoutRunId: null,
+              updatedAt: now,
+            })
+            .where(eq(issues.id, task.id));
+        await tx
+          .update(issueRecoveryActions)
+          .set({
+            status: "resolved",
+            outcome: current ? "blocked" : "cancelled",
+            resolvedAt: now,
+            updatedAt: now,
+            nextAction: note,
+            resolutionNote: note,
+            wakePolicy: null,
+            monitorPolicy: null,
+            evidence: {
+              ...action.evidence,
+              automaticRecovery: {
+                policy: "preserve_without_replay_v1",
+                runId: run.id,
+                replay: current ? "blocked" : "invalidated",
+                actionOutcome: "unknown",
+                recordedAt: now.toISOString(),
+              },
+            },
+          })
+          .where(eq(issueRecoveryActions.id, action.id));
+        await persistActivity(tx as unknown as Db, {
+          companyId: run.companyId,
+          actorType: "system",
+          actorId: "execution-recovery",
+          action: "issue.execution_recovery_settled",
+          entityType: "issue",
+          entityId: task.id,
+          runId: run.id,
+          details: {
+            recoveryActionId: action.id,
+            outcome: current ? "blocked" : "cancelled",
+            replay: "not_authorized",
+          },
+        });
+        await tx
+          .update(heartbeatRuns)
+          .set({ executionStatusDeliveryId: randomUUID() })
+          .where(eq(heartbeatRuns.id, run.id));
+        await appendHeartbeatRunEvent(tx as unknown as Db, {
+          companyId: run.companyId,
+          agentId: run.agentId,
+          runId: run.id,
+          eventType: "lifecycle",
+          stream: "system",
+          level: "warn",
+          message: note,
+          payload: {
+            recoveryActionId: action.id,
+            cause: action.cause,
+            automaticRecovery: "preserve_without_replay_v1",
+            replay: current ? "blocked" : "invalidated",
+          },
+        });
+        options.failpoint?.("persisted");
+      });
+    } catch (err) {
+      if (options.failpoint) throw err;
+      logger.warn(
+        { err, recoveryActionId: candidate.id },
+        "Automatic recovery disposition remains pending",
       );
     }
   }
