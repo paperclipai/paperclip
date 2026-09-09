@@ -837,6 +837,10 @@ describe("Codex protocol integrity propagation", () => {
                 (entry) => entry.eventType === "run.result.proposed",
               ),
             ).toBeGreaterThan(accepted);
+            // Proposal admission is not the runner's durable result receipt.
+            // Complete that exact command before asking close to certify reuse.
+            await commandResult("semantic_tool.result");
+            expect(core.semanticToolResultsSettled()).toBe(true);
             // This fixture replaces only the runner process. Model the new
             // durable close contract explicitly instead of accepting an
             // unreadable provider suffix as a reusable checkpoint.
