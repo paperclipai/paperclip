@@ -21,8 +21,12 @@ summarize-and-continue half to Paperclip's rotation model.
   keyed by company, agent, adapter type, and task key, plus adapter-native
   session stores referenced by `heartbeat_runs.session_id_before/after`.
   Read path: `getTaskSession` in `server/src/services/heartbeat.ts`.
-- Twelve adapters (`packages/adapters/*`) each own their session format
-  behind per-adapter codecs (`sessionCodec` serialize/deserialize).
+- Twelve adapters (`packages/adapters/*`) each own their session format,
+  mostly behind per-adapter codecs (`sessionCodec` serialize/deserialize).
+  OpenClaw Gateway is the exception: it has no `sessionCodec` and derives
+  a session key from its configured strategy (`sessionKeyStrategy`:
+  issue, fixed, or run), so any history-read or rewrite seam needs an
+  explicit OpenClaw path, not just codec coverage.
 - Rotation already exists and is policy-driven:
   `packages/adapter-utils/src/session-compaction.ts` resolves a per-adapter
   policy (run count, raw input tokens, session age; defaults 200 runs, 2M
@@ -91,8 +95,11 @@ visibility into per-session pressure before rotation fires.
 ### Phase 1: pressure visibility (Path-1 sized, no prompt changes)
 
 - Derive per-task-session pressure from existing rows: run count and error
-  streak from `heartbeat_runs`, summed tokens from `usage_json`, session age,
-  each against the resolved rotation policy for that adapter.
+  streak from `heartbeat_runs`, token usage from `usage_json`, session age,
+  each against the resolved rotation policy for that adapter. Token math
+  must respect reporting shape: per-run usage is summed, while adapters
+  that report cumulative session usage on each run contribute only deltas,
+  or pressure reads inflated past the threshold.
 - Surface it where operators already look: the run/session UI and wake
   metadata (numbers only, never content).
 - No summarization, no rewrites, no new prompts. Pure observability that the
@@ -106,7 +113,12 @@ visibility into per-session pressure before rotation fires.
 - Execution, mirroring the harness commit protocol and reusing the
   rotation decision point:
   1. Select a span: the session history minus a verbatim tail (propose the
-     reference default of 0.16 measured context).
+     reference default of 0.16 measured context). Prerequisite: a history
+     read API. The shared codec handles opaque resume metadata only, and
+     the rotation path reads run summaries, not adapter conversation
+     history — span selection with version checking needs a shared or
+     per-adapter history seam first, without which the non-goal of leaving
+     adapter contracts unchanged cannot hold.
   2. Summarize the span with an auxiliary model call using a fixed
      checkpoint schema (adopt the reference sections: intent, concepts,
      files, errors, pending, current work, next step, critical context).
@@ -130,8 +142,10 @@ visibility into per-session pressure before rotation fires.
 ### Phase 3: automatic checkpoint-on-rotation (later, needs phase 2 data)
 
 - Where rotation currently attaches the deterministic handoff, attach a
-  checkpoint instead, gated per adapter. Operator-visible, reversible via
-  fresh-session reset, logged.
+  checkpoint instead, gated per adapter. Operator-visible, logged, with
+  fresh-session reset kept as the escape hatch (reset discards the active
+  session and starts clean; it does not restore pre-compaction state, so
+  true rollback would need a snapshot mechanism defined separately).
 
 ## Open Questions for Maintainers
 
@@ -146,6 +160,9 @@ visibility into per-session pressure before rotation fires.
    for native-context-management adapters?
 6. Should phase 1 pressure numbers feed existing budgets/watchdogs, or stay
    advisory until phase 2?
+7. What provides the history-read seam for span selection: a shared
+   adapter-history API, per-adapter implementations, or reuse of an
+   existing transcript surface?
 
 ## Risks
 
