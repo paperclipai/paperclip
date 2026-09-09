@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { applyIssueExecutionPolicyTransition, normalizeIssueExecutionPolicy, parseIssueExecutionState } from "../services/issue-execution-policy.ts";
+import {
+  applyIssueExecutionPolicyTransition,
+  findFirstIneligibleApprovalStage,
+  normalizeIssueExecutionPolicy,
+  parseIssueExecutionState,
+} from "../services/issue-execution-policy.ts";
 import type { IssueExecutionPolicy, IssueExecutionState } from "@paperclipai/shared";
 
 const coderAgentId = "11111111-1111-4111-8111-111111111111";
@@ -130,6 +135,31 @@ describe("normalizeIssueExecutionPolicy", () => {
         scheduledBy: "assignee",
         externalRef: "[redacted]",
       },
+    });
+  });
+
+  it("identifies an approval stage whose only participant is the issue executor", () => {
+    const policy = makePolicy([
+      { type: "review", participants: [{ type: "agent", agentId: qaAgentId }] },
+      { type: "approval", participants: [{ type: "agent", agentId: coderAgentId }] },
+    ]);
+
+    expect(findFirstIneligibleApprovalStage(policy, { type: "agent", agentId: coderAgentId })).toMatchObject({
+      type: "approval",
+      participants: [{ type: "agent", agentId: coderAgentId }],
+    });
+    expect(findFirstIneligibleApprovalStage(twoStagePolicy(), { type: "agent", agentId: coderAgentId })).toBeNull();
+  });
+
+  it("uses the active workflow return assignee rather than the current reviewer", () => {
+    const policy = makePolicy([
+      { type: "review", participants: [{ type: "agent", agentId: qaAgentId }] },
+      { type: "approval", participants: [{ type: "agent", agentId: coderAgentId }] },
+    ]);
+
+    expect(findFirstIneligibleApprovalStage(policy, { type: "agent", agentId: coderAgentId })).toMatchObject({
+      type: "approval",
+      participants: [{ type: "agent", agentId: coderAgentId }],
     });
   });
 });

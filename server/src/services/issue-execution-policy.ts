@@ -498,6 +498,22 @@ function selectStageParticipant(
   return first ? { type: first.type, agentId: first.agentId ?? null, userId: first.userId ?? null } : null;
 }
 
+/**
+ * Finds an approval stage that cannot be reached because all of its
+ * participants are excluded as the issue's return executor. Callers use this
+ * at policy-write time; legacy persisted policies retain the transition-time
+ * 422 so they can be repaired without unrelated writes being blocked.
+ */
+export function findFirstIneligibleApprovalStage(
+  policy: IssueExecutionPolicy | null | undefined,
+  returnAssignee: IssueExecutionStagePrincipal | null,
+): IssueExecutionStage | null {
+  if (!policy) return null;
+  return policy.stages.find(
+    (stage) => stage.type === "approval" && !selectStageParticipant(stage, { exclude: returnAssignee }),
+  ) ?? null;
+}
+
 function stageHasParticipant(stage: IssueExecutionStage, participant: IssueExecutionStagePrincipal | null): boolean {
   if (!participant) return false;
   return stage.participants.some((candidate) => principalsEqual(candidate, participant));
