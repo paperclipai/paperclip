@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
-import { eq } from "drizzle-orm";
+import { eq, isNull } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
@@ -321,5 +321,172 @@ describeEmbeddedPostgres("issue create deduplication routes", () => {
 
     expect(created.originKind).toBe("manual");
     expect(created.originRunId).toBe(runId);
+  });
+
+  it("deduplicates a rephrased sibling that carries the same leading work-item code", async () => {
+    const companyId = await seedCompany();
+    const parent = await seedParent(companyId);
+    const app = createApp();
+
+    // Taken from a real incident: two runs re-planned the same parent and restated
+    // every title, so exact-title dedup matched none of the five pairs.
+    const firstPass = [
+      "ROT-01 — Rotate every exposed secret (8 tickets absorbed)",
+      "SEC-02 — AWS privileges of the prod app + root keys (4 tickets absorbed) — lab first",
+      "SEC-02b — Purge the excess IAM grants on the agent identities (5 tickets absorbed)",
+      "SEC-03 — Close the 2 controls that fail open (3 tickets absorbed)",
+      "SEC-05 — Forced HTTPS + HSTS + security headers actually shipped (~1h30)",
+    ];
+    const secondPass = [
+      "ROT-01 — Rotate every exposed secret (prod + lab)",
+      "SEC-02 — Remove AdministratorAccess from the prod app + neutralise the root keys",
+      "SEC-02b — Purge the excess IAM grants on the agent identities",
+      "SEC-03 — Close the 2 security controls that fail open",
+      "SEC-05 — Forced HTTPS + HSTS + security headers actually shipped",
+    ];
+
+    const originals: string[] = [];
+    for (const title of firstPass) {
+      const created = await request(app)
+        .post(`/api/companies/${companyId}/issues`)
+        .send({ parentId: parent.id, title })
+        .expect(201);
+      originals.push(created.body.id);
+    }
+    for (const [index, title] of secondPass.entries()) {
+      const replay = await request(app)
+        .post(`/api/companies/${companyId}/issues`)
+        .send({ parentId: parent.id, title })
+        .expect(200);
+      expect(replay.body).toMatchObject({
+        id: originals[index],
+        deduplicated: true,
+        deduplicationReason: "recent_open_sibling_code",
+      });
+    }
+
+    const children = await db.select().from(issues).where(eq(issues.parentId, parent.id));
+    expect(children).toHaveLength(5);
+  });
+
+  it("keeps distinct codes, closed siblings and explicit duplicates out of the code guard", async () => {
+    const companyId = await seedCompany();
+    const parent = await seedParent(companyId);
+    const app = createApp();
+
+    const first = await request(app)
+      .post(`/api/companies/${companyId}/issues`)
+      .send({ parentId: parent.id, title: "SEC-05 — HTTPS force" })
+      .expect(201);
+    await request(app)
+      .post(`/api/companies/${companyId}/issues`)
+      .send({ parentId: parent.id, title: "SEC-06 — HTTPS force elsewhere" })
+      .expect(201);
+    await request(app)
+      .post(`/api/companies/${companyId}/issues`)
+      .send({ parentId: parent.id, title: "SEC-07 — deliberate second pass", allowDuplicate: true })
+      .expect(201);
+
+    // A closed sibling no longer shadows its code.
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, first.body.id));
+    await request(app)
+      .post(`/api/companies/${companyId}/issues`)
+      .send({ parentId: parent.id, title: "SEC-05 — reopened work" })
+      .expect(201);
+
+    const children = await db.select().from(issues).where(eq(issues.parentId, parent.id));
+    expect(children).toHaveLength(4);
+  });
+
+  it("treats a leading existing issue identifier as a reference, not a work-item code", async () => {
+    const companyId = await seedCompany();
+    const parent = await seedParent(companyId);
+    const app = createApp();
+
+    // An issue whose identifier IS the leading token: "ROT-01 — …" then reads as a
+    // reference to that issue, so two siblings citing it stay distinct.
+    await db.insert(issues).values({
+      companyId,
+      title: "Referenced issue",
+      status: "todo",
+      priority: "medium",
+      identifier: "ROT-01",
+    });
+
+    await request(app)
+      .post(`/api/companies/${companyId}/issues`)
+      .send({ parentId: parent.id, title: "ROT-01 — write the migration" })
+      .expect(201);
+    await request(app)
+      .post(`/api/companies/${companyId}/issues`)
+      .send({ parentId: parent.id, title: "ROT-01 — write the tests" })
+      .expect(201);
+
+    const children = await db.select().from(issues).where(eq(issues.parentId, parent.id));
+    expect(children).toHaveLength(2);
+  });
+
+  it("keeps unrelated siblings that merely share a leading product or version token", async () => {
+    const companyId = await seedCompany();
+    const parent = await seedParent(companyId);
+    const app = createApp();
+
+    // Review case: a coincidental product token is not a batch code.
+    // None of these pairs may collapse — a false positive here silently drops real work.
+    const pairs = [
+      ["GPT-4 pricing update for the billing page", "GPT-4 rate limit fix for the ingest worker"],
+      ["ISO-8601 parsing in the importer", "ISO-8601 output in the export job"],
+      ["SEC-02 handles the prod keys", "SEC-02 handles the lab keys"],
+    ];
+    for (const [first, second] of pairs) {
+      await request(app)
+        .post(`/api/companies/${companyId}/issues`)
+        .send({ parentId: parent.id, title: first })
+        .expect(201);
+      await request(app)
+        .post(`/api/companies/${companyId}/issues`)
+        .send({ parentId: parent.id, title: second })
+        .expect(201);
+    }
+
+    const children = await db.select().from(issues).where(eq(issues.parentId, parent.id));
+    expect(children).toHaveLength(6);
+  });
+
+  it("keeps unrelated root issues that share a leading batch code", async () => {
+    const companyId = await seedCompany();
+    const app = createApp();
+
+    // Root issues share one company-wide bucket, so a shared leading code there is
+    // not evidence of a single batch. Collapsing them would silently drop real work.
+    await request(app)
+      .post(`/api/companies/${companyId}/issues`)
+      .send({ title: "ROT-01 — rotate the staging keys" })
+      .expect(201);
+    await request(app)
+      .post(`/api/companies/${companyId}/issues`)
+      .send({ title: "ROT-01 — rotate the vendor webhook secret" })
+      .expect(201);
+
+    const roots = await db.select().from(issues).where(isNull(issues.parentId));
+    expect(roots).toHaveLength(2);
+  });
+
+  it("still collapses rephrased siblings under the same parent", async () => {
+    const companyId = await seedCompany();
+    const parent = await seedParent(companyId);
+    const app = createApp();
+
+    await request(app)
+      .post(`/api/companies/${companyId}/issues`)
+      .send({ parentId: parent.id, title: "ROT-02 — rotate the staging keys" })
+      .expect(201);
+    await request(app)
+      .post(`/api/companies/${companyId}/issues`)
+      .send({ parentId: parent.id, title: "ROT-02 — rotate keys in staging" })
+      .expect(200); // replayed, not created
+
+    const children = await db.select().from(issues).where(eq(issues.parentId, parent.id));
+    expect(children).toHaveLength(1);
   });
 });
