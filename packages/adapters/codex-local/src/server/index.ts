@@ -13,6 +13,7 @@ export { getConfigSchema } from "./config-schema.js";
 export {
   reconcileManagedCodexHome,
   isManagedCodexHomePath,
+  resolveSharedCodexHomeDir,
   evaluateCodexCredentialReadiness,
   type ReconcileManagedCodexHomeInput,
   type ReconcileManagedCodexHomeResult,

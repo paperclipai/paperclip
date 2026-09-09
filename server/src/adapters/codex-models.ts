@@ -1,7 +1,11 @@
+import { readFile } from "node:fs/promises";
+import path from "node:path";
 import type { AdapterModel } from "./types.js";
 import { models as codexFallbackModels } from "@paperclipai/adapter-codex-local";
+import { resolveSharedCodexHomeDir } from "@paperclipai/adapter-codex-local/server";
 import { readConfigFile } from "../config-file.js";
 
+const CODEX_MODELS_CACHE_FILENAME = "models_cache.json";
 const OPENAI_MODELS_ENDPOINT = "https://api.openai.com/v1/models";
 const OPENAI_MODELS_TIMEOUT_MS = 5000;
 const OPENAI_MODELS_CACHE_TTL_MS = 60_000;
@@ -41,6 +45,60 @@ function resolveOpenAiApiKey(): string | null {
   return configKey && configKey.length > 0 ? configKey : null;
 }
 
+/**
+ * Read the model catalog the Codex CLI maintains for itself.
+ *
+ * Codex refreshes `$CODEX_HOME/models_cache.json` from the ChatGPT backend during normal use, so it
+ * is the only discovery source that works for ChatGPT-authenticated installs — which have no
+ * `OPENAI_API_KEY`, making the OpenAI API path below a silent no-op for them.
+ *
+ * Returns `[]` for every failure mode (missing file, unreadable, malformed JSON, unexpected shape)
+ * so callers fall through to the existing API and static-fallback paths.
+ */
+async function readCodexModelsCache(): Promise<AdapterModel[]> {
+  let raw: string;
+  try {
+    raw = await readFile(
+      path.join(resolveSharedCodexHomeDir(), CODEX_MODELS_CACHE_FILENAME),
+      "utf8",
+    );
+  } catch {
+    return [];
+  }
+
+  let payload: unknown;
+  try {
+    payload = JSON.parse(raw);
+  } catch {
+    return [];
+  }
+  if (typeof payload !== "object" || payload === null) return [];
+
+  const entries = (payload as { models?: unknown }).models;
+  if (!Array.isArray(entries)) return [];
+
+  const models: AdapterModel[] = [];
+  for (const entry of entries) {
+    if (typeof entry !== "object" || entry === null) continue;
+    const { slug, display_name: displayName, visibility } = entry as {
+      slug?: unknown;
+      display_name?: unknown;
+      visibility?: unknown;
+    };
+    if (typeof slug !== "string" || slug.trim().length === 0) continue;
+    // Codex keeps internal slugs (`gpt-reserve`, `codex-auto-review`) out of its own picker with
+    // visibility "hide"; mirror that instead of advertising models users are not meant to pick.
+    if (visibility !== "list") continue;
+    const id = slug.trim();
+    const label = typeof displayName === "string" && displayName.trim().length > 0
+      ? displayName.trim()
+      : id;
+    models.push({ id, label });
+  }
+
+  return dedupeModels(models);
+}
+
 async function fetchOpenAiModels(apiKey: string): Promise<AdapterModel[]> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), OPENAI_MODELS_TIMEOUT_MS);
@@ -72,8 +130,15 @@ async function fetchOpenAiModels(apiKey: string): Promise<AdapterModel[]> {
 
 async function loadCodexModels(options?: { forceRefresh?: boolean }): Promise<AdapterModel[]> {
   const forceRefresh = options?.forceRefresh === true;
-  const apiKey = resolveOpenAiApiKey();
   const fallback = dedupeModels(codexFallbackModels);
+
+  // Codex's own cache wins when present: it reflects what this install can actually run today,
+  // including models newer than any Paperclip release. It is a cheap local file that Codex owns
+  // refreshing, so it is re-read on every call rather than memoized behind the TTL below.
+  const codexCachedModels = await readCodexModelsCache();
+  if (codexCachedModels.length > 0) return mergedWithFallback(codexCachedModels);
+
+  const apiKey = resolveOpenAiApiKey();
   if (!apiKey) return fallback;
 
   const now = Date.now();
