@@ -2193,12 +2193,12 @@ export function createToolGatewayService(
           }
         : tool);
     if (onDemandTargets.length > 0) {
-      const targetDecisions = await Promise.all(onDemandTargets.map(async (tool) => {
+      for (const tool of onDemandTargets) {
         const decision = await policyService.decide(policyInputForTool({ session, tool }));
-        return { tool, decision };
-      }));
-      if (targetDecisions.some(({ decision }) => decision.allowed || decision.decision === "require_approval")) {
-        visibleTools.push(...VIRTUAL_TOOLS);
+        if (decision.allowed || decision.decision === "require_approval") {
+          visibleTools.push(...VIRTUAL_TOOLS);
+          break;
+        }
       }
     }
     return visibleTools;
