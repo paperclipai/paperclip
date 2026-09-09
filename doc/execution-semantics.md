@@ -785,6 +785,22 @@ Examples:
 
 Auto-recovery preserves the existing owner. It does not choose a replacement agent.
 
+### Completion tools and final answers
+
+A completion tool such as `paperclip_finish` reports task disposition; it does not
+end the provider turn. Paperclip continues persisting and displaying provider
+events until an authoritative turn terminal arrives. The completion report starts
+no interruption timer. Existing execution timeouts, cancellation, governed waits,
+and active-goal rules still apply. A later failed or cancelled terminal remains
+failed or cancelled even when the agent already reported completed work.
+
+The final assistant message is the visible task response. Response selection runs
+after preceding event persistence completes; the completion summary cannot replace
+an available final answer. Existing fallback and explicit-comment precedence still
+apply. Stream closure without a turn terminal is not proof of success. Event
+replay uses the existing source receipts and never repeats provider work merely
+to recover recorded output.
+
 ### Provider continuity and bounded finalization
 
 A permanently unusable established provider session may be replaced only with evidence that its predecessor is stopped and fenced, completed results and workspace state are preserved, required task history is available, and pending effects have been reconciled. A provider-native shell command or external write without a reliable outcome receipt is unknown. Unknown effects, integrity failures, and unverified process ownership never authorize speculative replay. Once automatic recovery is ruled out, Paperclip selects a conservative default: preserve recorded work, stop the affected task, and retain a durable no-replay hold. Unknown action outcomes remain unknown. No reconciliation form or user diagnosis is required.

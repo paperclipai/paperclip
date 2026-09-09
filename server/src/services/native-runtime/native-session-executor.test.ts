@@ -3313,13 +3313,11 @@ describe("native warm session supervision", () => {
       .mockReset()
       .mockImplementationOnce(async (options) => {
         expect(options.existingSession).toBeUndefined();
-        expect(options.semanticResultTerminalGraceMs).toBe(30_000);
         options.onSession?.(sharedSession);
         return result;
       })
       .mockImplementationOnce(async (options) => {
         expect(options.existingSession).toBe(sharedSession);
-        expect(options.semanticResultTerminalGraceMs).toBe(30_000);
         return result;
       });
 

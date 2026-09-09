@@ -55,6 +55,23 @@ async function finish(text, evidenceRef) {
     evidence: [{ ref: evidenceRef }], verification: [{ commandOrCheck: 'Fixture outcome', status: 'passed' }], attentionRequests: [], artifacts: [] });
 }
 async function execute() {
+  if (process.argv.includes('--completion-stream-fixture')) {
+    // Report completion before a deliberately slow final answer. The real
+    // runner and control plane must keep listening after the tool succeeds.
+    await finish('The fixture work is complete.', 'fixture:STREAM-42');
+    // Exceed both former completion deadlines: cold (5s) and reusable (30s).
+    await new Promise((resolve) => setTimeout(resolve, 31_000));
+    const itemId = `answer-${turnId}`;
+    const text = 'STREAM-42: The launch has two stages. Source: https://example.invalid/launch/STREAM-42';
+    send({ method: 'item/started', params: { threadId, turnId, item: { id: itemId, type: 'agentMessage', phase: 'final_answer', text: '' } } });
+    send({ method: 'item/agentMessage/delta', params: { threadId, turnId, itemId, delta: text.slice(0, 40) } });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    send({ method: 'item/agentMessage/delta', params: { threadId, turnId, itemId, delta: text.slice(40) } });
+    send({ method: 'item/completed', params: { threadId, turnId, item: { id: itemId, type: 'agentMessage', phase: 'final_answer', text } } });
+    send({ method: 'turn/completed', params: { threadId, turn: { id: turnId, status: 'completed' } } });
+    return;
+  }
+
   if (recoveryFixture) {
     send({ method: 'item/agentMessage/delta', params: { threadId, turnId, itemId: `progress-${turnId}`, delta: 'Checking the current request and available connections.' } });
   }
