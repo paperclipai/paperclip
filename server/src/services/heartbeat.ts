@@ -34,6 +34,7 @@ import {
   sql,
 } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
+import { pipelineCaseIssueLinks, pipelineCases } from "@paperclipai/db";
 import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
   CONNECTION_INTENT_AGENT_GUIDANCE,
@@ -11650,6 +11651,7 @@ export function heartbeatService(
       budgetBlock,
       pauseHold,
       activeRoutineContinuation,
+      pipelineManagedLifecycle,
     ] = await Promise.all([
       issue
         ? db
@@ -11795,6 +11797,26 @@ export function heartbeatService(
             .limit(1)
             .then((rows) => rows[0] ?? null)
         : Promise.resolve(null),
+      // Pipeline-managed lifecycle: this issue is linked (work/conversation)
+      // to a non-terminal pipeline case — the pipeline's stage gates own the
+      // next action, so disposition recovery must leave it alone.
+      issue
+        ? db
+          .select({ id: pipelineCaseIssueLinks.id })
+          .from(pipelineCaseIssueLinks)
+          .innerJoin(pipelineCases, eq(pipelineCases.id, pipelineCaseIssueLinks.caseId))
+          .where(
+            and(
+              eq(pipelineCaseIssueLinks.companyId, issue.companyId),
+              eq(pipelineCaseIssueLinks.issueId, issue.id),
+              isNull(pipelineCaseIssueLinks.retiredAt),
+              inArray(pipelineCaseIssueLinks.role, ["work", "conversation"]),
+              isNull(pipelineCases.terminalKind),
+            ),
+          )
+          .limit(1)
+          .then((rows) => rows[0] ?? null)
+        : Promise.resolve(null),
     ]);
 
     const decision = decideSuccessfulRunHandoff({
@@ -11816,6 +11838,7 @@ export function heartbeatService(
       hasOpenRecoveryIssue: Boolean(openRecoveryIssue),
       hasPauseHold: Boolean(pauseHold),
       hasActiveRoutineContinuation: Boolean(activeRoutineContinuation),
+      hasPipelineManagedLifecycle: Boolean(pipelineManagedLifecycle),
       budgetBlocked: Boolean(budgetBlock),
       idempotentWakeExists: Boolean(existingWake),
     });
