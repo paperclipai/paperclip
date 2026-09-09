@@ -579,6 +579,7 @@ pub struct CodexProvider {
 // variable by changing GIT_CONFIG_COUNT.
 const GITHUB_CREDENTIAL_ENVIRONMENT_KEYS: &[&str] = &[
     "PAPERCLIP_RUNNER_NETWORK_ACCESS",
+    "PAPERCLIP_RUNNER_NETWORK_ROOTS",
     "PAPERCLIP_GITHUB_AUTH_MODE",
     "PAPERCLIP_GITHUB_HOST_HOME",
     "PAPERCLIP_GIT_METADATA_ROOTS",
@@ -3556,9 +3557,10 @@ mod tests {
 
     #[test]
     fn github_credentials_cross_only_the_bounded_provider_environment() {
-        assert_eq!(GITHUB_CREDENTIAL_ENVIRONMENT_KEYS.len(), 94);
+        assert_eq!(GITHUB_CREDENTIAL_ENVIRONMENT_KEYS.len(), 95);
         for key in [
             "PAPERCLIP_RUNNER_NETWORK_ACCESS",
+            "PAPERCLIP_RUNNER_NETWORK_ROOTS",
             "PAPERCLIP_GITHUB_AUTH_MODE",
             "PAPERCLIP_GITHUB_HOST_HOME",
             "PAPERCLIP_GIT_METADATA_ROOTS",

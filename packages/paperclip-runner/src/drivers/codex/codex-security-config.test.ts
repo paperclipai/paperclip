@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   codexExecutableReadOnlyRoots,
+  codexNetworkReadOnlyRoots,
   createIsolatedCodexAppServerArgs,
   createSecuredCodexThreadParams,
   createSkilllessCodexThreadConfig,
@@ -23,6 +24,14 @@ describe("Codex security configuration", () => {
     const args = createIsolatedCodexAppServerArgs({ HOME: "/private-provider-home" }, roots).join("\n");
     expect(args).toContain(`${JSON.stringify(vendor)}="read"`);
     expect(args).toContain('"/private-provider-home"="none"');
+  });
+
+  it("preserves target DNS symlink resources without opening all of /run", () => {
+    const source = { PAPERCLIP_RUNNER_NETWORK_ROOTS: '["/run/systemd/resolve/stub-resolv.conf","/etc/ssl/certs"]' };
+    const args = createIsolatedCodexAppServerArgs(source).join("\n");
+    expect(args).toContain('"/run/systemd/resolve/stub-resolv.conf"="read"');
+    expect(args).not.toContain('"/run"="read"');
+    expect(codexNetworkReadOnlyRoots({ ...source, PAPERCLIP_RUNNER_NETWORK_ACCESS: "disabled" })).toEqual([]);
   });
 
   it("honors an explicit network restriction independently of GitHub", () => {

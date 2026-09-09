@@ -47,7 +47,10 @@ Runner network access is independent of GitHub credentials. Normal execution
 permits networking; `PAPERCLIP_RUNNER_NETWORK_ACCESS=disabled` retains an
 explicit restriction. Outer execution-environment network restrictions still
 apply. The controller projects the assigned worktree's Git metadata paths so
-Git can operate without exposing unrelated workspace or provider state.
+Git can operate without exposing unrelated workspace or provider state. The
+sandbox also receives read access to validated provider executable resources
+and the target host's DNS and CA files, including resolver symlink targets
+outside `/etc`. Provider credential directories remain isolated.
 
 A managed broker outage does not prevent local Git operations. Launchers clear
 credentials and run the command without authentication, with a redacted error

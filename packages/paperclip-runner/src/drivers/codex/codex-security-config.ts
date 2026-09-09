@@ -6,6 +6,25 @@ import {
   githubCredentialEnvironmentKeys,
 } from "../../github-credential-environment.js";
 
+/** DNS and CA files can point outside the minimal /etc filesystem (systemd). */
+export function codexNetworkReadOnlyRoots(source: NodeJS.ProcessEnv): string[] {
+  if (!codexNetworkAccess(source)) return [];
+  const roots = new Set<string>();
+  if (source.PAPERCLIP_RUNNER_NETWORK_ROOTS !== undefined) {
+    try {
+      const projected: unknown = JSON.parse(source.PAPERCLIP_RUNNER_NETWORK_ROOTS);
+      if (Array.isArray(projected)) for (const root of projected) {
+        if (typeof root === "string" && isAbsolute(root) && resolve(root) !== "/") roots.add(resolve(root));
+      }
+    } catch { /* A malformed controller projection must not expand access. */ }
+  } else {
+    for (const file of ["/etc/resolv.conf", "/etc/hosts", "/etc/nsswitch.conf", "/etc/ssl/certs", "/etc/ssl/cert.pem"]) {
+      try { roots.add(realpathSync(file)); } catch { /* Platform-specific optional resource. */ }
+    }
+  }
+  return [...roots];
+}
+
 /** Resolve executable resources only, without exposing their enclosing home. */
 export function codexExecutableReadOnlyRoots(source: NodeJS.ProcessEnv, command = "codex"): string[] {
   const roots = new Set<string>();
@@ -148,6 +167,7 @@ export function createIsolatedCodexAppServerArgs(
   readOnlyRoots: string[] = [],
 ): string[] {
   const gitRoots = gitFilesystemRoots(source);
+  readOnlyRoots = [...new Set([...readOnlyRoots, ...codexNetworkReadOnlyRoots(source)])];
   const networkAccess = codexNetworkAccess(source);
   const externalRunnerSandbox = usesExternalRunnerSandbox(source);
   const inheritedGitHubKeys = githubCredentialEnvironmentKeys(source);
