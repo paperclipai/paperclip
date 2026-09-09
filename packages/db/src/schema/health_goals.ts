@@ -1,4 +1,5 @@
-import { pgTable, uuid, text, timestamp, integer, boolean, index, uniqueIndex, sql } from "drizzle-orm/pg-core";
+import { pgTable, uuid, text, timestamp, integer, boolean, index, uniqueIndex } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 import { companies } from "./companies.js";
 
 export const healthGoals = pgTable(

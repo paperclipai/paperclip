@@ -505,6 +505,20 @@
       "when": 1757808000000,
       "tag": "0071_medications",
       "breakpoints": true
+    },
+    {
+      "idx": 72,
+      "version": "7",
+      "when": 1757894400000,
+      "tag": "0072_lab_results",
+      "breakpoints": true
+    },
+    {
+      "idx": 73,
+      "version": "7",
+      "when": 1757980800000,
+      "tag": "0073_health_goals",
+      "breakpoints": true
     }
   ]
 }
