@@ -39,9 +39,9 @@ const runContext = { agentId: "agent-1", runId: "run-1", companyId: "company-1",
 describe("repeat tool tracker", () => {
   it("counts consecutive identical calls regardless of argument key order", () => {
     const tracker = createRepeatToolTracker();
-    const first = tracker.observe({ ...runContext, toolName: "t", parameters: { a: 1, b: 2 } });
+    const first = tracker.observe({ ...runContext, toolName: "t", parameters: { a: 1, b: 2 }, result: { content: "r" } });
     expect(first).toEqual({ repeatCount: 1, notice: null });
-    const second = tracker.observe({ ...runContext, toolName: "t", parameters: { b: 2, a: 1 } });
+    const second = tracker.observe({ ...runContext, toolName: "t", parameters: { b: 2, a: 1 }, result: { content: "r" } });
     expect(second.repeatCount).toBe(2);
     expect(second.notice).toBeNull();
   });
@@ -50,20 +50,37 @@ describe("repeat tool tracker", () => {
     const tracker = createRepeatToolTracker();
     const fired: number[] = [];
     for (let index = 0; index < 9; index += 1) {
-      const { repeatCount, notice } = tracker.observe({ ...runContext, toolName: "t", parameters: { q: "x" } });
+      const { repeatCount, notice } = tracker.observe({ ...runContext, toolName: "t", parameters: { q: "x" }, result: { content: "r" } });
       if (notice) fired.push(repeatCount);
     }
     expect(fired).toEqual([3, 5, 8]);
   });
 
-  it("resets on a different call and scopes chains per run", () => {
-    const tracker = createRepeatToolTracker();
-    tracker.observe({ ...runContext, toolName: "t", parameters: { q: "x" } });
-    tracker.observe({ ...runContext, toolName: "t", parameters: { q: "x" } });
-    const changed = tracker.observe({ ...runContext, toolName: "t", parameters: { q: "y" } });
+  it("resets on a different call and scopes chains per run", () => {    const tracker = createRepeatToolTracker();
+    tracker.observe({ ...runContext, toolName: "t", parameters: { q: "x" }, result: { content: "r" } });
+    tracker.observe({ ...runContext, toolName: "t", parameters: { q: "x" }, result: { content: "r" } });
+    const changed = tracker.observe({ ...runContext, toolName: "t", parameters: { q: "y" }, result: { content: "r" } });
     expect(changed).toEqual({ repeatCount: 1, notice: null });
-    const otherRun = tracker.observe({ ...runContext, runId: "run-2", toolName: "t", parameters: { q: "x" } });
+    const otherRun = tracker.observe({ ...runContext, runId: "run-2", toolName: "t", parameters: { q: "x" }, result: { content: "r" } });
     expect(otherRun).toEqual({ repeatCount: 1, notice: null });
+  });
+
+  it("resets when identical calls return different outcomes", () => {
+    const tracker = createRepeatToolTracker();
+    tracker.observe({ ...runContext, toolName: "t", parameters: { q: "x" }, result: { content: "poll 1" } });
+    tracker.observe({ ...runContext, toolName: "t", parameters: { q: "x" }, result: { content: "poll 1" } });
+    const changed = tracker.observe({ ...runContext, toolName: "t", parameters: { q: "x" }, result: { content: "poll 2" } });
+    expect(changed).toEqual({ repeatCount: 1, notice: null });
+  });
+
+  it("never chains oversized or unserializable outcomes", () => {
+    const tracker = createRepeatToolTracker();
+    const big = "z".repeat(5_000);
+    const first = tracker.observe({ ...runContext, toolName: "t", parameters: { q: "x" }, result: { content: big } });
+    const second = tracker.observe({ ...runContext, toolName: "t", parameters: { q: "x" }, result: { content: big } });
+    expect(first.repeatCount).toBe(1);
+    expect(second.repeatCount).toBe(1);
+    expect(second.notice).toBeNull();
   });
 
   it("builds notices only at thresholds", () => {

@@ -450,13 +450,16 @@ export function createPluginToolRegistry(
       );
 
       // Advisory repeat-call nudge (DeepSeek Harness repeat-tool-reminder
-      // port): identical consecutive calls within one run get a reminder
-      // appended to string content. Never blocks, never rewrites data.
+      // port): consecutive identical plugin calls with identical outcomes
+      // within one run get a reminder appended to string content. Never
+      // blocks, never rewrites data. Adapter-native calls run outside the
+      // host loop and stay invisible to this chain either way.
       const { notice } = getSharedRepeatToolTracker().observe({
         agentId: runContext.agentId,
         runId: runContext.runId,
         toolName: namespacedName,
         parameters,
+        result,
       });
       if (notice && typeof result.content === "string" && result.content.length > 0) {
         return { pluginId, toolName, result: { ...result, content: `${result.content}\n\n${notice}` } };

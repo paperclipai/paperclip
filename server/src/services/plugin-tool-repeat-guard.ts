@@ -1,3 +1,4 @@
+import { createHash, randomUUID } from "node:crypto";
 import { canonicalToolArguments } from "./tool-content-guards.js";
 
 // Advisory repeat-call guard for plugin tool dispatch, borrowed from the
@@ -11,6 +12,12 @@ export const REPEAT_TOOL_REMINDER_THRESHOLDS = [3, 5, 8] as const;
 /** Cap on tracked (agent, run) chains; resets the map instead of growing it. */
 const MAX_TRACKED_CHAINS = 10_000;
 
+/**
+ * Bound on result text fingerprinted per call. Larger results skip chaining:
+ * without a verified identical outcome the guard must not claim a loop.
+ */
+const RESULT_FINGERPRINT_BUDGET_CHARS = 4_096;
+
 interface RepeatChain {
   key: string;
   count: number;
@@ -22,6 +29,32 @@ function chainScope(agentId: string, runId: string): string {
 
 function callKey(toolName: string, parameters: unknown): string {
   return JSON.stringify([toolName, canonicalToolArguments(parameters)]);
+}
+
+/**
+ * Fingerprint the completed outcome so the streak only counts calls that
+ * returned the same outcome. Stateful or time-varying tools (polling,
+ * retries, mutations) reset the chain instead of tripping the guard.
+ * Oversized or unserializable results fingerprint as null, which never
+ * chains, rather than risking a false loop claim.
+ */
+function fingerprintResultOutcome(result: {
+  content?: unknown;
+  data?: unknown;
+  error?: unknown;
+}): string | null {
+  let canonical: string;
+  try {
+    canonical = canonicalToolArguments({
+      content: typeof result.content === "string" ? result.content : null,
+      data: result.data ?? null,
+      error: typeof result.error === "string" ? result.error : null,
+    });
+  } catch {
+    return null;
+  }
+  if (canonical.length > RESULT_FINGERPRINT_BUDGET_CHARS) return null;
+  return createHash("sha256").update(canonical).digest("hex");
 }
 
 const REPEAT_TOOL_GENTLE_NOTICE =
@@ -59,9 +92,12 @@ export function buildRepeatToolNotice(
 }
 
 /**
- * Per-process tracker of consecutive identical tool calls, scoped by
- * (agent, run). A new run starts a fresh chain automatically, like a user
- * message resets the reference implementation.
+ * Per-process tracker of consecutive identical tool calls with identical
+ * outcomes, scoped by (agent, run). A new run starts a fresh chain
+ * automatically, like a user message resets the reference implementation.
+ * Only server-visible plugin dispatches participate: adapter-native calls
+ * execute outside the host loop and can neither count nor reset a chain,
+ * so the notice wording claims consecutive plugin calls, not all calls.
  */
 export function createRepeatToolTracker(
   thresholds: ReadonlyArray<number> = REPEAT_TOOL_REMINDER_THRESHOLDS,
@@ -74,9 +110,15 @@ export function createRepeatToolTracker(
       runId: string;
       toolName: string;
       parameters: unknown;
+      result: { content?: unknown; data?: unknown; error?: unknown };
     }): { repeatCount: number; notice: string | null } {
       const scope = chainScope(input.agentId, input.runId);
-      const key = callKey(input.toolName, input.parameters);
+      const outcome = fingerprintResultOutcome(input.result);
+      // Unverifiable outcomes get a unique key so they reset the streak
+      // instead of ever counting toward a loop claim.
+      const key = outcome === null
+        ? `${callKey(input.toolName, input.parameters)}\n${randomUUID()}`
+        : `${callKey(input.toolName, input.parameters)}\n${outcome}`;
       const previous = chains.get(scope);
       const count = previous !== undefined && previous.key === key ? previous.count + 1 : 1;
       if (chains.size >= MAX_TRACKED_CHAINS && !chains.has(scope)) {
