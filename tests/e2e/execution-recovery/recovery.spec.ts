@@ -259,11 +259,15 @@ for (const journey of [
       await page.goto(
         base + prefix + "/company/settings/instance/experimental",
       );
-      await page
-        .getByRole("switch", {
-          name: "Toggle Paperclip Runner experimental setting",
-        })
-        .click();
+      const nativeRunnerToggle = page.getByRole("switch", {
+        name: "Toggle Paperclip Runner experimental setting",
+      });
+      // Fresh instances may already enable the native runner. Configure the
+      // desired state instead of blindly toggling the current default off.
+      if (await nativeRunnerToggle.getAttribute("aria-checked") !== "true") {
+        await nativeRunnerToggle.click();
+      }
+      await expect(nativeRunnerToggle).toHaveAttribute("aria-checked", "true");
       await expect
         .poll(
           async () =>
