@@ -73,6 +73,7 @@ describe("managed GitHub launcher environment", () => {
     await writeFile(path.join(fixture.root, ".config/gh/hosts.yml"), "host credential fixture");
     const execute = fixture.runner.execute.getMockImplementation()!;
     fixture.runner.execute.mockImplementation(async (input) => {
+      expect(input.command).toBe("sh"); // No Node executable is required on the SSH host.
       const result = await execute(input);
       return { ...result, stdout: `SSH login banner\n${result.stdout}\nlogout` };
     });

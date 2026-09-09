@@ -5156,6 +5156,26 @@ describeEmbeddedPostgres("tool access service", () => {
     }
   }, 15_000);
 
+  it("reports GitHub reauthorization for the viewer without borrowing another user's grant", async () => {
+    const company = await createCompany(db);
+    const [application] = await db.insert(toolApplications).values({ companyId: company.id,
+      name: "GitHub authorization fixture", type: "mcp_http", status: "active" }).returning();
+    const [connection] = await db.insert(toolConnections).values({ companyId: company.id,
+      applicationId: application!.id, name: "GitHub authorization fixture", uid: randomUUID(),
+      transport: "mcp_remote", status: "active", enabled: true, credentialPolicy: "per_user",
+      createdByUserId: "A", config: { sourceTemplateKey: "github" },
+    }).returning();
+    await db.insert(connectionGrants).values(["A", "B"].map(user => ({ companyId: company.id,
+      connectionId: connection!.id, kind: "user" as const, subjectUserId: user,
+      status: user === "A" ? "revoked" as const : "active" as const, credentialSecretRefs: [],
+    })));
+    const service = createTestToolAccessService(db);
+    expect((await service.getConnection(connection!.id, company.id, "A")).requiresReauthorization).toBe(true);
+    expect((await service.getConnection(connection!.id, company.id, "B")).requiresReauthorization).toBe(false);
+    expect((await service.listConnections(company.id, "A"))[0]?.requiresReauthorization).toBe(true);
+    expect((await service.listConnections(company.id, "B"))[0]?.requiresReauthorization).toBe(false);
+  });
+
   it.each(["none", "event", "same-time-refresh", "one-conflict"])("binds a managed GitHub identity and protects refresh from concurrent access changes (%s)", async (concurrentChange) => {
     const company = await createCompany(db);
     const userId = `github-manager-${randomUUID()}`;

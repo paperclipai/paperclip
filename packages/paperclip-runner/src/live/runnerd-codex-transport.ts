@@ -1,3 +1,4 @@
+import { codexExecutableReadOnlyRoots } from "../drivers/codex/codex-security-config.js";
 import { isCanonicalProviderEventType } from "../provider-events.js";
 import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
@@ -2097,6 +2098,7 @@ export function trustedRuntimeReadOnlyRoots(
 export function createRunnerdCodexAppServerArgs(input: {
   environment: NodeJS.ProcessEnv | undefined;
   codexHome: string;
+  codexCommand?: string;
   readOnlyRoots?: string[];
 }): string[] {
   // The filesystem policy denies HOME and CODEX_HOME to keep credentials and
@@ -2109,7 +2111,7 @@ export function createRunnerdCodexAppServerArgs(input: {
       HOME: input.codexHome,
       CODEX_HOME: input.codexHome,
     },
-    input.readOnlyRoots,
+    [...(input.readOnlyRoots ?? []), ...codexExecutableReadOnlyRoots(input.environment ?? {}, input.codexCommand)],
   );
 }
 
@@ -3360,6 +3362,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
                         createRunnerdCodexAppServerArgs({
                           environment: this.options.environment,
                           codexHome,
+                          codexCommand: this.options.codexCommand,
                           readOnlyRoots: [
                             ...trustedRuntimeReadOnlyRoots(
                               this.options.environment,
@@ -3761,6 +3764,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         runAttachTemplate.runtimeLaunchArgs = this.options.codexArgs ?? createRunnerdCodexAppServerArgs({
           environment: this.options.environment,
           codexHome,
+          codexCommand: this.options.codexCommand,
           readOnlyRoots: [
             ...trustedRuntimeReadOnlyRoots(this.options.environment),
             ...(runtimeContext ? [

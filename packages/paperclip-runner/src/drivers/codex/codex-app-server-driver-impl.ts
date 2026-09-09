@@ -1,3 +1,4 @@
+import { codexExecutableReadOnlyRoots } from "./codex-security-config.js";
 import { resolve } from "node:path";
 
 import type {
@@ -620,7 +621,7 @@ export class CodexAppServerDriver implements HarnessDriver {
     return (
       this.#options.transportFactory?.(context) ??
       new ProcessCodexAppServerTransport({
-        args: createIsolatedCodexAppServerArgs(this.#options.environment),
+        args: createIsolatedCodexAppServerArgs(this.#options.environment, codexExecutableReadOnlyRoots(this.#options.environment ?? process.env)),
         environment: createSanitizedCodexEnvironment(this.#options.environment),
         onDiagnostic: this.#options.onDiagnostic,
         processGroup: true,

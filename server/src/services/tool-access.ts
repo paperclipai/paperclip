@@ -5435,16 +5435,19 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     return localTools(connection);
   }
 
-  async function annotateGitHubAuthorization(connections: ToolConnection[]) {
+  async function annotateGitHubAuthorization(connections: ToolConnection[], viewerUserId?: string) {
     const github = connections.filter((connection) => asRecord(connection.config).sourceTemplateKey === "github");
     if (!github.length) return;
-    const grants = await db.select({ connectionId: connectionGrants.connectionId, status: connectionGrants.status })
+    const grants = await db.select({ connectionId: connectionGrants.connectionId, status: connectionGrants.status, kind: connectionGrants.kind, subjectUserId: connectionGrants.subjectUserId })
       .from(connectionGrants).where(and(
         eq(connectionGrants.companyId, github[0].companyId),
         inArray(connectionGrants.connectionId, github.map((connection) => connection.id)),
       ));
     for (const connection of github) {
-      connection.requiresReauthorization = !grants.some((grant) => grant.connectionId === connection.id && grant.status === "active");
+      const userId = viewerUserId ?? connection.createdByUserId;
+      const eligible = grants.filter((grant) => grant.connectionId === connection.id
+        && (connection.credentialPolicy !== "per_user" || (grant.kind === "user" && grant.subjectUserId === userId)));
+      connection.requiresReauthorization = !eligible.some((grant) => grant.status === "active");
     }
   }
 
@@ -12528,7 +12531,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       return { repositories: [...repositories.values()].sort((a, b) => a.fullName.localeCompare(b.fullName)), connectionCount, failedConnectionCount };
     },
 
-    listConnections: async (companyId: string): Promise<ToolConnection[]> => {
+    listConnections: async (companyId: string, viewerUserId?: string): Promise<ToolConnection[]> => {
       const rows = await db
         .select()
         .from(toolConnections)
@@ -12572,7 +12575,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       for (const connection of connections) {
         connection.lastUsedAt = lastUsedByConnection.get(connection.id) ?? null;
       }
-      await annotateGitHubAuthorization(connections);
+      await annotateGitHubAuthorization(connections, viewerUserId);
       return connections;
     },
 
@@ -12650,10 +12653,10 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       return toConnection(row);
     },
 
-    getConnection: async (connectionId: string, companyId?: string): Promise<ToolConnection> => {
+    getConnection: async (connectionId: string, companyId?: string, viewerUserId?: string): Promise<ToolConnection> => {
       const connection = toConnection(await getConnectionRow(connectionId, companyId));
       connection.installs = await listConnectionInstalls(connection.id, connection.companyId);
-      await annotateGitHubAuthorization([connection]);
+      await annotateGitHubAuthorization([connection], viewerUserId);
       return connection;
     },
 

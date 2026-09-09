@@ -1600,16 +1600,62 @@ process.stdout.write("\0" + JSON.stringify(env) + "\0");
 `;
   const args = ["-e", script, input.hostCredentials ? "host" : "managed"];
   const remote = input.target?.kind === "remote" ? input.target : null;
-  const result = remote
-    ? await adapterExecutionTargetCommandRunner(remote).execute({ command: "node", args, cwd: input.cwd, timeoutMs: 15_000 })
-    : await promisify(execFile)(process.execPath, args, { cwd: input.cwd, timeout: 15_000, maxBuffer: 1024 * 1024 });
-  if ("exitCode" in result && result.exitCode !== 0) throw new Error("Could not read execution-target Git context");
-  // SSH login banners must not corrupt the credential envelope or leak it in
-  // a JSON parse error. The target writes one NUL-framed payload.
-  const payload = result.stdout.split("\0")[1];
   let discovered: Record<string, string>;
-  try { discovered = JSON.parse(payload ?? ""); }
-  catch { throw new Error("Could not read execution-target Git context"); }
+  if (remote) {
+    // A legacy SSH host may run a standalone agent binary without Node. Use
+    // only the shell and Git, and emit bounded, NUL-framed environment records.
+    const probe = String.raw`
+printf '\0PAPERCLIP_GIT_CONTEXT_V1\0'
+if [ "$1" = host ]; then
+  for key in GH_TOKEN GITHUB_TOKEN GH_ENTERPRISE_TOKEN GITHUB_ENTERPRISE_TOKEN PAPERCLIP_GIT_TOKEN GH_CONFIG_DIR GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM GIT_CONFIG_NOSYSTEM GIT_CONFIG_COUNT GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL GIT_ASKPASS SSH_ASKPASS SSH_AUTH_SOCK GIT_SSH_COMMAND GIT_SSH; do
+    eval 'value=${"$"}{'"$key"'-}'
+    [ -z "$value" ] || printf '%s\0%s\0' "$key" "$value"
+  done
+  index=0
+  while [ "$index" -lt 32 ]; do
+    for prefix in GIT_CONFIG_KEY_ GIT_CONFIG_VALUE_; do
+      key="$prefix$index"
+      eval 'value=${"$"}{'"$key"'-}'
+      [ -z "$value" ] || printf '%s\0%s\0' "$key" "$value"
+    done
+    index=$((index + 1))
+  done
+  printf 'PAPERCLIP_GITHUB_HOST_HOME\0%s\0' "$HOME"
+  printf 'GH_CONFIG_DIR\0%s\0' "${"$"}{GH_CONFIG_DIR:-${"$"}{XDG_CONFIG_HOME:-$HOME/.config}/gh}"
+fi
+cwd=$(pwd -P)
+top=$(git rev-parse --show-toplevel 2>/dev/null) || top=
+if [ -n "$top" ] && [ "$(cd "$top" && pwd -P)" = "$cwd" ]; then
+  for kind in --git-common-dir --git-dir; do
+    root=$(git rev-parse --path-format=absolute "$kind" 2>/dev/null) || continue
+    root=$(cd "$root" && pwd -P) || continue
+    printf 'PAPERCLIP_GIT_METADATA_ROOT\0%s\0' "$root"
+  done
+fi
+printf '\0PAPERCLIP_GIT_CONTEXT_END\0'
+`;
+    const result = await adapterExecutionTargetCommandRunner(remote).execute({
+      command: "sh", args: ["-c", probe, "paperclip-git-context", input.hostCredentials ? "host" : "managed"],
+      cwd: input.cwd, timeoutMs: 15_000,
+    });
+    if (result.exitCode !== 0) throw new Error("Could not read execution-target Git context");
+    const payload = result.stdout.split("\0PAPERCLIP_GIT_CONTEXT_V1\0")[1]?.split("\0PAPERCLIP_GIT_CONTEXT_END\0")[0];
+    if (payload === undefined) throw new Error("Could not read execution-target Git context");
+    discovered = {};
+    const records = payload.split("\0");
+    const roots: string[] = [];
+    for (let index = 0; index + 1 < records.length; index += 2) {
+      const key = records[index]!;
+      const value = records[index + 1]!;
+      if (key === "PAPERCLIP_GIT_METADATA_ROOT") roots.push(value);
+      else discovered[key] = value;
+    }
+    discovered.PAPERCLIP_GIT_METADATA_ROOTS = JSON.stringify([...new Set(roots)]);
+  } else {
+    const result = await promisify(execFile)(process.execPath, args, { cwd: input.cwd, timeout: 15_000, maxBuffer: 1024 * 1024 });
+    try { discovered = JSON.parse(result.stdout.split("\0")[1] ?? ""); }
+    catch { throw new Error("Could not read execution-target Git context"); }
+  }
   // Controller-derived roots and mode must not be replaced by agent bindings.
   return { ...discovered, ...input.env,
     ...(input.hostCredentials ? { PAPERCLIP_GITHUB_HOST_HOME: discovered.PAPERCLIP_GITHUB_HOST_HOME } : {}),

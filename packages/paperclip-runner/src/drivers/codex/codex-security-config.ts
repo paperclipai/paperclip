@@ -1,8 +1,48 @@
-import { resolve, isAbsolute, join } from "node:path";
+import { resolve, isAbsolute, join, dirname, delimiter } from "node:path";
+import { existsSync, realpathSync, readFileSync, statSync } from "node:fs";
+import { createRequire } from "node:module";
 
 import {
   githubCredentialEnvironmentKeys,
 } from "../../github-credential-environment.js";
+
+/** Resolve executable resources only, without exposing their enclosing home. */
+export function codexExecutableReadOnlyRoots(source: NodeJS.ProcessEnv, command = "codex"): string[] {
+  const roots = new Set<string>();
+  const add = (path: string) => {
+    try {
+      if (!isAbsolute(path) || resolve(path) === "/" || !existsSync(path)) return;
+      roots.add(resolve(path));
+      roots.add(realpathSync(path));
+    } catch { /* Missing resources remain a normal executable-resolution error. */ }
+  };
+  add(process.execPath);
+  const candidates = isAbsolute(command) ? [command]
+    : (source.PATH ?? "").split(delimiter).filter(isAbsolute).map(root => resolve(root, command));
+  const executable = candidates.find(path => {
+    try { return statSync(path).isFile(); } catch { return false; }
+  });
+  if (!executable) return [...roots];
+  add(executable);
+  try {
+    const canonical = realpathSync(executable);
+    const manifestPath = resolve(dirname(canonical), "../package.json");
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+    const bin = typeof manifest.bin === "string" ? manifest.bin : manifest.bin?.codex;
+    if (manifest.name !== "@openai/codex" || typeof bin !== "string"
+      || realpathSync(resolve(dirname(manifestPath), bin)) !== canonical) return [...roots];
+    // The npm entrypoint launches the platform package's native executable,
+    // which Codex invokes again inside bwrap when starting each shell command.
+    const platformPackage = `@openai/codex-${process.platform}-${process.arch}`;
+    if (manifest.optionalDependencies?.[platformPackage]) {
+      const platformManifest = createRequire(manifestPath).resolve(`${platformPackage}/package.json`);
+      add(resolve(dirname(platformManifest), "vendor"));
+    } else {
+      add(resolve(dirname(manifestPath), "vendor"));
+    }
+  } catch { /* Standalone executable installations need no npm resources. */ }
+  return [...roots];
+}
 
 export const CODEX_SKILLLESS_PERMISSION_PROFILE =
   "paperclip-runner-workspace-only";

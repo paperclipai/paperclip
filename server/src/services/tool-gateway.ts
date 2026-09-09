@@ -894,6 +894,12 @@ export function createToolGatewayService(
   const interactions = issueThreadInteractionService(db);
   const policyService = toolAccessPolicyService(db);
   const secrets = secretService(db);
+  // Authentication produces a new session object for every operation. Keep
+  // credential acquisition scoped to that object and out of persisted inputs.
+  const githubOperationCredentials = new WeakMap<ToolGatewaySession, {
+    grant: typeof connectionGrants.$inferSelect;
+    headers: Record<string, string>;
+  }>();
   const configuredCloudConnector = options.paperclipCloudConnector ?? options.paperclipIdGmailConnector;
   const connectorWasProvided = options.paperclipCloudConnector !== undefined || options.paperclipIdGmailConnector !== undefined;
   let cachedCloudConnector = configuredCloudConnector ?? null;
@@ -2066,14 +2072,42 @@ export function createToolGatewayService(
         eq(toolConnections.id, tool.connectionId), eq(toolConnections.companyId, session.companyId),
       ));
       if (connection?.config.sourceTemplateKey === "github" || connection?.transportConfig?.sourceTemplateKey === "github") {
-        const selected = await resolveManagedGitHubIdentitySelection(db, session.companyId, {
+        let selected = await resolveManagedGitHubIdentitySelection(db, session.companyId, {
           agentId: session.agentId, responsibleUserId: session.responsibleUserId, allowStandingDelegation: false,
         });
         if (!selected.grant) throw new ToolGatewayHttpError(409, selected.error ?? "No GitHub identity connected", "github_identity_unavailable");
-        const target = connectedTools.find((candidate) => candidate.connectionId === selected.grant!.connectionId
-          && candidate.upstreamToolName === tool.upstreamToolName && candidate.providerType === tool.providerType);
-        if (!target) throw new ToolGatewayHttpError(404, "This GitHub tool is unavailable for the responsible person", "github_tool_unavailable");
-        return target;
+        const original = selected.grant;
+        // Acquire before policy evaluation or dispatch. An alternate connection
+        // gets its own catalog descriptor and policy checks; never replay a call.
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+          const grant = selected.grant!;
+          const target = connectedTools.find((candidate) => candidate.connectionId === grant.connectionId
+            && candidate.upstreamToolName === tool.upstreamToolName && candidate.providerType === tool.providerType);
+          if (!target) throw new ToolGatewayHttpError(404, "This GitHub tool is unavailable for the responsible person", "github_tool_unavailable");
+          const [selectedConnection] = await db.select().from(toolConnections).where(and(
+            eq(toolConnections.id, grant.connectionId), eq(toolConnections.companyId, session.companyId),
+          ));
+          if (!selectedConnection) throw new ToolGatewayHttpError(409, "GitHub connection is unavailable", "github_identity_unavailable");
+          if (attempt === 0) await resolveConnectionGrant(session, selectedConnection);
+          try {
+            const headers = await resolveCredentialHeaders(session, selectedConnection, grant);
+            githubOperationCredentials.set(session, { grant, headers });
+            return target;
+          } catch (error) {
+            if (attempt !== 0) throw error;
+            const alternate = await resolveManagedGitHubIdentitySelection(db, session.companyId, {
+              agentId: session.agentId, responsibleUserId: session.responsibleUserId,
+              allowStandingDelegation: false, excludeGrantId: original.id,
+            });
+            const accountId = original.providerTenant?.github?.userId;
+            if (!accountId || !alternate.grant
+              || alternate.grant.providerTenant?.github?.userId !== accountId
+              || alternate.grant.subjectUserId !== original.subjectUserId
+              || alternate.grant.subjectAgentId !== original.subjectAgentId) throw error;
+            selected = alternate;
+          }
+        }
+        throw new ToolGatewayHttpError(409, "GitHub credentials are unavailable", "github_identity_unavailable");
       }
     }
     return tool;
@@ -2838,10 +2872,14 @@ export function createToolGatewayService(
     const tracked = session.identityContextId && (connection.config.sourceTemplateKey === "github"
       || connection.transportConfig?.sourceTemplateKey === "github");
     try {
-      const headers = await resolveCredentialHeadersUnrecorded(session, connection, grant, resolveOptions);
+      const captured = githubOperationCredentials.get(session);
+      const headers = !resolveOptions.forceRefresh && captured?.grant.id === grant.id
+        ? captured.headers
+        : await resolveCredentialHeadersUnrecorded(session, connection, grant, resolveOptions);
       if (tracked) await db.update(runIdentityContexts).set({ github: {
         status: "available", login: grant.providerTenant?.github?.login,
         source: grant.kind === "agent" ? "dedicated" : "personal",
+        connectionId: connection.id, grantId: grant.id, authenticationMode: "managed",
       } }).where(and(eq(runIdentityContexts.id, session.identityContextId!), eq(runIdentityContexts.companyId, session.companyId)));
       return headers;
     } catch (error) {
@@ -3211,9 +3249,12 @@ export function createToolGatewayService(
     if (session.identityContextId && session.agentId && (
       connection.config.sourceTemplateKey === "github" || connection.transportConfig?.sourceTemplateKey === "github"
     )) {
-      const selected = await resolveManagedGitHubIdentitySelection(db, session.companyId, {
-        agentId: session.agentId, responsibleUserId: session.responsibleUserId, allowStandingDelegation: false,
-      });
+      const captured = githubOperationCredentials.get(session);
+      const selected = captured
+        ? { grant: captured.grant, error: undefined }
+        : await resolveManagedGitHubIdentitySelection(db, session.companyId, {
+          agentId: session.agentId, responsibleUserId: session.responsibleUserId, allowStandingDelegation: false,
+        });
       if (!selected.grant || selected.grant.connectionId !== connection.id) {
         throw new ToolGatewayHttpError(409, selected.error ?? "GitHub identity changed; retry through the managed tool", "github_identity_unavailable");
       }

@@ -16,7 +16,7 @@ export const runIdentityContexts = pgTable("run_identity_contexts", {
   correlationId: text("correlation_id").notNull(),
   status: text("status").notNull().default("accepted"),
   acceptedAt: timestamp("accepted_at", { withTimezone: true }),
-  github: jsonb("github").$type<{ status: "available" | "absent" | "unavailable"; login?: string; source?: "personal" | "dedicated"; reason?: string }>(),
+  github: jsonb("github").$type<{ status: "available" | "absent" | "unavailable"; login?: string; source?: "personal" | "dedicated"; reason?: string; connectionId?: string; grantId?: string; authenticationMode?: "managed" | "host" | "anonymous" }>(),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => ({
   revisionIdx: uniqueIndex("run_identity_contexts_run_revision_idx").on(t.runId, t.revision),

@@ -1,12 +1,30 @@
+import { createRequire } from "node:module";
+import { dirname, resolve } from "node:path";
+import { evalProviderTransportOptions } from "../../cli/eval-provider-runtime.js";
 import { describe, expect, it } from "vitest";
 
 import {
+  codexExecutableReadOnlyRoots,
   createIsolatedCodexAppServerArgs,
   createSecuredCodexThreadParams,
   createSkilllessCodexThreadConfig,
 } from "./codex-security-config.js";
 
 describe("Codex security configuration", () => {
+  it("makes the installed npm Codex native sandbox executable readable without exposing its parent workspace", () => {
+    const command = evalProviderTransportOptions("codex").codexCommand!;
+    const manifest = createRequire(command).resolve(`@openai/codex-${process.platform}-${process.arch}/package.json`);
+    const vendor = resolve(dirname(manifest), "vendor");
+    const roots = codexExecutableReadOnlyRoots({ HOME: "/private-provider-home", PATH: "/usr/bin" }, command);
+    expect(roots).toContain(vendor);
+    expect(roots).toContain(process.execPath);
+    expect(roots).not.toContain(dirname(manifest));
+    expect(roots).not.toContain("/private-provider-home");
+    const args = createIsolatedCodexAppServerArgs({ HOME: "/private-provider-home" }, roots).join("\n");
+    expect(args).toContain(`${JSON.stringify(vendor)}="read"`);
+    expect(args).toContain('"/private-provider-home"="none"');
+  });
+
   it("honors an explicit network restriction independently of GitHub", () => {
     for (const GH_TOKEN of [undefined, "managed-token"]) {
       const args = createIsolatedCodexAppServerArgs({ GH_TOKEN, PAPERCLIP_RUNNER_NETWORK_ACCESS: "disabled" }).join("\n");

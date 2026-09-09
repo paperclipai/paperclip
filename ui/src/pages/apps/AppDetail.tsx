@@ -149,7 +149,7 @@ export function AppDetail() {
     grant.kind === "organization" && grant.isDefault
   )) ?? grantRows.find((grant) => grant.kind === "organization") ?? null;
   const managedIdentityGrant = connection?.credentialPolicy === "per_user"
-    ? retainedPersonalGrant
+    ? currentUserPersonalGrant ?? retainedPersonalGrant
     : connection?.credentialPolicy === "per_agent"
       ? retainedAgentGrant
     : connection?.credentialPolicy === "per_user_with_fallback"
