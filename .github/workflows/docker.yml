@@ -34,7 +34,14 @@ concurrency:
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    # The multi-arch (amd64 + QEMU-emulated arm64) production build has
+    # outgrown 60 minutes: the last runs to finish under the old cap took
+    # 39-54, and once the build crossed it every job died at the timeout.
+    # Each hour-long doomed run also held the per-ref concurrency slot, so
+    # queued master pushes superseded each other and the workflow published
+    # nothing at all. 120 restores headroom; the cloud job below is
+    # amd64-only (~10-15 minutes) and keeps its tighter cap.
+    timeout-minutes: 120
     steps:
       - name: Checkout
         uses: actions/checkout@v7
