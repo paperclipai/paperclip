@@ -4969,7 +4969,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     let headers = composioSession?.headers
       ?? credentialHeaders
       ?? { ...projectedConnectionHeaders(connection), ...await resolveCredentialHeaders(connection, actor) };
-    const endpoint = composioSession?.url ?? await resolvedRemoteEndpoint(connection, actor);
+    let endpoint = composioSession?.url ?? await resolvedRemoteEndpoint(connection, actor);
     // Pinned to the address the guard approved: `config.url` is operator-supplied,
     // so a second DNS resolution here would reopen the rebinding window that
     const sendRemote = (init: RequestInit) => requestRemoteHttpEndpoint(new URL(endpoint), init);
@@ -5032,9 +5032,12 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     }
     if (response.status === 401 && composioChild) {
       const refreshed = await composioSessions.ensureSession(connection.id, { force: true });
-      response = await requestRemoteHttpEndpoint(new URL(refreshed.url), {
+      endpoint = refreshed.url;
+      headers = refreshed.headers;
+      activeHeaders = refreshed.headers;
+      response = await sendRemote({
         method: "POST",
-        headers: mcpHttpRequestHeaders(refreshed.headers),
+        headers: mcpHttpRequestHeaders(activeHeaders),
         body: JSON.stringify({
           jsonrpc: "2.0",
           id: "paperclip-catalog-refresh-retry",
@@ -5137,17 +5140,43 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     let nextCursor = typeof result.nextCursor === "string" && result.nextCursor.trim() ? result.nextCursor.trim() : null;
     let pageCount = 1;
     const maxPages = 50;
+    const seenCursors = new Set<string>();
 
     while (nextCursor && pageCount < maxPages) {
+      seenCursors.add(nextCursor);
       pageCount++;
       const pageResponse = await sendToolsList(activeHeaders, nextCursor);
-      if (!pageResponse.ok) break;
+      if (!pageResponse.ok) {
+        throw new HttpError(502, `Remote app returned HTTP ${pageResponse.status} during tools/list pagination`, {
+          status: pageResponse.status,
+        });
+      }
       const pagePayload = parseMcpHttpResponseBody(await pageResponse.text(), pageResponse.headers.get("content-type"));
-      result = asRecord(asRecord(pagePayload).result);
-      payloadTools = asRecord(pagePayload).tools;
+      const pageRecord = asRecord(pagePayload);
+      if (pageRecord.error !== undefined) {
+        const errorDetails = asRecord(pageRecord.error);
+        const errorMessage = typeof errorDetails.message === "string" ? errorDetails.message : `code ${errorDetails.code ?? "unknown"}`;
+        throw new HttpError(502, `Remote app returned an error during tools/list pagination: ${errorMessage}`, {
+          code: "mcp_pagination_failed",
+        });
+      }
+      result = asRecord(pageRecord.result);
+      payloadTools = pageRecord.tools;
       const pageTools: unknown[] = Array.isArray(result.tools) ? result.tools : Array.isArray(payloadTools) ? payloadTools : [];
       tools.push(...pageTools);
-      nextCursor = typeof result.nextCursor === "string" && result.nextCursor.trim() ? result.nextCursor.trim() : null;
+      const candidateCursor = typeof result.nextCursor === "string" && result.nextCursor.trim() ? result.nextCursor.trim() : null;
+      if (candidateCursor && seenCursors.has(candidateCursor)) {
+        throw new HttpError(502, "Remote app returned cyclic pagination cursor during tools/list", {
+          code: "pagination_cycle_detected",
+        });
+      }
+      nextCursor = candidateCursor;
+    }
+
+    if (nextCursor) {
+      throw new HttpError(502, `Remote app tools/list pagination stopped before all tools were discovered (exceeded limit of ${maxPages} pages)`, {
+        code: "pagination_limit_exceeded",
+      });
     }
 
     return tools.map((tool) => normalizeToolDescriptor(tool)).filter((tool): tool is McpToolDescriptor => Boolean(tool));
