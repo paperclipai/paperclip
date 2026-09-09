@@ -58,7 +58,7 @@ describe("server package build script", () => {
       "pnpm --filter @paperclipai/paperclip-runner build",
     );
     expect(packageJson.scripts?.build).toContain(
-      "cp -R ../packages/paperclip-runner/dist/. dist/vendor/paperclip-runner/",
+      "node scripts/bundle-runner-vendor.mjs",
     );
   });
 
