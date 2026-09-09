@@ -296,6 +296,41 @@ describe("GET /health", () => {
     });
   });
 
+  it("finds the local database backup failure marker used by server backup failures", async () => {
+    const backupRoot = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-health-local-backups-root-"));
+    const backupDir = path.join(backupRoot, "backups");
+    const healthDir = path.join(backupRoot, "health");
+    fs.mkdirSync(backupDir);
+    fs.mkdirSync(healthDir);
+    const backupFile = path.join(backupDir, "paperclip-20260706-031702.sql.gz");
+    const alertFile = path.join(healthDir, "database-backup.failure");
+    fs.writeFileSync(backupFile, "backup");
+    fs.writeFileSync(alertFile, "2026-07-06T03:17:00.000Z Automatic database backup failed: ENOSPC\n");
+    const app = createApp(createHealthyDb(), testServerInfo, {
+      enabled: true,
+      backupDir,
+      maxAgeHours: 26,
+      now: new Date("2026-07-06T04:00:00.000Z"),
+    });
+
+    const res = await request(app).get("/health");
+
+    expect(res.status).toBe(200);
+    expect(res.body.databaseBackup).toMatchObject({
+      status: "warning",
+      lastFailure: {
+        path: alertFile,
+        message: "2026-07-06T03:17:00.000Z Automatic database backup failed: ENOSPC",
+      },
+      warnings: [
+        {
+          code: "database_backup_last_failure",
+          message: "2026-07-06T03:17:00.000Z Automatic database backup failed: ENOSPC",
+        },
+      ],
+    });
+  });
+
   it("surfaces redacted database backup warnings for anonymous authenticated probes", async () => {
     const backupDir = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-health-redacted-backups-"));
     const backupFile = path.join(backupDir, "paperclip-20260705-031702.sql.gz");

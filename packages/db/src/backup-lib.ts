@@ -1,4 +1,4 @@
-import { createReadStream, createWriteStream, existsSync, mkdirSync, readdirSync, statSync, unlinkSync } from "node:fs";
+import { createReadStream, createWriteStream, existsSync, linkSync, lstatSync, mkdirSync, readdirSync, renameSync, statSync, statfsSync, unlinkSync } from "node:fs";
 import { basename, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { spawn } from "node:child_process";
@@ -70,6 +70,9 @@ const DEFAULT_BACKUP_WRITE_BUFFER_BYTES = 1024 * 1024;
 const BACKUP_DATA_CURSOR_ROWS = 100;
 const BACKUP_CLI_STDERR_BYTES = 64 * 1024;
 const BACKUP_BREAKPOINT_DETECT_BYTES = 64 * 1024;
+const BACKUP_PARTIAL_STALE_MS = 6 * 60 * 60 * 1000;
+const RAW_BACKUP_MIN_FREE_BYTES = 64 * 1024 * 1024;
+const RAW_BACKUP_FREE_SPACE_FACTOR = 2;
 
 const STATEMENT_BREAKPOINT = "-- paperclip statement breakpoint 69f6f3f1-42fd-46a6-bf17-d1d85f8f3900";
 
@@ -133,9 +136,10 @@ function pruneOldBackups(backupDir: string, retention: BackupRetentionPolicy, fi
 
   for (const name of readdirSync(backupDir)) {
     if (!name.startsWith(`${filenamePrefix}-`)) continue;
-    if (!name.endsWith(".sql") && !name.endsWith(".sql.gz")) continue;
+    if (!name.endsWith(".sql.gz")) continue;
     const fullPath = resolve(backupDir, name);
-    const stat = statSync(fullPath);
+    const stat = lstatSync(fullPath);
+    if (!stat.isFile()) continue;
     entries.push({ name, fullPath, mtimeMs: stat.mtimeMs });
   }
 
@@ -183,6 +187,55 @@ function pruneOldBackups(backupDir: string, retention: BackupRetentionPolicy, fi
   }
 
   return toDelete.length;
+}
+
+export function cleanupStaleDatabaseBackupArtifacts(
+  backupDir: string,
+  filenamePrefix = "paperclip",
+  nowMs = Date.now(),
+): { deletedCount: number; quarantinedCount: number } {
+  if (!existsSync(backupDir)) return { deletedCount: 0, quarantinedCount: 0 };
+
+  let deletedCount = 0;
+  let quarantinedCount = 0;
+  let quarantineDir: string | null = null;
+
+  const ensureQuarantineDir = () => {
+    if (quarantineDir) return quarantineDir;
+    quarantineDir = resolve(backupDir, "incomplete");
+    mkdirSync(quarantineDir, { recursive: true });
+    return quarantineDir;
+  };
+
+  for (const name of readdirSync(backupDir)) {
+    if (!name.startsWith(`${filenamePrefix}-`)) continue;
+    const isTemporary = /\.sql(?:\.gz)?\.tmp-[A-Za-z0-9._-]+$/.test(name);
+    const isRawSql = name.endsWith(".sql");
+    if (!isTemporary && !isRawSql) continue;
+
+    const fullPath = resolve(backupDir, name);
+    const stat = lstatSync(fullPath);
+    if (!stat.isFile()) continue;
+    if (nowMs - stat.mtimeMs < BACKUP_PARTIAL_STALE_MS) continue;
+
+    if (isTemporary) {
+      unlinkSync(fullPath);
+      deletedCount += 1;
+      continue;
+    }
+
+    const targetDir = ensureQuarantineDir();
+    let targetPath = resolve(targetDir, name);
+    let suffix = 1;
+    while (existsSync(targetPath)) {
+      targetPath = resolve(targetDir, `${name}.${suffix}`);
+      suffix += 1;
+    }
+    renameSync(fullPath, targetPath);
+    quarantinedCount += 1;
+  }
+
+  return { deletedCount, quarantinedCount };
 }
 
 function formatBackupSize(sizeBytes: number): string {
@@ -350,6 +403,70 @@ async function runPgDumpBackup(opts: {
     pipeline(child.stdout, createGzip(), createWriteStream(opts.backupFile)),
     waitForChildExit(child, pgDumpBin),
   ]);
+}
+
+function temporaryBackupSuffix(): string {
+  return `${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function configuredRawBackupMinimumFreeBytes(): number | null {
+  const raw = process.env.PAPERCLIP_DB_BACKUP_RAW_MIN_FREE_BYTES?.trim();
+  if (!raw) return null;
+  const value = Number(raw);
+  return Number.isFinite(value) && value > 0 ? Math.ceil(value) : null;
+}
+
+async function assertRawBackupFreeSpace(sql: postgres.Sql, backupDir: string): Promise<void> {
+  const sizeRows = await sql<{ bytes: string | number }[]>`
+    SELECT pg_database_size(current_database())::text AS bytes
+  `;
+  const estimatedBytes = Number(sizeRows[0]?.bytes ?? 0);
+  const requiredBytes = Math.max(
+    RAW_BACKUP_MIN_FREE_BYTES,
+    Number.isFinite(estimatedBytes)
+      ? Math.ceil(estimatedBytes * RAW_BACKUP_FREE_SPACE_FACTOR)
+      : RAW_BACKUP_MIN_FREE_BYTES,
+    configuredRawBackupMinimumFreeBytes() ?? 0,
+  );
+  const space = statfsSync(backupDir);
+  const availableBytes = Number(space.bavail) * Number(space.bsize);
+
+  if (!Number.isFinite(availableBytes) || availableBytes < requiredBytes) {
+    const error = new Error(
+      `Insufficient free space for JavaScript raw database backup in ${backupDir}: ` +
+      `available ${formatBackupSize(Math.max(0, availableBytes))}, required ${formatBackupSize(requiredBytes)}.`,
+    ) as NodeJS.ErrnoException;
+    error.code = "ENOSPC";
+    throw error;
+  }
+}
+
+function wrapPgDumpBackupError(error: unknown): Error {
+  const detail = error instanceof Error ? error.message : String(error);
+  return new Error(
+    `pg_dump database backup failed; Paperclip did not fall back to the JavaScript raw backup engine. ` +
+    `Install a pg_dump binary compatible with the PostgreSQL server or set PAPERCLIP_PG_DUMP_PATH. ${detail}`,
+    { cause: error },
+  );
+}
+
+function promoteBackupNoClobber(temporaryBackupFile: string, backupBase: string): string {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const backupFile = attempt === 0
+      ? `${backupBase}.sql.gz`
+      : `${backupBase}-${attempt}.sql.gz`;
+    try {
+      linkSync(temporaryBackupFile, backupFile);
+      unlinkSync(temporaryBackupFile);
+      return backupFile;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+        continue;
+      }
+      throw error;
+    }
+  }
+  throw new Error(`Could not promote database backup without clobbering an existing file for ${backupBase}.`);
 }
 
 async function restoreWithPsql(opts: RunDatabaseRestoreOptions, connectTimeout: number): Promise<void> {
@@ -541,9 +658,12 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
     await sql.end();
   };
   mkdirSync(opts.backupDir, { recursive: true });
-  const sqlFile = resolve(opts.backupDir, `${filenamePrefix}-${timestamp()}.sql`);
-  const backupFile = `${sqlFile}.gz`;
-  const writer = createBufferedTextFileWriter(sqlFile);
+  cleanupStaleDatabaseBackupArtifacts(opts.backupDir, filenamePrefix);
+  const backupBase = resolve(opts.backupDir, `${filenamePrefix}-${timestamp()}`);
+  const temporarySuffix = temporaryBackupSuffix();
+  const sqlFile = `${backupBase}.sql.tmp-${temporarySuffix}`;
+  const temporaryBackupFile = `${backupBase}.sql.gz.tmp-${temporarySuffix}`;
+  let writer: ReturnType<typeof createBufferedTextFileWriter> | null = null;
 
   try {
     if (backupEngine === "pg_dump" || (backupEngine === "auto" && canUsePgDump)) {
@@ -552,10 +672,10 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
         await closeSql();
         await runPgDumpBackup({
           connectionString: opts.connectionString,
-          backupFile,
+          backupFile: temporaryBackupFile,
           connectTimeout,
         });
-        await writer.abort();
+        const backupFile = promoteBackupNoClobber(temporaryBackupFile, backupBase);
         const sizeBytes = statSync(backupFile).size;
         const prunedCount = pruneOldBackups(opts.backupDir, retention, filenamePrefix);
         return {
@@ -564,21 +684,19 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
           prunedCount,
         };
       } catch (error) {
-        if (existsSync(backupFile)) {
-          try { unlinkSync(backupFile); } catch { /* ignore */ }
+        if (existsSync(temporaryBackupFile)) {
+          try { unlinkSync(temporaryBackupFile); } catch { /* ignore */ }
         }
-        if (backupEngine === "pg_dump") {
-          throw error;
-        }
-        effectiveBackupEngine = "javascript";
-        sql = postgres(opts.connectionString, { max: 1, connect_timeout: connectTimeout });
-        sqlClosed = false;
+        throw wrapPgDumpBackupError(error);
       }
     }
 
     await sql`SELECT 1`;
+    await assertRawBackupFreeSpace(sql, opts.backupDir);
+    writer = createBufferedTextFileWriter(sqlFile);
+    const activeWriter = writer;
 
-    const emit = (line: string) => writer.emit(line);
+    const emit = (line: string) => activeWriter.emit(line);
     const emitStatement = (statement: string) => {
       emit(statement);
       emit(STATEMENT_BREAKPOINT);
@@ -936,19 +1054,19 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
       const nullifiedColumns = nullifiedColumnsByTable.get(currentTableKey) ?? new Set<string>();
       if (effectiveBackupEngine !== "javascript" && nullifiedColumns.size === 0) {
         emit(`COPY ${qualifiedTableName} (${colNames}) FROM stdin;`);
-        await writer.writeRaw("\n");
+        await activeWriter.writeRaw("\n");
         const copySql = postgres(opts.connectionString, { max: 1, connect_timeout: connectTimeout });
         try {
           const copyStream = await copySql
             .unsafe(`COPY ${qualifiedTableName} (${colNames}) TO STDOUT`)
             .readable();
           for await (const chunk of copyStream) {
-            await writer.writeRaw(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
+            await activeWriter.writeRaw(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
           }
         } finally {
           await copySql.end();
         }
-        await writer.writeRaw("\\.\n");
+        await activeWriter.writeRaw("\\.\n");
         emitStatementBoundary();
         emit("");
         continue;
@@ -965,7 +1083,7 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
           );
           emitStatement(`INSERT INTO ${qualifiedTableName} (${colNames}) VALUES (${values.join(", ")});`);
         }
-        await writer.drain();
+        await activeWriter.drain();
       }
       emit("");
     }
@@ -1018,13 +1136,15 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
     emitStatement("COMMIT;");
     emit("");
 
-    await writer.close();
+    await activeWriter.close();
+    writer = null;
 
     // Compress the SQL file with gzip
     const sqlReadStream = createReadStream(sqlFile);
-    const gzWriteStream = createWriteStream(backupFile);
+    const gzWriteStream = createWriteStream(temporaryBackupFile);
     await pipeline(sqlReadStream, createGzip(), gzWriteStream);
     unlinkSync(sqlFile);
+    const backupFile = promoteBackupNoClobber(temporaryBackupFile, backupBase);
 
     const sizeBytes = statSync(backupFile).size;
     const prunedCount = pruneOldBackups(opts.backupDir, retention, filenamePrefix);
@@ -1035,9 +1155,9 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
       prunedCount,
     };
   } catch (error) {
-    await writer.abort();
-    if (existsSync(backupFile)) {
-      try { unlinkSync(backupFile); } catch { /* ignore */ }
+    await writer?.abort();
+    if (existsSync(temporaryBackupFile)) {
+      try { unlinkSync(temporaryBackupFile); } catch { /* ignore */ }
     }
     if (existsSync(sqlFile)) {
       try { unlinkSync(sqlFile); } catch { /* ignore */ }

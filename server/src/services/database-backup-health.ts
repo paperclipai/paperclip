@@ -49,6 +49,9 @@ function alertFileCandidates(opts: InspectDatabaseBackupHealthOptions) {
   return [...new Set([
     opts.alertFile,
     ...(opts.alertFiles ?? []),
+    join(opts.backupDir, "database-backup.failure"),
+    resolve(opts.backupDir, "..", "database-backup.failure"),
+    resolve(opts.backupDir, "..", "health", "database-backup.failure"),
     join(opts.backupDir, "db-backup-to-s3.failure"),
     resolve(opts.backupDir, "..", "db-backup-to-s3.failure"),
   ].filter((value): value is string => Boolean(value)))];
@@ -83,10 +86,11 @@ function findLatestBackup(backupDir: string, nowMs: number) {
 
   const candidates = readdirSync(backupDir)
     .filter((name) => name.endsWith(".sql.gz"))
-    .map((name) => {
+    .filter((name) => !name.includes(".tmp-"))
+    .flatMap((name) => {
       const fullPath = join(backupDir, name);
       const stat = statSync(fullPath);
-      return { fullPath, name, stat };
+      return stat.isFile() ? [{ fullPath, name, stat }] : [];
     })
     .sort((a, b) => b.stat.mtimeMs - a.stat.mtimeMs);
 
