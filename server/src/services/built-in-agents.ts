@@ -739,6 +739,7 @@ function definitionPatch(definition: BuiltInAgentDefinition, input: BuiltInAgent
 }
 
 async function assertKnownBuiltInAgentModel(
+  companyId: string,
   definition: BuiltInAgentDefinition,
   input: BuiltInAgentProvisionInput,
 ) {
@@ -747,7 +748,7 @@ async function assertKnownBuiltInAgentModel(
   const model = typeof adapterConfig.model === "string" ? adapterConfig.model.trim() : "";
   if (!model || !hasCompleteAdapterConfig(adapterType, adapterConfig)) return;
 
-  const models = await listAdapterModels(adapterType);
+  const models = await listAdapterModels(adapterType, companyId);
   if (models.length === 0 || models.some((candidate) => candidate.id === model)) return;
 
   throw unprocessable(`Model "${model}" is not available for adapter ${adapterType}.`, {
@@ -1613,7 +1614,7 @@ export function builtInAgentService(db: Db) {
       ? input
       : await defaultProvisionInput(companyId, definition, input);
     if (!existingPendingApproval && !preserveExistingAdapter) {
-      await assertKnownBuiltInAgentModel(definition, resolvedInput);
+      await assertKnownBuiltInAgentModel(companyId, definition, resolvedInput);
     }
     if (existing) {
       const patch: Partial<typeof agents.$inferInsert> = {
@@ -1711,7 +1712,7 @@ export function builtInAgentService(db: Db) {
     if (!company.requireBoardApprovalForNewAgents) {
       return { state: await ensure(companyId, key, input), approval: null };
     }
-    await assertKnownBuiltInAgentModel(definition, input);
+    await assertKnownBuiltInAgentModel(companyId, definition, input);
 
     const existing = await findSingleAgent(companyId, definition);
     if (existing) {
