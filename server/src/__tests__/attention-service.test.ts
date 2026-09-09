@@ -1458,6 +1458,468 @@ describeEmbeddedPostgres("attention service", () => {
     expect(rows.map((item) => item.detail?.kind === "blocker" ? item.detail.blockedTaskCount : null)).toEqual([3, 1]);
   });
 
+  // P4: a source issue with an open human-owned recovery action was also
+  // projected as the terminal blocker of the work it holds up. The rows merge
+  // only when the durable blocked-generation id recorded on the action still
+  // equals the source issue's current one — same issue and same status are
+  // never enough, because block -> unblock -> block returns to both.
+  it("coalesces a recovery action into its terminal-blocker projection only on a matching blocked generation", async () => {
+    const { companyId, workerId } = await seedCompany("ATA");
+    const blockedAt = new Date("2026-09-09T21:52:13.088Z");
+    const sourceIssueId = await insertIssue({
+      companyId,
+      identifier: "ATA-1",
+      title: "EDI prerequisite verification",
+      status: "blocked",
+      assigneeAgentId: workerId,
+      blockedTransitionAt: blockedAt,
+      updatedAt: blockedAt,
+    });
+    const dependentId = await insertIssue({
+      companyId,
+      identifier: "ATA-2",
+      title: "Depends on the EDI prerequisite",
+      status: "in_progress",
+    });
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: sourceIssueId,
+      relatedIssueId: dependentId,
+      type: "blocks",
+    });
+    const recoveryActionId = randomUUID();
+    await db.insert(issueRecoveryActions).values({
+      id: recoveryActionId,
+      companyId,
+      sourceIssueId,
+      kind: "missing_disposition",
+      status: "active",
+      ownerType: "board",
+      cause: "successful_run_missing_state",
+      fingerprint: "source_scoped_recovery:coalesced",
+      // The action recorded the exact block generation the issue is still in.
+      evidence: { latestIssueStatus: "blocked", sourceBlockedTransitionAt: blockedAt.toISOString() },
+      nextAction: "Board operator: inspect the run evidence, then choose a disposition.",
+      createdAt: blockedAt,
+      updatedAt: new Date("2026-09-09T22:10:00.000Z"),
+    });
+
+    const feed = await attentionService(db).list(companyId, { userId: "board-user" });
+    const rows = feed.items.filter((item) => item.subject.id === sourceIssueId);
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      sourceKind: "blocker_attention",
+      dedupKey: `blocker:${sourceIssueId}`,
+      detail: { kind: "blocker", blockedTaskCount: 1 },
+    });
+    expect(rows[0]?.decisionVerbs.map((verb) => verb.id)).toEqual(
+      expect.arrayContaining(["unblock", "reassign", "nudge", "resolve", "cancel"]),
+    );
+    expect(rows[0]?.subject.metadata?.recoveryAction).toMatchObject({
+      id: recoveryActionId,
+      status: "active",
+      nextAction: "Board operator: inspect the run evidence, then choose a disposition.",
+      kind: "missing_disposition",
+      cause: "successful_run_missing_state",
+      fingerprint: "source_scoped_recovery:coalesced",
+      sourceIssueId,
+      sourceBlockedTransitionAt: blockedAt.toISOString(),
+    });
+    expect(feed.items.some((item) => item.sourceKind === "recovery_action")).toBe(false);
+    expect(feed.countsBySourceKind.recovery_action).toBe(0);
+    expect(feed.countsBySourceKind.blocker_attention).toBe(1);
+  });
+
+  // Distinct causes stay separate: the action is on the blocked issue, while the
+  // terminal blocker row is keyed by the deeper issue that blocks it.
+  it("keeps a recovery action separate from a terminal blocker on a different issue", async () => {
+    const { companyId, workerId } = await seedCompany("ATB");
+    const blockedAt = new Date("2026-09-09T21:52:13.088Z");
+    const sourceIssueId = await insertIssue({
+      companyId,
+      identifier: "ATB-1",
+      title: "Recovering source",
+      status: "blocked",
+      assigneeAgentId: workerId,
+      blockedTransitionAt: blockedAt,
+    });
+    const upstreamId = await insertIssue({
+      companyId,
+      identifier: "ATB-2",
+      title: "Upstream blocker",
+      status: "todo",
+    });
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: upstreamId,
+      relatedIssueId: sourceIssueId,
+      type: "blocks",
+    });
+    await db.insert(issueRecoveryActions).values({
+      id: randomUUID(),
+      companyId,
+      sourceIssueId,
+      kind: "missing_disposition",
+      status: "active",
+      ownerType: "board",
+      cause: "successful_run_missing_state",
+      fingerprint: "source_scoped_recovery:distinct",
+      evidence: { latestIssueStatus: "blocked", sourceBlockedTransitionAt: blockedAt.toISOString() },
+      nextAction: "Choose a disposition.",
+    });
+
+    const feed = await attentionService(db).list(companyId, { userId: "board-user" });
+    const recoveryRow = feed.items.find((item) => item.sourceKind === "recovery_action");
+    const blockerRow = feed.items.find((item) => item.dedupKey === `blocker:${upstreamId}`);
+
+    expect(recoveryRow).toBeTruthy();
+    expect(blockerRow).toBeTruthy();
+    expect(blockerRow).toMatchObject({
+      subject: { id: upstreamId },
+      relatedIssue: { id: sourceIssueId },
+    });
+    expect(blockerRow?.decisionVerbs.map((verb) => verb.id)).not.toContain("resolve");
+    expect(blockerRow?.subject.metadata?.recoveryAction ?? null).toBeNull();
+    expect(feed.countsBySourceKind.recovery_action).toBe(1);
+    expect(feed.countsBySourceKind.blocker_attention).toBe(1);
+  });
+
+  // Block -> unblock -> block returns to the same issue *and* the same status,
+  // so only the recorded generation id can tell the generations apart.
+  it("keeps an older blocked generation separate from a newer block with the same status", async () => {
+    const { companyId, workerId } = await seedCompany("ATJ");
+    const oldBlockedAt = new Date("2026-09-09T10:00:00.000Z");
+    const newBlockedAt = new Date("2026-09-09T18:00:00.000Z");
+    const sourceIssueId = await insertIssue({
+      companyId,
+      identifier: "ATJ-1",
+      title: "Re-blocked after the recorded generation",
+      status: "blocked",
+      assigneeAgentId: workerId,
+      blockedTransitionAt: newBlockedAt,
+    });
+    await db.insert(issueRecoveryActions).values({
+      id: randomUUID(),
+      companyId,
+      sourceIssueId,
+      kind: "missing_disposition",
+      status: "active",
+      ownerType: "board",
+      cause: "successful_run_missing_state",
+      fingerprint: "source_scoped_recovery:stale",
+      evidence: { latestIssueStatus: "blocked", sourceBlockedTransitionAt: oldBlockedAt.toISOString() },
+      nextAction: "Choose a disposition.",
+    });
+
+    const feed = await attentionService(db).list(companyId, { userId: "board-user" });
+    const recoveryRow = feed.items.find((item) => item.sourceKind === "recovery_action");
+    const blockerRow = feed.items.find((item) => item.dedupKey === `blocker:${sourceIssueId}`);
+
+    expect(recoveryRow).toBeTruthy();
+    expect(blockerRow).toBeTruthy();
+    expect(blockerRow?.subject.metadata?.recoveryAction ?? null).toBeNull();
+    expect(feed.countsBySourceKind.recovery_action).toBe(1);
+    expect(feed.countsBySourceKind.blocker_attention).toBe(1);
+  });
+
+  // No recorded generation id is no proof, even when the issue and status match.
+  it("keeps a recovery action separate when it recorded no blocked generation", async () => {
+    const { companyId, workerId } = await seedCompany("ATI");
+    const blockedAt = new Date("2026-09-09T21:52:13.088Z");
+    const sourceIssueId = await insertIssue({
+      companyId,
+      identifier: "ATI-1",
+      title: "Blocked with an unsnapshotted action",
+      status: "blocked",
+      assigneeAgentId: workerId,
+      blockedTransitionAt: blockedAt,
+    });
+    await db.insert(issueRecoveryActions).values({
+      id: randomUUID(),
+      companyId,
+      sourceIssueId,
+      kind: "missing_disposition",
+      status: "active",
+      ownerType: "board",
+      cause: "successful_run_missing_state",
+      fingerprint: "source_scoped_recovery:no-snapshot",
+      evidence: { latestIssueStatus: "blocked" },
+      nextAction: "Choose a disposition.",
+    });
+
+    const feed = await attentionService(db).list(companyId, { userId: "board-user" });
+    const recoveryRow = feed.items.find((item) => item.sourceKind === "recovery_action");
+    const blockerRow = feed.items.find((item) => item.dedupKey === `blocker:${sourceIssueId}`);
+
+    expect(recoveryRow).toBeTruthy();
+    expect(blockerRow).toBeTruthy();
+    expect(blockerRow?.subject.metadata?.recoveryAction ?? null).toBeNull();
+    expect(feed.countsBySourceKind.recovery_action).toBe(1);
+    expect(feed.countsBySourceKind.blocker_attention).toBe(1);
+  });
+
+  // Coalescing is not suppression by dependent count: an incident that holds up
+  // no work still renders, with the count the terminal row computed.
+  it("keeps a coalesced recovery row that holds up no dependent work", async () => {
+    const { companyId, workerId } = await seedCompany("ATZ");
+    const blockedAt = new Date("2026-09-09T21:52:13.088Z");
+    const sourceIssueId = await insertIssue({
+      companyId,
+      identifier: "ATZ-1",
+      title: "Blocked with no dependents",
+      status: "blocked",
+      assigneeAgentId: workerId,
+      blockedTransitionAt: blockedAt,
+    });
+    await db.insert(issueRecoveryActions).values({
+      id: randomUUID(),
+      companyId,
+      sourceIssueId,
+      kind: "missing_disposition",
+      status: "active",
+      ownerType: "board",
+      cause: "successful_run_missing_state",
+      fingerprint: "source_scoped_recovery:no-dependents",
+      evidence: { latestIssueStatus: "blocked", sourceBlockedTransitionAt: blockedAt.toISOString() },
+      nextAction: "Choose a disposition.",
+    });
+
+    const feed = await attentionService(db).list(companyId, { userId: "board-user" });
+    const rows = feed.items.filter((item) => item.subject.id === sourceIssueId);
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      dedupKey: `blocker:${sourceIssueId}`,
+      detail: { kind: "blocker", blockedTaskCount: 0 },
+    });
+    expect(rows[0]?.decisionVerbs.map((verb) => verb.id)).toContain("resolve");
+    expect(feed.countsBySourceKind.blocker_attention).toBe(1);
+  });
+
+  // The durable unblock descriptor owns its own blocked generation, so the
+  // generic terminal row produced by that same issue folds into it: the business
+  // action survives and the blocked-work count travels with it.
+  it("renders a gated blocked issue once, keeping the business action, verbs, and count", async () => {
+    const { companyId } = await seedCompany("ATY");
+    const transitionAt = new Date(ROUTABLE_BLOCKED_ROLLOUT_AT.getTime() + 60_000);
+    const issueId = await insertIssue({
+      companyId,
+      identifier: "ATY-1",
+      title: "Needs board action",
+      status: "blocked",
+      unblockDescriptor: { owner: "board", action: "Resolve the confirmed human_gate before any source resume." },
+      blockedTransitionAt: transitionAt,
+    });
+    const dependentId = await insertIssue({
+      companyId,
+      identifier: "ATY-2",
+      title: "Held up work",
+      status: "todo",
+    });
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId,
+      relatedIssueId: dependentId,
+      type: "blocks",
+    });
+
+    const feed = await attentionService(db).list(companyId, { userId: "board-user" });
+    const rows = feed.items.filter((item) => item.subject.id === issueId);
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      sourceKind: "blocker_attention",
+      dedupKey: `blocked-owner:${issueId}:${transitionAt.toISOString()}`,
+      whyNow: "Resolve the confirmed human_gate before any source resume.",
+      detail: { kind: "blocker", blockedTaskCount: 1 },
+    });
+    expect(rows[0]?.decisionVerbs.map((verb) => verb.id)).toEqual(
+      expect.arrayContaining(["unblock", "reassign", "nudge"]),
+    );
+    expect(rows[0]?.subject.metadata?.recoveryAction ?? null).toBeNull();
+    expect(feed.countsBySourceKind.blocker_attention).toBe(1);
+  });
+
+  // A business gate and an open recovery action on the same issue ask different
+  // questions. The gate folds in the generic terminal row, but the recovery
+  // action is never absorbed behind it.
+  it("keeps a business gate separate from a recovery action on the same issue", async () => {
+    const { companyId } = await seedCompany("ATG");
+    const transitionAt = new Date(ROUTABLE_BLOCKED_ROLLOUT_AT.getTime() + 60_000);
+    const issueId = await insertIssue({
+      companyId,
+      identifier: "ATG-1",
+      title: "Needs board action",
+      status: "blocked",
+      unblockDescriptor: { owner: "board", action: "Resolve the confirmed human_gate before any source resume." },
+      blockedTransitionAt: transitionAt,
+    });
+    const recoveryActionId = randomUUID();
+    await db.insert(issueRecoveryActions).values({
+      id: recoveryActionId,
+      companyId,
+      sourceIssueId: issueId,
+      kind: "missing_disposition",
+      status: "escalated",
+      ownerType: "board",
+      cause: "successful_run_missing_state",
+      fingerprint: "source_scoped_recovery:gated",
+      evidence: { latestIssueStatus: "blocked", sourceBlockedTransitionAt: transitionAt.toISOString() },
+      nextAction: "Board operator: choose a disposition.",
+    });
+
+    const feed = await attentionService(db).list(companyId, { userId: "board-user" });
+    const rows = feed.items.filter((item) => item.subject.id === issueId);
+    const recoveryRow = feed.items.find((item) => item.sourceKind === "recovery_action");
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      dedupKey: `blocked-owner:${issueId}:${transitionAt.toISOString()}`,
+      whyNow: "Resolve the confirmed human_gate before any source resume.",
+      detail: { kind: "blocker" },
+    });
+    expect(rows[0]?.subject.metadata?.recoveryAction ?? null).toBeNull();
+    expect(recoveryRow?.subject.metadata?.sourceIssueId).toBe(issueId);
+    expect(feed.countsBySourceKind.blocker_attention).toBe(1);
+    expect(feed.countsBySourceKind.recovery_action).toBe(1);
+  });
+
+  // A dependent's activity decides which blocked root produced the terminal
+  // candidate, never whether the gate and the terminal row are one generation.
+  // The newest dependent root must still fold to one row, keeping the dependent
+  // link and the blocked-work count.
+  it("folds a gated blocked issue once when a dependent root makes the terminal candidate newest", async () => {
+    const { companyId } = await seedCompany("ATO");
+    const transitionAt = new Date(ROUTABLE_BLOCKED_ROLLOUT_AT.getTime() + 60_000);
+    const gateIssueId = await insertIssue({
+      companyId,
+      identifier: "ATO-1",
+      title: "Needs board action",
+      status: "blocked",
+      unblockDescriptor: { owner: "board", action: "Approve the exception" },
+      blockedTransitionAt: transitionAt,
+      updatedAt: new Date("2026-09-09T10:00:00.000Z"),
+    });
+    const heldUpIssueId = await insertIssue({
+      companyId,
+      identifier: "ATO-2",
+      title: "Held up by the gate",
+      status: "blocked",
+      updatedAt: new Date("2026-09-09T11:00:00.000Z"),
+    });
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: gateIssueId,
+      relatedIssueId: heldUpIssueId,
+      type: "blocks",
+    });
+
+    const feed = await attentionService(db).list(companyId, { userId: "board-user" });
+    const rows = feed.items.filter((item) => item.subject.id === gateIssueId);
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      sourceKind: "blocker_attention",
+      dedupKey: `blocked-owner:${gateIssueId}:${transitionAt.toISOString()}`,
+      whyNow: "Approve the exception",
+      relatedIssue: { id: heldUpIssueId },
+      detail: { kind: "blocker", blockedTaskCount: 1 },
+    });
+    expect(rows[0]?.decisionVerbs.map((verb) => verb.id)).toEqual(
+      expect.arrayContaining(["unblock", "reassign", "nudge"]),
+    );
+    expect(feed.countsBySourceKind.blocker_attention).toBe(1);
+  });
+
+  // A gate whose terminal blocker is a deeper issue is a different generation:
+  // the dependency row belongs to that blocker, not to the gate's own block.
+  it("keeps a gate separate from a terminal blocker on a deeper issue", async () => {
+    const { companyId } = await seedCompany("GAQ");
+    const transitionAt = new Date(ROUTABLE_BLOCKED_ROLLOUT_AT.getTime() + 60_000);
+    const gateIssueId = await insertIssue({
+      companyId,
+      identifier: "GAQ-1",
+      title: "Needs board action",
+      status: "blocked",
+      unblockDescriptor: { owner: "board", action: "Approve the exception" },
+      blockedTransitionAt: transitionAt,
+    });
+    const deeperBlockerId = await insertIssue({
+      companyId,
+      identifier: "GAQ-2",
+      title: "Deeper blocker",
+      status: "todo",
+    });
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: deeperBlockerId,
+      relatedIssueId: gateIssueId,
+      type: "blocks",
+    });
+
+    const feed = await attentionService(db).list(companyId, { userId: "board-user" });
+    const gateRows = feed.items.filter((item) => item.subject.id === gateIssueId);
+    const dependencyRow = feed.items.find((item) => item.dedupKey === `blocker:${deeperBlockerId}`);
+
+    expect(gateRows).toHaveLength(1);
+    expect(gateRows[0]?.dedupKey).toBe(`blocked-owner:${gateIssueId}:${transitionAt.toISOString()}`);
+    expect(dependencyRow).toMatchObject({
+      subject: { id: deeperBlockerId },
+      relatedIssue: { id: gateIssueId },
+    });
+    expect(feed.countsBySourceKind.blocker_attention).toBe(2);
+  });
+
+  // The projection is read-only: coalescing must never resolve the recovery
+  // action, close the incident, or otherwise mutate the durable rows.
+  it("projects a coalesced incident without mutating the recovery action or the issue", async () => {
+    const { companyId, workerId } = await seedCompany("ATK");
+    const blockedAt = new Date("2026-09-09T21:52:13.088Z");
+    const sourceIssueId = await insertIssue({
+      companyId,
+      identifier: "ATK-1",
+      title: "Read-only projection",
+      status: "blocked",
+      assigneeAgentId: workerId,
+      blockedTransitionAt: blockedAt,
+    });
+    const recoveryActionId = randomUUID();
+    const actionUpdatedAt = new Date("2026-09-09T22:10:00.000Z");
+    await db.insert(issueRecoveryActions).values({
+      id: recoveryActionId,
+      companyId,
+      sourceIssueId,
+      kind: "missing_disposition",
+      status: "escalated",
+      ownerType: "board",
+      cause: "successful_run_missing_state",
+      fingerprint: "source_scoped_recovery:read-only",
+      evidence: { latestIssueStatus: "blocked", sourceBlockedTransitionAt: blockedAt.toISOString() },
+      nextAction: "Record the disposition.",
+      createdAt: actionUpdatedAt,
+      updatedAt: actionUpdatedAt,
+    });
+
+    const feed = await attentionService(db).list(companyId, { userId: "board-user" });
+    expect(feed.items.filter((item) => item.subject.id === sourceIssueId)).toHaveLength(1);
+
+    const actionRow = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.id, recoveryActionId))
+      .then((rows) => rows[0] ?? null);
+    const issueRow = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, sourceIssueId))
+      .then((rows) => rows[0] ?? null);
+
+    expect(actionRow).toMatchObject({ status: "escalated", outcome: null, resolutionNote: null });
+    expect(actionRow?.updatedAt).toEqual(actionUpdatedAt);
+    expect(issueRow?.status).toBe("blocked");
+  });
+
   it("does not name the blocked task as its own blocker on a human-owned unblock row", async () => {
     const { companyId } = await seedCompany("ATX");
     const transitionAt = new Date("2026-07-23T18:30:00.000Z");

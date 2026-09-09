@@ -1406,6 +1406,14 @@ export function recoveryService(
       sourceIdentifier: input.issue.identifier,
       previousStatus: input.previousStatus,
       latestIssueStatus: input.issue.status,
+      // Durable block-generation id, recorded verbatim only when the issue is
+      // actually blocked. `attention.ts` compares it with the source issue's
+      // current `blocked_transition_at` to prove a recovery action and a
+      // terminal blocker row describe the same blocked generation; null means
+      // no proof and the projections stay separate. Never inferred from timing.
+      sourceBlockedTransitionAt: input.issue.status === "blocked" && input.issue.blockedTransitionAt
+        ? input.issue.blockedTransitionAt.toISOString()
+        : null,
       latestRunId: input.latestRun?.id ?? null,
       latestRunStatus: input.latestRun?.status ?? null,
       latestRunErrorCode: input.latestRun?.errorCode ?? null,

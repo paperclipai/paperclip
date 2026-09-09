@@ -132,6 +132,11 @@ type IssueSummaryRow = {
   reviewPolicy?: IssueReviewPolicy | null;
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
+  /**
+   * Durable id of the issue's current blocked generation, used by the P4
+   * same-cause proof. Null whenever the issue is not in a blocked generation.
+   */
+  blockedTransitionAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
   project: AttentionProjectRef | null;
@@ -652,6 +657,238 @@ function betterDuplicate(left: AttentionItem, right: AttentionItem) {
   return compareAttentionItems(left, right) <= 0 ? left : right;
 }
 
+/**
+ * What an open recovery action recorded about the failure generation it was
+ * materialized for, next to the source issue's generation right now.
+ *
+ * `recordedBlockedTransitionAt` is the durable `issues.blocked_transition_at`
+ * the producer stored on the action's evidence; `currentBlockedTransitionAt`
+ * is that same column on the source issue in this request. They are opaque
+ * generation ids, compared for equality — never a time-window heuristic.
+ */
+type AttentionRecoveryGeneration = {
+  sourceIssueId: string;
+  cause: string;
+  fingerprint: string;
+  latestIssueStatus: string | null;
+  recordedBlockedTransitionAt: string | null;
+  currentBlockedTransitionAt: string | null;
+};
+
+type AttentionProjectionIndex = {
+  /** Terminal blocker issue id -> dedup key of its `blocker:` projection. */
+  terminalBlockerDedupKeyByIssueId: ReadonlyMap<string, string>;
+  /**
+   * Terminal blocker projection dedup key -> the terminal subject's current
+   * `blocked_transition_at`. This is the generation the row renders, no matter
+   * which blocked root produced the candidate.
+   */
+  terminalBlockerGenerationByDedupKey: ReadonlyMap<string, string | null>;
+  /** Blocked issue id -> dedup key of its `blocked-owner:` projection. */
+  blockedOwnerDedupKeyByIssueId: ReadonlyMap<string, string>;
+  /** Blocked issue id -> the `blocked_transition_at` its gate row renders. */
+  blockedOwnerGenerationByIssueId: ReadonlyMap<string, string>;
+  /**
+   * Recovery action id -> the generation that action recorded. Keyed by action
+   * id rather than source issue: `issue_recovery_actions_active_source_uq`
+   * keeps at most one open action per (company, source), but keying by id keeps
+   * the provenance exact even if that invariant is ever relaxed.
+   */
+  recoveryGenerationByActionId: ReadonlyMap<string, AttentionRecoveryGeneration>;
+  /** Issues carrying a live human unblock descriptor (their own business gate). */
+  humanUnblockDescriptorIssueIds: ReadonlySet<string>;
+};
+
+/**
+ * Proves a recovery action and a terminal blocker row describe the *same*
+ * blocked generation of the same issue. Issue identity and status alone are
+ * never enough — a block -> unblock -> block cycle returns to the same status
+ * and the same issue id — so the durable `blocked_transition_at` generation id
+ * must match exactly:
+ *  - `issue_recovery_actions.source_issue_id` is the issue the action belongs
+ *    to, and `issue_recovery_actions.status` says the action is still open;
+ *  - `cause` + `fingerprint` are the recorded failure generation;
+ *  - the source status the action last observed must equal the status the issue
+ *    is in now;
+ *  - the block generation the producer recorded on the action's evidence must
+ *    equal the source issue's current `blocked_transition_at`. Missing or
+ *    mismatched proof keeps the rows separate.
+ */
+function isSameRecoveryGeneration(
+  recoveryItem: AttentionItem,
+  terminalItem: AttentionItem,
+  generation: AttentionRecoveryGeneration,
+) {
+  if (generation.sourceIssueId !== terminalItem.subject.id) return false;
+  if (!generation.cause || !generation.fingerprint) return false;
+  if (recoveryItem.subject.status !== "active" && recoveryItem.subject.status !== "escalated") return false;
+  if (generation.latestIssueStatus === null || generation.latestIssueStatus !== terminalItem.subject.status) return false;
+  return generation.recordedBlockedTransitionAt !== null
+    && generation.recordedBlockedTransitionAt === generation.currentBlockedTransitionAt;
+}
+
+function recoveryActionProjection(item: AttentionItem, generation: AttentionRecoveryGeneration) {
+  const metadata = item.subject.metadata;
+  return {
+    id: item.subject.id,
+    href: item.subject.href,
+    status: item.subject.status,
+    nextAction: item.subject.title,
+    kind: readString(metadata?.kind),
+    cause: generation.cause,
+    fingerprint: generation.fingerprint,
+    ownerType: readString(metadata?.ownerType),
+    sourceIssueId: generation.sourceIssueId,
+    recoveryIssueId: readString(metadata?.recoveryIssueId),
+    sourceBlockedTransitionAt: generation.recordedBlockedTransitionAt,
+  };
+}
+
+/**
+ * Verbs are additive: the surviving row's own order wins, and an absorbed
+ * projection only contributes ids the survivor does not already offer. The
+ * row also reports the latest activity of either projection, keeps the
+ * blocked-work count that only the terminal-blocker projection computes, and
+ * falls back to the absorbed row's issue link when the survivor has none (a
+ * gate row carries `relatedIssue: null`, so the dependent link survives the
+ * fold).
+ */
+function mergeProjectionBase(survivor: AttentionItem, absorbed: AttentionItem): AttentionItem {
+  const verbs = [...survivor.decisionVerbs];
+  for (const verb of absorbed.decisionVerbs) {
+    if (!verbs.some((existing) => existing.id === verb.id)) verbs.push(verb);
+  }
+  const survivorCount = survivor.detail?.kind === "blocker" ? survivor.detail.blockedTaskCount : undefined;
+  const absorbedCount = absorbed.detail?.kind === "blocker" ? absorbed.detail.blockedTaskCount : undefined;
+  const blockedTaskCount = survivorCount ?? absorbedCount;
+  return {
+    ...survivor,
+    decisionVerbs: verbs,
+    relatedIssue: survivor.relatedIssue ?? absorbed.relatedIssue,
+    activityAt: timestamp(absorbed.activityAt) > timestamp(survivor.activityAt)
+      ? absorbed.activityAt
+      : survivor.activityAt,
+    updatedAt: timestamp(absorbed.updatedAt) > timestamp(survivor.updatedAt)
+      ? absorbed.updatedAt
+      : survivor.updatedAt,
+    detail: survivor.detail?.kind === "blocker" && blockedTaskCount !== undefined
+      ? { ...survivor.detail, blockedTaskCount }
+      : survivor.detail,
+  };
+}
+
+/**
+ * One durable blocked generation, one row (P4).
+ *
+ * The feed projects the same incident from more than one source, and every
+ * projection carries its own dedup key, so the desk showed one incident two or
+ * three times (COD-154):
+ *
+ *  - `recovery:<kind>:<sourceIssueId>:<cause>:<fingerprint>` — the open
+ *    human-owned action in `issue_recovery_actions`.
+ *  - `blocker:<terminalIssueId>` — the terminal blocker row for the work that
+ *    issue holds up.
+ *  - `blocked-owner:<issueId>:<blockedTransitionAt>` — the durable unblock
+ *    descriptor (business gate) on the blocked issue itself.
+ *
+ * Coalescing stays narrow and evidence-based. It never drops a row because of
+ * its issue id, its dependent count, or a source status alone:
+ *
+ *  - A recovery action folds into a terminal blocker row only when
+ *    `isSameRecoveryGeneration` proves the same blocked generation: the action's
+ *    `source_issue_id` is that issue, the action is still open, its
+ *    `cause`/`fingerprint` generation is recorded, the source status it last
+ *    observed is the status the issue is in now, and the `blocked_transition_at`
+ *    generation id the producer recorded on the action equals the source
+ *    issue's current one. An action on another issue, one whose blocked chain
+ *    ends at a deeper blocker, one left over from an earlier generation, or one
+ *    with no recorded generation id all stay separate rows.
+ *  - A recovery action never folds when the same issue carries an independent
+ *    human unblock descriptor: that gate is its own business question.
+ *  - A terminal blocker row folds into a `blocked-owner` row only when both
+ *    render the same blocked generation: the terminal row's subject and the
+ *    gate row are the same issue and their authoritative
+ *    `blocked_transition_at` values match. Which blocked root produced the
+ *    terminal candidate never decides the fold, so a dependent's activity
+ *    cannot duplicate an identical gate. A terminal row for a deeper blocker
+ *    is a different generation and stays its own dependency row.
+ *
+ * The survivor is the row an operator can act on — dependency impact for a
+ * recovery action, the business gate for a blocked issue — and it absorbs the
+ * other projection's verbs plus the recovery action's durable identity in
+ * `subject.metadata.recoveryAction`. Both source kinds deep-link and are not
+ * inline-resolvable, so no new inline action appears: the merged row keeps
+ * `inlineResolvable` and its subject/relatedIssue links, and the absorbed
+ * action's own link travels in that metadata. Nothing is written: every
+ * projection stays in the database, and reading the feed never closes an
+ * incident.
+ */
+function coalesceAttentionProjections(items: AttentionItem[], index: AttentionProjectionIndex): AttentionItem[] {
+  const byDedupKey = new Map(items.map((item) => [item.dedupKey, item]));
+  const recoveryBySourceIssueId = new Map<string, AttentionItem>();
+  for (const item of items) {
+    if (item.sourceKind !== "recovery_action") continue;
+    const sourceIssueId = readString(item.subject.metadata?.sourceIssueId);
+    if (!sourceIssueId) continue;
+    const current = recoveryBySourceIssueId.get(sourceIssueId);
+    recoveryBySourceIssueId.set(sourceIssueId, current ? betterDuplicate(current, item) : item);
+  }
+
+  const absorbed = new Set<string>();
+  const replacements = new Map<string, AttentionItem>();
+
+  for (const [sourceIssueId, recoveryItem] of recoveryBySourceIssueId) {
+    const terminalDedupKey = index.terminalBlockerDedupKeyByIssueId.get(sourceIssueId);
+    const terminalItem = terminalDedupKey ? byDedupKey.get(terminalDedupKey) : undefined;
+    if (!terminalDedupKey || !terminalItem || absorbed.has(recoveryItem.dedupKey)) continue;
+    // An independent human unblock descriptor on the same issue is its own
+    // business question; the recovery action must not be folded into the
+    // dependency projection behind it.
+    if (index.humanUnblockDescriptorIssueIds.has(sourceIssueId)) continue;
+    const generation = index.recoveryGenerationByActionId.get(recoveryItem.subject.id);
+    if (!generation || !isSameRecoveryGeneration(recoveryItem, terminalItem, generation)) continue;
+    const merged = mergeProjectionBase(terminalItem, recoveryItem);
+    replacements.set(terminalDedupKey, {
+      ...merged,
+      subject: {
+        ...merged.subject,
+        metadata: {
+          ...(merged.subject.metadata ?? {}),
+          recoveryAction: recoveryActionProjection(recoveryItem, generation),
+        },
+      },
+    });
+    absorbed.add(recoveryItem.dedupKey);
+  }
+
+  for (const [issueId, blockedOwnerDedupKey] of index.blockedOwnerDedupKeyByIssueId) {
+    const terminalDedupKey = index.terminalBlockerDedupKeyByIssueId.get(issueId);
+    const blockedOwnerItem = byDedupKey.get(blockedOwnerDedupKey);
+    const terminalItem = terminalDedupKey
+      ? replacements.get(terminalDedupKey) ?? byDedupKey.get(terminalDedupKey)
+      : undefined;
+    if (!terminalDedupKey || !blockedOwnerItem || !terminalItem || absorbed.has(terminalDedupKey)) continue;
+    // Same descriptor generation, compared from the authoritative maps: the
+    // terminal row renders the gate issue's own current `blocked_transition_at`.
+    // Which blocked root produced the candidate is irrelevant, so unrelated
+    // dependent activity can no longer split an identical gate. A terminal row
+    // for a different issue (a deeper blocker) has a different generation and
+    // stays its own dependency row. A gate issue never carries recovery
+    // provenance either: the recovery fold above is skipped for every issue
+    // with a human unblock descriptor.
+    const gateGeneration = index.blockedOwnerGenerationByIssueId.get(issueId);
+    const terminalGeneration = index.terminalBlockerGenerationByDedupKey.get(terminalDedupKey);
+    if (!gateGeneration || !terminalGeneration || gateGeneration !== terminalGeneration) continue;
+    replacements.set(blockedOwnerDedupKey, mergeProjectionBase(blockedOwnerItem, terminalItem));
+    absorbed.add(terminalDedupKey);
+  }
+
+  if (absorbed.size === 0) return items;
+  return items
+    .filter((item) => !absorbed.has(item.dedupKey))
+    .map((item) => replacements.get(item.dedupKey) ?? item);
+}
+
 function approvalTitle(type: string, payload: Record<string, unknown>) {
   const title = typeof payload.title === "string" ? payload.title.trim() : "";
   if (title) return title;
@@ -831,6 +1068,7 @@ async function issueSummaryMap(db: Db, companyId: string, issueIds: Array<string
       reviewPolicy: issues.reviewPolicy,
       assigneeAgentId: issues.assigneeAgentId,
       assigneeUserId: issues.assigneeUserId,
+      blockedTransitionAt: issues.blockedTransitionAt,
       createdAt: issues.createdAt,
       updatedAt: issues.updatedAt,
       projectId: projects.id,
@@ -857,6 +1095,7 @@ async function issueSummaryMap(db: Db, companyId: string, issueIds: Array<string
     reviewPolicy: row.reviewPolicy ?? null,
     assigneeAgentId: row.assigneeAgentId,
     assigneeUserId: row.assigneeUserId,
+    blockedTransitionAt: row.blockedTransitionAt,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
     project: row.projectId && row.projectName ? {
@@ -1086,6 +1325,14 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
       const includeDismissed = options.includeDismissed === true;
       const now = serviceOptions.now?.() ?? Date.now();
       const collected: AttentionItem[] = [];
+      // Durable projections of the same blocked generation, recorded as the
+      // blocker rows are built so coalescing never has to parse dedup keys.
+      const terminalBlockerDedupKeyByIssueId = new Map<string, string>();
+      const terminalBlockerGenerationByDedupKey = new Map<string, string | null>();
+      const blockedOwnerDedupKeyByIssueId = new Map<string, string>();
+      const blockedOwnerGenerationByIssueId = new Map<string, string>();
+      const recoveryGenerationByActionId = new Map<string, AttentionRecoveryGeneration>();
+      const humanUnblockDescriptorIssueIds = new Set<string>();
 
       const add = (item: AttentionItem) => {
         const dismissal = activeDismissalState(dismissals, item.dismissalKey, item.activityAt, now);
@@ -1410,6 +1657,20 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
       for (const recovery of recoveryRows) {
         const sourceIssue = recoveryIssueMap.get(recovery.sourceIssueId) ?? null;
         const recoveryIssue = recovery.recoveryIssueId ? recoveryIssueMap.get(recovery.recoveryIssueId) ?? null : null;
+        // The generation this action recorded, for the same-cause proof in
+        // `coalesceAttentionProjections`. Read from the row, not the item, so
+        // no evidence snapshot leaks into the feed payload.
+        const evidence = readRecord(recovery.evidence);
+        recoveryGenerationByActionId.set(recovery.id, {
+          sourceIssueId: recovery.sourceIssueId,
+          cause: recovery.cause,
+          fingerprint: recovery.fingerprint,
+          latestIssueStatus: readString(evidence.latestIssueStatus),
+          recordedBlockedTransitionAt: readString(evidence.sourceBlockedTransitionAt),
+          currentBlockedTransitionAt: sourceIssue?.blockedTransitionAt
+            ? sourceIssue.blockedTransitionAt.toISOString()
+            : null,
+        });
         const dedupKey = `recovery:${recovery.kind}:${recovery.sourceIssueId}:${recovery.cause}:${recovery.fingerprint}`;
         add(createItem({
           companyId,
@@ -1549,8 +1810,21 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
         const descriptor = issue.unblockDescriptor;
         const humanOwnerMatches = descriptor?.owner === "board"
           || (descriptor?.owner && "userId" in descriptor.owner && descriptor.owner.userId === options.userId);
+        // The issue owns an independent human business gate. Recorded for every
+        // viewer, because a recovery action on that issue must never be folded
+        // into the dependency projection just because the gate is not on screen.
+        if (
+          descriptor
+          && (descriptor.owner === "board" || "userId" in descriptor.owner)
+          && isProspectiveBlockedTransition(issue)
+        ) {
+          humanUnblockDescriptorIssueIds.add(issue.id);
+        }
         if (descriptor && humanOwnerMatches && isProspectiveBlockedTransition(issue)) {
           const issueSummary = blockedIssueSummaries.get(issue.id) ?? null;
+          const blockedOwnerDedupKey = `blocked-owner:${issue.id}:${issue.blockedTransitionAt.toISOString()}`;
+          blockedOwnerDedupKeyByIssueId.set(issue.id, blockedOwnerDedupKey);
+          blockedOwnerGenerationByIssueId.set(issue.id, issue.blockedTransitionAt.toISOString());
           add(createItem({
             companyId,
             sourceKind: "blocker_attention",
@@ -1563,7 +1837,7 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
             inlineResolvable: false,
             entryRule: "blocked issue has a human-owned unblockDescriptor",
             exitRule: "Issue leaves blocked status.",
-            dedupKey: `blocked-owner:${issue.id}:${issue.blockedTransitionAt.toISOString()}`,
+            dedupKey: blockedOwnerDedupKey,
             severity: "high",
             activityAt: toIso(issue.blockedTransitionAt),
             createdAt: toIso(issue.createdAt),
@@ -1601,6 +1875,11 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
         const blockedTaskCount = blockedWorkCounts.get(terminalIssueId) ?? 0;
         const taskLabel = blockedTaskCount === 1 ? "task" : "tasks";
         const dedupKey = `blocker:${terminalIssueId}`;
+        terminalBlockerDedupKeyByIssueId.set(terminalIssueId, dedupKey);
+        terminalBlockerGenerationByDedupKey.set(
+          dedupKey,
+          candidate.terminalSummary.blockedTransitionAt?.toISOString() ?? null,
+        );
         add(createItem({
           companyId,
           sourceKind: "blocker_attention",
@@ -1963,7 +2242,14 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
         deduped.set(item.dedupKey, current ? betterDuplicate(current, item) : item);
       }
 
-      const collectedItems = [...deduped.values()].sort(compareAttentionItems);
+      const collectedItems = coalesceAttentionProjections([...deduped.values()], {
+        terminalBlockerDedupKeyByIssueId,
+        terminalBlockerGenerationByDedupKey,
+        blockedOwnerDedupKeyByIssueId,
+        blockedOwnerGenerationByIssueId,
+        recoveryGenerationByActionId,
+        humanUnblockDescriptorIssueIds,
+      }).sort(compareAttentionItems);
       await decisionQueueService(db).materializeSeededQueues(companyId, collectedItems);
       const enrichedItems = await enrichAttentionItems(db, companyId, collectedItems, now);
 

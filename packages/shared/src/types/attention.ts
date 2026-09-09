@@ -34,6 +34,54 @@ export type AttentionSubjectKind =
 
 export type AttentionSeverity = "critical" | "high" | "medium" | "low";
 
+/**
+ * The open recovery action a coalesced attention row absorbed (P4).
+ *
+ * A source issue with an open human-owned recovery action is also projected as
+ * the terminal blocker of the work it holds up. Only when the action's durable
+ * failure generation still matches that issue's current state (see
+ * `coalesceAttentionProjections` in `server/src/services/attention.ts`) does the
+ * surviving row carry the action's identity here instead of duplicating the
+ * incident. The action row itself is never changed or closed by a read.
+ */
+export interface AttentionCoalescedRecoveryAction {
+  /** `issue_recovery_actions.id` of the action the row now represents. */
+  id: string;
+  /** Deep link the action resolved at: the repair issue, else the source issue. */
+  href: string | null;
+  /** `active` or `escalated`; only open actions reach the feed. */
+  status: string | null;
+  /** The action's recorded next step. */
+  nextAction: string | null;
+  kind: string | null;
+  cause: string | null;
+  /** `issue_recovery_actions.fingerprint`: the recorded failure generation. */
+  fingerprint: string | null;
+  ownerType: string | null;
+  /** Durable `source_issue_id` that tied the action to the blocked issue. */
+  sourceIssueId: string | null;
+  recoveryIssueId: string | null;
+  /**
+   * The `issues.blocked_transition_at` value the action recorded when it was
+   * materialized and which still equals the source issue's current value. This
+   * block-generation id is what proved the two projections were one incident.
+   */
+  sourceBlockedTransitionAt: string | null;
+}
+
+/**
+ * Extra facts the feed attaches to a subject. Kept open-ended because every
+ * source kind adds its own keys; only the keys the feed guarantees are named.
+ */
+export interface AttentionSubjectMetadata {
+  /**
+   * Present only on a row that absorbed an open recovery action (P4). Absent on
+   * independent recovery rows and on every other source kind.
+   */
+  recoveryAction?: AttentionCoalescedRecoveryAction | null;
+  [key: string]: unknown;
+}
+
 export interface AttentionSubject {
   kind: AttentionSubjectKind;
   id: string;
@@ -42,7 +90,7 @@ export interface AttentionSubject {
   identifier: string | null;
   status: string | null;
   href: string | null;
-  metadata?: Record<string, unknown>;
+  metadata?: AttentionSubjectMetadata;
 }
 
 export interface AttentionDecisionVerb {
