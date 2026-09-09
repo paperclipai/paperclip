@@ -17,6 +17,12 @@ class MemoryStorage {
   removeItem(key: string) { this.values.delete(key); }
 }
 
+class DeniedStorage {
+  getItem(_key: string): string | null { return null; }
+  setItem(_key: string, _value: string): void { throw new Error("denied"); }
+  removeItem(_key: string): void {}
+}
+
 type ViewState = { sort: "updated" | "created"; statuses: string[] };
 type Column = "status" | "id" | "updated";
 
@@ -57,6 +63,13 @@ describe("saved issue views", () => {
   it("normalizes names by collapsing whitespace and trimming length", () => {
     expect(normalizeSavedViewName("  my   view\t")).toBe("my view");
     expect(normalizeSavedViewName("x".repeat(200)).length).toBeLessThanOrEqual(80);
+  });
+
+  it("reports whether persistence succeeded", () => {
+    const storage = new MemoryStorage();
+    expect(persistSavedViews(location, [], storage)).toBe(true);
+    expect(persistSavedViews(location, [], new DeniedStorage())).toBe(false);
+    expect(persistSavedViews(location, [], null)).toBe(false);
   });
 
   it("creates views newest-first and round-trips through storage", () => {

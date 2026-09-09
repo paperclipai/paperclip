@@ -39,6 +39,8 @@ function errorLabel(code: string): string {
       return "View limit reached. Delete a view first.";
     case "not-found":
       return "That view no longer exists.";
+    case "storage-unavailable":
+      return "Could not save views. Browser storage is unavailable or full.";
     default:
       return "Could not save this view.";
   }
@@ -86,7 +88,10 @@ export function SavedViewsMenu<TViewState, TColumn extends string>({
       setSaveError(errorLabel(result.error));
       return;
     }
-    persistSavedViews(location, result.views);
+    if (!persistSavedViews(location, result.views)) {
+      setSaveError(errorLabel("storage-unavailable"));
+      return;
+    }
     setViews(result.views);
     setDraftName("");
     setSaveError(null);
@@ -99,7 +104,10 @@ export function SavedViewsMenu<TViewState, TColumn extends string>({
 
   const handleDelete = (id: string) => {
     const next = deleteSavedView(views, id);
-    persistSavedViews(location, next);
+    if (!persistSavedViews(location, next)) {
+      setSaveError(errorLabel("storage-unavailable"));
+      return;
+    }
     setViews(next);
     if (editingId === id) {
       setEditingId(null);
@@ -113,7 +121,10 @@ export function SavedViewsMenu<TViewState, TColumn extends string>({
       setRenameError(errorLabel(result.error));
       return;
     }
-    persistSavedViews(location, result.views);
+    if (!persistSavedViews(location, result.views)) {
+      setRenameError(errorLabel("storage-unavailable"));
+      return;
+    }
     setViews(result.views);
     setEditingId(null);
     setRenameError(null);

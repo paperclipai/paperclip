@@ -118,8 +118,8 @@ export function persistSavedViews(
   location: SavedViewsLocation,
   views: ReadonlyArray<unknown>,
   storage: StorageLike | null = browserStorage(),
-): void {
-  if (!storage) return;
+): boolean {
+  if (!storage) return false;
   try {
     const envelope: SavedViewsEnvelope = {
       version: SAVED_VIEWS_VERSION,
@@ -128,8 +128,11 @@ export function persistSavedViews(
       views,
     };
     storage.setItem(savedViewsStorageKey(location), JSON.stringify(envelope));
+    return true;
   } catch {
     // Saved views are an enhancement; storage denial must not break the list.
+    // Callers surface the false return instead of pretending the write held.
+    return false;
   }
 }
 
