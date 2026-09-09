@@ -1,7 +1,7 @@
 import { useEffect } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Landmark, Home, TrendingUp, Car, Gem, Cpu, Package, AlertCircle, CheckCircle2, Circle, Users, Shield, Receipt } from "lucide-react";
-import { estateApi, type AssetType, type PlanStatusCheckKey, type PlanStatusResult, type NetWorthProjectionResult, type EstateBeneficiary, type EstateTrust, type EstateTaxSummary, type EstateReview } from "../api/estate";
+import { Landmark, Home, TrendingUp, Car, Gem, Cpu, Package, AlertCircle, CheckCircle2, Circle, Users, Shield, Receipt, PiggyBank } from "lucide-react";
+import { estateApi, type AssetType, type PlanStatusCheckKey, type PlanStatusResult, type NetWorthProjectionResult, type EstateBeneficiary, type EstateTrust, type EstateTaxSummary, type EstateReview, type RmdSummary } from "../api/estate";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { EmptyState } from "../components/EmptyState";
@@ -248,6 +248,61 @@ function PlanStatusSection({ status }: { status: PlanStatusResult }) {
           );
         })}
       </div>
+    </div>
+  );
+}
+
+function RmdSection({ rmd }: { rmd: RmdSummary }) {
+  const due = rmd.accounts.filter((a) => a.isDueThisYear);
+  const { summary } = rmd;
+
+  if (rmd.accounts.length === 0) return null;
+
+  return (
+    <div className="rounded-lg border border-border bg-card overflow-hidden">
+      <div className="px-4 py-3 border-b border-border bg-muted/30 flex items-center gap-2">
+        <PiggyBank className="h-3.5 w-3.5 text-muted-foreground" />
+        <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+          RMD Summary — {rmd.year}
+        </p>
+        {summary.allSatisfied && (
+          <span className="ml-auto text-xs font-medium text-green-700 flex items-center gap-1">
+            <CheckCircle2 className="h-3 w-3" /> All satisfied
+          </span>
+        )}
+        {!summary.allSatisfied && summary.accountsDueThisYear > 0 && (
+          <span className="ml-auto text-xs font-medium text-amber-700">
+            {formatDollars(summary.totalRemainingCents / 100)} remaining
+          </span>
+        )}
+      </div>
+      {due.length > 0 ? (
+        due.map((acct) => (
+          <div key={acct.id} className="flex items-center gap-3 px-4 py-2.5 border-b border-border last:border-b-0">
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-medium truncate">{acct.assetName}</p>
+              <p className="text-xs text-muted-foreground capitalize">
+                {acct.accountType.replace(/_/g, " ")}
+                {acct.custodian ? ` · ${acct.custodian}` : ""}
+              </p>
+            </div>
+            <div className="text-right shrink-0">
+              <p className="text-sm tabular-nums font-medium">
+                {formatDollars(acct.rmdAmountCents / 100)}
+              </p>
+              {acct.rmdWithdrawnThisYearCents > 0 && (
+                <p className={cn("text-xs tabular-nums", acct.isFullySatisfied ? "text-green-700" : "text-amber-700")}>
+                  {formatDollars(acct.rmdWithdrawnThisYearCents / 100)} withdrawn
+                </p>
+              )}
+            </div>
+          </div>
+        ))
+      ) : (
+        <div className="px-4 py-6 text-center text-sm text-muted-foreground">
+          No RMDs due this year.
+        </div>
+      )}
     </div>
   );
 }
@@ -569,6 +624,13 @@ export function Estate() {
     staleTime: 5 * 60 * 1000,
   });
 
+  const rmdQuery = useQuery({
+    queryKey: ["estate", "rmd-summary", selectedCompanyId, currentYear],
+    queryFn: () => estateApi.rmdSummary(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+    staleTime: 10 * 60 * 1000,
+  });
+
   const projectionQuery = useQuery({
     queryKey: ["estate", "projection", selectedCompanyId],
     queryFn: () => estateApi.netWorthProjection(selectedCompanyId!),
@@ -713,6 +775,11 @@ export function Estate() {
       {/* Net worth projection */}
       {projectionQuery.data && (
         <NetWorthProjectionSection projection={projectionQuery.data} />
+      )}
+
+      {/* RMD summary */}
+      {rmdQuery.data && rmdQuery.data.accounts.length > 0 && (
+        <RmdSection rmd={rmdQuery.data} />
       )}
 
       {/* Annual review checklist */}

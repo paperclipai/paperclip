@@ -105,6 +105,36 @@ export interface EstateTaxSummary {
   asOfDate: string;
 }
 
+export interface RmdAccount {
+  id: string;
+  assetId: string;
+  assetName: string;
+  accountType: string;
+  isRoth: boolean;
+  custodian: string | null;
+  currentValueCents: number;
+  rmdRequired: boolean;
+  rmdDueYear: number | null;
+  rmdAmountCents: number;
+  rmdWithdrawnThisYearCents: number;
+  rmdRemainingCents: number;
+  isDueThisYear: boolean;
+  isFullySatisfied: boolean | null;
+}
+
+export interface RmdSummary {
+  year: number;
+  accounts: RmdAccount[];
+  summary: {
+    totalAccountsWithRmd: number;
+    accountsDueThisYear: number;
+    totalRmdDueCents: number;
+    totalWithdrawnCents: number;
+    totalRemainingCents: number;
+    allSatisfied: boolean;
+  };
+}
+
 export type EstateReviewStatus = "pending" | "in_progress" | "complete";
 
 export interface ReviewChecklistItem {
@@ -214,4 +244,7 @@ export const estateApi = {
     status?: EstateReviewStatus;
     notes?: string;
   }) => api.patch<EstateReview>(`/estate/reviews/${year}${qs({ companyId })}`, body),
+
+  rmdSummary: (companyId: string, year?: number) =>
+    api.get<RmdSummary>(`/estate/rmd-summary${qs({ companyId, year: year?.toString() })}`),
 };
