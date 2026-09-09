@@ -65,9 +65,9 @@ export function ReviewQueueCard({
   return (
     <section className="space-y-3">
       <div className="flex items-center gap-2">
-        <ShieldQuestion className="h-4 w-4 text-amber-600 dark:text-amber-400" />
+        <ShieldQuestion className="h-4 w-4 text-muted-foreground" />
         <h2 className="text-sm font-bold text-foreground">{heading}</h2>
-        <span className="inline-flex items-center rounded-full bg-amber-500/15 px-2 py-0.5 text-xs font-semibold text-amber-700 dark:text-amber-300">
+        <span className="inline-flex items-center rounded-full bg-muted px-2 py-0.5 text-xs font-semibold text-muted-foreground">
           {items.length}
         </span>
       </div>
@@ -172,7 +172,7 @@ function ReviewRow({
   const preview = item.request.previewMarkdown?.trim();
 
   return (
-    <div className={plain ? "py-3" : "rounded-xl border border-amber-500/40 bg-amber-500/[0.07] p-4"}>
+    <div className={plain ? "py-3" : "rounded-xl border border-border bg-card p-4"}>
       <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1 text-sm">
         <span className="font-bold text-foreground">{actionLabel(item)}</span>
         {item.applicationName && (
