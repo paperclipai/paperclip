@@ -68,6 +68,12 @@ import {
   LAB_MARKER_PRESETS,
   type LabResult,
 } from "../hooks/useLabResults";
+import {
+  useHealthGoals,
+  useUpsertHealthGoal,
+  useDeleteHealthGoal,
+  type HealthGoal,
+} from "../hooks/useHealthGoals";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { EmptyState } from "../components/EmptyState";
@@ -2608,12 +2614,187 @@ function LabResultsView({ companyId }: { companyId: string }) {
   );
 }
 
+// ---- Goals ----
+
+const GOAL_TYPE_OPTIONS = [
+  { value: "water_ml",         label: "Daily Water",      unit: "ml" },
+  { value: "sleep_minutes",    label: "Sleep",            unit: "min" },
+  { value: "exercise_minutes", label: "Exercise",         unit: "min" },
+  { value: "calories",         label: "Calories",         unit: "kcal" },
+  { value: "protein_g",        label: "Protein",          unit: "g" },
+  { value: "steps",            label: "Steps",            unit: "steps" },
+  { value: "weight_kg",        label: "Weight",           unit: "kg" },
+  { value: "mood_score",       label: "Mood Score",       unit: "/ 10" },
+];
+
+function GoalCard({ goal, onDelete }: { goal: HealthGoal; onDelete: () => void }) {
+  const opt = GOAL_TYPE_OPTIONS.find((o) => o.value === goal.goalType);
+  return (
+    <div className="flex items-center justify-between rounded-lg border border-border bg-card p-3">
+      <div className="space-y-0.5">
+        <p className="text-sm font-medium">{goal.label}</p>
+        <p className="text-xs text-muted-foreground">
+          Target: <span className="font-semibold text-foreground">{goal.targetValue}</span>{" "}
+          {opt?.unit ?? goal.unit}
+        </p>
+      </div>
+      <button
+        onClick={onDelete}
+        className="ml-3 shrink-0 text-muted-foreground hover:text-destructive transition-colors"
+        title="Remove goal"
+      >
+        <Trash2 className="h-4 w-4" />
+      </button>
+    </div>
+  );
+}
+
+function GoalsView({ companyId }: { companyId: string }) {
+  const { data: goals = [], isLoading, error } = useHealthGoals(companyId);
+  const upsertMutation = useUpsertHealthGoal();
+  const deleteMutation = useDeleteHealthGoal();
+
+  const [showForm, setShowForm] = useState(false);
+  const [formType, setFormType] = useState(GOAL_TYPE_OPTIONS[0].value);
+  const [formTarget, setFormTarget] = useState("");
+  const [formNotes, setFormNotes] = useState("");
+  const [formError, setFormError] = useState<string | null>(null);
+
+  function resetForm() {
+    setFormType(GOAL_TYPE_OPTIONS[0].value);
+    setFormTarget("");
+    setFormNotes("");
+    setFormError(null);
+  }
+
+  function handleSubmit() {
+    setFormError(null);
+    const tv = parseInt(formTarget, 10);
+    if (!formTarget || isNaN(tv) || tv <= 0) {
+      setFormError("Target value must be a positive number.");
+      return;
+    }
+    const opt = GOAL_TYPE_OPTIONS.find((o) => o.value === formType)!;
+    upsertMutation.mutate(
+      {
+        companyId,
+        goalType: formType,
+        targetValue: tv,
+        unit: opt.unit,
+        label: opt.label,
+        notes: formNotes.trim() || undefined,
+      },
+      {
+        onSuccess: () => {
+          setShowForm(false);
+          resetForm();
+        },
+        onError: () => setFormError("Failed to save goal. Please try again."),
+      },
+    );
+  }
+
+  if (isLoading) return <PageSkeleton variant="dashboard" />;
+
+  if (error) {
+    return (
+      <div className="flex items-center gap-2 text-sm text-destructive">
+        <AlertCircle className="h-4 w-4 shrink-0" />
+        <span>Failed to load health goals.</span>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-base font-semibold">Health Goals</h2>
+          <p className="text-xs text-muted-foreground">Set daily targets for tracked health metrics</p>
+        </div>
+        <Button size="sm" onClick={() => { resetForm(); setShowForm(true); }}>
+          <Plus className="h-3.5 w-3.5 mr-1" />
+          Set Goal
+        </Button>
+      </div>
+
+      <Dialog open={showForm} onOpenChange={(open) => { if (!open) { setShowForm(false); resetForm(); } }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Set Health Goal</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3 py-2">
+            <div className="space-y-1">
+              <label className="text-xs font-medium">Goal Type</label>
+              <select
+                value={formType}
+                onChange={(e) => setFormType(e.target.value)}
+                className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
+              >
+                {GOAL_TYPE_OPTIONS.map((o) => (
+                  <option key={o.value} value={o.value}>{o.label}</option>
+                ))}
+              </select>
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs font-medium">
+                Target ({GOAL_TYPE_OPTIONS.find((o) => o.value === formType)?.unit})
+              </label>
+              <input
+                type="number"
+                min={1}
+                value={formTarget}
+                onChange={(e) => setFormTarget(e.target.value)}
+                placeholder="e.g. 2500"
+                className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
+              />
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs font-medium">Notes (optional)</label>
+              <input
+                type="text"
+                value={formNotes}
+                onChange={(e) => setFormNotes(e.target.value)}
+                placeholder="e.g. pre-workout only"
+                className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
+              />
+            </div>
+            {formError && <p className="text-xs text-destructive">{formError}</p>}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" size="sm" onClick={() => { setShowForm(false); resetForm(); }}>
+              Cancel
+            </Button>
+            <Button size="sm" onClick={handleSubmit} disabled={upsertMutation.isPending}>
+              {upsertMutation.isPending ? "Saving…" : "Save Goal"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {goals.length === 0 ? (
+        <EmptyState icon={Zap} message="No goals set yet. Add a goal to track your daily targets." />
+      ) : (
+        <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+          {goals.map((g) => (
+            <GoalCard
+              key={g.id}
+              goal={g}
+              onDelete={() => deleteMutation.mutate({ id: g.id, companyId })}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ---- Page ----
 
 export function Health() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
-  const [view, setView] = useState<"score" | "locations" | "sleep" | "exercise" | "biometrics" | "mood" | "nutrition" | "symptoms" | "medications" | "lab-results">("score");
+  const [view, setView] = useState<"score" | "locations" | "sleep" | "exercise" | "biometrics" | "mood" | "nutrition" | "symptoms" | "medications" | "lab-results" | "goals">("score");
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Health" }]);
@@ -2716,6 +2897,15 @@ export function Health() {
         >
           Lab Results
         </button>
+        <button
+          className={cn(
+            "px-3 py-1 text-xs font-medium rounded transition-colors",
+            view === "goals" ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground",
+          )}
+          onClick={() => setView("goals")}
+        >
+          Goals
+        </button>
       </div>
 
       {view === "score" ? (
@@ -2736,8 +2926,10 @@ export function Health() {
         <SymptomsView companyId={selectedCompanyId} />
       ) : view === "medications" ? (
         <MedicationsView companyId={selectedCompanyId} />
-      ) : (
+      ) : view === "lab-results" ? (
         <LabResultsView companyId={selectedCompanyId} />
+      ) : (
+        <GoalsView companyId={selectedCompanyId} />
       )}
     </div>
   );

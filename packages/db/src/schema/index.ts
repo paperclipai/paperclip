@@ -98,3 +98,4 @@ export { nutritionLogs } from "./nutrition_logs.js";
 export { symptomLogs } from "./symptom_logs.js";
 export { medicationLogs } from "./medication_logs.js";
 export { labResults } from "./lab_results.js";
+export { healthGoals } from "./health_goals.js";
