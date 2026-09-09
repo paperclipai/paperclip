@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useLocation } from "react-router-dom";
 import { Activity, AlertCircle, ChevronDown, ChevronUp, Dumbbell, Heart, Leaf, MapPin, Moon, Pencil, Plus, Smile, Sun, Thermometer, Trash2, Weight, Wind, Zap } from "lucide-react";
 import {
   usePersonalEnvironmentalScore,
@@ -2964,7 +2965,10 @@ function GoalsView({ companyId }: { companyId: string }) {
 export function Health() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
-  const [view, setView] = useState<"dashboard" | "score" | "locations" | "sleep" | "exercise" | "biometrics" | "mood" | "nutrition" | "symptoms" | "medications" | "lab-results" | "goals">("dashboard");
+  const { pathname } = useLocation();
+  const [view, setView] = useState<"dashboard" | "score" | "locations" | "sleep" | "exercise" | "biometrics" | "mood" | "nutrition" | "symptoms" | "medications" | "lab-results" | "goals">(
+    pathname.includes("environmental-score") ? "score" : "dashboard"
+  );
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Health" }]);

@@ -166,6 +166,7 @@ function boardRoutes() {
       <Route path="goals" element={<Goals />} />
       <Route path="goals/:goalId" element={<GoalDetail />} />
       <Route path="supplements" element={<Supplements />} />
+      <Route path="health" element={<Health />} />
       <Route path="health/environmental-score" element={<Health />} />
       <Route path="estate" element={<Estate />} />
       <Route path="approvals" element={<Navigate to="/approvals/pending" replace />} />
