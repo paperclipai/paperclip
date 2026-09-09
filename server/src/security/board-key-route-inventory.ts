@@ -247,6 +247,7 @@ export const BOARD_KEY_ROUTE_INVENTORY: readonly string[] = [
   "board_key_denied | deny | /api/companies/{id}/users/me/inbox-agent-policy",
   "board_key_denied | deny | /api/companies/{id}/users/{id}/inbox-agent-policy",
   "board_key_denied | deny | /api/companies/{id}/users/{id}/profile",
+  "board_key_denied | deny | /api/companies/{id}/{*path}",
   "board_key_denied | deny | /api/connection-intents/{*path}",
   "board_key_denied | deny | /api/feedback-traces/{*path}",
   "board_key_denied | deny | /api/health/{*path}",
