@@ -15,6 +15,7 @@ export type AgentInvokabilityBlockReason =
   | "paused"
   | "terminated"
   | "pending_approval"
+  | "error"
   | "unknown_status"
   | "manager_missing"
   | "manager_company_mismatch"
@@ -36,6 +37,7 @@ export const DIRECT_NON_INVOKABLE_STATUSES = new Set<AgentStatus>([
   "paused",
   "terminated",
   "pending_approval",
+  "error",
 ]);
 
 function blocked(
@@ -51,6 +53,7 @@ function statusBlockReason(status: AgentStatus): AgentInvokabilityBlockReason | 
   if (status === "paused") return "paused";
   if (status === "terminated") return "terminated";
   if (status === "pending_approval") return "pending_approval";
+  if (status === "error") return "error";
   return null;
 }
 
