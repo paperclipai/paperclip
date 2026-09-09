@@ -68,7 +68,7 @@ function resolveBaseUrlFromCodexProviders(): string | null {
     const selected =
       typeof record.model_provider === "string" && record.model_provider.trim().length > 0
         ? record.model_provider.trim()
-        : Object.keys(providers)[0];
+        : null;
     if (!selected) return null;
     const entry = providers[selected];
     if (!entry || typeof entry !== "object" || Array.isArray(entry)) return null;

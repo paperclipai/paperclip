@@ -229,6 +229,32 @@ describe("adapter model listing", () => {
     expect(models.some((model) => model.id === "provider-model-b")).toBe(true);
   });
 
+  it("ignores PAPERCLIP_CODEX_PROVIDERS base_url when model_provider is unset", async () => {
+    process.env.OPENAI_API_KEY = "sk-test";
+    process.env.PAPERCLIP_CODEX_PROVIDERS = JSON.stringify({
+      providers: {
+        custom: {
+          name: "Custom gateway",
+          base_url: "https://gateway.example.com/v1/",
+          env_key: "OPENAI_API_KEY",
+          wire_api: "responses",
+        },
+      },
+    });
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        data: [{ id: "openai-default-model" }],
+      }),
+    } as Response);
+
+    const models = await listAdapterModels("codex_local");
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(fetchSpy.mock.calls[0]?.[0]).toBe("https://api.openai.com/v1/models");
+    expect(models.some((model) => model.id === "openai-default-model")).toBe(true);
+  });
+
   it("refreshes cached codex models on demand", async () => {
     process.env.OPENAI_API_KEY = "sk-test";
     const fetchSpy = vi.spyOn(globalThis, "fetch")
