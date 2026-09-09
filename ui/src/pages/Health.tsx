@@ -88,6 +88,176 @@ import {
 } from "@/components/ui/dialog";
 import { cn } from "../lib/utils";
 
+// ---- Dashboard ----
+
+interface GoalMetricRow {
+  goalType: string;
+  label: string;
+  target: number;
+  unit: string;
+  actual: number | null;
+}
+
+function GoalProgressBar({ row }: { row: GoalMetricRow }) {
+  const pct = row.actual != null && row.target > 0 ? Math.min(100, Math.round((row.actual / row.target) * 100)) : 0;
+  const logged = row.actual != null;
+  const met = logged && row.actual! >= row.target;
+
+  return (
+    <div className="space-y-1">
+      <div className="flex items-center justify-between text-xs">
+        <span className="font-medium">{row.label}</span>
+        <span className={cn("tabular-nums", met ? "text-green-600" : logged ? "text-foreground" : "text-muted-foreground")}>
+          {logged ? `${row.actual} / ${row.target} ${row.unit}` : `— / ${row.target} ${row.unit}`}
+        </span>
+      </div>
+      <div className="h-2 rounded-full bg-muted overflow-hidden">
+        <div
+          className={cn("h-full rounded-full transition-all", met ? "bg-green-500" : logged ? "bg-blue-500" : "bg-muted-foreground/20")}
+          style={{ width: `${pct}%` }}
+        />
+      </div>
+    </div>
+  );
+}
+
+function DashboardView({ companyId }: { companyId: string }) {
+  const today = new Date().toISOString().slice(0, 10);
+
+  const { data: goalsData, isLoading: goalsLoading } = useHealthGoals(companyId);
+  const { data: sleepData } = useSleepHistory(companyId, today, today);
+  const { data: exerciseData } = useExerciseHistory(companyId, today, today);
+  const { data: nutritionData } = useNutritionHistory(companyId, today, today);
+  const { data: moodData } = useMoodHistory(companyId, today, today);
+  const { data: biometricsData } = useBiometricsHistory(companyId, today, today);
+
+  if (goalsLoading) return <PageSkeleton variant="dashboard" />;
+
+  const goals = goalsData ?? [];
+
+  // Compute today's actual values from the tracker data
+  function actualFor(goalType: string): number | null {
+    switch (goalType) {
+      case "water_ml":
+        return nutritionData?.logs[0]?.waterMl ?? null;
+      case "calories":
+        return nutritionData?.logs[0]?.calories ?? null;
+      case "protein_g":
+        return nutritionData?.logs[0]?.proteinG ?? null;
+      case "sleep_minutes":
+        return sleepData?.records[0]?.durationMinutes ?? null;
+      case "exercise_minutes": {
+        const sessions = exerciseData?.logs.filter((l) => l.exerciseDate === today) ?? [];
+        if (sessions.length === 0) return null;
+        return sessions.reduce((sum, l) => sum + l.durationMinutes, 0);
+      }
+      case "mood_score":
+        return moodData?.logs[0]?.moodScore ?? null;
+      case "weight_kg":
+        return biometricsData?.readings[0]?.weightKg ?? null;
+      default:
+        return null;
+    }
+  }
+
+  const rows: GoalMetricRow[] = goals.map((g) => ({
+    goalType: g.goalType,
+    label: g.label,
+    target: g.targetValue,
+    unit: g.unit,
+    actual: actualFor(g.goalType),
+  }));
+
+  const logged = rows.filter((r) => r.actual != null).length;
+  const met = rows.filter((r) => r.actual != null && r.actual >= r.target).length;
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-base font-semibold">Today's Health Dashboard</h2>
+          <p className="text-xs text-muted-foreground">
+            {new Date().toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" })}
+          </p>
+        </div>
+        {rows.length > 0 && (
+          <div className="text-right">
+            <p className="text-lg font-bold tabular-nums">{met}/{rows.length}</p>
+            <p className="text-xs text-muted-foreground">goals met</p>
+          </div>
+        )}
+      </div>
+
+      {rows.length === 0 ? (
+        <EmptyState
+          icon={Zap}
+          message="No health goals set yet. Add goals in the Goals tab to track your daily progress here."
+        />
+      ) : (
+        <div className="rounded-lg border border-border bg-card p-4 space-y-4">
+          {rows.map((row) => (
+            <GoalProgressBar key={row.goalType} row={row} />
+          ))}
+          <p className="text-xs text-muted-foreground pt-1 border-t border-border">
+            {logged} of {rows.length} metrics logged today
+          </p>
+        </div>
+      )}
+
+      {/* Quick stat tiles */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+        {sleepData?.records[0] && (
+          <div className="rounded-lg border border-border bg-card p-3 space-y-0.5">
+            <div className="flex items-center gap-1.5 text-muted-foreground">
+              <Moon className="h-3.5 w-3.5" />
+              <span className="text-xs font-medium uppercase tracking-wide">Sleep</span>
+            </div>
+            <p className="text-xl font-semibold tabular-nums">{sleepData.records[0].durationMinutes}m</p>
+          </div>
+        )}
+        {exerciseData && exerciseData.logs.filter((l) => l.exerciseDate === today).length > 0 && (
+          <div className="rounded-lg border border-border bg-card p-3 space-y-0.5">
+            <div className="flex items-center gap-1.5 text-muted-foreground">
+              <Dumbbell className="h-3.5 w-3.5" />
+              <span className="text-xs font-medium uppercase tracking-wide">Exercise</span>
+            </div>
+            <p className="text-xl font-semibold tabular-nums">
+              {exerciseData.logs.filter((l) => l.exerciseDate === today).reduce((s, l) => s + l.durationMinutes, 0)}m
+            </p>
+          </div>
+        )}
+        {nutritionData?.logs[0] && (
+          <div className="rounded-lg border border-border bg-card p-3 space-y-0.5">
+            <div className="flex items-center gap-1.5 text-muted-foreground">
+              <Zap className="h-3.5 w-3.5" />
+              <span className="text-xs font-medium uppercase tracking-wide">Water</span>
+            </div>
+            <p className="text-xl font-semibold tabular-nums">{nutritionData.logs[0].waterMl}ml</p>
+          </div>
+        )}
+        {moodData?.logs[0] && (
+          <div className="rounded-lg border border-border bg-card p-3 space-y-0.5">
+            <div className="flex items-center gap-1.5 text-muted-foreground">
+              <Smile className="h-3.5 w-3.5" />
+              <span className="text-xs font-medium uppercase tracking-wide">Mood</span>
+            </div>
+            <p className="text-xl font-semibold tabular-nums">{moodData.logs[0].moodScore}/10</p>
+          </div>
+        )}
+        {biometricsData?.readings[0]?.weightKg && (
+          <div className="rounded-lg border border-border bg-card p-3 space-y-0.5">
+            <div className="flex items-center gap-1.5 text-muted-foreground">
+              <Weight className="h-3.5 w-3.5" />
+              <span className="text-xs font-medium uppercase tracking-wide">Weight</span>
+            </div>
+            <p className="text-xl font-semibold tabular-nums">{biometricsData.readings[0].weightKg}kg</p>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ---- Environmental Score helpers ----
 
 const TIER_CLASSES: Record<ColorTier, { bg: string; text: string; bar: string }> = {
@@ -2794,7 +2964,7 @@ function GoalsView({ companyId }: { companyId: string }) {
 export function Health() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
-  const [view, setView] = useState<"score" | "locations" | "sleep" | "exercise" | "biometrics" | "mood" | "nutrition" | "symptoms" | "medications" | "lab-results" | "goals">("score");
+  const [view, setView] = useState<"dashboard" | "score" | "locations" | "sleep" | "exercise" | "biometrics" | "mood" | "nutrition" | "symptoms" | "medications" | "lab-results" | "goals">("dashboard");
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Health" }]);
@@ -2807,6 +2977,15 @@ export function Health() {
   return (
     <div className="space-y-4">
       <div className="flex gap-1 p-0.5 rounded-md bg-muted w-fit">
+        <button
+          className={cn(
+            "px-3 py-1 text-xs font-medium rounded transition-colors",
+            view === "dashboard" ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground",
+          )}
+          onClick={() => setView("dashboard")}
+        >
+          Dashboard
+        </button>
         <button
           className={cn(
             "px-3 py-1 text-xs font-medium rounded transition-colors",
@@ -2908,7 +3087,9 @@ export function Health() {
         </button>
       </div>
 
-      {view === "score" ? (
+      {view === "dashboard" ? (
+        <DashboardView companyId={selectedCompanyId} />
+      ) : view === "score" ? (
         <ScoreView companyId={selectedCompanyId} />
       ) : view === "locations" ? (
         <LocationsView companyId={selectedCompanyId} />
