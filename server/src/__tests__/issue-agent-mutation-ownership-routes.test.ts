@@ -14,6 +14,7 @@ const recoveryActionId = "77777777-7777-4777-8777-777777777777";
 const mockIssueService = vi.hoisted(() => ({
   addComment: vi.fn(),
   assertCheckoutOwner: vi.fn(),
+  resolveActiveRunLock: vi.fn(),
   create: vi.fn(),
   createChild: vi.fn(),
   decomposeAcceptedPlan: vi.fn(),
@@ -290,6 +291,9 @@ function makeIssue(overrides: Record<string, unknown> = {}) {
     title: "Owned active issue",
     executionPolicy: null,
     executionState: null,
+    // Left null deliberately: the recovery-source guard reads these columns for
+    // a different purpose. The checkout lock this suite is about is expressed
+    // through resolveActiveRunLock, which is what the mutation guard consults.
     checkoutRunId: null,
     executionRunId: null,
     hiddenAt: null,
@@ -472,6 +476,7 @@ describe("agent issue mutation checkout ownership", () => {
     mockProjectService.getById.mockResolvedValue(null);
     mockIssueService.addComment.mockReset();
     mockIssueService.assertCheckoutOwner.mockReset();
+    mockIssueService.resolveActiveRunLock.mockReset();
     mockIssueService.create.mockReset();
     mockIssueService.createChild.mockReset();
     mockIssueService.decomposeAcceptedPlan.mockReset();
@@ -618,6 +623,13 @@ describe("agent issue mutation checkout ownership", () => {
     });
     mockIssueService.list.mockResolvedValue([makeIssue()]);
     mockIssueService.assertCheckoutOwner.mockResolvedValue({ adoptedFromRunId: null });
+    // This suite's premise is a live checkout held by ownerAgentId. The route
+    // now reads that premise instead of inferring it from the status column,
+    // so it has to be stated rather than assumed.
+    mockIssueService.resolveActiveRunLock.mockResolvedValue({
+      checkoutRunId: ownerRunId,
+      executionRunId: ownerRunId,
+    });
     mockIssueService.create.mockImplementation(async (_companyId: string, input: Record<string, unknown>) => ({
       ...makeIssue({
         id: "88888888-8888-4888-8888-888888888888",
