@@ -8,6 +8,7 @@ import {
   type ReactNode,
 } from "react";
 import { cn } from "@/lib/utils";
+import { useComposerStop } from "@/hooks/useComposerStop";
 import { useStreamlinedTaskChatPresentation } from "./presentation-mode";
 import {
   DRAFT_DEBOUNCE_MS,
@@ -17,6 +18,7 @@ import {
 } from "@/lib/composer-draft";
 import {
   ArrowUp,
+  Square,
   Check,
   ChevronDown,
   CircleHelp,
@@ -91,6 +93,9 @@ interface TaskChatComposerProps {
     reopen?: boolean,
     reassignment?: CommentReassignment,
   ) => Promise<void> | void;
+  onStop?: () => Promise<void>;
+  stopPending?: boolean;
+  stopScope?: "leaf" | "subtree";
   workMode: IssueWorkMode;
   onWorkModeChange?: (mode: IssueWorkMode) => Promise<void> | void;
   disabled?: boolean;
@@ -346,6 +351,9 @@ function escapeMarkdownLabel(name: string): string {
  */
 export function TaskChatComposer({
   onAdd,
+  onStop,
+  stopPending = false,
+  stopScope = "leaf",
   workMode,
   onWorkModeChange,
   disabled = false,
@@ -373,6 +381,7 @@ export function TaskChatComposer({
   onRunnerGoalReassign,
 }: TaskChatComposerProps) {
   const streamlined = useStreamlinedTaskChatPresentation();
+  const stopControl = useComposerStop(onStop, stopPending);
   const [body, setBody] = useState(() => (draftKey ? loadDraft(draftKey) : ""));
   const [submitting, setSubmitting] = useState(false);
   const [takeoverBusy, setTakeoverBusy] = useState(false);
@@ -641,6 +650,12 @@ export function TaskChatComposer({
   // Sending mid-upload would silently drop the pending file from the comment;
   // sending past a failed chip would discard the file the user selected and
   // clear its error state, so both hold submission until resolved or removed.
+  const showStop =
+    !queuedEdit &&
+    !submitting &&
+    body.trim().length === 0 &&
+    attachments.length === 0 &&
+    Boolean(onStop || stopControl.stopping);
   const uploadPending = attachments.some((item) => item.status === "uploading");
   const uploadFailed = attachments.some((item) => item.status === "error");
   const takeoverVisible = Boolean(
@@ -1194,31 +1209,43 @@ export function TaskChatComposer({
 
             <button
               type="button"
-              onClick={() => void submit()}
+              onClick={() => void (showStop ? stopControl.stop() : submit())}
               disabled={
-                disabled ||
-                submitting ||
-                uploadPending ||
-                uploadFailed ||
-                (body.trim().length === 0 && attachedRefs.length === 0)
+                showStop
+                  ? disabled || stopControl.stopping
+                  : disabled ||
+                    submitting ||
+                    uploadPending ||
+                    uploadFailed ||
+                    (body.trim().length === 0 && attachedRefs.length === 0)
               }
               title={
-                queuedEdit
-                  ? queuedEdit.stale
-                    ? "Queue as new message"
-                    : "Save queued message"
-                  : uploadPending
-                    ? "Waiting for upload to finish"
-                    : uploadFailed
-                      ? "Remove the failed attachment to send"
-                      : "Send (⌘+Enter)"
+                showStop
+                  ? stopControl.stopping
+                    ? "Stopping…"
+                    : stopScope === "subtree"
+                      ? "Stop and pause subtree"
+                      : "Stop and pause task"
+                  : queuedEdit
+                    ? queuedEdit.stale
+                      ? "Queue as new message"
+                      : "Save queued message"
+                    : uploadPending
+                      ? "Waiting for upload to finish"
+                      : uploadFailed
+                        ? "Remove the failed attachment to send"
+                        : "Send (⌘+Enter)"
               }
               aria-label={
-                queuedEdit
-                  ? queuedEdit.stale
-                    ? "Queue as new message"
-                    : "Save queued message"
-                  : "Send"
+                showStop
+                  ? stopControl.stopping
+                    ? "Stopping…"
+                    : "Stop"
+                  : queuedEdit
+                    ? queuedEdit.stale
+                      ? "Queue as new message"
+                      : "Save queued message"
+                    : "Send"
               }
               className={cn(
                 "flex h-8 w-8 shrink-0 items-center justify-center transition-transform hover:scale-105 disabled:scale-100",
@@ -1226,15 +1253,24 @@ export function TaskChatComposer({
                   ? "rounded-full bg-foreground text-background disabled:bg-foreground disabled:text-background disabled:opacity-100"
                   : "rounded-md bg-primary text-primary-foreground disabled:bg-muted disabled:text-muted-foreground",
               )}
-              data-testid="task-chat-composer-send"
+              data-testid={
+                showStop ? "task-chat-composer-stop" : "task-chat-composer-send"
+              }
             >
-              {submitting ? (
+              {submitting || (showStop && stopControl.stopping) ? (
                 <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
+              ) : showStop ? (
+                <Square className="h-4 w-4 fill-current" aria-hidden />
               ) : (
                 <ArrowUp className="h-4 w-4" aria-hidden />
               )}
             </button>
           </div>
+          {stopControl.error ? (
+            <p role="alert" className="text-xs text-destructive">
+              {stopControl.error}
+            </p>
+          ) : null}
         </>
       )}
     </div>

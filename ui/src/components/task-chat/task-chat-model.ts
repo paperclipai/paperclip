@@ -243,6 +243,8 @@ export interface TaskChatMarkerItem {
   detail?: string;
   /** Renders the marker as a quiet disclosure row with detail beneath it. */
   collapsible?: boolean;
+  /** Expected cancellation is neutral; unexpected failures remain destructive. */
+  tone?: "neutral" | "error";
   runId?: string;
   createdAtIso?: string;
   runHref?: string;

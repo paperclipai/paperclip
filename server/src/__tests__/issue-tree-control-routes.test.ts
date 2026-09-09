@@ -64,6 +64,30 @@ describe("issue tree control routes", () => {
     mockHeartbeatService.wakeup.mockResolvedValue(null);
   });
 
+  it.each([false, true])("only wakes eligible current assignees when resume requests wakeAgents=%s", async (wakeAgents) => {
+    const rootId = "11111111-1111-4111-8111-111111111111";
+    const holdId = "33333333-3333-4333-8333-333333333333";
+    const root = { id: rootId, companyId: "company-2", status: "todo", assigneeAgentId: "agent-parent" };
+    const issues = [root,
+      { id: "child", companyId: "company-2", status: "in_progress", assigneeAgentId: "agent-child" },
+      { id: "done", companyId: "company-2", status: "done", assigneeAgentId: "agent-done" },
+      { id: "cancelled", companyId: "company-2", status: "cancelled", assigneeAgentId: "agent-cancelled" },
+      { id: "foreign", companyId: "company-3", status: "todo", assigneeAgentId: "agent-foreign" },
+    ];
+    mockIssueService.getById.mockImplementation(async (id: string) => issues.find((issue) => issue.id === id));
+    mockTreeControlService.releaseHold.mockResolvedValue({
+      id: holdId, mode: "pause", status: "released", members: issues.map((issue) => ({ issueId: issue.id })),
+    });
+    const app = await createApp({ type: "board", userId: "user-1", companyIds: ["company-2"], source: "session", isInstanceAdmin: false });
+    const response = await request(app).post(`/api/issues/${rootId}/tree-holds/${holdId}/release`).send({ metadata: { wakeAgents } });
+    expect(response.status).toBe(200);
+    expect(mockHeartbeatService.wakeup.mock.calls.map(([id]) => id)).toEqual(wakeAgents ? ["agent-parent", "agent-child"] : []);
+    if (wakeAgents) expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith("agent-child", expect.objectContaining({
+      reason: "issue_tree_resumed", contextSnapshot: expect.objectContaining({ issueId: "child", holdId }),
+    }));
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ action: "issue.tree_hold_released" }));
+  });
+
   it("rejects cross-company preview requests with a uniform 404 before calling the preview service", async () => {
     const app = await createApp({
       type: "board",

@@ -2051,3 +2051,84 @@ describe("TaskChatComposer", () => {
     });
   });
 });
+
+describe("composer Stop", () => {
+  function stopButton() { return container.querySelector<HTMLButtonElement>('[data-testid="task-chat-composer-stop"]'); }
+
+  it("switches Stop to Send with text, whitespace back to Stop, without interrupting on keyboard submit", async () => {
+    const onStop = vi.fn(async () => {});
+    const onAdd = vi.fn(async () => {});
+    render(<TaskChatComposer workMode="standard" onAdd={onAdd} onStop={onStop} stopScope="subtree" />);
+    expect(stopButton()?.title).toBe("Stop and pause subtree");
+    pressKey("Enter", { metaKey: true });
+    expect(onStop).not.toHaveBeenCalled();
+    expect(onAdd).not.toHaveBeenCalled();
+    typeText("Check mobile too.");
+    expect(stopButton()).toBeNull();
+    expect(sendButton().disabled).toBe(false);
+    flushSync(() => sendButton().click());
+    await flushAsync();
+    expect(onAdd).toHaveBeenCalledWith("Check mobile too.", undefined, undefined);
+    expect(onStop).not.toHaveBeenCalled();
+    typeText(" \n ");
+    expect(stopButton()?.disabled).toBe(false);
+  });
+
+  it("blocks duplicate stops and preserves text typed while stopping", async () => {
+    let resolve!: () => void;
+    const onStop = vi.fn(() => new Promise<void>((done) => { resolve = done; }));
+    render(<TaskChatComposer workMode="standard" onAdd={vi.fn()} onStop={onStop} />);
+    const stop = stopButton()!;
+    flushSync(() => { stop.click(); stop.click(); });
+    expect(onStop).toHaveBeenCalledTimes(1);
+    expect(stopButton()?.disabled).toBe(true);
+    expect(stopButton()?.getAttribute("aria-label")).toBe("Stopping…");
+    typeText("Keep this draft.");
+    expect(sendButton().disabled).toBe(false);
+    resolve();
+    await flushAsync();
+    expect(editable().textContent).toBe("Keep this draft.");
+  });
+
+  it("reports failure without discarding the draft and permits retry", async () => {
+    const onStop = vi.fn().mockRejectedValueOnce(new Error("Unable to stop. Try again.")).mockResolvedValue(undefined);
+    render(<TaskChatComposer workMode="standard" onAdd={vi.fn()} onStop={onStop} />);
+    flushSync(() => stopButton()!.click());
+    await flushAsync();
+    expect(container.querySelector('[role="alert"]')?.textContent).toBe("Unable to stop. Try again.");
+    flushSync(() => stopButton()!.click());
+    await flushAsync();
+    expect(onStop).toHaveBeenCalledTimes(2);
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+  });
+
+  it("retains disabled Send when idle or when stop permission is absent", () => {
+    render(<TaskChatComposer workMode="standard" onAdd={vi.fn()} />);
+    expect(stopButton()).toBeNull();
+    expect(sendButton().disabled).toBe(true);
+    render(<TaskChatComposer workMode="standard" onAdd={vi.fn()} onStop={vi.fn()} disabled />);
+    expect(stopButton()?.disabled).toBe(true);
+  });
+
+  it("never turns a queued edit's save action into Stop", () => {
+    render(<TaskChatComposer workMode="standard" onAdd={vi.fn()} onStop={vi.fn()} queuedEdit={{ commentId: "queued", body: "" }} onSaveQueuedEdit={vi.fn()} />);
+    expect(stopButton()).toBeNull();
+    expect(sendButton().getAttribute("aria-label")).toBe("Save queued message");
+  });
+
+  it.each([false, true])("keeps attachments in send mode after upload (failed=%s)", async (failed) => {
+    let resolve!: (value: never) => void;
+    let reject!: (error: Error) => void;
+    const onAttachImage = vi.fn(() => new Promise<never>((done, fail) => { resolve = done; reject = fail; }));
+    render(<TaskChatComposer workMode="standard" onAdd={vi.fn()} onStop={vi.fn()} onAttachImage={onAttachImage} />);
+    pasteFiles([new File(["notes"], "notes.txt", { type: "text/plain" })]);
+    await flushAsync();
+    expect(stopButton()).toBeNull();
+    expect(sendButton().disabled).toBe(true);
+    if (failed) reject(new Error("Upload failed"));
+    else resolve({ id: "attachment", contentPath: "/notes.txt", originalFilename: "notes.txt" } as never);
+    await flushAsync();
+    expect(stopButton()).toBeNull();
+    expect(sendButton().disabled).toBe(failed);
+  });
+});

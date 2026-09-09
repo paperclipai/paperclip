@@ -387,6 +387,31 @@ export function issueTreeControlRoutes(db: Db) {
         },
       });
 
+      if (hold.mode === "pause" && req.body.metadata?.wakeAgents === true) {
+        for (const member of hold.members ?? []) {
+          if (member.skipped) continue;
+          const issue = await issuesSvc.getById(member.issueId);
+          if (!issue || issue.companyId !== root.companyId || !issue.assigneeAgentId
+            || issue.status === "done" || issue.status === "cancelled") continue;
+          await heartbeat.wakeup(issue.assigneeAgentId, {
+            source: "assignment",
+            triggerDetail: "system",
+            reason: "issue_tree_resumed",
+            payload: { issueId: issue.id, rootIssueId: root.id, holdId: hold.id },
+            requestedByActorType: actor.actorType,
+            requestedByActorId: actor.actorId,
+            contextSnapshot: {
+              issueId: issue.id,
+              taskId: issue.id,
+              wakeReason: "issue_tree_resumed",
+              source: "issue.tree_resume",
+              rootIssueId: root.id,
+              holdId: hold.id,
+            },
+          });
+        }
+      }
+
       res.json(hold);
     },
   );

@@ -478,6 +478,9 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     userProfileMap,
     currentUserId,
     onAdd,
+    onCancelRun,
+    stopPending,
+    stopScope,
     issueWorkMode = "standard",
     onWorkModeChange,
     composerAccessory,
@@ -1455,6 +1458,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
             id,
             kind: "marker",
             variant: "interrupted",
+            tone: source.status === "cancelled" ? "neutral" : "error",
             label,
             detail,
             collapsible: true,
@@ -2736,6 +2740,9 @@ export function TaskChatThread(props: TaskChatThreadProps) {
               <div className="relative z-10">
                 <TaskChatComposer
                   onAdd={handleThreadAdd}
+                  onStop={liveRun ? onCancelRun : undefined}
+                  stopPending={stopPending}
+                  stopScope={stopScope}
                   workMode={issueWorkMode}
                   onWorkModeChange={onWorkModeChange}
                   disabled={Boolean(runtimeComposerDisabledReason)}
