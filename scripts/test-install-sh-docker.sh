@@ -40,6 +40,20 @@ run_with_node() {
     "$@"
 }
 
+BASH32_IMAGE="paperclip-install-sh-bash32"
+
+run_with_bash32() {
+  local name="$1"
+  shift
+  docker run --rm \
+    -v "$REPO_ROOT/scripts:/paperclip-scripts:ro" \
+    -v "$RESULTS_DIR:/results" \
+    -e "PAPERCLIP_INSTALL_TEST_LOG=/results/$name.args" \
+    -e PATH="/paperclip-scripts/install-sh-fixtures:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
+    "$BASH32_IMAGE" \
+    "$@"
+}
+
 assert_line() {
   local file="$1"
   local expected="$2"
@@ -165,5 +179,56 @@ node_major="${node_major%%.*}"
   printf 'Expected Node >= 24, got %s\n' "$node_version" >&2
   exit 1
 }
+
+# macOS ships bash 3.2.57 as /bin/bash and the documented one-liner runs the
+# installer under it, so a bash 4+ construct is a total install failure on every
+# stock Mac. `bash -n` does not catch it: `${value,,}` parses fine and only
+# explodes when expanded. (2026-09-09: the published installer carried
+# `${value,,}` in parse_bool, which runs before any real work, so
+# `curl … | bash` could not install Paperclip on any Mac.)
+echo "==> bash 3.2 image"
+docker build \
+  --file "$REPO_ROOT/scripts/install-sh-bash32.Dockerfile" \
+  --tag "$BASH32_IMAGE" \
+  "$REPO_ROOT/scripts"
+
+echo "==> bash 3.2 is really 3.2"
+# shellcheck disable=SC2016 # must expand in the container's bash, not this one
+run_with_bash32 bash32-version bash32 -c 'echo "$BASH_VERSION"' >"$RESULTS_DIR/bash32.version"
+grep -q '^3\.2\.' "$RESULTS_DIR/bash32.version" || {
+  printf 'Expected bash 3.2 in this lane, got %s\n' "$(cat "$RESULTS_DIR/bash32.version")" >&2
+  exit 1
+}
+
+# If this ever succeeds, the lane is running a newer bash and every assertion
+# below has quietly stopped testing anything.
+echo "==> bash 4 expansions fail under this shell"
+# shellcheck disable=SC2016 # the bash 4 expansion is the payload, not a bug
+if run_with_bash32 bash32-canary bash32 -c 'value=ABC; printf "%s" "${value,,}"' 2>/dev/null; then
+  echo "Expected \${value,,} to be a bad substitution under bash 3.2" >&2
+  exit 1
+fi
+
+echo "==> installer runs end-to-end under bash 3.2"
+run_with_bash32 bash32-install bash32 /paperclip-scripts/install.sh --no-prompt --no-onboard
+assert_line "$RESULTS_DIR/bash32-install.args" "paperclipai@latest"
+assert_line "$RESULTS_DIR/bash32-install.args" "install"
+assert_line "$RESULTS_DIR/bash32-install.args" "--yes"
+
+# parse_bool lowercases its input; under bash 3.2 that has to happen without
+# ${value,,}, and only a non-lowercase value proves the replacement works.
+echo "==> bash 3.2 parses uppercase boolean env twins"
+docker run --rm \
+  -v "$REPO_ROOT/scripts:/paperclip-scripts:ro" \
+  -v "$RESULTS_DIR:/results" \
+  -e PAPERCLIP_INSTALL_TEST_LOG=/results/bash32-env.args \
+  -e PAPERCLIP_INSTALL_NO_PROMPT=TRUE \
+  -e PAPERCLIP_INSTALL_NO_ONBOARD=Yes \
+  -e PAPERCLIP_INSTALL_CANARY=Off \
+  -e PATH="/paperclip-scripts/install-sh-fixtures:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
+  "$BASH32_IMAGE" \
+  bash32 /paperclip-scripts/install.sh
+assert_line "$RESULTS_DIR/bash32-env.args" "paperclipai@latest"
+assert_line "$RESULTS_DIR/bash32-env.args" "--yes"
 
 echo "Installer Docker checks passed."
