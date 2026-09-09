@@ -53,6 +53,7 @@ import {
   ensurePathInEnv,
   ensurePaperclipSkillSymlink,
   isForbiddenConfigEnvKey,
+  isForeignSkillTarget,
   isPaperclipRuntimeEnvKey,
   joinPromptSections,
   materializePaperclipSkillCopy,
@@ -151,7 +152,7 @@ import {
 } from "./startup-timing.js";
 
 const defaultModuleDir = path.dirname(fileURLToPath(import.meta.url));
-const PAPERCLIP_MANAGED_CODEX_SKILLS_MANIFEST = ".paperclip-managed-skills.json";
+const PAPERCLIP_MANAGED_SKILLS_MANIFEST = ".paperclip-managed-skills.json";
 const BENIGN_NES_CLOSE_STDERR = /method: ['"]nes\/close['"].*-32601/;
 
 function routeChildStderr(state: ChildStderrState, chunk: string) {
@@ -1057,7 +1058,7 @@ async function resolveSelectedRuntimeSkills(
 }
 
 async function prepareClaudeSkillRuntime(input: {
-  stateDir: string;
+  cwd: string;
   config: Record<string, unknown>;
   moduleDir: string;
   onLog: AdapterExecutionContext["onLog"];
@@ -1068,26 +1069,51 @@ async function prepareClaudeSkillRuntime(input: {
 }> {
   const { allSkills, selectedSkills, desiredSkillNames } = await resolveSelectedRuntimeSkills(input.config, input.moduleDir);
   const skillSetKey = await buildSkillSetKey({ skills: selectedSkills, label: "claude" });
-  const bundleRoot = path.join(input.stateDir, "runtime-skills", "claude", skillSetKey);
-  const skillsHome = path.join(bundleRoot, ".claude", "skills");
-  await fs.mkdir(skillsHome, { recursive: true });
+  // The Claude Code SDK (`settingSources: ["user", "project", "local"]`, see
+  // `writePaperclipClaudeSettings` below) only discovers skills under
+  // `.claude/skills` beneath one of those scanned roots — it never reads an
+  // arbitrary path just because it's named in the system prompt. Skills used
+  // to be bundled under a content-hashed `stateDir/runtime-skills/...` path
+  // that the SDK never scanned, so every `Skill(...)` call for a
+  // Paperclip-managed skill failed with "Unknown skill" (TRY-1021).
+  // Materializing straight into the session's project `cwd` makes them part
+  // of the "project" settings root the SDK actually reads.
+  const skillsHome = path.join(input.cwd, ".claude", "skills");
+  // Unlike the Codex path (whose skillsHome lives under a Paperclip-managed
+  // CODEX_HOME), this directory lives inside the user's actual project
+  // checkout. Only touch it when there is a Paperclip skill catalog to
+  // reconcile at all, so a session with no configured skills doesn't leave a
+  // stray `.claude/skills/.paperclip-managed-skills.json` in every project.
+  if (allSkills.length > 0) {
+    await fs.mkdir(skillsHome, { recursive: true });
 
-  for (const entry of selectedSkills) {
-    const target = path.join(skillsHome, entry.runtimeName);
-    try {
-      const result = await materializePaperclipSkillCopy(entry.source, target);
-      if (result.skippedSymlinks.length > 0) {
+    await reconcileManagedSkills({
+      skillsHome,
+      allSkills,
+      selectedSkills,
+      onLog: input.onLog,
+      agentLabel: "Claude",
+    });
+
+    for (const entry of selectedSkills) {
+      const target = path.join(skillsHome, entry.runtimeName);
+      try {
+        const result = await materializePaperclipSkillCopy(entry.source, target);
+        if (result.skippedSymlinks.length > 0) {
+          await input.onLog(
+            "stdout",
+            `[paperclip] Materialized ACPX Claude skill "${entry.runtimeName}" into ${skillsHome} and skipped ${result.skippedSymlinks.length} symlink(s).\n`,
+          );
+        }
+      } catch (err) {
         await input.onLog(
-          "stdout",
-          `[paperclip] Materialized ACPX Claude skill "${entry.runtimeName}" into ${skillsHome} and skipped ${result.skippedSymlinks.length} symlink(s).\n`,
+          "stderr",
+          `[paperclip] Failed to materialize ACPX Claude skill "${entry.key}" into ${skillsHome}: ${err instanceof Error ? err.message : String(err)}\n`,
         );
       }
-    } catch (err) {
-      await input.onLog(
-        "stderr",
-        `[paperclip] Failed to materialize ACPX Claude skill "${entry.key}" into ${skillsHome}: ${err instanceof Error ? err.message : String(err)}\n`,
-      );
     }
+
+    await writeManagedSkillsManifest(skillsHome, selectedSkills.map((entry) => entry.runtimeName));
   }
 
   const selectedNames = selectedSkills.map((entry) => entry.runtimeName).sort();
@@ -1096,7 +1122,7 @@ async function prepareClaudeSkillRuntime(input: {
         "Paperclip has materialized selected runtime skills for this ACPX Claude session.",
         `Skill root: ${skillsHome}`,
         selectedNames.length > 0 ? `Selected skills: ${selectedNames.join(", ")}` : "",
-        "When a task calls for one of these skills, read its SKILL.md from that root and follow it.",
+        "These are registered with the Skill tool under the directory names listed above — invoke them with Skill(skill: \"<name>\") rather than reading SKILL.md manually.",
       ].filter(Boolean).join("\n")
     : "";
 
@@ -1115,8 +1141,8 @@ async function prepareClaudeSkillRuntime(input: {
   };
 }
 
-async function readManagedCodexSkillsManifest(skillsHome: string): Promise<Set<string>> {
-  const manifestPath = path.join(skillsHome, PAPERCLIP_MANAGED_CODEX_SKILLS_MANIFEST);
+async function readManagedSkillsManifest(skillsHome: string): Promise<Set<string>> {
+  const manifestPath = path.join(skillsHome, PAPERCLIP_MANAGED_SKILLS_MANIFEST);
   try {
     const raw = JSON.parse(await fs.readFile(manifestPath, "utf8")) as unknown;
     const parsed = parseObject(raw);
@@ -1129,10 +1155,10 @@ async function readManagedCodexSkillsManifest(skillsHome: string): Promise<Set<s
   }
 }
 
-async function writeManagedCodexSkillsManifest(skillsHome: string, skillNames: Iterable<string>): Promise<void> {
+async function writeManagedSkillsManifest(skillsHome: string, skillNames: Iterable<string>): Promise<void> {
   const managedSkillNames = Array.from(new Set(skillNames)).sort();
   await fs.writeFile(
-    path.join(skillsHome, PAPERCLIP_MANAGED_CODEX_SKILLS_MANIFEST),
+    path.join(skillsHome, PAPERCLIP_MANAGED_SKILLS_MANIFEST),
     `${JSON.stringify({ version: 1, managedSkillNames }, null, 2)}\n`,
     "utf8",
   );
@@ -1145,20 +1171,42 @@ async function removeSkillTarget(target: string): Promise<boolean> {
   return true;
 }
 
-async function reconcileManagedCodexSkills(input: {
+// Like `removeSkillTarget`, but for entries the manifest remembers as
+// Paperclip-managed *copies* (materialized via `materializePaperclipSkillCopy`).
+// The manifest only records a name, not an ownership proof, so if a project
+// owner deletes the Paperclip selection and then hand-authors their own
+// `.claude/skills/<same-name>` directory, a stale manifest entry must not be
+// allowed to delete it. Skip (and log) instead of removing when the target no
+// longer carries Paperclip's own materialization sentinel.
+async function removeManagedSkillCopyTarget(
+  target: string,
+  onLog: AdapterExecutionContext["onLog"],
+): Promise<boolean> {
+  if (await isForeignSkillTarget(target)) {
+    await onLog(
+      "stdout",
+      `[paperclip] Skipped revoking "${target}": it is no longer a Paperclip-managed skill directory.\n`,
+    );
+    return false;
+  }
+  return removeSkillTarget(target);
+}
+
+async function reconcileManagedSkills(input: {
   skillsHome: string;
   allSkills: PaperclipSkillEntry[];
   selectedSkills: PaperclipSkillEntry[];
   onLog: AdapterExecutionContext["onLog"];
+  agentLabel: string;
 }): Promise<void> {
   const desired = new Set(input.selectedSkills.map((entry) => entry.runtimeName));
-  const managed = await readManagedCodexSkillsManifest(input.skillsHome);
+  const managed = await readManagedSkillsManifest(input.skillsHome);
   const availableByRuntimeName = new Map(input.allSkills.map((entry) => [entry.runtimeName, entry]));
 
   for (const name of managed) {
     if (desired.has(name)) continue;
-    if (await removeSkillTarget(path.join(input.skillsHome, name))) {
-      await input.onLog("stdout", `[paperclip] Revoked ACPX Codex skill "${name}" from ${input.skillsHome}\n`);
+    if (await removeManagedSkillCopyTarget(path.join(input.skillsHome, name), input.onLog)) {
+      await input.onLog("stdout", `[paperclip] Revoked ACPX ${input.agentLabel} skill "${name}" from ${input.skillsHome}\n`);
     }
   }
 
@@ -1172,14 +1220,14 @@ async function reconcileManagedCodexSkills(input: {
     const resolvedLinkedPath = path.resolve(path.dirname(target), linkedPath);
     if (resolvedLinkedPath !== path.resolve(entry.source)) continue;
     if (await removeSkillTarget(target)) {
-      await input.onLog("stdout", `[paperclip] Revoked legacy ACPX Codex skill "${entry.runtimeName}" from ${input.skillsHome}\n`);
+      await input.onLog("stdout", `[paperclip] Revoked legacy ACPX ${input.agentLabel} skill "${entry.runtimeName}" from ${input.skillsHome}\n`);
     }
   }
 
   for (const name of managed) {
     if (desired.has(name) || availableByRuntimeName.has(name)) continue;
-    if (await removeSkillTarget(path.join(input.skillsHome, name))) {
-      await input.onLog("stdout", `[paperclip] Revoked unavailable ACPX Codex skill "${name}" from ${input.skillsHome}\n`);
+    if (await removeManagedSkillCopyTarget(path.join(input.skillsHome, name), input.onLog)) {
+      await input.onLog("stdout", `[paperclip] Revoked unavailable ACPX ${input.agentLabel} skill "${name}" from ${input.skillsHome}\n`);
     }
   }
 }
@@ -1236,11 +1284,12 @@ async function prepareCodexSkillRuntime(input: {
     onWallMs: undefined,
   };
   await measureStartupStep({ onEvent: input.onEvent }, now, "skills.reconcile", () =>
-    reconcileManagedCodexSkills({
+    reconcileManagedSkills({
       skillsHome,
       allSkills,
       selectedSkills,
       onLog: input.onLog,
+      agentLabel: "Codex",
     }),
     nestedStepMetrics,
   );
@@ -1262,7 +1311,7 @@ async function prepareCodexSkillRuntime(input: {
       );
     }
   }
-  await writeManagedCodexSkillsManifest(skillsHome, selectedSkills.map((entry) => entry.runtimeName));
+  await writeManagedSkillsManifest(skillsHome, selectedSkills.map((entry) => entry.runtimeName));
 
   input.env.CODEX_HOME = effectiveCodexHome;
 
@@ -1937,7 +1986,7 @@ async function buildRuntime(input: {
   let paperclipClaudeSettings: PaperclipClaudeSettingsResult | null = null;
   if (acpxAgent === "claude") {
     const preparedSkills = await prepareClaudeSkillRuntime({
-      stateDir,
+      cwd,
       config,
       moduleDir: input.engine.moduleDir,
       onLog: input.ctx.onLog,
