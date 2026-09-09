@@ -27,7 +27,11 @@ import {
   type PatchInstanceSettings,
   type PatchInstanceExperimentalSettings,
 } from "@paperclipai/shared";
-import { applyOperatorGeneralDefaults, stripOperatorGeneralEchoes } from "@paperclipai/shared";
+import {
+  INSTANCE_FEATURE_CATALOG,
+  applyOperatorGeneralDefaults,
+  stripOperatorGeneralEchoes,
+} from "@paperclipai/shared";
 import { eq } from "drizzle-orm";
 import { getManagedInstanceConfig, type ManagedInstanceConfig } from "./managed-config.js";
 import { getOperatorSettingDefaults } from "./setting-defaults.js";
@@ -329,6 +333,37 @@ export function applyManagedExperimentalOverlay(
   return { experimental: next, managedKeys };
 }
 
+/**
+ * Keep self-hosted-only defaults out of Cloud.
+ *
+ * The experimental schema carries one default per flag, and the feature
+ * catalog pins it to `selfHostedDefault`. A flag that is on by default for
+ * self-hosted but off by default for Cloud (`selfHostedDefault: true`,
+ * `cloudDefault: false`) would therefore normalize to "on" for a managed
+ * instance whose tenant row and managed overlay both leave it unset. Re-assert
+ * the declared Cloud default for exactly those flags. An explicit tenant value
+ * or a managed feature value still wins (the overlay is applied afterwards).
+ */
+export function applyCloudCatalogDefaults(
+  experimental: InstanceExperimentalSettings,
+  rawStored: unknown,
+  managedConfig: ManagedInstanceConfig | null,
+): InstanceExperimentalSettings {
+  if (!managedConfig) return experimental;
+  const stored =
+    rawStored && typeof rawStored === "object" && !Array.isArray(rawStored)
+      ? (rawStored as Record<string, unknown>)
+      : {};
+  const next: InstanceExperimentalSettings = { ...experimental };
+  for (const [key, entry] of Object.entries(INSTANCE_FEATURE_CATALOG)) {
+    if (entry.cloudDefault !== false || entry.selfHostedDefault !== true) continue;
+    if (typeof stored[key] === "boolean") continue;
+    if (typeof managedConfig.features[key as ManagedExperimentalFeatureKey] === "boolean") continue;
+    (next as unknown as Record<string, unknown>)[key] = false;
+  }
+  return next;
+}
+
 export function instanceSettingsService(db: Db, options: InstanceSettingsServiceOptions = {}) {
   // Fail closed: a malformed PAPERCLIP_MANAGED_CONFIG throws here (and at
   // boot in index.ts) rather than silently running without the overlay.
@@ -345,7 +380,7 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
 
   function toExperimentalView(raw: unknown): InstanceExperimentalSettingsWithManaged {
     const { experimental, managedKeys } = applyManagedExperimentalOverlay(
-      normalizeExperimentalSettings(raw),
+      applyCloudCatalogDefaults(normalizeExperimentalSettings(raw), raw, managedConfig),
       managedConfig,
     );
     // Self-hosted responses stay byte-identical: no managedKeys field at all.
