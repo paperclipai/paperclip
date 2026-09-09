@@ -67,6 +67,10 @@ import {
   stalledReviewDecisionSchema,
   submitIssueThreadInteractionVerdictsSchema,
   updateIssueWorkProductSchema,
+  recoveryEngineerActivationInputSchema,
+  recoveryEngineerConfigSchema,
+  recoveryEngineerProcedureReviewInputSchema,
+  recoveryEngineerRecordInputSchema,
   updateDocumentAnnotationThreadSchema,
   upsertIssueDocumentSchema,
   updateIssueSchema,
@@ -158,6 +162,10 @@ import {
   isReviewPathRecoveryIdempotencyConflict,
   REVIEW_PATH_RECOVERY_INSTRUCTION,
 } from "../services/recovery/review-path-recovery.js";
+import {
+  recoveryEngineerService,
+  type RecoveryEngineerActor,
+} from "../services/recovery-engineer.js";
 import { hydrateSuccessfulRunHandoffLiveness } from "../services/successful-run-handoff-state.js";
 import {
   TASK_WATCHDOG_ORIGIN_KIND,
@@ -301,6 +309,13 @@ const editQueuedCommentSchema = queuedCommentMutationTargetSchema.extend({
 const reorderQueuedCommentsSchema = queuedCommentMutationTargetSchema.extend({
   orderedCommentIds: z.array(z.string().min(1)).max(MAX_ISSUE_COMMENT_LIMIT),
 });
+
+const recoveryEngineerContextQuerySchema = z.object({
+  sourceCursor: z.string().uuid().optional(),
+  sourceLimit: z.coerce.number().int().min(1).max(100).default(50),
+  procedureCursor: z.string().uuid().optional(),
+  procedureLimit: z.coerce.number().int().min(1).max(100).default(20),
+}).strict();
 
 function prefersMinimalIssueUpdateResponse(req: Request) {
   return (req.get("Prefer") ?? "")
@@ -2943,6 +2958,19 @@ export function issueRoutes(
   const heartbeat = heartbeatService(db, {
     pluginWorkerManager: opts.pluginWorkerManager,
   });
+  const recoveryEngineer = recoveryEngineerService(db, {
+    enqueueWakeup: heartbeat.wakeup,
+  });
+  const recoveryEngineerActor = (req: Request): RecoveryEngineerActor => {
+    const actor = getActorInfo(req);
+    return {
+      actorType: actor.actorType,
+      agentId: actor.agentId,
+      userId: actor.actorType === "user" ? actor.actorId : null,
+      runId: actor.runId,
+      board: req.actor.type === "board",
+    };
+  };
   const commentWasCreatedByAssigneeRun = async (
     comment: { companyId: string; createdByRunId?: string | null },
     assigneeAgentId: string | null | undefined,
@@ -6411,6 +6439,111 @@ export function issueRoutes(
     });
   });
 
+  router.get("/companies/:companyId/recovery-engineer", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const config = await recoveryEngineer.getConfig(companyId);
+    if (
+      req.actor.type === "agent" &&
+      (
+        !config ||
+        ![config.agentId, config.repairAgentId, config.reviewerAgentId].includes(
+          req.actor.agentId ?? "",
+        )
+      )
+    ) {
+      throw forbidden("Recovery configuration is available only to configured participants");
+    }
+    res.json(config);
+  });
+
+  router.put(
+    "/companies/:companyId/recovery-engineer",
+    validate(recoveryEngineerConfigSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      assertBoard(req);
+      assertCompanyAccess(req, companyId);
+      const actor = getActorInfo(req);
+      res.json(await recoveryEngineer.putConfig(companyId, req.body, actor.actorId));
+    },
+  );
+
+  router.put(
+    "/companies/:companyId/recovery-engineer/procedures/:procedureId",
+    validate(recoveryEngineerProcedureReviewInputSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      assertBoard(req);
+      assertCompanyAccess(req, companyId);
+      const actor = getActorInfo(req);
+      res.json(await recoveryEngineer.reviewProcedure(
+        companyId,
+        req.params.procedureId as string,
+        req.body,
+        actor.actorId,
+      ));
+    },
+  );
+
+  router.put(
+    "/companies/:companyId/recovery-engineer/incidents/:incidentId/activation",
+    validate(recoveryEngineerActivationInputSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      assertBoard(req);
+      assertCompanyAccess(req, companyId);
+      const actor = getActorInfo(req);
+      res.json(await recoveryEngineer.confirmActivation(
+        companyId,
+        req.params.incidentId as string,
+        req.body,
+        actor.actorId,
+      ));
+    },
+  );
+
+  router.get("/issues/:id/recovery-engineer", async (req, res) => {
+    const issue = await getAccessibleResource(
+      req,
+      res,
+      getIssueById(req, req.params.id as string),
+      "Issue not found",
+    );
+    if (!issue) return;
+    const query = recoveryEngineerContextQuerySchema.safeParse(req.query);
+    if (!query.success) {
+      throw badRequest("Invalid recovery-engineer pagination query", query.error.flatten());
+    }
+    res.json(await recoveryEngineer.readContext({
+      issueId: issue.id,
+      actor: recoveryEngineerActor(req),
+      sourceCursor: query.data.sourceCursor,
+      sourceLimit: query.data.sourceLimit,
+      procedureCursor: query.data.procedureCursor,
+      procedureLimit: query.data.procedureLimit,
+    }));
+  });
+
+  router.post(
+    "/issues/:id/recovery-engineer",
+    validate(recoveryEngineerRecordInputSchema),
+    async (req, res) => {
+      const issue = await getAccessibleResource(
+        req,
+        res,
+        getIssueById(req, req.params.id as string),
+        "Issue not found",
+      );
+      if (!issue) return;
+      res.json(await recoveryEngineer.recordAction(
+        issue.id,
+        req.body,
+        recoveryEngineerActor(req),
+      ));
+    },
+  );
+
   router.get("/companies/:companyId/search/extract", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
@@ -7380,6 +7513,7 @@ export function issueRoutes(
     await queueTaskWatchdogEvaluation(issue, actor.runId);
     res.json({ ok: true });
   });
+
 
   router.get("/issues/:id/recovery-actions", async (req, res) => {
     const id = req.params.id as string;
@@ -9398,6 +9532,11 @@ export function issueRoutes(
       requestedByActorId: actor.actorId,
     });
     await queueTaskWatchdogEvaluation(issue, actor.runId);
+    if (issue.status === "blocked") {
+      void recoveryEngineer.observeBlockedIssue(issue).catch((err) => {
+        logger.error({ err, issueId: issue.id }, "failed to observe newly created blocked issue");
+      });
+    }
 
     res.status(201).json({
       ...issue,
@@ -9575,6 +9714,11 @@ export function issueRoutes(
       currentChildIssueId: currentSerializedChild?.id ?? issue.id,
     });
     await queueTaskWatchdogEvaluation(issue, actor.runId);
+    if (issue.status === "blocked") {
+      void recoveryEngineer.observeBlockedIssue(issue).catch((err) => {
+        logger.error({ err, issueId: issue.id }, "failed to observe newly created blocked child issue");
+      });
+    }
 
     res.status(201).json(issue);
   });
@@ -11145,6 +11289,12 @@ export function issueRoutes(
       requestedByActorType: actor.actorType,
       requestedByActorId: actor.actorId,
     });
+
+    if (existing.status !== "blocked" && issue.status === "blocked") {
+      void recoveryEngineer.observeBlockedIssue(issue).catch((err) => {
+        logger.error({ err, issueId: issue.id }, "failed to observe newly blocked issue");
+      });
+    }
 
     // Merge all wakeups from this update into one enqueue per agent to avoid duplicate runs.
     void (async () => {

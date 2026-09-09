@@ -77,6 +77,10 @@ import {
   DISPOSITION_REPAIR_MAX_ATTEMPTS,
 } from "./disposition-repair.js";
 import {
+  hasActiveRecoveryEngineerIncidentForIssue,
+  isRecoveryEngineerIssueOrigin,
+} from "../recovery-engineer-policy.js";
+import {
   createActiveRunWatchdog,
   WatchdogDecisionApplicationError,
   type RunOutputSilenceSummary,
@@ -2188,6 +2192,13 @@ export function recoveryService(
 
     const result = { requeued: 0, escalated: 0, resolved: 0, skipped: 0, issueIds: [] as string[] };
     for (const { action, issue } of rows) {
+      if (
+        isRecoveryEngineerIssueOrigin(issue.originKind) ||
+        await hasActiveRecoveryEngineerIncidentForIssue(db, issue.companyId, issue.id)
+      ) {
+        result.skipped += 1;
+        continue;
+      }
       const wakePolicy = parseObject(action.wakePolicy);
       const wakePolicyType = readNonEmptyString(wakePolicy.type);
       if (
@@ -2894,6 +2905,16 @@ export function recoveryService(
       }
 
       let latestRun = await getLatestIssueRun(issue.companyId, issue.id);
+      if (
+        isUnsuccessfulTerminalIssueRun(latestRun) &&
+        (
+          isRecoveryEngineerIssueOrigin(issue.originKind) ||
+          await hasActiveRecoveryEngineerIncidentForIssue(db, issue.companyId, issue.id)
+        )
+      ) {
+        result.skipped += 1;
+        continue;
+      }
 
       const agent = await getAgent(agentId);
       const agentInvokable = agent && agent.companyId === issue.companyId
@@ -3224,6 +3245,16 @@ export function recoveryService(
           continue;
         }
 
+        if (
+          isUnsuccessfulTerminalIssueRun(participantLatestRun) &&
+          (
+            isRecoveryEngineerIssueOrigin(issue.originKind) ||
+            await hasActiveRecoveryEngineerIncidentForIssue(db, issue.companyId, issue.id)
+          )
+        ) {
+          result.skipped += 1;
+          continue;
+        }
         const participantAdapterFailureClassification = isUnsuccessfulTerminalIssueRun(participantLatestRun)
           ? classifyAdapterFailureForRecovery(participantLatestRun, recoveryNow)
           : null;

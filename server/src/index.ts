@@ -1459,6 +1459,18 @@ export async function startServer(): Promise<StartedServer> {
         if (reviewed.created > 0 || reviewed.updated > 0 || reviewed.failed > 0) {
           logger.warn({ ...reviewed }, "startup productivity reconciliation created or updated review work");
         }
+
+        const recoveryEngineer = await heartbeat.reconcileRecoveryEngineer();
+        if (
+          recoveryEngineer.failedObserved > 0 ||
+          recoveryEngineer.blockedObserved > 0 ||
+          recoveryEngineer.verificationFinalized > 0
+        ) {
+          logger.warn(
+            { ...recoveryEngineer },
+            "startup recovery-engineer reconciliation observed incidents",
+          );
+        }
       })().catch((err) => {
         logger.error({ err }, "startup heartbeat recovery failed");
         throw err;
@@ -1699,6 +1711,19 @@ export async function startServer(): Promise<StartedServer> {
               const reviewed = await heartbeat.reconcileProductivityReviews();
               if (reviewed.created > 0 || reviewed.updated > 0 || reviewed.failed > 0) {
                 logger.warn({ ...reviewed }, "periodic productivity reconciliation created or updated review work");
+              }
+            })
+            .then(async () => {
+              const recoveryEngineer = await heartbeat.reconcileRecoveryEngineer();
+              if (
+                recoveryEngineer.failedObserved > 0 ||
+                recoveryEngineer.blockedObserved > 0 ||
+                recoveryEngineer.verificationFinalized > 0
+              ) {
+                logger.warn(
+                  { ...recoveryEngineer },
+                  "periodic recovery-engineer reconciliation observed incidents",
+                );
               }
             })
             .catch((err) => {

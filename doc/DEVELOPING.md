@@ -86,6 +86,18 @@ Specification acceptance is scope-only and never changes work mode or authorizes
 
 For a runtime smoke check, use a disposable task: publish a plan, annotate and reject revision 1, publish revision 2 against its base, compare the revisions, and confirm revision 1 cannot be approved. Approve only the synthetic revision 2, verify the native continuation creates one linked child, complete the synthetic child, and verify replay preserves its IDs. Separately approve a synthetic specification and confirm work mode is unchanged. Never use real business approvals as test fixtures.
 
+### Bounded recovery engineer
+
+Recovery is disabled until the board configures `PUT /api/companies/:companyId/recovery-engineer`. Bind three distinct agents, an incident project, and explicit framework/native repair projects. The service permits one diagnosis attempt per incident and uses the existing scheduler for a bounded five-minute reconciliation; it does not add an autonomous command executor.
+
+Agents read and record incident actions through `/api/issues/:issueId/recovery-engineer`. Source and procedure lists have independent UUID cursors. Native enforces the configured actor, active run, incident linkage, original owner, failure generation, and existing pause/approval/dependency gates.
+
+Independent reviewer evidence remains pending until that exact run succeeds with an accepted native review. Procedures start proposed; only the board can review or retire them. Logs and procedure text are untrusted evidence, never executable policy.
+
+An isolated repair is not a live repair. After applying the exact independently verified commit, the operator records `repairCommit` and `activationEvidence` at `PUT /api/companies/:companyId/recovery-engineer/incidents/:incidentId/activation`. Only then can recovery request a one-shot resume for each unchanged source generation. No source task is marked Done by recovery.
+
+Verify with `pnpm exec vitest run server/src/__tests__/recovery-engineer.test.ts` against embedded PostgreSQL; skipped database tests are not acceptance evidence. Apply migration 0247 with its generated snapshot and journal together. Disabling the company configuration releases ordinary source recovery suppression without granting repair agents any additional authority.
+
 ### Mobile-friendly preview (`pnpm dev:mobile`)
 
 The vite dev server serves an unbundled module graph. This is fast to reload on a local machine but too heavy for phones and tablets on slow links (airplane wifi, mobile data, distant tailnet peers). `pnpm dev:mobile` builds the UI once and serves the small production bundle on port `3101` via `vite preview`, proxying `/api` requests to the dev API on `3100`.

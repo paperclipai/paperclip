@@ -215,3 +215,7 @@ export {
   type RemoteAgentProfileInput,
   type RemoteAgentService,
 } from "./remote-agent-profiles.js";
+export {
+  recoveryEngineerService,
+  type RecoveryEngineerActor,
+} from "./recovery-engineer.js";

@@ -39,6 +39,10 @@ import {
   restoreIssueDocumentRevisionSchema,
   upsertIssueFeedbackVoteSchema,
   upsertIssueWatchdogSchema,
+  recoveryEngineerActivationInputSchema,
+  recoveryEngineerConfigSchema,
+  recoveryEngineerProcedureReviewInputSchema,
+  recoveryEngineerRecordInputSchema,
   // Project
   createProjectSchema,
   updateProjectSchema,
@@ -860,6 +864,9 @@ const BOARD_ONLY_PREFIXES = [
 ];
 
 const BOARD_ONLY_OPERATIONS = new Set([
+  "PUT /api/companies/{companyId}/recovery-engineer",
+  "PUT /api/companies/{companyId}/recovery-engineer/procedures/{procedureId}",
+  "PUT /api/companies/{companyId}/recovery-engineer/incidents/{incidentId}/activation",
   "DELETE /api/issues/{id}/documents/{key}",
   "GET /api/companies/{companyId}/decisions",
   "GET /api/cloud/stacks",
@@ -3637,6 +3644,114 @@ registry.registerPath({
   summary: "List issues for a heartbeat run",
   request: { params: z.object({ runId: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/recovery-engineer",
+  tags: ["recovery"],
+  summary: "Read recovery-engineer configuration",
+  request: { params: z.object({ companyId: z.string().guid() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
+  method: "put",
+  path: "/api/companies/{companyId}/recovery-engineer",
+  tags: ["recovery"],
+  summary: "Configure the native recovery engineer",
+  request: {
+    params: z.object({ companyId: z.string().guid() }),
+    body: jsonBody(recoveryEngineerConfigSchema),
+  },
+  responses: {
+    200: r.ok(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    422: r.unprocessable,
+  },
+});
+
+registry.registerPath({
+  method: "put",
+  path: "/api/companies/{companyId}/recovery-engineer/procedures/{procedureId}",
+  tags: ["recovery"],
+  summary: "Review or retire a recovery procedure",
+  request: {
+    params: z.object({ companyId: z.string().guid(), procedureId: z.string().guid() }),
+    body: jsonBody(recoveryEngineerProcedureReviewInputSchema),
+  },
+  responses: {
+    200: r.ok(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    409: r.conflict,
+  },
+});
+
+registry.registerPath({
+  method: "put",
+  path: "/api/companies/{companyId}/recovery-engineer/incidents/{incidentId}/activation",
+  tags: ["recovery"],
+  summary: "Confirm exact verified repair activation",
+  request: {
+    params: z.object({ companyId: z.string().guid(), incidentId: z.string().guid() }),
+    body: jsonBody(recoveryEngineerActivationInputSchema),
+  },
+  responses: {
+    200: r.ok(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    409: r.conflict,
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/issues/{issueId}/recovery-engineer",
+  tags: ["recovery"],
+  summary: "Read scoped recovery incident evidence and reviewed procedures",
+  request: {
+    params: z.object({ issueId: z.string() }),
+    query: z.object({
+      sourceCursor: z.string().guid().optional(),
+      sourceLimit: z.coerce.number().int().min(1).max(100).optional(),
+      procedureCursor: z.string().guid().optional(),
+      procedureLimit: z.coerce.number().int().min(1).max(100).optional(),
+    }),
+  },
+  responses: {
+    200: r.ok(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/issues/{issueId}/recovery-engineer",
+  tags: ["recovery"],
+  summary: "Record a scoped native recovery action",
+  request: {
+    params: z.object({ issueId: z.string() }),
+    body: jsonBody(recoveryEngineerRecordInputSchema),
+  },
+  responses: {
+    200: r.ok(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    409: r.conflict,
+    422: r.unprocessable,
+  },
 });
 
 // ─── Dashboard ───────────────────────────────────────────────────────────────

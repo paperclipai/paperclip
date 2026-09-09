@@ -368,6 +368,7 @@ import {
   isOperatorCancelledRun,
   recoveryService,
 } from "./recovery/service.js";
+import { recoveryEngineerService } from "./recovery-engineer.js";
 import { collectDispositionRepairSourceState } from "./recovery/disposition-repair.js";
 import {
   buildIssueReviewPathLostIdempotencyKey,
@@ -8416,6 +8417,7 @@ export function heartbeatService(
   const secretsSvc = secretService(db);
   const companySkills = companySkillService(db);
   const issuesSvc = issueService(db);
+  const recoveryEngineer = recoveryEngineerService(db, { enqueueWakeup });
   const treeControlSvc = issueTreeControlService(db);
   const executionWorkspacesSvc = executionWorkspaceService(db);
   const environmentsSvc = environmentService(db);
@@ -10966,6 +10968,12 @@ export function heartbeatService(
     if (previousStatus === updated.status) return;
     clearHeartbeatRunRuntimeStatus(updated.id);
     void emitAgentTaskRun(db, updated);
+    void recoveryEngineer.observeRunTerminal(updated).catch((err) => {
+      logger.error(
+        { err, runId: updated.id, companyId: updated.companyId },
+        "failed to observe terminal run for recovery engineer",
+      );
+    });
   }
 
   async function setRunStatus(
@@ -26529,6 +26537,7 @@ export function heartbeatService(
     reconcileProductivityReviews,
 
     reconcileTaskWatchdogs,
+    reconcileRecoveryEngineer: recoveryEngineer.reconcileDue,
 
     buildRunOutputSilence,
 
