@@ -534,6 +534,66 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function unsettledSemanticInput(
+  event: DurableRecoveryCommittedEvent,
+  state: Pick<StoredCoreState, "identity" | "commands">,
+): boolean {
+  if (
+    event.eventType !== "semantic_tool.input" &&
+    event.eventType !== "mcp_app.tool_input"
+  )
+    return false;
+  try {
+    const envelope = event.envelope;
+    const body =
+      isRecord(envelope.payload) && isRecord(envelope.payload.payload)
+        ? envelope.payload.payload
+        : {};
+    const semantic = isRecord(body.semantic_tool) ? body.semantic_tool : {};
+    const correlation = semantic.correlation;
+    const expectedCorrelation = {
+      runId: state.identity.runId,
+      normalizedSessionId: state.identity.normalizedSessionId,
+      turnId: state.identity.turnId,
+      itemId: state.identity.itemId,
+    };
+    if (
+      typeof semantic.callId !== "string" ||
+      typeof semantic.operationId !== "string" ||
+      canonicalJson(correlation) !== canonicalJson(expectedCorrelation)
+    )
+      return true;
+    const commandId = `command_tool_${createHash("sha256").update(`${state.identity.runId}\0${semantic.callId}`).digest("hex").slice(0, 32)}`;
+    const command = state.commands.find(
+      (candidate) => candidate.commandId === commandId,
+    );
+    if (
+      !command ||
+      command.type !== "semantic_tool.result" ||
+      command.status !== "completed" ||
+      !isRecord(command.result) ||
+      command.result.status !== "completed" ||
+      command.result.commandId !== commandId ||
+      command.result.controllerSeq !== command.controllerSeq ||
+      command.result.commandType !== command.type
+    )
+      return true;
+    return (
+      command.payload.callId !== semantic.callId ||
+      command.payload.operationId !== semantic.operationId ||
+      command.payload.sourceEventId !== event.sourceEventId ||
+      command.payload.sourceEventType !== event.eventType ||
+      canonicalJson(command.payload.correlation) !==
+        canonicalJson(expectedCorrelation) ||
+      canonicalJson(command.payload.input) !== canonicalJson(semantic.input)
+    );
+  } catch {
+    // Malformed retained evidence cannot establish settled authority, and
+    // must not throw past the caller's bounded process-containment path.
+    return true;
+  }
+}
+
 function isStoredCoreState(
   value: unknown,
   identity: DurableRecoveryIdentity,
@@ -1401,6 +1461,7 @@ export class DurablePrpControlPlane {
   #server: Server | null = null;
   #connections = new Set<AuthorityConnection>();
   #pendingSemanticCalls = new Set<string>();
+  #semanticResultPersistenceFailed = false;
   #port: number | null = null;
   #onSemanticToolInput?: DurablePrpControlPlaneOptions["onSemanticToolInput"];
   #onCommittedEvent?: DurablePrpControlPlaneOptions["onCommittedEvent"];
@@ -1524,6 +1585,22 @@ export class DurablePrpControlPlane {
     return [...this.#connections].filter(
       (connection) => connection.secureChannel !== null,
     ).length;
+  }
+
+  /** A reusable close requires every admitted callback's exact durable result. */
+  semanticToolResultsSettled(): boolean {
+    return (
+      !this.#semanticResultPersistenceFailed &&
+      this.#pendingSemanticCalls.size === 0 &&
+      !this.#store.state.commands.some(
+        (command) =>
+          command.type === "semantic_tool.result" &&
+          command.status !== "completed",
+      ) &&
+      !this.#store.state.committedEvents.some((event) =>
+        unsettledSemanticInput(event, this.#store.state),
+      )
+    );
   }
 
   /**
@@ -2392,8 +2469,8 @@ export class DurablePrpControlPlane {
         ...pending.requestedIdentity,
         runnerVersion: this.#expectedRunnerVersion,
         runnerDigest: this.#expectedRunnerDigest,
-        protocolMin: 1,
-        protocolMax: 1,
+        protocolMin: pending.selectedVersion,
+        protocolMax: pending.selectedVersion,
         ...(pending.warmTransitionVersion === 1
           ? { warmTransitionVersion: 1 }
           : {}),
@@ -2950,6 +3027,21 @@ export class DurablePrpControlPlane {
       }
     }
 
+    // Keep every unpaired semantic input as a durable close/restart fence.
+    // Decide capacity before the business callback: exhaustion cannot commit
+    // a new external effect whose local evidence would then be discarded.
+    const eventToEvict =
+      existing === undefined &&
+      this.#store.state.committedEvents.length >= maxCommittedEventWindow
+        ? this.#store.state.committedEvents.findIndex(
+            (candidate) =>
+              !unsettledSemanticInput(candidate, this.#store.state),
+          )
+        : null;
+    if (eventToEvict === -1) {
+      connection.close();
+      return;
+    }
     // The caller's durable commit is the acknowledgement authority. A crash
     // after that idempotent commit but before the local cursor save is safe:
     // the runner replays the event, the caller observes a duplicate, and only
@@ -2977,6 +3069,19 @@ export class DurablePrpControlPlane {
       existing.deliveryCount += 1;
       this.#store.state.replayDeliveries += 1;
     } else {
+      if (this.#store.state.committedEvents.length >= maxCommittedEventWindow) {
+        // The awaited business commit may allow another authenticated owner
+        // or a tool completion to advance the window. Re-evaluate, never use
+        // an index sampled before that await to delete a different input.
+        const currentEviction = this.#store.state.committedEvents.findIndex(
+          (candidate) => !unsettledSemanticInput(candidate, this.#store.state),
+        );
+        if (currentEviction < 0) {
+          connection.close();
+          return;
+        }
+        this.#store.state.committedEvents.splice(currentEviction, 1);
+      }
       this.#store.state.committedEvents.push({
         sourceSeq,
         sourceEventId,
@@ -2986,12 +3091,6 @@ export class DurablePrpControlPlane {
         deliveryCount: 1,
         logicalEffectCount: 1,
       });
-      if (this.#store.state.committedEvents.length > maxCommittedEventWindow) {
-        this.#store.state.committedEvents.splice(
-          0,
-          this.#store.state.committedEvents.length - maxCommittedEventWindow,
-        );
-      }
       this.#store.state.ackedSourceSeq = sourceSeq;
     }
     this.#store.save();
@@ -3037,6 +3136,7 @@ export class DurablePrpControlPlane {
               true,
             );
           } catch {
+            this.#semanticResultPersistenceFailed = true;
             // A result that cannot fit the bounded durable journal cannot be
             // acknowledged as a usable tool response. Force a reconnect so
             // the caller can recover or terminate the run explicitly.

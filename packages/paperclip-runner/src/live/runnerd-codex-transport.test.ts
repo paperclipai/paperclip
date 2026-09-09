@@ -13,7 +13,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
@@ -62,6 +62,7 @@ import {
   createCapabilityRunnerdProviderEnvironment,
   createRunnerdCodexAppServerArgs,
   defaultCapabilityRunnerdBinary as qualifiedCapabilityRunnerdBinary,
+  readRunnerdArtifactBinding,
   drainRetainedRunnerdMaintenanceOperations,
   expandRunnerdCanonicalNotifications,
   latestRunnerdSessionReadiness,
@@ -93,6 +94,155 @@ import {
 const defaultCapabilityRunnerdBinary = () =>
   process.env.PAPERCLIP_ATTACH_TRANSITION_RUNNER ??
   qualifiedCapabilityRunnerdBinary();
+
+it("replaces an owned v1 runner with fresh v2 authorization before warm attachment", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "runnerd-v1-v2-replacement-"));
+  const handles: durableControlPlane.RunnerProcessHandle[] = [];
+  let legacySelection = true;
+  let firstExited = false;
+  let core!: DurablePrpControlPlane;
+  const bundle = createCapabilityRunnerdCodexTransport({
+    runnerBinary: defaultCapabilityRunnerdBinary(),
+    codexCommand: fakeCodex,
+    codexArgs: fakeCodexArgs(directory),
+    stateDirectory: directory,
+    lifecyclePolicy: { mode: "warm", idleTimeoutMs: 60_000 },
+    runnerReconnectGraceMs: 10_000,
+    controlPlaneRegistration: async (authority) => {
+      if (!core) {
+        core = authority;
+        const attach = authority.attachWireConnection.bind(authority);
+        vi.spyOn(authority, "attachWireConnection").mockImplementation((wire) =>
+          attach({
+            sendJson: (value) => wire.sendJson(value),
+            close: (code) => wire.close(code),
+            onClose: (listener) => wire.onClose(listener),
+            onJson: (listener) =>
+              wire.onJson((value) => {
+                // Model the old controller's v1-only selection. The actual runner
+                // still verifies the signed selected version and encrypted frames.
+                const envelope = value as {
+                  kind?: string;
+                  payload?: Record<string, unknown>;
+                };
+                if (legacySelection && envelope.kind === "auth_hello") {
+                  listener({
+                    ...envelope,
+                    payload: { ...envelope.payload, protocolMax: 1 },
+                  });
+                } else listener(value);
+              }),
+          }),
+        );
+        await authority.start();
+      }
+      return { release: () => undefined };
+    },
+    runnerProcessLauncher: (spec) => {
+      if (handles.length > 0) expect(firstExited).toBe(true);
+      const child = spawn(spec.command, [...spec.args], {
+        cwd: spec.cwd,
+        env: spec.environment,
+        stdio: "ignore",
+      });
+      const index = handles.length;
+      const completion = new Promise<durableControlPlane.RunnerProcessResult>(
+        (resolveExit, rejectExit) => {
+          child.once("error", rejectExit);
+          child.once("exit", (code, signal) => {
+            if (index === 0) firstExited = true;
+            resolveExit({ code, signal, stdout: "", stderr: "" });
+          });
+        },
+      );
+      const handle = { child, completion };
+      handles.push(handle);
+      return handle;
+    },
+  });
+  const runnerPath = join(directory, "runner", "runner-state.json");
+  const runnerState = async () =>
+    JSON.parse(await readFile(runnerPath, "utf8"));
+  try {
+    await bundle.transport.request("thread/start", { cwd: directory });
+    const oldIdentity = structuredClone(core.store.state.identity);
+    await vi.waitFor(async () => {
+      const state = await runnerState();
+      expect(state.lastConnectionProtocolVersion).toBe(1);
+      expect(state.outbox).toEqual([]);
+      expect(Object.keys(state.v2ReplayEvents)).toHaveLength(2);
+    });
+    expect(
+      core.store.state.committedEvents.some(
+        (event) => event.eventType === "session.goal.snapshot",
+      ),
+    ).toBe(false);
+    const oldProvider = bundle.evidence().codexPid!;
+    expect(oldProvider).toBeGreaterThan(0);
+    // Retire only the exact fixture provider first; process recovery cannot
+    // launch a replacement while an old provider still owns this session.
+    process.kill(oldProvider, "SIGTERM");
+    await vi.waitFor(
+      () => {
+        expect(() => process.kill(oldProvider, 0)).toThrow();
+      },
+      { timeout: 5_000 },
+    );
+    legacySelection = false;
+    handles[0]!.child.kill("SIGKILL");
+    await handles[0]!.completion;
+    await vi.waitFor(
+      async () => {
+        expect(handles).toHaveLength(2);
+        const state = await runnerState();
+        expect(state.lastConnectionProtocolVersion).toBe(2);
+        expect(state.v2ReplayEvents).toEqual({});
+        expect(state.outbox).toEqual([]);
+        expect(core.activeRunnerConnectionCount()).toBe(1);
+      },
+      { timeout: 10_000 },
+    );
+    expect(core.store.state.identity).toEqual(oldIdentity);
+    const native = core.store.state.committedEvents.filter((event) =>
+      ["session.capabilities.updated", "session.goal.snapshot"].includes(
+        event.eventType,
+      ),
+    );
+    expect(native.map((event) => event.eventType)).toEqual([
+      "session.capabilities.updated",
+      "session.goal.snapshot",
+    ]);
+    expect(
+      native.every((event) => event.envelope.runId === oldIdentity.runId),
+    ).toBe(true);
+    expect(
+      core.store.state.commands.some(
+        (command) => command.type === "turn.start",
+      ),
+    ).toBe(false);
+    await bundle.transport.attachRun!({
+      runId: "run-v2-replacement",
+      turnId: "turn-v2-replacement",
+      itemId: "item-v2-replacement",
+    });
+    expect(core.store.state.identity.runId).toBe("run-v2-replacement");
+    expect(core.store.state.warmTransition).toBeUndefined();
+    expect(
+      core.store.state.commands.some(
+        (command) => command.type === "turn.start",
+      ),
+    ).toBe(false);
+  } finally {
+    legacySelection = false;
+    await bundle.transport.close().catch(() => undefined);
+    for (const handle of handles) {
+      if (handle.child.exitCode === null && handle.child.signalCode == null)
+        handle.child.kill("SIGKILL");
+      await handle.completion.catch(() => undefined);
+    }
+    await rm(directory, { recursive: true, force: true });
+  }
+}, 30_000);
 
 it.each([
   { alreadyEnded: false, appendFailure: false },
@@ -1580,6 +1730,7 @@ it.each([undefined, null, "true", 1, {}, false, true])(
     });
     const drained = await runnerdRecoveryInternals.awaitProviderDrainBarrier({
       readProviderState: () => null,
+      semanticResultsSettled: () => true,
       commands: () => commands,
       queueDrain: queue,
       pump: () => undefined,
@@ -1607,6 +1758,7 @@ it.each(["pending", "unreadable", "active", "expired", "failed"] as const)(
           providerSettled: mode !== "active",
         };
       },
+      semanticResultsSettled: () => true,
       commands: () => commands,
       queueDrain: (commandId) => {
         commands.push({
@@ -1636,12 +1788,14 @@ it("waits for a fresh empty provider suffix after a confirmed drain receipt", as
       activeProviderTurnId: null,
       providerSettled: true,
     }),
+    semanticResultsSettled: () => true,
     commands: () => commands,
     queueDrain: (commandId) => {
       commands.push({ commandId, status: "pending" });
     },
     pump: () => {
-      const last = commands.at(-1)!;
+      const last = commands.at(-1);
+      if (!last) return;
       last.status = "completed";
       last.result = { result: { retainedEventsDrained: suffix === 0 } };
       suffix = 0;
@@ -1690,6 +1844,157 @@ it("refuses a reusable close checkpoint when the local provider snapshot is unre
     await rm(stateDirectory, { recursive: true, force: true });
   }
 }, 15_000);
+
+it.each(["after_budget", "within_budget", "persistence_failure"] as const)(
+  "fences reusable suspension against late semantic completion (%s)",
+  async (mode) => {
+    const stateDirectory = await mkdtemp(
+      join(tmpdir(), "runnerd-late-semantic-close-"),
+    );
+    const checkpoint = vi.fn();
+    let core!: DurablePrpControlPlane;
+    let entered!: () => void;
+    let release!: () => void;
+    const handlerEntered = new Promise<void>((resolveEntered) => {
+      entered = resolveEntered;
+    });
+    const handlerRelease = new Promise<void>((resolveRelease) => {
+      release = resolveRelease;
+    });
+    const bundle = createCapabilityRunnerdCodexTransport({
+      runnerBinary: defaultCapabilityRunnerdBinary(),
+      codexCommand: fakeCodex,
+      codexArgs: fakeCodexArgs(stateDirectory, "--split-event-burst"),
+      stateDirectory,
+      closeGraceMs: 2_000,
+      controlPlaneRegistration: async (authority) => {
+        core = authority;
+        await authority.start();
+        return { checkpoint, release: () => undefined };
+      },
+    });
+    bundle.transport.setServerRequestHandler(async () => {
+      entered();
+      await handlerRelease;
+      return { success: true, contentItems: [] };
+    });
+    try {
+      await bundle.transport.request("thread/start", {
+        cwd: tmpdir(),
+        dynamicTools: [
+          {
+            name: "get_task_context",
+            description: "Read the task.",
+            inputSchema: {
+              type: "object",
+              properties: {},
+              additionalProperties: false,
+            },
+          },
+        ],
+      });
+      await bundle.transport.request("turn/start", {
+        input: [{ type: "text", text: "Read the task." }],
+      });
+      await Promise.race([
+        handlerEntered,
+        new Promise<never>((_, reject) => {
+          const timer = setTimeout(
+            () =>
+              reject(new Error("synthetic semantic handler was not invoked")),
+            5_000,
+          );
+          timer.unref();
+        }),
+      ]);
+      expect(core.semanticToolResultsSettled()).toBe(false);
+      if (mode === "persistence_failure") {
+        const queue = core.queueCommand.bind(core);
+        vi.spyOn(core, "queueCommand").mockImplementation((type, ...args) => {
+          if (type === "semantic_tool.result")
+            throw new Error("synthetic result journal refused persistence");
+          return queue(type, ...args);
+        });
+      }
+      const closing = bundle.transport.close().then(
+        () => null,
+        (error: unknown) => error,
+      );
+      if (mode !== "after_budget") {
+        // close() synchronously marks the transport closed before its first
+        // await; only now may the already-entered handler finish.
+        release();
+      }
+      const closeFailure = await closing;
+      if (mode !== "within_budget") {
+        const artifact = readRunnerdArtifactBinding(
+          defaultCapabilityRunnerdBinary(),
+        );
+        const reopened = new DurablePrpControlPlane({
+          stateDirectory: join(stateDirectory, "control-plane"),
+          identity: core.store.state.identity,
+          expectedRunnerVersion: artifact.version,
+          expectedRunnerDigest: artifact.digest,
+        });
+        expect(reopened.semanticToolResultsSettled()).toBe(false);
+        await reopened.stop();
+      }
+      release();
+      if (mode === "persistence_failure") {
+        expect(core.semanticToolResultsSettled()).toBe(false);
+        expect(
+          core.store.state.commands.filter(
+            (command) => command.type === "semantic_tool.result",
+          ),
+        ).toEqual([]);
+      } else {
+        await vi.waitFor(async () => {
+          const control = JSON.parse(
+            await readFile(
+              join(stateDirectory, "control-plane", "control-plane-state.json"),
+              "utf8",
+            ),
+          );
+          const late = control.commands.filter(
+            (command: { type: string }) =>
+              command.type === "semantic_tool.result",
+          );
+          expect(late).toHaveLength(1);
+          expect(late[0].payload.correlation.runId).toBe(
+            control.identity.runId,
+          );
+          expect(late[0].status).toBe(
+            mode === "within_budget" ? "completed" : "pending",
+          );
+          if (mode === "within_budget") {
+            const results = control.committedEvents.filter(
+              (event: { eventType: string }) =>
+                event.eventType === "semantic_tool.result",
+            );
+            expect(results).toHaveLength(1);
+            expect(results[0].envelope.runId).toBe(control.identity.runId);
+          }
+        });
+      }
+      if (mode === "within_budget") {
+        expect(closeFailure).toBeNull();
+        expect(core.semanticToolResultsSettled()).toBe(true);
+        expect(checkpoint).toHaveBeenCalledWith("settled");
+      } else {
+        expect(closeFailure).toBeInstanceOf(
+          NativeSessionCloseUnrecoverableError,
+        );
+        expect(checkpoint).toHaveBeenCalledWith("unsettled");
+        expect(checkpoint).not.toHaveBeenCalledWith("settled");
+      }
+    } finally {
+      release();
+      await bundle.transport.close().catch(() => undefined);
+      await rm(stateDirectory, { recursive: true, force: true });
+    }
+  },
+  15_000,
+);
 
 it("infers a remote provider turn until its own terminal event is durable", () => {
   expect(
@@ -5174,8 +5479,13 @@ it.each(["held-ack", "lost-ack", "rejected-attach"] as const)(
           attachedEvent.sourceSeq,
         );
         expect(
-          retired.committedEvents.slice(-2).map((entry) => entry.eventType),
-        ).toEqual(["session.resumed", "run.attached"]);
+          retired.committedEvents.slice(-4).map((entry) => entry.eventType),
+        ).toEqual([
+          "session.resumed",
+          "session.capabilities.updated",
+          "session.goal.snapshot",
+          "run.attached",
+        ]);
         expect(
           retired.committedEvents.every(
             (entry) => entry.envelope.runId === oldIdentity.runId,
@@ -6424,7 +6734,7 @@ it.each([
         expect(resumedCore.store.state.identity.runId).toBe(thirdRunId);
         expect(
           (await readFile(callsPath, "utf8")).trim().split(/\r?\n/),
-        ).toEqual(calls);
+        ).toEqual([...calls, "thread/goal/get"]);
       }
     } finally {
       snapshotObserverSpy?.mockRestore();

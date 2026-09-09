@@ -1553,7 +1553,8 @@ describe("Capability live runnerd and Codex session", () => {
       const transportOptions = {
         codexCommand: process.execPath,
         codexArgs: [fixture, providerStatePath],
-        closeGraceMs: 100,
+        // Use the production close budget for this successful durable-close
+        // proof. The killed first generation is interrupted explicitly below.
       };
       const firstService = new CapabilityLiveSessionService({ store, transportOptions });
       const first = await firstService.create({
@@ -1569,7 +1570,7 @@ describe("Capability live runnerd and Codex session", () => {
         expect(checkpoint?.activeTurnId).toBe("turn-1");
         expect(checkpoint?.process?.runnerPid).not.toBeNull();
         expect(checkpoint?.process?.codexPid).not.toBeNull();
-      });
+      }, { timeout: 2_000 }); // Match this turn's declared budget, not waitFor's shorter default.
       await first.recordUsage({
         receiptId: "real-response-1",
         providerResponseId: "fixture-response-1",

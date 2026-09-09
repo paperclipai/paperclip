@@ -218,6 +218,11 @@ fn apply_authority_rotation(
             "warm authority rotation requires the old event outbox to be durably acknowledged",
         ));
     }
+    if state.has_unobserved_v2_session_state() {
+        return Err(DurableRunnerError::invalid(
+            "warm authority rotation requires native v2 session state acknowledgement",
+        ));
+    }
     let reconnect_count = state.reconnect_count.saturating_add(1);
     let mut diagnostics = state.diagnostics.clone();
     let mut rotated = DurableState::new(&next);
@@ -613,7 +618,11 @@ pub fn run_durable_runner<E: CommandExecutor>(
         let mut disconnected = false;
         for command in welcome.pending_commands {
             let next_authority = next_authority_config(&command, &config)?;
-            require_warm_transition_capability(&next_authority, welcome.warm_transition_version)?;
+            require_warm_transition_capability(
+                &next_authority,
+                welcome.warm_transition_version,
+                connection.protocol_version,
+            )?;
             let (result, lifecycle) =
                 process_command(&mut state, &store, &config, &mut executor, &command)?;
             let next_authority = next_authority.filter(|_| completed_attachment(&result));
@@ -814,6 +823,7 @@ pub fn run_durable_runner<E: CommandExecutor>(
                     require_warm_transition_capability(
                         &next_authority,
                         welcome.warm_transition_version,
+                        connection.protocol_version,
                     )?;
                     let (result, lifecycle) =
                         process_command(&mut state, &store, &config, &mut executor, &command)?;
@@ -1195,10 +1205,21 @@ fn wait_for_old_authority_outbox_ack(
 fn require_warm_transition_capability(
     next: &Option<DurableRunnerConfig>,
     version: Option<u64>,
+    protocol_version: u64,
 ) -> Result<(), DurableRunnerError> {
     if next.is_some() && version != Some(1) {
         return Err(DurableRunnerError::invalid(
             "warm transition capability is required before attachment",
+        ));
+    }
+    // Even a legacy state with no replay cache acquires native goal/capability
+    // observations during run.attach. A v1 ACK covers only placeholders, so
+    // reject before provider rebind rather than lose them during rotation.
+    // The protocol version is lease-bound: reconnecting the same v1 lease is
+    // not an upgrade. Such callers need fresh v2 authorization on the old run.
+    if next.is_some() && protocol_version < 2 {
+        return Err(DurableRunnerError::invalid(
+            "warm authority attachment requires a negotiated v2 connection",
         ));
     }
     Ok(())
@@ -2475,6 +2496,82 @@ mod tests {
                 "must reject forged {field}"
             );
         }
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn warm_attachment_rejects_v1_before_provider_rebind_even_without_replay_cache() {
+        let next = Some(config(std::path::PathBuf::from("unused")));
+        assert!(require_warm_transition_capability(&next, Some(1), 1).is_err());
+        assert!(require_warm_transition_capability(&next, Some(1), 2).is_ok());
+        assert!(require_warm_transition_capability(&next, None, 2).is_err());
+        assert!(require_warm_transition_capability(&None, None, 1).is_ok());
+    }
+
+    #[test]
+    fn warm_rotation_preserves_unobserved_v2_session_state_until_native_ack() {
+        let directory = std::env::temp_dir().join(format!(
+            "paperclip-runner-warm-v2-observation-{}",
+            std::process::id()
+        ));
+        let mut current = config(directory.clone());
+        let store = DurableStateStore::new(&directory).unwrap();
+        let (mut state, _) = store.load_or_create(&current).unwrap();
+        for (event_type, payload) in [
+            (
+                "session.capabilities.updated",
+                json!({"sessionGoals": {"supported": true}}),
+            ),
+            (
+                "session.goal.snapshot",
+                json!({"goal": {"objective": "retained objective"}}),
+            ),
+        ] {
+            state
+                .enqueue_event(&current, event_type, EventPriority::P0, payload)
+                .unwrap();
+        }
+        state.apply_ack(2, 1).unwrap();
+        store.save(&state).unwrap();
+        let before = serde_json::to_value(&state).unwrap();
+        let mut next = current.clone();
+        next.run_id = "run_2".to_owned();
+        next.turn_id = "turn_2".to_owned();
+        next.item_id = "item_2".to_owned();
+        let mut endpoint =
+            RunnerTransportEndpoint::new(&current.connect_url, &current.run_id).unwrap();
+        assert!(apply_authority_rotation(
+            &mut state,
+            &store,
+            &mut current,
+            &mut endpoint,
+            next.clone()
+        )
+        .is_err());
+        assert_eq!(serde_json::to_value(&state).unwrap(), before);
+        assert_eq!(
+            serde_json::to_value(store.load_or_create(&current).unwrap().0).unwrap(),
+            before
+        );
+        assert_eq!(current.run_id, "run_1");
+
+        // A newly authorized v2 connection observes native state on its original
+        // authority. This is not a protocol upgrade of an existing v1 lease.
+        state.restore_v2_replay_events(&current).unwrap();
+        assert_eq!(state.outbox.len(), 2);
+        assert!(state
+            .outbox
+            .iter()
+            .all(|event| event.envelope["payload"]["runId"] == "run_1"));
+        state.apply_ack(4, 2).unwrap();
+        store.save(&state).unwrap();
+        apply_authority_rotation(&mut state, &store, &mut current, &mut endpoint, next).unwrap();
+        state.restore_v2_replay_events(&current).unwrap();
+        assert!(
+            state.outbox.is_empty(),
+            "old observations must not be relabeled under the new run"
+        );
+        assert_eq!(state.run_id, "run_2");
         fs::remove_dir_all(directory).unwrap();
     }
 

@@ -549,6 +549,7 @@ type ProviderDrainState =
 
 async function awaitProviderDrainBarrier(input: {
   readProviderState: () => ProviderDrainState;
+  semanticResultsSettled: () => boolean;
   commands: () => readonly {
     commandId: string;
     status: string;
@@ -561,6 +562,16 @@ async function awaitProviderDrainBarrier(input: {
 }): Promise<boolean> {
   let receiptConfirmed = false;
   while (Date.now() < input.deadline) {
+    input.pump();
+    // A callback is not part of the provider FIFO until its result is durably
+    // queued and completed. Never certify a temporarily empty prefix while
+    // that admitted old-authority result is still being produced.
+    if (!input.semanticResultsSettled()) {
+      await new Promise((resolveWait) =>
+        setTimeout(resolveWait, input.pollIntervalMs ?? 5),
+      );
+      continue;
+    }
     const state = input.readProviderState();
     // Remote roots still require the exact runner-owned receipt. Their
     // checkpoint separately verifies provider settlement on the remote host.
@@ -3829,6 +3840,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     try {
       const drained = await awaitProviderDrainBarrier({
         readProviderState: () => this.#providerDrainState(),
+        semanticResultsSettled: () => core.semanticToolResultsSettled(),
         commands: () => core.store.state.commands,
         queueDrain: (commandId) => {
           core.queueCommand("runner.drain", {}, commandId, true);
@@ -3911,6 +3923,16 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         this.options.closeGraceMs ?? 10_000,
       );
       if (!(await this.#runnerHasExited())) {
+        // Let an already-admitted tool result reach its original provider
+        // before turn.stop can retire that tool-call identity. This shares the
+        // close preparation deadline; a stuck callback never stalls cleanup.
+        while (
+          !this.#core.semanticToolResultsSettled() &&
+          Date.now() < preparationDeadline
+        ) {
+          this.#pumpEventsSafely();
+          await new Promise((resolveWait) => setTimeout(resolveWait, 5));
+        }
         const stoppedActiveTurn =
           await this.#stopActiveProviderTurnBeforeSuspend(preparationDeadline);
         providerDrained = await this.#drainSettledProviderEventsBeforeSuspend(
@@ -4009,6 +4031,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     const runnerSettled =
       runnerSuspended &&
       providerDrained &&
+      this.#core?.semanticToolResultsSettled() === true &&
       (finalProviderState === null ||
         (finalProviderState !== "unreadable" &&
           finalProviderState.pendingEventCount === 0 &&

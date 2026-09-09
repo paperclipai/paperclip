@@ -1084,6 +1084,156 @@ function corruptSemanticInputDigest(
 }
 
 describe.sequential("DurablePrpControlPlane", () => {
+  it.each(["pending_first", "all_pending", "completed_first"] as const)(
+    "retains unanswered semantic input across the bounded event window (%s)",
+    async (mode) => {
+      const root = mkdtempSync(
+        resolve(tmpdir(), "paperclip-prp-semantic-window-"),
+      );
+      const onCommittedEvent = vi.fn(async () => undefined);
+      const onSemanticToolInput = vi.fn(
+        async () => new Promise<{ result: unknown }>(() => undefined),
+      );
+      const options = {
+        stateDirectory: root,
+        identity,
+        expectedRunnerVersion,
+        expectedRunnerDigest,
+        onCommittedEvent,
+        onSemanticToolInput,
+      };
+      const core = new DurablePrpControlPlane(options);
+      const eventAt = (sourceSeq: number, semanticInput: boolean) => {
+        const envelope = semanticInputEvent(sourceSeq);
+        const event = envelope.payload as Record<string, unknown>;
+        if (semanticInput) {
+          (
+            (event.payload as Record<string, unknown>).semantic_tool as Record<
+              string,
+              unknown
+            >
+          ).callId = `call-${sourceSeq}`;
+        } else {
+          event.eventType = "harness.diagnostic";
+          event.payload = {};
+        }
+        return {
+          sourceSeq,
+          sourceEventId: String(event.sourceEventId),
+          eventType: String(event.eventType),
+          priority: 0 as const,
+          envelope,
+          deliveryCount: 1,
+          logicalEffectCount: 1 as const,
+        };
+      };
+      core.store.state.committedEvents = Array.from(
+        { length: 4096 },
+        (_, index) => eventAt(index + 1, index === 0 || mode === "all_pending"),
+      );
+      core.store.state.ackedSourceSeq = 4096;
+      if (mode === "completed_first") {
+        const semantic = (
+          (
+            core.store.state.committedEvents[0]!.envelope.payload as Record<
+              string,
+              unknown
+            >
+          ).payload as Record<string, unknown>
+        ).semantic_tool as Record<string, unknown>;
+        const commandId = `command_tool_${createHash("sha256").update(`${identity.runId}\0call-1`).digest("hex").slice(0, 32)}`;
+        core.store.state.commands.push({
+          schema: "paperclip.prp.command.v1",
+          commandId,
+          controllerSeq: 1,
+          type: "semantic_tool.result",
+          issuedAt: new Date().toISOString(),
+          status: "completed",
+          payload: {
+            callId: "call-1",
+            operationId: semantic.operationId,
+            input: semantic.input,
+            sourceEventId: "semantic-event-1",
+            sourceEventType: "semantic_tool.input",
+            correlation: semantic.correlation,
+          },
+          result: {
+            commandId,
+            controllerSeq: 1,
+            commandType: "semantic_tool.result",
+            status: "completed",
+            result: {},
+          },
+        });
+        expect(core.semanticToolResultsSettled()).toBe(true);
+        const completed = core.store.state.commands.pop()!;
+        expect(core.semanticToolResultsSettled()).toBe(false); // Missing/pruned receipt is never completion evidence.
+        core.store.state.commands.push(completed);
+        for (const corruption of [
+          "operation",
+          "run",
+          "source",
+          "receipt",
+        ] as const) {
+          const changed = structuredClone(completed);
+          if (corruption === "operation")
+            changed.payload.operationId = "different_operation";
+          if (corruption === "run")
+            changed.payload.correlation = {
+              ...(changed.payload.correlation as Record<string, unknown>),
+              runId: "different-run",
+            };
+          if (corruption === "source")
+            changed.payload.sourceEventId = "different-event";
+          if (corruption === "receipt")
+            changed.result = {
+              ...(changed.result as Record<string, unknown>),
+              controllerSeq: 2,
+            };
+          core.store.state.commands[0] = changed;
+          expect(core.semanticToolResultsSettled()).toBe(false);
+        }
+        core.store.state.commands[0] = completed;
+      }
+      writeFileSync(core.store.path, JSON.stringify(core.store.state), {
+        mode: 0o600,
+      });
+      try {
+        await core.start();
+        const client = (await authenticate(core, core.issueBootstrapTicket()))!;
+        const before = readFileSync(core.store.path, "utf8");
+        sendSecure(client, eventAt(4097, true).envelope);
+        if (mode === "all_pending") {
+          await expect(receiveSecure(client)).resolves.toBeNull();
+          expect(core.store.state.ackedSourceSeq).toBe(4096);
+          expect(readFileSync(core.store.path, "utf8")).toBe(before);
+          expect(onCommittedEvent).not.toHaveBeenCalled();
+          expect(onSemanticToolInput).not.toHaveBeenCalled();
+        } else {
+          await expect(receiveSecure(client)).resolves.toMatchObject({
+            kind: "ack",
+            payload: { ackedSourceSeq: 4097 },
+          });
+          expect(onCommittedEvent).toHaveBeenCalledTimes(1);
+          expect(
+            core.store.state.committedEvents.some(
+              (event) => event.sourceSeq === 1,
+            ),
+          ).toBe(mode === "pending_first");
+          expect(core.store.state.committedEvents.at(-1)?.sourceSeq).toBe(4097);
+        }
+        expect(core.store.state.committedEvents).toHaveLength(4096);
+        const reopened = new DurablePrpControlPlane(options);
+        expect(reopened.semanticToolResultsSettled()).toBe(false);
+        await reopened.stop();
+      } finally {
+        await core.stop();
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+    15_000,
+  );
+
   it.each([false, true])(
     "promptly fails the real transport request and notification paths on authenticated bad semantic input (throwing observer: %s)",
     async (throwingObserver) => {
@@ -1593,6 +1743,70 @@ describe.sequential("DurablePrpControlPlane", () => {
     },
   );
 
+  it("requires a fresh bootstrap to replace a v1 lease with v2 on the same authority", async () => {
+    const root = mkdtempSync(
+      resolve(tmpdir(), "paperclip-prp-version-bootstrap-"),
+    );
+    const core = new DurablePrpControlPlane({
+      stateDirectory: root,
+      identity,
+      expectedRunnerVersion,
+      expectedRunnerDigest,
+    });
+    const clients: AuthenticatedClient[] = [];
+    try {
+      await core.start();
+      const first = (await authenticate(core, core.issueBootstrapTicket()))!;
+      clients.push(first);
+      expect(first.welcome.version).toBe(1);
+      first.socket.destroy();
+      const reconnect = (await authenticate(
+        core,
+        first.leaseToken!,
+        identity,
+        expectedRunnerDigest,
+        undefined,
+        false,
+        2,
+      ))!;
+      clients.push(reconnect);
+      expect(reconnect.welcome.version).toBe(1);
+      reconnect.socket.destroy();
+      // A replacement process has no in-memory lease. Its owner issues the
+      // normal one-use bootstrap for the unchanged, validated run authority.
+      const freshTicket = core.issueBootstrapTicket();
+      const replacement = (await authenticate(
+        core,
+        freshTicket,
+        identity,
+        expectedRunnerDigest,
+        undefined,
+        false,
+        2,
+      ))!;
+      clients.push(replacement);
+      expect(replacement.welcome.version).toBe(2);
+      expect(core.store.state.identity).toEqual(identity);
+      expect(core.store.state.commands).toEqual([]);
+      expect(core.store.state.committedEvents).toEqual([]);
+      expect(
+        await authenticate(
+          core,
+          freshTicket,
+          identity,
+          expectedRunnerDigest,
+          undefined,
+          false,
+          2,
+        ),
+      ).toBeNull();
+    } finally {
+      for (const client of clients) client.socket.destroy();
+      await core.stop();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("exchanges a one-use bootstrap for a run-bound reconnect lease", async () => {
     const root = mkdtempSync(resolve(tmpdir(), "paperclip-prp-auth-"));
     const controlPlane = new DurablePrpControlPlane({
@@ -1974,6 +2188,7 @@ describe.sequential("DurablePrpControlPlane", () => {
 
   it.each([
     "activate",
+    "activate-v2",
     "foreign-receipt",
     "foreign-key",
     "old-event",
@@ -1990,7 +2205,7 @@ describe.sequential("DurablePrpControlPlane", () => {
     "completed-expired",
     "completed-foreign-key",
   ] as const)("keeps warm handoff authority closed across %s", async (mode) => {
-    const selectedProtocol = mode === "bootstrap-v2" ? 2 : 1;
+    const selectedProtocol = mode.endsWith("-v2") ? 2 : 1;
     const authenticateVersion: typeof authenticate = (...args) => {
       args[6] = selectedProtocol;
       return authenticate(...args);

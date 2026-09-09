@@ -663,6 +663,10 @@ impl DurableState {
         Ok(())
     }
 
+    pub(crate) fn has_unobserved_v2_session_state(&self) -> bool {
+        !self.v2_replay_events.is_empty()
+    }
+
     pub(crate) fn restore_v2_replay_events(
         &mut self,
         config: &DurableRunnerConfig,
