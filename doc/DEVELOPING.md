@@ -80,6 +80,12 @@ Existing-document publication locks the document row before checking `baseRevisi
 
 Verify these invariants with `pnpm exec vitest run server/src/__tests__/documents-service.test.ts`.
 
+The issue Plan surface groups canonical `specification` and `plan` documents with creation, optimistic autosave, inline annotations, revision history/diff, exact-revision human review, and linked accepted-plan decompositions. Artifacts excludes those canonical documents. Historical previews, unsaved/conflicted drafts, and closed tasks cannot offer current review actions; an agent-resolved interaction is not displayed as human approval.
+
+Specification acceptance is scope-only and never changes work mode or authorizes implementation. Acceptance of the exact current `plan` revision on a planning-mode issue changes it to standard before native continuation. Scope-only inventory tasks may retain their existing work mode; do not turn scope approval into implementation permission.
+
+For a runtime smoke check, use a disposable task: publish a plan, annotate and reject revision 1, publish revision 2 against its base, compare the revisions, and confirm revision 1 cannot be approved. Approve only the synthetic revision 2, verify the native continuation creates one linked child, complete the synthetic child, and verify replay preserves its IDs. Separately approve a synthetic specification and confirm work mode is unchanged. Never use real business approvals as test fixtures.
+
 ### Mobile-friendly preview (`pnpm dev:mobile`)
 
 The vite dev server serves an unbundled module graph. This is fast to reload on a local machine but too heavy for phones and tablets on slow links (airplane wifi, mobile data, distant tailnet peers). `pnpm dev:mobile` builds the UI once and serves the small production bundle on port `3101` via `vite preview`, proxying `/api` requests to the dev API on `3100`.
