@@ -2628,7 +2628,16 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
       payload: { issueId },
     });
 
-    await heartbeat.cancelRun(runId);
+    // A plain legacy cancel now stops promotion early for board reconciliation
+    // (see legacyExecutionNeedsReconciliation in legacy-execution-recovery.ts).
+    // Cancel as an in-flight workspace wait instead. That shape still reaches
+    // the deferred-wake promotion loop under test.
+    await heartbeat.cancelRun(runId, undefined, {
+      errorCode: "workspace_busy",
+      resultJson: {
+        executionRecovery: { kind: "workspace_wait", providerWorkStarted: false },
+      },
+    });
 
     const [missingAgentWake, validWake, issueRow] = await Promise.all([
       db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, missingAgentWakeId)).then((rows) => rows[0]),
@@ -2732,7 +2741,16 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
       payload: { issueId },
     });
 
-    await heartbeat.cancelRun(runId);
+    // A plain legacy cancel now stops promotion early for board reconciliation
+    // (see legacyExecutionNeedsReconciliation in legacy-execution-recovery.ts).
+    // Cancel as an in-flight workspace wait instead. That shape still reaches
+    // the deferred-wake promotion loop under test.
+    await heartbeat.cancelRun(runId, undefined, {
+      errorCode: "workspace_busy",
+      resultJson: {
+        executionRecovery: { kind: "workspace_wait", providerWorkStarted: false },
+      },
+    });
 
     const wake = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wakeId)).then((rows) => rows[0]);
     expect(wake).toMatchObject({
@@ -2855,7 +2873,16 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
       },
     });
 
-    await heartbeat.cancelRun(runId);
+    // A plain legacy cancel now stops promotion early for board reconciliation
+    // (see legacyExecutionNeedsReconciliation in legacy-execution-recovery.ts).
+    // Cancel as an in-flight workspace wait instead. That shape still reaches
+    // the deferred-wake promotion loop under test.
+    await heartbeat.cancelRun(runId, undefined, {
+      errorCode: "workspace_busy",
+      resultJson: {
+        executionRecovery: { kind: "workspace_wait", providerWorkStarted: false },
+      },
+    });
 
     const [plainWake, verifiedWake] = await Promise.all([
       db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, plainWakeId)).then((rows) => rows[0]),
@@ -2960,7 +2987,18 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
       payload: { issueId },
     });
 
-    await expect(heartbeat.cancelRun(runId)).rejects.toMatchObject({
+    // A plain legacy cancel now stops promotion early for board reconciliation
+    // (see legacyExecutionNeedsReconciliation in legacy-execution-recovery.ts).
+    // Cancel as an in-flight workspace wait instead. That shape still reaches
+    // the deferred-wake promotion loop under test.
+    await expect(
+      heartbeat.cancelRun(runId, undefined, {
+        errorCode: "workspace_busy",
+        resultJson: {
+          executionRecovery: { kind: "workspace_wait", providerWorkStarted: false },
+        },
+      }),
+    ).rejects.toMatchObject({
       status: 422,
       details: expect.objectContaining({ code: "responsible_user_unresolved" }),
     });
