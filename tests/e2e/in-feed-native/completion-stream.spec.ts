@@ -2,36 +2,30 @@ import { expect, test } from '@playwright/test';
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
-import { setTimeout as delay } from 'node:timers/promises';
 
 async function stopTestDrive(child: ChildProcess | undefined): Promise<void> {
   if (!child?.pid) return;
-  const group = -child.pid;
-  const alive = () => {
-    try { process.kill(group, 0); return true; }
-    catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ESRCH') return false;
-      throw error;
-    }
-  };
   const signal = (name: NodeJS.Signals) => {
-    try { process.kill(group, name); }
+    try { process.kill(-child.pid!, name); }
     catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error;
     }
   };
-  const waitForExit = async (timeoutMs: number) => {
-    const deadline = Date.now() + timeoutMs;
-    while (alive() || (child.exitCode === null && child.signalCode === null)) {
-      if (Date.now() >= deadline) return false;
-      await delay(50);
-    }
-    return true;
+  const waitForExit = (timeoutMs: number) => {
+    if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve(true);
+    return new Promise<boolean>((done) => {
+      const exited = () => { clearTimeout(timer); done(true); };
+      const timer = setTimeout(() => { child.removeListener('exit', exited); done(false); }, timeoutMs);
+      child.once('exit', exited);
+    });
   };
+  if (child.exitCode !== null || child.signalCode !== null) return;
+  const stopped = waitForExit(15_000);
   signal('SIGTERM');
-  if (await waitForExit(15_000)) return;
+  if (await stopped) return;
+  const killed = waitForExit(5_000);
   signal('SIGKILL');
-  if (!(await waitForExit(5_000))) throw new Error('test-drive process group did not exit');
+  if (!(await killed)) throw new Error('test-drive process did not exit after SIGKILL');
 }
 
 test('a completion tool does not cut off a delayed final answer', async ({ page }, info) => {
