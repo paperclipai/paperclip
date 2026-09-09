@@ -3345,6 +3345,35 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       await this.#command("turn.interrupt", params);
       return {};
     }
+    if (method === "thread/turns/list" || method === "thread/items/list") {
+      if (params.threadId !== this.#threadId) throw new Error("codex_history_identity_mismatch");
+      const snapshot = await this.request("thread/read", { threadId: this.#threadId, includeTurns: false });
+      const turns = record(snapshot.thread).turns as Array<Record<string, unknown>>;
+      let data: Array<Record<string, unknown>>;
+      if (method === "thread/turns/list") {
+        data = turns.map(turn => ({ ...turn, items: [], itemsView: "notLoaded" }));
+      } else {
+        if (params.turnId !== this.#turnId) throw new Error("codex_history_unavailable: requested turn is outside the retained runner event window");
+        const items = new Map<string, Record<string, unknown>>();
+        let observedTurn = "";
+        let observedStart = false;
+        for (const event of this.#core?.store.state.committedEvents ?? []) {
+          const payload = record(record(event.envelope.payload).payload);
+          if (event.eventType === "turn.started") observedTurn = String(payload.providerTurnId ?? payload.turnId ?? record(payload.turn).id ?? "");
+          if (event.eventType === "turn.started" && observedTurn === params.turnId) observedStart = true;
+          if (event.eventType !== "item.completed" || observedTurn !== params.turnId) continue;
+          const item = record(rehydrateRunnerdItemNotification(payload, this.#threadId, observedTurn).item);
+          if (typeof item.id === "string") items.set(item.id, { turnId: observedTurn, item });
+        }
+        if (!observedStart) throw new Error("codex_history_incomplete: requested turn start is outside the retained runner event window");
+        data = [...items.values()];
+      }
+      if (params.sortDirection === "desc") data.reverse();
+      const offset = params.cursor == null ? 0 : Number(params.cursor);
+      if (!Number.isSafeInteger(offset) || offset < 0 || offset > data.length) throw new Error("codex_history_invalid_cursor");
+      const limit = typeof params.limit === "number" ? Math.max(1, Math.min(100, params.limit)) : 100;
+      return { data: data.slice(offset, offset + limit), nextCursor: offset + limit < data.length ? String(offset + limit) : null };
+    }
     if (method === "thread/read") {
       if (this.#core === null) {
         this.#recoveryTurnBindingPending = true;

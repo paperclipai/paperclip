@@ -652,6 +652,19 @@ pub fn normalize_codex_notification(method: &str, params: &Value) -> Vec<Normali
                 }),
             );
         }
+        "paperclip/resumeUsageSnapshot" => push(
+            &mut events,
+            "harness.diagnostic",
+            EventPriority::P0,
+            json!({
+                "code": "codex_resume_usage_snapshot",
+                "method": "thread/tokenUsage/updated",
+                "classification": "resume_usage_snapshot",
+                "receivedThreadId": params.get("threadId"),
+                "receivedTurnId": params.get("turnId"),
+                "cumulative": measurement(params.get("total").unwrap_or(&Value::Null)),
+            }),
+        ),
         "thread/tokenUsage/updated" => {
             let cumulative = params
                 .get("tokenUsage")

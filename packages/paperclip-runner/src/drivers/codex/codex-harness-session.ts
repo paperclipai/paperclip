@@ -1,3 +1,5 @@
+import { readCodexThreadState, readCodexTurnMetadata, readCodexTurnItems } from "./codex-history.js";
+import { codexRunUsage } from "./codex-usage-baseline.js";
 import { randomUUID } from "node:crypto";
 import { NativeProviderTerminalFailure } from "../../contracts/native-session-backend.js";
 
@@ -104,6 +106,10 @@ export class CodexHarnessSession
       this.activeTurnId = null;
       this.pendingRuntimeRequestMap.clear();
       this.eventQueue.clear();
+    }
+    if (this.codexUsageBaseline) {
+      this.codexUsageBaseline = { baseline: { ...this.codexUsageBaseline.latest }, latest: { ...this.codexUsageBaseline.latest } };
+      this.usageSnapshot = codexRunUsage(this.codexUsageBaseline);
     }
     this.runId = input.runId;
     this.result = null;
@@ -615,10 +621,7 @@ export class CodexHarnessSession
     this.assertProtocolIntegrity();
     this.requireCapability("read");
     try {
-      const snapshot = await this.transport.request("thread/read", {
-        threadId: this.opened.threadId,
-        includeTurns: true,
-      });
+      const snapshot = await readCodexThreadState(this.transport, this.opened.threadId);
       this.assertProtocolIntegrity();
       return snapshot;
     } catch (error) {
@@ -646,7 +649,15 @@ export class CodexHarnessSession
         "thread/read returned a different provider session",
       );
     }
-    const turns = Array.isArray(thread.turns) ? thread.turns.map(record) : [];
+    const turns = await readCodexTurnMetadata(this.transport, this.opened.threadId);
+    thread.turns = turns;
+    for (const turn of turns) {
+      if ((text(turn.id) === this.activeTurnId || this.terminalTurns.has(text(turn.id)))
+        && text(turn.status) !== "inProgress") {
+        turn.items = await readCodexTurnItems(this.transport, this.opened.threadId, text(turn.id));
+        turn.itemsView = "full";
+      }
+    }
     const reconciledUsage = boundedPayload(
       record(thread.tokenUsage ?? snapshot.tokenUsage),
     );
@@ -749,6 +760,7 @@ export class CodexHarnessSession
               callId: this.resultCallId,
               turnId: this.resultTurnId,
             },
+      ...(this.codexUsageBaseline ? { codexUsageBaseline: structuredClone(this.codexUsageBaseline) } : {}),
       terminalTurns: [...this.terminalTurns].map(([turnId, fingerprint]) => ({
         turnId,
         fingerprint,

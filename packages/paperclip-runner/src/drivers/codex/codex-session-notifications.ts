@@ -1,3 +1,4 @@
+import { observeCodexUsage, codexRunUsage } from "./codex-usage-baseline.js";
 import { classifyCodexNotification } from "./codex-notification-identity.js";
 import { paperclipWorkspaceFileReferencesFromText } from "../../live/workspace-file-reference.js";
 import { canonicalProviderEventsFromCodex, isCanonicalProviderEventType } from "../../provider-events.js";
@@ -112,6 +113,20 @@ async function mapNotificationBody(state: CodexSessionState, notification: Codex
       rootThreadId: state.opened.threadId, activeTurnId: state.activeTurnId,
       knownThreads: new Set(state.lineageByThread.keys()), settledTurns: new Set(state.terminalTurns.keys()),
     });
+    if ((identity.classification === "root" || identity.classification === "stale_turn")
+      && identity.threadId === state.opened.threadId
+      && notification.method === "thread/tokenUsage/updated"
+      && identity.turnId !== null
+      && identity.turnId !== state.activeTurnId
+      && (state.activeTurnId === null || (identity.turnId !== null && state.terminalTurns.has(identity.turnId)))) {
+      state.codexUsageBaseline = observeCodexUsage(state.codexUsageBaseline, record(notification.params.tokenUsage).total, true);
+      state.usageSnapshot = codexRunUsage(state.codexUsageBaseline);
+      if (state.notificationIdentityDiagnostics++ < 32) state.emit("harness.diagnostic", {
+        code: "codex_resume_usage_snapshot", classification: "resume_usage_snapshot",
+        receivedThreadId: identity.threadId, receivedTurnId: identity.turnId,
+      });
+      return;
+    }
     if (identity.classification !== "root") {
       if (state.notificationIdentityDiagnostics < 32) {
         state.notificationIdentityDiagnostics += 1;
@@ -140,7 +155,12 @@ async function mapNotificationBody(state: CodexSessionState, notification: Codex
         state.failProtocol("provider_event_type_invalid", "Unknown canonical provider event type.");
         return;
       }
-      state.emit(params.eventType, record(params.payload), { turnId: turnId || undefined, itemId: itemId || undefined });
+      const canonicalPayload = record(params.payload);
+      if (params.eventType === "harness.diagnostic" && canonicalPayload.code === "codex_resume_usage_snapshot") {
+        state.codexUsageBaseline = observeCodexUsage(state.codexUsageBaseline, canonicalPayload.cumulative, true);
+        state.usageSnapshot = codexRunUsage(state.codexUsageBaseline);
+      }
+      state.emit(params.eventType, canonicalPayload, { turnId: turnId || undefined, itemId: itemId || undefined });
       return;
     }
     if (notification.method === "paperclip/workspaceChange/updated") {
@@ -513,6 +533,10 @@ async function mapNotificationBody(state: CodexSessionState, notification: Codex
     }
     if (notification.method === "thread/tokenUsage/updated") {
       state.usageSnapshot = boundedPayload(record(params.tokenUsage));
+      if (state.driverKind === "codex_app_server" && Object.keys(record(record(params.tokenUsage).total)).length > 0) {
+        state.codexUsageBaseline = observeCodexUsage(state.codexUsageBaseline, record(params.tokenUsage).total, false);
+        state.usageSnapshot = { ...state.usageSnapshot, ...codexRunUsage(state.codexUsageBaseline) };
+      }
       // Codex can replay a thread-scoped usage snapshot while a resumed thread
       // is being attached, before the next turn has started. Keep the snapshot,
       // but do not turn that benign replay into a fatal turn-binding violation.

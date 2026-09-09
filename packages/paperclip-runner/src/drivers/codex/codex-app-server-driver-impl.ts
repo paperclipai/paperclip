@@ -1,3 +1,4 @@
+import { readCodexThreadState, readCodexTurnMetadata } from "./codex-history.js";
 import { codexExecutableReadOnlyRoots } from "./codex-security-config.js";
 import { resolve } from "node:path";
 
@@ -372,13 +373,11 @@ export class CodexAppServerDriver implements HarnessDriver {
       await cancellation.wait(this.#persistProcessOwnership(transport));
       const initialize = await cancellation.wait(this.#initialize(transport));
       const existing = await cancellation.wait(
-        transport.request("thread/read", {
-          threadId: snapshot.driverSessionId,
-          includeTurns: true,
-        }),
+        readCodexThreadState(transport, snapshot.driverSessionId),
       );
       await cancellation.wait(this.#persistProcessOwnership(transport));
       const existingThread = record(existing.thread);
+      existingThread.turns = await cancellation.wait(readCodexTurnMetadata(transport, snapshot.driverSessionId));
       if (text(existingThread.id) !== snapshot.driverSessionId) {
         await cancellation.wait(cancellation.close());
         return {
@@ -393,6 +392,7 @@ export class CodexAppServerDriver implements HarnessDriver {
       );
       const response = await cancellation.wait(
         transport.request("thread/resume", {
+          excludeTurns: true,
           threadId: snapshot.driverSessionId,
           ...createSecuredCodexThreadParams(
             workingDirectory,
@@ -600,6 +600,7 @@ export class CodexAppServerDriver implements HarnessDriver {
         activeTurnId: recoveredActiveTurnId,
         semanticResult: snapshot.semanticResult ?? null,
         terminalTurns: snapshot.terminalTurns ?? [],
+        codexUsageBaseline: snapshot.codexUsageBaseline,
         dispositionOnlyRecoveryConsumed,
         dispositionOnlyRecoveryTurnId,
         stalePendingRuntimeRequests: snapshot.pendingRuntimeRequests ?? [],
@@ -891,6 +892,7 @@ export class CodexAppServerDriver implements HarnessDriver {
     activeTurnId?: string | null;
     semanticResult?: PersistedHarnessSemanticResult | null;
     terminalTurns?: PersistedHarnessTurnTerminal[];
+    codexUsageBaseline?: PersistedHarnessSession["codexUsageBaseline"];
     dispositionOnlyRecoveryConsumed?: boolean;
     dispositionOnlyRecoveryTurnId?: string | null;
     stalePendingRuntimeRequests?: HarnessRuntimeRequest[];
