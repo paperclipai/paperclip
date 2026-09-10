@@ -77,6 +77,40 @@ describe("issue graph liveness classifier", () => {
     });
   });
 
+  it("treats a board-owned terminal review stop as an explicit waiting path", () => {
+    const findings = classifyIssueGraphLiveness({
+      issues: [
+        issue(),
+        issue({
+          id: blockerId,
+          identifier: "PAP-1704",
+          title: "Stopped review",
+          status: "blocked",
+          assigneeAgentId: coderId,
+          executionState: {
+            status: "stopped",
+            currentStageId: null,
+            currentStageIndex: null,
+            currentStageType: null,
+            currentParticipant: null,
+            returnAssignee: { type: "agent", agentId: coderId },
+            completedStageIds: [],
+            lastDecisionId: "decision-1",
+            lastDecisionOutcome: "stopped",
+          },
+          unblockDescriptor: {
+            owner: "board",
+            action: "Board review is required before this issue can continue.",
+          },
+        }),
+      ],
+      relations: blocks,
+      agents: [agent(), manager],
+    });
+
+    expect(findings).toEqual([]);
+  });
+
   it("does not use free-form executive role or name matching for recovery ownership", () => {
     const rootAgentId = "root-agent";
     const spoofedExecutiveId = "spoofed-executive";

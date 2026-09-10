@@ -535,7 +535,7 @@ export const ISSUE_EXECUTION_MONITOR_RECOVERY_POLICIES = [
 export type IssueExecutionMonitorRecoveryPolicy =
   (typeof ISSUE_EXECUTION_MONITOR_RECOVERY_POLICIES)[number];
 
-export const ISSUE_EXECUTION_STATE_STATUSES = ["idle", "pending", "changes_requested", "completed"] as const;
+export const ISSUE_EXECUTION_STATE_STATUSES = ["idle", "pending", "changes_requested", "completed", "stopped"] as const;
 export type IssueExecutionStateStatus = (typeof ISSUE_EXECUTION_STATE_STATUSES)[number];
 
 export const ISSUE_EXECUTION_MONITOR_STATE_STATUSES = ["scheduled", "triggered", "cleared"] as const;
@@ -554,7 +554,7 @@ export const ISSUE_EXECUTION_MONITOR_CLEAR_REASONS = [
 ] as const;
 export type IssueExecutionMonitorClearReason = (typeof ISSUE_EXECUTION_MONITOR_CLEAR_REASONS)[number];
 
-export const ISSUE_EXECUTION_DECISION_OUTCOMES = ["approved", "changes_requested"] as const;
+export const ISSUE_EXECUTION_DECISION_OUTCOMES = ["approved", "changes_requested", "stopped"] as const;
 export type IssueExecutionDecisionOutcome = (typeof ISSUE_EXECUTION_DECISION_OUTCOMES)[number];
 
 export const GOAL_LEVELS = ["company", "team", "agent", "task"] as const;

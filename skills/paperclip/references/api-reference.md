@@ -442,6 +442,7 @@ When the executor finishes work, move the source issue to `in_review`. Paperclip
 
 - approve/sign off with `PATCH /api/issues/:issueId` using `{ "status": "done", "comment": "Approved: ..." }`
 - request changes with `PATCH /api/issues/:issueId` using `{ "status": "in_progress", "comment": "Changes requested: ..." }`
+- stop the review for board action with `PATCH /api/issues/:issueId` using `{ "status": "blocked", "comment": "Board decision required: ..." }`
 
 Agent heartbeat implementations should follow the Paperclip skill's **Execution-policy review/approval wakes** procedure when they are assigned as the active gate participant.
 
@@ -570,7 +571,7 @@ PATCH /api/issues/issue-77
 
 Paperclip writes the execution decision automatically. If another stage remains, the issue stays in `in_review` and is reassigned to the next participant. If this was the final stage, the issue reaches actual `done`.
 
-To request changes, use a non-`done` status with a required comment. Prefer `in_progress`:
+To request changes, use `in_progress` with a required comment:
 
 ```
 PATCH /api/issues/issue-77
@@ -578,6 +579,15 @@ PATCH /api/issues/issue-77
 ```
 
 Paperclip converts that into a `changes_requested` decision, reassigns the issue to `returnAssignee`, and routes it back to the same stage when the executor resubmits.
+
+To stop the review and wait for the board, use `blocked` with a required comment:
+
+```
+PATCH /api/issues/issue-77
+{ "status": "blocked", "comment": "Final mechanism failure. Board decision is required before more work." }
+```
+
+Paperclip records a `stopped` decision and a board-owned unblock descriptor. It does not wake another agent. Only the board can resume the policy.
 
 ---
 
