@@ -6735,7 +6735,7 @@ export function issueService(db: Db) {
           updatedAt: issues.updatedAt,
         })
         .from(issues)
-        .where(and(eq(issues.companyId, parent.companyId), eq(issues.parentId, parentIssueId)))
+        .where(and(eq(issues.companyId, parent.companyId), eq(issues.parentId, parentIssueId), or(isNull(issues.originKind), ne(issues.originKind, "task_watchdog"))))
         .orderBy(asc(issues.issueNumber), asc(issues.createdAt));
       if (children.length === 0) return null;
       if (!children.every((child) => child.status === "done" || child.status === "cancelled")) {

@@ -28,6 +28,7 @@ import { issueService } from "../issues.js";
 import { issueThreadInteractionService } from "../issue-thread-interactions.js";
 import { issueRecoveryActionService } from "../issue-recovery-actions.js";
 import { buildIssueBlockersResolvedWakeIdempotencyKey } from "../issue-dependency-wakeups.js";
+import { TASK_WATCHDOG_ORIGIN_KIND } from "../task-watchdog-scope.js";
 import { persistActivity, publishActivity, type ActivityPublication } from "../activity-log.js";
 import { emitAgentTaskRun } from "../agent-task-run-telemetry.js";
 
@@ -1196,7 +1197,7 @@ export async function commitNativeStatusDecision(input: {
           const summary = record(record(rows[0]?.resultJson).result).summary;
           return typeof summary === "string" && summary.trim().length > 0 ? summary.trim() : null;
         });
-      const parent = issue.parentId
+      const parent = issue.parentId && issue.originKind !== TASK_WATCHDOG_ORIGIN_KIND
         ? await issueSvc.getWakeableParentAfterChildCompletion(issue.parentId, {
             issueId: input.issueId,
             summary: completedResultSummary,

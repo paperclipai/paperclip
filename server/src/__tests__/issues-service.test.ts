@@ -4859,6 +4859,126 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
       childIssueSummaryTruncated: false,
     });
   });
+
+  it("excludes only exact task_watchdog children before readiness, ids, summaries, and truncation", async () => {
+    const companyId = randomUUID();
+    const assigneeAgentId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: assigneeAgentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    // Keep the explicit IS NULL compatibility branch covered even though current
+    // installations create origin_kind as NOT NULL. Older restored databases may
+    // still contain nulls, and the child-completion contract keeps them as work.
+    await db.execute(sql.raw('ALTER TABLE "issues" ALTER COLUMN "origin_kind" DROP NOT NULL'));
+
+    const parentId = randomUUID();
+    const watchdogOnlyParentId = randomUUID();
+    const normalChildIds = Array.from({ length: 20 }, () => randomUUID());
+    const watchdogChildIds = Array.from({ length: 5 }, () => randomUUID());
+    await db.insert(issues).values([
+      {
+        id: parentId,
+        companyId,
+        issueNumber: 1,
+        title: "Parent with real work",
+        status: "todo",
+        priority: "medium",
+        assigneeAgentId,
+      },
+      {
+        id: watchdogOnlyParentId,
+        companyId,
+        issueNumber: 2,
+        title: "Watchdog-only parent",
+        status: "todo",
+        priority: "medium",
+        assigneeAgentId,
+      },
+      ...normalChildIds.map((id, index) => ({
+        id,
+        companyId,
+        parentId,
+        issueNumber: 10 + index,
+        title: `Work child ${index + 1}`,
+        status: index === normalChildIds.length - 1 ? "todo" : "done",
+        priority: "medium",
+        originKind:
+          index === 0
+            ? (null as unknown as string)
+            : index === 1
+              ? "task_watchdog_product_bug"
+              : index === 2
+                ? "custom_automation"
+                : "manual",
+      })),
+      ...watchdogChildIds.map((id, index) => ({
+        id,
+        companyId,
+        parentId,
+        issueNumber: 100 + index,
+        title: `Synthetic watchdog ${index + 1}`,
+        status: index % 2 === 0 ? "todo" : "in_progress",
+        priority: "medium",
+        originKind: "task_watchdog",
+      })),
+      {
+        id: randomUUID(),
+        companyId,
+        parentId: watchdogOnlyParentId,
+        issueNumber: 200,
+        title: "Only synthetic child",
+        status: "done",
+        priority: "medium",
+        originKind: "task_watchdog",
+      },
+    ]);
+
+    expect(await svc.getWakeableParentAfterChildCompletion(parentId)).toBeNull();
+    expect(await svc.getWakeableParentAfterChildCompletion(watchdogOnlyParentId)).toBeNull();
+
+    await svc.update(normalChildIds.at(-1)!, { status: "done" });
+    const ready = await svc.getWakeableParentAfterChildCompletion(parentId);
+    expect(ready).toMatchObject({
+      id: parentId,
+      assigneeAgentId,
+      childIssueSummaryTruncated: false,
+    });
+    expect(ready?.childIssueIds).toEqual(normalChildIds);
+    expect(ready?.childIssueSummaries).toHaveLength(20);
+    expect(ready?.childIssueSummaries.map((child) => child.id)).toEqual(normalChildIds);
+    expect(ready?.childIssueIds.some((id) => watchdogChildIds.includes(id))).toBe(false);
+
+    const twentyFirstWorkChildId = randomUUID();
+    await db.insert(issues).values({
+      id: twentyFirstWorkChildId,
+      companyId,
+      parentId,
+      issueNumber: 30,
+      title: "Twenty-first work child",
+      status: "cancelled",
+      priority: "medium",
+      originKind: "manual",
+    });
+    const truncated = await svc.getWakeableParentAfterChildCompletion(parentId);
+    expect(truncated?.childIssueIds).toEqual([...normalChildIds, twentyFirstWorkChildId]);
+    expect(truncated?.childIssueSummaries).toHaveLength(20);
+    expect(truncated?.childIssueSummaryTruncated).toBe(true);
+  });
 });
 
 describeEmbeddedPostgres("issueService.create workspace inheritance", () => {

@@ -62,6 +62,9 @@ vi.mock("../services/index.js", () => ({
   heartbeatService: () => ({
     wakeup: mockWakeup,
     reportRunActivity: vi.fn(async () => undefined),
+    getRun: vi.fn(async () => null),
+    getActiveRunForAgent: vi.fn(async () => null),
+    cancelRun: vi.fn(async () => null),
   }),
   getIssueContinuationSummaryDocument: vi.fn(async () => null),
   instanceSettingsService: () => ({
@@ -326,6 +329,7 @@ describe("issue dependency wakeups in issue routes", () => {
       status: "in_progress",
       priority: "medium",
       parentId: "parent-1",
+      originKind: "task_watchdog_product_bug",
       assigneeAgentId: "agent-1",
       assigneeUserId: null,
       createdByAgentId: null,
@@ -343,6 +347,7 @@ describe("issue dependency wakeups in issue routes", () => {
       status: "done",
       priority: "medium",
       parentId: "parent-1",
+      originKind: "task_watchdog_product_bug",
       assigneeAgentId: "agent-1",
       assigneeUserId: null,
       createdByAgentId: null,
@@ -681,4 +686,45 @@ describe("issue dependency wakeups in issue routes", () => {
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(mockWakeup).not.toHaveBeenCalled();
   });
+  it.each(["done", "cancelled"] as const)(
+    "does not evaluate or wake the parent when an exact task_watchdog child becomes %s",
+    async (status) => {
+      const watchdog = {
+        id: "watchdog-1",
+        companyId: "company-1",
+        identifier: "PAP-102",
+        title: "Synthetic watchdog",
+        description: null,
+        status: "in_progress",
+        priority: "medium",
+        parentId: "parent-1",
+        originKind: "task_watchdog",
+        assigneeAgentId: "agent-1",
+        assigneeUserId: null,
+        createdByAgentId: null,
+        createdByUserId: null,
+        executionWorkspaceId: null,
+        labels: [],
+        labelIds: [],
+      };
+      mockIssueService.getById.mockResolvedValue(watchdog);
+      mockIssueService.update.mockResolvedValue({ ...watchdog, status });
+      mockIssueService.getWakeableParentAfterChildCompletion.mockResolvedValue({
+        id: "parent-1",
+        assigneeAgentId: "agent-9",
+        childIssueIds: [watchdog.id],
+        childIssueSummaries: [],
+        childIssueSummaryTruncated: false,
+      });
+
+      const res = await request(await createApp())
+        .patch(`/api/issues/${watchdog.id}`)
+        .send({ status });
+
+      expect(res.status).toBe(200);
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(mockIssueService.getWakeableParentAfterChildCompletion).not.toHaveBeenCalled();
+      expect(mockWakeup.mock.calls.some(([, wakeup]) => wakeup.reason === "issue_children_completed")).toBe(false);
+    },
+  );
 });
