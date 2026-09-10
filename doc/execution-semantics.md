@@ -144,6 +144,10 @@ The active-lock lifecycle is part of the checkout contract:
 
 Stale-lock recovery is crash recovery, not a retry loop. Paperclip must not clear or adopt locks held by non-terminal runs. After stale cleanup, a checkout `409` should mean a real live owner, status/assignee mismatch, unresolved blocker, or active gate still prevents checkout. Agents must treat that `409` as an ownership conflict and stop rather than retrying the same checkout.
 
+Checkout never reopens a terminal issue (`done` or `cancelled`), even if a caller includes that terminal value in `expectedStatuses`. Resuming completed work is a separate, explicit action: first reopen the issue with an authenticated `PATCH /api/issues/{issueId}` status update, then let the new run checkout the resulting non-terminal issue.
+
+For a row affected by the former checkout defect, the strongest signature is an issue that should be complete but is `in_progress` while its prior `completedAt` or `cancelledAt` timestamp remains set; checkout and execution run IDs may be null, stale, or non-null. After confirming the intended terminal state from audit history, a board operator restores it with `PATCH /api/issues/{issueId}` and body `{ "status": "done" }` (or `{ "status": "cancelled" }`). The explicit transition clears execution lock fields and writes a fresh terminal timestamp rather than preserving the old one. Confirm the response and a following `GET /api/issues/{issueId}` both report the intended terminal status before treating recovery as complete.
+
 ### Pre-dispatch configuration validation
 
 Pre-dispatch configuration validation is a distinct gate that runs after ownership and checkout are resolved but before the control plane actually dispatches a run.
