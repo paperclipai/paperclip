@@ -339,6 +339,9 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
       repoUrl: "https://github.com/paperclipai/paperclip.git",
       baseRef: "main",
       branchName: "PAP-16015-delivery",
+      // Match the sweep's millisecond clock; Postgres now() can fall just
+      // beyond its boundary within the same millisecond.
+      updatedAt: new Date(),
     });
     await db.insert(issues).values({
       id: sourceIssueId,
