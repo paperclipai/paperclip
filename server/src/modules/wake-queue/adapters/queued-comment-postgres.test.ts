@@ -505,4 +505,58 @@ describeEmbeddedPostgres("queued-comment postgres adapter", () => {
     expect(second.queue.entries).toHaveLength(0);
     expect(second.queue.steeringDisposition).toBe("temporarily_unavailable");
   });
+
+  it("bounds the live steering probe so a stalled provider answer cannot hold the transaction's row locks open", async () => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent({ companyId, adapterType: "paperclip_runner" });
+    const issueId = await seedIssue({ companyId, assigneeAgentId: agentId });
+    const firstCommentId = await seedComment({ companyId, issueId, authorUserId: "user-1" });
+    const secondCommentId = await seedComment({ companyId, issueId, authorUserId: "user-1" });
+    const wakeId = await seedDeferredWake({
+      companyId,
+      agentId,
+      issueId,
+      commentIds: [firstCommentId, secondCommentId],
+    });
+    const targetRunId = await seedRunningNativeRun({ companyId, agentId, issueId });
+
+    steerNativeSessionMock.mockResolvedValueOnce({ turnId: "turn-1" });
+    // The live provider never answers, standing in for a stalled
+    // native-runtime call. The probe must resolve on its own bound instead
+    // of leaving the steer's transaction, and its row locks, open forever.
+    // A second queued comment stays behind after this steer, so the shared
+    // rule still asks for a live probe instead of short-circuiting to
+    // "temporarily_unavailable" for an empty queue.
+    getNativeSessionSteeringStateMock.mockImplementationOnce(() => new Promise(() => {}));
+
+    const issueLock = createQueuedCommentIssueLockWriter(db, noopDeps);
+    const peeked = await issueLock.withLockedQueue(
+      {
+        issue: { id: issueId, companyId, assigneeAgentId: agentId, executionRunId: null },
+        actor: { actorType: "user", actorId: "user-1", agentId: null, runId: null, agentApiKeyId: null },
+        queueId: wakeId,
+      },
+      async (locked) => locked.queue,
+    );
+
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const resultPromise = issueLock.steerQueuedWakeComment({
+        issue: { id: issueId, companyId, assigneeAgentId: agentId, executionRunId: null },
+        actor: { actorType: "user", actorId: "user-1", agentId: null, runId: null, agentApiKeyId: null },
+        commentId: firstCommentId,
+        queueId: wakeId,
+        targetRunId,
+        revision: peeked.revision,
+      });
+      // Advance past the probe's own bound. A resolved promise here proves
+      // the bound fired; an unbounded wait would leave this promise pending.
+      await vi.advanceTimersByTimeAsync(5_000);
+      const result = await resultPromise;
+      expect(getNativeSessionSteeringStateMock).toHaveBeenCalledWith(targetRunId);
+      expect(result.queue.steeringDisposition).toBe("temporarily_unavailable");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

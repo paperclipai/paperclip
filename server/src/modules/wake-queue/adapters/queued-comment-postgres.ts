@@ -40,6 +40,30 @@ import type {
 type WakeRow = typeof agentWakeupRequests.$inferSelect;
 type RunRow = typeof heartbeatRuns.$inferSelect;
 
+// `buildQueueSnapshot` awaits the live steering probe below while it runs
+// inside a lock-holding transaction (`for("update")` on the issue, wake, and
+// run rows). The native runtime call has no timeout of its own, so an
+// unbounded wait would hold those row locks for as long as the provider
+// takes to answer. This bound keeps the wait, and so the lock hold, short.
+const LIVE_STEERING_PROBE_TIMEOUT_MS = 2_000;
+
+/** Rejects after `timeoutMs` if `promise` has not settled yet, so a caller can bound how long it waits. */
+function rejectAfterTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("live steering probe timed out")), timeoutMs);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+}
+
 function toWakeRow(row: WakeRow): QueuedCommentWakeRow {
   return { id: row.id, agentId: row.agentId, status: row.status, runId: row.runId, payload: parseObject(row.payload) };
 }
@@ -174,7 +198,7 @@ function buildTransaction(tx: Db, companyId: string, deps: QueuedCommentQueuePos
         steering.kind !== "probe"
           ? steering.kind
           : probeLiveSteering
-            ? await getNativeSessionSteeringState(steering.steeringRunId)
+            ? await rejectAfterTimeout(getNativeSessionSteeringState(steering.steeringRunId), LIVE_STEERING_PROBE_TIMEOUT_MS)
                 .then((liveState) => liveState.disposition)
                 .catch(() => "temporarily_unavailable" as const)
             : "temporarily_unavailable";
