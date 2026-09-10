@@ -55,3 +55,17 @@ export async function listAgyModels(command = "agy"): Promise<{ id: string; labe
 
   return fallbackModels;
 }
+
+export function inferModelProvider(model: string): string {
+  const normalized = model.trim().toLowerCase();
+  if (normalized.startsWith("claude")) return "anthropic";
+  if (
+    normalized.startsWith("gpt") ||
+    normalized.startsWith("openai") ||
+    normalized.startsWith("o1") ||
+    normalized.startsWith("o3")
+  ) {
+    return "openai";
+  }
+  return "google";
+}

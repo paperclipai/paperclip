@@ -1,15 +1,38 @@
 import type { AdapterSessionCodec } from "@paperclipai/adapter-utils";
 import { asString, parseObject } from "@paperclipai/adapter-utils/server-utils";
 
-export { execute } from "./execute.js";
+export { execute, modelHasEffortSuffix, resolveAgyPrintTimeoutSec } from "./execute.js";
 export { testEnvironment } from "./test.js";
-export { listAgySkills as listSkills, syncAgySkills as syncSkills } from "./skills.js";
-export { listAgyModels } from "./models.js";
+export {
+  listAgySkills as listSkills,
+  syncAgySkills as syncSkills,
+  resolveAgySkillRoot,
+  resolveAgySkillsHome,
+  syncSkillsForRun,
+  describeRunSkillSync,
+  sanitizeAgentIdSegment,
+  AGY_WORKSPACE_SKILL_SUBPATH,
+  AGY_GLOBAL_SKILLS_HOME_SEGMENTS,
+  AGY_AGENT_SKILL_ROOT_SEGMENTS,
+} from "./skills.js";
+export { listAgyModels, inferModelProvider } from "./models.js";
 export { listAgyAgents as listAgents, listAgyAgents, parseAgyAgentsOutput } from "./agents.js";
-export { parseAgyJsonl, isAgyUnknownSessionError } from "./parse.js";
+export {
+  parseAgyJsonl,
+  isAgyUnknownSessionError,
+  detectAgyAuthRequired,
+  detectAgyQuotaExhausted,
+  isAgyTransientNetworkError,
+  isAgySessionUnrecoverableError,
+  isAgySuccessResult,
+} from "./parse.js";
 
 export const sessionCodec: AdapterSessionCodec = {
   deserialize(raw) {
+    if (typeof raw === "string" && raw.trim().length > 0) {
+      const sessionId = raw.trim();
+      return { sessionId };
+    }
     const obj = parseObject(raw);
     const sessionId =
       asString(obj.sessionId, "") ||

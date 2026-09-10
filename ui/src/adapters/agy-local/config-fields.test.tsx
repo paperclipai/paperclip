@@ -132,4 +132,29 @@ describe("AgyLocalConfigFields", () => {
     });
     expect(result.set).toHaveBeenCalledWith({ mode: "plan" });
   });
+
+  it("renders skills location and per-agent skills root fields", () => {
+    const html = renderAgyStatic({ skillsScope: "global", skillsRootPath: "/custom/skills" });
+    expect(html).toContain('<option value="agent">Per-agent (recommended) — Isolated skill root per agent</option>');
+    expect(html).toContain('<option value="global" selected="">Shared agy config — ~/.gemini/config/skills</option>');
+    expect(html).toContain('value="/custom/skills"');
+  });
+
+  it("updates skillsScope on change in edit mode", () => {
+    const result = renderFields({
+      config: { skillsScope: "agent" },
+    });
+    roots.push(result.root);
+
+    const selects = result.container.querySelectorAll("select");
+    // Mode is first select, skillsScope is second select
+    const skillsSelect = selects[1];
+    expect(skillsSelect).not.toBeNull();
+
+    act(() => {
+      skillsSelect!.value = "global";
+      skillsSelect!.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    expect(result.mark).toHaveBeenCalledWith("adapterConfig", "skillsScope", "global");
+  });
 });

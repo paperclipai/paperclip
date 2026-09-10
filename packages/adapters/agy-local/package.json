@@ -16,7 +16,11 @@
     ".": "./src/index.ts",
     "./server": "./src/server/index.ts",
     "./ui": "./src/ui/index.ts",
-    "./cli": "./src/cli/index.ts"
+    "./cli": "./src/cli/index.ts",
+    "./ui-parser": "./ui-parser.cjs"
+  },
+  "paperclip": {
+    "adapterUiParser": "1.0.0"
   },
   "publishConfig": {
     "access": "public",
@@ -36,14 +40,16 @@
       "./cli": {
         "types": "./dist/cli/index.d.ts",
         "import": "./dist/cli/index.js"
-      }
+      },
+      "./ui-parser": "./ui-parser.cjs"
     },
     "main": "./dist/index.js",
     "types": "./dist/index.d.ts"
   },
   "files": [
     "dist",
-    "skills"
+    "skills",
+    "ui-parser.cjs"
   ],
   "scripts": {
     "build": "tsc",

@@ -53,6 +53,8 @@ Core fields:
 - jsonSchema (string, optional): JSON schema string or path to schema file to enforce structured output (--json-schema)
 - addDirs (string[], optional): additional workspace directories passed via --add-dir
 - workspaceStrategy (object, optional): execution workspace strategy; currently supports { type: "git_worktree", baseRef?, branchTemplate?, worktreeParentDir? }
+- skillsScope (string, optional): "agent" (default) keeps this agent's Paperclip skills in its own private root (~/.agy-paperclip/agents/<agentId>/.agents/skills) delivered with an extra --add-dir. "global" uses agy's shared ~/.gemini/config/skills.
+- skillsRootPath (string, optional): overrides the per-agent skill root; agy reads skills from <root>/.agents/skills. Ignored when skillsScope is "global".
 - command (string, optional): executable command name or path (defaults to "agy")
 - extraArgs (string[], optional): additional CLI args passed to agy
 - env (object, optional): KEY=VALUE environment variables
@@ -65,4 +67,6 @@ Notes:
 - Runs execute via non-interactive print mode: \`agy --print <prompt> --output-format stream-json --input-format text\`.
 - Sessions are maintained using \`--conversation <id>\` and automatically retried if a session is missing.
 - Workspace directory is added to Antigravity's context via \`--add-dir <cwd>\`.
+- Skills are delivered to Antigravity via an extra \`--add-dir\` pointing to the agent's isolated skill root, avoiding workspace repo pollution.
+- Live structured execution logs and tool calls render in the Paperclip UI via \`./ui-parser\` (contract 1.0.0).
 `;

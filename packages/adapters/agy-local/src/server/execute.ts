@@ -37,8 +37,23 @@ import {
   resolveLegacyPaperclipDesiredSkillNames,
   stringifyPaperclipWakePayload,
 } from "@paperclipai/adapter-utils/server-utils";
-import { isAgyUnknownSessionError, parseAgyJsonl } from "./parse.js";
-import { ensureAgySkillsInjected, resolveAgySkillsHome } from "./skills.js";
+import {
+  detectAgyAuthRequired,
+  detectAgyQuotaExhausted,
+  isAgySessionUnrecoverableError,
+  isAgyTransientNetworkError,
+  isAgyUnknownSessionError,
+  parseAgyJsonl,
+  type ParsedAgyOutput,
+} from "./parse.js";
+import {
+  describeRunSkillSync,
+  ensureAgySkillsInjected,
+  resolveAgySkillRoot,
+  resolveAgySkillsHome,
+  syncSkillsForRun,
+} from "./skills.js";
+import { inferModelProvider } from "./models.js";
 import { DEFAULT_AGY_LOCAL_MODEL } from "../index.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
@@ -50,6 +65,24 @@ function firstNonEmptyLine(text: string): string {
       .map((line) => line.trim())
       .find(Boolean) ?? ""
   );
+}
+
+/**
+ * Detect whether a model ID already includes a reasoning effort tier suffix.
+ * agy rejects --model plus --effort together when the model already specifies effort.
+ */
+export function modelHasEffortSuffix(model: string): boolean {
+  return /-(?:low|medium|high)$/i.test(model.trim());
+}
+
+/**
+ * Set agy's --print-timeout slightly below Paperclip's timeoutSec so agy exits cleanly
+ * and emits a result event before being terminated mid-stream.
+ */
+export function resolveAgyPrintTimeoutSec(timeoutSec: number): number {
+  if (!Number.isFinite(timeoutSec) || timeoutSec <= 0) return 0;
+  const margin = Math.max(10, Math.floor(timeoutSec * 0.05));
+  return Math.max(30, timeoutSec - margin);
 }
 
 export async function discoverAgySessionArtifacts(sessionId: string): Promise<string[]> {
@@ -137,14 +170,41 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const effectiveExecutionCwd = adapterExecutionTargetRemoteCwd(executionTarget, cwd);
   await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
 
-  const agySkillEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
-  const desiredAgySkillNames = resolveLegacyPaperclipDesiredSkillNames(config, agySkillEntries);
-  if (!executionTargetIsRemote) {
-    await ensureAgySkillsInjected(
-      onLog,
-      agySkillEntries,
-      desiredAgySkillNames,
-      resolveAgySkillsHome(config),
+  // ── Skills reconciliation and receipt logging ──────────────────────────────
+  let skillRoot = resolveAgySkillRoot({ config, agentId: agent.id });
+  let skillsAddDir: string | null = null;
+  if (skillRoot.addDir && !executionTargetIsRemote) {
+    try {
+      const runSync = await syncSkillsForRun({
+        config,
+        agentId: agent.id,
+        companyId: agent.companyId,
+      });
+      skillRoot = runSync.root;
+      for (const line of describeRunSkillSync(runSync)) {
+        await onLog("stdout", `${line}\n`);
+      }
+      for (const warning of runSync.warnings) {
+        await onLog("stdout", `[paperclip] skill sync: ${warning}\n`);
+      }
+    } catch (err) {
+      await onLog(
+        "stdout",
+        `[paperclip] Skill sync failed; the run continues without freshly synced skills: ${
+          err instanceof Error ? err.message : String(err)
+        }\n`,
+      );
+    }
+    const skillsHomeExists = await fs
+      .stat(skillRoot.skillsHome)
+      .then((stats) => stats.isDirectory())
+      .catch(() => false);
+    if (skillsHomeExists) skillsAddDir = skillRoot.addDir;
+  } else if (skillRoot.addDir && executionTargetIsRemote) {
+    await onLog(
+      "stdout",
+      `[paperclip] Skills synced to ${skillRoot.skillsHome} are not delivered to remote execution targets; ` +
+        `set skillsScope to "global" and provision ~/.gemini/config/skills in the target instead.\n`,
     );
   }
 
@@ -357,6 +417,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         args.push("--add-dir", addDir);
       }
     }
+    if (skillsAddDir) {
+      const resolved = path.resolve(skillsAddDir);
+      if (!addedDirs.has(resolved)) {
+        addedDirs.add(resolved);
+        args.push("--add-dir", skillsAddDir);
+      }
+    }
 
     if (dangerouslySkipPermissions) {
       args.push("--dangerously-skip-permissions");
@@ -437,27 +504,49 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     };
   };
 
+  type Attempt = Awaited<ReturnType<typeof runAttempt>>;
+
   const toResult = (
-    attempt: {
-      proc: {
-        exitCode: number | null;
-        signal: string | null;
-        timedOut: boolean;
-        stdout: string;
-        stderr: string;
-        errorCode?: string | null;
-      };
-      rawStderr: string;
-      parsed: ReturnType<typeof parseAgyJsonl>;
-    },
+    attempt: Attempt,
     clearSessionOnMissingSession = false,
   ): AdapterExecutionResult => {
+    const requiresAuth = detectAgyAuthRequired({
+      stdout: attempt.proc.stdout,
+      stderr: attempt.proc.stderr,
+      parsed: attempt.parsed,
+    }).requiresAuth;
+    const quotaExhausted = detectAgyQuotaExhausted({
+      stdout: attempt.proc.stdout,
+      stderr: attempt.proc.stderr,
+      parsed: attempt.parsed,
+    });
+    const networkUnavailable = isAgyTransientNetworkError(
+      attempt.proc.stdout,
+      attempt.proc.stderr,
+    );
+
+    const classifyErrorCode = (): string | null => {
+      if (attempt.proc.errorCode) return attempt.proc.errorCode;
+      if (requiresAuth) return "agy_auth_required";
+      if (quotaExhausted) return "agy_quota_exhausted";
+      if (networkUnavailable) return "agy_network_unavailable";
+      return null;
+    };
+
+    const errorFamily = quotaExhausted
+      ? ("provider_quota" as const)
+      : networkUnavailable
+        ? ("transient_upstream" as const)
+        : null;
+
     if (attempt.proc.timedOut) {
       return {
         exitCode: attempt.proc.exitCode,
         signal: attempt.proc.signal,
         timedOut: true,
         errorMessage: `Timed out after ${timeoutSec}s`,
+        errorCode: classifyErrorCode(),
+        errorFamily,
         clearSession: clearSessionOnMissingSession,
       };
     }
@@ -468,6 +557,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const resolvedSessionParams = resolvedSessionId
       ? ({
           sessionId: resolvedSessionId,
+          conversationId: resolvedSessionId,
           cwd: effectiveExecutionCwd,
           ...(workspaceId ? { workspaceId } : {}),
           ...(workspaceRepoUrl ? { repoUrl: workspaceRepoUrl } : {}),
@@ -488,13 +578,17 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       (parsedError || attempt.parsed.isError) && (rawExitCode ?? 0) === 0 ? 1 : rawExitCode;
     const fallbackErrorMessage =
       parsedError || stderrLine || `Antigravity exited with code ${synthesizedExitCode ?? -1}`;
+    const failed = (synthesizedExitCode ?? 0) !== 0;
+
+    const provider = inferModelProvider(model);
 
     return {
       exitCode: synthesizedExitCode,
       signal: attempt.proc.signal,
       timedOut: false,
-      errorMessage: (synthesizedExitCode ?? 0) === 0 ? null : fallbackErrorMessage,
-      errorCode: attempt.proc.errorCode ?? null,
+      errorMessage: failed ? fallbackErrorMessage : null,
+      errorCode: failed ? classifyErrorCode() : null,
+      errorFamily: failed ? errorFamily : null,
       usage: attempt.parsed.usage
         ? {
             inputTokens: attempt.parsed.usage.inputTokens,
@@ -502,17 +596,28 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             cachedInputTokens: attempt.parsed.usage.cachedInputTokens,
           }
         : undefined,
+      usageBasis: "per_run",
       sessionId: resolvedSessionId,
       sessionParams: resolvedSessionParams,
       sessionDisplayId: resolvedSessionId,
-      provider: "google",
+      provider,
       biller: "google",
       model: model || null,
-      billingType: "unknown",
+      billingType: "subscription",
       costUsd: attempt.parsed.costUsd ?? 0,
       resultJson: {
         stdout: attempt.proc.stdout,
         stderr: attempt.proc.stderr,
+        ...(attempt.parsed.resultJson ? attempt.parsed.resultJson : {}),
+        ...(attempt.parsed.thinkingTokens !== null
+          ? { thinking_tokens: attempt.parsed.thinkingTokens }
+          : {}),
+        ...(attempt.parsed.tools.length > 0
+          ? { tool_invocations: attempt.parsed.tools.map((t) => t.name) }
+          : {}),
+        ...(attempt.parsed.malformedLines > 0
+          ? { malformed_stream_lines: attempt.parsed.malformedLines }
+          : {}),
       },
       summary: attempt.parsed.summary,
       clearSession: Boolean(clearSessionOnMissingSession && !attempt.parsed.sessionId),
@@ -528,10 +633,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (
     sessionId &&
     initialFailed &&
-    isAgyUnknownSessionError({
+    (isAgyUnknownSessionError({
       stdout: initial.proc.stdout,
       stderr: initial.rawStderr,
-    })
+      errorMessage: initial.parsed.errorMessage,
+    }) ||
+      isAgySessionUnrecoverableError(initial.proc.stdout, initial.rawStderr))
   ) {
     await onLog(
       "stdout",
