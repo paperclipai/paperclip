@@ -9,10 +9,7 @@ import {
   withQueuedCommentIdsInRunContext,
   withQueuedCommentIdsInWakePayload,
 } from "../../../services/issue-queued-comment-queue.js";
-import {
-  decideQueuedCommentQueueRunState,
-  decideQueuedCommentWakeLookup,
-} from "../domain/policy.js";
+import { decideQueuedCommentWakeLookup } from "../domain/policy.js";
 import { parseObject, readNonEmptyString } from "../domain/values.js";
 import { QueuedCommentMutationError } from "../application/queued-comment-use-cases.js";
 import type {
@@ -248,11 +245,7 @@ export function createQueuedCommentIssueLockWriter(db: Db, deps: QueuedCommentQu
             .for("update")
             .limit(1)
             .then((rows) => rows[0] ?? null);
-          const runState = decideQueuedCommentQueueRunState({
-            queueRunPresent: queueRunRow !== null,
-            queueRunStatus: queueRunRow?.status ?? null,
-          });
-          if (runState.kind === "already_dispatching") {
+          if (!queueRunRow || queueRunRow.status !== "queued") {
             throw new QueuedCommentMutationError(
               "queued_comment_already_dispatching",
               "The queued message is already being dispatched",

@@ -1,8 +1,6 @@
 import type { IssueComment } from "@paperclipai/shared";
 import {
   decideQueuedCommentActorOwnsEntry,
-  decideQueuedCommentMutationTarget,
-  decideQueuedCommentRemovalOutcome,
   decideQueuedCommentReorder,
 } from "../domain/policy.js";
 import type {
@@ -41,14 +39,10 @@ export class QueuedCommentMutationForbiddenError extends Error {
 }
 
 function requireMutationTarget(queue: QueuedCommentQueueSnapshot, queueId: string, revision: string): void {
-  const decision = decideQueuedCommentMutationTarget({
-    queueIdMatches: queue.queueId === queueId,
-    revisionMatches: queue.revision === revision,
-  });
-  if (decision.kind === "stale_queue") {
+  if (queue.queueId !== queueId) {
     throw new QueuedCommentMutationError("queued_comment_stale_queue", "The queued message targets a stale queue");
   }
-  if (decision.kind === "revision_conflict") {
+  if (queue.revision !== revision) {
     throw new QueuedCommentMutationError("queued_comment_revision_conflict", "The queued messages changed in another session");
   }
 }
@@ -227,13 +221,13 @@ export function createDiscardQueuedComment(deps: { issueLock: QueuedCommentIssue
         await tx.syncCommentExternalObjectsSafely(input.commentId);
 
         const remainingIds = locked.queue.entries.map((candidate) => candidate.comment.id).filter((id) => id !== input.commentId);
-        const outcome = decideQueuedCommentRemovalOutcome({ remainingCount: remainingIds.length });
+        const queueBecomesEmpty = remainingIds.length === 0;
 
         let cancelledRun: { id: string } | null = null;
         let nextWake = locked.wake;
         let nextQueueRun = locked.queueRun;
 
-        if (outcome.kind === "empty") {
+        if (queueBecomesEmpty) {
           await tx.cancelWake({
             wakeId: locked.wake.id,
             reason: "Queued message discarded before dispatch",
@@ -278,9 +272,9 @@ export function createDiscardQueuedComment(deps: { issueLock: QueuedCommentIssue
         const queue = await tx.buildQueueSnapshot({
           issue: input.issue,
           actor: input.actor,
-          wake: outcome.kind === "empty" ? null : nextWake,
-          state: outcome.kind === "empty" ? null : locked.state,
-          queueRun: outcome.kind === "empty" ? null : (nextQueueRun ?? locked.queueRun),
+          wake: queueBecomesEmpty ? null : nextWake,
+          state: queueBecomesEmpty ? null : locked.state,
+          queueRun: queueBecomesEmpty ? null : (nextQueueRun ?? locked.queueRun),
           activeRun: locked.activeRun,
         });
 

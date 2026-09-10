@@ -3,10 +3,6 @@ import {
   decidePreDrain,
   decideQueuedCommentAction,
   decideQueuedCommentActorOwnsEntry,
-  decideQueuedCommentEntryPermissions,
-  decideQueuedCommentMutationTarget,
-  decideQueuedCommentQueueRunState,
-  decideQueuedCommentRemovalOutcome,
   decideQueuedCommentReorder,
   decideQueuedCommentWakeLookup,
   decideReleaseRecovery,
@@ -18,10 +14,6 @@ import {
   type ImmediateRecoveryContextLabels,
   type PreDrainFacts,
   type QueuedCommentActorOwnershipFacts,
-  type QueuedCommentEntryPermissionFacts,
-  type QueuedCommentMutationTargetFacts,
-  type QueuedCommentQueueRunFacts,
-  type QueuedCommentRemovalOutcomeFacts,
   type QueuedCommentReorderFacts,
   type QueuedCommentWakeLookupFacts,
   type ReleaseRecoveryFacts,
@@ -559,36 +551,6 @@ describe("decideWakeAdmission", () => {
   }
 });
 
-describe("decideQueuedCommentMutationTarget", () => {
-  const cases: Array<{
-    name: string;
-    facts: QueuedCommentMutationTargetFacts;
-    expected: ReturnType<typeof decideQueuedCommentMutationTarget>;
-  }> = [
-    {
-      name: "ok: the queue id and revision both match",
-      facts: { queueIdMatches: true, revisionMatches: true },
-      expected: { kind: "ok" },
-    },
-    {
-      name: "stale_queue: the queue id does not match, even when the revision would",
-      facts: { queueIdMatches: false, revisionMatches: true },
-      expected: { kind: "stale_queue" },
-    },
-    {
-      name: "revision_conflict: the queue id matches but the revision does not",
-      facts: { queueIdMatches: true, revisionMatches: false },
-      expected: { kind: "revision_conflict" },
-    },
-  ];
-
-  for (const testCase of cases) {
-    it(testCase.name, () => {
-      expect(decideQueuedCommentMutationTarget(testCase.facts)).toEqual(testCase.expected);
-    });
-  }
-});
-
 describe("decideQueuedCommentWakeLookup", () => {
   const baseFacts: QueuedCommentWakeLookupFacts = {
     wakePresent: true,
@@ -672,36 +634,6 @@ describe("decideQueuedCommentWakeLookup", () => {
   }
 });
 
-describe("decideQueuedCommentQueueRunState", () => {
-  const cases: Array<{
-    name: string;
-    facts: QueuedCommentQueueRunFacts;
-    expected: ReturnType<typeof decideQueuedCommentQueueRunState>;
-  }> = [
-    {
-      name: "queued: the linked run was found and is still queued",
-      facts: { queueRunPresent: true, queueRunStatus: "queued" },
-      expected: { kind: "queued" },
-    },
-    {
-      name: "already_dispatching: the linked run was not found",
-      facts: { queueRunPresent: false, queueRunStatus: null },
-      expected: { kind: "already_dispatching" },
-    },
-    {
-      name: "already_dispatching: the linked run already left the queued status",
-      facts: { queueRunPresent: true, queueRunStatus: "claimed" },
-      expected: { kind: "already_dispatching" },
-    },
-  ];
-
-  for (const testCase of cases) {
-    it(testCase.name, () => {
-      expect(decideQueuedCommentQueueRunState(testCase.facts)).toEqual(testCase.expected);
-    });
-  }
-});
-
 describe("decideQueuedCommentReorder", () => {
   const cases: Array<{
     name: string;
@@ -742,36 +674,6 @@ describe("decideQueuedCommentReorder", () => {
   }
 });
 
-describe("decideQueuedCommentEntryPermissions", () => {
-  const cases: Array<{
-    name: string;
-    facts: QueuedCommentEntryPermissionFacts;
-    expected: ReturnType<typeof decideQueuedCommentEntryPermissions>;
-  }> = [
-    {
-      name: "owned: a user actor authored the comment",
-      facts: { actorType: "user", actorId: "user-1", authorUserId: "user-1" },
-      expected: { canEdit: true, canDiscard: true },
-    },
-    {
-      name: "not owned: a user actor did not author the comment",
-      facts: { actorType: "user", actorId: "user-1", authorUserId: "user-2" },
-      expected: { canEdit: false, canDiscard: false },
-    },
-    {
-      name: "not owned: an agent actor is never granted queue-entry edit or discard",
-      facts: { actorType: "agent", actorId: "user-1", authorUserId: "user-1" },
-      expected: { canEdit: false, canDiscard: false },
-    },
-  ];
-
-  for (const testCase of cases) {
-    it(testCase.name, () => {
-      expect(decideQueuedCommentEntryPermissions(testCase.facts)).toEqual(testCase.expected);
-    });
-  }
-});
-
 describe("decideQueuedCommentActorOwnsEntry", () => {
   const cases: Array<{
     name: string;
@@ -808,36 +710,6 @@ describe("decideQueuedCommentActorOwnsEntry", () => {
   for (const testCase of cases) {
     it(testCase.name, () => {
       expect(decideQueuedCommentActorOwnsEntry(testCase.facts)).toBe(testCase.expected);
-    });
-  }
-});
-
-describe("decideQueuedCommentRemovalOutcome", () => {
-  const cases: Array<{
-    name: string;
-    facts: QueuedCommentRemovalOutcomeFacts;
-    expected: ReturnType<typeof decideQueuedCommentRemovalOutcome>;
-  }> = [
-    {
-      name: "empty: no queue entries remain",
-      facts: { remainingCount: 0 },
-      expected: { kind: "empty" },
-    },
-    {
-      name: "partial: one queue entry remains",
-      facts: { remainingCount: 1 },
-      expected: { kind: "partial" },
-    },
-    {
-      name: "partial: several queue entries remain",
-      facts: { remainingCount: 4 },
-      expected: { kind: "partial" },
-    },
-  ];
-
-  for (const testCase of cases) {
-    it(testCase.name, () => {
-      expect(decideQueuedCommentRemovalOutcome(testCase.facts)).toEqual(testCase.expected);
     });
   }
 });

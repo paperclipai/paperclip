@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { decideQueuedCommentQueueSteering } from "./issue-queued-comment-queue.js";
+import { buildQueuedCommentQueueSnapshot, decideQueuedCommentQueueSteering } from "./issue-queued-comment-queue.js";
 
 describe("decideQueuedCommentQueueSteering", () => {
   it("answers unsupported on the legacy protocol", () => {
@@ -66,5 +66,52 @@ describe("decideQueuedCommentQueueSteering", () => {
     });
 
     expect(decision).toEqual({ protocol: "paperclip_runner_v1", kind: "probe", steeringRunId: "run-1" });
+  });
+});
+
+describe("buildQueuedCommentQueueSnapshot entry permissions", () => {
+  const baseFacts = {
+    issueId: "issue-1",
+    queueId: "queue-1",
+    state: "queued" as const,
+    activeRunId: null,
+    protocol: "legacy" as const,
+    steeringDisposition: "unsupported" as const,
+  };
+
+  it("grants edit and discard to the user who authored the queued comment", () => {
+    const queue = buildQueuedCommentQueueSnapshot({
+      ...baseFacts,
+      actorType: "user",
+      actorId: "user-1",
+      comments: [{ id: "comment-1", updatedAt: new Date(), authorUserId: "user-1" }],
+    });
+
+    expect(queue.entries[0]?.canEdit).toBe(true);
+    expect(queue.entries[0]?.canDiscard).toBe(true);
+  });
+
+  it("denies edit and discard to a user who did not author the queued comment", () => {
+    const queue = buildQueuedCommentQueueSnapshot({
+      ...baseFacts,
+      actorType: "user",
+      actorId: "user-1",
+      comments: [{ id: "comment-1", updatedAt: new Date(), authorUserId: "user-2" }],
+    });
+
+    expect(queue.entries[0]?.canEdit).toBe(false);
+    expect(queue.entries[0]?.canDiscard).toBe(false);
+  });
+
+  it("denies edit and discard to an agent actor even when the comment carries a matching author id", () => {
+    const queue = buildQueuedCommentQueueSnapshot({
+      ...baseFacts,
+      actorType: "agent",
+      actorId: "user-1",
+      comments: [{ id: "comment-1", updatedAt: new Date(), authorUserId: "user-1" }],
+    });
+
+    expect(queue.entries[0]?.canEdit).toBe(false);
+    expect(queue.entries[0]?.canDiscard).toBe(false);
   });
 });
