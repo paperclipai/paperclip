@@ -320,5 +320,122 @@ describeEmbeddedPostgres("durable zombie reaper", () => {
       // Cleanup
       child.kill("SIGKILL");
     }, 10_000);
+
+    it(
+      "skips killing a detached PID whose start time does not match the run (recycled PID guard)",
+      async () => {
+        // On non-Linux the identity check is skipped (fail open), so this test
+        // only makes sense on Linux where /proc/<pid>/stat is readable.
+        if (process.platform !== "linux") return;
+
+        const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+          stdio: "ignore",
+        });
+        const pid = child.pid!;
+        expect(isPidAlive(pid)).toBe(true);
+
+        const companyId = await seedCompany();
+        const agentId = await seedAgent(companyId);
+        const runId = randomUUID();
+        const staleUpdatedAt = new Date(Date.now() - 60_000);
+
+        // processStartedAt is set 1 hour in the FUTURE — far outside the 30-s
+        // tolerance window, simulating a recycled PID whose original process
+        // started at a completely different time.
+        await db.insert(heartbeatRuns).values({
+          id: runId,
+          companyId,
+          agentId,
+          invocationSource: "assignment",
+          status: "running",
+          startedAt: staleUpdatedAt,
+          processPid: pid,
+          processStartedAt: new Date(Date.now() + 60 * 60 * 1000),
+          processLossRetryCount: 1,
+          errorCode: "process_detached",
+          error: "Lost in-memory process handle, but child pid is still alive",
+          updatedAt: staleUpdatedAt,
+          createdAt: staleUpdatedAt,
+        });
+
+        const heartbeat = heartbeatService(db);
+        await heartbeat.reapOrphanedRuns({ staleThresholdMs: 5 });
+
+        // The process must NOT have been killed — identity mismatch prevented it.
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        expect(isPidAlive(pid)).toBe(true);
+
+        // The run must still have been terminalized (DB cleanup must happen even
+        // when the kill is skipped due to the recycled-PID guard).
+        const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+        expect(run?.status).toMatch(/^(failed|interrupted|cancelled)$/);
+
+        // Cleanup
+        child.kill("SIGKILL");
+      },
+      10_000,
+    );
+  });
+
+  // ---------------------------------------------------------------------------
+  // reapSilentZombieRuns — edge cases (Issues 3 and 4)
+  // ---------------------------------------------------------------------------
+  describe("reapSilentZombieRuns — edge cases", () => {
+    it("terminates two zombie runs in one sweep even when the first has a null PID (loop continues)", async () => {
+      const companyId = await seedCompany();
+      const agentId = await seedAgent(companyId);
+
+      const runId1 = await seedRun(companyId, agentId, {
+        lastOutputAt: new Date(Date.now() - 5 * 60 * 60 * 1000),
+        processPid: null,
+        processGroupId: null,
+      });
+      const runId2 = await seedRun(companyId, agentId, {
+        lastOutputAt: new Date(Date.now() - 5 * 60 * 60 * 1000),
+        processPid: null,
+        processGroupId: null,
+      });
+
+      runningProcesses.set(runId1, { child: {} as never, graceSec: 30, processGroupId: null });
+      runningProcesses.set(runId2, { child: {} as never, graceSec: 30, processGroupId: null });
+
+      const heartbeat = heartbeatService(db);
+      const result = await heartbeat.reapSilentZombieRuns({ killThresholdMs: 0 });
+
+      // Both must be reaped — the loop must not abort after the first no-op kill.
+      expect(result.reaped).toBe(2);
+      expect(result.runIds).toContain(runId1);
+      expect(result.runIds).toContain(runId2);
+
+      const [r1] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId1));
+      const [r2] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId2));
+      expect(r1?.status).toBe("interrupted");
+      expect(r2?.status).toBe("interrupted");
+    });
+
+    it("terminates a live orphaned child when the DB row has been deleted", async () => {
+      const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+        stdio: "ignore",
+      });
+      const pid = child.pid!;
+      expect(isPidAlive(pid)).toBe(true);
+
+      const runId = randomUUID();
+      // No DB row seeded — simulates deletion while the process was still alive.
+      runningProcesses.set(runId, { child, graceSec: 30, processGroupId: null });
+
+      const heartbeat = heartbeatService(db);
+      await heartbeat.reapSilentZombieRuns({ killThresholdMs: 0 });
+
+      // The handle must be removed from the map.
+      expect(runningProcesses.has(runId)).toBe(false);
+
+      // The process must have been killed.
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      expect(isPidAlive(pid)).toBe(false);
+
+      // Cleanup
+      try { child.kill("SIGKILL"); } catch { /* ignore */ }
+    }, 10_000);
   });
 });

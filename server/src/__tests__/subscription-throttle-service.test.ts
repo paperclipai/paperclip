@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { subscriptionThrottleService } from "../services/subscription-throttle.js";
 import { subscriptionWindowUsage } from "../services/costs.js";
+import { subscriptionThrottleConfigSchema } from "@paperclipai/shared";
 
 // ---------------------------------------------------------------------------
 // Mocks
@@ -331,5 +332,68 @@ describe("subscriptionThrottleService.getStatus", () => {
     expect(status.estimatedCeilingTokens).toBe(1_500_000);
     expect(status.pausePercent).toBe(80);
     expect(status.resumePercent).toBe(50);
+  });
+
+  it("reflects live resume transition even when DB still shows throttle active", async () => {
+    // Persisted state says active (usage was 85% last time getBlock ran),
+    // but current usage has dropped below resumePercent (45%). getStatus must
+    // apply the resume logic inline rather than returning the stale persisted value.
+    const stateRow = { throttleActive: true, usagePercent: "85.0000", since: new Date(), updatedAt: new Date() };
+    const db = {
+      select: vi.fn().mockReturnValue({
+        from: vi.fn().mockReturnThis(),
+        where: vi.fn()
+          .mockResolvedValueOnce([stateRow]) // readState
+          .mockResolvedValueOnce([{ inputTokens: "675000", outputTokens: "0", cachedInputTokens: "0" }]), // 45%
+      }),
+      insert: mockInsert,
+    } as any;
+
+    const svc = subscriptionThrottleService(db, makeInstanceSvc(defaultConfig));
+    const status = await svc.getStatus("company-1");
+
+    expect(status.active).toBe(false);
+    expect(status.usagePercent).toBeCloseTo(45, 1);
+    expect(status.since).toBeNull();
+
+    // Must also write the deactivated state so subsequent reads are consistent.
+    expect(mockInsert).toHaveBeenCalled();
+    expect(mockInsertValues).toHaveBeenCalledWith(
+      expect.objectContaining({ throttleActive: false }),
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// subscriptionThrottleConfigSchema — threshold ordering validation
+// ---------------------------------------------------------------------------
+
+describe("subscriptionThrottleConfigSchema — threshold ordering", () => {
+  it("accepts a valid config where resumePercent < pausePercent", () => {
+    const result = subscriptionThrottleConfigSchema.safeParse({
+      pausePercent: 80,
+      resumePercent: 50,
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects a config where resumePercent equals pausePercent", () => {
+    const result = subscriptionThrottleConfigSchema.safeParse({
+      pausePercent: 80,
+      resumePercent: 80,
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects a config where resumePercent is greater than pausePercent", () => {
+    const result = subscriptionThrottleConfigSchema.safeParse({
+      pausePercent: 60,
+      resumePercent: 70,
+    });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      const paths = result.error.issues.map((i) => i.path.join("."));
+      expect(paths).toContain("resumePercent");
+    }
   });
 });
