@@ -1,3 +1,4 @@
+import type { ExecutionReconciliation } from "@paperclipai/shared";
 import type {
   AcceptedPlanDecompositionSummary,
   AskUserQuestionsAnswer,
@@ -25,8 +26,12 @@ import type {
   IssueTreeHold,
   IssueWatchdog,
   IssueWorkProduct,
+  RunnerGoalActionAccepted,
+  RunnerGoalActionRequest,
+  RunnerGoalProjection,
   PreviewIssueTreeControl,
   ReleaseIssueTreeHold,
+  ReleaseIssueTreeHoldResponse,
   UpsertIssueWatchdog,
   UpsertIssueDocument,
 } from "@paperclipai/shared";
@@ -153,6 +158,12 @@ export const issuesApi = {
   get: (id: string, options?: RequestOptions) => options
     ? api.get<Issue>(`/issues/${id}`, options)
     : api.get<Issue>(`/issues/${id}`),
+  getRunnerGoal: (id: string, agentId?: string | null) => {
+    const query = agentId ? `?agentId=${encodeURIComponent(agentId)}` : "";
+    return api.get<RunnerGoalProjection>(`/issues/${id}/runner-goal${query}`);
+  },
+  actOnRunnerGoal: (id: string, request: RunnerGoalActionRequest) =>
+    api.post<RunnerGoalActionAccepted>(`/issues/${id}/runner-goal/actions`, request),
   getWatchdog: (id: string) => api.get<IssueWatchdog | null>(`/issues/${id}/watchdog`),
   upsertWatchdog: (id: string, data: UpsertIssueWatchdog) =>
     api.put<IssueWatchdog>(`/issues/${id}/watchdog`, data),
@@ -172,6 +183,7 @@ export const issuesApi = {
   resolveRecoveryAction: (
     id: string,
     data: {
+      executionReconciliation?: ExecutionReconciliation;
       actionId?: string;
       outcome: "restored" | "false_positive" | "blocked" | "cancelled";
       sourceIssueStatus: "todo" | "done" | "in_review" | "blocked";
@@ -212,7 +224,7 @@ export const issuesApi = {
       } | null;
     }>(`/issues/${id}/tree-control/state`),
   releaseTreeHold: (id: string, holdId: string, data: ReleaseIssueTreeHold) =>
-    api.post<IssueTreeHold>(`/issues/${id}/tree-holds/${holdId}/release`, data),
+    api.post<ReleaseIssueTreeHoldResponse>(`/issues/${id}/tree-holds/${holdId}/release`, data),
   checkMonitorNow: (id: string) => api.post<{ ok: true }>(`/issues/${id}/monitor/check-now`, {}),
   retryScheduledRetryNow: (id: string) =>
     api.post<IssueRetryNowResponse>(`/issues/${id}/scheduled-retry/retry-now`, {}),
@@ -280,7 +292,7 @@ export const issuesApi = {
   acceptInteraction: (
     id: string,
     interactionId: string,
-    data?: { selectedClientKeys?: string[]; selectedOptionIds?: string[] },
+    data?: { selectedClientKeys?: string[]; selectedOptionIds?: string[]; rememberAction?: boolean },
   ) =>
     api.post<IssueThreadInteraction>(`/issues/${id}/interactions/${interactionId}/accept`, data ?? {}),
   rejectInteraction: (id: string, interactionId: string, reason?: string) =>
@@ -377,7 +389,10 @@ export const issuesApi = {
     api.post<Approval[]>(`/issues/${id}/approvals`, { approvalId }),
   unlinkApproval: (id: string, approvalId: string) =>
     api.delete<{ ok: true }>(`/issues/${id}/approvals/${approvalId}`),
-  listWorkProducts: (id: string) => api.get<IssueWorkProduct[]>(`/issues/${id}/work-products`),
+  listWorkProducts: (id: string, options?: { refreshPullRequests?: boolean }) =>
+    api.get<IssueWorkProduct[]>(
+      `/issues/${id}/work-products${options?.refreshPullRequests ? "?refreshPullRequests=true" : ""}`,
+    ),
   ensureWorkProductReviewDocument: (id: string, workProductId: string) =>
     api.post<IssueDocument>(`/issues/${id}/work-products/${workProductId}/review-document`, {}),
   createWorkProduct: (id: string, data: Record<string, unknown>) =>

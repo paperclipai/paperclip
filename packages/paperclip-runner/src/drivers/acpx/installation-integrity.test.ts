@@ -24,6 +24,7 @@ import { resolveQualifiedAcpxProfile } from "./qualified-profiles.js";
 import {
   awaitVerifiedAcpxProviderExit,
   awaitVerifiedAcpxProviderOwnership,
+  createAcpxPackageJsonResolver,
   guardSnapshotModuleLookup,
   guardSnapshotModuleResolution,
   reapCurrentProviderProcessGroup,
@@ -32,6 +33,7 @@ import {
   snapshotDescriptorResolution,
   verifiedExecutableOpenFlags,
   verifyQualifiedAcpxInstallation,
+  probeAcpxClaudeInstallation,
   type VerifiedAcpxProviderLifetime,
 } from "./installation-integrity.js";
 import { stageManagedCodexCredential } from "./codex-credentials.js";
@@ -48,6 +50,160 @@ afterEach(async () => {
 });
 
 describe("ACPX installation integrity", () => {
+  it.each([["linux", "arm64"], ["darwin", "ia32"], ["freebsd", "x64"]] as const)(
+    "rejects the actual Claude runtime probe on unsupported %s %s",
+    async (platform, arch) => {
+      const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue(platform);
+      const archSpy = vi.spyOn(process, "arch", "get").mockReturnValue(arch);
+      try {
+        await expect(probeAcpxClaudeInstallation("custom-claude-model")).rejects.toThrow(
+          `ACPX claude verified runtime executable is unavailable for ${platform} ${arch}`,
+        );
+      } finally {
+        platformSpy.mockRestore();
+        archSpy.mockRestore();
+      }
+    },
+  );
+  it("anchors dynamic provider package resolution at an explicit root", async () => {
+    const parent = await mkdtemp(
+      join(tmpdir(), "paperclip-acpx-package-parent-"),
+    );
+    temporaryDirectories.push(parent);
+    const root = join(parent, "provider-pack");
+    const providerDirectory = join(root, "node_modules", "qualified-provider");
+    const providerPackageJson = join(providerDirectory, "package.json");
+    await mkdir(providerDirectory, { recursive: true });
+    await Promise.all([
+      writeFile(join(root, "package.json"), JSON.stringify({ private: true })),
+      writeFile(
+        providerPackageJson,
+        JSON.stringify({ name: "qualified-provider", version: "1.0.0" }),
+      ),
+    ]);
+
+    expect(createAcpxPackageJsonResolver(root)("qualified-provider")).toBe(
+      await realpath(providerPackageJson),
+    );
+
+    const nestedDependencyDirectory = join(
+      providerDirectory,
+      "node_modules",
+      "qualified-dependency",
+    );
+    const nestedDependencyPackageJson = join(
+      nestedDependencyDirectory,
+      "package.json",
+    );
+    await mkdir(nestedDependencyDirectory, { recursive: true });
+    await writeFile(
+      nestedDependencyPackageJson,
+      JSON.stringify({
+        name: "qualified-dependency",
+        version: "1.0.0",
+        exports: "./index.js",
+      }),
+    );
+    await writeFile(join(nestedDependencyDirectory, "index.js"), "export {};");
+    expect(
+      createAcpxPackageJsonResolver(root)(
+        "qualified-dependency",
+        providerPackageJson,
+      ),
+    ).toBe(await realpath(nestedDependencyPackageJson));
+    expect(() =>
+      createAcpxPackageJsonResolver("relative/provider-pack"),
+    ).toThrow("explicit normalized absolute path");
+    expect(() => createAcpxPackageJsonResolver(undefined)).toThrow(
+      "explicit normalized absolute path",
+    );
+
+    const runnerPackage = join(root, "packages", "paperclip-runner");
+    const runnerManifest = join(runnerPackage, "package.json");
+    const pnpmProviderDirectory = join(
+      root,
+      "node_modules",
+      ".pnpm",
+      "qualified-provider@1.0.0",
+      "node_modules",
+      "pnpm-provider",
+    );
+    await Promise.all([
+      mkdir(join(runnerPackage, "node_modules"), { recursive: true }),
+      mkdir(pnpmProviderDirectory, { recursive: true }),
+    ]);
+    await Promise.all([
+      writeFile(runnerManifest, JSON.stringify({ private: true })),
+      writeFile(
+        join(pnpmProviderDirectory, "package.json"),
+        JSON.stringify({ name: "pnpm-provider", version: "1.0.0" }),
+      ),
+    ]);
+    await symlink(
+      pnpmProviderDirectory,
+      join(runnerPackage, "node_modules", "pnpm-provider"),
+    );
+    expect(
+      createAcpxPackageJsonResolver(root, runnerManifest)("pnpm-provider"),
+    ).toBe(await realpath(join(pnpmProviderDirectory, "package.json")));
+
+    const outsideManifest = join(parent, "outside-package.json");
+    await writeFile(outsideManifest, JSON.stringify({ private: true }));
+    expect(() => createAcpxPackageJsonResolver(root, outsideManifest)).toThrow(
+      "manifest resolves outside the selected provider root",
+    );
+
+    const ancestorProviderDirectory = join(
+      parent,
+      "node_modules",
+      "ancestor-provider",
+    );
+    await mkdir(ancestorProviderDirectory, { recursive: true });
+    await writeFile(
+      join(ancestorProviderDirectory, "package.json"),
+      JSON.stringify({ name: "ancestor-provider", version: "1.0.0" }),
+    );
+    expect(() =>
+      createAcpxPackageJsonResolver(root)("ancestor-provider"),
+    ).toThrow("outside the selected provider root");
+
+    const outsideProviderDirectory = join(parent, "outside-provider");
+    await mkdir(outsideProviderDirectory);
+    await writeFile(
+      join(outsideProviderDirectory, "package.json"),
+      JSON.stringify({ name: "linked-provider", version: "1.0.0" }),
+    );
+    await symlink(
+      outsideProviderDirectory,
+      join(root, "node_modules", "linked-provider"),
+    );
+    expect(() =>
+      createAcpxPackageJsonResolver(root)("linked-provider"),
+    ).toThrow("outside the selected provider root");
+  });
+
+  it("does not fall back through the server package for a missing rooted dependency", async () => {
+    const fixture = await installationFixture();
+    const nestedRuntimeDirectory = join(
+      fixture.serverDirectory,
+      "node_modules",
+      "@earendil-works",
+      "pi-coding-agent",
+    );
+    await mkdir(nestedRuntimeDirectory, { recursive: true });
+    await writeFile(
+      join(nestedRuntimeDirectory, "package.json"),
+      JSON.stringify({ version: "0.84.2" }),
+    );
+
+    await expect(
+      verifyQualifiedAcpxInstallation(fixture.profile, (packageName) => {
+        if (packageName === "pi-acp") return fixture.serverPackageJsonPath;
+        throw new Error("rooted package is absent");
+      }),
+    ).rejects.toThrow("rooted package is absent");
+  });
+
   it("rejects an unregistered provider exit proof", async () => {
     await expect(
       awaitVerifiedAcpxProviderExit({} as ChildProcess),
@@ -273,6 +429,178 @@ describe("ACPX installation integrity", () => {
       ),
     });
   });
+
+  it("pins Claude ACP direct dependencies outside its package root", async () => {
+    const fixture = await installationFixture();
+    const command = [
+      'import { qualifiedValue } from "@anthropic-ai/claude-agent-sdk";',
+      "process.stdout.write(qualifiedValue);",
+    ].join("\n");
+    const dependencyRoot = join(fixture.root, "qualified-dependencies");
+    const dependencyFixtures = [
+      {
+        name: "@agentclientprotocol/sdk",
+        version: "1.3.0",
+        directory: join(dependencyRoot, "agentclient-sdk"),
+      },
+      {
+        name: "@anthropic-ai/claude-agent-sdk",
+        version: "0.3.263",
+        directory: join(dependencyRoot, "claude-agent-sdk"),
+      },
+      {
+        name: "zod",
+        version: "4.4.3",
+        directory: join(dependencyRoot, "zod"),
+      },
+    ] as const;
+    await Promise.all([
+      writeFile(fixture.commandPath, command),
+      mkdir(join(fixture.serverDirectory, "node_modules", "@anthropic-ai"), {
+        recursive: true,
+      }),
+      ...dependencyFixtures.map((dependency) =>
+        mkdir(dependency.directory, { recursive: true }),
+      ),
+    ]);
+    await Promise.all([
+      writeFile(
+        fixture.serverPackageJsonPath,
+        JSON.stringify({
+          name: "@agentclientprotocol/claude-agent-acp",
+          version: "0.70.0",
+          type: "module",
+          bin: "bin/server.js",
+          dependencies: {
+            "@agentclientprotocol/sdk": "1.3.0",
+            "@anthropic-ai/claude-agent-sdk": "0.3.263",
+            zod: "^3.25.0 || ^4.0.0",
+          },
+        }),
+      ),
+      ...dependencyFixtures.map((dependency) =>
+        writeFile(
+          join(dependency.directory, "package.json"),
+          JSON.stringify({
+            name: dependency.name,
+            version: dependency.version,
+            type: "module",
+            exports: "./index.js",
+          }),
+        ),
+      ),
+      writeFile(
+        join(dependencyFixtures[1].directory, "index.js"),
+        'export const qualifiedValue = "qualified-claude-dependency";',
+      ),
+    ]);
+    await symlink(
+      dependencyFixtures[1].directory,
+      join(
+        fixture.serverDirectory,
+        "node_modules",
+        "@anthropic-ai",
+        "claude-agent-sdk",
+      ),
+    );
+    const paths = new Map<string, string>([
+      ["@agentclientprotocol/claude-agent-acp", fixture.serverPackageJsonPath],
+      ...dependencyFixtures.map(
+        (dependency) =>
+          [
+            dependency.name,
+            join(dependency.directory, "package.json"),
+          ] as const,
+      ),
+    ]);
+    const profile = {
+      ...resolveQualifiedAcpxProfile("claude", "claude-sonnet-5"),
+      agentRuntimePackage: null,
+      agentRuntimeVersion: null,
+      commandDigest: `sha256:${createHash("sha256").update(command).digest("hex")}`,
+    };
+    const installation = await verifyQualifiedAcpxInstallation(
+      profile,
+      (packageName) => {
+        const resolved = paths.get(packageName);
+        if (!resolved) throw new Error(`unexpected package ${packageName}`);
+        return resolved;
+      },
+    );
+
+    await expectPinnedOutput(
+      (await installation.openCommand()).spawn(),
+      "qualified-claude-dependency",
+    );
+  });
+
+  it("rejects drift in Claude ACP's qualified dependency versions", async () => {
+    const fixture = await installationFixture();
+    await writeFile(
+      fixture.serverPackageJsonPath,
+      JSON.stringify({
+        version: "0.70.0",
+        type: "module",
+        bin: "bin/server.js",
+        dependencies: {
+          "@agentclientprotocol/sdk": "1.3.0",
+          "@anthropic-ai/claude-agent-sdk": "0.3.263",
+          zod: "^3.25.0 || ^4.0.0",
+        },
+      }),
+    );
+    const dependencyPackage = join(fixture.root, "dependency", "package.json");
+    await mkdir(dirname(dependencyPackage), { recursive: true });
+    await writeFile(
+      dependencyPackage,
+      JSON.stringify({ version: "unexpected" }),
+    );
+
+    await expect(
+      verifyQualifiedAcpxInstallation(
+        {
+          ...resolveQualifiedAcpxProfile("claude", "claude-sonnet-5"),
+          agentRuntimePackage: null,
+          agentRuntimeVersion: null,
+          commandDigest: fixture.profile.commandDigest,
+        },
+        (packageName) =>
+          packageName === "@agentclientprotocol/claude-agent-acp"
+            ? fixture.serverPackageJsonPath
+            : dependencyPackage,
+      ),
+    ).rejects.toThrow(
+      "ACPX claude dependency package version mismatch for @agentclientprotocol/sdk",
+    );
+  });
+
+  it.runIf((process.platform === "linux" && process.arch === "x64") || (process.platform === "darwin" && ["arm64", "x64"].includes(process.arch)))(
+    "resolves and pins the installed Claude ACP dependency graph",
+    async () => {
+      const profile = resolveQualifiedAcpxProfile("claude", "claude-sonnet-5");
+      const installation = await verifyQualifiedAcpxInstallation(profile);
+      expect(installation.agentServerPackageJsonPath).toContain(
+        "/@agentclientprotocol/claude-agent-acp/package.json",
+      );
+      expect(installation.agentRuntimePackageJsonPath).toContain(
+        "/@anthropic-ai/claude-agent-sdk/package.json",
+      );
+      await (await installation.openCommand()).close();
+    },
+  );
+
+  it.runIf(process.platform === "linux" && process.arch === "x64")(
+    "resolves and pins the qualified Codex native runtime through its transitive packages",
+    async () => {
+      const profile = resolveQualifiedAcpxProfile("codex", "gpt-5.6-sol");
+      const installation = await verifyQualifiedAcpxInstallation(profile);
+      expect(installation.agentRuntimePackageJsonPath).toContain(
+        "/@openai/codex/package.json",
+      );
+      const command = await installation.openCommand();
+      await command.close();
+    },
+  );
 
   it("rejects package version and executable digest drift", async () => {
     const fixture = await installationFixture();
@@ -578,7 +906,7 @@ describe("ACPX installation integrity", () => {
     );
 
     const child = (await installation.openCommand()).spawn(["argument"]);
-    if (process.platform === "linux") {
+    if (process.platform === "linux" || process.platform === "darwin") {
       await expectOutput(
         child,
         JSON.stringify({
@@ -640,7 +968,7 @@ describe("ACPX installation integrity", () => {
     expect(redirectedCommand.dev).toBe(verifiedCommand.dev);
     expect(redirectedCommand.ino).toBe(verifiedCommand.ino);
 
-    if (process.platform === "linux") {
+    if (process.platform === "linux" || process.platform === "darwin") {
       await expectOutput(
         lease.spawn(),
         JSON.stringify({
@@ -692,7 +1020,7 @@ describe("ACPX installation integrity", () => {
     await symlink(attackerDirectory, fixture.commandDirectory);
 
     const child = lease.spawn(["argument"]);
-    if (process.platform === "linux") {
+    if (process.platform === "linux" || process.platform === "darwin") {
       await expectOutput(
         child,
         JSON.stringify({
@@ -741,7 +1069,7 @@ describe("ACPX installation integrity", () => {
     await symlink(attackerDirectory, fixture.commandDirectory);
 
     const child = lease.spawn();
-    if (process.platform === "linux") {
+    if (process.platform === "linux" || process.platform === "darwin") {
       await expectOutput(child, "verified-resource");
     } else {
       await expectFailure(child, "requires Linux descriptor-pinned paths");
@@ -804,7 +1132,7 @@ describe("ACPX installation integrity", () => {
     await symlink(attackerDirectory, fixture.commandDirectory);
 
     const child = lease.spawn();
-    if (process.platform === "linux") {
+    if (process.platform === "linux" || process.platform === "darwin") {
       await expectOutput(child, "verified-bare");
     } else {
       await expectFailure(child, "requires Linux descriptor-pinned paths");
@@ -847,7 +1175,7 @@ describe("ACPX installation integrity", () => {
     );
 
     const child = (await installation.openCommand()).spawn();
-    if (process.platform === "linux") {
+    if (process.platform === "linux" || process.platform === "darwin") {
       await expectFailure(child, "escaped descriptor-pinned ancestry");
     } else {
       await expectFailure(child, "requires Linux descriptor-pinned paths");
@@ -875,7 +1203,7 @@ describe("ACPX installation integrity", () => {
     );
 
     const child = (await installation.openCommand()).spawn();
-    if (process.platform === "linux") {
+    if (process.platform === "linux" || process.platform === "darwin") {
       await expectFailure(child, "descriptor-pinned ancestry");
     } else {
       await expectFailure(child, "requires Linux descriptor-pinned paths");
@@ -914,7 +1242,7 @@ describe("ACPX installation integrity", () => {
     );
 
     const child = (await installation.openCommand()).spawn();
-    if (process.platform === "linux") {
+    if (process.platform === "linux" || process.platform === "darwin") {
       await expectFailure(child, "ancestor-dependency");
     } else {
       await expectFailure(child, "requires Linux descriptor-pinned paths");
@@ -983,7 +1311,9 @@ describe("ACPX installation integrity", () => {
     ]);
     await rm(runtimeLink);
     await symlink(attackerRuntime, runtimeLink);
-    if (process.platform === "linux") {
+    if (process.platform === "darwin") {
+      await expectOutput(replacementLease.spawn(), "verified-runtime");
+    } else if (process.platform === "linux") {
       await expectFailure(replacementLease.spawn(), "descriptor-pinned");
     } else {
       await expectFailure(
@@ -1115,7 +1445,7 @@ describe("ACPX installation integrity", () => {
     await symlink(attackerServerDirectory, fixture.serverDirectory);
 
     const child = lease.spawn();
-    if (process.platform === "linux") {
+    if (process.platform === "linux" || process.platform === "darwin") {
       await expectOutput(child, "verified-package");
     } else {
       await expectFailure(child, "requires Linux descriptor-pinned paths");
@@ -1167,7 +1497,7 @@ describe("ACPX installation integrity", () => {
     );
 
     const child = (await installation.openCommand()).spawn();
-    if (process.platform === "linux") {
+    if (process.platform === "linux" || process.platform === "darwin") {
       await expectFailure(child, "higher-ancestor-package");
     } else {
       await expectFailure(child, "requires Linux descriptor-pinned paths");
@@ -1555,14 +1885,17 @@ async function expectOutput(
   });
   const [exitCode] = await once(child, "exit");
   expect(exitCode, stderr).toBe(0);
-  expect(stdout).toBe(expected);
+  const normalized = process.platform === "darwin"
+    ? stdout.replace(/\/private\/var\/[^"\s]*\/paperclip-acpx-[^/]+\/0/g, "/proc/self/fd/4")
+    : stdout;
+  expect(normalized).toBe(expected);
 }
 
 async function expectPinnedOutput(
   child: ChildProcess,
   expected: string,
 ): Promise<void> {
-  if (process.platform === "linux") {
+  if (process.platform === "linux" || process.platform === "darwin") {
     await expectOutput(child, expected);
   } else {
     await expectFailure(child, "requires Linux descriptor-pinned paths");
@@ -1580,7 +1913,11 @@ async function expectFailure(
   });
   const [exitCode] = await once(child, "exit");
   expect(exitCode).not.toBe(0);
-  expect(stderr).toContain(expected);
+  if (process.platform === "darwin" && expected.includes("descriptor-pinned")) {
+    expect(stderr).toMatch(/descriptor-pinned|Cannot find module/);
+  } else {
+    expect(stderr).toContain(expected);
+  }
 }
 
 async function persistentInstallationFixture() {

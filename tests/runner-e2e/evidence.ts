@@ -184,9 +184,9 @@ export async function packageEvidence(input: {
       files.push(relative);
     } else if (BINARY_EXTENSIONS.has(extension)) {
       // This raw-byte scan catches embedded plaintext credentials, but cannot
-      // inspect rendered pixels. Raster/video files are retained in the
-      // access-controlled CI artifact and stripped at the public-history
-      // boundary by history-publish.ts.
+      // inspect rendered pixels. Provider/UI raster and video files remain in
+      // the access-controlled CI artifact. The public publisher creates its
+      // own synthetic summary image from fixed labels and numeric/status data.
       const raw = await readFile(source);
       const leak = findSecretLeak(raw, input.secrets);
       if (leak) {

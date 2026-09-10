@@ -11,6 +11,7 @@ import {
   clearLocalInboxArchive,
   getLocalInboxArchiveIssueIds,
 } from "../lib/inboxArchiveCache";
+import { taskCollectionPreferencesStorageKey } from "../lib/task-collection-preferences";
 
 const routerMock = vi.hoisted(() => ({
   location: { pathname: "/", search: "", hash: "" },
@@ -360,7 +361,10 @@ function resetInboxApiMocks() {
   apiMocks.agentsList.mockResolvedValue([]);
   apiMocks.heartbeatRunsList.mockResolvedValue([]);
   apiMocks.liveRunsForCompany.mockResolvedValue([]);
-  apiMocks.experimentalSettings.mockResolvedValue({ enableIsolatedWorkspaces: false });
+  apiMocks.experimentalSettings.mockResolvedValue({
+    enableIsolatedWorkspaces: false,
+    enableStreamlinedUi: true,
+  });
   apiMocks.projectsList.mockResolvedValue([]);
 }
 
@@ -368,6 +372,7 @@ describe("Inbox toolbar", () => {
   let container: HTMLDivElement;
 
   beforeEach(() => {
+    localStorage.clear();
     resetInboxApiMocks();
     container = document.createElement("div");
     document.body.appendChild(container);
@@ -378,6 +383,52 @@ describe("Inbox toolbar", () => {
       clearLocalInboxArchive("company-1", issueId);
     }
     container.remove();
+  });
+
+  it("restores the legacy toolbar and issue-row presentation when Streamlined UI is off", async () => {
+    routerMock.location.pathname = "/inbox/mine";
+    apiMocks.experimentalSettings.mockResolvedValue({
+      enableIsolatedWorkspaces: false,
+      enableStreamlinedUi: false,
+    });
+    apiMocks.issuesList.mockResolvedValue([
+      createIssue({ id: "legacy-row", identifier: "PAP-1904", title: "Legacy inbox task" }),
+    ]);
+    localStorage.setItem(
+      taskCollectionPreferencesStorageKey({ companyId: "company-1", collectionKey: "inbox" }),
+      JSON.stringify({
+        version: 1,
+        companyId: "company-1",
+        collectionKey: "inbox",
+        viewState: {},
+        columns: [],
+      }),
+    );
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: 0, gcTime: 0 } },
+    });
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <Inbox />
+        </QueryClientProvider>,
+      );
+    });
+    await vi.waitFor(() => expect(container.textContent).toContain("Legacy inbox task"));
+
+    expect(container.querySelector('[data-slot="collection-toolbar"]')).toBeNull();
+    expect(container.querySelector('[role="toolbar"][aria-label="Inbox controls"]')).toBeNull();
+    expect(container.textContent).toContain("Mine");
+    expect(container.querySelector('[data-slot="task-row"]')).toBeNull();
+    const issueLink = container.querySelector('[data-inbox-issue-link]');
+    // Production reads the legacy Inbox column key and must ignore the
+    // Streamlined collection envelope above when the experiment is disabled.
+    expect(issueLink?.parentElement?.textContent).toContain("PAP-1904");
+
+    act(() => root.unmount());
   });
 
   it("does not render external-object summaries in inbox rows", async () => {
@@ -452,6 +503,16 @@ describe("Inbox toolbar", () => {
       expect(row?.querySelector("[data-inbox-row-surface]")).not.toBeNull();
     }
 
+    const approvalRow = rowFor("Hire Agent: New teammate");
+    const approvalActions = [...(approvalRow?.querySelectorAll("button") ?? [])]
+      .filter((button) => button.textContent === "Approve" || button.textContent === "Reject");
+    expect(approvalActions.length).toBeGreaterThanOrEqual(2);
+    approvalActions.forEach((button) => {
+      expect(button.className).toContain("h-8");
+      expect(button.className).toContain("min-w-(--sz-64px)");
+      expect(button.className).toContain("justify-center");
+    });
+
     act(() => root.unmount());
   });
 
@@ -471,7 +532,13 @@ describe("Inbox toolbar", () => {
       parentId: parent.id,
       title: "Nested inbox task",
     });
-    apiMocks.issuesList.mockResolvedValue([parent, child]);
+    const grandchild = createIssue({
+      id: "grandchild-issue",
+      identifier: "PAP-1003",
+      parentId: child.id,
+      title: "Deeply nested inbox task",
+    });
+    apiMocks.issuesList.mockResolvedValue([parent, child, grandchild]);
 
     const mountInbox = async () => {
       const queryClient = new QueryClient({
@@ -499,12 +566,23 @@ describe("Inbox toolbar", () => {
     let root = await mountInbox();
     try {
       expect(container.textContent).toContain(child.title);
+      expect(container.textContent).toContain(grandchild.title);
+      const taskRowFor = (title: string) =>
+        Array.from(container.querySelectorAll('[data-slot="task-row"]'))
+          .find((row) => row.textContent?.includes(title));
+      const childTaskRow = taskRowFor(child.title);
+      const grandchildTaskRow = taskRowFor(grandchild.title);
+      expect(childTaskRow?.querySelectorAll('[data-slot="task-row-tree-guide"]')).toHaveLength(1);
+      expect(childTaskRow?.querySelector('button[aria-label="Collapse sub-tasks"]')).not.toBeNull();
+      expect(grandchildTaskRow?.querySelectorAll('[data-slot="task-row-tree-guide"]')).toHaveLength(2);
+      expect(grandchildTaskRow?.querySelector('[data-slot="task-row-disclosure-spacer"]')).not.toBeNull();
 
       await act(async () => {
         parentToggle()?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
       });
       await vi.waitFor(() => {
         expect(container.textContent).not.toContain(child.title);
+        expect(container.textContent).not.toContain(grandchild.title);
       });
       expect(JSON.parse(localStorage.getItem(storageKey) ?? "[]")).toEqual([parent.id]);
 
@@ -517,12 +595,14 @@ describe("Inbox toolbar", () => {
       });
       await vi.waitFor(() => {
         expect(container.textContent).toContain(child.title);
+        expect(container.textContent).toContain(grandchild.title);
       });
       expect(JSON.parse(localStorage.getItem(storageKey) ?? "[]")).toEqual([]);
 
       act(() => root.unmount());
       root = await mountInbox();
       expect(container.textContent).toContain(child.title);
+      expect(container.textContent).toContain(grandchild.title);
     } finally {
       localStorage.removeItem(storageKey);
       act(() => root.unmount());
@@ -556,6 +636,191 @@ describe("Inbox toolbar", () => {
     act(() => {
       root.unmount();
     });
+  });
+
+  it("keeps Mine, Recent, Unread, Blocked, and All in the shared toolbar geometry", async () => {
+    for (const tab of ["mine", "recent", "unread", "blocked", "all"] as const) {
+      routerMock.location.pathname = `/inbox/${tab}`;
+      const queryClient = new QueryClient({
+        defaultOptions: { queries: { retry: false, staleTime: 0, gcTime: 0 } },
+      });
+      const root = createRoot(container);
+
+      await act(async () => {
+        root.render(
+          <QueryClientProvider client={queryClient}>
+            <Inbox />
+          </QueryClientProvider>,
+        );
+      });
+
+      const toolbar = container.querySelector('[data-slot="collection-toolbar"]');
+      expect(toolbar?.getAttribute("aria-label")).toBe("Inbox controls");
+      expect(toolbar?.querySelector('[data-slot="collection-toolbar-context"]')).not.toBeNull();
+      expect(toolbar?.querySelector('[data-slot="collection-toolbar-search"] input[placeholder="Search inbox…"]')).not.toBeNull();
+      expect(toolbar?.querySelector('[data-slot="collection-toolbar-controls"]')).not.toBeNull();
+      expect(container.querySelectorAll('input[placeholder="Search inbox…"]')).toHaveLength(1);
+
+      act(() => root.unmount());
+      container.replaceChildren();
+    }
+  });
+
+  it("explains that live-run filtering is different from active task statuses", async () => {
+    routerMock.location.pathname = "/inbox/mine";
+    localStorage.setItem("paperclip:inbox:filters:company-1", JSON.stringify({
+      allCategoryFilter: "everything",
+      allApprovalFilter: "all",
+      issueFilters: { liveOnly: true },
+    }));
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: 0, gcTime: 0 } },
+    });
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <Inbox />
+        </QueryClientProvider>,
+      );
+    });
+
+    expect(container.querySelector('[data-testid="inbox-filter-scope-feedback"]')?.textContent)
+      .toBe("Live runs only — tasks currently connected to an agent run.");
+    const migrated = JSON.parse(
+      localStorage.getItem("paperclip:task-collection:v1:company-1:inbox") ?? "null",
+    ) as { companyId?: string; collectionKey?: string } | null;
+    expect(migrated).toMatchObject({ companyId: "company-1", collectionKey: "inbox" });
+
+    act(() => root.unmount());
+  });
+
+  it("groups ungrouped attention items by Today, Yesterday, and Earlier", async () => {
+    routerMock.location.pathname = "/inbox/mine";
+    const now = new Date();
+    const localNoon = (daysAgo: number) =>
+      new Date(now.getFullYear(), now.getMonth(), now.getDate() - daysAgo, 12, 0, 0);
+    apiMocks.issuesList.mockResolvedValue([
+      createIssue({ id: "today", title: "Today task", lastActivityAt: localNoon(0) }),
+      createIssue({ id: "yesterday", title: "Yesterday task", lastActivityAt: localNoon(1) }),
+      createIssue({ id: "earlier", title: "Earlier task", lastActivityAt: localNoon(3) }),
+    ]);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: 0, gcTime: 0 } },
+    });
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <Inbox />
+        </QueryClientProvider>,
+      );
+    });
+    await vi.waitFor(() => expect(container.textContent).toContain("Earlier task"));
+
+    const separators = [...container.querySelectorAll('[data-testid="inbox-date-group"]')];
+    expect(separators.map((node) => node.textContent?.trim()))
+      .toEqual(["Today", "Yesterday", "Earlier"]);
+    expect(separators.every((separator) => (
+      separator.querySelectorAll("[data-date-group-rule]").length === 2
+    ))).toBe(true);
+    expect(separators.every((separator) => (
+      separator.querySelector("[data-date-group-label]")?.classList.contains("text-muted-foreground/70")
+    ))).toBe(true);
+
+    act(() => root.unmount());
+  });
+
+  it("honors the saved Columns option for hiding date group separators", async () => {
+    routerMock.location.pathname = "/inbox/mine";
+    localStorage.setItem(
+      taskCollectionPreferencesStorageKey({
+        companyId: "company-1",
+        collectionKey: "inbox",
+      }),
+      JSON.stringify({
+        version: 1,
+        companyId: "company-1",
+        collectionKey: "inbox",
+        viewState: { showDateGroupSeparators: false },
+        columns: ["status", "id", "updated"],
+      }),
+    );
+    const now = new Date();
+    const localNoon = (daysAgo: number) =>
+      new Date(now.getFullYear(), now.getMonth(), now.getDate() - daysAgo, 12, 0, 0);
+    apiMocks.issuesList.mockResolvedValue([
+      createIssue({ id: "today", title: "Today task", lastActivityAt: localNoon(0) }),
+      createIssue({ id: "earlier", title: "Earlier task", lastActivityAt: localNoon(3) }),
+    ]);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: 0, gcTime: 0 } },
+    });
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <Inbox />
+        </QueryClientProvider>,
+      );
+    });
+    await vi.waitFor(() => expect(container.textContent).toContain("Earlier task"));
+
+    expect(container.querySelector('[data-testid="inbox-date-group"]')).toBeNull();
+
+    act(() => root.unmount());
+  });
+
+  it("shows the resolved isolated workspace name in canonical task metadata", async () => {
+    routerMock.location.pathname = "/inbox/mine";
+    localStorage.setItem("paperclip:inbox:issue-columns", JSON.stringify(["status", "id", "workspace", "updated"]));
+    apiMocks.experimentalSettings.mockResolvedValue({ enableIsolatedWorkspaces: true });
+    apiMocks.executionWorkspaceSummaries.mockResolvedValue([{
+      id: "execution-workspace-1",
+      name: "Workspace Aurora",
+      mode: "isolated_workspace",
+      projectWorkspaceId: "project-workspace-1",
+    }]);
+    apiMocks.projectsList.mockResolvedValue([{
+      id: "project-1",
+      name: "Launch",
+      color: null,
+      workspaces: [{ id: "project-workspace-1", name: "Main" }],
+      executionWorkspacePolicy: { defaultProjectWorkspaceId: "project-workspace-1" },
+      primaryWorkspace: null,
+    }]);
+    apiMocks.issuesList.mockResolvedValue([createIssue({
+      projectId: "project-1",
+      executionWorkspaceId: "execution-workspace-1",
+      title: "Workspace-aware task",
+    })]);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: 0, gcTime: 0 } },
+    });
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <Inbox />
+        </QueryClientProvider>,
+      );
+    });
+    await vi.waitFor(() => expect(container.textContent).toContain("Workspace-aware task"));
+
+    const taskRow = container.querySelector('[data-slot="task-row"]');
+    const identifier = taskRow?.querySelector('[data-slot="task-row-identifier"]');
+    const timestamp = taskRow?.querySelector('[data-slot="task-row-timestamp"]');
+    expect(taskRow?.textContent).toContain("Workspace Aurora");
+    expect(identifier?.textContent).toBe("PAP-904");
+    expect(timestamp).not.toBeNull();
+    if (!identifier || !timestamp) throw new Error("Expected canonical identifier and timestamp columns");
+    expect(identifier.compareDocumentPosition(timestamp) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+
+    act(() => root.unmount());
   });
 
   it("hides workspace grouping when isolated workspaces are disabled", async () => {
@@ -678,7 +943,7 @@ describe("Inbox toolbar", () => {
     });
   });
 
-  it("does not indent unread rows: the mark-read dot sits in a reserved leading slot present on every row", async () => {
+  it("does not indent unread rows: the mark-read dot overlays the shared task-row gutter", async () => {
     routerMock.location.pathname = "/inbox/mine";
     // Two sibling leaf rows, one unread and one read, so their leading columns
     // are directly comparable.
@@ -716,29 +981,25 @@ describe("Inbox toolbar", () => {
     const rows = Array.from(container.querySelectorAll("[data-inbox-item]"));
     const rowFor = (text: string) => rows.find((row) => row.textContent?.includes(text));
     const markReadButton = (row: Element) => row.querySelector('button[aria-label="Mark as read"]');
-    // The empty spacer that reserves the chevron column on every leaf row.
-    // Excludes the tree-guide span (`.self-stretch`), which only renders on
-    // nested rows.
+    // The canonical spacer reserves the disclosure column on every leaf row.
     const hasLeadingSpacer = (row: Element) =>
-      !!row.querySelector("span.hidden.w-4.shrink-0.sm\\:block:not(.self-stretch)");
-    // The reserved leading dot slot, present on read AND unread rows.
+      !!row.querySelector('[data-slot="task-row-disclosure-spacer"]');
+    // The overlay anchor is present on read AND unread Inbox rows without
+    // consuming a layout column.
     const dotSlot = (row: Element) =>
       row.querySelector('[data-testid="issue-row-unread-slot"]');
 
     const unreadRow = rowFor("Unread inbox row")!;
     const readRow = rowFor("Read inbox row")!;
 
-    // The dot lives in a fixed leading slot that is reserved on every inbox row
-    // (in flow, NOT an absolute overlay). Because read and unread rows both
-    // reserve it — and both keep the chevron spacer — their status icon + title
-    // land at the same x (the bug this fix addresses: an unread-only dot column
-    // used to push unread rows right).
+    // Both rows share the canonical task-row geometry. The dot is absolutely
+    // positioned in the row gutter, so Inbox does not gain a column that Tasks
+    // lacks and unread state cannot shift status/title alignment.
     const unreadSlot = dotSlot(unreadRow);
     const readSlot = dotSlot(readRow);
     expect(unreadSlot).not.toBeNull();
     expect(readSlot).not.toBeNull();
-    // In flow, not an absolute overlay.
-    expect(unreadSlot?.className).not.toContain("absolute");
+    expect(unreadSlot?.className).toContain("absolute");
     // Only the unread row carries the dot button; the read slot is empty.
     expect(markReadButton(unreadSlot!)).not.toBeNull();
     expect(readSlot?.querySelector('button[aria-label="Mark as read"]')).toBeNull();
@@ -765,13 +1026,13 @@ describe("Inbox toolbar", () => {
     });
     const root = createRoot(container);
 
-    // The keyboard-selected row swaps to `hover:bg-transparent` on its root
-    // band (the overlay link's parent, where the wash now lives); find its index.
+    // Canonical task rows put the selected wash on the root band (the overlay
+    // link's parent); find the row with the standalone selected utility.
     const bandOf = (row: Element): HTMLElement | null =>
       row.querySelector<HTMLAnchorElement>("a[data-inbox-issue-link]")?.parentElement ?? null;
     const selectedRowIndex = () =>
       [...container.querySelectorAll("[data-inbox-item]")].findIndex((row) =>
-        bandOf(row)?.className.includes("hover:bg-transparent"),
+        bandOf(row)?.className.split(/\s+/).includes("bg-accent/50"),
       );
 
     try {

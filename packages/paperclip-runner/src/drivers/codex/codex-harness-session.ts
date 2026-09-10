@@ -1,4 +1,7 @@
+import { readCodexThreadState, readCodexTurnMetadata, readCodexTurnItems } from "./codex-history.js";
+import { codexRunUsage } from "./codex-usage-baseline.js";
 import { randomUUID } from "node:crypto";
+import { NativeProviderTerminalFailure } from "../../contracts/native-session-backend.js";
 
 import type {
   HarnessGoalOperation,
@@ -26,7 +29,10 @@ import {
 } from "../../contracts/codex.js";
 import type { PrpEvent } from "../../protocol/replay-contract.js";
 import { boundedCodexPayload as boundedPayload } from "./codex-boundaries.js";
-import { CodexRpcError, redactCodexDiagnostic } from "./app-server-transport.js";
+import {
+  CodexRpcError,
+  redactCodexDiagnostic,
+} from "./app-server-transport.js";
 import { runtimeRequestResponse } from "./codex-question-adapter.js";
 import {
   CODEX_PLANNING_PERMISSION_PROFILE as PLANNING_PERMISSION_PROFILE,
@@ -43,10 +49,16 @@ import {
 } from "./codex-session-state.js";
 import { pumpNotifications } from "./codex-session-notifications.js";
 import { handleServerRequest } from "./codex-session-server-requests.js";
-import { mapTerminalTurn, terminalReplayConflict } from "./codex-session-terminal.js";
+import {
+  mapTerminalTurn,
+  terminalReplayConflict,
+} from "./codex-session-terminal.js";
 import { boundedText, record, text, userInput } from "./codex-driver-values.js";
 
-export class CodexHarnessSession extends CodexSessionState implements HarnessSession {
+export class CodexHarnessSession
+  extends CodexSessionState
+  implements HarnessSession
+{
   constructor(input: CodexSessionStateInput) {
     super(input);
     this.transport.setServerRequestHandler((request) =>
@@ -69,10 +81,12 @@ export class CodexHarnessSession extends CodexSessionState implements HarnessSes
   }
 
   async attachRun(input: { runId: string }): Promise<void> {
+    this.assertProtocolIntegrity();
+    const transportOwnsQuiescence = this.transport.attachRun !== undefined;
     if (
-      this.activeTurnId !== null ||
       this.turnStartPending ||
-      this.pendingRuntimeRequestMap.size > 0
+      (!transportOwnsQuiescence &&
+        (this.activeTurnId !== null || this.pendingRuntimeRequestMap.size > 0))
     ) {
       throw new Error("codex_run_attach_busy");
     }
@@ -82,6 +96,21 @@ export class CodexHarnessSession extends CodexSessionState implements HarnessSes
       turnId: `turn_attachment_${randomUUID().replaceAll("-", "")}`,
       itemId: `item_attachment_${randomUUID().replaceAll("-", "")}`,
     });
+    this.assertProtocolIntegrity();
+    if (transportOwnsQuiescence) {
+      // Runnerd's attachment contract performs two durable readiness probes,
+      // drains the settled provider tail, and rotates authority atomically.
+      // Its proof supersedes host reducer state that can remain stale when a
+      // semantic-result consumer stops before the interrupt terminal arrives.
+      // Drop only the prior run's already-proven-settled buffered suffix.
+      this.activeTurnId = null;
+      this.pendingRuntimeRequestMap.clear();
+      this.eventQueue.clear();
+    }
+    if (this.codexUsageBaseline && input.runId !== this.runId) {
+      this.codexUsageBaseline = { baseline: { ...this.codexUsageBaseline.latest }, latest: { ...this.codexUsageBaseline.latest } };
+      this.usageSnapshot = codexRunUsage(this.codexUsageBaseline);
+    }
     this.runId = input.runId;
     this.result = null;
     this.resultFingerprint = null;
@@ -113,6 +142,10 @@ export class CodexHarnessSession extends CodexSessionState implements HarnessSes
     turnId: string;
     effectiveCollaborationMode: "default" | "plan";
   }> {
+    this.assertProtocolIntegrity();
+    if (this.protocolFailed && this.protocolFailureCode) {
+      throw new NativeProviderTerminalFailure(this.protocolFailureCode, false, this.protocolFailureMessage ?? undefined);
+    }
     if (
       this.terminal ||
       this.protocolFailed ||
@@ -132,10 +165,10 @@ export class CodexHarnessSession extends CodexSessionState implements HarnessSes
         ? input.message.text
         : dispositionOnlyRecovery
           ? input.message.text
-        : JSON.stringify({
-            task: this.taskEnvelope,
-            message: input.message.text,
-          });
+          : JSON.stringify({
+              task: this.taskEnvelope,
+              message: input.message.text,
+            });
     const effectiveCollaborationMode = this.opened.context.collaborationMode;
     if (
       input.requestedCollaborationMode &&
@@ -164,6 +197,10 @@ export class CodexHarnessSession extends CodexSessionState implements HarnessSes
       effectiveCollaborationMode,
     });
     this.turnStartPending = true;
+    let releaseTurnStartSettled: () => void = () => {};
+    this.turnStartSettled = new Promise((resolve) => {
+      releaseTurnStartSettled = resolve;
+    });
     let response: Record<string, unknown>;
     const requestedMode = this.opened.context.collaborationMode;
     try {
@@ -171,9 +208,9 @@ export class CodexHarnessSession extends CodexSessionState implements HarnessSes
         threadId: this.opened.threadId,
         cwd: this.opened.context.workingDirectory,
         permissions:
-          requestedMode === "plan"
+          text(record(record(this.opened.context.sandbox).permissionProfile).id) || (requestedMode === "plan"
             ? PLANNING_PERMISSION_PROFILE
-            : SKILLLESS_PERMISSION_PROFILE,
+            : SKILLLESS_PERMISSION_PROFILE),
         runtimeWorkspaceRoots: [this.opened.context.workingDirectory],
         ...(this.opened.collaborationMode === null
           ? {}
@@ -184,6 +221,13 @@ export class CodexHarnessSession extends CodexSessionState implements HarnessSes
           : { outputSchema: CODEX_RESULT_OUTPUT_SCHEMA }),
       });
     } catch (error) {
+      // A turn/started notification can arrive and mark a turn active while
+      // turn/start is still pending. The turn/start request just rejected,
+      // so no turn was accepted. Roll that optimistic state back so a
+      // terminal notification for it cannot pass the active-turn check below
+      // and release a terminal event for a turn that was never accepted.
+      this.activeTurnId = null;
+      this.turnStarted = false;
       if (dispositionOnlyRecovery) {
         if (error instanceof CodexRpcError) {
           // A JSON-RPC error is a definite provider rejection: no turn was
@@ -200,11 +244,23 @@ export class CodexHarnessSession extends CodexSessionState implements HarnessSes
       throw error;
     } finally {
       this.turnStartPending = false;
+      // Release a terminal notification that arrived and parked itself
+      // while this turn/start was in flight. This runs before turn.accepted
+      // below, in the same synchronous continuation, so a released waiter
+      // never observes the terminal turn ahead of turn.accepted.
+      releaseTurnStartSettled();
     }
+    this.assertProtocolIntegrity();
     const turn = record(response.turn);
     const turnId = text(turn.id);
-    if (turnId.length === 0)
+    if (turnId.length === 0) {
+      // A start notification is only optimistic until the response validates.
+      // Clear it before released semantic/terminal waiters can observe an
+      // active turn for a request that was never accepted.
+      this.activeTurnId = null;
+      this.turnStarted = false;
       throw new Error("Codex turn response omitted turn.id");
+    }
     if (this.activeTurnId !== null && this.activeTurnId !== turnId) {
       this.failProtocol(
         "turn_start_mismatch",
@@ -232,6 +288,7 @@ export class CodexHarnessSession extends CodexSessionState implements HarnessSes
     message: NativeUserMessage;
     correlationId?: string;
   }): Promise<void> {
+    this.assertProtocolIntegrity();
     this.requireCapability("steering");
     this.requireActiveTurn(input.turnId, "steering");
     if (input.correlationId) {
@@ -276,6 +333,7 @@ export class CodexHarnessSession extends CodexSessionState implements HarnessSes
       );
     } catch (error) {
       if (error instanceof HarnessOperationAlreadyTerminalError) throw error;
+      this.rethrowProtocolIntegrity(error);
       const detail = redactCodexDiagnostic(String(error));
       if (/unsupported|unavailable|capability|method not found/i.test(detail)) {
         throw this.unsupported("steering", detail);
@@ -349,6 +407,7 @@ export class CodexHarnessSession extends CodexSessionState implements HarnessSes
     turnId: string;
     resolution: HarnessRuntimeRequestResolution;
   }): Promise<void> {
+    this.assertProtocolIntegrity();
     this.requireCapability("runtimeRequestResolution");
     const pending = this.pendingRuntimeRequestMap.get(input.requestId);
     if (pending === undefined) {
@@ -412,18 +471,20 @@ export class CodexHarnessSession extends CodexSessionState implements HarnessSes
     reason: "durable_handoff";
     signal: AbortSignal;
   }): HarnessRuntimeRequestHandoff {
+    this.assertProtocolIntegrity();
     if (input.signal.aborted) {
       return { result: "already_settled", cleanup: Promise.resolve() };
     }
     this.requireCapability("runtimeRequestResolution");
     const pending = this.pendingRuntimeRequestMap.get(input.requestId);
     if (
-      pending === undefined
-      || pending.request.input === undefined
-      || pending.request.turnId !== input.turnId
-      || this.activeTurnId !== input.turnId
-      || pending.settlingResolution !== undefined
-    ) return { result: "already_settled", cleanup: Promise.resolve() };
+      pending === undefined ||
+      pending.request.input === undefined ||
+      pending.request.turnId !== input.turnId ||
+      this.activeTurnId !== input.turnId ||
+      pending.settlingResolution !== undefined
+    )
+      return { result: "already_settled", cleanup: Promise.resolve() };
     if (!this.pendingRuntimeRequestMap.delete(input.requestId)) {
       return { result: "already_settled", cleanup: Promise.resolve() };
     }
@@ -434,21 +495,47 @@ export class CodexHarnessSession extends CodexSessionState implements HarnessSes
     );
     pending.settle(safeRequestResponse(pending.request.method, "cancel"));
     const cleanup = Promise.allSettled([
-      Promise.resolve().then(() => this.transport.resolveRuntimeRequest?.({
-        requestId: input.requestId,
-        turnId: input.turnId,
-        resolution: { action: "cancel" },
-      })),
-      Promise.resolve().then(() => this.transport.request("turn/interrupt", {
-        threadId: this.opened.threadId,
-        turnId: input.turnId,
-      })),
+      Promise.resolve().then(() =>
+        this.transport.resolveRuntimeRequest?.({
+          requestId: input.requestId,
+          turnId: input.turnId,
+          resolution: { action: "cancel" },
+        }),
+      ),
+      Promise.resolve().then(() =>
+        this.transport.request("turn/interrupt", {
+          threadId: this.opened.threadId,
+          turnId: input.turnId,
+        }),
+      ),
     ]).then(() => undefined);
     return { result: "handed_off", cleanup };
   }
 
   async goal(input: HarnessGoalOperation): Promise<HarnessThreadGoal | null> {
+    this.assertProtocolIntegrity();
     this.requireCapability("goals");
+    if (
+      input.action !== "get"
+      && !this.goalCapability.actions.includes(input.action)
+    ) {
+      throw this.unsupported(
+        `goal ${input.action}`,
+        "capability action not advertised",
+      );
+    }
+    const expectsIdleAutostart =
+      this.activeTurnId === null
+      && !this.turnStartPending
+      && (input.action === "resume"
+        || (input.action === "set" && (input.status ?? "active") === "active"));
+    if (expectsIdleAutostart) {
+      // Codex activates an idle goal by starting a provider turn without a
+      // turn/start response. Keep the expectation armed until turn/started
+      // supplies the authoritative turn id; the notification may arrive
+      // after thread/goal/set has already returned.
+      this.turnStartPending = true;
+    }
     let method: string;
     let params: Record<string, unknown> = { threadId: this.opened.threadId };
     if (input.action === "get") {
@@ -461,7 +548,7 @@ export class CodexHarnessSession extends CodexSessionState implements HarnessSes
         params = {
           ...params,
           objective: input.objective,
-          status: "active",
+          status: input.status ?? "active",
           ...(input.tokenBudget !== undefined
             ? { tokenBudget: input.tokenBudget }
             : {}),
@@ -475,6 +562,7 @@ export class CodexHarnessSession extends CodexSessionState implements HarnessSes
     }
     try {
       const response = await this.transport.request(method, params);
+      this.assertProtocolIntegrity();
       const goal =
         input.action === "clear" ? null : parseThreadGoal(response.goal);
       if (!["get", "clear"].includes(input.action) && goal === null) {
@@ -497,29 +585,53 @@ export class CodexHarnessSession extends CodexSessionState implements HarnessSes
         },
         { itemId: `${this.opened.threadId}:goal:${this.sourceSequence + 1}` },
       );
+      this.emitGoalEvent(
+        input.action === "clear"
+          ? "session.goal.cleared"
+          : input.action === "get"
+            ? "session.goal.snapshot"
+            : "session.goal.updated",
+        goal,
+        {
+          ...(input.requestId ? { requestId: input.requestId } : {}),
+          workingNow: this.activeTurnId !== null,
+        },
+      );
       return goal === null ? null : structuredClone(goal);
     } catch (error) {
+      this.rethrowProtocolIntegrity(error);
+      if (expectsIdleAutostart && error instanceof CodexRpcError) {
+        // A JSON-RPC error is a definite provider rejection. Transport and
+        // protocol failures are ambiguous and deliberately retain the pending
+        // start so another command cannot create competing provider work.
+        this.turnStartPending = false;
+      }
       throw this.unsupported(`goal ${input.action}`, error);
     }
   }
 
   lineage(): HarnessThreadLineageEntry[] {
-    return [...this.lineageByThread.values()].map((entry) => structuredClone(entry));
+    this.assertProtocolIntegrity();
+    return [...this.lineageByThread.values()].map((entry) =>
+      structuredClone(entry),
+    );
   }
 
   async read(): Promise<Record<string, unknown>> {
+    this.assertProtocolIntegrity();
     this.requireCapability("read");
     try {
-      return await this.transport.request("thread/read", {
-        threadId: this.opened.threadId,
-        includeTurns: true,
-      });
+      const snapshot = await readCodexThreadState(this.transport, this.opened.threadId);
+      this.assertProtocolIntegrity();
+      return snapshot;
     } catch (error) {
+      this.rethrowProtocolIntegrity(error);
       throw this.unsupported("read", error);
     }
   }
 
   async reconcile(): Promise<Record<string, unknown>> {
+    this.assertProtocolIntegrity();
     this.requireCapability("reconciliation");
     const snapshot = await this.read();
     const thread = record(snapshot.thread);
@@ -537,11 +649,20 @@ export class CodexHarnessSession extends CodexSessionState implements HarnessSes
         "thread/read returned a different provider session",
       );
     }
-    const turns = Array.isArray(thread.turns) ? thread.turns.map(record) : [];
+    const turns = await readCodexTurnMetadata(this.transport, this.opened.threadId);
+    thread.turns = turns;
+    for (const turn of turns) {
+      if ((text(turn.id) === this.activeTurnId || this.terminalTurns.has(text(turn.id)))
+        && text(turn.status) !== "inProgress") {
+        turn.items = await readCodexTurnItems(this.transport, this.opened.threadId, text(turn.id));
+        turn.itemsView = "full";
+      }
+    }
     const reconciledUsage = boundedPayload(
       record(thread.tokenUsage ?? snapshot.tokenUsage),
     );
-    if (Object.keys(reconciledUsage).length > 0) this.usageSnapshot = reconciledUsage;
+    if (Object.keys(reconciledUsage).length > 0)
+      this.usageSnapshot = reconciledUsage;
     const activeTurns = turns.filter(
       (turn) => text(turn.status) === "inProgress",
     );
@@ -609,15 +730,23 @@ export class CodexHarnessSession extends CodexSessionState implements HarnessSes
   }
 
   async usage(): Promise<Record<string, unknown> | null> {
+    this.assertProtocolIntegrity();
     this.requireCapability("usage");
-    return this.usageSnapshot === null ? null : structuredClone(this.usageSnapshot);
+    return this.usageSnapshot === null
+      ? null
+      : structuredClone(this.usageSnapshot);
   }
 
   async snapshot(): Promise<PersistedHarnessSession> {
+    this.assertProtocolIntegrity();
     return {
       driverKind: this.driverKind,
+      workingDirectory: this.opened.context.workingDirectory,
       driverSessionId: this.opened.threadId,
       providerSessionId: this.opened.providerSessionId,
+      ...(this.opened.providerIdentity === undefined
+        ? {}
+        : { providerIdentity: structuredClone(this.opened.providerIdentity) }),
       runId: this.runId,
       normalizedSessionId: this.normalizedSessionId,
       activeTurnId: this.activeTurnId,
@@ -632,25 +761,29 @@ export class CodexHarnessSession extends CodexSessionState implements HarnessSes
               callId: this.resultCallId,
               turnId: this.resultTurnId,
             },
+      ...(this.codexUsageBaseline ? { codexUsageBaseline: structuredClone(this.codexUsageBaseline) } : {}),
       terminalTurns: [...this.terminalTurns].map(([turnId, fingerprint]) => ({
         turnId,
         fingerprint,
       })),
-      dispositionOnlyRecoveryConsumed:
-        this.dispositionOnlyRecoveryConsumed,
-      dispositionOnlyRecoveryTurnId:
-        this.dispositionOnlyRecoveryTurnId,
+      dispositionOnlyRecoveryConsumed: this.dispositionOnlyRecoveryConsumed,
+      dispositionOnlyRecoveryTurnId: this.dispositionOnlyRecoveryTurnId,
       pendingRuntimeRequests: this.pendingRuntimeRequests(),
-      goal: this.currentGoal === null ? null : structuredClone(this.currentGoal),
+      goal:
+        this.currentGoal === null ? null : structuredClone(this.currentGoal),
       lineage: this.lineage(),
       lastSourceSequence: this.sourceSequence,
     };
   }
 
-  async close(): Promise<void> {
+  async close(input?: { reason: string }): Promise<void> {
     this.cancelPendingRequests("session_closed");
     this.eventQueue.close();
-    await this.transport.close();
+    await this.transport.close(input?.reason);
   }
 
+  async detachControllerForRestart(): Promise<void> {
+    if (this.transport.detachControllerForRestart === undefined) return;
+    await this.transport.detachControllerForRestart();
+  }
 }

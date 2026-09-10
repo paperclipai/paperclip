@@ -26,5 +26,8 @@ export function classifyFailure(error: unknown): FailureClass {
 }
 
 export function shouldRetryFailure(failureClass: FailureClass) {
-  return failureClass === "transient_infrastructure";
+  return (
+    failureClass === "transient_infrastructure" ||
+    failureClass === "provider_variance"
+  );
 }

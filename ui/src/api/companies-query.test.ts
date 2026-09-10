@@ -1,6 +1,6 @@
 import { QueryClient } from "@tanstack/react-query";
 import { describe, expect, it, vi } from "vitest";
-import { companyListQueryOptions, resolveAccountUserId } from "./companies-query";
+import { companyDirectoryQueryOptions, companyListQueryOptions, resolveAccountUserId } from "./companies-query";
 import { ApiError } from "./client";
 import { queryKeys } from "../lib/queryKeys";
 
@@ -15,6 +15,8 @@ vi.mock("./auth", () => ({
 const mockCompaniesApi = vi.hoisted(() => ({
   list: vi.fn(),
   detachInflightList: vi.fn(),
+  directory: vi.fn(),
+  detachInflightDirectory: vi.fn(),
 }));
 
 vi.mock("./companies", () => ({
@@ -33,6 +35,14 @@ describe("companyListQueryOptions", () => {
 });
 
 describe("company list cache keys", () => {
+  it("isolates the administration directory from navigation and other accounts", async () => {
+    const options = companyDirectoryQueryOptions("admin");
+    expect(options.queryKey).not.toEqual(companyListQueryOptions("admin").queryKey);
+    expect(options.queryKey).not.toEqual(companyDirectoryQueryOptions("other-admin").queryKey);
+    mockCompaniesApi.directory.mockResolvedValueOnce([{ id: "non-member-company" }]);
+    await expect(options.queryFn()).resolves.toEqual([{ id: "non-member-company" }]);
+    expect(mockCompaniesApi.detachInflightDirectory).toHaveBeenCalled();
+  });
   it("gives each account its own entry, and a stable one for signed-out", () => {
     expect(companyListQueryOptions("user-1").queryKey).not.toEqual(
       companyListQueryOptions("user-2").queryKey,

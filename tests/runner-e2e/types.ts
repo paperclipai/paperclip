@@ -10,10 +10,12 @@ export type RunnerGeneration = "legacy" | "native";
 export type RunnerEnvironmentId = "local" | "daytona";
 export type RunnerTaskWorkMode = "standard" | "planning" | "ask";
 export type RunnerTaskFlow =
+  | "governed_tool_review"
   | "single_turn"
   | "plan_revision_acceptance"
   | "question_resume_completion"
-  | "plan_approval_completion";
+  | "plan_approval_completion"
+  | "warm_three_turn";
 
 export interface SecretReference {
   type: "secret_ref";
@@ -73,6 +75,8 @@ export interface RunnerProfileFixture {
 
 export interface EnvironmentFixture {
   id: RunnerEnvironmentId;
+  /** Distinguishes materially different configurations that share a provider ID. */
+  configurationKey?: string;
   label: string;
   groups: readonly string[];
   driver: "local" | "sandbox";
@@ -95,6 +99,7 @@ export interface EnvironmentFixture {
 export type Matcher =
   | { kind: "message_exact"; expected: string }
   | { kind: "message_contains"; expected: string }
+  | { kind: "message_occurrences"; expected: string; count: number }
   | { kind: "message_regex"; pattern: string; flags?: string }
   | { kind: "message_ordered"; expected: readonly string[] }
   | { kind: "issue_status"; expected: string }
@@ -102,6 +107,7 @@ export type Matcher =
   | { kind: "runtime_mode"; expected: RunnerGeneration }
   | { kind: "environment"; expected: RunnerEnvironmentId }
   | { kind: "file_exists"; path: string }
+  | { kind: "file_exact"; path: string; expected: string }
   | { kind: "file_contains"; path: string; expected: string }
   | { kind: "artifact_exists"; name: string; mimeType?: string }
   | { kind: "json_path"; path: string; expected: unknown }
@@ -123,10 +129,15 @@ export interface RunnerTaskFixture {
   buildPrompt(nonce: string): string;
   buildVisibleMarker(nonce: string): string;
   buildRevisionRequest?(nonce: string): string;
+  buildFollowupMessages?(nonce: string): readonly [string, string];
+  turnTimeoutMs?: number;
   buildQuestionAnswer?(nonce: string): {
     optionLabel: string;
     expectedMarker: string;
   };
+  /** Restart the isolated Paperclip server after the waiting turn settles. */
+  restartServerBeforeQuestionAnswer?: boolean;
+  toolReviewDecision?: "approve" | "decline" | "always" | "restart";
   buildPlanMarkers?(nonce: string): {
     draft: string;
     revised: string;
@@ -153,6 +164,7 @@ export interface RunnerSuiteFixture {
   profiles: readonly RunnerProfileFixture[];
   environments: readonly EnvironmentFixture[];
   tasks: readonly RunnerTaskFixture[];
+  excludedExecutionIds?: readonly string[];
   expectedMatrixSize: number;
   definitionMetadata?: Readonly<Record<string, unknown>>;
 }
@@ -170,6 +182,7 @@ export interface MatrixJob {
 
 export type FailureClass =
   | "candidate_failure"
+  | "provider_variance"
   | "transient_infrastructure"
   | "permanent_infrastructure"
   | "secret_leak"
@@ -255,6 +268,17 @@ export interface RunnerE2EResult {
   issueId?: string;
   issueIdentifier?: string | null;
   runIds?: string[];
+  turnTimings?: Array<{
+    turn: number;
+    submittedAt: string;
+    runStartedAt: string | null;
+    runFinishedAt: string | null;
+    schedulerLatencyMs: number | null;
+    runDurationMs: number | null;
+    responseLatencyMs: number | null;
+    runId: string;
+    leaseAcquisitionOutcome: "created" | "resumed" | "replacement" | "unknown";
+  }>;
   startedAt: string;
   finishedAt: string;
   durationMs: number;
@@ -270,6 +294,7 @@ export interface RunnerE2EResult {
     id: string;
     label: string;
     file: string;
+    publication?: "public-runner-fixture";
   }>;
   cleanup: "not_started" | "passed" | "failed";
 }

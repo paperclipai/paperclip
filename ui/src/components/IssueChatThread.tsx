@@ -176,6 +176,7 @@ import {
   summarizeToolResult,
 } from "../lib/transcriptPresentation";
 import { buildAgentMentionHref } from "@paperclipai/shared";
+import { useComposerStop } from "@/hooks/useComposerStop";
 import { cn, formatDateTime, formatShortDate } from "../lib/utils";
 import { liveBlueBadge } from "../lib/status-colors";
 import { nextWorkMode, titleForPendingWorkMode, workModeMetaFor, workModeMetaList } from "../lib/work-mode-meta";
@@ -222,6 +223,7 @@ interface IssueChatMessageContext {
       | RequestCheckboxConfirmationInteraction,
     selectedClientKeys?: string[],
     selectedOptionIds?: string[],
+    rememberAction?: boolean,
   ) => Promise<void> | void;
   onRejectInteraction?: (
     interaction:
@@ -417,6 +419,9 @@ export interface IssueChatComposerHandle {
 }
 
 interface IssueChatComposerProps {
+  onStop?: () => Promise<void>;
+  stopPending?: boolean;
+  stopScope?: "leaf" | "subtree";
   onImageUpload?: (file: File) => Promise<string>;
   onAttachImage?: (file: File) => Promise<IssueAttachment | void>;
   draftKey?: string;
@@ -492,6 +497,9 @@ interface IssueChatThreadProps {
   /** Requeues a blocked task after its no-live-execution-path recovery notice. */
   onTryAgainNoLiveExecutionPath?: () => Promise<void> | void;
   tryAgainNoLiveExecutionPathPending?: boolean;
+  /** Starts a fresh on-demand run for the selected failed run. */
+  onRetryFailedRun?: (runId: string) => Promise<void> | void;
+  retryFailedRunId?: string | null;
   companyId?: string | null;
   projectId?: string | null;
   issueStatus?: string;
@@ -506,6 +514,8 @@ interface IssueChatThreadProps {
   ) => Promise<void>;
   onAdd: (body: string, reopen?: boolean, reassignment?: CommentReassignment) => Promise<void>;
   onCancelRun?: () => Promise<void>;
+  stopPending?: boolean;
+  stopScope?: "leaf" | "subtree";
   onStopRun?: (runId: string) => Promise<void>;
   stopRunLabel?: string;
   stoppingRunLabel?: string;
@@ -565,6 +575,7 @@ interface IssueChatThreadProps {
       | RequestCheckboxConfirmationInteraction,
     selectedClientKeys?: string[],
     selectedOptionIds?: string[],
+    rememberAction?: boolean,
   ) => Promise<void> | void;
   onRejectInteraction?: (
     interaction:
@@ -1082,7 +1093,8 @@ function IssueChatChainOfThought({
   let headerVerb: string;
   let headerSuffix: string | null = null;
   if (isActive) {
-    headerVerb = "Working";
+    const execution = custom.execution as { phase?: string } | undefined;
+    headerVerb = execution?.phase === "reconnecting" || execution?.phase === "retry_scheduled" ? "Reconnecting…" : "Working";
     if (liveElapsed) headerSuffix = `for ${liveElapsed}`;
   } else if (segmentTiming) {
     const durationMs = segmentTiming.endMs - segmentTiming.startMs;
@@ -3856,6 +3868,9 @@ function areIssueChatMessageRowPropsEqual(
 }
 
 const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerProps>(function IssueChatComposer({
+  onStop,
+  stopPending,
+  stopScope = "leaf",
   onImageUpload,
   onAttachImage,
   draftKey,
@@ -3875,6 +3890,7 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
   onWorkModeChange,
 }, forwardedRef) {
   const api = useAui();
+  const stopControl = useComposerStop(onStop, stopPending);
   const [body, setBody] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [attaching, setAttaching] = useState(false);
@@ -3953,6 +3969,10 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
       focusComposer();
     },
   }), []);
+
+  const showStop =
+    !submitting && !attaching && body.trim().length === 0 &&
+    composerAttachments.length === 0 && Boolean(onStop || stopControl.stopping);
 
   async function handleSubmit() {
     const trimmed = body.trim();
@@ -4460,10 +4480,28 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
           />
         ) : null}
 
-        <Button size="sm" disabled={!canSubmit} onClick={() => void handleSubmit()}>
-          {submitting ? "Posting..." : "Send"}
-        </Button>
+        {showStop ? (
+          <Button
+            size="icon-sm"
+            disabled={stopControl.stopping}
+            onClick={() => void stopControl.stop()}
+            aria-label={stopControl.stopping ? "Stopping…" : "Stop"}
+            title={stopScope === "subtree" ? "Stop and pause subtree" : "Stop and pause task"}
+          >
+            {stopControl.stopping
+              ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
+              : <Square className="h-4 w-4 fill-current" aria-hidden />}
+          </Button>
+        ) : (
+          <Button size="sm" disabled={!canSubmit} onClick={() => void handleSubmit()}>
+            {submitting ? "Posting..." : "Send"}
+          </Button>
+        )}
       </div>
+
+      {stopControl.error ? (
+        <p role="alert" className="text-xs text-destructive">{stopControl.error}</p>
+      ) : null}
 
       {/* No-assignee warning modal (PAP-128 C): replaces the old press-Send-again toast. */}
       <AlertDialog open={noAssigneeDialogOpen} onOpenChange={setNoAssigneeDialogOpen}>
@@ -4546,6 +4584,8 @@ export function IssueChatThread({
   onVote,
   onAdd,
   onCancelRun,
+  stopPending,
+  stopScope,
   onStopRun,
   stopRunLabel,
   stoppingRunLabel,
@@ -4595,6 +4635,8 @@ export function IssueChatThread({
   resumeAssigneePending = false,
   onTryAgainNoLiveExecutionPath: _onTryAgainNoLiveExecutionPath,
   tryAgainNoLiveExecutionPathPending: _tryAgainNoLiveExecutionPathPending,
+  onRetryFailedRun: _onRetryFailedRun,
+  retryFailedRunId: _retryFailedRunId,
   externalReferences,
   linkCaseReferences = false,
 }: IssueChatThreadProps) {
@@ -5396,6 +5438,9 @@ export function IssueChatThread({
               mentions={mentions}
               agentMap={agentMap}
               hasActiveRun={!!hasActiveRun}
+              onStop={hasActiveRun ? onCancelRun : undefined}
+              stopPending={stopPending}
+              stopScope={stopScope}
               currentUserId={currentUserId}
               userLabelMap={userLabelMap}
               composerDisabledReason={composerDisabledReason}

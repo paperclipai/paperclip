@@ -70,6 +70,9 @@ describe("managed Codex credentials", () => {
     });
 
     expect(lease.mode).toBe("inline_json");
+    expect(lease.lifetimeFenceCandidates).toEqual(
+      credentialLeasePorts(await realpath(fixture.home)),
+    );
     expect(lease.lifetimeFenceFds).toHaveLength(2);
     expect(lease.lifetimeFenceFds.every(Number.isSafeInteger)).toBe(true);
     expect(lease.lifetimeFenceFds[0]).not.toBe(lease.lifetimeFenceFds[1]);

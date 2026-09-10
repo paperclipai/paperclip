@@ -6,6 +6,7 @@ import {
   projectHistoricalHeartbeatRunComment,
   findHeartbeatRunCompletionComment,
   mergeHeartbeatRunResultJson,
+  readCompletedAssistantMessageCandidate,
   resolveHeartbeatRunResponse,
   selectHeartbeatRunFinalAgentMessage,
 } from "../services/heartbeat-run-summary.js";
@@ -15,30 +16,149 @@ describe("selectHeartbeatRunFinalAgentMessage", () => {
     seq: 80,
     text: "Implemented the requested package and all nine tests pass.",
     sourceEventId: "runner:80",
+    channel: "final" as const,
   };
   const acknowledgement = {
     seq: 103,
     text: "The finish call was accepted.",
     sourceEventId: "runner:103",
+    channel: "final" as const,
   };
 
   it("uses the latest final message for an ordinary run", () => {
-    expect(selectHeartbeatRunFinalAgentMessage({
-      candidates: [substantive, acknowledgement],
-    })).toMatchObject({
+    expect(
+      selectHeartbeatRunFinalAgentMessage({
+        candidates: [substantive, acknowledgement],
+      }),
+    ).toMatchObject({
       sourceEventId: "runner:103",
       reasonCode: "latest_non_empty_completed_final_agent_message",
     });
   });
 
   it("preserves the completed work reply across a disposition-only recovery", () => {
-    expect(selectHeartbeatRunFinalAgentMessage({
-      candidates: [substantive, acknowledgement],
-      semanticResultRecoveryAfterSeq: 82,
-    })).toMatchObject({
+    expect(
+      selectHeartbeatRunFinalAgentMessage({
+        candidates: [substantive, acknowledgement],
+        semanticResultRecoveryAfterSeq: 82,
+      }),
+    ).toMatchObject({
       sourceEventId: "runner:80",
       reasonCode: "pre_semantic_result_recovery_final_agent_message",
     });
+  });
+
+  it("prefers an explicit final over a newer unknown-channel assistant message", () => {
+    expect(
+      selectHeartbeatRunFinalAgentMessage({
+        candidates: [
+          substantive,
+          {
+            seq: 120,
+            text: "Terminal assistant compatibility response.",
+            sourceEventId: "runner:120",
+            channel: "unknown",
+          },
+        ],
+      }),
+    ).toMatchObject({
+      sourceEventId: "runner:80",
+      channel: "final",
+      reasonCode: "latest_non_empty_completed_final_agent_message",
+    });
+  });
+
+  it("falls back to the latest completed unknown-channel assistant message", () => {
+    expect(
+      selectHeartbeatRunFinalAgentMessage({
+        candidates: [
+          {
+            seq: 120,
+            text: "Terminal assistant compatibility response.",
+            sourceEventId: "runner:120",
+            channel: "unknown",
+          },
+        ],
+      }),
+    ).toMatchObject({
+      sourceEventId: "runner:120",
+      channel: "unknown",
+      reasonCode: "latest_non_empty_completed_terminal_assistant_message",
+    });
+  });
+});
+
+describe("readCompletedAssistantMessageCandidate", () => {
+  it.each(["final", "unknown"] as const)(
+    "accepts completed %s-channel assistant messages",
+    (channel) => {
+      expect(
+        readCompletedAssistantMessageCandidate({
+          seq: 17,
+          prpEvent: {
+            sourceEventId: `runner:${channel}`,
+            payload: {
+              kind: "agentMessage",
+              channel,
+              text: `response-${channel}`,
+            },
+          },
+        }),
+      ).toEqual({
+        seq: 17,
+        sourceEventId: `runner:${channel}`,
+        channel,
+        text: `response-${channel}`,
+      });
+    },
+  );
+
+  it("keeps the persisted PRP v1 assistant_message alias readable", () => {
+    expect(
+      readCompletedAssistantMessageCandidate({
+        seq: 18,
+        prpEvent: {
+          sourceEventId: "runner:legacy-final",
+          payload: {
+            kind: "assistant_message",
+            channel: "final",
+            text: "Persisted final response.",
+          },
+        },
+      }),
+    ).toEqual({
+      seq: 18,
+      sourceEventId: "runner:legacy-final",
+      channel: "final",
+      text: "Persisted final response.",
+    });
+  });
+
+  it("rejects progress and non-assistant completed items", () => {
+    expect(
+      readCompletedAssistantMessageCandidate({
+        seq: 18,
+        prpEvent: {
+          payload: {
+            kind: "agentMessage",
+            channel: "progress",
+            text: "still working",
+          },
+        },
+      }),
+    ).toBeNull();
+    expect(
+      readCompletedAssistantMessageCandidate({
+        seq: 19,
+        prpEvent: {
+          payload: {
+            kind: "toolResult",
+            channel: "unknown",
+            text: "tool output",
+          },
+        },
+      }),
+    ).toBeNull();
   });
 });
 
@@ -179,14 +299,22 @@ describe("resolveHeartbeatRunResponse", () => {
     },
   };
 
-  it("applies comment, final-message, and semantic-result precedence", () => {
+  it("applies comment, explicit provider, adapter, terminal fallback, and semantic precedence", () => {
+    const resultWithAdapterFinal = {
+      ...resultJson,
+      finalResponse: {
+        disposition: "final",
+        text: "adapter response",
+      },
+    };
     expect(
       resolveHeartbeatRunResponse({
-        resultJson,
+        resultJson: resultWithAdapterFinal,
         existingComment: { id: "comment-1", body: "posted response" },
         finalAgentMessage: {
           text: "provider response",
           sourceEventId: "event-1",
+          channel: "final",
         },
       }),
     ).toMatchObject({
@@ -200,10 +328,11 @@ describe("resolveHeartbeatRunResponse", () => {
 
     expect(
       resolveHeartbeatRunResponse({
-        resultJson,
+        resultJson: resultWithAdapterFinal,
         finalAgentMessage: {
           text: "provider response",
           sourceEventId: "event-1",
+          channel: "final",
         },
       }),
     ).toMatchObject({
@@ -211,6 +340,37 @@ describe("resolveHeartbeatRunResponse", () => {
       decision: {
         chosenSource: "final_agent_message",
         sourceEventId: "event-1",
+      },
+    });
+
+    expect(
+      resolveHeartbeatRunResponse({
+        resultJson: resultWithAdapterFinal,
+        finalAgentMessage: {
+          text: "compatible terminal response",
+          sourceEventId: "event-unknown",
+          channel: "unknown",
+        },
+      }),
+    ).toMatchObject({
+      text: "adapter response",
+      decision: { chosenSource: "adapter_final_response" },
+    });
+
+    expect(
+      resolveHeartbeatRunResponse({
+        resultJson,
+        finalAgentMessage: {
+          text: "compatible terminal response",
+          sourceEventId: "event-unknown",
+          channel: "unknown",
+        },
+      }),
+    ).toMatchObject({
+      text: "compatible terminal response",
+      decision: {
+        chosenSource: "final_agent_message",
+        sourceEventId: "event-unknown",
       },
     });
 
@@ -228,33 +388,60 @@ describe("resolveHeartbeatRunResponse", () => {
   });
 
   it("keeps a yielded control-plane wait out of the assistant conversation", () => {
-    expect(resolveHeartbeatRunResponse({
-      resultJson: {
-        nativeResult: {
-          schema: "paperclip.run_result.v1",
-          reportedWorkDisposition: "yielded",
-          summary: "Waiting for Choose an output format.",
+    expect(
+      resolveHeartbeatRunResponse({
+        resultJson: {
+          nativeResult: {
+            schema: "paperclip.run_result.v1",
+            reportedWorkDisposition: "yielded",
+            summary: "Waiting for Choose an output format.",
+          },
         },
-      },
-    })).toMatchObject({
+      }),
+    ).toMatchObject({
       text: null,
       decision: { chosenSource: "none", commentAction: "none" },
     });
 
-    expect(resolveHeartbeatRunResponse({
-      resultJson: {
-        summary: "Waiting for Choose an output format.",
-        nativeResult: {
-          schema: "paperclip.run_result.v1",
-          reportedWorkDisposition: "yielded",
+    expect(
+      resolveHeartbeatRunResponse({
+        resultJson: {
           summary: "Waiting for Choose an output format.",
+          nativeResult: {
+            schema: "paperclip.run_result.v1",
+            reportedWorkDisposition: "yielded",
+            summary: "Waiting for Choose an output format.",
+          },
         },
-      },
-    })).toMatchObject({
+      }),
+    ).toMatchObject({
       text: null,
       decision: {
         chosenSource: "none",
         commentAction: "none",
+        reasonCodes: ["yielded_control_plane_wait"],
+      },
+    });
+
+    expect(
+      resolveHeartbeatRunResponse({
+        resultJson: {
+          nativeResult: {
+            schema: "paperclip.run_result.v1",
+            reportedWorkDisposition: "yielded",
+            summary: "Waiting for Choose an output format.",
+          },
+        },
+        finalAgentMessage: {
+          text: "Choose an output format before I continue.",
+          sourceEventId: "event-waiting-final",
+          channel: "final",
+        },
+      }),
+    ).toMatchObject({
+      text: null,
+      decision: {
+        chosenSource: "none",
         reasonCodes: ["yielded_control_plane_wait"],
       },
     });
@@ -267,6 +454,7 @@ describe("resolveHeartbeatRunResponse", () => {
         finalAgentMessage: {
           text: JSON.stringify(resultJson.nativeResult),
           sourceEventId: "event-structured-result",
+          channel: "final",
         },
       }),
     ).toMatchObject({
@@ -292,7 +480,11 @@ describe("resolveHeartbeatRunResponse", () => {
     expect(
       resolveHeartbeatRunResponse({
         resultJson,
-        finalAgentMessage: { text, sourceEventId: "event-exact" },
+        finalAgentMessage: {
+          text,
+          sourceEventId: "event-exact",
+          channel: "final",
+        },
       }).text,
     ).toBe(text);
   });
@@ -378,7 +570,9 @@ describe("mergeHeartbeatRunResultJson", () => {
     expect(buildHeartbeatRunIssueComment(merged)).toBe(
       "## Final update\n\n- Remediation verified",
     );
-    expect(buildHeartbeatRunIssueComment(merged)).not.toContain("Intermediate setup");
+    expect(buildHeartbeatRunIssueComment(merged)).not.toContain(
+      "Intermediate setup",
+    );
   });
 
   it("creates a result payload when only a summary exists", () => {

@@ -203,9 +203,9 @@ export function InstanceExperimentalSettings() {
   const enableNativeRunner = experimentalQuery.data?.enableNativeRunner === true;
   const enableManagedSandboxOnly = experimentalQuery.data?.enableManagedSandboxOnly === true;
   const enableIsolatedWorkspaces = experimentalQuery.data?.enableIsolatedWorkspaces === true;
-  const enableApps = experimentalQuery.data?.enableApps === true;
   // Streamlined left navigation is now the standard sidebar (PAP-12472); the
   // experimental opt-out was retired, so it no longer surfaces a toggle here.
+  const enableStreamlinedUi = experimentalQuery.data?.enableStreamlinedUi !== false;
   const enableConferenceRoomChat = experimentalQuery.data?.enableConferenceRoomChat === true;
   const enableClassicTaskInterface = experimentalQuery.data?.enableClassicTaskInterface === true;
   const enableIssuePlanDecompositions =
@@ -229,6 +229,8 @@ export function InstanceExperimentalSettings() {
     experimentalQuery.data?.enablePaperclipDeveloperMode === true;
   const enableSimplifiedEnglishInteractions =
     experimentalQuery.data?.enableSimplifiedEnglishInteractions === true;
+  const enableFirstTaskPlanProposal =
+    experimentalQuery.data?.enableFirstTaskPlanProposal === true;
   const enableSmokeLab = experimentalQuery.data?.enableSmokeLab === true;
   const autoRestartDevServerWhenIdle = experimentalQuery.data?.autoRestartDevServerWhenIdle === true;
   return (
@@ -274,17 +276,6 @@ export function InstanceExperimentalSettings() {
             Optional product features that are still being evaluated.
           </p>
         </div>
-
-        <ExperimentalToggleCard
-          title="Apps"
-          description="Show the Apps navigation and allow access to app connections, gateways, and advanced app tooling."
-          checked={enableApps}
-          onCheckedChange={(checked) => toggleMutation.mutate({ enableApps: checked })}
-          disabled={toggleMutation.isPending}
-          settingKey="enableApps"
-          managed={managedKeys.enableApps}
-          ariaLabel="Toggle apps experimental setting"
-        />
 
         <ExperimentalToggleCard
           title="Beta skills"
@@ -415,6 +406,19 @@ export function InstanceExperimentalSettings() {
         />
 
         <ExperimentalToggleCard
+          title="First task: propose with a plan document"
+          description="When the user's first request is a single task, the chief of staff writes a short plan document and a checkbox card instead of a one-card confirmation. Applies to organizations created after the toggle is flipped."
+          checked={enableFirstTaskPlanProposal}
+          onCheckedChange={(checked) =>
+            toggleMutation.mutate({ enableFirstTaskPlanProposal: checked })
+          }
+          disabled={toggleMutation.isPending}
+          settingKey="enableFirstTaskPlanProposal"
+          managed={managedKeys.enableFirstTaskPlanProposal}
+          ariaLabel="Toggle first task plan proposal experimental setting"
+        />
+
+        <ExperimentalToggleCard
           title="Status Cards"
           description="Enable the experimental shared status-card board and its gated API. Existing card data is kept when this is disabled."
           footnote="Enabling Status Cards also enables Summaries."
@@ -430,6 +434,18 @@ export function InstanceExperimentalSettings() {
           settingKey="enableStatusCards"
           managed={managedKeys.enableStatusCards}
           ariaLabel="Toggle status cards experimental setting"
+        />
+
+        <ExperimentalToggleCard
+          title="Streamlined UI"
+          description="Use the simplified main sidebar, shared Tasks and Inbox presentation, focused task detail layout, and contextual navigation across Agents, Routines, Skills, and Settings."
+          footnote="Turning this off restores the legacy shell and navigation. Task and page data are unchanged."
+          checked={enableStreamlinedUi}
+          onCheckedChange={(checked) => toggleMutation.mutate({ enableStreamlinedUi: checked })}
+          disabled={toggleMutation.isPending}
+          settingKey="enableStreamlinedUi"
+          managed={managedKeys.enableStreamlinedUi}
+          ariaLabel="Toggle Streamlined UI experimental setting"
         />
 
         <ExperimentalToggleCard

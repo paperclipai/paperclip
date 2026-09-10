@@ -1,433 +1,528 @@
 // @vitest-environment jsdom
-
+import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { flushSync } from "react-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { getEnvironmentCapabilities } from "@paperclipai/shared";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { ToastProvider } from "../context/ToastContext";
+import { queryKeys } from "@/lib/queryKeys";
 import { NewAgent } from "./NewAgent";
 
-// The real adapter registry stays in place so the create request runs the real
-// Claude config builder. That builder turns the fixed binding into the adapter
-// `env` map, which is the contract this page test verifies.
-
-const mockAgentsApi = vi.hoisted(() => ({
+const api = vi.hoisted(() => ({
+  get: vi.fn(),
   adapterModels: vi.fn(),
-  detectModel: vi.fn(),
   list: vi.fn(),
   hire: vi.fn(),
   testEnvironment: vi.fn(),
-  getClaudeOAuthTokenStatus: vi.fn(),
-  startClaudeSetupTokenLogin: vi.fn(),
-  getClaudeSetupTokenLoginStatus: vi.fn(),
-  getClaudeSetupTokenLoginPrompt: vi.fn(),
-  submitClaudeSetupTokenBrowserCode: vi.fn(),
-  completeClaudeSetupTokenLogin: vi.fn(),
-  cancelClaudeSetupTokenLogin: vi.fn(),
+  getAdapterAuthSignal: vi.fn(),
 }));
-
-const mockEnvironmentsApi = vi.hoisted(() => ({ list: vi.fn(), capabilities: vi.fn() }));
-const mockInstanceSettingsApi = vi.hoisted(() => ({
+const envApi = vi.hoisted(() => ({ list: vi.fn(), capabilities: vi.fn() }));
+const settings = vi.hoisted(() => ({
   get: vi.fn(),
   getExperimental: vi.fn(),
   getGeneral: vi.fn(),
 }));
-const mockSecretsApi = vi.hoisted(() => ({
+const secrets = vi.hoisted(() => ({
+  create: vi.fn(),
+  remove: vi.fn(),
   list: vi.fn(),
-  listProposals: vi.fn(),
-  listUserSecretDefinitions: vi.fn(),
+  listMyUserSecrets: vi.fn(),
+  createUserSecretDefinition: vi.fn(),
+  createMyUserSecret: vi.fn(),
+  rotateMyUserSecret: vi.fn(),
+  removeUserSecretDefinition: vi.fn(),
 }));
-const mockCompanySkillsApi = vi.hoisted(() => ({ list: vi.fn() }));
-const mockIssuesApi = vi.hoisted(() => ({ list: vi.fn() }));
-const mockProjectsApi = vi.hoisted(() => ({ list: vi.fn() }));
-const mockAssetsApi = vi.hoisted(() => ({ uploadImage: vi.fn() }));
-const mockClipboard = vi.hoisted(() => ({ copyTextToClipboard: vi.fn() }));
-const navigateMock = vi.hoisted(() => vi.fn());
-const mockAdapterAvailability = vi.hoisted(() => ({
-  disabled: new Set<string>(),
-  loaded: true,
+const state = vi.hoisted(() => ({
+  params: new URLSearchParams(),
+  adapters: [] as object[],
+  navigate: vi.fn(),
+  openNewIssue: vi.fn(),
 }));
-const mockSearchParams = vi.hoisted(() => ({ value: new URLSearchParams() }));
-
-vi.mock("@/lib/router", () => ({
-  useNavigate: () => navigateMock,
-  useSearchParams: () => [mockSearchParams.value, vi.fn()],
+vi.mock("@/api/agents", () => ({ agentsApi: api }));
+vi.mock("@/api/environments", () => ({ environmentsApi: envApi }));
+vi.mock("@/api/instanceSettings", () => ({ instanceSettingsApi: settings }));
+vi.mock("@/api/secrets", () => ({ secretsApi: secrets }));
+vi.mock("@/api/adapters", () => ({
+  adaptersApi: { list: async () => state.adapters },
 }));
-
-vi.mock("../context/CompanyContext", () => ({
+vi.mock("@/context/CompanyContext", () => ({
   useCompany: () => ({ selectedCompanyId: "company-1" }),
 }));
-
 vi.mock("../context/BreadcrumbContext", () => ({
   useBreadcrumbs: () => ({ setBreadcrumbs: vi.fn() }),
 }));
-
-vi.mock("../api/agents", () => ({ agentsApi: mockAgentsApi }));
-vi.mock("../api/environments", () => ({ environmentsApi: mockEnvironmentsApi }));
-vi.mock("../api/instanceSettings", () => ({ instanceSettingsApi: mockInstanceSettingsApi }));
-vi.mock("../api/secrets", () => ({ secretsApi: mockSecretsApi }));
-vi.mock("../api/companySkills", () => ({ companySkillsApi: mockCompanySkillsApi }));
-vi.mock("../api/issues", () => ({ issuesApi: mockIssuesApi }));
-vi.mock("../api/projects", () => ({ projectsApi: mockProjectsApi }));
-vi.mock("../api/assets", () => ({ assetsApi: mockAssetsApi }));
-vi.mock("../lib/clipboard", () => ({
-  copyTextToClipboard: mockClipboard.copyTextToClipboard,
+vi.mock("@/context/DialogContext", () => ({
+  useDialogActions: () => ({ openNewIssue: state.openNewIssue }),
 }));
-
-vi.mock("../adapters/use-disabled-adapters", () => ({
-  useDisabledAdaptersSync: () => mockAdapterAvailability.disabled,
-  useAdapterRegistryLoaded: () => mockAdapterAvailability.loaded,
+vi.mock("@/lib/router", () => ({
+  useNavigate: () => state.navigate,
+  useSearchParams: () => [state.params],
 }));
-
-// The form reads the projected adapter login capability to pick the login flow
-// and to gate the login panel. The server projects these safe scalar fields.
-// `claude_local` runs on a real pseudo-terminal, so the panel gate requires the
-// provider pty capability. Provide the projection so the login panel renders.
-const mockLoginProjections = vi.hoisted(
-  () =>
-    new Map<string, { panelMode: string; timeoutPolicy: string }>([
-      ["claude_local", { panelMode: "submitted_browser_code", timeoutPolicy: "fixed" }],
-      ["codex_local", { panelMode: "displayed_code", timeoutPolicy: "caller_bounded" }],
-    ]),
-);
-
-vi.mock("../adapters/use-adapter-capabilities", () => ({
-  useAdapterCapabilities: () => (adapterType: string) => {
-    const login = mockLoginProjections.get(adapterType);
-    return {
-      supportsInstructionsBundle: true,
-      supportsSkills: true,
-      supportsLocalAgentJwt: true,
-      requiresMaterializedRuntimeSkills: false,
-      supportsAcp: true,
-      ...(login ? { login } : {}),
-    };
-  },
-}));
-
-vi.mock("../components/MarkdownEditor", () => ({
-  MarkdownEditor: ({
+// Exercise API/persistence contracts with deterministic presentation primitives.
+// The actual searchable dropdown and login panel are covered by their tests and browser verification.
+vi.mock("@/components/AgentConfigForm", () => ({
+  ModelDropdown: ({
     value,
     onChange,
-    placeholder,
   }: {
     value: string;
     onChange: (value: string) => void;
-    placeholder?: string;
   }) => (
-    <textarea
-      aria-label={placeholder ?? "Markdown"}
+    <input
+      aria-label="Model"
       value={value}
-      onChange={(event) => onChange(event.currentTarget.value)}
+      onChange={(e) => onChange(e.target.value)}
     />
   ),
+  AdapterLoginPanel: ({ onStored }: { onStored: (id: string) => void }) => (
+    <button onClick={() => onStored("stored-claim")}>
+      Complete subscription login
+    </button>
+  ),
 }));
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-(globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
-
-async function act(callback: () => void | Promise<void>) {
-  let result: void | Promise<void> = undefined;
-  flushSync(() => {
-    result = callback();
-  });
-  await result;
-}
-
-async function flushReact() {
-  await act(async () => {
-    for (let i = 0; i < 4; i += 1) {
-      await Promise.resolve();
-      await new Promise((resolve) => window.setTimeout(resolve, 0));
-    }
-  });
-}
-
-// Flush React effects and pending promises until a condition holds. The Claude
-// login chains a start, a status poll, and a completion read, so a single flush
-// does not settle every state transition.
-async function flushUntil(check: () => boolean, timeoutMs = 4000) {
-  const start = Date.now();
-  while (!check()) {
-    if (Date.now() - start > timeoutMs) break;
-    await flushReact();
-    await new Promise((resolve) => setTimeout(resolve, 20));
-  }
-  await flushReact();
-}
-
-function findButton(container: HTMLElement, label: string) {
-  return Array.from(container.querySelectorAll("button")).find(
-    (button) => button.textContent?.trim() === label,
-  );
-}
-
-async function clickByText(container: HTMLElement, label: string) {
-  const button = findButton(container, label);
-  await act(async () => {
-    button?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-  });
-  await flushReact();
-}
-
-const CLAUDE_AUTH_MISSING_RESULT = {
-  adapterType: "claude_local",
-  status: "warn",
-  checks: [
-    {
-      code: "claude_hello_probe_auth_required",
-      level: "warn",
-      message: "Claude CLI is installed, but login is required.",
-    },
-    {
-      code: "adapter_auth_missing",
-      level: "warn",
-      message: "The sandbox has no ready authentication for this adapter.",
-    },
-  ],
-  testedAt: new Date(0).toISOString(),
-};
-
-// The provider capabilities the form fetches. Daytona advertises the
-// setup-token login capability; E2B does not. The Claude login panel shows only
-// for a provider with the capability, so the sandbox environment uses Daytona.
-const SANDBOX_CAPABILITIES = getEnvironmentCapabilities(["claude_local", "codex_local"], {
-  sandboxProviders: {
-    daytona: { supportsLoginPty: true, displayName: "Daytona" },
-    e2b: { supportsLoginPty: false, displayName: "E2B" },
+vi.mock("@/components/onboarding/PillGuy", () => ({ PillGuy: () => null }));
+vi.mock("motion/react", () => ({
+  AnimatePresence: ({ children }: any) => children,
+  MotionConfig: ({ children }: any) => children,
+  motion: {
+    span: ({ children }: any) => <span>{children}</span>,
+    div: ({ children, initial, animate, exit, transition, ...rest }: any) => (
+      <div {...rest}>{children}</div>
+    ),
   },
-});
-
-async function renderNewAgent() {
-  const container = document.createElement("div");
-  document.body.appendChild(container);
-  const root = createRoot(container);
-  const queryClient = new QueryClient({
-    defaultOptions: {
-      queries: { retry: false },
-      mutations: { retry: false },
-    },
-  });
-
+}));
+(globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+let root: Root;
+let container: HTMLDivElement;
+let cache: QueryClient;
+async function settle() {
   await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  });
+}
+async function click(text: string) {
+  const button = [...container.querySelectorAll("button")].find(
+    (b) => b.textContent?.trim() === text,
+  );
+  expect(button, `Missing button ${text}`).toBeTruthy();
+  await act(async () => button!.click());
+  await settle();
+}
+async function fill(label: string, value: string) {
+  const input = container.querySelector(
+    `[aria-label="${label}"]`,
+  ) as HTMLInputElement;
+  expect(input).toBeTruthy();
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(
+      HTMLInputElement.prototype,
+      "value",
+    )!.set!.call(input, value);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+}
+async function render(adapter = "pi_local", runnerProvider = "codex") {
+  state.params = new URLSearchParams({
+    name: "Atlas",
+    adapterType: adapter,
+    runnerProvider,
+  });
+  await act(async () =>
     root.render(
-      <QueryClientProvider client={queryClient}>
-        <ToastProvider>
-          <TooltipProvider>
-            <NewAgent />
-          </TooltipProvider>
-        </ToastProvider>
+      <QueryClientProvider client={cache}>
+        <TooltipProvider><NewAgent /></TooltipProvider>
       </QueryClientProvider>,
+    ),
+  );
+  await settle();
+}
+async function connect(provider: string) {
+  await click(provider + "Subscription");
+  await click("Connect");
+}
+const pass = {
+  adapterType: "pi_local",
+  status: "pass",
+  checks: [
+    { code: "hello_probe_passed", level: "info", message: "Model replied" },
+  ],
+  testedAt: "2026-09-07T00:00:00Z",
+};
+beforeEach(() => {
+  vi.clearAllMocks();
+  container = document.createElement("div");
+  document.body.append(container);
+  root = createRoot(container);
+  cache = new QueryClient({
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+  });
+  state.adapters = [
+    "claude_local",
+    "codex_local",
+    "opencode_local",
+    "pi_local",
+    "paperclip_runner", "cursor_cloud", "cursor", "gemini_local", "kimi_local", "grok_local", "hermes_local", "hermes_gateway",
+  ].map((type) => ({ type, loaded: true, disabled: false }));
+  api.adapterModels.mockResolvedValue([]);
+  api.list.mockResolvedValue([{ id: "ceo", role: "ceo", status: "idle" }]);
+  api.getAdapterAuthSignal.mockResolvedValue({ status: "present" });
+  api.testEnvironment.mockResolvedValue(pass);
+  api.hire.mockImplementation(async (_company, input) => ({
+    agent: { ...input, id: "new-agent", status: "idle", urlKey: "atlas" },
+  }));
+  envApi.list.mockResolvedValue([
+    { id: "local-1", name: "Local", driver: "local", config: {} },
+  ]);
+  envApi.capabilities.mockResolvedValue({ sandboxProviders: {} });
+  settings.get.mockResolvedValue({ defaultEnvironmentId: "local-1" });
+  settings.getExperimental.mockResolvedValue({ enableNativeRunner: true });
+  settings.getGeneral.mockResolvedValue({ executionMode: "any" });
+  secrets.list.mockResolvedValue([]);
+  secrets.create.mockResolvedValue({ id: "org-secret-1" });
+  secrets.remove.mockResolvedValue({ ok: true });
+  secrets.listMyUserSecrets.mockResolvedValue([]);
+  secrets.createUserSecretDefinition.mockResolvedValue({ id: "definition-1" });
+  secrets.createMyUserSecret.mockResolvedValue({ id: "secret-1" });
+  secrets.removeUserSecretDefinition.mockResolvedValue({ ok: true });
+});
+afterEach(async () => {
+  await act(async () => root.unmount());
+  cache.clear();
+  container.remove();
+});
+describe("New agent setup", () => {
+  it("blocks direct runner setup links when the experiment is disabled", async () => {
+    settings.getExperimental.mockResolvedValue({ enableNativeRunner: false });
+    await render("paperclip_runner");
+    expect(container.textContent).toContain("This adapter is unavailable");
+    expect(api.hire).not.toHaveBeenCalled();
+  });
+  it("blocks direct setup links for unsupported Cloud adapters", async () => {
+    cache.setQueryData(queryKeys.health, {
+      status: "ok",
+      cloud: { managed: true },
+    });
+    await render("pi_local");
+    expect(container.textContent).toContain("This adapter is unavailable");
+    expect(api.hire).not.toHaveBeenCalled();
+  });
+  it("sends Cursor Cloud repo/ref and transient API key, then saves an organization secret", async () => {
+    await render("cursor_cloud");
+    expect(container.querySelector('[aria-label="Model"]')).toBeNull();
+    expect(container.querySelector('[aria-label="Thinking effort"]')).toBeNull();
+    await fill("GitHub repository", "https://github.com/paperclipai/paperclip");
+    await fill("Branch", "master");
+    await fill("CURSOR_API_KEY", "cursor-test-key");
+    await click("Run test");
+    expect(api.testEnvironment.mock.calls[0][2]).toMatchObject({
+      adapterConfig: { repoUrl: "https://github.com/paperclipai/paperclip", repoStartingRef: "master" },
+      testCredentials: { CURSOR_API_KEY: "cursor-test-key" },
+    });
+    expect(secrets.create).not.toHaveBeenCalled();
+    await click("Finish setup");
+    const config = api.hire.mock.calls[0][1].adapterConfig;
+    expect(config).toMatchObject({ repoUrl: "https://github.com/paperclipai/paperclip", repoStartingRef: "master", env: {
+      CURSOR_API_KEY: { type: "secret_ref", secretId: "org-secret-1", version: "latest" },
+    } });
+    expect(config).not.toHaveProperty("repository");
+    expect(config).not.toHaveProperty("branch");
+    expect(JSON.stringify(config)).not.toContain("cursor-test-key");
+    expect(secrets.create).toHaveBeenCalledWith("company-1", expect.objectContaining({ value: "cursor-test-key" }));
+  });
+  it("requires a new Cursor Cloud key even when organization and personal keys exist", async () => {
+    secrets.list.mockResolvedValue([{ id: "existing", key: "CURSOR_API_KEY", name: "Cursor", status: "active" }]);
+    secrets.listMyUserSecrets.mockResolvedValue([{ definition: { key: "CURSOR_API_KEY" }, secret: { id: "personal-key" } }]);
+    await render("cursor_cloud");
+    expect(container.textContent).not.toContain("Or use an organization secret");
+    await fill("GitHub repository", "https://github.com/example/repo");
+    await click("Finish setup");
+    expect(api.hire).not.toHaveBeenCalled();
+    expect(container.textContent).toContain("Enter a Cursor API key");
+    await fill("CURSOR_API_KEY", "new-cursor-key");
+    await click("Finish setup");
+    expect(secrets.create).toHaveBeenCalledWith("company-1", expect.objectContaining({ value: "new-cursor-key" }));
+    expect(api.hire.mock.calls[0][1].adapterConfig.env.CURSOR_API_KEY).toMatchObject({ type: "secret_ref", secretId: "org-secret-1" });
+  });
+  it.each([
+    ["cursor", "CURSOR_API_KEY"],
+    ["gemini_local", "GEMINI_API_KEY"],
+    ["hermes_local", "OPENROUTER_API_KEY"],
+  ])("provides %s credentials to tests and stores only a secret reference", async (adapter, key) => {
+    await render(adapter);
+    await fill(key, "adapter-test-key");
+    await click("Finish setup");
+    expect(api.testEnvironment.mock.calls[0][2].testCredentials).toEqual({ [key]: "adapter-test-key" });
+    expect(api.hire.mock.calls[0][1].adapterConfig.env[key]).toMatchObject({ type: "secret_ref", secretId: "org-secret-1" });
+    expect(container.querySelector('[aria-label="Thinking effort"]')).toBeNull();
+  });
+  it("defines a Kimi API model without overriding it with a CLI model alias", async () => {
+    await render("kimi_local");
+    await fill("KIMI_MODEL_API_KEY", "kimi-test-key");
+    await click("Run test");
+    expect(api.testEnvironment).not.toHaveBeenCalled();
+    expect(container.textContent).toContain("Enter the Kimi API model name");
+    await fill("Kimi API model name", "kimi-for-coding");
+    await fill("Kimi API base URL", "https://api.kimi.com/coding/v1");
+    await click("Finish setup");
+    const config = api.hire.mock.calls[0][1].adapterConfig;
+    expect(config).not.toHaveProperty("model");
+    expect(config.env).toMatchObject({
+      KIMI_MODEL_NAME: { type: "plain", value: "kimi-for-coding" },
+      KIMI_MODEL_BASE_URL: { type: "plain", value: "https://api.kimi.com/coding/v1" },
+      KIMI_MODEL_API_KEY: { type: "secret_ref", secretId: "org-secret-1" },
+    });
+  });
+  it("configures Hermes Gateway URL and its top-level secret reference", async () => {
+    await render("hermes_gateway");
+    expect(container.querySelector('[aria-label="Model"]')).toBeNull();
+    await fill("Hermes API base URL", "https://hermes.example.com");
+    await fill("API_SERVER_KEY", "hermes-test-key");
+    await click("Finish setup");
+    expect(api.testEnvironment.mock.calls[0][2]).toMatchObject({
+      adapterConfig: { apiBaseUrl: "https://hermes.example.com" },
+      testCredentials: { API_SERVER_KEY: "hermes-test-key" },
+    });
+    expect(api.hire.mock.calls[0][1].adapterConfig.apiKey).toMatchObject({ type: "secret_ref", secretId: "org-secret-1" });
+    expect(JSON.stringify(api.hire.mock.calls)).not.toContain("hermes-test-key");
+  });
+  it("shows Grok login guidance and hides ignored Kimi and OpenCode effort controls", async () => {
+    await render("grok_local");
+    expect(container.textContent).toContain("grok login");
+    await render("opencode_local");
+    expect(container.querySelector('[aria-label="Thinking effort"]')).toBeNull();
+  });
+  it("restores confirmation on refresh without hiring again", async () => {
+    api.get.mockResolvedValue({
+      id: "saved-agent",
+      companyId: "company-1",
+      name: "Atlas",
+      adapterType: "pi_local",
+      adapterConfig: { model: "openrouter/anthropic/claude-sonnet-4.6" },
+      status: "idle",
+    });
+    state.params = new URLSearchParams({
+      name: "Atlas",
+      adapterType: "pi_local",
+      createdAgentId: "saved-agent",
+    });
+    await act(async () =>
+      root.render(
+        <QueryClientProvider client={cache}>
+          <TooltipProvider><NewAgent /></TooltipProvider>
+        </QueryClientProvider>,
+      ),
     );
+    await settle();
+    expect(container.textContent).toContain("Your agent is ready");
+    expect(container.textContent).not.toContain("Finish setup");
+    expect(api.hire).not.toHaveBeenCalled();
+    await click("Assign Atlas a Task");
+    expect(state.openNewIssue).toHaveBeenCalledWith({
+      assigneeAgentId: "saved-agent",
+      status: "todo",
+    });
   });
-  await flushReact();
-  return { container, root };
-}
-
-// Complete the Claude subscription login on the page: run the environment test,
-// start the login, and let the panel reach the server `stored` state.
-async function completeClaudeLogin(container: HTMLElement) {
-  await clickByText(container, "Test Agent");
-  await flushUntil(() => Boolean(findButton(container, "Sign in")));
-  await clickByText(container, "Sign in");
-  await flushUntil(() => (container.textContent ?? "").includes("Authenticated"));
-}
-
-describe("NewAgent Claude subscription login", () => {
-  let roots: Root[] = [];
-
-  beforeEach(() => {
-    mockAdapterAvailability.disabled = new Set<string>();
-    mockAdapterAvailability.loaded = true;
-    mockSearchParams.value = new URLSearchParams();
-    mockAgentsApi.adapterModels.mockResolvedValue([]);
-    mockAgentsApi.detectModel.mockResolvedValue(null);
-    // No existing agents: the page treats the new agent as the first (CEO) and
-    // seeds the name, so the Create button is enabled without a typed name.
-    mockAgentsApi.list.mockResolvedValue([]);
-    mockAgentsApi.hire.mockResolvedValue({ agent: { id: "agent-1", name: "CEO" } });
-    mockAgentsApi.testEnvironment.mockResolvedValue(CLAUDE_AUTH_MISSING_RESULT);
-    // The default owner has no stored Claude token, so the login is a first
-    // write. A test overrides this to prove the panel applies a stored token
-    // first and passes the captured version as a version-checked overwrite.
-    mockAgentsApi.getClaudeOAuthTokenStatus.mockResolvedValue(null);
-    mockAgentsApi.startClaudeSetupTokenLogin.mockResolvedValue({
-      sessionId: "claude-session-1",
-      environmentId: "sandbox-1",
-      status: "starting",
-      expiresAt: null,
-      failure: null,
-      panelMode: "submitted_browser_code",
-      prompt: null,
+  it("does not advance connection after a timed-out provider probe", async () => {
+    api.testEnvironment.mockResolvedValue({
+      ...pass,
+      status: "warn",
+      checks: [
+        {
+          code: "claude_hello_probe_timed_out",
+          level: "warn",
+          message: "Claude hello probe timed out.",
+        },
+      ],
     });
-    mockAgentsApi.getClaudeSetupTokenLoginStatus.mockResolvedValue({
-      sessionId: "claude-session-1",
-      environmentId: "sandbox-1",
-      status: "authenticated",
-      expiresAt: null,
-      failure: null,
-    });
-    mockAgentsApi.getClaudeSetupTokenLoginPrompt.mockResolvedValue({
-      authorizationUrl: "https://claude.example.test/authorize",
-    });
-    mockAgentsApi.submitClaudeSetupTokenBrowserCode.mockResolvedValue({
-      sessionId: "claude-session-1",
-      environmentId: "sandbox-1",
-      status: "authenticated",
-      expiresAt: null,
-      failure: null,
-    });
-    mockAgentsApi.completeClaudeSetupTokenLogin.mockResolvedValue({
-      storedSessionId: "stored-session-1",
-    });
-    mockAgentsApi.cancelClaudeSetupTokenLogin.mockResolvedValue(undefined);
-
-    mockEnvironmentsApi.list.mockResolvedValue([
-      { id: "local-1", name: "Local", driver: "local", config: {} },
-      {
-        id: "sandbox-1",
-        name: "Daytona",
-        driver: "sandbox",
-        config: { provider: "daytona" },
-      },
-    ]);
-    mockEnvironmentsApi.capabilities.mockResolvedValue(SANDBOX_CAPABILITIES);
-    // The instance default is the sandbox, so the effective login environment
-    // resolves to it without the user touching the override selector.
-    mockInstanceSettingsApi.get.mockResolvedValue({ defaultEnvironmentId: "sandbox-1" });
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableEnvironments: true });
-    mockInstanceSettingsApi.getGeneral.mockResolvedValue({ executionMode: "any" });
-    mockSecretsApi.list.mockResolvedValue([]);
-    mockSecretsApi.listProposals.mockResolvedValue([]);
-    mockSecretsApi.listUserSecretDefinitions.mockResolvedValue([]);
-    mockCompanySkillsApi.list.mockResolvedValue([]);
-    mockIssuesApi.list.mockResolvedValue([]);
-    mockProjectsApi.list.mockResolvedValue([]);
-    mockAssetsApi.uploadImage.mockResolvedValue({ contentPath: "/asset" });
-    mockClipboard.copyTextToClipboard.mockResolvedValue(undefined);
+    await render("claude_local");
+    await connect("Claude");
+    expect(container.textContent).toContain("Claude hello probe timed out.");
+    expect(container.textContent).not.toContain("Finish setup");
+    expect(api.hire).not.toHaveBeenCalled();
   });
 
-  afterEach(async () => {
-    for (const root of roots) {
-      await act(async () => {
-        root.unmount();
+  it.each(["claude_local", "codex_local"])(
+    "connects %s, creates once, and assigns a task",
+    async (adapter) => {
+      await render(adapter);
+      await connect(adapter === "claude_local" ? "Claude" : "OpenAI");
+      expect(api.testEnvironment).toHaveBeenCalledWith(
+        "company-1",
+        adapter,
+        expect.objectContaining({ environmentId: "local-1" }),
+      );
+      await click("Finish setup");
+      expect(api.hire).toHaveBeenCalledTimes(1);
+      expect(api.hire.mock.calls[0][1]).toMatchObject({
+        name: "Atlas",
+        adapterType: adapter,
+        reportsTo: "ceo",
+        runtimeConfig: { heartbeat: { enabled: false } },
       });
-    }
-    roots = [];
-    document.body.innerHTML = "";
-    vi.clearAllMocks();
+      expect(container.textContent).toContain("Your agent is ready");
+      await click("Assign Atlas a Task");
+      expect(state.openNewIssue).toHaveBeenCalledWith({
+        assigneeAgentId: "new-agent",
+        status: "todo",
+      });
+    },
+  );
+  it.each([
+    ["claude_local", "claude", "Claude", "ANTHROPIC_API_KEY"],
+    ["codex_local", "codex", "OpenAI", "OPENAI_API_KEY"],
+    ["paperclip_runner", "claude", "Claude", "ANTHROPIC_API_KEY"],
+    ["paperclip_runner", "codex", "OpenAI", "OPENAI_API_KEY"],
+  ])("stores %s %s API credentials only when finishing", async (adapter, runner, provider, key) => {
+    await render(adapter, runner);
+    await click("Use API key insteadUse subscription insteadUse API key instead");
+    await click(provider + "API");
+    await fill("API key", "connection-key");
+    await click("Connect");
+    expect(api.testEnvironment.mock.calls[0][2].testCredentials).toEqual({ [key]: "connection-key" });
+    expect(secrets.createUserSecretDefinition).not.toHaveBeenCalled();
+    await click("Finish setup");
+    expect(api.hire.mock.calls[0][1].adapterConfig.env[key].type).toBe("user_secret_ref");
+    expect(JSON.stringify(api.hire.mock.calls)).not.toContain("connection-key");
   });
-
-  it("shows Log in for a Claude sandbox before Create agent", async () => {
-    const result = await renderNewAgent();
-    roots.push(result.root);
-
-    // Before the test the page shows no login affordance.
-    expect(findButton(result.container, "Sign in")).toBeFalsy();
-
-    await clickByText(result.container, "Test Agent");
-    await flushUntil(() => Boolean(findButton(result.container, "Sign in")));
-
-    const loginButton = findButton(result.container, "Sign in");
-    const createButton = findButton(result.container, "Create agent");
-    expect(loginButton).toBeTruthy();
-    expect(createButton).toBeTruthy();
-
-    // The login panel renders before the Create agent button in the document, so
-    // the user completes the subscription login before an agent exists.
-    const order = loginButton!.compareDocumentPosition(createButton!);
-    expect(order & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  it.each(["opencode_local", "pi_local"])(
+    "persists %s OpenRouter credentials only as a secret reference",
+    async (adapter) => {
+      await render(adapter);
+      await fill("Model", "openrouter/anthropic/claude-sonnet-4.6");
+      await fill("OPENROUTER_API_KEY", "example-test-secret");
+      await click("Run test");
+      expect(secrets.rotateMyUserSecret).not.toHaveBeenCalled();
+      expect(secrets.createMyUserSecret).not.toHaveBeenCalled();
+      expect(api.testEnvironment.mock.calls[0][2].testCredentials).toEqual({ OPENROUTER_API_KEY: "example-test-secret" });
+      await click("Finish setup");
+      expect(api.hire.mock.calls[0][1].adapterConfig.env.OPENROUTER_API_KEY).toEqual({
+        type: "secret_ref",
+        secretId: "org-secret-1",
+        version: "latest",
+      });
+      expect(secrets.create).toHaveBeenCalledWith(
+        "company-1", expect.objectContaining({ value: "example-test-secret" }),
+      );
+      expect(JSON.stringify(api.hire.mock.calls)).not.toContain(
+        "example-test-secret",
+      );
+      expect(secrets.create).toHaveBeenCalledTimes(1);
+    },
+  );
+  it.each(["codex", "claude", "opencode"])(
+    "uses the correct native %s runner",
+    async (runner) => {
+      await render("paperclip_runner", runner);
+      if (runner !== "opencode")
+        await connect(runner === "claude" ? "Claude" : "OpenAI");
+      else await fill("Model", "openrouter/anthropic/claude-sonnet-4.6");
+      await click("Finish setup");
+      const config = api.hire.mock.calls[0][1].adapterConfig;
+      expect(config.provider).toBe(runner === "claude" ? "acpx" : runner);
+      if (runner === "claude") {
+        expect(config.acpxAgent).toBe("claude");
+        expect(config.model).toMatch(/^claude-/);
+      }
+      if (runner === "codex") expect(config.acpxAgent).toBeUndefined();
+    },
+  );
+  it("does not create when the test fails and permits retry", async () => {
+    await render();
+    await fill("Model", "openrouter/unknown/model");
+    api.testEnvironment.mockResolvedValueOnce({ ...pass, status: "fail" });
+    await click("Run test");
+    await click("Finish setup");
+    expect(api.hire).not.toHaveBeenCalled();
+    expect(container.textContent).toContain("Couldn't connect");
+    await click("Retry test");
+    await click("Finish setup");
+    expect(api.hire).toHaveBeenCalledTimes(1);
   });
-
-  it("stores the secret and adds the fixed binding through the create request, with no token in the DOM", async () => {
-    const result = await renderNewAgent();
-    roots.push(result.root);
-
-    await completeClaudeLogin(result.container);
-
-    expect(mockAgentsApi.completeClaudeSetupTokenLogin).toHaveBeenCalledWith(
-      "company-1",
-      "claude-session-1",
-    );
-
-    await clickByText(result.container, "Create agent");
-    await flushUntil(() => mockAgentsApi.hire.mock.calls.length > 0);
-
-    expect(mockAgentsApi.hire).toHaveBeenCalledTimes(1);
-    const [companyId, payload] = mockAgentsApi.hire.mock.calls[0] as [
-      string,
-      Record<string, unknown>,
+  it("does not rotate a working provider credential when a new key fails its test", async () => {
+    secrets.listMyUserSecrets.mockResolvedValue([{ definition: { id: "existing-definition", key: "OPENROUTER_API_KEY" }, secret: { id: "working-secret" } }]);
+    await render();
+    await fill("Model", "openrouter/anthropic/claude-sonnet-4.6");
+    await fill("OPENROUTER_API_KEY", "invalid-replacement");
+    api.testEnvironment.mockResolvedValueOnce({ ...pass, status: "fail" });
+    await click("Run test");
+    expect(secrets.rotateMyUserSecret).not.toHaveBeenCalled();
+    expect(secrets.createUserSecretDefinition).not.toHaveBeenCalled();
+    expect(api.testEnvironment.mock.calls[0][2].testCredentials.OPENROUTER_API_KEY).toBe("invalid-replacement");
+    await click("Finish setup");
+    expect(api.hire).not.toHaveBeenCalled();
+  });
+  it("does not store a key when leaving after a successful test", async () => {
+    await render();
+    await fill("Model", "openrouter/anthropic/claude-sonnet-4.6");
+    await fill("OPENROUTER_API_KEY", "abandoned-key");
+    await click("Run test");
+    await act(async () => root.render(null));
+    expect(secrets.createUserSecretDefinition).not.toHaveBeenCalled();
+  });
+  it("removes the staged credential when hiring fails", async () => {
+    await render();
+    await fill("Model", "openrouter/anthropic/claude-sonnet-4.6");
+    await fill("OPENROUTER_API_KEY", "new-key");
+    api.hire.mockRejectedValueOnce(new Error("Creation rejected"));
+    await click("Finish setup");
+    expect(secrets.remove).toHaveBeenCalledWith("org-secret-1");
+    expect(container.textContent).toContain("Creation rejected");
+  });
+  it("preserves the creation error when credential cleanup also fails", async () => {
+    await render();
+    await fill("Model", "openrouter/anthropic/claude-sonnet-4.6");
+    await fill("OPENROUTER_API_KEY", "new-key");
+    api.hire.mockRejectedValueOnce(new Error("Agent quota exceeded"));
+    secrets.remove.mockRejectedValueOnce(new Error("Cleanup unavailable"));
+    await click("Finish setup");
+    expect(container.textContent).toContain("Agent quota exceeded");
+    expect(container.textContent).toContain("Could not remove an unused setup credential");
+  });
+  it("requires an explicit provider/model for Pi", async () => {
+    await render();
+    await click("Run test");
+    expect(api.testEnvironment).not.toHaveBeenCalled();
+    expect(container.textContent).toContain("provider/model format");
+  });
+  it("blocks a disabled runner even when opened through a URL", async () => {
+    state.adapters = [
+      { type: "paperclip_runner", loaded: true, disabled: true },
     ];
-    expect(companyId).toBe("company-1");
-
-    // The create request carries the non-secret stored-session claim, and the
-    // adapter config carries the fixed reference binding.
-    expect(payload.storedSessionId).toBe("stored-session-1");
-    const adapterConfig = payload.adapterConfig as Record<string, unknown>;
-    const env = adapterConfig.env as Record<string, Record<string, unknown>>;
-    expect(env.CLAUDE_CODE_OAUTH_TOKEN).toEqual({
-      type: "user_secret_ref",
-      key: "CLAUDE_CODE_OAUTH_TOKEN",
-      version: "latest",
-      required: true,
-    });
-    // The binding is a reference. It carries no token value.
-    expect(env.CLAUDE_CODE_OAUTH_TOKEN).not.toHaveProperty("value");
-
-    // The token never enters the Document Object Model, and no request payload
-    // carries a token value.
-    expect(result.container.textContent ?? "").not.toContain("sk-ant");
-    expect(JSON.stringify(payload)).not.toContain("sk-ant");
+    await render("paperclip_runner");
+    await connect("OpenAI");
+    expect(api.testEnvironment).not.toHaveBeenCalled();
+    expect(api.hire).not.toHaveBeenCalled();
   });
-
-  it("applies a stored token first and starts a replacement login with the captured version", async () => {
-    // The owner already has a stored Claude token. The panel reads the status,
-    // applies the stored token first, and shows a replace action. A replacement
-    // login carries the captured secret id and version, so the server rotates the
-    // stored value under a version-checked overwrite instead of a first write.
-    mockAgentsApi.getClaudeOAuthTokenStatus.mockResolvedValue({
-      secretId: "44444444-4444-4444-8444-444444444444",
-      latestVersion: 3,
+  it("keeps pending agents behind approval and disables task assignment", async () => {
+    api.hire.mockResolvedValue({
+      agent: { id: "new-agent", name: "Atlas", status: "pending_approval" },
     });
-
-    const result = await renderNewAgent();
-    roots.push(result.root);
-
-    await clickByText(result.container, "Test Agent");
-    // The panel shows the replace action only after it reads the stored-token
-    // status, so the button label proves the panel captured the version.
-    await flushUntil(() => Boolean(findButton(result.container, "Sign in to replace")));
-    await clickByText(result.container, "Sign in to replace");
-    await flushUntil(() => mockAgentsApi.startClaudeSetupTokenLogin.mock.calls.length > 0);
-
-    expect(mockAgentsApi.startClaudeSetupTokenLogin).toHaveBeenCalledWith("company-1", {
-      environmentId: "sandbox-1",
-      overwrite: {
-        expectedSecretId: "44444444-4444-4444-8444-444444444444",
-        expectedLatestVersion: 3,
-      },
+    await render();
+    await fill("Model", "openrouter/anthropic/claude-sonnet-4.6");
+    await click("Finish setup");
+    expect(container.textContent).toContain("Agent submitted for approval");
+    await click("Assign Atlas a Task");
+    expect(state.openNewIssue).not.toHaveBeenCalled();
+  });
+  it("uses the same managed environment for connection testing and creation", async () => {
+    envApi.list.mockResolvedValue([
+      { id: "sandbox-1", driver: "sandbox", config: { provider: "daytona" } },
+    ]);
+    envApi.capabilities.mockResolvedValue({
+      sandboxProviders: { daytona: { supportsLoginPty: true } },
     });
-  });
-
-  it("ignores a native-runner URL preset while the experimental adapter is disabled", async () => {
-    mockSearchParams.value = new URLSearchParams("adapterType=paperclip_runner");
-    mockAdapterAvailability.disabled = new Set(["paperclip_runner"]);
-
-    const result = await renderNewAgent();
-    roots.push(result.root);
-
-    expect(result.container.textContent).not.toContain("Paperclip Runner");
-    expect(result.container.textContent).toContain("Claude Code");
-  });
-
-  it("accepts a native-runner URL preset after the experimental adapter is enabled", async () => {
-    mockSearchParams.value = new URLSearchParams("adapterType=paperclip_runner");
-
-    const result = await renderNewAgent();
-    roots.push(result.root);
-
-    expect(result.container.textContent).toContain("Paperclip Runner");
+    settings.get.mockResolvedValue({ defaultEnvironmentId: "sandbox-1" });
+    settings.getExperimental.mockResolvedValue({
+      enableManagedSandboxOnly: true,
+    });
+    await render("claude_local");
+    await connect("Claude");
+    await click("Finish setup");
+    expect(api.testEnvironment.mock.calls[0][2].environmentId).toBe(
+      "sandbox-1",
+    );
+    expect(api.hire.mock.calls[0][1]).toMatchObject({
+      defaultEnvironmentId: "sandbox-1",
+      applyStoredClaudeLogin: true,
+    });
   });
 });

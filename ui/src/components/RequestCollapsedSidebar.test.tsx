@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 
+import { act } from "react";
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -8,8 +9,6 @@ import { RequestCollapsedSidebar } from "./RequestCollapsedSidebar";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
-
-const COLLAPSED_STORAGE_KEY = "paperclip.sidebar.collapsed";
 
 let capturedValue: ReturnType<typeof useSidebar> | null = null;
 
@@ -30,18 +29,11 @@ function Harness({ onRoute }: { onRoute: boolean }) {
   );
 }
 
-async function flushReact() {
-  await Promise.resolve();
-  await new Promise((resolve) => window.setTimeout(resolve, 0));
-  flushSync(() => {});
-}
-
 async function render(onRoute: boolean): Promise<{ root: Root; host: HTMLDivElement }> {
   const host = document.createElement("div");
   document.body.appendChild(host);
   const root = createRoot(host);
-  flushSync(() => root.render(<Harness onRoute={onRoute} />));
-  await flushReact();
+  await act(async () => root.render(<Harness onRoute={onRoute} />));
   return { root, host };
 }
 
@@ -73,51 +65,47 @@ describe("RequestCollapsedSidebar", () => {
     });
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     if (active) {
-      flushSync(() => active!.root.unmount());
+      await act(async () => active!.root.unmount());
       active.host.remove();
       active = null;
     }
     localStorage.clear();
   });
 
-  it("requests collapsed while mounted when there is no user pin", async () => {
+  it("records the legacy route request without collapsing the global navigation", async () => {
     active = await render(true);
     expect(capturedValue?.routeRequestsCollapsed).toBe(true);
-    expect(capturedValue?.collapsed).toBe(true);
+    expect(capturedValue?.collapsed).toBe(false);
   });
 
-  it("lets an explicit user pin override the route request", async () => {
+  it("keeps the global navigation expanded when old pin APIs are called", async () => {
     active = await render(true);
-    expect(capturedValue?.collapsed).toBe(true);
+    expect(capturedValue?.collapsed).toBe(false);
 
-    // User explicitly pins expanded — must win over the route's request.
-    flushSync(() => capturedValue?.setCollapsed(false));
+    flushSync(() => capturedValue?.setCollapsed(true));
     expect(capturedValue?.routeRequestsCollapsed).toBe(true);
     expect(capturedValue?.collapsed).toBe(false);
   });
 
   it("clears the request on unmount, restoring the global default", async () => {
     active = await render(true);
-    expect(capturedValue?.collapsed).toBe(true);
+    expect(capturedValue?.collapsed).toBe(false);
 
     // Navigate away: the route (and its <RequestCollapsedSidebar/>) unmounts.
-    flushSync(() => active!.root.render(<Harness onRoute={false} />));
-    await flushReact();
+    await act(async () => active!.root.render(<Harness onRoute={false} />));
     expect(capturedValue?.routeRequestsCollapsed).toBe(false);
     expect(capturedValue?.collapsed).toBe(false);
   });
 
-  it("keeps a user pin after navigating away (pin persists, request cleared)", async () => {
+  it("clears the request without persisting a retired collapsed pin", async () => {
     active = await render(true);
     flushSync(() => capturedValue?.setCollapsed(true));
-    expect(localStorage.getItem(COLLAPSED_STORAGE_KEY)).toBe("1");
+    expect(localStorage.getItem("paperclip.sidebar.collapsed")).toBeNull();
 
-    flushSync(() => active!.root.render(<Harness onRoute={false} />));
-    await flushReact();
-    // Route request gone, but the explicit collapsed pin still applies.
+    await act(async () => active!.root.render(<Harness onRoute={false} />));
     expect(capturedValue?.routeRequestsCollapsed).toBe(false);
-    expect(capturedValue?.collapsed).toBe(true);
+    expect(capturedValue?.collapsed).toBe(false);
   });
 });

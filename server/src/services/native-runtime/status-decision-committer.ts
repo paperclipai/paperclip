@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import type { CreateIssueThreadInteraction } from "@paperclipai/shared";
 import {
@@ -29,6 +29,7 @@ import { issueThreadInteractionService } from "../issue-thread-interactions.js";
 import { issueRecoveryActionService } from "../issue-recovery-actions.js";
 import { buildIssueBlockersResolvedWakeIdempotencyKey } from "../issue-dependency-wakeups.js";
 import { persistActivity, publishActivity, type ActivityPublication } from "../activity-log.js";
+import { emitAgentTaskRun } from "../agent-task-run-telemetry.js";
 
 export class NativeStatusRaceError extends Error {
   readonly code = "native_status_race" as const;
@@ -327,6 +328,8 @@ async function materializeDecisionEffect(input: {
   effect: NativeStatusEffect;
   failpoint?: NativeStatusCommitFailpoint;
   preMaterializedEffects?: ReadonlyMap<string, NativeMaterializedStatusEffect>;
+  /** Terminal heartbeat_runs rows this effect wrote. The caller emits agent.task_run for each, after its transaction commits. */
+  terminalRunsToEmit?: (typeof heartbeatRuns.$inferSelect)[];
 }): Promise<NativeMaterializedStatusEffect> {
   const { effect } = input;
   if (effect.kind === "create_interaction") {
@@ -456,6 +459,15 @@ async function materializeDecisionEffect(input: {
   }
   if (effect.kind === "enqueue_continuation") {
     failAt("continuation_materialization", input.failpoint);
+    if (effect.idempotencyKey.startsWith(`connection-intent:tools:${input.runId}:`)) {
+      const [refresh] = await input.tx.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests).where(and(
+        eq(agentWakeupRequests.companyId, input.companyId), eq(agentWakeupRequests.agentId, effect.agentId),
+        eq(agentWakeupRequests.idempotencyKey, effect.idempotencyKey),
+        notInArray(agentWakeupRequests.status, ["skipped", "failed", "cancelled"]),
+      )).limit(1);
+      if (refresh) return { effectKind: effect.kind, targetType: "agent_wakeup_request", targetId: refresh.id,
+        payload: { continuationKind: effect.continuationKind, summary: effect.summary } };
+    }
     const wakeId = await enqueueWake({
       tx: input.tx,
       companyId: input.companyId,
@@ -689,8 +701,9 @@ async function materializeDecisionEffect(input: {
     }).where(and(
       eq(heartbeatRuns.id, input.runId),
       eq(heartbeatRuns.companyId, input.companyId),
-    )).returning({ id: heartbeatRuns.id });
+    )).returning();
     if (!run) throw new Error("native_continuation_cancellation_run_missing");
+    input.terminalRunsToEmit?.push(run);
     return {
       effectKind: effect.kind,
       targetType: "heartbeat_run",
@@ -1033,6 +1046,7 @@ export async function commitNativeStatusDecision(input: {
   }
   const reasonCode = input.decision.reasonCode;
   const publications: ActivityPublication[] = [];
+  const terminalRunsToEmit: (typeof heartbeatRuns.$inferSelect)[] = [];
   const committed = await input.db.transaction(async (tx) => {
     const coordinator = await tx.select().from(nativeRunFinalizations).where(and(
       eq(nativeRunFinalizations.runId, input.runId),
@@ -1136,6 +1150,7 @@ export async function commitNativeStatusDecision(input: {
         effect,
         failpoint: input.failpoint,
         preMaterializedEffects,
+        terminalRunsToEmit,
       }));
     }
 
@@ -1333,5 +1348,6 @@ export async function commitNativeStatusDecision(input: {
   });
 
   for (const publication of publications) publishActivity(publication);
+  for (const terminalRun of terminalRunsToEmit) await emitAgentTaskRun(input.db, terminalRun);
   return committed;
 }

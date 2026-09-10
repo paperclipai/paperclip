@@ -23,6 +23,25 @@ credential material are never written to the run log.
 These records remain run-log events. They do not create an OpenTelemetry or
 Paperclip Telemetry export, and legacy adapters do not use this writer.
 
+## Native Restart Recovery Run-Log Event
+
+Paperclip writes a `native.recovery.transition` event for every native restart
+classification and for graceful restart suspension. This immutable run-log
+record lets operators reconstruct recovery decisions without exporting data to
+Paperclip Telemetry or OpenTelemetry.
+
+The payload contains the restart kind, recovery request id when one exists,
+runner disposition, and the controller generation and provider attempt for a
+claimed recovery. Live-runner adoption also records the runner PID, process
+group, and process-start fingerprint. A non-claim disposition records a bounded
+reason instead. Graceful suspension records the signal and confirms that it did
+not create a retry run.
+
+The event never includes bootstrap tickets, reconnect leases, authentication
+proofs, encryption keys, environment variables, provider credentials, command
+arguments, or an unsanitized stderr stream. Detailed failed-attempt diagnostics
+remain in the bounded `native_run_finalizations.recovery_history` ledger.
+
 ## Sandbox Startup Run-Log Event
 
 Paperclip writes one `run.startup.step` event to the run log for each bring-up
@@ -94,3 +113,19 @@ The sandbox duplex transport also writes one run-log event as one of its three
 sinks. See the
 [Sandbox Duplex Transport Instrumentation](observability.md#sandbox-duplex-transport-instrumentation)
 section in the Observability contract.
+
+## Execution recovery
+
+Provider identity diagnostics remain in the local run log. They record the notification method, expected and received thread/turn identifiers, and the classification (root, verified descendant, stale, unrelated informational, or invalid authoritative). They omit the original provider payload and credentials. Repeated informational notices are bounded.
+
+Recovery lifecycle events retain the original structured failure code, retry attempt, next retry time, and predecessor/successor identifiers. Durable status delivery uses an idempotency marker; delivery grants no provider authority. Failed publication is retried without repeating provider work. These records are not first-party Telemetry.
+
+## Codex resume usage snapshot
+
+The native runner retains a bounded local `harness.diagnostic` event with code
+`codex_resume_usage_snapshot`. It identifies `thread/tokenUsage/updated` as
+`resume_usage_snapshot`, retains the reported thread and completed-turn IDs,
+and records cumulative usage counters. It does not include provider credentials
+or message content. The event establishes the accounting baseline; it is not a
+new billable usage receipt or a user-facing provider warning. Other provider
+identity checks remain in force.

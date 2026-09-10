@@ -24,7 +24,6 @@ async function newCompany(request: APIRequestContext, label: string): Promise<Se
   const body = await json<{ id: string; issuePrefix?: string; prefix?: string; urlKey?: string }>(
     await request.post("/api/companies", { data: { name: `MCP US ${label} ${Date.now()}` } }),
   );
-  await json(await request.patch("/api/instance/settings/experimental", { data: { enableApps: true } }));
   return { companyId: body.id, prefix: body.issuePrefix ?? body.prefix ?? body.urlKey ?? "E2E" };
 }
 
@@ -304,7 +303,7 @@ test.describe.serial("MCP prod Phase 5a user-story harness", () => {
       await page.goto(`/${seed.prefix}/apps/${connectionId}`);
       await expect(page.getByRole("heading", { name: /Sheets Fixture us1/i })).toBeVisible({ timeout: 30_000 });
       await screenshot(page, "US-1", "01-connected-app");
-      await page.goto(`/${seed.prefix}/apps/${connectionId}/activity`);
+      await page.goto(`/${seed.prefix}/activity?action=tool_`);
       await screenshot(page, "US-1", "02-activity");
     } finally {
       await mock.close();

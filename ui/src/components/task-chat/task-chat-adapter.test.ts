@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import type { IssueChatComment } from "@/lib/issue-chat-messages";
-import { commentsToTaskChatItems } from "./task-chat-adapter";
+import {
+  commentsToTaskChatItems,
+  formatTaskChatTimestamp,
+} from "./task-chat-adapter";
 
 describe("commentsToTaskChatItems", () => {
   it("classifies a recovered local-board comment as an agent bubble", () => {
@@ -124,5 +127,73 @@ describe("commentsToTaskChatItems", () => {
     expect(agent.metadata).toBeUndefined();
     expect(agent.runAgentId).toBeUndefined();
     expect(agent.createdAtIso).toBeUndefined();
+  });
+
+  it("shows both queue and steer times for a causally repositioned follow-up", () => {
+    const createdAt = "2026-09-04T14:09:33.000Z";
+    const conversationAnchorAt = "2026-09-04T14:10:14.000Z";
+    const [item] = commentsToTaskChatItems([
+      {
+        id: "c-steered",
+        body: "Use three seconds instead.",
+        authorType: "user",
+        authorUserId: "user-1",
+        authorAgentId: null,
+        followUpRequested: true,
+        consumedByRunId: "run-1",
+        steeredIntoRunId: "run-1",
+        conversationAnchorAt,
+        createdAt,
+      } as unknown as IssueChatComment,
+    ]);
+
+    expect(item).toMatchObject({
+      kind: "message",
+      timestamp: `Queued ${formatTaskChatTimestamp(createdAt)} · Steered ${formatTaskChatTimestamp(conversationAnchorAt)}`,
+    });
+  });
+
+  it("shows the successor-run delivery time for a queued follow-up", () => {
+    const createdAt = "2026-09-04T14:09:33.000Z";
+    const conversationAnchorAt = "2026-09-04T14:10:35.000Z";
+    const [item] = commentsToTaskChatItems([
+      {
+        id: "c-delivered",
+        body: "Use three seconds instead.",
+      authorType: "user",
+      authorUserId: "user-1",
+      authorAgentId: null,
+      followUpRequested: true,
+      consumedByRunId: "run-2",
+      conversationAnchorAt,
+      createdAt,
+      } as unknown as IssueChatComment,
+    ]);
+
+    expect(item).toMatchObject({
+      kind: "message",
+      timestamp: `Queued ${formatTaskChatTimestamp(createdAt)} · Delivered ${formatTaskChatTimestamp(conversationAnchorAt)}`,
+    });
+  });
+
+  it("keeps an ordinary first message on the compact timestamp", () => {
+    const createdAt = "2026-09-04T14:09:33.000Z";
+    const [item] = commentsToTaskChatItems([
+      {
+        id: "c-initial",
+        body: "Start the task.",
+        authorType: "user",
+        authorUserId: "user-1",
+        authorAgentId: null,
+        consumedByRunId: "run-1",
+        conversationAnchorAt: "2026-09-04T14:10:35.000Z",
+        createdAt,
+      } as unknown as IssueChatComment,
+    ]);
+
+    expect(item).toMatchObject({
+      kind: "message",
+      timestamp: formatTaskChatTimestamp(createdAt),
+    });
   });
 });

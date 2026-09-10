@@ -1,4 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  createTenantSessionRecoveryCoordinator,
+  tenantSessionRecovery,
+} from "@/lib/tenant-session-recovery";
 import { __inflightGetCount, api, detachInflightGet } from "./client";
 
 interface Deferred<T> {
@@ -21,6 +25,10 @@ function jsonResponse(body: unknown) {
   return { ok: true, status: 200, json: async () => body } as unknown as Response;
 }
 
+function errorResponse(body: unknown, status = 401) {
+  return { ok: false, status, json: async () => body } as unknown as Response;
+}
+
 const fetchMock = vi.fn();
 
 beforeEach(() => {
@@ -29,7 +37,44 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.restoreAllMocks();
   vi.unstubAllGlobals();
+});
+
+describe("tenant-session recovery", () => {
+  it("keeps concurrent failures pending and schedules one top-level reload", async () => {
+    const reload = vi.fn();
+    const recovery = createTenantSessionRecoveryCoordinator(reload);
+    vi.spyOn(tenantSessionRecovery, "recoverIfNeeded").mockImplementation(recovery.recoverIfNeeded);
+    fetchMock.mockResolvedValue(errorResponse({ error: "tenant_session_required" }));
+
+    const first = api.post("/tenant-session-a", { value: 1 });
+    const second = api.post("/tenant-session-b", { value: 2 });
+
+    await vi.waitFor(() => {
+      expect(tenantSessionRecovery.recoverIfNeeded).toHaveBeenCalledTimes(2);
+      expect(reload).toHaveBeenCalledTimes(1);
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    let settled = false;
+    void Promise.all([first, second]).then(
+      () => { settled = true; },
+      () => { settled = true; },
+    );
+    await Promise.resolve();
+    expect(settled).toBe(false);
+  });
+
+  it("preserves ApiError handling for an unrelated 401", async () => {
+    fetchMock.mockResolvedValue(errorResponse({ error: "unauthorized" }));
+
+    await expect(api.get("/ordinary-401")).rejects.toMatchObject({
+      name: "ApiError",
+      status: 401,
+      message: "unauthorized",
+    });
+  });
 });
 
 describe("in-tab GET coalescing", () => {

@@ -24,6 +24,7 @@ import { verifyLocalAgentJwt } from "../agent-auth-jwt.js";
 import { isUuidLike, normalizeAgentApiKeyScope, type DeploymentMode } from "@paperclipai/shared";
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
 import { logger } from "./logger.js";
+import { captureRunIdentity } from "../services/run-identity.js";
 import { boardAuthService } from "../services/board-auth.js";
 
 const CLOUD_TENANT_WRITE_DEBOUNCE_MS = 5_000;
@@ -379,7 +380,18 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
         return;
       }
 
-      const onBehalfOfUserId = claims.responsible_user_id !== undefined
+      const [identityRun] = await db.select({ activeIdentityContextId: heartbeatRuns.activeIdentityContextId,
+        responsibleUserId: heartbeatRuns.responsibleUserId, status: heartbeatRuns.status }).from(heartbeatRuns).where(and(
+          eq(heartbeatRuns.id, claims.run_id), eq(heartbeatRuns.companyId, claims.company_id), eq(heartbeatRuns.agentId, claims.sub),
+        ));
+      if (identityRun?.activeIdentityContextId && identityRun.status === "running") {
+        const captured = await captureRunIdentity(db, { companyId: claims.company_id, agentId: claims.sub, runId: claims.run_id });
+        identityRun.activeIdentityContextId = captured.context?.id ?? null;
+        identityRun.responsibleUserId = captured.context?.responsibleUserId ?? null;
+      }
+      const onBehalfOfUserId = identityRun?.activeIdentityContextId
+        ? identityRun.responsibleUserId
+        : claims.responsible_user_id !== undefined
         ? normalizeOptionalString(claims.responsible_user_id)
         : await resolveLegacyRunResponsibleUserId(db, {
             companyId: claims.company_id,
@@ -399,6 +411,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
         keyScope: normalizeAgentApiKeyScope(claims.key_scope),
         runId: claims.run_id,
         onBehalfOfUserId,
+        identityContextId: identityRun?.activeIdentityContextId ?? null,
         onBehalfOfMemberships,
         source: "agent_jwt",
       };
@@ -512,7 +525,60 @@ export function cloudActorHeaderSourceFromHeaders(
   };
 }
 
+/**
+ * postgres.js codes for a connection the server side closed out from under
+ * an in-flight query — a pooled Postgres endpoint recycling or suspending
+ * (observed 2026-09-03 with a managed pooler closing the socket mid-INSERT).
+ * The driver reconnects transparently on the next query; only the statement
+ * that was on the wire is lost.
+ */
+const transientDbConnectionCodes = new Set([
+  "CONNECTION_CLOSED",
+  "CONNECTION_ENDED",
+  "CONNECTION_DESTROYED",
+]);
+
+/**
+ * True when the error chain (drizzle wraps the driver error as `cause`)
+ * carries a postgres.js closed-connection code. Exported for tests.
+ */
+export function isTransientDbConnectionError(error: unknown): boolean {
+  for (let current: unknown = error; current instanceof Error; current = current.cause) {
+    const code = (current as { code?: unknown }).code;
+    if (typeof code === "string" && transientDbConnectionCodes.has(code)) return true;
+  }
+  return false;
+}
+
+/**
+ * Runs `run` and retries it exactly once when it fails on a transient
+ * closed-connection error. Callers must pass an idempotent operation.
+ * Exported for tests.
+ */
+export async function retryOnTransientDbConnectionError<T>(run: () => Promise<T>): Promise<T> {
+  try {
+    return await run();
+  } catch (error) {
+    if (!isTransientDbConnectionError(error)) throw error;
+    return run();
+  }
+}
+
+/**
+ * Trusted-header actor resolution with a single transient-connection retry.
+ * The tenant sync inside is idempotent end to end — every write is an
+ * upsert/on-conflict/delete and the write debounce records only after the
+ * whole sync succeeds — so replaying it after a dropped connection is safe,
+ * and turns a golden-path authentication 500 into a served request.
+ */
 export async function resolveCloudTenantActor(
+  db: Db,
+  req: CloudActorHeaderSource,
+): Promise<Express.Request["actor"] | null> {
+  return retryOnTransientDbConnectionError(() => resolveCloudTenantActorOnce(db, req));
+}
+
+async function resolveCloudTenantActorOnce(
   db: Db,
   req: CloudActorHeaderSource,
 ): Promise<Express.Request["actor"] | null> {

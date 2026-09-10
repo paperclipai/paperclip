@@ -87,6 +87,10 @@ class FakeCapabilityCodexTransport implements CodexAppServerTransport {
     if (method === "initialize") return { user: { sessionId: this.state.providerSessionId } };
     if (method === "thread/start") {
       expect(Array.isArray(params.dynamicTools)).toBe(true);
+      expect(params.completionContract).toEqual({
+        revision: "paperclip-capability-live-v1",
+        criterionIds: ["objective"],
+      });
       return {
         model: "gpt-eval-test",
         modelProvider: "openai",
@@ -575,20 +579,70 @@ describe("Capability live runnerd and Codex session", () => {
     expect(state.transports[0]?.processInfo().exited).toBe(true);
 
     const active = session.sendMessage("start a long turn");
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await vi.waitFor(() => expect(session.snapshot().activeTurnId).not.toBeNull());
     expect(session.snapshot().status).toBe("running");
     await session.interrupt("test cleanup");
     await expect(active).resolves.toMatchObject({ status: "interrupted" });
     await service.shutdown(session.id);
   });
 
+  it("interrupts pending admission without starting provider work", async () => {
+    const state = providerState();
+    const service = new CapabilityLiveSessionService({ transportFactory: fakeTransportFactory(state) });
+    const session = await service.create({ lifecyclePolicy: { mode: "warm", idleTimeoutMs: 60_000 } });
+
+    const turn = session.sendMessage("do not admit this turn");
+    expect(session.snapshot().transcript).toEqual([
+      expect.objectContaining({ role: "user", text: "do not admit this turn" }),
+    ]);
+    await session.interrupt("cancel during workspace preflight");
+    const result = await turn;
+
+    expect(result.status).toBe("interrupted");
+    expect(result.snapshot.status).toBe("warm_idle");
+    expect(result.snapshot.terminalTurns).toEqual([
+      expect.objectContaining({ turnId: result.turnId, status: "interrupted" }),
+    ]);
+    expect(state.transports[0]?.requests.filter((request) => request.method === "turn/start"))
+      .toEqual([]);
+    await service.shutdown(session.id);
+  });
+
+  it("fails visibly instead of blocking teardown on an unabortable provider start", async () => {
+    const state = providerState();
+    state.onTurnStart = () => new Promise<void>(() => undefined);
+    const service = new CapabilityLiveSessionService({ transportFactory: fakeTransportFactory(state) });
+    const session = await service.create({ lifecyclePolicy: { mode: "warm", idleTimeoutMs: 60_000 } });
+    const events: CapabilityLiveTurnEvent[] = [];
+    session.subscribe((event) => events.push(event));
+
+    const abandonedTurn = session.sendMessage("start a provider request that never returns");
+    void abandonedTurn.catch(() => undefined);
+    await vi.waitFor(() => {
+      expect(state.transports[0]?.requests.some((request) => request.method === "turn/start"))
+        .toBe(true);
+    });
+
+    await expect(session.suspend("bounded admission teardown")).resolves.toBeUndefined();
+    expect(session.snapshot().status).toBe("failed");
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: "error",
+        message: expect.stringContaining("did not stop after transport close"),
+      }),
+    ]));
+    expect(state.transports[0]?.processInfo().exited).toBe(true);
+  });
+
   it("persists the selected provider and passes it to the live runner transport", async () => {
     const state = providerState();
     const providers: Array<string | undefined> = [];
+    const permissionModes: Array<string | undefined> = [];
     const baseFactory = fakeTransportFactory(state);
     const service = new CapabilityLiveSessionService({
       transportFactory: (options) => {
         providers.push(options.provider);
+        permissionModes.push(options.opencodePermissionMode);
         return baseFactory(options);
       },
     });
@@ -598,11 +652,72 @@ describe("Capability live runnerd and Codex session", () => {
     });
 
     expect(providers).toEqual(["opencode"]);
+    expect(permissionModes).toEqual(["deny"]);
     expect(session.snapshot().config).toMatchObject({
       provider: "opencode",
       driver: "opencode_server",
-      providerVersion: "1.18.17",
+      providerVersion: "1.18.29",
       requestedModel: "openrouter/deepseek/deepseek-v4-flash-0731",
+    });
+    await service.shutdown(session.id);
+  });
+
+  it("passes caller-supplied native system instructions to the provider", async () => {
+    const state = providerState();
+    const service = new CapabilityLiveSessionService({
+      transportFactory: fakeTransportFactory(state),
+      transportOptions: {
+        baseInstructions:
+          "Native instructions\n\nRead-only instruction sibling root: /runtime/instructions",
+      },
+    });
+    const session = await service.create();
+
+    expect(
+      state.transports[0]?.requests.find(
+        (request) => request.method === "thread/start",
+      )?.params.baseInstructions,
+    ).toBe(
+      "Native instructions\n\nRead-only instruction sibling root: /runtime/instructions",
+    );
+    await service.shutdown(session.id);
+  });
+
+  it("attributes Claude Managed sessions to the pinned immutable Agent version", async () => {
+    const state = providerState();
+    const managedProfiles: Array<Record<string, unknown> | undefined> = [];
+    const baseFactory = fakeTransportFactory(state);
+    const service = new CapabilityLiveSessionService({
+      transportFactory: (options) => {
+        managedProfiles.push(options.managedProfile);
+        return baseFactory(options);
+      },
+    });
+    const session = await service.create({
+      provider: "claude_managed",
+      requestedModel: "claude-sonnet-5",
+      managedProfile: {
+        profileId: "managed-profile-1",
+        anthropicAgentId: "agent-1",
+        agentVersion: "17",
+        environmentId: "environment-1",
+        betaVersion: "managed-agents-2026-04-01",
+        maxSessionListCostUsd: 0.5,
+      },
+    });
+
+    expect(managedProfiles).toEqual([
+      expect.objectContaining({
+        agentVersion: "17",
+        betaVersion: "managed-agents-2026-04-01",
+        model: "claude-sonnet-5",
+      }),
+    ]);
+    expect(session.snapshot().config).toMatchObject({
+      provider: "claude_managed",
+      driver: "claude_managed_agents_api",
+      providerVersion: "17",
+      requestedModel: "claude-sonnet-5",
     });
     await service.shutdown(session.id);
   });
@@ -622,6 +737,74 @@ describe("Capability live runnerd and Codex session", () => {
     expect(names).toContain("invoke_discovered_capability");
     expect(names).not.toContain("list_agents");
     expect(session.snapshot().config.toolExposure).toBe("lazy");
+    await service.shutdown(session.id);
+  });
+
+  it("keeps discovered invocations correlated to the provider gateway call", async () => {
+    const state = providerState();
+    const claim = "discovery:agents:read";
+    const service = new CapabilityLiveSessionService({
+      transportFactory: fakeTransportFactory(state),
+    });
+    const session = await service.create({
+      runId: "run-live-lazy-invoke",
+      sessionId: "session-live-lazy-invoke",
+      toolExposure: "lazy",
+      capabilities: [claim],
+      explicitClaims: [claim],
+      scenario: { id: "lazy-invoke", claims: [claim] },
+    });
+    let gatewayResult: Record<string, unknown> | null = null;
+    state.onTurnStart = async () => {
+      const transport = state.transports[0]!;
+      const turnId = [...state.turns.keys()].at(-1)!;
+      const discovery = await transport.invokeServerRequest({
+        id: "request-discover",
+        method: "item/tool/call",
+        params: {
+          threadId: state.threadId,
+          turnId,
+          callId: "call-discover",
+          tool: "discover_capabilities",
+          arguments: {
+            query: "list company agents",
+            namespace: "discovery",
+            limit: 10,
+          },
+        },
+      });
+      expect(discovery.success).toBe(true);
+      const invoked = await transport.invokeServerRequest({
+        id: "request-invoke",
+        method: "item/tool/call",
+        params: {
+          threadId: state.threadId,
+          turnId,
+          callId: "call-invoke",
+          tool: "invoke_discovered_capability",
+          arguments: { operationId: "list_agents", input: {} },
+        },
+      });
+      gatewayResult = JSON.parse(
+        String(
+          (invoked.contentItems as Array<Record<string, unknown>>)[0]?.text,
+        ),
+      ) as Record<string, unknown>;
+    };
+
+    await session.sendMessage("Exercise the lazy discovery gateway.");
+
+    expect(gatewayResult).toMatchObject({
+      callId: "call-invoke",
+      operationId: "invoke_discovered_capability",
+      ok: true,
+    });
+    expect(
+      session
+        .snapshot()
+        .evidence.filter((entry) => entry.kind === "tool_call")
+        .map((entry) => entry.data.operationId),
+    ).toContain("list_agents");
     await service.shutdown(session.id);
   });
 
@@ -1001,7 +1184,7 @@ describe("Capability live runnerd and Codex session", () => {
       requestedModel: "openrouter/deepseek/deepseek-v4-flash-0731",
     });
     const longTurn = session.sendMessage("Start a long turn.");
-    await new Promise((resolve) => setTimeout(resolve, 1));
+    await vi.waitFor(() => expect(session.snapshot().activeTurnId).not.toBeNull());
     await session.interrupt("bounded test interrupt");
     await expect(longTurn).resolves.toMatchObject({ status: "interrupted" });
     await session.sendMessage("Please report progress before reset.");
@@ -1370,7 +1553,8 @@ describe("Capability live runnerd and Codex session", () => {
       const transportOptions = {
         codexCommand: process.execPath,
         codexArgs: [fixture, providerStatePath],
-        closeGraceMs: 100,
+        // Use the production close budget for this successful durable-close
+        // proof. The killed first generation is interrupted explicitly below.
       };
       const firstService = new CapabilityLiveSessionService({ store, transportOptions });
       const first = await firstService.create({
@@ -1386,7 +1570,7 @@ describe("Capability live runnerd and Codex session", () => {
         expect(checkpoint?.activeTurnId).toBe("turn-1");
         expect(checkpoint?.process?.runnerPid).not.toBeNull();
         expect(checkpoint?.process?.codexPid).not.toBeNull();
-      });
+      }, { timeout: 2_000 }); // Match this turn's declared budget, not waitFor's shorter default.
       await first.recordUsage({
         receiptId: "real-response-1",
         providerResponseId: "fixture-response-1",

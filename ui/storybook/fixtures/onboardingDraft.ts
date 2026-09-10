@@ -40,10 +40,15 @@ export function seedOnboardingDraft(): void {
       companyName: "Paperclip Storybook",
       agentName: "Darnold",
       agentRole: "general",
-      // The adapter's real type, not its label. This read `claude_code`, which
-      // is no adapter at all — the connect step recovered by falling back, and
-      // the hire would have posted a type the server does not know.
-      adapterType: "claude_local",
+      // No `adapterType`. This draft describes a run standing on step 3, and a
+      // run that has not reached the connect step cannot have chosen a source
+      // there — seeding one made every arc story arrive with Claude Code already
+      // picked, which is precisely the preselection the step was changed to stop
+      // doing. Stories that need a source pick one, the way a customer does.
+      //
+      // (It read `claude_code` before that, which is no adapter at all: the step
+      // recovered by falling back, and the hire would have posted a type the
+      // server does not know.)
       createdCompanyId: STORYBOOK_COMPANY_ID,
       createdCompanyPrefix: "PAP",
       createdAgentId: "",

@@ -14,6 +14,7 @@ const mockCompanyService = vi.hoisted(() => ({
 
 const mockAgentService = vi.hoisted(() => ({
   getById: vi.fn(),
+  list: vi.fn(),
 }));
 
 const mockAccessService = vi.hoisted(() => ({
@@ -341,6 +342,7 @@ describe.sequential("company portability routes", () => {
       companyId,
       role: id === ceoAgentId ? "ceo" : "engineer",
     }));
+    mockAgentService.list.mockResolvedValue([]);
     mockCompanyPortabilityService.exportBundle.mockResolvedValue(createExportResult());
     mockCompanyPortabilityService.previewExport.mockResolvedValue({
       rootPath: "paperclip",
@@ -456,8 +458,18 @@ describe.sequential("company portability routes", () => {
       expect(res.body.rootPath).toBe("paperclip");
     }
     expect(mockCompanyPortabilityService.exportBundle).toHaveBeenCalledTimes(2);
-    expect(mockCompanyPortabilityService.exportBundle).toHaveBeenNthCalledWith(1, companyId, exportRequest);
-    expect(mockCompanyPortabilityService.exportBundle).toHaveBeenNthCalledWith(2, companyId, exportRequest);
+    expect(mockCompanyPortabilityService.exportBundle).toHaveBeenNthCalledWith(
+      1,
+      companyId,
+      exportRequest,
+      { allowExternalInstructions: false },
+    );
+    expect(mockCompanyPortabilityService.exportBundle).toHaveBeenNthCalledWith(
+      2,
+      companyId,
+      exportRequest,
+      { allowExternalInstructions: false },
+    );
   });
 
   it.sequential("allows board users to export through legacy and CEO-safe bundle routes", async () => {
@@ -477,6 +489,166 @@ describe.sequential("company portability routes", () => {
       expect(res.body.rootPath).toBe("paperclip");
     }
     expect(mockCompanyPortabilityService.exportBundle).toHaveBeenCalledTimes(2);
+  });
+
+  it.sequential("requires instance-admin access when a company export includes external instructions", async () => {
+    mockAgentService.list.mockResolvedValue([{
+      id: "external-agent",
+      companyId,
+      adapterConfig: {
+        instructionsBundleMode: "external",
+        instructionsRootPath: "/srv/paperclip/external-agent",
+      },
+    }]);
+    const nonAdminActors = [
+      {
+        type: "board",
+        userId: "company-admin",
+        companyIds: [companyId],
+        memberships: [{ companyId, status: "active", membershipRole: "admin" }],
+        source: "session",
+        isInstanceAdmin: false,
+      },
+      {
+        type: "agent",
+        agentId: ceoAgentId,
+        companyId,
+        source: "agent_key",
+        runId: "run-1",
+      },
+    ];
+
+    for (const actor of nonAdminActors) {
+      const app = await createApp(actor);
+      for (const path of [
+        `/api/companies/${companyId}/export`,
+        `/api/companies/${companyId}/exports`,
+        `/api/companies/${companyId}/exports/preview`,
+      ]) {
+        const res = await request(app).post(path).send(exportRequest);
+        expect(res.status, `${path}: ${JSON.stringify(res.body)}`).toBe(403);
+        expect(res.body.error).toMatch(/Instance admin|Board access/);
+      }
+    }
+
+    expect(mockCompanyPortabilityService.exportBundle).not.toHaveBeenCalled();
+    expect(mockCompanyPortabilityService.previewExport).not.toHaveBeenCalled();
+  });
+
+  it.sequential("allows an instance admin to export companies with external instructions", async () => {
+    mockAgentService.list.mockResolvedValue([{
+      id: "external-agent",
+      companyId,
+      adapterConfig: {
+        instructionsBundleMode: "external",
+        instructionsRootPath: "/srv/paperclip/external-agent",
+      },
+    }]);
+    const app = await createApp({
+      type: "board",
+      userId: "instance-admin",
+      companyIds: [companyId],
+      memberships: [{ companyId, status: "active", membershipRole: "admin" }],
+      source: "session",
+      isInstanceAdmin: true,
+    });
+
+    const res = await request(app).post(`/api/companies/${companyId}/exports`).send(exportRequest);
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockCompanyPortabilityService.exportBundle).toHaveBeenCalledWith(
+      companyId,
+      exportRequest,
+      { allowExternalInstructions: true },
+    );
+  });
+
+  it.sequential("uses the export selector resolver before checking external instructions", async () => {
+    mockAgentService.list.mockResolvedValue([
+      {
+        id: "external-agent",
+        name: "Managed-Agent",
+        companyId,
+        status: "active",
+        metadata: null,
+        adapterConfig: {
+          instructionsBundleMode: "external",
+          instructionsRootPath: "/srv/paperclip/external-agent",
+        },
+      },
+      {
+        id: "managed-agent",
+        name: "Managed Agent",
+        companyId,
+        status: "active",
+        metadata: null,
+        adapterConfig: { instructionsBundleMode: "managed" },
+      },
+    ]);
+    mockCompanyPortabilityService.exportBundle.mockResolvedValue(createExportResult());
+    const app = await createApp({
+      type: "board",
+      userId: "company-admin",
+      companyIds: [companyId],
+      memberships: [{ companyId, status: "active", membershipRole: "admin" }],
+      source: "session",
+      isInstanceAdmin: false,
+    });
+    const selectedAgentRequest = {
+      ...exportRequest,
+      agents: ["managed-agent"],
+    };
+
+    const res = await request(app)
+      .post(`/api/companies/${companyId}/exports`)
+      .send(selectedAgentRequest);
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockAgentService.list).toHaveBeenCalledWith(companyId, { includeTerminated: true });
+    expect(mockCompanyPortabilityService.exportBundle).toHaveBeenCalledWith(
+      companyId,
+      selectedAgentRequest,
+      { allowExternalInstructions: false },
+    );
+  });
+
+  it.sequential("keeps non-agent exports open when external instructions are excluded", async () => {
+    mockAgentService.list.mockResolvedValue([{
+      id: "external-agent",
+      companyId,
+      adapterConfig: {
+        instructionsBundleMode: "external",
+        instructionsRootPath: "/srv/paperclip/external-agent",
+      },
+    }]);
+    const app = await createApp({
+      type: "board",
+      userId: "company-admin",
+      companyIds: [companyId],
+      memberships: [{ companyId, status: "active", membershipRole: "admin" }],
+      source: "session",
+      isInstanceAdmin: false,
+    });
+    const companyOnlyRequest = {
+      include: {
+        company: true,
+        agents: false,
+        projects: false,
+        issues: false,
+        skills: false,
+      },
+    };
+
+    const res = await request(app)
+      .post(`/api/companies/${companyId}/exports`)
+      .send(companyOnlyRequest);
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockCompanyPortabilityService.exportBundle).toHaveBeenCalledWith(
+      companyId,
+      companyOnlyRequest,
+      { allowExternalInstructions: false },
+    );
   });
 
   it.sequential("rejects CEO agents from exporting another company before services run", async () => {

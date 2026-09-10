@@ -202,6 +202,10 @@ test("release verify workflow covers the same split test surface as stable PR ve
   );
   assert.match(verifyWorkflow, /pnpm test:runner-workflow-evals/);
 
+  const buildJob = verifyWorkflow.match(/  build:\n[\s\S]*?(?=\n  [A-Za-z0-9_-]+:|$)/)?.[0] ?? "";
+  assert.match(buildJob, /persist-credentials: false/);
+  assert.doesNotMatch(buildJob, /cache: pnpm/);
+
   for (const group of [
     "general-server",
     "general-workspaces-a",
@@ -248,6 +252,7 @@ test("Runner eval workflows pin actions and gate paid live execution", () => {
     readWorkflow("runner-chaos-evals.yml"),
     readWorkflow("runner-full-stack-e2e.yml"),
     readWorkflow("e2e.yml"),
+    readWorkflow("runner-protocol-live-evals.yml"),
   ];
 
   for (const workflow of actionPinWorkflows) {
@@ -286,6 +291,7 @@ test("Runner eval workflows pin actions and gate paid live execution", () => {
     "e2e.yml",
     "runner-full-stack-e2e.yml",
     "runner-live-evals.yml",
+    "runner-protocol-live-evals.yml",
   ];
   const paidWorkflowNameSet = new Set(paidWorkflowNames);
   const providerSecretReference =
@@ -322,7 +328,7 @@ test("Runner eval workflows pin actions and gate paid live execution", () => {
       assert.match(block, /\n    environment:\n      name: runner-e2e-paid\n/);
       assert.match(
         block,
-        /\n    steps:\n(?:\s*\n)*      - name: Reauthorize[^\n]*\n/,
+        /\n    steps:(?: &[A-Za-z0-9_-]+)?\n(?:\s*\n)*      - name: Reauthorize[^\n]*\n/,
         `${name} must reauthorize as the first provider-job step`,
       );
       const reauthorize = block.indexOf("      - name: Reauthorize");
@@ -357,7 +363,11 @@ test("Runner eval workflows pin actions and gate paid live execution", () => {
   );
   assert.doesNotMatch(historyPublisher, /^\s+cache: pnpm$/m);
 
-  for (const name of ["runner-full-stack-e2e.yml", "runner-live-evals.yml"]) {
+  for (const name of [
+    "runner-full-stack-e2e.yml",
+    "runner-live-evals.yml",
+    "runner-protocol-live-evals.yml",
+  ]) {
     const workflow = readWorkflow(name);
     const crons = [...workflow.matchAll(/cron:\s*"([^"]+)"/g)].map(
       (match) => match[1],

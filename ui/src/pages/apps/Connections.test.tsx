@@ -218,14 +218,14 @@ describe("Connections table (M1b / PAP-13254 door 2)", () => {
       tr.textContent?.includes("GitHub"),
     );
     row?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    expect(mockNavigate).toHaveBeenCalledWith("/apps/app/app-github/setup");
+    expect(mockNavigate).toHaveBeenCalledWith("/apps/app/app-github/permissions");
 
     mockNavigate.mockClear();
     const connectButton = Array.from(container.querySelectorAll("button")).find((button) =>
       button.textContent?.includes("Connect") && !button.textContent.includes("Connect an app"),
     );
     connectButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    expect(mockNavigate).toHaveBeenCalledWith("/apps/app/app-github/setup");
+    expect(mockNavigate).toHaveBeenCalledWith("/apps/app/app-github/permissions");
   });
 
   it("renders every account with its owner, status, actions, and direct edit navigation", async () => {
@@ -323,15 +323,15 @@ describe("Connections table (M1b / PAP-13254 door 2)", () => {
       tr.textContent?.includes("Slack"),
     );
     slackRow?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    expect(mockNavigate).toHaveBeenCalledWith("/apps/c-attention/setup");
+    expect(mockNavigate).toHaveBeenCalledWith("/apps/c-attention/permissions");
     // 7. Button labels are honest: broken health says Reconnect, healthy/paused say Edit.
     const rowButtonLabel = (name: string, exact = false) =>
       Array.from(container.querySelectorAll("tbody tr"))
         .find((tr) => exact ? tr.textContent?.includes(name) && !tr.textContent?.includes("Slack Team") : tr.textContent?.includes(name))
         ?.querySelector("td:last-child button")?.textContent;
-    expect(rowButtonLabel("GitHub")).toBe("Edit");
+    expect(rowButtonLabel("GitHub")).toBe("Permissions");
     expect(rowButtonLabel("Slack", true)).toBe("Reconnect");
-    expect(rowButtonLabel("Notion")).toBe("Edit");
+    expect(rowButtonLabel("Notion")).toBe("Permissions");
     // 8. Generic connection names inherit the originating user's first name.
     expect(text).toContain("Dotta’s GitHub");
     expect(text).toContain("Slack for the company");
@@ -376,9 +376,9 @@ describe("Connections table (M1b / PAP-13254 door 2)", () => {
     );
     expect(row?.className).not.toContain("amber");
     const button = row?.querySelector("td:last-child button");
-    expect(button?.textContent).toBe("Edit");
+    expect(button?.textContent).toBe("Permissions");
     button?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    expect(mockNavigate).toHaveBeenCalledWith("/apps/c-healthy/setup");
+    expect(mockNavigate).toHaveBeenCalledWith("/apps/c-healthy/permissions");
   });
 
   it("deletes a connection only after trash-can confirmation", async () => {

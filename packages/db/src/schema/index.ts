@@ -22,7 +22,7 @@ export { budgetIncidents } from "./budget_incidents.js";
 export { agentConfigRevisions } from "./agent_config_revisions.js";
 export { agentApiKeys } from "./agent_api_keys.js";
 export { agentRuntimeState } from "./agent_runtime_state.js";
-export { agentTaskSessions } from "./agent_task_sessions.js";
+export { agentTaskSessions, agentSessionGoalActions } from "./agent_task_sessions.js";
 export { agentWakeupRequests } from "./agent_wakeup_requests.js";
 export { projects } from "./projects.js";
 export { projectMemberships } from "./project_memberships.js";
@@ -47,6 +47,21 @@ export { issueRecoveryActions } from "./issue_recovery_actions.js";
 export { issueReferenceMentions } from "./issue_reference_mentions.js";
 export { externalObjects } from "./external_objects.js";
 export { externalObjectMentions } from "./external_object_mentions.js";
+export { connectionEventDeliveries } from "./connection_event_deliveries.js";
+export {
+  chatEndpoints,
+  chatEndpointResources,
+  chatExternalPrincipals,
+  chatIdentityLinks,
+  chatConversations,
+  chatDeliveries,
+  chatPublications,
+  chatMessageLinks,
+  chatActions,
+  chatAgentRoutes,
+  chatEndpointLeases,
+  chatSdkState,
+} from "./chat_channels.js";
 export { issueRelations } from "./issue_relations.js";
 export { routines, routineRevisions, routineTriggers, routineRuns } from "./routines.js";
 export { pipelines, pipelineStages, pipelineTransitions } from "./pipelines.js";
@@ -182,3 +197,10 @@ export { pluginDatabaseNamespaces, pluginMigrations } from "./plugin_database.js
 export { pluginJobs, pluginJobRuns } from "./plugin_jobs.js";
 export { pluginWebhookDeliveries } from "./plugin_webhooks.js";
 export { pluginLogs } from "./plugin_logs.js";
+export { runIdentityContexts } from "./run_identity_contexts.js";
+export { connectionIntentDeliveries } from "./connection_intent_deliveries.js";
+
+export { toolActionDeliveries } from "./tool_action_deliveries.js";
+export { chatTeamsFileTransfers } from "./chat_teams_file_transfers.js";
+export { chatDiscordCommandOwners } from "./chat_discord_command_owners.js";
+export { chatTelegramDraftIds } from "./chat_telegram_draft_ids.js";

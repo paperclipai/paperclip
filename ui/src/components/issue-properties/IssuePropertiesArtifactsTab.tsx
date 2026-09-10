@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
@@ -19,16 +19,12 @@ import {
   Download,
   ExternalLink,
   FileText,
-  GitBranch,
-  GitCommit,
-  Globe,
-  Package,
   Paperclip,
-  Server,
 } from "lucide-react";
-import type { LucideIcon } from "lucide-react";
 import { ApiError } from "@/api/client";
 import { issuesApi } from "@/api/issues";
+import { activityApi } from "@/api/activity";
+import { agentsApi } from "@/api/agents";
 import { queryKeys } from "@/lib/queryKeys";
 import { useIssueDocuments } from "@/hooks/useIssueDocuments";
 import {
@@ -38,9 +34,10 @@ import {
 } from "@/lib/issue-artifacts";
 import { attachmentOpenPath } from "@/lib/issue-attachments";
 import { MarkdownBody } from "@/components/MarkdownBody";
+import { RichWorkProductCard } from "@/components/task-chat/RichWorkProductCard";
 import { DocumentAnnotationsCountChip, IssueDocumentAnnotations } from "@/components/IssueDocumentAnnotations";
-import { cn } from "@/lib/utils";
-import { useLocation } from "@/lib/router";
+import { cn, formatDateTime } from "@/lib/utils";
+import { Link, useLocation } from "@/lib/router";
 
 interface IssuePropertiesArtifactsTabProps {
   issue: Issue;
@@ -55,18 +52,6 @@ function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`;
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
   return `${(n / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-function workProductIcon(type: string): LucideIcon {
-  switch (type) {
-    case "document": return FileText;
-    case "pull_request": return GitBranch;
-    case "branch": return GitBranch;
-    case "commit": return GitCommit;
-    case "preview_url": return Globe;
-    case "runtime_service": return Server;
-    default: return Package;
-  }
 }
 
 /** Work-product status → label + `--status-task-*` base-hue var for `.status-chip`. */
@@ -89,52 +74,8 @@ function workProductStatusBadge(status: string): { label: string; cssVar: string
   }
 }
 
-function SectionHeading({ children }: { children: string }) {
-  return (
-    <h3 className="px-1 pt-1 text-(length:--text-micro) font-medium uppercase tracking-wide text-muted-foreground">
-      {children}
-    </h3>
-  );
-}
-
 const ROW_CLASS =
   "flex items-center gap-2 rounded-md border border-border bg-card/50 px-2.5 py-1.5 text-sm";
-
-function WorkProductRow({ workProduct }: { workProduct: IssueWorkProduct }) {
-  const Icon = workProductIcon(workProduct.type);
-  const badge = workProductStatusBadge(workProduct.status);
-  const href = workProductHref(workProduct);
-  const body = (
-    <>
-      <Icon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-      <span className="min-w-0 flex-1 truncate">{workProduct.title}</span>
-      {badge ? (
-        <span
-          className="status-chip inline-flex shrink-0 items-center rounded-full border px-1.5 py-0.5 text-(length:--text-nano) leading-none whitespace-nowrap"
-          style={{ "--sc": `var(${badge.cssVar})` } as CSSProperties}
-        >
-          {badge.label}
-        </span>
-      ) : null}
-      {href ? (
-        <ExternalLink className="h-3 w-3 shrink-0 text-muted-foreground" />
-      ) : null}
-    </>
-  );
-  if (href) {
-    return (
-      <a
-        href={href}
-        target="_blank"
-        rel="noreferrer"
-        className={cn(ROW_CLASS, "hover:bg-accent/50")}
-      >
-        {body}
-      </a>
-    );
-  }
-  return <div className={ROW_CLASS}>{body}</div>;
-}
 
 /**
  * Work-product row for an eligible Markdown artifact (LOOA-1533 gap): expands
@@ -416,6 +357,8 @@ function DocumentRow({
  * thread.
  */
 export function IssuePropertiesArtifactsTab({ issue, documentDeepLink, onOpenDocument }: IssuePropertiesArtifactsTabProps) {
+  const [typeFilter, setTypeFilter] = useState("all");
+  const [runFilter, setRunFilter] = useState("all");
   const { data: attachments } = useQuery({
     queryKey: queryKeys.issues.attachments(issue.id),
     queryFn: () => issuesApi.listAttachments(issue.id),
@@ -425,6 +368,14 @@ export function IssuePropertiesArtifactsTab({ issue, documentDeepLink, onOpenDoc
     queryFn: () => issuesApi.listWorkProducts(issue.id),
   });
   const { data: documents } = useIssueDocuments(issue.id);
+  const { data: runs } = useQuery({
+    queryKey: queryKeys.issues.runs(issue.id),
+    queryFn: () => activityApi.runsForIssue(issue.id),
+  });
+  const { data: agents } = useQuery({
+    queryKey: queryKeys.agents.list(issue.companyId),
+    queryFn: () => agentsApi.list(issue.companyId),
+  });
 
   const workProductRows = workProducts ?? [];
   // Proxy review documents (`artifact-review-*`) present only through their
@@ -432,6 +383,63 @@ export function IssuePropertiesArtifactsTab({ issue, documentDeepLink, onOpenDoc
   const documentRows = (documents ?? []).filter((doc) => !isArtifactReviewDocumentKey(doc.key));
   const reviewDocsByKey = new Map((documents ?? []).map((doc) => [doc.key, doc]));
   const fileRows = selectAgentArtifactAttachments(attachments, workProducts);
+  const runsById = useMemo(() => new Map((runs ?? []).map((run) => [run.runId, run])), [runs]);
+  const agentsById = useMemo(() => new Map((agents ?? []).map((agent) => [agent.id, agent])), [agents]);
+
+  type ArtifactRow =
+    | { kind: "work_product"; id: string; runId: string | null; date: Date; type: string; value: IssueWorkProduct }
+    | { kind: "document"; id: string; runId: null; date: Date; type: "document"; value: IssueDocument }
+    | { kind: "attachment"; id: string; runId: null; date: Date; type: "file" | "image"; value: NonNullable<typeof fileRows>[number] };
+
+  const allRows = useMemo<ArtifactRow[]>(() => [
+    ...workProductRows.map((value): ArtifactRow => ({
+      kind: "work_product",
+      id: value.id,
+      runId: value.createdByRunId,
+      date: new Date(value.createdAt),
+      type: value.type === "artifact" && typeof value.metadata?.contentType === "string" && value.metadata.contentType.startsWith("image/")
+        ? "image"
+        : value.type === "artifact" ? "file" : value.type,
+      value,
+    })),
+    ...documentRows.map((value): ArtifactRow => ({
+      kind: "document",
+      id: value.id,
+      runId: null,
+      date: new Date(value.createdAt),
+      type: "document",
+      value,
+    })),
+    ...fileRows.map((value): ArtifactRow => ({
+      kind: "attachment",
+      id: value.id,
+      runId: null,
+      date: new Date(value.createdAt),
+      type: value.contentType.startsWith("image/") ? "image" : "file",
+      value,
+    })),
+  ], [documentRows, fileRows, workProductRows]);
+
+  const filteredRows = allRows.filter((row) =>
+    (typeFilter === "all" || row.type === typeFilter) &&
+    (runFilter === "all" || (runFilter === "other" ? row.runId === null : row.runId === runFilter)),
+  );
+  const groupedRows = [...filteredRows.reduce((groups, row) => {
+    const key = row.runId ?? "other";
+    const group = groups.get(key) ?? [];
+    group.push(row);
+    groups.set(key, group);
+    return groups;
+  }, new Map<string, ArtifactRow[]>())]
+    .map(([runId, rows]) => ({
+      runId,
+      rows: rows.sort((a, b) => b.date.getTime() - a.date.getTime()),
+      date: runId === "other"
+        ? rows[0]?.date ?? new Date(0)
+        : new Date(runsById.get(runId)?.startedAt ?? rows[0]?.date ?? 0),
+    }))
+    .sort((a, b) => b.date.getTime() - a.date.getTime());
+  const runOptions = [...new Set(allRows.flatMap((row) => row.runId ? [row.runId] : []))];
 
   if (workProductRows.length === 0 && documentRows.length === 0 && fileRows.length === 0) {
     return (
@@ -442,78 +450,123 @@ export function IssuePropertiesArtifactsTab({ issue, documentDeepLink, onOpenDoc
   }
 
   return (
-    <div className="flex flex-col gap-2 py-2">
-      {workProductRows.length > 0 ? (
-        <>
-          <SectionHeading>Work products</SectionHeading>
-          <ul className="flex flex-col gap-1">
-            {workProductRows.map((wp) => {
-              const markdownMetadata = getMarkdownWorkProductAttachmentMetadata(wp);
-              if (!markdownMetadata) {
-                return (
-                  <li key={wp.id}>
-                    <WorkProductRow workProduct={wp} />
-                  </li>
-                );
-              }
-              const reviewKey = artifactReviewDocumentKey(wp.id);
+    <div className="flex flex-col gap-3 py-2">
+      <div className="flex items-center gap-2 px-1">
+        <label className="min-w-0 flex-1 text-(length:--text-micro) text-muted-foreground">
+          <span className="sr-only">Filter artifacts by type</span>
+          <select
+            aria-label="Filter artifacts by type"
+            value={typeFilter}
+            onChange={(event) => setTypeFilter(event.target.value)}
+            className="w-full rounded-md border border-border bg-background px-2 py-1 text-xs text-foreground"
+          >
+            <option value="all">All types</option>
+            <option value="image">Images</option>
+            <option value="file">Files</option>
+            <option value="pull_request">Pull requests</option>
+            <option value="commit">Commits</option>
+            <option value="branch">Branches</option>
+            <option value="document">Documents</option>
+            <option value="preview_url">Previews</option>
+            <option value="runtime_service">Runtime services</option>
+          </select>
+        </label>
+        <label className="min-w-0 flex-1 text-(length:--text-micro) text-muted-foreground">
+          <span className="sr-only">Filter artifacts by run</span>
+          <select
+            aria-label="Filter artifacts by run"
+            value={runFilter}
+            onChange={(event) => setRunFilter(event.target.value)}
+            className="w-full rounded-md border border-border bg-background px-2 py-1 text-xs text-foreground"
+          >
+            <option value="all">All runs</option>
+            {runOptions.map((runId) => {
+              const run = runsById.get(runId);
+              const agent = run ? agentsById.get(run.agentId) : null;
+              const runDate = run?.startedAt ?? allRows.find((row) => row.runId === runId)?.date;
               return (
-                <li key={wp.id}>
-                  <MarkdownWorkProductRow
-                    issueId={issue.id}
-                    workProduct={wp}
-                    metadata={markdownMetadata}
-                    reviewDoc={reviewDocsByKey.get(reviewKey)}
-                    openRequestId={documentDeepLink?.documentKey === reviewKey
-                      ? documentDeepLink.requestId
-                      : undefined}
-                  />
-                </li>
+                <option key={runId} value={runId}>
+                  {`${agent?.name ?? `Run ${runId.slice(0, 8)}`}${runDate ? ` · ${formatDateTime(runDate)}` : ""}`}
+                </option>
               );
             })}
-          </ul>
-        </>
-      ) : null}
-      {documentRows.length > 0 ? (
-        <>
-          <SectionHeading>Documents</SectionHeading>
-          <ul className="flex flex-col gap-1">
-            {documentRows.map((doc) => (
-              <li key={doc.key}>
-                <DocumentRow
-                  issueId={issue.id}
-                  doc={doc}
-                  onOpen={onOpenDocument ? () => onOpenDocument(doc) : undefined}
-                  openRequestId={documentDeepLink?.documentKey === doc.key
-                    ? documentDeepLink.requestId
-                    : undefined}
-                />
-              </li>
-            ))}
-          </ul>
-        </>
-      ) : null}
-      {fileRows.length > 0 ? (
-        <>
-          <SectionHeading>Files</SectionHeading>
-          <ul className="flex flex-col gap-1">
-            {fileRows.map((a) => (
-              <li key={a.id}>
-                <a
-                  href={attachmentOpenPath(a)}
-                  target="_blank"
-                  rel="noreferrer"
-                  className={cn(ROW_CLASS, "hover:bg-accent/50")}
-                >
-                  <Paperclip className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                  <span className="min-w-0 flex-1 truncate">{a.originalFilename ?? a.objectKey}</span>
-                  <span className="shrink-0 text-(length:--text-micro) text-muted-foreground">{formatBytes(a.byteSize)}</span>
-                </a>
-              </li>
-            ))}
-          </ul>
-        </>
-      ) : null}
+            {allRows.some((row) => row.runId === null) ? <option value="other">Other artifacts</option> : null}
+          </select>
+        </label>
+      </div>
+
+      {groupedRows.length === 0 ? (
+        <p className="px-1 py-6 text-sm text-muted-foreground">No artifacts match these filters.</p>
+      ) : groupedRows.map((group) => {
+        const run = group.runId === "other" ? null : runsById.get(group.runId);
+        const agent = run ? agentsById.get(run.agentId) : null;
+        return (
+          <section key={group.runId} className="flex flex-col gap-1.5">
+            <header className="flex items-baseline justify-between gap-2 px-1">
+              <h3 className="truncate text-xs font-medium text-foreground">
+                {group.runId === "other" ? "Other artifacts" : agent?.name ?? `Run ${group.runId.slice(0, 8)}`}
+              </h3>
+              <time className="shrink-0 text-(length:--text-micro) text-muted-foreground" dateTime={group.date.toISOString()}>
+                {formatDateTime(group.date)}
+              </time>
+            </header>
+            <ul className="flex flex-col gap-1">
+              {group.rows.map((row) => {
+                if (row.kind === "work_product") {
+                  const wp = row.value;
+                  const markdownMetadata = getMarkdownWorkProductAttachmentMetadata(wp);
+                  if (markdownMetadata) {
+                    const reviewKey = artifactReviewDocumentKey(wp.id);
+                    return (
+                      <li key={row.id}>
+                        <MarkdownWorkProductRow
+                          issueId={issue.id}
+                          workProduct={wp}
+                          metadata={markdownMetadata}
+                          reviewDoc={reviewDocsByKey.get(reviewKey)}
+                          openRequestId={documentDeepLink?.documentKey === reviewKey ? documentDeepLink.requestId : undefined}
+                        />
+                      </li>
+                    );
+                  }
+                  return (
+                    <li key={row.id}>
+                      <RichWorkProductCard workProduct={wp} href={workProductHref(wp)} variant="compact" />
+                    </li>
+                  );
+                }
+                if (row.kind === "document") {
+                  const doc = row.value;
+                  return (
+                    <li key={row.id}>
+                      <DocumentRow
+                        issueId={issue.id}
+                        doc={doc}
+                        onOpen={onOpenDocument ? () => onOpenDocument(doc) : undefined}
+                        openRequestId={documentDeepLink?.documentKey === doc.key ? documentDeepLink.requestId : undefined}
+                      />
+                    </li>
+                  );
+                }
+                const attachment = row.value;
+                return (
+                  <li key={row.id}>
+                    <a href={attachmentOpenPath(attachment)} target="_blank" rel="noreferrer" className={cn(ROW_CLASS, "hover:bg-accent/50")}>
+                      <Paperclip className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                      <span className="min-w-0 flex-1 truncate">{attachment.originalFilename ?? attachment.objectKey}</span>
+                      <span className="shrink-0 text-(length:--text-micro) text-muted-foreground">{formatBytes(attachment.byteSize)}</span>
+                    </a>
+                  </li>
+                );
+              })}
+            </ul>
+          </section>
+        );
+      })}
+
+      <Link to="/artifacts" className="mx-1 border-t border-border pt-2 text-xs font-medium text-foreground hover:underline">
+        View all in company Artifacts →
+      </Link>
     </div>
   );
 }

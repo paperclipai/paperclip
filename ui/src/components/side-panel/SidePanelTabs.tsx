@@ -33,6 +33,8 @@ import type { SidePanelTabItem } from "./types";
 interface SortableSidePanelTabProps {
   tab: SidePanelTabItem;
   active: boolean;
+  appearance: "default" | "streamlined-task";
+  fillAvailableWidth: boolean;
   showLeadingSeparator: boolean;
   onSelect: () => void;
   onClose: () => void;
@@ -40,7 +42,17 @@ interface SortableSidePanelTabProps {
   onKeyDown: (event: KeyboardEvent<HTMLButtonElement>) => void;
 }
 
-function SortableSidePanelTab({ tab, active, showLeadingSeparator, onSelect, onClose, onAuxClick, onKeyDown }: SortableSidePanelTabProps) {
+function SortableSidePanelTab({
+  tab,
+  active,
+  appearance,
+  fillAvailableWidth,
+  showLeadingSeparator,
+  onSelect,
+  onClose,
+  onAuxClick,
+  onKeyDown,
+}: SortableSidePanelTabProps) {
   const sortable = useSortable({ id: tab.id, disabled: tab.disabled });
   return (
     <div
@@ -49,13 +61,28 @@ function SortableSidePanelTab({ tab, active, showLeadingSeparator, onSelect, onC
         transform: DndCSS.Transform.toString(sortable.transform),
         transition: sortable.transition,
       }}
-      className={cn("relative", sortable.isDragging && "z-20 opacity-80")}
+      className={cn(
+        appearance === "streamlined-task"
+          ? cn(
+              "relative flex flex-1 items-center",
+              fillAvailableWidth
+                ? "min-w-0 max-w-none basis-auto"
+                : "min-w-(--side-panel-streamlined-tab-min-width) max-w-(--side-panel-streamlined-tab-max-width) basis-0",
+            )
+          : "relative",
+        sortable.isDragging && "z-20 opacity-80",
+      )}
     >
       {showLeadingSeparator ? (
         <span
           aria-hidden
           data-side-panel-tab-separator="true"
-          className="pointer-events-none absolute inset-y-2 -left-0.5 w-px bg-border/60"
+          className={cn(
+            "pointer-events-none absolute w-px bg-border",
+            appearance === "streamlined-task"
+              ? "left-0 top-1/2 h-4 -translate-y-1/2"
+              : "inset-y-2 -left-0.5 bg-border/60",
+          )}
         />
       ) : null}
       <SidePanelTab
@@ -65,6 +92,7 @@ function SortableSidePanelTab({ tab, active, showLeadingSeparator, onSelect, onC
         icon={tab.icon}
         status={tab.status}
         active={active}
+        appearance={appearance}
         closable={tab.closable}
         disabled={tab.disabled}
         tabRef={sortable.setActivatorNodeRef}
@@ -90,6 +118,7 @@ export interface SidePanelTabsProps {
   onAddTab?: () => void;
   addControl?: ReactNode;
   addLabel?: string;
+  appearance?: "default" | "streamlined-task";
   className?: string;
 }
 
@@ -102,9 +131,11 @@ export function SidePanelTabs({
   onAddTab,
   addControl,
   addLabel = "Open a new tab",
+  appearance = "default",
   className,
 }: SidePanelTabsProps) {
   const [announcement, setAnnouncement] = useState("");
+  const [showEndFade, setShowEndFade] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const addButtonRef = useRef<HTMLButtonElement>(null);
   const addControlRef = useRef<HTMLDivElement>(null);
@@ -132,6 +163,27 @@ export function SidePanelTabs({
     // `findTabElement` only reads the committed tab DOM for this active id.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTabId]);
+
+  useEffect(() => {
+    const element = scrollRef.current;
+    if (!element || appearance !== "streamlined-task") {
+      setShowEndFade(false);
+      return;
+    }
+    const updateEndFade = () => {
+      const remainingScroll = element.scrollWidth - element.clientWidth - element.scrollLeft;
+      setShowEndFade(remainingScroll > 1);
+    };
+    updateEndFade();
+    element.addEventListener("scroll", updateEndFade, { passive: true });
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(updateEndFade);
+    observer?.observe(element);
+    if (element.firstElementChild) observer?.observe(element.firstElementChild);
+    return () => {
+      element.removeEventListener("scroll", updateEndFade);
+      observer?.disconnect();
+    };
+  }, [appearance, tabIds]);
 
   function focusTab(tabId: string | null) {
     window.requestAnimationFrame(() => {
@@ -198,25 +250,48 @@ export function SidePanelTabs({
   }
 
   return (
-    <div className={cn("flex min-w-0 flex-1 items-center gap-1", className)}>
+    <div className={cn(
+      "flex min-w-0 flex-1 items-center",
+      appearance === "streamlined-task" ? "gap-0" : "gap-1",
+      className,
+    )}>
       <div
         ref={scrollRef}
         role="tablist"
         aria-orientation="horizontal"
-        className="min-w-0 flex-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+        data-scroll-end-fade={appearance === "streamlined-task" && showEndFade ? "true" : undefined}
+        className={cn(
+          "side-panel-tabs-scroll min-w-0 flex-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden",
+          appearance === "streamlined-task"
+            ? "overflow-x-auto overscroll-x-contain"
+            : "overflow-x-auto",
+        )}
       >
         <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
           <SortableContext items={tabIds} strategy={horizontalListSortingStrategy}>
-            <div className="flex min-w-max items-center gap-1 py-1">
+            <div className={cn(
+              "flex items-center",
+              appearance === "streamlined-task"
+                ? tabs.length === 1
+                  ? "w-full gap-0"
+                  : "w-max min-w-full gap-0"
+                : "min-w-max gap-1 py-1",
+            )}>
               {tabs.map((tab, index) => (
                 <SortableSidePanelTab
                   key={tab.id}
                   tab={tab}
                   active={tab.id === activeTabId}
+                  appearance={appearance}
+                  fillAvailableWidth={
+                    appearance === "streamlined-task" && tabs.length === 1
+                  }
                   showLeadingSeparator={
-                    index > 0
-                    && tab.id !== activeTabId
-                    && tabs[index - 1]?.id !== activeTabId
+                    appearance === "streamlined-task"
+                      ? index > 0
+                      : index > 0
+                        && tab.id !== activeTabId
+                        && tabs[index - 1]?.id !== activeTabId
                   }
                   onSelect={() => onActiveTabChange(tab.id)}
                   onClose={() => closeTab(tab.id)}
@@ -241,7 +316,12 @@ export function SidePanelTabs({
           onClick={onAddTab}
           aria-label={addLabel}
           title={addLabel}
-          className="h-(--side-panel-tab-height) w-(--side-panel-tab-height) shrink-0 rounded-(--side-panel-control-radius) text-muted-foreground hover:text-foreground focus-visible:text-foreground"
+          className={cn(
+            "shrink-0 text-muted-foreground hover:text-foreground focus-visible:text-foreground",
+            appearance === "streamlined-task"
+              ? "h-(--side-panel-tab-height) w-(--side-panel-tab-height) rounded-md"
+              : "h-(--side-panel-tab-height) w-(--side-panel-tab-height) rounded-(--side-panel-control-radius)",
+          )}
         >
           <Plus aria-hidden />
         </Button>

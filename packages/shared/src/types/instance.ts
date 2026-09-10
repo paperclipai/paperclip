@@ -54,6 +54,13 @@ export interface InstanceExperimentalSettings {
   enableManagedSandboxOnly: boolean;
   enableIsolatedWorkspaces: boolean;
   enableStreamlinedLeftNavigation: boolean;
+  /**
+   * Use the streamlined shell, navigation, and contextual-sidebar experience.
+   * Missing legacy values default on; the retired left-navigation preference
+   * remains separate so an old opt-out cannot disable the broader UI.
+   */
+  enableStreamlinedUi: boolean;
+  /** @deprecated Compatibility key only. Apps is always enabled. */
   enableApps: boolean;
   enablePipelines: boolean;
   enableCases: boolean;
@@ -79,6 +86,13 @@ export interface InstanceExperimentalSettings {
    * behavior change outside interaction wording.
    */
   enableSimplifiedEnglishInteractions: boolean;
+  /**
+   * When the user's first onboarding request is a single task, the chief of
+   * staff proposes with a short plan document and a checkbox card instead of a
+   * one-card confirmation. Read once, when the onboarding first task is created;
+   * flipping it later does not change an existing first task.
+   */
+  enableFirstTaskPlanProposal: boolean;
   autoRestartDevServerWhenIdle: boolean;
   enableWorkspaceBranchReconcileForward: boolean;
   enableWorkspaceDirtyQuarantineRepair: boolean;

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readdirSync, statSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, realpathSync, statSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -275,12 +275,17 @@ function runVitest(args, label) {
   console.log(`\n[test:run] ${label}`);
   invocationIndex += 1;
   const tempRootParent = process.platform === "win32" ? os.tmpdir() : "/tmp";
-  const testRoot = mkdtempSync(path.join(tempRootParent, `pcvt-${process.pid}-${invocationIndex}-`));
+  // Production workspace/security checks reject symlink aliases. In particular
+  // /tmp is /private/tmp on macOS, so fixture roots must use the canonical path.
+  const testRoot = realpathSync(mkdtempSync(path.join(tempRootParent, "pv-")));
   // Keep per-run paths compact so Unix socket fixtures stay under macOS path limits.
   const env = {
     ...process.env,
     NODE_ENV: "test",
     PAPERCLIP_HOME: path.join(testRoot, "h"),
+    // Config discovery otherwise prefers the checkout's .paperclip/config.json
+    // over PAPERCLIP_HOME, importing preview scheduling policy into unit tests.
+    PAPERCLIP_CONFIG: path.join(testRoot, "h", "config.json"),
     PAPERCLIP_INSTANCE_ID: `vt-${process.pid}-${invocationIndex}`,
     TMPDIR: path.join(testRoot, "t"),
   };

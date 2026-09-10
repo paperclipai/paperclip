@@ -175,7 +175,7 @@ export function buildNativeExecutionInput(input: {
         : {
             kind: "codex",
             model: input.model ?? null,
-            approvalPolicy: input.codexApprovalPolicy ?? "untrusted",
+            approvalPolicy: input.codexApprovalPolicy ?? "never",
           },
     completionContract: input.completionContract,
     interactionResponses: input.interactionResponses ?? [],

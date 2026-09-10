@@ -337,6 +337,25 @@ describe("agent routes adapter validation", () => {
     await unregisterTestAdapter(missingAdapterType);
   });
 
+  it("selects and refreshes the runner provider catalog independently", async () => {
+    const adapters = await import("../adapters/index.js");
+    const list = vi.spyOn(adapters, "listAdapterModels").mockImplementation(async (type) => [{ id: type, label: type }]);
+    const refresh = vi.spyOn(adapters, "refreshAdapterModels").mockImplementation(async (type) => [{ id: `${type}-fresh`, label: type }]);
+    try {
+      const app = await createApp();
+      for (const [provider, adapter] of [["acpx", "claude_local"], ["codex", "codex_local"], ["opencode", "opencode_local"]]) {
+        const res = await requestApp(app, (baseUrl) => request(baseUrl).get(`/api/companies/company-1/adapters/paperclip_runner/models?provider=${provider}`));
+        expect(res.status).toBe(200);
+        expect(res.body).toEqual([{ id: adapter, label: adapter }]);
+        const refreshed = await requestApp(app, (baseUrl) => request(baseUrl).get(`/api/companies/company-1/adapters/paperclip_runner/models?provider=${provider}&refresh=true`));
+        expect(refreshed.status).toBe(200);
+        expect(refreshed.body).toEqual([{ id: `${adapter}-fresh`, label: adapter }]);
+      }
+      const invalid = await requestApp(app, (baseUrl) => request(baseUrl).get("/api/companies/company-1/adapters/paperclip_runner/models?provider=acpx_codex"));
+      expect(invalid.status).toBe(422);
+    } finally { list.mockRestore(); refresh.mockRestore(); }
+  });
+
   it("creates agents for dynamically registered external adapter types", async () => {
     const { registerServerAdapter } = await import("../adapters/index.js");
     registerServerAdapter(externalAdapter);
@@ -627,17 +646,120 @@ describe("agent routes adapter validation", () => {
         .send({
           name: "Native Codex",
           adapterType: "paperclip_runner",
-          adapterConfig: { provider: "codex" },
+          adapterConfig: {
+            provider: "codex",
+            paperclipSkillSync: {
+              desiredSkills: ["paperclipai/paperclip/paperclip", "company-1/reviewer"],
+            },
+          },
         }),
     );
 
     expect(res.status, JSON.stringify(res.body)).toBe(201);
-    expect(mockAgentService.create).toHaveBeenCalledOnce();
+    expect(mockAgentService.create).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        adapterConfig: expect.objectContaining({
+          provider: "codex",
+          model: "gpt-5.6-sol",
+          codexPermissionMode: "never",
+          lifecycleMode: "per_turn",
+          paperclipSkillSync: { desiredSkills: ["company-1/reviewer"] },
+        }),
+      }),
+      expect.any(Object),
+    );
     expect(mockAgentInstructionsService.materializeManagedBundle).toHaveBeenCalledWith(
       expect.objectContaining({ adapterType: "paperclip_runner" }),
       expect.any(Object),
       expect.objectContaining({ entryFile: "AGENTS.md", replaceExisting: false }),
     );
+  });
+
+  it("normalizes legacy skills and permissions when switching to paperclip_runner", async () => {
+    mockInstanceSettingsService.getExperimental.mockResolvedValue({ enableNativeRunner: true });
+    const existing = await mockAgentService.getById();
+    mockAgentService.getById.mockResolvedValue({
+      ...existing,
+      adapterType: "codex_local",
+      adapterConfig: {
+        model: "gpt-5.5",
+        paperclipSkillSync: {
+          desiredSkills: ["paperclipai/paperclip/paperclip", "company-1/reviewer"],
+        },
+      },
+    });
+    const app = await createApp();
+
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .patch("/api/agents/11111111-1111-4111-8111-111111111111")
+        .send({ adapterType: "paperclip_runner", replaceAdapterConfig: true, adapterConfig: {} }),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockAgentService.update).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      expect.objectContaining({
+        adapterType: "paperclip_runner",
+        adapterConfig: expect.objectContaining({
+          provider: "codex",
+          model: "gpt-5.5",
+          codexPermissionMode: "never",
+          lifecycleMode: "per_turn",
+          paperclipSkillSync: { desiredSkills: ["company-1/reviewer"] },
+        }),
+      }),
+      expect.any(Object),
+    );
+  });
+
+  it("uses the Codex default when a codex_local conversion has no model", async () => {
+    mockInstanceSettingsService.getExperimental.mockResolvedValue({ enableNativeRunner: true });
+    const app = await createApp();
+
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .patch("/api/agents/11111111-1111-4111-8111-111111111111")
+        .send({
+          adapterType: "paperclip_runner",
+          replaceAdapterConfig: true,
+          adapterConfig: { model: "" },
+        }),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockAgentService.update).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      expect.objectContaining({
+        adapterConfig: expect.objectContaining({ model: "gpt-5.6-sol" }),
+      }),
+      expect.any(Object),
+    );
+  });
+
+  it("converts Claude to ACPX Claude while retaining its model", async () => {
+    mockInstanceSettingsService.getExperimental.mockResolvedValue({ enableNativeRunner: true });
+    const existing = await mockAgentService.getById();
+    mockAgentService.getById.mockResolvedValue({
+      ...existing,
+      adapterType: "claude_local",
+      adapterConfig: { model: "claude-sonnet-4-6" },
+    });
+    const app = await createApp();
+
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .patch("/api/agents/11111111-1111-4111-8111-111111111111")
+        .send({
+          adapterType: "paperclip_runner",
+          replaceAdapterConfig: true,
+          adapterConfig: {},
+        }),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.adapterConfig).toMatchObject({ provider: "acpx", acpxAgent: "claude", model: "claude-sonnet-4-6" });
   });
 
   it("accepts qualified local and managed providers on fresh runner agents and hires", async () => {
@@ -796,7 +918,7 @@ describe("agent routes adapter validation", () => {
     },
   );
 
-  it("rejects provider changes but preserves edits to historical runner agents", async () => {
+  it("defaults ACPX provider changes to Claude and preserves ordinary historical edits", async () => {
     const existing = await mockAgentService.getById();
     mockAgentService.getById.mockResolvedValue({
       ...existing,
@@ -816,10 +938,8 @@ describe("agent routes adapter validation", () => {
     );
 
     expect(ordinaryEdit.status, JSON.stringify(ordinaryEdit.body)).toBe(200);
-    expect(providerChange.status, JSON.stringify(providerChange.body)).toBe(422);
-    expect(providerChange.body.details).toMatchObject({
-      code: "paperclip_runner_acpx_agent_unavailable",
-    });
+    expect(providerChange.status, JSON.stringify(providerChange.body)).toBe(200);
+    expect(providerChange.body.adapterConfig).toMatchObject({ provider: "acpx", acpxAgent: "claude", model: "historical" });
   });
 
   it.each([
@@ -865,9 +985,9 @@ describe("agent routes adapter validation", () => {
     ],
     [
       "invalid Codex permission",
-      { provider: "codex", codexPermissionMode: "untrusted" },
+      { provider: "codex", codexPermissionMode: "never" },
       { codexPermissionMode: "unrestricted" },
-      "runner_permission_mode_invalid",
+      "paperclip_runner_codex_permission_mode_unqualified",
     ],
   ])(
     "rejects a same-provider Paperclip Runner edit with %s",

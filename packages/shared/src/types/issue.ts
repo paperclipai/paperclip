@@ -1,3 +1,4 @@
+import type { ExecutionProjection, ExecutionBlocker } from "./execution-projection.js";
 import type {
   IssueCommentAuthorType,
   IssueCommentMetadataRowType,
@@ -783,6 +784,9 @@ export interface IssueChangeReceiptEntry {
 export type IssueChanges = Record<string, IssueChangeReceiptEntry>;
 
 export interface Issue {
+  activeRun?: { id: string; status: string; agentId: string; invocationSource: string;
+    triggerDetail: string | null; startedAt: Date | string | null; finishedAt: Date | string | null;
+    createdAt: Date | string; execution?: ExecutionProjection } | null;
   id: string;
   companyId: string;
   projectId: string | null;
@@ -811,6 +815,8 @@ export interface Issue {
   originKind?: IssueOriginKind;
   originId?: string | null;
   originRunId?: string | null;
+  originIdentityContextId?: string | null;
+  continuationIdentityContextId?: string | null;
   originFingerprint?: string | null;
   requestDepth: number;
   billingCode: string | null;
@@ -843,6 +849,7 @@ export interface Issue {
   productivityReview?: IssueProductivityReview | null;
   activeRecoveryAction?: IssueRecoveryAction | null;
   successfulRunHandoff?: SuccessfulRunHandoffState | null;
+  executionBlocker?: ExecutionBlocker | null;
   watchdog?: IssueWatchdogSummary | null;
   scheduledRetry?: IssueScheduledRetry | null;
   liveDescendantCount?: number;
@@ -1058,6 +1065,7 @@ export interface IssueCommentMetadataSection {
 export interface IssueCommentMetadata {
   version: 1;
   sourceRunId?: string | null;
+  sourceIdentityContextId?: string | null;
   authorizationReason?: string | null;
   sections: IssueCommentMetadataSection[];
 }
@@ -1260,7 +1268,8 @@ export interface RequestConfirmationToolActionPayload {
   connectionId: string | null;
   applicationId: string | null;
   appDisplayName: string | null;
-  risk: "write" | "destructive";
+  risk: "read" | "write" | "destructive";
+  rememberActionScope?: string;
   previewMarkdown: string;
   argumentsSummaryJson: string;
   argumentsHash: string;
@@ -1285,6 +1294,7 @@ export interface RequestConfirmationSecretProposalPayload {
  */
 export interface RequestConfirmationToolActionResult {
   version: 1;
+  rememberedAction?: boolean;
   status: "approved" | "executing" | "executed" | "failed" | "expired";
   errorCode?: string | null;
   errorMessage?: string | null;
@@ -1469,8 +1479,10 @@ export interface IssueThreadInteractionBase extends IssueThreadInteractionActorF
   issueId: string;
   kind: IssueThreadInteractionKind;
   idempotencyKey?: string | null;
+  originCommentIds?: string[];
   sourceCommentId?: string | null;
   sourceRunId?: string | null;
+  sourceIdentityContextId?: string | null;
   addresseeAgentId?: string | null;
   addresseeUserId?: string | null;
   title?: string | null;

@@ -6,6 +6,7 @@ import {
   activityLog,
   agents,
   companies,
+  companyMemberships,
   createDb,
   documentRevisions,
   documents,
@@ -21,10 +22,14 @@ import {
   issueReadStates,
   issueRelations,
   issueThreadInteractions,
+  issueWorkProducts,
   issues,
   projectWorkspaces,
   projects,
   workspaceOperations,
+  toolApplications,
+  toolConnections,
+  toolOauthStates,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -63,6 +68,85 @@ describe("issue list limit helpers", () => {
     expect(clampIssueListLimit(25.9)).toBe(25);
     expect(clampIssueListLimit(ISSUE_LIST_MAX_LIMIT + 10)).toBe(ISSUE_LIST_MAX_LIMIT);
   });
+});
+
+describeEmbeddedPostgres("issueService run attachment artifacts", () => {
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  it("registers a run-produced attachment as an attachment-backed artifact work product", async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-run-attachment-artifact-");
+    const db = createDb(tempDb.connectionString);
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const runId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: "ART",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "ArtifactAgent",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Artifact registration",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: agentId,
+    });
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, status: "running" });
+
+    const attachment = await issueService(db).createAttachment({
+      issueId,
+      issueCommentId: null,
+      provider: "local_disk",
+      objectKey: "issues/artifact/screenshot.png",
+      contentType: "image/png",
+      byteSize: 128,
+      sha256: "a".repeat(64),
+      originalFilename: "screenshot.png",
+      createdByAgentId: agentId,
+      createdByRunId: runId,
+    });
+
+    const artifact = await db
+      .select()
+      .from(issueWorkProducts)
+      .where(eq(issueWorkProducts.externalId, attachment.id))
+      .then((rows) => rows[0]);
+    expect(artifact).toMatchObject({
+      companyId,
+      issueId,
+      type: "artifact",
+      provider: "paperclip",
+      title: "screenshot.png",
+      createdByRunId: runId,
+      metadata: {
+        attachmentId: attachment.id,
+        contentType: "image/png",
+        byteSize: 128,
+        contentPath: `/api/attachments/${attachment.id}/content`,
+        openPath: `/api/attachments/${attachment.id}/content`,
+        downloadPath: `/api/attachments/${attachment.id}/content?download=1`,
+        originalFilename: "screenshot.png",
+      },
+    });
+  }, 20_000);
 });
 
 describe("deriveIssueCommentRunLogAttribution", () => {
@@ -320,6 +404,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     await db.delete(heartbeatRuns);
     await db.delete(agents);
     await db.delete(instanceSettings);
+    await db.delete(companyMemberships);
     await db.delete(companies);
   });
 
@@ -528,6 +613,53 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
       assigneeAgentId: null,
       status: "todo",
     });
+  });
+
+  it("expires a pending connection and its OAuth state when reassigned to a user without a status change", async () => {
+    const companyId = await seedAssignableAgentCompany();
+    const agentId = randomUUID();
+    const userId = randomUUID();
+    await db.insert(agents).values(agentRow(companyId, { id: agentId, name: "ConnectionRequester" }));
+    await db.insert(companyMemberships).values({
+      companyId, principalType: "user", principalId: userId, status: "active", membershipRole: "member",
+    });
+    const issue = await svc.create(companyId, {
+      title: "Waiting for a connection", status: "in_review", priority: "medium", assigneeAgentId: agentId,
+    });
+    const [application] = await db.insert(toolApplications).values({
+      companyId, name: "Connection app", type: "mcp",
+    }).returning();
+    const [connection] = await db.insert(toolConnections).values({
+      companyId, applicationId: application!.id, name: "Notion", uid: randomUUID(),
+      transport: "mcp_remote", authKind: "oauth",
+    }).returning();
+    const [interaction] = await db.insert(issueThreadInteractions).values({
+      companyId, issueId: issue.id, kind: "connection_intent", status: "pending",
+      createdByAgentId: agentId, addresseeUserId: "local-board",
+      payload: {
+        version: 1, serviceSlug: "notion", serviceName: "Notion",
+        requestingAgentId: agentId, requestingAgentName: "ConnectionRequester", phase: "authorizing",
+      },
+    }).returning();
+    const oauthState = randomUUID();
+    await db.insert(toolOauthStates).values({
+      state: oauthState, companyId, connectionId: connection!.id, issueId: issue.id,
+      interactionId: interaction!.id, codeVerifier: "test-verifier",
+      createdByActorType: "user", createdByActorId: "local-board",
+      expiresAt: new Date(Date.now() + 60_000),
+    });
+
+    const updated = await svc.update(issue.id, {
+      assigneeAgentId: null, assigneeUserId: userId, actorUserId: "local-board",
+    });
+    expect(updated).toMatchObject({ status: "in_review", assigneeAgentId: null, assigneeUserId: userId });
+    await expect(db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, interaction!.id)))
+      .resolves.toEqual([expect.objectContaining({
+        status: "expired",
+        result: { version: 1, outcome: "expired", reason: "The task assignment changed" },
+        resolvedAt: expect.any(Date),
+      })]);
+    await expect(db.select().from(toolOauthStates).where(eq(toolOauthStates.state, oauthState))).resolves.toEqual([]);
   });
 
   it("expires pending thread interactions on any service-level terminal transition", async () => {
@@ -2369,6 +2501,44 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     });
 
     expect(comments.map((comment) => comment.id)).toEqual([latestCommentId]);
+  });
+
+  it("returns no comments for an anchor cursor that is not a UUID", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    const commentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Malformed cursor issue",
+      status: "todo",
+      priority: "medium",
+    });
+
+    await db.insert(issueComments).values({
+      id: commentId,
+      companyId,
+      issueId,
+      body: "Only comment",
+      createdAt: new Date("2026-03-26T10:00:00.000Z"),
+      updatedAt: new Date("2026-03-26T10:00:00.000Z"),
+    });
+
+    const comments = await svc.listComments(issueId, {
+      afterCommentId: commentId.slice(0, 8),
+      order: "asc",
+      limit: 50,
+    });
+
+    expect(comments).toEqual([]);
   });
 
   it("lists user comments when derived run attribution scans a timestamp window", async () => {
@@ -7011,5 +7181,27 @@ describeEmbeddedPostgres("issueService.addComment createdByRunId", () => {
     const comment = await svc.addComment(issueId, "hello from a live run", { runId });
 
     expect(await createdByRunIdFor(comment.id)).toBe(runId);
+  });
+
+  it("deduplicates concurrent identical comments from the same run", async () => {
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      status: "running",
+    });
+
+    const [first, second] = await Promise.all([
+      svc.addComment(issueId, "one durable result", { agentId, runId }),
+      svc.addComment(issueId, "one durable result", { agentId, runId }),
+    ]);
+
+    expect(second.id).toBe(first.id);
+    const duplicates = await db
+      .select({ id: issueComments.id })
+      .from(issueComments)
+      .where(eq(issueComments.createdByRunId, runId));
+    expect(duplicates).toHaveLength(1);
   });
 });

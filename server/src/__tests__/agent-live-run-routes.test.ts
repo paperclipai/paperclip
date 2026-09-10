@@ -22,6 +22,11 @@ const mockIssueService = vi.hoisted(() => ({
   getByIdentifier: vi.fn(),
 }));
 
+const mockExecutionProjection = vi.hoisted(() => ({
+  executionProjectionForRun: vi.fn(async () => null),
+  executionProjectionsForRuns: vi.fn(async () => new Map()),
+}));
+
 const mockInstanceSettingsService = vi.hoisted(() => ({
   get: vi.fn(),
   getExperimental: vi.fn(),
@@ -50,10 +55,21 @@ const mockWorkspaceDiffReprojection = vi.hoisted(() => ({
 }));
 const mockLogActivity = vi.hoisted(() => vi.fn());
 const mockQueueRuntimeRequestResolution = vi.hoisted(() => vi.fn());
+const mockAccessService = vi.hoisted(() => ({
+  canUser: vi.fn(),
+  decide: vi.fn(),
+  hasPermission: vi.fn(),
+}));
+const mockWorkspaceOperationService = vi.hoisted(() => ({
+  getById: vi.fn(),
+  listForRun: vi.fn(),
+  readLog: vi.fn(),
+}));
 
 const routeAgentId = "11111111-1111-4111-8111-111111111111";
 
 function registerModuleMocks() {
+  vi.doMock("../services/execution-projection.js", () => mockExecutionProjection);
   vi.doMock("../routes/authz.js", async () =>
     vi.importActual("../routes/authz.js"),
   );
@@ -100,16 +116,7 @@ function registerModuleMocks() {
   vi.doMock("../services/index.js", () => ({
     agentService: () => mockAgentService,
     agentInstructionsService: () => ({}),
-    accessService: () => ({
-      canUser: vi.fn(async () => true),
-      decide: vi.fn(async (input: { action?: string }) => ({
-        allowed: true,
-        action: input.action,
-        reason: "allow_explicit_grant",
-        explanation: "Allowed by test grant.",
-      })),
-      hasPermission: vi.fn(async () => true),
-    }),
+    accessService: () => mockAccessService,
     approvalService: () => ({}),
     builtInAgentService: () => ({ ensureCompanyDefaultAgentGrants: vi.fn() }),
     companySkillService: () => ({ listRuntimeSkillEntries: vi.fn() }),
@@ -120,7 +127,7 @@ function registerModuleMocks() {
     logActivity: mockLogActivity,
     secretService: () => ({}),
     syncInstructionsBundleConfigFromFilePath: vi.fn((_agent, config) => config),
-    workspaceOperationService: () => ({}),
+    workspaceOperationService: () => mockWorkspaceOperationService,
   }));
 
   vi.doMock("../adapters/index.js", () => ({
@@ -142,14 +149,15 @@ async function createApp(
     isInstanceAdmin: false,
   },
 ) {
-  const [{ agentRoutes }, { errorHandler }] = await Promise.all([
-    vi.importActual<typeof import("../routes/agents.js")>(
-      "../routes/agents.js",
-    ),
-    vi.importActual<typeof import("../middleware/index.js")>(
-      "../middleware/index.js",
-    ),
-  ]);
+  // Vitest tracks factory-mock resolution in one shared call stack. Importing
+  // these graphs concurrently can drop the services/index factory mock and
+  // accidentally run real DB-backed activity logging against this test stub.
+  const { agentRoutes } = await vi.importActual<
+    typeof import("../routes/agents.js")
+  >("../routes/agents.js");
+  const { errorHandler } = await vi.importActual<
+    typeof import("../middleware/index.js")
+  >("../middleware/index.js");
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -235,6 +243,14 @@ describe("agent live run routes", () => {
     vi.doUnmock("../middleware/index.js");
     registerModuleMocks();
     vi.clearAllMocks();
+    mockAccessService.canUser.mockResolvedValue(true);
+    mockAccessService.decide.mockImplementation(async (input: { action?: string }) => ({
+      allowed: true,
+      action: input.action,
+      reason: "allow_explicit_grant",
+      explanation: "Allowed by test grant.",
+    }));
+    mockAccessService.hasPermission.mockResolvedValue(true);
     mockIssueService.getByIdentifier.mockResolvedValue({
       id: "issue-1",
       companyId: "company-1",
@@ -311,6 +327,11 @@ describe("agent live run routes", () => {
       companyId: "company-1",
       agentId: "agent-1",
       status: "succeeded",
+    });
+    mockWorkspaceOperationService.getById.mockResolvedValue({
+      id: "operation-1",
+      companyId: "company-1",
+      runId: "run-1",
     });
     mockQueueRuntimeRequestResolution.mockReturnValue({
       commandId: "command-resolution-1",
@@ -425,7 +446,11 @@ describe("agent live run routes", () => {
       expect.objectContaining({ id: "run-1", issueId: "issue-1" }),
       { companyId: "company-1", issueId: "issue-1" },
     );
+    expect(mockExecutionProjection.executionProjectionForRun).toHaveBeenCalledWith(
+      expect.anything(), "company-1", "run-1",
+    );
     expect(res.body).toMatchObject({
+      execution: null,
       currentStatusMessage: "Syncing workspace to environment",
       currentStatusUpdatedAt: "2026-04-10T09:30:05.000Z",
       currentToolName: "bash",
@@ -463,6 +488,52 @@ describe("agent live run routes", () => {
       nextOffset: 5,
     });
   });
+
+  it.each(["skill_test", "task_bridge"])(
+    "denies %s keys from company-wide run and workspace logs",
+    async (kind) => {
+      mockAccessService.decide.mockImplementation(async (input: { action?: string }) => ({
+        allowed: input.action !== "company_scope:read",
+        action: input.action,
+        reason: input.action === "company_scope:read" ? "deny_key_scope" : "allow_explicit_grant",
+        explanation: input.action === "company_scope:read"
+          ? "Restricted keys cannot read company-wide run telemetry."
+          : "Allowed by test grant.",
+      }));
+      const actor = {
+        type: "agent",
+        agentId: routeAgentId,
+        companyId: "company-1",
+        source: "agent_key",
+        keyScope: kind === "skill_test"
+          ? { kind, issueId: "issue-1" }
+          : { kind, parentIssueId: "issue-1" },
+      };
+      const app = await createApp({}, actor);
+      const paths = [
+        "/api/companies/company-1/heartbeat-runs",
+        "/api/companies/company-1/live-runs",
+        "/api/heartbeat-runs/run-1",
+        "/api/heartbeat-runs/run-1/events",
+        "/api/heartbeat-runs/run-1/log",
+        "/api/heartbeat-runs/run-1/workspace-operations",
+        "/api/workspace-operations/operation-1/log",
+      ];
+
+      for (const path of paths) {
+        const res = await requestApp(app, (baseUrl) => request(baseUrl).get(path));
+        expect(res.status, `${path}: ${JSON.stringify(res.body)}`).toBe(403);
+        expect(res.body.error).toContain("Run telemetry");
+      }
+
+      expect(mockHeartbeatService.readLog).not.toHaveBeenCalled();
+      expect(mockWorkspaceOperationService.readLog).not.toHaveBeenCalled();
+      expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({
+        action: "company_scope:read",
+        resource: { type: "company", companyId: "company-1" },
+      }));
+    },
+  );
 
   it("caps company live run polling by default", async () => {
     const rows = Array.from({ length: 75 }, (_, index) => ({
@@ -710,11 +781,8 @@ describe("agent live run routes", () => {
     );
 
     expect(res.status, JSON.stringify(res.body)).toBe(202);
-    // The legacy /heartbeat/invoke endpoint forwards only the wake fields the
-    // caller actually supplied so empty-body callers (e.g. e2e suites) match
-    // the original fixed-arg `heartbeat.invoke()` shape exactly. When the
-    // caller supplies reason / payload / forceFreshSession those are
-    // forwarded; idempotencyKey is omitted unless explicitly set.
+    // Optional wake fields retain their existing shape; execution identity
+    // always comes from the authenticated caller.
     expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(routeAgentId, {
       source: "on_demand",
       triggerDetail: "manual",
@@ -729,6 +797,8 @@ describe("agent live run routes", () => {
       contextSnapshot: {
         triggeredBy: "board",
         actorId: "local-board",
+        responsibleUserId: "local-board",
+        originIdentityContextId: null,
         forceFreshSession: true,
       },
     });
@@ -752,6 +822,8 @@ describe("agent live run routes", () => {
       contextSnapshot: {
         triggeredBy: "board",
         actorId: "local-board",
+        responsibleUserId: "local-board",
+        originIdentityContextId: null,
       },
     });
   });

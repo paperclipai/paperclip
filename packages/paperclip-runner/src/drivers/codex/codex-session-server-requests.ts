@@ -6,7 +6,7 @@ import { validatePrpStructuredRunResult } from "../../protocol/replay-contract.j
 import type { CodexRpcServerRequest } from "./app-server-transport.js";
 import {
   boundedCodexValue,
-  codexToolAcceptsDisposition as toolAcceptsDisposition,
+  codexToolAcceptsResult as toolAcceptsResult,
   isCodexSemanticTool as isSemanticTool,
   isRetainableCodexPayload,
   redactCodexValue,
@@ -80,6 +80,11 @@ async function handleServerRequestBody(
     request: CodexRpcServerRequest,
   ): Promise<Record<string, unknown>> {
     if (request.method === "item/tool/call") {
+      // Provider requests and turn/start responses have independent delivery
+      // paths. Judge the call against the admitted provider turn, not the
+      // temporary null/optimistic identity while its start is still pending.
+      await state.turnStartSettled;
+      state.assertProtocolIntegrity();
       const tool = text(request.params.tool);
       const threadId = text(request.params.threadId);
       const turnId = text(request.params.turnId);
@@ -184,7 +189,7 @@ async function handleServerRequestBody(
         };
       }
       if (
-        !toolAcceptsDisposition(tool, validation.result.reportedWorkDisposition)
+        !toolAcceptsResult(tool, validation.result)
       ) {
         return {
           success: false,
@@ -194,7 +199,7 @@ async function handleServerRequestBody(
               text:
                 tool === CODEX_BLOCK_TOOL_NAME
                   ? "paperclip_block requires reportedWorkDisposition=blocked."
-                  : "paperclip_finish accepts only done or needs_review.",
+                  : "paperclip_finish accepts done, needs_review, or yielded with a response_wake continuation.",
             },
           ],
         };

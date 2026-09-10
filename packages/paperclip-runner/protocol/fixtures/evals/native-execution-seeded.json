@@ -24,7 +24,7 @@
     "prpVersion": 1,
     "nativeExecutionVersion": 1,
     "catalogVersion": 1,
-    "catalogSha256": "sha256:e5a90079e1641e50f2f07a320856bbef622c04810384ffdd1895576cc16c4c5c",
+    "catalogSha256": "sha256:842a1515a5b549fcc5df7675f3a96471b2f1ca33f4699cc5dd2ecf6c4235f2ec",
     "driverContractVersion": 1,
     "driverKind": "paperclip-deterministic",
     "driverVersion": "1.0.0"
@@ -136,7 +136,11 @@
             }
           ]
         },
-        "evidence": [{ "receiptId": "receipt_evals_seeded" }],
+        "evidence": [
+          {
+            "receiptId": "receipt_evals_seeded"
+          }
+        ],
         "verification": [
           {
             "commandOrCheck": "rejected tool effect stays denied",

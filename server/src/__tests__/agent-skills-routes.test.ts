@@ -838,17 +838,27 @@ describe.sequential("agent skill routes", () => {
     expect(mockAdapter.syncSkills).toHaveBeenCalled();
   });
 
-  it("rejects the reserved legacy Paperclip skill for paperclip_runner", async () => {
+  it("ignores the reserved legacy Paperclip skill for paperclip_runner", async () => {
     mockAgentService.getById.mockResolvedValue(makeAgent("paperclip_runner"));
 
     const res = await requestApp(await createApp(), (baseUrl) => request(baseUrl)
       .post("/api/agents/11111111-1111-4111-8111-111111111111/skills/sync?companyId=company-1")
       .send({ desiredSkills: ["paperclipai/paperclip/paperclip"], mode: "replace" }));
 
-    expect(res.status, JSON.stringify(res.body)).toBe(422);
-    expect(res.body.error).toContain("legacy Paperclip operational skill");
-    expect(mockAgentService.update).not.toHaveBeenCalled();
-    expect(mockAdapter.syncSkills).not.toHaveBeenCalled();
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockAgentService.update).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        adapterConfig: expect.objectContaining({
+          paperclipSkillSync: { desiredSkills: [] },
+        }),
+      }),
+      expect.any(Object),
+    );
+    expect(mockAdapter.syncSkills).toHaveBeenCalledWith(
+      expect.any(Object),
+      [],
+    );
   });
 
   it("allows paperclip_runner to remove a pre-existing legacy Paperclip skill", async () => {
@@ -1182,6 +1192,34 @@ describe.sequential("agent skill routes", () => {
         expect.any(Object),
       );
     });
+  });
+
+  it("seeds the chief-of-staff persona for the onboarding first agent", async () => {
+    const res = await requestApp(await createApp(), (baseUrl) => request(baseUrl)
+      .post("/api/companies/company-1/agents")
+      .send({
+        name: "Ada",
+        role: "general",
+        adapterType: "claude_local",
+        adapterConfig: {},
+        onboardingFirstAgent: true,
+      }));
+
+    expect([200, 201], JSON.stringify(res.body)).toContain(res.status);
+    const createdAgentId = expectResponseId(res.body.id);
+    await vi.waitFor(() => {
+      expect(mockAgentInstructionsService.materializeManagedBundle).toHaveBeenCalledWith(
+        expect.objectContaining({ id: createdAgentId, role: "general" }),
+        expect.objectContaining({
+          "AGENTS.md": expect.stringContaining("You are Ada, chief of staff for"),
+        }),
+        { entryFile: "AGENTS.md", replaceExisting: false },
+      );
+    });
+    // The generic default persona must NOT be what was seeded over the entry file.
+    const seededCalls = mockAgentInstructionsService.materializeManagedBundle.mock.calls;
+    const entrySeed = seededCalls.at(-1)?.[1] as Record<string, string> | undefined;
+    expect(entrySeed?.["AGENTS.md"]).toContain("# Hiring and delegation");
   });
 
   it("includes canonical desired skills in hire approvals", async () => {
