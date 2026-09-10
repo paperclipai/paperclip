@@ -159,7 +159,7 @@ describe("GitHub external object provider", () => {
   }
 
   it("detects GitHub pull request and issue URLs before the generic fallback", async () => {
-    const provider = createGitHubExternalObjectProvider({} as any, { tokenProvider: null });
+    const provider = createGitHubExternalObjectProvider({} as any, { credentialProvider: null });
     const pr = canonicalizeExternalObjectUrl("https://github.com/Acme/App/pull/42?token=secret#discussion");
     const issue = canonicalizeExternalObjectUrl("https://github.com/Acme/App/issues/7");
     const other = canonicalizeExternalObjectUrl("https://example.com/Acme/App/pull/42");
@@ -222,7 +222,7 @@ describe("GitHub external object provider", () => {
     ],
   ])("resolves a %s pull request snapshot", async (_name, body, expected) => {
     const fetch = vi.fn(async () => response(body));
-    const provider = createGitHubExternalObjectProvider({} as any, { fetch, tokenProvider: null });
+    const provider = createGitHubExternalObjectProvider({} as any, { fetch, credentialProvider: null });
     const resolver = provider.resolvers.find((entry) => entry.objectType === "pull_request")!;
 
     const result = await resolver.resolve({
@@ -269,7 +269,7 @@ describe("GitHub external object provider", () => {
     ],
   ])("resolves a %s issue snapshot", async (_name, body, expected) => {
     const fetch = vi.fn(async () => response(body));
-    const provider = createGitHubExternalObjectProvider({} as any, { fetch, tokenProvider: null });
+    const provider = createGitHubExternalObjectProvider({} as any, { fetch, credentialProvider: null });
     const resolver = provider.resolvers.find((entry) => entry.objectType === "issue")!;
 
     const result = await resolver.resolve({
@@ -294,14 +294,14 @@ describe("GitHub external object provider", () => {
     });
   });
 
-  it("uses a configured token without storing it in the resolved snapshot", async () => {
+  it("uses a configured credential without storing it in the resolved snapshot", async () => {
     const fetch = vi.fn(async (_url: string, init?: RequestInit) => {
       expect(init?.headers).toEqual(expect.objectContaining({ authorization: "Bearer ghp_secret" }));
       return response({ state: "open", draft: false, merged: false, title: "Private PR" });
     });
     const provider = createGitHubExternalObjectProvider({} as any, {
       fetch,
-      tokenProvider: async () => "ghp_secret",
+      credentialProvider: async () => ({ authorization: "Bearer ghp_secret" }),
     });
     const resolver = provider.resolvers.find((entry) => entry.objectType === "pull_request")!;
 
@@ -318,6 +318,7 @@ describe("GitHub external object provider", () => {
     [
       "auth-required",
       new Response("", { status: 401 }),
+      new Response("", { status: 401 }),
       { ok: false, liveness: "auth_required", errorCode: "github_auth_required" },
     ],
     [
@@ -326,17 +327,25 @@ describe("GitHub external object provider", () => {
         status: 403,
         headers: { "x-ratelimit-remaining": "0", "x-ratelimit-reset": String(Math.floor(Date.now() / 1000) + 120) },
       }),
+      new Response("", { status: 403 }),
       { ok: false, liveness: "unreachable", errorCode: "github_rate_limited" },
     ],
     [
       "not-found",
       new Response("", { status: 404, headers: { etag: '"missing"' } }),
+      response({}),
       { ok: true, snapshot: expect.objectContaining({ displayKey: "GitHub Pull Request", iconKey: "github", statusKey: "not_found", statusIconKey: "archive", statusCategory: "archived", statusTone: "muted" }) },
     ],
-  ])("maps %s responses to provider-safe results", async (_name, githubResponse, expected) => {
+    [
+      "not-found-without-repository-access",
+      new Response("", { status: 404, headers: { etag: '"missing"' } }),
+      new Response("", { status: 404 }),
+      { ok: false, liveness: "auth_required", errorCode: "github_repository_access_required" },
+    ],
+  ])("maps %s responses to provider-safe results", async (_name, objectResponse, repositoryResponse, expected) => {
     const provider = createGitHubExternalObjectProvider({} as any, {
-      fetch: async () => githubResponse,
-      tokenProvider: null,
+      fetch: async (url: string) => (url.endsWith("/pulls/42") ? objectResponse : repositoryResponse),
+      credentialProvider: null,
     });
     const resolver = provider.resolvers.find((entry) => entry.objectType === "pull_request")!;
 
@@ -784,6 +793,40 @@ describeEmbeddedPostgres("externalObjectService", () => {
 
     expect(refreshed).toEqual([]);
     expect(resolve).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps re-verifying a not-found snapshot when it comes due", async () => {
+    const { companyId, issueId } = await createIssue();
+    const resolve = vi.fn(async () => ({
+      ok: true as const,
+      snapshot: {
+        statusCategory: "archived" as const,
+        statusTone: "muted" as const,
+        statusKey: "not_found",
+        statusLabel: "Not found",
+        isTerminal: true,
+        ttlSeconds: 1,
+      },
+    }));
+    const resolver: ExternalObjectResolver = {
+      providerKey: "url",
+      objectType: "link",
+      resolve,
+    };
+    const svc = externalObjectService(db, { resolvers: [resolver], github: false });
+    await svc.syncIssue(issueId);
+    const object = await db.select().from(externalObjects).then((rows) => rows[0]!);
+
+    await svc.refreshObject(object.id, { companyId, force: true });
+    await db
+      .update(externalObjects)
+      .set({ nextRefreshAt: new Date(0) })
+      .where(eq(externalObjects.id, object.id));
+
+    const refreshed = await svc.refreshDueObjects(companyId);
+
+    expect(refreshed).toHaveLength(1);
+    expect(resolve).toHaveBeenCalledTimes(2);
   });
 
   it("keeps external object identities company-scoped for duplicate urls", async () => {

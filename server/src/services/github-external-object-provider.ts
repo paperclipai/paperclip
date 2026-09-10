@@ -1,6 +1,7 @@
-import type { Db } from "@paperclipai/db";
+import { and, eq, inArray, isNotNull, sql } from "drizzle-orm";
+import { deliveryPolicies, deliveryRepositories, type Db } from "@paperclipai/db";
 import type { ExternalObjectCanonicalUrl } from "@paperclipai/shared";
-import { DEFAULT_GITHUB_TOKEN_SECRET_NAMES } from "./git-credentials.js";
+import { DEFAULT_GITHUB_TOKEN_SECRET_NAMES, resolveGitHubConnectionCredential } from "./git-credentials.js";
 import { ghFetch, gitHubApiBase } from "./github-fetch.js";
 import { secretService } from "./secrets.js";
 import type {
@@ -13,9 +14,24 @@ import type {
 
 type FetchLike = (url: string, init?: RequestInit) => Promise<Response>;
 
+export type GitHubObjectCredential = { authorization: string };
+
+/** The company and repository an object read is scoped to. */
+export interface GitHubObjectCredentialRequest {
+  companyId: string;
+  host: string;
+  owner: string;
+  repo: string;
+}
+
+export type GitHubObjectCredentialProvider = (
+  request: GitHubObjectCredentialRequest,
+) => Promise<GitHubObjectCredential | null> | GitHubObjectCredential | null;
+
 export interface GitHubExternalObjectProviderOptions {
   fetch?: FetchLike;
-  tokenProvider?: (companyId: string) => Promise<string | null> | string | null;
+  /** Overrides governed-connection resolution; `null` reads anonymously. */
+  credentialProvider?: GitHubObjectCredentialProvider | null;
   secretNames?: readonly string[];
 }
 
@@ -29,6 +45,12 @@ interface GitHubObjectIdentity {
 }
 
 const GITHUB_OBJECT_TTL_SECONDS = 300;
+
+/**
+ * A missing object is re-verified on a slower cadence than a live one: unproven absence
+ * must not become permanent, but it also must not be polled at the live-object rate.
+ */
+const GITHUB_NOT_FOUND_TTL_SECONDS = 900;
 
 function isGitHubHost(host: string) {
   const h = host.toLowerCase();
@@ -125,6 +147,52 @@ function retryAfterSeconds(response: Response) {
   return 300;
 }
 
+/**
+ * GitHub answers 404 both for an object that does not exist and for one the caller is not
+ * allowed to see, so a 404 only proves the object is gone when the same credentials can read
+ * the repository it lives in. Without that proof the read failed for access reasons and has
+ * to stay retryable instead of being recorded as an archived, terminal "Not found".
+ */
+async function repositoryAccessFailure(
+  identity: GitHubObjectIdentity,
+  fetchImpl: FetchLike,
+  headers: Record<string, string>,
+): Promise<ExternalObjectResolveResult | null> {
+  const url = `${gitHubApiBase(identity.host)}/repos/${encodeURIComponent(identity.owner)}/${encodeURIComponent(identity.repo)}`;
+  let response: Response;
+  try {
+    response = await fetchImpl(url, { headers });
+  } catch {
+    return {
+      ok: false,
+      liveness: "unreachable",
+      errorCode: "github_fetch_failed",
+      errorMessage: "GitHub could not be reached while checking repository access for this object.",
+      retryAfterSeconds: GITHUB_OBJECT_TTL_SECONDS,
+    };
+  }
+  if (response.ok) return null;
+
+  const failure = failureFromGitHubResponse(response);
+  if (failure) return failure;
+  if (response.status === 404) {
+    return {
+      ok: false,
+      liveness: "auth_required",
+      errorCode: "github_repository_access_required",
+      errorMessage: "GitHub did not expose this repository to the configured credentials, so this object cannot be verified.",
+      retryAfterSeconds: retryAfterSeconds(response),
+    };
+  }
+  return {
+    ok: false,
+    liveness: "unreachable",
+    errorCode: "github_unexpected_response",
+    errorMessage: `GitHub returned HTTP ${response.status} while checking repository access for this object.`,
+    retryAfterSeconds: GITHUB_OBJECT_TTL_SECONDS,
+  };
+}
+
 function failureFromGitHubResponse(response: Response): ExternalObjectResolveResult | null {
   if (response.status === 401) {
     return {
@@ -181,7 +249,7 @@ function notFoundSnapshot(identity: GitHubObjectIdentity, etag: string | null): 
     statusTone: "muted",
     isTerminal: true,
     etag,
-    ttlSeconds: GITHUB_OBJECT_TTL_SECONDS,
+    ttlSeconds: GITHUB_NOT_FOUND_TTL_SECONDS,
     data: {
       provider: "github",
       owner: identity.owner,
@@ -317,16 +385,85 @@ async function safeJson(response: Response) {
   }
 }
 
-async function defaultTokenProvider(db: Db, companyId: string, secretNames: readonly string[]) {
+/**
+ * The GitHub connection bound to one company+repository, when exactly one is bound.
+ *
+ * Delivery policy rows are what the delivery controller itself reads with, so they win; the
+ * verified repository row is the fallback for a repository no policy pins a connection on,
+ * including one whose row still records the connection it was first verified with. Both
+ * sources are company+repository scoped — a company-wide "first connection" fallback would
+ * let one project's credential read another project's private repository. An ambiguous
+ * binding fails closed rather than falling back to a different identity.
+ */
+async function resolveRepositoryConnectionId(
+  db: Db,
+  companyId: string,
+  identity: Pick<GitHubObjectIdentity, "host" | "owner" | "repo">,
+): Promise<string | null> {
+  const repositories = await db
+    .select({ id: deliveryRepositories.id, connectionId: deliveryRepositories.connectionId })
+    .from(deliveryRepositories)
+    .where(and(
+      eq(deliveryRepositories.companyId, companyId),
+      eq(deliveryRepositories.host, identity.host),
+      sql`lower(${deliveryRepositories.owner}) = ${identity.owner.toLowerCase()}`,
+      sql`lower(${deliveryRepositories.name}) = ${identity.repo.toLowerCase()}`,
+    ));
+  if (repositories.length === 0) return null;
+
+  const policies = await db
+    .select({ connectionId: deliveryPolicies.githubConnectionId })
+    .from(deliveryPolicies)
+    .where(and(
+      eq(deliveryPolicies.companyId, companyId),
+      inArray(deliveryPolicies.repositoryId, repositories.map((repository) => repository.id)),
+      isNotNull(deliveryPolicies.githubConnectionId),
+    ));
+
+  const only = (connectionIds: Array<string | null>) => {
+    const candidates = new Set<string>();
+    for (const connectionId of connectionIds) {
+      if (connectionId) candidates.add(connectionId);
+    }
+    if (candidates.size > 1) throw new Error("Repository has ambiguous GitHub connection bindings");
+    return candidates.size === 1 ? [...candidates][0]! : null;
+  };
+
+  const policyConnectionId = only(policies.map((policy) => policy.connectionId));
+  if (policyConnectionId) return policyConnectionId;
+  if (policies.length > 0) return null;
+  return only(repositories.map((repository) => repository.connectionId));
+}
+
+/**
+ * Credentials for one GitHub object read, mirroring the delivery controller: the governed
+ * connection bound to the company+repository is authoritative, the well-known company-secret
+ * names remain the legacy fallback for companies that never configured a connection, and an
+ * unconfigured company still reads public objects anonymously. A configured connection
+ * that cannot authorize the read fails closed; another identity must never replace it.
+ */
+function defaultCredentialProvider(db: Db, secretNames: readonly string[]): GitHubObjectCredentialProvider {
   const secrets = secretService(db);
-  for (const secretName of secretNames) {
-    const secret = await secrets.getByName(companyId, secretName);
-    if (!secret) continue;
-    const token = await secrets.resolveSecretValue(companyId, secret.id, "latest");
-    const trimmed = token.trim();
-    if (trimmed) return trimmed;
-  }
-  return null;
+  return async (request) => {
+    const connectionId = await resolveRepositoryConnectionId(db, request.companyId, {
+      host: request.host,
+      owner: request.owner,
+      repo: request.repo,
+    });
+    if (connectionId) {
+      const credential = await resolveGitHubConnectionCredential(db, request.companyId, connectionId);
+      if (!credential.ok) throw new Error("Bound GitHub connection cannot authorize the read");
+      return { authorization: credential.authorization };
+    }
+
+    for (const secretName of secretNames) {
+      const secret = await secrets.getByName(request.companyId, secretName);
+      if (!secret) continue;
+      const token = (await secrets.resolveSecretValue(request.companyId, secret.id, "latest")).trim();
+      if (token) return { authorization: `Bearer ${token}` };
+    }
+    return null;
+  };
 }
 
 export function createGitHubExternalObjectProvider(
@@ -335,9 +472,9 @@ export function createGitHubExternalObjectProvider(
 ): { detector: ExternalObjectDetector; resolvers: ExternalObjectResolver[] } {
   const fetchImpl = opts.fetch ?? ghFetch;
   const secretNames = opts.secretNames ?? DEFAULT_GITHUB_TOKEN_SECRET_NAMES;
-  const tokenProvider = Object.prototype.hasOwnProperty.call(opts, "tokenProvider") && opts.tokenProvider !== undefined
-    ? opts.tokenProvider
-    : ((companyId: string) => defaultTokenProvider(db, companyId, secretNames));
+  const credentialProvider = opts.credentialProvider === undefined
+    ? defaultCredentialProvider(db, secretNames)
+    : opts.credentialProvider;
 
   const detector: ExternalObjectDetector = {
     key: "github",
@@ -376,9 +513,17 @@ export function createGitHubExternalObjectProvider(
           };
         }
 
-        let token: string | null = null;
+        let authorization: string | null = null;
         try {
-          token = typeof tokenProvider === "function" ? await tokenProvider(companyId) : tokenProvider;
+          const credential = credentialProvider
+            ? await credentialProvider({
+              companyId,
+              host: identity.host,
+              owner: identity.owner,
+              repo: identity.repo,
+            })
+            : null;
+          authorization = credential?.authorization ?? null;
         } catch {
           return {
             ok: false,
@@ -388,13 +533,12 @@ export function createGitHubExternalObjectProvider(
             retryAfterSeconds: GITHUB_OBJECT_TTL_SECONDS,
           };
         }
-        token = token?.trim() || null;
         const headers: Record<string, string> = {
           accept: "application/vnd.github+json",
           "user-agent": "paperclip-external-object-resolver",
           "x-github-api-version": "2022-11-28",
         };
-        if (token) headers.authorization = `Bearer ${token}`;
+        if (authorization) headers.authorization = authorization;
 
         const apiKind = objectType === "pull_request" ? "pulls" : "issues";
         const url = `${gitHubApiBase(identity.host)}/repos/${encodeURIComponent(identity.owner)}/${encodeURIComponent(identity.repo)}/${apiKind}/${identity.number}`;
@@ -414,6 +558,8 @@ export function createGitHubExternalObjectProvider(
 
         const etag = response.headers.get("etag");
         if (response.status === 404) {
+          const accessFailure = await repositoryAccessFailure(identity, fetchImpl, headers);
+          if (accessFailure) return accessFailure;
           return { ok: true, snapshot: notFoundSnapshot(identity, etag) };
         }
 

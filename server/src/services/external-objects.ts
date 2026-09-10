@@ -1030,7 +1030,13 @@ export function externalObjectService(
       .where(
         and(
           eq(externalObjects.companyId, companyId),
-          eq(externalObjects.isTerminal, false),
+          or(
+            eq(externalObjects.isTerminal, false),
+            // A "not found" snapshot is an inference rather than a provider-final state —
+            // GitHub also answers 404 for objects the credentials cannot see — so it is
+            // re-verified on its TTL instead of being retired like a closed pull request.
+            eq(externalObjects.statusKey, "not_found"),
+          ),
           lte(externalObjects.nextRefreshAt, now),
           or(
             isNull(externalObjects.refreshStartedAt),
