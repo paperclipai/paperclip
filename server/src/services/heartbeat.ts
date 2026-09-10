@@ -13739,8 +13739,27 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               },
             });
           }
+          // First detection: just mark detached and wait for the next tick to kill.
+          continue;
         }
-        continue;
+
+        // Already marked detached on a prior tick. Kill if the staleness threshold
+        // has elapsed since we wrote the detached warning (run.updatedAt). This
+        // gives the process one full stale window to reconnect before we forcibly
+        // terminate it and release the issue lock.
+        if (staleThresholdMs > 0) {
+          const detachedSince = run.updatedAt ? new Date(run.updatedAt).getTime() : 0;
+          if (now.getTime() - detachedSince < staleThresholdMs) {
+            continue;
+          }
+          // Stale detached process — kill it and fall through to terminalize.
+          await terminateHeartbeatRunProcess({
+            pid: run.processPid,
+            processGroupId: run.processGroupId,
+          });
+        } else {
+          continue;
+        }
       }
 
       let descendantOnlyCleanup = false;
@@ -13875,6 +13894,135 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         { errorKind: PENDING_CLEANUP_SWEEP_ERROR_KIND },
         "pending_cleanup lease sweep failed",
       );
+    }
+
+    return { reaped: reaped.length, runIds: reaped };
+  }
+
+  // Kills local-adapter processes that still hold an in-memory handle but have
+  // been silent beyond `killThresholdMs`. Handles the spend-limit / auth-failure
+  // zombie pattern where the adapter process is alive but the session is dead and
+  // produces no output — a case reapOrphanedRuns cannot reach because
+  // runningProcesses still contains the handle.
+  //
+  // Terminalizing the run in the DB is the durable action: sweepStaleIssueLocks
+  // clears the executionRunId / checkoutRunId on the next tick even if this
+  // process crashes between kill and releaseIssueExecutionAndPromote.
+  async function reapSilentZombieRuns(opts?: { killThresholdMs?: number }) {
+    const killThresholdMs = opts?.killThresholdMs ?? 4 * 60 * 60 * 1000; // 4 h default
+    const now = new Date();
+    const killBefore = new Date(now.getTime() - killThresholdMs);
+
+    const reaped: string[] = [];
+
+    for (const [runId, handle] of runningProcesses) {
+      const run = await getRun(runId);
+
+      if (!run) {
+        // Stale in-memory entry with no DB row — clean up.
+        runningProcesses.delete(runId);
+        continue;
+      }
+
+      if (run.status !== "running") {
+        // Run already reached a terminal status via another path; remove handle.
+        runningProcesses.delete(runId);
+        continue;
+      }
+
+      const agentRow = await db
+        .select({ adapterType: agents.adapterType, adapterConfig: agents.adapterConfig })
+        .from(agents)
+        .where(eq(agents.id, run.agentId))
+        .then((rows) => rows[0] ?? null);
+
+      if (!agentRow || !isTrackedLocalChildProcessAdapter(agentRow.adapterType)) {
+        // Only kill local child-process adapters; remote/cloud runs have different
+        // liveness semantics and are not managed by runningProcesses.
+        continue;
+      }
+
+      const { adapterType, adapterConfig } = agentRow;
+
+      // Use the latest output timestamp as the silence reference, falling back
+      // to process-start → run-start → creation time so newly started runs
+      // are never considered stale.
+      const silenceRef = run.lastOutputAt ?? run.processStartedAt ?? run.startedAt ?? run.createdAt;
+      if (!silenceRef || new Date(silenceRef).getTime() > killBefore.getTime()) {
+        continue;
+      }
+
+      const silenceMs = now.getTime() - new Date(silenceRef).getTime();
+      const killMessage = `Silent zombie reaper: local process silent for ${Math.round(silenceMs / 60_000)} min; killing and releasing lock`;
+
+      logger.warn(
+        { runId, agentId: run.agentId, silenceMs, processPid: run.processPid, processGroupId: run.processGroupId },
+        killMessage,
+      );
+
+      await terminateHeartbeatRunProcess({
+        pid: run.processPid,
+        processGroupId: run.processGroupId,
+      });
+      runningProcesses.delete(runId);
+
+      // Persist terminal status first so the issue lock is always clearable even
+      // if the steps below fail partway through.
+      let finalizedRun = await setRunStatus(runId, "interrupted", {
+        error: killMessage,
+        errorCode: "silent_zombie_killed",
+        finishedAt: now,
+        resultJson: mergeRunStopMetadataForAgent(
+          { adapterType, adapterConfig },
+          "interrupted",
+          {
+            resultJson: parseObject(run.resultJson),
+            errorCode: "silent_zombie_killed",
+            errorMessage: killMessage,
+          },
+        ),
+      });
+
+      if (!finalizedRun) finalizedRun = await getRun(runId);
+      if (!finalizedRun) {
+        reaped.push(runId);
+        continue;
+      }
+
+      finalizedRun = await classifyAndPersistRunLiveness(finalizedRun, parseObject(finalizedRun.resultJson)) ?? finalizedRun;
+
+      await appendRunEvent(finalizedRun, await nextRunEventSeq(finalizedRun.id), {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "error",
+        message: killMessage,
+        payload: {
+          silenceMs,
+          killThresholdMs,
+          ...(run.processPid ? { processPid: run.processPid } : {}),
+          ...(run.processGroupId ? { processGroupId: run.processGroupId } : {}),
+        },
+      });
+
+      await releaseEnvironmentLeasesForRun({
+        runId: finalizedRun.id,
+        companyId: finalizedRun.companyId,
+        agentId: finalizedRun.agentId,
+        status: finalizedRun.status,
+        failureReason: finalizedRun.error ?? undefined,
+      });
+
+      await releaseIssueExecutionAndPromote(finalizedRun);
+      await finalizeAgentStatus(finalizedRun.agentId, "interrupted", killMessage, {
+        wasFirstHeartbeat: timerClaimWasFirstHeartbeat(finalizedRun),
+      });
+      await startNextQueuedRunForAgent(finalizedRun.agentId);
+
+      reaped.push(runId);
+    }
+
+    if (reaped.length > 0) {
+      logger.warn({ reapedCount: reaped.length, runIds: reaped }, "reaped silent zombie runs");
     }
 
     return { reaped: reaped.length, runIds: reaped };
@@ -19723,6 +19871,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     prepareHotRestartShutdown,
     reconcileHotRestartAdoption,
     reapOrphanedRuns,
+    reapSilentZombieRuns,
     sweepPendingCleanupLeases,
     // Override-aware scheduling-suppression check (honors the worktree
     // run-execution experimental setting). Callers outside the service that
