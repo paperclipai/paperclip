@@ -815,6 +815,10 @@ Legacy adapters without a verified resume capability use the same automatic no-r
 
 The server projection remains available for execution diagnostics. Normal working, finishing, and interaction waits add no badges or cards to task lists or feeds. A retry may briefly change the existing transcript header to Reconnecting; attempts, causes, and recovery decisions belong in the run log. There is no reconciliation dialog. Safe recovery remains automatic. If it cannot continue safely, the source-scoped recovery record resolves with a blocked no-replay disposition and the ordinary task status becomes blocked, preserving its owner. Resolving this record does not grant replay authority: dispatch continues enforcing the durable hold. Replacement history remains inspectable and the composer stays usable.
 
+An operator Stop reaches embedded ACP execution through its run-owned cancellation signal. The response waits for adapter settlement; acknowledgment requires the local provider to have exited. A deadline or failed cleanup never grants continuation permission. A persistent local ACP session can record an interrupted checkpoint only after acknowledged cancellation, complete tool reporting with settled reads (or no tools), and successful cleanup. Writes, shell commands, incomplete client-operation receipts, forced cancellation, and lost transports retain the ordinary no-replay hold. Continuation must restore the same compatible session; an unavailable checkpoint cannot fall back to a new session. A restored provider receives the current run identity, API credential, and scratch environment. Run-owned scratch paths rotate without changing session identity, while user configuration changes still invalidate compatibility.
+
+Stop alone does not promote deferred messages. A subsequent explicit wake adopts pending comment IDs atomically in order through the existing queue. The task's ordered continuation history remains authoritative. A subtree pause still requires Resume; the text “go” has no special bypass. Task detail exposes the effective execution blocker, including a recovery record resolved with replay blocked, using the same predicate as dispatch and Resume. A cancelled run that never started says “Couldn't start” instead of claiming successful completion without an answer. Historical ambiguous executions remain held. A queued message or healthy child task cannot clear an execution reconciliation hold during a generic recovery sweep.
+
 ### Codex startup and provider state
 
 Paperclip trusts the server-selected startup execution root in the isolated
@@ -833,6 +837,7 @@ completed turn. Retain a bounded local diagnostic and use cumulative totals as
 a baseline; do not emit a warning or charge its historical `last` usage to the
 new run. Preserve the baseline across recovery of the same run and start a new
 delta when attaching a new run. Other stale-event and authority checks remain.
+
 
 ### Explicit Recovery Action
 

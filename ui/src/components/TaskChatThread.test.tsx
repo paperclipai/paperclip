@@ -1026,6 +1026,19 @@ describe("TaskChatThread runtime transcript selection", () => {
     expect(onRetryFailedRun).toHaveBeenCalledWith("native-failed");
   });
 
+  it("explains a legacy run prevented from starting by a reconciliation hold", () => {
+    render(<TaskChatThread comments={[]} onAdd={async () => {}} linkedRuns={[{
+      runId: "blocked-legacy", runtimeMode: "legacy", status: "cancelled",
+      errorCode: "execution_reconciliation_required", agentId: "agent-1", agentName: "Runner",
+      adapterType: "claude_local", createdAt: "2026-08-25T18:00:00.000Z",
+      startedAt: null, finishedAt: "2026-08-25T18:00:00.012Z",
+    }]} />);
+    expect(container.textContent).toContain("Couldn't start");
+    expect(container.textContent).not.toContain("No user-facing response");
+    expect(container.textContent).not.toContain("Run completed");
+    expect(container.querySelector(".text-destructive")).toBeNull();
+  });
+
   it("shows cancellation after native progress without offering a retry", () => {
     nativeTranscriptState.transcriptByRun.set("native-cancelled", [
       {

@@ -37,6 +37,9 @@ export async function waitForStoppedRuns(
     remaining = states
       .filter((run) => {
         if (LIVE_STATUSES.has(run.status)) return true;
+        const adapterCancellation = run.resultJson?.executionCancellation;
+        if (adapterCancellation && typeof adapterCancellation === "object"
+          && "state" in adapterCancellation && adapterCancellation.state !== "acknowledged") return true;
         if (!("runtimeMode" in run) || run.runtimeMode !== "native" || run.status !== "cancelled")
           return false;
         const cancellation = run.resultJson?.nativeCancellation;

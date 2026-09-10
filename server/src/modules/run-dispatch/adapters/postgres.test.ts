@@ -21,6 +21,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "../../../__tests__/helpers/embedded-postgres.js";
 import { createPostgresRunDispatchAdapter } from "./postgres.js";
+import { getExecutionBlocker } from "../../../services/execution-blocker.js";
 
 // Proves the DB-to-facts mapping this adapter owns for each state the two
 // run-dispatch gates decide on. `application/use-cases.test.ts` and
@@ -701,8 +702,31 @@ describeEmbeddedPostgres("run-dispatch postgres adapter", () => {
     await db.insert(issues).values({ id: issueId, companyId, title: "Uncertain email", status: "in_progress", assigneeAgentId: agentId });
     await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, status: "queued", contextSnapshot: { issueId, wakeReason: "retry_failed_run" } });
     await db.insert(issueRecoveryActions).values({ companyId, sourceIssueId: issueId, kind: "active_run_watchdog", ownerType: "board", cause: "uncertain_external_action", status, evidence: status === "resolved" ? { automaticRecovery: { replay: "blocked" } } : {}, fingerprint: runId, nextAction: "Verify whether email-1 was sent before continuing." });
+    expect(await getExecutionBlocker(db, companyId, issueId)).toMatchObject({ cause: "uncertain_external_action", nextAction: "Verify whether email-1 was sent before continuing." });
+    expect(await getExecutionBlocker(db, randomUUID(), issueId)).toBeNull();
     const adapter = createPostgresRunDispatchAdapter(db);
     await expect(adapter.cancelStaleQueuedRun({ companyId, runId, expectedStatus: "queued", now: new Date() })).resolves.toMatchObject({ outcome: "cancelled", errorCode: "execution_reconciliation_required" });
+  });
+
+  it("links the stopped run's agent instead of its return owner, within the same company", async () => {
+    const { companyId, agentId: ownerId } = await seedCompanyAndAgent();
+    const reviewerId = randomUUID(), issueId = randomUUID(), runId = randomUUID();
+    await seedAgent({ id: reviewerId, companyId, name: "Reviewer" });
+    await seedIssue({ companyId, issueId, status: "in_review", assigneeAgentId: ownerId });
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId: reviewerId, status: "cancelled" });
+    const [action] = await db.insert(issueRecoveryActions).values({
+      companyId, sourceIssueId: issueId, kind: "active_run_watchdog", ownerType: "board",
+      returnOwnerAgentId: ownerId, cause: "legacy_execution_requires_reconciliation", status: "active",
+      evidence: { runId }, fingerprint: runId, nextAction: "Inspect the stopped reviewer.",
+    }).returning();
+    expect(await getExecutionBlocker(db, companyId, issueId)).toMatchObject({ runId, agentId: reviewerId });
+    const other = await seedCompanyAndAgent();
+    const otherRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: otherRunId, companyId: other.companyId, agentId: other.agentId, status: "cancelled" });
+    await db.update(issueRecoveryActions).set({ evidence: { runId: otherRunId } }).where(eq(issueRecoveryActions.id, action!.id));
+    expect(await getExecutionBlocker(db, companyId, issueId)).toMatchObject({ agentId: null });
+    await db.update(issueRecoveryActions).set({ evidence: { runId: "invalid" } }).where(eq(issueRecoveryActions.id, action!.id));
+    expect(await getExecutionBlocker(db, companyId, issueId)).toMatchObject({ runId: null, agentId: null });
   });
 
 });

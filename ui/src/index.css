@@ -2425,6 +2425,8 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
      for the full site list).
 */
 :root {
+  --sz-execution-blocker-inline: calc(var(--spacing) * 4);
+  --sz-execution-blocker-block: calc(var(--spacing) * 2);
   /* Ten single-line repository rows, including the gaps between them. */
   --sz-github-repository-list: calc(10lh + 9 * var(--spacing) * 2);
   --sz-320px: 320px; /* Extracted from ui/src/components/ActiveAgentsPanel.tsx (h-[320px]). */

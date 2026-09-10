@@ -1,4 +1,4 @@
-import { EXECUTION_RECONCILIATION_CAUSES } from "@paperclipai/shared";
+import { getExecutionBlocker } from "../../../services/execution-blocker.js";
 import { and, asc, eq, gte, inArray, lte, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
@@ -870,16 +870,10 @@ export function createPostgresRunDispatchAdapter(
     const contextSnapshot = parseObject(run.contextSnapshot);
     const issueId = readNonEmptyString(contextSnapshot.issueId);
     if (!issueId) return { issueId: null, decision: { stale: false as const } };
-    const [recovery] = await tx.select({ id: issueRecoveryActions.id, nextAction: issueRecoveryActions.nextAction })
-      .from(issueRecoveryActions).where(and(
-        eq(issueRecoveryActions.companyId, run.companyId), eq(issueRecoveryActions.sourceIssueId, issueId),
-        or(inArray(issueRecoveryActions.status, ["active", "escalated"]),
-          sql`${issueRecoveryActions.evidence}->'automaticRecovery'->>'replay' = 'blocked'`),
-        inArray(issueRecoveryActions.cause, [...EXECUTION_RECONCILIATION_CAUSES]),
-      )).limit(1);
+    const recovery = await getExecutionBlocker(tx, run.companyId, issueId);
     if (recovery) return { issueId, decision: { stale: true as const,
       errorCode: "execution_reconciliation_required" as const, reason: recovery.nextAction,
-      details: { issueId, recoveryActionId: recovery.id },
+      details: { issueId, recoveryActionId: recovery.recoveryActionId },
     } };
     const facts = await loadStalenessFacts(
       {

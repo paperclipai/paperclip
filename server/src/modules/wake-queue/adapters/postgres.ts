@@ -798,6 +798,12 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
           return { outcome: { kind: "released" }, postCommitEffects: [], run: runSnapshot };
         }
 
+        // An operator stop never promotes old queued work by itself. The next
+        // explicit wake adopts those messages atomically when it queues a run.
+        if (run.status === "cancelled" && parseObject(run.resultJson?.executionCancellation).state === "acknowledged") {
+          return { outcome: { kind: "released" }, postCommitEffects: [], run: runSnapshot };
+        }
+
         if (await recordNativeTerminalRecoveryIfNeeded(tx, run, issueRow, input.now)) {
           return { outcome: { kind: "released" }, postCommitEffects: [], run: runSnapshot };
         }

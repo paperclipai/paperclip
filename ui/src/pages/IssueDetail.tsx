@@ -7409,6 +7409,16 @@ export function IssueDetail() {
                 : undefined
             }
           >
+            {issue.executionBlocker && (
+              <div role="status" className="px-(--sz-execution-blocker-inline) py-(--sz-execution-blocker-block) text-sm text-muted-foreground">
+                <span>Work cannot start. {issue.executionBlocker.nextAction}</span>{" "}
+                {issue.executionBlocker.runId && issue.executionBlocker.agentId && (
+                  <Link className="underline" to={`/agents/${issue.executionBlocker.agentId}/runs/${issue.executionBlocker.runId}`}>
+                    View stopped run
+                  </Link>
+                )}
+              </div>
+            )}
             {resolvedDetailTab === "chat" ? (
               <IssueDetailChatTab
                 threadHeader={taskChatThreadHeader}

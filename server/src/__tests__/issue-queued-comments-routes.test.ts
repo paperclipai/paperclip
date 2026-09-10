@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agentWakeupRequests,
@@ -52,17 +52,9 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
   }, 30_000);
 
   afterEach(async () => {
-    await db.update(issues).set({ executionRunId: null }).catch(() => undefined);
-    await db.update(agentWakeupRequests).set({ runId: null }).catch(() => undefined);
-    await db.delete(activityLog).catch(() => undefined);
-    await db.delete(issueComments).catch(() => undefined);
-    await db.delete(heartbeatRunEvents).catch(() => undefined);
-    await db.delete(heartbeatRuns).catch(() => undefined);
-    await db.delete(agentWakeupRequests).catch(() => undefined);
-    await db.delete(issues).catch(() => undefined);
-    await db.delete(companyMemberships).catch(() => undefined);
-    await db.delete(agents).catch(() => undefined);
-    await db.delete(companies).catch(() => undefined);
+    // Each case owns the entire disposable database. Clear the full company
+    // graph, including attribution rows and constraints added by migrations.
+    await db.execute(sql`TRUNCATE TABLE companies CASCADE`);
   });
 
   afterAll(async () => {

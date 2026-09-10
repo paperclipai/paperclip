@@ -1529,7 +1529,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
           settledRunIds.add(source.id);
         } else if (
           !sourceIsPaperclipRunner &&
-          (source.status === "failed" || source.status === "timed_out")
+          (source.status === "failed" || source.status === "timed_out" || source.status === "cancelled")
         ) {
           settledRunIds.add(source.id);
           const code = meta?.errorCode ?? "native_runner_process_exited";
@@ -1537,7 +1537,11 @@ export function TaskChatThread(props: TaskChatThreadProps) {
             ? "Retry scheduled automatically."
             : "You can retry this message now.";
           const detail =
-            code === "provider_frame_too_large"
+            source.status === "cancelled"
+              ? code === "execution_reconciliation_required"
+                ? "The previous execution must be checked before this task can continue. Your message is preserved. View the stopped run for details."
+                : "Execution was stopped before returning an answer."
+              : code === "provider_frame_too_large"
               ? `Provider output exceeded the safe limit. ${retryDetail}`
               : `The runner stopped before returning an answer (${code}). ${retryDetail}`;
           const id = `${source.id}:failure`;
@@ -1549,7 +1553,8 @@ export function TaskChatThread(props: TaskChatThreadProps) {
               id,
               kind: "marker",
               variant: "interrupted",
-              label: "Run failed",
+              label: source.status === "cancelled" ? (meta?.startedAt ? "Stopped" : "Couldn't start") : "Run failed",
+              tone: source.status === "cancelled" ? "neutral" : "error",
               detail,
             },
           });

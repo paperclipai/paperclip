@@ -1436,6 +1436,22 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(fp(sameEnvNewWake)).toBe(fp(first));
   });
 
+  it("keeps rotated run scratch paths out of session identity while retaining user temp overrides", async () => {
+    const root = await makeTempRoot();
+    const config = { agentCommand: "node ./fake-acp.js", stateDir: path.join(root, "state") };
+    async function withScratch(dir: string, userTemp: string) {
+      return runExecutor({ ...config, env: {
+        PAPERCLIP_RUN_SCRATCH_DIR: dir, PAPERCLIP_TASK_SCRATCH_DIR: dir,
+        PAPERCLIP_SCRATCH_DIR: dir, PAPERCLIP_TMPDIR: dir, TEMP: dir, TMP: dir, TMPDIR: userTemp,
+      } }, { context: { taskId: "issue-1", paperclipScratch: { type: "heartbeat_run", dir, tempKeysApplied: ["TEMP", "TMP"] } } });
+    }
+    const first = await withScratch(path.join(root, "run-1"), "/custom/tmp-1");
+    const second = await withScratch(path.join(root, "run-2"), "/custom/tmp-1");
+    const changed = await withScratch(path.join(root, "run-3"), "/custom/tmp-2");
+    expect(second.result.sessionParams?.configFingerprint).toBe(first.result.sessionParams?.configFingerprint);
+    expect(changed.result.sessionParams?.configFingerprint).not.toBe(first.result.sessionParams?.configFingerprint);
+  });
+
   it("busts the session fingerprint when a stable configured PAPERCLIP_* value rotates", async () => {
     const root = await makeTempRoot();
     const stateDir = path.join(root, "state");

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { StrictMode, useState, type ReactElement } from "react";
+import { act, StrictMode, useState, type ReactElement } from "react";
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -202,7 +202,9 @@ function render(ui: ReactElement) {
 }
 
 async function flushAsync() {
-  await new Promise((resolve) => setTimeout(resolve, 0));
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
 }
 
 function editable() {

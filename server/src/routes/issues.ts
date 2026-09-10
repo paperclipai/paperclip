@@ -1,4 +1,5 @@
 import { issueRecoveryActionReadModel } from "../services/issue-recovery-actions.js";
+import { getExecutionBlocker } from "../services/execution-blocker.js";
 import { requiresExecutionReconciliation } from "@paperclipai/shared";
 import { validateExecutionReconciliation, markExecutionReconciliation } from "../services/execution-recovery-resolution.js";
 import { storedSteeringAcknowledgement, reconcileSteeredIdentity, reserveSteeredIdentity, acceptSteeredIdentity, rejectSteeredIdentity } from "../services/run-identity.js";
@@ -7446,6 +7447,7 @@ export function issueRoutes(
       ...(reviewAttention ? { reviewAttention } : {}),
       productivityReview,
       successfulRunHandoff: successfulRunHandoffStates.get(issue.id) ?? null,
+      executionBlocker: await getExecutionBlocker(db, issue.companyId, issue.id),
       scheduledRetry,
       activeRecoveryAction: revalidatedActiveRecoveryAction,
       blockedBy: relationsWithRecoveryActions.blockedBy,
