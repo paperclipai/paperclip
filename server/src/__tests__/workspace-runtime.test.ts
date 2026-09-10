@@ -448,7 +448,7 @@ afterEach(async () => {
   delete process.env.PAPERCLIP_INSTANCE_ID;
   delete process.env.PAPERCLIP_WORKTREES_DIR;
   delete process.env.DATABASE_URL;
-  await resetRuntimeServicesForTests();
+  await resetRuntimeServicesForTests({ terminateProcesses: true });
 });
 
 describe("sanitizeRuntimeServiceBaseEnv", () => {
