@@ -7879,3 +7879,55 @@ the control helper is
 `a705ed33233b31537292ff9ca1782ba4d115866ed67cb94f67a9da4c576e3ff1`.
 Publish one successor with 392 files, then require fresh exact-head CI and
 review. Normal GitHub policy remains authoritative; no bypass or self-approval.
+
+## September 10, 04:03 UTC — final gates passed; new master conflict
+
+Published `7c6d36e0d7d343709f10b533a0c29dc2409f7b2b` passes all 24 jobs in
+[CI 34434501548](https://github.com/paperclipai/paperclip/actions/runs/34434501548),
+including both required aggregates. Full UI is 2,768/2,768; browser shards are
+104 passed with four existing optional skips. No retry or deadline change.
+The one exact-head Greptile review completes **5/5** at 03:48:23 UTC, explicitly
+accepting the registration barrier and finding no new actionable failures.
+
+The normal `--squash --match-head-commit` merge refuses to proceed: master
+advanced during CI to `6dd48cad439eaafc5666df122d40ca45f166c0c3`, extracting
+deferred-wake release into a module. This creates actual conflicts in heartbeat,
+issue service, and batching tests. The PR remains open, not merged. No admin
+bypass, self-approval, forced master update, or automatic conflict acceptance.
+
+The existing checkout now reconciles the extraction with the exact chat
+retry authorization and native recovery guards. Independent review checks
+policy placement and lock order. The test merge preserves every prior batching
+test byte and adds the two upstream deleted/self-authored wake cases. Issue
+service preserves the new company-scoped wrapper with its chat rules unchanged;
+19 focused tests pass. Initial pure module tests pass 37/37. These preliminary
+checks do not qualify the still-changing combined module or permit a merge.
+
+## September 10, 04:15 UTC — extracted module composition qualified
+
+The completed integration preserves all three established chat safeguards:
+exact retry promotion authority and lineage without normalization/reopening;
+retired question-source proof before native incident creation; and denial of
+generic failed-chat/nonretryable recovery after independently admitted deferred
+input has had its chance to promote. The adapter carries exact database facts
+through the module's ports. It does not turn serialized hints into authority.
+Existing issue-to-wake lock ordering, company guards, dedicated-answer adoption,
+Stop-registration barriers, and ordinary post-commit dispatch remain intact.
+
+Final module tests pass **49/49** across four files, including eight real
+embedded-PostgreSQL adapter cases and four added use-case controls; 6.69 seconds
+total. Plain server types pass. The combined recovery, batching, queued-comment
+and Stop-control suite passes **307/307** in 136.37 seconds total / 127.94 seconds
+tests. Full chat integration passes **995/995** in 238.45 seconds total /
+231.97 seconds tests. These use fresh databases, not reused populated fixtures.
+All final local cohorts have no failures, retries, or skips.
+
+All four actual local process/ACP browser paths pass again in **1.3 minutes**
+on fresh database `chat_merge_6dd_browser_20260910_01`, port 3283. The inspected
+final screenshot shows Cancelled, a paused subtree, retained input, and no
+error toast. This is local fixture evidence, not new live-channel qualification.
+Independent source review is clear. Before/after hashes match; heartbeat is
+`26825ecc83f758738ab5d93d9bf9daa1ec36d6175ec4383b101d1aa500e2002a` and the
+module adapter is `0de02024c6d6e3c6f5de525c3a73e62ba0695123e468ef90b74a679a41861821`.
+The original checkout, live server and runner remain untouched. The single
+successor has 397 changed files and still needs fresh exact-head CI and review.

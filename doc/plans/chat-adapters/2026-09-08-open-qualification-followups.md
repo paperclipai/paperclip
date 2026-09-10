@@ -24,7 +24,32 @@ stack ancestry. Neither the provisional count nor prior-head review is final
 verification. Root continues live qualification in the original worktree and
 does not push the remotely coordinated branch.
 
-## Current work — September 10: Stop-registration review correction
+## Current work — September 10: deferred-wake extraction reconciliation
+
+Published `7c6d36e0d7d343709f10b533a0c29dc2409f7b2b` passes all 24 jobs in
+[fresh CI](https://github.com/paperclipai/paperclip/actions/runs/34434501548).
+Greptile reviews that exact head at **5/5**, without actionable findings.
+The normal exact-head guarded squash merge then fails because master advanced
+to `6dd48cad4` (the deferred-wake module extraction) during the checks.
+No merge or policy bypass occurred. The three conflicts are being reconciled
+in the existing isolated checkout; no new worktree or live changes.
+
+Preserve the upstream module boundary and the previously established chat
+guards: exact retry promotion authorization, retired native question-source
+suppression, and denial of description-only generic recovery for failed chat
+work. That final deny applies after independent deferred messages are drained,
+not as a blanket refusal of fresh input. Existing batching-test bytes remain
+intact; the two new upstream cases are added. Focused issue-update checks pass
+19/19 and the initial pure module cohort passes 37/37. The final composition
+passes **307/307** recovery/batching/queue/control tests, **995/995** full chat
+integration, **49/49** module tests (including eight PostgreSQL adapter cases),
+plain server types, and all four actual local process/ACP browser paths.
+No retries or skips in these final local cohorts. Source hashes stay frozen
+and independent review is clear. Publish the single 397-file successor, then
+obtain fresh exact-head CI and review. All unrelated live qualification stays
+paused until normal merge succeeds.
+
+### Prior checkpoint — September 10: Stop-registration review correction
 
 Master reconciliation is published as `a95d42e58afa35cf4ecf1a39cbd96f06523b90ec`.
 Its complete [CI run](https://github.com/paperclipai/paperclip/actions/runs/34433249742)

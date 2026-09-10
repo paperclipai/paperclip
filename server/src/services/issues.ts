@@ -7867,7 +7867,7 @@ export function issueService(db: Db) {
     return row;
   }
 
-  return {
+  const service = {
     clearExecutionRunIfTerminal,
     clearCheckoutRunIfTerminal,
     addStopRelayCommentIfNeeded,
@@ -10589,6 +10589,7 @@ export function issueService(db: Db) {
         blockedByIssueIds?: string[];
         actorAgentId?: string | null;
         actorUserId?: string | null;
+        companyGuard?: string;
       },
       dbOrTx: any = db,
       postCommitActivityPublications?: ActivityPublication[],
@@ -10600,10 +10601,19 @@ export function issueService(db: Db) {
       const ownedPostCommitActions: IssuePostCommitAction[] = [];
       const queuedPostCommitActions =
         postCommitActions ?? ownedPostCommitActions;
+      // A caller that supplies `companyGuard` gets the company added to
+      // every read, lock, and write predicate below. A check before this
+      // call is not a boundary: `issues.company_id` can change between
+      // that check and this write, so the predicate must carry the
+      // company itself.
+      const idPredicate =
+        data.companyGuard !== undefined
+          ? and(eq(issues.id, id), eq(issues.companyId, data.companyGuard))
+          : eq(issues.id, id);
       const existing = await dbOrTx
         .select()
         .from(issues)
-        .where(eq(issues.id, id))
+        .where(idPredicate)
         .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
       if (!existing) return null;
 
@@ -10612,6 +10622,7 @@ export function issueService(db: Db) {
         blockedByIssueIds,
         actorAgentId,
         actorUserId,
+        companyGuard,
         ...issueData
       } = data;
       if (
@@ -10856,7 +10867,7 @@ export function issueService(db: Db) {
         const receiptExisting = await tx
           .select()
           .from(issues)
-          .where(eq(issues.id, id))
+          .where(idPredicate)
           .for("update")
           .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
         if (!receiptExisting) return null;
@@ -10897,7 +10908,7 @@ export function issueService(db: Db) {
         const updated = await tx
           .update(issues)
           .set(patch)
-          .where(eq(issues.id, id))
+          .where(idPredicate)
           .returning()
           .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
         if (!updated) return null;
@@ -13229,4 +13240,38 @@ export function issueService(db: Db) {
       }));
     },
   };
+
+  type IssueServiceApi = typeof service & {
+    updateForCompany: (
+      id: string,
+      companyId: string,
+      data: Parameters<typeof service.update>[1],
+      dbOrTx?: any,
+      postCommitActivityPublications?: ActivityPublication[],
+      postCommitActions?: IssuePostCommitAction[],
+    ) => ReturnType<typeof service.update>;
+  };
+  const serviceApi = service as IssueServiceApi;
+
+  // A company-scoped wrapper around `update`. It passes the company as a
+  // guard on every read, lock, and write predicate, so a caller with only
+  // a company id and an issue id cannot update an issue in another company.
+  serviceApi.updateForCompany = async (
+    id,
+    companyId,
+    data,
+    dbOrTx = db,
+    postCommitActivityPublications,
+    postCommitActions,
+  ) => {
+    return service.update(
+      id,
+      { ...data, companyGuard: companyId },
+      dbOrTx,
+      postCommitActivityPublications,
+      postCommitActions,
+    );
+  };
+
+  return serviceApi;
 }
