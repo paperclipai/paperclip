@@ -11732,6 +11732,23 @@ export function heartbeatService(
           })
         : false;
 
+    // A constrained recovery-engineer participant runtime cannot record its own
+    // issue disposition. Before minting a corrective handoff wake that would
+    // demand impossible work, persist the durable existing-maintenance/board
+    // wait for the incident's own maintenance issue. The flag routes the
+    // decision to the wait-owned skip instead of the corrective wake.
+    const recoveryMaintenanceWaitRecorded = issue
+      ? await recoveryEngineer
+          .recordTrustedMaintenanceWaitForRun(run)
+          .catch((err) => {
+            logger.error(
+              { err, runId: run.id, issueId: issue.id },
+              "failed to record recovery engineer maintenance wait",
+            );
+            return false;
+          })
+      : false;
+
     const decision = decideSuccessfulRunHandoff({
       run,
       issue,
@@ -11752,6 +11769,7 @@ export function heartbeatService(
       hasOpenRecoveryIssue: Boolean(openRecoveryIssue),
       hasPauseHold: Boolean(pauseHold),
       hasActiveRoutineContinuation: Boolean(activeRoutineContinuation),
+      recoveryMaintenanceWaitRecorded,
       budgetBlocked: Boolean(budgetBlock),
       idempotentWakeExists: Boolean(existingWake),
     });

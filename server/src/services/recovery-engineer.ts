@@ -46,15 +46,20 @@ import type {
 } from "@paperclipai/shared";
 import { badRequest, conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { isUniqueViolation } from "../db-errors.js";
-import { logActivity } from "./activity-log.js";
+import { logActivity, publishActivity, type ActivityPublication } from "./activity-log.js";
 import { evaluateAgentInvokabilityFromDb } from "./agent-invokability.js";
 import { normalizeIssueExecutionPolicy } from "./issue-execution-policy.js";
-import { issueService } from "./issues.js";
+import {
+  executeIssuePostCommitActions,
+  issueService,
+  type IssuePostCommitAction,
+} from "./issues.js";
 import {
   classifyAdapterFailureForRecovery,
   isOperatorCancelledRun,
 } from "./recovery/service.js";
 import {
+  ACTIVE_INCIDENT_STATUSES,
   RECOVERY_ENGINEER_ORIGIN_KINDS,
   isRecoveryEngineerIssueOrigin,
 } from "./recovery-engineer-policy.js";
@@ -69,6 +74,7 @@ const VERIFICATION_RUN_CONSTRAINT = "recovery_engineer_verifications_company_rev
 const TERMINAL_FAILURE_STATUSES = ["failed", "timed_out"] as const;
 const PARTICIPANT_FAILURE_STATUSES = ["failed", "timed_out", "interrupted", "cancelled"] as const;
 const ACTIVE_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
+const LIVE_WAKE_REQUEST_STATUSES = ["queued", "deferred_issue_execution", "claimed"] as const;
 const SWEEP_BATCH_SIZE = 100;
 const INITIAL_SWEEP_LOOKBACK_MS = 24 * 60 * 60 * 1_000;
 
@@ -79,6 +85,9 @@ export type RecoveryEngineerActor = {
   runId: string | null;
   board: boolean;
 };
+
+type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
+type DbOrTransaction = Db | DbTransaction;
 
 type RecoveryEngineerWakeup = (
   agentId: string,
@@ -156,8 +165,8 @@ export function recoveryEngineerService(
   const issuesSvc = issueService(db);
   const sweepingCompanies = new Set<string>();
 
-  async function getConfigRow(companyId: string) {
-    return db
+  async function getConfigRow(companyId: string, dbOrTx: DbOrTransaction = db) {
+    return dbOrTx
       .select()
       .from(recoveryEngineerConfigs)
       .where(eq(recoveryEngineerConfigs.companyId, companyId))
@@ -674,8 +683,8 @@ export function recoveryEngineerService(
     return !readiness.isDependencyReady;
   }
 
-  async function latestIssueRun(issue: IssueRow) {
-    return db
+  async function latestIssueRun(issue: IssueRow, dbOrTx: DbOrTransaction = db) {
+    return dbOrTx
       .select()
       .from(heartbeatRuns)
       .where(and(
@@ -907,6 +916,159 @@ export function recoveryEngineerService(
       entityType: "recovery_engineer_incident",
       entityId: incident.id,
       details: { reason, maintenanceIssueId: incident.maintenanceIssueId },
+    });
+    return true;
+  }
+
+  // A configured recovery-engineer participant runs in a constrained native
+  // runtime that has no issue-disposition tool. When one of its incident wakes
+  // terminalizes successfully on the incident's own maintenance issue while
+  // that maintenance is still authoritative and unresolved, the generic
+  // successful-run handoff would demand a disposition this role cannot record.
+  // Instead, native persists the durable owner-preserving exit here: blocked
+  // with a board-owned unblock descriptor naming the existing maintenance
+  // wait. Evidence is structural only — configured participant, active
+  // incident, maintenance-issue scope, current run generation — never the
+  // run's report text. Corrective handoff runs carry no incidentId in their
+  // context, so they keep the designed handoff/exhaustion path.
+  //
+  // Eligibility and the status mutation are one transaction. The issue,
+  // incident, and config rows are locked and every guard is re-validated under
+  // those locks before issuesSvc.update runs inside the same transaction, so a
+  // competing operator decision (reassignment, completion, newer execution
+  // generation) that commits between observation and write cannot be
+  // overwritten. The wait is also refused when a live run or a queued wake on
+  // the maintenance issue already owns the next action. The activity log entry
+  // is written only after the transaction commits.
+  async function recordTrustedMaintenanceWaitForRun(run: RunRow): Promise<boolean> {
+    if (run.status !== "succeeded") return false;
+    if (run.runtimeMode === "native" && (run.nativePhase !== null || run.completionContractId !== null)) {
+      return false;
+    }
+    const scopedIssueId = runIssueId(run);
+    const context = parseObject(run.contextSnapshot);
+    const incidentId = readString(context.incidentId);
+    if (!scopedIssueId || !incidentId) return false;
+    // Cheap pre-transaction filter: runs from non-recovery participants never
+    // open the atomic transaction below.
+    const configHint = await getConfigRow(run.companyId);
+    if (!configHint?.enabled) return false;
+    if (participantRole(configHint, run.agentId) !== "recovery") return false;
+    const postCommitActivityPublications: ActivityPublication[] = [];
+    const postCommitActions: IssuePostCommitAction[] = [];
+    const recorded = await db.transaction(async (tx): Promise<{
+      companyId: string;
+      issueId: string;
+      incidentId: string;
+      runId: string;
+      previousStatus: string;
+    } | null> => {
+      const issue = await tx
+        .select()
+        .from(issues)
+        .where(and(eq(issues.id, scopedIssueId), eq(issues.companyId, run.companyId)))
+        .for("update")
+        .then((rows) => rows[0] ?? null);
+      if (!issue) return null;
+      if (issue.assigneeAgentId !== run.agentId || issue.assigneeUserId) return null;
+      if (issue.executionState) return null;
+      if (issue.checkoutRunId || issue.executionRunId || issue.executionLockedAt) return null;
+      if (issue.status !== "in_progress") return null;
+      const incident = await tx
+        .select()
+        .from(recoveryEngineerIncidents)
+        .where(and(
+          eq(recoveryEngineerIncidents.id, incidentId),
+          eq(recoveryEngineerIncidents.companyId, run.companyId),
+        ))
+        .for("update")
+        .then((rows) => rows[0] ?? null);
+      if (!incident || incident.maintenanceIssueId !== scopedIssueId) return null;
+      if (!ACTIVE_INCIDENT_STATUSES.includes(incident.status as never)) return null;
+      const config = await tx
+        .select()
+        .from(recoveryEngineerConfigs)
+        .where(eq(recoveryEngineerConfigs.companyId, run.companyId))
+        .for("update")
+        .then((rows) => rows[0] ?? null);
+      if (!config?.enabled) return null;
+      if (participantRole(config, run.agentId) !== "recovery") return null;
+      // Wrong-generation evidence: a newer run on the issue supersedes this one.
+      const newest = await latestIssueRun(issue, tx);
+      if (newest && newest.id !== run.id) return null;
+      // An existing live execution path or a queued wake on the maintenance
+      // issue already owns the next action; recording a wait over it would
+      // overwrite that path.
+      const liveExecutionRun = await tx
+        .select({ id: heartbeatRuns.id })
+        .from(heartbeatRuns)
+        .where(and(
+          eq(heartbeatRuns.companyId, issue.companyId),
+          ne(heartbeatRuns.id, run.id),
+          inArray(heartbeatRuns.status, ACTIVE_RUN_STATUSES),
+          or(
+            eq(heartbeatRuns.nativeIssueId, issue.id),
+            sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issue.id}`,
+            sql`${heartbeatRuns.contextSnapshot} ->> 'taskId' = ${issue.id}`,
+          ),
+        ))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      if (liveExecutionRun) return null;
+      const liveWakeRequest = await tx
+        .select({ id: agentWakeupRequests.id })
+        .from(agentWakeupRequests)
+        .where(and(
+          eq(agentWakeupRequests.companyId, issue.companyId),
+          eq(agentWakeupRequests.agentId, run.agentId),
+          inArray(agentWakeupRequests.status, LIVE_WAKE_REQUEST_STATUSES),
+          sql`(
+            ${agentWakeupRequests.payload} ->> 'issueId' = ${issue.id}
+            or ${agentWakeupRequests.payload} ->> 'taskId' = ${issue.id}
+            or ${agentWakeupRequests.payload} -> '_paperclipWakeContext' ->> 'issueId' = ${issue.id}
+            or ${agentWakeupRequests.payload} -> '_paperclipWakeContext' ->> 'taskId' = ${issue.id}
+          )`,
+        ))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      if (liveWakeRequest) return null;
+      const updated = await issuesSvc.update(issue.id, {
+        status: "blocked",
+        unblockDescriptor: {
+          owner: "board",
+          action: `Recovery incident ${incident.id} maintenance is still unresolved and this recovery participant runtime cannot record its own issue disposition. Inspect the incident evidence and choose the next maintenance action.`,
+        },
+      }, tx, postCommitActivityPublications, postCommitActions);
+      if (!updated) return null;
+      return {
+        companyId: issue.companyId,
+        issueId: issue.id,
+        incidentId: incident.id,
+        runId: run.id,
+        previousStatus: issue.status,
+      };
+    });
+    if (!recorded) return false;
+    if (postCommitActivityPublications.length > 0) {
+      for (const publication of postCommitActivityPublications) publishActivity(publication);
+    }
+    await executeIssuePostCommitActions(db, postCommitActions);
+    await logActivity(db, {
+      companyId: recorded.companyId,
+      actorType: "system",
+      actorId: "recovery_engineer",
+      agentId: null,
+      runId: recorded.runId,
+      action: "recovery_engineer.maintenance_wait_recorded",
+      entityType: "recovery_engineer_incident",
+      entityId: recorded.incidentId,
+      details: {
+        incidentId: recorded.incidentId,
+        maintenanceIssueId: recorded.issueId,
+        sourceRunId: recorded.runId,
+        previousStatus: recorded.previousStatus,
+        nextStatus: "blocked",
+      },
     });
     return true;
   }
@@ -2559,6 +2721,7 @@ export function recoveryEngineerService(
     resolveIncidentForIssue,
     readContext,
     recordAction,
+    recordTrustedMaintenanceWaitForRun,
     reviewProcedure,
     confirmActivation,
     observeBlockedIssue,

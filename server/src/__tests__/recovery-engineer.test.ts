@@ -5,6 +5,7 @@ import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
+  agentWakeupRequests,
   agents,
   companies,
   createDb,
@@ -101,6 +102,7 @@ describeEmbeddedPostgres("native recovery engineer", () => {
     await db.delete(recoveryEngineerConfigs);
     await db.delete(issueExecutionDecisions);
     await db.delete(activityLog);
+    await db.delete(agentWakeupRequests);
     await db.delete(heartbeatRuns);
     await db.delete(issueRelations);
     await db.delete(issueCreateIdempotencyKeys);
@@ -854,5 +856,312 @@ describeEmbeddedPostgres("native recovery engineer", () => {
     const after = await db.select().from(issues).where(eq(issues.id, seeded.sourceIssueId)).then((rows) => rows[0]!);
     expect(after.assigneeAgentId).toBe(seeded.ownerAgentId);
     expect(after.status).not.toBe("done");
+  });
+
+  describe("recordTrustedMaintenanceWaitForRun", () => {
+    // Polls pg_stat_activity until a backend is provably waiting on a row
+    // lock. The interleaving below must not depend on wall-clock timing, and
+    // the awaited condition (a live database lock wait) exists only on the
+    // real server clock, so deterministic fake timers cannot drive it; the
+    // bounded poll mirrors the delivery lifecycle boundary suite convention.
+    // In this fixture the only backend that can wait on a lock is the wait
+    // record's transaction.
+    async function waitForIssueLockWaiter() {
+      const deadline = Date.now() + 15_000;
+      for (;;) {
+        const rows = await db.$client<Array<{ wait_event_type: string | null }>>`
+          select wait_event_type
+          from pg_stat_activity
+          where datname = current_database()
+            and pid <> pg_backend_pid()
+        `;
+        if (rows.some((row) => row.wait_event_type === "Lock")) return;
+        if (Date.now() > deadline) {
+          throw new Error("timed out waiting for the maintenance-issue lock waiter");
+        }
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+    }
+
+    async function seedIncidentWithMaintenanceIssue(input: { incidentStatus: string }) {
+      const seeded = await seedCompany();
+      const maintenanceIssueId = randomUUID();
+      const incidentId = randomUUID();
+      await db.insert(issues).values({
+        id: maintenanceIssueId,
+        companyId: seeded.companyId,
+        title: `Recovery incident maintenance`,
+        status: "in_progress",
+        priority: "high",
+        assigneeAgentId: seeded.recoveryAgentId,
+        issueNumber: 2,
+        identifier: `${seeded.prefix}-2`,
+        originKind: "recovery_engineer_incident",
+        originId: incidentId,
+      });
+      await db.insert(recoveryEngineerIncidents).values({
+        id: incidentId,
+        companyId: seeded.companyId,
+        failureFingerprint: "trusted-maintenance-wait",
+        status: input.incidentStatus,
+        maintenanceIssueId,
+        diagnosisAttemptCount: 1,
+      });
+      const diagnosisRun = await db
+        .insert(heartbeatRuns)
+        .values({
+          id: randomUUID(),
+          companyId: seeded.companyId,
+          agentId: seeded.recoveryAgentId,
+          invocationSource: "automation",
+          status: "succeeded",
+          nativeIssueId: maintenanceIssueId,
+          contextSnapshot: {
+            issueId: maintenanceIssueId,
+            taskId: maintenanceIssueId,
+            incidentId,
+            wakeReason: "recovery_engineer_diagnose",
+            source: "recovery_engineer.incident_detected",
+            recoveryRole: "diagnosis",
+          },
+          createdAt: new Date("2026-09-09T10:00:00.000Z"),
+          startedAt: new Date("2026-09-09T10:00:00.000Z"),
+          finishedAt: new Date("2026-09-09T10:05:00.000Z"),
+        })
+        .returning()
+        .then((rows) => rows[0]!);
+      return { ...seeded, maintenanceIssueId, incidentId, diagnosisRun };
+    }
+
+    async function readMaintenanceIssue(maintenanceIssueId: string) {
+      return db.select().from(issues).where(eq(issues.id, maintenanceIssueId)).then((rows) => rows[0]!);
+    }
+
+    it("persists a durable owner-preserving board wait for the constrained recovery run", async () => {
+      const seeded = await seedIncidentWithMaintenanceIssue({ incidentStatus: "diagnosing" });
+      const noWakeup: RecoveryEngineerWakeup = async () => null;
+      const recovery = recoveryEngineerService(db, { enqueueWakeup: noWakeup });
+
+      await expect(recovery.recordTrustedMaintenanceWaitForRun(seeded.diagnosisRun)).resolves.toBe(true);
+
+      const maintenance = await readMaintenanceIssue(seeded.maintenanceIssueId);
+      expect(maintenance.status).toBe("blocked");
+      expect(maintenance.unblockDescriptor).toMatchObject({
+        owner: "board",
+        action: expect.stringContaining(seeded.incidentId),
+      });
+      // owner-preserving: the configured recovery participant stays assigned
+      expect(maintenance.assigneeAgentId).toBe(seeded.recoveryAgentId);
+      expect(maintenance.assigneeUserId).toBeNull();
+
+      const logged = await db
+        .select()
+        .from(activityLog)
+        .where(eq(activityLog.action, "recovery_engineer.maintenance_wait_recorded"));
+      expect(logged).toHaveLength(1);
+      expect(logged[0]).toMatchObject({
+        entityType: "recovery_engineer_incident",
+        entityId: seeded.incidentId,
+        runId: seeded.diagnosisRun.id,
+      });
+
+      // re-observing the same terminal run must not rewrite the wait
+      await expect(recovery.recordTrustedMaintenanceWaitForRun(seeded.diagnosisRun)).resolves.toBe(false);
+      const reread = await readMaintenanceIssue(seeded.maintenanceIssueId);
+      expect(reread.unblockDescriptor).toEqual(maintenance.unblockDescriptor);
+    });
+
+    it("ignores wrong-generation evidence from a newer run on the maintenance issue", async () => {
+      const seeded = await seedIncidentWithMaintenanceIssue({ incidentStatus: "diagnosing" });
+      const newerRun = await seedRun({
+        companyId: seeded.companyId,
+        agentId: seeded.recoveryAgentId,
+        issueId: seeded.maintenanceIssueId,
+        status: "succeeded",
+      });
+      await db.update(heartbeatRuns).set({
+        createdAt: new Date("2026-09-09T12:00:00.000Z"),
+        contextSnapshot: {
+          issueId: seeded.maintenanceIssueId,
+          taskId: seeded.maintenanceIssueId,
+          incidentId: seeded.incidentId,
+          wakeReason: "recovery_engineer_activated",
+          recoveryRole: "resume",
+        },
+      }).where(eq(heartbeatRuns.id, newerRun.id));
+      const noWakeup: RecoveryEngineerWakeup = async () => null;
+      const recovery = recoveryEngineerService(db, { enqueueWakeup: noWakeup });
+      const before = await readMaintenanceIssue(seeded.maintenanceIssueId);
+
+      await expect(recovery.recordTrustedMaintenanceWaitForRun(seeded.diagnosisRun)).resolves.toBe(false);
+
+      const after = await readMaintenanceIssue(seeded.maintenanceIssueId);
+      expect(after.status).toBe("in_progress");
+      expect(after.unblockDescriptor).toBeNull();
+      expect(after.updatedAt.getTime()).toBe(before.updatedAt.getTime());
+    });
+
+    it("ignores evidence from an incident whose maintenance is no longer authoritative", async () => {
+      const seeded = await seedIncidentWithMaintenanceIssue({ incidentStatus: "resolved" });
+      const noWakeup: RecoveryEngineerWakeup = async () => null;
+      const recovery = recoveryEngineerService(db, { enqueueWakeup: noWakeup });
+      const before = await readMaintenanceIssue(seeded.maintenanceIssueId);
+
+      await expect(recovery.recordTrustedMaintenanceWaitForRun(seeded.diagnosisRun)).resolves.toBe(false);
+
+      const after = await readMaintenanceIssue(seeded.maintenanceIssueId);
+      expect(after.status).toBe("in_progress");
+      expect(after.unblockDescriptor).toBeNull();
+      expect(after.updatedAt.getTime()).toBe(before.updatedAt.getTime());
+    });
+
+    it("ignores runs from participants that are not the configured recovery agent", async () => {
+      const seeded = await seedIncidentWithMaintenanceIssue({ incidentStatus: "diagnosing" });
+      const repairRun = await seedRun({
+        companyId: seeded.companyId,
+        agentId: seeded.repairAgentId,
+        issueId: seeded.maintenanceIssueId,
+        status: "succeeded",
+      });
+      const noWakeup: RecoveryEngineerWakeup = async () => null;
+      const recovery = recoveryEngineerService(db, { enqueueWakeup: noWakeup });
+
+      await expect(recovery.recordTrustedMaintenanceWaitForRun(repairRun)).resolves.toBe(false);
+
+      const after = await readMaintenanceIssue(seeded.maintenanceIssueId);
+      expect(after.status).toBe("in_progress");
+      expect(after.unblockDescriptor).toBeNull();
+    });
+
+    it("never touches a normal implementer's issue or its source assignment", async () => {
+      const seeded = await seedIncidentWithMaintenanceIssue({ incidentStatus: "diagnosing" });
+      const noWakeup: RecoveryEngineerWakeup = async () => null;
+      const recovery = recoveryEngineerService(db, { enqueueWakeup: noWakeup });
+      const ownerRun = await seedRun({
+        companyId: seeded.companyId,
+        agentId: seeded.ownerAgentId,
+        issueId: seeded.sourceIssueId,
+        status: "succeeded",
+      });
+      const before = await db.select().from(issues).where(eq(issues.id, seeded.sourceIssueId)).then((rows) => rows[0]!);
+
+      await expect(recovery.recordTrustedMaintenanceWaitForRun(ownerRun)).resolves.toBe(false);
+
+      const after = await db.select().from(issues).where(eq(issues.id, seeded.sourceIssueId)).then((rows) => rows[0]!);
+      expect(after.status).toBe(before.status);
+      expect(after.assigneeAgentId).toBe(seeded.ownerAgentId);
+      expect(after.unblockDescriptor).toBe(before.unblockDescriptor);
+    });
+
+    it("refuses to record a wait when a queued wake already owns the next action", async () => {
+      const seeded = await seedIncidentWithMaintenanceIssue({ incidentStatus: "diagnosing" });
+      await db.insert(agentWakeupRequests).values({
+        companyId: seeded.companyId,
+        agentId: seeded.recoveryAgentId,
+        source: "automation",
+        status: "queued",
+        payload: { issueId: seeded.maintenanceIssueId, taskId: seeded.maintenanceIssueId },
+      });
+      const noWakeup: RecoveryEngineerWakeup = async () => null;
+      const recovery = recoveryEngineerService(db, { enqueueWakeup: noWakeup });
+      const before = await readMaintenanceIssue(seeded.maintenanceIssueId);
+
+      await expect(recovery.recordTrustedMaintenanceWaitForRun(seeded.diagnosisRun)).resolves.toBe(false);
+
+      const after = await readMaintenanceIssue(seeded.maintenanceIssueId);
+      expect(after.status).toBe("in_progress");
+      expect(after.unblockDescriptor).toBeNull();
+      expect(after.updatedAt.getTime()).toBe(before.updatedAt.getTime());
+      const logged = await db
+        .select()
+        .from(activityLog)
+        .where(eq(activityLog.action, "recovery_engineer.maintenance_wait_recorded"));
+      expect(logged).toHaveLength(0);
+    });
+
+    // Deterministic interleaving: the competing operator transaction holds the
+    // maintenance-issue row lock, the wait record blocks on that lock, and only
+    // then does the operator commit its takeover plus newer execution. The
+    // guard re-validation must observe the committed operator state, so the
+    // wait can never be written over it.
+    it("does not overwrite a competing operator decision that commits during validation", async () => {
+      const seeded = await seedIncidentWithMaintenanceIssue({ incidentStatus: "diagnosing" });
+      const noWakeup: RecoveryEngineerWakeup = async () => null;
+      const recovery = recoveryEngineerService(db, { enqueueWakeup: noWakeup });
+
+      const operatorDecided = Promise.withResolvers<void>();
+      const operatorHoldingLock = Promise.withResolvers<void>();
+      const operatorUserId = randomUUID();
+      // The operator's newer execution generation is a real queued run on the
+      // maintenance issue, so the takeover references a live execution.
+      const newerExecutionRunId = randomUUID();
+      await db.insert(heartbeatRuns).values({
+        id: newerExecutionRunId,
+        companyId: seeded.companyId,
+        agentId: seeded.ownerAgentId,
+        invocationSource: "assignment",
+        status: "queued",
+        nativeIssueId: seeded.maintenanceIssueId,
+        contextSnapshot: { issueId: seeded.maintenanceIssueId, taskId: seeded.maintenanceIssueId },
+        createdAt: new Date("2026-09-09T12:00:00.000Z"),
+      });
+      const operatorTx = db.transaction(async (tx) => {
+        await tx
+          .select({ id: issues.id })
+          .from(issues)
+          .where(eq(issues.id, seeded.maintenanceIssueId))
+          .for("update");
+        operatorHoldingLock.resolve();
+        await operatorDecided.promise;
+        await tx
+          .update(issues)
+          .set({
+            status: "in_progress",
+            assigneeAgentId: null,
+            assigneeUserId: operatorUserId,
+            executionState: {
+              status: "running",
+              currentStageId: null,
+              currentStageIndex: null,
+              currentStageType: null,
+              currentParticipant: null,
+              returnAssignee: null,
+              completedStageIds: [],
+              lastDecisionId: null,
+              lastDecisionOutcome: null,
+            },
+            checkoutRunId: newerExecutionRunId,
+            executionRunId: newerExecutionRunId,
+            executionLockedAt: new Date(),
+          })
+          .where(eq(issues.id, seeded.maintenanceIssueId));
+      });
+
+      // The operator provably holds the issue row lock before the wait record
+      // starts, and the wait record is provably blocked on that lock before
+      // the operator commits. The re-validation must therefore observe the
+      // committed operator state, so the wait can never be written over it.
+      await operatorHoldingLock.promise;
+      const waitRecorded = recovery.recordTrustedMaintenanceWaitForRun(seeded.diagnosisRun);
+      await waitForIssueLockWaiter();
+      operatorDecided.resolve();
+      await operatorTx;
+
+      await expect(waitRecorded).resolves.toBe(false);
+
+      const after = await readMaintenanceIssue(seeded.maintenanceIssueId);
+      expect(after.status).toBe("in_progress");
+      expect(after.assigneeUserId).toBe(operatorUserId);
+      expect(after.assigneeAgentId).toBeNull();
+      expect(after.executionState).toMatchObject({ status: "running" });
+      expect(after.checkoutRunId).toBe(newerExecutionRunId);
+      expect(after.executionRunId).toBe(newerExecutionRunId);
+      expect(after.unblockDescriptor).toBeNull();
+      const logged = await db
+        .select()
+        .from(activityLog)
+        .where(eq(activityLog.action, "recovery_engineer.maintenance_wait_recorded"));
+      expect(logged).toHaveLength(0);
+    });
   });
 });

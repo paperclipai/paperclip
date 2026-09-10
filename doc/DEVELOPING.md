@@ -90,6 +90,8 @@ For a runtime smoke check, use a disposable task: publish a plan, annotate and r
 
 Recovery is disabled until the board configures `PUT /api/companies/:companyId/recovery-engineer`. Bind three distinct agents, an incident project, and explicit framework/native repair projects. The service permits one diagnosis attempt per incident and uses the existing scheduler for a bounded five-minute reconciliation; it does not add an autonomous command executor.
 
+A configured recovery participant runs in a constrained runtime that has no issue-disposition tool. When its incident wake terminalizes successfully on the incident's own maintenance issue while that maintenance is still authoritative and unresolved, native records the existing-maintenance wait directly (blocked with a board-owned unblock descriptor, original assignee preserved) instead of minting a corrective disposition wake the role could never satisfy.
+
 Agents read and record incident actions through `/api/issues/:issueId/recovery-engineer`. Source and procedure lists have independent UUID cursors. Native enforces the configured actor, active run, incident linkage, original owner, failure generation, and existing pause/approval/dependency gates.
 
 Each source includes `currentContext` alongside its immutable failure snapshot: current status/version, owner invokability, human/dependency/execution-lock gates, latest run evidence, and the latest 20 non-deleted comments. Comments are redacted and capped at 20,000 characters with explicit truncation/overflow flags. This context is diagnostic only, not permission to resume or a replacement for the recorded failure generation. A changing source invalidates the framework reader's revision-bound continuation.

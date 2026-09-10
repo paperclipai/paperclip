@@ -11,7 +11,7 @@ export const RECOVERY_ENGINEER_ORIGIN_KINDS = {
   repair: "recovery_engineer_repair",
 } as const;
 
-const ACTIVE_INCIDENT_STATUSES = [
+export const ACTIVE_INCIDENT_STATUSES = [
   "suspected",
   "diagnosing",
   "diagnosed",
