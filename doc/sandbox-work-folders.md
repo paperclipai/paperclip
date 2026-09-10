@@ -254,6 +254,13 @@ either observes completion or fails visibly and retains the working copy for
 the next run's existing intent reconciliation. This does not make arbitrary
 sandbox commands or repository mutations retryable.
 
+Host-owned GitHub launcher staging also retries transient transport failures up
+to three times within a single 15-second deadline per file or permission step.
+The same run-specific file is locked, hash-checked, and atomically replaced, so
+a lost reply after a successful upload does not rewrite the file on retry.
+Cancellation, script failures, and invalid responses stop setup. This retry is
+limited to launcher preparation; it never replays an agent or Git command.
+
 Repository checkpoints transfer up to sixteen distinct batch-readable blobs
 of at most 1 MiB concurrently, plus at most four larger streaming blobs.
 Transports without batched reads retain the four-stream limit. Identical files

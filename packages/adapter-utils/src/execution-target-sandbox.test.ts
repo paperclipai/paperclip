@@ -5,7 +5,7 @@ import http2 from "node:http2";
 import net from "node:net";
 import { duplexPair, type Duplex } from "node:stream";
 import { execFile, spawn } from "node:child_process";
-import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -27,6 +27,7 @@ import {
   formatAdapterExecutionTimeoutStartLogLine,
   parseAdapterExecutionTarget,
   postedIssueCommentLogMarker,
+  prepareGitHubOperationLaunchers,
   resolveAdapterExecutionTargetTimeout,
   resolveAdapterExecutionTargetTimeoutSec,
   runAdapterExecutionTargetProcess,
@@ -157,6 +158,122 @@ describe("sandbox adapter execution targets", () => {
       },
     };
   }
+
+  describe("GitHub launcher staging transport retries", () => {
+    const transient = () => Object.assign(new Error("Request failed with status code 502"), {
+      name: "JsonRpcCallError", code: -32002,
+    });
+    async function fixture(execute: NonNullable<AdapterSandboxExecutionTarget["runner"]>["execute"]) {
+      const root = await mkdtemp(path.join(os.tmpdir(), "github-launcher-retry-"));
+      cleanupDirs.push(root);
+      const target: AdapterSandboxExecutionTarget = {
+        kind: "remote", transport: "sandbox", providerKey: "test", environmentId: "env-1",
+        leaseId: "lease-1", remoteCwd: root, timeoutMs: 30_000, runner: { execute },
+      };
+      return { runId: "launcher-retry", target, cwd: root, env: {} };
+    }
+
+    it("hash-skips an accepted upload after its provider reply is lost", async () => {
+      const local = createLocalSandboxRunner();
+      let firstMtime = 0;
+      const outputs: string[] = [];
+      const execute = vi.fn(async (request: Parameters<typeof local.execute>[0]) => {
+        const result = await local.execute(request);
+        outputs.push(result.stdout);
+        if (outputs.length === 1) {
+          firstMtime = (await stat(path.join(request.cwd!, ".paperclip-runtime/github/launcher-retry/package.json"))).mtimeMs;
+          throw transient();
+        }
+        return result;
+      });
+      const input = await fixture(execute);
+      const env = await prepareGitHubOperationLaunchers(input);
+      expect(execute).toHaveBeenCalledTimes(11);
+      expect(JSON.parse(outputs[1].trim())).toEqual({ uploaded: false });
+      expect((await stat(path.join(env.PAPERCLIP_GITHUB_LAUNCHER_DIR, "package.json"))).mtimeMs).toBe(firstMtime);
+      expect(JSON.parse(await readFile(path.join(env.PAPERCLIP_GITHUB_LAUNCHER_DIR, "package.json"), "utf8"))).toEqual({ type: "commonjs" });
+      expect((await stat(path.join(env.PAPERCLIP_GITHUB_LAUNCHER_DIR, "git"))).mode & 0o777).toBe(0o700);
+      expect((await stat(env.GH_CONFIG_DIR)).isDirectory()).toBe(true);
+    });
+
+    it("safely completes permissions after their provider reply is lost", async () => {
+      const local = createLocalSandboxRunner();
+      let lost = false;
+      const execute = vi.fn(async (request: Parameters<typeof local.execute>[0]) => {
+        const result = await local.execute(request);
+        if (request.args?.[1]?.startsWith("chmod 700") && !lost) {
+          lost = true;
+          throw transient();
+        }
+        return result;
+      });
+      const env = await prepareGitHubOperationLaunchers(await fixture(execute));
+      expect(lost).toBe(true);
+      expect(execute).toHaveBeenCalledTimes(11);
+      expect((await stat(path.join(env.PAPERCLIP_GITHUB_LAUNCHER_DIR, "gh"))).mode & 0o777).toBe(0o700);
+      expect((await stat(env.GH_CONFIG_DIR)).isDirectory()).toBe(true);
+    });
+
+    it("limits persistent transport failures to three attempts within one deadline", async () => {
+      const error = transient();
+      const execute = vi.fn<NonNullable<AdapterSandboxExecutionTarget["runner"]>["execute"]>().mockRejectedValue(error);
+      await expect(prepareGitHubOperationLaunchers(await fixture(execute))).rejects.toBe(error);
+      expect(execute).toHaveBeenCalledTimes(3);
+      const budgets = execute.mock.calls.map(([request]) => request.timeoutMs!);
+      expect(budgets[0]).toBeLessThanOrEqual(15_000);
+      expect(budgets[1]).toBeLessThan(budgets[0]);
+      expect(budgets[2]).toBeLessThan(budgets[1]);
+    });
+
+    it.each([
+      new Error("script failed: Request failed with status code 502"),
+      Object.assign(new Error("permission denied"), { code: "EACCES" }),
+      Object.assign(new Error("Request failed with status code 502"), { name: "JsonRpcCallError", code: -32602 }),
+    ])("does not replay unclassified errors: %s", async (error) => {
+      const execute = vi.fn<NonNullable<AdapterSandboxExecutionTarget["runner"]>["execute"]>().mockRejectedValue(error);
+      await expect(prepareGitHubOperationLaunchers(await fixture(execute))).rejects.toBe(error);
+      expect(execute).toHaveBeenCalledTimes(1);
+    });
+
+    it("does not retry a completed shell failure containing an HTTP status", async () => {
+      const local = createLocalSandboxRunner();
+      const execute = vi.fn(async (request: Parameters<typeof local.execute>[0]) => {
+        const result = await local.execute({ ...request, command: "sh", args: ["-c", "echo 'Request failed with status code 502' >&2; exit 1"] });
+        return result;
+      });
+      await expect(prepareGitHubOperationLaunchers(await fixture(execute))).rejects.toThrow("502");
+      expect(execute).toHaveBeenCalledTimes(1);
+    });
+
+    it("does not exceed the deadline after a failed attempt", async () => {
+      const error = transient();
+      let now = 1_000;
+      const execute = vi.fn<NonNullable<AdapterSandboxExecutionTarget["runner"]>["execute"]>().mockImplementation(async () => {
+        now += 15_000;
+        throw error;
+      });
+      const input = await fixture(execute);
+      const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+      try {
+        await expect(prepareGitHubOperationLaunchers(input)).rejects.toBe(error);
+        expect(execute).toHaveBeenCalledTimes(1);
+      } finally { clock.mockRestore(); }
+    });
+
+    it("stops retries when the run is cancelled", async () => {
+      let cancelled: Promise<void> | undefined;
+      const execute = vi.fn<NonNullable<AdapterSandboxExecutionTarget["runner"]>["execute"]>().mockImplementation(async () => {
+        cancelled = cancelAdapterRunExecution("launcher-retry");
+        throw transient();
+      });
+      const input = await fixture(execute);
+      beginAdapterRunCancellation(input.runId);
+      try {
+        await expect(prepareGitHubOperationLaunchers(input)).rejects.toMatchObject({ code: "ADAPTER_RUN_CANCELLED" });
+        expect(execute).toHaveBeenCalledTimes(1);
+      } finally { finishAdapterRunCancellation(input.runId); await cancelled; }
+    });
+  });
 
   async function readRuntimeTextFiles(rootDir: string): Promise<string[]> {
     const entries = await readdir(rootDir, { withFileTypes: true }).catch(() => []);

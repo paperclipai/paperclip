@@ -1541,6 +1541,35 @@ export async function cleanupGitHubOperationLaunchers(input: GitHubLauncherLocat
   }
 }
 
+// This retry boundary is deliberately private to host-owned launcher setup.
+// A lost reply can follow a completed write: staging locks, verifies the hash,
+// and atomically replaces the same run-specific file with identical bytes.
+async function prepareGitHubLauncherWithRetry<T>(runId: string, operation: (timeoutMs: number) => Promise<T>): Promise<T> {
+  const deadline = Date.now() + 15_000;
+  for (let attempt = 0; ; attempt++) {
+    throwIfAdapterRunCancelled(runId);
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) throw new Error("GitHub launcher preparation deadline exceeded");
+    try { return await operation(remaining); }
+    catch (error) {
+      throwIfAdapterRunCancelled(runId);
+      const detail = error instanceof Error
+        ? error as Error & { code?: unknown; status?: unknown; statusCode?: unknown; response?: { status?: unknown } }
+        : null;
+      const transient = detail && (
+        ["ECONNRESET", "EPIPE", "EAI_AGAIN", "ECONNABORTED"].includes(String(detail.code ?? ""))
+        || detail.message === "socket hang up"
+        || [detail.status, detail.statusCode, detail.response?.status].some((status) => [502, 503, 504].includes(status as number))
+        || (detail.name === "JsonRpcCallError" && detail.code === -32002
+          && /^Request failed with status code (502|503|504)(?:: Sandbox command requested here)?$/.test(detail.message))
+      );
+      const waitMs = 250 * (attempt + 1);
+      if (!transient || attempt >= 2 || Date.now() + waitMs >= deadline) throw error;
+      await new Promise((resolve) => setTimeout(resolve, waitMs));
+    }
+  }
+}
+
 /** Stage token-free launchers next to the execution, not in shared global Git config. */
 export async function prepareGitHubOperationLaunchers(input: {
   runId: string; target: AdapterExecutionTarget | null | undefined; cwd: string; env: Record<string, string>;
@@ -1563,15 +1592,18 @@ export async function prepareGitHubOperationLaunchers(input: {
   if (remote) {
     const runner = adapterExecutionTargetCommandRunner(remote);
     for (const [program, body] of Object.entries(files)) {
-      await syncRemoteTextFileWithHashSkip({
+      await prepareGitHubLauncherWithRetry(input.runId, (timeoutMs) => syncRemoteTextFileWithHashSkip({
         runner, remoteCwd: remote.remoteCwd, remoteDir: directory,
         remotePath: path.posix.join(directory, program), body,
         label: "GitHub operation launcher", action: "stage GitHub operation launcher",
         lockDir: path.posix.join(directory, `.${program}.lock`),
-        timeoutMs: 15_000, shellCommand: adapterExecutionTargetShellCommand(remote),
-      });
+        timeoutMs, shellCommand: adapterExecutionTargetShellCommand(remote),
+      }));
     }
-    const permissions = await runner.execute({ command: "sh", args: ["-c", `chmod 700 ${shellQuote(directory)}/git ${shellQuote(directory)}/gh && mkdir -p ${shellQuote(configDirectory)}`], cwd: remote.remoteCwd, timeoutMs: 15_000 });
+    const permissions = await prepareGitHubLauncherWithRetry(input.runId, (timeoutMs) => runner.execute({
+      command: "sh", args: ["-c", `chmod 700 ${shellQuote(directory)}/git ${shellQuote(directory)}/gh && mkdir -p ${shellQuote(configDirectory)}`],
+      cwd: remote.remoteCwd, timeoutMs,
+    }));
     if (permissions.exitCode !== 0) throw new Error("Could not prepare managed GitHub launchers");
   } else {
     await fs.mkdir(directory, { recursive: true, mode: 0o700 });
