@@ -7,6 +7,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { ClaudeLocalConfigFields, ClaudeLocalAdvancedFields } from "./claude-local/config-fields";
 import { CodexLocalConfigFields } from "./codex-local/config-fields";
 import { GeminiLocalConfigFields } from "./gemini-local/config-fields";
+import { AgyLocalConfigFields } from "./agy-local/config-fields";
 import type { AdapterConfigFieldsProps } from "./types";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -178,5 +179,35 @@ describe("adapter config fields under the managed-sandbox-only policy", () => {
     expect(labels).not.toContain("Agent instructions file");
     expect(choosePathButtons(result.container)).toHaveLength(0);
     expect(labels).toContain("ACP session mode");
+  });
+
+  it("renders Antigravity paths when the policy is off", () => {
+    const result = renderFields(AgyLocalConfigFields, {
+      adapterType: "agy_local",
+      managedSandboxOnly: false,
+    });
+    roots.push(result.root);
+
+    const labels = fieldLabels(result.container);
+    expect(labels).toContain("Agent instructions file");
+    expect(labels).toContain("Per-agent skills root");
+  });
+
+  it("drops Antigravity paths when the policy is on", () => {
+    const result = renderFields(AgyLocalConfigFields, {
+      adapterType: "agy_local",
+      managedSandboxOnly: true,
+      hideInstructionsFile: true,
+    });
+    roots.push(result.root);
+
+    const labels = fieldLabels(result.container);
+    expect(labels).not.toContain("Agent instructions file");
+    expect(labels).not.toContain("Per-agent skills root");
+    expect(choosePathButtons(result.container)).toHaveLength(0);
+    // Non-path behavior toggles stay visible
+    expect(labels).toContain("Execution mode");
+    expect(labels).toContain("Skills location");
+    expect(labels).toContain("Structured output schema");
   });
 });

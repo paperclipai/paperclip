@@ -1,3 +1,4 @@
+import { configFieldsForSection } from "../config-sections";
 import type { AdapterConfigFieldsProps } from "../types";
 import {
   Field,
@@ -13,6 +14,7 @@ const instructionsFileHint =
   "Absolute path to a markdown file (e.g. AGENTS.md) that defines this agent's behavior. Prepended to the Antigravity prompt at runtime.";
 
 export function AgyLocalConfigFields({
+  section,
   isCreate,
   values,
   set,
@@ -20,6 +22,7 @@ export function AgyLocalConfigFields({
   eff,
   mark,
   hideInstructionsFile,
+  managedSandboxOnly,
 }: AdapterConfigFieldsProps) {
   const rawValues = values as unknown as (Record<string, unknown> | undefined);
   const rawMode = isCreate
@@ -27,7 +30,7 @@ export function AgyLocalConfigFields({
     : eff("adapterConfig", "mode", String(config.mode ?? ""));
   const mode = rawMode === "plan" ? "plan" : "accept-edits";
 
-  return (
+  return configFieldsForSection(section, (
     <>
       {!hideInstructionsFile && (
         <Field label="Agent instructions file" hint={instructionsFileHint}>
@@ -98,6 +101,7 @@ export function AgyLocalConfigFields({
         />
       </Field>
       <Field
+        configSection="advanced"
         label="Structured output schema"
         hint="Optional JSON schema or path to a schema file to enforce structured output for the final result."
       >
@@ -122,6 +126,7 @@ export function AgyLocalConfigFields({
         />
       </Field>
       <ToggleField
+        configSection="advanced"
         label="Skip permissions"
         hint={help.dangerouslySkipPermissions}
         checked={
@@ -160,6 +165,7 @@ export function AgyLocalConfigFields({
         />
       </Field>
       <Field
+        configSection="advanced"
         label="Print timeout"
         hint="Optional CLI print mode wait timeout (e.g. 15m, 30m, 1h). Defaults to aligned Paperclip timeout or 24h."
       >
@@ -180,6 +186,7 @@ export function AgyLocalConfigFields({
         />
       </Field>
       <ToggleField
+        configSection="advanced"
         label="Disable slash commands"
         hint="Disable slash command and skill expansion in print mode (--disable-slash-commands)."
         checked={
@@ -198,6 +205,7 @@ export function AgyLocalConfigFields({
         }
       />
       <ToggleField
+        configSection="advanced"
         label="Sandbox mode"
         hint="Enable strict Antigravity terminal restrictions and sandboxing."
         checked={
@@ -237,26 +245,29 @@ export function AgyLocalConfigFields({
           <option value="global">Shared agy config — ~/.gemini/config/skills</option>
         </select>
       </Field>
-      <Field
-        label="Per-agent skills root"
-        hint="Optional override for the directory holding this agent's skills (<root>/.agents/skills). Ignored when Skills location is set to shared."
-      >
-        <DraftInput
-          value={
-            isCreate
-              ? (values as any)?.skillsRootPath ?? ""
-              : eff("adapterConfig", "skillsRootPath", String(config.skillsRootPath ?? ""))
-          }
-          onCommit={(v) =>
-            isCreate
-              ? set!({ skillsRootPath: v || undefined } as any)
-              : mark("adapterConfig", "skillsRootPath", v || undefined)
-          }
-          immediate
-          className={inputClass}
-          placeholder="e.g. ~/.agy-paperclip/agents/custom-root"
-        />
-      </Field>
+      {!managedSandboxOnly && (
+        <Field
+          configSection="advanced"
+          label="Per-agent skills root"
+          hint="Optional override for the directory holding this agent's skills (<root>/.agents/skills). Ignored when Skills location is set to shared."
+        >
+          <DraftInput
+            value={
+              isCreate
+                ? (values as any)?.skillsRootPath ?? ""
+                : eff("adapterConfig", "skillsRootPath", String(config.skillsRootPath ?? ""))
+            }
+            onCommit={(v) =>
+              isCreate
+                ? set!({ skillsRootPath: v || undefined } as any)
+                : mark("adapterConfig", "skillsRootPath", v || undefined)
+            }
+            immediate
+            className={inputClass}
+            placeholder="e.g. ~/.agy-paperclip/agents/custom-root"
+          />
+        </Field>
+      )}
     </>
-  );
+  ));
 }

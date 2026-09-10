@@ -157,4 +157,131 @@ describe("AgyLocalConfigFields", () => {
     });
     expect(result.mark).toHaveBeenCalledWith("adapterConfig", "skillsScope", "global");
   });
+
+  it("filters fields by section", () => {
+    const config = { mode: "accept-edits", skillsScope: "agent", jsonSchema: "{}", printTimeout: "15m" };
+
+    const configHtml = renderToStaticMarkup(
+      <TooltipProvider>
+        <AgyLocalConfigFields
+          section="configuration"
+          mode="edit"
+          isCreate={false}
+          adapterType="agy_local"
+          values={null}
+          set={null}
+          config={config}
+          eff={(_group, _field, original) => original}
+          mark={() => undefined}
+          models={[]}
+          hideInstructionsFile
+        />
+      </TooltipProvider>,
+    );
+    expect(configHtml).toContain("Execution mode");
+    expect(configHtml).toContain("Skills location");
+    expect(configHtml).not.toContain("Structured output schema");
+    expect(configHtml).not.toContain("Print timeout");
+
+    const advancedHtml = renderToStaticMarkup(
+      <TooltipProvider>
+        <AgyLocalConfigFields
+          section="advanced"
+          mode="edit"
+          isCreate={false}
+          adapterType="agy_local"
+          values={null}
+          set={null}
+          config={config}
+          eff={(_group, _field, original) => original}
+          mark={() => undefined}
+          models={[]}
+          hideInstructionsFile
+        />
+      </TooltipProvider>,
+    );
+    expect(advancedHtml).not.toContain("Execution mode");
+    expect(advancedHtml).toContain("Structured output schema");
+    expect(advancedHtml).toContain("Print timeout");
+    expect(advancedHtml).toContain("Sandbox mode");
+
+    const adapterHtml = renderToStaticMarkup(
+      <TooltipProvider>
+        <AgyLocalConfigFields
+          section="adapter"
+          mode="edit"
+          isCreate={false}
+          adapterType="agy_local"
+          values={null}
+          set={null}
+          config={config}
+          eff={(_group, _field, original) => original}
+          mark={() => undefined}
+          models={[]}
+          hideInstructionsFile
+        />
+      </TooltipProvider>,
+    );
+    expect(adapterHtml).toBe("");
+
+    const runPolicyHtml = renderToStaticMarkup(
+      <TooltipProvider>
+        <AgyLocalConfigFields
+          section="runPolicy"
+          mode="edit"
+          isCreate={false}
+          adapterType="agy_local"
+          values={null}
+          set={null}
+          config={config}
+          eff={(_group, _field, original) => original}
+          mark={() => undefined}
+          models={[]}
+          hideInstructionsFile
+        />
+      </TooltipProvider>,
+    );
+    expect(runPolicyHtml).toBe("");
+  });
+
+  it("hides host path fields when managedSandboxOnly is true", () => {
+    const visibleHtml = renderToStaticMarkup(
+      <TooltipProvider>
+        <AgyLocalConfigFields
+          section="advanced"
+          mode="edit"
+          isCreate={false}
+          adapterType="agy_local"
+          values={null}
+          set={null}
+          config={{ skillsRootPath: "/custom/path" }}
+          eff={(_group, _field, original) => original}
+          mark={() => undefined}
+          models={[]}
+          managedSandboxOnly={false}
+        />
+      </TooltipProvider>,
+    );
+    expect(visibleHtml).toContain("Per-agent skills root");
+
+    const hiddenHtml = renderToStaticMarkup(
+      <TooltipProvider>
+        <AgyLocalConfigFields
+          section="advanced"
+          mode="edit"
+          isCreate={false}
+          adapterType="agy_local"
+          values={null}
+          set={null}
+          config={{ skillsRootPath: "/custom/path" }}
+          eff={(_group, _field, original) => original}
+          mark={() => undefined}
+          models={[]}
+          managedSandboxOnly={true}
+        />
+      </TooltipProvider>,
+    );
+    expect(hiddenHtml).not.toContain("Per-agent skills root");
+  });
 });
+
