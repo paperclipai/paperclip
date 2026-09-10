@@ -376,7 +376,9 @@ function providerActivityItem(
       label: titleCaseKey(key),
       value: clip(
         value,
-        key === "message" || key === "summary" || key === "reason" ? 320 : 160,
+        entry.family === "provider_notice" && (key === "summary" || key === "message")
+          ? 4000
+          : key === "message" || key === "summary" || key === "reason" ? 320 : 160,
       ),
       mono: /(?:id|model|target|reference|url|code|bytes)$/i.test(key),
     });
@@ -1170,6 +1172,13 @@ export function paperclipRunnerActivityItems(
       case "marker":
         return item.variant === "interrupted";
       case "protocol":
+        // Completion is already represented by task state and the final answer.
+        // Keep its event in the inspector, but omit it from feed rows and counts.
+        if (
+          item.surface === "provider_activity" &&
+          item.family === "tool_execution" &&
+          providerItemDetail(item, "Name") === "paperclip_finish"
+        ) return false;
         if (
           hasAggregateWorkspaceChange &&
           item.surface === "provider_activity" &&

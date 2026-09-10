@@ -1,5 +1,6 @@
-import { useState, type ReactNode } from "react";
+import { useContext, useState, type ReactNode } from "react";
 import type { IssueAttachment } from "@paperclipai/shared";
+import { IssueGalleryContext } from "@/context/IssueGalleryContext";
 import { cn } from "@/lib/utils";
 import { useStreamlinedTaskChatPresentation } from "./presentation-mode";
 import { MarkdownBody } from "@/components/MarkdownBody";
@@ -141,9 +142,12 @@ export function TaskChatBubble({
   tryAgainNoLiveExecutionPathPending,
 }: TaskChatBubbleProps) {
   const streamlined = useStreamlinedTaskChatPresentation();
-  // Clicking an embedded image opens the full-screen lightbox (with download);
-  // arrow keys walk across the other images in the same bubble.
+  // Task attachments share the page gallery; standalone images retain the bubble viewer.
+  const openIssueGallery = useContext(IssueGalleryContext);
   const [lightboxSrc, setLightboxSrc] = useState<string | null>(null);
+  const openImage = (src: string) => {
+    if (!openIssueGallery?.(src)) setLightboxSrc(src);
+  };
   if (item.interstitial) {
     // Interstitial updates are ephemeral (PAP-361): while streaming the text
     // lives on the live parent row's line (TaskChatStatusItem.selfTalk), and
@@ -235,7 +239,7 @@ export function TaskChatBubble({
             className={isHuman ? "paperclip-markdown-on-accent" : undefined}
             softBreaks
             linkIssueReferences
-            onImageClick={setLightboxSrc}
+            onImageClick={openImage}
           >
             {bodyText}
           </MarkdownBody>
@@ -258,7 +262,7 @@ export function TaskChatBubble({
                   type="button"
                   className="group aspect-video min-w-0 overflow-hidden rounded-md bg-muted outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   aria-label={`Open ${ref.name || `image ${index + 1}`}`}
-                  onClick={() => setLightboxSrc(ref.url)}
+                  onClick={() => openImage(ref.url)}
                 >
                   <img
                     src={ref.openPath ?? ref.url}
@@ -273,7 +277,7 @@ export function TaskChatBubble({
                 type="button"
                 className="aspect-video min-w-0 rounded-md bg-muted text-sm font-semibold text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 aria-label={`Open ${imageRefs.length - 3} more screenshots`}
-                onClick={() => setLightboxSrc(imageRefs[3].url)}
+                onClick={() => openImage(imageRefs[3].url)}
               >
                 +{imageRefs.length - 3}
               </button>

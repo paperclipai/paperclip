@@ -2430,9 +2430,10 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
     interaction: PipelineConversationActionableInteraction,
     selectedClientKeys?: string[],
     selectedOptionIds?: string[],
+    rememberAction?: boolean,
   ) => {
     if (!conversationIssueId) return;
-    await issuesApi.acceptInteraction(conversationIssueId, interaction.id, { selectedClientKeys, selectedOptionIds });
+    await issuesApi.acceptInteraction(conversationIssueId, interaction.id, { selectedClientKeys, selectedOptionIds, rememberAction });
     await invalidateConversation();
   }, [conversationIssueId, invalidateConversation]);
 

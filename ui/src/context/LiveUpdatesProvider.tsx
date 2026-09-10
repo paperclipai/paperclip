@@ -163,6 +163,9 @@ interface VisibleIssueRouteContext {
   issueRefs: Set<string>;
   assigneeAgentId: string | null;
   runIds: Set<string>;
+  subtreeIssueRefs: Set<string>;
+  subtreeAgentIds: Set<string>;
+  subtreeRunIds: Set<string>;
 }
 
 function resolveIssueQueryRefs(
@@ -265,11 +268,37 @@ function resolveVisibleIssueRouteContext(
     if (run.runId) runIds.add(run.runId);
   }
 
+  // Notifications about descendants belong to the subtree already on screen.
+  // Keep these separate from issueRefs, which also drives cache invalidation.
+  const subtreeIssueRefs = new Set(issueRefs);
+  const subtreeAgentIds = new Set<string>();
+  const subtreeRunIds = new Set(runIds);
+  if (issue?.companyId && issue.id) {
+    const descendants = queryClient.getQueryData<Issue[]>(
+      queryKeys.issues.listByDescendantRoot(issue.companyId, issue.id),
+    ) ?? [];
+    for (const descendant of descendants) {
+      subtreeIssueRefs.add(descendant.id);
+      if (descendant.identifier) subtreeIssueRefs.add(descendant.identifier);
+      if (descendant.assigneeAgentId) subtreeAgentIds.add(descendant.assigneeAgentId);
+      if (descendant.executionRunId) subtreeRunIds.add(descendant.executionRunId);
+    }
+  }
+
+  if (issue?.companyId) {
+    const companyRuns = queryClient.getQueryData<LiveRunForIssue[]>(queryKeys.liveRuns(issue.companyId)) ?? [];
+    for (const run of companyRuns) {
+      if (run.issueId && subtreeIssueRefs.has(run.issueId)) subtreeRunIds.add(run.id);
+    }
+  }
   return {
     routeIssueRef: issueRef,
     issueRefs,
     assigneeAgentId: issue?.assigneeAgentId ?? null,
     runIds,
+    subtreeIssueRefs,
+    subtreeAgentIds,
+    subtreeRunIds,
   };
 }
 
@@ -300,7 +329,7 @@ function shouldSuppressActivityToastForVisibleIssue(
   const context = resolveVisibleIssueRouteContext(queryClient, pathname, options);
   if (!context) return false;
 
-  return overlaps(context.issueRefs, buildIssueRefsForPayload(entityId, readRecord(payload.details)));
+  return overlaps(context.subtreeIssueRefs, buildIssueRefsForPayload(entityId, readRecord(payload.details)));
 }
 
 function shouldSuppressRunStatusToastForVisibleIssue(
@@ -309,14 +338,19 @@ function shouldSuppressRunStatusToastForVisibleIssue(
   payload: Record<string, unknown>,
   options?: VisibleRouteOptions,
 ): boolean {
+  if (!(options?.isForegrounded ?? isPageForegrounded())) return false;
+  const visibleRunId = toCompanyRelativePath(pathname).match(/^\/agents\/[^/]+\/runs\/([^/]+)/)?.[1];
+  if (visibleRunId && decodeURIComponent(visibleRunId) === readString(payload.runId)) return true;
   const context = resolveVisibleIssueRouteContext(queryClient, pathname, options);
   if (!context) return false;
 
+  const issueId = readString(payload.issueId);
+  if (issueId) return context.subtreeIssueRefs.has(issueId);
   const runId = readString(payload.runId);
-  if (runId && context.runIds.has(runId)) return true;
+  if (runId) return context.subtreeRunIds.has(runId);
 
   const agentId = readString(payload.agentId);
-  return !!agentId && !!context.assigneeAgentId && agentId === context.assigneeAgentId;
+  return !!agentId && (agentId === context.assigneeAgentId || context.subtreeAgentIds.has(agentId));
 }
 
 function invalidateVisibleIssueRunQueries(
@@ -528,10 +562,10 @@ function shouldSuppressAgentStatusToastForVisibleIssue(
   options?: VisibleRouteOptions,
 ): boolean {
   const context = resolveVisibleIssueRouteContext(queryClient, pathname, options);
-  if (!context?.assigneeAgentId) return false;
+  if (!context) return false;
 
   const agentId = readString(payload.agentId);
-  return !!agentId && agentId === context.assigneeAgentId;
+  return !!agentId && (agentId === context.assigneeAgentId || context.subtreeAgentIds.has(agentId));
 }
 
 function shouldDeferIssueRefetchForVisibleAgentActivity(
@@ -828,7 +862,7 @@ function buildRunStatusToast(
   const error = readString(payload.error);
   const triggerDetail = readString(payload.triggerDetail);
   const name = nameOf(agentId) ?? `Agent ${shortId(agentId)}`;
-  const tone = status === "succeeded" ? "success" : status === "cancelled" ? "warn" : "error";
+  const tone = status === "succeeded" ? "success" : status === "cancelled" ? "info" : "error";
   const statusLabel =
     status === "succeeded" ? "succeeded"
       : status === "failed" ? "failed"
@@ -1045,6 +1079,9 @@ function invalidateActivityQueries(
           // in the streamed PRP projection, so inactive-only invalidation leaves
           // the visible task stale until a full reload.
           queryClient.invalidateQueries({ queryKey: queryKeys.issues.interactions(ref) });
+          queryClient.invalidateQueries({ queryKey: queryKeys.tools.actionRequests(companyId, "pending") });
+          queryClient.invalidateQueries({ queryKey: queryKeys.apps.attention(companyId) });
+          queryClient.invalidateQueries({ queryKey: queryKeys.tools.trustRules(companyId) });
         }
       }
     }
@@ -1195,6 +1232,8 @@ function handleLiveEvent(
 
   const nameOf = (id: string) => resolveAgentName(queryClient, expectedCompanyId, id);
   const payload = event.payload ?? {};
+  // Resolve membership before terminal lifecycle patches remove live-run rows.
+  const suppressRunToast = event.type === "heartbeat.run.status" && shouldSuppressRunStatusToastForVisibleIssue(queryClient, pathname, payload);
   const liveStatusPatch = readRunLiveStatusPatchFromPayload(payload, event.createdAt, event.type);
   if (liveStatusPatch) {
     applyRunLiveStatusPatchToCaches(queryClient, expectedCompanyId, pathname, liveStatusPatch);
@@ -1218,7 +1257,7 @@ function handleLiveEvent(
       const toast = buildRunStatusToast(payload, nameOf);
       if (
         toast &&
-        !shouldSuppressRunStatusToastForVisibleIssue(queryClient, pathname, payload)
+        !suppressRunToast
       ) {
         gatedPushToast(gate, pushToast, "run-status", toast);
       }

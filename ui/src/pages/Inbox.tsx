@@ -2689,6 +2689,7 @@ function StreamlinedInbox() {
       {actionError && <p className="text-sm text-destructive">{actionError}</p>}
 
       {tab === "blocked" ? (
+        <div className="-mx-2 sm:mx-0">
         <BlockedInboxView
           companyId={selectedCompanyId!}
           searchQuery={searchQuery}
@@ -2707,6 +2708,7 @@ function StreamlinedInbox() {
           showUpdatedColumn={visibleIssueColumnSet.has("updated") && availableIssueColumnSet.has("updated")}
           presentation={streamlinedUiEnabled ? "task" : "legacy"}
         />
+        </div>
       ) : null}
 
       {tab !== "blocked" && !allLoaded && visibleSections.length === 0 && (
@@ -2736,7 +2738,7 @@ function StreamlinedInbox() {
           <div>
             <div
               ref={listRef}
-              className="overflow-hidden"
+              className="-mx-2 overflow-hidden sm:mx-0"
               onPointerDownCapture={noteInboxSortInteraction}
               onWheelCapture={noteInboxSortInteraction}
             >
@@ -2816,7 +2818,7 @@ function StreamlinedInbox() {
                           <ChevronRight className={cn("h-3.5 w-3.5 transition-transform", isExpanded && "rotate-90")} />
                         </button>
                       ) : streamlinedUiEnabled ? (
-                        <span data-slot="task-row-disclosure-spacer" className="h-4 w-4 shrink-0" aria-hidden="true" />
+                        <span data-slot="task-row-disclosure-spacer" className={cn("h-4 w-4 shrink-0", !nestingEnabled && "hidden sm:block")} aria-hidden="true" />
                       ) : undefined}
                       statusSlot={streamlinedUiEnabled ? rowStatusIcon : undefined}
                       metadata={streamlinedUiEnabled ? (
@@ -2868,7 +2870,8 @@ function StreamlinedInbox() {
                           ({childCount} sub-task{childCount !== 1 ? "s" : ""})
                         </span>
                       ) : undefined}
-                      mobileMeta={issueActivityText(issue).toLowerCase()}
+                      mobileTitleMeta={streamlinedUiEnabled ? issueActivityTimestamp(issue) : undefined}
+                      mobileMeta={streamlinedUiEnabled ? undefined : issueActivityText(issue).toLowerCase()}
                       mobileLeading={!streamlinedUiEnabled ? (
                         depth === 0 && hasChildren && collapseParentId ? (
                           <button

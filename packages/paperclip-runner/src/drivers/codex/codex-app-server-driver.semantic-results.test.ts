@@ -45,6 +45,89 @@ import {
 import { RUNNERD_CANONICAL_ITEM } from "./codex-driver-values.js";
 
 describe("Codex app-server Codex driver", () => {
+  it("accepts an explicit response-wake yield through paperclip_finish", async () => {
+    const transport = new FakeCodexTransport();
+    const session = await makeDriver([transport]).openSession({
+      runId: "run-response-wake",
+      normalizedSessionId: "normalized-response-wake",
+      workingDirectory: WORKSPACE,
+    });
+    await session.startTurn({ message: { role: "user", text: "Reply, then wait." } });
+    const yielded = {
+      ...structuredClone(result),
+      reportedWorkDisposition: "yielded" as const,
+      completionClaim: {
+        ...structuredClone(result.completionClaim),
+        objectiveSatisfied: false,
+        criteria: result.completionClaim.criteria.map((criterion) => ({
+          ...criterion,
+          status: "unknown" as const,
+          evidenceRefs: [],
+        })),
+        remainingWork: [{
+          description: "Wait for the next external response.",
+          blocksCompletion: true,
+        }],
+      },
+      continuation: {
+        kind: "response_wake" as const,
+        summary: "Resume after the next external response.",
+        idempotencyKey: "response-wake-1",
+      },
+    };
+    expect(await transport.invoke({
+      id: "response-wake",
+      method: "item/tool/call",
+      params: {
+        threadId: "thread-1",
+        turnId: "turn-1",
+        callId: "response-wake",
+        tool: "paperclip_finish",
+        arguments: yielded,
+      },
+    })).toMatchObject({ success: true });
+    transport.push("turn/completed", {
+      threadId: "thread-1",
+      turn: { id: "turn-1", status: "completed", items: [] },
+    });
+
+    const events = await collectUntilTerminal(session.events());
+    expect(events.find((event) => event.eventType === "run.result.proposed")?.payload)
+      .toMatchObject({ reportedWorkDisposition: "yielded", continuation: { kind: "response_wake" } });
+    expect((await session.snapshot()).semanticResult?.result).toMatchObject({
+      reportedWorkDisposition: "yielded",
+      continuation: { kind: "response_wake" },
+    });
+    expect(events.some((event) => event.eventType === "turn.completed")).toBe(true);
+
+    const otherTransport = new FakeCodexTransport();
+    const otherSession = await makeDriver([otherTransport]).openSession({
+      runId: "run-same-agent-yield",
+      normalizedSessionId: "normalized-same-agent-yield",
+      workingDirectory: WORKSPACE,
+    });
+    await otherSession.startTurn({ message: { role: "user", text: "Continue." } });
+    expect(await otherTransport.invoke({
+      id: "same-agent-yield",
+      method: "item/tool/call",
+      params: {
+        threadId: "thread-1",
+        turnId: "turn-1",
+        callId: "same-agent-yield",
+        tool: "paperclip_finish",
+        arguments: {
+          ...yielded,
+          continuation: {
+            kind: "same_agent",
+            summary: "Continue immediately.",
+            idempotencyKey: "same-agent-1",
+          },
+        },
+      },
+    })).toMatchObject({ success: false });
+    await otherSession.close();
+  });
+
   it("makes duplicate semantic completion idempotent and rejects changed payloads", async () => {
     const transport = new FakeCodexTransport();
     const session = await makeDriver([transport]).openSession({

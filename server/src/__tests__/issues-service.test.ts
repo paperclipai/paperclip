@@ -6,6 +6,7 @@ import {
   activityLog,
   agents,
   companies,
+  companyMemberships,
   createDb,
   documentRevisions,
   documents,
@@ -26,6 +27,9 @@ import {
   projectWorkspaces,
   projects,
   workspaceOperations,
+  toolApplications,
+  toolConnections,
+  toolOauthStates,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -400,6 +404,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     await db.delete(heartbeatRuns);
     await db.delete(agents);
     await db.delete(instanceSettings);
+    await db.delete(companyMemberships);
     await db.delete(companies);
   });
 
@@ -608,6 +613,53 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
       assigneeAgentId: null,
       status: "todo",
     });
+  });
+
+  it("expires a pending connection and its OAuth state when reassigned to a user without a status change", async () => {
+    const companyId = await seedAssignableAgentCompany();
+    const agentId = randomUUID();
+    const userId = randomUUID();
+    await db.insert(agents).values(agentRow(companyId, { id: agentId, name: "ConnectionRequester" }));
+    await db.insert(companyMemberships).values({
+      companyId, principalType: "user", principalId: userId, status: "active", membershipRole: "member",
+    });
+    const issue = await svc.create(companyId, {
+      title: "Waiting for a connection", status: "in_review", priority: "medium", assigneeAgentId: agentId,
+    });
+    const [application] = await db.insert(toolApplications).values({
+      companyId, name: "Connection app", type: "mcp",
+    }).returning();
+    const [connection] = await db.insert(toolConnections).values({
+      companyId, applicationId: application!.id, name: "Notion", uid: randomUUID(),
+      transport: "mcp_remote", authKind: "oauth",
+    }).returning();
+    const [interaction] = await db.insert(issueThreadInteractions).values({
+      companyId, issueId: issue.id, kind: "connection_intent", status: "pending",
+      createdByAgentId: agentId, addresseeUserId: "local-board",
+      payload: {
+        version: 1, serviceSlug: "notion", serviceName: "Notion",
+        requestingAgentId: agentId, requestingAgentName: "ConnectionRequester", phase: "authorizing",
+      },
+    }).returning();
+    const oauthState = randomUUID();
+    await db.insert(toolOauthStates).values({
+      state: oauthState, companyId, connectionId: connection!.id, issueId: issue.id,
+      interactionId: interaction!.id, codeVerifier: "test-verifier",
+      createdByActorType: "user", createdByActorId: "local-board",
+      expiresAt: new Date(Date.now() + 60_000),
+    });
+
+    const updated = await svc.update(issue.id, {
+      assigneeAgentId: null, assigneeUserId: userId, actorUserId: "local-board",
+    });
+    expect(updated).toMatchObject({ status: "in_review", assigneeAgentId: null, assigneeUserId: userId });
+    await expect(db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, interaction!.id)))
+      .resolves.toEqual([expect.objectContaining({
+        status: "expired",
+        result: { version: 1, outcome: "expired", reason: "The task assignment changed" },
+        resolvedAt: expect.any(Date),
+      })]);
+    await expect(db.select().from(toolOauthStates).where(eq(toolOauthStates.state, oauthState))).resolves.toEqual([]);
   });
 
   it("expires pending thread interactions on any service-level terminal transition", async () => {

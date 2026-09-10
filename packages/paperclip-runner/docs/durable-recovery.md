@@ -33,7 +33,7 @@ The connection starts in this order:
 6. Both sides derive directional AES-256-GCM keys from the capability and both
    nonces. Strict per-direction counters reject replays and out-of-order frames.
 7. Only after mutual authentication does the core send an encrypted `welcome`.
-   The welcome selects PRP v1, returns a short-lived connection lease, reports
+   The welcome selects a supported PRP version, returns a short-lived connection lease, reports
    the cumulative committed event cursor, and carries at most one pending
    command. Every later ACK, command, revoke, event, and command result remains
    inside the encrypted session.
@@ -183,6 +183,33 @@ same cursor.
 If recovery cannot be truthful, state names the outcome. For example, failure
 to reserve storage for a P0 event records `p0_storage_exhausted` and the
 `unrecoverable` lifecycle. It never reports a fresh session as resumed.
+
+## Protocol versions and warm handoff
+
+Ordinary PRP v1 connections remain supported. A warm `run.attach` that changes
+run authority requires negotiated PRP v2, as well as the warm-transition
+capability. The runner refuses a v1 warm attachment before provider work. A v1
+peer acknowledges placeholders for native session-goal and capability events;
+those acknowledgements do not prove that the peer observed the native state.
+Rotation must not discard that retained evidence or relabel it as a new run.
+
+A connection lease fixes its protocol version. Advertising v2 on reconnect
+does not upgrade an existing v1 lease. For a v2-capable runner holding a v1
+lease, the owned transport's process-recovery path can replace the process
+with fresh authorization when configured with a reconnect grace. It preserves
+validated state and original authority and issues a new one-use bootstrap.
+The old process must exit first; any old provider owner must also be retired.
+The connection lease exists only in process
+memory; no credential or journal file needs to be edited. The replacement
+negotiates v2 and replays retained native session state on the original
+authority. Its native event acknowledgements must settle before warm handoff.
+The controller must still authorize replacement and verify current process,
+artifact, and run ownership. This is not an automatic in-place lease upgrade
+or a general operator UI migration flow. An old binary stays old when its
+immutable launcher restarts it. Replacing a legacy binary or an adopted owner
+requires separate artifact and ownership admission; this path does not qualify
+that migration. Pending warm-transition receipts
+require their separate exact recovery admission, not an ordinary bootstrap.
 
 ## Backpressure and bounded storage
 

@@ -237,6 +237,28 @@ function buildContext(root: string, overrides: Partial<AdapterExecutionContext> 
 }
 
 describe("claude_local ACP lane", () => {
+  it("uses the same default model in ACP startup and session identity", async () => {
+    const root = await makeTempRoot("paperclip-claude-acp-default-");
+    const meta: AdapterInvocationMeta[] = [];
+    const execute = createClaudeAcpExecutor({
+      createRuntime: (options: FakeRuntimeOptions) => new FakeRuntime(options) as never,
+    });
+    const result = await execute(buildContext(root, {
+      onMeta: async (payload) => { meta.push(payload); },
+    }));
+    expect(result.exitCode).toBe(0);
+    expect(meta[0]?.env?.ANTHROPIC_MODEL).toBe("claude-opus-5");
+  });
+
+  it("keeps ACP model precedence consistent with CLI and provider overrides", () => {
+    expect(buildClaudeAcpConfig({ model: "claude-sonnet-4-5", env: { ANTHROPIC_MODEL: "opus" } }))
+      .toMatchObject({ model: "claude-sonnet-4-5", env: { ANTHROPIC_MODEL: "claude-sonnet-4-5" } });
+    expect(buildClaudeAcpConfig({}, { ANTHROPIC_MODEL: "custom-model" }))
+      .toMatchObject({ model: "custom-model", env: { ANTHROPIC_MODEL: "custom-model" } });
+    expect(buildClaudeAcpConfig({}, { CLAUDE_CODE_USE_BEDROCK: "1" }).model).toBe("");
+    expect(buildClaudeAcpConfig({ env: { CLAUDE_CODE_USE_VERTEX: "1" } }).model).toBe("");
+  });
+
   it("maps Claude config to the ACPX Claude target", () => {
     expect(buildClaudeAcpConfig({
       engine: "acp",
@@ -265,7 +287,7 @@ describe("claude_local ACP lane", () => {
     expect(nodeVersionMeetsClaudeAcpMinimum()).toBe(true);
   });
 
-  it("defaults to ACP when prerequisites pass and falls back to CLI only for auto resolution", async () => {
+  it("keeps ACP selected and reports unavailable prerequisites for default and explicit engines", async () => {
     const root = await makeTempRoot("paperclip-claude-acp-default-");
     const commandPath = path.join(root, "bin", "claude-agent-acp");
     await fs.mkdir(path.dirname(commandPath), { recursive: true });
@@ -293,44 +315,44 @@ describe("claude_local ACP lane", () => {
         executionTarget: null,
       }),
     ).resolves.toMatchObject({
-      engine: "cli",
+      engine: "acp",
       explicit: false,
-      fallbackReason: expect.stringContaining("Node"),
+      unavailableReason: expect.stringContaining("Node"),
     });
     await expect(
       resolveClaudeExecutionEngineForRun({
         config: { engine: "acp", agentCommand: "/missing/claude-agent-acp" },
         executionTarget: null,
       }),
-    ).resolves.toEqual({ engine: "acp", explicit: true });
+    ).resolves.toMatchObject({ engine: "acp", explicit: true, unavailableReason: expect.stringContaining("Node") });
   });
 
-  it("selects the confined CLI lane for local filesystem or network scope", async () => {
+  it("requires explicit CLI selection for local filesystem or network scope", async () => {
     await expect(
       resolveClaudeExecutionEngineForRun({
         config: { filesystemScope: "workspace" },
         executionTarget: null,
       }),
     ).resolves.toMatchObject({
-      engine: "cli",
+      engine: "acp",
       explicit: false,
-      fallbackReason: expect.stringContaining("spawn-level confinement"),
+      unavailableReason: expect.stringContaining("confinement"),
     });
     await expect(
       resolveClaudeExecutionEngineForRun({
         config: { engine: "acp", filesystemScope: "workspace" },
         executionTarget: null,
       }),
-    ).rejects.toThrow("ACP confinement is not supported");
+    ).resolves.toMatchObject({ engine: "acp", unavailableReason: expect.stringContaining("ACP confinement is not supported") });
     await expect(
       resolveClaudeExecutionEngineForRun({
         config: { networkScope: "deny" },
         executionTarget: null,
       }),
     ).resolves.toMatchObject({
-      engine: "cli",
+      engine: "acp",
       explicit: false,
-      fallbackReason: expect.stringContaining("network scope"),
+      unavailableReason: expect.stringContaining("confinement"),
     });
     await expect(
       resolveClaudeExecutionEngineForRun({
@@ -366,7 +388,7 @@ describe("claude_local ACP lane", () => {
     ).resolves.toEqual({ engine: "acp", explicit: false });
   });
 
-  it("falls back to the CLI lane for one-shot sandbox auto runs", async () => {
+  it("reports unavailable ACP for one-shot sandbox auto runs", async () => {
     setNodeVersion("v24.11.0");
     await expect(
       resolveClaudeExecutionEngineForRun({
@@ -379,13 +401,13 @@ describe("claude_local ACP lane", () => {
         },
       }),
     ).resolves.toMatchObject({
-      engine: "cli",
+      engine: "acp",
       explicit: false,
-      fallbackReason: expect.stringContaining("bidirectional remote process"),
+      unavailableReason: expect.stringContaining("bidirectional remote process"),
     });
   });
 
-  it("falls back to the CLI lane for non-sandbox remote auto runs", async () => {
+  it("reports unavailable ACP for non-sandbox remote auto runs", async () => {
     setNodeVersion("v24.11.0");
     await expect(
       resolveClaudeExecutionEngineForRun({
@@ -407,9 +429,9 @@ describe("claude_local ACP lane", () => {
         },
       }),
     ).resolves.toMatchObject({
-      engine: "cli",
+      engine: "acp",
       explicit: false,
-      fallbackReason: expect.stringContaining("sandbox remote targets only"),
+      unavailableReason: expect.stringContaining("sandbox remote targets only"),
     });
   });
 
@@ -954,7 +976,7 @@ describe("claude_local ACP lane", () => {
     );
   });
 
-  it("falls back to the CLI lane for a runner-less sandbox even when the ACP command is set", async () => {
+  it("reports unavailable ACP for a runner-less sandbox even when the ACP command is set", async () => {
     setNodeVersion("v24.11.0");
     await expect(
       resolveClaudeExecutionEngineForRun({
@@ -967,9 +989,9 @@ describe("claude_local ACP lane", () => {
         },
       }),
     ).resolves.toMatchObject({
-      engine: "cli",
+      engine: "acp",
       explicit: false,
-      fallbackReason: expect.stringContaining("bidirectional remote process"),
+      unavailableReason: expect.stringContaining("bidirectional remote process"),
     });
   });
 

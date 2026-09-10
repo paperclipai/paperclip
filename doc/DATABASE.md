@@ -122,8 +122,10 @@ All of these are optional; when unset, the driver defaults apply and behavior is
 ```sh
 DATABASE_PREPARED_STATEMENTS=false   # required for transaction-mode poolers; default: enabled
 DATABASE_POOL_MAX=25                 # connection pool size; default: 10
-DATABASE_IDLE_TIMEOUT_SECONDS=60     # close idle pooled connections; default: keep open
+DATABASE_IDLE_TIMEOUT_SECONDS=60     # close idle pooled connections; default: 60 (0 = keep open)
 DATABASE_CONNECT_TIMEOUT_SECONDS=10  # default: 30
+DATABASE_MAX_LIFETIME_SECONDS=1800   # recycle a pooled connection after this long; default: 30-60 min (random)
+DATABASE_APPLICATION_NAME=paperclip  # application_name in pg_stat_activity; default: paperclip
 ```
 
 ### Push the schema
@@ -244,6 +246,15 @@ gaps and conflicting replays fail closed. Accepted structured results enter the
 finalization ledger, whose retry time and owner lease are checked under a row
 lock. None of these writes selects a runtime or changes a legacy run's execution
 path.
+
+Durable agent session goals are an additive projection on
+`agent_task_sessions`, distinct from the business-goal hierarchy. The row stores
+the negotiated goal capability, normalized snapshot and status, desired state,
+provider source cursor, monotonic projection revision, and observation time.
+`agent_session_goal_actions` is the control outbox: `(session_id, request_id)`
+is unique, so retries return the original accepted action. Provider source
+ordering fences duplicate and stale updates, and a cleared projection retains
+its revision/cursor tombstone so an older provider event cannot resurrect it.
 
 Issue `status_version` advances only when `status` changes. The JavaScript backup
 path includes user-defined functions and triggers so a restored database keeps

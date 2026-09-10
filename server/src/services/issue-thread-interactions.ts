@@ -1,3 +1,5 @@
+import { currentContinuationOrigins } from "./execution-continuation.js";
+import { connectionIntentDeliveries } from "@paperclipai/db";
 import { isDeepStrictEqual } from "node:util";
 import { and, asc, desc, eq, inArray, isNotNull, isNull, ne } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -656,7 +658,8 @@ function shouldReturnAcceptedConfirmationToCreatorAgent(args: {
 }
 
 function shouldSupersedeInteractionOnUserComment(interaction: UserCommentSupersedableInteraction) {
-  if (interaction.kind === "connection_intent") return true;
+  if (interaction.kind === "connection_intent") return false;
+  if (interaction.kind === "request_confirmation" && interaction.payload.toolAction) return false;
   return interaction.payload.supersedeOnUserComment === true;
 }
 
@@ -2034,6 +2037,7 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
       input: {
         payload: ConnectionIntentInteraction["payload"];
         sourceRunId: string;
+        sourceIdentityContextId?: string | null;
         addresseeUserId: string;
         idempotencyKey: string;
       },
@@ -2049,7 +2053,9 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
           existing.kind !== "connection_intent"
           || existing.sourceRunId !== input.sourceRunId
           || existing.addresseeUserId !== input.addresseeUserId
-          || !isDeepStrictEqual(existing.payload, payload)
+          || (existing.kind === "connection_intent"
+            ? connectionIntentPayloadSchema.parse(existing.payload).serviceSlug !== payload.serviceSlug
+            : !isDeepStrictEqual(existing.payload, payload))
         ) {
           throw conflict("Interaction idempotency key already exists for a different request", {
             idempotencyKey: input.idempotencyKey,
@@ -2058,17 +2064,35 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
         return hydrateInteraction(existing) as ConnectionIntentInteraction;
       }
 
+      let inserted = false;
       const created = await db.transaction(async (tx) => {
         const issueRow = await tx
-          .select({ status: issues.status })
+          .select({ status: issues.status, assigneeAgentId: issues.assigneeAgentId })
           .from(issues)
           .where(and(eq(issues.id, issue.id), eq(issues.companyId, issue.companyId)))
           .for("update")
           .then((rows) => rows[0] ?? null);
-        if (!issueRow || isTerminalIssueStatus(issueRow.status)) {
+        if (!issueRow || isTerminalIssueStatus(issueRow.status) || issueRow.assigneeAgentId !== payload.requestingAgentId) {
           throw conflict("Cannot create an interaction on a closed issue");
         }
 
+        // Serialize on the task so retries and later runs share the same live card.
+        const pending = await tx.select().from(issueThreadInteractions).where(and(
+          eq(issueThreadInteractions.companyId, issue.companyId),
+          eq(issueThreadInteractions.issueId, issue.id),
+          eq(issueThreadInteractions.kind, "connection_intent"),
+          eq(issueThreadInteractions.status, "pending"),
+          eq(issueThreadInteractions.createdByAgentId, payload.requestingAgentId),
+          eq(issueThreadInteractions.addresseeUserId, input.addresseeUserId),
+        ));
+        const reusable = pending.find((candidate) =>
+          connectionIntentPayloadSchema.parse(candidate.payload).serviceSlug === payload.serviceSlug);
+        if (reusable) return reusable;
+
+        const [sourceRun] = await tx.select({ context: heartbeatRuns.contextSnapshot }).from(heartbeatRuns)
+          .where(and(eq(heartbeatRuns.id, input.sourceRunId), eq(heartbeatRuns.companyId, issue.companyId)));
+        if (!sourceRun) throw unprocessable("Interaction source run is unavailable");
+        const originCommentIds = await currentContinuationOrigins(tx as unknown as Db, issue.companyId, issue.id, sourceRun.context);
         const [row] = await tx
           .insert(issueThreadInteractions)
           .values({
@@ -2083,6 +2107,8 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
             effectiveResolverPolicySource: "governed_action",
             idempotencyKey: input.idempotencyKey,
             sourceRunId: input.sourceRunId,
+            originCommentIds,
+            sourceIdentityContextId: input.sourceIdentityContextId ?? null,
             title: `Connect ${payload.serviceName}`,
             summary: `${payload.requestingAgentName} needs this connection to continue.`,
             createdByAgentId: payload.requestingAgentId,
@@ -2127,11 +2153,12 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
             .where(inArray(issueThreadInteractions.id, supersededIds));
         }
         await touchIssue(tx, issue.id);
+        inserted = true;
         return row;
       });
 
       const interaction = hydrateInteraction(created) as ConnectionIntentInteraction;
-      emitInteractionCreatedTelemetry({
+      if (inserted) emitInteractionCreatedTelemetry({
         interactionKind: "connection_intent",
         usedDeprecatedResolverPolicyAlias: false,
       });
@@ -2182,7 +2209,8 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
           ? "rejected"
           : "expired";
       const resolvedAt = now();
-      const [updated] = await db
+      const updated = await db.transaction(async (tx) => {
+        const [row] = await tx
         .update(issueThreadInteractions)
         .set({
           status,
@@ -2198,6 +2226,12 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
           eq(issueThreadInteractions.status, "pending"),
         ))
         .returning();
+        if (!row) throw interactionAlreadyResolvedError();
+        if (status === "accepted" || status === "rejected") {
+          await tx.insert(connectionIntentDeliveries).values({ interactionId, companyId: issue.companyId }).onConflictDoNothing();
+        }
+        return row;
+      });
       if (!updated) throw interactionAlreadyResolvedError();
       await touchIssue(db, issue.id);
       const interaction = hydrateInteraction(updated) as ConnectionIntentInteraction;
@@ -2709,10 +2743,12 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
         }
       }
 
+      let originCommentIds: string[] = data.sourceCommentId ? [data.sourceCommentId] : [];
       let sourceIdentityContextId: string | null = null;
       if (data.sourceRunId) {
         const sourceRun = await db
           .select({
+            contextSnapshot: heartbeatRuns.contextSnapshot,
             companyId: heartbeatRuns.companyId,
             activeIdentityContextId: heartbeatRuns.activeIdentityContextId,
           })
@@ -2722,6 +2758,7 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
         if (!sourceRun || sourceRun.companyId !== issue.companyId) {
           throw unprocessable("sourceRunId must belong to the same company");
         }
+        originCommentIds = [...new Set([...originCommentIds, ...await currentContinuationOrigins(db, issue.companyId, issue.id, sourceRun.contextSnapshot)])];
         sourceIdentityContextId = actor.identityContextId ?? sourceRun.activeIdentityContextId;
         if (sourceIdentityContextId) {
           const [origin] = await db.select({id: runIdentityContexts.id}).from(runIdentityContexts).where(and(
@@ -2780,6 +2817,7 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
               resolverPolicyProvenance: policy.resolverPolicyProvenance,
               effectiveResolverPolicySource: policy.effectiveResolverPolicySource,
               idempotencyKey: data.idempotencyKey ?? null,
+              originCommentIds,
               sourceCommentId: data.sourceCommentId ?? null,
               sourceRunId: data.sourceRunId ?? null,
               sourceIdentityContextId,
@@ -3573,6 +3611,15 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
       return expired;
     },
 
+    expireConnectionIntentsForOwnershipChange: async (issue: { id: string; companyId: string }) => {
+      const expired = await db.update(issueThreadInteractions).set({
+        status: "expired", result: { version: 1, outcome: "expired", reason: "The task assignment changed" },
+        resolvedAt: now(), updatedAt: now(),
+      }).where(and(eq(issueThreadInteractions.companyId, issue.companyId), eq(issueThreadInteractions.issueId, issue.id),
+        eq(issueThreadInteractions.kind, "connection_intent"), eq(issueThreadInteractions.status, "pending"))).returning();
+      if (expired.length) await db.delete(toolOauthStates).where(inArray(toolOauthStates.interactionId, expired.map((row) => row.id)));
+      return expired;
+    },
     expirePendingInteractionsForTerminalIssue: async (
       issue: { id: string; companyId: string; status: string },
       actor: InteractionActor = {},

@@ -21,6 +21,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { companySkillService } from "../services/company-skills.ts";
+import { removeRuntimeSkillCache } from "../services/runtime-skill-cache.js";
 import { folderService } from "../services/folders.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -62,6 +63,9 @@ describeEmbeddedPostgres("companySkillService.list", () => {
   }, 20_000);
 
   afterEach(async () => {
+    for (const skill of await db.select().from(companySkills)) {
+      await removeRuntimeSkillCache(path.join(paperclipHome!, "instances", "default", "skills", skill.companyId), skill.id);
+    }
     await db.delete(agents);
     await db.delete(companySkills);
     await db.delete(projectWorkspaces);
@@ -82,6 +86,157 @@ describeEmbeddedPostgres("companySkillService.list", () => {
       await fs.rm(paperclipHome, { recursive: true, force: true });
     }
     await tempDb?.cleanup();
+  });
+
+  async function createPinnedRuntimeFixture() {
+    const companyId = randomUUID();
+    const skillId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Cache tests", issuePrefix: `T${companyId.slice(0, 6)}` });
+    await db.insert(companySkills).values({
+      id: skillId, companyId, key: `company/${companyId}/cached`, slug: "cached", name: "Cached",
+      markdown: "# Installed skill", sourceType: "github", sourceLocator: "https://github.com/acme/cache",
+      sourceRef: "a".repeat(40), trustLevel: "markdown_only", compatibility: "compatible",
+      metadata: { owner: "acme", repo: "cache", repoSkillDir: ".", trackingRef: "main" },
+      fileInventory: [{ path: "SKILL.md", kind: "skill" },
+        ...Array.from({ length: 20 }, (_, index) => ({ path: `references/${index}.md`, kind: "reference" as const }))],
+    });
+    return { companyId, skillId, key: `company/${companyId}/cached` };
+  }
+
+  it("refreshes once, reuses pinned runtime contents across service instances, and ignores cosmetic changes", async () => {
+    const { companyId, skillId, key } = await createPinnedRuntimeFixture();
+    const upstream = vi.fn(async (url: string | URL) => new Response(String(url)));
+    vi.stubGlobal("fetch", upstream);
+    const select = vi.spyOn(db, "select");
+    try {
+      const cold = (await svc.listRuntimeSkillEntries(companyId)).find((entry) => entry.key === key)!;
+      expect(cold.sourceStatus).toBe("available");
+      expect(select.mock.calls.filter(([fields]) => fields && Object.keys(fields).length === 1 && fields.id === companies.id)).toHaveLength(1);
+      expect(upstream).toHaveBeenCalledTimes(21);
+      expect(new Set(upstream.mock.calls.map(([url]) => String(url))).size).toBe(21);
+      const before = await fs.stat(path.join(cold.source, "SKILL.md"));
+      upstream.mockClear();
+      upstream.mockRejectedValue(new Error("Upstream outage"));
+      await db.update(companySkills).set({ name: "New display label", updatedAt: new Date(), metadata: { owner: "acme", repo: "cache", repoSkillDir: ".", trackingRef: "main", starred: true } }).where(eq(companySkills.id, skillId));
+      const warm = (await companySkillService(db).listRuntimeSkillEntries(companyId)).find((entry) => entry.key === key)!;
+      expect(warm).toEqual(cold);
+      expect(upstream).not.toHaveBeenCalled();
+      expect((await fs.stat(path.join(warm.source, "SKILL.md"))).mtimeMs).toBe(before.mtimeMs);
+      const readOnly = (await svc.listRuntimeSkillEntries(companyId, { materializeMissing: false })).find((entry) => entry.key === key)!;
+      expect(readOnly).toEqual(warm);
+      await db.update(companySkills).set({ sourceRef: "b".repeat(40) }).where(eq(companySkills.id, skillId));
+      expect((await svc.listRuntimeSkillEntries(companyId, { materializeMissing: false })).find((entry) => entry.key === key)!.sourceStatus).toBe("missing");
+      expect(upstream).not.toHaveBeenCalled();
+      // An unavailable newly installed revision must never use the older cache.
+      expect((await svc.listRuntimeSkillEntries(companyId)).find((entry) => entry.key === key)!.sourceStatus).toBe("missing");
+      expect(await fs.readFile(path.join(cold.source, "references/0.md"), "utf8")).toContain("a".repeat(40));
+      upstream.mockImplementation(async (url) => new Response(String(url)));
+      const next = (await svc.listRuntimeSkillEntries(companyId)).find((entry) => entry.key === key)!;
+      expect(next.sourceStatus).toBe("available");
+      expect(next.source).not.toBe(cold.source);
+      expect(await fs.readFile(path.join(next.source, "references/0.md"), "utf8")).toContain("b".repeat(40));
+      expect(await fs.readFile(path.join(cold.source, "references/0.md"), "utf8")).toContain("a".repeat(40));
+    } finally { select.mockRestore(); vi.unstubAllGlobals(); }
+  });
+
+  it("deduplicates runtime downloads for twenty concurrent service callers and isolates companies", async () => {
+    const first = await createPinnedRuntimeFixture();
+    const second = await createPinnedRuntimeFixture();
+    const upstream = vi.fn(async (url: string | URL) => new Response(String(url)));
+    vi.stubGlobal("fetch", upstream);
+    try {
+      const batches = await Promise.all(Array.from({ length: 20 }, () => companySkillService(db).listRuntimeSkillEntries(first.companyId)));
+      const sources = batches.map((entries) => entries.find((entry) => entry.key === first.key)!);
+      expect(sources.every((entry) => entry.sourceStatus === "available")).toBe(true);
+      expect(new Set(sources.map((entry) => entry.source)).size).toBe(1);
+      expect(upstream).toHaveBeenCalledTimes(21);
+      const other = (await svc.listRuntimeSkillEntries(second.companyId)).find((entry) => entry.key === second.key)!;
+      expect(other.source).not.toBe(sources[0].source);
+      expect(upstream).toHaveBeenCalledTimes(42);
+    } finally { vi.unstubAllGlobals(); }
+  });
+
+  it("keeps upstream changes dormant until explicit update and refreshes supporting-only changes", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Update cache", issuePrefix: `T${companyId.slice(0, 6)}` });
+    let revision = "a".repeat(40);
+    const markdown = "---\nname: cached\ndescription: A fixture\n---\n# Unchanged skill\n";
+    const upstream = vi.fn(async (input: string | URL) => {
+      const url = String(input);
+      if (url.includes("/commits/")) return Response.json({ sha: revision });
+      if (url.includes("/git/trees/")) return Response.json({ tree: [{ path: "cached/SKILL.md", type: "blob" }, { path: "cached/reference.md", type: "blob" }] });
+      if (url.endsWith("/SKILL.md")) return new Response(markdown);
+      if (url.endsWith("/reference.md")) return new Response(url.includes("a".repeat(40)) ? "old supporting file" : "new supporting file");
+      return Response.json({ default_branch: "main" });
+    });
+    vi.stubGlobal("fetch", upstream);
+    try {
+      const imported = await svc.importFromSource(companyId, "https://github.com/acme/cache");
+      const skill = imported.imported[0];
+      expect(skill.sourceRef).toBe(revision);
+      const old = (await svc.listRuntimeSkillEntries(companyId)).find((entry) => entry.key === skill.key)!;
+      revision = "b".repeat(40);
+      upstream.mockClear();
+      expect((await svc.listRuntimeSkillEntries(companyId)).find((entry) => entry.key === skill.key)).toEqual(old);
+      expect(upstream).not.toHaveBeenCalled();
+      const updated = await svc.installUpdate(companyId, skill.id);
+      expect(updated?.sourceRef).toBe(revision);
+      expect(updated?.markdown).toBe(markdown);
+      const next = (await svc.listRuntimeSkillEntries(companyId)).find((entry) => entry.key === skill.key)!;
+      expect(next.source).not.toBe(old.source);
+      expect(await fs.readFile(path.join(next.source, "reference.md"), "utf8")).toBe("new supporting file");
+      expect(await fs.readFile(path.join(old.source, "reference.md"), "utf8")).toBe("old supporting file");
+      const lockFailure = vi.spyOn(fs, "link").mockRejectedValueOnce(new Error("Publication lock unavailable"));
+      try {
+        await expect(svc.deleteSkill(companyId, skill.id)).rejects.toThrow("Publication lock unavailable");
+        expect(await svc.getById(companyId, skill.id)).not.toBeNull();
+      } finally { lockFailure.mockRestore(); }
+      await svc.deleteSkill(companyId, skill.id);
+      await expect(fs.stat(path.dirname(path.dirname(next.source)))).rejects.toMatchObject({ code: "ENOENT" });
+    } finally { vi.unstubAllGlobals(); }
+  });
+
+  it("observes edits to a direct local source on the next preparation", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Local cache", issuePrefix: `T${companyId.slice(0, 6)}` });
+    const skill = await svc.createLocalSkill(companyId, { name: "Local source", slug: "local-source" });
+    const first = (await svc.listRuntimeSkillEntries(companyId)).find((entry) => entry.key === skill.key)!;
+    await fs.appendFile(path.join(first.source, "SKILL.md"), "\nNew local instructions\n");
+    const next = (await svc.listRuntimeSkillEntries(companyId)).find((entry) => entry.key === skill.key)!;
+    expect(next.source).toBe(first.source);
+    expect(await fs.readFile(path.join(next.source, "SKILL.md"), "utf8")).toContain("New local instructions");
+  });
+
+  it("observes supporting-only local file saves across runtime preparations and service restarts", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Local supporting files", issuePrefix: `T${companyId.slice(0, 6)}` });
+    const skill = await svc.createLocalSkill(companyId, { name: "Local references", slug: "local-references" });
+    const source = skill.sourceLocator!;
+    await fs.writeFile(path.join(source, "reference.md"), "Original supporting file");
+    await db.update(companySkills).set({
+      fileInventory: [...skill.fileInventory, { path: "reference.md", kind: "reference" }],
+    }).where(eq(companySkills.id, skill.id));
+    const prepare = async () => (await companySkillService(db).listRuntimeSkillEntries(companyId))
+      .find((entry) => entry.key === skill.key)!;
+    const first = await prepare();
+    expect(first.sourceStatus).toBe("available");
+    expect(await fs.readFile(path.join(first.source, "reference.md"), "utf8")).toBe("Original supporting file");
+
+    await svc.updateFile(companyId, skill.id, "reference.md", "Edited supporting file");
+    expect((await svc.getById(companyId, skill.id))?.markdown).toBe(skill.markdown);
+    const next = await prepare();
+    expect(next.sourceStatus).toBe("available");
+    expect(await fs.readFile(path.join(next.source, "reference.md"), "utf8")).toBe("Edited supporting file");
+
+    await fs.writeFile(path.join(source, "reference.md"), "Direct filesystem edit");
+    const onDisk = await prepare();
+    expect(await fs.readFile(path.join(onDisk.source, "reference.md"), "utf8")).toBe("Direct filesystem edit");
+    // Mutable local sources never enter the immutable revision-cache fast path.
+    expect(first.source).toBe(source);
+    expect(next.source).toBe(source);
+    expect(onDisk.source).toBe(source);
+    await fs.unlink(path.join(source, "SKILL.md"));
+    expect(await prepare()).toBeUndefined();
   });
 
   it("lists skills without exposing markdown content", async () => {
@@ -3070,7 +3225,11 @@ describeEmbeddedPostgres("companySkillService.list", () => {
     await fs.mkdir(oldRuntimeDir, { recursive: true });
     await fs.writeFile(path.join(oldRuntimeDir, "SKILL.md"), "# stale\n", "utf8");
 
+    const revisionCacheRoot = path.join(managedRoot, "__runtime_cache_v1__", skill.id);
+    await fs.mkdir(revisionCacheRoot, { recursive: true });
+    await fs.writeFile(path.join(revisionCacheRoot, "old-cache"), "stale");
     await svc.renameSkill(companyId, skill.id, { name: "Runtime Skill", slug: "runtime-renamed" });
+    await expect(fs.stat(revisionCacheRoot)).rejects.toMatchObject({ code: "ENOENT" });
 
     await expect(fs.stat(oldRuntimeDir)).rejects.toMatchObject({ code: "ENOENT" });
   });

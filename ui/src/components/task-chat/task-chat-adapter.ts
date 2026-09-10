@@ -119,6 +119,7 @@ export function commentsToTaskChatItems(
       ?? null;
     items.push({
       id: comment.id || comment.clientId || `${comment.createdAt}`,
+      renderKey: comment.clientId ?? comment.id,
       kind: "message",
       author: kind,
       authorName,

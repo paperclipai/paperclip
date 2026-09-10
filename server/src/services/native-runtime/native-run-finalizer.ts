@@ -167,7 +167,7 @@ async function claimCoordinator(input: {
       .set({
         leaseOwner,
         leaseExpiresAt: new Date(now.getTime() + 5 * 60_000),
-        attempt: input.preserveProviderAttempt
+        attempt: input.preserveProviderAttempt || coordinator.controllerBootId !== null
           ? coordinator.attempt
           : coordinator.attempt + 1,
         phase:
@@ -300,6 +300,7 @@ async function recordRetryableFailure(input: {
     const [updatedRun] = await tx
       .update(heartbeatRuns)
       .set({
+        executionStatusDeliveryId: randomUUID(),
         ...(projectsTerminalStatus
           ? {
               status:
@@ -441,6 +442,7 @@ async function projectCommittedRun(input: {
   }
   const now = new Date();
   const [updatedRun] = await input.db.update(heartbeatRuns).set({
+        executionStatusDeliveryId: randomUUID(),
     status: projectNativeTerminalRunStatus(terminalState as "succeeded" | "failed" | "cancelled"),
     finishedAt: input.run.finishedAt ?? now,
     nativePhase: "committed",
@@ -623,6 +625,7 @@ export async function finalizeNativeRun(input: {
         (effect) => effect.kind === "cancel_continuations",
       );
       const [updatedRun] = await input.db.update(heartbeatRuns).set({
+        executionStatusDeliveryId: randomUUID(),
         ...(input.projectRunStatus ? {
           status: terminalState === "succeeded" ? "succeeded" : terminalState === "cancelled" ? "cancelled" : "failed",
           finishedAt: now,

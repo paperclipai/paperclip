@@ -648,7 +648,7 @@ function ConnectionAccountRow({
             variant="outline"
             onClick={() => onNavigate(actionHref)}
           >
-            {state.kind === "attention" ? "Reconnect" : "Finish setup"}
+            {state.kind === "attention" ? connection.requiresReauthorization === false ? "Retry access" : "Reconnect" : "Finish setup"}
           </Button>
         ) : null}
         <DropdownMenu>

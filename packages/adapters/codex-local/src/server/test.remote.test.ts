@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import path from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
 
 const {
@@ -14,14 +15,19 @@ const {
   prepareManagedCodexHome,
   restoreWorkspace,
   capturedHomeAssetFiles,
+  capturedHomeAssetAuthJson,
 } = vi.hoisted(() => {
   const restoreWorkspace = vi.fn(async () => {});
   // Records the files staged in the uploaded "home" asset at call time, before
   // the probe's cleanup deletes the temp dir. Lets tests assert the upload is a
   // minimal credentials-only home and not the full managed CODEX_HOME.
   const capturedHomeAssetFiles: { value: string[] | null } = { value: null };
+  // Records the staged auth.json content, so tests can assert WHICH home's
+  // credential the probe uploaded (the effective home a run would use).
+  const capturedHomeAssetAuthJson: { value: string | null } = { value: null };
   return {
     capturedHomeAssetFiles,
+    capturedHomeAssetAuthJson,
     ensureAdapterExecutionTargetDirectory: vi.fn(async () => {}),
     ensureAdapterExecutionTargetCommandResolvable: vi.fn(async () => {}),
     maybeRunSandboxInstallCommand: vi.fn(async () => null),
@@ -50,6 +56,9 @@ const {
       const homeAsset = input?.assets?.find((asset) => asset.key === "home");
       if (homeAsset) {
         capturedHomeAssetFiles.value = (await fs.readdir(homeAsset.localDir)).sort();
+        capturedHomeAssetAuthJson.value = await fs
+          .readFile(`${homeAsset.localDir}/auth.json`, "utf8")
+          .catch(() => null);
       }
       return {
         target: null,
@@ -100,9 +109,34 @@ vi.mock("./codex-home.js", async () => {
 import { testEnvironment } from "./test.js";
 
 describe("codex remote environment diagnostics", () => {
-  afterEach(() => {
+  const scratchDirs: string[] = [];
+
+  async function makeScratchDir(prefix: string): Promise<string> {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
+    scratchDirs.push(dir);
+    return dir;
+  }
+
+  beforeEach(async () => {
+    // The probe mirrors execute's home preparation, which reads the shared
+    // source home and the auth cache from `process.env`. Pin both to empty
+    // scratch locations so no test ever reads or writes the real ~/.codex or
+    // the real instance tree.
+    vi.stubEnv("CODEX_HOME", await makeScratchDir("paperclip-test-shared-codex-"));
+    vi.stubEnv("PAPERCLIP_HOME", await makeScratchDir("paperclip-test-instance-"));
+    vi.stubEnv("PAPERCLIP_INSTANCE_ID", "default");
+  });
+
+  afterEach(async () => {
     vi.clearAllMocks();
+    vi.unstubAllEnvs();
     delete process.env.OPENAI_API_KEY;
+    capturedHomeAssetFiles.value = null;
+    capturedHomeAssetAuthJson.value = null;
+    while (scratchDirs.length > 0) {
+      const dir = scratchDirs.pop();
+      if (dir) await fs.rm(dir, { recursive: true, force: true }).catch(() => undefined);
+    }
   });
 
   it("stages managed CODEX_HOME in an isolated runtime dir and keeps the probe cwd on the original remote workspace", async () => {
@@ -317,5 +351,115 @@ describe("codex remote environment diagnostics", () => {
       | [string, AdapterExecutionTarget, string, string[], { cwd: string; env: Record<string, string> }]
       | undefined;
     expect(probeCall?.[4].env.CODEX_HOME).toBeUndefined();
+  });
+
+  const subscriptionAuth = (accountId: string, marker: string, lastRefresh: string) =>
+    JSON.stringify({
+      tokens: {
+        id_token: `synthetic-id-token-${marker}`,
+        access_token: `synthetic-access-token-${marker}`,
+        refresh_token: `synthetic-refresh-token-${marker}`,
+        account_id: accountId,
+      },
+      last_refresh: lastRefresh,
+    });
+
+  function sandboxTarget(): AdapterExecutionTarget {
+    return {
+      kind: "remote",
+      transport: "sandbox",
+      providerKey: "daytona",
+      remoteCwd: "/remote/workspace",
+      runner: {
+        execute: async () => ({
+          exitCode: 0,
+          signal: null,
+          timedOut: false,
+          stdout: "",
+          stderr: "",
+          pid: null,
+          startedAt: new Date().toISOString(),
+        }),
+      },
+    };
+  }
+
+  it("stages a configured managed per-agent CODEX_HOME instead of the company default home", async () => {
+    // Execute honors env.CODEX_HOME, so the probe must exercise that same home
+    // — otherwise the Test and real runs authenticate with different
+    // credentials and can disagree in both directions.
+    const perAgentHome = path.join(
+      process.env.PAPERCLIP_HOME!,
+      "instances",
+      "default",
+      "companies",
+      "company-1",
+      "agents",
+      "agent-x",
+      "codex-home",
+    );
+    const promoted = subscriptionAuth("acct-agent", "promoted", "2026-07-09T02:00:00Z");
+    await fs.mkdir(perAgentHome, { recursive: true });
+    await fs.writeFile(path.join(perAgentHome, "auth.json"), promoted, "utf8");
+    await fs.writeFile(path.join(perAgentHome, "config.toml"), 'model = "gpt-5"\n', "utf8");
+
+    const result = await testEnvironment({
+      companyId: "company-1",
+      adapterType: "codex_local",
+      config: {
+        engine: "cli",
+        command: "codex",
+        env: { CODEX_HOME: perAgentHome },
+      },
+      executionTarget: sandboxTarget(),
+      environmentName: "QA Daytona",
+    });
+
+    expect(result.status).toBe("pass");
+    // The company default home preparation never ran; the configured managed
+    // home was seeded in place and its credential is what got staged.
+    expect(prepareManagedCodexHome).not.toHaveBeenCalled();
+    expect(capturedHomeAssetAuthJson.value).toBe(promoted);
+    // The real seeding pass ran on the per-agent home and kept the promoted
+    // regular-file credential (the shared source scratch home is empty).
+    const stat = await fs.lstat(path.join(perAgentHome, "auth.json"));
+    expect(stat.isSymbolicLink()).toBe(false);
+    expect(await fs.readFile(path.join(perAgentHome, "auth.json"), "utf8")).toBe(promoted);
+  });
+
+  it("stages an external CODEX_HOME's credentials as-is and never seeds or mutates it", async () => {
+    const externalHome = await makeScratchDir("paperclip-test-external-codex-");
+    const external = subscriptionAuth("acct-ext", "external", "2026-07-09T01:00:00Z");
+    await fs.writeFile(path.join(externalHome, "auth.json"), external, "utf8");
+    // Plant a same-identity, strictly-fresher credential in the shared source
+    // home: if the probe wrongly ran the managed seeding pass on the external
+    // home, the heal would swap its auth.json for a symlink to this file. The
+    // regular-file assertion below is therefore proof no seeding happened.
+    await fs.writeFile(
+      path.join(process.env.CODEX_HOME!, "auth.json"),
+      subscriptionAuth("acct-ext", "shared", "2026-07-09T02:00:00Z"),
+      "utf8",
+    );
+
+    const result = await testEnvironment({
+      companyId: "company-1",
+      adapterType: "codex_local",
+      config: {
+        engine: "cli",
+        command: "codex",
+        env: { CODEX_HOME: externalHome },
+      },
+      executionTarget: sandboxTarget(),
+      environmentName: "QA Daytona",
+    });
+
+    expect(result.status).toBe("pass");
+    expect(prepareManagedCodexHome).not.toHaveBeenCalled();
+    // The external home's own credential is what got staged — not the shared
+    // source's fresher copy, because an external override manages its own auth.
+    expect(capturedHomeAssetAuthJson.value).toBe(external);
+    const stat = await fs.lstat(path.join(externalHome, "auth.json"));
+    expect(stat.isSymbolicLink()).toBe(false);
+    expect(await fs.readFile(path.join(externalHome, "auth.json"), "utf8")).toBe(external);
   });
 });

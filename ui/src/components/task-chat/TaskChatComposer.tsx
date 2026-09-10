@@ -8,6 +8,7 @@ import {
   type ReactNode,
 } from "react";
 import { cn } from "@/lib/utils";
+import { useComposerStop } from "@/hooks/useComposerStop";
 import { useStreamlinedTaskChatPresentation } from "./presentation-mode";
 import {
   DRAFT_DEBOUNCE_MS,
@@ -17,6 +18,7 @@ import {
 } from "@/lib/composer-draft";
 import {
   ArrowUp,
+  Square,
   Check,
   ChevronDown,
   CircleHelp,
@@ -59,10 +61,12 @@ import { AgentIcon } from "@/components/AgentIconPicker";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import type { MentionOption } from "@/components/MarkdownEditor";
 import type { IssueAttachment, IssueWorkMode } from "@paperclipai/shared";
+import type { RunnerGoalCapability } from "@paperclipai/shared";
+import type { ActionCommandOption } from "@/context/EditorAutocompleteContext";
 import { TaskChatComposerTakeoverActionsContext } from "./TaskChatComposerTakeoverContext";
 
 /** Structurally identical to IssueChatThread's module-private CommentReassignment. */
-interface CommentReassignment {
+export interface CommentReassignment {
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
 }
@@ -78,6 +82,7 @@ export interface TaskChatComposerTakeover {
   onShowNext?: () => void;
   /** Places Skip inside a structured question form's action row. */
   inlineSkip?: boolean;
+  hideLabel?: boolean;
   /** Some decision surfaces already provide a non-accept path of their own. */
   hideSkip?: boolean;
 }
@@ -88,6 +93,9 @@ interface TaskChatComposerProps {
     reopen?: boolean,
     reassignment?: CommentReassignment,
   ) => Promise<void> | void;
+  onStop?: () => Promise<void>;
+  stopPending?: boolean;
+  stopScope?: "leaf" | "subtree";
   workMode: IssueWorkMode;
   onWorkModeChange?: (mode: IssueWorkMode) => Promise<void> | void;
   disabled?: boolean;
@@ -107,6 +115,7 @@ interface TaskChatComposerProps {
     { label: string; image: string | null }
   > | null;
   currentAssigneeValue?: string;
+  onPendingAssigneeChange?: (value: string | null) => void;
   issueStatus?: string;
   /** Mobile document-flow host: 16px editor text so iOS doesn't zoom on focus. */
   mobile?: boolean;
@@ -122,6 +131,67 @@ interface TaskChatComposerProps {
     label?: string;
     onOpen: () => void;
   } | null;
+  runnerGoalCapability?: RunnerGoalCapability | null;
+  onRunnerGoalCommand?: (command: RunnerGoalComposerCommand) => Promise<void> | void;
+  onRunnerGoalReassign?: (reassignment: CommentReassignment) => Promise<void> | void;
+}
+
+export type RunnerGoalComposerCommand =
+  | { action: "focus" }
+  | { action: "create"; objective: string }
+  | { action: "edit" }
+  | { action: "pause" }
+  | { action: "resume" }
+  | { action: "clear" };
+
+export type ParsedRunnerGoalCommand =
+  | { matched: false }
+  | { matched: true; command: RunnerGoalComposerCommand }
+  | { matched: true; error: string };
+
+function normalizeRunnerGoalCommandText(value: string): string {
+  const trimmed = value.trim();
+  // MDXEditor's link extension can reinterpret a selected action command plus
+  // its subsequently typed argument as one relative autolink. Accept only the
+  // exact whole-document shape it generates so the action still cannot fall
+  // through as a comment. Ordinary Markdown links remain ordinary comments.
+  const relativeAutolink = trimmed.match(
+    /^\[\/(?:go(?:al)?)?[ \t\u00a0]*\]\(<(\/goal(?:[ \t\u00a0].*)?)>\)$/s,
+  );
+  if (relativeAutolink) return relativeAutolink[1]!.replaceAll("\u00a0", " ");
+
+  const encodedAutolink = trimmed.match(
+    /^\[\/(?:go(?:al)?)?[ \t\u00a0]*\]\((\/goal(?:%20|%C2%A0).*)\)$/s,
+  );
+  if (encodedAutolink) {
+    try {
+      return decodeURIComponent(encodedAutolink[1]!).replaceAll("\u00a0", " ");
+    } catch {
+      return trimmed;
+    }
+  }
+  return trimmed.replaceAll("\u00a0", " ");
+}
+
+export function parseRunnerGoalCommand(value: string): ParsedRunnerGoalCommand {
+  const trimmed = normalizeRunnerGoalCommandText(value);
+  if (!trimmed) return { matched: false };
+  const firstWhitespace = trimmed.search(/\s/);
+  const firstToken = firstWhitespace === -1 ? trimmed : trimmed.slice(0, firstWhitespace);
+  if (firstToken !== "/goal") return { matched: false };
+  const remainder = firstWhitespace === -1 ? "" : trimmed.slice(firstWhitespace).trim();
+  if (!remainder) return { matched: true, command: { action: "focus" } };
+  const [subcommand, ...extra] = remainder.split(/\s+/);
+  if (["edit", "pause", "resume", "clear"].includes(subcommand)) {
+    if (extra.length > 0) {
+      return { matched: true, error: `/goal ${subcommand} does not accept extra arguments.` };
+    }
+    return {
+      matched: true,
+      command: { action: subcommand as "edit" | "pause" | "resume" | "clear" },
+    };
+  }
+  return { matched: true, command: { action: "create", objective: remainder } };
 }
 
 /** Per-mode hue token (see ui/src/index.css `--tc-mode-*`). */
@@ -210,7 +280,12 @@ const MODE_DESCRIPTION: Partial<Record<IssueWorkMode, string>> = {
 };
 
 /** v7 per-mode placeholder copy; `{agent}` is the pending assignee's name. */
-function modePlaceholder(mode: IssueWorkMode, agentName: string): string {
+function modePlaceholder(mode: IssueWorkMode, agentName: string, mobile: boolean): string {
+  if (mobile) {
+    if (mode === "planning") return `Plan with ${agentName}…`;
+    if (mode === "ask") return `Ask ${agentName}…`;
+    return `Message ${agentName}…`;
+  }
   switch (mode) {
     case "planning":
       return `Plan with ${agentName} — shapes the plan doc, no code changes…`;
@@ -281,6 +356,9 @@ function escapeMarkdownLabel(name: string): string {
  */
 export function TaskChatComposer({
   onAdd,
+  onStop,
+  stopPending = false,
+  stopScope = "leaf",
   workMode,
   onWorkModeChange,
   disabled = false,
@@ -294,6 +372,7 @@ export function TaskChatComposer({
   agentMap,
   userProfileMap,
   currentAssigneeValue = "",
+  onPendingAssigneeChange,
   issueStatus,
   mobile = false,
   draftKey,
@@ -302,8 +381,12 @@ export function TaskChatComposer({
   onCancelQueuedEdit,
   takeover = null,
   pendingTakeover = null,
+  runnerGoalCapability = null,
+  onRunnerGoalCommand,
+  onRunnerGoalReassign,
 }: TaskChatComposerProps) {
   const streamlined = useStreamlinedTaskChatPresentation();
+  const stopControl = useComposerStop(onStop, stopPending);
   const [body, setBody] = useState(() => (draftKey ? loadDraft(draftKey) : ""));
   const [submitting, setSubmitting] = useState(false);
   const [takeoverBusy, setTakeoverBusy] = useState(false);
@@ -316,6 +399,7 @@ export function TaskChatComposer({
   const [pendingMode, setPendingMode] = useState<IssueWorkMode>(workMode);
   const [pendingAssignee, setPendingAssignee] = useState<string | null>(null);
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
+  const [actionError, setActionError] = useState<string | null>(null);
   const attachmentsRef = useRef(attachments);
   attachmentsRef.current = attachments;
   const pendingAssigneeRef = useRef(pendingAssignee);
@@ -423,7 +507,27 @@ export function TaskChatComposer({
     assigneeLabel === "Unassigned" ? "the agent" : assigneeLabel;
   const effectivePlaceholder = queuedEdit
     ? "Edit queued message…"
-    : (placeholder ?? modePlaceholder(pendingMode, assigneeName));
+    : (placeholder ?? modePlaceholder(pendingMode, assigneeName, mobile));
+  const goalUnavailable = runnerGoalCapability?.availability !== "available";
+  const goalCommandOption: ActionCommandOption = {
+    id: "action:goal",
+    kind: "action",
+    command: "goal",
+    name: "Goal",
+    description:
+      !runnerGoalCapability || runnerGoalCapability.verified === false
+        ? "Support will be verified when the session starts."
+        : "Pursue work across turns.",
+    aliases: ["goal", "pursue", "continue"],
+    disabled: goalUnavailable && runnerGoalCapability !== null,
+    disabledReason:
+      runnerGoalCapability?.reason ?? "Session goals are unsupported by this agent.",
+  };
+
+  function updatePendingAssignee(value: string | null) {
+    setPendingAssignee(value);
+    onPendingAssigneeChange?.(value);
+  }
 
   /** Upload an image and return its URL for inline `![](src)` markdown. */
   async function uploadInlineImage(file: File): Promise<string> {
@@ -551,6 +655,12 @@ export function TaskChatComposer({
   // Sending mid-upload would silently drop the pending file from the comment;
   // sending past a failed chip would discard the file the user selected and
   // clear its error state, so both hold submission until resolved or removed.
+  const showStop =
+    !queuedEdit &&
+    !submitting &&
+    body.trim().length === 0 &&
+    attachments.length === 0 &&
+    Boolean(onStop || stopControl.stopping);
   const uploadPending = attachments.some((item) => item.status === "uploading");
   const uploadFailed = attachments.some((item) => item.status === "error");
   const takeoverVisible = Boolean(
@@ -569,6 +679,56 @@ export function TaskChatComposer({
     const submittedAttachments = attachmentsRef.current;
     const submittedAssignee = pendingAssigneeRef.current;
     const trimmed = submittedBody.trim();
+    const goalCommand = queuedEdit
+      ? ({ matched: false } as const)
+      : parseRunnerGoalCommand(submittedBody);
+    if (goalCommand.matched) {
+      if ("error" in goalCommand) {
+        setActionError(goalCommand.error);
+        return;
+      }
+      if (attachmentsRef.current.length > 0) {
+        setActionError("Remove attachments before using /goal.");
+        return;
+      }
+      if (!onRunnerGoalCommand) {
+        setActionError(
+          runnerGoalCapability?.reason ?? "Session goals are unsupported by this agent.",
+        );
+        return;
+      }
+      if (runnerGoalCapability && runnerGoalCapability.availability !== "available") {
+        setActionError(
+          runnerGoalCapability.reason ?? "Session goals are unsupported by this agent.",
+        );
+        return;
+      }
+      try {
+        const hasReassignment = showAssignee && assigneeValue !== currentAssigneeValue;
+        if (hasReassignment && goalCommand.command.action !== "focus") {
+          const reassignment = parseAssigneeValue(assigneeValue);
+          if (!reassignment || !onRunnerGoalReassign) {
+            setActionError("Select an agent before starting a session goal.");
+            return;
+          }
+          await onRunnerGoalReassign(reassignment);
+          updatePendingAssignee(null);
+        }
+        await onRunnerGoalCommand(goalCommand.command);
+        setActionError(null);
+        bodyRef.current = "";
+        if (draftTimer.current) clearTimeout(draftTimer.current);
+        draftTimer.current = null;
+        if (draftKey) clearDraft(draftKey);
+        setBody("");
+        editorRef.current?.clear();
+      } catch (error) {
+        setActionError(
+          error instanceof Error ? error.message : "The goal action could not be applied.",
+        );
+      }
+      return;
+    }
     if (
       (!trimmed && attachedRefs.length === 0) ||
       uploadPending ||
@@ -626,7 +786,7 @@ export function TaskChatComposer({
         setAttachments([]);
       }
       if (pendingAssigneeRef.current === submittedAssignee) {
-        setPendingAssignee(null);
+        updatePendingAssignee(null);
       }
     } catch {
       // Restore the failed message for retry without discarding a next draft
@@ -682,6 +842,7 @@ export function TaskChatComposer({
         streamlined
           ? "paperclip-task-chat-composer rounded-(--radius-task-composer) border border-border bg-card p-(--sz-18px) shadow-(--shadow-task-composer) dark:border-0 dark:bg-muted dark:shadow-none"
           : "paperclip-task-chat-composer rounded-xl bg-card p-(--sz-18px)",
+        mobile && "p-3",
       )}
       onKeyDownCapture={(e) => {
         // Capture mode shortcuts on the wrapper so they work while the rich
@@ -708,11 +869,11 @@ export function TaskChatComposer({
           data-testid="task-chat-composer-takeover"
         >
           <div
-            className="mb-3 flex min-w-0 items-center gap-2"
+            className={cn("flex min-w-0 items-center gap-2", takeover.hideLabel && takeover.pendingCount === 1 ? "absolute right-0 top-0 z-10" : "mb-3")}
             data-testid="task-chat-composer-takeover-header"
           >
             <div className="min-w-0 flex-1">
-              {!takeoverHeaderClaimed ? (
+              {!takeoverHeaderClaimed && !takeover.hideLabel ? (
                 <strong className="block truncate text-sm font-medium text-foreground">
                   {takeover.label}
                 </strong>
@@ -753,7 +914,7 @@ export function TaskChatComposer({
               </Button>
             </div>
           </div>
-          <div className="pr-1" data-testid="task-chat-composer-takeover-body">
+          <div className={takeover.hideLabel && takeover.pendingCount === 1 ? "pr-8" : "pr-1"} data-testid="task-chat-composer-takeover-body">
             <TaskChatComposerTakeoverActionsContext.Provider
               value={{
                 skipButton:
@@ -762,6 +923,7 @@ export function TaskChatComposer({
                   takeoverSkipButton
                     ? takeoverSkipButton
                     : null,
+                dismiss: takeover.onDismiss,
                 headerSlot: takeoverHeaderSlot,
                 controlsSlot: takeoverControlsSlot,
                 setHeaderClaimed: setTakeoverHeaderClaimed,
@@ -811,6 +973,7 @@ export function TaskChatComposer({
               }
               readOnly={disabled}
               mentions={mentions}
+              actionCommands={[goalCommandOption]}
               onSubmit={() => void submit()}
               imageUploadHandler={
                 canAcceptFiles ? uploadInlineImage : undefined
@@ -820,11 +983,21 @@ export function TaskChatComposer({
               className={cn(disabled && "opacity-60")}
               contentClassName={
                 mobile
-                  ? "max-h-(--sz-28dvh) min-h-(--sz-72px) overflow-y-auto px-1 py-1 text-base scrollbar-auto-hide"
+                  ? "max-h-(--sz-28dvh) min-h-(--sz-48px) overflow-y-auto px-1 py-1 text-base scrollbar-auto-hide"
                   : "max-h-(--sz-28dvh) min-h-(--sz-48px) overflow-y-auto px-1 py-1 text-sm scrollbar-auto-hide"
               }
             />
           </div>
+
+          {actionError ? (
+            <p
+              className="px-1 text-xs text-destructive"
+              role="alert"
+              data-testid="task-chat-goal-error"
+            >
+              {actionError}
+            </p>
+          ) : null}
 
           {attachments.length > 0 ? (
             <AttachmentGroup
@@ -933,6 +1106,7 @@ export function TaskChatComposer({
                     )}
                     style={{ "--sc": modeHue(pendingMode) } as CSSProperties}
                     data-testid="task-chat-composer-mode"
+                    data-slot="task-chat-mode-trigger"
                     data-pending-work-mode={pendingMode}
                   >
                     {modeMeta.label}
@@ -990,7 +1164,7 @@ export function TaskChatComposer({
                 noneLabel="No assignee"
                 searchPlaceholder="Search assignees…"
                 emptyMessage="No matches."
-                onChange={setPendingAssignee}
+                onChange={updatePendingAssignee}
                 disabled={disabled}
                 triggerTestId="task-chat-composer-assignee"
                 className="h-8 gap-1.5 border-0 bg-transparent px-2.5 text-xs shadow-none hover:bg-accent focus-visible:bg-accent focus-visible:ring-0"
@@ -1042,47 +1216,69 @@ export function TaskChatComposer({
 
             <button
               type="button"
-              onClick={() => void submit()}
+              onClick={() => void (showStop ? stopControl.stop() : submit())}
               disabled={
-                disabled ||
-                submitting ||
-                uploadPending ||
-                uploadFailed ||
-                (body.trim().length === 0 && attachedRefs.length === 0)
+                showStop
+                  ? disabled || stopControl.stopping
+                  : disabled ||
+                    submitting ||
+                    uploadPending ||
+                    uploadFailed ||
+                    (body.trim().length === 0 && attachedRefs.length === 0)
               }
               title={
-                queuedEdit
-                  ? queuedEdit.stale
-                    ? "Queue as new message"
-                    : "Save queued message"
-                  : uploadPending
-                    ? "Waiting for upload to finish"
-                    : uploadFailed
-                      ? "Remove the failed attachment to send"
-                      : "Send (⌘+Enter)"
+                showStop
+                  ? stopControl.stopping
+                    ? "Stopping…"
+                    : stopScope === "subtree"
+                      ? "Stop and pause subtree"
+                      : "Stop and pause task"
+                  : queuedEdit
+                    ? queuedEdit.stale
+                      ? "Queue as new message"
+                      : "Save queued message"
+                    : uploadPending
+                      ? "Waiting for upload to finish"
+                      : uploadFailed
+                        ? "Remove the failed attachment to send"
+                        : "Send (⌘+Enter)"
               }
               aria-label={
-                queuedEdit
-                  ? queuedEdit.stale
-                    ? "Queue as new message"
-                    : "Save queued message"
-                  : "Send"
+                showStop
+                  ? stopControl.stopping
+                    ? "Stopping…"
+                    : "Stop"
+                  : queuedEdit
+                    ? queuedEdit.stale
+                      ? "Queue as new message"
+                      : "Save queued message"
+                    : "Send"
               }
               className={cn(
-                "flex h-8 w-8 shrink-0 items-center justify-center transition-transform hover:scale-105 disabled:scale-100",
+                "flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition-transform hover:scale-105 disabled:scale-100",
                 streamlined
-                  ? "rounded-full bg-foreground text-background disabled:bg-foreground disabled:text-background disabled:opacity-100"
-                  : "rounded-md bg-primary text-primary-foreground disabled:bg-muted disabled:text-muted-foreground",
+                  ? "bg-foreground text-background disabled:bg-foreground disabled:text-background disabled:opacity-100"
+                  : "bg-primary text-primary-foreground disabled:bg-muted disabled:text-muted-foreground",
               )}
-              data-testid="task-chat-composer-send"
+              data-testid={
+                showStop ? "task-chat-composer-stop" : "task-chat-composer-send"
+              }
+              data-slot="icon-button"
             >
-              {submitting ? (
+              {submitting || (showStop && stopControl.stopping) ? (
                 <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
+              ) : showStop ? (
+                <Square className="h-4 w-4 fill-current" aria-hidden />
               ) : (
                 <ArrowUp className="h-4 w-4" aria-hidden />
               )}
             </button>
           </div>
+          {stopControl.error ? (
+            <p role="alert" className="text-xs text-destructive">
+              {stopControl.error}
+            </p>
+          ) : null}
         </>
       )}
     </div>

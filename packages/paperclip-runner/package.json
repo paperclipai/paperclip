@@ -165,7 +165,8 @@
     "json-schema-to-ts": "^3.1.1",
     "opencode-ai": "1.18.29",
     "react-markdown": "^10.1.0",
-    "remark-gfm": "^4.0.1"
+    "remark-gfm": "^4.0.1",
+    "smol-toml": "^1.4.2"
   },
   "peerDependencies": {
     "react": ">=18",

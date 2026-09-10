@@ -1194,6 +1194,34 @@ describe.sequential("agent skill routes", () => {
     });
   });
 
+  it("seeds the chief-of-staff persona for the onboarding first agent", async () => {
+    const res = await requestApp(await createApp(), (baseUrl) => request(baseUrl)
+      .post("/api/companies/company-1/agents")
+      .send({
+        name: "Ada",
+        role: "general",
+        adapterType: "claude_local",
+        adapterConfig: {},
+        onboardingFirstAgent: true,
+      }));
+
+    expect([200, 201], JSON.stringify(res.body)).toContain(res.status);
+    const createdAgentId = expectResponseId(res.body.id);
+    await vi.waitFor(() => {
+      expect(mockAgentInstructionsService.materializeManagedBundle).toHaveBeenCalledWith(
+        expect.objectContaining({ id: createdAgentId, role: "general" }),
+        expect.objectContaining({
+          "AGENTS.md": expect.stringContaining("You are Ada, chief of staff for"),
+        }),
+        { entryFile: "AGENTS.md", replaceExisting: false },
+      );
+    });
+    // The generic default persona must NOT be what was seeded over the entry file.
+    const seededCalls = mockAgentInstructionsService.materializeManagedBundle.mock.calls;
+    const entrySeed = seededCalls.at(-1)?.[1] as Record<string, string> | undefined;
+    expect(entrySeed?.["AGENTS.md"]).toContain("# Hiring and delegation");
+  });
+
   it("includes canonical desired skills in hire approvals", async () => {
     const db = createDb(true);
 

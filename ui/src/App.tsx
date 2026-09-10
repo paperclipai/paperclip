@@ -114,9 +114,6 @@ const CompanyExport = lazy(() =>
 const ProductionAgents = lazy(() =>
   import("./pages/Agents.production").then((module) => ({ default: module.Agents })),
 );
-const ProductionAgentDetail = lazy(() =>
-  import("./pages/AgentDetail.production").then((module) => ({ default: module.AgentDetail })),
-);
 const ProductionRoutines = lazy(() =>
   import("./pages/Routines.production").then((module) => ({ default: module.Routines })),
 );
@@ -267,9 +264,9 @@ function boardRoutes(streamlinedUiEnabled: boolean) {
         />
       ))}
       <Route path="agents/new" element={<NewAgent />} />
-      <Route path="agents/:agentId" element={streamlinedUiEnabled ? <AgentDetail /> : <ProductionSurface><ProductionAgentDetail /></ProductionSurface>} />
-      <Route path="agents/:agentId/:tab" element={streamlinedUiEnabled ? <AgentDetail /> : <ProductionSurface><ProductionAgentDetail /></ProductionSurface>} />
-      <Route path="agents/:agentId/runs/:runId" element={streamlinedUiEnabled ? <AgentDetail /> : <ProductionSurface><ProductionAgentDetail /></ProductionSurface>} />
+      <Route path="agents/:agentId" element={<AgentDetail />} />
+      <Route path="agents/:agentId/:tab" element={<AgentDetail />} />
+      <Route path="agents/:agentId/runs/:runId" element={<AgentDetail />} />
       <Route path="projects" element={<Projects />} />
       <Route path="projects/:projectId" element={<ProjectDetail />} />
       <Route path="projects/:projectId/overview" element={<ProjectDetail />} />

@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { eq } from "drizzle-orm";
+import { asc, eq } from "drizzle-orm";
+import { readCompletedAssistantMessageCandidate, resolveHeartbeatRunResponse, selectHeartbeatRunFinalAgentMessage } from "../heartbeat-run-summary.js";
 import {
   activityLog,
   agentWakeupRequests,
@@ -495,7 +496,7 @@ describe("PaperclipControlPlanePort conformance", () => {
     ]);
   });
 
-  it("completes one selected Paperclip task through the public package session contract", async () => {
+  it("persists a delayed final answer and replay before resolving the selected task response", async () => {
     const identity = CONTROL_PLANE_CONFORMANCE_OPEN.identity;
     const sessionId = taskSessionId;
     const evidenceRef = `work_product:${taskWorkProductId}`;
@@ -519,9 +520,13 @@ describe("PaperclipControlPlanePort conformance", () => {
       emittedAt: `2026-08-09T02:59:0${sourceSeq}.000Z`,
       payload,
     });
+    const finalText = "The launch has two stages. Source: https://example.invalid/launch/STREAM-42";
+    const finalAnswer = event(2, "item.completed", { kind: "agentMessage", channel: "final", text: finalText });
     const events = [
       event(1, "run.result.proposed", taskResult),
-      event(2, "turn.completed", {}),
+      finalAnswer,
+      finalAnswer, // Exact replay must not create another stored answer.
+      event(3, "turn.completed", {}),
     ];
     const backend: NativeSessionBackend = {
       async descriptor() {
@@ -537,9 +542,13 @@ describe("PaperclipControlPlanePort conformance", () => {
         return {
           identity: () => input.identity,
           async capabilities() { return { resume: false, typedEvents: true, steering: false, interruption: true, structuredResult: true }; },
-          async *events() { yield* events; },
+          async *events() {
+            yield events[0]!;
+            await new Promise((resolve) => setTimeout(resolve, 6_000));
+            yield* events.slice(1);
+          },
           async startTurn() { return { turnId: "turn-phase6-paperclip-task" }; },
-          cancel() { return { cleanup: Promise.resolve() }; },
+          cancel() { throw new Error("A completion report must not interrupt the provider"); },
           async result() { return { result: taskResult, terminal: CONTROL_PLANE_CONFORMANCE_TERMINAL, turnId: "turn-phase6-paperclip-task" }; },
           async snapshot() { return { backendKind: "mock", sessionId, identity: input.identity, providerSessionId: "provider-phase6-paperclip-task" }; },
           async close() {},
@@ -606,6 +615,23 @@ describe("PaperclipControlPlanePort conformance", () => {
       controlPlaneInstanceId: "phase6-control-plane",
     });
     expect(completed.terminal.runTerminalState).toBe("succeeded");
+    const stored = await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, taskRunId)).orderBy(asc(heartbeatRunEvents.seq));
+    const answers = stored.filter((row) => row.eventType === "item.completed");
+    expect(answers).toHaveLength(1);
+    const finalAgentMessage = selectHeartbeatRunFinalAgentMessage({
+      candidates: answers.flatMap((row) => {
+        const candidate = readCompletedAssistantMessageCandidate({ seq: row.seq, prpEvent: row.payload?.prpEvent });
+        return candidate ? [candidate] : [];
+      }),
+    });
+    const response = resolveHeartbeatRunResponse({
+      resultJson: { nativeResult: taskResult }, finalAgentMessage,
+    });
+    expect(resolveHeartbeatRunResponse({ resultJson: { nativeResult: taskResult } }).text).toBe(taskResult.summary);
+    expect(response.text).toBe(finalText);
+    expect(response.decision.chosenSource).toBe("final_agent_message");
+    expect(stored.findIndex((row) => row.eventType === "run.result.accepted"))
+      .toBeGreaterThan(stored.findIndex((row) => row.eventType === "item.completed"));
     await finalizeNativeRun({ db, runId: taskRunId, workspaceFinalizeStatus: "succeeded" });
     await expect(port.completeRun({
       result: taskResult,

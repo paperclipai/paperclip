@@ -5,6 +5,7 @@ import type { DurablePrpControlPlane } from "@paperclipai/paperclip-runner";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  queueLiveRunnerPrpCommand,
   queueRunnerPrpRuntimeRequestResolution,
   registerRunnerPrpAuthority,
   RunnerPrpRuntimeRequestResolutionError,
@@ -90,6 +91,74 @@ describe("runner PRP websocket route", () => {
       registerRunnerPrpAuthority({ companyId: "company-2", runId, authority }),
     ).rejects.toThrow("runner_prp_authority_already_registered");
     await first.release();
+    server.close();
+  });
+
+  it("routes live commands only to the newest generation", async () => {
+    const server = createServer();
+    setupRunnerPrpWebSocketServer(server, { apiUrl: "http://127.0.0.1:3214" });
+    const oldRunId = "00000000-0000-4000-8000-000000000781";
+    const newRunId = "00000000-0000-4000-8000-000000000782";
+    const oldQueueCommand = vi.fn(() => ({
+      commandId: "old-command",
+      controllerSeq: 1,
+    }));
+    const newQueueCommand = vi.fn(() => ({
+      commandId: "new-command",
+      controllerSeq: 2,
+    }));
+    const oldRegistration = await registerRunnerPrpAuthority({
+      companyId: "company-1",
+      issueId: "issue-1",
+      agentId: "agent-1",
+      runId: oldRunId,
+      authority: {
+        queueCommand: oldQueueCommand,
+        commandOutcome: vi.fn(() => ({ status: "completed", result: null })),
+      } as unknown as DurablePrpControlPlane,
+    });
+    const newRegistration = await registerRunnerPrpAuthority({
+      companyId: "company-1",
+      issueId: "issue-1",
+      agentId: "agent-1",
+      runId: newRunId,
+      authority: {
+        queueCommand: newQueueCommand,
+        commandOutcome: vi.fn(() => ({ status: "completed", result: null })),
+      } as unknown as DurablePrpControlPlane,
+    });
+
+    expect(
+      queueLiveRunnerPrpCommand({
+        companyId: "company-1",
+        issueId: "issue-1",
+        agentId: "agent-1",
+        type: "session.goal.get",
+      }),
+    ).toMatchObject({ runId: newRunId, commandId: "new-command" });
+    expect(oldQueueCommand).not.toHaveBeenCalled();
+    expect(newQueueCommand).toHaveBeenCalledOnce();
+
+    await oldRegistration.release();
+    expect(
+      queueLiveRunnerPrpCommand({
+        companyId: "company-1",
+        issueId: "issue-1",
+        agentId: "agent-1",
+        type: "session.goal.get",
+      }),
+    ).toMatchObject({ runId: newRunId, commandId: "new-command" });
+    expect(newQueueCommand).toHaveBeenCalledTimes(2);
+
+    await newRegistration.release();
+    expect(
+      queueLiveRunnerPrpCommand({
+        companyId: "company-1",
+        issueId: "issue-1",
+        agentId: "agent-1",
+        type: "session.goal.get",
+      }),
+    ).toBeNull();
     server.close();
   });
 

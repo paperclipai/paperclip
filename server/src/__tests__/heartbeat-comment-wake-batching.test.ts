@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, eq, sql } from "drizzle-orm";
 import { WebSocketServer } from "ws";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
@@ -10,7 +10,9 @@ import {
   createDb,
   heartbeatRuns,
   issueComments,
+  issueRecoveryActions,
   issues,
+  issueTreeHolds,
 } from "@paperclipai/db";
 import { runningProcesses } from "../adapters/index.js";
 import { heartbeatService } from "../services/heartbeat.ts";
@@ -609,7 +611,8 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
       });
       expect(String(secondPayload.message ?? "")).toContain("Second comment");
       expect(String(secondPayload.message ?? "")).toContain("Third comment");
-      expect(String(secondPayload.message ?? "")).not.toContain("First comment");
+      // A fresh gateway request receives full context; the wake delta stays bounded above.
+      expect(String(secondPayload.message ?? "")).toContain("First comment");
     } finally {
       gateway.releaseFirstWait();
       await gateway.close();
@@ -762,7 +765,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
     }
   }, 120_000);
 
-  it("promotes deferred comment wakes with their comments after the active run is cancelled", async () => {
+  it("retains deferred comments for reconciliation after cancelling an unknown provider outcome", async () => {
     const gateway = await createControlledGatewayServer();
     const companyId = randomUUID();
     const agentId = randomUUID();
@@ -886,24 +889,17 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
 
       await heartbeat.cancelRun(firstRun!.id);
 
-      await waitFor(() => gateway.getAgentPayloads().length === 2);
-      const promotedPayload = gateway.getAgentPayloads()[1] ?? {};
-      expect(promotedPayload.paperclip).toBeUndefined();
-      const promotedWake = parseWakePayloadFromMessage(promotedPayload.message);
-      expect(promotedWake).toMatchObject({
-        commentIds: [queuedComment.id],
-        latestCommentId: queuedComment.id,
-        requestedCount: 1,
-        includedCount: 1,
-        missingCount: 0,
-      });
-      expect(String(promotedPayload.message ?? "")).toContain("Queued follow-up");
-
       gateway.releaseFirstWait();
-      await waitFor(async () => {
-        const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
-        return runs.length === 2 && runs.every((run) => ["cancelled", "succeeded"].includes(run.status));
-      }, 90_000);
+      await heartbeat.reconcileStrandedAssignedIssues();
+      expect(gateway.getAgentPayloads()).toHaveLength(1);
+      const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+      expect(runs).toEqual([expect.objectContaining({ id: firstRun!.id, status: "cancelled" })]);
+      const [action] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId));
+      expect(action).toMatchObject({ cause: "legacy_execution_requires_reconciliation", ownerType: "board", returnOwnerAgentId: agentId });
+      const [retained] = await db.select().from(issueComments).where(eq(issueComments.id, queuedComment.id));
+      expect(retained?.body).toBe("Queued follow-up");
+      const wakes = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, agentId));
+      expect(wakes.some(wake => wake.payload?.commentId === queuedComment.id && wake.status === "deferred_issue_execution")).toBe(true);
     } finally {
       gateway.releaseFirstWait();
       await gateway.close();
@@ -995,6 +991,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
           .then((rows) => rows[0] ?? null);
         return run?.status === "running";
       });
+      await waitFor(() => gateway.getAgentPayloads().length === 1);
 
       const comment2 = await db
         .insert(issueComments)
@@ -1039,6 +1036,10 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         return Boolean(deferred);
       });
 
+      // Running records admission. Wait for provider acceptance before
+      // simulating completion by that provider, or startup correctly rejects
+      // the already-closed task before this scenario reaches its follow-up.
+      await waitFor(() => gateway.getAgentPayloads().length >= 1);
       await db
         .update(issues)
         .set({
@@ -1200,6 +1201,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
           .then((rows) => rows[0] ?? null);
         return run?.status === "running";
       });
+      await waitFor(() => gateway.getAgentPayloads().length === 1);
 
       const comment = await db
         .insert(issueComments)
@@ -1247,6 +1249,10 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         return Boolean(deferred);
       });
 
+      // Running records admission. Wait for provider acceptance before
+      // simulating completion by that provider, or startup correctly rejects
+      // the already-closed task before this scenario reaches its follow-up.
+      await waitFor(() => gateway.getAgentPayloads().length >= 1);
       await db
         .update(issues)
         .set({
@@ -1379,6 +1385,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
           .then((rows) => rows[0] ?? null);
         return run?.status === "running";
       });
+      await waitFor(() => gateway.getAgentPayloads().length === 1);
 
       // Local-CLI agents post comments under user auth, but stamp the heartbeat
       // run id on each comment via createdByRunId. Simulate that here: a "user"
@@ -1429,6 +1436,10 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         return Boolean(deferred);
       });
 
+      // Running records admission. Wait for provider acceptance before
+      // simulating completion by that provider, or startup correctly rejects
+      // the already-closed task before this scenario reaches its follow-up.
+      await waitFor(() => gateway.getAgentPayloads().length >= 1);
       await db
         .update(issues)
         .set({
@@ -1806,6 +1817,10 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         return Boolean(deferred);
       });
 
+      // Running records admission. Wait for provider acceptance before
+      // simulating completion by that provider, or startup correctly rejects
+      // the already-closed task before this scenario reaches its follow-up.
+      await waitFor(() => gateway.getAgentPayloads().length >= 1);
       await db
         .update(issues)
         .set({
@@ -2512,4 +2527,501 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
       await gateway.close();
     }
   }, 20_000);
+
+  it("fails a deferred wake whose agent no longer exists, then still promotes the next queued wake", async () => {
+    const companyId = randomUUID();
+    const finishingAgentId = randomUUID();
+    const validAgentId = randomUUID();
+    const missingAgentId = randomUUID();
+    const issueId = randomUUID();
+    const runId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    // Pin scheduling suppression off with the runtimeEnv test seam. Do not rely
+    // on the ambient PAPERCLIP_IN_WORKTREE value: startNextQueuedRunForAgent
+    // no-ops under suppression and would leave the promoted wake at "queued".
+    const heartbeat = heartbeatService(db, { runtimeEnv: {} });
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+      defaultResponsibleUserId: "responsible-user",
+    });
+    await db.insert(agents).values([
+      {
+        id: finishingAgentId,
+        companyId,
+        name: "Finishing Agent",
+        role: "engineer",
+        status: "idle",
+        adapterType: "process",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: validAgentId,
+        companyId,
+        name: "Assignee Agent",
+        role: "engineer",
+        status: "idle",
+        adapterType: "process",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId: finishingAgentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "running",
+      runtimeMode: "legacy",
+      startedAt: new Date(),
+      contextSnapshot: { issueId },
+      responsibleUserId: "responsible-user",
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Continue past a missing deferred agent",
+      status: "in_progress",
+      priority: "medium",
+      responsibleUserId: "responsible-user",
+      assigneeAgentId: validAgentId,
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
+      executionRunId: runId,
+    });
+
+    const missingAgentWakeId = randomUUID();
+    // The agent_id foreign key always holds in the running system, so a wake row
+    // can never outlive its agent through the application. Bypass the check for
+    // this one insert to pin the release code's defensive branch for that state.
+    await db.transaction(async (tx) => {
+      await tx.execute(sql`set local session_replication_role = 'replica'`);
+      await tx.insert(agentWakeupRequests).values({
+        id: missingAgentWakeId,
+        companyId,
+        agentId: missingAgentId,
+        source: "automation",
+        reason: "issue_commented",
+        status: "deferred_issue_execution",
+        requestedByActorType: "system",
+        requestedByActorId: "test",
+        requestedAt: new Date("2026-08-22T15:00:00.000Z"),
+        payload: { issueId },
+      });
+    });
+
+    const validWakeId = randomUUID();
+    await db.insert(agentWakeupRequests).values({
+      id: validWakeId,
+      companyId,
+      agentId: validAgentId,
+      source: "automation",
+      reason: "issue_commented",
+      status: "deferred_issue_execution",
+      requestedByActorType: "system",
+      requestedByActorId: "test",
+      requestedAt: new Date("2026-08-22T15:01:00.000Z"),
+      payload: { issueId },
+    });
+
+    // A plain legacy cancel now stops promotion early for board reconciliation
+    // (see legacyExecutionNeedsReconciliation in legacy-execution-recovery.ts).
+    // Cancel as an in-flight workspace wait instead. That shape still reaches
+    // the deferred-wake promotion loop under test.
+    await heartbeat.cancelRun(runId, undefined, {
+      errorCode: "workspace_busy",
+      resultJson: {
+        executionRecovery: { kind: "workspace_wait", providerWorkStarted: false },
+      },
+    });
+
+    const [missingAgentWake, validWake, issueRow] = await Promise.all([
+      db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, missingAgentWakeId)).then((rows) => rows[0]),
+      db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, validWakeId)).then((rows) => rows[0]),
+      db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]),
+    ]);
+
+    expect(missingAgentWake).toMatchObject({
+      status: "failed",
+      error: "Deferred wake could not be promoted: agent is not invokable",
+    });
+    // The promotion writes "queued", then releaseIssueExecutionAndPromote
+    // immediately calls startNextQueuedRunForAgent for the idle promoted
+    // agent, which claims the run in the same call. Assert the settled
+    // state, not the intermediate one.
+    expect(validWake?.status).toBe("claimed");
+    expect(validWake?.runId).not.toBeNull();
+    expect(issueRow?.executionRunId).toBe(validWake?.runId);
+  });
+
+  it("fails a deferred wake with the same status and error text when its agent belongs to another company", async () => {
+    const companyId = randomUUID();
+    const otherCompanyId = randomUUID();
+    const finishingAgentId = randomUUID();
+    const crossCompanyAgentId = randomUUID();
+    const issueId = randomUUID();
+    const runId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const otherIssuePrefix = `T${otherCompanyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const heartbeat = heartbeatService(db);
+
+    await db.insert(companies).values([
+      {
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix,
+        requireBoardApprovalForNewAgents: false,
+        defaultResponsibleUserId: "responsible-user",
+      },
+      {
+        id: otherCompanyId,
+        name: "Other Paperclip",
+        issuePrefix: otherIssuePrefix,
+        requireBoardApprovalForNewAgents: false,
+      },
+    ]);
+    await db.insert(agents).values([
+      {
+        id: finishingAgentId,
+        companyId,
+        name: "Finishing Agent",
+        role: "engineer",
+        status: "idle",
+        adapterType: "process",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: crossCompanyAgentId,
+        companyId: otherCompanyId,
+        name: "Other Company Agent",
+        role: "engineer",
+        status: "idle",
+        adapterType: "process",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId: finishingAgentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "running",
+      runtimeMode: "legacy",
+      startedAt: new Date(),
+      contextSnapshot: { issueId },
+      responsibleUserId: "responsible-user",
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Cross-company deferred agent",
+      status: "in_progress",
+      priority: "medium",
+      responsibleUserId: "responsible-user",
+      assigneeAgentId: finishingAgentId,
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
+      executionRunId: runId,
+    });
+    const wakeId = randomUUID();
+    await db.insert(agentWakeupRequests).values({
+      id: wakeId,
+      companyId,
+      agentId: crossCompanyAgentId,
+      source: "automation",
+      reason: "issue_commented",
+      status: "deferred_issue_execution",
+      requestedByActorType: "system",
+      requestedByActorId: "test",
+      payload: { issueId },
+    });
+
+    // A plain legacy cancel now stops promotion early for board reconciliation
+    // (see legacyExecutionNeedsReconciliation in legacy-execution-recovery.ts).
+    // Cancel as an in-flight workspace wait instead. That shape still reaches
+    // the deferred-wake promotion loop under test.
+    await heartbeat.cancelRun(runId, undefined, {
+      errorCode: "workspace_busy",
+      resultJson: {
+        executionRecovery: { kind: "workspace_wait", providerWorkStarted: false },
+      },
+    });
+
+    const wake = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wakeId)).then((rows) => rows[0]);
+    expect(wake).toMatchObject({
+      status: "failed",
+      error: "Deferred wake could not be promoted: agent is not invokable",
+    });
+  });
+
+  it("cancels a deferred wake under an active pause hold, but promotes a verified hold interaction with the hold context", async () => {
+    const companyId = randomUUID();
+    const finishingAgentId = randomUUID();
+    const holdAgentId = randomUUID();
+    const issueId = randomUUID();
+    const runId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    // Pin scheduling suppression off with the runtimeEnv test seam. Do not rely
+    // on the ambient PAPERCLIP_IN_WORKTREE value: startNextQueuedRunForAgent
+    // no-ops under suppression and would leave the promoted wake at "queued".
+    const heartbeat = heartbeatService(db, { runtimeEnv: {} });
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+      defaultResponsibleUserId: "responsible-user",
+    });
+    await db.insert(agents).values([
+      {
+        id: finishingAgentId,
+        companyId,
+        name: "Finishing Agent",
+        role: "engineer",
+        status: "idle",
+        adapterType: "process",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: holdAgentId,
+        companyId,
+        name: "Hold Interaction Agent",
+        role: "engineer",
+        status: "idle",
+        adapterType: "process",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId: finishingAgentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "running",
+      runtimeMode: "legacy",
+      startedAt: new Date(),
+      contextSnapshot: { issueId },
+      responsibleUserId: "responsible-user",
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "A pause hold gates a plain wake but not a verified one",
+      status: "in_progress",
+      priority: "medium",
+      responsibleUserId: "responsible-user",
+      assigneeAgentId: holdAgentId,
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
+      executionRunId: runId,
+    });
+    const [hold] = await db.insert(issueTreeHolds).values({
+      companyId,
+      rootIssueId: issueId,
+      mode: "pause",
+      status: "active",
+      reason: "Investigating a regression",
+    }).returning();
+
+    const plainWakeId = randomUUID();
+    await db.insert(agentWakeupRequests).values({
+      id: plainWakeId,
+      companyId,
+      agentId: finishingAgentId,
+      source: "automation",
+      reason: "issue_commented",
+      status: "deferred_issue_execution",
+      requestedByActorType: "system",
+      requestedByActorId: "test",
+      requestedAt: new Date("2026-08-22T15:00:00.000Z"),
+      payload: { issueId },
+    });
+
+    const holdComment = await db.insert(issueComments).values({
+      companyId,
+      issueId,
+      authorUserId: "hold-user",
+      body: "Please continue despite the hold",
+    }).returning().then((rows) => rows[0]!);
+    const verifiedWakeId = randomUUID();
+    await db.insert(agentWakeupRequests).values({
+      id: verifiedWakeId,
+      companyId,
+      agentId: holdAgentId,
+      source: "issue_comment",
+      reason: "issue_commented",
+      status: "deferred_issue_execution",
+      requestedByActorType: "user",
+      requestedByActorId: "hold-user",
+      requestedAt: new Date("2026-08-22T15:01:00.000Z"),
+      payload: {
+        issueId,
+        commentId: holdComment.id,
+        _paperclipWakeContext: {
+          wakeReason: "issue_commented",
+          source: "issue.comment",
+          wakeCommentIds: [holdComment.id],
+        },
+      },
+    });
+
+    // A plain legacy cancel now stops promotion early for board reconciliation
+    // (see legacyExecutionNeedsReconciliation in legacy-execution-recovery.ts).
+    // Cancel as an in-flight workspace wait instead. That shape still reaches
+    // the deferred-wake promotion loop under test.
+    await heartbeat.cancelRun(runId, undefined, {
+      errorCode: "workspace_busy",
+      resultJson: {
+        executionRecovery: { kind: "workspace_wait", providerWorkStarted: false },
+      },
+    });
+
+    const [plainWake, verifiedWake] = await Promise.all([
+      db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, plainWakeId)).then((rows) => rows[0]),
+      db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, verifiedWakeId)).then((rows) => rows[0]),
+    ]);
+    expect(plainWake).toMatchObject({
+      status: "cancelled",
+      error: "Deferred wake suppressed by active subtree pause hold",
+    });
+    // Same settle-then-assert reasoning as the missing-agent test above:
+    // the idle promoted agent's run is claimed synchronously.
+    expect(verifiedWake?.status).toBe("claimed");
+    const promotedRun = await db
+      .select({ contextSnapshot: heartbeatRuns.contextSnapshot })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, verifiedWake!.runId!))
+      .then((rows) => rows[0]);
+    expect(promotedRun?.contextSnapshot).toMatchObject({
+      treeHoldInteraction: true,
+      activeTreeHold: {
+        holdId: hold!.id,
+        rootIssueId: issueId,
+        mode: "pause",
+        reason: "Investigating a regression",
+        interaction: true,
+      },
+    });
+  });
+
+  it("rolls back the wake row, the run row, and the issue lock together when the responsible user cannot resolve", async () => {
+    const companyId = randomUUID();
+    const finishingAgentId = randomUUID();
+    const deferredAgentId = randomUUID();
+    const issueId = randomUUID();
+    const runId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const heartbeat = heartbeatService(db);
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+      // No defaultResponsibleUserId: the company default must not resolve this wake.
+    });
+    await db.insert(agents).values([
+      {
+        id: finishingAgentId,
+        companyId,
+        name: "Finishing Agent",
+        role: "engineer",
+        status: "idle",
+        adapterType: "process",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: deferredAgentId,
+        companyId,
+        name: "Deferred Agent",
+        role: "engineer",
+        status: "idle",
+        adapterType: "process",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId: finishingAgentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "running",
+      runtimeMode: "legacy",
+      startedAt: new Date(),
+      contextSnapshot: { issueId },
+      // No responsibleUserId: the finishing run itself must not resolve this wake.
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "No responsible user can be resolved",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: deferredAgentId,
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
+      executionRunId: runId,
+      // No responsibleUserId: the issue itself must not resolve this wake.
+    });
+    const wakeId = randomUUID();
+    await db.insert(agentWakeupRequests).values({
+      id: wakeId,
+      companyId,
+      agentId: deferredAgentId,
+      source: "automation",
+      reason: "issue_commented",
+      status: "deferred_issue_execution",
+      requestedByActorType: "system",
+      requestedByActorId: "test",
+      payload: { issueId },
+    });
+
+    // A plain legacy cancel now stops promotion early for board reconciliation
+    // (see legacyExecutionNeedsReconciliation in legacy-execution-recovery.ts).
+    // Cancel as an in-flight workspace wait instead. That shape still reaches
+    // the deferred-wake promotion loop under test.
+    await expect(
+      heartbeat.cancelRun(runId, undefined, {
+        errorCode: "workspace_busy",
+        resultJson: {
+          executionRecovery: { kind: "workspace_wait", providerWorkStarted: false },
+        },
+      }),
+    ).rejects.toMatchObject({
+      status: 422,
+      details: expect.objectContaining({ code: "responsible_user_unresolved" }),
+    });
+
+    const [wake, issueRow, runs] = await Promise.all([
+      db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wakeId)).then((rows) => rows[0]),
+      db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]),
+      db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId)),
+    ]);
+    expect(wake?.status).toBe("deferred_issue_execution");
+    expect(issueRow?.executionRunId).toBe(runId);
+    expect(runs).toHaveLength(1);
+  });
 });

@@ -415,6 +415,8 @@ export const connectToolAppSchema = z.object({
   interactionId: z.string().uuid().optional(),
   /** Exact draft to continue after an interrupted setup. */
   resumeConnectionId: z.string().guid().optional(),
+  /** Exact configured connection to reauthorize without replacing its identity. */
+  reconnectConnectionId: z.string().guid().optional(),
   authMode: genericMcpAuthModeSchema.optional(),
   oauthClient: genericMcpOAuthClientSchema.optional(),
   credentialSource: z.enum(["paperclip_vault", "vercel_connect"]).optional(),
@@ -440,6 +442,9 @@ export const connectToolAppSchema = z.object({
       path: ["authMode"],
       message: "Authentication mode selection applies to a pasted URL, not a gallery app",
     });
+  }
+  if (value.resumeConnectionId && value.reconnectConnectionId) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["reconnectConnectionId"], message: "Choose resume or reconnect, not both" });
   }
   if (value.resumeConnectionId && !value.galleryKey) {
     ctx.addIssue({
@@ -476,6 +481,8 @@ export const reconnectToolAppSchema = z.object({
 export type ReconnectToolApp = z.infer<typeof reconnectToolAppSchema>;
 
 export const finishToolAppSchema = z.object({
+  /** Task setup adds access while preserving existing assignments and action policies. */
+  preserveExistingAccess: z.boolean().optional(),
   enabledCatalogEntryIds: z.array(z.string().guid()).max(500).default([]),
   askFirstCatalogEntryIds: z.array(z.string().guid()).max(500).default([]),
   reviewedCatalogEntryIds: z.array(z.string().guid()).max(500).optional(),
@@ -980,6 +987,7 @@ export const toolTrustRuleBatchApprovalSchema = z.object({
 });
 
 export const createToolTrustRuleFromActionRequestSchema = z.object({
+  argumentMode: z.enum(["exact", "action"]).optional(),
   name: z.string().trim().min(1).max(160).optional(),
   description: z.string().max(4000).optional().nullable(),
   priority: z.number().int().min(0).max(10000).default(40),
