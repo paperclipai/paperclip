@@ -2,7 +2,7 @@ import { pipeline } from "node:stream/promises";
 import { Router } from "express";
 import { z } from "zod";
 import { AGENT_PALETTE_IDS, AGENT_AVATAR_SIZES, CHARACTER_STATES, appearanceForPalette, type AgentAvatarSize } from "@paperclipai/shared";
-import { createAgentAvatarService } from "../services/agent-avatars.js";
+import { AvatarAdmissionError, createAgentAvatarService } from "../services/agent-avatars.js";
 import { createStorageProviderFromConfig } from "../storage/provider-registry.js";
 import { loadConfig } from "../config.js";
 import { logger } from "../middleware/logger.js";
@@ -29,7 +29,7 @@ export function agentAvatarRoutes(injected?: ReturnType<typeof createAgentAvatar
     const { palette, pose, size, scale } = parsed.data;
     try {
       service ??= createAgentAvatarService(createStorageProviderFromConfig(loadConfig()));
-      const { stream, byteSize, etag } = await service.get({ appearance: appearanceForPalette(palette === "muted-dream" ? AGENT_PALETTE_IDS[0] : palette), muted: palette === "muted-dream", pose, size: size as AgentAvatarSize, scale: Number(scale) as 1 | 2 });
+      const { stream, byteSize, etag } = await service.get({ appearance: appearanceForPalette(palette === "muted-dream" ? AGENT_PALETTE_IDS[0] : palette), muted: palette === "muted-dream", pose, size: size as AgentAvatarSize, scale: Number(scale) as 1 | 2 }, req.ip || req.socket.remoteAddress || "unknown");
       res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
       res.setHeader("ETag", etag);
       res.setHeader("X-Content-Type-Options", "nosniff");
@@ -39,13 +39,13 @@ export function agentAvatarRoutes(injected?: ReturnType<typeof createAgentAvatar
       res.setHeader("Content-Length", byteSize);
       await pipeline(stream, res);
     } catch (error) {
-      logger.warn({ err: error }, "Could not render agent avatar");
+      if (!(error instanceof AvatarAdmissionError)) logger.warn({ err: error }, "Could not render agent avatar");
       if (res.headersSent || res.destroyed) { res.destroy(); return; }
       res.removeHeader("Content-Length");
       res.removeHeader("ETag");
       res.setHeader("Cache-Control", "no-store");
-      res.setHeader("Retry-After", "5");
-      res.status(503).json({ error: "Avatar temporarily unavailable" });
+      res.setHeader("Retry-After", String(error instanceof AvatarAdmissionError ? error.retryAfterSeconds : 5));
+      res.status(error instanceof AvatarAdmissionError ? 429 : 503).json({ error: "Avatar temporarily unavailable" });
     }
   });
   return router;
