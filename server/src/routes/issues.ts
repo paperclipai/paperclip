@@ -7609,6 +7609,7 @@ export function issueRoutes(
         executionReconciliation.actionOutcome === "not_performed" &&
         lockedIssue.status === "in_review" &&
         reviewState?.status === "pending" &&
+        reviewState.currentStageId != null &&
         reviewState.currentStageType === "review" &&
         reviewState.currentParticipant?.type === "agent";
 

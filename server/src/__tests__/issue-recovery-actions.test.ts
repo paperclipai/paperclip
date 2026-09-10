@@ -1772,7 +1772,18 @@ describeEmbeddedPostgres("issue recovery actions", () => {
 
     expect(wake).toHaveBeenCalledWith(
       managerId,
-      expect.objectContaining({ reason: "issue_recovery_action_restored" }),
+      expect.objectContaining({
+        reason: "issue_recovery_action_restored",
+        issueStateGuard: {
+          statuses: ["in_review"],
+          assigneeAgentId: managerId,
+          execution: {
+            currentStageId: stageId,
+            currentStageType: "review",
+            participantAgentId: managerId,
+          },
+        },
+      }),
     );
     const [delivered] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, action!.id));
     expect(delivered!.evidence).toMatchObject({

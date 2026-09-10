@@ -230,6 +230,7 @@ export async function deliverReconciledExecutions(
         : null;
       const reviewParticipantAgentId =
         reviewState?.status === "pending" &&
+        reviewState.currentStageId != null &&
         reviewState.currentStageType === "review" &&
         reviewState.currentParticipant?.type === "agent"
           ? reviewState.currentParticipant.agentId
@@ -284,6 +285,17 @@ export async function deliverReconciledExecutions(
           wakeReason: "issue_recovery_action_restored",
           source: "execution.reconciled",
         },
+        issueStateGuard: reviewReconciliation
+          ? {
+              statuses: ["in_review"],
+              assigneeAgentId: deliveryAgentId,
+              execution: {
+                currentStageId: reviewState!.currentStageId!,
+                currentStageType: "review",
+                participantAgentId: deliveryAgentId,
+              },
+            }
+          : undefined,
       });
       if (run)
         await db.transaction(async (tx) => {

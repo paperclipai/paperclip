@@ -395,6 +395,60 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     ]);
   });
 
+  it("checks guarded review stage and participant under the enqueue lock", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const issueId = randomUUID();
+    const expectedStageId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Review continuation with stale stage",
+      status: "in_review",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      executionState: {
+        status: "pending",
+        currentStageId: randomUUID(),
+        currentStageType: "approval",
+        currentStageIndex: 1,
+        completedStageIds: [],
+        currentParticipant: { type: "agent", agentId, userId: null },
+        returnAssignee: { type: "agent", agentId, userId: null },
+        reviewRequest: null,
+        lastDecisionOutcome: null,
+        changesRequestedCount: 0,
+        lastDecisionId: null,
+      },
+    });
+
+    const run = await heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_commented",
+      payload: { issueId },
+      contextSnapshot: { issueId, wakeReason: "issue_commented" },
+      requestedByActorType: "user",
+      requestedByActorId: "responsible-user",
+      issueStateGuard: {
+        statuses: ["in_review"],
+        assigneeAgentId: agentId,
+        execution: {
+          currentStageId: expectedStageId,
+          currentStageType: "review",
+          participantAgentId: agentId,
+        },
+      },
+    });
+
+    expect(run).toBeNull();
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+    expect(await db.select().from(heartbeatRuns)).toHaveLength(0);
+    expect(await db.select({ status: agentWakeupRequests.status, reason: agentWakeupRequests.reason })
+      .from(agentWakeupRequests)).toEqual([
+      { status: "skipped", reason: "issue_state_guard_mismatch" },
+    ]);
+  });
+
   it("cancels a resolved connection-intent wake parked before queued-run claim", async () => {
     const { companyId, agentId } = await seedCompanyAndAgent();
     const issueId = randomUUID();

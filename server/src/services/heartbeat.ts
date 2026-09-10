@@ -3342,6 +3342,11 @@ interface WakeupOptions {
   issueStateGuard?: {
     statuses: string[];
     assigneeAgentId: string;
+    execution?: {
+      currentStageId: string;
+      currentStageType: "review";
+      participantAgentId: string;
+    };
   };
 }
 
@@ -23167,6 +23172,7 @@ export function heartbeatService(
             executionWorkspaceSettings: issues.executionWorkspaceSettings,
             assigneeAgentId: issues.assigneeAgentId,
             executionRunId: issues.executionRunId,
+            executionState: issues.executionState,
             executionAgentNameKey: issues.executionAgentNameKey,
             createdAt: issues.createdAt,
           })
@@ -23238,7 +23244,9 @@ export function heartbeatService(
             !action ||
             action.status !== "resolved" ||
             action.kind !== "active_run_watchdog" ||
-            action.returnOwnerAgentId !== agentId ||
+            (action.evidence.continuationDeliveryMode === "review"
+              ? issue.assigneeAgentId !== agentId
+              : action.returnOwnerAgentId !== agentId) ||
             !sourceRunId ||
             !isUuidLike(sourceRunId) ||
             decision.providerStopped !== true ||
@@ -23301,10 +23309,20 @@ export function heartbeatService(
         }
 
         const issueStateGuard = opts.issueStateGuard;
+        const executionStateGuard = issueStateGuard?.execution;
+        const currentExecutionState = executionStateGuard
+          ? parseIssueExecutionState(issue.executionState)
+          : null;
         if (
           issueStateGuard &&
           (!issueStateGuard.statuses.includes(issue.status) ||
-            issue.assigneeAgentId !== issueStateGuard.assigneeAgentId)
+            issue.assigneeAgentId !== issueStateGuard.assigneeAgentId ||
+            (executionStateGuard &&
+              (currentExecutionState?.status !== "pending" ||
+                currentExecutionState.currentStageId !== executionStateGuard.currentStageId ||
+                currentExecutionState.currentStageType !== executionStateGuard.currentStageType ||
+                currentExecutionState.currentParticipant?.type !== "agent" ||
+                currentExecutionState.currentParticipant.agentId !== executionStateGuard.participantAgentId)))
         ) {
           await tx.insert(agentWakeupRequests).values({
             companyId: agent.companyId,
