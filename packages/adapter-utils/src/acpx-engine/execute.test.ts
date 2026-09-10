@@ -592,6 +592,148 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(promptMetrics?.runtimeNoteChars).toBeGreaterThan(0);
   });
 
+  it("uses only the guarded external-chat contract for a default ACPX prompt", async () => {
+    const { meta } = await runExecutor(
+      { agent: "custom", agentCommand: "node ./fake-acp.js" },
+      {
+        authToken: "runtime-secret-token",
+        context: {
+          taskId: "issue-chat-1",
+          paperclipTaskMarkdown: "# CHAT-1 — Answer the provider message",
+          paperclipWake: {
+            reason: "External chat message received",
+            externalChatProvider: "discord",
+            checkedOutByHarness: true,
+            issue: {
+              id: "issue-chat-1",
+              identifier: "CHAT-1",
+              title: "Discord conversation",
+              status: "in_progress",
+              workMode: "standard",
+            },
+            continuationSummary: {
+              key: "summary",
+              body: "Earlier chat context.",
+            },
+            commentWindow: {
+              requestedCount: 1,
+              includedCount: 1,
+              missingCount: 0,
+            },
+            comments: [
+              {
+                id: "comment-chat-1",
+                issueId: "issue-chat-1",
+                body: "Reply with CHAT-OK.",
+              },
+            ],
+            fallbackFetchNeeded: false,
+          },
+        },
+      },
+    );
+
+    const prompt = String(meta[0]?.prompt ?? "");
+    const promptMetrics = meta[0]?.promptMetrics as Record<string, number> | undefined;
+    expect(prompt).toContain("## External chat response contract");
+    expect(prompt).toContain("# CHAT-1 — Answer the provider message");
+    expect(prompt).toContain("Make zero Paperclip API calls");
+    expect(prompt).not.toContain("Paperclip API access note:");
+    expect(prompt).not.toContain("Paperclip runtime note:");
+    expect(prompt).not.toContain(
+      "Leave durable progress in comments, documents, or work products",
+    );
+    expect(promptMetrics?.runtimeNoteChars).toBe(0);
+    expect(promptMetrics?.heartbeatPromptChars).toBe(0);
+  });
+
+  it("keeps the authenticated API fallback when ACPX has no native wake reader", async () => {
+    const { meta } = await runExecutor(
+      { agent: "custom", agentCommand: "node ./fake-acp.js" },
+      {
+        authToken: "runtime-secret-token",
+        context: {
+          taskId: "issue-chat-overflow",
+          paperclipTaskMarkdown: "# CHAT-2 — Answer every queued message",
+          paperclipWake: {
+            reason: "External chat message received",
+            externalChatProvider: "slack",
+            checkedOutByHarness: true,
+            issue: {
+              id: "issue-chat-overflow",
+              identifier: "CHAT-2",
+              title: "Slack conversation",
+              status: "in_progress",
+              workMode: "standard",
+            },
+            commentWindow: {
+              requestedCount: 2,
+              includedCount: 1,
+              missingCount: 1,
+            },
+            commentIds: ["comment-chat-1", "comment-chat-2"],
+            latestCommentId: "comment-chat-2",
+            comments: [
+              {
+                id: "comment-chat-2",
+                issueId: "issue-chat-overflow",
+                body: "Answer both queued messages.",
+              },
+            ],
+            fallbackFetchNeeded: true,
+          },
+        },
+      },
+    );
+
+    const prompt = String(meta[0]?.prompt ?? "");
+    expect(prompt).not.toContain("read_current_wake_comments");
+    expect(prompt).not.toContain("## External chat response contract");
+    expect(prompt).toContain("Paperclip API access note:");
+    expect(prompt).toContain("Only fetch the API thread");
+  });
+
+  it("preserves a configured agent prompt template on a guarded external-chat turn", async () => {
+    const { meta } = await runExecutor(
+      {
+        agent: "custom",
+        agentCommand: "node ./fake-acp.js",
+        promptTemplate: "Custom agent instruction for {{agent.id}}.",
+      },
+      {
+        context: {
+          taskId: "issue-chat-1",
+          paperclipWake: {
+            reason: "External chat message received",
+            externalChatProvider: "telegram",
+            checkedOutByHarness: true,
+            issue: {
+              id: "issue-chat-1",
+              identifier: "CHAT-1",
+              title: "Telegram conversation",
+              status: "in_progress",
+              workMode: "standard",
+            },
+            commentWindow: {
+              requestedCount: 1,
+              includedCount: 1,
+              missingCount: 0,
+            },
+            comments: [{ id: "comment-chat-1", body: "Hello" }],
+            fallbackFetchNeeded: false,
+          },
+        },
+      },
+    );
+
+    const prompt = String(meta[0]?.prompt ?? "");
+    expect(prompt).toContain("## External chat response contract");
+    expect(prompt).toContain("Custom agent instruction for agent-1.");
+    expect(prompt).not.toContain(
+      "Leave durable progress in comments, documents, or work products",
+    );
+  });
+
   it("does not show a scoped issue API command when the task id is unavailable", async () => {
     const { meta } = await runExecutor(
       { agent: "custom", agentCommand: "node ./fake-acp.js" },

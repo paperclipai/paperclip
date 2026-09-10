@@ -177,11 +177,10 @@ function createDb(requireBoardApprovalForNewAgents = false) {
   };
 }
 
+let agentRoutes: (typeof import("../routes/agents.js"))["agentRoutes"];
+let errorHandler: (typeof import("../middleware/index.js"))["errorHandler"];
+
 async function createApp(db: Record<string, unknown> = createDb()) {
-  const [{ agentRoutes }, { errorHandler }] = await Promise.all([
-    vi.importActual<typeof import("../routes/agents.js")>("../routes/agents.js"),
-    vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
-  ]);
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -246,7 +245,7 @@ function makeAgent(adapterType: string) {
 }
 
 describe.sequential("agent skill routes", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.resetModules();
     vi.doUnmock("../routes/agents.js");
     vi.doUnmock("../routes/authz.js");
@@ -369,6 +368,13 @@ describe.sequential("agent skill routes", () => {
     mockAccessService.listPrincipalGrants.mockResolvedValue([]);
     mockAccessService.ensureMembership.mockResolvedValue(undefined);
     mockAccessService.setPrincipalPermission.mockResolvedValue(undefined);
+
+    // Prepare the module graph inside the setup budget after every reset. Each
+    // test still constructs its own app after configuring its request-specific mocks.
+    [{ agentRoutes }, { errorHandler }] = await Promise.all([
+      vi.importActual<typeof import("../routes/agents.js")>("../routes/agents.js"),
+      vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+    ]);
   });
 
   it("skips runtime materialization when listing Claude skills", async () => {

@@ -1,5 +1,5 @@
 import { readCodexThreadState, readCodexTurnMetadata, readCodexTurnItems } from "./codex-history.js";
-import { codexRunUsage } from "./codex-usage-baseline.js";
+import { codexRunUsage, observeCodexUsage } from "./codex-usage-baseline.js";
 import { randomUUID } from "node:crypto";
 import { NativeProviderTerminalFailure } from "../../contracts/native-session-backend.js";
 
@@ -661,8 +661,21 @@ export class CodexHarnessSession
     const reconciledUsage = boundedPayload(
       record(thread.tokenUsage ?? snapshot.tokenUsage),
     );
-    if (Object.keys(reconciledUsage).length > 0)
-      this.usageSnapshot = reconciledUsage;
+    if (Object.keys(reconciledUsage).length > 0) {
+      if (this.driverKind === "codex_app_server" && this.codexUsageBaseline) {
+        this.codexUsageBaseline = observeCodexUsage(
+          this.codexUsageBaseline,
+          reconciledUsage.total,
+          false,
+        );
+        this.usageSnapshot = {
+          ...reconciledUsage,
+          ...codexRunUsage(this.codexUsageBaseline),
+        };
+      } else {
+        this.usageSnapshot = reconciledUsage;
+      }
+    }
     const activeTurns = turns.filter(
       (turn) => text(turn.status) === "inProgress",
     );

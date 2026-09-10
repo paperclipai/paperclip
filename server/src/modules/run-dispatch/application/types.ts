@@ -23,6 +23,8 @@ export type RunStatusEvent = {
   triggerDetail: string | null;
   error: string | null;
   errorCode: string | null;
+  /** Source-only projection from the committed run; never its full wake context. */
+  contextSource: string | null;
   startedAt: Date | null;
   finishedAt: Date | null;
   result: Record<string, unknown>;

@@ -22,6 +22,10 @@ export type WakeAdmissionFacts = {
   shouldQueueFollowupForRunningWake: boolean;
   /** True when the active execution run still stands as a live coalesce target after the zombie-run filter runs. */
   availableActiveExecutionRunPresent: boolean;
+  /** Missing means ordinary legacy admission, preserving its existing behavior. */
+  allowRunCoalescing?: boolean;
+  /** False when a durable input's actor does not match the target wake receipt. */
+  sameDurableActor?: boolean;
 };
 
 export type WakeAdmissionDecision =
@@ -39,6 +43,8 @@ export type WakeAdmissionDecision =
  */
 export function decideWakeAdmission(facts: WakeAdmissionFacts): WakeAdmissionDecision {
   if (
+    facts.allowRunCoalescing !== false &&
+    facts.sameDurableActor !== false &&
     facts.isSameExecutionAgent &&
     !facts.shouldDeferFollowupWake &&
     !facts.shouldQueueFollowupForRunningWake &&
@@ -216,6 +222,8 @@ export type ReleaseRecoveryImmediateFacts = {
   isConfigurationIncompleteFailedRun: boolean;
   /** didAutomaticRecoveryFail(run, expectedRetryReason) for the issue's own status branch. */
   automaticRecoveryAlreadyFailed: boolean;
+  /** Exact admitted-chat lineage or a non-retryable failure forbids generic continuation. */
+  sourceRequiresExplicitRecovery?: boolean;
 };
 
 export type ReleaseRecoveryFacts = {
@@ -400,6 +408,7 @@ export function decideReleaseRecovery(facts: ReleaseRecoveryFacts): ReleaseRecov
   if (shared.isStrandedRecoveryOrigin) return { kind: "blocked_recovery_in_place" };
 
   const shouldBlockImmediately =
+    immediate.sourceRequiresExplicitRecovery === true ||
     !shared.recoveryAgentInvokable ||
     !shared.recoveryAgentPresent ||
     immediate.isWorkspaceValidationFailedRun ||

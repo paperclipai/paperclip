@@ -615,6 +615,24 @@ export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]
     Extract<TranscriptEntry, { kind: "runtime_request" }>
   >();
   let hasRunResult = false;
+  let responseWakeCandidate: {
+    entry: Extract<TranscriptEntry, { kind: "run_result" }>;
+    runId: string;
+    sourceEventId: string;
+    sourceInstanceId: string;
+    normalizedSessionId: string;
+    turnId: string | null;
+    seq: number;
+  } | null = null;
+  const acceptedResultCounts = new Map<string, number>();
+  const terminalsByRun = new Map<
+    string,
+    {
+      entry: Extract<TranscriptEntry, { kind: "run_terminal" }>;
+      seq: number;
+      envelope: Record<string, unknown>;
+    }
+  >();
   const completedAgentMessageIds = new Set<string>();
   const completedReasoningIds = new Set<string>();
   const completionItemIdentityById = new Map<string, ItemIdentity>();
@@ -918,18 +936,66 @@ export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]
 
     if (event.eventType === "run.terminal") {
       const terminal = runTerminalEntry(payload, ts);
-      if (terminal) entries.push(terminal);
+      if (terminal) {
+        entries.push(terminal);
+        terminalsByRun.set(event.runId, {
+          entry: terminal,
+          seq: event.seq,
+          envelope,
+        });
+      }
       continue;
     }
 
     if (
-      (event.eventType === "run.result.proposed" || event.eventType === "run.result.accepted")
+      event.eventType === "run.result.proposed" ||
+      event.eventType === "run.result.accepted"
     ) {
-      if (event.eventType === "run.result.proposed" && hasAcceptedResult) continue;
-      const result = event.eventType === "run.result.accepted" ? record(payload.result) : payload;
+      if (event.eventType === "run.result.proposed" && hasAcceptedResult)
+        continue;
+      const result =
+        event.eventType === "run.result.accepted"
+          ? record(payload.result)
+          : payload;
       if (!result || result.schema !== RUN_RESULT_SCHEMA) continue;
+      if (event.eventType === "run.result.accepted") {
+        acceptedResultCounts.set(
+          event.runId,
+          (acceptedResultCounts.get(event.runId) ?? 0) + 1,
+        );
+      }
       if (!hasRunResult) {
-        entries.push(runResultEntry(result, ts));
+        const entry = runResultEntry(result, ts);
+        entries.push(entry);
+        const continuation = record(result.continuation);
+        const sourceEventId = text(envelope.sourceEventId);
+        const sourceInstanceId = text(envelope.sourceInstanceId);
+        const normalizedSessionId = text(envelope.normalizedSessionId);
+        // Never infer this authority from provider prose, a proposed result,
+        // or a similarly named field supplied inside the semantic result.
+        if (
+          event.eventType === "run.result.accepted" &&
+          envelope.sourceKind === "control_plane" &&
+          entry.disposition === "yielded" &&
+          text(result.summary)?.trim() &&
+          continuation?.kind === "response_wake" &&
+          text(continuation.idempotencyKey)?.trim() &&
+          Array.isArray(result.attentionRequests) &&
+          result.attentionRequests.length === 0 &&
+          sourceEventId?.trim() &&
+          sourceInstanceId?.trim() &&
+          normalizedSessionId?.trim()
+        ) {
+          responseWakeCandidate = {
+            entry,
+            runId: event.runId,
+            sourceEventId,
+            sourceInstanceId,
+            normalizedSessionId,
+            turnId: text(envelope.turnId),
+            seq: event.seq,
+          };
+        }
         hasRunResult = true;
       }
       const summary = text(result.summary);
@@ -938,7 +1004,32 @@ export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]
       }
       continue;
     }
+  }
 
+  if (responseWakeCandidate) {
+    const candidate = responseWakeCandidate;
+    const terminal = terminalsByRun.get(candidate.runId);
+    if (
+      acceptedResultCounts.get(candidate.runId) === 1 &&
+      terminal &&
+      terminal.seq > candidate.seq &&
+      terminal.envelope.sourceKind === "control_plane" &&
+      text(terminal.envelope.sourceEventId)?.trim() &&
+      terminal.envelope.sourceInstanceId === candidate.sourceInstanceId &&
+      terminal.envelope.normalizedSessionId === candidate.normalizedSessionId &&
+      text(terminal.envelope.turnId) === candidate.turnId &&
+      terminal.entry.runState === "succeeded" &&
+      terminal.entry.turnState === "completed" &&
+      terminal.entry.disposition === "yielded" &&
+      ![...runtimeRequests.values()].some(
+        (request) => request.status === "pending",
+      )
+    ) {
+      candidate.entry.acceptedResponseWake = {
+        runId: candidate.runId,
+        sourceEventId: candidate.sourceEventId,
+      };
+    }
   }
 
   // A structured result can be proposed before its originating final item is

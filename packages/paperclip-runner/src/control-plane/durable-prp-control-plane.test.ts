@@ -1083,6 +1083,212 @@ function corruptSemanticInputDigest(
   return event;
 }
 
+it.each(["committed", "rejected"] as const)(
+  "holds explicit maintenance retirement through a closed connection's queued processing (%s)",
+  async (suffixOutcome) => {
+    const root = mkdtempSync(resolve(tmpdir(), "runner-processing-drain-"));
+    const releases: Array<() => void> = [];
+    const gates = [0, 1].map(
+      () => new Promise<void>((release) => releases.push(release)),
+    );
+    const onCommittedEvent = vi.fn(async (event: { sourceSeq: number }) => {
+      await gates[event.sourceSeq - 1];
+      if (event.sourceSeq === 2 && suffixOutcome === "rejected")
+        throw new Error("retained suffix commit rejected");
+    });
+    const core = new DurablePrpControlPlane({
+      stateDirectory: root,
+      identity,
+      expectedRunnerVersion,
+      expectedRunnerDigest,
+      onCommittedEvent,
+    });
+    let admittedFrames = 0;
+    const attachWire = core.attachWireConnection.bind(core);
+    const wireSpy = vi
+      .spyOn(core, "attachWireConnection")
+      .mockImplementation((wire) =>
+        attachWire({
+          onJson: (listener) =>
+            wire.onJson((value) => {
+              admittedFrames += 1;
+              listener(value);
+            }),
+          onClose: wire.onClose.bind(wire),
+          close: wire.close.bind(wire),
+          sendJson: wire.sendJson.bind(wire),
+        }),
+      );
+    let client: AuthenticatedClient | null = null;
+    let retirement: Promise<void> | undefined;
+    const retired = vi.fn();
+    try {
+      await core.start();
+      client = (await authenticate(core, core.issueBootstrapTicket()))!;
+      const beforeFrames = admittedFrames;
+      for (const sourceSeq of [1, 2]) {
+        const envelope = semanticInputEvent(sourceSeq);
+        envelope.payload = {
+          ...(envelope.payload as Record<string, unknown>),
+          eventType: "item.delta",
+          priority: 2,
+          payload: { delta: `retained-${sourceSeq}` },
+        };
+        expect(validatePrpEvent(envelope.payload)).toMatchObject({ ok: true });
+        sendSecure(client, envelope);
+      }
+      await vi.waitFor(() => {
+        expect(admittedFrames).toBe(beforeFrames + 2);
+        expect(onCommittedEvent).toHaveBeenCalledTimes(1);
+      });
+      // Both frames have entered the real authenticated processing chain;
+      // socket shutdown does not settle either of their durable callbacks.
+      await core.stop();
+      expect(core.activeRunnerConnectionCount()).toBe(0);
+      retirement = core
+        .drainPendingConnectionProcessing()
+        .then(() => retired());
+      await new Promise<void>((resolveTurn) => setImmediate(resolveTurn));
+      expect(retired).not.toHaveBeenCalled();
+      expect(core.store.state.ackedSourceSeq).toBe(0);
+
+      releases[0]!();
+      await vi.waitFor(() => expect(onCommittedEvent).toHaveBeenCalledTimes(2));
+      expect(core.store.state.ackedSourceSeq).toBe(1);
+      expect(retired).not.toHaveBeenCalled();
+      releases[1]!();
+      await retirement;
+      expect(retired).toHaveBeenCalledOnce();
+      const stored = JSON.parse(
+        readFileSync(resolve(root, "control-plane-state.json"), "utf8"),
+      );
+      expect(stored.ackedSourceSeq).toBe(suffixOutcome === "committed" ? 2 : 1);
+      expect(
+        stored.committedEvents.map(
+          (event: { sourceSeq: number }) => event.sourceSeq,
+        ),
+      ).toEqual(suffixOutcome === "committed" ? [1, 2] : [1]);
+      expect(stored.commands).toEqual([]);
+    } finally {
+      releases.forEach((release) => release());
+      client?.socket.destroy();
+      await core.stop();
+      await core.drainPendingConnectionProcessing();
+      await vi.waitFor(() => expect(onCommittedEvent).toHaveBeenCalledTimes(2));
+      await new Promise<void>((resolveTurn) => setImmediate(resolveTurn));
+      await retirement;
+      wireSpy.mockRestore();
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+);
+
+it.each([false, true])(
+  "joins held authentication processing after stop without consuming its revoked admission (reopened ingress: %s)",
+  async (reopenedIngress) => {
+    const root = mkdtempSync(
+      resolve(tmpdir(), "runner-auth-processing-drain-"),
+    );
+    let release!: () => void;
+    const gate = new Promise<void>((resolveGate) => {
+      release = resolveGate;
+    });
+    let entered!: () => void;
+    const waiting = new Promise<void>((resolveEntered) => {
+      entered = resolveEntered;
+    });
+    const core = new DurablePrpControlPlane({
+      stateDirectory: root,
+      identity,
+      expectedRunnerVersion,
+      expectedRunnerDigest,
+      beforeAuthenticatedConnection: async () => {
+        entered();
+        await gate;
+      },
+    });
+    let authenticating: Promise<AuthenticatedClient | null> | undefined;
+    let drained: Promise<void> | undefined;
+    try {
+      await core.start();
+      const ticket = core.issueBootstrapTicket();
+      const ticketId = credentialMaterial(ticket).credentialId;
+      authenticating = authenticate(core, ticket);
+      await waiting;
+      await core.stop();
+      const settled = vi.fn();
+      drained = core.drainPendingConnectionProcessing().then(() => settled());
+      void drained.catch(() => undefined);
+      await new Promise<void>((resolveTurn) => setImmediate(resolveTurn));
+      expect(settled).not.toHaveBeenCalled();
+      if (reopenedIngress) await core.start();
+      release();
+      if (reopenedIngress) {
+        await expect(drained).rejects.toThrow("stopped ingress");
+        expect(settled).not.toHaveBeenCalled();
+        await core.stop();
+      } else {
+        await drained;
+        expect(settled).toHaveBeenCalledOnce();
+      }
+      await expect(authenticating).resolves.toBeNull();
+      expect(core.store.state.tickets[ticketId]!.usedAt).toBeNull();
+      expect(core.store.state.leases).toEqual({});
+      expect(core.store.state.connectionCount).toBe(0);
+      expect(core.store.state.commandDeliveryCounts).toEqual({});
+      await expect(
+        core.drainPendingConnectionProcessing(),
+      ).resolves.toBeUndefined();
+    } finally {
+      release();
+      await core.stop();
+      await core.drainPendingConnectionProcessing();
+      await authenticating?.catch(() => undefined);
+      await drained?.catch(() => undefined);
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+);
+
+it("refuses a processing-drain absence claim while local or remote ingress remains admitted", async () => {
+  const root = mkdtempSync(
+    resolve(tmpdir(), "runner-processing-drain-ingress-"),
+  );
+  const core = new DurablePrpControlPlane({
+    stateDirectory: root,
+    identity,
+    expectedRunnerVersion,
+    expectedRunnerDigest,
+  });
+  try {
+    await core.start();
+    await expect(core.drainPendingConnectionProcessing()).rejects.toThrow(
+      "stopped ingress",
+    );
+    await core.stop();
+    let closed = () => {};
+    core.attachWireConnection({
+      onJson: () => {},
+      onClose: (listener) => {
+        closed = () => listener({ message: "closed" });
+      },
+      close: () => closed(),
+      sendJson: () => {},
+    });
+    await expect(core.drainPendingConnectionProcessing()).rejects.toThrow(
+      "stopped ingress",
+    );
+    await core.stop();
+    await expect(
+      core.drainPendingConnectionProcessing(),
+    ).resolves.toBeUndefined();
+  } finally {
+    await core.stop();
+    await core.drainPendingConnectionProcessing();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 describe.sequential("DurablePrpControlPlane", () => {
   it.each(["pending_first", "all_pending", "completed_first"] as const)(
     "retains unanswered semantic input across the bounded event window (%s)",

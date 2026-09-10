@@ -60,6 +60,14 @@ function sourceSlugForConnection(
 }
 
 
+function availableToolConnectionMethods(
+  app: (typeof CONNECTABLE_APP_DEFINITIONS)[number],
+) {
+  return getAvailableConnectionMethods(app).filter(
+    (method) => (method.purpose ?? "tool") === "tool",
+  );
+}
+
 export function connectionIntentService(db: Db) {
   const interactions = issueThreadInteractionService(db);
   const access = toolAccessService(db);
@@ -281,9 +289,9 @@ export function connectionIntentService(db: Db) {
       const app = getAppStoreDefinition(service);
       if (!app) throw notFound("Connection service was not found");
       return { ...app, available: app.availability?.available !== false,
-        searchCapabilities: getAvailableConnectionMethods(app).map((method) =>
+        searchCapabilities: availableToolConnectionMethods(app).map((method) =>
           `${method.whenToUse} ${method.capabilityProfile?.label ?? ""} ${method.capabilityProfile?.description ?? ""}`).join(" "),
-        methods: getAvailableConnectionMethods(app).map((method) => ({
+        methods: availableToolConnectionMethods(app).map((method) => ({
           key: method.key, label: method.label ?? method.key, auth: method.auth,
         })), source: "catalog" as const };
     }

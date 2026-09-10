@@ -244,7 +244,14 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
     );
     expect(dispatchedRequests).toHaveLength(1);
     const dispatchedRun = runs.find((run) => run.id === dispatchedRequests[0]!.runId);
-    expect(dispatchedRun).toMatchObject({ status: "succeeded", agentId });
+    expect(dispatchedRun).toMatchObject({
+      status: "succeeded",
+      agentId,
+      contextSnapshot: {
+        source: "native_status_decision",
+        statusDecisionSource: "native_status_decision",
+      },
+    });
 
     const persistedIntents = await db.select({
       id: agentWakeupRequests.id,
