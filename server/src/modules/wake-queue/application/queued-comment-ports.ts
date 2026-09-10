@@ -5,6 +5,8 @@
 // caller a `LockedQueuedCommentState` plus a `QueuedCommentQueueTransaction`
 // bound to that same transaction for every further read and write.
 
+import type { IssueComment, IssueQueuedCommentEntry, IssueQueuedCommentQueue } from "@paperclipai/shared";
+
 export type QueuedCommentActor = {
   actorType: "agent" | "user";
   /** The user id for a user actor, the agent id for an agent actor -- the same value `getActorInfo` names `actorId`. */
@@ -35,25 +37,11 @@ export type QueuedCommentRunRow = {
   contextSnapshot: Record<string, unknown>;
 };
 
-export type QueuedCommentEntrySnapshot = {
-  commentId: string;
-  /** The full comment row, carried opaquely so the route can cast it back to `IssueComment` for the response and redaction pipeline. */
-  comment: Record<string, unknown>;
-  position: number;
-  canEdit: boolean;
-  canDiscard: boolean;
-};
+/** The module's entry shape is the shared contract, so the compiler checks it directly; the route needs no cast. */
+export type QueuedCommentEntrySnapshot = IssueQueuedCommentEntry;
 
-export type QueuedCommentQueueSnapshot = {
-  issueId: string;
-  queueId: string | null;
-  state: "deferred" | "queued" | null;
-  targetRunId: string | null;
-  revision: string;
-  protocol: "paperclip_runner_v1" | "legacy";
-  steeringDisposition: "available" | "unsupported" | "temporarily_unavailable";
-  entries: QueuedCommentEntrySnapshot[];
-};
+/** The module's queue-snapshot shape is the shared contract, so the compiler checks it directly; the route needs no cast. */
+export type QueuedCommentQueueSnapshot = IssueQueuedCommentQueue;
 
 /** The locked, transaction-scoped state a mutation reads before it decides what to write. */
 export type LockedQueuedCommentState = {
@@ -96,12 +84,12 @@ export interface QueuedCommentQueueTransaction {
     ids: string[];
     updatedAt: Date;
   }): Promise<QueuedCommentRunRow | null>;
-  /** Returns the full deleted comment row, opaquely, so the caller can echo it back as the delete route's response body. */
+  /** Returns the full deleted comment row so the caller can echo it back as the delete route's response body. */
   deleteComment(input: {
     companyId: string;
     issueId: string;
     commentId: string;
-  }): Promise<Record<string, unknown> | null>;
+  }): Promise<IssueComment | null>;
   cancelWake(input: { companyId: string; wakeId: string; reason: string; now: Date }): Promise<void>;
   /**
    * Guarded on the run's current `queued` status. Returns `null` when a

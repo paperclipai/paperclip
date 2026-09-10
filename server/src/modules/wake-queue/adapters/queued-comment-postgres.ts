@@ -1,6 +1,7 @@
 import { and, eq, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agentWakeupRequests, agents, heartbeatRuns, issueComments, issues } from "@paperclipai/db";
+import type { IssueComment, IssueQueuedCommentQueue } from "@paperclipai/shared";
 import {
   queuedCommentIdsFromWakePayload,
   queuedCommentQueueRevision,
@@ -16,9 +17,7 @@ import { parseObject, readNonEmptyString } from "../domain/values.js";
 import { QueuedCommentMutationError } from "../application/queued-comment-use-cases.js";
 import type {
   LockedQueuedCommentState,
-  QueuedCommentEntrySnapshot,
   QueuedCommentIssueLockWriter,
-  QueuedCommentQueueSnapshot,
   QueuedCommentQueueTransaction,
   QueuedCommentRunRow,
   QueuedCommentWakeRow,
@@ -86,7 +85,7 @@ function buildTransaction(tx: Db, deps: QueuedCommentQueuePostgresAdapterDeps): 
         .where(and(eq(issueComments.id, commentId), eq(issueComments.issueId, issueId), eq(issueComments.companyId, companyId)))
         .returning()
         .then((rows) => rows[0] ?? null);
-      return row as unknown as Record<string, unknown> | null;
+      return row ? (row as IssueComment) : null;
     },
 
     async cancelWake({ companyId, wakeId, reason, now }) {
@@ -122,7 +121,7 @@ function buildTransaction(tx: Db, deps: QueuedCommentQueuePostgresAdapterDeps): 
         );
     },
 
-    async buildQueueSnapshot({ companyId, issue, actor, wake, state, queueRun, activeRun }): Promise<QueuedCommentQueueSnapshot> {
+    async buildQueueSnapshot({ companyId, issue, actor, wake, state, queueRun, activeRun }): Promise<IssueQueuedCommentQueue> {
       const commentIds = queuedCommentIdsFromWakePayload(wake?.payload ?? null);
       const rows =
         commentIds.length > 0
@@ -159,19 +158,30 @@ function buildTransaction(tx: Db, deps: QueuedCommentQueuePostgresAdapterDeps): 
           ? ("paperclip_runner_v1" as const)
           : ("legacy" as const);
       // A queue mutation never delivers same-turn steering itself, so the
-      // disposition is a static fact about the active run's protocol, never
-      // a live probe of the native runner.
-      const steeringDisposition = activeRun?.runtimeMode === "native" ? ("temporarily_unavailable" as const) : ("unsupported" as const);
+      // base value is a static fact about the active run's protocol, never
+      // a live probe of the native runner. Because of this, a discard
+      // response never reports "available"; only the read path can, because
+      // only the read path still probes the live provider.
+      let steeringDisposition: IssueQueuedCommentQueue["steeringDisposition"] =
+        activeRun?.runtimeMode === "native" ? "temporarily_unavailable" : "unsupported";
+      // Match the read path's rule: a native-runner queue supports steering
+      // only while the queue targets a running deferred turn with at least
+      // one comment still queued. Apply the rule here too, so a promoted
+      // queue (state "queued", no deferred run) reports
+      // "temporarily_unavailable" instead of the wrong value "unsupported".
+      const steeringRun = state === "deferred" ? activeRun : null;
+      if (protocol === "paperclip_runner_v1" && (!steeringRun || comments.length === 0)) {
+        steeringDisposition = "temporarily_unavailable";
+      }
 
-      const entries: QueuedCommentEntrySnapshot[] = comments.map((comment, position) => {
+      const entries = comments.map((comment, position) => {
         const permissions = decideQueuedCommentEntryPermissions({
           actorType: actor.actorType,
           actorId: actor.actorId,
           authorUserId: comment.authorUserId,
         });
         return {
-          commentId: comment.id,
-          comment: comment as unknown as Record<string, unknown>,
+          comment: comment as IssueComment,
           position,
           canEdit: permissions.canEdit,
           canDiscard: permissions.canDiscard,

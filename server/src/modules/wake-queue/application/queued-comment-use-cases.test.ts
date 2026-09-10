@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import type { IssueComment } from "@paperclipai/shared";
 import {
   createDiscardQueuedComment,
   createEditQueuedComment,
@@ -36,10 +37,26 @@ function runRow(overrides: Partial<QueuedCommentRunRow> = {}): QueuedCommentRunR
   return { id: "run-1", status: "queued", runtimeMode: null, contextSnapshot: {}, ...overrides };
 }
 
+function commentFixture(overrides: Partial<IssueComment> = {}): IssueComment {
+  return {
+    id: "comment-1",
+    companyId: "company-1",
+    issueId: "issue-1",
+    authorType: "user",
+    authorAgentId: null,
+    authorUserId: "user-1",
+    body: "queued comment",
+    presentation: null,
+    metadata: null,
+    createdAt: new Date("2026-01-01T00:00:00Z"),
+    updatedAt: new Date("2026-01-01T00:00:00Z"),
+    ...overrides,
+  };
+}
+
 function entry(overrides: Partial<QueuedCommentEntrySnapshot> = {}): QueuedCommentEntrySnapshot {
   return {
-    commentId: "comment-1",
-    comment: { id: "comment-1", authorUserId: "user-1", authorAgentId: null },
+    comment: commentFixture(),
     position: 0,
     canEdit: true,
     canDiscard: true,
@@ -78,7 +95,7 @@ function createFakeTransaction(overrides: Partial<QueuedCommentQueueTransaction>
     touchIssueUpdatedAt: vi.fn(async () => {}),
     updateWakeQueuedCommentIds: vi.fn(async (input) => wakeRow({ id: input.wakeId })),
     updateQueueRunCommentIds: vi.fn(async (input) => runRow({ id: input.queueRunId })),
-    deleteComment: vi.fn(async () => ({ id: "comment-1", authorUserId: "user-1", authorAgentId: null })),
+    deleteComment: vi.fn(async () => commentFixture()),
     cancelWake: vi.fn(async () => {}),
     cancelQueueRun: vi.fn(async () => ({ id: "run-1" })),
     updateIssueAfterDiscard: vi.fn(async () => {}),
@@ -199,7 +216,10 @@ describe("editQueuedComment", () => {
 describe("reorderQueuedComments", () => {
   it("rewrites the wake payload with the submitted order", async () => {
     const locked = lockedState({
-      queue: queueSnapshot({ entries: [entry({ commentId: "a", position: 0 }), entry({ commentId: "b", position: 1 })] }),
+      queue: queueSnapshot({ entries: [
+        entry({ comment: commentFixture({ id: "a" }), position: 0 }),
+        entry({ comment: commentFixture({ id: "b" }), position: 1 }),
+      ] }),
     });
     const transaction = createFakeTransaction();
     const reorderQueuedComments = createReorderQueuedComments({ issueLock: createFakeIssueLock(locked, transaction) });
@@ -220,7 +240,10 @@ describe("reorderQueuedComments", () => {
   });
 
   it("rejects an order that is not a permutation of the current queue", async () => {
-    const locked = lockedState({ queue: queueSnapshot({ entries: [entry({ commentId: "a" }), entry({ commentId: "b" })] }) });
+    const locked = lockedState({ queue: queueSnapshot({ entries: [
+      entry({ comment: commentFixture({ id: "a" }) }),
+      entry({ comment: commentFixture({ id: "b" }) }),
+    ] }) });
     const reorderQueuedComments = createReorderQueuedComments({ issueLock: createFakeIssueLock(locked, createFakeTransaction()) });
 
     await expect(
@@ -263,7 +286,10 @@ describe("discardQueuedComment", () => {
 
   it("rewrites the remaining ids when other queued comments are left", async () => {
     const locked = lockedState({
-      queue: queueSnapshot({ entries: [entry({ commentId: "comment-1" }), entry({ commentId: "comment-2" })] }),
+      queue: queueSnapshot({ entries: [
+        entry({ comment: commentFixture({ id: "comment-1" }) }),
+        entry({ comment: commentFixture({ id: "comment-2" }) }),
+      ] }),
     });
     const transaction = createFakeTransaction();
     const discardQueuedComment = createDiscardQueuedComment({ issueLock: createFakeIssueLock(locked, transaction) });
@@ -302,7 +328,9 @@ describe("discardQueuedComment", () => {
   });
 
   it("rejects a discard from an actor who did not author the comment", async () => {
-    const locked = lockedState({ queue: queueSnapshot({ entries: [entry({ comment: { id: "comment-1", authorUserId: "user-2", authorAgentId: null } })] }) });
+    const locked = lockedState({ queue: queueSnapshot({ entries: [
+      entry({ comment: commentFixture({ authorUserId: "user-2", authorAgentId: null }) }),
+    ] }) });
     const discardQueuedComment = createDiscardQueuedComment({ issueLock: createFakeIssueLock(locked, createFakeTransaction()) });
 
     await expect(
@@ -320,7 +348,9 @@ describe("discardQueuedComment", () => {
 
   it("authorizes an agent actor discarding its own queued message", async () => {
     const locked = lockedState({
-      queue: queueSnapshot({ entries: [entry({ comment: { id: "comment-1", authorUserId: null, authorAgentId: "agent-1" } })] }),
+      queue: queueSnapshot({ entries: [
+        entry({ comment: commentFixture({ authorUserId: null, authorAgentId: "agent-1" }) }),
+      ] }),
     });
     const transaction = createFakeTransaction();
     const discardQueuedComment = createDiscardQueuedComment({ issueLock: createFakeIssueLock(locked, transaction) });

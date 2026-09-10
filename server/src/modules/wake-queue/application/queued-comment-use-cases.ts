@@ -1,3 +1,4 @@
+import type { IssueComment } from "@paperclipai/shared";
 import {
   decideQueuedCommentActorOwnsEntry,
   decideQueuedCommentMutationTarget,
@@ -87,7 +88,7 @@ export function createEditQueuedComment(deps: { issueLock: QueuedCommentIssueLoc
       { companyId: input.companyId, issue: input.issue, actor: input.actor, queueId: input.queueId },
       async (locked, tx) => {
         requireMutationTarget(locked.queue, input.queueId, input.revision);
-        const entry = locked.queue.entries.find((candidate) => candidate.commentId === input.commentId);
+        const entry = locked.queue.entries.find((candidate) => candidate.comment.id === input.commentId);
         if (!entry) {
           throw new QueuedCommentMutationError("queued_comment_not_pending", "The queued message is no longer pending");
         }
@@ -109,7 +110,7 @@ export function createEditQueuedComment(deps: { issueLock: QueuedCommentIssueLoc
         await tx.syncCommentReferences(input.commentId);
         await tx.syncCommentExternalObjectsSafely(input.commentId);
 
-        const ids = locked.queue.entries.map((candidate) => candidate.commentId);
+        const ids = locked.queue.entries.map((candidate) => candidate.comment.id);
         const updatedQueueRun = await updateQueueRunCommentIdsGuarded(tx, {
           companyId: input.companyId,
           queueRun: locked.queueRun,
@@ -148,7 +149,7 @@ export function createReorderQueuedComments(deps: { issueLock: QueuedCommentIssu
       async (locked, tx) => {
         requireMutationTarget(locked.queue, input.queueId, input.revision);
 
-        const currentIds = locked.queue.entries.map((entry) => entry.commentId);
+        const currentIds = locked.queue.entries.map((entry) => entry.comment.id);
         const reorderDecision = decideQueuedCommentReorder({ currentIds, orderedIds: input.orderedCommentIds });
         if (reorderDecision.kind === "mismatch") {
           throw new QueuedCommentMutationError(
@@ -197,8 +198,8 @@ export type DiscardQueuedCommentInput = {
 };
 
 export type DiscardQueuedCommentResult = {
-  /** The full deleted comment row, opaquely; the comment-delete route echoes it back as its own response body. */
-  deleted: Record<string, unknown>;
+  /** The full deleted comment row; the comment-delete route echoes it back as its own response body. */
+  deleted: IssueComment;
   queue: QueuedCommentQueueSnapshot;
   /** Set only when the discard emptied the queue and cancelled a queued run; the caller emits telemetry for it after the transaction commits. */
   cancelledRun: { id: string } | null;
@@ -213,17 +214,16 @@ export function createDiscardQueuedComment(deps: { issueLock: QueuedCommentIssue
           requireMutationTarget(locked.queue, input.queueId, input.revision);
         }
 
-        const entry = locked.queue.entries.find((candidate) => candidate.commentId === input.commentId);
+        const entry = locked.queue.entries.find((candidate) => candidate.comment.id === input.commentId);
         if (!entry) {
           throw new QueuedCommentMutationError("queued_comment_not_pending", "The queued message is no longer pending");
         }
-        const comment = entry.comment as { authorAgentId?: unknown; authorUserId?: unknown };
         const owns = decideQueuedCommentActorOwnsEntry({
           actorType: input.actor.actorType,
           actorId: input.actor.actorId,
           actorAgentId: input.actor.agentId,
-          authorAgentId: typeof comment.authorAgentId === "string" ? comment.authorAgentId : null,
-          authorUserId: typeof comment.authorUserId === "string" ? comment.authorUserId : null,
+          authorAgentId: entry.comment.authorAgentId,
+          authorUserId: entry.comment.authorUserId,
         });
         if (!owns) {
           throw new QueuedCommentMutationForbiddenError("Only the queued message author can discard it");
@@ -236,7 +236,7 @@ export function createDiscardQueuedComment(deps: { issueLock: QueuedCommentIssue
         await tx.deleteCommentReferenceSource(input.commentId);
         await tx.syncCommentExternalObjectsSafely(input.commentId);
 
-        const remainingIds = locked.queue.entries.map((candidate) => candidate.commentId).filter((id) => id !== input.commentId);
+        const remainingIds = locked.queue.entries.map((candidate) => candidate.comment.id).filter((id) => id !== input.commentId);
         const outcome = decideQueuedCommentRemovalOutcome({ remainingCount: remainingIds.length });
 
         let cancelledRun: { id: string } | null = null;

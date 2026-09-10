@@ -102,6 +102,7 @@ import {
   type IssueRelationIssueSummary,
   type IssueReviewPolicy,
   type IssueThreadInteractionCanonicalResolverPolicy,
+  type IssueComment,
   type IssueCommentPresentation,
   type IssueQueuedCommentQueue,
   type IssueWatchdogDiscoveryKind,
@@ -12050,7 +12051,7 @@ export function issueRoutes(
           revision: req.body.revision,
           body: req.body.body,
           now: new Date(),
-        }) as unknown as IssueQueuedCommentQueue;
+        });
       } catch (error) {
         throwForQueuedCommentMutationError(error);
       }
@@ -12083,7 +12084,7 @@ export function issueRoutes(
           revision: req.body.revision,
           orderedCommentIds: req.body.orderedCommentIds as string[],
           now: new Date(),
-        }) as unknown as IssueQueuedCommentQueue;
+        });
       } catch (error) {
         throwForQueuedCommentMutationError(error);
       }
@@ -12334,7 +12335,7 @@ export function issueRoutes(
           revision: req.body.revision,
           now: new Date(),
         });
-        queue = result.queue as unknown as IssueQueuedCommentQueue;
+        queue = result.queue;
         // Telemetry is best-effort background work; it must not delay the
         // response with a slow lookup, so fire it and do not await it.
         if (result.cancelledRun) {
@@ -13248,7 +13249,7 @@ export function issueRoutes(
       const queueWakeForCancellation = deleteMode === "cancel"
         ? authoritativeQueueWake
         : pendingQueueWake;
-      let removed: Record<string, unknown> | null;
+      let removed: IssueComment | null;
       if (queueWakeForCancellation) {
         try {
           removed = (await queuedCommentQueue.discardQueuedComment({
@@ -13278,8 +13279,6 @@ export function issueRoutes(
         });
         return;
       }
-      const removedComment = removed as { id: string; body: string };
-
       await logActivity(db, {
         companyId: issue.companyId,
         actorType: actor.actorType,
@@ -13291,8 +13290,8 @@ export function issueRoutes(
         entityType: "issue",
         entityId: issue.id,
         details: {
-          commentId: removedComment.id,
-          bodySnippet: removedComment.body.slice(0, 120),
+          commentId: removed.id,
+          bodySnippet: removed.body.slice(0, 120),
           identifier: issue.identifier,
           issueTitle: issue.title,
           source: "queue_cancel",

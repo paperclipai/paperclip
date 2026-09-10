@@ -311,6 +311,45 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
     expect(storedIssue?.executionRunId).toBeNull();
   });
 
+  it("keeps a mutation response's steering disposition in step with a fresh GET after promotion", async () => {
+    const seeded = await seedQueue();
+    await promoteQueue(seeded);
+    const initial = await request(app(seeded.companyId))
+      .get(`/api/issues/${seeded.issueId}/queued-comments`);
+    expect(initial.body.steeringDisposition).toBe("temporarily_unavailable");
+
+    const edited = await request(app(seeded.companyId))
+      .patch(`/api/issues/${seeded.issueId}/queued-comments/${seeded.commentIds[0]}`)
+      .send({ queueId: seeded.wakeId, revision: initial.body.revision, body: "edited during promotion" });
+    expect(edited.status, JSON.stringify(edited.body)).toBe(200);
+    const afterEdit = await request(app(seeded.companyId))
+      .get(`/api/issues/${seeded.issueId}/queued-comments`);
+    expect(edited.body.steeringDisposition).toBe(afterEdit.body.steeringDisposition);
+
+    const reordered = await request(app(seeded.companyId))
+      .put(`/api/issues/${seeded.issueId}/queued-comments/order`)
+      .send({
+        queueId: seeded.wakeId,
+        revision: edited.body.revision,
+        orderedCommentIds: [...seeded.commentIds].reverse(),
+      });
+    expect(reordered.status, JSON.stringify(reordered.body)).toBe(200);
+    const afterReorder = await request(app(seeded.companyId))
+      .get(`/api/issues/${seeded.issueId}/queued-comments`);
+    expect(reordered.body.steeringDisposition).toBe(afterReorder.body.steeringDisposition);
+  });
+
+  it("returns entry objects with the same keys as the GET endpoint", async () => {
+    const seeded = await seedQueue();
+    const initial = await request(app(seeded.companyId))
+      .get(`/api/issues/${seeded.issueId}/queued-comments`);
+    const edited = await request(app(seeded.companyId))
+      .patch(`/api/issues/${seeded.issueId}/queued-comments/${seeded.commentIds[0]}`)
+      .send({ queueId: seeded.wakeId, revision: initial.body.revision, body: "edited body" });
+    expect(edited.status, JSON.stringify(edited.body)).toBe(200);
+    expect(Object.keys(edited.body.entries[0]).sort()).toEqual(Object.keys(initial.body.entries[0]).sort());
+  });
+
   it("cancels the deferred wake when the final message is discarded before promotion", async () => {
     const seeded = await seedQueue();
     await db.delete(issueComments).where(eq(issueComments.id, seeded.commentIds[1]));
