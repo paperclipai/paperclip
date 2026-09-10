@@ -119,6 +119,8 @@ export const DELIVERY_BLOCKER_REASON_CODES = [
   "dependency_cycle",
   "checks_failing",
   "checks_pending",
+  "review_pending",
+  "review_approval_required",
   "review_blocking_findings",
   "review_head_stale",
   "head_stale",

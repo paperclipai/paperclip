@@ -160,6 +160,14 @@ export function evaluateDeliveryRequirements(input: {
       };
     }
   }
+  if (evidence.blockingFindings > 0 || evidence.reviewStatus === "changes_requested") {
+    return {
+      reasonCode: "review_blocking_findings",
+      message: "Review has unresolved blocking findings",
+      owner: null,
+      nextAction: "Resolve or disposition the blocking findings.",
+    };
+  }
   if (evidence.reviewStatus === "approved" && (!evidence.reviewHeadSha || evidence.reviewHeadSha !== evidence.headSha)) {
     return {
       reasonCode: "review_head_stale",
@@ -172,31 +180,23 @@ export function evaluateDeliveryRequirements(input: {
     const author = evidence.prAuthorLogin?.trim().toLowerCase() ?? null;
     if (!author) {
       return {
-        reasonCode: "review_blocking_findings",
+        reasonCode: "provider_unknown",
         message: "Pull request author identity is unknown; independent approval cannot be proven",
         owner: null,
         nextAction: "Reconcile again so the pull request author is read from GitHub.",
       };
     }
-    const independent = evidence.approvals.filter((approval) =>
+    const independent = evidence.approvals.some((approval) =>
       approval.commitSha === evidence.headSha
       && approval.login.trim().toLowerCase() !== author);
-    if (independent.length === 0) {
+    if (!independent) {
       return {
-        reasonCode: "review_blocking_findings",
+        reasonCode: "review_approval_required",
         message: "Independent approval required: no reviewer other than the author approved the current head",
         owner: null,
-        nextAction: "Request approval from a reviewer other than the pull request author.",
+        nextAction: "Obtain an APPROVED GitHub review on the current commit from an authorized reviewer other than the pull request author. Internal candidate acceptance is not a GitHub approval.",
       };
     }
-  }
-  if (evidence.blockingFindings > 0 || evidence.reviewStatus === "changes_requested") {
-    return {
-      reasonCode: "review_blocking_findings",
-      message: "Review has unresolved blocking findings",
-      owner: null,
-      nextAction: "Resolve or disposition the blocking findings.",
-    };
   }
   if (evidence.reviewStatus === "none" && input.requiredChecks.length === 0 && !input.requireGreptile) {
     return {

@@ -67,11 +67,22 @@ export type DeliveryUnitMetadata = {
   blockedPhase?: DeliveryPhase;
   artifactRoot?: string | null;
   greptileFetchedAt?: string | null;
+  /** Latest governed Greptile review state (`completed` | `pending`). */
+  greptileReviewState?: "completed" | "pending";
+  /** Revision Greptile's findings were correlated to, never a candidate guess. */
+  greptileReviewedHeadSha?: string | null;
+  /** Findings the provider reports across the pull request. */
+  greptileProviderFindings?: number;
   lastRemoteUpdatedAt?: string | null;
   submittedHeadSha?: string;
   authorLogin?: string | null;
   /** Latest-state approvals with the commit each reviewer approved. */
   approvals?: Array<{ login: string; commitSha: string | null }>;
+  /**
+   * Last actionable repair signal per reason code. Reconciliation polls, so a
+   * repeated signal for unchanged evidence must not spend another attempt.
+   */
+  lastRepairSignal?: Record<string, string>;
 };
 
 const TERMINAL_UNIT_STATUSES = ["merged", "cancelled", "closed_unmerged"] as const;
@@ -801,6 +812,41 @@ export function deliveryUnitService(
         url: unit.prUrl,
         payload: { headSha },
       });
+    }
+    // Submission is a controller-owned review transition: the candidate and the
+    // issues it covers are now under review. The write is a conditional update,
+    // so a concurrent terminal, blocked, or operator-owned status is never
+    // reopened and the transition cannot race into a fabricated confirmation.
+    if (unit.pausedAt == null) {
+      const coveredIssueIds = await db
+        .select({ issueId: deliveryUnitIssues.issueId })
+        .from(deliveryUnitIssues)
+        .where(and(
+          eq(deliveryUnitIssues.companyId, input.companyId),
+          eq(deliveryUnitIssues.unitId, unit.id),
+        ))
+        .then((rows) => rows.map((row) => row.issueId));
+      const moved = await db
+        .update(issues)
+        .set({ status: "in_review", updatedAt: now })
+        .where(and(
+          eq(issues.companyId, input.companyId),
+          inArray(issues.id, coveredIssueIds),
+          inArray(issues.status, ["todo", "in_progress", "in_review"]),
+        ))
+        .returning({ id: issues.id });
+      for (const issue of moved) {
+        if (issue.id === input.issue.id) continue;
+        await events.append({
+          companyId: input.companyId,
+          unitId: unit.id,
+          issueId: issue.id,
+          type: "reconciled",
+          message: `Moved to review by the candidate covering this issue (${headSha.slice(0, 12)})`,
+          dedupeKey: `covered_review:${issue.id}:${headSha}`,
+          payload: { headSha, primaryIssueId: input.issue.id },
+        });
+      }
     }
     return { unit, created };
   }

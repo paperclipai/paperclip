@@ -85,6 +85,25 @@ export type GitHubReviewState = {
 };
 
 /**
+ * An authoritative pull request review comment.
+ *
+ * `commitSha` is GitHub's own `commit_id`: the commit the comment was written
+ * against. It is the only accepted source for head provenance when a governed
+ * provider read has to be related to a revision, and it is never inferred from
+ * the candidate head or from a provider-supplied status flag.
+ */
+export type GitHubReviewComment = {
+  id: string;
+  login: string | null;
+  commitSha: string | null;
+  path: string | null;
+  line: number | null;
+  body: string | null;
+  url: string | null;
+  createdAt: string | null;
+};
+
+/**
  * Whether a GitHub compare status proves inclusion. For
  * `compare(base=candidate, head=target)`, only `ahead` (target contains the
  * candidate plus newer commits) or `identical` proves the candidate landed in
@@ -485,6 +504,50 @@ export function createGitHubDeliveryClient(
     };
   }
 
+  /**
+   * Authoritative pull request review comments. Used only to relate a scoped
+   * provider finding identity (for example a Greptile `commentId`) to the exact
+   * commit GitHub recorded for it. A malformed response is a failed read, never
+   * a partial list, so callers cannot mistake an unreadable comment for an
+   * absent one.
+   */
+  async function getReviewComments(
+    companyId: string,
+    connectionId: string | null,
+    host: string,
+    owner: string,
+    repo: string,
+    number: number,
+  ): Promise<GitHubResult<GitHubReviewComment[]>> {
+    const result = await request<unknown>(
+      companyId, connectionId, host, "GET",
+      `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls/${number}/comments?per_page=100`,
+    );
+    if (!result.ok) return result;
+    if (!Array.isArray(result.value)) {
+      return { ok: false, status: null, errorCode: "github_invalid_response", message: "GitHub returned an unreadable review comment list", retryAfterSeconds: null };
+    }
+    const comments: GitHubReviewComment[] = [];
+    for (const entry of result.value) {
+      const row = record(entry);
+      const id = num(row?.id);
+      if (!id) {
+        return { ok: false, status: null, errorCode: "github_invalid_response", message: "GitHub returned a review comment without an id", retryAfterSeconds: null };
+      }
+      comments.push({
+        id: str(row?.node_id) ?? String(id),
+        login: str(record(row?.user)?.login),
+        commitSha: str(row?.commit_id),
+        path: str(row?.path),
+        line: num(row?.line) ?? num(row?.original_line),
+        body: str(row?.body),
+        url: str(row?.html_url),
+        createdAt: str(row?.created_at),
+      });
+    }
+    return { ok: true, value: comments };
+  }
+
   async function mergePullRequest(
     companyId: string,
     connectionId: string | null,
@@ -628,6 +691,7 @@ export function createGitHubDeliveryClient(
     getPullRequest,
     getChecks,
     getReviews,
+    getReviewComments,
     mergePullRequest,
     enqueuePullRequest,
     compareCommits,
@@ -668,6 +732,14 @@ export interface GitHubDeliveryClient {
     repo: string,
     number: number,
   ): Promise<GitHubResult<GitHubReviewState>>;
+  getReviewComments(
+    companyId: string,
+    connectionId: string | null,
+    host: string,
+    owner: string,
+    repo: string,
+    number: number,
+  ): Promise<GitHubResult<GitHubReviewComment[]>>;
   mergePullRequest(
     companyId: string,
     connectionId: string | null,

@@ -186,6 +186,20 @@ describeEmbeddedPostgres("GitHub delivery connection credentials", () => {
       .toMatchObject({ ok: true, value: { blockingFindings: 1, approvals: [{ login: "approver", commitSha: head }] } });
   });
 
+  it("correlates Greptile node identities with the GitHub comment revision", async () => {
+    const fixture = await createPersonalPatFixture();
+    const head = "a".repeat(40);
+    const client = createGitHubDeliveryClient(db, {
+      fetch: vi.fn<typeof fetch>().mockResolvedValue(Response.json([{
+        id: 123, node_id: "PRRC_reviewFinding", commit_id: head,
+        user: { login: "greptile-apps[bot]" }, body: "P1: invalid carrier",
+        path: "dispatch.ts", line: 30,
+      }])),
+    });
+    expect(await client.getReviewComments(fixture.company.id, fixture.connection.id, "github.com", "acme", "widget", 42))
+      .toMatchObject({ ok: true, value: [{ id: "PRRC_reviewFinding", commitSha: head, path: "dispatch.ts", line: 30 }] });
+  });
+
   it("projects the personal PAT Authorization binding into a real delivery request", async () => {
     const fixture = await createPersonalPatFixture();
     const fetchMock = vi.fn(async () => githubRepositoryResponse());

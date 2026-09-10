@@ -22,7 +22,9 @@ import type { DeliveryQueueService } from "./queue.js";
 import type { DeliveryUnitService, DeliveryUnitRow } from "./units.js";
 import { readUnitMetadata } from "./units.js";
 import type { GitHubDeliveryClient } from "./github-client.js";
-import type { GreptileFinding, GreptileReviewService } from "./greptile.js";
+import type { GreptileFinding, GreptileReviewService, GreptileReviewState } from "./greptile.js";
+import { GREPTILE_BLOCKING_SEVERITIES } from "./greptile.js";
+import { recordObservedFindings } from "./findings.js";
 import type { DeliveryControllerContext } from "./done-gate.js";
 import { isCheckSuccessful, repositoryFullName, type DeliveryEvidence } from "./policy.js";
 
@@ -35,6 +37,22 @@ export type DeliveryReconcileTrigger =
   | "webhook"
   | "operator"
   | "retry";
+
+/** One actionable repair request. `signal` is its evidence identity. */
+export type DeliveryRepairRequest = {
+  companyId: string;
+  unit: DeliveryUnitRow;
+  reasonCode: string;
+  message: string;
+  signal: string;
+  detail?: string;
+};
+
+export type DeliveryRepairOutcome = {
+  requested: boolean;
+  attempt: number;
+  exhausted: boolean;
+};
 
 export type DeliveryReconcileOutcome = {
   unitId: string;
@@ -51,7 +69,7 @@ export interface DeliveryReconciler {
     unitId: string;
     trigger: DeliveryReconcileTrigger;
   }): Promise<DeliveryReconcileOutcome>;
-  reconcileIssue(input: { companyId: string; issueId: string }): Promise<DeliveryReconcileOutcome | null>;
+  reconcileIssue(input: { companyId: string; issueId: string; trigger?: DeliveryReconcileTrigger }): Promise<DeliveryReconcileOutcome | null>;
   reconcilePullRequest(input: {
     companyId: string;
     owner: string;
@@ -60,13 +78,8 @@ export interface DeliveryReconciler {
   }): Promise<number>;
   reconcileCompany(input: { companyId: string; limit?: number }): Promise<{ reconciled: number; merged: number }>;
   verifyMergedUnit(input: { companyId: string; unitId: string }): Promise<DeliveryReconcileOutcome>;
-  wakeOwnerForRepair(input: {
-    companyId: string;
-    unit: DeliveryUnitRow;
-    reasonCode: string;
-    message: string;
-    detail?: string;
-  }): Promise<{ attempted: boolean; attempt: number; exhausted: boolean }>;
+  /** Wakes the owner for a changed actionable evidence signal, bounded per signal. */
+  requestRepair(input: DeliveryRepairRequest): Promise<DeliveryRepairOutcome>;
 }
 
 export type DeliveryIssueStatusWriter = (input: {
@@ -345,82 +358,109 @@ export function deliveryReconciler(
     return { attempted: dispatched, attempt, exhausted: false };
   }
 
-  async function upsertFindings(input: {
-    companyId: string;
-    unitId: string;
+  /**
+   * Request a repair only for a signal the unit has not already been woken for.
+   *
+   * Reconciliation polls: the same head, the same finding and the same failing
+   * check are re-observed on every sweep. A repeated request for unchanged
+   * evidence is not a new repair and must not consume the bounded attempt
+   * budget, so the last requested signal is recorded per reason code and a
+   * repeated signal returns without dispatching. New actionable evidence — a
+   * new head, a new or changed finding, a new failing check — carries a new
+   * signal and does request a wake.
+   */
+  async function requestRepair(input: DeliveryRepairRequest): Promise<DeliveryRepairOutcome> {
+    const metadata = readUnitMetadata(input.unit.metadata);
+    if (metadata.lastRepairSignal?.[input.reasonCode] === input.signal) {
+      return { requested: false, attempt: 0, exhausted: false };
+    }
+    const result = await wakeOwnerForRepair({
+      companyId: input.companyId,
+      unit: input.unit,
+      reasonCode: input.reasonCode,
+      message: input.message,
+      detail: input.detail,
+    });
+    // Record the signal even when the bounded loop has escalated: the escalation
+    // must not be re-requested on every sweep either.
+    await db
+      .update(deliveryUnits)
+      .set({
+        metadata: {
+          ...metadata,
+          lastRepairSignal: { ...(metadata.lastRepairSignal ?? {}), [input.reasonCode]: input.signal },
+        },
+        updatedAt: new Date(),
+      })
+      .where(eq(deliveryUnits.id, input.unit.id));
+    return { requested: result.attempted, attempt: result.attempt, exhausted: result.exhausted };
+  }
+
+  /**
+   * Evidence identity for a review/check repair: a change is a new request.
+   *
+   * `explicitNonce` makes an operator-driven retry a fresh request even when
+   * the evidence is unchanged, because that is what an explicit retry means.
+   * Polling never sets it, so repeated sweeps of unchanged evidence stay
+   * deduplicated and never spend an attempt.
+   */
+  function evidenceSignal(input: {
+    reasonCode: string;
     headSha: string | null;
-    findings: GreptileFinding[];
+    reviewStatus: string | null;
+    reviewHeadSha: string | null;
+    blockingFindings: number;
+    checks: DeliveryCheck[] | null;
+    explicitNonce?: number | null;
   }) {
-    const now = new Date();
-    const openExternalIds: string[] = [];
-    for (const finding of input.findings) {
-      openExternalIds.push(finding.externalId);
-      const [existing] = await db
-        .select({ id: deliveryFindings.id, state: deliveryFindings.state })
-        .from(deliveryFindings)
-        .where(and(
-          eq(deliveryFindings.companyId, input.companyId),
-          eq(deliveryFindings.unitId, input.unitId),
-          eq(deliveryFindings.externalId, finding.externalId),
-        ))
-        .limit(1);
-      if (existing) {
-        await db
-          .update(deliveryFindings)
-          .set({
-            severity: finding.severity,
-            title: finding.title,
-            body: finding.body,
-            filePath: finding.filePath,
-            line: finding.line,
-            url: finding.url,
-            headSha: input.headSha,
-            lastSeenAt: now,
-            updatedAt: now,
-            ...(existing.state === "open" ? {} : { state: "open" }),
-          })
-          .where(eq(deliveryFindings.id, existing.id));
-      } else {
-        await db
-          .insert(deliveryFindings)
-          .values({
-            companyId: input.companyId,
-            unitId: input.unitId,
-            source: "greptile",
-            externalId: finding.externalId,
-            severity: finding.severity,
-            title: finding.title,
-            body: finding.body,
-            filePath: finding.filePath,
-            line: finding.line,
-            url: finding.url,
-            headSha: input.headSha,
-            state: "open",
-            firstSeenAt: now,
-            lastSeenAt: now,
-          })
-          .onConflictDoNothing();
-      }
-    }
-    // Findings that disappeared on the current head are stale, not fixed: only
-    // an explicit disposition marks a finding fixed.
-    const openRows = await db
-      .select({ id: deliveryFindings.id, externalId: deliveryFindings.externalId })
-      .from(deliveryFindings)
-      .where(and(
-        eq(deliveryFindings.companyId, input.companyId),
-        eq(deliveryFindings.unitId, input.unitId),
-        eq(deliveryFindings.state, "open"),
-      ));
-    const staleIds = openRows
-      .filter((row) => !openExternalIds.includes(row.externalId))
-      .map((row) => row.id);
-    if (staleIds.length > 0) {
-      await db
-        .update(deliveryFindings)
-        .set({ state: "stale", updatedAt: now })
-        .where(inArray(deliveryFindings.id, staleIds));
-    }
+    return `v1:${hashEvidence({
+      reasonCode: input.reasonCode,
+      headSha: input.headSha,
+      reviewStatus: input.reviewStatus,
+      reviewHeadSha: input.reviewHeadSha,
+      blockingFindings: input.blockingFindings,
+      checks: input.checks?.map((check) => `${check.name}:${check.status}`).sort() ?? null,
+      explicitNonce: input.explicitNonce ?? null,
+    })}`;
+  }
+
+  /**
+   * Reason codes a code repair can actually resolve. Evidence that can only
+   * change by waiting (an in-flight provider review, a missing required check,
+   * a human approval gate, an unreadable provider) withdraws readiness but
+   * never spends a repair attempt on the implementation owner.
+   */
+  const REPAIRABLE_REASON_CODES: Record<string, true> = {
+    review_blocking_findings: true,
+    checks_failing: true,
+    head_stale: true,
+  };
+
+  /** Withdraw readiness, and request a repair only for actionable evidence. */
+  async function failRequirements(input: {
+    companyId: string;
+    unit: DeliveryUnitRow;
+    blocker: DeliveryBlocker;
+    signal: string;
+    dedupeKey: string;
+    eventType: string;
+  }): Promise<void> {
+    await revokeAcceptance({
+      companyId: input.companyId,
+      unit: input.unit,
+      blocker: input.blocker,
+      dedupeKey: input.dedupeKey,
+      eventType: input.eventType,
+    });
+    if (!REPAIRABLE_REASON_CODES[input.blocker.reasonCode]) return;
+    await requestRepair({
+      companyId: input.companyId,
+      unit: input.unit,
+      reasonCode: input.blocker.reasonCode,
+      message: input.blocker.message,
+      signal: input.signal,
+      detail: input.blocker.nextAction ?? undefined,
+    });
   }
 
   async function buildReceipt(input: {
@@ -586,32 +626,78 @@ export function deliveryReconciler(
         });
         return { unitId: unit.id, status: "blocked", phase: "merging", blocker: unit.blocker, merged: false, changed: true };
       }
+      if (!unit.prNumber) {
+        await units.markBlocked({
+          companyId: input.companyId,
+          unitId: unit.id,
+          blocker: blocker(
+            "greptile_unavailable",
+            "Greptile review cannot be verified because no pull request is bound to the unit",
+            "Bind the pull request before verifying the merge.",
+          ),
+        });
+        return { unitId: unit.id, status: "blocked", phase: "merging", blocker: unit.blocker, merged: false, changed: true };
+      }
+      // The receipt is issued over the same exact-head contract as the merge
+      // decision: a completed review that names the accepted head is required,
+      // and an in-flight or stale review never becomes merge evidence.
       const freshGreptile = await greptile.read({
         companyId: input.companyId,
         connectionId: policyRow.greptileConnectionId,
         repositoryName: `${repository.owner}/${repository.name}`,
         defaultBranch: unit.targetBranch,
         prNumber: unit.prNumber!,
-        submittedHeadSha: unit.headSha,
-        acceptedHeadSha: unit.acceptedHeadSha,
-        checks: freshChecks.value,
+        correlation: {
+          host: repository.host,
+          connectionId: policyRow.githubConnectionId ?? null,
+          owner: repository.owner,
+          repo: repository.name,
+        },
       });
-      if (!freshGreptile.ok || freshGreptile.headSha !== unit.acceptedHeadSha) {
+      if (!freshGreptile.ok) {
+        await units.markBlocked({
+          companyId: input.companyId,
+          unitId: unit.id,
+          blocker: blocker(
+            freshGreptile.errorCode === "provider_unknown" ? "provider_unknown" : "greptile_unavailable",
+            `Greptile evidence could not be refreshed for the receipt: ${freshGreptile.message}`,
+            "Reconcile again once Greptile is reachable.",
+          ),
+        });
+        return { unitId: unit.id, status: "blocked", phase: "merging", blocker: unit.blocker, merged: false, changed: true };
+      }
+      if (freshGreptile.reviewState === "pending") {
+        await units.markBlocked({
+          companyId: input.companyId,
+          unitId: unit.id,
+          blocker: blocker(
+            "review_pending",
+            "Greptile has not completed a review of the accepted head; no receipt issued",
+            "Wait for Greptile to finish reviewing the accepted head, then reconcile again.",
+          ),
+        });
+        return { unitId: unit.id, status: "blocked", phase: "merging", blocker: unit.blocker, merged: false, changed: true };
+      }
+      if (freshGreptile.headSha !== unit.acceptedHeadSha) {
         await units.markBlocked({
           companyId: input.companyId,
           unitId: unit.id,
           blocker: blocker(
             "review_head_stale",
-            !freshGreptile.ok
-              ? `Greptile evidence could not be refreshed: ${freshGreptile.message}`
-              : "Greptile reviewed a different revision than the accepted head",
+            "Greptile reviewed a different revision than the accepted head; no receipt issued",
             "Reconcile again once Greptile has reviewed the accepted head.",
           ),
         });
         return { unitId: unit.id, status: "blocked", phase: "merging", blocker: unit.blocker, merged: false, changed: true };
       }
       freshBlocking = Math.max(freshBlocking, freshGreptile.blockingFindings);
-      if (freshGreptile.status === "changes_requested") freshReviewStatus = "changes_requested";
+      // The receipt states the verdict the evidence actually supports: a
+      // completed clean Greptile review of the accepted head is the review
+      // verdict, but a change request from either source is recorded as one.
+      freshReviewStatus = freshGreptile.status === "changes_requested"
+        || freshReviews.value.status === "changes_requested"
+        ? "changes_requested"
+        : "approved";
     }
     await buildReceipt({
       companyId: input.companyId,
@@ -782,11 +868,12 @@ export function deliveryReconciler(
         dedupeKey: `closed_unmerged:${pullRequest.number}`,
         url: pullRequest.url,
       });
-      await wakeOwnerForRepair({
+      await requestRepair({
         companyId: input.companyId,
         unit: { ...unit, status: "closed_unmerged" },
         reasonCode: "pr_closed_unmerged",
         message: "The pull request was closed without merging; reopen it or publish a new candidate.",
+        signal: `v1:${hashEvidence({ reasonCode: "pr_closed_unmerged", prNumber: pullRequest.number })}`,
       });
       return { unitId: unit.id, status: "closed_unmerged", phase: "in_review", blocker: null, merged: false, changed: true };
     }
@@ -802,7 +889,7 @@ export function deliveryReconciler(
       nextUnit = updated!;
       changed = true;
       if (unit.acceptedHeadSha && pullRequest.headSha !== unit.acceptedHeadSha) {
-        await revokeAcceptance({
+        await failRequirements({
           companyId: input.companyId,
           unit: nextUnit,
           blocker: blocker(
@@ -810,14 +897,16 @@ export function deliveryReconciler(
             `Remote head ${pullRequest.headSha.slice(0, 12)} no longer matches the accepted revision`,
             "Re-submit the reviewed candidate revision.",
           ),
+          signal: evidenceSignal({
+            reasonCode: "head_stale",
+            headSha: pullRequest.headSha,
+            reviewStatus: null,
+            reviewHeadSha: unit.acceptedHeadSha,
+            blockingFindings: 0,
+            checks: null,
+          }),
           dedupeKey: `head_changed:${pullRequest.headSha}`,
           eventType: "head_changed",
-        });
-        await wakeOwnerForRepair({
-          companyId: input.companyId,
-          unit: nextUnit,
-          reasonCode: "head_stale",
-          message: "A new commit was pushed; re-submit the accepted revision after review.",
         });
       }
     }
@@ -830,10 +919,17 @@ export function deliveryReconciler(
     );
     const authorLogin = pullRequest.authorLogin ?? null;
 
-    // Greptile is read through the scoped gateway. A required-but-unavailable
-    // read blocks; an optional one only contributes findings when it succeeds.
+    // Greptile is read through the scoped gateway and every finding is
+    // correlated with GitHub's own review-comment records before it counts.
+    // A required-but-unavailable read blocks; an optional one only contributes
+    // findings when it succeeds.
     let greptileEvidenceAvailable = !policyRow.requireGreptile;
     let greptileFindings: GreptileFinding[] = [];
+    let greptileBlocking = 0;
+    let greptileReviewedHead: string | null = null;
+    let greptileReviewState: GreptileReviewState | null = null;
+    let greptileReadVerdict: string | null = null;
+    let greptileGate: DeliveryBlocker | null = null;
     if (policyRow.greptileConnectionId) {
       const greptileRead = await greptile.read({
         companyId: input.companyId,
@@ -841,52 +937,56 @@ export function deliveryReconciler(
         repositoryName: `${repository.owner}/${repository.name}`,
         defaultBranch: unit.targetBranch,
         prNumber: pullRequest.number,
-        submittedHeadSha: pullRequest.headSha,
-        acceptedHeadSha: unit.acceptedHeadSha,
-        checks: checks.ok ? checks.value : [],
+        correlation: {
+          host: repository.host,
+          connectionId,
+          owner: repository.owner,
+          repo: repository.name,
+        },
       });
       if (greptileRead.ok) {
         greptileFindings = greptileRead.findings;
         greptileEvidenceAvailable = true;
+        greptileReviewState = greptileRead.reviewState;
+        greptileReviewedHead = greptileRead.headSha;
+        greptileBlocking = greptileRead.blockingFindings;
+        greptileReadVerdict = greptileRead.status;
         metadata.greptileFetchedAt = now.toISOString();
-        // Exact reviewed-head provenance: when Greptile is required, the
-        // review must name the current remote head. A stale or missing head
-        // revokes acceptance instead of passing on old findings.
-        if (policyRow.requireGreptile && greptileRead.headSha !== pullRequest.headSha) {
-          await revokeAcceptance({
-            companyId: input.companyId,
-            unit,
-            blocker: blocker(
-              "review_head_stale",
-              "Greptile reviewed a different revision than the current remote head",
-              "Wait for Greptile to review the current head, then reconcile again.",
-            ),
-            dedupeKey: `greptile_head_stale:${pullRequest.headSha}`,
-            eventType: "readiness_revoked",
-          });
-          return { unitId: unit.id, status: "blocked", phase: "in_review", blocker: null, merged: false, changed: true };
+        metadata.greptileReviewState = greptileRead.reviewState;
+        metadata.greptileReviewedHeadSha = greptileRead.headSha;
+        metadata.greptileProviderFindings = greptileRead.providerFindings;
+        // Every observed finding and its real provenance is persisted before
+        // any requirement is judged: findings, review state and reviewed head
+        // are operator-visible even when acceptance still fails.
+        await recordObservedFindings(db, {
+          companyId: input.companyId,
+          unitId: unit.id,
+          headSha: greptileRead.headSha,
+          findings: greptileFindings,
+        });
+        if (policyRow.requireGreptile && greptileRead.reviewState === "pending") {
+          greptileGate = blocker(
+            "review_pending",
+            "Greptile has not completed a review of the current head",
+            "Wait for Greptile to finish reviewing the current head, then reconcile again.",
+          );
+        } else if (policyRow.requireGreptile && greptileRead.headSha !== pullRequest.headSha) {
+          greptileGate = blocker(
+            "review_head_stale",
+            `Greptile reviewed ${greptileRead.headSha?.slice(0, 12) ?? "an unknown revision"}, not the current head ${pullRequest.headSha.slice(0, 12)}`,
+            "Wait for Greptile to review the current head, then reconcile again.",
+          );
         }
       } else if (policyRow.requireGreptile) {
         greptileEvidenceAvailable = false;
-        await revokeAcceptance({
-          companyId: input.companyId,
-          unit,
-          blocker: blocker("greptile_unavailable", greptileRead.message, "Connect Greptile and reconcile again."),
-          dedupeKey: `greptile_unavailable:${pullRequest.headSha}`,
-          eventType: "blocked",
-        });
-        return { unitId: unit.id, status: "blocked", phase: "in_review", blocker: null, merged: false, changed: true };
+        greptileGate = blocker(
+          greptileRead.errorCode === "provider_unknown" ? "provider_unknown" : "greptile_unavailable",
+          greptileRead.message,
+          "Refresh the authoritative GitHub and Greptile review evidence, then reconcile again.",
+        );
       }
     } else if (policyRow.requireGreptile) {
       greptileEvidenceAvailable = false;
-    }
-    if (greptileFindings.length > 0) {
-      await upsertFindings({
-        companyId: input.companyId,
-        unitId: unit.id,
-        headSha: pullRequest.headSha,
-        findings: greptileFindings,
-      });
     }
 
     const openBlockingFindings = await db
@@ -896,19 +996,35 @@ export function deliveryReconciler(
         eq(deliveryFindings.companyId, input.companyId),
         eq(deliveryFindings.unitId, unit.id),
         inArray(deliveryFindings.state, ["open", "disputed"]),
-        inArray(deliveryFindings.severity, ["critical", "high", "error", "blocker"]),
+        inArray(deliveryFindings.severity, [...GREPTILE_BLOCKING_SEVERITIES]),
       ))
       .then((rows) => rows[0]?.count ?? 0);
-    const blockingFindings = Math.max(reviews.ok ? reviews.value.blockingFindings : 0, openBlockingFindings);
+    const blockingFindings = Math.max(
+      reviews.ok ? reviews.value.blockingFindings : 0,
+      openBlockingFindings,
+      greptileBlocking,
+    );
 
     // Only authoritative reads feed the decision. A failed read is `null`
     // evidence, which the requirement evaluator blocks on; the cached metadata
-    // written below is for display and never merge evidence.
+    // written below is for display and never merge evidence. A required
+    // Greptile review is part of that evidence: a completed review of the
+    // exact head stands as the review verdict, and blocking findings on the
+    // head block regardless of the native review state.
+    const greptileRequiredAndFresh = policyRow.requireGreptile
+      && greptileEvidenceAvailable
+      && greptileReviewState === "completed"
+      && greptileReviewedHead === pullRequest.headSha
+      && greptileReadVerdict !== "changes_requested";
     const evidence: DeliveryEvidence = {
       headSha: pullRequest.headSha,
       checks: checks.ok ? checks.value : null,
-      reviewStatus: reviews.ok ? reviews.value.status : null,
-      reviewHeadSha: reviews.ok ? (reviews.value.approvedHeadSha ?? reviews.value.headSha) : null,
+      reviewStatus: greptileReadVerdict === "changes_requested" || (reviews.ok && reviews.value.status === "changes_requested")
+        ? "changes_requested"
+        : greptileRequiredAndFresh ? "approved" : (reviews.ok ? reviews.value.status : null),
+      reviewHeadSha: greptileRequiredAndFresh
+        ? greptileReviewedHead
+        : (reviews.ok ? (reviews.value.approvedHeadSha ?? reviews.value.headSha) : null),
       approvals: reviews.ok ? reviews.value.approvals : null,
       prAuthorLogin: authorLogin,
       blockingFindings,
@@ -947,12 +1063,12 @@ export function deliveryReconciler(
     const nextMetadata = {
       ...metadata,
       ...(checks.ok ? { checks: checks.value } : {}),
-      ...(reviews.ok
-        ? {
-            reviewStatus: reviews.value.status,
-            reviewHeadSha: evidence.reviewHeadSha,
-            approvals: reviews.value.approvals,
-          }
+      ...(reviews.ok ? { approvals: reviews.value.approvals } : {}),
+      // The effective verdict is persisted whenever either authoritative source
+      // produced one, so the board shows the real reviewed head and status even
+      // when acceptance still fails.
+      ...((reviews.ok || greptileRequiredAndFresh)
+        ? { reviewStatus: greptileReadVerdict ?? evidence.reviewStatus, reviewHeadSha: greptileEvidenceAvailable && policyRow.greptileConnectionId ? greptileReviewedHead : evidence.reviewHeadSha }
         : {}),
       blockingFindings,
       authorLogin,
@@ -964,6 +1080,16 @@ export function deliveryReconciler(
       .where(eq(deliveryUnits.id, unit.id));
     const refreshed = await units.getUnit(input.companyId, unit.id);
     if (!refreshed) throw new Error("delivery_unit_not_found");
+    if (greptileGate) {
+      await revokeAcceptance({
+        companyId: input.companyId,
+        unit: refreshed,
+        blocker: greptileGate,
+        dedupeKey: `${greptileGate.reasonCode}:${pullRequest.headSha}:${greptileReviewedHead ?? "none"}`,
+        eventType: "readiness_revoked",
+      });
+      return { unitId: unit.id, status: "blocked", phase: "in_review", blocker: greptileGate, merged: false, changed: true };
+    }
 
     const decision = await policy.evaluateUnit({
       companyId: input.companyId,
@@ -985,23 +1111,24 @@ export function deliveryReconciler(
         "The remote head no longer matches an accepted revision",
         "Re-submit the reviewed candidate revision.",
       );
-      await revokeAcceptance({
+      await failRequirements({
         companyId: input.companyId,
         unit: refreshed,
         blocker: blockerValue,
+        signal: evidenceSignal({
+          reasonCode: blockerValue.reasonCode,
+          headSha: pullRequest.headSha,
+          reviewStatus: evidence.reviewStatus,
+          reviewHeadSha: evidence.reviewHeadSha,
+          blockingFindings: evidence.blockingFindings,
+          checks: evidence.checks,
+          // An explicit operator/retry reconcile is a fresh request; a poll is
+          // not.
+          explicitNonce: input.trigger === "retry" || input.trigger === "operator" ? now.getTime() : null,
+        }),
         dedupeKey: `revoked:${blockerValue.reasonCode}:${pullRequest.headSha}`,
         eventType: "readiness_revoked",
       });
-      if (blockerValue.reasonCode === "review_blocking_findings"
-        || blockerValue.reasonCode === "checks_failing"
-        || blockerValue.reasonCode === "review_head_stale") {
-        await wakeOwnerForRepair({
-          companyId: input.companyId,
-          unit: refreshed,
-          reasonCode: blockerValue.reasonCode,
-          message: blockerValue.message,
-        });
-      }
       return {
         unitId: refreshed.id,
         status: "blocked",
@@ -1086,10 +1213,10 @@ export function deliveryReconciler(
     };
   }
 
-  async function reconcileIssue(input: { companyId: string; issueId: string }) {
+  async function reconcileIssue(input: { companyId: string; issueId: string; trigger?: DeliveryReconcileTrigger }) {
     const unit = await units.findUnitForIssue(input.companyId, input.issueId);
     if (!unit) return null;
-    return await reconcileUnit({ companyId: input.companyId, unitId: unit.id, trigger: "manual" });
+    return await reconcileUnit({ companyId: input.companyId, unitId: unit.id, trigger: input.trigger ?? "manual" });
   }
 
   /**
@@ -1142,5 +1269,5 @@ export function deliveryReconciler(
     return { reconciled, merged };
   }
 
-  return { reconcileUnit, reconcileIssue, reconcilePullRequest, reconcileCompany, verifyMergedUnit, wakeOwnerForRepair };
+  return { reconcileUnit, reconcileIssue, reconcilePullRequest, reconcileCompany, verifyMergedUnit, requestRepair };
 }

@@ -875,10 +875,15 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       failedIssueIds: [] as string[],
     };
 
-    const candidateIdsByCompany = Map.groupBy(candidates, (candidate) => candidate.companyId);
+    const candidateIdsByCompany = new Map<string, string[]>();
+    for (const candidate of candidates) {
+      const ids = candidateIdsByCompany.get(candidate.companyId);
+      if (ids) ids.push(candidate.id);
+      else candidateIdsByCompany.set(candidate.companyId, [candidate.id]);
+    }
     const deliveryWaitIssueIds = new Set<string>();
-    await Promise.all([...candidateIdsByCompany].map(async ([companyId, companyCandidates]) => {
-      const waits = await listNativeDeliveryWaits(db, companyId, companyCandidates.map((candidate) => candidate.id));
+    await Promise.all([...candidateIdsByCompany].map(async ([companyId, issueIds]) => {
+      const waits = await listNativeDeliveryWaits(db, companyId, issueIds);
       for (const issueId of waits.keys()) deliveryWaitIssueIds.add(issueId);
     }));
 

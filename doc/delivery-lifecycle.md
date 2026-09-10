@@ -47,6 +47,13 @@ Backlog → Todo → In Progress → In Review → Ready to merge → Merging �
 `issues.update` rejects them from every other caller, and issues cannot be
 created in them. The board UI renders them; agents never set them.
 
+Submitting a verified candidate moves its active primary and covered issues into
+`in_review`. Explicit operator blocks and terminal states are preserved. The
+persisted delivery unit is an owned waiting path: review-path validation,
+successful-run handoff, recovery, and productivity review recognize the native
+controller instead of requesting duplicate confirmations or escalating an
+ordinary remote-review wait.
+
 ## 3. Done gate
 
 `server/src/services/delivery/done-gate.ts` runs inside the row-locked
@@ -118,10 +125,26 @@ exemption. It fails closed when the author identity is unknown, when no approval
 exists for that exact commit, or when the only approvals are the author's.
 Approvals are derived from each reviewer's latest review state, so a later
 `DISMISSED` or `CHANGES_REQUESTED` supersedes an earlier `APPROVED`, and an
-approval recorded for an older commit never counts for a newer head. An
-approving review for a different revision is `review_head_stale`.
+approval recorded for an older commit never counts for a newer head. Missing
+independent approval is `review_approval_required`, not a code-repair request.
+Blocking findings take precedence so an owner can repair them before approval.
+Unknown author identity remains an unavailable-provider blocker.
 
 Never force push, never admin bypass, never accept stale evidence.
+
+Greptile completion and commit identity come from separate authoritative reads:
+the governed MCP payload supplies review state and findings; GitHub's Greptile
+review record and matching review-comment node IDs supply commit provenance.
+The submitted candidate SHA is never substituted for a reviewed SHA. Empty or
+in-flight review collections and new commits since review are `review_pending`;
+malformed or unreadable evidence fails closed. A completed CI check is not a
+review verdict. Unaddressed findings remain blocking across commits until the
+provider clears them, and an explicit disputed disposition remains blocking.
+
+Findings and checks are persisted before readiness is evaluated, so blocked
+candidates retain actionable bodies, locations, and revision evidence. The same
+review contract is checked during reconciliation, immediately before merge,
+and before the verified merge receipt is recorded.
 
 ## 5. Queue
 

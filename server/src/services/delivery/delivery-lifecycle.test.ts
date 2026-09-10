@@ -176,21 +176,21 @@ describe("delivery requirements", () => {
 
   it("fails closed when the pull request author identity is unknown", () => {
     expect(requirements({ evidence: evidence({ prAuthorLogin: null }) }))
-      .toMatchObject({ reasonCode: "review_blocking_findings" });
+      .toMatchObject({ reasonCode: "provider_unknown" });
   });
 
   it("accepts an independent approval of the exact head", () => {
     expect(requirements()).toBeNull();
   });
 
-  it("rejects self-approval of the exact head", () => {
+  it("rejects self-approval of the exact head as a missing approval, not a blocking finding", () => {
     expect(requirements({ evidence: evidence({ approvals: [{ login: "author", commitSha: HEAD }] }) }))
-      .toMatchObject({ reasonCode: "review_blocking_findings" });
+      .toMatchObject({ reasonCode: "review_approval_required" });
   });
 
   it("rejects an independent approval recorded for a different head", () => {
     expect(requirements({ evidence: evidence({ approvals: [{ login: "reviewer", commitSha: OLD_HEAD }] }) }))
-      .toMatchObject({ reasonCode: "review_blocking_findings" });
+      .toMatchObject({ reasonCode: "review_approval_required" });
   });
 
   it("still requires an exact-head approval when independent approval is not required", () => {

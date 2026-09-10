@@ -7,6 +7,7 @@ import type { DeliveryQueueService } from "./queue.js";
 import type { DeliveryUnitService } from "./units.js";
 import type { GitHubDeliveryClient } from "./github-client.js";
 import type { GreptileReviewService } from "./greptile.js";
+import { GREPTILE_BLOCKING_SEVERITIES } from "./greptile.js";
 import type { DeliveryReconciler, DeliveryIssueStatusWriter } from "./reconciler.js";
 import type { DeliveryControllerContext } from "./done-gate.js";
 import { repositoryFullName, type DeliveryEvidence } from "./policy.js";
@@ -194,10 +195,12 @@ export function deliveryMergeExecutor(
       input.companyId, connectionId, repository.host, repository.owner, repository.name, pullRequest.number,
     );
     // A merge needs full fresh Greptile evidence too: when the policy requires
-    // it, the read must succeed and its reviewed head must be the exact
-    // accepted head. A partial read or a stale review blocks the merge.
+    // it, the read must succeed, the review must be completed, and its reviewed
+    // head must be the exact accepted head. A partial read, an in-flight
+    // review, or a stale review blocks the merge.
     let greptileAvailable = !policyRow.requireGreptile;
     let greptileBlocking = 0;
+    let greptileApproves = false;
     if (policyRow.greptileConnectionId) {
       const greptileRead = await greptile.read({
         companyId: input.companyId,
@@ -205,22 +208,33 @@ export function deliveryMergeExecutor(
         repositoryName: `${repository.owner}/${repository.name}`,
         defaultBranch: unit.targetBranch,
         prNumber: pullRequest.number,
-        submittedHeadSha: pullRequest.headSha,
-        acceptedHeadSha: unit.acceptedHeadSha,
-        checks: checks.ok ? checks.value : [],
+        correlation: {
+          host: repository.host,
+          connectionId,
+          owner: repository.owner,
+          repo: repository.name,
+        },
       });
       if (!greptileRead.ok) {
         if (policyRow.requireGreptile) {
-          return await blockMerge(input.companyId, unit, "greptile_unavailable", greptileRead.message);
+          return await blockMerge(input.companyId, unit, greptileRead.errorCode === "provider_unknown" ? "provider_unknown" : "greptile_unavailable", greptileRead.message);
         }
-      } else if (policyRow.requireGreptile && greptileRead.headSha !== unit.acceptedHeadSha) {
-        return await blockMerge(
-          input.companyId, unit, "review_head_stale",
-          "Greptile reviewed a different revision than the accepted head",
-        );
       } else {
+        if (policyRow.requireGreptile && greptileRead.reviewState === "pending") {
+          return await blockMerge(
+            input.companyId, unit, "review_pending",
+            "Greptile has not completed a review of the accepted head",
+          );
+        }
+        if (policyRow.requireGreptile && greptileRead.headSha !== unit.acceptedHeadSha) {
+          return await blockMerge(
+            input.companyId, unit, "review_head_stale",
+            "Greptile reviewed a different revision than the accepted head",
+          );
+        }
         greptileAvailable = true;
         greptileBlocking = greptileRead.blockingFindings;
+        greptileApproves = greptileRead.status !== "changes_requested";
       }
     }
     const openBlockingFindings = await db
@@ -230,17 +244,30 @@ export function deliveryMergeExecutor(
         eq(deliveryFindings.companyId, input.companyId),
         eq(deliveryFindings.unitId, unit.id),
         inArray(deliveryFindings.state, ["open", "disputed"]),
-        inArray(deliveryFindings.severity, ["critical", "high", "error", "blocker"]),
+        inArray(deliveryFindings.severity, [...GREPTILE_BLOCKING_SEVERITIES]),
       ))
       .then((rows) => rows[0]?.count ?? 0);
+    // Merge-time evidence follows the same exact-head contract as
+    // reconciliation: a required Greptile review that names the accepted head
+    // and carries no blocking findings is the review verdict for that head.
+    const greptileVerdict = policyRow.requireGreptile && greptileAvailable;
+    const reviewStatus = greptileVerdict
+      ? (greptileApproves ? "approved" : "changes_requested")
+      : (reviews.ok ? reviews.value.status : null);
     const evidence: DeliveryEvidence = {
       headSha: unit.acceptedHeadSha,
       checks: checks.ok ? checks.value : null,
-      reviewStatus: reviews.ok ? reviews.value.status : null,
-      reviewHeadSha: reviews.ok ? (reviews.value.approvedHeadSha ?? reviews.value.headSha) : null,
+      reviewStatus,
+      reviewHeadSha: greptileVerdict && greptileApproves
+        ? unit.acceptedHeadSha
+        : (reviews.ok ? (reviews.value.approvedHeadSha ?? reviews.value.headSha) : null),
       approvals: reviews.ok ? reviews.value.approvals : null,
       prAuthorLogin: pullRequest.authorLogin ?? null,
-      blockingFindings: Math.max(reviews.ok ? reviews.value.blockingFindings : 0, openBlockingFindings, greptileBlocking),
+      blockingFindings: Math.max(
+        reviews.ok ? reviews.value.blockingFindings : 0,
+        openBlockingFindings,
+        greptileBlocking,
+      ),
     };
     const decision = await policy.evaluateUnit({
       companyId: input.companyId,
@@ -373,11 +400,12 @@ export function deliveryMergeExecutor(
         url: pullRequest.url,
         payload: { reasonCode: mapped.reasonCode },
       });
-      await reconciler.wakeOwnerForRepair({
+      await reconciler.requestRepair({
         companyId: input.companyId,
-        unit: unit,
+        unit,
         reasonCode: mapped.reasonCode,
         message: mapped.message,
+        signal: `v1:${mapped.reasonCode}:${unit.acceptedHeadSha}:${mapped.message}`,
       });
       return { unitId: unit.id, leased: false, merged: false, queued: false, blocked: true, reasonCode: mapped.reasonCode };
     }

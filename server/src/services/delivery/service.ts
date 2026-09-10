@@ -21,8 +21,9 @@ import { createGitHubDeliveryClient, type GitHubDeliveryClient } from "./github-
 import { deliveryEventService, type DeliveryEventService } from "./events.js";
 import { deliveryPolicyService, type DeliveryPolicyService, type PolicyWriteInput } from "./policy.js";
 import { deliveryQueueService, type DeliveryQueueService } from "./queue.js";
-import { deliveryUnitService, type DeliveryActor, type DeliveryIssueRow, type DeliveryUnitService, type DeliveryWakeEnqueue } from "./units.js";
+import { deliveryUnitService, readUnitMetadata, type DeliveryActor, type DeliveryIssueRow, type DeliveryUnitService, type DeliveryWakeEnqueue } from "./units.js";
 import { greptileReviewService, type GreptileReviewService } from "./greptile.js";
+import { recordObservedFindings } from "./findings.js";
 import {
   deliveryReconciler,
   type DeliveryIssueStatusWriter,
@@ -134,7 +135,7 @@ export function deliveryService(
   const requestOwnerWake: DeliveryWakeEnqueue = (agentId, opts) =>
     ownerWake ? ownerWake(agentId, opts) : Promise.resolve(null);
   const units = deliveryUnitService(db, { policy, queue, events, github, requestOwnerWake });
-  const greptile = greptileReviewService(db, deps);
+  const greptile = greptileReviewService(db, { toolGateway: deps.toolGateway, github });
   const reconciliation = deliveryReconciliationService(db, {
     github,
     loadRepository: (companyId, repositoryId) => units.loadRepository(companyId, repositoryId),
@@ -373,35 +374,25 @@ export function deliveryService(
     }
     const repository = await units.loadRepository(companyId, unit.repositoryId);
     const policyRow = await policy.getRowForIssueProject(companyId, unit.projectId);
+    const findings = await units.listFindings(companyId, unit.id);
+    const unavailable = (nextAction: string): DeliveryReviewSummary => ({
+      issueId,
+      repository: repository ? `${repository.owner}/${repository.name}` : null,
+      targetBranch: unit.targetBranch,
+      prNumber: unit.prNumber,
+      headSha: unit.headSha,
+      reviewedHeadSha: readUnitMetadata(unit.metadata).greptileReviewedHeadSha ?? null,
+      status: "unavailable",
+      blockingFindings: findings.filter((finding) => finding.state === "open").length,
+      findings,
+      nextAction,
+      fetchedAt: null,
+    });
     if (!policyRow?.greptileConnectionId) {
-      return {
-        issueId,
-        repository: repository ? `${repository.owner}/${repository.name}` : null,
-        targetBranch: unit.targetBranch,
-        prNumber: unit.prNumber,
-        headSha: unit.headSha,
-        reviewedHeadSha: null,
-        status: "unavailable",
-        blockingFindings: 0,
-        findings: await units.listFindings(companyId, unit.id),
-        nextAction: "Connect Greptile and set greptileConnectionId on the delivery policy.",
-        fetchedAt: null,
-      };
+      return unavailable("Connect Greptile and set greptileConnectionId on the delivery policy.");
     }
     if (!repository || !unit.prNumber) {
-      return {
-        issueId,
-        repository: repository ? `${repository.owner}/${repository.name}` : null,
-        targetBranch: unit.targetBranch,
-        prNumber: unit.prNumber,
-        headSha: unit.headSha,
-        reviewedHeadSha: null,
-        status: "unavailable",
-        blockingFindings: 0,
-        findings: await units.listFindings(companyId, unit.id),
-        nextAction: "Open a pull request before reading Greptile feedback.",
-        fetchedAt: null,
-      };
+      return unavailable("Open a pull request before reading Greptile feedback.");
     }
     const result = await greptile.read({
       companyId,
@@ -409,11 +400,13 @@ export function deliveryService(
       repositoryName: `${repository.owner}/${repository.name}`,
       defaultBranch: unit.targetBranch,
       prNumber: unit.prNumber,
-      submittedHeadSha: unit.headSha,
-      acceptedHeadSha: unit.acceptedHeadSha,
-      checks: [],
+      correlation: {
+        host: repository.host,
+        connectionId: policyRow.githubConnectionId,
+        owner: repository.owner,
+        repo: repository.name,
+      },
     });
-    const findings = await units.listFindings(companyId, unit.id);
     if (!result.ok) {
       return {
         issueId,
@@ -421,7 +414,7 @@ export function deliveryService(
         targetBranch: unit.targetBranch,
         prNumber: unit.prNumber,
         headSha: unit.headSha,
-        reviewedHeadSha: null,
+        reviewedHeadSha: readUnitMetadata(unit.metadata).greptileReviewedHeadSha ?? null,
         status: "unavailable",
         blockingFindings: findings.filter((finding) => finding.state === "open").length,
         findings,
@@ -429,6 +422,16 @@ export function deliveryService(
         fetchedAt: new Date().toISOString(),
       };
     }
+    // A successful read is durable evidence: persist what the provider actually
+    // reported, on the revision it actually reviewed, before any requirement is
+    // judged.
+    await recordObservedFindings(db, {
+      companyId,
+      unitId: unit.id,
+      headSha: result.headSha,
+      findings: result.findings,
+    });
+    const persisted = await units.listFindings(companyId, unit.id);
     return {
       issueId,
       repository: `${repository.owner}/${repository.name}`,
@@ -438,8 +441,12 @@ export function deliveryService(
       reviewedHeadSha: result.headSha,
       status: result.status,
       blockingFindings: result.blockingFindings,
-      findings,
-      nextAction: result.blockingFindings > 0 ? "Resolve or disposition the blocking findings." : null,
+      findings: persisted,
+      nextAction: result.status === "pending"
+        ? "Wait for Greptile to finish reviewing the current head, then refresh."
+        : result.blockingFindings > 0
+          ? "Resolve or disposition the blocking findings."
+          : null,
       fetchedAt: new Date().toISOString(),
     };
   }

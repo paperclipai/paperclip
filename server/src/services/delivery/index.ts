@@ -26,17 +26,26 @@ export {
   type DeliveryReceiptRow,
   type RegisterCandidateInput,
 } from "./units.js";
-export { createGitHubDeliveryClient, isMergeIncluded, type GitHubDeliveryClient } from "./github-client.js";
+export {
+  createGitHubDeliveryClient,
+  isMergeIncluded,
+  type GitHubDeliveryClient,
+  type GitHubReviewComment,
+} from "./github-client.js";
 export {
   greptileReviewService,
   parseMcpToolPayload,
   GREPTILE_READ_TOOL_NAMES,
   GREPTILE_READ_PARAMETER_KEYS,
+  GREPTILE_BLOCKING_SEVERITIES,
   type GreptileReviewService,
   type GreptileReview,
   type GreptileFinding,
   type GreptileReadResult,
+  type GreptileReadInput,
+  type GreptileReviewState,
 } from "./greptile.js";
+export { recordObservedFindings } from "./findings.js";
 export {
   deliveryReconciler,
   DELIVERY_MAX_REPAIR_ATTEMPTS,
@@ -44,6 +53,8 @@ export {
   type DeliveryReconcileOutcome,
   type DeliveryReconcileTrigger,
   type DeliveryIssueStatusWriter,
+  type DeliveryRepairRequest,
+  type DeliveryRepairOutcome,
 } from "./reconciler.js";
 export {
   deliveryMergeExecutor,
