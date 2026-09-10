@@ -7,7 +7,6 @@ import {
   hideSupportChat,
   mountSupportChat,
   resetSupportChatForTests,
-  updateSupportChatCompany,
   updateSupportChatTheme,
 } from "./plain-chat";
 
@@ -45,9 +44,7 @@ const MOUNT = {
     email: "user@example.com",
     emailHash: "a".repeat(64),
     fullName: "User One",
-    externalId: "user-1",
   },
-  tenantId: null,
   identityKey: "user-1:verified",
 };
 
@@ -81,13 +78,11 @@ describe("plain-chat controller", () => {
       appId: "liveChatApp_TEST",
       theme: "light",
       hideLauncher: false,
-      threadDetails: {},
       customerDetails: {
         email: "user@example.com",
         emailHash: "a".repeat(64),
         fullName: "User One",
-        externalId: "user-1",
-      },
+          },
     });
   });
 
@@ -104,7 +99,6 @@ describe("plain-chat controller", () => {
       appId: "liveChatApp_TEST",
       theme: "light",
       hideLauncher: false,
-      threadDetails: {},
     });
   });
 
@@ -151,12 +145,10 @@ describe("plain-chat controller", () => {
     );
 
     await mountSupportChat({ ...MOUNT, theme: "dark" });
-    // Every update passes a complete config (merge/replace semantics of
-    // Plain.update are undocumented), so appId and identity stay present.
+    // Updates preserve the identity but omit the init-only app ID.
     expect(fake.update).toHaveBeenLastCalledWith(
       expect.objectContaining({
         hideLauncher: false,
-      threadDetails: {},
         theme: "dark",
         customerDetails: expect.objectContaining({ email: "user@example.com" }),
       }),
@@ -201,18 +193,17 @@ describe("plain-chat controller", () => {
   it("is a no-op to hide or retheme before the widget ever mounts", async () => {
     await hideSupportChat();
     await updateSupportChatTheme("dark");
-    await updateSupportChatCompany("paperclip-company-1");
     expect(getSupportChatWidgetStatus()).toBe("idle");
   });
 
 
-  it("waits for async initialization before company updates and omits init-only fields", async () => {
+  it("waits for async initialization before theme updates and omits init-only fields", async () => {
     const fake = createFakePlain();
     let finish!: () => void;
     fake.init.mockReturnValue(new Promise<void>((resolve) => { finish = resolve; }));
     (window as unknown as { Plain: unknown }).Plain = fake;
     const mounted = mountSupportChat(MOUNT);
-    const updated = updateSupportChatCompany("te_second");
+    const updated = updateSupportChatTheme("dark");
     await tick();
     expect(getSupportChatWidgetStatus()).toBe("loading");
     expect(fake.update).not.toHaveBeenCalled();
@@ -220,23 +211,23 @@ describe("plain-chat controller", () => {
     await mounted;
     await updated;
     expect(fake.update).toHaveBeenLastCalledWith(expect.objectContaining({
-      threadDetails: { tenantIdentifier: { tenantId: "te_second" } },
+      theme: "dark",
       customerDetails: expect.objectContaining({ email: "user@example.com" }),
     }));
     expect(fake.update.mock.lastCall![0]).not.toHaveProperty("appId");
   });
 
-  it("removes the stale widget and restores fallback after a rejected company update", async () => {
+  it("removes the stale widget and restores fallback after a rejected update", async () => {
     const fake = createFakePlain();
     (window as unknown as { Plain: unknown }).Plain = fake;
     const host = document.createElement("div");
     host.id = "plain-chat";
     document.body.appendChild(host);
-    await mountSupportChat({ ...MOUNT, tenantId: "te_original" });
+    await mountSupportChat(MOUNT);
     fake.update.mockRejectedValue(new Error("vendor update rejected"));
     fake.close.mockImplementation(() => { throw new Error("close also failed"); });
     const error = vi.spyOn(console, "error").mockImplementation(() => {});
-    await updateSupportChatCompany("te_next");
+    await updateSupportChatTheme("dark");
     expect(getSupportChatWidgetStatus()).toBe("error");
     expect(document.getElementById("plain-chat")).toBeNull();
     const count = fake.update.mock.calls.length;
@@ -247,46 +238,4 @@ describe("plain-chat controller", () => {
     error.mockRestore();
   });
 
-  it("scopes new threads to the current company's tenant at init", async () => {
-    const scripts = captureScript();
-    const fake = createFakePlain();
-    const mounted = mountSupportChat({ ...MOUNT, tenantId: "paperclip-company-1" });
-    await tick();
-    (window as unknown as { Plain: unknown }).Plain = fake;
-    scripts[0]!.onload!(new Event("load"));
-    await mounted;
-
-    expect(fake.init).toHaveBeenCalledWith(
-      expect.objectContaining({
-        threadDetails: { tenantIdentifier: { tenantId: "paperclip-company-1" } },
-      }),
-    );
-  });
-
-  it("re-points thread context on a company switch without closing the panel", async () => {
-    const scripts = captureScript();
-    const fake = createFakePlain();
-    const mounted = mountSupportChat({ ...MOUNT, tenantId: "paperclip-company-1" });
-    await tick();
-    (window as unknown as { Plain: unknown }).Plain = fake;
-    scripts[0]!.onload!(new Event("load"));
-    await mounted;
-
-    await updateSupportChatCompany("paperclip-company-2");
-    // Full config on every update (merge/replace semantics undocumented) and
-    // no `close`: an open chat panel survives the switch, and only threads
-    // created from now on carry the new tenant.
-    expect(fake.close).not.toHaveBeenCalled();
-    expect(fake.update).toHaveBeenLastCalledWith(
-      expect.objectContaining({
-        customerDetails: expect.objectContaining({ email: "user@example.com" }),
-        threadDetails: { tenantIdentifier: { tenantId: "paperclip-company-2" } },
-      }),
-    );
-
-    await updateSupportChatCompany(null);
-    const lastConfig = fake.update.mock.lastCall![0] as Record<string, unknown>;
-    expect(lastConfig.threadDetails).toEqual({});
-    expect(lastConfig).not.toHaveProperty("appId");
-  });
 });

@@ -1,35 +1,4 @@
-// The Plain support chat widget controller.
-//
-// Activated only when `GET /api/support-chat/session` answers 200 — see
-// `SupportChatGate.tsx`. A self-hosted instance answers 404, so this module's
-// script injection never runs there and the page makes no request to Plain's
-// CDN.
-//
-// Everything here goes through documented Plain widget APIs only
-// (https://www.plain.com/docs/product/channels/chat-customization):
-// `Plain.init`, `Plain.update`, `Plain.open`, `Plain.close`. Plain documents
-// no teardown/identity-reset call, so this controller enforces a
-// one-identity-per-page-lifetime policy instead of guessing at vendor
-// internals:
-//
-// - The first successful `mountSupportChat` binds the page to that identity
-//   key (user id + attestation mode).
-// - A later mount for the *same* key re-shows the launcher via `Plain.update`.
-// - A later mount for a *different* key refuses and leaves the widget hidden
-//   until a full page load. On Cloud this situation cannot be reached: tenant
-//   sign-out is a top-level navigation (`useSignOut`), so the document — and
-//   the widget with it — is gone before another account can sign in.
-// - `hideSupportChat` (sign-out with the document still alive) closes the
-//   panel and hides the launcher through `Plain.update({ hideLauncher: true })`.
-//
-// Updates include all mutable configuration, with init-only appId omitted.
-// Explicit empty threadDetails clears a previous company association.
-//
-// Operations queue on one shared promise chain (same pattern as
-// `ui/src/lib/sentry.ts`), so a sign-out issued while the vendor script is
-// still loading runs strictly after the mount it races, never interleaved
-// with it.
-
+// Cloud-only Plain lifecycle. One authenticated identity per document; failures restore feedback.
 import { useSyncExternalStore } from "react";
 
 export const PLAIN_SCRIPT_URL = "https://chat.cdn-plain.com/index.js";
@@ -40,22 +9,12 @@ export interface SupportChatCustomerDetails {
   email: string;
   emailHash: string;
   fullName?: string | null;
-  externalId?: string | null;
 }
 
 export interface SupportChatMountOptions {
   appId: string;
   theme: SupportChatTheme;
   customer: SupportChatCustomerDetails | null;
-  /**
-   * The Plain tenant ID for the customer's currently selected
-   * company, or null for no company context. Server-provided only — non-null
-   * means the server has already ensured the tenant exists in Plain. Passed
-   * as `threadDetails.tenantIdentifier`, which scopes threads *created from
-   * now on* to that tenant; it is context, not identity, so
-   * `updateSupportChatCompany` may change it within one page lifetime.
-   */
-  tenantId: string | null;
   /**
    * Stable key for the identity this mount represents. Mount requests with a
    * key different from the mounted one are refused (no documented vendor
@@ -167,21 +126,13 @@ function loadPlainScript(): Promise<PlainGlobal | null> {
   return scriptPromise;
 }
 
-function buildThreadDetails(tenantId: string | null): Record<string, unknown> {
-  // Applied by Plain to threads created from this point on; threads that
-  // already exist keep the tenant they were created under. Only the tenant
-  // reference — never product content.
-  return tenantId ? { tenantIdentifier: { tenantId } } : {};
-}
-
 function buildConfig(opts: SupportChatMountOptions): Record<string, unknown> {
   return {
     appId: opts.appId,
     theme: opts.theme,
     hideLauncher: false,
     // Never include product content, URLs, or logs here. The identity block
-    // is the server-attested customer identity, the thread block is the
-    // current-company tenant reference, and nothing else — see the
+    // is the server-attested customer identity, nothing else is sent — see the
     // support-chat session route.
     ...(opts.customer
       ? {
@@ -189,11 +140,9 @@ function buildConfig(opts: SupportChatMountOptions): Record<string, unknown> {
             email: opts.customer.email,
             emailHash: opts.customer.emailHash,
             ...(opts.customer.fullName ? { fullName: opts.customer.fullName } : {}),
-            ...(opts.customer.externalId ? { externalId: opts.customer.externalId } : {}),
           },
         }
       : {}),
-    threadDetails: buildThreadDetails(opts.tenantId),
   };
 }
 
@@ -299,25 +248,6 @@ export function updateSupportChatTheme(theme: SupportChatTheme): Promise<void> {
   return enqueue(async () => {
     if (!plain) return;
     await applyUpdate({ theme });
-  });
-}
-
-/**
- * Point new support threads at the customer's currently selected company
- * (a Plain tenant), or clear the association when no company is selected.
- * Company context is not identity: switching it neither closes an open panel
- * nor re-keys the mounted identity — threads already created keep the tenant
- * they started under. A no-op before the widget mounts (the mount itself
- * carries the initial context).
- */
-export function updateSupportChatCompany(tenantId: string | null): Promise<void> {
-  return enqueue(async () => {
-    if (!plain || !lastConfig) return;
-    const next = { ...lastConfig };
-    // Omitting this key preserves the previous tenant in Plain. An explicit
-    // empty object replaces thread metadata when no company is selected.
-    next.threadDetails = buildThreadDetails(tenantId);
-    await applyConfig(next);
   });
 }
 
