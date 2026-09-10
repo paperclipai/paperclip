@@ -1588,8 +1588,20 @@ export type {
   OAuthRedirectConstraints,
   QuotaWindow,
   ProviderQuotaResult,
+  CompanyCoordinationWorkItem,
+  CompanyCoordinationProjectRef,
+  CompanyCoordinationWorkResponse,
+  CoordinationHandoffResponse,
+  CompanyCoordinationOpenStatus,
 } from "./types/index.js";
 export { WORKSPACE_READINESS_STATES } from "./types/index.js";
+export {
+  COORDINATION_WORK_PAGE_SIZE,
+  COORDINATION_WORK_OPEN_STATUSES,
+  COORDINATION_HANDOFF_ACTIVITY_ACTION,
+  COORDINATION_HANDOFF_WAKE_REASON,
+  COORDINATION_HANDOFF_WAKE_IDEMPOTENCY_PREFIX,
+} from "./types/index.js";
 export {
   COMPANY_SEARCH_EXTRACT_KINDS,
   COMPANY_SEARCH_EXTRACT_SCOPES,
@@ -1878,6 +1890,10 @@ export {
   type ResetAgentSession,
   type TestAdapterEnvironment,
   type UpdateAgentPermissions,
+  companyCoordinationWorkQuerySchema,
+  coordinationHandoffBodySchema,
+  type CompanyCoordinationWorkQuery,
+  type CoordinationHandoffBody,
   createProjectSchema,
   updateProjectSchema,
   createProjectWorkspaceSchema,

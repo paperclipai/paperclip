@@ -23,6 +23,8 @@ import {
   writeStatusCardSummarySchema,
   wakeAgentSchema,
   resetAgentSessionSchema,
+  companyCoordinationWorkQuerySchema,
+  coordinationHandoffBodySchema,
   agentSkillSyncSchema,
   testAdapterEnvironmentSchema,
   // Issue
@@ -877,6 +879,7 @@ const BOARD_ONLY_PREFIXES = [
 ];
 
 const BOARD_ONLY_OPERATIONS = new Set([
+  "GET /api/companies/{companyId}/issue-overviews",
   "PUT /api/companies/{companyId}/recovery-engineer",
   "PUT /api/companies/{companyId}/recovery-engineer/procedures/{procedureId}",
   "PUT /api/companies/{companyId}/recovery-engineer/incidents/{incidentId}/activation",
@@ -4398,6 +4401,87 @@ registerCurrentRoute({
     401: r.unauthorized,
     403: r.forbidden,
     404: r.notFound,
+  },
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/companies/{companyId}/issue-overviews",
+  tags: ["issues"],
+  summary: "Read board-only issue overview projections without reconciling delivery",
+  query: z.object({
+    issueIds: z.string().optional().describe("Comma-separated issue UUIDs; whitespace and duplicates are ignored."),
+  }),
+  responses: {
+    200: r.ok(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+  },
+});
+
+// ─── Company coordination (opt-in agent tools) ──────────────────────────────
+
+const coordinationProjectRefSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  leadAgentId: z.string().nullable(),
+}).strict();
+
+const coordinationWorkItemSchema = z.object({
+  id: z.string(),
+  identifier: z.string().nullable(),
+  title: z.string(),
+  status: z.string(),
+  priority: z.string(),
+  projectId: z.string().nullable(),
+  assigneeAgentId: z.string().nullable(),
+  executionRunId: z.string().nullable(),
+  project: coordinationProjectRefSchema.nullable(),
+}).strict();
+
+const coordinationWorkResponseSchema = z.object({
+  items: z.array(coordinationWorkItemSchema),
+  nextOffset: z.number().int().nonnegative().nullable(),
+}).strict();
+
+const coordinationHandoffResponseSchema = z.object({
+  sourceIssueId: z.string(),
+  targetIssueId: z.string(),
+  leadAgentId: z.string(),
+  leadIssueId: z.string(),
+  commentId: z.string(),
+  wakeRequestId: z.string().nullable(),
+}).strict();
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/companies/{companyId}/coordination/work",
+  tags: ["coordination"],
+  summary: "List the company's open coordination work (bounded page)",
+  query: companyCoordinationWorkQuerySchema,
+  responses: {
+    200: r.ok(coordinationWorkResponseSchema),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+  },
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/companies/{companyId}/coordination/handoffs",
+  tags: ["coordination"],
+  summary: "Request an addressed coordination handoff to a project lead",
+  body: coordinationHandoffBodySchema,
+  responses: {
+    200: r.ok(coordinationHandoffResponseSchema),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    409: r.conflict,
+    429: r.tooManyRequests,
   },
 });
 

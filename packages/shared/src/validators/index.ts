@@ -387,6 +387,13 @@ export {
 } from "./agent.js";
 
 export {
+  companyCoordinationWorkQuerySchema,
+  coordinationHandoffBodySchema,
+  type CompanyCoordinationWorkQuery,
+  type CoordinationHandoffBody,
+} from "./company-coordination.js";
+
+export {
   createProjectSchema,
   updateProjectSchema,
   createProjectWorkspaceSchema,

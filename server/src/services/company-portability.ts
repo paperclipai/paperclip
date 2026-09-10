@@ -76,6 +76,7 @@ import { ghFetch, gitHubApiBase, resolveRawGitHubUrl } from "./github-fetch.js";
 import type { StorageService } from "../storage/types.js";
 import { accessService } from "./access.js";
 import { agentService } from "./agents.js";
+import { stripAgentCoordinationAuthority } from "./agent-permissions.js";
 import { agentInstructionsBundleMode, agentInstructionsService } from "./agent-instructions.js";
 import { assetService } from "./assets.js";
 import { generateReadme } from "./company-export-readme.js";
@@ -5598,7 +5599,10 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             adapterConfig: normalizedAdapter.adapterConfig,
             runtimeConfig: sanitizeImportedAgentRuntimeConfig(manifestAgent.runtimeConfig),
             budgetMonthlyCents: manifestAgent.budgetMonthlyCents,
-            permissions: manifestAgent.permissions,
+            // Fail closed: an imported package must never be able to grant
+            // company coordination authority. The board re-grants it after
+            // import through the agent permissions route.
+            permissions: stripAgentCoordinationAuthority(manifestAgent.permissions) ?? undefined,
             metadata: manifestAgent.metadata,
           };
           // "import", not "system": the UI reads this to explain that the

@@ -3,6 +3,13 @@ import { LOW_TRUST_REVIEW_PRESET } from "@paperclipai/shared";
 export type NormalizedAgentPermissions = Record<string, unknown> & {
   canCreateAgents: boolean;
   canCreateSkills: boolean;
+  /**
+   * Company coordination authority. Fail-closed everywhere except the
+   * board-owned agent permissions update route: defaults are always false, the
+   * create context forces false, and the import path strips the key before any
+   * write. Enforcement must read this normalized boolean, never raw rows.
+   */
+  canCoordinateCompanyWork: boolean;
 };
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -45,6 +52,10 @@ export function defaultAgentPermissions(
   return {
     canCreateAgents: options?.context === "create" && options?.lowTrust !== true,
     canCreateSkills: true,
+    // Coordination authority is never a default in any context, not even for
+    // board-created agents: the board grants it after creation through the
+    // permissions route, so no creation/import path can smuggle it in.
+    canCoordinateCompanyWork: false,
   };
 }
 
@@ -71,5 +82,31 @@ export function normalizeAgentPermissions(
       typeof record.canCreateSkills === "boolean"
         ? record.canCreateSkills
         : defaults.canCreateSkills,
+    canCoordinateCompanyWork:
+      // In the create context this is forced false regardless of input: new
+      // agents (board-created, agent-hired, catalog-provisioned, imported)
+      // never start with coordination authority. The stored context preserves
+      // an explicit value so a board grant survives read normalization.
+      options?.context === "create"
+        ? false
+        : typeof record.canCoordinateCompanyWork === "boolean"
+          ? record.canCoordinateCompanyWork
+          : defaults.canCoordinateCompanyWork,
   };
+}
+
+/**
+ * Drops the coordination authority key from a permissions record without
+ * touching any other field. Used by the company import path, where package
+ * contents are untrusted input: an exported bundle must never be able to
+ * reinstall coordination authority into the target company. Dropping the key
+ * (instead of rewriting it) lets the downstream normalization default it to
+ * false.
+ */
+export function stripAgentCoordinationAuthority(
+  permissions: Record<string, unknown> | null | undefined,
+): Record<string, unknown> | null | undefined {
+  if (!permissions || !("canCoordinateCompanyWork" in permissions)) return permissions;
+  const { canCoordinateCompanyWork: _dropped, ...rest } = permissions;
+  return rest;
 }

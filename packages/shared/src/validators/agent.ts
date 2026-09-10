@@ -16,6 +16,9 @@ export const agentPermissionsSchema = z.object({
   // permissions record marks the agent low-trust) when the field is omitted.
   canCreateAgents: z.boolean().optional(),
   canCreateSkills: z.boolean().optional().default(true),
+  // Accepted on the wire so the field round-trips, but the server's
+  // normalization forces false outside the board-owned permissions route.
+  canCoordinateCompanyWork: z.boolean().optional(),
   trustPreset: trustPresetSchema.optional(),
   authorizationPolicy: trustAuthorizationPolicySchema.optional(),
 }).catchall(z.unknown());
@@ -244,6 +247,10 @@ export const updateAgentPermissionsSchema = z.object({
   canCreateAgents: z.boolean(),
   canCreateSkills: z.boolean().optional(),
   canAssignTasks: z.boolean(),
+  // Only a board actor may pass true here; the route rejects agent callers
+  // attempting to grant it, and normalization keeps every other write path
+  // fail-closed.
+  canCoordinateCompanyWork: z.boolean().optional(),
   trustPreset: trustPresetSchema.optional(),
   authorizationPolicy: trustAuthorizationPolicySchema.optional(),
 });

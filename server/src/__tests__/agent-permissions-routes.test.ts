@@ -1897,6 +1897,57 @@ describe.sequential("agent permission routes", () => {
     expect(mockAccessService.setPrincipalPermission).not.toHaveBeenCalled();
   });
 
+  it("blocks a CEO agent from granting company coordination authority", async () => {
+    mockAgentService.getById.mockImplementation(async (id: string) =>
+      id === "ceo-agent"
+        ? { ...baseAgent, id: "ceo-agent", role: "ceo", permissions: { canCreateAgents: true } }
+        : baseAgent);
+
+    const app = await createApp({
+      type: "agent",
+      agentId: "ceo-agent",
+      companyId,
+      runId: "run-1",
+      source: "agent_key",
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .patch(`/api/agents/${agentId}/permissions`)
+      .send({ canCreateAgents: true, canAssignTasks: true, canCoordinateCompanyWork: true }));
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe("Only board operators can grant company coordination authority");
+    expect(mockAgentService.updatePermissions).not.toHaveBeenCalled();
+    expect(mockAccessService.setPrincipalPermission).not.toHaveBeenCalled();
+  });
+
+  it("lets a board operator grant company coordination authority", async () => {
+    mockAgentService.updatePermissions.mockResolvedValue({
+      ...baseAgent,
+      permissions: { canCreateAgents: false, canCoordinateCompanyWork: true },
+    });
+
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .patch(`/api/agents/${agentId}/permissions`)
+      .send({ canCreateAgents: false, canAssignTasks: false, canCoordinateCompanyWork: true }));
+
+    expect(res.status).toBe(200);
+    expect(mockAgentService.updatePermissions).toHaveBeenCalledWith(agentId, {
+      canCreateAgents: false,
+      canAssignTasks: false,
+      canCoordinateCompanyWork: true,
+    });
+    expect(res.body.permissions.canCoordinateCompanyWork).toBe(true);
+  });
+
 
   describe("agent configuration read gate", () => {
     it("allows a board member without agents:create to read agent configuration", async () => {

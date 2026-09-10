@@ -456,3 +456,25 @@ preserved rather than silently discarded.
 The candidate publisher is the framework broker; see
 `/Users/mirko/.paseo/worktrees/0is1eoku/delivery-integration` (framework repo) for
 `delivery_submit_candidate` wiring.
+
+## 14. Bounded company coordination
+
+Company-wide discovery is an explicit operator opt-in, not broader issue-write
+authority. The board grants `canCoordinateCompanyWork` through the agent
+permissions endpoint. Creation, cloning and company import cannot grant it.
+The framework coordinator must also explicitly enable `delivery_read_company_work`
+and `delivery_handoff_project_work`; neither tool is granted by default.
+
+`GET /api/companies/:companyId/coordination/work` returns a fixed-size page of
+visible open issues with project-lead metadata, without descriptions or comments.
+`POST /api/companies/:companyId/coordination/handoffs` requires an active caller
+run bound to the source issue. The server derives the target's project lead and
+an existing lead-owned issue; callers cannot choose attribution, reassign work,
+create a replacement task or bypass delivery approval.
+
+Handoffs persist the notice and audit record before waking the lead through the
+ordinary status, dependency and budget guards. Company-scoped idempotency keys
+serialize concurrent requests; changed source, target or message conflicts.
+Replay and the existing orphan-reaper sweep recover pending dispatch errors and
+crash windows without duplicate notices or durable wakes. Legitimately blocked,
+skipped and deferred wake outcomes settle rather than becoming a retry loop.

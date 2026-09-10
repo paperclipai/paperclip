@@ -42,3 +42,4 @@ export { instanceDatabaseBackupRoutes } from "./instance-database-backups.js";
 export { managedAgentProfileRoutes } from "./managed-agent-profiles.js";
 export { remoteAgentProfileRoutes } from "./remote-agent-profiles.js";
 export { deliveryRoutes } from "./delivery.js";
+export { companyCoordinationRoutes } from "./company-coordination.js";

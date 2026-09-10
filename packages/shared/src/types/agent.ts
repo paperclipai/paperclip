@@ -18,6 +18,13 @@ import type { AgentApiKeyScope } from "../validators/agent.js";
 export interface AgentPermissions extends Record<string, unknown> {
   canCreateAgents: boolean;
   canCreateSkills?: boolean;
+  /**
+   * Opt-in authority to use the bounded company coordination tools (read the
+   * company work list and request addressed handoffs). Fail-closed: only an
+   * authenticated board operator can grant or change this through the agent
+   * permissions route; no agent, clone, import, or creation path can set it.
+   */
+  canCoordinateCompanyWork?: boolean;
   trustPreset?: TrustPreset;
   authorizationPolicy?: TrustAuthorizationPolicy;
 }

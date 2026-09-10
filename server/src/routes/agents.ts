@@ -4382,6 +4382,12 @@ export function agentRoutes(
         res.status(403).json({ error: "Only CEO can manage permissions" });
         return;
       }
+      // Company coordination authority is board-granted only: even a CEO agent
+      // cannot grant or move it, through any agent-facing path.
+      if (req.body.canCoordinateCompanyWork === true) {
+        res.status(403).json({ error: "Only board operators can grant company coordination authority" });
+        return;
+      }
     } else {
       await assertBoardCanManageAgentsForCompany(req, existing.companyId);
     }
@@ -4418,6 +4424,7 @@ export function agentRoutes(
       details: {
         canCreateAgents: agent.permissions?.canCreateAgents ?? false,
         canCreateSkills: agent.permissions?.canCreateSkills ?? true,
+        canCoordinateCompanyWork: agent.permissions?.canCoordinateCompanyWork ?? false,
         canAssignTasks: effectiveCanAssignTasks,
         trustPreset: agent.permissions?.trustPreset ?? "standard",
       },

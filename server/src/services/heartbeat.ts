@@ -195,6 +195,7 @@ import { trackAgentFirstHeartbeat } from "@paperclipai/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
 import { emitAgentTaskRun } from "./agent-task-run-telemetry.js";
 import { companySkillService } from "./company-skills.js";
+import { companyCoordinationService } from "./company-coordination.js";
 import { budgetService, type BudgetEnforcementScope } from "./budgets.js";
 import { secretService, type MissingRuntimeBinding } from "./secrets.js";
 import {
@@ -8470,6 +8471,7 @@ export function heartbeatService(
   const secretsSvc = secretService(db);
   const companySkills = companySkillService(db);
   const issuesSvc = issueService(db);
+  const companyCoordination = companyCoordinationService(db, enqueueWakeup);
   const recoveryEngineer = recoveryEngineerService(db, { enqueueWakeup });
   const treeControlSvc = issueTreeControlService(db);
   const executionWorkspacesSvc = executionWorkspaceService(db);
@@ -17424,6 +17426,12 @@ export function heartbeatService(
       logger.warn(
         { err: error },
         "failed to dispatch persisted native status wake intents before orphan reaping",
+      );
+    });
+    await companyCoordination.reconcilePendingHandoffs().catch((error) => {
+      logger.warn(
+        { err: error },
+        "failed to dispatch persisted coordination handoffs before orphan reaping",
       );
     });
 

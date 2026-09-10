@@ -8,6 +8,7 @@ import {
   defaultAgentPermissions,
   normalizeAgentPermissions,
   permissionsImplyLowTrust,
+  stripAgentCoordinationAuthority,
 } from "../services/agent-permissions.js";
 
 describe("agent permissions service", () => {
@@ -112,5 +113,61 @@ describe("agent permissions service", () => {
       canCreateSkills: false,
       canAssignTasks: false,
     }).canCreateSkills).toBe(false);
+  });
+
+  it("defaults coordination authority to false in every normalization context", () => {
+    expect(defaultAgentPermissions().canCoordinateCompanyWork).toBe(false);
+    expect(defaultAgentPermissions({ context: "create" }).canCoordinateCompanyWork).toBe(false);
+    expect(normalizeAgentPermissions(undefined).canCoordinateCompanyWork).toBe(false);
+    expect(normalizeAgentPermissions(undefined, { context: "create" }).canCoordinateCompanyWork).toBe(false);
+    expect(normalizeAgentPermissions({}).canCoordinateCompanyWork).toBe(false);
+    expect(normalizeAgentPermissions({}, { context: "create" }).canCoordinateCompanyWork).toBe(false);
+    expect(normalizeAgentPermissions("malformed").canCoordinateCompanyWork).toBe(false);
+    expect(normalizeAgentPermissions([]).canCoordinateCompanyWork).toBe(false);
+  });
+
+  it("forces coordination authority false at creation even when input claims it", () => {
+    expect(
+      normalizeAgentPermissions({ canCoordinateCompanyWork: true }, { context: "create" }).canCoordinateCompanyWork,
+    ).toBe(false);
+    expect(
+      normalizeAgentPermissions(
+        { trustPreset: "standard", canCoordinateCompanyWork: true },
+        { context: "create" },
+      ).canCoordinateCompanyWork,
+    ).toBe(false);
+  });
+
+  it("preserves an explicit board grant on stored rows only", () => {
+    expect(normalizeAgentPermissions({ canCoordinateCompanyWork: true }).canCoordinateCompanyWork).toBe(true);
+    expect(normalizeAgentPermissions({ canCoordinateCompanyWork: false }).canCoordinateCompanyWork).toBe(false);
+  });
+
+  it("strips coordination authority from imported permission records", () => {
+    expect(
+      stripAgentCoordinationAuthority({ canCoordinateCompanyWork: true, canCreateAgents: false }),
+    ).toEqual({ canCreateAgents: false });
+    expect(stripAgentCoordinationAuthority({ canCreateAgents: true })).toEqual({ canCreateAgents: true });
+    expect(stripAgentCoordinationAuthority(null)).toBeNull();
+    expect(stripAgentCoordinationAuthority(undefined)).toBeUndefined();
+    // Normalizing the stripped record keeps the grant off.
+    expect(
+      normalizeAgentPermissions(stripAgentCoordinationAuthority({ canCoordinateCompanyWork: true })),
+    ).toMatchObject({ canCoordinateCompanyWork: false });
+  });
+
+  it("round-trips the coordination flag on the wire schemas without a default", () => {
+    expect(agentPermissionsSchema.parse({}).canCoordinateCompanyWork).toBeUndefined();
+    expect(agentPermissionsSchema.parse({ canCoordinateCompanyWork: true }).canCoordinateCompanyWork).toBe(true);
+    expect(
+      updateAgentPermissionsSchema.parse({ canCreateAgents: false, canAssignTasks: false }).canCoordinateCompanyWork,
+    ).toBeUndefined();
+    expect(
+      updateAgentPermissionsSchema.parse({
+        canCreateAgents: false,
+        canAssignTasks: false,
+        canCoordinateCompanyWork: true,
+      }).canCoordinateCompanyWork,
+    ).toBe(true);
   });
 });

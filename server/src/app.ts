@@ -44,6 +44,7 @@ import { environmentRuntimeService } from "./services/environment-runtime.js";
 import { projectRoutes } from "./routes/projects.js";
 import { issueRoutes } from "./routes/issues.js";
 import { deliveryRoutes } from "./routes/delivery.js";
+import { companyCoordinationRoutes } from "./routes/company-coordination.js";
 import { deliveryService } from "./services/delivery/index.js";
 import { issueTreeControlRoutes } from "./routes/issue-tree-control.js";
 import { caseRoutes } from "./routes/cases.js";
@@ -610,6 +611,10 @@ export async function createApp(
   const connectionIntentHeartbeat = heartbeatService(db, {
     pluginWorkerManager: workerManager,
   });
+  // The coordination handoff routes dispatch their addressed wakes through the
+  // same heartbeat service instance; every active-run/dependency/budget guard
+  // inside enqueueWakeup stays in force.
+  api.use(companyCoordinationRoutes(db, { heartbeat: connectionIntentHeartbeat }));
   // Real owner feedback: delivery repair and artifact wakes queue actual
   // heartbeat runs through the scheduler instead of bare wakeup rows.
   delivery.setWakeDispatcher((agentId, opts) => connectionIntentHeartbeat.wakeup(agentId, opts));
