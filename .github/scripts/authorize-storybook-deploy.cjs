@@ -1,5 +1,5 @@
 // Run before building, and again inside the protected deployment job on reruns.
-module.exports = async function authorizeStorybookPages({ github, context }) {
+module.exports = async function authorizeStorybookDeploy({ github, context }) {
   const fail = (message) => { throw new Error(message); };
   if (context.repo.owner !== "paperclipai" || context.repo.repo !== "paperclip") {
     fail("Storybook publishing is restricted to paperclipai/paperclip.");
@@ -39,12 +39,12 @@ module.exports = async function authorizeStorybookPages({ github, context }) {
   // as well, so editing this check cannot grant an outsider deployment access.
   const { data: environment } = await github.rest.repos.getEnvironment({
     ...context.repo,
-    environment_name: "storybook-pages",
+    environment_name: "storybook-deploy",
   });
   const reviewers = environment.protection_rules
     ?.find((rule) => rule.type === "required_reviewers")?.reviewers;
   if (environment.can_admins_bypass !== false || !reviewers?.length ||
       reviewers.some(({ type, reviewer }) => type !== "User" || !owners.has(reviewer.login.toLowerCase()))) {
-    fail("storybook-pages must require CODEOWNER reviewers and disable administrator bypass.");
+    fail("storybook-deploy must require CODEOWNER reviewers and disable administrator bypass.");
   }
 };

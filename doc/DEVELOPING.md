@@ -110,56 +110,60 @@ workflow manually, to produce downloadable Playwright report/test-result
 artifacts. Normal PR visual runs use read-only repository permissions and do not
 upload or mutate baseline objects.
 
-### Publish Storybook to GitHub Pages
+### Publish a branch Storybook
 
-CODEOWNERS can publish a repository branch through **Actions → Storybook Pages →
+CODEOWNERS can publish a repository branch through **Actions → Storybook Deploy →
 Run workflow**. Keep the workflow branch on `master` and enter the source branch
-in `branch`. Leaving `branch` empty publishes the selected workflow branch's
-exact dispatched commit. The source branch does not need to contain the workflow.
+in `branch`. The source branch does not need to contain the workflow. Leaving
+`branch` empty publishes the selected workflow branch's dispatched commit.
 
 ```sh
-gh workflow run storybook-pages.yml --ref master -f branch=your-branch
+gh workflow run storybook-deploy.yml --ref master -f branch=your-branch
 ```
 
-The existing **Storybook Visual** workflow also offers a `deploy_pages` checkbox.
-This runs the same Pages workflow instead of visual regression tests:
+The existing **Storybook Visual** workflow also offers a `deploy_preview` checkbox,
+which publishes through the same workflow instead of running visual tests:
 
 ```sh
-gh workflow run storybook-visual.yml --ref master -f deploy_pages=true -f branch=your-branch
+gh workflow run storybook-visual.yml --ref master -f deploy_preview=true -f branch=your-branch
 ```
 
-Approve the pending `storybook-pages` environment deployment as a CODEOWNER.
-The workflow summary links the published site. `deployment.json` at the site
-root records the source branch and commit. GitHub Pages hosts one site per
-repository: each successful deployment replaces the previous published branch;
-this does not create simultaneous branch previews.
+Approve the `storybook-deploy` environment as a CODEOWNER. The workflow summary
+links the **stable branch URL** and **this build**. Different branches have
+different URLs; publishing one never replaces another. Redeploying the same
+branch updates its stable URL only after all files for the new build are uploaded.
+Previous build links keep working. The branch entry preserves Storybook query
+parameters and fragments when redirecting to the completed build.
+
+URLs use `storybook/branches/<readable-branch>-<hash>/index.html`. The hash preserves
+the distinction between branch names such as `feature/foo`, `feature-foo`, and
+`Feature/foo`. Build files live under that branch's `builds/<run-id>-<attempt>/`.
+`deployment.json` in each build records its branch, source commit and URLs.
+Builds run independently; publication is serialized per branch. Retained builds
+are not automatically deleted and will accumulate until an operator prunes them.
 
 Publishing requires both the original actor and the current rerunner to be
 individual GitHub accounts named in `.github/CODEOWNERS` on the current default
-branch. Comments, team entries and email entries do not grant publishing access.
-Authorization runs before the build and again before deployment, including when
-only the deployment job is rerun. The source build receives a read-only token,
-no deployment credentials, and no repository secrets.
+branch. Comments, teams and email entries do not grant access. Authorization runs
+before the build and again before deployment, including deployment-only reruns.
+GitHub also requires a CODEOWNER environment approval, so editing authorization
+code on a branch cannot grant AWS access without an authorized reviewer.
 
-Repository setup (admin, once):
+The build receives a read-only GitHub token and no AWS credentials or repository
+secrets. The separate publisher uses GitHub OIDC to assume a role limited to
+`storybook/branches/*`. It treats the build artifact as static files and runs only
+the publisher from the workflow checkout. It cannot delete objects, change AWS
+settings, or overwrite the runner dashboard. The Storybook site itself is public.
+Pushes and PR events never publish it.
 
-- Set **Settings → Pages → Source** to **GitHub Actions**.
-- Create the `storybook-pages` environment. Require reviewers from the individual
-  CODEOWNERS accounts, disable administrator bypass, allow self-review, and allow
-  repository branches. GitHub's reviewer gate also protects against a branch
-  modifying its own workflow. Keep reviewers in sync when CODEOWNERS changes.
-- Disable the previous runner dashboard Pages publisher by setting
-  `RUNNER_FULL_STACK_E2E_PUBLISH_PAGES=false` before the first Storybook deployment.
-  Its independent CloudFront history publisher remains available.
+The existing S3 bucket and CloudFront distribution also serve runner reports in
+separate prefixes. GitHub Pages and its dashboard workflow are independent.
+See [Storybook deployment setup](STORYBOOK-DEPLOYMENT.md) for the environment,
+repository variables, AWS policies and one-time operator setup.
 
-The workflow fails closed if the environment lacks CODEOWNER reviewers or permits
-administrator bypass. Public contributors cannot manually dispatch repository
-workflows without write access, and non-CODEOWNER dispatches fail authorization.
-The published Storybook itself is public. Pushes and PR events never publish it.
-
-GitHub requires a dispatch workflow to exist on the default branch before it is
-available as a new manual entry point. To test this change before merging, use
-`storybook-visual.yml --ref <workflow-branch> -f deploy_pages=true`.
+GitHub requires a new dispatch workflow to exist on the default branch before
+it becomes a manual entry point. Before merging this change, test through
+`storybook-visual.yml --ref codex/storybook-pages -f deploy_preview=true`.
 
 ## UI Fonts And Screenshots
 

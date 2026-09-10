@@ -1,4 +1,4 @@
-name: Storybook Pages
+name: Storybook Deploy
 
 on:
   workflow_dispatch:
@@ -17,11 +17,6 @@ on:
 permissions:
   contents: read
 
-# One Pages site per repository: the latest successful requested branch wins.
-concurrency:
-  group: storybook-pages
-  cancel-in-progress: false
-
 jobs:
   authorize:
     name: Authorize Storybook publisher
@@ -30,6 +25,7 @@ jobs:
     outputs:
       sha: ${{ steps.source.outputs.sha }}
       branch: ${{ steps.source.outputs.branch }}
+      branch_key: ${{ steps.source.outputs.branch_key }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -38,7 +34,7 @@ jobs:
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         with:
           script: |
-            const authorize = require('./.github/scripts/authorize-storybook-pages.cjs');
+            const authorize = require('./.github/scripts/authorize-storybook-deploy.cjs');
             await authorize({ github, context });
 
       - name: Pin requested repository branch
@@ -46,6 +42,8 @@ jobs:
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         env:
           SOURCE_BRANCH: ${{ inputs.branch }}
+          STORYBOOK_S3_BUCKET: ${{ vars.STORYBOOK_S3_BUCKET }}
+          STORYBOOK_PUBLIC_BASE_URL: ${{ vars.STORYBOOK_PUBLIC_BASE_URL }}
         with:
           script: |
             const branch = process.env.SOURCE_BRANCH || context.ref.slice('refs/heads/'.length);
@@ -54,7 +52,13 @@ jobs:
               throw new Error('Select an existing branch in this repository.');
             }
             // With no source override, preserve the exact dispatched commit.
-            core.setOutput('sha', process.env.SOURCE_BRANCH ? data.object.sha : context.sha);
+            const sha = process.env.SOURCE_BRANCH ? data.object.sha : context.sha;
+            const { storybookDestination } = require('./.github/scripts/storybook-destination.cjs');
+            const destination = storybookDestination({ branch, sha,
+              runId: context.runId, runAttempt: process.env.GITHUB_RUN_ATTEMPT,
+              bucket: process.env.STORYBOOK_S3_BUCKET, baseUrl: process.env.STORYBOOK_PUBLIC_BASE_URL });
+            core.setOutput('sha', sha);
+            core.setOutput('branch_key', destination.branchKey);
             core.setOutput('branch', branch);
 
   build:
@@ -92,24 +96,28 @@ jobs:
           test -s ui/storybook-static/index.json
           jq -n --arg sha "$SOURCE_SHA" --arg branch "$SOURCE_BRANCH" \
             '{sha: $sha, branch: $branch}' > ui/storybook-static/deployment.json
-          echo "name=storybook-pages-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
-      - uses: actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b # v4
+          echo "name=storybook-deploy-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: ${{ steps.artifact.outputs.name }}
           path: ui/storybook-static
+          if-no-files-found: error
+          retention-days: 7
 
   deploy:
-    name: Publish Storybook to Pages
+    name: Publish branch Storybook to S3
     needs: [authorize, build]
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
+    concurrency:
+      group: storybook-deploy-${{ needs.authorize.outputs.branch_key }}
+      cancel-in-progress: false
     permissions:
       contents: read
-      pages: write
       id-token: write
     environment:
-      name: storybook-pages
-      url: ${{ steps.deployment.outputs.page_url }}
+      name: storybook-deploy
+      url: ${{ steps.deployment.outputs.url }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -119,20 +127,31 @@ jobs:
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         with:
           script: |
-            const authorize = require('./.github/scripts/authorize-storybook-pages.cjs');
+            const authorize = require('./.github/scripts/authorize-storybook-deploy.cjs');
             await authorize({ github, context });
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4
+      - name: Download the successful build artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
-          # Reuse the successful build's artifact when only deployment is rerun.
-          artifact_name: ${{ needs.build.outputs.artifact_name }}
-      - name: Report published source
+          name: ${{ needs.build.outputs.artifact_name }}
+          path: storybook-static
+      - name: Assume the Storybook-only uploader role
+        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6
+        with:
+          role-to-assume: ${{ vars.STORYBOOK_AWS_ROLE_ARN }}
+          aws-region: ${{ vars.STORYBOOK_AWS_REGION }}
+          role-duration-seconds: 900
+      - name: Publish this branch preview
+        id: deployment
         env:
-          PAGE_URL: ${{ steps.deployment.outputs.page_url }}
           SOURCE_SHA: ${{ needs.authorize.outputs.sha }}
           SOURCE_BRANCH: ${{ needs.authorize.outputs.branch }}
+          STORYBOOK_S3_BUCKET: ${{ vars.STORYBOOK_S3_BUCKET }}
+          STORYBOOK_PUBLIC_BASE_URL: ${{ vars.STORYBOOK_PUBLIC_BASE_URL }}
+        run: node .github/scripts/publish-storybook.cjs
+      - name: Verify public build metadata
+        env:
+          BUILD_URL: ${{ steps.deployment.outputs.build_url }}
+          SOURCE_SHA: ${{ needs.authorize.outputs.sha }}
         run: |
-          # shellcheck disable=SC2016
-          printf 'Storybook: %s\n\nBranch: `%s`\n\nCommit: `%s`\n' \
-            "$PAGE_URL" "$SOURCE_BRANCH" "$SOURCE_SHA" >> "$GITHUB_STEP_SUMMARY"
+          curl --fail --silent --show-error --retry 6 --retry-all-errors --retry-delay 10 \
+            "${BUILD_URL%index.html}deployment.json" | jq -e --arg sha "$SOURCE_SHA" '.sha == $sha'
