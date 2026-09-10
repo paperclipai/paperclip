@@ -553,7 +553,7 @@ jobs:
     # Preserve the legacy required-check name while the underlying work runs in parallel.
     name: verify
     if: ${{ always() }}
-    needs: [gate, policy, typecheck_release_registry, general_tests, build, docker_context_integrity]
+    needs: [gate, policy, typecheck_release_registry, general_tests, verify_paperclip_runner, build, docker_context_integrity]
     runs-on: ${{ needs.gate.outputs.runner }}
     timeout-minutes: 5
 
@@ -564,6 +564,7 @@ jobs:
           POLICY_RESULT: ${{ needs.policy.result }}
           TYPECHECK_RELEASE_REGISTRY_RESULT: ${{ needs.typecheck_release_registry.result }}
           GENERAL_TESTS_RESULT: ${{ needs.general_tests.result }}
+          RUNNER_VERIFICATION_RESULT: ${{ needs.verify_paperclip_runner.result }}
           BUILD_RESULT: ${{ needs.build.result }}
           DOCKER_CONTEXT_INTEGRITY_RESULT: ${{ needs.docker_context_integrity.result }}
         run: |
@@ -572,12 +573,14 @@ jobs:
             true)
               test "$TYPECHECK_RELEASE_REGISTRY_RESULT" = "success"
               test "$GENERAL_TESTS_RESULT" = "success"
+              test "$RUNNER_VERIFICATION_RESULT" = "success"
               test "$BUILD_RESULT" = "success"
               test "$DOCKER_CONTEXT_INTEGRITY_RESULT" = "success"
               ;;
             false)
               test "$TYPECHECK_RELEASE_REGISTRY_RESULT" = "skipped"
               test "$GENERAL_TESTS_RESULT" = "skipped"
+              test "$RUNNER_VERIFICATION_RESULT" = "skipped"
               test "$BUILD_RESULT" = "skipped"
               test "$DOCKER_CONTEXT_INTEGRITY_RESULT" = "skipped"
               ;;
