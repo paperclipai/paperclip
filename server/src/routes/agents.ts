@@ -6219,7 +6219,7 @@ export function agentRoutes(
     const limit = limitParam ? Math.max(1, Math.min(1000, parseInt(limitParam, 10) || 200)) : undefined;
     const summary = req.query.summary === "true" || req.query.summary === "1";
     const runs = await heartbeat.list(companyId, agentId, limit, { summary });
-    res.json(await Promise.all(runs.map((run) => runRedactions.redactForRun(companyId, run.id, run))));
+    res.json(await runRedactions.redactForRuns(companyId, runs));
   });
 
   router.get("/companies/:companyId/provider-traces", async (req, res) => {
@@ -6326,20 +6326,20 @@ export function agentRoutes(
 
       const rows = [...liveRuns, ...recentRuns];
       const projections = await executionProjectionsForRuns(db, companyId, rows.map(run => run.id));
-      res.json(await Promise.all(rows.map(async (run) => runRedactions.redactForRun(companyId, run.id, {
+      res.json(await runRedactions.redactForRuns(companyId, await Promise.all(rows.map(async (run) => ({
         ...heartbeat.decorateActiveRunStatus(run),
         execution: projections.get(run.id) ?? null,
         outputSilence: await heartbeat.buildRunOutputSilence(run),
-      }))));
+      })))));
       return;
     }
 
     const projections = await executionProjectionsForRuns(db, companyId, liveRuns.map(run => run.id));
-    res.json(await Promise.all(liveRuns.map(async (run) => runRedactions.redactForRun(companyId, run.id, {
+    res.json(await runRedactions.redactForRuns(companyId, await Promise.all(liveRuns.map(async (run) => ({
       ...heartbeat.decorateActiveRunStatus(run),
         execution: projections.get(run.id) ?? null,
       outputSilence: await heartbeat.buildRunOutputSilence(run),
-    }))));
+    })))));
   });
 
   router.get("/heartbeat-runs/:runId", async (req, res) => {
