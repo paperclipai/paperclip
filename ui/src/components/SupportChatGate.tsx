@@ -89,7 +89,7 @@ export function SupportChatGate() {
       appId,
       theme: themeRef.current,
       customer: current.customer,
-      tenantExternalId: current.company?.tenantExternalId ?? null,
+      tenantId: current.company?.tenantId ?? null,
       identityKey,
     });
     return () => {
@@ -101,10 +101,10 @@ export function SupportChatGate() {
   // the same tenant re-applies nothing, and before the widget mounts the
   // update is a queue-ordered no-op (the mount itself carries the initial
   // context from `configRef`).
-  const tenantExternalId = config?.company?.tenantExternalId ?? null;
+  const tenantId = config?.company?.tenantId ?? null;
   useEffect(() => {
-    void updateSupportChatCompany(tenantExternalId);
-  }, [tenantExternalId]);
+    void updateSupportChatCompany(tenantId);
+  }, [tenantId]);
 
   useEffect(() => {
     void updateSupportChatTheme(theme);

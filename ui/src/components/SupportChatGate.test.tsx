@@ -66,7 +66,7 @@ const CONFIG = {
 };
 
 function companyBlock(id: string, name: string) {
-  return { id, name, tenantExternalId: `paperclip-company-${id}` };
+  return { id, name, tenantId: `paperclip-company-${id}` };
 }
 
 describe("SupportChatGate", () => {
@@ -156,7 +156,7 @@ describe("SupportChatGate", () => {
     expect(fetchSupportChatSessionMock).toHaveBeenCalledWith("c-1");
     expect(mountSupportChatMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        tenantExternalId: "paperclip-company-c-1",
+        tenantId: "paperclip-company-c-1",
         identityKey: "user-1:verified",
       }),
     );
@@ -202,7 +202,7 @@ describe("SupportChatGate", () => {
 
     expect(fetchSupportChatSessionMock).toHaveBeenCalledWith(null);
     expect(mountSupportChatMock).toHaveBeenCalledWith(
-      expect.objectContaining({ tenantExternalId: null }),
+      expect.objectContaining({ tenantId: null }),
     );
   });
 

@@ -65,17 +65,18 @@ export function supportChatRoutes(
     if (!company) return null;
 
     let tenantExternalId: string | null = null;
+    let tenantId: string | null = null;
     if (config.tenantSyncApiKey) {
       const externalId = plainTenantExternalId(company.id);
-      const ensured = await ensurePlainTenant({
+      tenantId = await ensurePlainTenant({
         apiKey: config.tenantSyncApiKey,
         externalId,
         name: company.name,
         fetchImpl: opts.tenantSyncFetch,
       });
-      if (ensured) tenantExternalId = externalId;
+      if (tenantId) tenantExternalId = externalId;
     }
-    return { id: company.id, name: company.name, tenantExternalId };
+    return { id: company.id, name: company.name, tenantExternalId, tenantId };
   }
 
   router.get("/session", async (req, res) => {

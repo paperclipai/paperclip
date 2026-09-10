@@ -230,6 +230,7 @@ describe("GET /api/support-chat/session", () => {
       id: COMPANY.id,
       name: COMPANY.name,
       tenantExternalId: null,
+      tenantId: null,
     });
   });
 
@@ -274,6 +275,7 @@ describe("GET /api/support-chat/session", () => {
       id: COMPANY.id,
       name: COMPANY.name,
       tenantExternalId: plainTenantExternalId(COMPANY.id),
+      tenantId: "ten_1",
     });
 
     // The upsert went to Plain's documented endpoint with the documented
@@ -310,6 +312,7 @@ describe("GET /api/support-chat/session", () => {
         id: COMPANY.id,
         name: COMPANY.name,
         tenantExternalId: null,
+      tenantId: null,
       });
     }
   });

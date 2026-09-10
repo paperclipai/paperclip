@@ -22,9 +22,8 @@
 // - `hideSupportChat` (sign-out with the document still alive) closes the
 //   panel and hides the launcher through `Plain.update({ hideLauncher: true })`.
 //
-// `Plain.update`'s partial-config merge behavior is not documented, so every
-// update call passes the complete last-known config with the changed fields
-// applied — correct under both merge and replace semantics.
+// Updates include all mutable configuration, with init-only appId omitted.
+// Explicit empty threadDetails clears a previous company association.
 //
 // Operations queue on one shared promise chain (same pattern as
 // `ui/src/lib/sentry.ts`), so a sign-out issued while the vendor script is
@@ -49,14 +48,14 @@ export interface SupportChatMountOptions {
   theme: SupportChatTheme;
   customer: SupportChatCustomerDetails | null;
   /**
-   * The Plain tenant externalId for the customer's currently selected
+   * The Plain tenant ID for the customer's currently selected
    * company, or null for no company context. Server-provided only — non-null
    * means the server has already ensured the tenant exists in Plain. Passed
    * as `threadDetails.tenantIdentifier`, which scopes threads *created from
    * now on* to that tenant; it is context, not identity, so
    * `updateSupportChatCompany` may change it within one page lifetime.
    */
-  tenantExternalId: string | null;
+  tenantId: string | null;
   /**
    * Stable key for the identity this mount represents. Mount requests with a
    * key different from the mounted one are refused (no documented vendor
@@ -67,8 +66,8 @@ export interface SupportChatMountOptions {
 
 /** The subset of the Plain widget global this module calls. */
 interface PlainGlobal {
-  init: (config: Record<string, unknown>) => void;
-  update: (config: Record<string, unknown>) => void;
+  init: (config: Record<string, unknown>) => void | Promise<void>;
+  update: (config: Record<string, unknown>) => void | Promise<void>;
   open: () => void;
   close: () => void;
 }
@@ -168,11 +167,11 @@ function loadPlainScript(): Promise<PlainGlobal | null> {
   return scriptPromise;
 }
 
-function buildThreadDetails(tenantExternalId: string): Record<string, unknown> {
+function buildThreadDetails(tenantId: string | null): Record<string, unknown> {
   // Applied by Plain to threads created from this point on; threads that
   // already exist keep the tenant they were created under. Only the tenant
   // reference — never product content.
-  return { tenantIdentifier: { externalId: tenantExternalId } };
+  return tenantId ? { tenantIdentifier: { tenantId } } : {};
 }
 
 function buildConfig(opts: SupportChatMountOptions): Record<string, unknown> {
@@ -194,17 +193,17 @@ function buildConfig(opts: SupportChatMountOptions): Record<string, unknown> {
           },
         }
       : {}),
-    ...(opts.tenantExternalId
-      ? { threadDetails: buildThreadDetails(opts.tenantExternalId) }
-      : {}),
+    threadDetails: buildThreadDetails(opts.tenantId),
   };
 }
 
-/** Push a complete replacement config to a mounted widget. */
-function applyConfig(next: Record<string, unknown>) {
+/** Push mutable configuration to a mounted widget. */
+async function applyConfig(next: Record<string, unknown>) {
   if (!plain) return;
   try {
-    plain.update(next);
+    // appId is init-only; Plain rejects it in update configuration.
+    const { appId: _appId, ...updateConfig } = next;
+    await plain.update(updateConfig);
     lastConfig = next;
   } catch (err) {
     // eslint-disable-next-line no-console
@@ -212,9 +211,9 @@ function applyConfig(next: Record<string, unknown>) {
   }
 }
 
-function applyUpdate(patch: Record<string, unknown>) {
+async function applyUpdate(patch: Record<string, unknown>) {
   if (!plain || !lastConfig) return;
-  applyConfig({ ...lastConfig, ...patch });
+  await applyConfig({ ...lastConfig, ...patch });
 }
 
 /**
@@ -232,7 +231,7 @@ export function mountSupportChat(opts: SupportChatMountOptions): Promise<void> {
         );
         return;
       }
-      applyUpdate({ hideLauncher: false, theme: opts.theme });
+      await applyUpdate({ hideLauncher: false, theme: opts.theme });
       setState({ launcherVisible: true });
       return;
     }
@@ -245,7 +244,7 @@ export function mountSupportChat(opts: SupportChatMountOptions): Promise<void> {
     }
     const config = buildConfig(opts);
     try {
-      Plain.init(config);
+      await Plain.init(config);
     } catch (err) {
       // eslint-disable-next-line no-console
       console.error("[paperclip] Plain chat bootstrap failed", err);
@@ -273,7 +272,7 @@ export function hideSupportChat(): Promise<void> {
       // eslint-disable-next-line no-console
       console.error("[paperclip] Plain chat close failed", err);
     }
-    applyUpdate({ hideLauncher: true });
+    await applyUpdate({ hideLauncher: true });
     setState({ launcherVisible: false });
   });
 }
@@ -282,7 +281,7 @@ export function hideSupportChat(): Promise<void> {
 export function updateSupportChatTheme(theme: SupportChatTheme): Promise<void> {
   return enqueue(async () => {
     if (!plain) return;
-    applyUpdate({ theme });
+    await applyUpdate({ theme });
   });
 }
 
@@ -294,21 +293,14 @@ export function updateSupportChatTheme(theme: SupportChatTheme): Promise<void> {
  * they started under. A no-op before the widget mounts (the mount itself
  * carries the initial context).
  */
-export function updateSupportChatCompany(tenantExternalId: string | null): Promise<void> {
+export function updateSupportChatCompany(tenantId: string | null): Promise<void> {
   return enqueue(async () => {
     if (!plain || !lastConfig) return;
     const next = { ...lastConfig };
-    if (tenantExternalId) {
-      next.threadDetails = buildThreadDetails(tenantExternalId);
-    } else {
-      // Under Plain.update's undocumented merge-vs-replace semantics, a merge
-      // may keep the previous tenant vendor-side after this key is dropped;
-      // recorded as an open vendor question in doc/support-chat.md. Clearing
-      // only happens when an account loses its last company mid-page — new
-      // threads then at worst carry the last authorized company.
-      delete next.threadDetails;
-    }
-    applyConfig(next);
+    // Omitting this key preserves the previous tenant in Plain. An explicit
+    // empty object replaces thread metadata when no company is selected.
+    next.threadDetails = buildThreadDetails(tenantId);
+    await applyConfig(next);
   });
 }
 

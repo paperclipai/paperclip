@@ -32,13 +32,11 @@ export type SupportChatCustomer = z.infer<typeof supportChatCustomerSchema>;
 export const supportChatCompanySchema = z.object({
   id: z.string().uuid(),
   name: z.string().min(1),
-  // The Plain tenant externalId mirroring this company. Non-null only once
-  // the server has ensured the tenant exists in the Plain workspace (requires
-  // the tenant-sync API key); the widget passes it as
-  // `threadDetails.tenantIdentifier.externalId` and omits tenant context
-  // entirely while this is null, so chat never references a tenant Plain
-  // does not know about.
+  // Stable matching key for upserts and organization renames. This is not
+  // the email-domain company; the widget uses the native tenantId below.
   tenantExternalId: z.string().min(1).nullable(),
+  // Plain ID returned by the server-side upsert; used directly by the widget.
+  tenantId: z.string().min(1).nullable().default(null),
 });
 
 export type SupportChatCompany = z.infer<typeof supportChatCompanySchema>;

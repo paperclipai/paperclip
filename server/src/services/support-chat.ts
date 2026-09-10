@@ -15,7 +15,7 @@ import {
 //   carries no attested customer identity and Plain's own email verification
 //   flow covers identity instead.
 // `PLAIN_API_KEY` — a Plain **Core API** key (scoped to `tenant:read` +
-//   `tenant:create`), used server-side to upsert the Plain tenant mirroring a
+//   `tenant:create` + `tenant:edit`), used server-side to upsert the Plain tenant mirroring a
 //   Paperclip company before the widget references it. Secret, server-side
 //   env only. Absent → sessions carry no tenant context (chat still works;
 //   support threads just lack the current-company association).

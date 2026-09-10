@@ -47,7 +47,7 @@ const MOUNT = {
     fullName: "User One",
     externalId: "user-1",
   },
-  tenantExternalId: null,
+  tenantId: null,
   identityKey: "user-1:verified",
 };
 
@@ -81,6 +81,7 @@ describe("plain-chat controller", () => {
       appId: "liveChatApp_TEST",
       theme: "light",
       hideLauncher: false,
+      threadDetails: {},
       customerDetails: {
         email: "user@example.com",
         emailHash: "a".repeat(64),
@@ -103,6 +104,7 @@ describe("plain-chat controller", () => {
       appId: "liveChatApp_TEST",
       theme: "light",
       hideLauncher: false,
+      threadDetails: {},
     });
   });
 
@@ -145,7 +147,7 @@ describe("plain-chat controller", () => {
     await hideSupportChat();
     expect(fake.close).toHaveBeenCalledTimes(1);
     expect(fake.update).toHaveBeenLastCalledWith(
-      expect.objectContaining({ appId: "liveChatApp_TEST", hideLauncher: true }),
+      expect.objectContaining({ hideLauncher: true }),
     );
 
     await mountSupportChat({ ...MOUNT, theme: "dark" });
@@ -153,8 +155,8 @@ describe("plain-chat controller", () => {
     // Plain.update are undocumented), so appId and identity stay present.
     expect(fake.update).toHaveBeenLastCalledWith(
       expect.objectContaining({
-        appId: "liveChatApp_TEST",
         hideLauncher: false,
+      threadDetails: {},
         theme: "dark",
         customerDetails: expect.objectContaining({ email: "user@example.com" }),
       }),
@@ -192,7 +194,7 @@ describe("plain-chat controller", () => {
 
     await updateSupportChatTheme("dark");
     expect(fake.update).toHaveBeenLastCalledWith(
-      expect.objectContaining({ theme: "dark", appId: "liveChatApp_TEST" }),
+      expect.objectContaining({ theme: "dark" }),
     );
   });
 
@@ -203,10 +205,31 @@ describe("plain-chat controller", () => {
     expect(getSupportChatWidgetStatus()).toBe("idle");
   });
 
+
+  it("waits for async initialization before company updates and omits init-only fields", async () => {
+    const fake = createFakePlain();
+    let finish!: () => void;
+    fake.init.mockReturnValue(new Promise<void>((resolve) => { finish = resolve; }));
+    (window as unknown as { Plain: unknown }).Plain = fake;
+    const mounted = mountSupportChat(MOUNT);
+    const updated = updateSupportChatCompany("te_second");
+    await tick();
+    expect(getSupportChatWidgetStatus()).toBe("loading");
+    expect(fake.update).not.toHaveBeenCalled();
+    finish();
+    await mounted;
+    await updated;
+    expect(fake.update).toHaveBeenLastCalledWith(expect.objectContaining({
+      threadDetails: { tenantIdentifier: { tenantId: "te_second" } },
+      customerDetails: expect.objectContaining({ email: "user@example.com" }),
+    }));
+    expect(fake.update.mock.lastCall![0]).not.toHaveProperty("appId");
+  });
+
   it("scopes new threads to the current company's tenant at init", async () => {
     const scripts = captureScript();
     const fake = createFakePlain();
-    const mounted = mountSupportChat({ ...MOUNT, tenantExternalId: "paperclip-company-1" });
+    const mounted = mountSupportChat({ ...MOUNT, tenantId: "paperclip-company-1" });
     await tick();
     (window as unknown as { Plain: unknown }).Plain = fake;
     scripts[0]!.onload!(new Event("load"));
@@ -214,7 +237,7 @@ describe("plain-chat controller", () => {
 
     expect(fake.init).toHaveBeenCalledWith(
       expect.objectContaining({
-        threadDetails: { tenantIdentifier: { externalId: "paperclip-company-1" } },
+        threadDetails: { tenantIdentifier: { tenantId: "paperclip-company-1" } },
       }),
     );
   });
@@ -222,7 +245,7 @@ describe("plain-chat controller", () => {
   it("re-points thread context on a company switch without closing the panel", async () => {
     const scripts = captureScript();
     const fake = createFakePlain();
-    const mounted = mountSupportChat({ ...MOUNT, tenantExternalId: "paperclip-company-1" });
+    const mounted = mountSupportChat({ ...MOUNT, tenantId: "paperclip-company-1" });
     await tick();
     (window as unknown as { Plain: unknown }).Plain = fake;
     scripts[0]!.onload!(new Event("load"));
@@ -235,15 +258,14 @@ describe("plain-chat controller", () => {
     expect(fake.close).not.toHaveBeenCalled();
     expect(fake.update).toHaveBeenLastCalledWith(
       expect.objectContaining({
-        appId: "liveChatApp_TEST",
         customerDetails: expect.objectContaining({ email: "user@example.com" }),
-        threadDetails: { tenantIdentifier: { externalId: "paperclip-company-2" } },
+        threadDetails: { tenantIdentifier: { tenantId: "paperclip-company-2" } },
       }),
     );
 
     await updateSupportChatCompany(null);
     const lastConfig = fake.update.mock.lastCall![0] as Record<string, unknown>;
-    expect(lastConfig.threadDetails).toBeUndefined();
-    expect(lastConfig).toEqual(expect.objectContaining({ appId: "liveChatApp_TEST" }));
+    expect(lastConfig.threadDetails).toEqual({});
+    expect(lastConfig).not.toHaveProperty("appId");
   });
 });

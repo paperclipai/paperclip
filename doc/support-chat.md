@@ -25,9 +25,9 @@ entry point is untouched.
   user is a member of (`hasCompanyAccess`); malformed, foreign, and unknown
   ids all collapse to `company: null`, so the parameter is not an existence
   oracle. When honored — and only after the tenant sync below confirmed the
-  tenant exists in Plain — the response includes the tenant externalId
+  tenant exists in Plain — the response includes the native tenant ID and stable externalId
   (`paperclip-company-<company uuid>`), which the widget passes as
-  `threadDetails.tenantIdentifier.externalId` so **new** support threads are
+  `threadDetails.tenantIdentifier.tenantId` so **new** support threads are
   scoped to the company the customer is working in.
 - `SupportChatGate` (`ui/src/components/SupportChatGate.tsx`) asks that route
   once per signed-in account (re-asking on company switch), and only then
@@ -47,7 +47,7 @@ entry point is untouched.
 Plain has two grouping concepts, and only one of them is ours to set:
 
 - A Plain **company** is derived by Plain from the customer's email domain
-  (`michael@paperclip.ing` → the `paperclip.ing` company). We never send it;
+  (`user@example.com` → the `example.com` company). We never send it;
   it appears automatically once the customer identity is attested (or the
   customer verifies via Plain's own email OTP). "No company" in the Plain
   inbox is therefore a symptom of an anonymous customer, not a missing field.
@@ -65,7 +65,7 @@ Plain has two grouping concepts, and only one of them is ours to set:
 | --- | --- | --- |
 | `PLAIN_CHAT_APP_ID` | Public identifier | The Plain Chat App id (e.g. `liveChatApp_…`). Absent → support chat off everywhere. |
 | `PLAIN_CHAT_EMAIL_HMAC_SECRET` | **Secret, bearer-grade** | Plain's chat authentication secret (Plain → Settings → Chat → the Chat App → Authentication). Holder can mint a chat identity for any email. Server-side env only: never in client bundles, issue comments, documents, or logs. Absent → the widget still mounts, but unauthenticated; Plain's own email OTP flow covers identity. |
-| `PLAIN_API_KEY` | **Secret** | A Plain Core API key scoped to exactly `tenant:read` + `tenant:create` (Plain → Settings → Machine users / API keys), used server-side to upsert the tenant mirroring a Paperclip company. Same handling rules as the HMAC secret. Absent → sessions carry the company name but no tenant id, and support threads lack the current-company association; chat itself is unaffected. |
+| `PLAIN_API_KEY` | **Secret** | A Plain Core API key scoped to exactly `tenant:read` + `tenant:create` + `tenant:edit` (Plain → Settings → Machine users / API keys), used server-side to upsert the tenant mirroring a Paperclip company. Same handling rules as the HMAC secret. Absent → sessions carry the company name but no tenant id, and support threads lack the current-company association; chat itself is unaffected. |
 | `PAPERCLIP_SUPPORT_CHAT_DEV_PREVIEW` | Dev-only switch | `1`/`true` enables the surface on a local development instance for product review. Ignored (fails closed) when `NODE_ENV=production` or when the instance is Cloud-managed. |
 
 Gating (`server/src/services/support-chat.ts`): the surface is enabled when a
@@ -134,21 +134,44 @@ identities, never the production Chat App or real customer emails.
 - Open question for Plain support: what browser storage does the chat widget
   persist across page loads, and what is the supported way to clear it on
   sign-out from a shared machine?
-- `Plain.update` partial-config semantics are undocumented; the client always
-  passes a complete config on update, which is correct under both merge and
-  replace behavior. The one place this bites: *clearing* company context (an
-  account losing its last company mid-page) drops the `threadDetails` key from
-  our config, but under merge semantics Plain may retain the previous tenant —
-  worst case a new thread carries the last company the user was authorized
-  for. Ask Plain for the supported way to clear `threadDetails`.
-- The `upsertTenant` input shape (`{ identifier: { externalId }, name,
-  externalId }`) follows Plain's current public docs and SDK GraphQL
-  documents, but has not yet run against the live API (no `PLAIN_API_KEY`
-  exists for the test workspace). Verify on the first authenticated run —
-  Plain's GraphQL errors name any mismatched field/permission — before
-  trusting tenant context end to end.
-- Whether chat `threadDetails.tenantIdentifier` referencing an *unknown*
-  externalId fails thread creation or lazily creates the tenant is
-  undocumented; the server-side ensure-then-reference design makes the
-  question moot for us, but an answer from Plain would tell us whether
-  `PLAIN_API_KEY` could be dropped later.
+- Widget initialization and updates are asynchronous and serialized. Updates
+  omit the init-only `appId`. Clearing company context sends `threadDetails: {}`
+  because omitting the key leaves the previous tenant in Plain's current SDK.
+- The server upserts a tenant using the stable Paperclip company ID as its
+  external ID, then returns Plain's tenant ID for the widget's thread context.
+  A rename updates the tenant name without creating a different organization.
+- The tenant upsert and identity have been verified against the local test
+  workspace. A fresh live thread must still verify the tenant-ID handoff.
+
+## Email domain and organization are separate
+
+- Plain customer: signed-in user's name, email, and stable Paperclip user ID.
+- Plain company: email-domain grouping managed by Plain, not overwritten with
+  the Paperclip organization name.
+- Plain tenant: the selected Paperclip organization, using its user-chosen name.
+- New conversations receive the selected tenant. Existing conversations keep
+  their original association. No logs or other product content are attached.
+
+## Validation status
+
+Local live testing confirmed message delivery and verified customer identity.
+Tenant association remains unresolved: an actual chat request contained the
+existing tenant ID on both thread and customer details, but the saved thread
+had no tenant and the customer had no tenant memberships. Experimental customer
+membership changes were removed. Do not treat unit tests as proof that Plain
+persists tenant context. Cloud staging must verify this before rollout.
+
+Plain server credentials are removed from inherited adapter environments.
+
+## Staging deployment
+
+Use a dedicated Plain staging chat app. Deliver its public app ID and the
+server-only HMAC and tenant API credentials through the Cloud managed-env
+secret-reference path. Deploy an immutable preview release to one explicit
+staging stack through the fleet app-deploy campaign. Keep the fleet default
+unchanged. Record the prior release and configuration for rollback.
+
+Verify the deployed revision, Cloud enablement, server-attested identity,
+message delivery, replies, and stored tenant context. Exercise organization
+switching and sign-out with distinct test accounts. Self-hosted instances must
+still show their existing feedback link and make no Plain CDN request.

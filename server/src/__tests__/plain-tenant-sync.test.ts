@@ -28,7 +28,7 @@ describe("ensurePlainTenant", () => {
     const fetchImpl = vi.fn(async () => okResponse());
     const ensured = await ensurePlainTenant({ ...BASE, fetchImpl: fetchImpl as unknown as typeof fetch });
 
-    expect(ensured).toBe(true);
+    expect(ensured).toBe("ten_1");
     expect(fetchImpl).toHaveBeenCalledTimes(1);
     const [url, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
     expect(url).toBe(PLAIN_GRAPHQL_ENDPOINT);
@@ -44,11 +44,11 @@ describe("ensurePlainTenant", () => {
     const fetchImpl = vi.fn(async () => okResponse());
     const f = fetchImpl as unknown as typeof fetch;
 
-    expect(await ensurePlainTenant({ ...BASE, fetchImpl: f })).toBe(true);
-    expect(await ensurePlainTenant({ ...BASE, fetchImpl: f })).toBe(true);
+    expect(await ensurePlainTenant({ ...BASE, fetchImpl: f })).toBe("ten_1");
+    expect(await ensurePlainTenant({ ...BASE, fetchImpl: f })).toBe("ten_1");
     expect(fetchImpl).toHaveBeenCalledTimes(1);
 
-    expect(await ensurePlainTenant({ ...BASE, name: "Acme Renamed", fetchImpl: f })).toBe(true);
+    expect(await ensurePlainTenant({ ...BASE, name: "Acme Renamed", fetchImpl: f })).toBe("ten_1");
     expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 
@@ -70,7 +70,7 @@ describe("ensurePlainTenant", () => {
     for (const impl of cases) {
       resetPlainTenantSyncForTests();
       const fetchImpl = vi.fn(impl) as unknown as typeof fetch;
-      expect(await ensurePlainTenant({ ...BASE, fetchImpl })).toBe(false);
+      expect(await ensurePlainTenant({ ...BASE, fetchImpl })).toBeNull();
     }
   });
 
@@ -81,8 +81,8 @@ describe("ensurePlainTenant", () => {
       .mockImplementation(async () => okResponse());
     const f = fetchImpl as unknown as typeof fetch;
 
-    expect(await ensurePlainTenant({ ...BASE, fetchImpl: f })).toBe(false);
-    expect(await ensurePlainTenant({ ...BASE, fetchImpl: f })).toBe(true);
+    expect(await ensurePlainTenant({ ...BASE, fetchImpl: f })).toBeNull();
+    expect(await ensurePlainTenant({ ...BASE, fetchImpl: f })).toBe("ten_1");
     expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 });
