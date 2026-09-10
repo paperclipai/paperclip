@@ -4764,7 +4764,7 @@ async function executePaperclipNativeSessionWithinScope(
         ) {
           throw new Error("native_cancellation_intent_conflict");
         }
-        await tx
+        const released = await tx
           .update(nativeRunFinalizations)
           .set({
             leaseOwner: null,
@@ -4779,7 +4779,14 @@ async function executePaperclipNativeSessionWithinScope(
             eq(nativeRunFinalizations.issueId, input.execution.binding.issueId),
             eq(nativeRunFinalizations.leaseOwner, leaseOwner),
             eq(nativeRunFinalizations.attempt, attempt),
-          ));
+            eq(nativeRunFinalizations.controllerBootId, controller.bootId),
+            eq(nativeRunFinalizations.controllerPid, controller.pid),
+            eq(nativeRunFinalizations.controllerProcessStartedAt, controller.processStartedAt),
+            gt(nativeRunFinalizations.leaseExpiresAt, sql`now()`),
+          ))
+          .returning({ runId: nativeRunFinalizations.runId })
+          .then((rows) => rows[0] ?? null);
+        if (!released) throw new Error("native_session_lease_lost");
         return true;
       }
       const updated = await tx

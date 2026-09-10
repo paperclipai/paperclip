@@ -2535,6 +2535,7 @@ function leaseDb(
   coordinatorOverrides: Partial<LeaseCoordinator> = {},
   runResultJson: Record<string, unknown> = {},
   writes: Array<{ table: unknown; values: Record<string, unknown> }> = [],
+  loseCancellationLease = false,
 ): Db {
   const coordinator: LeaseCoordinator = {
     runId: boundExecution.binding.runId,
@@ -2555,8 +2556,10 @@ function leaseDb(
           const result = Promise.resolve([]) as unknown as Promise<unknown[]> & {
             returning: () => Promise<Array<{ runId: string }>>;
           };
-          result.returning = () =>
-            Promise.resolve([{ runId: coordinator.runId }]);
+          result.returning = () => Promise.resolve(
+            loseCancellationLease && values.nextAttemptAt === null && values.leaseOwner === null
+              ? [] : [{ runId: coordinator.runId }],
+          );
           return result;
         },
       };
@@ -2753,9 +2756,14 @@ describe("native session cancellation", () => {
     ).resolves.toBe(false);
   });
 
-  it.each(["pending", "acknowledged"])(
-    "does not schedule recovery when cancellation becomes %s during a provider turn",
-    async (dispatchState) => {
+  it.each([
+    { dispatchState: "pending", leaseLost: false },
+    { dispatchState: "acknowledged", leaseLost: false },
+    { dispatchState: "pending", leaseLost: true },
+    { dispatchState: "acknowledged", leaseLost: true },
+  ])(
+    "fences recovery for $dispatchState cancellation during a provider turn (leaseLost=$leaseLost)",
+    async ({ dispatchState, leaseLost }) => {
       const resultJson: Record<string, unknown> = {};
       const writes: Array<{ table: unknown; values: Record<string, unknown> }> = [];
       state.execute.mockImplementationOnce(async (options) => {
@@ -2774,14 +2782,14 @@ describe("native session cancellation", () => {
         throw new Error("native_finalization_missing: session returned no semantic result");
       });
       const failure = await executePaperclipNativeSession({
-        db: leaseDb(execution, {}, resultJson, writes),
+        db: leaseDb(execution, {}, resultJson, writes, leaseLost),
         execution,
         runnerInstanceId: "runner",
       }).catch((error: unknown) => error);
       expect(writes.some(({ values }) => values.phase === "retryable_failure")).toBe(false);
       expect(writes.some(({ values }) => values.errorCode === "native_session_interrupted")).toBe(false);
       expect(failure).toBeInstanceOf(Error);
-      expect((failure as Error).message).toBe("native_cancellation_pending_recovery");
+      expect((failure as Error).message).toBe(leaseLost ? "native_session_lease_lost" : "native_cancellation_pending_recovery");
       expect(writes).toContainEqual({
         table: nativeRunFinalizations,
         values: expect.objectContaining({ leaseOwner: null, leaseExpiresAt: null, nextAttemptAt: null }),
