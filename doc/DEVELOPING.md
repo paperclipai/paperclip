@@ -1308,3 +1308,9 @@ Networking behavior for this smoke script:
 ### GitHub identity for shared agents
 
 See [execution GitHub identity](execution-github-identity.md) for the operation-time credential contract, continuation rules, runtime rollout, and acceptance-test requirements.
+
+### Agent persona Storybook
+
+See [agent-personas.md](agent-personas.md) for the dynamic avatar endpoint, cache,
+and character stories. Set `PAPERCLIP_STORYBOOK_API_URL` to your isolated
+Paperclip API URL when running Storybook. Avatar PNGs are generated on demand.

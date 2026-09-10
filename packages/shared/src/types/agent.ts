@@ -1,3 +1,4 @@
+import type { AgentAppearance } from "../agent-appearance.js";
 import type {
   AgentAdapterType,
   PauseReason,
@@ -78,6 +79,8 @@ export interface Agent {
   role: AgentRole;
   title: string | null;
   icon: string | null;
+  appearance?: AgentAppearance | null;
+  avatarUrl?: string;
   status: AgentStatus;
   reportsTo: string | null;
   capabilities: string | null;
