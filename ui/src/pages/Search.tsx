@@ -368,8 +368,8 @@ export function Search() {
     placeholderData: (previousData) => previousData,
   });
 
-  const agentsById = useMemo<ReadonlyMap<string, Pick<Agent, "id" | "name">>>(() => {
-    const map = new Map<string, Pick<Agent, "id" | "name">>();
+  const agentsById = useMemo<ReadonlyMap<string, Pick<Agent, "id" | "name" | "appearance">>>(() => {
+    const map = new Map<string, Pick<Agent, "id" | "name" | "appearance">>();
     for (const agent of agents) map.set(agent.id, agent);
     return map;
   }, [agents]);
@@ -774,7 +774,7 @@ interface SearchTabContentProps {
   sortLabel: string;
   zeroResultsSlot: ReactNode;
   isFetching: boolean;
-  agentsById: ReadonlyMap<string, Pick<Agent, "id" | "name">>;
+  agentsById: ReadonlyMap<string, Pick<Agent, "id" | "name" | "appearance">>;
 }
 
 function SearchTabContent({

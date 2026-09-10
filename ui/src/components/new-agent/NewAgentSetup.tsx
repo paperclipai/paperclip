@@ -1,3 +1,5 @@
+import { AgentCharacter } from "../AgentCharacter";
+import { useAgentAppearanceDraft } from "../../hooks/useAgentAppearanceDraft";
 import { DEFAULT_CODEX_LOCAL_MODEL } from "@paperclipai/adapter-codex-local";
 import {
   SETUP_CREDENTIAL_KEYS,
@@ -49,7 +51,6 @@ import { Field } from "../agent-config-primitives";
 import { SecretPicker } from "../environment-variables-editor/SecretPicker";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
-import { PillGuy } from "../onboarding/PillGuy";
 import {
   OnboardingCard,
   OnboardingHeading,
@@ -105,6 +106,7 @@ function Setup({
   const navigate = useNavigate();
   const cache = useQueryClient();
   const { openNewIssue } = useDialogActions();
+  const appearanceDraft = useAgentAppearanceDraft(`${companyId}:new-agent`);
   const isRunner = adapterType === "paperclip_runner";
   const brandType = isRunner
     ? runnerProvider === "claude"
@@ -487,6 +489,7 @@ function Setup({
       );
       const response = await agentsApi.hire(companyId, {
         name: name.trim(),
+        appearance: appearanceDraft.appearance,
         role: existing.length ? "general" : "ceo",
         ...(leader ? { reportsTo: leader.id } : {}),
         adapterType,
@@ -507,6 +510,7 @@ function Setup({
       setApiKey("");
       setConnection(null);
       setCreated(response.agent);
+      appearanceDraft.clear();
       setScreen("saved");
       navigate(
         `/agents/new?${new URLSearchParams({ name: response.agent.name, adapterType, runnerProvider, createdAgentId: response.agent.id })}`,
@@ -614,10 +618,9 @@ function Setup({
     <MotionConfig reducedMotion="user">
       <div className="mx-auto flex max-w-5xl flex-col gap-8 py-6">
         <header className="flex items-center gap-4">
-          <PillGuy
-            state={created ? "alive" : "dormant"}
-            className="size-14 shrink-0"
-          />
+          <AgentCharacter appearance={created?.appearance ?? appearanceDraft.appearance} size={256} className="size-48" trackingScope="page"
+            state={created || testState === "pass" ? "success" : testState === "running" ? "loading" : "sleepy"}
+            muted={!created && testState !== "pass"} />
           <div className="space-y-2">
             <h1 className="text-2xl font-semibold tracking-tight">{name}</h1>
             <div className="flex items-center gap-2 text-sm text-muted-foreground">

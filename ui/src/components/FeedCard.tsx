@@ -1,5 +1,5 @@
+import { AgentAvatar } from "@/components/AgentAvatar";
 import { Link } from "@/lib/router";
-import { AgentIcon } from "./AgentIconPicker";
 import { timeAgo } from "../lib/timeAgo";
 import { cn } from "../lib/utils";
 import { deriveProjectUrlKey, type ActivityEvent, type Agent } from "@paperclipai/shared";
@@ -380,10 +380,8 @@ function resolveContent(
 function ActorGlyph({ content }: { content: CardContent }) {
   if (content.actorType === "agent") {
     return (
-      <AgentIcon
-        icon={content.actor?.icon ?? null}
-        className="h-3.5 w-3.5 shrink-0 text-muted-foreground"
-      />
+      <AgentAvatar agent={content.actor} size={16}
+        className="h-3.5 w-3.5 shrink-0 text-muted-foreground"/>
     );
   }
   if (content.actorType === "user") {

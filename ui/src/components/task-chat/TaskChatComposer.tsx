@@ -1,3 +1,4 @@
+import { AgentAvatar } from "../AgentAvatar";
 import {
   useEffect,
   useRef,
@@ -64,7 +65,6 @@ import {
   InlineEntitySelector,
   type InlineEntityOption,
 } from "@/components/InlineEntitySelector";
-import { AgentIcon } from "@/components/AgentIconPicker";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import type { MentionOption } from "@/components/MarkdownEditor";
 import type { IssueAttachment, IssueWorkMode } from "@paperclipai/shared";
@@ -117,7 +117,7 @@ interface TaskChatComposerProps {
   mentions?: MentionOption[];
   enableReassign?: boolean;
   reassignOptions?: InlineEntityOption[];
-  agentMap?: ReadonlyMap<string, { icon?: string | null }>;
+  agentMap?: ReadonlyMap<string, import("../AgentAvatar").AvatarAgent & { icon?: string | null }>;
   userProfileMap?: ReadonlyMap<
     string,
     { label: string; image: string | null }
@@ -239,7 +239,7 @@ function AssigneeIdentityAvatar({
 }: {
   assigneeValue: string;
   label: string;
-  agentMap: ReadonlyMap<string, { icon?: string | null }> | undefined;
+  agentMap: ReadonlyMap<string, import("../AgentAvatar").AvatarAgent & { icon?: string | null }> | undefined;
   userProfileMap:
     | ReadonlyMap<string, { label: string; image: string | null }>
     | null
@@ -250,8 +250,7 @@ function AssigneeIdentityAvatar({
     const agentId = assigneeValue.slice("agent:".length);
     const icon = agentMap?.get(agentId)?.icon ?? "bot";
     return (
-      <Avatar
-        size="xs"
+      <span
         className="shrink-0"
         data-assignee-identity={assigneeValue}
         data-assignee-trigger-icon={placement === "trigger" ? icon : undefined}
@@ -259,10 +258,8 @@ function AssigneeIdentityAvatar({
           placement === "option" ? assigneeValue : undefined
         }
       >
-        <AvatarFallback>
-          <AgentIcon icon={icon} className="h-3 w-3" />
-        </AvatarFallback>
-      </Avatar>
+        <AgentAvatar agent={agentMap?.get(agentId) ?? { id: agentId }} size={16} />
+      </span>
     );
   }
 

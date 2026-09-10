@@ -1,3 +1,4 @@
+import { AgentIdentity } from "@/components/AgentIdentity";
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { AlertTriangle, CheckCircle2 } from "lucide-react";
@@ -29,6 +30,7 @@ interface BlockedInboxViewProps {
   companyId: string;
   searchQuery: string;
   agentNameById: ReadonlyMap<string, string>;
+  agents?: import("./AgentAvatar").AvatarAgent[];
   userLabelById?: ReadonlyMap<string, string>;
   issueLinkState: unknown;
   groupBy: BlockedInboxGroupBy;
@@ -50,6 +52,7 @@ export function BlockedInboxView({
   companyId,
   searchQuery,
   agentNameById,
+  agents,
   userLabelById,
   issueLinkState,
   groupBy,
@@ -217,7 +220,7 @@ export function BlockedInboxView({
               key={row.issue.id}
               row={row}
               issueLinkState={issueLinkState}
-              agentNameById={agentNameById}
+              agentNameById={agentNameById} agents={agents}
               userLabelById={userLabelById}
               liveIssueIds={liveIssueIds}
               subtreeLiveCounts={subtreeLiveCounts}
@@ -247,7 +250,7 @@ export function BlockedInboxView({
                         key={row.issue.id}
                         row={row}
                         issueLinkState={issueLinkState}
-                        agentNameById={agentNameById}
+                        agentNameById={agentNameById} agents={agents}
                         userLabelById={userLabelById}
                         liveIssueIds={liveIssueIds}
                         subtreeLiveCounts={subtreeLiveCounts}
@@ -272,6 +275,7 @@ interface BlockedInboxRowProps {
   row: BlockedInboxIssueRow;
   issueLinkState: unknown;
   agentNameById: ReadonlyMap<string, string>;
+  agents?: import("./AgentAvatar").AvatarAgent[];
   userLabelById?: ReadonlyMap<string, string>;
   liveIssueIds: ReadonlySet<string>;
   subtreeLiveCounts: ReadonlyMap<string, number>;
@@ -301,6 +305,7 @@ function BlockedInboxRow({
   row,
   issueLinkState,
   agentNameById,
+  agents,
   userLabelById,
   liveIssueIds,
   subtreeLiveCounts,
@@ -330,11 +335,7 @@ function BlockedInboxRow({
       </span>
       {ownerName ? (
         <span className="hidden w-(--sz-150px) min-w-0 items-center text-muted-foreground sm:inline-flex">
-          <Identity
-            name={ownerName}
-            size="xs"
-            className="max-w-full"
-          />
+          {isAgent ? <AgentIdentity agent={agents?.find((agent) => agent.id === row.attention.owner.agentId) ?? { id: row.attention.owner.agentId ?? undefined, name: ownerName }} size="xs" className="max-w-full" /> : <Identity name={ownerName} size="xs" className="max-w-full" />}
         </span>
       ) : (
         <span className="hidden w-(--sz-150px) shrink-0 sm:inline-flex" aria-hidden="true" />

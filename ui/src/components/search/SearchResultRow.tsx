@@ -1,3 +1,5 @@
+import { AgentAvatar } from "../AgentAvatar";
+import { AgentIdentity } from "../AgentIdentity";
 import { memo, type ComponentType, type SVGProps } from "react";
 import { Bot, FileText, Hexagon, MessageSquare, Paperclip, Quote } from "lucide-react";
 import type { Agent, CompanySearchResult } from "@paperclipai/shared";
@@ -46,7 +48,7 @@ function formatRelativeTime(input: string | null): string {
 
 export interface SearchResultRowProps {
   result: CompanySearchResult;
-  agentsById?: ReadonlyMap<string, Pick<Agent, "id" | "name">>;
+  agentsById?: ReadonlyMap<string, Pick<Agent, "id" | "name" | "appearance">>;
   isActive?: boolean;
   className?: string;
 }
@@ -67,9 +69,7 @@ function SearchResultRowImpl({
         className={cn(ROW_BASE, "py-3", isActive && "bg-muted/40", className)}
         data-result-type="agent"
       >
-        <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-muted text-muted-foreground">
-          <Bot className="h-3 w-3" />
-        </span>
+        <AgentAvatar agent={agentsById?.get(result.id) ?? { id: result.id, name: result.title }} size={24} />
         <div className="min-w-0 flex-1">
           <div className="flex min-w-0 items-center gap-2">
             <span className="truncate text-sm font-medium">{result.title}</span>
@@ -214,7 +214,7 @@ function SearchResultRowImpl({
         <div className="ml-2 hidden shrink-0 flex-col items-end gap-2 sm:flex">
           {assigneeName || updated ? (
             <div className="flex items-center gap-2 text-xs text-muted-foreground">
-              {assigneeName ? <Identity name={assigneeName} size="sm" /> : null}
+              {assigneeName ? <AgentIdentity agent={agentsById?.get(result.issue?.assigneeAgentId ?? "") ?? { id: result.issue?.assigneeAgentId ?? undefined, name: assigneeName }} size="sm" /> : null}
               {updated ? <span className="tabular-nums">{updated}</span> : null}
             </div>
           ) : null}

@@ -102,6 +102,7 @@ function renderItem(
             ...item.attachedTurn,
             agentName: item.attachedTurn.agentName ?? item.authorName,
             agentIcon: item.attachedTurn.agentIcon ?? item.agentIcon,
+            agent: item.attachedTurn.agent ?? item.agent,
           }
         : item.attachedTurn;
       const turn = attachedTurnItem ? (

@@ -1,3 +1,4 @@
+import { AgentAvatar, type AvatarAgent } from "../AgentAvatar";
 import { useState } from "react";
 import { Pencil } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -5,7 +6,6 @@ import { FoldCurtain } from "@/components/FoldCurtain";
 import { InlineEditor } from "@/components/InlineEditor";
 import { MarkdownBody, type MarkdownExternalReferenceMap } from "@/components/MarkdownBody";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
-import { AgentIcon } from "@/components/AgentIconPicker";
 import type { MentionOption } from "@/components/MarkdownEditor";
 import { formatTaskChatTimestamp } from "./task-chat-adapter";
 
@@ -23,6 +23,7 @@ export interface TaskChatIssueBrief {
   authorName?: string;
   /** Creating agent's assigned icon (AgentIconName) for the avatar header. */
   agentIcon?: string | null;
+  agent?: AvatarAgent;
   /** issue.createdAt — rendered like the other bubbles' footer timestamps. */
   createdAt?: string | Date;
   onSave: (description: string) => void | Promise<unknown>;
@@ -115,15 +116,7 @@ export function TaskChatDescriptionBubble({ brief }: TaskChatDescriptionBubblePr
     >
       {!isHuman && brief.authorName ? (
         <span className="flex items-center gap-2 px-1">
-          <Avatar size="sm" className="shrink-0" data-testid="task-chat-agent-avatar">
-            {brief.agentIcon ? (
-              <AvatarFallback>
-                <AgentIcon icon={brief.agentIcon} className="h-3.5 w-3.5" />
-              </AvatarFallback>
-            ) : (
-              <AvatarFallback>{initialsForName(brief.authorName)}</AvatarFallback>
-            )}
-          </Avatar>
+          <AgentAvatar agent={brief.agent} name={brief.authorName} size={24} />
           <span className="text-sm font-semibold text-foreground">{brief.authorName}</span>
         </span>
       ) : null}

@@ -1,3 +1,4 @@
+import { AgentAvatar } from "./AgentAvatar";
 import { Link } from "@/lib/router";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { deriveInitials } from "./Identity";
@@ -55,10 +56,10 @@ export function ActivityRow({ event, agentMap, userProfileMap, entityNameMap, en
     <div className="space-y-2">
       <div className="flex items-center gap-3">
         <div className="flex min-w-0 flex-1 items-center gap-2">
-          <Avatar size="xs">
+          {event.actorType === "agent" ? <AgentAvatar agent={actor} name={actorName} size={24} /> : <Avatar size="xs">
             {actorAvatarUrl && <AvatarImage src={actorAvatarUrl} alt={actorName} />}
             <AvatarFallback>{deriveInitials(actorName)}</AvatarFallback>
-          </Avatar>
+          </Avatar>}
           <p className="min-w-0 flex-1 truncate">
             <span>{actorName}</span>
             <span className="text-muted-foreground"> {verb} </span>
