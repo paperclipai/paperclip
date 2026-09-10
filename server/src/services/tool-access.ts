@@ -15,8 +15,10 @@ import {
   isNotNull,
   isNull,
   lt,
+  lte,
   max,
   ne,
+  or,
   sql,
 } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -8015,26 +8017,32 @@ export function toolAccessService(
     const staleAfterMs = input.staleAfterMs ?? 15 * 60 * 1000;
     const limit = input.limit ?? 25;
     const cutoff = new Date(generatedAt.getTime() - staleAfterMs);
-    const connections = await db
-      .select()
+    // Legacy plugin backfills use a remote transport as a placeholder, but
+    // their tools run in the plugin worker and have no remote MCP endpoint.
+    // Select only due IDs in SQL so each scheduler tick does not decode every
+    // active connection's config and credential metadata.
+    const due = await db
+      .select({ id: toolConnections.id })
       .from(toolConnections)
+      .innerJoin(toolApplications, and(
+        eq(toolApplications.id, toolConnections.applicationId),
+        eq(toolApplications.companyId, toolConnections.companyId),
+      ))
       .where(
         and(
           eq(toolConnections.enabled, true),
           eq(toolConnections.status, "active"),
           ne(toolConnections.transport, "chat_sdk"),
+          ne(toolApplications.type, "paperclip_plugin"),
+          or(isNull(toolConnections.healthCheckedAt), lte(toolConnections.healthCheckedAt, cutoff)),
         ),
       )
       .orderBy(
-        asc(toolConnections.healthCheckedAt),
+        sql`${toolConnections.healthCheckedAt} asc nulls first`,
         asc(toolConnections.createdAt),
-      );
-    const due = connections
-      .filter(
-        (connection) =>
-          !connection.healthCheckedAt || connection.healthCheckedAt <= cutoff,
+        asc(toolConnections.id),
       )
-      .slice(0, limit);
+      .limit(limit);
     let healthy = 0;
     let failed = 0;
     const failedConnectionIds: string[] = [];
