@@ -24,7 +24,41 @@ stack ancestry. Neither the provisional count nor prior-head review is final
 verification. Root continues live qualification in the original worktree and
 does not push the remotely coordinated branch.
 
-## Current work — September 10: deferred-wake extraction reconciliation
+## Current work — September 10, 12:19 UTC: queue admission reconciliation
+
+The user asks to fix the new merge conflicts and merge PR #13038. Published
+`e02a63d462ce5d47433b0aeb632bb6fd20aab1ba` passed all 24 CI jobs and exact-head
+Greptile review at 5/5, but normal merge still required CODEOWNER approval.
+Master has since advanced to `2a05b5ed3457ea33efd6895520447d1d97fe98d8`, adding
+the queue-admission extraction, simplified queue ports, test TypeScript
+configuration, and a separate runner-verification CI job. Those changes cause
+six conflicts. Earlier-head results do not qualify this new composition.
+
+Keep the new host/transaction split and admission module while carrying exact
+durable receipts, current actor boundaries, and non-coalescing dedicated
+answers through the extracted ports. Preserve failed-chat retry authority,
+retired question-source suppression, generic recovery denial after fresh input
+gets its promotion opportunity, and the existing Stop-registration barriers.
+The original checkout and live server remain untouched; unrelated provider
+qualification stays paused. Auto-merge is temporarily disabled so a successor
+cannot land before fresh exact-head checks and review.
+
+UI types and all 24 workflow/module-boundary tests pass. The initial boundary
+run failed on an upstream application-layer import; removing its no-op wrapper
+around a fresh normal-model context preserves the exact context and restores
+the enforced boundary. No scanner exception or test deadline changed. Fresh
+database recovery/batching/queue/control verification passes **308/308** in
+139.98 seconds. The four queue-module suites pass **89/89**, plain server
+types pass, and all four actual local process/ACP browser paths pass in
+**1.4 minutes**, without skips or retries. The final screenshot shows Cancelled,
+a paused subtree, retained input, and no error toast. Independent final source
+review is clear. Full chat integration passes **995/995** in 249.35 seconds on
+its fresh database. All final source hashes match the reviewed freeze. Publish
+the single 398-file successor and require fresh exact-head CI and Greptile
+review, then attempt normal merge. CODEOWNER approval remains independently
+required; no bypass or self-approval.
+
+### Prior checkpoint — September 10: deferred-wake extraction reconciliation
 
 Published `7c6d36e0d7d343709f10b533a0c29dc2409f7b2b` passes all 24 jobs in
 [fresh CI](https://github.com/paperclipai/paperclip/actions/runs/34434501548).

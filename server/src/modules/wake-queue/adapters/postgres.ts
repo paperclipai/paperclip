@@ -18,7 +18,7 @@ import {
 } from "../../../services/durable-chat-wakeup.js";
 import { isRetiredExternalChatQuestionSource } from "../../../services/question-response-delivery.js";
 import { HttpError } from "../../../errors.js";
-import { evaluateAgentInvokability } from "../../../services/agent-invokability.js";
+import { evaluateAgentInvokabilityFromDb } from "../../../services/agent-invokability.js";
 import { issueTreeControlService, isVerifiedIssueTreeControlInteractionWake } from "../../../services/issue-tree-control.js";
 import { isAutomaticRecoverySuppressedByPauseHold } from "../../../services/recovery/pause-hold-guard.js";
 import { classifyContinuationFailure } from "../../../services/recovery/service.js";
@@ -28,17 +28,20 @@ import { readContinuationAttempt } from "../../../services/recovery/run-liveness
 import { withRecoveryContext } from "../../../services/recovery/status-only-context.js";
 import { parseIssueExecutionState } from "../../../services/issue-execution-policy.js";
 import {
-  buildConfigurationIncompleteRecoveryNoticeSeed,
-  buildExecutionReviewParticipantRecoveryNoticeSeed,
-  buildImmediateExecutionPathRecoveryNoticeSeed,
-  buildWorkspaceValidationRecoveryNoticeSeed,
-} from "../../../services/recovery/stranded-notice.js";
-import {
   queuedCommentIdsFromWakePayload,
   withQueuedCommentIdsInWakePayload,
 } from "../../../services/issue-queued-comment-queue.js";
 import { extractWakeCommentIds } from "../../run-dispatch/index.js";
 import { hasInteractionContinuationWakeContext } from "../domain/context.js";
+import { decidePreDrain, type PreDrainFacts } from "../domain/policy.js";
+import {
+  EXECUTION_REVIEW_PARTICIPANT_RECOVERY_RETRY_REASON,
+  isConfigurationIncompleteFailedRun,
+  isWorkspaceValidationFailedRun,
+  parseObject,
+  readNonEmptyString,
+} from "../domain/values.js";
+import { requireTransactionScopeTx, TransactionScope } from "../application/ports.js";
 import type {
   DeferredWakeCandidate,
   InvokableAgentSnapshot,
@@ -47,35 +50,19 @@ import type {
   LockedIssueExecution,
   ReleaseTransactionResult,
   RunSnapshot,
-  WakeQueueReader,
-  WakeQueueWriter,
+  WakeAdmissionReader,
+  WakeAdmissionWriter,
+  WakeQueueHost,
+  WakeQueueTransaction,
 } from "../application/ports.js";
 import type { RunSummary } from "../application/types.js";
-import { WakeQueueApplicationError } from "../application/types.js";
 
 const DEFERRED_WAKE_STATUS = "deferred_issue_execution";
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
-const WORKSPACE_VALIDATION_FAILURE_CODE = "workspace_validation_failed";
-const CONFIGURATION_INCOMPLETE_FAILURE_CODE = "configuration_incomplete";
-const WORKSPACE_VALIDATION_RECOVERY_CAUSE = "workspace_validation_failed";
-const CONFIGURATION_INCOMPLETE_RECOVERY_CAUSE = "configuration_incomplete";
-const EXECUTION_REVIEW_PARTICIPANT_RECOVERY_CAUSE = "execution_review_participant_recovery";
-const EXECUTION_REVIEW_PARTICIPANT_RECOVERY_WAKE_REASON = "execution_review_participant_recovery";
-const EXECUTION_REVIEW_PARTICIPANT_RECOVERY_RETRY_REASON = "execution_review_participant_recovery";
 const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 
 type HeartbeatRunRow = typeof heartbeatRuns.$inferSelect;
 type IssueRow = typeof issues.$inferSelect;
-
-function parseObject(value: unknown): Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : {};
-}
-
-function readNonEmptyString(value: unknown): string | null {
-  return typeof value === "string" && value.trim().length > 0 ? value : null;
-}
 
 function normalizeAgentNameKey(value: string | null | undefined): string | null {
   if (typeof value !== "string") return null;
@@ -83,12 +70,10 @@ function normalizeAgentNameKey(value: string | null | undefined): string | null 
   return normalized.length > 0 ? normalized : null;
 }
 
-function isWorkspaceValidationFailedRun(run: Pick<HeartbeatRunRow, "errorCode">): boolean {
-  return run.errorCode === WORKSPACE_VALIDATION_FAILURE_CODE;
-}
-
-function isConfigurationIncompleteFailedRun(run: Pick<HeartbeatRunRow, "errorCode">): boolean {
-  return run.errorCode === CONFIGURATION_INCOMPLETE_FAILURE_CODE || run.errorCode === "model_not_found";
+function toRequestedByActorType(value: string | null): "user" | "agent" | "system" | null {
+  // The database column is free text; map any value outside the union to
+  // null instead of widening the type back to string.
+  return value === "user" || value === "agent" || value === "system" ? value : null;
 }
 
 function toRunSnapshot(row: HeartbeatRunRow): RunSnapshot {
@@ -160,7 +145,7 @@ function toDeferredWakeCandidate(row: typeof agentWakeupRequests.$inferSelect): 
     reason: row.reason,
     source: row.source,
     triggerDetail: row.triggerDetail,
-    requestedByActorType: row.requestedByActorType,
+    requestedByActorType: toRequestedByActorType(row.requestedByActorType),
     requestedByActorId: row.requestedByActorId,
     payload,
     queuedCommentIds,
@@ -172,12 +157,23 @@ function toDeferredWakeCandidate(row: typeof agentWakeupRequests.$inferSelect): 
 }
 
 export type WakeQueuePostgresAdapterDeps = {
-  resolveResponsibleUserId: WakeQueueReader["resolveResponsibleUserId"];
-  getRoutineEnv: WakeQueueReader["getRoutineEnv"];
-  resolveSessionBeforeForWakeup: WakeQueueReader["resolveSessionBeforeForWakeup"];
+  resolveResponsibleUserId: WakeQueueHost["resolveResponsibleUserId"];
+  getRoutineEnv: WakeQueueHost["getRoutineEnv"];
+  resolveSessionBeforeForWakeup: WakeQueueHost["resolveSessionBeforeForWakeup"];
 };
 
-function buildReader(tx: Db, deps: WakeQueuePostgresAdapterDeps): WakeQueueReader {
+function buildHost(_tx: Db, deps: WakeQueuePostgresAdapterDeps): WakeQueueHost {
+  return {
+    resolveResponsibleUserId: deps.resolveResponsibleUserId,
+    getRoutineEnv: deps.getRoutineEnv,
+    resolveSessionBeforeForWakeup: deps.resolveSessionBeforeForWakeup,
+  };
+}
+
+function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, run: HeartbeatRunRow): WakeQueueTransaction {
+  const treeControlSvc = issueTreeControlService(tx);
+  const issuesSvc = issueService(tx);
+
   return {
     async findInvokableAgent({ companyId, agentId }): Promise<InvokableAgentSnapshot | null> {
       const agent = await tx
@@ -186,30 +182,11 @@ function buildReader(tx: Db, deps: WakeQueuePostgresAdapterDeps): WakeQueueReade
         .where(and(eq(agents.id, agentId), eq(agents.companyId, companyId)))
         .then((rows) => rows[0] ?? null);
       if (!agent) return null;
-      const companyAgents = await tx
-        .select({ id: agents.id, companyId: agents.companyId, name: agents.name, reportsTo: agents.reportsTo, status: agents.status })
-        .from(agents)
-        .where(eq(agents.companyId, companyId));
-      const invokability = evaluateAgentInvokability(agent, companyAgents);
+      const invokability = await evaluateAgentInvokabilityFromDb(tx, agent);
       return { id: agent.id, companyId: agent.companyId, name: agent.name, invokable: invokability.invokable };
     },
-    resolveResponsibleUserId: deps.resolveResponsibleUserId,
-    getRoutineEnv: deps.getRoutineEnv,
-    resolveSessionBeforeForWakeup: deps.resolveSessionBeforeForWakeup,
-  };
-}
 
-function buildWriter(
-  tx: Db,
-  deps: WakeQueuePostgresAdapterDeps,
-  db: Db,
-  run: HeartbeatRunRow,
-): WakeQueueWriter {
-  const treeControlSvc = issueTreeControlService(tx);
-  const issuesSvc = issueService(tx);
-
-  return {
-    async claimNextDeferredWake({ companyId, issueId }) {
+    async findNextDeferredWake({ companyId, issueId }) {
       while (true) {
         const row = await tx
           .select()
@@ -537,25 +514,6 @@ function buildWriter(
       );
     },
 
-    async buildBlockedRecoveryNotice({ noticeKind, issueStatus, finishingRun }) {
-      if (noticeKind === "workspace_validation") {
-        return { notice: buildWorkspaceValidationRecoveryNoticeSeed(), recoveryCause: WORKSPACE_VALIDATION_RECOVERY_CAUSE };
-      }
-      if (noticeKind === "configuration_incomplete") {
-        return {
-          notice: buildConfigurationIncompleteRecoveryNoticeSeed(finishingRun.configurationIncompletePayload),
-          recoveryCause: CONFIGURATION_INCOMPLETE_RECOVERY_CAUSE,
-        };
-      }
-      if (noticeKind === "execution_review_participant") {
-        return {
-          notice: buildExecutionReviewParticipantRecoveryNoticeSeed(),
-          recoveryCause: EXECUTION_REVIEW_PARTICIPANT_RECOVERY_CAUSE,
-        };
-      }
-      return { notice: buildImmediateExecutionPathRecoveryNoticeSeed({ status: issueStatus }), recoveryCause: null };
-    },
-
     async queueReviewParticipantRecoveryRun({ companyId, issue, finishingRun, recoveryAgent, sessionBefore, now }) {
       const executionState = parseIssueExecutionState(issue.executionState);
       const wakeupRequest = await tx
@@ -565,7 +523,7 @@ function buildWriter(
           agentId: recoveryAgent.id,
           source: "automation",
           triggerDetail: "system",
-          reason: EXECUTION_REVIEW_PARTICIPANT_RECOVERY_WAKE_REASON,
+          reason: EXECUTION_REVIEW_PARTICIPANT_RECOVERY_RETRY_REASON,
           payload: withRecoveryContext(
             {
               issueId: issue.id,
@@ -597,7 +555,7 @@ function buildWriter(
             {
               issueId: issue.id,
               taskId: issue.id,
-              wakeReason: EXECUTION_REVIEW_PARTICIPANT_RECOVERY_WAKE_REASON,
+              wakeReason: EXECUTION_REVIEW_PARTICIPANT_RECOVERY_RETRY_REASON,
               retryReason: EXECUTION_REVIEW_PARTICIPANT_RECOVERY_RETRY_REASON,
               source: "issue.execution_review_recovery",
               retryOfRunId: finishingRun.id,
@@ -633,48 +591,17 @@ function buildWriter(
       return toRunSummary(queuedRun);
     },
 
-    async queueImmediateRecoveryRun({ companyId, issue, finishingRun, recoveryAgent, sessionBefore, now }) {
-      const retryReason = issue.status === "todo" ? "assignment_recovery" : "issue_continuation_needed";
-      const recoveryReason = issue.status === "todo" ? "issue_assignment_recovery" : "issue_continuation_needed";
-      const recoverySource = issue.status === "todo" ? "issue.assignment_recovery" : "issue.continuation_recovery";
-      const recoveryContextSnapshot = withRecoveryContext(
-        {
-          issueId: issue.id,
-          taskId: issue.id,
-          wakeReason: recoveryReason,
-          retryReason,
-          source: recoverySource,
-          retryOfRunId: finishingRun.id,
-        },
-        "normal_model",
-      );
-
-      const routineEnvContext = await deps.getRoutineEnv({ companyId, issue });
-      const responsibleUserId = await deps.resolveResponsibleUserId({
-        companyId,
-        contextSnapshot: recoveryContextSnapshot,
-        issue,
-        routineEnvContext,
-        requestedByActorType: "system",
-        requestedByActorId: null,
-        source: "automation",
-        triggerDetail: "system",
-        existingRunResponsibleUserId: finishingRun.responsibleUserId,
-      });
-      if (!responsibleUserId) {
-        throw new WakeQueueApplicationError(
-          "responsible_user_unresolved",
-          "Unable to resolve responsible user for recovery heartbeat run",
-          {
-            runId: finishingRun.id,
-            agentId: recoveryAgent.id,
-            companyId,
-            issueId: issue.id,
-            wakeReason: recoveryReason,
-          },
-        );
-      }
-
+    async queueImmediateRecoveryRun({
+      companyId,
+      issue,
+      finishingRun,
+      recoveryAgent,
+      reason,
+      contextSnapshot,
+      responsibleUserId,
+      sessionBefore,
+      now,
+    }) {
       const wakeupRequest = await tx
         .insert(agentWakeupRequests)
         .values({
@@ -682,7 +609,7 @@ function buildWriter(
           agentId: recoveryAgent.id,
           source: "automation",
           triggerDetail: "system",
-          reason: recoveryReason,
+          reason,
           payload: withRecoveryContext({ issueId: issue.id, retryOfRunId: finishingRun.id }, "normal_model"),
           status: "queued",
           requestedByActorType: "system",
@@ -701,7 +628,7 @@ function buildWriter(
           triggerDetail: "system",
           status: "queued",
           wakeupRequestId: wakeupRequest.id,
-          contextSnapshot: recoveryContextSnapshot,
+          contextSnapshot,
           responsibleUserId,
           sessionIdBefore: sessionBefore,
           retryOfRunId: finishingRun.id,
@@ -790,6 +717,218 @@ async function recordNativeTerminalRecoveryIfNeeded(tx: Db, run: HeartbeatRunRow
   return true;
 }
 
+/**
+ * Builds the temporary transaction-scope handle the admission port needs.
+ * `heartbeat.ts` calls this through `createWakeQueue`'s own wrapper; it
+ * never builds a `TransactionScope` itself.
+ */
+export function createAdmissionTransactionScope(companyId: string, tx: Db): TransactionScope {
+  return TransactionScope.create(companyId, tx);
+}
+
+function requireAdmissionTx(scope: TransactionScope | null | undefined, companyId: string): Db {
+  return requireTransactionScopeTx(scope, companyId) as Db;
+}
+
+export function createWakeAdmissionReader(): WakeAdmissionReader {
+  return {
+    async matchesActiveWakeActor(scope, input) {
+      const tx = requireAdmissionTx(scope, input.companyId);
+      if (!input.wakeupRequestId) return false;
+      const actor = await tx
+        .select({
+          type: agentWakeupRequests.requestedByActorType,
+          id: agentWakeupRequests.requestedByActorId,
+        })
+        .from(agentWakeupRequests)
+        .where(
+          and(
+            eq(agentWakeupRequests.companyId, input.companyId),
+            eq(agentWakeupRequests.id, input.wakeupRequestId),
+          ),
+        )
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      return (
+        actor !== null &&
+        actor.type === input.requestedByActorType &&
+        actor.id === input.requestedByActorId
+      );
+    },
+    async isSameExecutionAgent(
+      scope,
+      {
+        companyId,
+        activeExecutionRunAgentId,
+        issueExecutionAgentNameKey,
+        agentNameKey,
+      },
+    ) {
+      const tx = requireAdmissionTx(scope, companyId);
+      const executionAgent = await tx
+        .select({ name: agents.name })
+        .from(agents)
+        .where(
+          and(
+            eq(agents.id, activeExecutionRunAgentId),
+            eq(agents.companyId, companyId),
+          ),
+        )
+        .then((rows) => rows[0] ?? null);
+      const executionAgentNameKey =
+        normalizeAgentNameKey(issueExecutionAgentNameKey) ??
+        normalizeAgentNameKey(executionAgent?.name);
+      return (
+        Boolean(executionAgentNameKey) && executionAgentNameKey === agentNameKey
+      );
+    },
+
+    async findExistingDeferredWake(
+      scope,
+      { companyId, agentId, issueId, durableActor },
+    ) {
+      const tx = requireAdmissionTx(scope, companyId);
+      const row = await tx
+        .select()
+        .from(agentWakeupRequests)
+        .where(
+          and(
+            eq(agentWakeupRequests.companyId, companyId),
+            eq(agentWakeupRequests.agentId, agentId),
+            eq(agentWakeupRequests.status, DEFERRED_WAKE_STATUS),
+            sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issueId}`,
+            ...(durableActor
+              ? [
+                  durableActor.type === null
+                    ? isNull(agentWakeupRequests.requestedByActorType)
+                    : eq(
+                        agentWakeupRequests.requestedByActorType,
+                        durableActor.type,
+                      ),
+                  durableActor.id === null
+                    ? isNull(agentWakeupRequests.requestedByActorId)
+                    : eq(
+                        agentWakeupRequests.requestedByActorId,
+                        durableActor.id,
+                      ),
+                ]
+              : []),
+          ),
+        )
+        .orderBy(asc(agentWakeupRequests.requestedAt))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      if (!row) return null;
+      const payload = parseObject(row.payload);
+      return {
+        id: row.id,
+        runId: row.runId,
+        payload,
+        deferredContext: parseObject(payload[DEFERRED_WAKE_CONTEXT_KEY]),
+        coalescedCount: row.coalescedCount,
+      };
+    },
+  };
+}
+
+export function createWakeAdmissionWriter(): WakeAdmissionWriter {
+  return {
+    async coalesceIntoActiveExecutionRun(scope, input) {
+      const tx = requireAdmissionTx(scope, input.companyId);
+      const now = new Date();
+      const mergedRun = await tx
+        .update(heartbeatRuns)
+        .set({ contextSnapshot: input.mergedContextSnapshot, updatedAt: now })
+        .where(
+          and(
+            eq(heartbeatRuns.id, input.activeExecutionRunId),
+            eq(heartbeatRuns.companyId, input.companyId),
+          ),
+        )
+        .returning()
+        .then((rows) => rows[0] ?? null);
+      if (!mergedRun) {
+        // The compare-and-set write affected no row. Throw to roll the
+        // transaction back instead of recording a coalesced wake against a
+        // run this write never touched.
+        throw new Error(
+          "wake-queue: the coalesce target run was not found for this company",
+        );
+      }
+      await tx.insert(agentWakeupRequests).values({
+        ...input.durableReceipt,
+        companyId: input.companyId,
+        agentId: input.agentId,
+        source: input.source,
+        triggerDetail: input.triggerDetail,
+        reason: "issue_execution_same_name",
+        payload: input.payload,
+        status: "coalesced",
+        coalescedCount: 1,
+        requestedByActorType: input.requestedByActorType,
+        requestedByActorId: input.requestedByActorId,
+        idempotencyKey: input.idempotencyKey,
+        runId: mergedRun.id,
+        finishedAt: now,
+      });
+      return mergedRun as unknown as Record<string, unknown>;
+    },
+
+    async mergeIntoExistingDeferredWake(scope, input) {
+      const tx = requireAdmissionTx(scope, input.companyId);
+      const rows = await tx
+        .update(agentWakeupRequests)
+        .set({
+          payload: input.mergedPayload,
+          coalescedCount: input.nextCoalescedCount,
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(agentWakeupRequests.id, input.existingDeferredWakeId),
+            eq(agentWakeupRequests.companyId, input.companyId),
+            eq(agentWakeupRequests.status, DEFERRED_WAKE_STATUS),
+          ),
+        )
+        .returning({ id: agentWakeupRequests.id });
+      if (rows.length === 0) {
+        // The compare-and-set write affected no row: a concurrent writer
+        // already moved this wake off `deferred_issue_execution`. Roll the
+        // transaction back instead of leaving the merge half-applied.
+        throw new Error(
+          "wake-queue: the deferred wake to merge into was not found for this company",
+        );
+      }
+      if (input.coalescedReceipt) {
+        await tx.insert(agentWakeupRequests).values({
+          ...input.coalescedReceipt,
+          companyId: input.companyId,
+          status: "coalesced",
+          coalescedCount: 1,
+          finishedAt: new Date(),
+        });
+      }
+    },
+
+    async insertNewDeferredWake(scope, input) {
+      const tx = requireAdmissionTx(scope, input.companyId);
+      await tx.insert(agentWakeupRequests).values({
+        ...input.durableReceipt,
+        companyId: input.companyId,
+        agentId: input.agentId,
+        source: input.source,
+        triggerDetail: input.triggerDetail,
+        reason: "issue_execution_deferred",
+        payload: input.payload,
+        status: DEFERRED_WAKE_STATUS,
+        requestedByActorType: input.requestedByActorType,
+        requestedByActorId: input.requestedByActorId,
+        idempotencyKey: input.idempotencyKey,
+      });
+    },
+  };
+}
+
 export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAdapterDeps): IssueLockWriter {
   return {
     async withIssueExecutionLock(input, fn): Promise<ReleaseTransactionResult & { run: RunSnapshot }> {
@@ -858,41 +997,43 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
         const issueRow =
           (contextIssueId ? candidateIssues.find((candidate) => candidate.id === contextIssueId) : candidateIssues[0]) ?? null;
 
-        if (!issueRow || (issueRow.executionRunId && issueRow.executionRunId !== run.id)) {
+        const preDrainFacts: PreDrainFacts = {
+          issueRowPresent: issueRow !== null,
+          executionRunIdMatchesRun: !issueRow || !issueRow.executionRunId || issueRow.executionRunId === run.id,
+          isWorkspaceValidationFailedRun: isWorkspaceValidationFailedRun(run),
+          isConfigurationIncompleteFailedRun: isConfigurationIncompleteFailedRun(run),
+          issueStatus: issueRow?.status ?? "",
+          hasAssigneeUser: Boolean(issueRow?.assigneeUserId),
+          assigneeAgentMatchesRunAgent: issueRow?.assigneeAgentId === run.agentId,
+          legacyExecutionNeedsReconciliation: legacyExecutionNeedsReconciliation(run),
+          // An operator stop never promotes old queued work by itself. The
+          // next explicit wake adopts those messages atomically when it
+          // queues a run.
+          executionCancellationAcknowledged:
+            run.status === "cancelled" && parseObject(run.resultJson?.executionCancellation).state === "acknowledged",
+        };
+        const preDrain = decidePreDrain(preDrainFacts);
+
+        if (preDrain.kind === "released") {
           return { outcome: { kind: "released" }, postCommitEffects: [], run: runSnapshot };
         }
 
-        if (
-          (isWorkspaceValidationFailedRun(run) || isConfigurationIncompleteFailedRun(run)) &&
-          (issueRow.status === "todo" || issueRow.status === "in_progress") &&
-          !issueRow.assigneeUserId &&
-          issueRow.assigneeAgentId === run.agentId
-        ) {
-          const configurationIncomplete = isConfigurationIncompleteFailedRun(run);
-          const notice = configurationIncomplete
-            ? buildConfigurationIncompleteRecoveryNoticeSeed(runSnapshot.configurationIncompletePayload)
-            : buildWorkspaceValidationRecoveryNoticeSeed();
+        // decidePreDrain only returns "blocked" or "proceed" when the issue row is present.
+        if (!issueRow) {
+          throw new Error(`wake-queue: pre-drain decision ${preDrain.kind} reached without an issue row`);
+        }
+
+        if (preDrain.kind === "blocked") {
           return {
             outcome: {
               kind: "blocked",
               issue: toIssueSnapshot(issueRow),
               previousStatus: issueRow.status as "todo" | "in_progress",
-              notice,
-              recoveryCause: configurationIncomplete ? CONFIGURATION_INCOMPLETE_RECOVERY_CAUSE : WORKSPACE_VALIDATION_RECOVERY_CAUSE,
+              noticeKind: preDrain.noticeKind,
             },
             postCommitEffects: [],
             run: runSnapshot,
           };
-        }
-
-        if (legacyExecutionNeedsReconciliation(run)) {
-          return { outcome: { kind: "released" }, postCommitEffects: [], run: runSnapshot };
-        }
-
-        // An operator stop never promotes old queued work by itself. The next
-        // explicit wake adopts those messages atomically when it queues a run.
-        if (run.status === "cancelled" && parseObject(run.resultJson?.executionCancellation).state === "acknowledged") {
-          return { outcome: { kind: "released" }, postCommitEffects: [], run: runSnapshot };
         }
 
         // The durable external answer owns the sole successor of this retired
@@ -920,10 +1061,7 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
         }
 
         const locked: LockedIssueExecution = { primaryIssue: toIssueSnapshot(issueRow), run: runSnapshot };
-        const result = await fn(locked, {
-          reader: buildReader(tx, deps),
-          writer: buildWriter(tx, deps, db, run),
-        });
+        const result = await fn(locked, { host: buildHost(tx, deps), transaction: buildTransaction(tx, deps, db, run) });
         return { ...result, run: runSnapshot };
       });
     },

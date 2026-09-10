@@ -7931,3 +7931,58 @@ Independent source review is clear. Before/after hashes match; heartbeat is
 module adapter is `0de02024c6d6e3c6f5de525c3a73e62ba0695123e468ef90b74a679a41861821`.
 The original checkout, live server and runner remain untouched. The single
 successor has 397 changed files and still needs fresh exact-head CI and review.
+
+## September 10, 12:19 UTC — subsequent master queue refactor
+
+The preceding composition was published as
+`e02a63d462ce5d47433b0aeb632bb6fd20aab1ba`. Its
+[CI run](https://github.com/paperclipai/paperclip/actions/runs/34436462958)
+passed all 24 PR jobs, and its exact-head Greptile review completed 5/5.
+Normal merge remained blocked by required CODEOWNER review; no bypass or
+self-approval occurred. Master then advanced to
+`2a05b5ed3457ea33efd6895520447d1d97fe98d8`, creating six new conflicts.
+
+The new reconciliation retains upstream's host/transaction split and extracted
+admission use case. Chat admission carries its own durable receipt identity,
+actor partition, and non-coalescing contract through those ports. A merge into
+an existing deferred wake still inserts the incoming receipt in the same
+transaction; a real PostgreSQL regression forces that insert to fail and
+verifies that the preceding target update rolls back. Upstream company and
+status compare-and-set guards remain intact. All previous release guards,
+dedicated-answer adoption rules, and Stop-registration barriers survive.
+
+Upstream's stricter module-boundary check initially fails because the new
+application code imports a service helper. That helper only strips inherited
+fields, while this call supplies a fresh six-field normal-model context.
+Removing the no-op wrapper/import preserves the exact context without adding
+another port or relaxing the scanner. The initial failed log is retained.
+The repeated workflow/module-boundary cohort passes **24/24**. Plain server
+and UI types pass. All four queue-module suites pass **89/89**, including the
+real rollback case, with no skips in 8.74 seconds total / 2.42 seconds tests.
+The preservation audit confirms prior chat guards and incoming upstream tests
+are retained; batching adds one upstream case without deleting prior tests.
+
+Independent review of the frozen production and test hashes is clear. Fresh
+recovery/batching/queue/control verification passes **308/308** in 139.98 seconds
+total / 130.33 seconds tests. All four actual local process/ACP browser paths
+pass in **1.4 minutes**, without retries or skips, on their own fresh database.
+The inspected final screenshot shows Cancelled, a paused subtree, retained
+input, and no error toast. These are local fixtures, not live-channel proof.
+Full chat integration passes **995/995** in 249.35 seconds total / 241.04 seconds
+tests on its own fresh database. There are no failures, retries, or skips in
+these final local cohorts. Before/after source hashes match the reviewed
+freeze: heartbeat `65bdfb994130b16dcc3d29a353219868f6e265e7c9882da877a79e272c181b6e`,
+adapter `88d0e8669f53bb97e39714af242228a847ab18969b981650b0eafaecc176c998`.
+The successor has 398 changed files, without wireframe images or HTML galleries.
+Auto-merge is disabled until fresh exact-head CI and review complete. The
+original checkout, live server, and runner remain untouched.
+
+An additional exploratory `tsc --noEmit -p server/src/__tests__/tsconfig.json`
+fails and its log is retained. The new configuration is byte-identical to
+master and was added to govern orphan test transformation, not to join the
+server build/typecheck graph. Invoking it as a standalone project produces
+625 outside-root diagnostics and other broad existing test-type errors.
+All seven wake-queue diagnostics are outside-root errors. No standard CI,
+workspace typecheck, or build command invokes that project directly. No
+configuration, test, or standard gate was changed to conceal that failure;
+the normal server and UI typechecks passed as reported above.
