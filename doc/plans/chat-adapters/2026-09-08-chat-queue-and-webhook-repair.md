@@ -8074,3 +8074,55 @@ remain unchanged. This successor changes only one test and its two qualification
 notes; the full PR becomes 399 files. Require fresh exact-head CI and review
 before normal merge. No live server, provider credentials, or runner deployment
 changes occur.
+
+## September 10, 13:12 UTC — real-runner durable receipt observation
+
+The remaining `a8a32c60d` CI jobs prove the Discord fixture correction:
+full Linux chat integration passes **995/995** in **657.63 seconds** total /
+642.50 seconds tests, with no skips. Build then fails native-runner verification
+at the real-process kill/resume case. Its two-second checkpoint poll sees only
+the initial open-run state, not the expected durable governed effect. That
+runner Vitest cohort reports **1943 passed, one failed, three existing skips**.
+The real-process case fails before the explicit kill and receipt/recovery
+assertions. The complete job log is retained; it is not a passing build.
+The completed run has **21 successful jobs**. Build, the agent-skills serialized
+shard, and the required verification aggregate fail; all other jobs pass,
+including typecheck, canary, all other server/workspace shards, and the browser
+aggregate. The browser shards pass **104 cases** with four existing optional
+skips. No CI rerun or merge bypass occurs.
+
+The unchanged failing case passes locally once: **1/1**, 30 intentionally
+unselected, 4.67 seconds tests / 5.24 seconds total. The staged runner hash is
+`5ba0b273086e48ac1be07186083f75b6eb64a7157bf0663609f52c944f310443`, matching the
+previously built and qualified artifact; the corresponding Rust source is
+unchanged. This is not a local reproduction of the original CI failure.
+
+There is an independently verifiable fixture clock mismatch: its two-second
+poll begins at `sendMessage`, whereas the provider's two-second turn deadline
+is armed after bounded workspace admission. The nominal workspace bound is
+100 milliseconds, and the original CI snapshot alone does not establish how
+much time that phase consumed. Do not claim an unmeasured production cause.
+The test correction instead observes the actual durable store save completing
+for the exact session, run, active turn, effect, and process identities. It
+races real turn failure and the existing test-abort signal. Actual save/fsync,
+the provider two-second deadline, overall thirty-second deadline, process kill,
+thread recovery, and duplicate-effect assertions must remain unchanged.
+A controlled mutation acknowledges before the real save finishes; it fails
+the held-save assertion in 2.14 seconds. This is causal evidence for the
+durability boundary, not an unchanged reproduction of the CI scheduling issue.
+The corrected focused cohort passes **5/5** in 6.77 seconds. Controls also reject
+six identity/effect/process mismatches and a rejected save, fail on actual turn
+failure or unexpected completion, and remove their abort listener. A new
+assertion requires the turn to remain unsettled immediately before SIGKILL, so
+a prior provider timeout cannot masquerade as the intentional termination.
+Cleanup joins the owned turn and preserves the resumed generation's checkpoint.
+
+The frozen full affected suite passes **35/35** in **24.70 seconds** total /
+24.14 seconds tests, without skips or retries. Plain runner types pass and
+independent review is clear at test hash
+`be8beacc62d3ff937cbffabab2c52668cc007adbb523b9d3be561e41bda6ff75`.
+Production and the staged binary remain unchanged. Together with the preceding
+route setup correction, the next push changes only two test files and their
+qualification notes; the full PR is **400 files**. Both original CI failures
+remain recorded. Fresh exact-head CI and review must pass before normal merge;
+no approval bypass, self-approval, or live deployment occurs.

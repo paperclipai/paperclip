@@ -24,7 +24,32 @@ stack ancestry. Neither the provisional count nor prior-head review is final
 verification. Root continues live qualification in the original worktree and
 does not push the remotely coordinated branch.
 
-## Current work — September 10, 13:08 UTC: cold route-module setup
+## Current work — September 10, 13:12 UTC: real-runner durable receipt boundary
+
+The same `a8a32c60d` CI run now proves the corrected Discord fixture under Linux:
+full chat integration passes **995/995** in 657.63 seconds total. Build exposes
+another failure: the real-runner kill/resume test's two-second checkpoint poll
+does not observe its expected effect. Its snapshot contains only the initial
+open-run state; this does not identify where the CI process spent that time.
+The case passes unchanged locally in 4.67 seconds. No local reproduction of
+the exact CI failure or production regression is claimed.
+
+The test's poll starts before workspace admission, but the provider's two-second
+turn deadline starts afterward. Replace the independent polling assumption
+with an exact real-store save-completion signal, racing actual turn failure
+and test abort. Keep the provider's two-second limit, the case's thirty-second
+limit, real filesystem persistence, explicit process kill, thread recovery,
+and duplicate-effect assertions. A controlled premature acknowledgement fails
+the held-save assertion; the corrected focused cohort passes **5/5**, and the
+full affected runner suite passes **35/35** in 24.70 seconds with no skips or
+retries. Negative controls reject wrong identities, missing effect/process
+evidence, failed persistence, turn failure, and test abort. Plain runner types
+pass and independent frozen-source review is clear. The route-module setup
+correction below is also committed locally; both test-only fixes will receive
+fresh CI and review together. The full PR is 400 files. No live deployment or
+provider testing resumes before this merge lane is clear.
+
+### Prior checkpoint — September 10, 13:08 UTC: cold route-module setup
 
 The Discord fixture successor is published as
 `a8a32c60d2034e7b0efb4eb7d1dde585a75c509b`. Exact-head Greptile review finishes
