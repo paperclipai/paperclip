@@ -15141,7 +15141,7 @@ export function issueRoutes(
       );
       if (!issue) return;
       const actor = getActorInfo(req);
-      const queue = await runQueuedCommentMutation(() =>
+      const { queue, activityPublication } = await runQueuedCommentMutation(() =>
         queuedCommentQueue.editQueuedComment({
           issue: buildQueuedCommentIssueContext(issue),
           actor,
@@ -15152,22 +15152,7 @@ export function issueRoutes(
           now: new Date(),
         }),
       );
-      await logActivity(db, {
-        companyId: issue.companyId,
-        actorType: actor.actorType,
-        actorId: actor.actorId,
-        agentId: actor.agentId,
-        runId: actor.runId,
-        agentApiKeyId: actor.agentApiKeyId,
-        action: "issue.queued_comment_edited",
-        entityType: "issue",
-        entityId: issue.id,
-        details: {
-          commentId,
-          queueId: req.body.queueId,
-          revision: queue.revision,
-        },
-      });
+      publishActivity(activityPublication as ActivityPublication);
       res.json(await runRedactions.redactForIssue(issue.companyId, issue.id, queue));
     },
   );
@@ -15187,7 +15172,7 @@ export function issueRoutes(
       );
       if (!issue) return;
       const actor = getActorInfo(req);
-      const queue = await runQueuedCommentMutation(() =>
+      const { queue, activityPublication } = await runQueuedCommentMutation(() =>
         queuedCommentQueue.reorderQueuedComments({
           issue: buildQueuedCommentIssueContext(issue),
           actor,
@@ -15197,22 +15182,7 @@ export function issueRoutes(
           now: new Date(),
         }),
       );
-      await logActivity(db, {
-        companyId: issue.companyId,
-        actorType: actor.actorType,
-        actorId: actor.actorId,
-        agentId: actor.agentId,
-        runId: actor.runId,
-        agentApiKeyId: actor.agentApiKeyId,
-        action: "issue.queued_comments_reordered",
-        entityType: "issue",
-        entityId: issue.id,
-        details: {
-          queueId: req.body.queueId,
-          revision: queue.revision,
-          orderedCommentIds: req.body.orderedCommentIds,
-        },
-      });
+      publishActivity(activityPublication as ActivityPublication);
       res.json(await runRedactions.redactForIssue(issue.companyId, issue.id, queue));
     },
   );
@@ -15499,25 +15469,10 @@ export function issueRoutes(
           queueId: req.body.queueId,
           revision: req.body.revision,
           now: new Date(),
+          logActivity: true,
         }),
       );
-      await logActivity(db, {
-        companyId: issue.companyId,
-        actorType: actor.actorType,
-        actorId: actor.actorId,
-        agentId: actor.agentId,
-        runId: actor.runId,
-        agentApiKeyId: actor.agentApiKeyId,
-        action: "issue.queued_comment_discarded",
-        entityType: "issue",
-        entityId: issue.id,
-        details: {
-          commentId,
-          queueId: req.body.queueId,
-          revision: result.queue.revision,
-          cancelledRunId: result.cancelledRun?.id ?? null,
-        },
-      });
+      publishActivity(result.activityPublication as ActivityPublication);
       // Telemetry is best-effort background work; it must not delay the
       // response with a slow lookup, so fire it and do not await it.
       if (result.cancelledRun) {

@@ -13,6 +13,33 @@ export type QueuedCommentActor = {
   actorId: string;
   /** Null for a user actor. */
   agentId: string | null;
+  runId: string | null;
+  agentApiKeyId: string | null;
+};
+
+/** The fields a mutation needs to log its own activity row; entity type is always "issue". */
+export type QueuedCommentActivityLogInput = {
+  actorType: "agent" | "user";
+  actorId: string;
+  agentId: string | null;
+  runId: string | null;
+  agentApiKeyId: string | null;
+  action: string;
+  entityId: string;
+  details: Record<string, unknown>;
+};
+
+/**
+ * Structurally mirrors the server's `ActivityPublication` (from
+ * `services/activity-log.ts`), which this layer cannot import by name --
+ * the module boundary check forbids the application layer from importing
+ * server services. The route casts this back to `ActivityPublication`
+ * before calling `publishActivity`.
+ */
+export type QueuedCommentActivityPublication = {
+  companyId: string;
+  payload: Record<string, unknown>;
+  pluginEvent: unknown;
 };
 
 export type QueuedCommentIssueContext = {
@@ -121,6 +148,13 @@ export interface QueuedCommentQueueTransaction {
   syncCommentReferences(commentId: string): Promise<void>;
   deleteCommentReferenceSource(commentId: string): Promise<void>;
   syncCommentExternalObjectsSafely(commentId: string): Promise<void>;
+  /**
+   * Persists the activity row on this same transaction, so a mutation and
+   * its audit record commit or roll back together. Returns the publication
+   * for the caller to publish once the transaction has committed; this
+   * write never publishes the live event itself.
+   */
+  logActivity(input: QueuedCommentActivityLogInput): Promise<QueuedCommentActivityPublication>;
 }
 
 export interface QueuedCommentIssueLockWriter {

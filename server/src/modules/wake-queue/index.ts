@@ -44,10 +44,13 @@ export type {
   DiscardQueuedCommentInput,
   DiscardQueuedCommentResult,
   EditQueuedCommentInput,
+  EditQueuedCommentResult,
   QueuedCommentMutationErrorCode,
   ReorderQueuedCommentsInput,
+  ReorderQueuedCommentsResult,
 } from "./application/queued-comment-use-cases.js";
 export type {
+  QueuedCommentActivityPublication,
   QueuedCommentActor,
   QueuedCommentIssueContext,
   QueuedCommentQueueSnapshot,

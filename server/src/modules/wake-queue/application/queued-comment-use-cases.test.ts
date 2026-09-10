@@ -9,6 +9,7 @@ import {
 } from "./queued-comment-use-cases.js";
 import type {
   LockedQueuedCommentState,
+  QueuedCommentActivityPublication,
   QueuedCommentActor,
   QueuedCommentEntrySnapshot,
   QueuedCommentIssueContext,
@@ -26,8 +27,24 @@ const ISSUE: QueuedCommentIssueContext = {
   executionRunId: null,
 };
 
-const USER_ACTOR: QueuedCommentActor = { actorType: "user", actorId: "user-1", agentId: null };
-const AGENT_ACTOR: QueuedCommentActor = { actorType: "agent", actorId: "agent-1", agentId: "agent-1" };
+const USER_ACTOR: QueuedCommentActor = {
+  actorType: "user",
+  actorId: "user-1",
+  agentId: null,
+  runId: null,
+  agentApiKeyId: null,
+};
+const AGENT_ACTOR: QueuedCommentActor = {
+  actorType: "agent",
+  actorId: "agent-1",
+  agentId: "agent-1",
+  runId: "run-1",
+  agentApiKeyId: "api-key-1",
+};
+
+function activityPublicationFixture(overrides: Partial<QueuedCommentActivityPublication> = {}): QueuedCommentActivityPublication {
+  return { companyId: ISSUE.companyId, payload: {}, pluginEvent: null, ...overrides };
+}
 
 function wakeRow(overrides: Partial<QueuedCommentWakeRow> = {}): QueuedCommentWakeRow {
   return { id: "wake-1", agentId: "agent-1", status: "deferred_issue_execution", runId: null, payload: {}, ...overrides };
@@ -103,6 +120,7 @@ function createFakeTransaction(overrides: Partial<QueuedCommentQueueTransaction>
     syncCommentReferences: vi.fn(async () => {}),
     deleteCommentReferenceSource: vi.fn(async () => {}),
     syncCommentExternalObjectsSafely: vi.fn(async () => {}),
+    logActivity: vi.fn(async () => activityPublicationFixture()),
     ...overrides,
   };
 }
@@ -135,7 +153,20 @@ describe("editQueuedComment", () => {
     );
     expect(transaction.syncCommentReferences).toHaveBeenCalledWith("comment-1");
     expect(transaction.syncCommentExternalObjectsSafely).toHaveBeenCalledWith("comment-1");
-    expect(result).toEqual(queueSnapshot());
+    expect(result.queue).toEqual(queueSnapshot());
+    // Proves the activity write runs on the same locked transaction as the
+    // mutation, not as a separate statement after it commits.
+    expect(transaction.logActivity).toHaveBeenCalledWith({
+      actorType: "user",
+      actorId: "user-1",
+      agentId: null,
+      runId: null,
+      agentApiKeyId: null,
+      action: "issue.queued_comment_edited",
+      entityId: "issue-1",
+      details: { commentId: "comment-1", queueId: "wake-1", revision: "rev-1" },
+    });
+    expect(result.activityPublication).toEqual(activityPublicationFixture());
   });
 
   it("rejects a stale queue id with queued_comment_stale_queue", async () => {
@@ -219,7 +250,7 @@ describe("reorderQueuedComments", () => {
     const transaction = createFakeTransaction();
     const reorderQueuedComments = createReorderQueuedComments({ issueLock: createFakeIssueLock(locked, transaction) });
 
-    await reorderQueuedComments({
+    const result = await reorderQueuedComments({
       issue: ISSUE,
       actor: USER_ACTOR,
       queueId: "wake-1",
@@ -231,6 +262,19 @@ describe("reorderQueuedComments", () => {
     expect(transaction.updateWakeQueuedCommentIds).toHaveBeenCalledWith(
       expect.objectContaining({ wakeId: "wake-1", ids: ["b", "a"] }),
     );
+    // Proves the activity write runs on the same locked transaction as the
+    // mutation, not as a separate statement after it commits.
+    expect(transaction.logActivity).toHaveBeenCalledWith({
+      actorType: "user",
+      actorId: "user-1",
+      agentId: null,
+      runId: null,
+      agentApiKeyId: null,
+      action: "issue.queued_comments_reordered",
+      entityId: "issue-1",
+      details: { queueId: "wake-1", revision: "rev-1", orderedCommentIds: ["b", "a"] },
+    });
+    expect(result.activityPublication).toEqual(activityPublicationFixture());
   });
 
   it("rejects an order that is not a permutation of the current queue", async () => {
@@ -266,6 +310,7 @@ describe("discardQueuedComment", () => {
       queueId: "wake-1",
       revision: "rev-1",
       now: new Date(),
+      logActivity: true,
     });
 
     expect(transaction.cancelWake).toHaveBeenCalledWith(expect.objectContaining({ wakeId: "wake-1" }));
@@ -274,6 +319,37 @@ describe("discardQueuedComment", () => {
       expect.objectContaining({ executionRunId: "run-1" }),
     );
     expect(result.cancelledRun).toEqual({ id: "run-1" });
+    // Proves the activity write runs on the same locked transaction as the
+    // mutation, and that the cancelled run's own id lands in its details.
+    expect(transaction.logActivity).toHaveBeenCalledWith({
+      actorType: "user",
+      actorId: "user-1",
+      agentId: null,
+      runId: null,
+      agentApiKeyId: null,
+      action: "issue.queued_comment_discarded",
+      entityId: "issue-1",
+      details: { commentId: "comment-1", queueId: "wake-1", revision: "rev-1", cancelledRunId: "run-1" },
+    });
+    expect(result.activityPublication).toEqual(activityPublicationFixture());
+  });
+
+  it("logs no activity row when the caller does not request one, matching the comment-delete route's cancellation call site", async () => {
+    const locked = lockedState({ state: "queued", queueRun: runRow({ id: "run-1" }) });
+    const transaction = createFakeTransaction();
+    const discardQueuedComment = createDiscardQueuedComment({ issueLock: createFakeIssueLock(locked, transaction) });
+
+    const result = await discardQueuedComment({
+      issue: ISSUE,
+      actor: USER_ACTOR,
+      commentId: "comment-1",
+      queueId: "wake-1",
+      revision: "rev-1",
+      now: new Date(),
+    });
+
+    expect(transaction.logActivity).not.toHaveBeenCalled();
+    expect(result.activityPublication).toBeNull();
   });
 
   it("rewrites the remaining ids when other queued comments are left", async () => {

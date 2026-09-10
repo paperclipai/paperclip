@@ -9,11 +9,14 @@ import {
   withQueuedCommentIdsInRunContext,
   withQueuedCommentIdsInWakePayload,
 } from "../../../services/issue-queued-comment-queue.js";
+import { logActivity as persistActivityLogRow, type ActivityPublication } from "../../../services/activity-log.js";
 import { decideQueuedCommentWakeLookup } from "../domain/policy.js";
 import { parseObject, readNonEmptyString } from "../domain/values.js";
 import { QueuedCommentMutationError } from "../application/queued-comment-use-cases.js";
 import type {
   LockedQueuedCommentState,
+  QueuedCommentActivityLogInput,
+  QueuedCommentActivityPublication,
   QueuedCommentIssueLockWriter,
   QueuedCommentQueueTransaction,
   QueuedCommentRunRow,
@@ -174,6 +177,27 @@ function buildTransaction(tx: Db, companyId: string, deps: QueuedCommentQueuePos
     },
     async syncCommentExternalObjectsSafely(commentId) {
       await deps.syncCommentExternalObjectsSafely(commentId, tx);
+    },
+
+    async logActivity(input: QueuedCommentActivityLogInput): Promise<QueuedCommentActivityPublication> {
+      const publications: ActivityPublication[] = [];
+      await persistActivityLogRow(
+        tx,
+        {
+          companyId,
+          actorType: input.actorType,
+          actorId: input.actorId,
+          agentId: input.agentId,
+          runId: input.runId,
+          agentApiKeyId: input.agentApiKeyId,
+          action: input.action,
+          entityType: "issue",
+          entityId: input.entityId,
+          details: input.details,
+        },
+        publications,
+      );
+      return publications[0];
     },
   };
 }

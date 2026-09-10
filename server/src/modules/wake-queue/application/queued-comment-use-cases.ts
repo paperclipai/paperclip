@@ -4,6 +4,7 @@ import {
   decideQueuedCommentReorder,
 } from "../domain/policy.js";
 import type {
+  QueuedCommentActivityPublication,
   QueuedCommentActor,
   QueuedCommentIssueContext,
   QueuedCommentIssueLockWriter,
@@ -74,8 +75,13 @@ export type EditQueuedCommentInput = {
   now: Date;
 };
 
+export type EditQueuedCommentResult = {
+  queue: QueuedCommentQueueSnapshot;
+  activityPublication: QueuedCommentActivityPublication;
+};
+
 export function createEditQueuedComment(deps: { issueLock: QueuedCommentIssueLockWriter }) {
-  return async function editQueuedComment(input: EditQueuedCommentInput): Promise<QueuedCommentQueueSnapshot> {
+  return async function editQueuedComment(input: EditQueuedCommentInput): Promise<EditQueuedCommentResult> {
     return deps.issueLock.withLockedQueue(
       { issue: input.issue, actor: input.actor, queueId: input.queueId },
       async (locked, tx) => {
@@ -108,7 +114,7 @@ export function createEditQueuedComment(deps: { issueLock: QueuedCommentIssueLoc
           updatedAt: input.now,
         });
 
-        return tx.buildQueueSnapshot({
+        const queue = await tx.buildQueueSnapshot({
           issue: input.issue,
           actor: input.actor,
           wake: locked.wake,
@@ -116,6 +122,23 @@ export function createEditQueuedComment(deps: { issueLock: QueuedCommentIssueLoc
           queueRun: updatedQueueRun ?? locked.queueRun,
           activeRun: locked.activeRun,
         });
+
+        const activityPublication = await tx.logActivity({
+          actorType: input.actor.actorType,
+          actorId: input.actor.actorId,
+          agentId: input.actor.agentId,
+          runId: input.actor.runId,
+          agentApiKeyId: input.actor.agentApiKeyId,
+          action: "issue.queued_comment_edited",
+          entityId: input.issue.id,
+          details: {
+            commentId: input.commentId,
+            queueId: input.queueId,
+            revision: queue.revision,
+          },
+        });
+
+        return { queue, activityPublication };
       },
     );
   };
@@ -130,8 +153,13 @@ export type ReorderQueuedCommentsInput = {
   now: Date;
 };
 
+export type ReorderQueuedCommentsResult = {
+  queue: QueuedCommentQueueSnapshot;
+  activityPublication: QueuedCommentActivityPublication;
+};
+
 export function createReorderQueuedComments(deps: { issueLock: QueuedCommentIssueLockWriter }) {
-  return async function reorderQueuedComments(input: ReorderQueuedCommentsInput): Promise<QueuedCommentQueueSnapshot> {
+  return async function reorderQueuedComments(input: ReorderQueuedCommentsInput): Promise<ReorderQueuedCommentsResult> {
     return deps.issueLock.withLockedQueue(
       { issue: input.issue, actor: input.actor, queueId: input.queueId },
       async (locked, tx) => {
@@ -158,7 +186,7 @@ export function createReorderQueuedComments(deps: { issueLock: QueuedCommentIssu
           updatedAt: input.now,
         });
 
-        return tx.buildQueueSnapshot({
+        const queue = await tx.buildQueueSnapshot({
           issue: input.issue,
           actor: input.actor,
           wake: updatedWake,
@@ -166,6 +194,23 @@ export function createReorderQueuedComments(deps: { issueLock: QueuedCommentIssu
           queueRun: updatedQueueRun ?? locked.queueRun,
           activeRun: locked.activeRun,
         });
+
+        const activityPublication = await tx.logActivity({
+          actorType: input.actor.actorType,
+          actorId: input.actor.actorId,
+          agentId: input.actor.agentId,
+          runId: input.actor.runId,
+          agentApiKeyId: input.actor.agentApiKeyId,
+          action: "issue.queued_comments_reordered",
+          entityId: input.issue.id,
+          details: {
+            queueId: input.queueId,
+            revision: queue.revision,
+            orderedCommentIds: input.orderedCommentIds,
+          },
+        });
+
+        return { queue, activityPublication };
       },
     );
   };
@@ -179,6 +224,13 @@ export type DiscardQueuedCommentInput = {
   /** Skipped entirely when omitted, matching the comment-delete route's cancellation call site, which does not carry a revision. */
   revision?: string;
   now: Date;
+  /**
+   * Set only by the queue-discard route. The comment-delete route's
+   * cancellation call site omits this: it already logs its own
+   * `issue.comment_cancelled` row outside this use case, and this flag
+   * would otherwise double-log that same discard.
+   */
+  logActivity?: boolean;
 };
 
 export type DiscardQueuedCommentResult = {
@@ -187,6 +239,8 @@ export type DiscardQueuedCommentResult = {
   queue: QueuedCommentQueueSnapshot;
   /** Set only when the discard emptied the queue and cancelled a queued run; the caller emits telemetry for it after the transaction commits. */
   cancelledRun: { id: string } | null;
+  /** Set only when `input.logActivity` was true; the caller publishes it once the transaction commits. */
+  activityPublication: QueuedCommentActivityPublication | null;
 };
 
 export function createDiscardQueuedComment(deps: { issueLock: QueuedCommentIssueLockWriter }) {
@@ -278,7 +332,25 @@ export function createDiscardQueuedComment(deps: { issueLock: QueuedCommentIssue
           activeRun: locked.activeRun,
         });
 
-        return { deleted, queue, cancelledRun };
+        const activityPublication = input.logActivity
+          ? await tx.logActivity({
+              actorType: input.actor.actorType,
+              actorId: input.actor.actorId,
+              agentId: input.actor.agentId,
+              runId: input.actor.runId,
+              agentApiKeyId: input.actor.agentApiKeyId,
+              action: "issue.queued_comment_discarded",
+              entityId: input.issue.id,
+              details: {
+                commentId: input.commentId,
+                queueId: input.queueId,
+                revision: queue.revision,
+                cancelledRunId: cancelledRun?.id ?? null,
+              },
+            })
+          : null;
+
+        return { deleted, queue, cancelledRun, activityPublication };
       },
     );
   };

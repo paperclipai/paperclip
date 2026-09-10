@@ -373,6 +373,21 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
     ]);
     expect(queueRun?.status).toBe("cancelled");
     expect(storedIssue?.executionRunId).toBeNull();
+
+    // Two discards happen in this scenario (the first trash, then the final
+    // one that empties the queue), so match the row by its own commentId
+    // instead of assuming insertion order.
+    const discardRows = await db
+      .select({ details: activityLog.details })
+      .from(activityLog)
+      .where(eq(activityLog.action, "issue.queued_comment_discarded"));
+    const finalDiscardRow = discardRows.find(
+      (row) => (row.details as { commentId?: string } | null)?.commentId === seeded.commentIds[0],
+    );
+    expect(finalDiscardRow?.details).toMatchObject({
+      commentId: seeded.commentIds[0],
+      cancelledRunId: queueRunId,
+    });
   });
 
   it("keeps a mutation response's steering disposition in step with a fresh GET after promotion", async () => {
