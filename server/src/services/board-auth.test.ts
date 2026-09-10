@@ -1,5 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
-import type { Db } from "@paperclipai/db";
+import {
+  boardApiKeys,
+  companyMemberships,
+  instanceUserRoles,
+  principalPermissionGrants,
+  type Db,
+} from "@paperclipai/db";
 import { boardAuthService } from "./board-auth.js";
 
 describe("boardAuthService touchBoardApiKey", () => {
@@ -43,5 +49,94 @@ describe("boardAuthService touchBoardApiKey", () => {
     await Promise.all([first, second]);
 
     expect(update).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("boardAuthService createNamedBoardApiKey", () => {
+  const companyId = "00000000-0000-4000-8000-000000000001";
+  const userId = "user-1";
+
+  function creationDb(options: {
+    instanceAdmin?: boolean;
+    membershipRole?: "viewer" | "operator";
+    grants?: string[];
+  }) {
+    const insert = vi.fn((table: unknown) => {
+      expect(table).toBe(boardApiKeys);
+      return {
+        values: () => ({
+          returning: () => Promise.resolve([{
+            id: "key-1",
+            name: "automation",
+            tokenPrefix: "pcp_board_prefix",
+            createdAt: new Date(),
+            lastUsedAt: null,
+            revokedAt: null,
+            expiresAt: new Date(Date.now() + 60_000),
+          }]),
+        }),
+      };
+    });
+    const select = vi.fn(() => ({
+      from: (table: unknown) => ({
+        where: () => {
+          if (table === instanceUserRoles) {
+            return Promise.resolve(options.instanceAdmin ? [{ id: "admin-role" }] : []);
+          }
+          if (table === companyMemberships) {
+            return Promise.resolve(options.membershipRole
+              ? [{ companyId, membershipRole: options.membershipRole }]
+              : []);
+          }
+          if (table === principalPermissionGrants) {
+            return Promise.resolve((options.grants ?? []).map((permissionKey) => ({
+              companyId,
+              permissionKey,
+            })));
+          }
+          throw new Error("Unexpected authority table");
+        },
+      }),
+    }));
+    return { db: { select, insert } as unknown as Db, insert };
+  }
+
+  it("rejects an instance-admin capability for a non-admin owner", async () => {
+    const { db, insert } = creationDb({ membershipRole: "operator" });
+    const service = boardAuthService(db);
+
+    await expect(service.createNamedBoardApiKey({
+      userId,
+      name: "automation",
+      scopeConfig: {
+        version: 1,
+        kind: "scoped",
+        companyIds: [companyId],
+        permissions: ["companies:read"],
+        instanceCapabilities: ["instance_admin"],
+      },
+    })).rejects.toMatchObject({ status: 403 });
+    expect(insert).not.toHaveBeenCalled();
+  });
+
+  it("rejects permissions outside the owner's live granular grants", async () => {
+    const { db, insert } = creationDb({
+      membershipRole: "operator",
+      grants: ["agents:create"],
+    });
+    const service = boardAuthService(db);
+
+    await expect(service.createNamedBoardApiKey({
+      userId,
+      name: "automation",
+      scopeConfig: {
+        version: 1,
+        kind: "scoped",
+        companyIds: [companyId],
+        permissions: ["agents:write"],
+        instanceCapabilities: [],
+      },
+    })).rejects.toMatchObject({ status: 403 });
+    expect(insert).not.toHaveBeenCalled();
   });
 });

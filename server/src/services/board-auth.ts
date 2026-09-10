@@ -15,6 +15,7 @@ import {
   instanceUserRoles,
 } from "@paperclipai/db";
 import { conflict, forbidden, notFound } from "../errors.js";
+import { validateBoardKeyScopeOwnerAuthority } from "../security/board-key-owner-authority.js";
 
 export const BOARD_API_KEY_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 export const CLI_AUTH_CHALLENGE_TTL_MS = 10 * 60 * 1000;
@@ -253,8 +254,15 @@ export function boardAuthService(db: Db) {
     expiresAt?: Date | null;
     scopeConfig: BoardApiKeyScopeConfig;
   }) {
-    const token = createBoardApiToken();
     const scopeConfig = boardApiKeyScopeConfigSchema.parse(input.scopeConfig);
+    const authorityViolation = await validateBoardKeyScopeOwnerAuthority(db, input.userId, scopeConfig);
+    if (authorityViolation === "instance_admin_required") {
+      throw forbidden("Instance admin required for the requested board API key scope");
+    }
+    if (authorityViolation) {
+      throw forbidden("Board API key scope exceeds the owner's current authority");
+    }
+    const token = createBoardApiToken();
     const created = await db
       .insert(boardApiKeys)
       .values({
@@ -463,6 +471,17 @@ export function boardAuthService(db: Db) {
       const requestedScope = boardApiKeyScopeConfigSchema.safeParse(challenge.requestedScopeConfig);
       if (!requestedScope.success || !challenge.pendingKeyPrefix) {
         throw conflict("CLI auth challenge must be recreated with an explicit board-key scope");
+      }
+      const authorityViolation = await validateBoardKeyScopeOwnerAuthority(
+        tx as unknown as Db,
+        userId,
+        requestedScope.data,
+      );
+      if (authorityViolation === "instance_admin_required") {
+        throw forbidden("Instance admin required for the requested board API key scope");
+      }
+      if (authorityViolation) {
+        throw forbidden("Board API key scope exceeds the owner's current authority");
       }
 
       let boardKeyId = challenge.boardApiKeyId;
