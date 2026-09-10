@@ -25,6 +25,7 @@ import {
 } from "../../../services/issue-queued-comment-queue.js";
 import { extractWakeCommentIds } from "../../run-dispatch/index.js";
 import { hasInteractionContinuationWakeContext } from "../domain/context.js";
+import { decidePreDrain, type PreDrainFacts } from "../domain/policy.js";
 import {
   EXECUTION_REVIEW_PARTICIPANT_RECOVERY_RETRY_REASON,
   isConfigurationIncompleteFailedRun,
@@ -726,37 +727,43 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
         const issueRow =
           (contextIssueId ? candidateIssues.find((candidate) => candidate.id === contextIssueId) : candidateIssues[0]) ?? null;
 
-        if (!issueRow || (issueRow.executionRunId && issueRow.executionRunId !== run.id)) {
+        const preDrainFacts: PreDrainFacts = {
+          issueRowPresent: issueRow !== null,
+          executionRunIdMatchesRun: !issueRow || !issueRow.executionRunId || issueRow.executionRunId === run.id,
+          isWorkspaceValidationFailedRun: isWorkspaceValidationFailedRun(run),
+          isConfigurationIncompleteFailedRun: isConfigurationIncompleteFailedRun(run),
+          issueStatus: issueRow?.status ?? "",
+          hasAssigneeUser: Boolean(issueRow?.assigneeUserId),
+          assigneeAgentMatchesRunAgent: issueRow?.assigneeAgentId === run.agentId,
+          legacyExecutionNeedsReconciliation: legacyExecutionNeedsReconciliation(run),
+          // An operator stop never promotes old queued work by itself. The
+          // next explicit wake adopts those messages atomically when it
+          // queues a run.
+          executionCancellationAcknowledged:
+            run.status === "cancelled" && parseObject(run.resultJson?.executionCancellation).state === "acknowledged",
+        };
+        const preDrain = decidePreDrain(preDrainFacts);
+
+        if (preDrain.kind === "released") {
           return { outcome: { kind: "released" }, postCommitEffects: [], run: runSnapshot };
         }
 
-        if (
-          (isWorkspaceValidationFailedRun(run) || isConfigurationIncompleteFailedRun(run)) &&
-          (issueRow.status === "todo" || issueRow.status === "in_progress") &&
-          !issueRow.assigneeUserId &&
-          issueRow.assigneeAgentId === run.agentId
-        ) {
-          const configurationIncomplete = isConfigurationIncompleteFailedRun(run);
+        // decidePreDrain only returns "blocked" or "proceed" when the issue row is present.
+        if (!issueRow) {
+          throw new Error(`wake-queue: pre-drain decision ${preDrain.kind} reached without an issue row`);
+        }
+
+        if (preDrain.kind === "blocked") {
           return {
             outcome: {
               kind: "blocked",
               issue: toIssueSnapshot(issueRow),
               previousStatus: issueRow.status as "todo" | "in_progress",
-              noticeKind: configurationIncomplete ? "configuration_incomplete" : "workspace_validation",
+              noticeKind: preDrain.noticeKind,
             },
             postCommitEffects: [],
             run: runSnapshot,
           };
-        }
-
-        if (legacyExecutionNeedsReconciliation(run)) {
-          return { outcome: { kind: "released" }, postCommitEffects: [], run: runSnapshot };
-        }
-
-        // An operator stop never promotes old queued work by itself. The next
-        // explicit wake adopts those messages atomically when it queues a run.
-        if (run.status === "cancelled" && parseObject(run.resultJson?.executionCancellation).state === "acknowledged") {
-          return { outcome: { kind: "released" }, postCommitEffects: [], run: runSnapshot };
         }
 
         if (await recordNativeTerminalRecoveryIfNeeded(tx, run, issueRow, input.now)) {

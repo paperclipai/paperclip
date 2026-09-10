@@ -1,5 +1,7 @@
 // Pure decision rules for the release half of the deferred issue-execution
 // wake state machine:
+//   - the pre-drain decision (decidePreDrain), applied once per lock
+//     acquisition, before the caller touches the deferred-wake queue at all
 //   - the per-wake decision, split into decideQueuedCommentAction and
 //     decideWakeOutcome, applied to the earliest deferred wake queued
 //     against the issue a run just released
@@ -8,6 +10,65 @@
 // The caller reads the database and packs the result into a facts object.
 // This file only branches on that facts object; it never queries a
 // database, reads the clock, or reads the wake context payload directly.
+
+export type PreDrainFacts = {
+  /** True when the transaction found the issue row the lock is for. */
+  issueRowPresent: boolean;
+  /** True when the issue carries no `executionRunId`, or carries the finishing run's own id. False when a different run already holds it. */
+  executionRunIdMatchesRun: boolean;
+  isWorkspaceValidationFailedRun: boolean;
+  isConfigurationIncompleteFailedRun: boolean;
+  /** The issue's current status. Only "todo" and "in_progress" can lead to the blocked-notice outcome. */
+  issueStatus: string;
+  hasAssigneeUser: boolean;
+  assigneeAgentMatchesRunAgent: boolean;
+  legacyExecutionNeedsReconciliation: boolean;
+  /** True when the finishing run is cancelled and its stored result carries an acknowledged execution cancellation. */
+  executionCancellationAcknowledged: boolean;
+};
+
+export type PreDrainDecision =
+  | { kind: "released" }
+  | { kind: "blocked"; noticeKind: ReleaseRecoveryBlockedNoticeKind }
+  | { kind: "proceed" };
+
+/**
+ * Decides the pre-drain release outcome for one lock acquisition, before the
+ * caller runs its own lock function. Check order is fixed: the issue-row
+ * check runs first, then the blocked-notice check, then legacy-execution
+ * reconciliation, then acknowledged execution cancellation. Each check
+ * returns as soon as it applies, so an earlier true condition can hide a
+ * later one when both hold at the same time. "proceed" means none of the
+ * four checks applied; the caller then runs its own write-carrying check
+ * and, if that also clears, calls its lock function.
+ */
+export function decidePreDrain(facts: PreDrainFacts): PreDrainDecision {
+  if (!facts.issueRowPresent || !facts.executionRunIdMatchesRun) {
+    return { kind: "released" };
+  }
+
+  if (
+    (facts.isWorkspaceValidationFailedRun || facts.isConfigurationIncompleteFailedRun) &&
+    (facts.issueStatus === "todo" || facts.issueStatus === "in_progress") &&
+    !facts.hasAssigneeUser &&
+    facts.assigneeAgentMatchesRunAgent
+  ) {
+    return {
+      kind: "blocked",
+      noticeKind: facts.isConfigurationIncompleteFailedRun ? "configuration_incomplete" : "workspace_validation",
+    };
+  }
+
+  if (facts.legacyExecutionNeedsReconciliation) {
+    return { kind: "released" };
+  }
+
+  if (facts.executionCancellationAcknowledged) {
+    return { kind: "released" };
+  }
+
+  return { kind: "proceed" };
+}
 
 export type DeferredWakeQueuedCommentFacts = {
   /** True when the wake carries one or more queued comment ids to check. */

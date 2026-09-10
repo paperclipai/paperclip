@@ -1,12 +1,127 @@
 import { describe, expect, it } from "vitest";
 import {
+  decidePreDrain,
   decideQueuedCommentAction,
   decideReleaseRecovery,
   decideWakeOutcome,
   type DeferredWakeOutcomeFacts,
   type DeferredWakeQueuedCommentFacts,
+  type PreDrainFacts,
   type ReleaseRecoveryFacts,
 } from "./policy.js";
+
+const basePreDrainFacts: PreDrainFacts = {
+  issueRowPresent: true,
+  executionRunIdMatchesRun: true,
+  isWorkspaceValidationFailedRun: false,
+  isConfigurationIncompleteFailedRun: false,
+  issueStatus: "in_progress",
+  hasAssigneeUser: false,
+  assigneeAgentMatchesRunAgent: true,
+  legacyExecutionNeedsReconciliation: false,
+  executionCancellationAcknowledged: false,
+};
+
+describe("decidePreDrain", () => {
+  const cases: Array<{
+    name: string;
+    facts: PreDrainFacts;
+    expected: ReturnType<typeof decidePreDrain>;
+  }> = [
+    {
+      name: "released: the issue row is missing",
+      facts: { ...basePreDrainFacts, issueRowPresent: false },
+      expected: { kind: "released" },
+    },
+    {
+      name: "released: another run already holds executionRunId",
+      facts: { ...basePreDrainFacts, executionRunIdMatchesRun: false },
+      expected: { kind: "released" },
+    },
+    {
+      name: "blocked: a workspace-validation failure on an eligible todo issue",
+      facts: { ...basePreDrainFacts, isWorkspaceValidationFailedRun: true, issueStatus: "todo" },
+      expected: { kind: "blocked", noticeKind: "workspace_validation" },
+    },
+    {
+      name: "blocked: a configuration-incomplete failure on an eligible in_progress issue",
+      facts: { ...basePreDrainFacts, isConfigurationIncompleteFailedRun: true, issueStatus: "in_progress" },
+      expected: { kind: "blocked", noticeKind: "configuration_incomplete" },
+    },
+    {
+      name: "proceed: a workspace-validation failure on an issue that is not todo or in_progress",
+      facts: { ...basePreDrainFacts, isWorkspaceValidationFailedRun: true, issueStatus: "in_review" },
+      expected: { kind: "proceed" },
+    },
+    {
+      name: "proceed: a workspace-validation failure but the issue already has an assigned user",
+      facts: {
+        ...basePreDrainFacts,
+        isWorkspaceValidationFailedRun: true,
+        issueStatus: "todo",
+        hasAssigneeUser: true,
+      },
+      expected: { kind: "proceed" },
+    },
+    {
+      name: "proceed: a workspace-validation failure but the assigned agent does not match the finishing run's agent",
+      facts: {
+        ...basePreDrainFacts,
+        isWorkspaceValidationFailedRun: true,
+        issueStatus: "todo",
+        assigneeAgentMatchesRunAgent: false,
+      },
+      expected: { kind: "proceed" },
+    },
+    {
+      name: "released: legacy execution needs reconciliation",
+      facts: { ...basePreDrainFacts, legacyExecutionNeedsReconciliation: true },
+      expected: { kind: "released" },
+    },
+    {
+      name: "released: an acknowledged execution cancellation",
+      facts: { ...basePreDrainFacts, executionCancellationAcknowledged: true },
+      expected: { kind: "released" },
+    },
+    {
+      name: "proceed: none of the pre-drain conditions apply",
+      facts: basePreDrainFacts,
+      expected: { kind: "proceed" },
+    },
+    {
+      name: "the blocked-notice check is evaluated before legacy-execution reconciliation",
+      facts: {
+        ...basePreDrainFacts,
+        isWorkspaceValidationFailedRun: true,
+        issueStatus: "todo",
+        // If reconciliation were checked first, this would force a "released"
+        // outcome; the expected "blocked" here proves the blocked-notice
+        // check, evaluated first, decides the outcome.
+        legacyExecutionNeedsReconciliation: true,
+      },
+      expected: { kind: "blocked", noticeKind: "workspace_validation" },
+    },
+    {
+      name: "the blocked-notice check is evaluated before an acknowledged execution cancellation",
+      facts: {
+        ...basePreDrainFacts,
+        isConfigurationIncompleteFailedRun: true,
+        issueStatus: "todo",
+        // If the cancellation check were checked first, this would force a
+        // "released" outcome; the expected "blocked" here proves the
+        // blocked-notice check, evaluated first, decides the outcome.
+        executionCancellationAcknowledged: true,
+      },
+      expected: { kind: "blocked", noticeKind: "configuration_incomplete" },
+    },
+  ];
+
+  for (const testCase of cases) {
+    it(testCase.name, () => {
+      expect(decidePreDrain(testCase.facts)).toEqual(testCase.expected);
+    });
+  }
+});
 
 const baseQueuedCommentFacts: DeferredWakeQueuedCommentFacts = {
   hasQueuedCommentIds: false,
