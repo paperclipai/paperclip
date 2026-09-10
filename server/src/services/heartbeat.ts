@@ -21703,7 +21703,7 @@ export function heartbeatService(
                             ? meta.processGroupId
                             : null,
                         startedAt: meta.startedAt,
-                      })));
+                      }, executionTarget?.kind === "remote" ? "remote" : "local")));
                     },
                     authToken: authToken ?? undefined,
                   }),
