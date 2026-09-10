@@ -411,18 +411,12 @@ async function runReleaseRecoveryTail(
   }
 
   if (decision.kind === "blocked") {
-    const { notice, recoveryCause } = await writer.buildBlockedRecoveryNotice({
-      noticeKind: decision.notice,
-      issueStatus: issue.status === "todo" ? "todo" : "in_progress",
-      finishingRun: run,
-    });
     return {
       outcome: {
         kind: "blocked",
         issue,
         previousStatus: statusForBlock(issue),
-        notice,
-        recoveryCause,
+        noticeKind: decision.notice,
       },
       postCommitEffects,
     };
@@ -486,8 +480,7 @@ export function createReleaseIssueExecution(deps: {
         issue: result.outcome.issue,
         previousStatus: result.outcome.previousStatus,
         latestRun: result.run,
-        notice: result.outcome.notice,
-        recoveryCause: result.outcome.recoveryCause,
+        noticeKind: result.outcome.noticeKind,
       });
     } else if (result.outcome.kind === "blocked_recovery_in_place") {
       await deps.recovery.escalateStrandedRecoveryIssueInPlace({

@@ -20,12 +20,6 @@ import { readContinuationAttempt } from "../../../services/recovery/run-liveness
 import { withRecoveryContext } from "../../../services/recovery/status-only-context.js";
 import { parseIssueExecutionState } from "../../../services/issue-execution-policy.js";
 import {
-  buildConfigurationIncompleteRecoveryNoticeSeed,
-  buildExecutionReviewParticipantRecoveryNoticeSeed,
-  buildImmediateExecutionPathRecoveryNoticeSeed,
-  buildWorkspaceValidationRecoveryNoticeSeed,
-} from "../../../services/recovery/stranded-notice.js";
-import {
   queuedCommentIdsFromWakePayload,
   withQueuedCommentIdsInWakePayload,
 } from "../../../services/issue-queued-comment-queue.js";
@@ -54,8 +48,6 @@ import { WakeQueueApplicationError } from "../application/types.js";
 
 const DEFERRED_WAKE_STATUS = "deferred_issue_execution";
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
-const WORKSPACE_VALIDATION_RECOVERY_CAUSE = "workspace_validation_failed";
-const CONFIGURATION_INCOMPLETE_RECOVERY_CAUSE = "configuration_incomplete";
 const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 
 type HeartbeatRunRow = typeof heartbeatRuns.$inferSelect;
@@ -432,25 +424,6 @@ function buildWriter(tx: Db, deps: WakeQueuePostgresAdapterDeps): WakeQueueWrite
       return isAutomaticRecoverySuppressedByPauseHold(tx, companyId, issueId, treeControlSvc);
     },
 
-    async buildBlockedRecoveryNotice({ noticeKind, issueStatus, finishingRun }) {
-      if (noticeKind === "workspace_validation") {
-        return { notice: buildWorkspaceValidationRecoveryNoticeSeed(), recoveryCause: WORKSPACE_VALIDATION_RECOVERY_CAUSE };
-      }
-      if (noticeKind === "configuration_incomplete") {
-        return {
-          notice: buildConfigurationIncompleteRecoveryNoticeSeed(finishingRun.configurationIncompletePayload),
-          recoveryCause: CONFIGURATION_INCOMPLETE_RECOVERY_CAUSE,
-        };
-      }
-      if (noticeKind === "execution_review_participant") {
-        return {
-          notice: buildExecutionReviewParticipantRecoveryNoticeSeed(),
-          recoveryCause: EXECUTION_REVIEW_PARTICIPANT_RECOVERY_RETRY_REASON,
-        };
-      }
-      return { notice: buildImmediateExecutionPathRecoveryNoticeSeed({ status: issueStatus }), recoveryCause: null };
-    },
-
     async queueReviewParticipantRecoveryRun({ companyId, issue, finishingRun, recoveryAgent, sessionBefore, now }) {
       const executionState = parseIssueExecutionState(issue.executionState);
       const wakeupRequest = await tx
@@ -764,16 +737,12 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
           issueRow.assigneeAgentId === run.agentId
         ) {
           const configurationIncomplete = isConfigurationIncompleteFailedRun(run);
-          const notice = configurationIncomplete
-            ? buildConfigurationIncompleteRecoveryNoticeSeed(runSnapshot.configurationIncompletePayload)
-            : buildWorkspaceValidationRecoveryNoticeSeed();
           return {
             outcome: {
               kind: "blocked",
               issue: toIssueSnapshot(issueRow),
               previousStatus: issueRow.status as "todo" | "in_progress",
-              notice,
-              recoveryCause: configurationIncomplete ? CONFIGURATION_INCOMPLETE_RECOVERY_CAUSE : WORKSPACE_VALIDATION_RECOVERY_CAUSE,
+              noticeKind: configurationIncomplete ? "configuration_incomplete" : "workspace_validation",
             },
             postCommitEffects: [],
             run: runSnapshot,

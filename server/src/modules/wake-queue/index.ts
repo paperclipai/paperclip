@@ -14,7 +14,12 @@ export type {
   RunSummary,
 } from "./application/types.js";
 export { WakeQueueApplicationError } from "./application/types.js";
-export type { IssueSnapshot, RunSnapshot, RecoveryEscalationPort } from "./application/ports.js";
+export type {
+  IssueSnapshot,
+  RunSnapshot,
+  RecoveryEscalationPort,
+  ReleaseRecoveryBlockedNoticeKind,
+} from "./application/ports.js";
 export type { ReleaseIssueExecutionInput } from "./application/use-cases.js";
 
 export type WakeQueueDeps = {

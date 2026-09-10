@@ -376,6 +376,10 @@ import {
   readContinuationAttempt,
 } from "./recovery/index.js";
 import {
+  buildConfigurationIncompleteRecoveryNoticeSeed,
+  buildExecutionReviewParticipantRecoveryNoticeSeed,
+  buildImmediateExecutionPathRecoveryNoticeSeed,
+  buildWorkspaceValidationRecoveryNoticeSeed,
   SANDBOX_PROVIDER_PLUGIN_NOT_READY_REASON,
   type StrandedRecoveryNoticeSeed,
 } from "./recovery/stranded-notice.js";
@@ -403,6 +407,7 @@ import {
   WakeQueueApplicationError,
   type IssueSnapshot as WakeQueueIssueSnapshot,
   type PostCommitEffect as WakeQueuePostCommitEffect,
+  type ReleaseRecoveryBlockedNoticeKind,
   type RunSnapshot as WakeQueueRunSnapshot,
 } from "../modules/wake-queue/index.js";
 import {
@@ -8468,6 +8473,41 @@ export function heartbeatService(
     return { issueRow, runRow };
   }
 
+  // Reproduces `adapters/postgres.ts`'s former `buildBlockedRecoveryNotice`
+  // four-arm switch, now built once here from the full run row this file
+  // already re-reads through `loadStrandedEscalationRows`.
+  function buildStrandedRecoveryNoticeForKind(
+    noticeKind: ReleaseRecoveryBlockedNoticeKind,
+    input: { issueStatus: "todo" | "in_progress"; runRow: typeof heartbeatRuns.$inferSelect },
+  ): {
+    notice: StrandedRecoveryNoticeSeed;
+    recoveryCause:
+      | typeof WORKSPACE_VALIDATION_RECOVERY_CAUSE
+      | typeof CONFIGURATION_INCOMPLETE_RECOVERY_CAUSE
+      | typeof EXECUTION_REVIEW_PARTICIPANT_RECOVERY_CAUSE
+      | undefined;
+  } {
+    if (noticeKind === "workspace_validation") {
+      return { notice: buildWorkspaceValidationRecoveryNoticeSeed(), recoveryCause: WORKSPACE_VALIDATION_RECOVERY_CAUSE };
+    }
+    if (noticeKind === "configuration_incomplete") {
+      const configurationIncomplete = parseObject(parseObject(input.runRow.resultJson).configurationIncomplete);
+      return {
+        notice: buildConfigurationIncompleteRecoveryNoticeSeed(
+          Object.keys(configurationIncomplete).length > 0 ? configurationIncomplete : null,
+        ),
+        recoveryCause: CONFIGURATION_INCOMPLETE_RECOVERY_CAUSE,
+      };
+    }
+    if (noticeKind === "execution_review_participant") {
+      return {
+        notice: buildExecutionReviewParticipantRecoveryNoticeSeed(),
+        recoveryCause: EXECUTION_REVIEW_PARTICIPANT_RECOVERY_CAUSE,
+      };
+    }
+    return { notice: buildImmediateExecutionPathRecoveryNoticeSeed({ status: input.issueStatus }), recoveryCause: undefined };
+  }
+
   const wakeQueue = createWakeQueue(db, {
     resolveResponsibleUserId: async (input) => {
       // `input.issue` is the wake-queue module's own transaction-scoped
@@ -8514,16 +8554,16 @@ export function heartbeatService(
       escalateStrandedAssignedIssue: async (input) => {
         const rows = await loadStrandedEscalationRows(input);
         if (!rows) return;
+        const { notice, recoveryCause } = buildStrandedRecoveryNoticeForKind(input.noticeKind, {
+          issueStatus: input.issue.status === "todo" ? "todo" : "in_progress",
+          runRow: rows.runRow,
+        });
         await recovery.escalateStrandedAssignedIssue({
           issue: rows.issueRow,
           previousStatus: input.previousStatus,
           latestRun: rows.runRow,
-          notice: input.notice as StrandedRecoveryNoticeSeed,
-          recoveryCause: (input.recoveryCause ?? undefined) as
-            | typeof WORKSPACE_VALIDATION_RECOVERY_CAUSE
-            | typeof CONFIGURATION_INCOMPLETE_RECOVERY_CAUSE
-            | typeof EXECUTION_REVIEW_PARTICIPANT_RECOVERY_CAUSE
-            | undefined,
+          notice,
+          recoveryCause,
         });
       },
       escalateStrandedRecoveryIssueInPlace: async (input) => {

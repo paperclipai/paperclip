@@ -114,7 +114,6 @@ function createFakeWriter(overrides: Partial<WakeQueueWriter> = {}): WakeQueueWr
     hasExistingExecutionPath: vi.fn(async () => false),
     hasExplicitBlockerPath: vi.fn(async () => false),
     isAutomaticRecoverySuppressedByPauseHold: vi.fn(async () => false),
-    buildBlockedRecoveryNotice: vi.fn(async () => ({ notice: {}, recoveryCause: null })),
     queueReviewParticipantRecoveryRun: vi.fn(async () => runSummary("review-recovery")),
     queueImmediateRecoveryRun: vi.fn(async () => runSummary("immediate-recovery")),
     ...overrides,
@@ -315,7 +314,6 @@ describe("releaseIssueExecution", () => {
       claimNextDeferredWake: vi.fn(async () => null),
       hasExistingExecutionPath: vi.fn(async () => false),
       isAutomaticRecoverySuppressedByPauseHold: vi.fn(async () => false),
-      buildBlockedRecoveryNotice: vi.fn(async () => ({ notice: { kind: "immediate_execution_path" }, recoveryCause: "immediate_execution_path" })),
     });
     // The recovery agent (the finishing run's own agent) is not invokable, which forces "blocked".
     const reader = createFakeReader({ findInvokableAgent: vi.fn(async () => null) });
@@ -326,6 +324,7 @@ describe("releaseIssueExecution", () => {
     const result = await releaseIssueExecution({ companyId: "company-1", runId: "run-1", now: new Date() });
 
     expect(result.outcome.kind).toBe("blocked");
+    expect(result.outcome.kind === "blocked" && result.outcome.noticeKind).toBe("immediate_execution_path");
     expect(recovery.escalateStrandedAssignedIssue).toHaveBeenCalledTimes(1);
   });
 });

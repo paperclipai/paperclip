@@ -8,7 +8,7 @@ import type {
   RunSummary,
 } from "./types.js";
 
-export type { InvokableAgentSnapshot, IssueSnapshot, RunSnapshot, RunSummary };
+export type { InvokableAgentSnapshot, IssueSnapshot, ReleaseRecoveryBlockedNoticeKind, RunSnapshot, RunSummary };
 
 /** The primary issue a locked release resolves to, plus the finishing run the lock step already loaded. */
 export type LockedIssueExecution = {
@@ -169,12 +169,6 @@ export interface WakeQueueWriter {
   /** An open, non-hidden issue that still lists this issue as a `blocks` predecessor. */
   hasExplicitBlockerPath(input: { companyId: string; issueId: string }): Promise<boolean>;
   isAutomaticRecoverySuppressedByPauseHold(input: { companyId: string; issueId: string }): Promise<boolean>;
-  /** Builds the stranded-recovery notice content for a `blocked` outcome; pure formatting, kept behind the writer so `services/recovery/stranded-notice` stays out of the application layer. */
-  buildBlockedRecoveryNotice(input: {
-    noticeKind: ReleaseRecoveryBlockedNoticeKind;
-    issueStatus: "todo" | "in_progress";
-    finishingRun: RunSnapshot;
-  }): Promise<{ notice: Record<string, unknown>; recoveryCause: string | null }>;
   queueReviewParticipantRecoveryRun(input: {
     companyId: string;
     issue: IssueSnapshot;
@@ -225,8 +219,7 @@ export type StrandedAssignedIssueEscalationInput = {
   issue: IssueSnapshot;
   previousStatus: "todo" | "in_progress" | "in_review";
   latestRun: RunSnapshot;
-  notice: Record<string, unknown>;
-  recoveryCause: string | null;
+  noticeKind: ReleaseRecoveryBlockedNoticeKind;
 };
 
 export type StrandedRecoveryInPlaceEscalationInput = {

@@ -1,3 +1,5 @@
+import type { ReleaseRecoveryBlockedNoticeKind } from "../domain/policy.js";
+
 export type RunSummary = {
   id: string;
   companyId: string;
@@ -76,8 +78,7 @@ export type ReleaseOutcome =
       kind: "blocked";
       issue: IssueSnapshot;
       previousStatus: "todo" | "in_progress" | "in_review";
-      notice: Record<string, unknown>;
-      recoveryCause: string | null;
+      noticeKind: ReleaseRecoveryBlockedNoticeKind;
     }
   | {
       kind: "blocked_recovery_in_place";
