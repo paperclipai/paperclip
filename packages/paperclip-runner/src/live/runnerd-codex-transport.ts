@@ -2515,7 +2515,8 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     return {
       pid: this.#evidence.runnerPid,
       processGroupId: this.#evidence.runnerProcessGroupId,
-      startedAt: this.#startedAt,
+      // Reconnecting creates a new transport, not a new runner process.
+      startedAt: this.options.adoptExistingRunner?.startedAt ?? this.#handle?.startedAt ?? this.#startedAt,
       exited: this.#evidence.runnerExited,
       exitCode: this.#evidence.runnerExitCode,
       signal: this.#evidence.runnerSignal,

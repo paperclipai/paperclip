@@ -341,6 +341,7 @@ describe("remote runner process supervision", () => {
       startedAt: "2026-09-06T00:00:00.000Z",
     });
     expect(handle.child.pid).toBe(4321);
+    expect(handle.startedAt).toBe("2026-09-06T00:00:00.000Z");
 
     expect(handle.child.kill("SIGKILL")).toBe(true);
     await vi.waitFor(() =>

@@ -6362,7 +6362,11 @@ export function createRemoteRunnerProcessLauncher(input: {
         };
       }
     })();
-    return { child, completion };
+    return {
+      child,
+      completion,
+      get startedAt() { return launchedIdentity?.startedAt; },
+    };
   };
 }
 

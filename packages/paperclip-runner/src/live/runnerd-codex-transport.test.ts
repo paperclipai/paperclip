@@ -3212,7 +3212,7 @@ async function verifyLiveRunnerAdoption(mismatchedCheckpoint: boolean) {
       adoptExistingRunner: {
         pid: runnerPid!,
         processGroupId: runnerPid,
-        startedAt: new Date().toISOString(),
+        startedAt: "2026-09-01T10:00:00.000Z",
         isAlive: () => {
           try {
             process.kill(runnerPid!, 0);
@@ -3237,6 +3237,7 @@ async function verifyLiveRunnerAdoption(mismatchedCheckpoint: boolean) {
       }),
     );
     expect(adopted.evidence().runnerPid).toBe(runnerPid);
+    expect(adopted.transport.processInfo?.().startedAt).toBe("2026-09-01T10:00:00.000Z");
     expect(duplicateLauncher).not.toHaveBeenCalled();
     expect(adopted.evidence().diagnostics).toContain(
       `adopted runner ${runnerPid} authenticated to its durable PRP authority`,
