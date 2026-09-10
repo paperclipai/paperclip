@@ -1,4 +1,7 @@
-import { parsePiStdoutLine } from "@paperclipai/adapter-pi-local/ui";
+import {
+  createPiStdoutParser,
+  parsePiStdoutLine,
+} from "@paperclipai/adapter-pi-local/ui";
 import type { TranscriptEntry } from "../types";
 
 // Shared Pi plan contract (emitter-owned `delivery_update_plan` tool): one
@@ -86,7 +89,11 @@ function tryPlanEntry(event: Record<string, unknown> | null, ts: string): Transc
   };
 }
 
-export function parseProcessStdoutLine(line: string, ts: string): TranscriptEntry[] {
+function parseProcessLine(
+  line: string,
+  ts: string,
+  parsePiLine: (line: string, ts: string) => TranscriptEntry[],
+): TranscriptEntry[] {
   let parsed: unknown;
   try {
     parsed = JSON.parse(line);
@@ -95,12 +102,25 @@ export function parseProcessStdoutLine(line: string, ts: string): TranscriptEntr
   }
   const planEntry = tryPlanEntry(asRecord(parsed), ts);
   if (planEntry) {
-    return [...parsePiStdoutLine(line, ts), planEntry];
+    return [...parsePiLine(line, ts), planEntry];
   }
   if (asRecord(parsed)) {
     // Recognized Pi events render as Pi messages/tools; unknown JSON object
     // events fall back to stdout inside the Pi parser.
-    return parsePiStdoutLine(line, ts);
+    return parsePiLine(line, ts);
   }
   return [{ kind: "stdout", ts, text: line }];
+}
+
+export function createProcessStdoutParser() {
+  const piParser = createPiStdoutParser();
+  return {
+    parseLine: (line: string, ts: string) =>
+      parseProcessLine(line, ts, piParser.parseLine),
+    reset: piParser.reset,
+  };
+}
+
+export function parseProcessStdoutLine(line: string, ts: string): TranscriptEntry[] {
+  return parseProcessLine(line, ts, parsePiStdoutLine);
 }

@@ -17,17 +17,46 @@ function resolveStdoutParser(source: StdoutLineParser | TranscriptParserSource) 
 }
 
 export function appendTranscriptEntry(entries: TranscriptEntry[], entry: TranscriptEntry) {
-  if ((entry.kind === "thinking" || entry.kind === "assistant") && entry.delta) {
-    const last = entries[entries.length - 1];
-    if (
-      last &&
-      last.kind === entry.kind &&
-      last.delta &&
-      last.channel === entry.channel
-    ) {
-      last.text += entry.text;
-      last.ts = entry.ts;
-      return;
+  if (entry.kind === "thinking" || entry.kind === "assistant") {
+    if (entry.itemId !== undefined) {
+      for (let index = entries.length - 1; index >= 0; index -= 1) {
+        const previous = entries[index];
+        if (
+          !previous ||
+          previous.kind !== entry.kind ||
+          previous.itemId !== entry.itemId ||
+          previous.channel !== entry.channel
+        ) {
+          continue;
+        }
+
+        if (entry.delta) {
+          previous.text += entry.text;
+          previous.ts = entry.ts;
+          previous.delta = true;
+          if (previous.kind === "thinking" && entry.kind === "thinking" && entry.lifecycle) {
+            previous.lifecycle = entry.lifecycle;
+          }
+        } else {
+          entries[index] = { ...entry, text: entry.text || previous.text };
+        }
+        return;
+      }
+    }
+
+    if (entry.delta && entry.itemId === undefined) {
+      const last = entries[entries.length - 1];
+      if (
+        last &&
+        last.kind === entry.kind &&
+        last.delta &&
+        last.itemId === undefined &&
+        last.channel === entry.channel
+      ) {
+        last.text += entry.text;
+        last.ts = entry.ts;
+        return;
+      }
     }
   }
   entries.push(entry);
