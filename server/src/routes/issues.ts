@@ -7609,6 +7609,7 @@ export function issueRoutes(
         executionReconciliation.actionOutcome === "not_performed" &&
         lockedIssue.status === "in_review" &&
         reviewState?.status === "pending" &&
+        reviewState.currentStageType === "review" &&
         reviewState.currentParticipant?.type === "agent";
 
       let activeRecoveryAction = await recoveryActionsSvc.getActiveForIssue(
@@ -7660,6 +7661,7 @@ export function issueRoutes(
           companyId: lockedIssue.companyId, issueId: lockedIssue.id, agentId: lockedIssue.assigneeAgentId,
           sourceRunId: activeRecoveryAction.evidence.runId ?? activeRecoveryAction.evidence.sourceRunId,
           decision: executionReconciliation,
+          requireNeverStarted: isPendingReviewReconciliation,
         });
         await markExecutionReconciliation(tx as unknown as Db, activeRecoveryAction, executionReconciliation!, actor.actorId);
       } else if (executionReconciliation) {

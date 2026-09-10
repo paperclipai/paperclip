@@ -14,6 +14,7 @@ import {
   environmentLeases,
   environments,
   heartbeatRuns,
+  heartbeatRunEvents,
   issueComments,
   issueInboxArchives,
   issueRecoveryActions,
@@ -142,6 +143,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     await db.delete(issueComments);
     await db.delete(environmentLeases);
     await db.delete(activityLog);
+    await db.delete(heartbeatRunEvents);
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
     await db.delete(environments);
@@ -1752,6 +1754,185 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       executionReconciliation: { runId, actionOutcome: "not_performed" },
       continuationDelivery: "pending",
     });
+
+    const successorId = randomUUID();
+    const wake = vi.fn(async (agentId: string, input: { contextSnapshot?: unknown }) => {
+      await db.insert(heartbeatRuns).values({
+        id: successorId,
+        companyId,
+        agentId,
+        invocationSource: "automation",
+        status: "queued",
+        startedAt: null,
+        contextSnapshot: input.contextSnapshot as Record<string, unknown>,
+      });
+      return { id: successorId } as never;
+    });
+    await deliverReconciledExecutions(db, wake);
+
+    expect(wake).toHaveBeenCalledWith(
+      managerId,
+      expect.objectContaining({ reason: "issue_recovery_action_restored" }),
+    );
+    const [delivered] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, action!.id));
+    expect(delivered!.evidence).toMatchObject({
+      continuationDelivery: "delivered",
+      continuationRunId: successorId,
+    });
+  });
+
+  it.each([
+    { label: "a startedAt timestamp", startedAt: new Date("2026-05-13T18:00:00.000Z"), addProviderEvent: false },
+    { label: "an adapter invocation event", startedAt: null, addProviderEvent: true },
+  ])("rejects pending-review reconciliation with %s", async ({ startedAt, addProviderEvent }) => {
+    const { companyId, managerId, coderId, sourceIssueId } = await seedCompany();
+    const stageId = randomUUID();
+    const runId = randomUUID();
+    await db.update(issues).set({
+      status: "in_review",
+      assigneeAgentId: managerId,
+      executionState: {
+        status: "pending",
+        currentStageId: stageId,
+        currentStageType: "review",
+        currentStageIndex: 0,
+        completedStageIds: [],
+        currentParticipant: { type: "agent", agentId: managerId, userId: null },
+        returnAssignee: { type: "agent", agentId: coderId, userId: null },
+        reviewRequest: null,
+        lastDecisionOutcome: null,
+        changesRequestedCount: 0,
+        lastDecisionId: null,
+      },
+    }).where(eq(issues.id, sourceIssueId));
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId: managerId,
+      invocationSource: "manual",
+      status: "cancelled",
+      errorCode: "execution_reconciliation_required",
+      startedAt,
+      finishedAt: new Date("2026-05-13T18:01:00.000Z"),
+      contextSnapshot: { issueId: sourceIssueId },
+    });
+    if (addProviderEvent) {
+      await db.insert(heartbeatRunEvents).values({
+        companyId,
+        runId,
+        agentId: managerId,
+        seq: 1,
+        eventType: "adapter.invoke",
+        stream: "system",
+        level: "info",
+        message: "adapter invocation",
+        payload: {},
+      });
+    }
+    const [action] = await db.insert(issueRecoveryActions).values({
+      companyId,
+      sourceIssueId,
+      kind: "active_run_watchdog",
+      status: "resolved",
+      outcome: "blocked",
+      ownerType: "board",
+      returnOwnerAgentId: coderId,
+      cause: "legacy_execution_requires_reconciliation",
+      fingerprint: `legacy-execution:${runId}`,
+      nextAction: "Reconcile the stopped legacy reviewer run.",
+      evidence: {
+        runId,
+        automaticRecovery: { replay: "blocked", actionOutcome: "unknown" },
+      },
+    }).returning();
+
+    await request(createApp())
+      .post(`/api/issues/${sourceIssueId}/recovery-actions/resolve`)
+      .send({
+        actionId: action!.id,
+        outcome: "restored",
+        sourceIssueStatus: "in_review",
+        resolutionNote: "Attempted invalid never-started reconciliation.",
+        executionReconciliation: {
+          runId,
+          providerStopped: true,
+          actionOutcome: "not_performed",
+          outcomeEvidence: "Verified test evidence for this recovery attempt.",
+        },
+      })
+      .expect(409);
+
+    const [unchangedAction] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, action!.id));
+    expect(unchangedAction).toMatchObject({ status: "resolved", outcome: "blocked" });
+  });
+
+  it("rejects pending-approval reconciliation", async () => {
+    const { companyId, managerId, coderId, sourceIssueId } = await seedCompany();
+    const stageId = randomUUID();
+    const runId = randomUUID();
+    await db.update(issues).set({
+      status: "in_review",
+      assigneeAgentId: managerId,
+      executionState: {
+        status: "pending",
+        currentStageId: stageId,
+        currentStageType: "approval",
+        currentStageIndex: 0,
+        completedStageIds: [],
+        currentParticipant: { type: "agent", agentId: managerId, userId: null },
+        returnAssignee: { type: "agent", agentId: coderId, userId: null },
+        reviewRequest: null,
+        lastDecisionOutcome: null,
+        changesRequestedCount: 0,
+        lastDecisionId: null,
+      },
+    }).where(eq(issues.id, sourceIssueId));
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId: managerId,
+      invocationSource: "manual",
+      status: "cancelled",
+      errorCode: "execution_reconciliation_required",
+      startedAt: null,
+      finishedAt: new Date("2026-05-13T18:01:00.000Z"),
+      contextSnapshot: { issueId: sourceIssueId },
+    });
+    const [action] = await db.insert(issueRecoveryActions).values({
+      companyId,
+      sourceIssueId,
+      kind: "active_run_watchdog",
+      status: "resolved",
+      outcome: "blocked",
+      ownerType: "board",
+      returnOwnerAgentId: coderId,
+      cause: "legacy_execution_requires_reconciliation",
+      fingerprint: `legacy-execution:${runId}`,
+      nextAction: "Reconcile the stopped legacy approval run.",
+      evidence: {
+        runId,
+        automaticRecovery: { replay: "blocked", actionOutcome: "unknown" },
+      },
+    }).returning();
+
+    await request(createApp())
+      .post(`/api/issues/${sourceIssueId}/recovery-actions/resolve`)
+      .send({
+        actionId: action!.id,
+        outcome: "restored",
+        sourceIssueStatus: "in_review",
+        resolutionNote: "Approval stages must not use reviewer reconciliation.",
+        executionReconciliation: {
+          runId,
+          providerStopped: true,
+          actionOutcome: "not_performed",
+          outcomeEvidence: "Verified test evidence for this recovery attempt.",
+        },
+      })
+      .expect(409);
+
+    const [unchangedAction] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, action!.id));
+    expect(unchangedAction).toMatchObject({ status: "resolved", outcome: "blocked" });
   });
 
   async function seedReconciledDelivery() {
