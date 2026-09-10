@@ -389,7 +389,7 @@ describeEmbeddedPostgres("queued-comment postgres adapter", () => {
         // context; that single value binds every read and write for the
         // whole transaction, so it alone must decide what is visible.
         issue: { id: issueId, companyId: otherCompanyId, assigneeAgentId: agentId, executionRunId: null },
-        actor: { actorType: "user", actorId: "user-1", agentId: null },
+        actor: { actorType: "user", actorId: "user-1", agentId: null, runId: null, agentApiKeyId: null },
         commentId,
         queueId: wakeId,
         targetRunId,
@@ -416,7 +416,7 @@ describeEmbeddedPostgres("queued-comment postgres adapter", () => {
     const queue = await issueLock.withLockedQueue(
       {
         issue: { id: issueId, companyId, assigneeAgentId: agentId, executionRunId: null },
-        actor: { actorType: "user", actorId: "user-1", agentId: null },
+        actor: { actorType: "user", actorId: "user-1", agentId: null, runId: null, agentApiKeyId: null },
         queueId: wakeId,
       },
       async (locked, transaction) => {
@@ -425,7 +425,7 @@ describeEmbeddedPostgres("queued-comment postgres adapter", () => {
         // below.
         return transaction.buildQueueSnapshot({
           issue: { id: issueId, companyId, assigneeAgentId: agentId, executionRunId: null },
-          actor: { actorType: "user", actorId: "user-1", agentId: null },
+          actor: { actorType: "user", actorId: "user-1", agentId: null, runId: null, agentApiKeyId: null },
           wake: locked.wake,
           state: locked.state,
           queueRun: locked.queueRun,
@@ -462,7 +462,7 @@ describeEmbeddedPostgres("queued-comment postgres adapter", () => {
     const peeked = await issueLock.withLockedQueue(
       {
         issue: { id: issueId, companyId, assigneeAgentId: agentId, executionRunId: null },
-        actor: { actorType: "user", actorId: "user-1", agentId: null },
+        actor: { actorType: "user", actorId: "user-1", agentId: null, runId: null, agentApiKeyId: null },
         queueId: wakeId,
       },
       async (locked) => locked.queue,
@@ -470,7 +470,7 @@ describeEmbeddedPostgres("queued-comment postgres adapter", () => {
 
     const result = await issueLock.steerQueuedWakeComment({
       issue: { id: issueId, companyId, assigneeAgentId: agentId, executionRunId: null },
-      actor: { actorType: "user", actorId: "user-1", agentId: null },
+      actor: { actorType: "user", actorId: "user-1", agentId: null, runId: null, agentApiKeyId: null },
       commentId: firstCommentId,
       queueId: wakeId,
       targetRunId,
@@ -492,7 +492,7 @@ describeEmbeddedPostgres("queued-comment postgres adapter", () => {
     steerNativeSessionMock.mockResolvedValueOnce({ turnId: "turn-2" });
     const second = await issueLock.steerQueuedWakeComment({
       issue: { id: issueId, companyId, assigneeAgentId: agentId, executionRunId: null },
-      actor: { actorType: "user", actorId: "user-1", agentId: null },
+      actor: { actorType: "user", actorId: "user-1", agentId: null, runId: null, agentApiKeyId: null },
       commentId: secondCommentId,
       queueId: wakeId,
       targetRunId,
