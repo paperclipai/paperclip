@@ -144,19 +144,21 @@ describeEmbeddedPostgres("access routes permissions upgrade compatibility", () =
       .then((rows) => rows[0]!);
     const customScope = { projectIds: ["project-1"] };
     await db.insert(principalPermissionGrants).values([
-      ...grantsForHumanRole("admin").map((grant) => ({
-        companyId: company.id,
-        principalType: "user" as const,
-        principalId: member.principalId,
-        permissionKey: grant.permissionKey,
-        scope: grant.scope,
-        grantedByUserId: owner.principalId,
-      })),
+      ...grantsForHumanRole("admin")
+        .filter((grant) => grant.permissionKey !== "tools:use")
+        .map((grant) => ({
+          companyId: company.id,
+          principalType: "user" as const,
+          principalId: member.principalId,
+          permissionKey: grant.permissionKey,
+          scope: grant.scope,
+          grantedByUserId: owner.principalId,
+        })),
       {
         companyId: company.id,
         principalType: "user" as const,
         principalId: member.principalId,
-        permissionKey: "tasks:assign_scope" as const,
+        permissionKey: "tools:use" as const,
         scope: customScope,
         grantedByUserId: owner.principalId,
       },
@@ -193,7 +195,7 @@ describeEmbeddedPostgres("access routes permissions upgrade compatibility", () =
         scope: null,
       }),
       expect.objectContaining({
-        permissionKey: "tasks:assign_scope",
+        permissionKey: "tools:use",
         scope: customScope,
         grantedByUserId: owner.principalId,
       }),

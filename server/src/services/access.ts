@@ -1,4 +1,4 @@
-import { and, eq, inArray, ne, notInArray, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, ne, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   companyMemberships,
@@ -1137,6 +1137,7 @@ export function accessService(db: Db) {
               eq(principalPermissionGrants.principalType, "user"),
               eq(principalPermissionGrants.principalId, existing.principalId),
               inArray(principalPermissionGrants.permissionKey, retiredDefaultKeys),
+              isNull(principalPermissionGrants.scope),
             ));
         }
       }
