@@ -6808,6 +6808,152 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     },
   );
 
+  it.each(["single Stop", "agent pause"] as const)(
+    "fences adapter registration while an earlier no-owner %s waits to commit",
+    async (operation) => {
+      let context!: {
+        onCancellationReady?: () => Promise<void>;
+        signal?: AbortSignal;
+      };
+      let releaseRegistration!: () => void;
+      const registrationGate = new Promise<void>((resolve) => {
+        releaseRegistration = resolve;
+      });
+      let releaseAdapter!: () => void;
+      const adapterGate = new Promise<void>((resolve) => {
+        releaseAdapter = resolve;
+      });
+      let registered = false;
+      let registrationAttempted = false;
+      let providerStarts = 0;
+      mockAdapterExecute.mockImplementationOnce(async (input) => {
+        context = input as typeof context;
+        await registrationGate;
+        registrationAttempted = true;
+        await context.onCancellationReady?.();
+        registered = true;
+        // This is the real engine's next permission check, before buildRuntime.
+        if (!context.signal?.aborted) providerStarts += 1;
+        await adapterGate;
+        return {
+          exitCode: 0,
+          signal: null,
+          timedOut: false,
+          errorMessage: null,
+          summary: "Stopped before provider startup",
+          provider: "test",
+          model: "test-model",
+          ...(context.signal?.aborted
+            ? {
+                executionRecovery: {
+                  kind: "bootstrap",
+                  providerWorkStarted: false,
+                },
+                resultJson: {
+                  executionCancellation: { state: "acknowledged", forced: false },
+                },
+              }
+            : {}),
+        };
+      });
+      const { runId, agentId } = await seedRunFixture({
+        runtimeMode: "legacy",
+        agentStatus: "idle",
+        runStatus: "queued",
+        includeIssue: false,
+      });
+      const heartbeat = heartbeatService(db);
+      await heartbeat.resumeQueuedRuns();
+      await waitForValue(async () => context);
+      expect(adapterExecutionControls.has(runId)).toBe(false);
+      let releaseRow!: () => void;
+      const rowGate = new Promise<void>((resolve) => {
+        releaseRow = resolve;
+      });
+      let reportRow!: (pid: number) => void;
+      const rowReady = new Promise<number>((resolve) => {
+        reportRow = resolve;
+      });
+      const lock = db.transaction(async (tx) => {
+        await tx
+          .select({ id: heartbeatRuns.id })
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, runId))
+          .for("update");
+        const [row] = await tx.execute<{ pid: number }>(
+          sql`select pg_backend_pid() as pid`,
+        );
+        reportRow(row!.pid);
+        await rowGate;
+      });
+      const pid = await rowReady;
+      let stopReturned = false;
+      const requestStop =
+        operation === "single Stop"
+          ? heartbeat.cancelRun(runId)
+          : heartbeat
+              .cancelActiveForAgent(agentId)
+              .then(() => heartbeat.getRun(runId));
+      const stopping = requestStop.then(
+        (run) => {
+          stopReturned = true;
+          return { run, error: null };
+        },
+        (error: unknown) => {
+          stopReturned = true;
+          return { run: null, error };
+        },
+      );
+      try {
+        await vi.waitFor(async () => {
+          const [row] = await db.execute<{ count: number }>(sql`
+          select count(*)::int as count from pg_stat_activity
+          where datname = current_database() and ${pid} = any(pg_blocking_pids(pid))
+            and query ilike '%update%heartbeat_runs%'
+        `);
+          expect(row!.count).toBeGreaterThan(0);
+        });
+        releaseRegistration();
+        await vi.waitFor(() => expect(registrationAttempted).toBe(true));
+        // Readiness must remain behind the earlier Stop, without publishing a
+        // joinable owner that would deadlock a duplicate Stop on this barrier.
+        expect(adapterExecutionControls.has(runId)).toBe(false);
+        expect(registered).toBe(false);
+        expect(providerStarts).toBe(0);
+        expect(stopReturned).toBe(false);
+        releaseRow();
+        await lock;
+        const result = await stopping;
+        expect(result.error).toBeNull();
+        expect(result.run).toMatchObject({ status: "cancelled" });
+        await vi.waitFor(() => expect(registered).toBe(true));
+        expect(context.signal?.aborted).toBe(true);
+        expect(providerStarts).toBe(0);
+        releaseAdapter();
+        await heartbeat.drainActiveRunExecutions();
+        const settledRun = await heartbeat.getRun(runId);
+        expect({
+          status: settledRun?.status,
+          errorCode: settledRun?.errorCode,
+          resultJson: settledRun?.resultJson,
+          finishedAt: settledRun?.finishedAt,
+        }).toEqual({
+          status: result.run!.status,
+          errorCode: result.run!.errorCode,
+          resultJson: result.run!.resultJson,
+          finishedAt: result.run!.finishedAt,
+        });
+      } finally {
+        releaseRow();
+        releaseRegistration();
+        releaseAdapter();
+        await lock;
+        await stopping;
+        await heartbeat.drainActiveRunExecutions();
+      }
+    },
+  );
+
   it("signals an embedded adapter and waits for its cleanup before returning Stop", async () => {
     const { runId } = await seedRunFixture({ runtimeMode: "legacy", includeIssue: false });
     const control = createAdapterExecutionControl();

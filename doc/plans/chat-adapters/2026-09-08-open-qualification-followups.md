@@ -24,7 +24,33 @@ stack ancestry. Neither the provisional count nor prior-head review is final
 verification. Root continues live qualification in the original worktree and
 does not push the remotely coordinated branch.
 
-## Current work — September 10: final master reconciliation
+## Current work — September 10: Stop-registration review correction
+
+Master reconciliation is published as `a95d42e58afa35cf4ecf1a39cbd96f06523b90ec`.
+Its complete [CI run](https://github.com/paperclipai/paperclip/actions/runs/34433249742)
+passes all 24 jobs, including both required aggregates, at 03:42 UTC.
+Greptile's exact-head review is **4/5**, with a confirmed Stop-registration
+race. This is a merge hold, not permission to merge because CI is green.
+
+An in-flight Stop can capture no adapter owner and then wait for its terminal
+database write. Meanwhile a newly registered adapter can read the earlier
+running state and start after Stop returns. The correction fences readiness
+behind every earlier no-owner Stop for the same run, before publishing a
+joinable control. Single Stop and agent pause release their barriers in
+`finally`; registered cleanup, native cancellation, and plain-process behavior
+retain their existing owners. No cancellation receipt is fabricated.
+
+Both real-service regressions fail against the exact published source and
+pass with the correction. The full recovery/control cohort passes **265/265**
+(259 recovery and six control cases), and plain server types pass. A stricter
+post-drain equality assertion then passes both affected service cases again
+on a fresh database. All four actual local process/ACP browser paths pass in
+1.3 minutes, without skips or retries; this is not live-provider qualification.
+Publish one successor, obtain fresh exact-head CI and Greptile review, then
+use normal GitHub merge policy without bypass or self-approval. The PR remains
+below 500 files. Live qualification remains paused and no live binary changed.
+
+### Prior checkpoint — September 10: final master reconciliation
 
 The published head `3e4e1c1cee05737fd5193e141ccd52f8815c7854` passes its
 complete [CI run](https://github.com/paperclipai/paperclip/actions/runs/34415826820),

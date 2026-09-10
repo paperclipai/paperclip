@@ -7819,3 +7819,63 @@ Stop, subtree pause/cancel, reload and resume. The inspected final screenshot
 shows Cancelled, a paused subtree, preserved input, and no error toast.
 These are real local fixtures, not live provider or complete visual-transition
 qualification. The next exact published head still needs fresh CI and review.
+
+## September 10, 03:42 UTC — green CI, confirmed registration race
+
+The master reconciliation is published as
+`a95d42e58afa35cf4ecf1a39cbd96f06523b90ec`. Its
+[CI run](https://github.com/paperclipai/paperclip/actions/runs/34433249742)
+passes all 24 PR jobs and both required aggregates. UI CI passes 2,768 cases;
+browser shards pass 104 with four explicitly skipped optional cases. Those
+skips are not live or native-runner qualification.
+
+The one requested exact-head Greptile review completes **4/5**, identifying
+a real Stop-registration race outside the diff. Stop can snapshot no control,
+then wait for its database terminal write while a readiness callback registers
+and reads the old running state. The later Stop commit uses the earlier
+no-owner decision, allowing provider startup after acknowledged Stop. The
+simpler ordering where Stop commits before the callback was already safe.
+
+The fix records exact-run no-owner Stop barriers and awaits them before a
+readiness callback publishes its control. Registration and the final empty-set
+observation are synchronous together. Duplicate Stops cannot join an adapter
+whose readiness waits for those same Stops. Each single/bulk owner releases
+in `finally`, including failures; registered-before-Stop retains verified
+abort/cleanup joining. Native execution and non-opting plain processes retain
+their separate paths. No late terminal rewrite or invented ACK is required.
+
+Controlled database tests hold the real run row and prove that Stop's update
+is waiting, invoke the real readiness callback, and assert no early readiness,
+published joinable control, provider dispatch, or returned Stop. After release,
+the callback observes committed cancellation and the engine-equivalent dispatch
+gate remains closed. Both single Stop and agent pause cases genuinely fail
+against exact `a95` heartbeat source and pass with the correction. These
+service fixtures do not themselves invoke a live ACP provider.
+
+The final full suite passes **265/265** (259 heartbeat and six control cases)
+in 106.79 seconds total / 102.28 seconds tests, on a fresh database. Plain
+server types and diff checks pass. The first exact-old-source replay did not
+reach tests because `git show` exceeded its subprocess output buffer; that
+startup failure remains retained separately. Increasing only the ignored
+replay config's read buffer permits the genuine two-case red comparison.
+No tracked source was reverted, deadline enlarged, or fixture race hidden.
+
+Independent final review strengthens the post-drain assertion from partial
+matching to exact equality of terminal status, error fields, and result JSON.
+An added late acknowledgment would now fail the test. Those final two cases
+pass again on a fresh database in 6.61 seconds total; plain server types pass
+again. This is a test-only strengthening after the full 265-case run, not a
+claim that the full suite ran again. Final recovery-test SHA-256 is
+`522b581a67e908e249e1a96359a5c0ab66df1a71a36a39c4a60d97223bcbbb38`.
+
+The unchanged frozen production then passes all four actual local process/ACP
+browser paths in **1.3 minutes**, with no skips or retries, using fresh database
+`chat_stop_registry_browser_20260910_01` and port 3282. The final screenshot
+shows Cancelled, a paused subtree, retained input, and no error toast. These
+are local fixtures, not new live-provider or native-runner deployment proof.
+Production heartbeat SHA-256 is
+`66f9c0c316d7aac970b74fbc2e1412e61a5d206dbb8b8ac9d8dbbaed3ba4f343`;
+the control helper is
+`a705ed33233b31537292ff9ca1782ba4d115866ed67cb94f67a9da4c576e3ff1`.
+Publish one successor with 392 files, then require fresh exact-head CI and
+review. Normal GitHub policy remains authoritative; no bypass or self-approval.

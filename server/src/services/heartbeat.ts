@@ -5,7 +5,9 @@ import {
 } from "./legacy-execution-recovery.js";
 import {
   adapterExecutionControls,
+  captureAdapterStopOwnership,
   createAdapterExecutionControl,
+  registerAdapterExecutionControl,
   waitForAdapterStop,
 } from "./adapter-execution-control.js";
 import { executionFailureRetryCount } from "./execution-recovery-attempt.js";
@@ -22919,7 +22921,7 @@ export function heartbeatService(
                     onDispatch: markDispatchStarted,
                     signal: executionControl.controller.signal,
                     onCancellationReady: async () => {
-                      adapterExecutionControls.set(run.id, executionControl);
+                      await registerAdapterExecutionControl(run.id, executionControl);
                       const current = await getRun(run.id);
                       if (!current || isHeartbeatRunTerminalStatus(current.status)) {
                         executionControl.controller.abort(new Error("Run stopped before provider startup"));
@@ -28225,194 +28227,202 @@ export function heartbeatService(
       return getRun(run.id);
     }
     const running = runningProcesses.get(run.id);
-    const control =
+    const stopOwnership =
       run.runtimeMode !== "native"
-        ? adapterExecutionControls.get(run.id)
+        ? captureAdapterStopOwnership(run.id)
         : undefined;
-    let releaseProcessCancellation: (() => void) | undefined;
-    const processCancellationSettlement =
-      agent?.adapterType === "process" &&
-      run.runtimeMode !== "native" &&
-      running
-        ? {
-            settled: new Promise<void>((resolve) => {
-              releaseProcessCancellation = resolve;
-            }),
-            failed: false,
-            error: undefined as unknown,
+    const control = stopOwnership?.control;
+    try {
+      let releaseProcessCancellation: (() => void) | undefined;
+      const processCancellationSettlement =
+        agent?.adapterType === "process" &&
+        run.runtimeMode !== "native" &&
+        running
+          ? {
+              settled: new Promise<void>((resolve) => {
+                releaseProcessCancellation = resolve;
+              }),
+              failed: false,
+              error: undefined as unknown,
+            }
+          : undefined;
+      if (processCancellationSettlement) {
+        // No await between joining an existing owner above and registering ours.
+        processRunCancellationSettlements.set(
+          run.id,
+          processCancellationSettlement,
+        );
+      }
+      const cancellation = await (async () => {
+        try {
+          if (control) {
+            await db
+              .update(heartbeatRuns)
+              .set({
+                error: reason,
+                errorCode,
+                resultJson: {
+                  ...parseObject(run.resultJson),
+                  ...resultJson,
+                  ...(!running
+                    ? {
+                        executionCancellation: {
+                          state: "requested",
+                          requestedAt: new Date().toISOString(),
+                        },
+                      }
+                    : {}),
+                },
+                updatedAt: new Date(),
+              })
+              .where(
+                and(
+                  eq(heartbeatRuns.id, run.id),
+                  eq(heartbeatRuns.status, "running"),
+                ),
+              );
+            control.controller.abort(new Error(reason));
           }
-        : undefined;
-    if (processCancellationSettlement) {
-      // No await between joining an existing owner above and registering ours.
-      processRunCancellationSettlements.set(
-        run.id,
-        processCancellationSettlement,
-      );
-    }
-    const cancellation = await (async () => {
-      try {
-        if (control) {
-          await db
-            .update(heartbeatRuns)
-            .set({
+          let terminationSettled = false;
+          try {
+            await cancelHeartbeatNativeRun({
+              db,
+              runId: run.id,
+              reason,
+              runtimeMode: run.runtimeMode,
+            });
+            if (running) {
+              await terminateHeartbeatRunProcess({
+                pid: running.child.pid,
+                processGroupId: running.processGroupId,
+                graceMs: cancellationTerminationGraceMs(
+                  running.graceSec,
+                  options.terminationGraceMs,
+                ),
+              });
+            }
+            terminationSettled = true;
+          } finally {
+            if (
+              (!processCancellationSettlement || terminationSettled) &&
+              runningProcesses.get(run.id) === running
+            ) {
+              runningProcesses.delete(run.id);
+            }
+          }
+
+          if (control) {
+            await waitForAdapterStop(control.settled);
+            const stopped = await getRun(run.id);
+            if (stopped && isHeartbeatRunTerminalStatus(stopped.status)) {
+              if (
+                parseObject(stopped.resultJson?.executionCancellation).state !==
+                "acknowledged"
+              ) {
+                throw conflict(
+                  "Execution ended, but provider termination could not be verified. Inspect the stopped run before continuing.",
+                );
+              }
+              // The owned adapter already finalized this run and its lifecycle.
+              // Do not replay the process cancellation side effects below.
+              return { run: stopped, updated: false };
+            }
+          }
+
+          const finishedAt = new Date();
+          const persistedCancellationResult =
+            run.runtimeMode === "native"
+              ? await getRun(run.id).then((current) =>
+                  parseObject(current?.resultJson),
+                )
+              : {};
+          return await setRunStatusFromLive(
+            run.id,
+            "cancelled",
+            pendingNativeRetry
+              ? [...CANCELLABLE_HEARTBEAT_RUN_STATUSES, "failed"]
+              : [...CANCELLABLE_HEARTBEAT_RUN_STATUSES],
+            {
+              finishedAt,
               error: reason,
               errorCode,
-              resultJson: {
-                ...parseObject(run.resultJson),
-                ...resultJson,
-                ...(!running
-                  ? {
-                      executionCancellation: {
-                        state: "requested",
-                        requestedAt: new Date().toISOString(),
-                      },
-                    }
-                  : {}),
-              },
-              updatedAt: new Date(),
-            })
-            .where(
-              and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "running")),
-            );
-          control.controller.abort(new Error(reason));
-        }
-        let terminationSettled = false;
-        try {
-          await cancelHeartbeatNativeRun({
-            db,
-            runId: run.id,
-            reason,
-            runtimeMode: run.runtimeMode,
-          });
-          if (running) {
-            await terminateHeartbeatRunProcess({
-              pid: running.child.pid,
-              processGroupId: running.processGroupId,
-              graceMs: cancellationTerminationGraceMs(
-                running.graceSec,
-                options.terminationGraceMs,
-              ),
-            });
-          }
-          terminationSettled = true;
-        } finally {
-          if (
-            (!processCancellationSettlement || terminationSettled) &&
-            runningProcesses.get(run.id) === running
-          ) {
-            runningProcesses.delete(run.id);
-          }
-        }
-
-        if (control) {
-          await waitForAdapterStop(control.settled);
-          const stopped = await getRun(run.id);
-          if (stopped && isHeartbeatRunTerminalStatus(stopped.status)) {
-            if (
-              parseObject(stopped.resultJson?.executionCancellation).state !==
-              "acknowledged"
-            ) {
-              throw conflict(
-                "Execution ended, but provider termination could not be verified. Inspect the stopped run before continuing.",
+              ...(resultJson ||
+              Object.keys(persistedCancellationResult).length > 0
+                ? {
+                    resultJson: {
+                      ...persistedCancellationResult,
+                      ...(resultJson ?? {}),
+                      // The native cancellation helper may have advanced a durable
+                      // pending intent to its acknowledged state after `run` was
+                      // first read. Never let that stale snapshot overwrite the
+                      // authoritative post-dispatch acknowledgement.
+                      ...(Object.hasOwn(
+                        persistedCancellationResult,
+                        "nativeCancellation",
+                      )
+                        ? {
+                            nativeCancellation:
+                              persistedCancellationResult.nativeCancellation,
+                          }
+                        : {}),
+                    },
+                  }
+                : {}),
+            },
+          );
+        } catch (error) {
+          if (processCancellationSettlement) {
+            processCancellationSettlement.failed = true;
+            processCancellationSettlement.error = error;
+            if (activeRunExecutions.has(run.id)) {
+              failedProcessRunCancellations.set(
+                run.id,
+                processCancellationSettlement,
               );
             }
-            // The owned adapter already finalized this run and its lifecycle.
-            // Do not replay the process cancellation side effects below.
-            return { run: stopped, updated: false };
+          }
+          throw error;
+        } finally {
+          if (processCancellationSettlement) {
+            if (
+              processRunCancellationSettlements.get(run.id) ===
+              processCancellationSettlement
+            ) {
+              processRunCancellationSettlements.delete(run.id);
+            }
+            // Always settle waiters, including termination and DB errors. A
+            // failed Stop remains an error to its caller, never a cancellation
+            // receipt; the signal-bearing executor may then record failure.
+            releaseProcessCancellation?.();
           }
         }
+      })();
+      const cancelled = cancellation.run;
 
-        const finishedAt = new Date();
-        const persistedCancellationResult =
-          run.runtimeMode === "native"
-            ? await getRun(run.id).then((current) =>
-                parseObject(current?.resultJson),
-              )
-            : {};
-        return await setRunStatusFromLive(
-          run.id,
-          "cancelled",
-          pendingNativeRetry
-            ? [...CANCELLABLE_HEARTBEAT_RUN_STATUSES, "failed"]
-            : [...CANCELLABLE_HEARTBEAT_RUN_STATUSES],
-          {
-            finishedAt,
-            error: reason,
-            errorCode,
-            ...(resultJson ||
-            Object.keys(persistedCancellationResult).length > 0
-              ? {
-                  resultJson: {
-                    ...persistedCancellationResult,
-                    ...(resultJson ?? {}),
-                    // The native cancellation helper may have advanced a durable
-                    // pending intent to its acknowledged state after `run` was
-                    // first read. Never let that stale snapshot overwrite the
-                    // authoritative post-dispatch acknowledgement.
-                    ...(Object.hasOwn(
-                      persistedCancellationResult,
-                      "nativeCancellation",
-                    )
-                      ? {
-                          nativeCancellation:
-                            persistedCancellationResult.nativeCancellation,
-                        }
-                      : {}),
-                  },
-                }
-              : {}),
-          },
-        );
-      } catch (error) {
-        if (processCancellationSettlement) {
-          processCancellationSettlement.failed = true;
-          processCancellationSettlement.error = error;
-          if (activeRunExecutions.has(run.id)) {
-            failedProcessRunCancellations.set(
-              run.id,
-              processCancellationSettlement,
-            );
-          }
-        }
-        throw error;
-      } finally {
-        if (processCancellationSettlement) {
-          if (
-            processRunCancellationSettlements.get(run.id) ===
-            processCancellationSettlement
-          ) {
-            processRunCancellationSettlements.delete(run.id);
-          }
-          // Always settle waiters, including termination and DB errors. A
-          // failed Stop remains an error to its caller, never a cancellation
-          // receipt; the signal-bearing executor may then record failure.
-          releaseProcessCancellation?.();
-        }
+      if (cancellation.updated && cancelled) {
+        await setWakeupStatus(run.wakeupRequestId, "cancelled", {
+          finishedAt: cancelled.finishedAt ?? new Date(),
+          error: reason,
+        });
+        await appendRunEvent(cancelled, {
+          eventType: "lifecycle",
+          stream: "system",
+          level: "warn",
+          message: options.eventMessage ?? "run cancelled",
+          ...(options.eventPayload ? { payload: options.eventPayload } : {}),
+        });
+        await releaseIssueExecutionAndPromote(cancelled, {
+          suppressImmediateRecovery: options.suppressImmediateRecovery,
+        });
+        await finalizeAgentStatus(run.agentId, "cancelled", undefined, {
+          wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run),
+        });
+        await startNextQueuedRunForAgent(run.agentId);
       }
-    })();
-    const cancelled = cancellation.run;
-
-    if (cancellation.updated && cancelled) {
-      await setWakeupStatus(run.wakeupRequestId, "cancelled", {
-        finishedAt: cancelled.finishedAt ?? new Date(),
-        error: reason,
-      });
-      await appendRunEvent(cancelled, {
-        eventType: "lifecycle",
-        stream: "system",
-        level: "warn",
-        message: options.eventMessage ?? "run cancelled",
-        ...(options.eventPayload ? { payload: options.eventPayload } : {}),
-      });
-      await releaseIssueExecutionAndPromote(cancelled, {
-        suppressImmediateRecovery: options.suppressImmediateRecovery,
-      });
-      await finalizeAgentStatus(run.agentId, "cancelled", undefined, {
-        wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run),
-      });
-      await startNextQueuedRunForAgent(run.agentId);
+      return cancelled;
+    } finally {
+      stopOwnership?.release();
     }
-    return cancelled;
   }
 
   async function cancelActiveForAgentInternal(
@@ -28427,61 +28437,67 @@ export function heartbeatService(
       .where(
         and(
           eq(heartbeatRuns.agentId, agentId),
-          inArray(heartbeatRuns.status, [
-            ...CANCELLABLE_HEARTBEAT_RUN_STATUSES,
-          ]),
+          inArray(heartbeatRuns.status, [...CANCELLABLE_HEARTBEAT_RUN_STATUSES]),
         ),
       );
 
     for (const run of runs) {
-      if (run.runtimeMode !== "native" && adapterExecutionControls.has(run.id)) {
-        await cancelRunInternal(run.id, reason, { errorCode });
-        continue;
-      }
-      if (run.runtimeMode === "native") {
-        await cancelHeartbeatNativeRun({
-          db,
-          runId: run.id,
-          reason,
-          runtimeMode: run.runtimeMode,
+      const stopOwnership =
+        run.runtimeMode !== "native"
+          ? captureAdapterStopOwnership(run.id)
+          : undefined;
+      try {
+        if (stopOwnership?.control) {
+          await cancelRunInternal(run.id, reason, { errorCode });
+          continue;
+        }
+        if (run.runtimeMode === "native") {
+          await cancelHeartbeatNativeRun({
+            db,
+            runId: run.id,
+            reason,
+            runtimeMode: run.runtimeMode,
+          });
+        }
+        const persistedCancellationResult =
+          run.runtimeMode === "native"
+            ? await getRun(run.id).then((current) =>
+                parseObject(current?.resultJson),
+              )
+            : parseObject(run.resultJson);
+        await setRunStatus(run.id, "cancelled", {
+          finishedAt: new Date(),
+          error: reason,
+          errorCode,
+          ...(agent
+            ? {
+                resultJson: mergeRunStopMetadataForAgent(agent, "cancelled", {
+                  resultJson: persistedCancellationResult,
+                  errorCode,
+                  errorMessage: reason,
+                }),
+              }
+            : {}),
         });
-      }
-      const persistedCancellationResult =
-        run.runtimeMode === "native"
-          ? await getRun(run.id).then((current) =>
-              parseObject(current?.resultJson),
-            )
-          : parseObject(run.resultJson);
-      await setRunStatus(run.id, "cancelled", {
-        finishedAt: new Date(),
-        error: reason,
-        errorCode,
-        ...(agent
-          ? {
-              resultJson: mergeRunStopMetadataForAgent(agent, "cancelled", {
-                resultJson: persistedCancellationResult,
-                errorCode,
-                errorMessage: reason,
-              }),
-            }
-          : {}),
-      });
 
-      await setWakeupStatus(run.wakeupRequestId, "cancelled", {
-        finishedAt: new Date(),
-        error: reason,
-      });
-
-      const running = runningProcesses.get(run.id);
-      if (running) {
-        await terminateHeartbeatRunProcess({
-          pid: running.child.pid,
-          processGroupId: running.processGroupId,
-          graceMs: Math.max(1, running.graceSec) * 1000,
+        await setWakeupStatus(run.wakeupRequestId, "cancelled", {
+          finishedAt: new Date(),
+          error: reason,
         });
+
+        const running = runningProcesses.get(run.id);
+        if (running) {
+          await terminateHeartbeatRunProcess({
+            pid: running.child.pid,
+            processGroupId: running.processGroupId,
+            graceMs: Math.max(1, running.graceSec) * 1000,
+          });
+        }
+        runningProcesses.delete(run.id);
+        await releaseIssueExecutionAndPromote(run);
+      } finally {
+        stopOwnership?.release();
       }
-      runningProcesses.delete(run.id);
-      await releaseIssueExecutionAndPromote(run);
     }
 
     return runs.length;
