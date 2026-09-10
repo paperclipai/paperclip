@@ -304,6 +304,37 @@ export type ExistingDeferredWake = {
   coalescedCount: number | null;
 };
 
+/**
+ * The four wake-admission decision helpers that stay in `heartbeat.ts`
+ * today. The application layer receives them through this port so it never
+ * imports the service it is extracted from.
+ */
+export type WakeAdmissionHeartbeatHelpers = {
+  /** `filterZombieCoalesceTarget` in `heartbeat.ts`. */
+  filterZombieCoalesceTarget(
+    target: WakeAdmissionActiveExecutionRun | null,
+    liveRunExecutions: { has(id: string): boolean },
+  ): WakeAdmissionActiveExecutionRun | null;
+  /** `mergeCoalescedContextSnapshot` in `heartbeat.ts`. */
+  mergeCoalescedContextSnapshot(
+    existingRaw: unknown,
+    incoming: Record<string, unknown>,
+    options?: { preserveExistingInteractionContinuation?: boolean },
+  ): Record<string, unknown>;
+  /** `shouldDeferFollowupWakeForSameIssue` in `heartbeat.ts`. */
+  shouldDeferFollowupWakeForSameIssue(input: {
+    activeRunStatus: string | null | undefined;
+    isSameExecutionAgent: boolean;
+    wakeCommentId: string | null | undefined;
+    forceFreshSession: boolean;
+  }): boolean;
+  /** `shouldQueueFollowupForRunningIssueWake` in `heartbeat.ts`. */
+  shouldQueueFollowupForRunningIssueWake(input: {
+    contextSnapshot: Record<string, unknown> | null | undefined;
+    wakeCommentId: string | null;
+  }): boolean;
+};
+
 export type AdmitWakeBehindIssueExecutionResult =
   | { kind: "proceed" }
   | { kind: "coalesced"; run: Record<string, unknown> }

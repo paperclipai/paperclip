@@ -22,21 +22,20 @@ export type WakeAdmissionFacts = {
   shouldQueueFollowupForRunningWake: boolean;
   /** True when the active execution run still stands as a live coalesce target after the zombie-run filter runs. */
   availableActiveExecutionRunPresent: boolean;
-  /** True when a deferred wake already sits queued for this agent and this issue. */
-  hasExistingDeferredWake: boolean;
 };
 
 export type WakeAdmissionDecision =
   | { kind: "proceed" }
   | { kind: "coalesce" }
-  | { kind: "defer_merge" }
-  | { kind: "defer_new" };
+  | { kind: "defer" };
 
 /**
  * Decides what a new wake does when an active execution run already holds
  * the issue's execution lock: run into that run (coalesce), wait behind it
- * (defer, merged into an existing deferred wake or queued as a new one), or
- * proceed as an ordinary wake because no run currently holds the lock.
+ * (defer), or proceed as an ordinary wake because no run currently holds the
+ * lock. The caller reads whether a deferred wake already exists only after
+ * this function returns `defer`, so that read never runs on the coalesce
+ * path.
  */
 export function decideWakeAdmission(facts: WakeAdmissionFacts): WakeAdmissionDecision {
   if (
@@ -49,7 +48,7 @@ export function decideWakeAdmission(facts: WakeAdmissionFacts): WakeAdmissionDec
   }
 
   if (facts.availableActiveExecutionRunPresent) {
-    return facts.hasExistingDeferredWake ? { kind: "defer_merge" } : { kind: "defer_new" };
+    return { kind: "defer" };
   }
 
   return { kind: "proceed" };

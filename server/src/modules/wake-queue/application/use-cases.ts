@@ -1,9 +1,3 @@
-import {
-  filterZombieCoalesceTarget,
-  mergeCoalescedContextSnapshot,
-  shouldDeferFollowupWakeForSameIssue,
-  shouldQueueFollowupForRunningIssueWake,
-} from "../../../services/heartbeat.js";
 import { enrichPromotedWakeContext } from "../domain/context.js";
 import {
   decideQueuedCommentAction,
@@ -31,6 +25,7 @@ import type {
   RunSnapshot,
   TransactionScope,
   WakeAdmissionActiveExecutionRun,
+  WakeAdmissionHeartbeatHelpers,
   WakeAdmissionReader,
   WakeAdmissionWriter,
   WakeQueueHost,
@@ -598,6 +593,7 @@ export type { AdmitWakeBehindIssueExecutionResult };
 export function createAdmitWakeBehindIssueExecution(deps: {
   reader: WakeAdmissionReader;
   writer: WakeAdmissionWriter;
+  helpers: WakeAdmissionHeartbeatHelpers;
 }) {
   return async function admitWakeBehindIssueExecution(
     scope: TransactionScope,
@@ -610,44 +606,35 @@ export function createAdmitWakeBehindIssueExecution(deps: {
       agentNameKey: input.agentNameKey,
     });
 
-    const shouldDeferFollowupWake = shouldDeferFollowupWakeForSameIssue({
+    const shouldDeferFollowupWake = deps.helpers.shouldDeferFollowupWakeForSameIssue({
       activeRunStatus: input.activeExecutionRun.status,
       isSameExecutionAgent,
       wakeCommentId: input.wakeCommentId,
       forceFreshSession: input.forceFreshSession,
     });
     const shouldQueueFollowupForRunningWake =
-      shouldQueueFollowupForRunningIssueWake({
+      deps.helpers.shouldQueueFollowupForRunningIssueWake({
         contextSnapshot: input.contextSnapshot,
         wakeCommentId: input.wakeCommentId,
       }) &&
       input.activeExecutionRun.status === "running" &&
       isSameExecutionAgent;
     const availableActiveExecutionRun = isSameExecutionAgent
-      ? filterZombieCoalesceTarget(input.activeExecutionRun, input.liveRunExecutions)
+      ? deps.helpers.filterZombieCoalesceTarget(input.activeExecutionRun, input.liveRunExecutions)
       : input.activeExecutionRun;
-
-    const existingDeferred = availableActiveExecutionRun
-      ? await deps.reader.findExistingDeferredWake(scope, {
-          companyId: input.companyId,
-          agentId: input.agentId,
-          issueId: input.issueId,
-        })
-      : null;
 
     const decision = decideWakeAdmission({
       isSameExecutionAgent,
       shouldDeferFollowupWake,
       shouldQueueFollowupForRunningWake,
       availableActiveExecutionRunPresent: availableActiveExecutionRun !== null,
-      hasExistingDeferredWake: existingDeferred !== null,
     });
 
     if (decision.kind === "proceed") return { kind: "proceed" };
 
     if (decision.kind === "coalesce") {
       const target = availableActiveExecutionRun!;
-      const mergedContextSnapshot = mergeCoalescedContextSnapshot(target.contextSnapshot, input.contextSnapshot, {
+      const mergedContextSnapshot = deps.helpers.mergeCoalescedContextSnapshot(target.contextSnapshot, input.contextSnapshot, {
         preserveExistingInteractionContinuation:
           target.status === "queued" || target.status === "scheduled_retry",
       });
@@ -666,27 +653,34 @@ export function createAdmitWakeBehindIssueExecution(deps: {
       return { kind: "coalesced", run };
     }
 
-    if (decision.kind === "defer_merge") {
-      const existing = existingDeferred!;
-      const mergedDeferredContext = mergeCoalescedContextSnapshot(existing.deferredContext, input.contextSnapshot, {
+    // decision.kind === "defer": only now does the module read for an
+    // existing deferred wake, so the coalesce path (the common path) never
+    // pays for this query.
+    const existingDeferred = await deps.reader.findExistingDeferredWake(scope, {
+      companyId: input.companyId,
+      agentId: input.agentId,
+      issueId: input.issueId,
+    });
+
+    if (existingDeferred) {
+      const mergedDeferredContext = deps.helpers.mergeCoalescedContextSnapshot(existingDeferred.deferredContext, input.contextSnapshot, {
         preserveExistingInteractionContinuation: true,
       });
       const mergedPayload = {
-        ...existing.payload,
+        ...existingDeferred.payload,
         ...(input.payload ?? {}),
         issueId: input.issueId,
         [DEFERRED_WAKE_CONTEXT_KEY]: mergedDeferredContext,
       };
       await deps.writer.mergeIntoExistingDeferredWake(scope, {
         companyId: input.companyId,
-        existingDeferredWakeId: existing.id,
+        existingDeferredWakeId: existingDeferred.id,
         mergedPayload,
-        nextCoalescedCount: (existing.coalescedCount ?? 0) + 1,
+        nextCoalescedCount: (existingDeferred.coalescedCount ?? 0) + 1,
       });
       return { kind: "deferred" };
     }
 
-    // decision.kind === "defer_new"
     const deferredPayload = {
       ...(input.payload ?? {}),
       issueId: input.issueId,

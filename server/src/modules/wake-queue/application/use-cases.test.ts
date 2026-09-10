@@ -13,6 +13,7 @@ import type {
   RunSummary,
   TransactionScope,
   WakeAdmissionActiveExecutionRun,
+  WakeAdmissionHeartbeatHelpers,
   WakeAdmissionReader,
   WakeAdmissionWriter,
   WakeQueueHost,
@@ -462,11 +463,33 @@ function createFakeAdmissionWriter(overrides: Partial<WakeAdmissionWriter> = {})
   };
 }
 
+// Test doubles for the four heartbeat.ts decision helpers the module
+// receives as a port. The defaults mirror the real helpers' behaviour for
+// the plain wake in `admissionInput()`: no comment id, no forced fresh
+// session, and a live coalesce target when `liveRunExecutions.has` says so.
+function createFakeAdmissionHelpers(
+  overrides: Partial<WakeAdmissionHeartbeatHelpers> = {},
+): WakeAdmissionHeartbeatHelpers {
+  return {
+    filterZombieCoalesceTarget: vi.fn((target, liveRunExecutions) =>
+      target && liveRunExecutions.has(target.id) ? target : null,
+    ),
+    mergeCoalescedContextSnapshot: vi.fn((existingRaw, incoming) => ({
+      ...(existingRaw && typeof existingRaw === "object" ? (existingRaw as Record<string, unknown>) : {}),
+      ...incoming,
+    })),
+    shouldDeferFollowupWakeForSameIssue: vi.fn(() => false),
+    shouldQueueFollowupForRunningIssueWake: vi.fn(() => false),
+    ...overrides,
+  };
+}
+
 describe("admitWakeBehindIssueExecution", () => {
   it("returns the coalesce outcome and calls the writer one time when the same agent's run absorbs the wake", async () => {
     const writer = createFakeAdmissionWriter();
     const reader = createFakeAdmissionReader();
-    const admit = createAdmitWakeBehindIssueExecution({ reader, writer });
+    const helpers = createFakeAdmissionHelpers();
+    const admit = createAdmitWakeBehindIssueExecution({ reader, writer, helpers });
 
     const result = await admit(SCOPE, admissionInput());
 
@@ -474,6 +497,18 @@ describe("admitWakeBehindIssueExecution", () => {
     expect(writer.coalesceIntoActiveExecutionRun).toHaveBeenCalledTimes(1);
     expect(writer.mergeIntoExistingDeferredWake).not.toHaveBeenCalled();
     expect(writer.insertNewDeferredWake).not.toHaveBeenCalled();
+  });
+
+  it("never reads for an existing deferred wake on the coalesce path", async () => {
+    const writer = createFakeAdmissionWriter();
+    const reader = createFakeAdmissionReader();
+    const helpers = createFakeAdmissionHelpers();
+    const admit = createAdmitWakeBehindIssueExecution({ reader, writer, helpers });
+
+    const result = await admit(SCOPE, admissionInput());
+
+    expect(result.kind).toBe("coalesced");
+    expect(reader.findExistingDeferredWake).not.toHaveBeenCalled();
   });
 
   it("merges into the existing deferred wake when the policy returns a merge target", async () => {
@@ -490,7 +525,8 @@ describe("admitWakeBehindIssueExecution", () => {
         coalescedCount: 2,
       })),
     });
-    const admit = createAdmitWakeBehindIssueExecution({ reader, writer });
+    const helpers = createFakeAdmissionHelpers();
+    const admit = createAdmitWakeBehindIssueExecution({ reader, writer, helpers });
 
     const result = await admit(SCOPE, admissionInput());
 
@@ -507,7 +543,8 @@ describe("admitWakeBehindIssueExecution", () => {
   it("inserts a new deferred wake when a different agent holds the lock and none is queued yet", async () => {
     const writer = createFakeAdmissionWriter();
     const reader = createFakeAdmissionReader({ isSameExecutionAgent: vi.fn(async () => false) });
-    const admit = createAdmitWakeBehindIssueExecution({ reader, writer });
+    const helpers = createFakeAdmissionHelpers();
+    const admit = createAdmitWakeBehindIssueExecution({ reader, writer, helpers });
 
     const result = await admit(SCOPE, admissionInput());
 
@@ -520,7 +557,8 @@ describe("admitWakeBehindIssueExecution", () => {
   it("proceeds, and never reads for an existing deferred wake, when the zombie-run filter leaves no live coalesce target", async () => {
     const writer = createFakeAdmissionWriter();
     const reader = createFakeAdmissionReader();
-    const admit = createAdmitWakeBehindIssueExecution({ reader, writer });
+    const helpers = createFakeAdmissionHelpers();
+    const admit = createAdmitWakeBehindIssueExecution({ reader, writer, helpers });
 
     const result = await admit(SCOPE, admissionInput({ liveRunExecutions: { has: () => false } }));
 

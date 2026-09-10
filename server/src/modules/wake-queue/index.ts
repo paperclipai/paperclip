@@ -11,6 +11,7 @@ import type {
   RecoveryEscalationPort,
   RunSnapshot,
   TransactionScope,
+  WakeAdmissionHeartbeatHelpers,
   WakeQueueHost,
 } from "./application/ports.js";
 
@@ -36,6 +37,12 @@ export type WakeQueueDeps = {
   getRoutineEnv: WakeQueueHost["getRoutineEnv"];
   /** Stays in `heartbeat.ts`; resolves the session-before display id for a wakeup. */
   resolveSessionBeforeForWakeup: WakeQueueHost["resolveSessionBeforeForWakeup"];
+  /**
+   * The four wake-admission decision helpers stay in `heartbeat.ts` today;
+   * the module receives them here so it never imports the service it is
+   * extracted from.
+   */
+  wakeAdmissionHelpers: WakeAdmissionHeartbeatHelpers;
   /** `services/recovery`'s stranded-issue escalation, called only after the release transaction commits. */
   recovery: RecoveryEscalationPort;
 };
@@ -64,6 +71,7 @@ export function createWakeQueue(db: Db, deps: WakeQueueDeps) {
     admitWakeBehindIssueExecution: createAdmitWakeBehindIssueExecution({
       reader: createWakeAdmissionReader(),
       writer: createWakeAdmissionWriter(),
+      helpers: deps.wakeAdmissionHelpers,
     }),
     createAdmissionTransactionScope(companyId: string, tx: Db): TransactionScope {
       return buildAdmissionTransactionScope(companyId, tx);

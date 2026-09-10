@@ -8550,6 +8550,15 @@ export function heartbeatService(
       if (!agent) return null;
       return resolveSessionBeforeForWakeup(agent, input.taskKey);
     },
+    // These four helpers stay in this file today; the wake-queue module
+    // receives them here so it never imports this file, the service it is
+    // extracted from.
+    wakeAdmissionHelpers: {
+      filterZombieCoalesceTarget,
+      mergeCoalescedContextSnapshot,
+      shouldDeferFollowupWakeForSameIssue,
+      shouldQueueFollowupForRunningIssueWake,
+    },
     recovery: {
       escalateStrandedAssignedIssue: async (input) => {
         const rows = await loadStrandedEscalationRows(input);
