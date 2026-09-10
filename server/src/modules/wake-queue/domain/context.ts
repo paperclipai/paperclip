@@ -7,6 +7,9 @@
 import { extractWakeCommentIds, WAKE_COMMENT_IDS_KEY } from "../../run-dispatch/index.js";
 
 const PAPERCLIP_WAKE_PAYLOAD_KEY = "paperclipWake";
+const PAPERCLIP_WAKE_COMMENT_KEY = "paperclipWakeComment";
+const PAPERCLIP_TASK_MARKDOWN_KEY = "paperclipTaskMarkdown";
+const PAPERCLIP_TASK_MARKDOWN_COMPACT_KEY = "paperclipTaskMarkdownCompact";
 
 const INTERACTION_CONTINUATION_CONTEXT_KEYS = [
   "interactionId",
@@ -121,12 +124,21 @@ export function enrichPromotedWakeContext(
   if (!readNonEmptyString(contextSnapshot["commentId"]) && commentIdFromPayload) {
     contextSnapshot.commentId = commentIdFromPayload;
   }
+  // The wake payload, resolved comment, and task-markdown snapshots below are
+  // all derived from the canonical comment ids. This function recomputes
+  // those ids on every call (`wakeCommentIds`), so it must not let a
+  // derived projection from a stale id list carry forward: clear all four,
+  // then restore only the canonical id and latest-id fields, and only when
+  // the recomputed list actually has entries.
+  delete contextSnapshot[PAPERCLIP_WAKE_PAYLOAD_KEY];
+  delete contextSnapshot[PAPERCLIP_WAKE_COMMENT_KEY];
+  delete contextSnapshot[PAPERCLIP_TASK_MARKDOWN_KEY];
+  delete contextSnapshot[PAPERCLIP_TASK_MARKDOWN_COMPACT_KEY];
   if (wakeCommentIds.length > 0) {
     const latestCommentId = wakeCommentIds[wakeCommentIds.length - 1];
     contextSnapshot[WAKE_COMMENT_IDS_KEY] = wakeCommentIds;
     contextSnapshot.commentId = latestCommentId;
     contextSnapshot.wakeCommentId = latestCommentId;
-    delete contextSnapshot[PAPERCLIP_WAKE_PAYLOAD_KEY];
   }
   if (!readNonEmptyString(contextSnapshot["wakeSource"]) && source) {
     contextSnapshot.wakeSource = source;
