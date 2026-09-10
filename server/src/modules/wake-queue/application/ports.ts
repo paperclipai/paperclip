@@ -21,9 +21,12 @@ export type ReleaseTransactionResult = {
   postCommitEffects: PostCommitEffect[];
 };
 
-/** Read-only lookups the release use case needs, each scoped to a company. */
-export interface WakeQueueReader {
-  findInvokableAgent(input: { companyId: string; agentId: string }): Promise<InvokableAgentSnapshot | null>;
+/**
+ * The three host callbacks the release use case needs. These members do
+ * not run on the module's own transaction, which is why two of them take
+ * the transaction-scoped issue snapshot instead of an issue id.
+ */
+export interface WakeQueueHost {
   /**
    * Takes the transaction-scoped issue snapshot, not an issue id, so this
    * port never re-reads the issue on a separate connection while the
@@ -94,9 +97,14 @@ export type PromoteDeferredWakeInput = {
   now: Date;
 };
 
-/** The transaction-scoped write operations that drain and resolve the deferred-wake queue. */
-export interface WakeQueueWriter {
-  claimNextDeferredWake(input: { companyId: string; issueId: string }): Promise<DeferredWakeCandidate | null>;
+/**
+ * Every member is bound to the one transaction that `withIssueExecutionLock`
+ * owns. The interface holds both reads and writes that drain and resolve
+ * the deferred-wake queue.
+ */
+export interface WakeQueueTransaction {
+  findInvokableAgent(input: { companyId: string; agentId: string }): Promise<InvokableAgentSnapshot | null>;
+  findNextDeferredWake(input: { companyId: string; issueId: string }): Promise<DeferredWakeCandidate | null>;
   getQueuedCommentLiveness(input: {
     companyId: string;
     issueId: string;
@@ -115,7 +123,7 @@ export interface WakeQueueWriter {
   normalizeDeferredWakeCommentIds(input: {
     companyId: string;
     wakeId: string;
-    /** The wake's current payload, as already read by `claimNextDeferredWake`, used as the rewrite base. */
+    /** The wake's current payload, as already read by `findNextDeferredWake`, used as the rewrite base. */
     payload: Record<string, unknown>;
     liveCommentIds: string[];
     now: Date;
@@ -203,16 +211,15 @@ export interface WakeQueueWriter {
  * (workspace-validation block, legacy reconciliation, a native-runtime
  * terminal failure), the adapter returns that outcome directly without
  * calling `fn`. Otherwise it calls `fn` with the locked issue and run, and
- * with `reader`/`writer` ports bound to the same transaction, so every
- * call `fn` makes through them participates in the one transaction this
- * method owns.
+ * with `host`/`transaction` ports, so every call `fn` makes through the
+ * transaction port participates in the one transaction this method owns.
  */
 export interface IssueLockWriter {
   withIssueExecutionLock(
     input: { companyId: string; runId: string; now: Date },
     fn: (
       locked: LockedIssueExecution,
-      ports: { reader: WakeQueueReader; writer: WakeQueueWriter },
+      ports: { host: WakeQueueHost; transaction: WakeQueueTransaction },
     ) => Promise<ReleaseTransactionResult>,
   ): Promise<ReleaseTransactionResult & { run: RunSnapshot }>;
 }

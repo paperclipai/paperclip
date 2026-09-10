@@ -41,8 +41,8 @@ import type {
   LockedIssueExecution,
   ReleaseTransactionResult,
   RunSnapshot,
-  WakeQueueReader,
-  WakeQueueWriter,
+  WakeQueueHost,
+  WakeQueueTransaction,
 } from "../application/ports.js";
 import type { RunSummary } from "../application/types.js";
 
@@ -146,12 +146,23 @@ function toDeferredWakeCandidate(row: typeof agentWakeupRequests.$inferSelect): 
 }
 
 export type WakeQueuePostgresAdapterDeps = {
-  resolveResponsibleUserId: WakeQueueReader["resolveResponsibleUserId"];
-  getRoutineEnv: WakeQueueReader["getRoutineEnv"];
-  resolveSessionBeforeForWakeup: WakeQueueReader["resolveSessionBeforeForWakeup"];
+  resolveResponsibleUserId: WakeQueueHost["resolveResponsibleUserId"];
+  getRoutineEnv: WakeQueueHost["getRoutineEnv"];
+  resolveSessionBeforeForWakeup: WakeQueueHost["resolveSessionBeforeForWakeup"];
 };
 
-function buildReader(tx: Db, deps: WakeQueuePostgresAdapterDeps): WakeQueueReader {
+function buildHost(_tx: Db, deps: WakeQueuePostgresAdapterDeps): WakeQueueHost {
+  return {
+    resolveResponsibleUserId: deps.resolveResponsibleUserId,
+    getRoutineEnv: deps.getRoutineEnv,
+    resolveSessionBeforeForWakeup: deps.resolveSessionBeforeForWakeup,
+  };
+}
+
+function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps): WakeQueueTransaction {
+  const treeControlSvc = issueTreeControlService(tx);
+  const issuesSvc = issueService(tx);
+
   return {
     async findInvokableAgent({ companyId, agentId }): Promise<InvokableAgentSnapshot | null> {
       const agent = await tx
@@ -163,18 +174,8 @@ function buildReader(tx: Db, deps: WakeQueuePostgresAdapterDeps): WakeQueueReade
       const invokability = await evaluateAgentInvokabilityFromDb(tx, agent);
       return { id: agent.id, companyId: agent.companyId, name: agent.name, invokable: invokability.invokable };
     },
-    resolveResponsibleUserId: deps.resolveResponsibleUserId,
-    getRoutineEnv: deps.getRoutineEnv,
-    resolveSessionBeforeForWakeup: deps.resolveSessionBeforeForWakeup,
-  };
-}
 
-function buildWriter(tx: Db, deps: WakeQueuePostgresAdapterDeps): WakeQueueWriter {
-  const treeControlSvc = issueTreeControlService(tx);
-  const issuesSvc = issueService(tx);
-
-  return {
-    async claimNextDeferredWake({ companyId, issueId }) {
+    async findNextDeferredWake({ companyId, issueId }) {
       const row = await tx
         .select()
         .from(agentWakeupRequests)
@@ -739,7 +740,7 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
         }
 
         const locked: LockedIssueExecution = { primaryIssue: toIssueSnapshot(issueRow), run: runSnapshot };
-        const result = await fn(locked, { reader: buildReader(tx, deps), writer: buildWriter(tx, deps) });
+        const result = await fn(locked, { host: buildHost(tx, deps), transaction: buildTransaction(tx, deps) });
         return { ...result, run: runSnapshot };
       });
     },

@@ -5,7 +5,7 @@ import type {
   IssueSnapshot,
   RecoveryEscalationPort,
   RunSnapshot,
-  WakeQueueReader,
+  WakeQueueHost,
 } from "./application/ports.js";
 
 export type {
@@ -24,11 +24,11 @@ export type { ReleaseIssueExecutionInput } from "./application/use-cases.js";
 
 export type WakeQueueDeps = {
   /** Stays in `heartbeat.ts`; resolves the responsible user for a promoted or recovery run seed. */
-  resolveResponsibleUserId: WakeQueueReader["resolveResponsibleUserId"];
+  resolveResponsibleUserId: WakeQueueHost["resolveResponsibleUserId"];
   /** Stays in `heartbeat.ts`; reads the routine environment context for an execution issue. */
-  getRoutineEnv: WakeQueueReader["getRoutineEnv"];
+  getRoutineEnv: WakeQueueHost["getRoutineEnv"];
   /** Stays in `heartbeat.ts`; resolves the session-before display id for a wakeup. */
-  resolveSessionBeforeForWakeup: WakeQueueReader["resolveSessionBeforeForWakeup"];
+  resolveSessionBeforeForWakeup: WakeQueueHost["resolveSessionBeforeForWakeup"];
   /** `services/recovery`'s stranded-issue escalation, called only after the release transaction commits. */
   recovery: RecoveryEscalationPort;
 };

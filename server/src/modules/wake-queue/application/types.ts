@@ -86,7 +86,7 @@ export type ReleaseOutcome =
       previousStatus: "todo" | "in_progress" | "in_review";
     };
 
-export type WakeQueueApplicationErrorCode = "responsible_user_unresolved";
+export type WakeQueueApplicationErrorCode = "responsible_user_unresolved" | "deferred_wake_not_advanced";
 
 export class WakeQueueApplicationError extends Error {
   constructor(

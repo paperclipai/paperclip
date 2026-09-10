@@ -171,11 +171,11 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
 
     const adapter = createPostgresWakeQueueAdapter(db, stubDeps);
     const result = await adapter.withIssueExecutionLock({ companyId, runId, now: new Date() }, async (locked, ports) => {
-      const candidate = await ports.writer.claimNextDeferredWake({ companyId, issueId: locked.primaryIssue.id });
+      const candidate = await ports.transaction.findNextDeferredWake({ companyId, issueId: locked.primaryIssue.id });
       expect(candidate?.id).toBe(wakeId);
-      const agent = await ports.reader.findInvokableAgent({ companyId, agentId: foreignAgentId });
+      const agent = await ports.transaction.findInvokableAgent({ companyId, agentId: foreignAgentId });
       expect(agent).toBeNull();
-      const failed = await ports.writer.failDeferredWake({ companyId, wakeId: candidate!.id, now: new Date() });
+      const failed = await ports.transaction.failDeferredWake({ companyId, wakeId: candidate!.id, now: new Date() });
       expect(failed).toBe(true);
       return { outcome: { kind: "released" as const }, postCommitEffects: [] };
     });
@@ -205,7 +205,7 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
     await adapter.withIssueExecutionLock(
       { companyId, runId, now: new Date() },
       async (_locked, ports) => {
-        const cancelledUnderWrongCompany = await ports.writer.cancelDeferredWake({
+        const cancelledUnderWrongCompany = await ports.transaction.cancelDeferredWake({
           companyId: otherCompanyId,
           wakeId,
           reason: "cross-company cancel attempt",
@@ -213,14 +213,14 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
         });
         expect(cancelledUnderWrongCompany).toBe(false);
 
-        const failedUnderWrongCompany = await ports.writer.failDeferredWake({
+        const failedUnderWrongCompany = await ports.transaction.failDeferredWake({
           companyId: otherCompanyId,
           wakeId,
           now: new Date(),
         });
         expect(failedUnderWrongCompany).toBe(false);
 
-        const normalizedUnderWrongCompany = await ports.writer.normalizeDeferredWakeCommentIds({
+        const normalizedUnderWrongCompany = await ports.transaction.normalizeDeferredWakeCommentIds({
           companyId: otherCompanyId,
           wakeId,
           payload: { issueId },
@@ -229,7 +229,7 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
         });
         expect(normalizedUnderWrongCompany).toBeNull();
 
-        const reopenedUnderWrongCompany = await ports.writer.reopenIssue({
+        const reopenedUnderWrongCompany = await ports.transaction.reopenIssue({
           companyId: otherCompanyId,
           issueId,
           runId,
@@ -264,7 +264,7 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
       reopened: null,
     };
     await adapter.withIssueExecutionLock({ companyId, runId, now: new Date() }, async (_locked, ports) => {
-      captured.reopened = await ports.writer.reopenIssue({ companyId: otherCompanyId, issueId, runId });
+      captured.reopened = await ports.transaction.reopenIssue({ companyId: otherCompanyId, issueId, runId });
       return { outcome: { kind: "released" as const }, postCommitEffects: [] };
     });
     expect(captured.reopened).toBeNull();
@@ -286,7 +286,7 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
       reopened: null,
     };
     await adapter.withIssueExecutionLock({ companyId, runId, now: new Date() }, async (_locked, ports) => {
-      captured.reopened = await ports.writer.reopenIssue({ companyId, issueId, runId });
+      captured.reopened = await ports.transaction.reopenIssue({ companyId, issueId, runId });
       return { outcome: { kind: "released" as const }, postCommitEffects: [] };
     });
     expect(captured.reopened?.status).toBe("todo");
@@ -310,7 +310,7 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
     const adapter = createPostgresWakeQueueAdapter(db, stubDeps);
     const runId = await seedRun({ companyId, agentId, contextSnapshot: { issueId }, status: "succeeded" });
     const result = await adapter.withIssueExecutionLock({ companyId, runId, now: new Date() }, async (_locked, ports) => {
-      const claimed = await ports.writer.claimDeferredWakeForPromotion({ companyId, wakeId, now: new Date() });
+      const claimed = await ports.transaction.claimDeferredWakeForPromotion({ companyId, wakeId, now: new Date() });
       expect(claimed).toBe(false);
       return { outcome: { kind: "released" as const }, postCommitEffects: [] };
     });
@@ -345,7 +345,7 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
     const adapter = createPostgresWakeQueueAdapter(db, stubDeps);
     await adapter.withIssueExecutionLock({ companyId, runId, now: new Date() }, async (locked, ports) => {
       const finalize = async (wakeId: string) => {
-        const promoted = await ports.writer.finalizePromotedWake({
+        const promoted = await ports.transaction.finalizePromotedWake({
           companyId,
           wakeId,
           deferredAgent,
