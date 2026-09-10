@@ -38,6 +38,7 @@ async function mount(
   canLogin = true,
   codexSubscriptions = false,
   savedApiKeys = true,
+  cachedClaudeLogin = false,
 ) {
   const key =
     adapterType === "claude_local" ? "ANTHROPIC_API_KEY" : "OPENAI_API_KEY";
@@ -86,6 +87,10 @@ async function mount(
     mocks.organization.mockResolvedValue([]);
   }
   client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  if (cachedClaudeLogin) {
+    client.setQueryData(["claude-oauth-token-status", "c1"], { secretId: "cached-claude", latestVersion: 1 });
+    mocks.auth.mockResolvedValue({ status: "absent" });
+  }
   host = document.createElement("div");
   document.body.appendChild(host);
   root = createRoot(host);
@@ -132,6 +137,14 @@ describe("AgentProviderConnection reuse", () => {
     expect(host.querySelector('input[type="password"]')).not.toBeNull();
   });
 
+  it("does not use a cached Claude login for Codex", async () => {
+    await mount("codex_local", false, true, false, false, true);
+    openProvider();
+    expect(host.textContent).toContain("New subscription login");
+    expect(host.textContent).not.toContain("saved Claude subscription");
+    expect(host.textContent).not.toContain("Use saved subscription");
+    expect(mocks.login).not.toHaveBeenCalled();
+  });
   it("reuses a saved ChatGPT account when the sandbox auth signal is unknown", async () => {
     const { test, connected } = await mount("codex_local", false, true, true);
     openProvider();

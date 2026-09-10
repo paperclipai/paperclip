@@ -27,7 +27,9 @@ export function useSavedProviderKeys(
     retry: false,
   });
   const storedLogin = useQuery({
-    queryKey: ["claude-oauth-token-status", companyId],
+    // Disabled queries still return cached data. Keep other providers away
+    // from the shared Claude login cache.
+    queryKey: ["claude-oauth-token-status", envKey === "ANTHROPIC_API_KEY" ? companyId : null],
     queryFn: async () => {
       try {
         return await agentsApi.getClaudeOAuthTokenStatus(companyId!);
