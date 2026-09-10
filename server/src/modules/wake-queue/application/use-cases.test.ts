@@ -29,7 +29,7 @@ const RUN: RunSnapshot = {
 const ISSUE: IssueSnapshot = {
   id: "issue-1",
   companyId: "company-1",
-  identifier: "PAP-1",
+  identifier: "ISSUE-1",
   status: "in_progress",
   assigneeAgentId: "finishing-agent",
   assigneeUserId: null,

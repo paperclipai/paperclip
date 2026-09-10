@@ -1,7 +1,8 @@
 // Pure decision rules for the release half of the deferred issue-execution
 // wake state machine:
-//   - the per-wake decision (decideDeferredWake), applied to the earliest
-//     deferred wake queued against the issue a run just released
+//   - the per-wake decision, split into decideQueuedCommentAction and
+//     decideWakeOutcome, applied to the earliest deferred wake queued
+//     against the issue a run just released
 //   - the release-recovery decision (decideReleaseRecovery), applied once
 //     the deferred-wake queue is empty and no wake was promoted
 // The caller reads the database and packs the result into a facts object.
@@ -14,12 +15,17 @@ export type DeferredWakeQueuedCommentFacts = {
   /** Count of queued comment ids that are still live and not self-authored by the finishing run. */
   liveNonSelfCommentIdsLength: number;
   /** True when the live, non-self comment id list differs from the queued list. */
-  liveCommentIdsChanged: boolean;
+  liveCommentIdsDiffer: boolean;
   /** True when every discarded comment id was authored by the finishing run. */
   containedSelfAuthoredComment: boolean;
   /** True when the wake carries an independent reason to continue even with no live comments. */
   preservesIndependentContinuation: boolean;
 };
+
+export type DeferredWakeQueuedCommentDecision =
+  | { kind: "cancel_empty"; selfAuthored: boolean }
+  | { kind: "normalize" }
+  | { kind: "proceed" };
 
 export type DeferredWakeAgentFacts = {
   /** True when the wake's agent exists in the issue's own company. */
@@ -35,41 +41,38 @@ export type DeferredWakePauseHoldFacts = {
   treeHoldInteractionWake: boolean;
 };
 
-export type DeferredWakeFacts = {
-  queuedComment: DeferredWakeQueuedCommentFacts;
+export type DeferredWakeOutcomeFacts = {
   agent: DeferredWakeAgentFacts;
   pauseHold: DeferredWakePauseHoldFacts;
 };
 
-export type DeferredWakeDecision =
-  | { kind: "cancel_empty"; selfAuthored: boolean }
-  | { kind: "normalize" }
+export type DeferredWakeOutcomeDecision =
   | { kind: "fail_not_invokable" }
   | { kind: "cancel_pause_hold" }
   | { kind: "promote" };
 
-/**
- * Decides what to do with the earliest deferred wake queued against the
- * issue a run just released. The caller applies a "normalize" decision (a
- * queued-comment-id rewrite) and calls this function again with facts that
- * reflect the rewrite, so a single wake can normalize and then also fail,
- * cancel, or promote in the same drain step — matching the order the
- * original state machine always evaluated them in.
- */
-export function decideDeferredWake(facts: DeferredWakeFacts): DeferredWakeDecision {
-  const { queuedComment, agent, pauseHold } = facts;
-
+/** Decides what to do with a deferred wake's queued comment ids. On "normalize", the caller rewrites the ids and then calls `decideWakeOutcome` directly; the rewrite cannot change the agent or pause-hold facts. */
+export function decideQueuedCommentAction(
+  facts: DeferredWakeQueuedCommentFacts,
+): DeferredWakeQueuedCommentDecision {
   if (
-    queuedComment.hasQueuedCommentIds &&
-    queuedComment.liveNonSelfCommentIdsLength === 0 &&
-    !queuedComment.preservesIndependentContinuation
+    facts.hasQueuedCommentIds &&
+    facts.liveNonSelfCommentIdsLength === 0 &&
+    !facts.preservesIndependentContinuation
   ) {
-    return { kind: "cancel_empty", selfAuthored: queuedComment.containedSelfAuthoredComment };
+    return { kind: "cancel_empty", selfAuthored: facts.containedSelfAuthoredComment };
   }
 
-  if (queuedComment.hasQueuedCommentIds && queuedComment.liveCommentIdsChanged) {
+  if (facts.hasQueuedCommentIds && facts.liveCommentIdsDiffer) {
     return { kind: "normalize" };
   }
+
+  return { kind: "proceed" };
+}
+
+/** Decides the outcome for a deferred wake whose queued-comment action resolved to "proceed" (or finished its rewrite): fail, cancel, or promote. */
+export function decideWakeOutcome(facts: DeferredWakeOutcomeFacts): DeferredWakeOutcomeDecision {
+  const { agent, pauseHold } = facts;
 
   if (!agent.agentFound || !agent.invokable) {
     return { kind: "fail_not_invokable" };
@@ -82,15 +85,19 @@ export function decideDeferredWake(facts: DeferredWakeFacts): DeferredWakeDecisi
   return { kind: "promote" };
 }
 
-export type ReleaseRecoveryReviewParticipantFacts = {
-  /** True when the issue is in_review, unassigned to a user, and waiting on the finishing run as the current agent participant. */
-  applies: boolean;
+/** Shared between the review-participant and immediate branches; the caller derives every field from the same expression regardless of which branch applies. */
+export type ReleaseRecoverySharedFacts = {
   hasExistingExecutionPath: boolean;
   hasPersistedMonitor: boolean;
   suppressedByPauseHold: boolean;
   isStrandedRecoveryOrigin: boolean;
   recoveryAgentPresent: boolean;
   recoveryAgentInvokable: boolean;
+};
+
+export type ReleaseRecoveryReviewParticipantFacts = {
+  /** True when the issue is in_review, unassigned to a user, and waiting on the finishing run as the current agent participant. */
+  applies: boolean;
   /** True when the finishing run was itself a review-participant-recovery retry. */
   isExecutionReviewParticipantRecoveryRun: boolean;
 };
@@ -100,13 +107,7 @@ export type ReleaseRecoveryImmediateFacts = {
   applies: boolean;
   /** True when the finishing run itself carried the disposition-repair retry reason. */
   isDispositionRepairRetry: boolean;
-  hasExistingExecutionPath: boolean;
-  hasPersistedMonitor: boolean;
   hasExplicitBlockerPath: boolean;
-  suppressedByPauseHold: boolean;
-  isStrandedRecoveryOrigin: boolean;
-  recoveryAgentPresent: boolean;
-  recoveryAgentInvokable: boolean;
   isWorkspaceValidationFailedRun: boolean;
   isConfigurationIncompleteFailedRun: boolean;
   /** didAutomaticRecoveryFail(run, expectedRetryReason) for the issue's own status branch. */
@@ -118,6 +119,7 @@ export type ReleaseRecoveryFacts = {
   suppressImmediateRecovery: boolean;
   reviewParticipant: ReleaseRecoveryReviewParticipantFacts;
   immediate: ReleaseRecoveryImmediateFacts;
+  shared: ReleaseRecoverySharedFacts;
 };
 
 export type ReleaseRecoveryBlockedNoticeKind =
@@ -142,23 +144,23 @@ export type ReleaseRecoveryDecision =
  * order.
  */
 export function decideReleaseRecovery(facts: ReleaseRecoveryFacts): ReleaseRecoveryDecision {
-  const { reviewParticipant, immediate } = facts;
+  const { reviewParticipant, immediate, shared } = facts;
 
   if (reviewParticipant.applies) {
     if (
       facts.suppressImmediateRecovery ||
-      reviewParticipant.hasExistingExecutionPath ||
-      reviewParticipant.hasPersistedMonitor ||
-      reviewParticipant.suppressedByPauseHold
+      shared.hasExistingExecutionPath ||
+      shared.hasPersistedMonitor ||
+      shared.suppressedByPauseHold
     ) {
       return { kind: "released" };
     }
-    if (reviewParticipant.isStrandedRecoveryOrigin) {
+    if (shared.isStrandedRecoveryOrigin) {
       return { kind: "blocked_recovery_in_place" };
     }
     const shouldBlock =
-      !reviewParticipant.recoveryAgentInvokable ||
-      !reviewParticipant.recoveryAgentPresent ||
+      !shared.recoveryAgentInvokable ||
+      !shared.recoveryAgentPresent ||
       reviewParticipant.isExecutionReviewParticipantRecoveryRun;
     if (shouldBlock) {
       return { kind: "blocked", notice: "execution_review_participant" };
@@ -169,19 +171,15 @@ export function decideReleaseRecovery(facts: ReleaseRecoveryFacts): ReleaseRecov
   if (immediate.isDispositionRepairRetry) return { kind: "released" };
   if (!immediate.applies) return { kind: "released" };
   if (facts.suppressImmediateRecovery) return { kind: "released" };
-  if (
-    immediate.hasExistingExecutionPath ||
-    immediate.hasPersistedMonitor ||
-    immediate.hasExplicitBlockerPath
-  ) {
+  if (shared.hasExistingExecutionPath || shared.hasPersistedMonitor || immediate.hasExplicitBlockerPath) {
     return { kind: "released" };
   }
-  if (immediate.suppressedByPauseHold) return { kind: "released" };
-  if (immediate.isStrandedRecoveryOrigin) return { kind: "blocked_recovery_in_place" };
+  if (shared.suppressedByPauseHold) return { kind: "released" };
+  if (shared.isStrandedRecoveryOrigin) return { kind: "blocked_recovery_in_place" };
 
   const shouldBlockImmediately =
-    !immediate.recoveryAgentInvokable ||
-    !immediate.recoveryAgentPresent ||
+    !shared.recoveryAgentInvokable ||
+    !shared.recoveryAgentPresent ||
     immediate.isWorkspaceValidationFailedRun ||
     immediate.isConfigurationIncompleteFailedRun ||
     immediate.automaticRecoveryAlreadyFailed;

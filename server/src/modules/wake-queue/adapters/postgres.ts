@@ -56,8 +56,6 @@ const DEFERRED_WAKE_STATUS = "deferred_issue_execution";
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 const WORKSPACE_VALIDATION_RECOVERY_CAUSE = "workspace_validation_failed";
 const CONFIGURATION_INCOMPLETE_RECOVERY_CAUSE = "configuration_incomplete";
-const EXECUTION_REVIEW_PARTICIPANT_RECOVERY_CAUSE = "execution_review_participant_recovery";
-const EXECUTION_REVIEW_PARTICIPANT_RECOVERY_WAKE_REASON = "execution_review_participant_recovery";
 const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 
 type HeartbeatRunRow = typeof heartbeatRuns.$inferSelect;
@@ -447,7 +445,7 @@ function buildWriter(tx: Db, deps: WakeQueuePostgresAdapterDeps): WakeQueueWrite
       if (noticeKind === "execution_review_participant") {
         return {
           notice: buildExecutionReviewParticipantRecoveryNoticeSeed(),
-          recoveryCause: EXECUTION_REVIEW_PARTICIPANT_RECOVERY_CAUSE,
+          recoveryCause: EXECUTION_REVIEW_PARTICIPANT_RECOVERY_RETRY_REASON,
         };
       }
       return { notice: buildImmediateExecutionPathRecoveryNoticeSeed({ status: issueStatus }), recoveryCause: null };
@@ -462,7 +460,7 @@ function buildWriter(tx: Db, deps: WakeQueuePostgresAdapterDeps): WakeQueueWrite
           agentId: recoveryAgent.id,
           source: "automation",
           triggerDetail: "system",
-          reason: EXECUTION_REVIEW_PARTICIPANT_RECOVERY_WAKE_REASON,
+          reason: EXECUTION_REVIEW_PARTICIPANT_RECOVERY_RETRY_REASON,
           payload: withRecoveryContext(
             {
               issueId: issue.id,
@@ -494,7 +492,7 @@ function buildWriter(tx: Db, deps: WakeQueuePostgresAdapterDeps): WakeQueueWrite
             {
               issueId: issue.id,
               taskId: issue.id,
-              wakeReason: EXECUTION_REVIEW_PARTICIPANT_RECOVERY_WAKE_REASON,
+              wakeReason: EXECUTION_REVIEW_PARTICIPANT_RECOVERY_RETRY_REASON,
               retryReason: EXECUTION_REVIEW_PARTICIPANT_RECOVERY_RETRY_REASON,
               source: "issue.execution_review_recovery",
               retryOfRunId: finishingRun.id,
