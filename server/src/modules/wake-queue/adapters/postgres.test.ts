@@ -393,6 +393,91 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
     expect(runs.map((run) => run.id).sort()).toEqual([runId, runA, runB, runC].sort());
   });
 
+  // The application layer now resolves the responsible user and builds the
+  // context snapshot before this write runs (proven in the application-layer
+  // test). This proves the adapter persists the caller-resolved responsible
+  // user, and merges the two stage fields it alone can derive onto that same
+  // snapshot instead of building a new one, so a marker the resolver already
+  // stamped on it survives into the persisted row.
+  it("queueReviewParticipantRecoveryRun persists the caller-resolved responsible user and context snapshot, merged with the derived stage fields", async () => {
+    const companyId = await seedCompany();
+    const finishingAgentId = await seedAgent({ companyId, name: "Finishing Agent" });
+    const recoveryAgentId = await seedAgent({ companyId, name: "Recovery Agent" });
+    const stageId = randomUUID();
+    const issueId = await seedIssue({ companyId, assigneeAgentId: null, status: "in_review" });
+    await db
+      .update(issues)
+      .set({
+        executionState: {
+          status: "pending",
+          currentStageId: stageId,
+          currentStageIndex: 0,
+          currentStageType: "review",
+          currentParticipant: { type: "agent", agentId: recoveryAgentId },
+          returnAssignee: null,
+          completedStageIds: [],
+          lastDecisionId: null,
+          lastDecisionOutcome: null,
+        },
+      })
+      .where(eq(issues.id, issueId));
+    // A finishing run status other than the legacy-reconciliation set
+    // (failed, timed_out, interrupted, cancelled) reaches the module's own
+    // drain logic, so this call runs.
+    const finishingRunId = await seedRun({
+      companyId,
+      agentId: finishingAgentId,
+      contextSnapshot: { issueId },
+      status: "succeeded",
+    });
+
+    const adapter = createPostgresWakeQueueAdapter(db, stubDeps);
+    const result = await adapter.withIssueExecutionLock(
+      { companyId, runId: finishingRunId, now: new Date() },
+      async (locked, ports) => {
+        // The caller resolves the responsible user against this exact
+        // object before this call, and the resolver can stamp a marker on
+        // it; simulate that stamp here, the same way the real resolver does.
+        const contextSnapshot: Record<string, unknown> = {
+          issueId,
+          taskId: issueId,
+          wakeReason: "execution_review_participant_recovery",
+          retryReason: "execution_review_participant_recovery",
+          source: "issue.execution_review_recovery",
+          retryOfRunId: finishingRunId,
+          reviewRecoveryInstruction: "Submit the review decision now.",
+          executionIdentityCause: "company_default",
+        };
+        const run = await ports.transaction.queueReviewParticipantRecoveryRun({
+          companyId,
+          issue: locked.primaryIssue,
+          finishingRun: locked.run,
+          recoveryAgent: { id: recoveryAgentId, companyId, name: "Recovery Agent", invokable: true },
+          contextSnapshot,
+          responsibleUserId: "responsible-user",
+          sessionBefore: null,
+          now: new Date(),
+        });
+        return { outcome: { kind: "queued_review_participant_recovery" as const, run }, postCommitEffects: [] };
+      },
+    );
+    expect(result.outcome.kind).toBe("queued_review_participant_recovery");
+
+    const runRow = (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId))).find(
+      (row) => row.agentId === recoveryAgentId,
+    );
+    expect(runRow?.responsibleUserId).toBe("responsible-user");
+    expect(runRow?.contextSnapshot).toMatchObject({
+      issueId,
+      retryOfRunId: finishingRunId,
+      // The marker the resolver stamped survives the merge.
+      executionIdentityCause: "company_default",
+      // The two fields only this adapter can derive.
+      currentStageId: stageId,
+      currentStageType: "review",
+    });
+  });
+
   it("locks the context issue and every sibling issue in id order, and two concurrent releases do not deadlock", async () => {
     const companyId = await seedCompany();
     const agentId = await seedAgent({ companyId });

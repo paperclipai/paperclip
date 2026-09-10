@@ -56,6 +56,24 @@ const AGENT: InvokableAgentSnapshot = {
   invokable: true,
 };
 
+// A run and its issue in the shape the release-recovery tail needs to reach
+// the review-participant recovery path: the issue is in review with no
+// assigned user, the run's agent is the issue's pending stage participant,
+// and the run carries a wake reason the eligibility check recognizes.
+const REVIEW_PARTICIPANT_RUN: RunSnapshot = {
+  ...RUN,
+  contextSnapshot: { wakeReason: "execution_review_requested" },
+};
+
+const REVIEW_PARTICIPANT_ISSUE: IssueSnapshot = {
+  ...ISSUE,
+  status: "in_review",
+  executionState: {
+    status: "pending",
+    currentParticipant: { type: "agent", agentId: RUN.agentId },
+  },
+};
+
 function wakeCandidate(overrides: Partial<DeferredWakeCandidate> = {}): DeferredWakeCandidate {
   return {
     id: overrides.id ?? "wake-1",
@@ -132,6 +150,15 @@ function createFakeIssueLock(host: WakeQueueHost, transaction: WakeQueueTransact
     withIssueExecutionLock: vi.fn(async (_input, fn) => {
       const result = await fn({ primaryIssue: issue, run: RUN }, { host, transaction });
       return { ...result, run: RUN };
+    }),
+  };
+}
+
+function createReviewParticipantIssueLock(host: WakeQueueHost, transaction: WakeQueueTransaction): IssueLockWriter {
+  return {
+    withIssueExecutionLock: vi.fn(async (_input, fn) => {
+      const result = await fn({ primaryIssue: REVIEW_PARTICIPANT_ISSUE, run: REVIEW_PARTICIPANT_RUN }, { host, transaction });
+      return { ...result, run: REVIEW_PARTICIPANT_RUN };
     }),
   };
 }
@@ -483,6 +510,68 @@ describe("releaseIssueExecution", () => {
       code: "responsible_user_unresolved",
     });
     expect(transaction.queueImmediateRecoveryRun).not.toHaveBeenCalled();
+  });
+
+  it("resolves the responsible user for a review-participant recovery run before queuing it, and keeps the marker the resolver stamped", async () => {
+    const resolveResponsibleUserId = vi.fn(async (input: Parameters<WakeQueueHost["resolveResponsibleUserId"]>[0]) => {
+      // Mirrors the real resolver: it mutates the same context snapshot
+      // object it received, stamping this marker on the company-default
+      // fallback path.
+      input.contextSnapshot.executionIdentityCause = "company_default";
+      return "resolved-user";
+    });
+    const queueReviewParticipantRecoveryRun = vi.fn(
+      async (_input: Parameters<WakeQueueTransaction["queueReviewParticipantRecoveryRun"]>[0]) => runSummary("review-recovery"),
+    );
+    const transaction = createFakeTransaction({ queueReviewParticipantRecoveryRun });
+    const host = createFakeHost({ resolveResponsibleUserId });
+    const issueLock = createReviewParticipantIssueLock(host, transaction);
+    const releaseIssueExecution = createReleaseIssueExecution({ issueLock, recovery: createFakeRecovery() });
+
+    const result = await releaseIssueExecution({ companyId: "company-1", runId: "run-1", now: new Date() });
+
+    expect(result.outcome.kind).toBe("queued_review_participant_recovery");
+    expect(resolveResponsibleUserId).toHaveBeenCalledTimes(1);
+    const resolveCall = resolveResponsibleUserId.mock.calls[0]![0];
+    expect(resolveCall.requestedByActorType).toBe("system");
+    expect(resolveCall.requestedByActorId).toBeNull();
+    expect(resolveCall.source).toBe("automation");
+    expect(resolveCall.triggerDetail).toBe("system");
+    expect(resolveCall.existingRunResponsibleUserId).toBe(REVIEW_PARTICIPANT_RUN.responsibleUserId);
+    expect(resolveCall.contextSnapshot).toEqual({
+      issueId: REVIEW_PARTICIPANT_ISSUE.id,
+      taskId: REVIEW_PARTICIPANT_ISSUE.id,
+      wakeReason: "execution_review_participant_recovery",
+      retryReason: "execution_review_participant_recovery",
+      source: "issue.execution_review_recovery",
+      retryOfRunId: REVIEW_PARTICIPANT_RUN.id,
+      reviewRecoveryInstruction:
+        "The previous reviewer run ended while this execution-review stage was still pending. Submit the review decision now, or mark the issue blocked with the exact unblock action.",
+      executionIdentityCause: "company_default",
+    });
+
+    expect(queueReviewParticipantRecoveryRun).toHaveBeenCalledTimes(1);
+    const queueCall = queueReviewParticipantRecoveryRun.mock.calls[0]![0];
+    expect(queueCall.responsibleUserId).toBe("resolved-user");
+    // The object the caller hands the port is the same object it handed the resolver.
+    expect(queueCall.contextSnapshot).toBe(resolveCall.contextSnapshot);
+    // The marker the resolver stamped survives onto the persisted call.
+    expect((queueCall.contextSnapshot as Record<string, unknown>).executionIdentityCause).toBe("company_default");
+  });
+
+  it("throws WakeQueueApplicationError with code responsible_user_unresolved for a review-participant recovery run, without queuing it", async () => {
+    const transaction = createFakeTransaction();
+    const host = createFakeHost({ resolveResponsibleUserId: vi.fn(async () => null) });
+    const issueLock = createReviewParticipantIssueLock(host, transaction);
+    const releaseIssueExecution = createReleaseIssueExecution({ issueLock, recovery: createFakeRecovery() });
+
+    await expect(
+      releaseIssueExecution({ companyId: "company-1", runId: "run-1", now: new Date() }),
+    ).rejects.toMatchObject({
+      constructor: WakeQueueApplicationError,
+      code: "responsible_user_unresolved",
+    });
+    expect(transaction.queueReviewParticipantRecoveryRun).not.toHaveBeenCalled();
   });
 
   it("escalates through the recovery port for a blocked outcome, after the transaction resolves", async () => {

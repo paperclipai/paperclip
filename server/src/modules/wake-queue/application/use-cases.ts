@@ -563,11 +563,51 @@ async function runReleaseRecoveryTail(
   });
 
   if (decision.kind === "queue_review_participant_recovery") {
+    // Resolve the responsible user here, in the application layer, before
+    // the transaction port queues the run — the same order the immediate
+    // recovery path below uses.
+    const reviewParticipantContextSnapshot: Record<string, unknown> = {
+      issueId: issue.id,
+      taskId: issue.id,
+      wakeReason: EXECUTION_REVIEW_PARTICIPANT_RECOVERY_RETRY_REASON,
+      retryReason: EXECUTION_REVIEW_PARTICIPANT_RECOVERY_RETRY_REASON,
+      source: "issue.execution_review_recovery",
+      retryOfRunId: run.id,
+      reviewRecoveryInstruction:
+        "The previous reviewer run ended while this execution-review stage was still pending. Submit the review decision now, or mark the issue blocked with the exact unblock action.",
+    };
+
+    const reviewParticipantResponsibleUserId = await resolveResponsibleUserForQueuedRun(host, {
+      companyId: issue.companyId,
+      contextSnapshot: reviewParticipantContextSnapshot,
+      issue,
+      requestedByActorType: "system",
+      requestedByActorId: null,
+      source: "automation",
+      triggerDetail: "system",
+      existingRunResponsibleUserId: run.responsibleUserId,
+    });
+    if (!reviewParticipantResponsibleUserId) {
+      throw new WakeQueueApplicationError(
+        "responsible_user_unresolved",
+        "Unable to resolve responsible user for review-participant recovery heartbeat run",
+        {
+          runId: run.id,
+          agentId: recoveryAgent.id,
+          companyId: issue.companyId,
+          issueId: issue.id,
+          wakeReason: EXECUTION_REVIEW_PARTICIPANT_RECOVERY_RETRY_REASON,
+        },
+      );
+    }
+
     const queuedRun = await transaction.queueReviewParticipantRecoveryRun({
       companyId: issue.companyId,
       issue,
       finishingRun: run,
       recoveryAgent,
+      contextSnapshot: reviewParticipantContextSnapshot,
+      responsibleUserId: reviewParticipantResponsibleUserId,
       sessionBefore,
       now: input.now,
     });

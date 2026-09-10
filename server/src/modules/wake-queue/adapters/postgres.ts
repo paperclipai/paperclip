@@ -514,7 +514,16 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
       );
     },
 
-    async queueReviewParticipantRecoveryRun({ companyId, issue, finishingRun, recoveryAgent, sessionBefore, now }) {
+    async queueReviewParticipantRecoveryRun({
+      companyId,
+      issue,
+      finishingRun,
+      recoveryAgent,
+      contextSnapshot,
+      responsibleUserId,
+      sessionBefore,
+      now,
+    }) {
       const executionState = parseIssueExecutionState(issue.executionState);
       const wakeupRequest = await tx
         .insert(agentWakeupRequests)
@@ -542,37 +551,15 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
         .returning()
         .then((rows) => rows[0]);
 
-      // This insert does not set responsibleUserId. When claimQueuedRun claims
-      // this row, it resolves a responsible user. It writes that value in the
-      // same update that moves the run from "queued" to "running". But
-      // claimQueuedRun can also cancel a queued recovery run before it
-      // resolves that value, and a cancelled row then keeps a null
-      // responsible user permanently. A claimed row still needs
-      // initializeRunIdentity to overwrite the value again, from the run
-      // identity chain; if execution ends before that overwrite runs, the
-      // claimed value stays. Readers can observe a null value here.
-      // runsForIssue projects the column with no status filter, so the issue
-      // run ledger can show a recovery run with no responsible user. That
-      // projection displays attribution and makes no authorization decision.
-      // The issue-thread interaction attribution check is an authorization
-      // read that can also observe a null value. It looks up a
-      // caller-supplied run id with no status filter, and it compares this
-      // column against the responsible user of the caller. It makes that
-      // comparison only when the caller carries a responsible user, and a
-      // null value never equals one, so the check denies. The audit feed can
-      // observe a cancelled run: claimQueuedRun cancels a queued run when an
-      // active subtree pause hold holds the issue, and it writes an activity
-      // log event for that cancelled run. agentActionAuditService prefers the
-      // responsible user that the activity log row carries.
-      // resolveResponsibleUserIdForActivity sets that value, and it finds no
-      // responsible user on the cancelled run. It falls back to the issue,
-      // then to the agent API key, then to the company default.
-      // The immediate-recovery writer takes an already-resolved
-      // responsibleUserId as an input parameter, because its caller must
-      // resolve one before it can call that writer. This writer's input
-      // carries no such parameter. It leaves resolution to claimQueuedRun,
-      // which resolves and writes a responsible user for every queued run,
-      // the moment it claims one.
+      // The caller already resolved the responsible user against this same
+      // `contextSnapshot` object, so this insert persists that object as
+      // given. The two stage fields below only exist in this adapter, so
+      // this is the one place that can add them; the merge writes them onto
+      // the same object instead of building a new one, so it does not
+      // disturb any key the resolver already set.
+      contextSnapshot.currentStageId = executionState?.currentStageId ?? null;
+      contextSnapshot.currentStageType = executionState?.currentStageType ?? null;
+
       const queuedRun = await tx
         .insert(heartbeatRuns)
         .values({
@@ -582,21 +569,8 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
           triggerDetail: "system",
           status: "queued",
           wakeupRequestId: wakeupRequest.id,
-          contextSnapshot: withRecoveryContext(
-            {
-              issueId: issue.id,
-              taskId: issue.id,
-              wakeReason: EXECUTION_REVIEW_PARTICIPANT_RECOVERY_RETRY_REASON,
-              retryReason: EXECUTION_REVIEW_PARTICIPANT_RECOVERY_RETRY_REASON,
-              source: "issue.execution_review_recovery",
-              retryOfRunId: finishingRun.id,
-              currentStageId: executionState?.currentStageId ?? null,
-              currentStageType: executionState?.currentStageType ?? null,
-              reviewRecoveryInstruction:
-                "The previous reviewer run ended while this execution-review stage was still pending. Submit the review decision now, or mark the issue blocked with the exact unblock action.",
-            },
-            "normal_model",
-          ),
+          contextSnapshot,
+          responsibleUserId,
           sessionIdBefore: sessionBefore,
           retryOfRunId: finishingRun.id,
           updatedAt: now,

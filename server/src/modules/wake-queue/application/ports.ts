@@ -183,11 +183,17 @@ export interface WakeQueueTransaction {
   isAutomaticRecoverySuppressedByPauseHold(input: { companyId: string; issueId: string }): Promise<boolean>;
   /** Deny-only facts from the exact finishing run and its durable chat wake owner. */
   isImmediateRecoverySourceBlocked(input: { companyId: string; runId: string }): Promise<boolean>;
+  /**
+   * Queues the run with the context snapshot and the responsible user the
+   * caller already resolved.
+   */
   queueReviewParticipantRecoveryRun(input: {
     companyId: string;
     issue: IssueSnapshot;
     finishingRun: RunSnapshot;
     recoveryAgent: InvokableAgentSnapshot;
+    contextSnapshot: Record<string, unknown>;
+    responsibleUserId: string;
     sessionBefore: string | null;
     now: Date;
   }): Promise<RunSummary>;
