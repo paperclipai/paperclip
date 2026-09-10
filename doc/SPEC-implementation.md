@@ -1561,3 +1561,10 @@ Export/import behavior in V1:
 - import supports preview (dry-run) before apply
 - import preview reports skill-policy and legacy-grant mappings before apply and rejects unknown policy schema versions
 - GitHub imports warn on unpinned refs instead of blocking
+
+## Agent visual identity
+
+Agent appearances are stable, versioned ClipLab end-cap personas, separate from
+behavioral instructions. Compact surfaces use on-demand cached PNG URLs; larger
+placements may use a lazy live character. See [agent-personas.md](agent-personas.md)
+for persistence, migration, rendering, and integration contracts.

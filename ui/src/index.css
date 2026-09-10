@@ -2912,3 +2912,43 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
 .task-chat-loading-shell .animate-pulse {
   animation: none;
 }
+
+/* Immutable ClipLab cap-v1 artwork tokens. New artwork gets a new version. */
+:root {
+  --agent-cap-v1-bubblegum-sky-a: #8bd4ff;
+  --agent-cap-v1-bubblegum-sky-b: #ff51bf;
+  --agent-cap-v1-pink-lemonade-a: #ff26a8;
+  --agent-cap-v1-pink-lemonade-b: #fff78a;
+  --agent-cap-v1-orchid-peach-a: #e771ff;
+  --agent-cap-v1-orchid-peach-b: #ffd87c;
+  --agent-cap-v1-coral-mint-a: #beffe8;
+  --agent-cap-v1-coral-mint-b: #ff797b;
+  --agent-cap-v1-lime-lagoon-a: #b4ffa4;
+  --agent-cap-v1-lime-lagoon-b: #26dfff;
+  --agent-cap-v1-arctic-blue-a: #97fff3;
+  --agent-cap-v1-arctic-blue-b: #0084ff;
+  --agent-cap-v1-solar-flare-a: #ecca5c;
+  --agent-cap-v1-solar-flare-b: #fe3c3f;
+  --agent-cap-v1-violet-ember-a: #ff5c43;
+  --agent-cap-v1-violet-ember-b: #6262ff;
+  --agent-cap-v1-deep-tide-a: #003d60;
+  --agent-cap-v1-deep-tide-b: #32fffc;
+  --agent-cap-v1-coral-current-a: #26e2ff;
+  --agent-cap-v1-coral-current-b: #ff6666;
+  --agent-cap-v1-golden-hour-a: #ffcd4f;
+  --agent-cap-v1-golden-hour-b: #fde5ba;
+  --agent-cap-v1-tangerine-cobalt-a: #ffad32;
+  --agent-cap-v1-tangerine-cobalt-b: #4169ff;
+  --agent-cap-v1-electric-grove-a: #b4ff32;
+  --agent-cap-v1-electric-grove-b: #008d58;
+  --agent-cap-v1-flamingo-jade-a: #ff4f9a;
+  --agent-cap-v1-flamingo-jade-b: #36edaa;
+  --agent-cap-v1-cherry-pop-a: #ff69db;
+  --agent-cap-v1-cherry-pop-b: #d51c46;
+  --agent-cap-v1-turquoise-cherry-a: #37f0db;
+  --agent-cap-v1-turquoise-cherry-b: #ff4f64;
+  --agent-cap-v1-ultraviolet-tide-a: #7516cf;
+  --agent-cap-v1-ultraviolet-tide-b: #00e8d1;
+  --agent-cap-v1-muted-dream-a: #a6aaad;
+  --agent-cap-v1-muted-dream-b: #44464a;
+}

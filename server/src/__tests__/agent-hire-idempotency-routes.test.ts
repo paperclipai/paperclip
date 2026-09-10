@@ -136,6 +136,8 @@ describeEmbeddedPostgres("agent hire idempotency within a run", () => {
     expect(second.status, JSON.stringify(second.body)).toBe(200);
     expect(second.body.idempotent).toBe(true);
     expect(second.body.agent?.id).toBe(createdId);
+    expect(first.body.agent?.appearance).toMatchObject({ schemaVersion: 1, characterVersion: "cap-v1" });
+    expect(second.body.agent?.appearance).toEqual(first.body.agent?.appearance);
     // The retry must not have auto-renamed a duplicate to "Sam 2".
     expect(second.body.agent?.name).toBe("Sam");
 

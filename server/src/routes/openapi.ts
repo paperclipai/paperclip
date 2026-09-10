@@ -7,6 +7,10 @@ import { Router } from "express";
 import { z } from "zod";
 import {
   // Agent
+  AGENT_PALETTE_IDS,
+  AGENT_AVATAR_SIZES,
+  CHARACTER_STATES,
+  agentAppearanceSchema,
   createAgentSchema,
   createAgentHireSchema,
   updateAgentSchema,
@@ -1237,6 +1241,7 @@ const RUNTIME_TOOLS_OPERATIONS = new Set([
 ]);
 
 const PUBLIC_OPERATIONS = new Set([
+  "GET /api/agent-avatars/{version}/{palette}/{file}",
   "GET /api/health",
   "GET /api/openapi.json",
   "GET /api/board-claim/{token}",
@@ -2516,6 +2521,33 @@ for (const route of [
 }
 
 // ─── Agents ──────────────────────────────────────────────────────────────────
+
+registry.register("AgentAppearance", agentAppearanceSchema);
+registry.registerPath({
+  method: "get",
+  path: "/api/agent-avatars/{version}/{palette}/{file}",
+  tags: ["agents"],
+  summary: "Render or retrieve a public preset agent portrait",
+  description: "On-demand PNG artwork; no agent or company lookup. Logical size determines face detail independently of density. Successful URLs are immutable for one year and return a content-derived ETag. Cache entries regenerate after deletion.",
+  request: {
+    params: z.object({
+      version: z.literal("cap-v1"),
+      palette: z.enum([...AGENT_PALETTE_IDS, "muted-dream"]),
+      file: z.enum(CHARACTER_STATES.map(pose => `${pose}.png`)),
+    }),
+    query: z.object({
+      size: z.enum(AGENT_AVATAR_SIZES.map(String)).optional().default("512"),
+      scale: z.enum(["1", "2"]).optional().default("1"),
+    }).strict(),
+  },
+  responses: {
+    200: { description: "PNG portrait; Cache-Control: public, max-age=31536000, immutable; ETag: SHA-256 of PNG bytes", content: { "image/png": { schema: { type: "string", format: "binary" } } } },
+    304: { description: "If-None-Match matches the cached content ETag" },
+    400: r.badRequest,
+    429: { description: "Cold-render admission limit for this client; Cache-Control: no-store; Retry-After in seconds. Cached portraits remain available." },
+    503: { description: "Retryable rendering/storage failure; Cache-Control: no-store; Retry-After: 5" },
+  },
+});
 
 registry.registerPath({
   method: "get",

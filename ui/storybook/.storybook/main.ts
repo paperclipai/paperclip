@@ -20,6 +20,7 @@ const config: StorybookConfig = {
   viteFinal: async (baseConfig) =>
     mergeConfig(baseConfig, {
       plugins: [tailwindcss()],
+      server: { proxy: { "/api/agent-avatars": { target: process.env.PAPERCLIP_STORYBOOK_API_URL ?? "http://localhost:3100", changeOrigin: true } } },
       optimizeDeps: { include: ["motion/react", "react", "react-dom"] },
       resolve: {
         // Storybook's core and the react-vite builder each resolve their own

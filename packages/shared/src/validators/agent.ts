@@ -1,3 +1,4 @@
+import { agentAppearanceSchema } from "../agent-appearance.js";
 import { z } from "zod";
 import {
   AGENT_ICON_NAMES,
@@ -78,6 +79,7 @@ export const createAgentSchema = z.object({
   role: z.enum(AGENT_ROLES).optional().default("general"),
   title: z.string().optional().nullable(),
   icon: z.enum(AGENT_ICON_NAMES).optional().nullable(),
+  appearance: agentAppearanceSchema.optional(),
   reportsTo: z.string().guid().optional().nullable(),
   capabilities: z.string().optional().nullable(),
   desiredSkills: z.array(agentDesiredSkillSelectionSchema).optional(),

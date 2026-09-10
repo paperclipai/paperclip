@@ -1,3 +1,4 @@
+import { agentAppearanceSchema } from "../agent-appearance.js";
 import { z } from "zod";
 import { PERMISSION_KEYS } from "../constants.js";
 import {
@@ -77,6 +78,7 @@ export const portabilityAgentManifestEntrySchema = z.object({
   role: z.string().min(1),
   title: z.string().nullable(),
   icon: z.string().nullable(),
+  appearance: agentAppearanceSchema.nullable().optional(),
   capabilities: z.string().nullable(),
   reportsToSlug: z.string().min(1).nullable(),
   adapterType: z.string().min(1),

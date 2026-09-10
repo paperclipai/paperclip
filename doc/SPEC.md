@@ -543,3 +543,10 @@ Things Paperclip explicitly does **not** do:
 7. **Atomic ownership.** Single assignee per task. Atomic checkout prevents conflicts.
 8. **Progressive deployment.** Trivial to start local, straightforward to scale to hosted.
 9. **Extensible core.** Clean boundaries so plugins can add capabilities (Adapters, knowledge base, revenue tracking) without modifying core.
+
+## Agent visual identity
+
+Agent appearances are stable, versioned ClipLab end-cap personas, separate from
+behavioral instructions. Compact surfaces use on-demand cached PNG URLs; larger
+placements may use a lazy live character. See [agent-personas.md](agent-personas.md)
+for persistence, migration, rendering, and integration contracts.

@@ -1,3 +1,4 @@
+import { agentAvatarRoutes } from "./routes/agent-avatars.js";
 import { toolActionDeliveryService } from "./services/tool-action-delivery.js";
 import express, { Router, type Request as ExpressRequest } from "express";
 import {
@@ -613,6 +614,7 @@ export async function createApp(
 
   // Mount API routes
   const api = Router();
+  api.use(agentAvatarRoutes());
   api.use(boardMutationGuard());
   api.use(
     "/health",

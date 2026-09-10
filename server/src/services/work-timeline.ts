@@ -1,3 +1,4 @@
+import { withAgentAppearance } from "@paperclipai/shared";
 import { and, asc, desc, eq, gte, inArray, isNull, lte, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
@@ -430,7 +431,7 @@ export function workTimelineService(db: Db) {
     const [agentRows, userRows] = await Promise.all([
       agentIds.length > 0
         ? db
-          .select({ id: agents.id, name: agents.name, icon: agents.icon })
+          .select({ id: agents.id, name: agents.name, icon: agents.icon, appearance: agents.appearance })
           .from(agents)
           .where(and(eq(agents.companyId, companyId), inArray(agents.id, maybeUuidList(agentIds))))
         : [],
@@ -763,7 +764,8 @@ export function workTimelineService(db: Db) {
       const [type, rawId] = id.split(":", 2) as [TimelineActorType, string];
       if (type === "agent") {
         const agent = actorMaps.agents.get(rawId);
-        return { id, type, name: agent?.name ?? "Unknown agent", avatar: agent?.icon ?? null };
+        const identity = withAgentAppearance(agent ?? { id: rawId });
+        return { id, type, name: agent?.name ?? "Unknown agent", avatar: identity.avatarUrl, appearance: identity.appearance, avatarUrl: identity.avatarUrl };
       }
       if (type === "user") {
         const user = actorMaps.users.get(rawId);

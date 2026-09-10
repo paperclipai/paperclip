@@ -1017,8 +1017,11 @@ const recoveryFakeCodex = resolve(
         normalizedSessionId,
       });
       expect(continuity).toMatchObject({
-        reason: expect.stringContaining(
-          "run.attach requires a settled Codex provider session",
+        // The deliberately corrupt input may be rejected during provider
+        // startup or by run.attach after startup has reported the failure.
+        // Both paths must archive the same damaged epoch and recover below.
+        reason: expect.stringMatching(
+          /run\.attach requires a settled Codex provider session|semantic tool input content digest does not match its transmitted input/,
         ),
         previousDriverSessionId: checkpoint.sessionId,
       });
