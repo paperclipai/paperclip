@@ -588,17 +588,22 @@ async function runReleaseRecoveryTail(
       existingRunResponsibleUserId: run.responsibleUserId,
     });
     if (!reviewParticipantResponsibleUserId) {
-      throw new WakeQueueApplicationError(
-        "responsible_user_unresolved",
-        "Unable to resolve responsible user for review-participant recovery heartbeat run",
-        {
-          runId: run.id,
-          agentId: recoveryAgent.id,
-          companyId: issue.companyId,
-          issueId: issue.id,
-          wakeReason: EXECUTION_REVIEW_PARTICIPANT_RECOVERY_RETRY_REASON,
+      // Do not throw here: a throw would unwind the surrounding issue-execution
+      // lock transaction and undo the release it already ran, leaving the
+      // issue's execution and checkout references stuck on this finished run.
+      // Treat an unresolved identity the same way the sibling checks just
+      // above treat a missing or non-invokable recovery agent: block the
+      // issue in the same committed transaction that clears the lock, so a
+      // human can assign a responsible user or resolve the issue directly.
+      return {
+        outcome: {
+          kind: "blocked",
+          issue,
+          previousStatus: statusForBlock(issue),
+          noticeKind: "execution_review_participant",
         },
-      );
+        postCommitEffects,
+      };
     }
 
     const queuedRun = await transaction.queueReviewParticipantRecoveryRun({

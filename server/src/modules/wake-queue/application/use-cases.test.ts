@@ -559,19 +559,22 @@ describe("releaseIssueExecution", () => {
     expect((queueCall.contextSnapshot as Record<string, unknown>).executionIdentityCause).toBe("company_default");
   });
 
-  it("throws WakeQueueApplicationError with code responsible_user_unresolved for a review-participant recovery run, without queuing it", async () => {
+  it("blocks the issue instead of throwing when the responsible user cannot resolve for a review-participant recovery run, so the release still commits", async () => {
     const transaction = createFakeTransaction();
     const host = createFakeHost({ resolveResponsibleUserId: vi.fn(async () => null) });
     const issueLock = createReviewParticipantIssueLock(host, transaction);
-    const releaseIssueExecution = createReleaseIssueExecution({ issueLock, recovery: createFakeRecovery() });
+    const recovery = createFakeRecovery();
+    const releaseIssueExecution = createReleaseIssueExecution({ issueLock, recovery });
 
-    await expect(
-      releaseIssueExecution({ companyId: "company-1", runId: "run-1", now: new Date() }),
-    ).rejects.toMatchObject({
-      constructor: WakeQueueApplicationError,
-      code: "responsible_user_unresolved",
-    });
+    const result = await releaseIssueExecution({ companyId: "company-1", runId: "run-1", now: new Date() });
+
+    // A throw here would unwind the lock transaction and leave the issue's
+    // execution and checkout references stuck on the finished run. The
+    // release must commit and the issue must end up "blocked" instead.
+    expect(result.outcome.kind).toBe("blocked");
+    expect(result.outcome.kind === "blocked" && result.outcome.noticeKind).toBe("execution_review_participant");
     expect(transaction.queueReviewParticipantRecoveryRun).not.toHaveBeenCalled();
+    expect(recovery.escalateStrandedAssignedIssue).toHaveBeenCalledTimes(1);
   });
 
   it("escalates through the recovery port for a blocked outcome, after the transaction resolves", async () => {
