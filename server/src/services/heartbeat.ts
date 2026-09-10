@@ -376,6 +376,10 @@ import {
   readContinuationAttempt,
 } from "./recovery/index.js";
 import {
+  buildConfigurationIncompleteRecoveryNoticeSeed,
+  buildExecutionReviewParticipantRecoveryNoticeSeed,
+  buildImmediateExecutionPathRecoveryNoticeSeed,
+  buildWorkspaceValidationRecoveryNoticeSeed,
   SANDBOX_PROVIDER_PLUGIN_NOT_READY_REASON,
   type StrandedRecoveryNoticeSeed,
 } from "./recovery/stranded-notice.js";
@@ -401,7 +405,10 @@ import {
 import {
   createWakeQueue,
   WakeQueueApplicationError,
+  type IssueSnapshot as WakeQueueIssueSnapshot,
   type PostCommitEffect as WakeQueuePostCommitEffect,
+  type ReleaseRecoveryBlockedNoticeKind,
+  type RunSnapshot as WakeQueueRunSnapshot,
 } from "../modules/wake-queue/index.js";
 import {
   buildIssueReviewPathLostIdempotencyKey,
@@ -8446,6 +8453,61 @@ export function heartbeatService(
     }
   }
 
+  // The wake-queue module's plain snapshots hold only the fields the release
+  // decision needs; escalation needs the full row, so this re-reads both by
+  // id after the release transaction has committed. Returns null when either
+  // row is gone, so both escalation adapters below skip the escalation call.
+  async function loadStrandedEscalationRows(input: {
+    issue: WakeQueueIssueSnapshot;
+    latestRun: WakeQueueRunSnapshot;
+  }) {
+    const [issueRow] = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.id, input.issue.id), eq(issues.companyId, input.issue.companyId)));
+    const [runRow] = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.id, input.latestRun.id), eq(heartbeatRuns.companyId, input.latestRun.companyId)));
+    if (!issueRow || !runRow) return null;
+    return { issueRow, runRow };
+  }
+
+  // Reproduces `adapters/postgres.ts`'s former `buildBlockedRecoveryNotice`
+  // four-arm switch, now built once here from the full run row this file
+  // already re-reads through `loadStrandedEscalationRows`.
+  function buildStrandedRecoveryNoticeForKind(
+    noticeKind: ReleaseRecoveryBlockedNoticeKind,
+    input: { issueStatus: "todo" | "in_progress"; runRow: typeof heartbeatRuns.$inferSelect },
+  ): {
+    notice: StrandedRecoveryNoticeSeed;
+    recoveryCause:
+      | typeof WORKSPACE_VALIDATION_RECOVERY_CAUSE
+      | typeof CONFIGURATION_INCOMPLETE_RECOVERY_CAUSE
+      | typeof EXECUTION_REVIEW_PARTICIPANT_RECOVERY_CAUSE
+      | undefined;
+  } {
+    if (noticeKind === "workspace_validation") {
+      return { notice: buildWorkspaceValidationRecoveryNoticeSeed(), recoveryCause: WORKSPACE_VALIDATION_RECOVERY_CAUSE };
+    }
+    if (noticeKind === "configuration_incomplete") {
+      const configurationIncomplete = parseObject(parseObject(input.runRow.resultJson).configurationIncomplete);
+      return {
+        notice: buildConfigurationIncompleteRecoveryNoticeSeed(
+          Object.keys(configurationIncomplete).length > 0 ? configurationIncomplete : null,
+        ),
+        recoveryCause: CONFIGURATION_INCOMPLETE_RECOVERY_CAUSE,
+      };
+    }
+    if (noticeKind === "execution_review_participant") {
+      return {
+        notice: buildExecutionReviewParticipantRecoveryNoticeSeed(),
+        recoveryCause: EXECUTION_REVIEW_PARTICIPANT_RECOVERY_CAUSE,
+      };
+    }
+    return { notice: buildImmediateExecutionPathRecoveryNoticeSeed({ status: input.issueStatus }), recoveryCause: undefined };
+  }
+
   const wakeQueue = createWakeQueue(db, {
     resolveResponsibleUserId: async (input) => {
       // `input.issue` is the wake-queue module's own transaction-scoped
@@ -8489,45 +8551,28 @@ export function heartbeatService(
       return resolveSessionBeforeForWakeup(agent, input.taskKey);
     },
     recovery: {
-      // The wake-queue module's plain snapshots hold only the fields the
-      // release decision needs; escalation needs the full row, so this
-      // re-reads both by id after the release transaction has committed.
       escalateStrandedAssignedIssue: async (input) => {
-        const [issueRow] = await db
-          .select()
-          .from(issues)
-          .where(and(eq(issues.id, input.issue.id), eq(issues.companyId, input.issue.companyId)));
-        const [runRow] = await db
-          .select()
-          .from(heartbeatRuns)
-          .where(and(eq(heartbeatRuns.id, input.latestRun.id), eq(heartbeatRuns.companyId, input.latestRun.companyId)));
-        if (!issueRow || !runRow) return;
+        const rows = await loadStrandedEscalationRows(input);
+        if (!rows) return;
+        const { notice, recoveryCause } = buildStrandedRecoveryNoticeForKind(input.noticeKind, {
+          issueStatus: input.issue.status === "todo" ? "todo" : "in_progress",
+          runRow: rows.runRow,
+        });
         await recovery.escalateStrandedAssignedIssue({
-          issue: issueRow,
+          issue: rows.issueRow,
           previousStatus: input.previousStatus,
-          latestRun: runRow,
-          notice: input.notice as StrandedRecoveryNoticeSeed,
-          recoveryCause: (input.recoveryCause ?? undefined) as
-            | typeof WORKSPACE_VALIDATION_RECOVERY_CAUSE
-            | typeof CONFIGURATION_INCOMPLETE_RECOVERY_CAUSE
-            | typeof EXECUTION_REVIEW_PARTICIPANT_RECOVERY_CAUSE
-            | undefined,
+          latestRun: rows.runRow,
+          notice,
+          recoveryCause,
         });
       },
       escalateStrandedRecoveryIssueInPlace: async (input) => {
-        const [issueRow] = await db
-          .select()
-          .from(issues)
-          .where(and(eq(issues.id, input.issue.id), eq(issues.companyId, input.issue.companyId)));
-        const [runRow] = await db
-          .select()
-          .from(heartbeatRuns)
-          .where(and(eq(heartbeatRuns.id, input.latestRun.id), eq(heartbeatRuns.companyId, input.latestRun.companyId)));
-        if (!issueRow || !runRow) return;
+        const rows = await loadStrandedEscalationRows(input);
+        if (!rows) return;
         await recovery.escalateStrandedRecoveryIssueInPlace({
-          issue: issueRow,
+          issue: rows.issueRow,
           previousStatus: input.previousStatus,
-          latestRun: runRow,
+          latestRun: rows.runRow,
         });
       },
     },

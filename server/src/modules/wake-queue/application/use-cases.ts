@@ -1,20 +1,33 @@
 import { enrichPromotedWakeContext } from "../domain/context.js";
-import { decideDeferredWake, decideReleaseRecovery } from "../domain/policy.js";
+import {
+  decideQueuedCommentAction,
+  decideReleaseRecovery,
+  decideWakeOutcome,
+  deriveImmediateRecoveryContextLabels,
+} from "../domain/policy.js";
+import {
+  EXECUTION_REVIEW_PARTICIPANT_RECOVERY_RETRY_REASON,
+  isConfigurationIncompleteFailedRun,
+  isWorkspaceValidationFailedRun,
+  readNonEmptyString,
+} from "../domain/values.js";
+import { withRecoveryContext } from "../../../services/recovery/status-only-context.js";
 import type {
+  DeferredWakeCandidate,
+  InvokableAgentSnapshot,
   IssueLockWriter,
   IssueSnapshot,
   LockedIssueExecution,
   RecoveryEscalationPort,
   ReleaseTransactionResult,
   RunSnapshot,
-  WakeQueueReader,
-  WakeQueueWriter,
+  WakeQueueHost,
+  WakeQueueTransaction,
 } from "./ports.js";
 import type { PostCommitEffect, ReleaseOutcome } from "./types.js";
 import { WakeQueueApplicationError } from "./types.js";
 
 const ISSUE_DISPOSITION_REPAIR_RETRY_REASON = "issue_disposition_repair";
-const EXECUTION_REVIEW_PARTICIPANT_RECOVERY_RETRY_REASON = "execution_review_participant_recovery";
 const EXECUTION_REVIEW_PARTICIPANT_RECOVERY_WAKE_REASONS = new Set([
   "execution_review_requested",
   "execution_approval_requested",
@@ -31,20 +44,6 @@ const UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES = new Set([
   "cancelled",
 ]);
 const STRANDED_ISSUE_RECOVERY_ORIGIN_KIND = "stranded_issue_recovery";
-const WORKSPACE_VALIDATION_FAILURE_CODE = "workspace_validation_failed";
-const CONFIGURATION_INCOMPLETE_FAILURE_CODE = "configuration_incomplete";
-
-function readNonEmptyString(value: unknown): string | null {
-  return typeof value === "string" && value.trim().length > 0 ? value : null;
-}
-
-function isWorkspaceValidationFailedRun(run: Pick<RunSnapshot, "errorCode">): boolean {
-  return run.errorCode === WORKSPACE_VALIDATION_FAILURE_CODE;
-}
-
-function isConfigurationIncompleteFailedRun(run: Pick<RunSnapshot, "errorCode">): boolean {
-  return run.errorCode === CONFIGURATION_INCOMPLETE_FAILURE_CODE || run.errorCode === "model_not_found";
-}
 
 function isExecutionReviewParticipantRecoveryRun(run: Pick<RunSnapshot, "contextSnapshot">): boolean {
   return readNonEmptyString(run.contextSnapshot.retryReason) === EXECUTION_REVIEW_PARTICIPANT_RECOVERY_RETRY_REASON;
@@ -73,12 +72,47 @@ function currentAgentParticipant(issue: IssueSnapshot): { agentId: string } | nu
   return agentId ? { agentId } : null;
 }
 
+/**
+ * Resolves the responsible user for a heartbeat run the module is about to
+ * queue. The promote path and the immediate-recovery path both call this
+ * one function; each still checks the result and throws its own error with
+ * its own metadata when no responsible user resolves.
+ */
+async function resolveResponsibleUserForQueuedRun(
+  host: WakeQueueHost,
+  input: {
+    companyId: string;
+    contextSnapshot: Record<string, unknown>;
+    issue: IssueSnapshot;
+    requestedByActorType: "user" | "agent" | "system" | null;
+    requestedByActorId: string | null;
+    source: string;
+    triggerDetail: string | null;
+    existingRunResponsibleUserId: string | null;
+  },
+): Promise<string | null> {
+  const routineEnvContext = await host.getRoutineEnv({ companyId: input.companyId, issue: input.issue });
+  return host.resolveResponsibleUserId({
+    companyId: input.companyId,
+    contextSnapshot: input.contextSnapshot,
+    issue: input.issue,
+    routineEnvContext,
+    requestedByActorType: input.requestedByActorType,
+    requestedByActorId: input.requestedByActorId,
+    source: input.source,
+    triggerDetail: input.triggerDetail,
+    existingRunResponsibleUserId: input.existingRunResponsibleUserId,
+  });
+}
+
 export type ReleaseIssueExecutionInput = {
   companyId: string;
   runId: string;
   now: Date;
   suppressImmediateRecovery?: boolean;
 };
+
+type PauseHoldFacts = Awaited<ReturnType<WakeQueueTransaction["getPauseHoldFacts"]>>;
 
 /**
  * Drains the deferred-wake queue for the issue a run just released, in
@@ -89,20 +123,35 @@ export type ReleaseIssueExecutionInput = {
  */
 async function runReleaseDrain(
   locked: LockedIssueExecution,
-  ports: { reader: WakeQueueReader; writer: WakeQueueWriter },
+  ports: { host: WakeQueueHost; transaction: WakeQueueTransaction },
   input: ReleaseIssueExecutionInput,
 ): Promise<ReleaseTransactionResult> {
   const { run } = locked;
-  let issue = locked.primaryIssue;
+  const issue = locked.primaryIssue;
   const postCommitEffects: PostCommitEffect[] = [];
 
+  // Each `continue` path below leaves the wake row off the
+  // `deferred_issue_execution` status, so the next queue read cannot
+  // return that same row again. That invariant is what ends this loop.
+  // The `processedWakeIds` guard below makes a break of the invariant
+  // fail loudly, instead of holding this transaction open forever.
+  const processedWakeIds = new Set<string>();
+
   while (true) {
-    const candidate = await ports.writer.claimNextDeferredWake({ companyId: run.companyId, issueId: issue.id });
+    const candidate = await ports.transaction.findNextDeferredWake({ companyId: run.companyId, issueId: issue.id });
     if (!candidate) break;
+    if (processedWakeIds.has(candidate.id)) {
+      throw new WakeQueueApplicationError(
+        "deferred_wake_not_advanced",
+        "Deferred wake queue read the same wake id twice; the row did not leave the deferred status",
+        { companyId: run.companyId, issueId: issue.id, wakeId: candidate.id },
+      );
+    }
+    processedWakeIds.add(candidate.id);
 
     let liveness = { liveNonSelfCommentIds: candidate.queuedCommentIds, containedSelfAuthoredComment: false };
     if (candidate.queuedCommentIds.length > 0) {
-      liveness = await ports.writer.getQueuedCommentLiveness({
+      liveness = await ports.transaction.getQueuedCommentLiveness({
         companyId: run.companyId,
         issueId: issue.id,
         wakeAgentId: candidate.agentId,
@@ -111,12 +160,11 @@ async function runReleaseDrain(
         queuedCommentIds: candidate.queuedCommentIds,
       });
     }
-    const liveCommentIdsChanged =
-      liveness.liveNonSelfCommentIds.length !== candidate.queuedCommentIds.length ||
-      liveness.liveNonSelfCommentIds.some((id, index) => id !== candidate.queuedCommentIds[index]);
+    // A length mismatch is the only way the lists can differ: the adapter derives `liveNonSelfCommentIds` with `.filter`, so it is always a subsequence of `queuedCommentIds`.
+    const liveCommentIdsDiffer = liveness.liveNonSelfCommentIds.length !== candidate.queuedCommentIds.length;
 
-    const deferredAgent = await ports.reader.findInvokableAgent({ companyId: run.companyId, agentId: candidate.agentId });
-    const pauseHold = await ports.writer.getPauseHoldFacts({
+    const deferredAgent = await ports.transaction.findInvokableAgent({ companyId: run.companyId, agentId: candidate.agentId });
+    const pauseHold = await ports.transaction.getPauseHoldFacts({
       companyId: run.companyId,
       issueId: issue.id,
       wakeAgentId: candidate.agentId,
@@ -125,24 +173,21 @@ async function runReleaseDrain(
       requestedByActorId: candidate.requestedByActorId,
     });
 
-    let decision = decideDeferredWake({
-      queuedComment: {
-        hasQueuedCommentIds: candidate.queuedCommentIds.length > 0,
-        liveNonSelfCommentIdsLength: liveness.liveNonSelfCommentIds.length,
-        queuedCommentIdsLength: candidate.queuedCommentIds.length,
-        liveCommentIdsChanged,
-        containedSelfAuthoredComment: liveness.containedSelfAuthoredComment,
-        preservesIndependentContinuation: candidate.preservesIndependentContinuation,
-      },
-      agent: { agentFound: deferredAgent !== null, invokable: deferredAgent?.invokable ?? false },
-      pauseHold: { activePauseHold: pauseHold.activePauseHold, treeHoldInteractionWake: pauseHold.treeHoldInteractionWake },
+    const commentAction = decideQueuedCommentAction({
+      hasQueuedCommentIds: candidate.queuedCommentIds.length > 0,
+      liveNonSelfCommentIdsLength: liveness.liveNonSelfCommentIds.length,
+      liveCommentIdsDiffer,
+      containedSelfAuthoredComment: liveness.containedSelfAuthoredComment,
+      preservesIndependentContinuation: candidate.preservesIndependentContinuation,
     });
 
-    if (decision.kind === "cancel_empty") {
-      await ports.writer.cancelDeferredWake({
+    if (commentAction.kind === "cancel_empty") {
+      // A `false` result means another writer already moved this row off
+      // the deferred status, so the next queue read cannot return it again.
+      await ports.transaction.cancelDeferredWake({
         companyId: run.companyId,
         wakeId: candidate.id,
-        reason: decision.selfAuthored
+        reason: commentAction.selfAuthored
           ? "Deferred wake contained only comments authored by the finishing run"
           : "Queued messages were discarded before promotion",
         now: input.now,
@@ -151,8 +196,8 @@ async function runReleaseDrain(
     }
 
     let workingCandidate = candidate;
-    if (decision.kind === "normalize") {
-      const normalized = await ports.writer.normalizeDeferredWakeCommentIds({
+    if (commentAction.kind === "normalize") {
+      const normalized = await ports.transaction.normalizeDeferredWakeCommentIds({
         companyId: run.companyId,
         wakeId: candidate.id,
         payload: candidate.payload,
@@ -161,29 +206,21 @@ async function runReleaseDrain(
       });
       if (!normalized) continue;
       workingCandidate = normalized;
-      // Re-decide with the same agent/pause-hold facts already fetched above; the
-      // comment-id set now matches, so only fail/cancel-pause-hold/promote can result.
-      decision = decideDeferredWake({
-        queuedComment: {
-          hasQueuedCommentIds: workingCandidate.queuedCommentIds.length > 0,
-          liveNonSelfCommentIdsLength: liveness.liveNonSelfCommentIds.length,
-          queuedCommentIdsLength: liveness.liveNonSelfCommentIds.length,
-          liveCommentIdsChanged: false,
-          containedSelfAuthoredComment: liveness.containedSelfAuthoredComment,
-          preservesIndependentContinuation: workingCandidate.preservesIndependentContinuation,
-        },
-        agent: { agentFound: deferredAgent !== null, invokable: deferredAgent?.invokable ?? false },
-        pauseHold: { activePauseHold: pauseHold.activePauseHold, treeHoldInteractionWake: pauseHold.treeHoldInteractionWake },
-      });
     }
 
-    if (decision.kind === "fail_not_invokable") {
-      await ports.writer.failDeferredWake({ companyId: run.companyId, wakeId: workingCandidate.id, now: input.now });
+    // A comment-id rewrite cannot change the agent or pause-hold facts already fetched above, so one decision covers both the rewritten and un-rewritten cases.
+    const wakeOutcome = decideWakeOutcome({
+      agent: { agentFound: deferredAgent !== null, invokable: deferredAgent?.invokable ?? false },
+      pauseHold: { activePauseHold: pauseHold.activePauseHold, treeHoldInteractionWake: pauseHold.treeHoldInteractionWake },
+    });
+
+    if (wakeOutcome.kind === "fail_not_invokable") {
+      await ports.transaction.failDeferredWake({ companyId: run.companyId, wakeId: workingCandidate.id, now: input.now });
       continue;
     }
 
-    if (decision.kind === "cancel_pause_hold") {
-      await ports.writer.cancelDeferredWake({
+    if (wakeOutcome.kind === "cancel_pause_hold") {
+      await ports.transaction.cancelDeferredWake({
         companyId: run.companyId,
         wakeId: workingCandidate.id,
         reason: "Deferred wake suppressed by active subtree pause hold",
@@ -192,150 +229,164 @@ async function runReleaseDrain(
       continue;
     }
 
-    // decision.kind === "promote"
-    const invokableAgent = deferredAgent!;
+    // Unreachable: decideWakeOutcome only returns "promote" when agentFound and invokable are both true.
+    if (!deferredAgent) throw new Error("wake-queue: promoted a deferred wake with no invokable agent");
 
-    // Claim the wake for promotion before any other write in this branch
-    // (design choice: claim first, then reopen). A reopen write, or its
-    // `issue_reopened` post-commit effect, must never survive a lost race on
-    // this compare-and-set. When the claim fails, a concurrent writer already
-    // changed the wake's status, so this candidate is gone; move on to the
-    // next one instead of ending the drain.
-    const claimedForPromotion = await ports.writer.claimDeferredWakeForPromotion({
-      companyId: run.companyId,
-      wakeId: workingCandidate.id,
-      now: input.now,
-    });
-    if (!claimedForPromotion) continue;
-
-    let currentIssue = issue;
-
-    if (workingCandidate.deferredCommentIds.length > 0 && (currentIssue.status === "done" || currentIssue.status === "cancelled")) {
-      const selfAuthorship = await ports.writer.getCommentSelfAuthorship({
-        companyId: run.companyId,
-        issueId: currentIssue.id,
-        finishingRunId: run.id,
-        commentIds: workingCandidate.deferredCommentIds,
-      });
-      const shouldReopen =
-        !selfAuthorship.allSelfAuthored &&
-        (workingCandidate.requestedByActorType === "user" || workingCandidate.wakeReason === "issue_reopened_via_comment");
-      if (shouldReopen) {
-        const reopened = await ports.writer.reopenIssue({ companyId: run.companyId, issueId: currentIssue.id, runId: run.id });
-        if (reopened) {
-          postCommitEffects.push({
-            kind: "issue_reopened",
-            companyId: reopened.companyId,
-            agentId: invokableAgent.id,
-            runId: run.id,
-            issueId: reopened.id,
-            identifier: reopened.identifier,
-            reopenedFrom: currentIssue.status,
-          });
-          currentIssue = reopened;
-          issue = reopened;
-        }
-      }
-    }
-
-    const promotedReason = workingCandidate.reason ?? "issue_execution_promoted";
-    const promotedSource = workingCandidate.source ?? "automation";
-    const promotedTriggerDetail = workingCandidate.triggerDetail ?? null;
-    const promotedPayload = { ...workingCandidate.payload };
-    delete promotedPayload["_paperclipWakeContext"];
-
-    const promotedContextSeed: Record<string, unknown> = { ...workingCandidate.deferredContextSeed };
-    if (pauseHold.activePauseHold) {
-      promotedContextSeed.treeHoldInteraction = true;
-      promotedContextSeed.activeTreeHold = {
-        holdId: pauseHold.holdId,
-        rootIssueId: pauseHold.rootIssueId,
-        mode: pauseHold.mode,
-        reason: pauseHold.reason,
-        releasePolicy: pauseHold.releasePolicy,
-        interaction: true,
-      };
-    }
-
-    const { contextSnapshot: promotedContextSnapshot, taskKey: promotedTaskKey } = enrichPromotedWakeContext({
-      contextSnapshot: promotedContextSeed,
-      reason: promotedReason,
-      source: promotedSource,
-      triggerDetail: promotedTriggerDetail,
-      payload: promotedPayload,
-    });
-
-    const sessionBefore =
-      readNonEmptyString(promotedContextSnapshot.resumeSessionDisplayId) ??
-      (await ports.reader.resolveSessionBeforeForWakeup({
-        companyId: run.companyId,
-        agentId: invokableAgent.id,
-        taskKey: promotedTaskKey,
-      }));
-
-    const promotedRoutineEnvContext = await ports.reader.getRoutineEnv({
-      companyId: invokableAgent.companyId,
-      issue: currentIssue,
-    });
-    const responsibleUserId = await ports.reader.resolveResponsibleUserId({
-      companyId: invokableAgent.companyId,
-      contextSnapshot: promotedContextSnapshot,
-      issue: currentIssue,
-      routineEnvContext: promotedRoutineEnvContext,
-      requestedByActorType: workingCandidate.requestedByActorType as "user" | "agent" | "system" | null,
-      requestedByActorId: workingCandidate.requestedByActorId,
-      source: promotedSource,
-      triggerDetail: promotedTriggerDetail,
-      existingRunResponsibleUserId: run.responsibleUserId,
-    });
-    if (!responsibleUserId) {
-      throw new WakeQueueApplicationError(
-        "responsible_user_unresolved",
-        "Unable to resolve responsible user for promoted heartbeat run",
-        {
-          runId: run.id,
-          agentId: invokableAgent.id,
-          companyId: invokableAgent.companyId,
-          issueId: currentIssue.id,
-          wakeReason: readNonEmptyString(promotedContextSnapshot.wakeReason),
-        },
-      );
-    }
-
-    const promotedRun = await ports.writer.finalizePromotedWake({
-      companyId: run.companyId,
-      wakeId: workingCandidate.id,
-      deferredAgent: invokableAgent,
-      issue: currentIssue,
-      finishingRun: run,
-      contextSnapshot: promotedContextSnapshot,
-      reason: promotedReason,
-      source: promotedSource,
-      triggerDetail: promotedTriggerDetail,
-      payload: promotedPayload,
-      responsibleUserId,
-      sessionBefore,
-      now: input.now,
-    });
-
-    postCommitEffects.push({ kind: "run_queued", run: promotedRun });
-    return { outcome: { kind: "promoted", run: promotedRun }, postCommitEffects };
+    const promoted = await promoteDeferredWake(ports, run, issue, workingCandidate, deferredAgent, pauseHold, postCommitEffects, input);
+    if (!promoted) continue;
+    return promoted;
   }
 
-  return runReleaseRecoveryTail(issue, run, ports.reader, ports.writer, input, postCommitEffects);
+  return runReleaseRecoveryTail(issue, run, ports.host, ports.transaction, input, postCommitEffects);
+}
+
+/**
+ * Finalizes one deferred wake that `decideWakeOutcome` chose to promote.
+ * Returns `null` when the promotion claim loses a race, so the caller moves
+ * on to the next queued wake instead of ending the drain.
+ */
+async function promoteDeferredWake(
+  ports: { host: WakeQueueHost; transaction: WakeQueueTransaction },
+  run: RunSnapshot,
+  issue: IssueSnapshot,
+  workingCandidate: DeferredWakeCandidate,
+  invokableAgent: InvokableAgentSnapshot,
+  pauseHold: PauseHoldFacts,
+  postCommitEffects: PostCommitEffect[],
+  input: ReleaseIssueExecutionInput,
+): Promise<ReleaseTransactionResult | null> {
+  // Claim the wake for promotion before any other write in this branch
+  // (design choice: claim first, then reopen). A reopen write, or its
+  // `issue_reopened` post-commit effect, must never survive a lost race on
+  // this compare-and-set. When the claim fails, a concurrent writer already
+  // changed the wake's status, so this candidate is gone; the caller moves
+  // on to the next one instead of ending the drain.
+  const claimedForPromotion = await ports.transaction.claimDeferredWakeForPromotion({
+    companyId: run.companyId,
+    wakeId: workingCandidate.id,
+    now: input.now,
+  });
+  if (!claimedForPromotion) return null;
+
+  let currentIssue = issue;
+
+  if (workingCandidate.deferredCommentIds.length > 0 && (currentIssue.status === "done" || currentIssue.status === "cancelled")) {
+    const selfAuthorship = await ports.transaction.getCommentSelfAuthorship({
+      companyId: run.companyId,
+      issueId: currentIssue.id,
+      finishingRunId: run.id,
+      commentIds: workingCandidate.deferredCommentIds,
+    });
+    const shouldReopen =
+      !selfAuthorship.allSelfAuthored &&
+      (workingCandidate.requestedByActorType === "user" || workingCandidate.wakeReason === "issue_reopened_via_comment");
+    if (shouldReopen) {
+      const reopened = await ports.transaction.reopenIssue({ companyId: run.companyId, issueId: currentIssue.id, runId: run.id });
+      if (reopened) {
+        postCommitEffects.push({
+          kind: "issue_reopened",
+          companyId: reopened.companyId,
+          agentId: invokableAgent.id,
+          runId: run.id,
+          issueId: reopened.id,
+          identifier: reopened.identifier,
+          reopenedFrom: currentIssue.status,
+        });
+        currentIssue = reopened;
+      }
+    }
+  }
+
+  const promotedReason = workingCandidate.reason ?? "issue_execution_promoted";
+  const promotedSource = workingCandidate.source ?? "automation";
+  const promotedTriggerDetail = workingCandidate.triggerDetail ?? null;
+  const promotedPayload = { ...workingCandidate.payload };
+  delete promotedPayload["_paperclipWakeContext"];
+
+  const promotedContextSeed: Record<string, unknown> = { ...workingCandidate.deferredContextSeed };
+  if (pauseHold.activePauseHold) {
+    promotedContextSeed.treeHoldInteraction = true;
+    promotedContextSeed.activeTreeHold = {
+      holdId: pauseHold.holdId,
+      rootIssueId: pauseHold.rootIssueId,
+      mode: pauseHold.mode,
+      reason: pauseHold.reason,
+      releasePolicy: pauseHold.releasePolicy,
+      interaction: true,
+    };
+  }
+
+  const { contextSnapshot: promotedContextSnapshot, taskKey: promotedTaskKey } = enrichPromotedWakeContext({
+    contextSnapshot: promotedContextSeed,
+    reason: promotedReason,
+    source: promotedSource,
+    triggerDetail: promotedTriggerDetail,
+    payload: promotedPayload,
+  });
+
+  const sessionBefore =
+    readNonEmptyString(promotedContextSnapshot.resumeSessionDisplayId) ??
+    (await ports.host.resolveSessionBeforeForWakeup({
+      companyId: run.companyId,
+      agentId: invokableAgent.id,
+      taskKey: promotedTaskKey,
+    }));
+
+  const responsibleUserId = await resolveResponsibleUserForQueuedRun(ports.host, {
+    companyId: invokableAgent.companyId,
+    contextSnapshot: promotedContextSnapshot,
+    issue: currentIssue,
+    requestedByActorType: workingCandidate.requestedByActorType,
+    requestedByActorId: workingCandidate.requestedByActorId,
+    source: promotedSource,
+    triggerDetail: promotedTriggerDetail,
+    existingRunResponsibleUserId: run.responsibleUserId,
+  });
+  if (!responsibleUserId) {
+    throw new WakeQueueApplicationError(
+      "responsible_user_unresolved",
+      "Unable to resolve responsible user for promoted heartbeat run",
+      {
+        runId: run.id,
+        agentId: invokableAgent.id,
+        companyId: invokableAgent.companyId,
+        issueId: currentIssue.id,
+        wakeReason: readNonEmptyString(promotedContextSnapshot.wakeReason),
+      },
+    );
+  }
+
+  const promotedRun = await ports.transaction.finalizePromotedWake({
+    companyId: run.companyId,
+    wakeId: workingCandidate.id,
+    deferredAgent: invokableAgent,
+    issue: currentIssue,
+    finishingRun: run,
+    contextSnapshot: promotedContextSnapshot,
+    reason: promotedReason,
+    source: promotedSource,
+    triggerDetail: promotedTriggerDetail,
+    payload: promotedPayload,
+    responsibleUserId,
+    sessionBefore,
+    now: input.now,
+  });
+
+  postCommitEffects.push({ kind: "run_queued", run: promotedRun });
+  return { outcome: { kind: "promoted", run: promotedRun }, postCommitEffects };
 }
 
 async function runReleaseRecoveryTail(
   issue: IssueSnapshot,
   run: RunSnapshot,
-  reader: WakeQueueReader,
-  writer: WakeQueueWriter,
+  host: WakeQueueHost,
+  transaction: WakeQueueTransaction,
   input: ReleaseIssueExecutionInput,
   postCommitEffects: PostCommitEffect[],
 ): Promise<ReleaseTransactionResult> {
   const suppressImmediateRecovery = input.suppressImmediateRecovery ?? false;
   const isStrandedRecoveryOrigin = issue.originKind === STRANDED_ISSUE_RECOVERY_ORIGIN_KIND;
-  const recoveryAgent = await reader.findInvokableAgent({ companyId: issue.companyId, agentId: run.agentId });
+  const recoveryAgent = await transaction.findInvokableAgent({ companyId: issue.companyId, agentId: run.agentId });
 
   const currentParticipant = currentAgentParticipant(issue);
   const reviewParticipantApplies =
@@ -354,22 +405,22 @@ async function runReleaseRecoveryTail(
     (run.status === "failed" || run.status === "timed_out" || run.status === "cancelled");
 
   const suppressedByPauseHold = (reviewParticipantApplies || immediateApplies)
-    ? await writer.isAutomaticRecoverySuppressedByPauseHold({ companyId: issue.companyId, issueId: issue.id })
+    ? await transaction.isAutomaticRecoverySuppressedByPauseHold({ companyId: issue.companyId, issueId: issue.id })
     : false;
 
   const hasExistingExecutionPath = reviewParticipantApplies
-    ? await writer.hasExistingExecutionPath({
+    ? await transaction.hasExistingExecutionPath({
         companyId: issue.companyId,
         issueId: issue.id,
         excludeRunId: run.id,
         agentId: currentParticipant?.agentId ?? null,
       })
     : immediateApplies
-      ? await writer.hasExistingExecutionPath({ companyId: issue.companyId, issueId: issue.id, excludeRunId: run.id, agentId: null })
+      ? await transaction.hasExistingExecutionPath({ companyId: issue.companyId, issueId: issue.id, excludeRunId: run.id, agentId: null })
       : false;
 
   const hasExplicitBlockerPath = immediateApplies && !reviewParticipantApplies
-    ? await writer.hasExplicitBlockerPath({ companyId: issue.companyId, issueId: issue.id })
+    ? await transaction.hasExplicitBlockerPath({ companyId: issue.companyId, issueId: issue.id })
     : false;
 
   const expectedRetryReason: "assignment_recovery" | "issue_continuation_needed" =
@@ -379,27 +430,23 @@ async function runReleaseRecoveryTail(
     suppressImmediateRecovery,
     reviewParticipant: {
       applies: reviewParticipantApplies,
-      hasExistingExecutionPath,
-      hasPersistedMonitor: Boolean(issue.monitorNextCheckAt),
-      suppressedByPauseHold,
-      isStrandedRecoveryOrigin,
-      recoveryAgentPresent: recoveryAgent !== null,
-      recoveryAgentInvokable: recoveryAgent?.invokable ?? false,
       isExecutionReviewParticipantRecoveryRun: isExecutionReviewParticipantRecoveryRun(run),
     },
     immediate: {
       applies: immediateApplies,
       isDispositionRepairRetry: readNonEmptyString(run.contextSnapshot.retryReason) === ISSUE_DISPOSITION_REPAIR_RETRY_REASON,
+      hasExplicitBlockerPath,
+      isWorkspaceValidationFailedRun: isWorkspaceValidationFailedRun(run),
+      isConfigurationIncompleteFailedRun: isConfigurationIncompleteFailedRun(run),
+      automaticRecoveryAlreadyFailed: didAutomaticRecoveryFail(run, expectedRetryReason),
+    },
+    shared: {
       hasExistingExecutionPath,
       hasPersistedMonitor: Boolean(issue.monitorNextCheckAt),
-      hasExplicitBlockerPath,
       suppressedByPauseHold,
       isStrandedRecoveryOrigin,
       recoveryAgentPresent: recoveryAgent !== null,
       recoveryAgentInvokable: recoveryAgent?.invokable ?? false,
-      isWorkspaceValidationFailedRun: isWorkspaceValidationFailedRun(run),
-      isConfigurationIncompleteFailedRun: isConfigurationIncompleteFailedRun(run),
-      automaticRecoveryAlreadyFailed: didAutomaticRecoveryFail(run, expectedRetryReason),
     },
   });
 
@@ -415,35 +462,32 @@ async function runReleaseRecoveryTail(
   }
 
   if (decision.kind === "blocked") {
-    const { notice, recoveryCause } = await writer.buildBlockedRecoveryNotice({
-      noticeKind: decision.notice,
-      issueStatus: issue.status === "todo" ? "todo" : "in_progress",
-      finishingRun: run,
-    });
     return {
       outcome: {
         kind: "blocked",
         issue,
         previousStatus: statusForBlock(issue),
-        notice,
-        recoveryCause,
+        noticeKind: decision.notice,
       },
       postCommitEffects,
     };
   }
 
-  const sessionBefore = await reader.resolveSessionBeforeForWakeup({
+  // Unreachable: decideReleaseRecovery only reaches "queue_review_participant_recovery" or "queue_recovery" when the shared recovery-agent facts are both true.
+  if (!recoveryAgent) throw new Error("wake-queue: queued a recovery run with no invokable recovery agent");
+
+  const sessionBefore = await host.resolveSessionBeforeForWakeup({
     companyId: issue.companyId,
-    agentId: recoveryAgent!.id,
+    agentId: recoveryAgent.id,
     taskKey: readNonEmptyString(run.contextSnapshot.taskKey) ?? readNonEmptyString(run.contextSnapshot.issueId),
   });
 
   if (decision.kind === "queue_review_participant_recovery") {
-    const queuedRun = await writer.queueReviewParticipantRecoveryRun({
+    const queuedRun = await transaction.queueReviewParticipantRecoveryRun({
       companyId: issue.companyId,
       issue,
       finishingRun: run,
-      recoveryAgent: recoveryAgent!,
+      recoveryAgent,
       sessionBefore,
       now: input.now,
     });
@@ -451,14 +495,53 @@ async function runReleaseRecoveryTail(
     return { outcome: { kind: "queued_review_participant_recovery", run: queuedRun }, postCommitEffects };
   }
 
-  // decision.kind === "queue_recovery"; the adapter builds the recovery
-  // context snapshot and resolves the responsible user from it, throwing
-  // WakeQueueApplicationError when no responsible user resolves.
-  const queuedRun = await writer.queueImmediateRecoveryRun({
+  // decision.kind === "queue_recovery"; resolve the responsible user here,
+  // in the application layer, before the transaction port queues the run.
+  const { retryReason, recoveryReason, recoverySource } = deriveImmediateRecoveryContextLabels(issue.status);
+  const recoveryContextSnapshot = withRecoveryContext(
+    {
+      issueId: issue.id,
+      taskId: issue.id,
+      wakeReason: recoveryReason,
+      retryReason,
+      source: recoverySource,
+      retryOfRunId: run.id,
+    },
+    "normal_model",
+  );
+
+  const recoveryResponsibleUserId = await resolveResponsibleUserForQueuedRun(host, {
+    companyId: issue.companyId,
+    contextSnapshot: recoveryContextSnapshot,
+    issue,
+    requestedByActorType: "system",
+    requestedByActorId: null,
+    source: "automation",
+    triggerDetail: "system",
+    existingRunResponsibleUserId: run.responsibleUserId,
+  });
+  if (!recoveryResponsibleUserId) {
+    throw new WakeQueueApplicationError(
+      "responsible_user_unresolved",
+      "Unable to resolve responsible user for recovery heartbeat run",
+      {
+        runId: run.id,
+        agentId: recoveryAgent.id,
+        companyId: issue.companyId,
+        issueId: issue.id,
+        wakeReason: recoveryReason,
+      },
+    );
+  }
+
+  const queuedRun = await transaction.queueImmediateRecoveryRun({
     companyId: issue.companyId,
     issue,
     finishingRun: run,
-    recoveryAgent: recoveryAgent!,
+    recoveryAgent,
+    reason: recoveryReason,
+    contextSnapshot: recoveryContextSnapshot,
+    responsibleUserId: recoveryResponsibleUserId,
     sessionBefore,
     now: input.now,
   });
@@ -487,8 +570,7 @@ export function createReleaseIssueExecution(deps: {
         issue: result.outcome.issue,
         previousStatus: result.outcome.previousStatus,
         latestRun: result.run,
-        notice: result.outcome.notice,
-        recoveryCause: result.outcome.recoveryCause,
+        noticeKind: result.outcome.noticeKind,
       });
     } else if (result.outcome.kind === "blocked_recovery_in_place") {
       await deps.recovery.escalateStrandedRecoveryIssueInPlace({

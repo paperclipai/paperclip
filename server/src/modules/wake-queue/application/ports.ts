@@ -8,7 +8,7 @@ import type {
   RunSummary,
 } from "./types.js";
 
-export type { InvokableAgentSnapshot, IssueSnapshot, RunSnapshot, RunSummary };
+export type { InvokableAgentSnapshot, IssueSnapshot, ReleaseRecoveryBlockedNoticeKind, RunSnapshot, RunSummary };
 
 /** The primary issue a locked release resolves to, plus the finishing run the lock step already loaded. */
 export type LockedIssueExecution = {
@@ -21,9 +21,12 @@ export type ReleaseTransactionResult = {
   postCommitEffects: PostCommitEffect[];
 };
 
-/** Read-only lookups the release use case needs, each scoped to a company. */
-export interface WakeQueueReader {
-  findInvokableAgent(input: { companyId: string; agentId: string }): Promise<InvokableAgentSnapshot | null>;
+/**
+ * The three host callbacks the release use case needs. These members do
+ * not run on the module's own transaction, which is why two of them take
+ * the transaction-scoped issue snapshot instead of an issue id.
+ */
+export interface WakeQueueHost {
   /**
    * Takes the transaction-scoped issue snapshot, not an issue id, so this
    * port never re-reads the issue on a separate connection while the
@@ -64,7 +67,7 @@ export type DeferredWakeCandidate = {
   reason: string | null;
   source: string | null;
   triggerDetail: string | null;
-  requestedByActorType: string | null;
+  requestedByActorType: "user" | "agent" | "system" | null;
   requestedByActorId: string | null;
   payload: Record<string, unknown>;
   /** The queued comment ids the wake's queued-comment context carries, already extracted from the payload. */
@@ -94,9 +97,14 @@ export type PromoteDeferredWakeInput = {
   now: Date;
 };
 
-/** The transaction-scoped write operations that drain and resolve the deferred-wake queue. */
-export interface WakeQueueWriter {
-  claimNextDeferredWake(input: { companyId: string; issueId: string }): Promise<DeferredWakeCandidate | null>;
+/**
+ * Every member is bound to the one transaction that `withIssueExecutionLock`
+ * owns. The interface holds both reads and writes that drain and resolve
+ * the deferred-wake queue.
+ */
+export interface WakeQueueTransaction {
+  findInvokableAgent(input: { companyId: string; agentId: string }): Promise<InvokableAgentSnapshot | null>;
+  findNextDeferredWake(input: { companyId: string; issueId: string }): Promise<DeferredWakeCandidate | null>;
   getQueuedCommentLiveness(input: {
     companyId: string;
     issueId: string;
@@ -115,7 +123,7 @@ export interface WakeQueueWriter {
   normalizeDeferredWakeCommentIds(input: {
     companyId: string;
     wakeId: string;
-    /** The wake's current payload, as already read by `claimNextDeferredWake`, used as the rewrite base. */
+    /** The wake's current payload, as already read by `findNextDeferredWake`, used as the rewrite base. */
     payload: Record<string, unknown>;
     liveCommentIds: string[];
     now: Date;
@@ -169,12 +177,6 @@ export interface WakeQueueWriter {
   /** An open, non-hidden issue that still lists this issue as a `blocks` predecessor. */
   hasExplicitBlockerPath(input: { companyId: string; issueId: string }): Promise<boolean>;
   isAutomaticRecoverySuppressedByPauseHold(input: { companyId: string; issueId: string }): Promise<boolean>;
-  /** Builds the stranded-recovery notice content for a `blocked` outcome; pure formatting, kept behind the writer so `services/recovery/stranded-notice` stays out of the application layer. */
-  buildBlockedRecoveryNotice(input: {
-    noticeKind: ReleaseRecoveryBlockedNoticeKind;
-    issueStatus: "todo" | "in_progress";
-    finishingRun: RunSnapshot;
-  }): Promise<{ notice: Record<string, unknown>; recoveryCause: string | null }>;
   queueReviewParticipantRecoveryRun(input: {
     companyId: string;
     issue: IssueSnapshot;
@@ -184,16 +186,18 @@ export interface WakeQueueWriter {
     now: Date;
   }): Promise<RunSummary>;
   /**
-   * Builds the recovery context snapshot, resolves the responsible user
-   * from it, and queues the run. Throws `WakeQueueApplicationError` with
-   * code `responsible_user_unresolved` when no responsible user resolves,
-   * without queuing anything.
+   * Queues the run with the context snapshot and the responsible user the
+   * caller already resolved.
    */
   queueImmediateRecoveryRun(input: {
     companyId: string;
     issue: IssueSnapshot;
     finishingRun: RunSnapshot;
     recoveryAgent: InvokableAgentSnapshot;
+    /** The wakeup request's reason and the run's context-snapshot wakeReason; the caller derives it from the issue status. */
+    reason: string;
+    contextSnapshot: Record<string, unknown>;
+    responsibleUserId: string;
     sessionBefore: string | null;
     now: Date;
   }): Promise<RunSummary>;
@@ -207,16 +211,15 @@ export interface WakeQueueWriter {
  * (workspace-validation block, legacy reconciliation, a native-runtime
  * terminal failure), the adapter returns that outcome directly without
  * calling `fn`. Otherwise it calls `fn` with the locked issue and run, and
- * with `reader`/`writer` ports bound to the same transaction, so every
- * call `fn` makes through them participates in the one transaction this
- * method owns.
+ * with `host`/`transaction` ports, so every call `fn` makes through the
+ * transaction port participates in the one transaction this method owns.
  */
 export interface IssueLockWriter {
   withIssueExecutionLock(
     input: { companyId: string; runId: string; now: Date },
     fn: (
       locked: LockedIssueExecution,
-      ports: { reader: WakeQueueReader; writer: WakeQueueWriter },
+      ports: { host: WakeQueueHost; transaction: WakeQueueTransaction },
     ) => Promise<ReleaseTransactionResult>,
   ): Promise<ReleaseTransactionResult & { run: RunSnapshot }>;
 }
@@ -225,8 +228,7 @@ export type StrandedAssignedIssueEscalationInput = {
   issue: IssueSnapshot;
   previousStatus: "todo" | "in_progress" | "in_review";
   latestRun: RunSnapshot;
-  notice: Record<string, unknown>;
-  recoveryCause: string | null;
+  noticeKind: ReleaseRecoveryBlockedNoticeKind;
 };
 
 export type StrandedRecoveryInPlaceEscalationInput = {

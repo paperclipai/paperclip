@@ -5,6 +5,7 @@
 // building the release half's promoted-run snapshot.
 
 import { extractWakeCommentIds, WAKE_COMMENT_IDS_KEY } from "../../run-dispatch/index.js";
+import { readNonEmptyString } from "./values.js";
 
 const PAPERCLIP_WAKE_PAYLOAD_KEY = "paperclipWake";
 const PAPERCLIP_WAKE_COMMENT_KEY = "paperclipWakeComment";
@@ -20,10 +21,6 @@ const INTERACTION_CONTINUATION_CONTEXT_KEYS = [
   "itemVerdicts",
   "newlyResolvedItemIds",
 ] as const;
-
-function readNonEmptyString(value: unknown): string | null {
-  return typeof value === "string" && value.trim().length > 0 ? value : null;
-}
 
 function deriveTaskKey(
   contextSnapshot: Record<string, unknown> | null | undefined,

@@ -10,8 +10,8 @@ import type {
   RecoveryEscalationPort,
   RunSnapshot,
   RunSummary,
-  WakeQueueReader,
-  WakeQueueWriter,
+  WakeQueueHost,
+  WakeQueueTransaction,
 } from "./ports.js";
 
 const RUN: RunSnapshot = {
@@ -29,7 +29,7 @@ const RUN: RunSnapshot = {
 const ISSUE: IssueSnapshot = {
   id: "issue-1",
   companyId: "company-1",
-  identifier: "PAP-1",
+  identifier: "ISSUE-1",
   status: "in_progress",
   assigneeAgentId: "finishing-agent",
   assigneeUserId: null,
@@ -81,9 +81,8 @@ function runSummary(id: string): RunSummary {
   };
 }
 
-function createFakeReader(overrides: Partial<WakeQueueReader> = {}): WakeQueueReader {
+function createFakeHost(overrides: Partial<WakeQueueHost> = {}): WakeQueueHost {
   return {
-    findInvokableAgent: vi.fn(async () => AGENT),
     resolveResponsibleUserId: vi.fn(async () => "user-1"),
     getRoutineEnv: vi.fn(async () => ({ routineId: null, env: null, responsibleUserId: null })),
     resolveSessionBeforeForWakeup: vi.fn(async () => null),
@@ -91,9 +90,10 @@ function createFakeReader(overrides: Partial<WakeQueueReader> = {}): WakeQueueRe
   };
 }
 
-function createFakeWriter(overrides: Partial<WakeQueueWriter> = {}): WakeQueueWriter {
+function createFakeTransaction(overrides: Partial<WakeQueueTransaction> = {}): WakeQueueTransaction {
   return {
-    claimNextDeferredWake: vi.fn(async () => null),
+    findInvokableAgent: vi.fn(async () => AGENT),
+    findNextDeferredWake: vi.fn(async () => null),
     getQueuedCommentLiveness: vi.fn(async () => ({ liveNonSelfCommentIds: [], containedSelfAuthoredComment: false })),
     cancelDeferredWake: vi.fn(async () => true),
     normalizeDeferredWakeCommentIds: vi.fn(async (input) => wakeCandidate({ id: input.wakeId, queuedCommentIds: input.liveCommentIds })),
@@ -114,17 +114,16 @@ function createFakeWriter(overrides: Partial<WakeQueueWriter> = {}): WakeQueueWr
     hasExistingExecutionPath: vi.fn(async () => false),
     hasExplicitBlockerPath: vi.fn(async () => false),
     isAutomaticRecoverySuppressedByPauseHold: vi.fn(async () => false),
-    buildBlockedRecoveryNotice: vi.fn(async () => ({ notice: {}, recoveryCause: null })),
     queueReviewParticipantRecoveryRun: vi.fn(async () => runSummary("review-recovery")),
     queueImmediateRecoveryRun: vi.fn(async () => runSummary("immediate-recovery")),
     ...overrides,
   };
 }
 
-function createFakeIssueLock(reader: WakeQueueReader, writer: WakeQueueWriter): IssueLockWriter {
+function createFakeIssueLock(host: WakeQueueHost, transaction: WakeQueueTransaction): IssueLockWriter {
   return {
     withIssueExecutionLock: vi.fn(async (_input, fn) => {
-      const result = await fn({ primaryIssue: ISSUE, run: RUN }, { reader, writer });
+      const result = await fn({ primaryIssue: ISSUE, run: RUN }, { host, transaction });
       return { ...result, run: RUN };
     }),
   };
@@ -141,35 +140,36 @@ describe("releaseIssueExecution", () => {
   it("processes the deferred wakes in requestedAt order", async () => {
     const claimOrder: string[] = [];
     const queue = [wakeCandidate({ id: "wake-earliest" }), wakeCandidate({ id: "wake-latest" })];
-    const writer = createFakeWriter({
-      claimNextDeferredWake: vi.fn(async () => {
+    const transaction = createFakeTransaction({
+      findNextDeferredWake: vi.fn(async () => {
         const next = queue.shift() ?? null;
         if (next) claimOrder.push(next.id);
         return next;
       }),
+      // Every wake fails invokability so the loop keeps draining without promoting.
+      findInvokableAgent: vi.fn(async () => null),
     });
-    // Every wake fails invokability so the loop keeps draining without promoting.
-    const reader = createFakeReader({ findInvokableAgent: vi.fn(async () => null) });
-    const issueLock = createFakeIssueLock(reader, writer);
+    const host = createFakeHost();
+    const issueLock = createFakeIssueLock(host, transaction);
     const releaseIssueExecution = createReleaseIssueExecution({ issueLock, recovery: createFakeRecovery() });
 
     await releaseIssueExecution({ companyId: "company-1", runId: "run-1", now: new Date() });
 
     expect(claimOrder).toEqual(["wake-earliest", "wake-latest"]);
-    expect(writer.failDeferredWake).toHaveBeenCalledTimes(2);
+    expect(transaction.failDeferredWake).toHaveBeenCalledTimes(2);
   });
 
   it("stops the loop after the first promotion", async () => {
-    const claimNextDeferredWake = vi.fn(async () => wakeCandidate({ id: "wake-promotes" }));
-    const writer = createFakeWriter({ claimNextDeferredWake });
-    const reader = createFakeReader();
-    const issueLock = createFakeIssueLock(reader, writer);
+    const findNextDeferredWake = vi.fn(async () => wakeCandidate({ id: "wake-promotes" }));
+    const transaction = createFakeTransaction({ findNextDeferredWake });
+    const host = createFakeHost();
+    const issueLock = createFakeIssueLock(host, transaction);
     const releaseIssueExecution = createReleaseIssueExecution({ issueLock, recovery: createFakeRecovery() });
 
     const result = await releaseIssueExecution({ companyId: "company-1", runId: "run-1", now: new Date() });
 
     expect(result.outcome.kind).toBe("promoted");
-    expect(claimNextDeferredWake).toHaveBeenCalledTimes(1);
+    expect(findNextDeferredWake).toHaveBeenCalledTimes(1);
   });
 
   it("continues the loop after a cancel outcome, a fail outcome, and a normalize outcome, then promotes", async () => {
@@ -181,7 +181,7 @@ describe("releaseIssueExecution", () => {
       // normalize: queued comments differ from the live set, then promotes.
       wakeCandidate({ id: "wake-normalize", queuedCommentIds: ["c1", "c2"] }),
     ];
-    const claimNextDeferredWake = vi.fn(async () => queue.shift() ?? null);
+    const findNextDeferredWake = vi.fn(async () => queue.shift() ?? null);
     const findInvokableAgent = vi.fn(async (input: { agentId: string }) =>
       input.agentId === "deferred-agent" ? AGENT : null,
     );
@@ -190,24 +190,45 @@ describe("releaseIssueExecution", () => {
         ? { liveNonSelfCommentIds: [], containedSelfAuthoredComment: false }
         : { liveNonSelfCommentIds: ["c2"], containedSelfAuthoredComment: false },
     );
-    const writer = createFakeWriter({ claimNextDeferredWake, getQueuedCommentLiveness });
-    const reader = createFakeReader({ findInvokableAgent });
-    const issueLock = createFakeIssueLock(reader, writer);
+    const transaction = createFakeTransaction({ findNextDeferredWake, findInvokableAgent, getQueuedCommentLiveness });
+    const host = createFakeHost();
+    const issueLock = createFakeIssueLock(host, transaction);
     const releaseIssueExecution = createReleaseIssueExecution({ issueLock, recovery: createFakeRecovery() });
 
     const result = await releaseIssueExecution({ companyId: "company-1", runId: "run-1", now: new Date() });
 
-    expect(writer.cancelDeferredWake).toHaveBeenCalledTimes(1);
-    expect(writer.failDeferredWake).toHaveBeenCalledTimes(1);
-    expect(writer.normalizeDeferredWakeCommentIds).toHaveBeenCalledTimes(1);
-    expect(claimNextDeferredWake).toHaveBeenCalledTimes(3);
+    expect(transaction.cancelDeferredWake).toHaveBeenCalledTimes(1);
+    expect(transaction.failDeferredWake).toHaveBeenCalledTimes(1);
+    expect(transaction.normalizeDeferredWakeCommentIds).toHaveBeenCalledTimes(1);
+    expect(findNextDeferredWake).toHaveBeenCalledTimes(3);
     expect(result.outcome.kind).toBe("promoted");
   });
 
+  it("rejects with deferred_wake_not_advanced when the queue read returns the same wake id twice, instead of looping forever", async () => {
+    // queuedCommentIds with no live comments and no independent continuation
+    // routes to "cancel_empty", so the drain calls cancelDeferredWake and
+    // discards its result, then reads the queue again for the same row.
+    const repeatedCandidate = wakeCandidate({ id: "wake-repeat", queuedCommentIds: ["c1"] });
+    const findNextDeferredWake = vi.fn(async () => repeatedCandidate);
+    const cancelDeferredWake = vi.fn(async () => false);
+    const transaction = createFakeTransaction({ findNextDeferredWake, cancelDeferredWake });
+    const host = createFakeHost();
+    const issueLock = createFakeIssueLock(host, transaction);
+    const releaseIssueExecution = createReleaseIssueExecution({ issueLock, recovery: createFakeRecovery() });
+
+    await expect(
+      releaseIssueExecution({ companyId: "company-1", runId: "run-1", now: new Date() }),
+    ).rejects.toMatchObject({
+      constructor: WakeQueueApplicationError,
+      code: "deferred_wake_not_advanced",
+    });
+    expect(findNextDeferredWake).toHaveBeenCalledTimes(2);
+  });
+
   it("returns the post-commit effects as data without running them", async () => {
-    const writer = createFakeWriter({ claimNextDeferredWake: vi.fn(async () => wakeCandidate()) });
-    const reader = createFakeReader();
-    const issueLock = createFakeIssueLock(reader, writer);
+    const transaction = createFakeTransaction({ findNextDeferredWake: vi.fn(async () => wakeCandidate()) });
+    const host = createFakeHost();
+    const issueLock = createFakeIssueLock(host, transaction);
     const recovery = createFakeRecovery();
     const releaseIssueExecution = createReleaseIssueExecution({ issueLock, recovery });
 
@@ -220,8 +241,8 @@ describe("releaseIssueExecution", () => {
 
   it("carries the deferred wake's raw issue, interaction, execution-stage, and accepted-plan context onto the promoted run, and clears only the rendered text projections", async () => {
     const finalizePromotedWake = vi.fn(async (input: PromoteDeferredWakeInput) => runSummary(input.wakeId));
-    const writer = createFakeWriter({
-      claimNextDeferredWake: vi.fn(async () =>
+    const transaction = createFakeTransaction({
+      findNextDeferredWake: vi.fn(async () =>
         wakeCandidate({
           deferredContextSeed: {
             issueId: ISSUE.id,
@@ -239,8 +260,8 @@ describe("releaseIssueExecution", () => {
       ),
       finalizePromotedWake,
     });
-    const reader = createFakeReader();
-    const issueLock = createFakeIssueLock(reader, writer);
+    const host = createFakeHost();
+    const issueLock = createFakeIssueLock(host, transaction);
     const releaseIssueExecution = createReleaseIssueExecution({ issueLock, recovery: createFakeRecovery() });
 
     const result = await releaseIssueExecution({ companyId: "company-1", runId: "run-1", now: new Date() });
@@ -275,14 +296,14 @@ describe("releaseIssueExecution", () => {
       }),
       wakeCandidate({ id: "wake-promotes" }),
     ];
-    const claimNextDeferredWake = vi.fn(async () => queue.shift() ?? null);
+    const findNextDeferredWake = vi.fn(async () => queue.shift() ?? null);
     const claimDeferredWakeForPromotion = vi.fn(async ({ wakeId }: { wakeId: string }) => wakeId !== "wake-lost-race");
     const reopenIssue = vi.fn(async () => null);
-    const writer = createFakeWriter({ claimNextDeferredWake, claimDeferredWakeForPromotion, reopenIssue });
-    const reader = createFakeReader();
+    const transaction = createFakeTransaction({ findNextDeferredWake, claimDeferredWakeForPromotion, reopenIssue });
+    const host = createFakeHost();
     const issueLock: IssueLockWriter = {
       withIssueExecutionLock: vi.fn(async (_input, fn) => {
-        const result = await fn({ primaryIssue: doneIssue, run: RUN }, { reader, writer });
+        const result = await fn({ primaryIssue: doneIssue, run: RUN }, { host, transaction });
         return { ...result, run: RUN };
       }),
     };
@@ -297,9 +318,9 @@ describe("releaseIssueExecution", () => {
   });
 
   it("throws WakeQueueApplicationError with code responsible_user_unresolved when the responsible user cannot resolve", async () => {
-    const writer = createFakeWriter({ claimNextDeferredWake: vi.fn(async () => wakeCandidate()) });
-    const reader = createFakeReader({ resolveResponsibleUserId: vi.fn(async () => null) });
-    const issueLock = createFakeIssueLock(reader, writer);
+    const transaction = createFakeTransaction({ findNextDeferredWake: vi.fn(async () => wakeCandidate()) });
+    const host = createFakeHost({ resolveResponsibleUserId: vi.fn(async () => null) });
+    const issueLock = createFakeIssueLock(host, transaction);
     const releaseIssueExecution = createReleaseIssueExecution({ issueLock, recovery: createFakeRecovery() });
 
     await expect(
@@ -310,22 +331,77 @@ describe("releaseIssueExecution", () => {
     });
   });
 
+  it("resolves the responsible user for an immediate recovery run before queuing it", async () => {
+    const resolveResponsibleUserId = vi.fn(
+      async (_input: Parameters<WakeQueueHost["resolveResponsibleUserId"]>[0]) => "resolved-user",
+    );
+    const queueImmediateRecoveryRun = vi.fn(
+      async (input: Parameters<WakeQueueTransaction["queueImmediateRecoveryRun"]>[0]) => runSummary("immediate-recovery"),
+    );
+    const transaction = createFakeTransaction({ queueImmediateRecoveryRun });
+    const host = createFakeHost({ resolveResponsibleUserId });
+    const issueLock = createFakeIssueLock(host, transaction);
+    const releaseIssueExecution = createReleaseIssueExecution({ issueLock, recovery: createFakeRecovery() });
+
+    const result = await releaseIssueExecution({ companyId: "company-1", runId: "run-1", now: new Date() });
+
+    expect(result.outcome.kind).toBe("queued_recovery");
+    expect(resolveResponsibleUserId).toHaveBeenCalledTimes(1);
+    const resolveCall = resolveResponsibleUserId.mock.calls[0]![0];
+    expect(resolveCall.requestedByActorType).toBe("system");
+    expect(resolveCall.requestedByActorId).toBeNull();
+    expect(resolveCall.source).toBe("automation");
+    expect(resolveCall.triggerDetail).toBe("system");
+    expect(resolveCall.existingRunResponsibleUserId).toBe(RUN.responsibleUserId);
+    // ISSUE.status is "in_progress", so the stalled-continuation labels apply.
+    expect(resolveCall.contextSnapshot).toEqual({
+      issueId: ISSUE.id,
+      taskId: ISSUE.id,
+      wakeReason: "issue_continuation_needed",
+      retryReason: "issue_continuation_needed",
+      source: "issue.continuation_recovery",
+      retryOfRunId: RUN.id,
+    });
+
+    expect(queueImmediateRecoveryRun).toHaveBeenCalledTimes(1);
+    const queueCall = queueImmediateRecoveryRun.mock.calls[0]![0];
+    expect(queueCall.reason).toBe("issue_continuation_needed");
+    expect(queueCall.responsibleUserId).toBe("resolved-user");
+    expect(queueCall.contextSnapshot).toBe(resolveCall.contextSnapshot);
+  });
+
+  it("throws WakeQueueApplicationError with code responsible_user_unresolved for a recovery run, without queuing it", async () => {
+    const transaction = createFakeTransaction();
+    const host = createFakeHost({ resolveResponsibleUserId: vi.fn(async () => null) });
+    const issueLock = createFakeIssueLock(host, transaction);
+    const releaseIssueExecution = createReleaseIssueExecution({ issueLock, recovery: createFakeRecovery() });
+
+    await expect(
+      releaseIssueExecution({ companyId: "company-1", runId: "run-1", now: new Date() }),
+    ).rejects.toMatchObject({
+      constructor: WakeQueueApplicationError,
+      code: "responsible_user_unresolved",
+    });
+    expect(transaction.queueImmediateRecoveryRun).not.toHaveBeenCalled();
+  });
+
   it("escalates through the recovery port for a blocked outcome, after the transaction resolves", async () => {
-    const writer = createFakeWriter({
-      claimNextDeferredWake: vi.fn(async () => null),
+    const transaction = createFakeTransaction({
+      findNextDeferredWake: vi.fn(async () => null),
       hasExistingExecutionPath: vi.fn(async () => false),
       isAutomaticRecoverySuppressedByPauseHold: vi.fn(async () => false),
-      buildBlockedRecoveryNotice: vi.fn(async () => ({ notice: { kind: "immediate_execution_path" }, recoveryCause: "immediate_execution_path" })),
+      // The recovery agent (the finishing run's own agent) is not invokable, which forces "blocked".
+      findInvokableAgent: vi.fn(async () => null),
     });
-    // The recovery agent (the finishing run's own agent) is not invokable, which forces "blocked".
-    const reader = createFakeReader({ findInvokableAgent: vi.fn(async () => null) });
-    const issueLock = createFakeIssueLock(reader, writer);
+    const host = createFakeHost();
+    const issueLock = createFakeIssueLock(host, transaction);
     const recovery = createFakeRecovery();
     const releaseIssueExecution = createReleaseIssueExecution({ issueLock, recovery });
 
     const result = await releaseIssueExecution({ companyId: "company-1", runId: "run-1", now: new Date() });
 
     expect(result.outcome.kind).toBe("blocked");
+    expect(result.outcome.kind === "blocked" && result.outcome.noticeKind).toBe("immediate_execution_path");
     expect(recovery.escalateStrandedAssignedIssue).toHaveBeenCalledTimes(1);
   });
 });
