@@ -284,6 +284,7 @@ export function deliveryMergeExecutor(
           connectionId,
           owner: repository.owner,
           repo: repository.name,
+          headSha: unit.acceptedHeadSha,
         },
       });
       if (!greptileRead.ok) {

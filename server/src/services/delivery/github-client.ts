@@ -104,6 +104,27 @@ export type GitHubReviewComment = {
 };
 
 /**
+ * A check run exactly as GitHub recorded it, including the app that created it.
+ *
+ * `appSlug` is the slug of the GitHub App that produced the run. GitHub sets it
+ * from the app's own authenticated request, so it is the provenance that
+ * distinguishes the real Greptile app from any other check that merely names
+ * itself "Greptile". `headSha` is GitHub's record of the commit the run
+ * belongs to.
+ */
+export type GitHubCheckRun = {
+  id: number | null;
+  name: string | null;
+  status: string | null;
+  conclusion: string | null;
+  headSha: string | null;
+  appSlug: string | null;
+  completedAt: string | null;
+  startedAt: string | null;
+  url: string | null;
+};
+
+/**
  * Whether a GitHub compare status proves inclusion. For
  * `compare(base=candidate, head=target)`, only `ahead` (target contains the
  * candidate plus newer commits) or `identical` proves the candidate landed in
@@ -162,6 +183,12 @@ export type GitHubMergeResult = {
 };
 
 const GITHUB_TIMEOUT_MS = 20_000;
+
+/** Check runs are read at GitHub's maximum page size. */
+const CHECK_RUNS_PAGE_SIZE = 100;
+
+/** Page bound for a complete check-run read; exhausting it is an unreadable record. */
+const MAX_CHECK_RUN_PAGES = 10;
 
 function apiBase(host: string) {
   return gitHubApiBase(host);
@@ -548,6 +575,77 @@ export function createGitHubDeliveryClient(
     return { ok: true, value: comments };
   }
 
+  /**
+   * Check runs GitHub records for one exact commit, with app provenance intact.
+   *
+   * Used to authenticate a provider's GitHub-side review evidence (which app
+   * reported an outcome on which head), not for required-check policy —
+   * `getChecks` keeps that flattened role. The read is only a usable record
+   * when it is complete: pages are followed until the response's own
+   * `total_count` is accounted for within a small page bound, so an outcome
+   * hidden beyond the first page can never be dropped from the evidence. A
+   * malformed response — an unreadable list, missing or malformed pagination
+   * metadata, an unparseable run, or a page budget exhausted before
+   * `total_count` is accounted for — is a failed read, never a partial list,
+   * so a caller can never mistake a truncated record for a complete one.
+   */
+  async function getCheckRuns(
+    companyId: string,
+    connectionId: string | null,
+    host: string,
+    owner: string,
+    repo: string,
+    ref: string,
+  ): Promise<GitHubResult<GitHubCheckRun[]>> {
+    const checkRunsPath = `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/commits/${encodeURIComponent(ref)}/check-runs`;
+    const checkRuns: GitHubCheckRun[] = [];
+    let fetched = 0;
+    let expectedCount: number | null = null;
+    const seenIds = new Set<number>();
+    for (let page = 1; page <= MAX_CHECK_RUN_PAGES; page += 1) {
+      const result = await request<Record<string, unknown>>(
+        companyId, connectionId, host, "GET",
+        `${checkRunsPath}?per_page=${CHECK_RUNS_PAGE_SIZE}&page=${page}`,
+      );
+      if (!result.ok) return result;
+      const payload = record(result.value);
+      const runs = payload === null ? null : payload.check_runs;
+      if (!Array.isArray(runs)) {
+        return { ok: false, status: null, errorCode: "github_invalid_response", message: "GitHub returned an unreadable check-run list", retryAfterSeconds: null };
+      }
+      const totalCount = num(payload?.total_count);
+      if (totalCount === null || totalCount < fetched + runs.length || (expectedCount !== null && totalCount !== expectedCount)) {
+        return { ok: false, status: null, errorCode: "github_invalid_response", message: "GitHub returned unreadable check-run pagination metadata", retryAfterSeconds: null };
+      }
+      expectedCount = totalCount;
+      fetched += runs.length;
+      for (const entry of runs) {
+        const row = record(entry);
+        const id = row ? num(row.id) : null;
+        if (!row || id === null || id <= 0 || seenIds.has(id)) {
+          return { ok: false, status: null, errorCode: "github_invalid_response", message: "GitHub returned an unreadable check-run list", retryAfterSeconds: null };
+        }
+        seenIds.add(id);
+        checkRuns.push({
+          id,
+          name: str(row.name),
+          status: str(row.status),
+          conclusion: str(row.conclusion),
+          headSha: str(row.head_sha),
+          appSlug: str(record(row.app)?.slug),
+          completedAt: str(row.completed_at),
+          startedAt: str(row.started_at),
+          url: str(row.html_url),
+        });
+      }
+      if (fetched >= totalCount) return { ok: true, value: checkRuns };
+      if (runs.length === 0) {
+        return { ok: false, status: null, errorCode: "github_invalid_response", message: "GitHub returned an incomplete check-run list", retryAfterSeconds: null };
+      }
+    }
+    return { ok: false, status: null, errorCode: "github_invalid_response", message: "GitHub returned an incomplete check-run list", retryAfterSeconds: null };
+  }
+
   async function mergePullRequest(
     companyId: string,
     connectionId: string | null,
@@ -692,6 +790,7 @@ export function createGitHubDeliveryClient(
     getChecks,
     getReviews,
     getReviewComments,
+    getCheckRuns,
     mergePullRequest,
     enqueuePullRequest,
     compareCommits,
@@ -740,6 +839,14 @@ export interface GitHubDeliveryClient {
     repo: string,
     number: number,
   ): Promise<GitHubResult<GitHubReviewComment[]>>;
+  getCheckRuns(
+    companyId: string,
+    connectionId: string | null,
+    host: string,
+    owner: string,
+    repo: string,
+    ref: string,
+  ): Promise<GitHubResult<GitHubCheckRun[]>>;
   mergePullRequest(
     companyId: string,
     connectionId: string | null,

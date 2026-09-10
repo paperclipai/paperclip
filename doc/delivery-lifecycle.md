@@ -187,12 +187,20 @@ Never force push, never admin bypass, never accept stale evidence.
 
 Greptile completion and commit identity come from separate authoritative reads:
 the governed MCP payload supplies review state and findings; GitHub's Greptile
-review record and matching review-comment node IDs supply commit provenance.
-The submitted candidate SHA is never substituted for a reviewed SHA. Empty or
-in-flight review collections and new commits since review are `review_pending`;
-malformed or unreadable evidence fails closed. A completed CI check is not a
-review verdict. Unaddressed findings remain blocking across commits until the
-provider clears them, and an explicit disputed disposition remains blocking.
+review record, matching review-comment node IDs, and — when GitHub emits no
+review object for a clean re-review — the Greptile app's own completed
+successful check run supply commit provenance. The submitted candidate SHA is
+never substituted for a reviewed SHA. Empty or in-flight review collections and
+new commits since review are `review_pending`; malformed or unreadable evidence
+fails closed. A completed CI check is not a review verdict: a check run counts
+as provenance only when GitHub records it as created by the Greptile app
+itself, on the exact head under evaluation, completed and successful, and as
+the latest Greptile outcome on that head; anything else — a check that merely
+names itself Greptile, a run on another head, an in-flight or later-failed run,
+an unreadable check list — proves nothing and the conservative evidence stands.
+Check provenance never clears findings: unaddressed findings remain blocking
+across commits until the provider clears them, and an explicit disputed
+disposition remains blocking.
 
 Findings and checks are persisted before readiness is evaluated, so blocked
 candidates retain actionable bodies, locations, and revision evidence. The same
@@ -372,8 +380,14 @@ a deny or a spent budget fails closed. **Both** reads are required: a failed
 comments read is a failed read, never a silent partial success. A missing or
 unusable connection fails closed with the `greptile_unavailable` blocker. When
 Greptile is required, its reviewed head must be the exact head under
-evaluation. An addressed flag is not acceptance: acceptance requires native
-GitHub review/check evidence on the accepted head.
+evaluation. That head is proven from GitHub's own records: the Greptile review
+record, review-comment commit ids, or — when GitHub emits no review object for
+a clean re-review — the Greptile app's own completed successful check run on
+that exact head, authenticated by GitHub's `app.slug` (never by a check name)
+and accepted only as the latest Greptile outcome on the head. An addressed flag
+is not acceptance: acceptance requires native GitHub review/check evidence on
+the accepted head, and a green check never clears findings or a disputed
+disposition.
 
 ## 11. Reconciliation
 
@@ -430,7 +444,10 @@ Service/route/DB-boundary regressions live in
 concurrent queue single-flight, lease revocation during review for both merge
 modes, Done through the real issue mutation on a GitHub project without a policy,
 atomic fail-closed submit, covered-issue authorization, Greptile
-partial-read failure, policy authorization invalidation, reconciliation
+partial-read failure and current-head check provenance (a completed
+app-authenticated Greptile check repairing a stale reviewed head, rejected
+spoofed/wrong-head/in-flight/later-failed checks, unresolved findings and their
+commit origin preserved), policy authorization invalidation, reconciliation
 downgrade, pause/disposition guards, bounded retry, repair re-dispatch after a
 vanished execution (with dedupe preserved for live, completed, and live-retry
 dispatches, and bounded escalation once the bound is reached), candidate

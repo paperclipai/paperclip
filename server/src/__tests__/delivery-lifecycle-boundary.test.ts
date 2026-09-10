@@ -42,7 +42,7 @@ import { getNativeDeliveryWait } from "../services/delivery/native-delivery-wait
 import { recordObservedFindings } from "../services/delivery/findings.js";
 import { deliveryMergeExecutor } from "../services/delivery/merge-executor.js";
 import { deliveryReconciler } from "../services/delivery/reconciler.js";
-import type { GitHubDeliveryClient } from "../services/delivery/github-client.js";
+import type { GitHubCheckRun, GitHubDeliveryClient } from "../services/delivery/github-client.js";
 import { issueService } from "../services/issues.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -60,6 +60,7 @@ function githubStub(overrides: Partial<GitHubDeliveryClient> = {}): GitHubDelive
     getChecks: async () => failure,
     getReviews: async () => failure,
     getReviewComments: async () => failure,
+    getCheckRuns: async () => failure,
     mergePullRequest: async () => failure,
     enqueuePullRequest: async () => failure,
     compareCommits: async () => failure,
@@ -136,6 +137,34 @@ function openPr(headSha: string) {
       updatedAt: "2026-09-01T00:00:00Z",
     },
   } as const;
+}
+
+/**
+ * A check run in GitHub's recorded shape. Defaults reproduce the live
+ * evidence: the Greptile app's completed successful review check on the
+ * current head.
+ */
+function checkRun(input: {
+  id?: number;
+  name?: string | null;
+  status?: string | null;
+  conclusion?: string | null;
+  headSha?: string | null;
+  appSlug?: string | null;
+  completedAt?: string | null;
+  startedAt?: string | null;
+}) {
+  return {
+    id: input.id ?? 103022939203,
+    name: input.name ?? "Greptile Review",
+    status: input.status ?? "completed",
+    conclusion: input.conclusion ?? "success",
+    headSha: input.headSha ?? HEAD,
+    appSlug: input.appSlug ?? "greptile-apps",
+    completedAt: input.completedAt ?? "2026-09-10T12:00:00Z",
+    startedAt: input.startedAt ?? "2026-09-10T11:59:00Z",
+    url: "https://github.com/acme/widget/pull/7/checks",
+  };
 }
 
 describeEmbeddedPostgres("delivery lifecycle boundary regressions", () => {
@@ -453,7 +482,7 @@ describeEmbeddedPostgres("delivery lifecycle boundary regressions", () => {
       repositoryName: "widget",
       defaultBranch: "main",
       prNumber: 7,
-      correlation: { host: "github.com", connectionId: null, owner: "acme", repo: "widget" },
+      correlation: { host: "github.com", connectionId: null, owner: "acme", repo: "widget", headSha: HEAD },
     });
     expect(result).toMatchObject({ ok: false, errorCode: "tool_call_failed" });
   });
@@ -727,7 +756,15 @@ describeEmbeddedPostgres("delivery lifecycle boundary regressions", () => {
    * registered candidate, and a Greptile MCP read whose payload the test owns.
    */
   async function governedPipeline(
-    input: { reviewState?: "COMPLETED" | "IN_PROGRESS"; revision?: string; failRead?: boolean; canDispatch?: () => boolean } = {},
+    input: {
+      reviewState?: "COMPLETED" | "IN_PROGRESS";
+      revision?: string;
+      failRead?: boolean;
+      canDispatch?: () => boolean;
+      reviews?: Array<{ login: string; state: string; commitSha: string; submittedAt: string }>;
+      checkRuns?: GitHubCheckRun[];
+      comments?: Array<Record<string, unknown>>;
+    } = {},
   ) {
     const companyId = await seedCompany();
     const projectId = await seedProject(companyId, "https://github.com/acme/widget");
@@ -777,10 +814,11 @@ describeEmbeddedPostgres("delivery lifecycle boundary regressions", () => {
         value: {
           status: "commented", headSha: HEAD, approvedHeadSha: HEAD,
           approvals: [{ login: "independent-reviewer", commitSha: HEAD }],
-          blockingFindings: 0, reviews: [],
+          blockingFindings: 0, reviews: input.reviews ?? [],
         },
       }),
       getReviewComments: async () => reviewComments([{ id: provider.findingId, commitSha: input.revision ?? HEAD }]),
+      getCheckRuns: async () => ({ ok: true, value: input.checkRuns ?? [] }),
       mergePullRequest: async (_company, _connection, _host, _owner, _repo, _number, mergeInput) => {
         merges.push(mergeInput.sha);
         return { ok: true, value: { merged: true, sha: mergeInput.sha, message: "merged" } };
@@ -792,7 +830,7 @@ describeEmbeddedPostgres("delivery lifecycle boundary regressions", () => {
       toolGateway: greptileToolGateway({
         review: { status: input.reviewState ?? "COMPLETED" },
         commentsFailure: input.failRead,
-        comments: [{
+        comments: input.comments ?? [{
           id: "internal-1",
           get commentId() { return provider.findingId; },
           // The real payload carries no severity field: the priority is only in
@@ -1692,6 +1730,42 @@ describeEmbeddedPostgres("delivery lifecycle boundary regressions", () => {
     expect(await repairAttempts(unavailable.companyId, unavailable.unit.id)).toHaveLength(0);
   });
 
+  it("accepts a repaired head proven by the Greptile app's own completed check", async () => {
+    // The live repair shape: Greptile reviewed the new clean head and reported
+    // it as its own completed successful check run on the exact head, while
+    // GitHub's review list still only carries the older COMMENTED review.
+    // GitHub emits no new review object for a clean re-review, and that must
+    // not keep the repaired head stale forever.
+    const proven = await governedPipeline({
+      reviews: [{
+        login: "greptile-apps[bot]", state: "COMMENTED",
+        commitSha: OTHER_HEAD, submittedAt: "2026-09-10T10:00:00Z",
+      }],
+      checkRuns: [checkRun({})],
+      comments: [],
+    });
+    expect(await proven.reconciler.reconcileUnit({ companyId: proven.companyId, unitId: proven.unit.id, trigger: "sweep" }))
+      .toMatchObject({ status: "ready_to_merge", merged: false });
+    const [accepted] = await db.select().from(deliveryUnits).where(eq(deliveryUnits.id, proven.unit.id));
+    expect(accepted).toMatchObject({ acceptedHeadSha: HEAD, status: "ready_to_merge" });
+
+    // The same shape with a check created by another integration proves
+    // nothing: the reviewed head stays the old review commit and the unit
+    // stays blocked as stale.
+    const spoofed = await governedPipeline({
+      reviews: [{
+        login: "greptile-apps[bot]", state: "COMMENTED",
+        commitSha: OTHER_HEAD, submittedAt: "2026-09-10T10:00:00Z",
+      }],
+      checkRuns: [checkRun({ appSlug: "acme-ci", name: "Greptile Review" })],
+      comments: [],
+    });
+    expect(await spoofed.reconciler.reconcileUnit({ companyId: spoofed.companyId, unitId: spoofed.unit.id, trigger: "sweep" }))
+      .toMatchObject({ status: "blocked", blocker: { reasonCode: "review_head_stale" } });
+    const [spoofedUnit] = await db.select().from(deliveryUnits).where(eq(deliveryUnits.id, spoofed.unit.id));
+    expect(spoofedUnit?.acceptedHeadSha).toBeNull();
+  });
+
   it("stales findings a fresh zero-finding snapshot omits without erasing dispositions", async () => {
     const companyId = await seedCompany();
     const projectId = await seedProject(companyId);
@@ -1765,7 +1839,7 @@ describeEmbeddedPostgres("delivery lifecycle boundary regressions", () => {
 });
 
 describe("governed Greptile ingestion", () => {
-  const correlation = { host: "github.com", connectionId: null, owner: "acme", repo: "widget" };
+  const correlation = { host: "github.com", connectionId: null, owner: "acme", repo: "widget", headSha: HEAD };
   const baseInput = {
     companyId: "22222222-2222-4222-8222-222222222222",
     connectionId: "33333333-3333-4333-8333-333333333333",
@@ -1788,6 +1862,9 @@ describe("governed Greptile ingestion", () => {
           }] : [],
         },
       }),
+      // No Greptile check runs by default: head proof comes only from the
+      // tests that plant one.
+      getCheckRuns: async () => ({ ok: true, value: [] }),
       ...overrides,
     });
   }
@@ -2087,5 +2164,148 @@ describe("governed Greptile ingestion", () => {
     expect(await greptile.read(baseInput)).toMatchObject({ ok: true, reviewState: "pending" });
     incompleteReview = { createdAt: "2026-09-10T11:00:00Z" };
     expect(await greptile.read(baseInput)).toMatchObject({ ok: false, errorCode: "provider_unknown" });
+  });
+
+  // Live repair shape (PR52/53/57/59/62): the provider reviewed the new clean
+  // head and reported it as its own check run, but GitHub emitted no new
+  // review object — /pulls/N/reviews still only carries the older
+  // greptile-apps[bot] COMMENTED review.
+  it("recognizes a completed Greptile check on the current head when GitHub emits no new review object", async () => {
+    const greptile = greptileReviewService({} as Db, {
+      github: greptileGitHub({
+        getReviewComments: async () => reviewComments([]),
+        getCheckRuns: async () => ({ ok: true, value: [checkRun({})] }),
+      }, OTHER_HEAD),
+      toolGateway: greptileToolGateway({ review: { status: "COMPLETED", revision: OTHER_HEAD }, comments: [] }),
+    });
+    expect(await greptile.read(baseInput)).toMatchObject({
+      ok: true,
+      status: "none",
+      reviewState: "completed",
+      headSha: HEAD,
+      blockingFindings: 0,
+      findings: [],
+    });
+  });
+
+  it("rejects a successful check named Greptile that another app created", async () => {
+    const greptile = greptileReviewService({} as Db, {
+      github: greptileGitHub({
+        getReviewComments: async () => reviewComments([]),
+        getCheckRuns: async () => ({ ok: true, value: [checkRun({ appSlug: "acme-ci", name: "Greptile Review" })] }),
+      }, OTHER_HEAD),
+      toolGateway: greptileToolGateway({ review: { status: "COMPLETED" }, comments: [] }),
+    });
+    // Provenance is the app slug GitHub recorded, never the check name: the
+    // reviewed head stays the old review commit and the caller sees stale.
+    expect(await greptile.read(baseInput)).toMatchObject({ ok: true, headSha: OTHER_HEAD });
+  });
+
+  it("rejects a Greptile check GitHub recorded against a different head", async () => {
+    const greptile = greptileReviewService({} as Db, {
+      github: greptileGitHub({
+        getReviewComments: async () => reviewComments([]),
+        getCheckRuns: async () => ({ ok: true, value: [checkRun({ headSha: OTHER_HEAD })] }),
+      }, OTHER_HEAD),
+      toolGateway: greptileToolGateway({ review: { status: "COMPLETED" }, comments: [] }),
+    });
+    expect(await greptile.read(baseInput)).toMatchObject({ ok: true, headSha: OTHER_HEAD });
+  });
+
+  it("rejects an in-flight Greptile check as proof of a completed review", async () => {
+    const greptile = greptileReviewService({} as Db, {
+      github: greptileGitHub({
+        getReviewComments: async () => reviewComments([]),
+        getCheckRuns: async () => ({
+          ok: true,
+          value: [checkRun({ status: "in_progress", conclusion: null, completedAt: null })],
+        }),
+      }, OTHER_HEAD),
+      toolGateway: greptileToolGateway({ review: { status: "COMPLETED" }, comments: [] }),
+    });
+    expect(await greptile.read(baseInput)).toMatchObject({ ok: true, headSha: OTHER_HEAD });
+  });
+
+  it("rejects an older success when a later Greptile run on the head failed", async () => {
+    const greptile = greptileReviewService({} as Db, {
+      github: greptileGitHub({
+        getReviewComments: async () => reviewComments([]),
+        getCheckRuns: async () => ({
+          ok: true,
+          value: [
+            checkRun({ id: 103022939100, completedAt: "2026-09-10T11:00:00Z" }),
+            checkRun({ id: 103022939200, completedAt: "2026-09-10T12:00:00Z", conclusion: "failure" }),
+          ],
+        }),
+      }, OTHER_HEAD),
+      toolGateway: greptileToolGateway({ review: { status: "COMPLETED" }, comments: [] }),
+    });
+    expect(await greptile.read(baseInput)).toMatchObject({ ok: true, headSha: OTHER_HEAD });
+  });
+
+  it("follows the latest Greptile outcome when a failure is superseded by a later success", async () => {
+    const greptile = greptileReviewService({} as Db, {
+      github: greptileGitHub({
+        getReviewComments: async () => reviewComments([]),
+        getCheckRuns: async () => ({
+          ok: true,
+          value: [
+            checkRun({ id: 103022939100, completedAt: "2026-09-10T11:00:00Z", conclusion: "failure" }),
+            checkRun({ id: 103022939200, completedAt: "2026-09-10T12:00:00Z" }),
+          ],
+        }),
+      }, OTHER_HEAD),
+      toolGateway: greptileToolGateway({ review: { status: "COMPLETED" }, comments: [] }),
+    });
+    expect(await greptile.read(baseInput)).toMatchObject({
+      ok: true, status: "none", headSha: HEAD, blockingFindings: 0,
+    });
+  });
+
+  it("keeps unaddressed findings and their own commit origin when a clean check proves the current head", async () => {
+    const greptile = greptileReviewService({} as Db, {
+      github: greptileGitHub({
+        getReviewComments: async () => reviewComments([{ id: "scm-1", commitSha: OTHER_HEAD }]),
+        getCheckRuns: async () => ({ ok: true, value: [checkRun({})] }),
+      }, OTHER_HEAD),
+      toolGateway: greptileToolGateway({ review: { status: "COMPLETED", revision: OTHER_HEAD }, comments: [unaddressedFinding()] }),
+    });
+    // The green check proves the reviewed head is the current one, but the
+    // provider still reports the finding: it keeps blocking, and the finding's
+    // GitHub commit origin stays the revision it was written against.
+    expect(await greptile.read(baseInput)).toMatchObject({
+      ok: true,
+      status: "changes_requested",
+      headSha: HEAD,
+      blockingFindings: 1,
+      findings: [{ externalId: "scm-1", commitSha: OTHER_HEAD, blocking: true }],
+    });
+  });
+
+  it("does not let a green check outrank a review the provider still has in flight", async () => {
+    const greptile = greptileReviewService({} as Db, {
+      github: greptileGitHub({
+        getReviewComments: async () => reviewComments([]),
+        getCheckRuns: async () => ({ ok: true, value: [checkRun({})] }),
+      }, OTHER_HEAD),
+      toolGateway: greptileToolGateway({ review: { status: "IN_PROGRESS" }, comments: [] }),
+    });
+    // The check is not consulted while the provider still has the review in
+    // flight: the read stays pending and the resolved head stays the old
+    // review commit — never the current head on check evidence alone.
+    expect(await greptile.read(baseInput)).toMatchObject({
+      ok: true, status: "pending", reviewState: "pending", headSha: OTHER_HEAD,
+    });
+  });
+
+  it("keeps the conservative reviewed head when the Greptile check-run read fails", async () => {
+    const greptile = greptileReviewService({} as Db, {
+      github: greptileGitHub({
+        getReviewComments: async () => reviewComments([]),
+        getCheckRuns: async () => ({ ok: false, status: null, errorCode: "github_unreachable", message: "stub", retryAfterSeconds: null }),
+      }, OTHER_HEAD),
+      toolGateway: greptileToolGateway({ review: { status: "COMPLETED" }, comments: [] }),
+    });
+    expect(await greptile.read(baseInput)).toMatchObject({ ok: true, headSha: OTHER_HEAD });
   });
 });

@@ -13,11 +13,16 @@ import type { GitHubDeliveryClient } from "./github-client.js";
  * A Greptile finding carries no trustworthy revision of its own: MCP
  * `get_merge_request`/`list_merge_request_comments` responses expose review
  * status text and comment bodies, not an accepted head. The reviewed head is
- * therefore never taken from the provider payload, from a CI check conclusion,
- * or from the candidate under evaluation. It is proven by correlating each
- * governed finding identity with GitHub's own review comment record
- * (`commit_id`), which is the authoritative commit that comment was written
- * against.
+ * therefore never taken from the provider payload or from the candidate under
+ * evaluation. It is proven from GitHub's own records: each governed finding
+ * identity correlated with GitHub's review comment record (`commit_id`), the
+ * GitHub Greptile review record, or — when GitHub emits no review object for
+ * the current head — the Greptile GitHub App's own completed successful check
+ * run bound to that exact head. A check run is proof only with authenticated
+ * app provenance (GitHub's `app.slug`, not a check name), an exact head match,
+ * and the latest Greptile outcome on that head; anything unreadable,
+ * unauthenticated, mismatched, or superseded by a later Greptile run proves
+ * nothing.
  *
  * Every failure fails closed: an unreadable comments list, an unresolvable
  * blocking finding, an unknown provider review state, or an unprovable reviewed
@@ -107,6 +112,12 @@ export type GreptileReadInput = {
     connectionId: string | null;
     owner: string;
     repo: string;
+    /**
+     * GitHub's own head of the pull request under evaluation — the revision
+     * acceptance is being evaluated for. It is the lookup key for head-proof
+     * evidence and is never itself returned as a reviewed head.
+     */
+    headSha: string;
   };
 };
 
@@ -468,6 +479,71 @@ function isGreptileReviewer(login: string): boolean {
   return login.toLowerCase() === "greptile-apps[bot]" || login.toLowerCase() === "greptile-apps";
 }
 
+/**
+ * The GitHub App slug that proves a check run was produced by the real
+ * Greptile app. GitHub records `app.slug` from the app's own authenticated
+ * request, so a check run created by any other integration — however it names
+ * itself — never carries this provenance.
+ */
+function isGreptileCheckApp(slug: string): boolean {
+  return slug.toLowerCase() === "greptile-apps";
+}
+
+/**
+ * GitHub-side proof that the Greptile app itself completed a successful review
+ * of the exact head under evaluation.
+ *
+ * GitHub's review list only carries review objects, and a clean Greptile
+ * re-review adds no comments and no new review object — the app reports the
+ * completed review of the new head as a check run instead. Such a run proves
+ * the reviewed head only when every layer binds to the same facts:
+ *
+ * - the run was created by the Greptile app itself (`app.slug`), not by any
+ *   other check that happens to be named "Greptile";
+ * - GitHub's own `head_sha` for the run is the exact head under evaluation;
+ *   the head is only ever the lookup key, never substituted as evidence;
+ * - the run is `completed` with conclusion `success`;
+ * - it is the latest Greptile outcome on that head, ordered by GitHub's own
+ *   completion time: a later in-progress or failed Greptile run supersedes an
+ *   older success, and an outcome without a usable completion time cannot be
+ *   ordered, so the latest outcome is unknown.
+ *
+ * A failed or unreadable read, or any run failing these conditions, is no
+ * proof and the caller keeps its existing conservative evidence.
+ */
+async function greptileHeadProof(
+  github: Pick<GitHubDeliveryClient, "getCheckRuns">,
+  input: GreptileReadInput,
+): Promise<boolean> {
+  const headSha = input.correlation.headSha.toLowerCase();
+  if (!SHA_PATTERN.test(headSha)) return false;
+  const runs = await github.getCheckRuns(
+    input.companyId,
+    input.correlation.connectionId,
+    input.correlation.host,
+    input.correlation.owner,
+    input.correlation.repo,
+    headSha,
+  );
+  if (!runs.ok) return false;
+  const greptileRuns = runs.value.filter((run) =>
+    run.appSlug !== null
+    && isGreptileCheckApp(run.appSlug)
+    && run.headSha !== null
+    && SHA_PATTERN.test(run.headSha)
+    && run.headSha.toLowerCase() === headSha
+  );
+  if (greptileRuns.length === 0) return false;
+  const completedAt = (run: (typeof greptileRuns)[number]) => {
+    const parsed = Date.parse(run.completedAt ?? "");
+    return Number.isFinite(parsed) ? parsed : 0;
+  };
+  if (greptileRuns.some((run) => completedAt(run) === 0)) return false;
+  greptileRuns.sort((a, b) => completedAt(b) - completedAt(a) || (b.id ?? 0) - (a.id ?? 0));
+  const latest = greptileRuns[0]!;
+  return latest.status?.toLowerCase() === "completed" && latest.conclusion?.toLowerCase() === "success";
+}
+
 export interface GreptileReviewService {
   read(input: GreptileReadInput): Promise<GreptileReadResult>;
 }
@@ -476,7 +552,7 @@ export function greptileReviewService(
   db: Db,
   deps: {
     toolGateway: Pick<ToolGatewayService, "readConnectedTool">;
-    github: Pick<GitHubDeliveryClient, "getReviewComments" | "getReviews">;
+    github: Pick<GitHubDeliveryClient, "getReviewComments" | "getReviews" | "getCheckRuns">;
   },
 ): GreptileReviewService {
   async function read(input: GreptileReadInput): Promise<GreptileReadResult> {
@@ -589,6 +665,17 @@ export function greptileReviewService(
     // identifies its exact commit; never substitute a provider/candidate SHA.
     let headSha = reviews[0]?.commitSha?.toLowerCase() ?? null;
     if (!headSha && headCandidates.size === 1) headSha = headCandidates.keys().next().value ?? null;
+    // GitHub's review record can lag the provider: a clean Greptile re-review
+    // of the current head adds no comments and no new review object, so the
+    // latest review entry still names the older revision. The Greptile app's
+    // own completed successful check run on the exact head is then GitHub's
+    // authoritative record that this head was reviewed (see
+    // `greptileHeadProof`). The provider must itself report the review
+    // completed — a check run never outranks a review the provider still has
+    // in flight.
+    if (provider.state === "completed" && headSha !== input.correlation.headSha.toLowerCase()) {
+      if (await greptileHeadProof(deps.github, input)) headSha = input.correlation.headSha.toLowerCase();
+    }
     if (!headSha && provider.state === "completed") {
       return {
         ok: false,

@@ -31,6 +31,7 @@ export {
   isMergeIncluded,
   type GitHubDeliveryClient,
   type GitHubReviewComment,
+  type GitHubCheckRun,
 } from "./github-client.js";
 export {
   greptileReviewService,
