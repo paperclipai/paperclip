@@ -50,7 +50,7 @@ const DEFAULT_KUBERNETES_ENVIRONMENT_DESCRIPTION =
   "Managed Kubernetes sandbox environment for hosted tenant execution.";
 /** Provider key (== plugin driverKey) of the first-party Kubernetes sandbox provider. */
 const KUBERNETES_PROVIDER_KEY = "kubernetes";
-/** Metadata marker for the company's managed-by-config Kubernetes sandbox environment. */
+/** Legacy lookup marker for the instance-wide managed Kubernetes environment. */
 const KUBERNETES_MANAGED_MARKER = "managedKubernetesSandbox";
 const ACTIVE_CUSTOM_IMAGE_SETUP_STATUSES = ["starting", "waiting_for_user", "capturing"] as const;
 
@@ -105,6 +105,13 @@ export interface ManagedSandboxEnvironmentInput {
   extraMetadata?: Record<string, unknown>;
   /** Version label recorded with the stock binding; hashes remain the drift authority. */
   stockVersion?: string;
+  /**
+   * Declares stock fields (name, description, config, managed metadata, status)
+   * caller-owned, replacing operator edits and resetting the baseline. envVars
+   * and unrelated metadata remain operator-owned. Operator archives take
+   * precedence; only a reconciler-owned archive may be reactivated.
+   */
+  applyOverOperatorEdits?: boolean;
 }
 
 export type ManagedSandboxEnvironmentReconcileAction =
@@ -319,8 +326,9 @@ export function environmentService(db: Db) {
    * - A stock-controlled managed row advances to a new stock hash in the same
    *   transaction as its managed fields, including provider switches.
    * - A stock-current row is returned without an environment write.
-   * - An operator-modified or previously unmanaged row is preserved and
-   *   reported as skipped; its user-owned fields are never folded into stock.
+   * - An operator-modified or previously unmanaged row is preserved unless the
+   *   caller opts into replacing its stock fields. Operator-owned fields are
+   *   excluded from the baseline.
    */
   const ensureManagedSandboxEnvironment = async (
     input: ManagedSandboxEnvironmentInput,
@@ -418,6 +426,28 @@ export function environmentService(db: Db) {
               updatedAt: new Date(),
             },
           });
+        };
+
+        const refreshAttachedBindings = async (
+          environmentId: string,
+          stockVersion: string,
+          installedStockHash: string,
+          defaultsJson: Record<string, unknown>,
+        ) => {
+          await tx
+            .update(builtInManagedResources)
+            .set({
+              stockVersion,
+              stockHash: installedStockHash,
+              defaultsJson,
+              updatedAt: new Date(),
+            })
+            .where(and(
+              eq(builtInManagedResources.bundleKey, MANAGED_ENVIRONMENT_BUNDLE_KEY),
+              eq(builtInManagedResources.resourceKind, MANAGED_ENVIRONMENT_RESOURCE_KIND),
+              eq(builtInManagedResources.resourceKey, MANAGED_ENVIRONMENT_RESOURCE_KEY),
+              eq(builtInManagedResources.resourceId, environmentId),
+            ));
         };
 
         if (!row) {
@@ -539,27 +569,31 @@ export function environmentService(db: Db) {
           },
         );
         if (operatorReaffirmedArchive) stockStatus = "operator_modified";
+        // Status alone cannot prove archive ownership. An operator's later
+        // archive clears the row token, even if the row was already archived.
+        const archivedByReconciler = row.status === "archived" &&
+          typeof rowArchiveToken === "string" &&
+          matchingBindings.some((binding) => {
+            const bindingDefaults = binding.defaultsJson;
+            return bindingDefaults.status === "archived" &&
+              bindingDefaults[MANAGED_ENVIRONMENT_ARCHIVE_TOKEN_DEFAULTS_KEY] === rowArchiveToken;
+          });
+        // Keep the observed stockStatus so activity records disclose overwrites.
+        // Manifest ownership does not grant permission to undo operator archives.
+        const applyOverOperatorEdits = stockStatus === "operator_modified" &&
+          input.applyOverOperatorEdits === true &&
+          (row.status !== "archived" || (archivedByReconciler && !operatorReaffirmedArchive));
+        if (applyOverOperatorEdits && row.status === "archived") providerReactivated = true;
 
-        if (stockStatus === "operator_modified") {
+        if (stockStatus === "operator_modified" && !applyOverOperatorEdits) {
           const baseline = matchingBindings[0];
           let baselineDefaults = baseline
             ? managedEnvironmentBaselineDefaults(baseline.defaultsJson)
             : desiredStock;
           let baselineHash = baseline?.stockHash ?? latestStockHash;
 
-          // Provider unavailability is an operational state transition, not
-          // an operator edit. If the binding records that Paperclip archived
-          // this row, restore only its availability status. Keep every other
-          // operator-modified field intact and leave the stock update pending.
-          // A manually archived row still has an active binding baseline, so
-          // it remains operator_modified and is not reactivated here.
-          const archivedByReconciler = row.status === "archived" &&
-            typeof rowArchiveToken === "string" &&
-            matchingBindings.some((binding) => {
-              const bindingDefaults = binding.defaultsJson;
-              return bindingDefaults.status === "archived" &&
-                bindingDefaults[MANAGED_ENVIRONMENT_ARCHIVE_TOKEN_DEFAULTS_KEY] === rowArchiveToken;
-            });
+          // Without manifest ownership, provider recovery restores availability
+          // but must not replace operator config or mark the stock update applied.
           if (archivedByReconciler) {
             const reactivated = await tx
               .update(environments)
@@ -617,12 +651,15 @@ export function environmentService(db: Db) {
         }
 
         if (stockStatus === "stock_current") {
+          const hasStaleBinding = matchingBindings.some(
+            (binding) => binding.stockHash !== latestStockHash,
+          );
           await writeBindings(
             row.id,
             input.stockVersion ?? MANAGED_ENVIRONMENT_STOCK_VERSION,
             latestStockHash,
             desiredStock,
-            false,
+            hasStaleBinding,
           );
           return {
             environment: toEnvironment(row),
@@ -649,6 +686,12 @@ export function environmentService(db: Db) {
           .returning()
           .then((rows) => rows[0] ?? null);
         if (!updated) throw new Error("Managed sandbox environment changed during reconciliation");
+        await refreshAttachedBindings(
+          updated.id,
+          input.stockVersion ?? MANAGED_ENVIRONMENT_STOCK_VERSION,
+          latestStockHash,
+          desiredStock,
+        );
         await writeBindings(
           updated.id,
           input.stockVersion ?? MANAGED_ENVIRONMENT_STOCK_VERSION,
@@ -928,16 +971,13 @@ export function environmentService(db: Db) {
     archiveManagedSandboxEnvironment,
 
     /**
-     * Idempotently ensure a managed Kubernetes sandbox environment exists for
-     * an instance, configured from instance/operator-supplied config. A thin
-     * wrapper over `ensureManagedSandboxEnvironment` that pins the provider to
-     * "kubernetes" and stamps the legacy marker `findKubernetesEnvironment`
-     * keys on. On subsequent calls stock-controlled config advances in place;
-     * operator modifications remain untouched for explicit review.
+     * The legacy Kubernetes marker is required by findKubernetesEnvironment.
+     * Operator edits win unless the caller explicitly declares manifest ownership.
      */
     ensureKubernetesEnvironment: async (
       companyIdOrConfig: string | KubernetesEnvironmentConfigInput,
       maybeConfig?: KubernetesEnvironmentConfigInput,
+      options?: { applyOverOperatorEdits?: boolean },
     ): Promise<Environment> => {
       const config = resolveKubernetesConfig(companyIdOrConfig, maybeConfig);
       return ensureManagedSandboxEnvironment({
@@ -947,6 +987,7 @@ export function environmentService(db: Db) {
         provider: KUBERNETES_PROVIDER_KEY,
         config,
         extraMetadata: { [KUBERNETES_MANAGED_MARKER]: true },
+        applyOverOperatorEdits: options?.applyOverOperatorEdits === true,
       }).then((result) => result.environment);
     },
 
