@@ -359,6 +359,24 @@ export function environmentService(db: Db) {
           ? [input.companyId]
           : await tx.select({ id: companies.id }).from(companies).then((rows) => rows.map((row) => row.id));
         activityCompanyIds = companyIds;
+
+        // Take the sandbox-row lock BEFORE reading the stock bindings. Two
+        // passes can reconcile the same slot concurrently (the boot ensure and
+        // the async provider-recovery reactivation, or two app builds during a
+        // rolling deploy). Concurrent passes serialize on this lock, and under
+        // READ COMMITTED each later statement sees a fresh snapshot — so a pass
+        // that blocks here then reads the bindings the winning pass committed,
+        // not a snapshot from before it waited. Reading bindings first left a
+        // window where a waiting pass compared the winner's fresh row against
+        // its own stale binding hash, misclassified the mismatch as
+        // `operator_modified`, and — once `platformFullyManaged` turns that
+        // into an update — rolled the row back to its own older stock.
+        const sandboxRows = await tx
+          .select()
+          .from(environments)
+          .where(eq(environments.driver, "sandbox"))
+          .for("update");
+
         const bindingConditions = and(
           eq(builtInManagedResources.bundleKey, MANAGED_ENVIRONMENT_BUNDLE_KEY),
           eq(builtInManagedResources.resourceKind, MANAGED_ENVIRONMENT_RESOURCE_KIND),
@@ -371,11 +389,6 @@ export function environmentService(db: Db) {
         trackingInitialized = bindings.length < companyIds.length;
         const keys = managedMetadataKeys(desiredMetadata, bindings);
 
-        const sandboxRows = await tx
-          .select()
-          .from(environments)
-          .where(eq(environments.driver, "sandbox"))
-          .for("update");
         let row = sandboxRows.find(
           (candidate) => (candidate.metadata as Record<string, unknown> | null)?.managedByPaperclip === true,
         ) ?? sandboxRows.find((candidate) => candidate.name === input.name) ?? null;
@@ -556,19 +569,32 @@ export function environmentService(db: Db) {
         // applier) assert that nothing in their deployment can hand-edit this
         // row — the product gives a cloud-harness tenant no path to it, unlike
         // the general self-hosted contract this function otherwise protects
-        // (see "classifies operator drift" and "preserves an existing
-        // unmanaged sandbox row" in environment-service.test.ts, both of which
-        // exercise a real operator edit and must keep winning). Under that
-        // assertion, a plain content-hash mismatch against a real prior
+        // (see "classifies operator drift" in environment-service.test.ts,
+        // which exercises a real operator edit and must keep winning). Under
+        // that assertion, a plain content-hash mismatch against a real prior
         // binding can only be drift between two platform-driven reconciliation
         // passes (e.g. a stock hash recorded by an older app build before a
         // later stock field was added), never a customization to protect —
-        // apply it like any other stock-outdated row. Archive-reaffirmation is
-        // a distinct, still-real signal even here — a `sandbox_image` update
-        // must never resurrect a row something else deliberately kept
-        // archived after Paperclip's own provider-unavailability archival —
-        // so that path still skips below regardless of this flag.
-        if (input.platformFullyManaged && stockStatus === "operator_modified" && !operatorReaffirmedArchive) {
+        // apply it like any other stock-outdated row.
+        //
+        // Two things the bypass must never touch:
+        // - A row with NO matching binding. `row` can be a same-name sandbox
+        //   row that was never Paperclip-managed (the fallback lookup above).
+        //   It also reads as `operator_modified`, but there is no prior
+        //   platform pass to have drifted from — adopting it would overwrite
+        //   a tenant-created environment and stamp it managed. Require a
+        //   binding for this exact row, so "prior binding" is enforced, not
+        //   just documented.
+        // - Archive-reaffirmation. A `sandbox_image` update must never
+        //   resurrect a row something else deliberately kept archived after
+        //   Paperclip's own provider-unavailability archival, so that path
+        //   still skips below regardless of this flag.
+        if (
+          input.platformFullyManaged &&
+          stockStatus === "operator_modified" &&
+          !operatorReaffirmedArchive &&
+          matchingBindings.length > 0
+        ) {
           stockStatus = "stock_update_available";
         }
 

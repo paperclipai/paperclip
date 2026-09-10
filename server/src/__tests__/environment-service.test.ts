@@ -1663,6 +1663,44 @@ describeEmbeddedPostgres("environmentService leases", () => {
     expect(rows).toHaveLength(1);
   });
 
+  it("platformFullyManaged never adopts an unbound same-name sandbox row", async () => {
+    // Same setup as the plain case above: a tenant-created sandbox row holds
+    // the desired name and has no stock binding. It reads as
+    // `operator_modified` too, but there is no prior platform pass for it to
+    // have drifted from — the bypass must require a binding for this exact
+    // row, or it would overwrite the tenant's config and stamp it managed.
+    const companyId = await seedCompany();
+    const handMade = await svc.create({
+      name: "Daytona",
+      driver: "sandbox",
+      status: "active",
+      config: { provider: "daytona", target: "us" },
+    });
+    expect(handMade.metadata?.managedByPaperclip).toBeUndefined();
+
+    const reconciliation = await svc.ensureManagedSandboxEnvironment({
+      companyId,
+      name: "Daytona",
+      provider: "daytona",
+      config: { target: "eu" },
+      platformFullyManaged: true,
+    });
+    expect(reconciliation).toMatchObject({
+      action: "skipped",
+      stockStatus: "operator_modified",
+      updateAvailable: true,
+    });
+    expect(reconciliation.environment.id).toBe(handMade.id);
+    expect(reconciliation.environment.config.target).toBe("us");
+    expect(reconciliation.environment.metadata?.managedByPaperclip).toBeUndefined();
+
+    const rows = await db
+      .select()
+      .from(environments)
+      .where(eq(environments.driver, "sandbox"));
+    expect(rows).toHaveLength(1);
+  });
+
   it("keeps the current name when the desired name belongs to another row", async () => {
     const companyId = await seedCompany();
     await svc.create({
