@@ -7,6 +7,23 @@ import { runAdapterExecutionTargetProcess } from "./execution-target.js";
 import { beginAdapterRunCancellation, cancelAdapterRunExecution, finishAdapterRunCancellation } from "./adapter-run-cancellation.js";
 
 describe("sandbox CLI cancellation through the execution target", () => {
+  it.each(["SIGTERM", "SIGKILL"] as const)("preserves a child's external %s termination", async (signal) => {
+    const runId = randomUUID();
+    beginAdapterRunCancellation(runId);
+    const runner: CommandManagedRuntimeRunner = { execute: async (input) => new Promise((resolve, reject) => {
+      const child = spawn(input.command === "node" ? process.execPath : input.command, input.args ?? [], { stdio: "ignore" });
+      child.once("error", reject);
+      child.once("close", (exitCode, signal) => resolve({ exitCode, signal, stdout: "", stderr: "", timedOut: false, pid: child.pid ?? null, startedAt: null }));
+    }) };
+    try {
+      const result = await executeCancellableSandboxCommand(runId, runner, {
+        command: process.execPath, args: ["-e", `process.kill(process.pid, '${signal}')`],
+      }, 100);
+      expect(result.signal).toBe(signal);
+      expect(result.exitCode).toBeNull();
+    } finally { finishAdapterRunCancellation(runId); }
+  });
+
   it("retains a failed cancellation for an explicit retry", async () => {
     const runId = randomUUID();
     beginAdapterRunCancellation(runId);

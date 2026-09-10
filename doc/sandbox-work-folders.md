@@ -425,7 +425,10 @@ Legacy sandbox cancellation stops the owned remote CLI process group or ACP
 process session before waiting for run teardown and the final file flush. The
 host sends a command-scoped cancellation marker for CLI execution; remote PIDs
 are never passed to the host process killer. Cancellation is persisted before
-stopping execution so its exit cannot admit an automatic retry. Failed stop
+stopping execution so its exit cannot admit an automatic retry. Scope registration
+rechecks durable run status, and cancellation rechecks newly registered scopes
+before acknowledgement, preventing cancelled startup work from dispatching.
+The supervisor preserves externally delivered child termination signals. Failed stop
 requests remain visible and can be retried explicitly. Local and native runner
 cancellation retain their existing authorities.
 

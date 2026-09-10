@@ -1,4 +1,4 @@
-import { beginAdapterRunCancellation, cancelAdapterRunExecution, finishAdapterRunCancellation, hasAdapterRunCancellation } from "@paperclipai/adapter-utils/adapter-run-cancellation";
+import { beginAdapterRunCancellation, cancelAdapterRunExecution, finishAdapterRunCancellation, hasAdapterRunCancellation, throwIfAdapterRunCancelled } from "@paperclipai/adapter-utils/adapter-run-cancellation";
 import { measureSandboxOperation, runWithSandboxPerformanceTrace, setSandboxPerformanceRunAttributes } from "./sandbox-performance.js";
 import { initializeRunIdentity } from "./run-identity.js";
 import { startNativeGitHubCallbackBridge } from "./native-github-bridge.js";
@@ -21151,6 +21151,11 @@ export function heartbeatService(
         if (nativeRuntimeResolution.kind === "legacy"
           && executionTarget?.kind === "remote" && executionTarget.transport === "sandbox") {
           beginAdapterRunCancellation(run.id);
+          // Register first, then read the durable status. A cancellation that
+          // preceded registration must not be erased by a fresh active scope.
+          if ((await getRun(run.id))?.status !== "running") {
+            throw Object.assign(new Error("Run stopped before adapter dispatch"), { code: "ADAPTER_RUN_CANCELLED" });
+          }
         }
         const localAgentJwtScope =
           issueRef?.workMode === "skill_test"
@@ -21671,8 +21676,9 @@ export function heartbeatService(
             }
             const guardedDispatch =
               await measureSandboxOperation("heartbeat.dispatch_resolved_interaction_continuation_with_atomic_gate", { operationIndex: 147 }, async () => (dispatchResolvedInteractionContinuationWithAtomicGate(
-                (markDispatchStarted) =>
-                  adapter.execute({
+                (markDispatchStarted) => {
+                  throwIfAdapterRunCancelled(run.id);
+                  return adapter.execute({
                     runId: run.id,
                     agent,
                     runtime: runtimeForAdapter,
@@ -21716,7 +21722,8 @@ export function heartbeatService(
                       }, executionTarget?.kind === "remote" ? "remote" : "local")));
                     },
                     authToken: authToken ?? undefined,
-                  }),
+                  });
+                },
               )));
             if (!guardedDispatch.dispatched) return;
             adapterResult = await measureSandboxOperation("heartbeat.guarded_dispatch.result_promise", { operationIndex: 150 }, async () => (guardedDispatch.resultPromise));
@@ -26124,6 +26131,10 @@ export function heartbeatService(
           }
         : {}),
     });
+
+    // Scope initialization may have raced the earlier lookup. Persist first,
+    // then notify any scope now present; later scopes read this terminal state.
+    if (run.runtimeMode !== "native") await cancelAdapterRunExecution(run.id);
 
     await setWakeupStatus(run.wakeupRequestId, "cancelled", {
       finishedAt,

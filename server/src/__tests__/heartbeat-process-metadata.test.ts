@@ -6,6 +6,7 @@ import * as processes from "../services/hot-restart.js";
 import * as adapters from "../adapters/index.js";
 import * as orchestration from "../services/environment-run-orchestrator.js";
 import * as compatibility from "../services/legacy-sandbox-workspace.js";
+import * as cancellation from "@paperclipai/adapter-utils/adapter-run-cancellation";
 import { bindAdapterRunStop, hasAdapterRunCancellation } from "@paperclipai/adapter-utils/adapter-run-cancellation";
 import * as executionTargets from "@paperclipai/adapter-utils/execution-target";
 import { heartbeatService, persistHeartbeatRunProcessMetadata } from "../services/heartbeat.js";
@@ -68,7 +69,41 @@ describe("heartbeat process identity persistence", () => {
     }
   }, 30_000);
 
-  it("cancels the remote adapter and waits for teardown before acknowledging", async () => {
+  it("does not dispatch when cancellation precedes the remote cancellation scope", async () => {
+    const originalOrchestrator = orchestration.environmentRunOrchestrator;
+    vi.spyOn(orchestration, "environmentRunOrchestrator").mockImplementation((...args) => {
+      const actual = originalOrchestrator(...args);
+      return { ...actual, realizeForRun: async (input) => ({
+        ...await actual.realizeForRun(input),
+        executionTarget: { kind: "remote", transport: "sandbox", remoteCwd: "/remote/task", shellCommand: "sh" } as never,
+      }) };
+    });
+    vi.spyOn(compatibility, "hasLegacySandboxWorkspace").mockReturnValue(true);
+    let ready!: () => void, release!: () => void;
+    const preparing = new Promise<void>((resolve) => { ready = resolve; });
+    const finishPreparation = new Promise<void>((resolve) => { release = resolve; });
+    vi.spyOn(executionTargets, "prepareGitHubOperationLaunchers").mockImplementation(async (input) => {
+      ready(); await finishPreparation; return input.env;
+    });
+    vi.spyOn(executionTargets, "cleanupGitHubOperationLaunchers").mockResolvedValue(undefined);
+    const execute = vi.fn(async () => ({ exitCode: 0, signal: null, timedOut: false }));
+    vi.spyOn(adapters, "getServerAdapter").mockReturnValue({ supportsLocalAgentJwt: false, execute } as never);
+    const heartbeat = heartbeatService(db);
+    try {
+      const queued = await heartbeat.invoke(agentId, "on_demand", {}, "manual");
+      expect(queued).not.toBeNull();
+      await preparing;
+      expect(hasAdapterRunCancellation(queued!.id)).toBe(false);
+      await heartbeat.cancelRun(queued!.id);
+      expect((await heartbeat.getRun(queued!.id))?.status).toBe("cancelled");
+      release();
+      await heartbeat.drainActiveRunExecutions();
+      expect(execute).not.toHaveBeenCalled();
+      expect(hasAdapterRunCancellation(queued!.id)).toBe(false);
+    } finally { release(); await heartbeat.drainActiveRunExecutions(); }
+  }, 30_000);
+
+  it.each([false, true])("cancels the remote adapter and waits for teardown (scope lookup raced: %s)", async (scopeLookupRaced) => {
     const originalOrchestrator = orchestration.environmentRunOrchestrator;
     vi.spyOn(orchestration, "environmentRunOrchestrator").mockImplementation((...args) => {
       const actual = originalOrchestrator(...args);
@@ -105,6 +140,9 @@ describe("heartbeat process identity persistence", () => {
       const queued = await heartbeat.invoke(agentId, "on_demand", {}, "manual");
       expect(queued).not.toBeNull();
       await started;
+      // Model the initial lookup occurring before registration. The final
+      // lookup after persisting cancellation must still notify the scope.
+      if (scopeLookupRaced) vi.spyOn(cancellation, "hasAdapterRunCancellation").mockReturnValueOnce(false);
       let acknowledged = false;
       pending = heartbeat.cancelRun(queued!.id).then((result) => { acknowledged = true; return result; });
       await interrupted;

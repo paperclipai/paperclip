@@ -32,11 +32,18 @@ const poll = setInterval(() => { if (cancelled()) stop(); }, 100);
 for (const name of ['SIGTERM', 'SIGINT', 'SIGHUP']) process.on(name, stop);
 const cleanup = () => { clearInterval(poll); clearTimeout(escalation); try { fs.unlinkSync(marker); } catch (e) { if (e.code !== 'ENOENT') throw e; } };
 child.once('error', () => { exited = true; cleanup(); process.exitCode = 127; });
-child.once('exit', code => {
+child.once('exit', (code, childSignal) => {
   // Do not leave a shell/tool child holding the provider's output pipe after
   // the CLI exits in response to cancellation. Never retain a PID kill timer.
   if (stopping) signal('SIGKILL');
-  exited = true; cleanup(); process.exitCode = stopping ? 143 : (code ?? 128);
+  exited = true; cleanup();
+  if (!stopping && childSignal) {
+    // Preserve the real termination signal instead of reporting exit code 128.
+    process.removeAllListeners(childSignal);
+    process.kill(process.pid, childSignal);
+    return;
+  }
+  process.exitCode = stopping ? 143 : (code ?? 1);
 });
 process.once('exit', () => { if (!exited) signal('SIGKILL'); });
 `;
