@@ -437,5 +437,40 @@ describeEmbeddedPostgres("durable zombie reaper", () => {
       // Cleanup
       try { child.kill("SIGKILL"); } catch { /* ignore */ }
     }, 10_000);
+
+    it("retains the in-memory handle and leaves the run as running when the kill throws", async () => {
+      const companyId = await seedCompany();
+      const agentId = await seedAgent(companyId);
+      const runId = await seedRun(companyId, agentId, {
+        lastOutputAt: new Date(Date.now() - 5 * 60 * 60 * 1000),
+        processPid: 99999,
+      });
+
+      runningProcesses.set(runId, { child: {} as never, graceSec: 30, processGroupId: null });
+
+      // Force the underlying kill to throw so the catch-block retain-handle path
+      // is exercised. terminateHeartbeatRunProcess delegates to terminateLocalService.
+      const localSupervisor = await import("../services/local-service-supervisor.js");
+      vi.spyOn(localSupervisor, "terminateLocalService").mockRejectedValueOnce(
+        new Error("permission denied"),
+      );
+
+      try {
+        const heartbeat = heartbeatService(db);
+        const result = await heartbeat.reapSilentZombieRuns({ killThresholdMs: 0 });
+
+        // Not counted as reaped — kill failed.
+        expect(result.reaped).toBe(0);
+
+        // Handle must be retained so the next sweep can retry the kill.
+        expect(runningProcesses.has(runId)).toBe(true);
+
+        // DB status must be unchanged — no premature terminalization.
+        const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+        expect(run?.status).toBe("running");
+      } finally {
+        vi.restoreAllMocks();
+      }
+    });
   });
 });

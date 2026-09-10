@@ -14029,11 +14029,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         killMessage,
       );
 
-      // Persist terminal status BEFORE removing the handle so that if this
-      // process crashes between kill and releaseIssueExecutionAndPromote the
-      // lock is still clearable by sweepStaleIssueLocks on the next tick.
-      // Wrap the kill in try-catch: a failed kill should not abort the DB
-      // cleanup or prevent subsequent zombies from being processed in this sweep.
+      // Kill the process first. If the kill fails, the process is still alive
+      // and we must NOT release the lock or mark the run terminal — doing so
+      // would let a new run start while the zombie is still running. Leave the
+      // handle in runningProcesses so the next sweep retries the kill.
       try {
         await terminateHeartbeatRunProcess({
           pid: run.processPid,
@@ -14042,8 +14041,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       } catch (killErr) {
         logger.warn(
           { runId, processPid: run.processPid, processGroupId: run.processGroupId, err: killErr },
-          "reapSilentZombieRuns: kill failed; proceeding with DB cleanup and lock release",
+          "reapSilentZombieRuns: kill failed; retaining handle and deferring cleanup to next sweep",
         );
+        continue;
       }
       runningProcesses.delete(runId);
 
