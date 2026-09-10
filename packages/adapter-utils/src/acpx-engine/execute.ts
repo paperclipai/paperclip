@@ -4743,12 +4743,12 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         ]);
         if (!eventsEnded) {
           // The deadline won: stop waiting on the agent. `closeStream` ends
-          // the event drain locally, with no agent cooperation required. The
-          // abandoned `drainEvents` promise is left to settle on its own and
-          // is observed so it can never raise an unhandled rejection; nothing
-          // downstream reads its side effects after this point.
-          void turn.closeStream({ reason: "paperclip duplex loss cancel deadline" }).catch(() => {});
-          void drainEvents.catch(() => {});
+          // the event drain locally, with no agent cooperation required. Await
+          // both the close call and the drain it unblocks before this step
+          // returns, so no late runtime event can still mutate shared state
+          // (output segments, tool inventory) after finalization reads it.
+          await turn.closeStream({ reason: "paperclip duplex loss cancel deadline" }).catch(() => {});
+          await drainEvents.catch(() => {});
           flushOutputSegment();
           return LOSS_DEADLINE_TERMINAL;
         }
@@ -4860,12 +4860,12 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           signal: timedOut ? "SIGTERM" : null,
           timedOut,
           errorMessage,
-          errorCode: terminal.status === "failed"
-            ? "acpx_turn_failed"
-            : timedOut
-              ? "acpx_timeout"
-              : channelLost
-                ? DUPLEX_CHANNEL_LOST_ERROR_CODE
+          errorCode: timedOut
+            ? "acpx_timeout"
+            : channelLost
+              ? DUPLEX_CHANNEL_LOST_ERROR_CODE
+              : terminal.status === "failed"
+                ? "acpx_turn_failed"
                 : null,
           sessionId: sessionHandle.backendSessionId ?? sessionHandle.runtimeSessionName,
           sessionParams: buildSessionParams({ prepared, handle: sessionHandle }),
@@ -4913,16 +4913,6 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
             resources: emptyConsumed,
           };
         }
-        if (terminal.status === "failed") {
-          return {
-            kind: "failed",
-            cause: {
-              kind: "turn_failed",
-              error: terminal.error instanceof Error ? terminal.error : new Error(String(terminal.error)),
-            },
-            resources: emptyConsumed,
-          };
-        }
         if (terminal.status === "cancelled") {
           return {
             kind: "cancelled",
@@ -4930,16 +4920,28 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
             resources: emptyConsumed,
           };
         }
-        // A completed terminal whose duplex control channel died mid-turn returns
-        // a failed completion, so the coordinator settles for a failure and the
-        // reuse decision forbids a save. The message carries only the typed loss
-        // reason, so no raw provider text rides the cause.
+        // A duplex control-channel loss outranks a provider-reported failure or
+        // completion: the loss reason explains why the provider terminal reads
+        // the way it does, not the other way round. This also covers a
+        // "completed" terminal whose channel died mid-turn. The message carries
+        // only the typed loss reason, so no raw provider text rides the cause,
+        // even when the provider terminal itself reports `failed`.
         if (channelLost) {
           return {
             kind: "failed",
             cause: {
               kind: "turn_failed",
               error: new Error(channelLostMessage ?? "The sandbox duplex control channel was lost."),
+            },
+            resources: emptyConsumed,
+          };
+        }
+        if (terminal.status === "failed") {
+          return {
+            kind: "failed",
+            cause: {
+              kind: "turn_failed",
+              error: terminal.error instanceof Error ? terminal.error : new Error(String(terminal.error)),
             },
             resources: emptyConsumed,
           };

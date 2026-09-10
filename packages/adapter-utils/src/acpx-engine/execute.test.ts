@@ -6432,6 +6432,25 @@ describe("ACPX engine sandbox bridge run-disposition seam (fail-closed)", () => 
     expect(fake.readDisposition().failed).toBe(false);
   });
 
+  it("keeps duplex_channel_lost precedence when the loss latches before a failed terminal", async () => {
+    const sandbox = await setupRemoteSandbox();
+    const fake = createFakeBridgeHandle();
+    // Latch the loss before the ACP terminal resolves, and the terminal
+    // itself also reports a provider failure.
+    const runtime = runtimeWithFailedResult(() => fake.emitLoss("provider_exit"));
+
+    const result = await runRemote(fake.handle, runtime, sandbox);
+
+    expect(result.exitCode).not.toBe(0);
+    // The duplex loss reason wins over the provider's own failed terminal.
+    expect(result.errorCode).toBe("duplex_channel_lost");
+    // The message carries only the typed loss reason, not the raw provider
+    // failure text.
+    expect(result.errorMessage).toContain("provider_exit");
+    expect(result.errorMessage).not.toContain("agent failed");
+    expect(result.resultJson).toMatchObject({ status: "failed" });
+  });
+
   it("releases the runtime locally and places no remote close call once the duplex channel is lost", async () => {
     const sandbox = await setupRemoteSandbox();
     const fake = createFakeBridgeHandle();
@@ -6592,6 +6611,65 @@ describe("ACPX engine sandbox bridge run-disposition seam (fail-closed)", () => 
     // raw provider text.
     expect(result.errorMessage).toContain("provider_exit");
     expect(result.resultJson).toMatchObject({ status: "failed" });
+  }, 5000);
+
+  it("awaits stream closure and the event drain before finalizing a duplex loss deadline", async () => {
+    const sandbox = await setupRemoteSandbox();
+    const fake = createFakeBridgeHandle();
+    let endEvents: (() => void) | null = null;
+    const eventsEnded = new Promise<void>((resolve) => {
+      endEvents = resolve;
+    });
+    let releaseCloseStream!: () => void;
+    const closeStreamGate = new Promise<void>((resolve) => {
+      releaseCloseStream = resolve;
+    });
+    let closeStreamCalls = 0;
+    // `closeStream()` stays pending on a gate the test controls, and only
+    // ends the event drain once the test releases that gate. If the run
+    // finalizes before the gate opens, the seam did not wait for the close
+    // call, so a late event on this drain could still land after the result.
+    const runtime = {
+      ensureSession: async () => ({
+        backendSessionId: "backend-session",
+        agentSessionId: "agent-session",
+        runtimeSessionName: "runtime-session",
+      }),
+      startTurn: () => ({
+        events: (async function* () {
+          await eventsEnded;
+        })(),
+        result: new Promise<never>(() => {}),
+        cancel: async () => {},
+        closeStream: async () => {
+          closeStreamCalls += 1;
+          await closeStreamGate;
+          endEvents?.();
+        },
+      }),
+      setConfigOption: async () => {},
+      close: async () => {},
+    };
+
+    const resultPromise = runRemote(fake.handle, runtime, sandbox, {
+      duplexLossCancelDeadlineMs: 25,
+    });
+    await vi.waitFor(() => expect(fake.onLoss).toHaveBeenCalled());
+    fake.emitLoss("provider_exit");
+
+    await vi.waitFor(() => expect(closeStreamCalls).toBe(1));
+    // The close call has not resolved yet, so the run must still be pending.
+    let settled = false;
+    void resultPromise.then(() => {
+      settled = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(settled).toBe(false);
+
+    releaseCloseStream();
+    const result = await resultPromise;
+
+    expect(result.errorCode).toBe("duplex_channel_lost");
   }, 5000);
 
   it("does not abort or fail an already-completed run when the duplex channel loses after an orderly completion", async () => {
