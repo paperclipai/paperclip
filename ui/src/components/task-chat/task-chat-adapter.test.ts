@@ -195,6 +195,8 @@ describe("commentsToTaskChatItems", () => {
       kind: "message",
       timestamp: formatTaskChatTimestamp(createdAt),
     });
+  });
+
   it("routes an agent-authored workspace-ready notice through the system renderer", () => {
     const presentation = {
       kind: "system_notice",

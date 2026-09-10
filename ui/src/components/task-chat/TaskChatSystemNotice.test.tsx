@@ -208,7 +208,7 @@ describe("TaskChatSystemNotice (PAP-443)", () => {
     expect(
       container
         .querySelector('[data-testid="task-chat-system-notice"]')
-        ?.classList.contains("items-center"),
+        ?.classList.contains("items-start"),
     ).toBe(true);
   });
 
