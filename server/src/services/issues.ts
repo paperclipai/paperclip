@@ -57,6 +57,7 @@ import type {
   IssueRelationIssueSummary,
   IssueWatchdogSummary,
   LowTrustBoundary,
+  DuplicateIssueConsolidationSnapshot,
   SuccessfulRunHandoffState,
 } from "@paperclipai/shared";
 import {
@@ -1447,6 +1448,7 @@ const ISSUE_USER_PARTICIPATION_ACTIVITY_ACTIONS = [
   "issue.document_unlocked",
   "issue.document_updated",
   "issue.document_upserted",
+  "issue.duplicate_consolidated",
   "issue.feedback_vote_saved",
   "issue.inbox_touched",
   "issue.low_trust_output_promoted",
@@ -5230,6 +5232,44 @@ export function issueService(db: Db) {
     }
   }
 
+  async function lockIssueGraph(companyId: string, dbOrTx: any) {
+    await dbOrTx.execute(
+      sql`select pg_advisory_xact_lock(hashtextextended(${'issue-graph:' + companyId}, 0))`,
+    );
+  }
+
+  async function validateParentAssignment(
+    companyId: string,
+    issueId: string | null,
+    parentId: string | null,
+    dbOrTx: any,
+  ): Promise<"missing" | "cycle" | null> {
+    if (!parentId) return null;
+    if (parentId === issueId) return "cycle";
+    const parent = await dbOrTx
+      .select({ id: issues.id })
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.id, parentId)))
+      .then((rows: Array<{ id: string }>) => rows[0] ?? null);
+    if (!parent) return "missing";
+    if (!issueId) return null;
+    const result = await dbOrTx.execute(sql`
+      with recursive ancestors(id, parent_id) as (
+        select ${issues.id}, ${issues.parentId}
+        from ${issues}
+        where ${and(eq(issues.companyId, companyId), eq(issues.id, parentId))}
+        union
+        select parent.id, parent.parent_id
+        from ${issues} parent
+        join ancestors on parent.id = ancestors.parent_id
+        where parent.company_id = ${companyId}
+      )
+      select id from ancestors where id = ${issueId} limit 1
+    `);
+    const rows = Array.isArray(result) ? result : result?.rows ?? [];
+    return rows.length > 0 ? "cycle" : null;
+  }
+
   async function syncBlockedByIssueIds(
     issueId: string,
     companyId: string,
@@ -5237,51 +5277,85 @@ export function issueService(db: Db) {
     actor: { agentId?: string | null; userId?: string | null } = {},
     dbOrTx: any = db,
   ) {
-    const deduped = [...new Set(blockedByIssueIds)];
-    if (deduped.some((candidate) => candidate === issueId)) {
-      throw unprocessable("Issue cannot be blocked by itself");
-    }
+    const run = async (tx: any) => {
+      await lockIssueGraph(companyId, tx);
+      const deduped = [...new Set(blockedByIssueIds)];
+      if (deduped.some((candidate) => candidate === issueId)) {
+        throw unprocessable("Issue cannot be blocked by itself");
+      }
 
-    if (deduped.length > 0) {
       const lockedIssueIds = [issueId, ...deduped].sort();
-      await dbOrTx.execute(
+      await tx.execute(
         sql`SELECT ${issues.id} FROM ${issues}
             WHERE ${and(eq(issues.companyId, companyId), inArray(issues.id, lockedIssueIds))}
             ORDER BY ${issues.id}
             FOR UPDATE`,
       );
-      const relatedIssues = await dbOrTx
+      if (deduped.length > 0) {
+        const relatedIssues = await tx
+          .select({ id: issues.id })
+          .from(issues)
+          .where(and(eq(issues.companyId, companyId), inArray(issues.id, deduped)));
+        if (relatedIssues.length !== deduped.length) {
+          throw unprocessable("Blocked-by issues must belong to the same company");
+        }
+        await assertNoBlockingCycles(companyId, issueId, deduped, tx);
+      }
+
+      await tx
+        .delete(issueRelations)
+        .where(
+          and(
+            eq(issueRelations.companyId, companyId),
+            eq(issueRelations.relatedIssueId, issueId),
+            eq(issueRelations.type, "blocks"),
+          ),
+        );
+
+      if (deduped.length === 0) return;
+
+      await tx.insert(issueRelations).values(
+        deduped.map((blockerIssueId) => ({
+          companyId,
+          issueId: blockerIssueId,
+          relatedIssueId: issueId,
+          type: "blocks",
+          createdByAgentId: actor.agentId ?? null,
+          createdByUserId: actor.userId ?? null,
+        })),
+      );
+    };
+    return dbOrTx === db ? db.transaction(run) : run(dbOrTx);
+  }
+
+  async function addBlockedByIssueId(
+    issueId: string,
+    companyId: string,
+    blockerIssueId: string,
+    actor: { agentId?: string | null; userId?: string | null } = {},
+  ) {
+    return db.transaction(async (tx) => {
+      await lockIssueGraph(companyId, tx);
+      const lockedIssueIds = [issueId, blockerIssueId].sort();
+      const lockedIssues = await tx
         .select({ id: issues.id })
         .from(issues)
-        .where(and(eq(issues.companyId, companyId), inArray(issues.id, deduped)));
-      if (relatedIssues.length !== deduped.length) {
+        .where(and(eq(issues.companyId, companyId), inArray(issues.id, lockedIssueIds)))
+        .orderBy(asc(issues.id))
+        .for("update");
+      if (lockedIssues.length !== lockedIssueIds.length) {
         throw unprocessable("Blocked-by issues must belong to the same company");
       }
-      await assertNoBlockingCycles(companyId, issueId, deduped, dbOrTx);
-    }
-
-    await dbOrTx
-      .delete(issueRelations)
-      .where(
-        and(
-          eq(issueRelations.companyId, companyId),
-          eq(issueRelations.relatedIssueId, issueId),
-          eq(issueRelations.type, "blocks"),
-        ),
-      );
-
-    if (deduped.length === 0) return;
-
-    await dbOrTx.insert(issueRelations).values(
-      deduped.map((blockerIssueId) => ({
+      await assertNoBlockingCycles(companyId, issueId, [blockerIssueId], tx);
+      await tx.insert(issueRelations).values({
         companyId,
         issueId: blockerIssueId,
         relatedIssueId: issueId,
         type: "blocks",
         createdByAgentId: actor.agentId ?? null,
         createdByUserId: actor.userId ?? null,
-      })),
-    );
+      }).onConflictDoNothing();
+    });
   }
 
   async function isTerminalOrMissingHeartbeatRun(runId: string, dbOrTx: DbReader = db) {
@@ -6878,14 +6952,10 @@ export function issueService(db: Db) {
       });
 
       if (blockParentUntilDone) {
-        const existingBlockers = await db
-          .select({ blockerIssueId: issueRelations.issueId })
-          .from(issueRelations)
-          .where(and(eq(issueRelations.companyId, parent.companyId), eq(issueRelations.relatedIssueId, parent.id), eq(issueRelations.type, "blocks")));
-        await syncBlockedByIssueIds(
+        await addBlockedByIssueId(
           parent.id,
           parent.companyId,
-          [...new Set([...existingBlockers.map((row) => row.blockerIssueId), child.id])],
+          child.id,
           { agentId: actorAgentId ?? null, userId: actorUserId ?? null },
         );
         [child] = await withIssueRelationSummaries(parent.companyId, [child], db);
@@ -7207,6 +7277,14 @@ export function issueService(db: Db) {
         throw unprocessable("in_progress issues require an assignee");
       }
       return db.transaction(async (tx) => {
+        if (issueData.parentId !== undefined || blockedByIssueIds !== undefined) {
+          await lockIssueGraph(companyId, tx);
+        }
+        if (issueData.parentId) {
+          const parentError = await validateParentAssignment(companyId, null, issueData.parentId, tx);
+          if (parentError === "missing") throw unprocessable("Parent issue must belong to the same company");
+          if (parentError === "cycle") throw unprocessable("Parent relations cannot contain cycles");
+        }
         const idempotencyKey = rawIdempotencyKey?.trim() || null;
         const normalizedTitle = normalizeCreateIssueTitle(issueData.title);
         if (allowDuplicate === false) {
@@ -7776,6 +7854,327 @@ export function issueService(db: Db) {
       });
     },
 
+    consolidateDuplicate: async (
+      canonicalIssueId: string,
+      input: {
+        duplicateIssueId: string;
+        idempotencyKey: string;
+        expected: DuplicateIssueConsolidationSnapshot[];
+        actor: {
+          userId?: string | null;
+          agentId?: string | null;
+          runId?: string | null;
+          apiKeyId?: string | null;
+        };
+        authorizeLocked?: (input: {
+          canonical: IssueRow;
+          duplicate: IssueRow;
+          affected: IssueRow[];
+          tx: Db;
+        }) => Promise<void>;
+      },
+    ) => {
+      if (canonicalIssueId === input.duplicateIssueId) {
+        throw conflict("Canonical and duplicate issues must be different", {
+          code: "duplicate_consolidation_same_issue",
+        });
+      }
+      const publications: ActivityPublication[] = [];
+      const result = await db.transaction(async (tx) => {
+        const requestedIssues = await tx
+          .select({ id: issues.id, companyId: issues.companyId })
+          .from(issues)
+          .where(inArray(issues.id, [canonicalIssueId, input.duplicateIssueId]));
+        if (requestedIssues.length !== 2) throw notFound("Issue not found");
+        const companyId = requestedIssues[0]!.companyId;
+        if (requestedIssues.some((issue) => issue.companyId !== companyId)) {
+          throw conflict("Canonical and duplicate issues must belong to the same company", {
+            code: "duplicate_consolidation_company_mismatch",
+          });
+        }
+
+        await lockIssueGraph(companyId, tx);
+
+        const prior = await tx
+          .select({ id: activityLog.id, details: activityLog.details })
+          .from(activityLog)
+          .where(and(
+            eq(activityLog.companyId, companyId),
+            eq(activityLog.action, "issue.duplicate_consolidated"),
+            sql`${activityLog.details}->>'idempotencyKey' = ${input.idempotencyKey}`,
+          ))
+          .limit(1)
+          .then((rows) => rows[0] ?? null);
+        if (prior) {
+          const priorCanonical = prior.details?.canonicalIssueId;
+          const priorDuplicate = prior.details?.duplicateIssueId;
+          if (priorCanonical !== canonicalIssueId || priorDuplicate !== input.duplicateIssueId) {
+            throw conflict("Idempotency key was already used for another consolidation", {
+              code: "duplicate_consolidation_idempotency_conflict",
+            });
+          }
+          return {
+            canonicalIssueId,
+            duplicateIssueId: input.duplicateIssueId,
+            migratedIssueIds: Array.isArray(prior.details?.migratedIssueIds)
+              ? prior.details.migratedIssueIds.filter((id): id is string => typeof id === "string")
+              : [canonicalIssueId, input.duplicateIssueId],
+            auditActivityId: prior.id,
+            idempotent: true,
+          };
+        }
+
+        const relationRows = await tx
+          .select()
+          .from(issueRelations)
+          .where(and(eq(issueRelations.companyId, companyId), eq(issueRelations.type, "blocks")));
+        const affectedIds = new Set<string>([canonicalIssueId, input.duplicateIssueId]);
+        for (const relation of relationRows) {
+          if (relation.issueId === input.duplicateIssueId) affectedIds.add(relation.relatedIssueId);
+        }
+        const affectedIdList = [...affectedIds].sort();
+        const lockedIssues = await tx
+          .select()
+          .from(issues)
+          .where(and(eq(issues.companyId, companyId), inArray(issues.id, affectedIdList)))
+          .orderBy(asc(issues.id))
+          .for("update");
+        if (lockedIssues.length !== affectedIdList.length) {
+          throw conflict("The affected issue graph changed before consolidation", {
+            code: "duplicate_consolidation_precondition_failed",
+          });
+        }
+        const issueById = new Map(lockedIssues.map((issue) => [issue.id, issue]));
+        const canonical = issueById.get(canonicalIssueId)!;
+        const duplicate = issueById.get(input.duplicateIssueId)!;
+
+        const normalizeSnapshot = (snapshot: DuplicateIssueConsolidationSnapshot) => ({
+          ...snapshot,
+          blockedByIssueIds: [...snapshot.blockedByIssueIds].sort(),
+          blocksIssueIds: [...snapshot.blocksIssueIds].sort(),
+        });
+        const currentSnapshots = lockedIssues.map((issue) => normalizeSnapshot({
+          issueId: issue.id,
+          parentId: issue.parentId,
+          projectId: issue.projectId,
+          title: issue.title,
+          description: issue.description,
+          status: issue.status as DuplicateIssueConsolidationSnapshot["status"],
+          createdByAgentId: issue.createdByAgentId,
+          createdByUserId: issue.createdByUserId,
+          assigneeAgentId: issue.assigneeAgentId,
+          assigneeUserId: issue.assigneeUserId,
+          blockedByIssueIds: relationRows
+            .filter((relation) => relation.relatedIssueId === issue.id)
+            .map((relation) => relation.issueId),
+          blocksIssueIds: relationRows
+            .filter((relation) => relation.issueId === issue.id)
+            .map((relation) => relation.relatedIssueId),
+        })).sort((left, right) => left.issueId.localeCompare(right.issueId));
+        const expectedSnapshots = input.expected
+          .map(normalizeSnapshot)
+          .sort((left, right) => left.issueId.localeCompare(right.issueId));
+        if (JSON.stringify(currentSnapshots) !== JSON.stringify(expectedSnapshots)) {
+          throw conflict("The affected issue graph changed before consolidation", {
+            code: "duplicate_consolidation_precondition_failed",
+            current: currentSnapshots,
+          });
+        }
+
+        if ([canonical.status, duplicate.status].some((status) => status === "done" || status === "cancelled")) {
+          throw conflict("Open canonical and duplicate issues are required", {
+            code: "duplicate_consolidation_terminal_issue",
+          });
+        }
+        if (canonical.projectId !== duplicate.projectId) {
+          throw conflict("Canonical and duplicate issues must have the same project", {
+            code: "duplicate_consolidation_scope_conflict",
+          });
+        }
+        if (duplicate.checkoutRunId || duplicate.executionRunId || duplicate.executionLockedAt) {
+          throw conflict("The duplicate issue has active execution ownership", {
+            code: "duplicate_consolidation_active_execution",
+          });
+        }
+        if (canonical.parentId && duplicate.parentId && canonical.parentId !== duplicate.parentId) {
+          throw conflict("Canonical and duplicate issues have conflicting parents", {
+            code: "duplicate_consolidation_parent_conflict",
+          });
+        }
+        const targetParentId = canonical.parentId ?? duplicate.parentId;
+        const parentError = await validateParentAssignment(companyId, canonicalIssueId, targetParentId, tx);
+        if (parentError) {
+          throw conflict(
+            parentError === "missing"
+              ? "The duplicate parent does not belong to the same company"
+              : "Consolidation would create a parent cycle",
+            {
+              code: parentError === "missing"
+                ? "duplicate_consolidation_parent_scope_conflict"
+                : "duplicate_consolidation_parent_cycle",
+            },
+          );
+        }
+
+        const pendingInteraction = await tx
+          .select({ id: issueThreadInteractions.id })
+          .from(issueThreadInteractions)
+          .where(and(
+            eq(issueThreadInteractions.companyId, companyId),
+            eq(issueThreadInteractions.issueId, input.duplicateIssueId),
+            eq(issueThreadInteractions.status, "pending"),
+          ))
+          .limit(1)
+          .then((rows) => rows[0] ?? null);
+        const pendingApproval = await tx
+          .select({ id: approvals.id })
+          .from(issueApprovals)
+          .innerJoin(approvals, eq(approvals.id, issueApprovals.approvalId))
+          .where(and(
+            eq(issueApprovals.companyId, companyId),
+            eq(issueApprovals.issueId, input.duplicateIssueId),
+            eq(approvals.status, "pending"),
+          ))
+          .limit(1)
+          .then((rows) => rows[0] ?? null);
+        if (pendingInteraction || pendingApproval) {
+          throw conflict("The duplicate issue has a pending human decision", {
+            code: "duplicate_consolidation_pending_human_decision",
+            interactionId: pendingInteraction?.id ?? null,
+            approvalId: pendingApproval?.id ?? null,
+          });
+        }
+
+        await input.authorizeLocked?.({
+          canonical,
+          duplicate,
+          affected: lockedIssues,
+          tx: tx as unknown as Db,
+        });
+
+        const transformedRelations = relationRows.map((relation) => ({
+          ...relation,
+          issueId: relation.issueId === input.duplicateIssueId ? canonicalIssueId : relation.issueId,
+          relatedIssueId: relation.relatedIssueId === input.duplicateIssueId
+            ? canonicalIssueId
+            : relation.relatedIssueId,
+        }));
+        if (transformedRelations.some((relation) => relation.issueId === relation.relatedIssueId)) {
+          throw conflict("Consolidation would create a dependency cycle", {
+            code: "duplicate_consolidation_dependency_cycle",
+          });
+        }
+        const adjacency = new Map<string, string[]>();
+        for (const relation of transformedRelations) {
+          const outgoing = adjacency.get(relation.issueId) ?? [];
+          outgoing.push(relation.relatedIssueId);
+          adjacency.set(relation.issueId, outgoing);
+        }
+        const visiting = new Set<string>();
+        const visited = new Set<string>();
+        const hasCycle = (issueId: string): boolean => {
+          if (visiting.has(issueId)) return true;
+          if (visited.has(issueId)) return false;
+          visiting.add(issueId);
+          for (const next of adjacency.get(issueId) ?? []) {
+            if (hasCycle(next)) return true;
+          }
+          visiting.delete(issueId);
+          visited.add(issueId);
+          return false;
+        };
+        if ([...adjacency.keys()].some(hasCycle)) {
+          throw conflict("Consolidation would create a dependency cycle", {
+            code: "duplicate_consolidation_dependency_cycle",
+          });
+        }
+
+        const originalRelationsToMigrate = relationRows.filter(
+          (relation) =>
+            relation.issueId === input.duplicateIssueId ||
+            relation.relatedIssueId === input.duplicateIssueId,
+        );
+        const relationsToMigrate = originalRelationsToMigrate.map((relation) => ({
+          ...relation,
+          issueId: relation.issueId === input.duplicateIssueId ? canonicalIssueId : relation.issueId,
+          relatedIssueId: relation.relatedIssueId === input.duplicateIssueId
+            ? canonicalIssueId
+            : relation.relatedIssueId,
+        }));
+        if (relationsToMigrate.length > 0) {
+          await tx.insert(issueRelations).values(relationsToMigrate.map((relation) => ({
+            companyId,
+            issueId: relation.issueId,
+            relatedIssueId: relation.relatedIssueId,
+            type: "blocks" as const,
+            createdByAgentId: relation.createdByAgentId,
+            createdByUserId: relation.createdByUserId,
+            createdAt: relation.createdAt,
+            updatedAt: relation.updatedAt,
+          }))).onConflictDoNothing();
+        }
+        await tx.delete(issueRelations).where(and(
+          eq(issueRelations.companyId, companyId),
+          eq(issueRelations.type, "blocks"),
+          or(
+            eq(issueRelations.issueId, input.duplicateIssueId),
+            eq(issueRelations.relatedIssueId, input.duplicateIssueId),
+          ),
+        ));
+        if (!canonical.parentId && targetParentId) {
+          await tx.update(issues).set({ parentId: targetParentId, updatedAt: new Date() })
+            .where(eq(issues.id, canonicalIssueId));
+        }
+        await tx.update(issues).set({ status: "cancelled", cancelledAt: new Date(), updatedAt: new Date() })
+          .where(eq(issues.id, input.duplicateIssueId));
+
+        const migratedIssueIds = affectedIdList;
+        const migratedRelations = relationsToMigrate.map((relation, index) => {
+          const original = originalRelationsToMigrate[index]!;
+          return {
+            sourceRelationId: original.id,
+            fromIssueId: original.issueId,
+            toIssueId: original.relatedIssueId,
+            targetFromIssueId: relation.issueId,
+            targetToIssueId: relation.relatedIssueId,
+            createdByAgentId: original.createdByAgentId,
+            createdByUserId: original.createdByUserId,
+          };
+        });
+        const { activity, publication } = await persistActivity(tx as unknown as Db, {
+          companyId,
+          actorType: input.actor.agentId ? "agent" : input.actor.userId ? "user" : "system",
+          actorId: input.actor.agentId ?? input.actor.userId ?? "issue_service",
+          agentId: input.actor.agentId ?? null,
+          runId: input.actor.runId ?? null,
+          agentApiKeyId: input.actor.apiKeyId ?? null,
+          issueId: canonicalIssueId,
+          action: "issue.duplicate_consolidated",
+          entityType: "issue",
+          entityId: canonicalIssueId,
+          details: {
+            canonicalIssueId,
+            duplicateIssueId: input.duplicateIssueId,
+            migratedIssueIds,
+            migratedRelations,
+            idempotencyKey: input.idempotencyKey,
+            actorAgentId: input.actor.agentId ?? null,
+            actorUserId: input.actor.userId ?? null,
+          },
+        });
+        publications.push(publication);
+        return {
+          canonicalIssueId,
+          duplicateIssueId: input.duplicateIssueId,
+          migratedIssueIds,
+          auditActivityId: activity.id,
+          idempotent: false,
+        };
+      });
+      for (const publication of publications) publishActivity(publication);
+      return result;
+    },
+
     update: async (
       id: string,
       data: Partial<typeof issues.$inferInsert> & {
@@ -7949,6 +8348,16 @@ export function issueService(db: Db) {
       }
 
       const runUpdate = async (tx: any) => {
+        if (
+          issueData.parentId !== undefined ||
+          blockedByIssueIds !== undefined ||
+          (
+            (issueData.status === "done" || issueData.status === "cancelled") &&
+            existing.originKind === RECOVERY_ORIGIN_KINDS.issueGraphLivenessEscalation
+          )
+        ) {
+          await lockIssueGraph(existing.companyId, tx);
+        }
         // The receipt baseline must be read under the same row lock as the
         // write. Otherwise a concurrent update can be mistaken for a change
         // made by this request.
@@ -7959,6 +8368,16 @@ export function issueService(db: Db) {
           .for("update")
           .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
         if (!receiptExisting) return null;
+        if (issueData.parentId !== undefined) {
+          const parentError = await validateParentAssignment(
+            existing.companyId,
+            id,
+            issueData.parentId,
+            tx,
+          );
+          if (parentError === "missing") throw unprocessable("Parent issue must belong to the same company");
+          if (parentError === "cycle") throw unprocessable("Parent relations cannot contain cycles");
+        }
         if (actorAgentId && patch.status === "done") {
           const [review] = await tx.select({ id: toolActionRequests.id }).from(toolActionRequests).where(and(eq(toolActionRequests.companyId, existing.companyId), eq(toolActionRequests.issueId, id), inArray(toolActionRequests.status, ["pending", "approved", "executing"]))).limit(1);
           if (review) throw conflict("This task is waiting for a connection review. Finish unrelated work, then yield in_review without retrying the governed call.", { code: "tool_review_pending", actionRequestId: review.id });
@@ -8279,6 +8698,12 @@ export function issueService(db: Db) {
 
     remove: (id: string) =>
       db.transaction(async (tx) => {
+        const issueCompany = await tx
+          .select({ companyId: issues.companyId })
+          .from(issues)
+          .where(eq(issues.id, id))
+          .then((rows) => rows[0] ?? null);
+        if (issueCompany) await lockIssueGraph(issueCompany.companyId, tx);
         const attachmentAssetIds = await tx
           .select({ assetId: issueAttachments.assetId })
           .from(issueAttachments)

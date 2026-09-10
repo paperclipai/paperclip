@@ -1023,6 +1023,7 @@ instances return `404`.
 - `POST /companies/:companyId/issues`
 - `GET /issues/:issueId`
 - `PATCH /issues/:issueId`
+- `POST /issues/:issueId/consolidate-duplicate`
 - `GET /issues/:issueId/documents`
 - `GET /issues/:issueId/documents/:key`
 - `PUT /issues/:issueId/documents/:key`
@@ -1069,6 +1070,37 @@ Server behavior:
 3. successful checkout sets `assignee_agent_id`, `status = in_progress`, and `started_at`
 
 `POST /issues/:issueId/admin/force-release` is an operator recovery endpoint for stale harness locks. It requires board access to the issue company, clears checkout and execution run lock fields, and may clear the agent assignee when `clearAssignee=true` is passed. The route must write an `issue.admin_force_release` activity log entry containing the previous checkout and execution run IDs.
+
+### 10.4.2 Atomic Duplicate Consolidation Contract
+
+`POST /issues/:issueId/consolidate-duplicate` makes `issueId` the canonical
+issue and cancels one duplicate. The request contains a required idempotency key
+and an `expected` snapshot for the canonical issue, the duplicate, and every
+issue that the duplicate blocks. Each snapshot includes parent, project, title,
+description, status, creator, assignee, incoming blocker ids, and outgoing
+blocked issue ids.
+
+The server uses the normal issue access, mutation, review, recovery, low-trust,
+and cross-issue influence checks. It then runs one database transaction that:
+
+1. takes the company issue-graph lock;
+2. locks every affected issue and compares the complete expected snapshot;
+3. rejects a project or parent conflict, an active duplicate execution, a
+   pending human interaction or approval, and any resulting parent or blocker
+   cycle;
+4. moves every blocker edge to the canonical issue without replacing unrelated
+   edges, preserving relation creator and timestamps;
+5. copies the duplicate parent only when the canonical parent is empty;
+6. cancels the duplicate and writes `issue.duplicate_consolidated` activity in
+   the same transaction.
+
+A stale graph returns `409` with
+`duplicate_consolidation_precondition_failed`. No parent, relation, issue
+status, or audit row is changed. A retry with the same idempotency key and the
+same issue pair returns the original activity receipt. Reuse of that key for a
+different pair returns `409`. All ordinary parent, blocker, import, child-link,
+and issue-delete paths use the same company graph lock, so the precondition also
+serializes against those writes.
 
 ## 10.5 Projects
 

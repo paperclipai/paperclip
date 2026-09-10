@@ -621,6 +621,56 @@ export const updateIssueSchema = objectWithoutDefaults(
 export type UpdateIssue = z.infer<typeof updateIssueSchema>;
 export type IssueExecutionWorkspaceSettings = z.infer<typeof issueExecutionWorkspaceSettingsSchema>;
 
+export const duplicateIssueConsolidationSnapshotSchema = z.object({
+  issueId: z.string().guid(),
+  parentId: z.string().guid().nullable(),
+  projectId: z.string().guid().nullable(),
+  title: z.string(),
+  description: z.string().nullable(),
+  status: z.enum(ISSUE_STATUSES),
+  createdByAgentId: z.string().guid().nullable(),
+  createdByUserId: z.string().nullable(),
+  assigneeAgentId: z.string().guid().nullable(),
+  assigneeUserId: z.string().nullable(),
+  blockedByIssueIds: z.array(z.string().guid()).max(200),
+  blocksIssueIds: z.array(z.string().guid()).max(200),
+}).strict().superRefine((snapshot, ctx) => {
+  for (const field of ["blockedByIssueIds", "blocksIssueIds"] as const) {
+    const seen = new Set<string>();
+    for (const [index, issueId] of snapshot[field].entries()) {
+      if (seen.has(issueId)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `${field} must contain unique issue ids`,
+          path: [field, index],
+        });
+      }
+      seen.add(issueId);
+    }
+  }
+});
+
+export const consolidateDuplicateIssueSchema = z.object({
+  duplicateIssueId: z.string().guid(),
+  idempotencyKey: z.string().trim().min(1).max(255),
+  expected: z.array(duplicateIssueConsolidationSnapshotSchema).min(2).max(202),
+}).strict().superRefine((value, ctx) => {
+  const seen = new Set<string>();
+  for (const [index, snapshot] of value.expected.entries()) {
+    if (seen.has(snapshot.issueId)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "expected must contain one snapshot per issue",
+        path: ["expected", index, "issueId"],
+      });
+    }
+    seen.add(snapshot.issueId);
+  }
+});
+
+export type DuplicateIssueConsolidationSnapshot = z.infer<typeof duplicateIssueConsolidationSnapshotSchema>;
+export type ConsolidateDuplicateIssue = z.infer<typeof consolidateDuplicateIssueSchema>;
+
 export const stalledReviewDecisionSchema = z.object({
   action: z.enum(["approve", "request_changes", "send_back"]),
   note: multilineTextSchema.pipe(z.string().min(1)).optional(),

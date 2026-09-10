@@ -51,6 +51,7 @@ import {
   createDocumentAnnotationThreadSchema,
   createChildIssueSchema,
   createIssueSchema,
+  consolidateDuplicateIssueSchema,
   resolveCreateIssueStatusDefault,
   resolveIssueRecoveryActionSchema,
   runnerGoalActionRequestSchema,
@@ -10209,6 +10210,76 @@ export function issueRoutes(
         comment: result.comment,
         wakeQueued,
       });
+    },
+  );
+
+  router.post(
+    "/issues/:id/consolidate-duplicate",
+    validateIssueMutationBody(consolidateDuplicateIssueSchema),
+    async (req, res) => {
+      const canonicalId = req.params.id as string;
+      const expectedIds = new Set<string>(
+        req.body.expected.map((snapshot: { issueId: string }) => snapshot.issueId),
+      );
+      if (!expectedIds.has(canonicalId) || !expectedIds.has(req.body.duplicateIssueId)) {
+        res.status(400).json({ error: "Expected snapshots must include the canonical and duplicate issues" });
+        return;
+      }
+
+      const affectedIssues = [];
+      for (const issueId of expectedIds) {
+        const issue = await getAccessibleResource(req, res, svc.getById(issueId), "Issue not found");
+        if (!issue) return;
+        if (!(await assertAgentIssueMutationAllowed(req, res, issue, { allowVisibleIssueWrite: true }))) return;
+        affectedIssues.push(issue);
+      }
+      const canonical = affectedIssues.find((issue) => issue.id === canonicalId)!;
+      const duplicate = affectedIssues.find((issue) => issue.id === req.body.duplicateIssueId)!;
+      if (await assertLowTrustControlPlaneDenied(req, res, canonical.companyId, canonical)) return;
+      if (affectedIssues.some((issue) => issue.companyId !== canonical.companyId)) {
+        res.status(409).json({ error: "All affected issues must belong to the same company" });
+        return;
+      }
+      for (const issue of affectedIssues) {
+        if (!(await assertCrossIssueInfluenceWithinRunCap(req, res, issue, "update"))) return;
+      }
+
+      const actor = getActorInfo(req);
+      if (duplicate.reviewPolicy != null && duplicate.reviewPolicy !== "anyone") {
+        await assertIssueReviewVerdictActorAllowed(db, {
+          issue: duplicate,
+          actor: { type: actor.actorType, id: actor.actorId },
+          reviewPolicy: duplicate.reviewPolicy,
+        });
+      }
+      const activeRecoveryAction = await recoveryActionsSvc.getActiveForIssue(
+        duplicate.companyId,
+        duplicate.id,
+      );
+      await requireRecoveryActionAuthority(req, duplicate, activeRecoveryAction, { source: "issue_update" });
+      if (activeRecoveryAction) await requireRecoverySourceMutationAuthority(req, duplicate);
+
+      const result = await svc.consolidateDuplicate(canonical.id, {
+        duplicateIssueId: req.body.duplicateIssueId,
+        idempotencyKey: req.body.idempotencyKey,
+        expected: req.body.expected,
+        actor: {
+          userId: actor.actorType === "user" ? actor.actorId : null,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          apiKeyId: actor.agentApiKeyId,
+        },
+        authorizeLocked: async ({ duplicate: lockedDuplicate, tx }) => {
+          if (lockedDuplicate.reviewPolicy != null && lockedDuplicate.reviewPolicy !== "anyone") {
+            await assertIssueReviewVerdictActorAllowed(tx, {
+              issue: lockedDuplicate,
+              actor: { type: actor.actorType, id: actor.actorId },
+              reviewPolicy: lockedDuplicate.reviewPolicy,
+            });
+          }
+        },
+      });
+      res.json(result);
     },
   );
 

@@ -3,7 +3,7 @@ import { promises as fs } from "node:fs";
 import { execFile } from "node:child_process";
 import path from "node:path";
 import { promisify } from "node:util";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import {
   builtInManagedResources,
   issueRelations,
@@ -6380,17 +6380,42 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           }
           if (relationRows.length > 0) {
             const relationCompanyId = targetCompany.id;
-            await db
-              .insert(issueRelations)
-              .values(relationRows.map((row) => ({
-                companyId: relationCompanyId,
-                issueId: row.issueId,
-                relatedIssueId: row.relatedIssueId,
-                type: "blocks" as const,
-                createdByAgentId: null,
-                createdByUserId: actorUserId ?? null,
-              })))
-              .onConflictDoNothing();
+            const insertRelations = async (tx: any) => {
+              await tx.execute(sql`
+                select pg_advisory_xact_lock(
+                  hashtextextended(${'issue-graph:' + relationCompanyId}, 0)
+                )
+              `);
+              await tx
+                .insert(issueRelations)
+                .values(relationRows.map((row) => ({
+                  companyId: relationCompanyId,
+                  issueId: row.issueId,
+                  relatedIssueId: row.relatedIssueId,
+                  type: "blocks" as const,
+                  createdByAgentId: null,
+                  createdByUserId: actorUserId ?? null,
+                })))
+                .onConflictDoNothing();
+            };
+            // Some narrow unit-test database doubles implement only the query
+            // builder. Production Db always has transactions and therefore
+            // always takes the graph lock.
+            if (typeof (db as Db & { transaction?: unknown }).transaction === "function") {
+              await db.transaction(insertRelations);
+            } else {
+              await db
+                .insert(issueRelations)
+                .values(relationRows.map((row) => ({
+                  companyId: relationCompanyId,
+                  issueId: row.issueId,
+                  relatedIssueId: row.relatedIssueId,
+                  type: "blocks" as const,
+                  createdByAgentId: null,
+                  createdByUserId: actorUserId ?? null,
+                })))
+                .onConflictDoNothing();
+            }
           }
         }
 
