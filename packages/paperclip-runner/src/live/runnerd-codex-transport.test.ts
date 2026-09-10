@@ -7341,6 +7341,47 @@ it("probes an exact-authority resume and confirms its live provider identity", a
   }
 }, 30_000);
 
+it("still fails closed when a real close grace period cannot fit a durable suspension round trip", async () => {
+  const stateDirectory = await mkdtemp(
+    join(tmpdir(), "runnerd-close-grace-too-small-"),
+  );
+  const identity = {
+    runnerInstanceId: "runner-close-grace-too-small",
+    environmentLeaseId: "lease-close-grace-too-small",
+    runId: "run-close-grace-too-small",
+    normalizedSessionId: "session-close-grace-too-small",
+    turnId: "turn-close-grace-too-small",
+    itemId: "item-close-grace-too-small",
+  };
+  const bundle = createCapabilityRunnerdCodexTransport({
+    runnerBinary: defaultCapabilityRunnerdBinary(),
+    codexCommand: fakeCodex,
+    codexArgs: fakeCodexArgs(stateDirectory),
+    stateDirectory,
+    // No real durable command round trip can complete this fast. A wider
+    // budget for the provider-drain proof must not turn this barrier into
+    // one that always passes; it still needs the actual proof to arrive.
+    closeGraceMs: 1,
+    lifecyclePolicy: { mode: "per_turn", idleTimeoutMs: null },
+    prpIdentity: identity,
+  });
+  bundle.transport.setServerRequestHandler(async () => ({
+    success: true,
+    contentItems: [],
+  }));
+  try {
+    await bundle.transport.request("thread/start", {
+      cwd: tmpdir(),
+      dynamicTools: [],
+    });
+    await expect(bundle.transport.close()).rejects.toThrow(
+      "runner did not durably suspend before checkpoint",
+    );
+  } finally {
+    await rm(stateDirectory, { recursive: true, force: true });
+  }
+}, 30_000);
+
 it("cold-restores a suspended provider session under its durable run binding", async () => {
   const stateDirectory = await mkdtemp(join(tmpdir(), "runnerd-cold-attach-"));
   const tracePath = join(stateDirectory, "provider-trace.ndjson");

@@ -587,6 +587,77 @@ describe("seedManagedCodexHome", () => {
     }
   });
 
+  it("never symlinks or heals a credential-store entry's auth.json, even for a fresher same-identity source", async () => {
+    // An agent can bind CODEX_HOME to a per-identity store entry through the
+    // login's account-home secret, and this seeding pass runs before every
+    // probe and execute. The entry's auth.json is the durable login the
+    // promotion/vend/copy-back own — a strictly-fresher same-identity shared
+    // source must NOT trigger the #5028 heal here, or the bound account is
+    // silently swapped for the host login.
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-seed-store-"));
+    try {
+      const sharedCodexHome = path.join(root, "shared-codex-home");
+      const entryHome = path.join(
+        root, "paperclip-home", "instances", "default", "companies", "company-1", "codex-auth-cache", "acct-bound",
+      );
+      const env = {
+        CODEX_HOME: sharedCodexHome,
+        PAPERCLIP_HOME: path.join(root, "paperclip-home"),
+        PAPERCLIP_INSTANCE_ID: "default",
+      };
+      const stored = subscriptionAuth("acct-same", "stored", "2026-07-09T01:00:00Z");
+      await fs.mkdir(sharedCodexHome, { recursive: true });
+      await fs.writeFile(
+        path.join(sharedCodexHome, "auth.json"),
+        subscriptionAuth("acct-same", "host", "2026-07-09T02:00:00Z"),
+        "utf8",
+      );
+      await fs.writeFile(path.join(sharedCodexHome, "config.toml"), 'model = "gpt-5"\n', "utf8");
+      await fs.mkdir(entryHome, { recursive: true });
+      await fs.writeFile(path.join(entryHome, "auth.json"), stored, "utf8");
+
+      await seedManagedCodexHome(entryHome, env, async () => {});
+
+      const kept = path.join(entryHome, "auth.json");
+      expect((await fs.lstat(kept)).isSymbolicLink()).toBe(false);
+      expect(await fs.readFile(kept, "utf8")).toBe(stored);
+      // The static shared config still copies in, so a bound run gets the
+      // same config a per-agent home gets.
+      expect(await fs.readFile(path.join(entryHome, "config.toml"), "utf8")).toBe('model = "gpt-5"\n');
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses an API-key rewrite of a credential-store entry's auth.json", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-seed-store-apikey-"));
+    try {
+      const sharedCodexHome = path.join(root, "shared-codex-home");
+      const entryHome = path.join(
+        root, "paperclip-home", "instances", "default", "companies", "company-1", "codex-auth-cache", "acct-bound",
+      );
+      const env = {
+        CODEX_HOME: sharedCodexHome,
+        PAPERCLIP_HOME: path.join(root, "paperclip-home"),
+        PAPERCLIP_INSTANCE_ID: "default",
+      };
+      const stored = subscriptionAuth("acct-bound-id", "stored", "2026-07-09T01:00:00Z");
+      await fs.mkdir(sharedCodexHome, { recursive: true });
+      await fs.mkdir(entryHome, { recursive: true });
+      await fs.writeFile(path.join(entryHome, "auth.json"), stored, "utf8");
+      const logs: string[] = [];
+
+      await seedManagedCodexHome(entryHome, env, async (_stream, line) => {
+        logs.push(line);
+      }, { apiKey: "sk-configured" });
+
+      expect(await fs.readFile(path.join(entryHome, "auth.json"), "utf8")).toBe(stored);
+      expect(logs.join("\n")).toContain("Refusing to write an API-key auth.json into credential-store entry");
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("still removes an apikey-mode auth.json so the chatgpt-mode symlink is restored", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-seed-apikey-residue-"));
     try {

@@ -2,7 +2,7 @@ import { paperclipRunnerTransitionConfig, normalizeLegacyRunnerProvider, isPaper
 import { executionProjectionForRun, executionProjectionsForRuns } from "../services/execution-projection.js";
 import { Router, type NextFunction, type Request, type Response } from "express";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
-import { rm } from "node:fs/promises";
+import { readFile, rm } from "node:fs/promises";
 import path from "node:path";
 import type { Db } from "@paperclipai/db";
 import { activityLog, agents as agentsTable, companies, heartbeatRuns, issues as issuesTable, projects as projectsTable } from "@paperclipai/db";
@@ -89,7 +89,7 @@ import type {
   AdapterEnvironmentTestResult,
 } from "@paperclipai/adapter-utils";
 import { evaluateCodexCredentialReadiness } from "@paperclipai/adapter-codex-local/server";
-import type { AdapterAuthSignal, AdapterAuthSignalResponse } from "@paperclipai/shared";
+import type { AdapterAuthSignal, AdapterAuthSignalResponse, CodexAccountBindingClaim } from "@paperclipai/shared";
 import { getDisabledAdapterTypes } from "../services/adapter-plugin-store.js";
 import { skillVersionSelectionMap } from "../services/runtime-skill-selections.js";
 import { secretService } from "../services/secrets.js";
@@ -185,6 +185,8 @@ import {
 import {
   checkStagedCredentialReadiness,
   promoteDeviceLoginCredential,
+  readSubscriptionAccountId,
+  resolveManagedCodexHomeDir,
   withAccountHomeSecretMutationLock,
   withCodexAccountHomePromotionLock,
 } from "@paperclipai/adapter-codex-local/server";
@@ -728,8 +730,9 @@ export function agentRoutes(
   // nothing outlives one login attempt.
   const pendingAccountHomeSecretCommits = new Map<
     string,
-    { secretId: string; secretName: string; accountHomeDir: string }
+    { secretId: string; secretName: string; accountHomeDir: string; companyIdentityDiffers: boolean }
   >();
+
 
   const adapterLoginService = createDeviceLoginService({
     store: adapterLoginStore,
@@ -835,6 +838,26 @@ export function agentRoutes(
             }
             const secretName = `CODEX_HOME_${handle}`;
             const accountHomeDir = result.accountHomeDir;
+            // Whether the company default home ended on a DIFFERENT account
+            // than this login. The promotion's own company-home write already
+            // ran (a seed or same-identity refresh landed this login there; a
+            // different account's claim was kept), so this read observes the
+            // post-promotion state. The flag rides to the owner status read,
+            // where the client offers binding the agent to this account — the
+            // only way the login can take effect while another account holds
+            // the company slot. Any read failure degrades to `false`: the
+            // client then simply offers nothing, never a wrong bind.
+            const companyIdentityDiffers = await (async () => {
+              try {
+                const companyAuthBytes = await readFile(
+                  path.join(resolveManagedCodexHomeDir(process.env, context.companyId), "auth.json"),
+                );
+                const companyIdentity = readSubscriptionAccountId(companyAuthBytes);
+                return companyIdentity !== null && companyIdentity !== result.accountId;
+              } catch {
+                return false;
+              }
+            })();
             const existingSecret = await secretsSvc.getByName(context.companyId, secretName);
             if (existingSecret) {
               // A same-name secret already exists. Confirm it still names this
@@ -856,6 +879,7 @@ export function agentRoutes(
                 secretId: existingSecret.id,
                 secretName,
                 accountHomeDir,
+                companyIdentityDiffers,
               });
               return;
             }
@@ -879,6 +903,7 @@ export function agentRoutes(
                 secretId: createdSecret.id,
                 secretName,
                 accountHomeDir,
+                companyIdentityDiffers,
               });
             } catch (err) {
               if (err instanceof HttpError && err.status === 409) {
@@ -903,6 +928,7 @@ export function agentRoutes(
                   secretId: winningSecret.id,
                   secretName,
                   accountHomeDir,
+                  companyIdentityDiffers,
                 });
                 return;
               }
@@ -980,7 +1006,13 @@ export function agentRoutes(
               pending.secretName,
               pending.accountHomeDir,
             );
-            return commit();
+            // The claim rides the terminal write itself, so it is durable, it
+            // survives a restart, and it can never exist for a session that
+            // did not authenticate.
+            return commit({
+              secretId: pending.secretId,
+              companyIdentityDiffers: pending.companyIdentityDiffers,
+            });
           });
         },
       },
@@ -1845,7 +1877,38 @@ export function agentRoutes(
     if (!row || row.adapterType !== adapterType || row.startedByUserId !== requestingUserId) {
       return null;
     }
-    return adapterLoginService.readOwnerSession(publicSessionId, companyId, requestingUserId);
+    const session = await adapterLoginService.readOwnerSession(publicSessionId, companyId, requestingUserId);
+    if (!session) return session;
+    // Merge the non-secret account-binding claim onto an authenticated Codex
+    // owner read. The claim was written atomically with the terminal status
+    // (see runTerminalCommit), so it survives restarts and can never appear
+    // on a session that did not authenticate.
+    //
+    // Read the claim from a row fetched AFTER the status was observed, never
+    // from the earlier authorization read: the terminal write can land
+    // between the two, and a poll that sees `authenticated` paired with the
+    // older claim-less row would drop the claim forever (polling stops at
+    // the terminal status). The claim-and-status write is one atomic update,
+    // so any row read after `authenticated` was observed carries the claim.
+    // Shape-validate the durable value rather than trusting a cast: a
+    // malformed claim degrades to "offer nothing", never to a wrong bind.
+    if (row.adapterType === "codex_local" && session.status === "authenticated") {
+      const settled = await adapterLoginStore.getByPublicId(publicSessionId, companyId);
+      const raw = settled?.resultClaim;
+      if (
+        raw &&
+        typeof raw.secretId === "string" &&
+        raw.secretId.length > 0 &&
+        typeof raw.companyIdentityDiffers === "boolean"
+      ) {
+        const claim: CodexAccountBindingClaim = {
+          secretId: raw.secretId,
+          companyIdentityDiffers: raw.companyIdentityDiffers,
+        };
+        return { ...session, codexAccountBinding: claim };
+      }
+    }
+    return session;
   }
 
   async function assertCanReadConfigurations(req: Request, companyId: string) {

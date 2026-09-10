@@ -66,6 +66,8 @@ interface FakeProviderState {
   usageRunDelta: Record<string, unknown> | null;
   onTurnStart?: () => Promise<void>;
   onUsage?: (queue: AsyncNotifications, turnId: string) => void | Promise<void>;
+  /** Delays the fake `turn/interrupt` reply, to model a slow transport round trip. */
+  interruptDelayMs: number;
 }
 
 class FakeCapabilityCodexTransport implements CodexAppServerTransport {
@@ -132,6 +134,9 @@ class FakeCapabilityCodexTransport implements CodexAppServerTransport {
       return { turn: { id: turnId, status: "inProgress" } };
     }
     if (method === "turn/interrupt") {
+      if (this.state.interruptDelayMs > 0) {
+        await new Promise((resolve) => setTimeout(resolve, this.state.interruptDelayMs));
+      }
       const turnId = String(params.turnId);
       this.state.turns.set(turnId, "interrupted");
       this.notificationsQueue.push({
@@ -318,6 +323,7 @@ function providerState(): FakeProviderState {
     holdAfterTool: false,
     closeError: null,
     usageRunDelta: null,
+    interruptDelayMs: 0,
   };
 }
 
@@ -1310,6 +1316,47 @@ describe("Capability live runnerd and Codex session", () => {
       reasoningTokens: 5,
       costNanodollars: 2_500,
     });
+  });
+
+  it("does not raise an unhandled rejection when interrupt() outlasts the turn timeout during reconcileActiveTurn", async () => {
+    const state = providerState();
+    const store = new InMemoryCapabilityLiveSessionStore();
+    const firstService = new CapabilityLiveSessionService({
+      store,
+      transportFactory: fakeTransportFactory(state),
+    });
+    const first = await firstService.create({
+      runId: "run-slow-interrupt-reconcile",
+      sessionId: "session-slow-interrupt-reconcile",
+      attemptId: "attempt-slow-interrupt-killed",
+      turnTimeoutMs: 20,
+    });
+    state.holdAfterTool = true;
+    const killedTurn = captureTurnRejection(first.sendMessage("Apply idempotent progress once."));
+    await vi.waitFor(async () => {
+      expect((await store.load(first.id))?.mockState).toContain("progress-governed-once");
+    });
+    await state.transports[0]!.close();
+    await expect(killedTurn).resolves.toMatchObject({ message: expect.stringContaining("timed out") });
+
+    const resumedService = new CapabilityLiveSessionService({
+      store,
+      transportFactory: fakeTransportFactory(state),
+    });
+    const resumed = await resumedService.resume({
+      sessionId: first.id,
+      attemptId: "attempt-slow-interrupt-resumed",
+      resumeOf: "attempt-slow-interrupt-killed",
+    });
+
+    // Make the fake transport's turn/interrupt reply outlast the 20 ms turn
+    // timeout. reconcileActiveTurn() awaits interrupt() first, so the turn
+    // waiter's timer can reject before interrupt() resolves. The rejection
+    // handler must already be in place at that moment; otherwise Node
+    // reports an unhandled rejection and Vitest fails the whole file, even
+    // though the assertion below is correct.
+    state.interruptDelayMs = 200;
+    await expect(resumed.reconcileActiveTurn()).rejects.toThrow(/timed out/);
   });
 
   it("persists a resumed turnTimeoutMs override so a later resume that omits it keeps the value", async () => {

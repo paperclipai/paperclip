@@ -3828,9 +3828,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     }
   }
 
-  async #stopActiveProviderTurnBeforeSuspend(
-    deadline: number,
-  ): Promise<boolean> {
+  async #stopActiveProviderTurnBeforeSuspend(deadline: number): Promise<void> {
     const state = this.#providerDrainState();
     const core = this.#core;
     const inferredActiveProviderTurnId =
@@ -3848,7 +3846,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       activeProviderTurnId === null ||
       core === null
     ) {
-      return false;
+      return;
     }
     const commandId = `command_close_stop_${randomUUID().replaceAll("-", "")}`;
     core.queueCommand(
@@ -3866,19 +3864,18 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         this.#diagnostic(
           `stopped active provider turn ${activeProviderTurnId} before runner suspension`,
         );
-        return true;
+        return;
       }
       if (command !== undefined && command.status !== "pending") {
         this.#diagnostic(
           `provider turn stop ${command.status} before runner suspension`,
         );
-        return false;
+        return;
       }
-      if (await this.#runnerHasExited()) return false;
+      if (await this.#runnerHasExited()) return;
       await new Promise((resolveWait) => setTimeout(resolveWait, 5));
     }
     this.#diagnostic("provider turn stop timed out before runner suspension");
-    return false;
   }
 
   async #drainSettledProviderEventsBeforeSuspend(
@@ -3982,13 +3979,15 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           this.#pumpEventsSafely();
           await new Promise((resolveWait) => setTimeout(resolveWait, 5));
         }
-        const stoppedActiveTurn =
-          await this.#stopActiveProviderTurnBeforeSuspend(preparationDeadline);
+        // The drain always needs one real command round trip to the runner
+        // process, whether or not a turn was active: stopping an active
+        // turn only changes how much trailing event traffic that round
+        // trip may need to carry. Give both cases the same budget so a
+        // slow-but-idle runner is not held to a tighter deadline than a
+        // runner that just stopped a turn.
+        await this.#stopActiveProviderTurnBeforeSuspend(preparationDeadline);
         providerDrained = await this.#drainSettledProviderEventsBeforeSuspend(
-          Math.min(
-            stoppedActiveTurn ? 5_000 : 1_000,
-            Math.max(0, preparationDeadline - Date.now()),
-          ),
+          Math.min(5_000, Math.max(0, preparationDeadline - Date.now())),
         );
       }
       // Local durable roots are reused too. Process exit alone cannot prove
