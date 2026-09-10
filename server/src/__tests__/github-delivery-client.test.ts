@@ -18,6 +18,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { createGitHubDeliveryClient } from "../services/delivery/github-client.js";
+import { greptileReviewService } from "../services/delivery/greptile.js";
 import { secretService } from "../services/secrets.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -39,6 +40,45 @@ function githubRepositoryResponse(): Response {
     status: 200,
     headers: { "content-type": "application/json" },
   });
+}
+
+/** A check run row in GitHub's recorded REST shape, exactly what the client parses. */
+function greptileCheckRunRow(input: {
+  id: number;
+  status: string;
+  conclusion: string | null;
+  completedAt: string | null;
+  headSha: string;
+}): Record<string, unknown> {
+  return {
+    id: input.id,
+    name: "Greptile Review",
+    status: input.status,
+    conclusion: input.conclusion,
+    head_sha: input.headSha,
+    app: { slug: "greptile-apps" },
+    completed_at: input.completedAt,
+    started_at: input.completedAt,
+    html_url: `https://github.com/acme/widget/commit/${input.headSha}/checks`,
+  };
+}
+
+/** Governed Greptile MCP payloads in the provider's nested shape. */
+function greptileToolGateway(input: {
+  review?: Record<string, unknown>;
+  comments?: Array<Record<string, unknown>>;
+}) {
+  return {
+    readConnectedTool: async ({ toolName }: { toolName: string }) => {
+      if (toolName === "get_merge_request") {
+        return {
+          ok: true,
+          result: { content: JSON.stringify({ mergeRequest: { codeReviews: [input.review ?? { status: "COMPLETED" }] } }) },
+        };
+      }
+      return { ok: true, result: { content: JSON.stringify({ comments: input.comments ?? [] }) } };
+    },
+  };
 }
 
 describeEmbeddedPostgres("GitHub delivery connection credentials", () => {
@@ -343,5 +383,219 @@ describeEmbeddedPostgres("GitHub delivery connection credentials", () => {
       errorCode: "connection_missing",
     });
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("follows check-run pagination and records the complete run list", async () => {
+    const fixture = await createPersonalPatFixture();
+    const head = "a".repeat(40);
+    const fetchMock = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(Response.json({
+        total_count: 2,
+        check_runs: [greptileCheckRunRow({ id: 103022939100, status: "completed", conclusion: "success", completedAt: "2026-09-10T11:00:00Z", headSha: head })],
+      }))
+      .mockResolvedValueOnce(Response.json({
+        total_count: 2,
+        check_runs: [greptileCheckRunRow({ id: 103022939200, status: "completed", conclusion: "failure", completedAt: "2026-09-10T12:00:00Z", headSha: head })],
+      }));
+    const client = createGitHubDeliveryClient(db, { fetch: fetchMock });
+
+    await expect(client.getCheckRuns(fixture.company.id, fixture.connection.id, "github.com", "acme", "widget", head))
+      .resolves.toMatchObject({
+        ok: true,
+        value: [
+          expect.objectContaining({ id: 103022939100, conclusion: "success", appSlug: "greptile-apps" }),
+          expect.objectContaining({ id: 103022939200, conclusion: "failure" }),
+        ],
+      });
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      `https://api.github.com/repos/acme/widget/commits/${head}/check-runs?per_page=100&page=1`,
+      `https://api.github.com/repos/acme/widget/commits/${head}/check-runs?per_page=100&page=2`,
+    ]);
+  });
+
+  it.each([
+    { name: "missing total_count", payload: { check_runs: [] } },
+    { name: "string total_count", payload: { total_count: "1", check_runs: [] } },
+    { name: "fractional total_count", payload: { total_count: 1.5, check_runs: [] } },
+    { name: "negative total_count", payload: { total_count: -1, check_runs: [] } },
+  ])("fails closed on unreadable check-run pagination metadata: $name", async ({ payload }) => {
+    const fixture = await createPersonalPatFixture();
+    const head = "a".repeat(40);
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(Response.json(payload));
+    const client = createGitHubDeliveryClient(db, { fetch: fetchMock });
+
+    await expect(client.getCheckRuns(fixture.company.id, fixture.connection.id, "github.com", "acme", "widget", head))
+      .resolves.toMatchObject({ ok: false, errorCode: "github_invalid_response" });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("fails closed when the check-run list is truncated before total_count is accounted for", async () => {
+    const fixture = await createPersonalPatFixture();
+    const head = "a".repeat(40);
+    const fetchMock = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(Response.json({
+        total_count: 2,
+        check_runs: [greptileCheckRunRow({ id: 103022939100, status: "completed", conclusion: "success", completedAt: "2026-09-10T11:00:00Z", headSha: head })],
+      }))
+      .mockResolvedValueOnce(Response.json({ total_count: 2, check_runs: [] }));
+    const client = createGitHubDeliveryClient(db, { fetch: fetchMock });
+
+    await expect(client.getCheckRuns(fixture.company.id, fixture.connection.id, "github.com", "acme", "widget", head))
+      .resolves.toMatchObject({ ok: false, errorCode: "github_invalid_response" });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("fails closed when check-run pages run out before total_count is accounted for", async () => {
+    const fixture = await createPersonalPatFixture();
+    const head = "a".repeat(40);
+    // Every page reports one run but claims eleven total: the page bound
+    // exhausts and the unprovable list is rejected, never truncated into proof.
+    let id = 103022939100;
+    const fetchMock = vi.fn<typeof fetch>().mockImplementation(async () => Response.json({
+      total_count: 11,
+      check_runs: [greptileCheckRunRow({ id: id++, status: "completed", conclusion: "success", completedAt: "2026-09-10T11:00:00Z", headSha: head })],
+    }));
+    const client = createGitHubDeliveryClient(db, { fetch: fetchMock });
+
+    await expect(client.getCheckRuns(fixture.company.id, fixture.connection.id, "github.com", "acme", "widget", head))
+      .resolves.toMatchObject({ ok: false, errorCode: "github_invalid_response" });
+  });
+
+  it.each([
+    { name: "a changing total", secondTotal: 3, secondId: 103022939101 },
+    { name: "a duplicated run", secondTotal: 2, secondId: 103022939100 },
+  ])("refuses a complete-evidence claim across $name", async ({ secondTotal, secondId }) => {
+    const fixture = await createPersonalPatFixture();
+    const head = "a".repeat(40);
+    const firstRun = greptileCheckRunRow({
+      id: 103022939100, status: "completed", conclusion: "success",
+      completedAt: "2026-09-10T11:00:00Z", headSha: head,
+    });
+    const fetchMock = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(Response.json({ total_count: 2, check_runs: [firstRun] }))
+      .mockResolvedValueOnce(Response.json({ total_count: secondTotal, check_runs: [{ ...firstRun, id: secondId }] }));
+    const client = createGitHubDeliveryClient(db, { fetch: fetchMock });
+    await expect(client.getCheckRuns(fixture.company.id, fixture.connection.id, "github.com", "acme", "widget", head))
+      .resolves.toMatchObject({ ok: false, errorCode: "github_invalid_response" });
+  });
+
+  // The consumer regression: a naive first-page read proves the stale success
+  // because the superseding outcome sits beyond it. The real client must parse
+  // both pages so the hidden outcome stays in the evidence.
+  it.each([
+    {
+      name: "failed",
+      hidden: { id: 103022939200, status: "completed", conclusion: "failure" as string | null, completedAt: "2026-09-10T12:00:00Z" as string | null },
+    },
+    {
+      name: "in flight",
+      hidden: { id: 103022939300, status: "in_progress", conclusion: null, completedAt: null },
+    },
+  ])("cannot ignore a later $name Greptile outcome hidden beyond the first check-run page", async ({ hidden }) => {
+    const fixture = await createPersonalPatFixture();
+    const head = "a".repeat(40);
+    const reviewedHead = "b".repeat(40);
+    const fetchMock = vi.fn<typeof fetch>(async (input) => {
+      const url = String(input);
+      if (url.includes("/pulls/7/comments")) return Response.json([]);
+      if (url.includes("/pulls/7/reviews")) {
+        return Response.json([{
+          id: 501,
+          user: { login: "greptile-apps[bot]" },
+          state: "COMMENTED",
+          submitted_at: "2026-09-10T11:59:08Z",
+          commit_id: reviewedHead,
+        }]);
+      }
+      if (url.includes("/check-runs")) {
+        return new URL(url).searchParams.get("page") === "2"
+          ? Response.json({ total_count: 2, check_runs: [greptileCheckRunRow({ ...hidden, headSha: head })] })
+          : Response.json({
+              total_count: 2,
+              check_runs: [greptileCheckRunRow({ id: 103022939100, status: "completed", conclusion: "success", completedAt: "2026-09-10T11:00:00Z", headSha: head })],
+            });
+      }
+      throw new Error(`Unexpected GitHub path: ${url}`);
+    });
+    // GitHub's review record still names the older revision, so only a
+    // complete check-run read could prove the current head: the older success
+    // sits on the first page, the later outcome beyond it.
+    const greptile = greptileReviewService({} as Db, {
+      github: createGitHubDeliveryClient(db, { fetch: fetchMock }),
+      toolGateway: greptileToolGateway({ review: { status: "COMPLETED", revision: reviewedHead }, comments: [] }),
+    });
+
+    await expect(greptile.read({
+      companyId: fixture.company.id,
+      connectionId: fixture.connection.id,
+      repositoryName: "acme/widget",
+      defaultBranch: "main",
+      prNumber: 7,
+      correlation: {
+        host: "github.com",
+        connectionId: fixture.connection.id,
+        owner: "acme",
+        repo: "widget",
+        headSha: head,
+      },
+    })).resolves.toMatchObject({ ok: true, headSha: reviewedHead });
+
+    expect(fetchMock.mock.calls.map(([url]) => url).filter((url) => String(url).includes("/check-runs"))).toEqual([
+      `https://api.github.com/repos/acme/widget/commits/${head}/check-runs?per_page=100&page=1`,
+      `https://api.github.com/repos/acme/widget/commits/${head}/check-runs?per_page=100&page=2`,
+    ]);
+  });
+
+  it("still proves the current head from a complete first-page Greptile check", async () => {
+    const fixture = await createPersonalPatFixture();
+    const head = "a".repeat(40);
+    const reviewedHead = "b".repeat(40);
+    const fetchMock = vi.fn<typeof fetch>(async (input) => {
+      const url = String(input);
+      if (url.includes("/pulls/7/comments")) return Response.json([]);
+      if (url.includes("/pulls/7/reviews")) {
+        return Response.json([{
+          id: 501,
+          user: { login: "greptile-apps[bot]" },
+          state: "COMMENTED",
+          submitted_at: "2026-09-10T11:59:08Z",
+          commit_id: reviewedHead,
+        }]);
+      }
+      if (url.includes("/check-runs")) {
+        return Response.json({
+          total_count: 1,
+          check_runs: [greptileCheckRunRow({ id: 103022939200, status: "completed", conclusion: "success", completedAt: "2026-09-10T12:00:00Z", headSha: head })],
+        });
+      }
+      throw new Error(`Unexpected GitHub path: ${url}`);
+    });
+    const greptile = greptileReviewService({} as Db, {
+      github: createGitHubDeliveryClient(db, { fetch: fetchMock }),
+      toolGateway: greptileToolGateway({ review: { status: "COMPLETED", revision: reviewedHead }, comments: [] }),
+    });
+
+    await expect(greptile.read({
+      companyId: fixture.company.id,
+      connectionId: fixture.connection.id,
+      repositoryName: "acme/widget",
+      defaultBranch: "main",
+      prNumber: 7,
+      correlation: {
+        host: "github.com",
+        connectionId: fixture.connection.id,
+        owner: "acme",
+        repo: "widget",
+        headSha: head,
+      },
+    })).resolves.toMatchObject({
+      ok: true,
+      status: "none",
+      reviewState: "completed",
+      headSha: head,
+      blockingFindings: 0,
+      findings: [],
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 });

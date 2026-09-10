@@ -939,6 +939,7 @@ export function deliveryReconciler(
           connectionId: policyRow.githubConnectionId ?? null,
           owner: repository.owner,
           repo: repository.name,
+          headSha: unit.acceptedHeadSha,
         },
       });
       if (!freshGreptile.ok) {
@@ -1275,6 +1276,7 @@ export function deliveryReconciler(
           connectionId,
           owner: repository.owner,
           repo: repository.name,
+          headSha: pullRequest.headSha,
         },
       });
       if (greptileRead.ok) {

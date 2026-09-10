@@ -408,6 +408,7 @@ export function deliveryService(
         connectionId: policyRow.githubConnectionId,
         owner: repository.owner,
         repo: repository.name,
+        headSha: unit.headSha,
       },
     });
     if (!result.ok) {
