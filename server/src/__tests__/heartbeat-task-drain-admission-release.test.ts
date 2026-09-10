@@ -223,17 +223,21 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
   // calls tx.update(table) for a table named in tablesByCall — this makes a
   // real Postgres transaction roll back exactly like a genuine write failure
   // partway through, without touching any other table's update path.
-  // tablesByCall maps a 0-based db.transaction() call index (in call order)
-  // to the table that call should fail on; a call index with no entry runs
-  // every update for real. For example { 0: issues } fails only the
-  // issue-lock write inside releaseRunClaimedJustBeforeSuppression's
-  // transaction.
+  // The wrapper stays transparent until arm() is called, so transactions that
+  // run before the phase under test (for example the admission claim that
+  // admits the run) commit for real. After arm(), tablesByCall maps a 0-based
+  // db.transaction() call index (in call order from that point) to the table
+  // that call should fail on; a call index with no entry runs every update for
+  // real. For example arm(); { 0: issues } fails only the issue-lock write
+  // inside releaseRunClaimedJustBeforeSuppression's transaction.
   function withFailingTransactionalUpdate(realDb: typeof db, tablesByCall: Record<number, unknown>) {
     let callIndex = 0;
-    return new Proxy(realDb, {
+    let armed = false;
+    const faultingDb = new Proxy(realDb, {
       get(target, prop, receiver) {
         if (prop !== "transaction") return Reflect.get(target, prop, receiver);
         return (fn: (tx: unknown) => Promise<unknown>) => {
+          if (!armed) return target.transaction(fn);
           const failingTable = tablesByCall[callIndex];
           callIndex += 1;
           return target.transaction((tx) => {
@@ -255,6 +259,13 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
         };
       },
     }) as typeof db;
+    return {
+      db: faultingDb,
+      arm() {
+        armed = true;
+        callIndex = 0;
+      },
+    };
   }
 
   it("leaves the run row running for the orphan reaper when the atomic release fails", async () => {
@@ -262,12 +273,16 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
     // Fault the release transaction on the issue-lock write, so executeRun's
     // suppression branch catches the failure, logs it, and returns instead
     // of throwing. There is no in-process fallback or retry for this path.
-    const failingDb = withFailingTransactionalUpdate(db, { 0: issues });
-    const heartbeat = heartbeatService(failingDb);
+    // The fault stays disarmed until the run's own "running" live event, so the
+    // admission claim that admits the run commits for real and the first
+    // db.transaction() after arming is the release itself.
+    const fault = withFailingTransactionalUpdate(db, { 0: issues });
+    const heartbeat = heartbeatService(fault.db);
 
     const unsubscribe = subscribeCompanyLiveEvents(companyId, (event) => {
       const payload = event.payload as { runId?: string; status?: string };
       if (event.type === "heartbeat.run.status" && payload.runId === runId && payload.status === "running") {
+        fault.arm();
         startTaskDrain({});
       }
     });
