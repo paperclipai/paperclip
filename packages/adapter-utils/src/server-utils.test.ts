@@ -2928,7 +2928,7 @@ describe("renderPaperclipWakePrompt", () => {
     expect(prompt).toContain("Added the helper route and tests.");
   });
 
-  // Locks the property the env-var removal (PAP-6176) depends on: the prompt
+  // Locks the property that the launch-environment payload removal depends on: the prompt
   // is the single delivery path, so every field the payload carries must
   // reach the prompt text. A handful of fields never render as prompt text
   // under any one scenario — `commentIds`/`interactionKind`/`interactionStatus`
