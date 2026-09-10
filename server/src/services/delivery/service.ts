@@ -397,6 +397,9 @@ export function deliveryService(
     if (!repository || !unit.prNumber) {
       return unavailable("Open a pull request before reading Greptile feedback.");
     }
+    if (!unit.headSha) {
+      return unavailable("Wait for the pull request head to synchronize before reading Greptile feedback.");
+    }
     const result = await greptile.read({
       companyId,
       connectionId: policyRow.greptileConnectionId,
