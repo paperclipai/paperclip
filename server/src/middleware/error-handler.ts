@@ -111,6 +111,14 @@ export function errorHandler(
       "standing_delegation_required",
       "grant_owner_membership_inactive",
     ]).has(typeof details?.code === "string" ? details.code : "");
+    // HttpError subclasses (e.g. ToolGatewayHttpError) may carry a stable
+    // machine-readable reason code alongside their human-readable message.
+    // Surface it the same way every route that already catches these errors
+    // locally does (`{ error, reasonCode, ...details }` - see
+    // routes/tool-gateway.ts, routes/tool-access.ts, routes/plugins.ts),
+    // so a caller reaching this generic handler gets the same shape instead
+    // of only the message.
+    const reasonCode = (err as { reasonCode?: unknown }).reasonCode;
     recordResponsibleUserDenialFromHttpError(req, details);
     if (err.status >= 500) {
       attachErrorContext(
@@ -123,6 +131,7 @@ export function errorHandler(
     }
     res.status(err.status).json({
       error: err.message,
+      ...(typeof reasonCode === "string" ? { reasonCode } : {}),
       ...(typeof details?.code === "string" ? { code: details.code } : {}),
       ...(redactedSkillPolicyDenial && typeof details?.reason === "string" ? { reason: details.reason } : {}),
       ...(workspaceRepairPreconditionFailure && typeof details?.reason === "string" ? { reason: details.reason } : {}),

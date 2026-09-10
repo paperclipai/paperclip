@@ -2,6 +2,7 @@ import type { NextFunction, Request, Response } from "express";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { HttpError } from "../errors.js";
 import { errorHandler } from "../middleware/error-handler.js";
+import { ToolGatewayHttpError } from "../services/tool-gateway.js";
 
 const recordResponsibleUserDenialOnActiveRunMock = vi.hoisted(() => vi.fn());
 
@@ -145,5 +146,47 @@ describe("errorHandler", () => {
       companyId: "company-1",
       code: "RESPONSIBLE_USER_UNAUTHORIZED",
     });
+  });
+
+  // Regression: ToolGatewayHttpError previously extended the bare `Error`
+  // class instead of `HttpError`, so `err instanceof HttpError` was false
+  // here and every tool-gateway rejection (404s, 409s, ...) fell through to
+  // the generic 500 branch below - masking the real status/reasonCode and
+  // wrongly reporting expected business-rule rejections as crashes.
+  it("maps a ToolGatewayHttpError to its own status instead of a generic 500", () => {
+    const req = makeReq();
+    const res = makeRes() as any;
+    const next = vi.fn() as unknown as NextFunction;
+    const err = new ToolGatewayHttpError(
+      409,
+      "Tool action request requires formal board approval before execution",
+      "formal_approval_required",
+      { approvalId: "approval-1" },
+    );
+
+    errorHandler(err, req, res, next);
+
+    expect(res.status).toHaveBeenCalledWith(409);
+    expect(res.json).toHaveBeenCalledWith({
+      error: "Tool action request requires formal board approval before execution",
+      reasonCode: "formal_approval_required",
+      details: { approvalId: "approval-1" },
+    });
+    // Sub-500 statuses must not be attached/reported as a server crash.
+    expect(res.err).toBeUndefined();
+    expect(res.__errorContext).toBeUndefined();
+  });
+
+  it("still reports a ToolGatewayHttpError as a crash when its status is >= 500", () => {
+    const req = makeReq();
+    const res = makeRes() as any;
+    const next = vi.fn() as unknown as NextFunction;
+    const err = new ToolGatewayHttpError(502, "Remote MCP tool call timed out", "tool_timeout");
+
+    errorHandler(err, req, res, next);
+
+    expect(res.status).toHaveBeenCalledWith(502);
+    expect(res.err).toBe(err);
+    expect(res.__errorContext?.error?.message).toBe("Remote MCP tool call timed out");
   });
 });
