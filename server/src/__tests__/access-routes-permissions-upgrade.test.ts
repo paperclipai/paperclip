@@ -19,6 +19,8 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+import { ownerHasRequiredGrant } from "../security/board-key-owner-authority.js";
+import { grantsForHumanRole } from "../services/company-member-roles.js";
 
 vi.hoisted(() => {
   process.env.PAPERCLIP_HOME = "/tmp/paperclip-test-home";
@@ -127,7 +129,7 @@ describeEmbeddedPostgres("access routes permissions upgrade compatibility", () =
     expect(unchanged.membershipRole).toBe("owner");
   }, 10_000);
 
-  it("keeps custom grants when the role-only member route changes a member role", async () => {
+  it("retires former role defaults but keeps custom grants when the role-only route demotes a member", async () => {
     const { company, owner } = await createCompanyWithOwner(db);
     const member = await db
       .insert(companyMemberships)
@@ -141,14 +143,31 @@ describeEmbeddedPostgres("access routes permissions upgrade compatibility", () =
       .returning()
       .then((rows) => rows[0]!);
     const customScope = { projectIds: ["project-1"] };
-    await db.insert(principalPermissionGrants).values({
-      companyId: company.id,
-      principalType: "user",
-      principalId: member.principalId,
-      permissionKey: "tasks:assign_scope",
-      scope: customScope,
-      grantedByUserId: owner.principalId,
-    });
+    await db.insert(principalPermissionGrants).values([
+      ...grantsForHumanRole("admin").map((grant) => ({
+        companyId: company.id,
+        principalType: "user" as const,
+        principalId: member.principalId,
+        permissionKey: grant.permissionKey,
+        scope: grant.scope,
+        grantedByUserId: owner.principalId,
+      })),
+      {
+        companyId: company.id,
+        principalType: "user" as const,
+        principalId: member.principalId,
+        permissionKey: "tasks:assign_scope" as const,
+        scope: customScope,
+        grantedByUserId: owner.principalId,
+      },
+    ]);
+
+    await expect(ownerHasRequiredGrant(
+      db,
+      member.principalId,
+      [company.id],
+      "tools:manage",
+    )).resolves.toBe(true);
 
     const res = await request(await createApp(db, company.id, owner.principalId))
       .patch(`/api/companies/${company.id}/members/${member.id}`)
@@ -166,13 +185,25 @@ describeEmbeddedPostgres("access routes permissions upgrade compatibility", () =
           eq(principalPermissionGrants.principalType, "user"),
           eq(principalPermissionGrants.principalId, member.principalId),
         ),
-      );
-    expect(grants).toHaveLength(1);
-    expect(grants[0]).toMatchObject({
-      permissionKey: "tasks:assign_scope",
-      scope: customScope,
-      grantedByUserId: owner.principalId,
-    });
+    );
+    expect(grants).toHaveLength(2);
+    expect(grants).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        permissionKey: "tasks:assign",
+        scope: null,
+      }),
+      expect.objectContaining({
+        permissionKey: "tasks:assign_scope",
+        scope: customScope,
+        grantedByUserId: owner.principalId,
+      }),
+    ]));
+    await expect(ownerHasRequiredGrant(
+      db,
+      member.principalId,
+      [company.id],
+      "tools:manage",
+    )).resolves.toBe(false);
   });
 
   it("sweeps personal connection access when the member route suspends a user", async () => {

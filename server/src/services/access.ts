@@ -18,6 +18,7 @@ import type { PermissionKey, PrincipalType } from "@paperclipai/shared";
 import { conflict } from "../errors.js";
 import { assertAssignableAgent } from "./agent-assignability.js";
 import { authorizationService, type AuthorizationActor, type AuthorizationResource } from "./authorization.js";
+import { grantsForHumanRole, normalizeHumanRole } from "./company-member-roles.js";
 import { ensureHumanRoleDefaultGrants } from "./principal-access-compatibility.js";
 
 type MembershipRow = typeof companyMemberships.$inferSelect;
@@ -1110,6 +1111,34 @@ export function accessService(db: Db) {
         nextStatus === "suspended"
       ) {
         await sweepMemberConnectionAccess(tx, companyId, existing.principalId, now);
+      }
+
+      if (
+        existing.principalType === "user"
+        && data.membershipRole !== undefined
+        && nextMembershipRole !== existing.membershipRole
+      ) {
+        const previousDefaultKeys = new Set(
+          grantsForHumanRole(normalizeHumanRole(existing.membershipRole, "operator"))
+            .map((grant) => grant.permissionKey),
+        );
+        const nextDefaultKeys = new Set(
+          grantsForHumanRole(normalizeHumanRole(nextMembershipRole, "operator"))
+            .map((grant) => grant.permissionKey),
+        );
+        const retiredDefaultKeys = [...previousDefaultKeys]
+          .filter((permissionKey) => !nextDefaultKeys.has(permissionKey));
+
+        if (retiredDefaultKeys.length > 0) {
+          await tx
+            .delete(principalPermissionGrants)
+            .where(and(
+              eq(principalPermissionGrants.companyId, companyId),
+              eq(principalPermissionGrants.principalType, "user"),
+              eq(principalPermissionGrants.principalId, existing.principalId),
+              inArray(principalPermissionGrants.permissionKey, retiredDefaultKeys),
+            ));
+        }
       }
 
       return tx
