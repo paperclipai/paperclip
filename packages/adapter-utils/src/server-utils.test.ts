@@ -2927,6 +2927,274 @@ describe("renderPaperclipWakePrompt", () => {
     expect(prompt).toContain("PAP-101 Implement helper (done)");
     expect(prompt).toContain("Added the helper route and tests.");
   });
+
+  // Locks the property the env-var removal (PAP-6176) depends on: the prompt
+  // is the single delivery path, so every field the payload carries must
+  // reach the prompt text. A handful of fields never render as prompt text
+  // under any one scenario — `commentIds`/`interactionKind`/`interactionStatus`
+  // only surface together on a planning wake with zero comments (mutually
+  // exclusive with the comment-list scenario below), `unresolvedBlockerIssueIds`
+  // is shadowed by `unresolvedBlockerSummaries` when both are set, and the
+  // top-level `truncated` field is not read by the renderer at all. Those five
+  // are still checked through the JSON round trip, proving the env-var copy
+  // and the prompt copy come from the same normalized object.
+  it("the prompt carries every top-level wake payload field", () => {
+    const payload = {
+      reason: "issue_commented",
+      issue: {
+        id: "wakecov-issue-id",
+        identifier: "PAP-9001",
+        title: "wakecov-issue-title",
+        description: "wakecov-issue-description",
+        descriptionTruncated: false,
+        status: "wakecov-issue-status",
+        workMode: "wakecov-issue-workmode",
+        priority: "wakecov-issue-priority",
+      },
+      executionContinuation: {
+        version: 1,
+        companyId: "wakecov-company-id",
+        issueId: "wakecov-issue-id",
+        trigger: { reason: "issue_commented", interactionId: null, sourceRunId: null },
+        originCommentIds: [],
+        objective: "wakecov-objective",
+        messages: [
+          {
+            id: "wakecov-message-id",
+            authorType: "user",
+            authorId: "wakecov-message-author",
+            body: "wakecov-message-body",
+            createdAt: "2026-01-01T00:00:00.000Z",
+            updatedAt: "2026-01-01T00:00:00.000Z",
+            deleted: false,
+            sourceTrust: "trusted",
+          },
+        ],
+        interactionOutcomes: [
+          { id: "wakecov-outcome-id", kind: "wakecov-outcome-kind", status: "resolved", result: { note: "wakecov-interaction-result" } },
+        ],
+        recoveryOutcomes: [{ recoveryActionId: "wakecov-recovery-action-id", decision: "retry" }],
+        completedWork: "wakecov-completed-work",
+        completedActions: [{ runId: "wakecov-run-id", receiptId: "wakecov-receipt-id", operationId: "wakecov-op-id", result: { ok: true } }],
+        unresolvedInteractionIds: [],
+        coverage: { kind: "full_task_history", throughCommentId: null, summaryThroughCommentId: null },
+      },
+      recovery: {
+        cause: "process_lost",
+        failureSummary: "wakecov-recovery-failure",
+        originalAssignee: { id: "wakecov-orig-assignee-id", name: null },
+        attemptCount: 2,
+        maxAttempts: 5,
+        nextAction: "wakecov-recovery-next-action",
+        routingFallbackReason: "wakecov-routing-fallback-reason",
+      },
+      checkedOutByHarness: true,
+      simplifiedEnglishInteractions: true,
+      dependencyBlockedInteraction: true,
+      treeHoldInteraction: true,
+      activeTreeHold: { holdId: "wakecov-hold-id", rootIssueId: "wakecov-hold-root", mode: "wakecov-hold-mode" },
+      unresolvedBlockerIssueIds: ["wakecov-blocker-issue-id"],
+      unresolvedBlockerSummaries: [
+        { id: "wakecov-blocker-id", identifier: "wakecov-blocker-identifier", title: "wakecov-blocker-title", status: "wakecov-blocker-status" },
+      ],
+      executionStage: {
+        wakeRole: "reviewer",
+        stageId: "wakecov-stage-id",
+        stageType: "wakecov-stage-type",
+        currentParticipant: { type: "agent", agentId: "wakecov-participant-agent" },
+        returnAssignee: { type: "user", userId: "wakecov-return-user" },
+        reviewRequest: { instructions: "wakecov-review-instructions" },
+        lastDecisionOutcome: "wakecov-decision-outcome",
+        allowedActions: ["wakecov-allowed-action"],
+      },
+      continuationSummary: { body: "wakecov-continuation-summary-body" },
+      planReviewContext: null,
+      documentReviewContext: null,
+      annotationDeltas: [],
+      livenessContinuation: {
+        attempt: 3,
+        maxAttempts: 6,
+        sourceRunId: "wakecov-liveness-run-id",
+        state: "wakecov-liveness-state",
+        reason: "wakecov-liveness-reason",
+        instruction: "wakecov-liveness-instruction",
+      },
+      taskWatchdog: null,
+      interactionKind: "wakecov-interaction-kind-field",
+      interactionStatus: "wakecov-interaction-status-field",
+      checkboxSelection: {
+        prompt: "wakecov-checkbox-prompt",
+        selectedOptionIds: ["wakecov-option-id"],
+        selectedOptions: [{ id: "wakecov-option-id", label: "wakecov-option-label", description: "wakecov-option-description" }],
+      },
+      questionResponse: {
+        interactionId: "wakecov-question-interaction-id",
+        summaryMarkdown: "wakecov-question-summary",
+      },
+      executionWorkspace: { branchName: "wakecov-branch-name" },
+      agentMessage: { text: "wakecov-agent-message-text", source: "plugin", pluginKey: "wakecov-plugin-key" },
+      childIssueSummaries: [
+        { id: "wakecov-child-id", identifier: "wakecov-child-identifier", title: "wakecov-child-title", status: "wakecov-child-status", summary: "wakecov-child-summary" },
+      ],
+      childIssueSummaryTruncated: true,
+      commentIds: ["wakecov-comment-id-a"],
+      latestCommentId: "wakecov-latest-comment-id",
+      comments: [
+        {
+          id: "wakecov-comment-id",
+          body: "wakecov-comment-body",
+          createdAt: "2026-01-01T00:00:00.000Z",
+          author: { type: "user", id: "wakecov-comment-author-id" },
+        },
+      ],
+      commentWindow: { requestedCount: 3, includedCount: 1, missingCount: 2 },
+      truncated: true,
+      fallbackFetchNeeded: true,
+    };
+
+    const serialized = stringifyPaperclipWakePayload(payload);
+    expect(serialized).not.toBeNull();
+    const parsed = JSON.parse(serialized ?? "{}");
+    // Fields with no distinct prompt rendering under this scenario (see the
+    // comment above the test): confirm the env-var copy still carried them.
+    expect(parsed).toMatchObject({
+      commentIds: ["wakecov-comment-id-a"],
+      interactionKind: "wakecov-interaction-kind-field",
+      interactionStatus: "wakecov-interaction-status-field",
+      unresolvedBlockerIssueIds: ["wakecov-blocker-issue-id"],
+      truncated: true,
+    });
+
+    const prompt = renderPaperclipWakePrompt(payload);
+
+    // reason
+    expect(prompt).toContain("- reason: issue_commented");
+    // issue
+    expect(prompt).toContain("- issue: PAP-9001 wakecov-issue-title");
+    expect(prompt).toContain("wakecov-issue-description");
+    expect(prompt).toContain("- issue status: wakecov-issue-status");
+    expect(prompt).toContain("- issue work mode: wakecov-issue-workmode");
+    expect(prompt).toContain("- issue priority: wakecov-issue-priority");
+    // executionContinuation (objective, messages, completedWork, interactionOutcomes, completedActions, recoveryOutcomes)
+    expect(prompt).toContain("wakecov-objective");
+    expect(prompt).toContain("wakecov-message-body");
+    expect(prompt).toContain("wakecov-completed-work");
+    expect(prompt).toContain("wakecov-interaction-result");
+    expect(prompt).toContain("wakecov-receipt-id");
+    expect(prompt).toContain("wakecov-recovery-action-id");
+    // recovery
+    expect(prompt).toContain("- failure summary: wakecov-recovery-failure");
+    expect(prompt).toContain("- original assignee: wakecov-orig-assignee-id");
+    expect(prompt).toContain("- recovery attempt: 2/5");
+    expect(prompt).toContain("- next action: wakecov-recovery-next-action");
+    expect(prompt).toContain("- routing fallback: wakecov-routing-fallback-reason");
+    // checkedOutByHarness
+    expect(prompt).toContain("The harness already checked out this issue for the current run.");
+    // simplifiedEnglishInteractions
+    expect(prompt).toContain("ASD-STE100 Simplified Technical English");
+    // dependencyBlockedInteraction + unresolvedBlockerSummaries
+    expect(prompt).toContain("- dependency-blocked interaction: yes");
+    expect(prompt).toContain("wakecov-blocker-identifier wakecov-blocker-title (wakecov-blocker-status)");
+    // treeHoldInteraction + activeTreeHold
+    expect(prompt).toContain("- tree-hold interaction: yes");
+    expect(prompt).toContain("wakecov-hold-id rooted at wakecov-hold-root (wakecov-hold-mode)");
+    // executionStage
+    expect(prompt).toContain("- execution wake role: reviewer");
+    expect(prompt).toContain("- execution stage: wakecov-stage-type");
+    expect(prompt).toContain("agent wakecov-participant-agent");
+    expect(prompt).toContain("user wakecov-return-user");
+    expect(prompt).toContain("- last decision outcome: wakecov-decision-outcome");
+    expect(prompt).toContain("wakecov-allowed-action");
+    expect(prompt).toContain("wakecov-review-instructions");
+    // continuationSummary
+    expect(prompt).toContain("wakecov-continuation-summary-body");
+    // livenessContinuation
+    expect(prompt).toContain("- attempt: 3/6");
+    expect(prompt).toContain("- source run: wakecov-liveness-run-id");
+    expect(prompt).toContain("- liveness state: wakecov-liveness-state");
+    expect(prompt).toContain("- reason: wakecov-liveness-reason");
+    expect(prompt).toContain("- instruction: wakecov-liveness-instruction");
+    // checkboxSelection
+    expect(prompt).toContain("- checkbox prompt: wakecov-checkbox-prompt");
+    expect(prompt).toContain("wakecov-option-id");
+    expect(prompt).toContain("wakecov-option-label");
+    expect(prompt).toContain("wakecov-option-description");
+    // questionResponse
+    expect(prompt).toContain("wakecov-question-interaction-id");
+    expect(prompt).toContain("wakecov-question-summary");
+    // executionWorkspace
+    expect(prompt).toContain("wakecov-branch-name");
+    // agentMessage
+    expect(prompt).toContain("wakecov-plugin-key");
+    expect(prompt).toContain("wakecov-agent-message-text");
+    // childIssueSummaries + childIssueSummaryTruncated
+    expect(prompt).toContain("wakecov-child-identifier wakecov-child-title (wakecov-child-status)");
+    expect(prompt).toContain("wakecov-child-summary");
+    expect(prompt).toContain("[child issue summaries truncated]");
+    // comments, commentWindow (requestedCount/includedCount), latestCommentId, missingCount
+    expect(prompt).toContain("wakecov-comment-id");
+    expect(prompt).toContain("wakecov-comment-body");
+    expect(prompt).toContain("- pending comments: 1/3");
+    expect(prompt).toContain("- latest comment id: wakecov-latest-comment-id");
+    expect(prompt).toContain("- omitted comments: 2");
+    // fallbackFetchNeeded
+    expect(prompt).toContain("- fallback fetch needed: yes");
+  });
+
+  it("the prompt carries the resume delta on a resumed session", () => {
+    const payload = {
+      reason: "issue_commented",
+      issue: { id: "wakecov-resume-issue-id", identifier: "PAP-9100", title: "Resume delta coverage" },
+      executionContinuation: {
+        version: 1,
+        companyId: "wakecov-company-id",
+        issueId: "wakecov-resume-issue-id",
+        trigger: { reason: "issue_commented", interactionId: null, sourceRunId: null },
+        originCommentIds: [],
+        objective: "wakecov-resume-objective",
+        messages: [
+          {
+            id: "wakecov-full-message-id",
+            authorType: "user",
+            authorId: "wakecov-message-author",
+            body: "wakecov-full-history-message",
+            createdAt: "2026-01-01T00:00:00.000Z",
+            updatedAt: "2026-01-01T00:00:00.000Z",
+            deleted: false,
+            sourceTrust: "trusted",
+          },
+        ],
+        interactionOutcomes: [],
+        completedWork: null,
+        resumeDelta: {
+          baseRunId: "wakecov-base-run-id",
+          messages: [
+            {
+              id: "wakecov-delta-message-id",
+              authorType: "user",
+              authorId: "wakecov-message-author",
+              body: "wakecov-delta-only-message",
+              createdAt: "2026-01-02T00:00:00.000Z",
+              updatedAt: "2026-01-02T00:00:00.000Z",
+              deleted: false,
+              sourceTrust: "trusted",
+            },
+          ],
+        },
+        unresolvedInteractionIds: [],
+        coverage: { kind: "full_task_history", throughCommentId: null, summaryThroughCommentId: null },
+      },
+      commentWindow: { requestedCount: 0, includedCount: 0, missingCount: 0 },
+      comments: [],
+      fallbackFetchNeeded: false,
+    };
+
+    const prompt = renderPaperclipWakePrompt(payload, { resumedSession: true });
+    expect(prompt).toContain("wakecov-delta-only-message");
+    expect(prompt).toContain("task_history_delta");
+    expect(prompt).toContain("wakecov-base-run-id");
+    expect(prompt).not.toContain("wakecov-full-history-message");
+  });
 });
 
 describe("WATCHDOG_DEFAULT_MANDATE", () => {

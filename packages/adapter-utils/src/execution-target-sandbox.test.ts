@@ -455,6 +455,70 @@ describe("sandbox adapter execution targets", () => {
     }
   });
 
+  it("keeps the launch envelope under the kernel per-string limit even with a large env value", async () => {
+    const rootDir = await mkdtemp(
+      path.join(os.tmpdir(), "paperclip-process-session-envelope-"),
+    );
+    cleanupDirs.push(rootDir);
+    const childPath = path.join(rootDir, "noop-acp-child.mjs");
+    await writeFile(childPath, "process.stdin.on('data', () => {});\n", "utf8");
+
+    const delegate = createLocalSandboxRunner();
+    const execScripts: string[] = [];
+    const runner = {
+      execute: vi.fn(async (input: Parameters<typeof delegate.execute>[0]) => {
+        execScripts.push(input.args?.[1] ?? "");
+        return delegate.execute(input);
+      }),
+    };
+    const target: AdapterSandboxExecutionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      providerKey: "local-test",
+      remoteCwd: rootDir,
+      timeoutMs: 30_000,
+      runner,
+    };
+
+    // A 90,000-byte single env value stands in for a wake payload sized
+    // field. The old PAPERCLIP_WAKE_PAYLOAD_JSON writer put a value close to
+    // this size into the launch env on a normal driver task.
+    const largeEnvValue = "x".repeat(90_000);
+
+    const bridge = await startAdapterExecutionTargetProcessSessionBridge({
+      runId: "run-process-session-envelope",
+      target,
+      runtimeRootDir: path.posix.join(rootDir, ".paperclip-runtime", "acpx"),
+      adapterKey: "acpx",
+      command: process.execPath,
+      args: [childPath],
+      cwd: rootDir,
+      env: { PAPERCLIP_LARGE_FIELD: largeEnvValue },
+      timeoutSec: 5,
+      onLog: async () => {},
+    });
+    expect(bridge).not.toBeNull();
+
+    try {
+      const launchExec = execScripts.find((script) =>
+        script.includes("PAPERCLIP_PROCESS_SESSION_COMMAND_B64="),
+      );
+      expect(launchExec).toBeDefined();
+      // shellQuote wraps the base64 payload in plain single quotes -- the
+      // base64 alphabet has no single quote, so no escaping is present.
+      const match = launchExec!.match(
+        /PAPERCLIP_PROCESS_SESSION_COMMAND_B64='([^']*)'/,
+      );
+      expect(match).not.toBeNull();
+      const commandPayloadBase64 = match![1];
+      // A 32-page (4096-byte page) kernel MAX_ARG_STRLEN of 131,072 bytes
+      // bounds a single argv/environ string, including this base64 payload.
+      expect(commandPayloadBase64.length).toBeLessThan(131_072);
+    } finally {
+      await bridge?.stop();
+    }
+  });
+
   it.each([
     { outputMode: "polled", streamOutputViaSession: false },
     { outputMode: "streamed", streamOutputViaSession: true },
