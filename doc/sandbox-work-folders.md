@@ -434,6 +434,11 @@ cancellation retain their existing authorities.
 Immediate recovery honors the same operator-cancellation attribution as periodic
 recovery, so cancelling a run does not synthesize a continuation that restarts its
 sandbox. Explicitly queued work can still run through normal promotion.
+Native failure recovery also checks the durable cancellation intent under the run
+lock before scheduling a retry. An interrupted turn without a semantic result
+must preserve cancellation instead of reporting a provider failure. Terminal
+cancellation clears stale retry retention flags so final flushing and sandbox
+release still run.
 
 Automated tests do not qualify a deployed runner image. Before merging, use a
 new pinned staging stack with the branch's Cloud image and matching migrator.

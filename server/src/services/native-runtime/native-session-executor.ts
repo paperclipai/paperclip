@@ -4725,7 +4725,63 @@ async function executePaperclipNativeSessionWithinScope(
         ? error.message.slice(0, 2_000)
         : String(error).slice(0, 2_000);
     const sanitizedStderrTail = redactSensitiveText(message).slice(-4_096);
-    await input.db.transaction(async (tx) => {
+    const cancellationWon = await input.db.transaction(async (tx) => {
+      // Match the execution claim's coordinator -> run lock order. Cancellation
+      // publishes its intent under the run lock before interrupting the provider.
+      // A result-less interrupted turn must not overwrite that intent's outcome
+      // or create recovery work that keeps its sandbox running.
+      await tx
+        .select({ runId: nativeRunFinalizations.runId })
+        .from(nativeRunFinalizations)
+        .where(eq(nativeRunFinalizations.runId, input.execution.binding.runId))
+        .for("update")
+        .limit(1);
+      const boundRun = await tx
+        .select({
+          companyId: heartbeatRuns.companyId,
+          agentId: heartbeatRuns.agentId,
+          nativeIssueId: heartbeatRuns.nativeIssueId,
+          resultJson: heartbeatRuns.resultJson,
+        })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, input.execution.binding.runId))
+        .for("update")
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      const cancellation = record(record(boundRun?.resultJson).nativeCancellation);
+      if (
+        cancellation.scope === "run" &&
+        (cancellation.dispatchState === "pending" || cancellation.dispatchState === "acknowledged")
+      ) {
+        if (
+          boundRun?.companyId !== input.execution.binding.companyId ||
+          boundRun?.agentId !== input.execution.binding.agentId ||
+          boundRun?.nativeIssueId !== input.execution.binding.issueId ||
+          cancellation.schema !== "paperclip.native-cancellation.v1" ||
+          cancellation.companyId !== input.execution.binding.companyId ||
+          cancellation.runId !== input.execution.binding.runId ||
+          cancellation.issueId !== input.execution.binding.issueId
+        ) {
+          throw new Error("native_cancellation_intent_conflict");
+        }
+        await tx
+          .update(nativeRunFinalizations)
+          .set({
+            leaseOwner: null,
+            leaseExpiresAt: null,
+            nextAttemptAt: null,
+            recoveryState: null,
+            updatedAt: now,
+          })
+          .where(and(
+            eq(nativeRunFinalizations.runId, input.execution.binding.runId),
+            eq(nativeRunFinalizations.companyId, input.execution.binding.companyId),
+            eq(nativeRunFinalizations.issueId, input.execution.binding.issueId),
+            eq(nativeRunFinalizations.leaseOwner, leaseOwner),
+            eq(nativeRunFinalizations.attempt, attempt),
+          ));
+        return true;
+      }
       const updated = await tx
         .update(nativeRunFinalizations)
         .set({
@@ -4876,6 +4932,11 @@ async function executePaperclipNativeSessionWithinScope(
         supersedeOnIdentityChange: recoveryProjection.supersedeOnIdentityChange,
       });
     });
+    if (cancellationWon) {
+      if (taskSettleScope) await trace.end(taskSettleScope, { outcome: "ok" });
+      await trace.finish("ok");
+      throw new NativeCancellationPendingRecoveryError();
+    }
     if (taskSettleScope) {
       await trace.end(taskSettleScope, { outcome: "failed" });
     }

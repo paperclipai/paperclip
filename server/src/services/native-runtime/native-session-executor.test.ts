@@ -2534,6 +2534,7 @@ function leaseDb(
   boundExecution: NativeExecutionInputV1 = execution,
   coordinatorOverrides: Partial<LeaseCoordinator> = {},
   runResultJson: Record<string, unknown> = {},
+  writes: Array<{ table: unknown; values: Record<string, unknown> }> = [],
 ): Db {
   const coordinator: LeaseCoordinator = {
     runId: boundExecution.binding.runId,
@@ -2546,17 +2547,20 @@ function leaseDb(
     resultId: null,
     ...coordinatorOverrides,
   };
-  const update = () => ({
-    set: () => ({
-      where: () => {
-        const result = Promise.resolve([]) as unknown as Promise<unknown[]> & {
-          returning: () => Promise<Array<{ runId: string }>>;
-        };
-        result.returning = () =>
-          Promise.resolve([{ runId: coordinator.runId }]);
-        return result;
-      },
-    }),
+  const update = (table: unknown) => ({
+    set: (values: Record<string, unknown>) => {
+      writes.push({ table, values });
+      return {
+        where: () => {
+          const result = Promise.resolve([]) as unknown as Promise<unknown[]> & {
+            returning: () => Promise<Array<{ runId: string }>>;
+          };
+          result.returning = () =>
+            Promise.resolve([{ runId: coordinator.runId }]);
+          return result;
+        },
+      };
+    },
   });
   const tx = {
     select: () => ({
@@ -2585,6 +2589,13 @@ function leaseDb(
     transaction: async (operation: (transaction: Db) => Promise<unknown>) =>
       operation(tx as unknown as Db),
     update,
+    select: () => ({
+      from: (table: unknown) => ({ where: () => ({ limit: async () =>
+        table === heartbeatRuns
+          ? [{ runnerProfileJson: { sessionCheckpoint: { providerSessionId: "provider" } } }]
+          : [],
+      }) }),
+    }),
   } as unknown as Db;
 }
 
@@ -2741,6 +2752,42 @@ describe("native session cancellation", () => {
       cancelNativeSession(execution.binding.runId, "late cancel"),
     ).resolves.toBe(false);
   });
+
+  it.each(["pending", "acknowledged"])(
+    "does not schedule recovery when cancellation becomes %s during a provider turn",
+    async (dispatchState) => {
+      const resultJson: Record<string, unknown> = {};
+      const writes: Array<{ table: unknown; values: Record<string, unknown> }> = [];
+      state.execute.mockImplementationOnce(async (options) => {
+        options.onSession?.({ cancel: state.cancel });
+        // The claim saw no cancellation. The durable intent arrives while the
+        // provider is running, before its interruption surfaces as a failure.
+        resultJson.nativeCancellation = {
+          schema: "paperclip.native-cancellation.v1",
+          scope: "run",
+          companyId: execution.binding.companyId,
+          runId: execution.binding.runId,
+          issueId: execution.binding.issueId,
+          dispatchState,
+        };
+        options.onSession?.(null);
+        throw new Error("native_finalization_missing: session returned no semantic result");
+      });
+      const failure = await executePaperclipNativeSession({
+        db: leaseDb(execution, {}, resultJson, writes),
+        execution,
+        runnerInstanceId: "runner",
+      }).catch((error: unknown) => error);
+      expect(writes.some(({ values }) => values.phase === "retryable_failure")).toBe(false);
+      expect(writes.some(({ values }) => values.errorCode === "native_session_interrupted")).toBe(false);
+      expect(failure).toBeInstanceOf(Error);
+      expect((failure as Error).message).toBe("native_cancellation_pending_recovery");
+      expect(writes).toContainEqual({
+        table: nativeRunFinalizations,
+        values: expect.objectContaining({ leaseOwner: null, leaseExpiresAt: null, nextAttemptAt: null }),
+      });
+    },
+  );
 
   it("allows cancellation to be retried when the session dispatch fails", async () => {
     state.cancel.mockImplementationOnce(() => {

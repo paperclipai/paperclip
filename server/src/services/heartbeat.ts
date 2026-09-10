@@ -21802,6 +21802,7 @@ export function heartbeatService(
             }
           }
         } catch (adapterErr) {
+          if (adapterErr instanceof NativeCancellationPendingRecoveryError) throw adapterErr;
           const nativeResumeScheduled =
             nativeRuntimeResolution.kind === "native"
               ? await measureSandboxOperation("heartbeat.db.select.from.where.limit.then", { operationIndex: 158 }, async () => (db
@@ -22994,6 +22995,12 @@ export function heartbeatService(
         catch (error) { workFolderSaveFailed = true; logger.error({ err: error, runId: run.id }, "Work folder save failed; retaining sandbox for recovery"); }
       }
       let latestRun = await measureSandboxOperation("heartbeat.get_run.catch", { operationIndex: 246 }, async () => (getRun(run.id).catch(() => null)));
+      // Cancellation can arrive after the executor scheduled a same-run retry.
+      // Once terminal, that stale local flag must not retain its provider lease.
+      if (latestRun?.status === "cancelled") {
+        nativeSessionResumeScheduled = false;
+        nativeWorkspaceFinalizeScheduled = false;
+      }
       // Trace capture is debug-only and must settle independently of every
       // provider outcome. Adapter/setup failures used to skip the success-path
       // finalizer, leaving metadata permanently stuck at `capturing` even when
