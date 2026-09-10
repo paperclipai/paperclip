@@ -188,6 +188,18 @@ import {
   createDocumentAnnotationCommentSchema,
   createDocumentAnnotationThreadSchema,
   updateDocumentAnnotationThreadSchema,
+  // Delivery lifecycle
+  deliveryIssueActionSchema,
+  deliveryPolicyWriteSchema,
+  deliveryReconciliationWriteSchema,
+  DELIVERY_AUTO_DEPLOY_DISPOSITIONS,
+  DELIVERY_FINDING_DISPOSITIONS,
+  DELIVERY_FINDING_STATES,
+  DELIVERY_MERGE_METHODS,
+  DELIVERY_MERGE_QUEUE_MODES,
+  DELIVERY_PHASES,
+  DELIVERY_RECONCILIATION_CLASSIFICATIONS,
+  DELIVERY_RECONCILIATION_OUTCOMES,
   // Issue recovery and decomposition
   createAcceptedPlanDecompositionSchema,
   resolveIssueRecoveryActionSchema,
@@ -1023,6 +1035,8 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "POST /api/tool-gateway/gateway-tokens/{tokenId}/revoke",
   "POST /api/tool-gateway/action-requests/{id}/approve",
   "POST /api/tool-gateway/action-requests/{id}/decline",
+  "PUT /api/projects/{id}/delivery-policy",
+  "POST /api/companies/{companyId}/delivery/reconciliation",
 ]);
 
 const INSTANCE_ADMIN_OPERATIONS = new Set([
@@ -3751,11 +3765,11 @@ registry.registerPath({
 
 registry.registerPath({
   method: "get",
-  path: "/api/issues/{issueId}/recovery-engineer",
+  path: "/api/issues/{id}/recovery-engineer",
   tags: ["recovery"],
   summary: "Read scoped recovery incident evidence and reviewed procedures",
   request: {
-    params: z.object({ issueId: z.string() }),
+    params: z.object({ id: z.string() }),
     query: z.object({
       sourceCursor: z.string().guid().optional(),
       sourceLimit: z.coerce.number().int().min(1).max(100).optional(),
@@ -3774,11 +3788,11 @@ registry.registerPath({
 
 registry.registerPath({
   method: "post",
-  path: "/api/issues/{issueId}/recovery-engineer",
+  path: "/api/issues/{id}/recovery-engineer",
   tags: ["recovery"],
   summary: "Record a scoped native recovery action",
   request: {
-    params: z.object({ issueId: z.string() }),
+    params: z.object({ id: z.string() }),
     body: jsonBody(recoveryEngineerRecordInputSchema),
   },
   responses: {
@@ -3789,6 +3803,349 @@ registry.registerPath({
     404: r.notFound,
     409: r.conflict,
     422: r.unprocessable,
+  },
+});
+
+// ─── Delivery lifecycle ────────────────────────────────────────────────────────
+//
+// Request bodies reuse the shared delivery validators directly so the document
+// cannot drift from the route handlers. Response shapes mirror the shared
+// delivery types consumed by the board UI and the Pi delivery tools.
+
+const deliveryCheckSchema = z.object({
+  name: z.string(),
+  status: z.string(),
+  url: z.string().nullable(),
+}).strict();
+
+const deliverySummaryReviewSchema = z.object({
+  status: z.string(),
+  headSha: z.string().nullable(),
+  blockingFindings: z.number().int().nonnegative(),
+}).strict();
+
+const deliveryBlockerSchema = z.object({
+  reasonCode: z.string(),
+  message: z.string(),
+  owner: z.string().nullable(),
+  nextAction: z.string().nullable(),
+}).strict();
+
+const deliveryEventSchema = z.object({
+  id: z.string(),
+  type: z.string(),
+  message: z.string(),
+  createdAt: z.string(),
+  url: z.string().nullable(),
+}).strict();
+
+const deliverySummarySchema = z.object({
+  issueId: z.string(),
+  codeDelivery: z.boolean(),
+  artifactReady: z.boolean(),
+  paused: z.boolean(),
+  phase: z.enum(DELIVERY_PHASES),
+  repository: z.string().nullable(),
+  targetBranch: z.string().nullable(),
+  unitId: z.string().nullable(),
+  prUrl: z.string().nullable(),
+  prNumber: z.number().int().positive().nullable(),
+  headSha: z.string().nullable(),
+  mergedSha: z.string().nullable(),
+  ownerAgentId: z.string().nullable(),
+  queuePosition: z.number().int().nonnegative().nullable(),
+  checks: z.array(deliveryCheckSchema),
+  review: deliverySummaryReviewSchema,
+  blocker: deliveryBlockerSchema.nullable(),
+  nextAction: z.string().nullable(),
+  lastEventAt: z.string().nullable(),
+  events: z.array(deliveryEventSchema),
+}).strict();
+
+const deliveryIssueListSchema = z.object({
+  items: z.array(deliverySummarySchema),
+}).strict();
+
+const deliveryPolicyAuthorizationSchema = z.object({
+  approvedByUserId: z.string(),
+  approvedAt: z.string(),
+  statement: z.string(),
+  scope: z.enum(["project", "repository"]),
+}).strict();
+
+const deliveryPolicySchema = z.object({
+  id: z.string(),
+  companyId: z.string(),
+  projectId: z.string(),
+  repositoryId: z.string().nullable(),
+  repository: z.string().nullable(),
+  repositoryHost: z.string(),
+  repositoryOwner: z.string().nullable(),
+  repositoryName: z.string().nullable(),
+  githubRepositoryId: z.string().nullable(),
+  targetBranch: z.string(),
+  enabled: z.boolean(),
+  paused: z.boolean(),
+  mergeMethod: z.enum(DELIVERY_MERGE_METHODS),
+  mergeQueueMode: z.enum(DELIVERY_MERGE_QUEUE_MODES),
+  requiredChecks: z.array(z.string()),
+  requireGreptile: z.boolean(),
+  requireIndependentApproval: z.boolean(),
+  githubConnectionId: z.string().nullable(),
+  greptileConnectionId: z.string().nullable(),
+  autoDeployDisposition: z.enum(DELIVERY_AUTO_DEPLOY_DISPOSITIONS),
+  authorization: deliveryPolicyAuthorizationSchema.nullable(),
+  version: z.number().int().nonnegative(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+}).strict();
+
+const deliveryFindingSchema = z.object({
+  id: z.string(),
+  externalId: z.string(),
+  severity: z.string(),
+  title: z.string(),
+  body: z.string().nullable(),
+  filePath: z.string().nullable(),
+  line: z.number().int().nullable(),
+  url: z.string().nullable(),
+  headSha: z.string().nullable(),
+  state: z.enum(DELIVERY_FINDING_STATES),
+  disposition: z.enum(DELIVERY_FINDING_DISPOSITIONS).nullable(),
+  dispositionExplanation: z.string().nullable(),
+  dispositionAt: z.string().nullable(),
+  firstSeenAt: z.string(),
+  lastSeenAt: z.string(),
+}).strict();
+
+const deliveryReviewSummarySchema = z.object({
+  issueId: z.string(),
+  repository: z.string().nullable(),
+  targetBranch: z.string().nullable(),
+  prNumber: z.number().int().positive().nullable(),
+  headSha: z.string().nullable(),
+  reviewedHeadSha: z.string().nullable(),
+  status: z.string(),
+  blockingFindings: z.number().int().nonnegative(),
+  findings: z.array(deliveryFindingSchema),
+  nextAction: z.string().nullable(),
+  fetchedAt: z.string().nullable(),
+}).strict();
+
+const deliveryProvenanceSchema = z.object({
+  repository: z.string(),
+  githubRepositoryId: z.string().nullable(),
+  targetBranch: z.string(),
+  sourceBranch: z.string(),
+  submittedHeadSha: z.string(),
+  acceptedHeadSha: z.string(),
+  baseSha: z.string().nullable(),
+  mergedSha: z.string(),
+  mergeCommitSha: z.string().nullable(),
+  mergeMethod: z.enum(DELIVERY_MERGE_METHODS),
+  squashOrRebase: z.boolean(),
+  checks: z.array(deliveryCheckSchema),
+  reviewStatus: z.string(),
+  blockingFindings: z.number().int().nonnegative(),
+  verifiedAt: z.string(),
+}).strict();
+
+const deliveryDispositionSchema = z.object({
+  reasonCode: z.string(),
+  message: z.string(),
+  owner: z.string().nullable(),
+  nextAction: z.string().nullable(),
+  actorType: z.enum(["user", "agent", "system"]),
+  actorId: z.string(),
+  at: z.string(),
+}).strict();
+
+const deliveryReconciliationItemSchema = z.object({
+  issueId: z.string(),
+  identifier: z.string().nullable(),
+  title: z.string(),
+  projectId: z.string().nullable(),
+  issueStatus: z.string(),
+  classification: z.enum(DELIVERY_RECONCILIATION_CLASSIFICATIONS),
+  outcome: z.enum(DELIVERY_RECONCILIATION_OUTCOMES),
+  unitId: z.string().nullable(),
+  repository: z.string().nullable(),
+  targetBranch: z.string().nullable(),
+  prNumber: z.number().int().positive().nullable(),
+  prUrl: z.string().nullable(),
+  headSha: z.string().nullable(),
+  mergedSha: z.string().nullable(),
+  provenance: deliveryProvenanceSchema.nullable(),
+  disposition: deliveryDispositionSchema.nullable(),
+  reconciledAt: z.string().nullable(),
+}).strict();
+
+const deliveryReconciliationInventorySchema = z.object({
+  companyId: z.string(),
+  generatedAt: z.string(),
+  counts: z.record(z.string(), z.number().int().nonnegative()),
+  items: z.array(deliveryReconciliationItemSchema),
+}).strict();
+
+const deliveryReconciliationRecordSchema = z.object({
+  item: deliveryReconciliationItemSchema,
+}).strict();
+
+const deliveryProjectQuerySchema = z.object({
+  projectId: z.string().optional(),
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/issues/{id}/delivery",
+  tags: ["delivery"],
+  summary: "Read the delivery summary for an issue",
+  request: { params: z.object({ id: z.string() }) },
+  responses: {
+    200: r.ok(deliverySummarySchema),
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/issues/{id}/delivery",
+  tags: ["delivery"],
+  summary: "Apply a delivery lifecycle action to an issue",
+  description:
+    "Board actors and company agents share this route. The pause, resume, cancel, disposition, and dependencies actions require a board session; a submit from an agent run must present the signed publication capability in the x-paperclip-publication-capability header.",
+  request: {
+    params: z.object({ id: z.string() }),
+    body: jsonBody(deliveryIssueActionSchema),
+  },
+  responses: {
+    200: r.ok(deliverySummarySchema),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    409: r.conflict,
+    422: r.unprocessable,
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/delivery",
+  tags: ["delivery"],
+  summary: "List delivery summaries for a company",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    query: deliveryProjectQuerySchema,
+  },
+  responses: {
+    200: r.ok(deliveryIssueListSchema),
+    401: r.unauthorized,
+    403: r.forbidden,
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/projects/{id}/delivery-policy",
+  tags: ["delivery"],
+  summary: "Read the delivery policy for a project",
+  description: "Returns the policy object, or null when no policy is configured.",
+  request: { params: z.object({ id: z.string() }) },
+  responses: {
+    200: r.ok(deliveryPolicySchema.nullable()),
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+  },
+});
+
+registry.registerPath({
+  method: "put",
+  path: "/api/projects/{id}/delivery-policy",
+  tags: ["delivery"],
+  summary: "Update the delivery policy for a project",
+  description:
+    "Board-only. An agent key can read the policy but cannot write it, and the authorization record granting standing merge authority is only accepted from a board actor.",
+  request: {
+    params: z.object({ id: z.string() }),
+    body: jsonBody(deliveryPolicyWriteSchema),
+  },
+  responses: {
+    200: r.ok(deliveryPolicySchema),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    409: r.conflict,
+    422: r.unprocessable,
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/issues/{id}/delivery/review",
+  tags: ["delivery"],
+  summary: "Read the delivery review state for an issue",
+  request: { params: z.object({ id: z.string() }) },
+  responses: {
+    200: r.ok(deliveryReviewSummarySchema),
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/issues/{id}/delivery/review",
+  tags: ["delivery"],
+  summary: "Refresh the delivery review state for an issue",
+  description:
+    "A read-only refresh: the reconciler re-reads the review provider and re-evaluates policy. The caller supplies no repository arguments.",
+  request: { params: z.object({ id: z.string() }) },
+  responses: {
+    200: r.ok(deliveryReviewSummarySchema),
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/delivery/reconciliation",
+  tags: ["delivery"],
+  summary: "Read the delivery reconciliation inventory for a company",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    query: deliveryProjectQuerySchema,
+  },
+  responses: {
+    200: r.ok(deliveryReconciliationInventorySchema),
+    401: r.unauthorized,
+    403: r.forbidden,
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/delivery/reconciliation",
+  tags: ["delivery"],
+  summary: "Record a historical delivery reconciliation",
+  description:
+    "Board-only. The operator-supplied provenance is a claim, not evidence: a code_verified classification is stored as code_unverified unless an existing verified receipt or a live remote inclusion check confirms it.",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    body: jsonBody(deliveryReconciliationWriteSchema),
+  },
+  responses: {
+    200: r.ok(deliveryReconciliationRecordSchema),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
   },
 });
 
