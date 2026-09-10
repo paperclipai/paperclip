@@ -3236,6 +3236,112 @@ describe("renderPaperclipWakePrompt", () => {
     expect(prompt).toContain("- omitted messages: 10");
     expect(prompt).toContain("fetch the comments API");
   });
+
+  it("names the omitted count and does not claim a complete delta when the cap drops delta messages", () => {
+    const payload = {
+      reason: "issue_commented",
+      issue: { id: "wakecov-delta-omit-issue-id", identifier: "PAP-9300", title: "Delta omitted count coverage" },
+      executionContinuation: {
+        version: 1,
+        companyId: "wakecov-company-id",
+        issueId: "wakecov-delta-omit-issue-id",
+        trigger: { reason: "issue_commented", interactionId: null, sourceRunId: null },
+        originCommentIds: [],
+        objective: "wakecov-delta-omit-objective",
+        messages: [],
+        interactionOutcomes: [],
+        completedWork: null,
+        resumeDelta: {
+          baseRunId: "wakecov-base-run-id",
+          messages: [
+            {
+              id: "wakecov-delta-kept-message-id",
+              authorType: "user",
+              authorId: "wakecov-message-author",
+              body: "wakecov-delta-kept-message",
+              createdAt: "2026-01-02T00:00:00.000Z",
+              updatedAt: "2026-01-02T00:00:00.000Z",
+              deleted: false,
+              sourceTrust: "trusted",
+            },
+          ],
+          omittedMessageCount: 10,
+        },
+        unresolvedInteractionIds: [],
+        coverage: { kind: "full_task_history", throughCommentId: null, summaryThroughCommentId: null },
+      },
+      commentWindow: { requestedCount: 0, includedCount: 0, missingCount: 0 },
+      comments: [],
+      fallbackFetchNeeded: false,
+    };
+
+    const prompt = renderPaperclipWakePrompt(payload, { resumedSession: true });
+    expect(prompt).toContain("- omitted messages: 10");
+    expect(prompt).not.toContain(
+      "plus the required originating requests. Earlier delivered history remains in this resumed session.",
+    );
+  });
+
+  it("does not carry the snapshot's omitted count into a delta that drops nothing", () => {
+    const payload = {
+      reason: "issue_commented",
+      issue: { id: "wakecov-delta-complete-issue-id", identifier: "PAP-9400", title: "Delta complete coverage" },
+      executionContinuation: {
+        version: 1,
+        companyId: "wakecov-company-id",
+        issueId: "wakecov-delta-complete-issue-id",
+        trigger: { reason: "issue_commented", interactionId: null, sourceRunId: null },
+        originCommentIds: [],
+        objective: "wakecov-delta-complete-objective",
+        messages: [
+          {
+            id: "wakecov-snapshot-message-id",
+            authorType: "user",
+            authorId: "wakecov-message-author",
+            body: "wakecov-snapshot-message",
+            createdAt: "2026-01-01T00:00:00.000Z",
+            updatedAt: "2026-01-01T00:00:00.000Z",
+            deleted: false,
+            sourceTrust: "trusted",
+          },
+        ],
+        interactionOutcomes: [],
+        completedWork: null,
+        resumeDelta: {
+          baseRunId: "wakecov-base-run-id",
+          messages: [
+            {
+              id: "wakecov-delta-only-message-id",
+              authorType: "user",
+              authorId: "wakecov-message-author",
+              body: "wakecov-delta-only-message",
+              createdAt: "2026-01-02T00:00:00.000Z",
+              updatedAt: "2026-01-02T00:00:00.000Z",
+              deleted: false,
+              sourceTrust: "trusted",
+            },
+          ],
+        },
+        unresolvedInteractionIds: [],
+        coverage: {
+          kind: "full_task_history",
+          throughCommentId: null,
+          summaryThroughCommentId: null,
+          omittedMessageCount: 10,
+        },
+      },
+      commentWindow: { requestedCount: 0, includedCount: 0, missingCount: 0 },
+      comments: [],
+      fallbackFetchNeeded: false,
+    };
+
+    const prompt = renderPaperclipWakePrompt(payload, { resumedSession: true });
+    expect(prompt).not.toContain("omittedMessageCount");
+    expect(prompt).not.toContain("- omitted messages:");
+    expect(prompt).toContain(
+      "plus the required originating requests. Earlier delivered history remains in this resumed session.",
+    );
+  });
 });
 
 describe("WATCHDOG_DEFAULT_MANDATE", () => {

@@ -361,6 +361,7 @@ const support = await getEmbeddedPostgresTestSupport();
       agentId = randomUUID(),
       issueId = randomUUID(),
       baseRunId = randomUUID();
+    let recoveryActionIds: string[] = [];
     beforeAll(async () => {
       database = await startEmbeddedPostgresTestDatabase(
         "paperclip-continuation-cap-lists-",
@@ -458,9 +459,10 @@ const support = await getEmbeddedPostgresTestSupport();
           },
         })),
       );
+      recoveryActionIds = Array.from({ length: 40 }, () => randomUUID());
       await db.insert(issueRecoveryActions).values(
-        Array.from({ length: 40 }, (_, index) => ({
-          id: randomUUID(),
+        recoveryActionIds.map((id, index) => ({
+          id,
           companyId,
           sourceIssueId: issueId,
           kind: "liveness",
@@ -469,6 +471,7 @@ const support = await getEmbeddedPostgresTestSupport();
           fingerprint: `fp-${index}`,
           evidence: { executionReconciliation: { decision: "retry" } },
           nextAction: "none",
+          createdAt: new Date(Date.UTC(2026, 8, 3, 0, index)),
         })),
       );
     }, 30_000);
@@ -491,6 +494,34 @@ const support = await getEmbeddedPostgresTestSupport();
       expect(context.unresolvedInteractionIds).toHaveLength(30);
       expect(context.completedActions).toHaveLength(30);
       expect(context.recoveryOutcomes).toHaveLength(30);
+    });
+    it("reports the number of dropped delta messages on resumeDelta.omittedMessageCount", async () => {
+      const context = await buildExecutionContinuation({
+        db,
+        companyId,
+        issueId,
+        agentId,
+        previousContextRunId: baseRunId,
+        context: {},
+        summary: null,
+        exposeLowTrustRaw: false,
+      });
+      expect(context.resumeDelta?.omittedMessageCount).toBe(10);
+    });
+    it("keeps the newest 30 recovery outcomes by createdAt", async () => {
+      const context = await buildExecutionContinuation({
+        db,
+        companyId,
+        issueId,
+        agentId,
+        previousContextRunId: baseRunId,
+        context: {},
+        summary: null,
+        exposeLowTrustRaw: false,
+      });
+      expect(context.recoveryOutcomes?.map((row) => row.recoveryActionId)).toEqual(
+        recoveryActionIds.slice(10),
+      );
     });
   },
 );

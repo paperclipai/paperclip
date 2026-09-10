@@ -214,30 +214,38 @@ export async function buildExecutionContinuation(input: {
   const deliveredMessages = Array.isArray(priorEnvelope.messages)
     ? priorEnvelope.messages.map(object)
     : null;
+  const previousContextRunId = input.previousContextRunId ?? null;
+  const deltaMessageCap =
+    deliveredMessages && previousContextRunId
+      ? capMessagesKeepingOrigins(
+          messages.filter(
+            (message) =>
+              originCommentIds.includes(message.id) ||
+              !deliveredMessages.some(
+                (prior) =>
+                  prior.id === message.id &&
+                  prior.updatedAt === message.updatedAt &&
+                  prior.body === message.body &&
+                  prior.deleted === message.deleted &&
+                  prior.authorId === message.authorId &&
+                  (prior.createdByRunId ?? null) ===
+                    message.createdByRunId &&
+                  JSON.stringify(prior.sourceTrust) ===
+                    JSON.stringify(message.sourceTrust),
+              ),
+          ),
+          WAKE_CONTEXT_ITEM_CAP,
+          originCommentIds,
+        )
+      : null;
   const resumeDelta =
-    deliveredMessages && input.previousContextRunId
+    deltaMessageCap && previousContextRunId
       ? {
-          baseRunId: input.previousContextRunId,
-          messages: capMessagesKeepingOrigins(
-            messages.filter(
-              (message) =>
-                originCommentIds.includes(message.id) ||
-                !deliveredMessages.some(
-                  (prior) =>
-                    prior.id === message.id &&
-                    prior.updatedAt === message.updatedAt &&
-                    prior.body === message.body &&
-                    prior.deleted === message.deleted &&
-                    prior.authorId === message.authorId &&
-                    (prior.createdByRunId ?? null) ===
-                      message.createdByRunId &&
-                    JSON.stringify(prior.sourceTrust) ===
-                      JSON.stringify(message.sourceTrust),
-                ),
-            ),
-            WAKE_CONTEXT_ITEM_CAP,
-            originCommentIds,
-          ).kept,
+          baseRunId: previousContextRunId,
+          messages: deltaMessageCap.kept,
+          ...(deltaMessageCap.omitted > 0
+            ? { omittedMessageCount: deltaMessageCap.omitted }
+            : {}),
         }
       : undefined;
   const latestRequest = messages.findLast(
@@ -285,7 +293,8 @@ export async function buildExecutionContinuation(input: {
         eq(issueRecoveryActions.sourceIssueId, issueId),
         eq(issueRecoveryActions.status, "resolved"),
       ),
-    );
+    )
+    .orderBy(asc(issueRecoveryActions.createdAt), asc(issueRecoveryActions.id));
   const cappedMessages = capMessagesKeepingOrigins(
     messages,
     WAKE_CONTEXT_ITEM_CAP,

@@ -32,6 +32,8 @@ export interface ExecutionContinuationEnvelope {
   resumeDelta?: {
     baseRunId: string;
     messages: ExecutionContinuationEnvelope["messages"];
+    /** The number of older delta messages the item cap dropped from `messages`. */
+    omittedMessageCount?: number;
   };
   recoveryOutcomes?: Array<{ recoveryActionId: string; decision: unknown }>;
   completedWork: string | null;
