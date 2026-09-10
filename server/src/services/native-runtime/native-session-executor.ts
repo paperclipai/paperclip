@@ -5594,7 +5594,7 @@ const REMOTE_PROVIDER_PACK_PINS = {
   codex: "0.153.4",
   opencode: "1.18.29",
   acpx: "0.13.1",
-  claudeAcp: "0.70.0",
+  claudeAcp: "0.73.0",
   codexAcp: "1.6.2",
 } as const;
 const REMOTE_PROVIDER_PACK_PROFILE_DIGESTS = {

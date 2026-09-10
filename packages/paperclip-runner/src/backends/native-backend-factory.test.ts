@@ -93,7 +93,7 @@ function acpxExecution(
               ? "pi-acp"
               : "@agentclientprotocol/claude-agent-acp",
         agentServerVersion:
-          agent === "codex" ? "1.6.2" : agent === "pi" ? "0.0.33" : "0.70.0",
+          agent === "codex" ? "1.6.2" : agent === "pi" ? "0.0.33" : "0.73.0",
         agentRuntimePackage:
           agent === "pi"
             ? "@earendil-works/pi-coding-agent"

@@ -54,7 +54,7 @@ export const QUALIFIED_ACPX_PROFILES: Readonly<
     agent: "claude",
     agentProfileVersion: 1,
     agentServerPackage: "@agentclientprotocol/claude-agent-acp",
-    agentServerVersion: "0.70.0",
+    agentServerVersion: "0.73.0",
     agentRuntimePackage: "@anthropic-ai/claude-agent-sdk",
     agentRuntimeVersion: "0.3.263",
     commandDigest:
