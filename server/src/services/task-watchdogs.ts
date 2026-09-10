@@ -25,6 +25,12 @@ import { visibleIssueCondition } from "./issue-visibility.js";
 import { TASK_WATCHDOG_ORIGIN_KIND } from "./task-watchdog-scope.js";
 
 const TASK_WATCHDOG_STOP_FINGERPRINT_PREFIX = "task_watchdog_stop:";
+// Fingerprint schema version this build writes into stop snapshots. This constant is
+// the single source of truth: the snapshot type, the fingerprint payload, the parser
+// and the snapshot constructor all read it, so they cannot drift apart.
+// Two server builds can share one instance database, so a stored snapshot may carry a
+// version written by another build (for example a dev checkout next to the desktop app).
+export const TASK_WATCHDOG_STOP_SNAPSHOT_VERSION = 2;
 const TASK_WATCHDOG_SUBTREE_MAX_DEPTH = 100;
 const TASK_WATCHDOG_LIVE_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const TASK_WATCHDOG_WAKE_REQUEST_STATUSES = ["queued", "deferred_issue_execution"] as const;
@@ -101,7 +107,13 @@ export type TaskWatchdogClassifierConfig = Pick<
   IssueWatchdogSummary,
   "companyId" | "issueId" | "lastReviewedFingerprint"
 > & {
-  lastReviewedStopSnapshot?: TaskWatchdogStopSnapshot | null;
+  // The reviewed stop snapshot exactly as it is persisted in the watchdog row. It is
+  // deliberately untyped: the row is shared with any other server build that points at
+  // the same instance database, so the stored value may carry another build's schema
+  // version. The classifier decides what a foreign version means, therefore the value
+  // must reach it unparsed - pre-parsing it under this build's schema would silently
+  // turn a foreign snapshot into "no snapshot at all".
+  lastReviewedStopSnapshot?: unknown;
 };
 
 export type TaskWatchdogStoppedLeaf = {
@@ -137,7 +149,7 @@ export type TaskWatchdogWaitsByIssueId = Record<string, {
 }>;
 
 export type TaskWatchdogStopSnapshot = {
-  version: 2;
+  version: typeof TASK_WATCHDOG_STOP_SNAPSHOT_VERSION;
   fingerprint: string;
   materialLeaves: TaskWatchdogMaterialLeaf[];
   waitsByIssueId: TaskWatchdogWaitsByIssueId;
@@ -251,6 +263,18 @@ export function summarizeIssueWatchdog(row: IssueWatchdogRow): IssueWatchdogSumm
   };
 }
 
+// Builds the watchdog slice of the classifier input from a stored watchdog row. The
+// service and the regression tests both go through this single conversion, so a stored
+// snapshot cannot be dropped on the way to the classifier: a snapshot written under
+// another build's schema version is still a reviewed stop for this build, and only the
+// classifier decides what that means.
+export function classifierWatchdogConfigFromStoredRow(row: IssueWatchdogRow): TaskWatchdogClassifierConfig {
+  return {
+    ...summarizeIssueWatchdog(row),
+    lastReviewedStopSnapshot: row.lastReviewedStopSnapshot,
+  };
+}
+
 function toIssueWatchdog(row: IssueWatchdogRow): IssueWatchdog {
   return {
     ...summarizeIssueWatchdog(row),
@@ -308,7 +332,7 @@ function stableStopFingerprint(input: {
   waitsByIssueId: TaskWatchdogWaitsByIssueId;
 }) {
   const payload = JSON.stringify({
-    version: 2,
+    version: TASK_WATCHDOG_STOP_SNAPSHOT_VERSION,
     companyId: input.companyId,
     watchedIssueId: input.watchedIssueId,
     materialLeaves: input.materialLeaves,
@@ -329,11 +353,39 @@ function materialLeaf(leaf: TaskWatchdogStoppedLeaf): TaskWatchdogMaterialLeaf {
   };
 }
 
+// A reviewed stop snapshot written under another schema version belongs to another
+// build. It keeps owning the watchdog row for this long after its last write so a
+// mixed-version instance converges instead of looping; afterwards this build takes
+// over and re-verifies the stopped subtree normally.
+const TASK_WATCHDOG_FOREIGN_REVIEW_GRACE_MS = 6 * 60 * 60 * 1000;
+
+function stopSnapshotSchemaVersion(value: unknown): number | null {
+  if (!value || typeof value !== "object") return null;
+  const version = (value as { version?: unknown }).version;
+  return typeof version === "number" ? version : null;
+}
+
+export function isForeignStopSnapshot(value: unknown): boolean {
+  const version = stopSnapshotSchemaVersion(value);
+  return version !== null && version !== TASK_WATCHDOG_STOP_SNAPSHOT_VERSION;
+}
+
+function foreignReviewGraceRemainingMs(watchdog: {
+  lastCompletedAt?: Date | string | null;
+  updatedAt?: Date | string | null;
+}): number {
+  const seenAt = watchdog.lastCompletedAt ?? watchdog.updatedAt ?? null;
+  if (!seenAt) return TASK_WATCHDOG_FOREIGN_REVIEW_GRACE_MS;
+  const age = Date.now() - new Date(seenAt).getTime();
+  if (!Number.isFinite(age)) return TASK_WATCHDOG_FOREIGN_REVIEW_GRACE_MS;
+  return TASK_WATCHDOG_FOREIGN_REVIEW_GRACE_MS - Math.max(age, 0);
+}
+
 function parseStopSnapshot(value: unknown): TaskWatchdogStopSnapshot | null {
   if (!value || typeof value !== "object") return null;
   const candidate = value as Partial<TaskWatchdogStopSnapshot>;
   if (
-    candidate.version !== 2 ||
+    candidate.version !== TASK_WATCHDOG_STOP_SNAPSHOT_VERSION ||
     typeof candidate.fingerprint !== "string" ||
     !Array.isArray(candidate.materialLeaves) ||
     !candidate.waitsByIssueId ||
@@ -511,19 +563,24 @@ export function classifyTaskWatchdogSubtree(input: TaskWatchdogClassifierInput):
     waitsByIssueId,
   });
   const currentStopSnapshot: TaskWatchdogStopSnapshot = {
-    version: 2,
+    version: TASK_WATCHDOG_STOP_SNAPSHOT_VERSION,
     fingerprint: stopFingerprint,
     materialLeaves,
     waitsByIssueId,
   };
 
+  const reviewedStopSnapshot = parseStopSnapshot(input.watchdog.lastReviewedStopSnapshot);
+  const reviewedUnderForeignSchema = isForeignStopSnapshot(input.watchdog.lastReviewedStopSnapshot);
   if (
     input.watchdog.lastReviewedFingerprint === stopFingerprint ||
-    isShrinkOfReviewedSnapshot(currentStopSnapshot, input.watchdog.lastReviewedStopSnapshot)
+    isShrinkOfReviewedSnapshot(currentStopSnapshot, reviewedStopSnapshot) ||
+    reviewedUnderForeignSchema
   ) {
     return {
       state: "already_reviewed",
-      reason: "The current stopped subtree fingerprint was already reviewed by the watchdog.",
+      reason: reviewedUnderForeignSchema && input.watchdog.lastReviewedFingerprint !== stopFingerprint
+        ? "The stopped subtree was already reviewed by a server build using a different stop-fingerprint schema version."
+        : "The current stopped subtree fingerprint was already reviewed by the watchdog.",
       includedIssueIds: includedIds,
       stopFingerprint,
       stoppedLeaves: leaves,
@@ -1093,10 +1150,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
     const completedRunIssueIds = await collectCompletedRunIssueIds(companyId, freshIssueIds);
 
     return {
-      watchdog: {
-        ...summarizeIssueWatchdog(watchdog),
-        lastReviewedStopSnapshot: parseStopSnapshot(watchdog.lastReviewedStopSnapshot),
-      },
+      watchdog: classifierWatchdogConfigFromStoredRow(watchdog),
       issues: issueRows.map((issue) => ({
         ...issue,
         latestCommentAt: latestCommentByIssueId.get(issue.id) ?? null,
@@ -1280,6 +1334,14 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
     if (!isWatchdogReviewDisposition(watchdogIssue, hasPendingReviewPath)) return watchdog;
     const reviewedFingerprint = reviewedFingerprintForWatchdogIssue(watchdogIssue);
     if (!reviewedFingerprint) return watchdog;
+    // Leave the review state owned by another fingerprint schema version alone while
+    // that build is still writing the row: overwriting it makes both builds invalidate
+    // each other, and every invalidation re-triggers the watchdog on an unchanged
+    // stopped subtree. After the grace window this build takes over as before.
+    if (
+      isForeignStopSnapshot(watchdog.lastReviewedStopSnapshot) &&
+      foreignReviewGraceRemainingMs(watchdog) > 0
+    ) return watchdog;
     const observedSnapshot = parseStopSnapshot(watchdog.lastObservedStopSnapshot);
     const reviewedStopSnapshot = observedSnapshot?.fingerprint === reviewedFingerprint
       ? observedSnapshot

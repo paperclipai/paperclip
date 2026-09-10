@@ -799,4 +799,67 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
 
     expect(result).toMatchObject({ checked: 0, triggered: 0 });
   });
+
+  it("keeps a stop reviewed by another build's fingerprint schema version reviewed", async () => {
+    const companyId = await seedCompany();
+    const sourceId = await seedIssue(companyId, { identifier: "WDOG-XVER", status: "done" });
+    const agentId = await seedAgent(companyId);
+    await seedWatchdog(companyId, sourceId, agentId);
+    const { service, wakes } = createService();
+
+    const first = await service.reconcileTaskWatchdogs({ companyId });
+    expect(first).toMatchObject({ checked: 1, triggered: 1 });
+    const [triggeredWatchdog] = await db
+      .select()
+      .from(issueWatchdogs)
+      .where(eq(issueWatchdogs.issueId, sourceId));
+
+    // A second server build on the same instance database writes its own review state
+    // to this row: it uses another fingerprint schema version with incompatible fields.
+    // Its snapshot must reach the classifier as stored, otherwise the classifier reads
+    // the reviewed stop as "never reviewed" and triggers a wake for an unchanged subtree.
+    const foreignFingerprint = "task_watchdog_stop:foreign-schema-v1";
+    const foreignSnapshot = {
+      version: 1,
+      fingerprint: foreignFingerprint,
+      leaves: [
+        {
+          issueId: sourceId,
+          identifier: "WDOG-XVER",
+          title: "Watched issue",
+          status: "done",
+          assignees: [],
+          blockers: [],
+          waits: [],
+        },
+      ],
+    };
+    await db
+      .update(issues)
+      .set({ status: "done", updatedAt: new Date() })
+      .where(eq(issues.id, triggeredWatchdog!.watchdogIssueId!));
+    await db
+      .update(issueWatchdogs)
+      .set({
+        lastObservedFingerprint: foreignFingerprint,
+        lastObservedStopSnapshot: foreignSnapshot,
+        lastReviewedFingerprint: foreignFingerprint,
+        lastReviewedStopSnapshot: foreignSnapshot,
+        updatedAt: new Date(),
+      })
+      .where(eq(issueWatchdogs.id, triggeredWatchdog!.id));
+
+    const afterForeignReview = await service.reconcileTaskWatchdogs({ companyId });
+
+    expect(afterForeignReview).toMatchObject({ checked: 1, triggered: 0, alreadyReviewed: 1 });
+    expect(wakes).toHaveLength(1);
+    const [watchdog] = await db
+      .select()
+      .from(issueWatchdogs)
+      .where(eq(issueWatchdogs.id, triggeredWatchdog!.id));
+    expect(watchdog?.triggerCount).toBe(1);
+    // The review state of the other build is left alone inside the grace window.
+    expect(watchdog?.lastReviewedFingerprint).toBe(foreignFingerprint);
+    expect(watchdog?.lastReviewedStopSnapshot).toEqual(foreignSnapshot);
+  });
 });
