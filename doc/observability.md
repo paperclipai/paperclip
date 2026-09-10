@@ -518,6 +518,14 @@ Two controls belong to the operator. This feature ships neither one.
 
 ## Sandbox Startup Trace Spans
 
+The optional `paperclip.sandbox` performance trace accounts for one heartbeat
+run. A reused native session may deliver a callback with a previous run's
+startup context; performance spans fall back to the current run's open scope
+when that context belongs to another trace. Startup-step parents in the same
+trace are preserved. The root's `paperclip.sandbox.runtime` is `unresolved`
+until runtime selection is persisted, then becomes `legacy` or `native`.
+Database runtime selection remains authoritative when inspecting older traces.
+
 Paperclip opens OpenTelemetry spans on the sandbox start path. These spans are
 an Observability surface. They are not Paperclip Telemetry events. The
 generated telemetry contract does not cover them, so this section is their

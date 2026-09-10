@@ -47,6 +47,15 @@ function identity(context: unknown) {
   const value = traceparentFromContextToken(context)?.split("-");
   return value && !/^0+$/.test(value[1]!) && !/^0+$/.test(value[2]!) ? { traceId: value[1], spanId: value[2] } : undefined;
 }
+function operationParent(scope: ScopeState | undefined) {
+  const active = getActiveStepContext()?.parentContext;
+  const currentTrace = identity(scope?.context)?.traceId;
+  // Reused native sessions can invoke callbacks under a previous run's startup
+  // context. Keep its spans out of the current run's accounting. Startup steps
+  // in this trace still retain their more specific parent.
+  if (currentTrace && identity(active)?.traceId !== currentTrace) return scope?.context;
+  return active ?? scope?.context;
+}
 function record(trace: TraceState, entry: SandboxPerformanceRecord) {
   if (trace.closed) return;
   if (trace.records.length < trace.limit) trace.records.push(entry);
@@ -63,7 +72,7 @@ const noop: SandboxOperation = { set() {}, end() {}, run: (work) => work(), reco
 /** Capture at stream creation, not when an unrelated consumer later reads it. */
 export function captureSandboxPerformanceContext(): <T>(work: () => T) => T {
   const scope = scopes.getStore();
-  const parent = getActiveStepContext()?.parentContext ?? scope?.context;
+  const parent = operationParent(scope);
   return (work) => {
     const current = openScope(scope);
     const token = current === scope ? parent : current?.context;
@@ -80,7 +89,7 @@ export function startSandboxOperation(name: string, attributes: Attributes = {})
   const current = openScope(scopes.getStore());
   if (!current || current.trace.closed) return noop;
   const trace = current.trace;
-  const parentContext = getActiveStepContext()?.parentContext ?? current.context;
+  const parentContext = operationParent(current);
   const parentId = identity(parentContext)?.spanId ?? current.id;
   const startedAtMs = Date.now(), started = performance.now();
   const values = safe(attributes);

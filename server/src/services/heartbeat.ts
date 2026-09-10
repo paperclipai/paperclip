@@ -18017,7 +18017,7 @@ export function heartbeatService(
 
     let run = await measureSandboxOperation("heartbeat.get_run", { operationIndex: 2 }, async () => (getRun(runId)));
     if (!run) return;
-    setSandboxPerformanceRunAttributes({ runtime: run.runtimeMode === "native" ? "native" : "legacy" });
+    setSandboxPerformanceRunAttributes({ runtime: run.runtimeModeResolvedAt ? run.runtimeMode : "unresolved" });
     if (run.status !== "queued" && run.status !== "running") return;
 
     if (run.status === "queued") {
@@ -21141,6 +21141,7 @@ export function heartbeatService(
             })
             .where(eq(heartbeatRuns.id, run.id))));
         }
+        setSandboxPerformanceRunAttributes({ runtime: nativeRuntimeResolution.kind });
         const localAgentJwtScope =
           issueRef?.workMode === "skill_test"
             ? { kind: "skill_test" as const, issueId: issueRef.id }

@@ -1,7 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { ROOT_CONTEXT, trace, type Context } from "@opentelemetry/api";
 import { describe, expect, it, vi } from "vitest";
-import { getActiveStepContext } from "@paperclipai/adapter-utils/acpx-engine/startup-timing";
+import { getActiveStepContext, runWithRuntimeParent } from "@paperclipai/adapter-utils/acpx-engine/startup-timing";
 import type { StartupTraceContextHandle } from "../instrumentation.js";
 import {
   captureSandboxPerformanceContext,
@@ -19,13 +19,15 @@ function recordingContext() {
   const tracing: StartupTraceContextHandle = {
     tracer: { startSpan(name, options, parent) {
       const id = (next++).toString(16).padStart(16, "0");
-      const record = { name, id, parentId: trace.getSpanContext(parent as Context ?? active.getStore() ?? ROOT_CONTEXT)?.spanId,
+      const parentSpan = trace.getSpanContext(parent as Context ?? active.getStore() ?? ROOT_CONTEXT);
+      const traceId = parentSpan?.traceId ?? "1234567890abcdef1234567890abcdef";
+      const record = { name, id, parentId: parentSpan?.spanId,
         attributes: { ...(options as { attributes?: Record<string, unknown> })?.attributes },
         ended: false, status: undefined as unknown, events: [] as unknown[] };
       spans.push(record);
       return {
-        ...trace.wrapSpanContext({ spanId: id, traceId: "1234567890abcdef1234567890abcdef", traceFlags: 1 }),
-        spanContext: () => ({ spanId: id, traceId: "1234567890abcdef1234567890abcdef", traceFlags: 1 }),
+        ...trace.wrapSpanContext({ spanId: id, traceId, traceFlags: 1 }),
+        spanContext: () => ({ spanId: id, traceId, traceFlags: 1 }),
         setAttribute(key: string, value: unknown) { record.attributes[key] = value; },
         setStatus(status: unknown) { record.status = status; },
         addEvent(name: string, attributes: unknown) { record.events.push({ name, attributes }); },
@@ -39,6 +41,39 @@ function recordingContext() {
 }
 
 describe("sandbox performance trace", () => {
+  it.each([false, true])("keeps a callback with a previous run's parent in the current trace (captured: %s)", async (captured) => {
+    const { tracing, spans } = recordingContext();
+    const records: SandboxPerformanceRecord[] = [];
+    const staleParent = trace.setSpanContext(ROOT_CONTEXT, {
+      traceId: "abcdef1234567890abcdef1234567890", spanId: "abcdef1234567890", traceFlags: 1,
+    });
+    await runWithSandboxPerformanceTrace({ runId: "warm-run", enabled: true, traceContext: tracing,
+      onBatch: async (batch) => { records.push(...batch.records); } }, async () => {
+      await runWithRuntimeParent(staleParent, async () => {
+        const within = captured ? captureSandboxPerformanceContext() : <T>(work: () => T) => work();
+        await within(() => measureSandboxOperation("heartbeat.append_run_event", {}, async () => undefined));
+      });
+    });
+    const root = records.find((record) => record.name === "sandbox.run")!;
+    const callback = records.find((record) => record.name === "heartbeat.append_run_event")!;
+    expect(callback.traceId).toBe(root.traceId);
+    expect(callback.parentId).toBe(root.id);
+    expect(spans.every((span) => span.ended)).toBe(true);
+  });
+
+  it("preserves a startup-step parent belonging to the current trace", async () => {
+    const { tracing } = recordingContext();
+    const records: SandboxPerformanceRecord[] = [];
+    const step = trace.setSpanContext(ROOT_CONTEXT, {
+      traceId: "1234567890abcdef1234567890abcdef", spanId: "abcdef1234567890", traceFlags: 1,
+    });
+    await runWithSandboxPerformanceTrace({ runId: "run", enabled: true, traceContext: tracing,
+      onBatch: async (batch) => { records.push(...batch.records); } }, async () => {
+      await runWithRuntimeParent(step, () => measureSandboxOperation("sandbox.child", {}, async () => undefined));
+    });
+    expect(records.find((record) => record.name === "sandbox.child")?.parentId).toBe("abcdef1234567890");
+  });
+
   it("uses real contexts and keeps parallel branches separate across awaits", async () => {
     const { tracing, spans, active } = recordingContext();
     const records: SandboxPerformanceRecord[] = [];
