@@ -1544,9 +1544,10 @@ describeEmbeddedPostgres("delivery lifecycle boundary regressions", () => {
       url: "https://github.com/acme/widget/pull/99",
       status: "open",
     });
+    let publishedHead = HEAD;
     const github = githubStub({
-      findOpenPullRequest: async () => openPr(HEAD),
-      getPullRequest: async () => openPr(HEAD),
+      findOpenPullRequest: async () => openPr(publishedHead),
+      getPullRequest: async () => openPr(publishedHead),
     });
     const { units } = services(github);
     const delivery = deliveryService(db, { toolGateway: greptileToolGateway({}) });
@@ -1578,7 +1579,25 @@ describeEmbeddedPostgres("delivery lifecycle boundary regressions", () => {
     });
     expect((await delivery.listSummaries(companyId)).map((summary) => summary.issueId).sort())
       .toEqual([primary.id, linkedOnly.id].sort());
-    expect(repository.id).toBeTruthy();
+
+    // Repairing the same candidate must retain its explicit covered-by handoff.
+    publishedHead = OTHER_HEAD;
+    await units.registerCandidate({
+      companyId, issue: primary, actor: userActor, headSha: OTHER_HEAD,
+      sourceBranch: "delivery/x", artifactReady: false,
+    });
+    expect(await units.buildSummary(companyId, linkedOnly.id)).toMatchObject({
+      unitId: (await units.buildSummary(companyId, primary.id)).unitId,
+      headSha: OTHER_HEAD,
+    });
+
+    // Removing coverage is a separate, explicit operation, not an omission.
+    await units.registerCandidate({
+      companyId, issue: primary, actor: userActor, headSha: OTHER_HEAD,
+      sourceBranch: "delivery/x", artifactReady: false, coveredIssueIds: [],
+    });
+    expect((await delivery.listSummaries(companyId)).map((summary) => summary.issueId))
+      .toEqual([primary.id]);
   });
 
   it("drives governed Greptile evidence through repair, a fresh review, and a merged receipt", async () => {

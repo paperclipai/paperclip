@@ -873,17 +873,21 @@ export function deliveryUnitService(
         ...covered.map((issueId) => ({ companyId: input.companyId, unitId: unit.id, issueId, role: "covered" })),
       ])
       .onConflictDoNothing();
-    const existingCovered = await db
-      .select({ id: deliveryUnitIssues.id, issueId: deliveryUnitIssues.issueId })
-      .from(deliveryUnitIssues)
-      .where(and(
-        eq(deliveryUnitIssues.companyId, input.companyId),
-        eq(deliveryUnitIssues.unitId, unit.id),
-        eq(deliveryUnitIssues.role, "covered"),
-      ));
-    const staleCovered = existingCovered.filter((row) => !covered.includes(row.issueId));
-    if (staleCovered.length > 0) {
-      await db.delete(deliveryUnitIssues).where(inArray(deliveryUnitIssues.id, staleCovered.map((row) => row.id)));
+    // A repair submission advances the candidate, not its explicit coverage.
+    // Only a supplied list replaces the handoff; [] explicitly removes it.
+    if (input.coveredIssueIds !== undefined) {
+      const existingCovered = await db
+        .select({ id: deliveryUnitIssues.id, issueId: deliveryUnitIssues.issueId })
+        .from(deliveryUnitIssues)
+        .where(and(
+          eq(deliveryUnitIssues.companyId, input.companyId),
+          eq(deliveryUnitIssues.unitId, unit.id),
+          eq(deliveryUnitIssues.role, "covered"),
+        ));
+      const staleCovered = existingCovered.filter((row) => !covered.includes(row.issueId));
+      if (staleCovered.length > 0) {
+        await db.delete(deliveryUnitIssues).where(inArray(deliveryUnitIssues.id, staleCovered.map((row) => row.id)));
+      }
     }
 
     // The queue holds only accepted candidates: the reconciler enqueues when a

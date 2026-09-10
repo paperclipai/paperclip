@@ -330,6 +330,10 @@ already-published candidate:
   The remote head is authoritative: a failed read, a missing PR, or a
   head/branch mismatch blocks registration (`provider_unknown`,
   `candidate_required`, `head_stale`).
+- `coveredIssueIds` records an explicit coverage handoff. On resubmission,
+  omission preserves existing covered tasks; a supplied list replaces them,
+  and `[]` explicitly removes coverage. Advancing a repair head alone never
+  detaches the tasks already covered by that candidate.
 - An agent actor must present the **publication capability**: the existing
   runtime tools token with the `github_credentials` scope
   (`server/src/runtime-tools-token.ts`) in `X-Paperclip-Publication-Capability`.
