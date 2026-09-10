@@ -6,6 +6,7 @@ const SILENCED_SUCCESS_API_PATHS = [
   /^\/api\/companies\/[^/]+\/dashboard(?:\/|$)/,
   /^\/api\/companies\/[^/]+\/heartbeat-runs(?:\/|$)/,
   /^\/api\/companies\/[^/]+\/issues(?:\/|$)/,
+  /^\/api\/companies\/[^/]+\/issue-overviews(?:\/|$)/,
   /^\/api\/companies\/[^/]+\/live-runs(?:\/|$)/,
   /^\/api\/companies\/[^/]+\/sidebar-badges(?:\/|$)/,
   /^\/api\/heartbeat-runs\/[^/]+\/log(?:\/|$)/,

@@ -46,6 +46,13 @@ describe("shouldSilenceHttpSuccessLog", () => {
     expect(
       shouldSilenceHttpSuccessLog(
         "GET",
+        "/api/companies/5cbe79ee-acb3-4597-896e-7662742593cd/issue-overviews?issueIds=33333333-3333-4333-8333-333333333333",
+        200,
+      ),
+    ).toBe(true);
+    expect(
+      shouldSilenceHttpSuccessLog(
+        "GET",
         "/api/companies/5cbe79ee-acb3-4597-896e-7662742593cd/activity",
         200,
       ),
