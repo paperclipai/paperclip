@@ -153,6 +153,7 @@ import {
   cn,
   formatDurationMs,
   formatTokens,
+  projectUrl,
   visibleRunCostUsd,
 } from "../lib/utils";
 import { liveBlueBadge } from "../lib/status-colors";
@@ -277,6 +278,9 @@ import {
 } from "../lib/issue-thread-interactions";
 import { resolveIssueDocumentDeepLink } from "../lib/issue-document-deep-link";
 import { TaskDeliveryPanel } from "../components/delivery/TaskDeliveryPanel";
+import { TaskOutcomeSummary } from "../components/TaskOutcomeSummary";
+import { buildTaskOutcomeModel } from "../lib/task-outcome-summary";
+import { useIssueOverviews } from "../hooks/useIssueOverviews";
 import {
   buildIssueSiblingNavigation,
   shouldRenderRichSubIssuesSection,
@@ -1271,6 +1275,12 @@ type IssueDetailChatTabProps = {
    */
   threadHeader?: ReactNode;
   /**
+   * Result-first outcome summary rendered above the transcript. The classic
+   * thread renders it directly (it ignores threadHeader); the chat-style
+   * thread receives it through threadHeader instead.
+   */
+  outcomeSummary?: ReactNode;
+  /**
    * The task description rendered as the requester's first chat bubble in the
    * chat-style thread (PAP-375). Ignored by the classic thread.
    */
@@ -1390,6 +1400,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   composerRef,
   composerAccessory,
   threadHeader,
+  outcomeSummary,
   issueBrief,
   footer,
   feedbackVotes,
@@ -2266,6 +2277,10 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
       {/* Chat-style: the button rides inside the thread's scroll viewport with
           the header so nothing sits above the thread in the page flow. */}
       {classicTaskInterfaceEnabled ? loadOlderButton : null}
+      {/* Classic thread ignores threadHeader, so the result-first summary is
+          rendered here, above the transcript. Chat-style receives it through
+          threadHeader instead — never both. */}
+      {classicTaskInterfaceEnabled && outcomeSummary ? outcomeSummary : null}
       {commentsInitialLoading &&
       commentsWithRunMeta.length === 0 &&
       interactions.length === 0 ? (
@@ -3329,6 +3344,48 @@ export function IssueDetail() {
         new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
     );
   }, [issue?.id, rawChildIssues]);
+  // Result-first summary: read-only board+company-scoped overviews for this
+  // task and its direct blockers. No status writes, no agent wakes — the hook
+  // batches one GET and shares the record-observation timestamp as freshness.
+  const outcomeOverviewIssueIds = useMemo(() => {
+    const ids = new Set<string>();
+    if (issue?.id) ids.add(issue.id);
+    for (const blocker of issue?.blockedBy ?? []) {
+      if (blocker.id) ids.add(blocker.id);
+      if (ids.size >= 25) break;
+    }
+    return [...ids];
+  }, [issue?.id, issue?.blockedBy]);
+  const {
+    byId: issueOverviewsById,
+    isPending: issueOverviewsPending,
+    error: issueOverviewsError,
+    dataUpdatedAt: issueOverviewsUpdatedAt,
+  } = useIssueOverviews(resolvedCompanyId, outcomeOverviewIssueIds);
+  const taskOutcomeModel = useMemo(() => {
+    if (!issue) return null;
+    return buildTaskOutcomeModel({
+      issue,
+      childIssues,
+      workProducts: workProducts ?? [],
+      documents: issue.documentSummaries ?? [],
+      ancestors: issue.ancestors ?? [],
+      project: resolvedProject
+        ? {
+            id: resolvedProject.id,
+            name: resolvedProject.name,
+            urlKey: resolvedProject.urlKey ?? null,
+          }
+        : null,
+      overview: issueOverviewsById.get(issue.id) ?? null,
+    });
+  }, [
+    issue,
+    childIssues,
+    workProducts,
+    resolvedProject,
+    issueOverviewsById,
+  ]);
   const liveIssueIds = useMemo(
     () =>
       collectLiveIssueIds(
@@ -7236,10 +7293,30 @@ export function IssueDetail() {
     </>
   );
 
+  // Result-first outcome summary above the transcript. One node, three
+  // mutually exclusive mounts: inside the thread viewport (chat shell),
+  // in the page flow above the tabs (classic disabled shell), or directly
+  // above the classic thread (which ignores threadHeader). Static content —
+  // no composer, tab, scroll, selection, or agent side effects.
+  const taskOutcomeSummary = taskOutcomeModel ? (
+    <TaskOutcomeSummary
+      model={taskOutcomeModel}
+      linkState={resolvedIssueDetailState ?? location.state}
+      projectHref={resolvedProject ? projectUrl(resolvedProject) : null}
+      observedAt={issueOverviewsUpdatedAt || null}
+      overviewPending={issueOverviewsPending}
+      overviewError={issueOverviewsError?.message ?? null}
+      onOpenDelivery={
+        taskChatShellEnabled ? undefined : () => setDetailTab("delivery")
+      }
+    />
+  ) : null;
+
   const taskChatThreadHeader = taskChatShellEnabled ? (
     <>
       {ancestorsNav}
       {issueHeaderBlock}
+      {taskOutcomeSummary}
       {pluginOutletsBlock}
     </>
   ) : undefined;
@@ -7586,6 +7663,13 @@ export function IssueDetail() {
           <Separator className={shellSectionClass} />
         )}
 
+        {/* Page flow (no chat shell), chat-style thread: the summary sits
+            directly above the transcript tabs. Classic renders it inside the
+            chat tab instead; the shell carries it in the thread header. */}
+        {!taskChatShellEnabled && !classicTaskInterfaceEnabled
+          ? taskOutcomeSummary
+          : null}
+
         <Tabs
           value={resolvedDetailTab}
           onValueChange={setDetailTab}
@@ -7648,6 +7732,7 @@ export function IssueDetail() {
             {resolvedDetailTab === "chat" ? (
               <IssueDetailChatTab
                 threadHeader={taskChatThreadHeader}
+                outcomeSummary={taskOutcomeSummary}
                 issueBrief={
                   // Suppress the seeded-description bubble for the onboarding first
                   // task: its description is agent instructions, not something the

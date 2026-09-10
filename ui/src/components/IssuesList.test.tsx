@@ -1490,6 +1490,69 @@ describe("IssuesList", () => {
       root.unmount();
     });
   });
+  it("persists the board outcomes scope and project swimlanes", async () => {
+    localStorage.setItem(
+      "paperclip:test-issues:company-1",
+      JSON.stringify({ viewMode: "board" }),
+    );
+
+    const { root } = renderWithQueryClient(
+      <IssuesList
+        issues={[
+          createIssue({ id: "issue-parent", title: "Parent task" }),
+          createIssue({ id: "issue-child", title: "Child task", parentId: "issue-parent" }),
+        ]}
+        agents={[]}
+        projects={[]}
+        viewStateKey="paperclip:test-issues"
+        onUpdateIssue={() => undefined}
+      />,
+      container,
+    );
+
+    await waitForAssertion(() => {
+      expect(mockKanbanBoard).toHaveBeenLastCalledWith(expect.objectContaining({
+        scope: "all",
+        swimlanes: false,
+      }));
+    });
+
+    const outcomesButton = Array.from(container.querySelectorAll("button")).find((button) =>
+      button.getAttribute("aria-label") === "Outcomes only",
+    );
+    expect(outcomesButton).toBeTruthy();
+
+    act(() => {
+      outcomesButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    await waitForAssertion(() => {
+      expect(mockKanbanBoard).toHaveBeenLastCalledWith(expect.objectContaining({
+        scope: "outcomes",
+      }));
+    });
+    expect(localStorage.getItem("paperclip:test-issues:company-1")).toContain("\"boardScope\":\"outcomes\"");
+
+    const swimlanesButton = Array.from(container.querySelectorAll("button")).find((button) =>
+      button.getAttribute("aria-label") === "Show project swimlanes",
+    );
+    expect(swimlanesButton).toBeTruthy();
+
+    act(() => {
+      swimlanesButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    await waitForAssertion(() => {
+      expect(mockKanbanBoard).toHaveBeenLastCalledWith(expect.objectContaining({
+        swimlanes: true,
+      }));
+    });
+    expect(localStorage.getItem("paperclip:test-issues:company-1")).toContain("\"boardSwimlanes\":true");
+
+    act(() => {
+      root.unmount();
+    });
+  });
 
   it("shows a refinement hint when a board column hits its server cap", async () => {
     localStorage.setItem(

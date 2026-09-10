@@ -5,16 +5,31 @@ import { flushSync } from "react-dom";
 import type { Issue, IssueStatus } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getKanbanColumnTone, KanbanBoard, resolveKanbanTargetStatus } from "./KanbanBoard";
+import type { IssueOverviewsResult } from "../hooks/useIssueOverviews";
+
+const overviewState = vi.hoisted<IssueOverviewsResult>(() => ({
+  byId: new Map(),
+  isPending: false,
+  error: null,
+  dataUpdatedAt: 0,
+  refetch: vi.fn(),
+}));
+
+vi.mock("../hooks/useIssueOverviews", () => ({
+  useIssueOverviews: () => overviewState,
+}));
 
 vi.mock("@/lib/router", () => ({
   Link: ({
     children,
     to,
     disableIssueQuicklook: _disableIssueQuicklook,
+    issuePrefetch: _issuePrefetch,
     ...props
   }: React.AnchorHTMLAttributes<HTMLAnchorElement> & {
     to: string;
     disableIssueQuicklook?: boolean;
+    issuePrefetch?: unknown;
   }) => (
     <a href={to} {...props}>{children}</a>
   ),
@@ -79,7 +94,25 @@ function createIssues(count: number, status: IssueStatus): Issue[] {
   return Array.from({ length: count }, (_, index) => createIssue(index + 1, status));
 }
 
-function renderBoard(
+function createOverview(issueId: string, overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    issueId,
+    phase: "todo",
+    phaseSource: "status",
+    blocked: false,
+    project: null,
+    parent: null,
+    children: [],
+    childCount: 0,
+    completedChildCount: 0,
+    blocker: null,
+    pullRequests: [],
+    delivery: null,
+    ...overrides,
+  };
+}
+
+ function renderBoard(
   props: Partial<React.ComponentProps<typeof KanbanBoard>> & { issues: Issue[] },
 ) {
   const container = document.createElement("div");
@@ -108,6 +141,10 @@ function renderBoard(
 describe("KanbanBoard", () => {
   beforeEach(() => {
     document.body.innerHTML = "";
+    overviewState.byId = new Map();
+    overviewState.isPending = false;
+    overviewState.error = null;
+    overviewState.refetch.mockReset();
   });
 
   afterEach(() => {
@@ -206,7 +243,7 @@ describe("KanbanBoard", () => {
       issues: createIssues(1, "cancelled"),
     });
 
-    const card = container.querySelector('a[href="/issues/PAP-1"]')?.parentElement;
+    const card = container.querySelector('a[href="/issues/PAP-1"]')?.closest('[data-testid="kanban-card"]');
 
     expect(card?.className).toContain("bg-muted/35");
     expect(card?.className).toContain("opacity-80");
@@ -235,9 +272,30 @@ describe("KanbanBoard", () => {
     expect(resolveKanbanTargetStatus("merging", issues)).toBeNull();
     expect(resolveKanbanTargetStatus("issue-ready_to_merge-3", issues)).toBeNull();
     expect(resolveKanbanTargetStatus("done", issues)).toBe("done");
-    expect(resolveKanbanTargetStatus("issue-blocked-2", issues)).toBe("blocked");
     expect(resolveKanbanTargetStatus("issue-todo-1", issues)).toBe("todo");
     expect(resolveKanbanTargetStatus("missing", issues)).toBeNull();
+  });
+
+  it("has no blocked lane: blocked drops resolve to the projected phase", () => {
+    const issues = [
+      createIssue(1, "todo"),
+      createIssue(2, "blocked"),
+    ];
+
+    expect(resolveKanbanTargetStatus("blocked", issues)).toBeNull();
+    expect(resolveKanbanTargetStatus("issue-blocked-2", issues)).toBeNull();
+
+    overviewState.byId = new Map([
+      ["issue-blocked-2", createOverview("issue-blocked-2", { phase: "in_review", blocked: true })],
+    ]);
+    expect(resolveKanbanTargetStatus("issue-blocked-2", issues, overviewState.byId)).toBe("in_review");
+    expect(resolveKanbanTargetStatus("project-1:in_review", issues, overviewState.byId)).toBe("in_review");
+    expect(resolveKanbanTargetStatus("project-1:blocked", issues, overviewState.byId)).toBeNull();
+
+    overviewState.byId = new Map([
+      ["issue-blocked-2", createOverview("issue-blocked-2", { phase: "ready_to_merge", blocked: true })],
+    ]);
+    expect(resolveKanbanTargetStatus("issue-blocked-2", issues, overviewState.byId)).toBeNull();
   });
 
   it("marks controller-owned lanes as controller-managed", () => {
@@ -248,5 +306,133 @@ describe("KanbanBoard", () => {
     const controllerHeader = container.querySelector('[title*="delivery controller"]');
     expect(controllerHeader?.textContent).toContain("Controller");
     expect(controllerHeader?.textContent).toContain("Ready To Merge");
+  });
+
+  it("keeps blocked cards in their projected phase with named blocker context", () => {
+    const blockedIssue = { ...createIssue(2, "blocked"), projectId: "project-1" };
+    overviewState.byId = new Map([
+      ["issue-blocked-2", createOverview("issue-blocked-2", {
+        phase: "in_progress",
+        phaseSource: "history",
+        blocked: true,
+        project: { id: "project-1", name: "Platform", color: "#2563eb" },
+        parent: { id: "issue-parent", identifier: "PAP-9", title: "Parent thing", status: "todo" },
+        blocker: {
+          message: "Waiting on the API change",
+          ownerLabel: "Ops",
+          nextAction: "Approve the migration",
+          issues: [
+            { id: "blocker-1", identifier: "PAP-7", title: "API change", status: "in_review" },
+            { id: "blocker-2", identifier: "PAP-8", title: "Second dep", status: "todo" },
+          ],
+        },
+        children: [
+          { id: "child-1", identifier: "PAP-11", title: "First subtask", status: "done" },
+          { id: "child-2", identifier: "PAP-12", title: "Second subtask", status: "todo" },
+          { id: "child-3", identifier: "PAP-13", title: "Third subtask", status: "todo" },
+        ],
+        childCount: 3,
+        completedChildCount: 1,
+        pullRequests: [
+          { url: "https://example.test/repo/pull/1", number: 1, repository: "repo", state: "open", updatedAt: null, stale: false },
+          { url: "https://example.test/repo/pull/2", number: 2, repository: "repo", state: "merged", updatedAt: null, stale: false },
+        ],
+      })],
+    ]);
+    const { container } = renderBoard({
+      issues: [blockedIssue, createIssue(1, "in_progress")],
+      projects: [{ id: "project-1", name: "Platform", color: "#2563eb" }],
+    });
+
+    expect(container.querySelector('[data-kanban-lane="blocked"]')).toBeNull();
+    const lane = container.querySelector('[data-kanban-lane="in_progress"]');
+    expect(lane?.textContent).toContain("Issue 2");
+    expect(lane?.textContent).toContain("Platform");
+    expect(lane?.textContent).toContain("PAP-9");
+    expect(lane?.textContent).toContain("Blocked by");
+    expect(lane?.textContent).toContain("PAP-7");
+    expect(lane?.textContent).toContain("+1");
+    expect(lane?.textContent).toContain("Waiting on the API change");
+    expect(lane?.textContent).toContain("repo#1");
+    expect(lane?.textContent).toContain("Open");
+    expect(lane?.textContent).toContain("Merged");
+    expect(lane?.textContent).toContain("1/3 subtasks");
+    expect(container.querySelector('a[href="https://example.test/repo/pull/1"]')).toBeTruthy();
+  });
+
+  it("parks phase-unknown cards in an explained attention area, not a default lane", () => {
+    const { container } = renderBoard({
+      issues: [createIssue(2, "blocked"), createIssue(1, "todo")],
+    });
+
+    const unknown = container.querySelector('[data-kanban-unknown="true"]');
+    expect(unknown?.textContent).toContain("Stage not recorded");
+    expect(unknown?.textContent).toContain("Issue 2");
+    expect(container.querySelector('[data-kanban-lane="todo"]')?.textContent).toContain("Issue 1");
+    expect(container.querySelector('[data-kanban-lane="todo"]')?.textContent).not.toContain("Issue 2");
+  });
+
+  it("expands child tasks inline from the card", () => {
+    overviewState.byId = new Map([
+      ["issue-todo-1", createOverview("issue-todo-1", {
+        phase: "todo",
+        children: [
+          { id: "child-1", identifier: "PAP-11", title: "First subtask", status: "done" },
+        ],
+        childCount: 1,
+        completedChildCount: 1,
+      })],
+    ]);
+    const { container } = renderBoard({ issues: [createIssue(1, "todo")] });
+
+    const toggle = container.querySelector('[data-testid="kanban-card-children-toggle"]');
+    expect(toggle?.textContent).toContain("1/1 subtasks");
+    expect(container.textContent).not.toContain("First subtask");
+
+    act(() => {
+      toggle?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(container.textContent).toContain("First subtask");
+  });
+
+  it("shows overview fetch errors with a retry instead of hiding them", () => {
+    overviewState.error = new Error("context exploded");
+    const { container } = renderBoard({ issues: [createIssue(1, "todo")] });
+
+    const alert = container.querySelector('[role="alert"]');
+    expect(alert?.textContent).toContain("Task context unavailable");
+    expect(alert?.textContent).toContain("Issue 1");
+
+    const retry = Array.from(container.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Retry"),
+    );
+    act(() => {
+      retry?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(overviewState.refetch).toHaveBeenCalled();
+  });
+
+  it("groups lanes by project swimlanes and filters to outcomes", () => {
+    const parent = { ...createIssue(1, "todo"), projectId: "project-1" };
+    const child = { ...createIssue(2, "todo"), id: "issue-child", identifier: "PAP-20", parentId: parent.id };
+    const { container, render } = renderBoard({
+      issues: [parent, child],
+      projects: [{ id: "project-1", name: "Platform" }],
+      swimlanes: true,
+      scope: "all",
+    });
+
+    expect(container.querySelector('[aria-label="Platform swimlane"]')).toBeTruthy();
+    expect(container.textContent).toContain("PAP-20");
+
+    render({
+      issues: [parent, child],
+      projects: [{ id: "project-1", name: "Platform" }],
+      swimlanes: true,
+      scope: "outcomes",
+    });
+    expect(container.textContent).toContain("Issue 1");
+    expect(container.textContent).not.toContain("PAP-20");
   });
 });

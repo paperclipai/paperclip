@@ -47,6 +47,15 @@ import { DecisionQueueRail } from "../components/DecisionQueueRail";
 import { DecisionDateChips, type AttentionCustomRange } from "../components/DecisionDateChips";
 import { DecisionResolver } from "../components/DecisionResolver";
 import { IssueGroupHeader } from "../components/IssueGroupHeader";
+import { Button } from "../components/ui/button";
+import {
+  countDecisionViews,
+  filterDecisionView,
+  loadOperatorDecisionView,
+  saveOperatorDecisionView,
+  type OperatorDecisionView,
+} from "../lib/operator-dashboard";
+import { OperatorDecisionViewTabs } from "../components/operator/OperatorDecisionViewTabs";
 
 /** Curtain rows never expand; module-level so memoized rows see one identity. */
 const noopToggleExpand = () => {};
@@ -117,6 +126,13 @@ export function WhatNeedsMe() {
   const [searchParams, setSearchParams] = useSearchParams();
   const deepLinkDecisionId = searchParams.get("decisionId");
   const [deepLinkConsumed, setDeepLinkConsumed] = useState(false);
+  const requestedView = searchParams.get("view");
+  const decisionView = useMemo<OperatorDecisionView>(() => {
+    if (requestedView === "all" || requestedView === "mine" || requestedView === "fixing" || requestedView === "setup") {
+      return requestedView;
+    }
+    return deepLinkDecisionId ? "all" : loadOperatorDecisionView(selectedCompanyId);
+  }, [requestedView, deepLinkDecisionId, selectedCompanyId]);
 
   // Optimistic hide/restore. Reset whenever a fresh feed lands (server truth).
   const [pendingHide, setPendingHide] = useState<Set<string>>(() => new Set());
@@ -148,6 +164,7 @@ export function WhatNeedsMe() {
     data: feed,
     isLoading,
     error,
+    refetch: refetchFeed,
   } = useQuery({
     // Distinct from the sidebar badge's `queryKeys.attention` so dismissed rows
     // (needed for the curtains) never inflate the badge count. Invalidating the
@@ -175,12 +192,12 @@ export function WhatNeedsMe() {
 
   // Decision history — decided / expired decisions leave the open attention
   // feed (entryRule = open only), so we fetch them directly for the curtains.
-  const { data: decidedDecisions, isLoading: decidedDecisionsLoading } = useQuery({
+  const { data: decidedDecisions, isLoading: decidedDecisionsLoading, error: decidedDecisionsError, refetch: refetchDecidedDecisions } = useQuery({
     queryKey: queryKeys.decisions.list(selectedCompanyId!, "decided"),
     queryFn: () => decisionsApi.list(selectedCompanyId!, { status: "decided", limit: DECISION_HISTORY_QUERY_LIMIT }),
     enabled: decisionHistoryQueryEnabled(selectedCompanyId, decidedOpen),
   });
-  const { data: expiredDecisions, isLoading: expiredDecisionsLoading } = useQuery({
+  const { data: expiredDecisions, isLoading: expiredDecisionsLoading, error: expiredDecisionsError, refetch: refetchExpiredDecisions } = useQuery({
     queryKey: queryKeys.decisions.list(selectedCompanyId!, "expired"),
     queryFn: () => decisionsApi.list(selectedCompanyId!, { status: "expired", limit: DECISION_HISTORY_QUERY_LIMIT }),
     enabled: decisionHistoryQueryEnabled(selectedCompanyId, expiredOpen),
@@ -204,7 +221,19 @@ export function WhatNeedsMe() {
     setPendingRestore(new Set());
   }, [feed?.generatedAt]);
 
-  const allItems = useMemo(() => feed?.items ?? [], [feed]);
+  const feedItems = useMemo(() => feed?.items ?? [], [feed]);
+  const allItems = useMemo(
+    () => filterDecisionView(feedItems, decisionView, currentUserId),
+    [feedItems, decisionView, currentUserId],
+  );
+  const viewCounts = useMemo(
+    () => countDecisionViews(
+      feedItems.filter((item) =>
+        (!item.dismissal?.isActive || pendingRestore.has(item.id)) && !pendingHide.has(item.id)),
+      currentUserId,
+    ),
+    [feedItems, pendingRestore, pendingHide, currentUserId],
+  );
 
   const isServerHidden = (item: AttentionItem) => item.dismissal != null && item.dismissal.isActive;
 
@@ -514,6 +543,16 @@ export function WhatNeedsMe() {
     return <PageSkeleton variant="approvals" />;
   }
 
+  if (error && !feed) {
+    return (
+      <div role="alert" className="space-y-3">
+        <h1 className="text-xl font-bold">Decisions unavailable</h1>
+        <p className="text-sm text-destructive">{error.message}</p>
+        <Button variant="outline" onClick={() => void refetchFeed()}>Retry decisions</Button>
+      </div>
+    );
+  }
+
   const hasAnything = activeItems.length > 0 || snoozedItems.length > 0 || dismissedItems.length > 0;
 
   return (
@@ -531,6 +570,19 @@ export function WhatNeedsMe() {
           onSortOrderChange={updateSortOrder}
         />
       </div>
+      <OperatorDecisionViewTabs
+        value={decisionView}
+        counts={viewCounts}
+        onChange={(nextView) => {
+          saveOperatorDecisionView(selectedCompanyId, nextView);
+          const next = new URLSearchParams(searchParams);
+          next.set("view", nextView);
+          next.delete("decisionId");
+          setSearchParams(next);
+          setExpandedId(null);
+          setSelectedAttentionId(null);
+        }}
+      />
 
       {/* Queue quicklinks + date-range chips (§4.1–§4.2). The rail self-hides
           when the company has no queues; the chips filter the desk server-side. */}
@@ -549,7 +601,9 @@ export function WhatNeedsMe() {
       {error && <p className="text-sm text-destructive">{(error as Error).message}</p>}
 
       {!hasAnything ? (
-        <ZeroState />
+        decisionView === "all"
+          ? <ZeroState />
+          : <p className="text-sm text-muted-foreground">No decisions in this view.</p>
       ) : (
         <div className="space-y-4">
           {visibleCount === 0 ? (
@@ -710,6 +764,7 @@ export function WhatNeedsMe() {
       )}
 
       <div className="space-y-4">
+        <p className="text-xs text-muted-foreground">Decision history across all views</p>
         <Curtain
           label="Decided"
           count={decisionHistoryCount(decidedDecisions?.length)}
@@ -718,6 +773,11 @@ export function WhatNeedsMe() {
         >
           {decidedDecisionsLoading ? (
             <p className="text-xs text-muted-foreground">Loading decided decisions…</p>
+          ) : decidedDecisionsError ? (
+            <div role="alert" className="space-y-2">
+              <p className="text-xs text-destructive">Decision history unavailable: {decidedDecisionsError.message}</p>
+              <Button variant="outline" size="sm" onClick={() => void refetchDecidedDecisions()}>Retry history</Button>
+            </div>
           ) : (decidedDecisions?.length ?? 0) > 0 ? (
             decidedDecisions!.slice(0, DECISION_HISTORY_VISIBLE_LIMIT).map((decision) => (
               <DecisionResolver
@@ -741,6 +801,11 @@ export function WhatNeedsMe() {
         >
           {expiredDecisionsLoading ? (
             <p className="text-xs text-muted-foreground">Loading expired decisions…</p>
+          ) : expiredDecisionsError ? (
+            <div role="alert" className="space-y-2">
+              <p className="text-xs text-destructive">Expired decisions unavailable: {expiredDecisionsError.message}</p>
+              <Button variant="outline" size="sm" onClick={() => void refetchExpiredDecisions()}>Retry expired decisions</Button>
+            </div>
           ) : (expiredDecisions?.length ?? 0) > 0 ? (
             expiredDecisions!.slice(0, DECISION_HISTORY_VISIBLE_LIMIT).map((decision) => (
               <DecisionResolver

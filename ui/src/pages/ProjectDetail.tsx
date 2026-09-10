@@ -26,6 +26,9 @@ import { PageSkeleton } from "../components/PageSkeleton";
 import { PageTabBar } from "../components/PageTabBar";
 import { ProjectWorkspacesContent } from "../components/ProjectWorkspacesContent";
 import { SummarySlotCard } from "../components/SummarySlotCard";
+import { ProjectOperatorOverview } from "../components/ProjectOperatorOverview";
+import { PROJECT_OPERATOR_OVERVIEW_PAGE_SIZE } from "../components/project-operator-overview";
+import { useIssueOverviews } from "../hooks/useIssueOverviews";
 import { MembershipAction } from "../components/MembershipAction";
 import { StarToggle } from "../components/StarToggle";
 import { buildProjectWorkspaceSummaries } from "../lib/project-workspaces-tab";
@@ -543,6 +546,52 @@ export function ProjectDetail() {
     refetchInterval: 30_000,
     staleTime: 5_000,
   });
+  // Operator snapshot inventory: bounded project task list feeding the current
+  // snapshot on the overview tab only. No per-task lookups — delivery detail
+  // comes from the batched overview hook below, plan presence from the plan filter.
+  const showOperatorSnapshot = activeTab === "overview" || activeTab === null;
+  const operatorInventoryQuery = useQuery({
+    queryKey: [
+      ...queryKeys.issues.listByProject(resolvedCompanyId ?? "__none__", project?.id ?? routeProjectRef),
+      "operator-overview",
+    ],
+    queryFn: () => issuesApi.list(resolvedCompanyId!, {
+      projectId: project!.id,
+      limit: PROJECT_OPERATOR_OVERVIEW_PAGE_SIZE,
+      includeBlockedBy: true,
+    }),
+    enabled: Boolean(resolvedCompanyId && project?.id && showOperatorSnapshot),
+    refetchInterval: 30_000,
+    staleTime: 5_000,
+  });
+  // Plan-document presence is not part of list rows; the filtered set below is
+  // the only honest source, so unknown stays hidden instead of "0 plans".
+  const operatorPlanSetQuery = useQuery({
+    queryKey: [
+      ...queryKeys.issues.listByProject(resolvedCompanyId ?? "__none__", project?.id ?? routeProjectRef),
+      "operator-overview-plans",
+    ],
+    queryFn: () => issuesApi.list(resolvedCompanyId!, {
+      projectId: project!.id,
+      limit: PROJECT_OPERATOR_OVERVIEW_PAGE_SIZE,
+      hasPlanDocument: true,
+    }),
+    enabled: Boolean(resolvedCompanyId && project?.id && showOperatorSnapshot),
+    refetchInterval: 30_000,
+    staleTime: 5_000,
+  });
+  const operatorIssueIds = useMemo(
+    () => (operatorInventoryQuery.data ?? []).map((issue) => issue.id),
+    [operatorInventoryQuery.data],
+  );
+  const operatorOverviews = useIssueOverviews(
+    showOperatorSnapshot ? resolvedCompanyId : undefined,
+    showOperatorSnapshot ? operatorIssueIds : [],
+  );
+  const operatorPlanTaskIds = useMemo(
+    () => (operatorPlanSetQuery.data ? new Set(operatorPlanSetQuery.data.map((issue) => issue.id)) : undefined),
+    [operatorPlanSetQuery.data],
+  );
 
   useEffect(() => {
     setBreadcrumbs([
@@ -852,6 +901,32 @@ export function ProjectDetail() {
           />
         </div>
       </div>
+
+      {showOperatorSnapshot && project?.id && resolvedCompanyId ? (
+        <ProjectOperatorOverview
+          tasksHref={`/projects/${canonicalProjectRef}/issues`}
+          issues={operatorInventoryQuery.data}
+          issuesLoading={operatorInventoryQuery.isLoading}
+          issuesError={(operatorInventoryQuery.error as Error | null) ?? null}
+          issuesObservedAt={operatorInventoryQuery.dataUpdatedAt}
+          issuesRefreshing={operatorInventoryQuery.isFetching}
+          onRetryIssues={() => operatorInventoryQuery.refetch()}
+          truncated={
+            (operatorInventoryQuery.data?.length ?? 0) >= PROJECT_OPERATOR_OVERVIEW_PAGE_SIZE
+          }
+          overviewsById={operatorOverviews.byId}
+          overviewsPending={operatorOverviews.isPending}
+          overviewsError={operatorOverviews.error}
+          overviewsObservedAt={operatorOverviews.dataUpdatedAt}
+          onRetryOverviews={operatorOverviews.refetch}
+          onRefreshAll={() => {
+            operatorInventoryQuery.refetch();
+            operatorPlanSetQuery.refetch();
+            operatorOverviews.refetch();
+          }}
+          planTaskIds={operatorPlanTaskIds}
+        />
+      ) : null}
 
       <SummarySlotCard
         companyId={resolvedCompanyId}

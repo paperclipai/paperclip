@@ -46,6 +46,14 @@ import { DecisionDateChips, type AttentionCustomRange } from "../components/Deci
 import { IssueGroupHeader } from "../components/IssueGroupHeader";
 import { Button } from "../components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "../components/ui/popover";
+import { OperatorDecisionViewTabs } from "../components/operator/OperatorDecisionViewTabs";
+import {
+  countDecisionViews,
+  filterDecisionView,
+  loadOperatorDecisionView,
+  saveOperatorDecisionView,
+  type OperatorDecisionView,
+} from "../lib/operator-dashboard";
 
 /**
  * Queue page. A single queue's pending
@@ -74,6 +82,11 @@ export function DecisionQueuePage() {
   const [filters, setFilters] = useState<AttentionFilterState>(() => defaultAttentionFilterState);
   const [collapsedGroupKeys, setCollapsedGroupKeys] = useState<Set<string>>(() => new Set());
   const [agingOpen, setAgingOpen] = useState(false);
+  // Operator view (All / Your decision / System fixing / Needs operator
+  // setup), persisted per company. Filters the feed before the toolbar's
+  // own filter → sort → group pipeline, so every native semantic below is
+  // preserved and only the candidate set narrows.
+  const [view, setView] = useState<OperatorDecisionView>(() => loadOperatorDecisionView(selectedCompanyId));
 
   // Date-range chips (§4.2) — resolve to server-side activity bounds.
   const [dateRange, setDateRange] = useState<AttentionDateRangeId>("all");
@@ -133,6 +146,7 @@ export function DecisionQueuePage() {
   useEffect(() => {
     setFilters(loadAttentionFilters(selectedCompanyId));
     setCollapsedGroupKeys(loadCollapsedAttentionGroupKeys(selectedCompanyId));
+    setView(loadOperatorDecisionView(selectedCompanyId));
   }, [selectedCompanyId]);
 
   // The server's clock at feed time — used for the arrival/decide-by shelves and
@@ -143,15 +157,26 @@ export function DecisionQueuePage() {
   );
 
   const activeItems = useMemo(
-    () => (feed?.items ?? []).filter((item) => !(item.dismissal?.isActive ?? false)),
+    () => (feed?.items ?? []).filter((item) => !item.dismissal?.isActive),
     [feed],
+  );
+
+  // Operator view narrows the candidate set first: the aging shelf, the
+  // filter options, and the group pipeline below all see the same view, so
+  // counts and rows can never disagree about what the view contains.
+  const viewItems = useMemo(
+    () => filterDecisionView(activeItems, view, currentUserId),
+    [activeItems, view, currentUserId],
+  );
+  const viewCounts = useMemo(
+    () => countDecisionViews(activeItems, currentUserId),
+    [activeItems, currentUserId],
   );
 
   // Aging shelf (§4.4): items the server flags as idle past retention leave the
   // live list for their own curtain, mirroring the desk.
-  const agingItems = useMemo(() => activeItems.filter(attentionIsAging), [activeItems]);
-  const listItems = useMemo(() => activeItems.filter((item) => !attentionIsAging(item)), [activeItems]);
-
+  const agingItems = useMemo(() => viewItems.filter(attentionIsAging), [viewItems]);
+  const listItems = useMemo(() => viewItems.filter((item) => !attentionIsAging(item)), [viewItems]);
   const filterOptions = useMemo(() => buildAttentionFilterOptions(listItems), [listItems]);
 
   // Filter → sort → group, matching the desk. In the default (ungrouped) view the
@@ -180,6 +205,10 @@ export function DecisionQueuePage() {
   const updateFilters = (next: AttentionFilterState) => {
     setFilters(next);
     saveAttentionFilters(selectedCompanyId, next);
+  };
+  const updateView = (next: OperatorDecisionView) => {
+    setView(next);
+    saveOperatorDecisionView(selectedCompanyId, next);
   };
   const toggleGroupCollapse = (key: string) => {
     setCollapsedGroupKeys((prev) => {
@@ -218,7 +247,8 @@ export function DecisionQueuePage() {
     return <PageSkeleton variant="approvals" />;
   }
 
-  const isEmpty = activeItems.length === 0;
+  const queueEmpty = activeItems.length === 0;
+  const viewEmpty = !queueEmpty && viewItems.length === 0;
 
   return (
     <div className="max-w-3xl space-y-4">
@@ -238,6 +268,13 @@ export function DecisionQueuePage() {
           onSortOrderChange={updateSortOrder}
         />
       </div>
+
+      <OperatorDecisionViewTabs value={view} counts={viewCounts} onChange={updateView} />
+      {view === "mine" && !currentUserId && (
+        <p className="text-xs text-muted-foreground">
+          Signed-out view: gates are matched by kind only. Sign in to also highlight items addressed to you.
+        </p>
+      )}
 
       <div className="space-y-2">
         <DecisionQueueRail companyId={selectedCompanyId} activeQueueKey={queueKey} />
@@ -262,11 +299,18 @@ export function DecisionQueuePage() {
 
       {error && <p className="text-sm text-destructive">{(error as Error).message}</p>}
 
-      {isEmpty ? (
+      {queueEmpty ? (
         <div className="rounded-xl border border-dashed border-border py-14 text-center">
           <p className="text-sm font-medium text-foreground">This queue is empty.</p>
           <p className="mt-1 text-xs text-muted-foreground">
             Decisions land here when they match the queue's rules or an agent adds them.
+          </p>
+        </div>
+      ) : viewEmpty ? (
+        <div className="rounded-xl border border-dashed border-border py-10 text-center">
+          <p className="text-sm font-medium text-foreground">No decisions in this view.</p>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Nothing here matches this view right now — the other views still hold the rest.
           </p>
         </div>
       ) : (
