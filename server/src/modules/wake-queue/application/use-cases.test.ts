@@ -6,6 +6,7 @@ import type {
   InvokableAgentSnapshot,
   IssueLockWriter,
   IssueSnapshot,
+  PromoteDeferredWakeInput,
   RecoveryEscalationPort,
   RunSnapshot,
   RunSummary,
@@ -215,6 +216,51 @@ describe("releaseIssueExecution", () => {
     expect(result.postCommitEffects).toEqual([{ kind: "run_queued", run: runSummary("wake-1") }]);
     expect(recovery.escalateStrandedAssignedIssue).not.toHaveBeenCalled();
     expect(recovery.escalateStrandedRecoveryIssueInPlace).not.toHaveBeenCalled();
+  });
+
+  it("carries the deferred wake's raw issue, interaction, execution-stage, and accepted-plan context onto the promoted run, and clears only the rendered text projections", async () => {
+    const finalizePromotedWake = vi.fn(async (input: PromoteDeferredWakeInput) => runSummary(input.wakeId));
+    const writer = createFakeWriter({
+      claimNextDeferredWake: vi.fn(async () =>
+        wakeCandidate({
+          deferredContextSeed: {
+            issueId: ISSUE.id,
+            wakeCommentIds: ["comment-1"],
+            // A queue-time render from a prior coalesced run. Promotion must
+            // not persist this alongside the current (unrelated) comment id.
+            paperclipTaskMarkdown: "queue-time markdown",
+            paperclipTaskMarkdownCompact: "queue-time compact markdown",
+            paperclipWake: { commentId: "comment-1" },
+            executionStage: { stage: "review" },
+            planReviewInteraction: { acceptedTargetRevision: { revisionId: "revision-1" } },
+            acceptedPlanWakeRouting: { targetAgentId: "agent-1" },
+          },
+        }),
+      ),
+      finalizePromotedWake,
+    });
+    const reader = createFakeReader();
+    const issueLock = createFakeIssueLock(reader, writer);
+    const releaseIssueExecution = createReleaseIssueExecution({ issueLock, recovery: createFakeRecovery() });
+
+    const result = await releaseIssueExecution({ companyId: "company-1", runId: "run-1", now: new Date() });
+
+    expect(result.outcome.kind).toBe("promoted");
+    expect(finalizePromotedWake).toHaveBeenCalledTimes(1);
+    const promotedContextSnapshot = finalizePromotedWake.mock.calls[0]![0].contextSnapshot;
+    // The rendered text is cleared; `executeRun` rebuilds it, with proper
+    // trust-based redaction, from the current issue and comment rows before
+    // the run dispatches.
+    expect(promotedContextSnapshot.paperclipTaskMarkdown).toBeUndefined();
+    expect(promotedContextSnapshot.paperclipTaskMarkdownCompact).toBeUndefined();
+    expect(promotedContextSnapshot.paperclipWake).toBeUndefined();
+    // The raw fields that render depends on are not dropped.
+    expect(promotedContextSnapshot.issueId).toBe(ISSUE.id);
+    expect(promotedContextSnapshot.executionStage).toEqual({ stage: "review" });
+    expect(promotedContextSnapshot.planReviewInteraction).toEqual({
+      acceptedTargetRevision: { revisionId: "revision-1" },
+    });
+    expect(promotedContextSnapshot.acceptedPlanWakeRouting).toEqual({ targetAgentId: "agent-1" });
   });
 
   it("never reopens the issue when the promotion claim loses the race, and moves on to the next wake", async () => {

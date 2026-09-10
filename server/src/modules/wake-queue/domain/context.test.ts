@@ -83,4 +83,42 @@ describe("enrichPromotedWakeContext", () => {
     expect(result.contextSnapshot.wakeCommentId).toBe("comment-2");
     expect(result.contextSnapshot.paperclipWakeComment).toBeUndefined();
   });
+
+  it("keeps the raw issue, execution-stage, and accepted-plan fields a dispatch rebuild needs, alongside the cleared text projections", () => {
+    const contextSnapshot: Record<string, unknown> = {
+      wakeCommentIds: ["comment-1"],
+      paperclipWake: { commentId: "comment-1" },
+      paperclipTaskMarkdown: "stale markdown",
+      paperclipTaskMarkdownCompact: "stale compact markdown",
+      // Raw context a dispatch-time rebuild reads directly off the promoted
+      // run; none of it is derived from the comment ids above, so none of it
+      // should be cleared alongside the stale text projections.
+      issueId: "issue-1",
+      executionStage: { stage: "review" },
+      planReviewInteraction: { acceptedTargetRevision: { revisionId: "revision-1" } },
+      acceptedPlanWakeRouting: { targetAgentId: "agent-1" },
+      workspaceRefreshReason: "accepted_plan_confirmation",
+    };
+
+    const result = enrichPromotedWakeContext({
+      contextSnapshot,
+      reason: "issue_execution_promoted",
+      source: "automation",
+      triggerDetail: null,
+      payload: {},
+    });
+
+    // The rendered text is cleared; dispatch rebuilds it from the raw fields.
+    expect(result.contextSnapshot.paperclipWake).toBeUndefined();
+    expect(result.contextSnapshot.paperclipTaskMarkdown).toBeUndefined();
+    expect(result.contextSnapshot.paperclipTaskMarkdownCompact).toBeUndefined();
+    // The raw fields the rebuild needs are untouched.
+    expect(result.contextSnapshot.issueId).toBe("issue-1");
+    expect(result.contextSnapshot.executionStage).toEqual({ stage: "review" });
+    expect(result.contextSnapshot.planReviewInteraction).toEqual({
+      acceptedTargetRevision: { revisionId: "revision-1" },
+    });
+    expect(result.contextSnapshot.acceptedPlanWakeRouting).toEqual({ targetAgentId: "agent-1" });
+    expect(result.contextSnapshot.workspaceRefreshReason).toBe("accepted_plan_confirmation");
+  });
 });

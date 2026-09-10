@@ -125,11 +125,24 @@ export function enrichPromotedWakeContext(
     contextSnapshot.commentId = commentIdFromPayload;
   }
   // The wake payload, resolved comment, and task-markdown snapshots below are
-  // all derived from the canonical comment ids. This function recomputes
-  // those ids on every call (`wakeCommentIds`), so it must not let a
-  // derived projection from a stale id list carry forward: clear all four,
-  // then restore only the canonical id and latest-id fields, and only when
-  // the recomputed list actually has entries.
+  // rendered text built from the canonical comment ids and the issue state at
+  // queue time. This function recomputes the canonical ids on every call
+  // (`wakeCommentIds`), so it must not let a rendered snapshot from a stale
+  // id list carry forward: clear all four, then restore only the canonical
+  // id and latest-id fields, and only when the recomputed list actually has
+  // entries.
+  //
+  // This function does not render a replacement in its place. The
+  // promoted run still carries every raw field the render depends on
+  // (`issueId`, `wakeReason`, interaction and accepted-plan fields, and the
+  // canonical comment ids set below): `heartbeatService`'s `executeRun`
+  // rebuilds the rendered text from those raw fields and the current issue
+  // and comment rows, with the trust-based redaction that rendering needs,
+  // before it persists the run and dispatches it to the agent. Rendering a
+  // second, simplified copy here would either skip that redaction (an unsafe
+  // shortcut for quarantined comment content) or duplicate it outside the
+  // one place it is proven correct, so this function leaves the render to
+  // dispatch and only guarantees the raw inputs survive.
   delete contextSnapshot[PAPERCLIP_WAKE_PAYLOAD_KEY];
   delete contextSnapshot[PAPERCLIP_WAKE_COMMENT_KEY];
   delete contextSnapshot[PAPERCLIP_TASK_MARKDOWN_KEY];
