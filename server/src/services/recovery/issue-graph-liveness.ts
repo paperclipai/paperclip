@@ -1,4 +1,4 @@
-import { getAgentWorkEligibility, isAgentInvokable } from "@paperclipai/shared";
+import { getAgentWorkEligibility, isAgentInvokable, updateIssueSchema } from "@paperclipai/shared";
 import { buildIssueGraphLivenessIncidentKey } from "./origins.js";
 
 export type IssueLivenessSeverity = "warning" | "critical";
@@ -28,6 +28,7 @@ export interface IssueLivenessIssueInput {
   executionState?: Record<string, unknown> | null;
   monitorNextCheckAt?: Date | string | null;
   monitorAttemptCount?: number | null;
+  unblockDescriptor?: unknown;
 }
 
 export interface IssueLivenessRelationInput {
@@ -166,6 +167,14 @@ function hasWaitingPath(
   waitingPaths: IssueLivenessWaitingPathInput[],
 ) {
   return waitingPaths.some((entry) => entry.companyId === companyId && entry.issueId === issueId);
+}
+
+function hasValidExternalUnblockPath(issue: IssueLivenessIssueInput) {
+  if (issue.status !== "blocked" || issue.unblockDescriptor == null) return false;
+  return updateIssueSchema.safeParse({
+    status: "blocked",
+    unblockDescriptor: issue.unblockDescriptor,
+  }).success;
 }
 
 function readRecord(value: unknown): Record<string, unknown> | null {
@@ -512,7 +521,8 @@ export function classifyIssueGraphLiveness(input: IssueGraphLivenessInput): Issu
   }
 
   function hasExplicitWaitingPath(issue: IssueLivenessIssueInput) {
-    return Boolean(issue.assigneeUserId) ||
+    return hasValidExternalUnblockPath(issue) ||
+      Boolean(issue.assigneeUserId) ||
       hasScheduledIssueMonitorPath(issue, nowMs) ||
       hasActiveExecutionPath(issue.companyId, issue.id, activeRuns, queuedWakeRequests) ||
       hasWaitingPath(issue.companyId, issue.id, pendingInteractions) ||

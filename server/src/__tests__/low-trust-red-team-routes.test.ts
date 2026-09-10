@@ -1051,6 +1051,66 @@ describeEmbeddedPostgres(
       }
     });
 
+    it("persists valid external unblock descriptors on create and comment-plus-status updates", async () => {
+      const fixture = await seedLowTrustFixture(db);
+      const app = createApp(db, boardActor(fixture));
+      const unblockDescriptor = {
+        owner: "board",
+        action: "Review the external dependency",
+      } as const;
+
+      const created = await request(app)
+        .post(`/api/companies/${fixture.company.id}/issues`)
+        .send({
+          projectId: fixture.projects.allowed.id,
+          title: "Externally blocked during creation",
+          status: "blocked",
+          unblockDescriptor,
+        });
+      expect(created.status, JSON.stringify(created.body)).toBe(201);
+
+      const [createdRow] = await db
+        .select({
+          status: issues.status,
+          unblockDescriptor: issues.unblockDescriptor,
+        })
+        .from(issues)
+        .where(eq(issues.id, created.body.id));
+      expect(createdRow).toMatchObject({ status: "blocked", unblockDescriptor });
+
+      await db
+        .delete(issueApprovals)
+        .where(eq(issueApprovals.issueId, fixture.issues.assignedReview.id));
+      const transitionComment =
+        "External unblock path recorded with the status transition.";
+      const transitioned = await request(app)
+        .patch(`/api/issues/${fixture.issues.assignedReview.id}`)
+        .send({ status: "blocked", comment: transitionComment, unblockDescriptor });
+      expect(transitioned.status, JSON.stringify(transitioned.body)).toBe(200);
+
+      const [transitionedRow] = await db
+        .select({
+          status: issues.status,
+          unblockDescriptor: issues.unblockDescriptor,
+        })
+        .from(issues)
+        .where(eq(issues.id, fixture.issues.assignedReview.id));
+      const [persistedComment] = await db
+        .select({ body: issueComments.body })
+        .from(issueComments)
+        .where(
+          and(
+            eq(issueComments.issueId, fixture.issues.assignedReview.id),
+            eq(issueComments.body, transitionComment),
+          ),
+        );
+      expect(transitionedRow).toMatchObject({
+        status: "blocked",
+        unblockDescriptor,
+      });
+      expect(persistedComment?.body).toBe(transitionComment);
+    });
+
     it("relays blocked and cancelled stops once without laundering child prose", async () => {
       const fixture = await seedLowTrustFixture(db);
       const app = createApp(db, boardActor(fixture));
