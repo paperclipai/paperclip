@@ -118,6 +118,7 @@ for (const id of fullPages) {
     await expect(page.locator("main")).toBeVisible();
     await expect(page.locator("main")).not.toContainText("This page hit an error");
     await expect(page.locator('img[src*="/api/agent-avatars/"]').first()).toBeAttached();
+    if (id === "company-dashboard") await expect(page.getByText("Live now", { exact: true })).toBeVisible();
     await imagesLoaded(page);
     await expect(page.locator("canvas")).toHaveCount(0);
     await expect(page).toHaveScreenshot(`full-page-${id}.png`, { animations: "disabled", maxDiffPixels: 0 });

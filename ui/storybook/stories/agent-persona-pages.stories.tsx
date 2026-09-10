@@ -20,6 +20,7 @@ const agents = storybookAgents.map(agent => {
   const appearance = resolveAgentAppearance(agent.appearance, agent.id);
   return { ...agent, appearance, avatarUrl: agentAvatarUrl(appearance), chainOfCommand: [], access: { canAssignTasks: true, taskAssignSource: "explicit_grant", membership: null, grants: [] } };
 });
+const liveRuns = storybookLiveRuns.map(run => ({ ...run, agentAppearance: agents.find(agent => agent.id === run.agentId)?.appearance }));
 const issue = { ...storybookIssues[0], assigneeAgentId: agents[0].id, status: "in_progress" };
 
 /** Real route components and navigation; all domain data stays in Storybook. */
@@ -38,7 +39,7 @@ function installPageFixtures() {
     if (path === `/api/companies/${companyId}/agents`) return json(agents);
     if (path.endsWith("/dashboard")) return json(storybookDashboardSummary);
     if (path === `/api/companies/${companyId}/activity`) return json(storybookActivityEvents);
-    if (path === `/api/companies/${companyId}/live-runs`) return json(storybookLiveRuns.map(run => ({ ...run, agentAppearance: agents.find(agent => agent.id === run.agentId)?.appearance })));
+    if (path === `/api/companies/${companyId}/live-runs`) return json(liveRuns);
     const agentMatch = path.match(/^\/api\/agents\/([^/]+)(?:\/(.*))?$/);
     if (agentMatch) {
       const agent = agents.find(item => item.id === agentMatch[1] || item.urlKey === agentMatch[1]) ?? agents[0];
@@ -82,6 +83,9 @@ function PersonaPage({ path, meet = false }: { path: string; meet?: boolean }) {
     if (initialPath.current === path) return;
     initialPath.current = path;
     queryClient.setQueryData(queryKeys.agents.list(companyId), agents);
+    // Shared polling elects a leader asynchronously; seed the visible panel so
+    // its initial render is independent of that election and the avatar cache.
+    queryClient.setQueryData([...queryKeys.liveRuns(companyId), "dashboard", { minRunCount: 4, fetchLimit: undefined }], liveRuns);
     for (const agent of agents) {
       for (const ref of [agent.id, agent.urlKey]) queryClient.setQueryData([...queryKeys.agents.detail(ref!), companyId], agent);
     }
