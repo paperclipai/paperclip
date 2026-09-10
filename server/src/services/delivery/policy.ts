@@ -537,7 +537,7 @@ export function deliveryPolicyService(db: Db, deps: { github?: GitHubDeliveryCli
     if (row.autoDeployDisposition === "block_merge") {
       return {
         allowed: false, repository, policy: row,
-        blocker: { reasonCode: "deployment_authority_missing", message: "Policy blocks merging to this target", owner: null, nextAction: "Change autoDeployDisposition when deployment authority exists." },
+        blocker: { reasonCode: "deployment_authority_missing", message: "Policy blocks merging to this target", owner: null, nextAction: "Record a verified deployment disposition before permitting merges." },
       };
     }
     if (row.autoDeployDisposition === "none" && repository.defaultBranch === input.targetBranch) {
@@ -547,7 +547,7 @@ export function deliveryPolicyService(db: Db, deps: { github?: GitHubDeliveryCli
           reasonCode: "deployment_authority_missing",
           message: "Merging to the default branch has unknown deployment behaviour and no recorded authority",
           owner: null,
-          nextAction: "Set autoDeployDisposition to authorized (or block_merge) on the delivery policy.",
+          nextAction: "Record no_auto_deploy after verifying trigger separation, authorized when deployment is permitted, or block_merge.",
         },
       };
     }

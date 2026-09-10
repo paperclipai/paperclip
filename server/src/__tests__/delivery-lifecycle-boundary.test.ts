@@ -174,6 +174,26 @@ describeEmbeddedPostgres("delivery lifecycle boundary regressions", () => {
 
   const userActor: DeliveryActor = { type: "user", id: "user-1", userId: "user-1" };
 
+  it("permits merge-only authority for verified deployment separation but blocks an unknown default-branch effect", async () => {
+    const companyId = await seedCompany();
+    const projectId = await seedProject(companyId, "https://github.com/acme/widget");
+    const repository = await seedRepository(companyId);
+    await db.insert(deliveryPolicies).values({
+      companyId, projectId, repositoryId: repository.id, targetBranch: "main",
+      enabled: true, autoDeployDisposition: "no_auto_deploy",
+      requireIndependentApproval: false, requireGreptile: false,
+      authorization: { approvedByUserId: "user-1", approvedAt: new Date().toISOString(), statement: "Merge only; automatic deployment triggers verified absent. No deployment authorized.", scope: "project" },
+    });
+    const { policy } = services(githubStub());
+    const input = {
+      companyId, projectId, targetBranch: "main", requireGreptile: false,
+      evidence: { headSha: HEAD, checks: [], reviewStatus: "approved", reviewHeadSha: HEAD, approvals: [], prAuthorLogin: "author", blockingFindings: 0 },
+    };
+    expect(await policy.evaluateUnit(input)).toMatchObject({ allowed: true });
+    await db.update(deliveryPolicies).set({ autoDeployDisposition: "none" }).where(eq(deliveryPolicies.projectId, projectId));
+    expect(await policy.evaluateUnit(input)).toMatchObject({ allowed: false, blocker: { reasonCode: "deployment_authority_missing" } });
+  });
+
   it("serializes concurrent leases for the same repository and branch", async () => {
     const companyId = await seedCompany();
     const projectId = await seedProject(companyId);

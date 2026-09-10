@@ -1730,6 +1730,13 @@
       "when": 1788991985591,
       "tag": "0248_delivery_lifecycle",
       "breakpoints": true
+    },
+    {
+      "idx": 249,
+      "version": "7",
+      "when": 1789027843465,
+      "tag": "0249_separated_merge_deployment",
+      "breakpoints": true
     }
   ]
 }

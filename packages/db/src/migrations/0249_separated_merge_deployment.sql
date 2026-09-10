@@ -1,0 +1,2 @@
+ALTER TABLE "delivery_policies" DROP CONSTRAINT "delivery_policies_auto_deploy_disposition_check";--> statement-breakpoint
+ALTER TABLE "delivery_policies" ADD CONSTRAINT "delivery_policies_auto_deploy_disposition_check" CHECK ("delivery_policies"."auto_deploy_disposition" in ('none','block_merge','no_auto_deploy','authorized'));

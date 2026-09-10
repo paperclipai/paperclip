@@ -95,6 +95,11 @@ re-authorizes at once. Pausing or resuming never changes the authorized scope.
 - `none` — merging to the repository default branch has unknown deployment
   behavior and is blocked; non-default targets are allowed.
 - `block_merge` — never merge.
+- `no_auto_deploy` — operator has verified that merging does not trigger
+  deployment (for example, repository deployment triggers were removed).
+  Authorizes merging only; deployment remains separately governed. Record
+  trigger-verification evidence in the policy authorization statement and
+  pause delivery before restoring automatic deployment triggers.
 - `authorized` — operator has recorded deployment authority for this target.
 
 `mergeQueueMode`:

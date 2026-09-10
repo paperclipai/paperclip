@@ -59,6 +59,7 @@ export type DeliveryMergeQueueMode = (typeof DELIVERY_MERGE_QUEUE_MODES)[number]
 export const DELIVERY_AUTO_DEPLOY_DISPOSITIONS = [
   "none",
   "block_merge",
+  "no_auto_deploy",
   "authorized",
 ] as const;
 export type DeliveryAutoDeployDisposition = (typeof DELIVERY_AUTO_DEPLOY_DISPOSITIONS)[number];

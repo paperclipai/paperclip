@@ -51,8 +51,9 @@ export const DELIVERY_MERGE_QUEUE_MODE_LABELS: Record<DeliveryMergeQueueMode, st
 };
 
 export const DELIVERY_AUTO_DEPLOY_DISPOSITION_LABELS: Record<DeliveryAutoDeployDisposition, string> = {
-  none: "No deployment authority — merging does not deploy",
+  none: "Deployment effect not yet verified",
   block_merge: "Block merge when the target auto-deploys",
+  no_auto_deploy: "No automatic deployment — merge only",
   authorized: "Deployment authority recorded",
 };
 

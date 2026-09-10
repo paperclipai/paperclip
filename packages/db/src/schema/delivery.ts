@@ -251,7 +251,7 @@ export const deliveryPolicies = pgTable(
     check("delivery_policies_merge_queue_mode_check", sql`${table.mergeQueueMode} in ('serialized','native_merge_queue')`),
     check(
       "delivery_policies_auto_deploy_disposition_check",
-      sql`${table.autoDeployDisposition} in ('none','block_merge','authorized')`,
+      sql`${table.autoDeployDisposition} in ('none','block_merge','no_auto_deploy','authorized')`,
     ),
     unique("delivery_policies_project_uq").on(table.projectId),
     index("delivery_policies_company_idx").on(table.companyId),
