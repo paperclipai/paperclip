@@ -17065,9 +17065,14 @@ export function issueRoutes(
       // blocker, and run-cap gate passes. A rejected comment must not rebuild and
       // republish the workspace as active, because the issue stays terminal and the
       // reaper then skips the leaked workspace.
+      //
+      // A comment on a terminal issue that does not resume the work is a plain
+      // record: it never needs the worktree. Rebuilding one for it would either
+      // churn a workspace the reaper immediately reaps again or block an audit
+      // comment with a 409 the workspace was never needed for.
       let reopenedWorkspace: Pick<ExecutionWorkspace, "id"> | null = null;
       let reopenedGeneration: number | null = null;
-      if (closedExecutionWorkspace) {
+      if (closedExecutionWorkspace && (!isClosed || effectiveMoveToTodoRequested)) {
         const reopenOutcome =
           await reopenClosedIssueExecutionWorkspaceOrRespond(
             req,

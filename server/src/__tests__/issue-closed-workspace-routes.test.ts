@@ -308,6 +308,56 @@ describe.sequential("closed isolated workspace issue routes", () => {
     expect(mockIssueService.addComment).not.toHaveBeenCalled();
   });
 
+  it("accepts a plain comment on a done issue without touching the closed workspace", async () => {
+    // A comment that does not resume a terminal issue is a pure record: it
+    // must not rebuild the worktree, and it must not be blocked by a
+    // workspace it never needed.
+    mockIssueService.getById.mockResolvedValue({ ...makeIssue(), status: "done", assigneeAgentId: null });
+    mockIssueService.addComment.mockResolvedValue({ id: "comment-1", body: "decision recorded" });
+
+    const res = await request(createApp())
+      .post(`/api/issues/${issueId}/comments`)
+      .send({ body: "decision recorded" });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.addComment).toHaveBeenCalledTimes(1);
+    expect(mockExecutionWorkspaceService.reopenClosedIsolatedExecutionWorkspaceForIssue).not.toHaveBeenCalled();
+  });
+
+  it("accepts a plain comment on a done issue even when the workspace cannot be reopened", async () => {
+    // The audit comment is not resuming anything, so a workspace that is
+    // un-reopenable must not turn it into a 409.
+    mockIssueService.getById.mockResolvedValue({ ...makeIssue(), status: "done", assigneeAgentId: null });
+    mockIssueService.addComment.mockResolvedValue({ id: "comment-1", body: "decision recorded" });
+    mockExecutionWorkspaceService.reopenClosedIsolatedExecutionWorkspaceForIssue.mockResolvedValue({
+      ok: false,
+      code: "not_reopenable",
+      message: "Execution workspace is not reopenable",
+    });
+
+    const res = await request(createApp())
+      .post(`/api/issues/${issueId}/comments`)
+      .send({ body: "decision recorded" });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.addComment).toHaveBeenCalledTimes(1);
+  });
+
+  it("still reopens the closed workspace for a comment that resumes a done issue", async () => {
+    // `reopen: true` on a terminal issue is a resume: it needs the worktree,
+    // so the reopen still runs and still blocks when the rebuild fails.
+    mockIssueService.getById.mockResolvedValue({ ...makeIssue(), status: "done", assigneeAgentId: null });
+    mockIssueService.update.mockResolvedValue({ ...makeIssue(), status: "todo" });
+    mockIssueService.addComment.mockResolvedValue({ id: "comment-1", body: "hello" });
+
+    const res = await request(createApp())
+      .post(`/api/issues/${issueId}/comments`)
+      .send({ body: "please continue", reopen: true });
+
+    expect(mockExecutionWorkspaceService.reopenClosedIsolatedExecutionWorkspaceForIssue).toHaveBeenCalledTimes(1);
+    expect(res.status).toBe(201);
+  });
+
   it("returns 503 and blocks the checkout when the rebuild fails", async () => {
     mockExecutionWorkspaceService.reopenClosedIsolatedExecutionWorkspaceForIssue.mockResolvedValue({
       ok: false,
