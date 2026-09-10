@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { approvalComments, approvals } from "@paperclipai/db";
 import { notFound, unprocessable } from "../errors.js";
@@ -7,6 +7,17 @@ import { agentService } from "./agents.js";
 import { budgetService } from "./budgets.js";
 import { notifyHireApproved } from "./hire-hook.js";
 import { instanceSettingsService } from "./instance-settings.js";
+
+export type ApprovalListFilters = {
+  status?: string;
+  /** Exact match on `payload->>'dedupKey'` — the duplicate check before filing a new approval. */
+  dedupKey?: string;
+  /** Omit for the full result set; pagination is opt-in (see `list`). */
+  limit?: number;
+  offset?: number;
+};
+
+export const APPROVAL_LIST_MAX_LIMIT = 500;
 
 export function approvalService(db: Db) {
   const agentsSvc = agentService(db);
@@ -86,10 +97,29 @@ export function approvalService(db: Db) {
   }
 
   return {
-    list: (companyId: string, status?: string) => {
+    list: (companyId: string, filters: ApprovalListFilters = {}) => {
+      const { status, dedupKey, limit, offset } = filters;
       const conditions = [eq(approvals.companyId, companyId)];
       if (status) conditions.push(eq(approvals.status, status));
-      return db.select().from(approvals).where(and(...conditions));
+      // Matched in SQL, before `redactApprovalPayload` runs over the response —
+      // a redacted payload must still be findable by its dedup key.
+      if (dedupKey !== undefined) {
+        conditions.push(sql`${approvals.payload} ->> 'dedupKey' = ${dedupKey}`);
+      }
+
+      // Newest first, with `id` breaking ties, so `offset` walks a stable order
+      // instead of whatever the heap happens to return.
+      const query = db
+        .select()
+        .from(approvals)
+        .where(and(...conditions))
+        .orderBy(desc(approvals.createdAt), asc(approvals.id));
+
+      // Pagination is deliberately opt-in. The approvals UI (list page, inbox
+      // feed, sidebar badge) fetches with no params and counts client-side over
+      // the whole array, so a default page size would silently under-report it.
+      if (limit === undefined) return query;
+      return query.limit(limit).offset(offset ?? 0);
     },
 
     getById: (id: string) =>

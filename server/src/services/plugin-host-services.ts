@@ -2642,7 +2642,7 @@ export function buildHostServices(
       async list(params) {
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
-        const rows = await approvalSvc.list(companyId, params.status ?? undefined);
+        const rows = await approvalSvc.list(companyId, { status: params.status ?? undefined });
         // Match the web app's approval read surface: payloads are redacted so
         // the chat bridge never receives secrets the web app itself hides.
         return rows.map((approval) => redactApprovalPayload(approval)) as any;
