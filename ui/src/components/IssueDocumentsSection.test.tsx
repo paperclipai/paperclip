@@ -1053,4 +1053,116 @@ describe("IssueDocumentsSection", () => {
     });
     queryClient.clear();
   });
+
+  // JUP-26: a verbatim document is data. The markdown renderer and the WYSIWYG
+  // editor both reflow what they are given, and saving one back as markdown
+  // would have its body normalised on the way in.
+  describe("verbatim documents", () => {
+    const ndjsonBody = '{"id":1,"rawExcerpt":"one\\ntwo"}\n{"id":2,"rawExcerpt":"C:\\\\new"}';
+
+    function createNdjsonDocument() {
+      return createIssueDocument({
+        key: "actions-raw",
+        title: "Action candidates",
+        format: "ndjson",
+        body: ndjsonBody,
+      });
+    }
+
+    function newQueryClient() {
+      return new QueryClient({
+        defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+      });
+    }
+
+    it("renders an ndjson body as preformatted text rather than markdown", async () => {
+      const root = createRoot(container);
+      const queryClient = newQueryClient();
+      mockIssuesApi.listDocuments.mockResolvedValue([createNdjsonDocument()]);
+
+      await act(async () => {
+        root.render(
+          <QueryClientProvider client={queryClient}>
+            <IssueDocumentsSection issue={createIssue()} canDeleteDocuments={false} />
+          </QueryClientProvider>,
+        );
+      });
+      await flush();
+      await flush();
+
+      const pre = container.querySelector("pre");
+      expect(pre).toBeTruthy();
+      // Byte for byte, including the escapes the store used to rewrite.
+      expect(pre?.textContent).toBe(ndjsonBody);
+      expect(container.querySelector('[data-testid="markdown-body"]')).toBeNull();
+
+      await act(async () => {
+        root.unmount();
+      });
+      queryClient.clear();
+    });
+
+    it("edits an ndjson body in a plain textarea and saves it under its own format", async () => {
+      const document_ = createNdjsonDocument();
+      const root = createRoot(container);
+      const queryClient = newQueryClient();
+      mockIssuesApi.listDocuments.mockResolvedValue([document_]);
+      mockIssuesApi.upsertDocument.mockResolvedValue(document_);
+
+      await act(async () => {
+        root.render(
+          <QueryClientProvider client={queryClient}>
+            <IssueDocumentsSection issue={createIssue()} canDeleteDocuments={false} />
+          </QueryClientProvider>,
+        );
+      });
+      await flush();
+      await flush();
+
+      const editItem = Array.from(container.querySelectorAll("button")).find(
+        (button) => button.textContent?.includes("Edit document"),
+      );
+      expect(editItem).toBeTruthy();
+      await act(async () => {
+        editItem?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      await flush();
+
+      const textarea = container.querySelector("textarea");
+      expect(textarea).toBeTruthy();
+      expect(textarea?.value).toBe(ndjsonBody);
+      // The WYSIWYG editor never sees a verbatim body.
+      expect(container.querySelector('[data-testid="markdown-editor"]')).toBeNull();
+
+      const editedBody = `${ndjsonBody}\n{"id":3,"rawExcerpt":"three"}`;
+      const setTextareaValue = Object.getOwnPropertyDescriptor(
+        window.HTMLTextAreaElement.prototype,
+        "value",
+      )?.set;
+      await act(async () => {
+        setTextareaValue?.call(textarea, editedBody);
+        textarea?.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+      await flush();
+
+      // Cmd+Enter commits the draft without waiting on the autosave debounce.
+      await act(async () => {
+        textarea?.dispatchEvent(
+          new KeyboardEvent("keydown", { key: "Enter", metaKey: true, bubbles: true }),
+        );
+      });
+      await flush();
+
+      expect(mockIssuesApi.upsertDocument).toHaveBeenCalledWith(
+        "issue-1",
+        "actions-raw",
+        expect.objectContaining({ format: "ndjson", body: editedBody }),
+      );
+
+      await act(async () => {
+        root.unmount();
+      });
+      queryClient.clear();
+    });
+  });
 });

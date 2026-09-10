@@ -10,6 +10,7 @@ import type {
   IssueExecutionMonitorRecoveryPolicy,
   IssueExecutionMonitorStateStatus,
   IssueExecutionDecisionOutcome,
+  IssueDocumentFormat,
   IssueMonitorScheduledBy,
   IssueExecutionPolicyMode,
   IssueReferenceSourceKind,
@@ -93,7 +94,7 @@ export interface IssueAssigneeAdapterOverrides {
   useProjectWorkspace?: boolean;
 }
 
-export type DocumentFormat = "markdown";
+export type DocumentFormat = IssueDocumentFormat;
 
 export interface IssueDocumentSummary {
   id: string;

@@ -13,6 +13,8 @@ import {
   ISSUE_COMMENT_PRESENTATION_KINDS,
   ISSUE_COMMENT_PRESENTATION_TONES,
   ISSUE_COMMENT_PRESENTATION_DENSITIES,
+  ISSUE_DOCUMENT_FORMATS,
+  isVerbatimIssueDocumentFormat,
   ISSUE_HARNESS_KINDS,
   ISSUE_MONITOR_SCHEDULED_BY,
   ISSUE_PRIORITIES,
@@ -35,7 +37,7 @@ import {
   REQUEST_CHECKBOX_CONFIRMATION_OPTION_LIMIT,
   REQUEST_ITEM_VERDICTS_ITEM_LIMIT,
 } from "../constants.js";
-import { multilineTextSchema } from "./text.js";
+import { multilineTextSchema, normalizeEscapedLineBreaks } from "./text.js";
 import {
   lowTrustReviewPresetPolicySchema,
   trustAuthorizationPolicySchema,
@@ -2062,21 +2064,31 @@ export type CreateIssueAttachmentMetadata = z.infer<
   typeof createIssueAttachmentMetadataSchema
 >;
 
-export const ISSUE_DOCUMENT_FORMATS = ["markdown"] as const;
-
 export const issueDocumentFormatSchema = z.enum(ISSUE_DOCUMENT_FORMATS);
 
-export const upsertIssueDocumentSchema = z.object({
-  title: z.string().trim().max(200).nullable().optional(),
-  format: issueDocumentFormatSchema,
-  body: multilineTextSchema.pipe(z.string().max(524288)),
-  changeSummary: z.string().trim().max(500).nullable().optional(),
-  baseRevisionId: z.string().guid().nullable().optional(),
-});
+const MAX_ISSUE_DOCUMENT_BODY_LENGTH = 524288;
+
+export const upsertIssueDocumentSchema = z
+  .object({
+    title: z.string().trim().max(200).nullable().optional(),
+    format: issueDocumentFormatSchema,
+    // Normalisation is decided by the sibling `format`, so it happens once the
+    // whole object has parsed rather than inside the field. The length limit
+    // stays on the field, both so the published contract keeps it and so the
+    // limit describes what a client may send.
+    body: z.string().max(MAX_ISSUE_DOCUMENT_BODY_LENGTH),
+    changeSummary: z.string().trim().max(500).nullable().optional(),
+    baseRevisionId: z.string().guid().nullable().optional(),
+  })
+  .transform((input) => (
+    isVerbatimIssueDocumentFormat(input.format)
+      ? input
+      : { ...input, body: normalizeEscapedLineBreaks(input.body) }
+  ));
 
 export const restoreIssueDocumentRevisionSchema = z.object({});
 
-export type IssueDocumentFormat = z.infer<typeof issueDocumentFormatSchema>;
+export type { IssueDocumentFormat } from "../constants.js";
 export type UpsertIssueDocument = z.infer<typeof upsertIssueDocumentSchema>;
 export type RestoreIssueDocumentRevision = z.infer<
   typeof restoreIssueDocumentRevisionSchema

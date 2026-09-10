@@ -1,4 +1,5 @@
-import type { DocumentRevision, IssueDocument, IssueLabel } from "@paperclipai/shared";
+import type { DocumentFormat, DocumentRevision, IssueDocument, IssueLabel } from "@paperclipai/shared";
+import { ISSUE_DOCUMENT_FORMATS } from "@paperclipai/shared";
 import { api } from "./client";
 
 // -----------------------------------------------------------------------------
@@ -249,6 +250,15 @@ export interface PatchCaseInput {
   labelIds?: string[];
 }
 
+// A case document stores its format as free text, so it can carry a value the
+// issue document surface has no renderer for. Anything unrecognised reads as
+// markdown, which is what every case document was before formats existed.
+function toDocumentFormat(format: string): DocumentFormat {
+  return (ISSUE_DOCUMENT_FORMATS as readonly string[]).includes(format)
+    ? (format as DocumentFormat)
+    : "markdown";
+}
+
 export function caseDocumentToIssueDocument(caseId: string, key: string, document: CaseDocument): IssueDocument {
   return {
     id: document.id,
@@ -256,7 +266,7 @@ export function caseDocumentToIssueDocument(caseId: string, key: string, documen
     issueId: caseId,
     key,
     title: document.title,
-    format: "markdown",
+    format: toDocumentFormat(document.format),
     body: document.latestBody ?? "",
     latestRevisionId: document.latestRevisionId,
     latestRevisionNumber: document.latestRevisionNumber ?? 1,
@@ -282,7 +292,7 @@ export function caseRevisionToDocumentRevision(caseId: string, key: string, revi
     key,
     revisionNumber: revision.revisionNumber,
     title: revision.title,
-    format: "markdown",
+    format: toDocumentFormat(revision.format),
     body: revision.body ?? "",
     changeSummary: revision.changeSummary,
     createdByAgentId: revision.createdByAgentId,

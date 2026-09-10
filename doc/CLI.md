@@ -466,6 +466,18 @@ npx paperclipai issue document:restore <issue-id> <key> <revision-id>
 npx paperclipai issue document:delete <issue-id> <key>
 ```
 
+A document body is `markdown` unless `--format` says otherwise. A markdown body
+has escaped line breaks interpreted on the way in, so prose assembled by string
+concatenation still renders as intended. That is wrong for a machine-readable
+body: interpreting an escape inside a JSON string splits one record across
+several lines. Write those with `text`, `json` or `ndjson`, which store the body
+byte for byte.
+
+```sh
+npx paperclipai issue document:put <issue-id> actions-raw \
+  --format ndjson --body-file ./candidates.ndjson
+```
+
 ```sh
 npx paperclipai issue work-products <issue-id>
 npx paperclipai issue work-product:create <issue-id> --payload-json '{"type":"pull_request","provider":"github","title":"PR"}'

@@ -448,6 +448,33 @@ const SYSTEM_ISSUE_DOCUMENT_KEY_SET = new Set<string>(SYSTEM_ISSUE_DOCUMENT_KEYS
 export function isSystemIssueDocumentKey(key: string): key is SystemIssueDocumentKey {
   return SYSTEM_ISSUE_DOCUMENT_KEY_SET.has(key);
 }
+
+/**
+ * `markdown` is prose meant to be read, so its body gets escaped line breaks
+ * interpreted on the way in — a document assembled by string concatenation
+ * upstream still renders as the author meant it.
+ *
+ * The verbatim formats store the body byte for byte. A machine-readable
+ * document (NDJSON records, a JSON blob, a log excerpt) has to survive a round
+ * trip unchanged, and interpreting an escape inside a JSON string breaks it:
+ * `JSON.stringify` emits the short escape for a real newline, so normalising it
+ * splits one record across several physical lines.
+ */
+export const ISSUE_DOCUMENT_FORMATS = ["markdown", "text", "json", "ndjson"] as const;
+export type IssueDocumentFormat = (typeof ISSUE_DOCUMENT_FORMATS)[number];
+
+export const VERBATIM_ISSUE_DOCUMENT_FORMATS = ["text", "json", "ndjson"] as const;
+export type VerbatimIssueDocumentFormat = (typeof VERBATIM_ISSUE_DOCUMENT_FORMATS)[number];
+
+const VERBATIM_ISSUE_DOCUMENT_FORMAT_SET = new Set<string>(VERBATIM_ISSUE_DOCUMENT_FORMATS);
+
+/** True when a body of this format is stored exactly as it arrived. */
+export function isVerbatimIssueDocumentFormat(
+  format: string,
+): format is VerbatimIssueDocumentFormat {
+  return VERBATIM_ISSUE_DOCUMENT_FORMAT_SET.has(format);
+}
+
 export const ISSUE_REFERENCE_SOURCE_KINDS = ["title", "description", "comment", "document"] as const;
 export type IssueReferenceSourceKind = (typeof ISSUE_REFERENCE_SOURCE_KINDS)[number];
 

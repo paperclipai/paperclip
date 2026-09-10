@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { MAX_ISSUE_REQUEST_DEPTH } from "../index.js";
+import {
+  ISSUE_DOCUMENT_FORMATS,
+  MAX_ISSUE_REQUEST_DEPTH,
+  VERBATIM_ISSUE_DOCUMENT_FORMATS,
+  isVerbatimIssueDocumentFormat,
+} from "../index.js";
 import {
   addIssueCommentSchema,
   createIssueSchema,
@@ -440,6 +445,100 @@ describe("issue validators", () => {
 
     expect(response.summaryMarkdown).toBe("Summary\n\nNext action");
     expect(document.body).toBe("# Plan\n\nShip it");
+  });
+
+  describe("issue document formats", () => {
+    // JUP-26: a `markdown` body is prose and gets escaped line breaks
+    // interpreted; a verbatim body is data and has to come back byte for byte.
+    const BACKSLASH = "\\";
+
+    it("accepts every published format and rejects anything else", () => {
+      for (const format of ISSUE_DOCUMENT_FORMATS) {
+        expect(upsertIssueDocumentSchema.safeParse({ format, body: "x" }).success).toBe(true);
+      }
+      expect(upsertIssueDocumentSchema.safeParse({ format: "html", body: "x" }).success).toBe(false);
+      expect(upsertIssueDocumentSchema.safeParse({ body: "x" }).success).toBe(false);
+    });
+
+    it("agrees with isVerbatimIssueDocumentFormat about which formats are prose", () => {
+      expect(ISSUE_DOCUMENT_FORMATS.filter((format) => !isVerbatimIssueDocumentFormat(format)))
+        .toEqual(["markdown"]);
+      expect([...VERBATIM_ISSUE_DOCUMENT_FORMATS].every(isVerbatimIssueDocumentFormat)).toBe(true);
+    });
+
+    it("stores an NDJSON body byte for byte", () => {
+      // The reported break: a record whose rawExcerpt holds a real newline
+      // serialises to the short escape, and normalising it split one record
+      // across several physical lines.
+      const records = [
+        { id: 1, rawExcerpt: "line one\nline two" },
+        { id: 2, rawExcerpt: `C:${BACKSLASH}new${BACKSLASH}records` },
+        { id: 3, rawExcerpt: "carriage\r\nreturn" },
+      ];
+      const body = records.map((record) => JSON.stringify(record)).join("\n");
+
+      const stored = upsertIssueDocumentSchema.parse({ format: "ndjson", body }).body;
+
+      expect(stored).toBe(body);
+      const lines = stored.split("\n");
+      expect(lines).toHaveLength(records.length);
+      expect(lines.map((line) => JSON.parse(line))).toEqual(records);
+    });
+
+    it("leaves a JSON body's escapes alone and keeps it parseable", () => {
+      const body = JSON.stringify({ note: "one\ntwo", path: `C:${BACKSLASH}new` }, null, 2);
+
+      const stored = upsertIssueDocumentSchema.parse({ format: "json", body }).body;
+
+      expect(stored).toBe(body);
+      expect(JSON.parse(stored)).toEqual({ note: "one\ntwo", path: `C:${BACKSLASH}new` });
+    });
+
+    it("still interprets escaped line breaks for markdown", () => {
+      const parsed = upsertIssueDocumentSchema.parse({
+        format: "markdown",
+        body: `Line 1${BACKSLASH}nLine 2`,
+      });
+
+      expect(parsed.body).toBe("Line 1\nLine 2");
+    });
+
+    it("does not normalize a plain-text body", () => {
+      const body = `Line 1${BACKSLASH}nLine 2`;
+
+      expect(upsertIssueDocumentSchema.parse({ format: "text", body }).body).toBe(body);
+    });
+
+    it("carries the rest of the payload through the format branch untouched", () => {
+      const parsed = upsertIssueDocumentSchema.parse({
+        title: "  Collector output  ",
+        format: "ndjson",
+        body: "{}",
+        changeSummary: "  first run  ",
+        baseRevisionId: null,
+      });
+
+      expect(parsed).toEqual({
+        title: "Collector output",
+        format: "ndjson",
+        body: "{}",
+        changeSummary: "first run",
+        baseRevisionId: null,
+      });
+    });
+
+    it("holds the body length limit on every format", () => {
+      const oversized = "a".repeat(524289);
+
+      for (const format of ISSUE_DOCUMENT_FORMATS) {
+        const result = upsertIssueDocumentSchema.safeParse({ format, body: oversized });
+        expect(result.success).toBe(false);
+        expect(result.error?.issues[0]?.path).toEqual(["body"]);
+      }
+      expect(
+        upsertIssueDocumentSchema.safeParse({ format: "ndjson", body: "a".repeat(524288) }).success,
+      ).toBe(true);
+    });
   });
 
   it("clamps oversized requestDepth values on create", () => {

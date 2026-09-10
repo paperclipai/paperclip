@@ -18,7 +18,7 @@ import {
   type CaseSummary,
 } from "@/api/cases";
 import { issuesApi } from "@/api/issues";
-import type { IssueDocument } from "@paperclipai/shared";
+import type { DocumentFormat, IssueDocument } from "@paperclipai/shared";
 import { PROJECT_COLORS, type IssueLabel } from "@paperclipai/shared";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -522,7 +522,7 @@ export function CaseDetail() {
         const document = await casesApi.getDocument(caseIdentifier, key);
         return caseDocumentToIssueDocument(caseData.id, document.key, document);
       },
-      upsertDocument: async (key: string, data: { title: string | null; format: "markdown"; body: string; baseRevisionId: string | null }) => {
+      upsertDocument: async (key: string, data: { title: string | null; format: DocumentFormat; body: string; baseRevisionId: string | null }) => {
         const result = await casesApi.upsertDocument(caseIdentifier, key, data);
         return caseDocumentToIssueDocument(caseData.id, result.document.key, result.document);
       },

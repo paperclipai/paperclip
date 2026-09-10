@@ -4,6 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import request from "supertest";
 import { describe, expect, it } from "vitest";
+import { ISSUE_DOCUMENT_FORMATS } from "@paperclipai/shared";
 import { COMPANY_IMPORT_TRANSFERS_ROUTE_PATH } from "@paperclipai/shared/company-import-transfer";
 import { errorHandler } from "../middleware/index.js";
 import { buildOpenApiSpec, openApiRoutes } from "../routes/openapi.js";
@@ -857,6 +858,20 @@ describe("openapi routes", () => {
     expect(
       Object.keys(responseSchemas.prompt.properties as Record<string, unknown>),
     ).toEqual(["authorizationUrl", "transportAdvisory"]);
+  });
+
+  it("publishes every issue document format and the body length limit", () => {
+    const { spec } = loadSpecRoutes();
+    const schema =
+      spec.paths["/api/issues/{id}/documents/{key}"].put.requestBody.content["application/json"].schema;
+
+    // JUP-26: a collector picks its format from this contract, so the verbatim
+    // formats have to be visible here and not just accepted by the handler.
+    expect(schema.properties.format.enum).toEqual([...ISSUE_DOCUMENT_FORMATS]);
+    // The limit sits on the field rather than behind the body transform, so the
+    // published contract states the size a client may send.
+    expect(schema.properties.body).toEqual({ type: "string", maxLength: 524288 });
+    expect(schema.required).toEqual(["format", "body"]);
   });
 
   it("documents the 404 non-member gate on the Claude setup-token cancel route", () => {

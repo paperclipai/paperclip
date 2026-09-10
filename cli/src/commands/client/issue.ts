@@ -1,6 +1,7 @@
 import { Command } from "commander";
 import { readFile, writeFile } from "node:fs/promises";
 import {
+  ISSUE_DOCUMENT_FORMATS,
   addIssueCommentSchema,
   acceptIssueThreadInteractionSchema,
   cancelIssueThreadInteractionSchema,
@@ -687,7 +688,11 @@ export function registerIssueCommands(program: Command): void {
       .argument("<issueId>", "Issue ID")
       .argument("<key>", "Document key")
       .option("--title <title>", "Document title")
-      .option("--format <format>", "Document format", "markdown")
+      .option(
+        "--format <format>",
+        `Document format (${ISSUE_DOCUMENT_FORMATS.join(", ")}). Every format other than markdown stores the body verbatim`,
+        "markdown",
+      )
       .option("--body <markdown>", "Document body")
       .option("--body-file <path>", "Read document body from a file")
       .option("--change-summary <text>", "Change summary")

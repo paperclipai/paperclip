@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { QueryClient, QueryKey } from "@tanstack/react-query";
 import type {
   Agent,
+  DocumentFormat,
   DocumentRevision,
   FeedbackDataSharingPreference,
   FeedbackVote,
@@ -10,7 +11,7 @@ import type {
   Issue,
   IssueDocument,
 } from "@paperclipai/shared";
-import { isSystemIssueDocumentKey } from "@paperclipai/shared";
+import { isSystemIssueDocumentKey, isVerbatimIssueDocumentFormat } from "@paperclipai/shared";
 import { useLocation } from "@/lib/router";
 import { ApiError } from "../api/client";
 import { issuesApi } from "../api/issues";
@@ -28,6 +29,7 @@ import { MarkdownEditor, type MentionOption } from "./MarkdownEditor";
 import { OutputFeedbackButtons } from "./OutputFeedbackButtons";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -44,6 +46,10 @@ import { Badge } from "@/components/ui/badge";
 type DraftState = {
   key: string;
   title: string;
+  // Carried on the draft so an edit round-trips the document's own format. A
+  // verbatim document saved back as markdown would have its body normalised on
+  // the way in, which is exactly the corruption the format exists to avoid.
+  format: DocumentFormat;
   body: string;
   baseRevisionId: string | null;
   isNew: boolean;
@@ -67,7 +73,7 @@ type DocumentSubjectConfig = {
   getDocument: (key: string) => Promise<IssueDocument>;
   upsertDocument: (key: string, data: {
     title: string | null;
-    format: "markdown";
+    format: DocumentFormat;
     body: string;
     baseRevisionId: string | null;
   }) => Promise<IssueDocument>;
@@ -106,9 +112,22 @@ function saveFoldedDocumentKeys(issueId: string, keys: string[]) {
 
 function renderFoldableBody(
   body: string,
+  format: DocumentFormat,
   className?: string,
   externalReferences?: MarkdownExternalReferenceMap,
 ) {
+  // A verbatim body is data, not prose. Rendering it as markdown would swallow
+  // the characters that carry its meaning — `#`, `*`, `_`, the line breaks
+  // between NDJSON records — so show it exactly as stored.
+  if (isVerbatimIssueDocumentFormat(format)) {
+    return (
+      <FoldCurtain>
+        <pre className={cn("overflow-x-auto whitespace-pre font-mono text-xs leading-6", className)}>
+          {body}
+        </pre>
+      </FoldCurtain>
+    );
+  }
   return (
     <FoldCurtain>
       <MarkdownBody className={className} softBreaks={false} externalReferences={externalReferences}>
@@ -134,12 +153,20 @@ function isLockedDocumentError(error: unknown) {
   return error instanceof ApiError && error.status === 409 && error.message === "Document is locked";
 }
 
-function downloadDocumentFile(key: string, body: string) {
-  const blob = new Blob([body], { type: "text/markdown;charset=utf-8" });
+const DOCUMENT_DOWNLOAD_TYPES: Record<DocumentFormat, { extension: string; mimeType: string }> = {
+  markdown: { extension: "md", mimeType: "text/markdown" },
+  text: { extension: "txt", mimeType: "text/plain" },
+  json: { extension: "json", mimeType: "application/json" },
+  ndjson: { extension: "ndjson", mimeType: "application/x-ndjson" },
+};
+
+function downloadDocumentFile(key: string, body: string, format: DocumentFormat) {
+  const { extension, mimeType } = DOCUMENT_DOWNLOAD_TYPES[format] ?? DOCUMENT_DOWNLOAD_TYPES.markdown;
+  const blob = new Blob([body], { type: `${mimeType};charset=utf-8` });
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
   anchor.href = url;
-  anchor.download = `${key}.md`;
+  anchor.download = `${key}.${extension}`;
   document.body.appendChild(anchor);
   anchor.click();
   anchor.remove();
@@ -378,7 +405,7 @@ export function IssueDocumentsSection({
     mutationFn: async (nextDraft: DraftState) =>
       documentSubject.upsertDocument(nextDraft.key, {
         title: isPlanKey(nextDraft.key) ? null : nextDraft.title.trim() || null,
-        format: "markdown",
+        format: nextDraft.format,
         body: nextDraft.body,
         baseRevisionId: nextDraft.baseRevisionId,
       }),
@@ -475,6 +502,7 @@ export function IssueDocumentsSection({
     setDraft({
       key: "",
       title: "",
+      format: "markdown",
       body: "",
       baseRevisionId: null,
       isNew: true,
@@ -492,6 +520,7 @@ export function IssueDocumentsSection({
     setDraft({
       key: conflictedDraft?.key ?? doc.key,
       title: conflictedDraft?.title ?? doc.title ?? "",
+      format: conflictedDraft?.format ?? doc.format,
       body: conflictedDraft?.body ?? doc.body,
       baseRevisionId: conflictedDraft?.baseRevisionId ?? doc.latestRevisionId,
       isNew: false,
@@ -591,6 +620,7 @@ export function IssueDocumentsSection({
         return {
           key: saved.key,
           title: saved.title ?? "",
+          format: saved.format,
           body: saved.body,
           baseRevisionId: saved.latestRevisionId,
           isNew: false,
@@ -624,6 +654,7 @@ export function IssueDocumentsSection({
             localDraft: {
               key: normalizedKey,
               title: isPlanKey(normalizedKey) ? "" : normalizedTitle,
+              format: currentDraft.format,
               body: currentDraft.body,
               baseRevisionId: currentDraft.baseRevisionId,
               isNew: false,
@@ -650,6 +681,7 @@ export function IssueDocumentsSection({
     setDraft({
       key: serverDocument.key,
       title: serverDocument.title ?? "",
+      format: serverDocument.format,
       body: serverDocument.body,
       baseRevisionId: serverDocument.latestRevisionId,
       isNew: false,
@@ -985,7 +1017,7 @@ export function IssueDocumentsSection({
             </Badge>
           </div>
           <div className={documentBodyPaddingClassName}>
-            {renderFoldableBody(documentSubject.legacyPlanDocument.body, documentBodyContentClassName, externalReferences)}
+            {renderFoldableBody(documentSubject.legacyPlanDocument.body, "markdown", documentBodyContentClassName, externalReferences)}
           </div>
         </div>
       ) : null}
@@ -1009,6 +1041,7 @@ export function IssueDocumentsSection({
             ? selectedHistoricalRevision.title ?? ""
             : activeDraft?.title ?? currentRevision.title ?? "";
           const displayedBody = selectedHistoricalRevision?.body ?? activeDraft?.body ?? currentRevision.body;
+          const displayedFormat = selectedHistoricalRevision?.format ?? activeDraft?.format ?? doc.format;
           const displayedRevisionNumber = selectedHistoricalRevision?.revisionNumber ?? currentRevision.revisionNumber;
           const displayedUpdatedAt = selectedHistoricalRevision?.createdAt ?? currentRevision.createdAt;
           const showTitle = !isPlanKey(doc.key) && !!displayedTitle.trim() && !titlesMatchKey(displayedTitle, doc.key);
@@ -1115,7 +1148,7 @@ export function IssueDocumentsSection({
                         ) : null}
                         {!isHistoricalPreview && !isLocked ? <DropdownMenuSeparator /> : null}
                         <DropdownMenuItem
-                          onClick={() => downloadDocumentFile(doc.key, displayedBody)}
+                          onClick={() => downloadDocumentFile(doc.key, displayedBody, displayedFormat)}
                         >
                           <Download className="h-3.5 w-3.5" />
                           Download document
@@ -1253,7 +1286,7 @@ export function IssueDocumentsSection({
                           {!isPlanKey(doc.key) && activeConflict.serverDocument.title ? (
                             <p className="mb-2 text-sm font-medium">{activeConflict.serverDocument.title}</p>
                           ) : null}
-                          {renderFoldableBody(activeConflict.serverDocument.body, "text-sm leading-7", externalReferences)}
+                          {renderFoldableBody(activeConflict.serverDocument.body, activeConflict.serverDocument.format, "text-sm leading-7", externalReferences)}
                         </div>
                       )}
                     </div>
@@ -1274,30 +1307,47 @@ export function IssueDocumentsSection({
                     }`}
                   >
                     {(() => {
+                      const editDocumentBody = (body: string) => {
+                        markDocumentDirty(doc.key);
+                        setDraft((current) => {
+                          if (current && current.key === doc.key && !current.isNew) {
+                            return { ...current, body };
+                          }
+                          return current;
+                        });
+                      };
                       const renderedDocumentBody = isHistoricalPreview ? (
-                        renderFoldableBody(displayedBody, documentBodyContentClassName, externalReferences)
+                        renderFoldableBody(displayedBody, displayedFormat, documentBodyContentClassName, externalReferences)
                       ) : activeDraft ? (
-                        <MarkdownEditor
-                          value={displayedBody}
-                          onChange={(body) => {
-                            markDocumentDirty(doc.key);
-                            setDraft((current) => {
-                              if (current && current.key === doc.key && !current.isNew) {
-                                return { ...current, body };
-                              }
-                              return current;
-                            });
-                          }}
-                          placeholder="Markdown body"
-                          bordered={false}
-                          className="bg-transparent"
-                          contentClassName={documentBodyContentClassName}
-                          mentions={mentions}
-                          imageUploadHandler={imageUploadHandler}
-                          onSubmit={() => void commitDraft(activeDraft ?? draft, { clearAfterSave: false, trackAutosave: true })}
-                        />
+                        // The markdown editor is a WYSIWYG surface: it reflows
+                        // what it is given. A verbatim body has to come back out
+                        // byte for byte, so it gets a plain textarea instead.
+                        isVerbatimIssueDocumentFormat(displayedFormat) ? (
+                          <Textarea
+                            value={displayedBody}
+                            onChange={(event) => editDocumentBody(event.target.value)}
+                            placeholder={`${displayedFormat} body`}
+                            spellCheck={false}
+                            className={cn(
+                              "min-h-40 resize-y whitespace-pre rounded-none border-0 bg-transparent px-0 font-mono text-xs leading-6 shadow-none focus-visible:ring-0",
+                              documentBodyContentClassName,
+                            )}
+                          />
+                        ) : (
+                          <MarkdownEditor
+                            value={displayedBody}
+                            onChange={editDocumentBody}
+                            placeholder="Markdown body"
+                            bordered={false}
+                            className="bg-transparent"
+                            contentClassName={documentBodyContentClassName}
+                            mentions={mentions}
+                            imageUploadHandler={imageUploadHandler}
+                            onSubmit={() => void commitDraft(activeDraft ?? draft, { clearAfterSave: false, trackAutosave: true })}
+                          />
+                        )
                       ) : (
-                        renderFoldableBody(displayedBody, documentBodyContentClassName, externalReferences)
+                        renderFoldableBody(displayedBody, displayedFormat, documentBodyContentClassName, externalReferences)
                       );
 
                       return documentSubject.annotations ? (
