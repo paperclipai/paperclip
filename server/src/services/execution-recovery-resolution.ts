@@ -154,6 +154,7 @@ export async function markExecutionReconciliation(
   >,
   decision: ExecutionReconciliation,
   actorId: string,
+  deliveryMode: "review" | "todo" = "todo",
 ) {
   await db
     .update(nativeRunFinalizations)
@@ -178,6 +179,7 @@ export async function markExecutionReconciliation(
           recordedAt: new Date().toISOString(),
         },
         continuationDelivery: "pending",
+        continuationDeliveryMode: deliveryMode,
       },
     })
     .where(
@@ -232,11 +234,28 @@ export async function deliverReconciledExecutions(
         reviewState.currentParticipant?.type === "agent"
           ? reviewState.currentParticipant.agentId
           : null;
-      const deliveryAgentId = reviewParticipantAgentId ?? action.returnOwnerAgentId;
-      if (!deliveryAgentId) continue;
+      const reviewReconciliation =
+        action.evidence.continuationDeliveryMode === "review";
+      const deliveryAgentId = reviewReconciliation
+        ? reviewParticipantAgentId
+        : action.returnOwnerAgentId;
+      if (!deliveryAgentId) {
+        await db
+          .update(issueRecoveryActions)
+          .set({
+            evidence: sql`${issueRecoveryActions.evidence} || '{"continuationDelivery":"invalidated"}'::jsonb`,
+          })
+          .where(pendingDecision);
+        continue;
+      }
       if (
         !task ||
         task.assigneeAgentId !== deliveryAgentId ||
+        (reviewReconciliation &&
+          (task.status !== "in_review" ||
+            reviewState?.status !== "pending" ||
+            reviewState.currentStageType !== "review" ||
+            reviewState.currentParticipant?.type !== "agent")) ||
         ["done", "cancelled"].includes(task.status)
       ) {
         await db

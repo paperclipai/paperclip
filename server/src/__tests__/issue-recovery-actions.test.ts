@@ -1935,6 +1935,57 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     expect(unchangedAction).toMatchObject({ status: "resolved", outcome: "blocked" });
   });
 
+  it("invalidates a review continuation when the governed stage drifts before delivery", async () => {
+    const { companyId, managerId, coderId, sourceIssueId } = await seedCompany();
+    const runId = randomUUID();
+    await db.update(issues).set({
+      status: "in_review",
+      assigneeAgentId: managerId,
+      executionState: {
+        status: "pending",
+        currentStageId: randomUUID(),
+        currentStageType: "approval",
+        currentStageIndex: 0,
+        completedStageIds: [],
+        currentParticipant: { type: "agent", agentId: managerId, userId: null },
+        returnAssignee: { type: "agent", agentId: coderId, userId: null },
+        reviewRequest: null,
+        lastDecisionOutcome: null,
+        changesRequestedCount: 0,
+        lastDecisionId: null,
+      },
+    }).where(eq(issues.id, sourceIssueId));
+    const [action] = await db.insert(issueRecoveryActions).values({
+      companyId,
+      sourceIssueId,
+      kind: "active_run_watchdog",
+      status: "resolved",
+      outcome: "restored",
+      ownerType: "board",
+      returnOwnerAgentId: coderId,
+      cause: "legacy_execution_requires_reconciliation",
+      fingerprint: `legacy-execution:${runId}`,
+      nextAction: "Continue from the verified reconciliation.",
+      evidence: {
+        continuationDelivery: "pending",
+        continuationDeliveryMode: "review",
+        executionReconciliation: {
+          runId,
+          providerStopped: true,
+          actionOutcome: "not_performed",
+          outcomeEvidence: "Verified absent provider effect.",
+        },
+      },
+    }).returning();
+    const wake = vi.fn();
+
+    await deliverReconciledExecutions(db, wake as never);
+
+    expect(wake).not.toHaveBeenCalled();
+    const [invalidated] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, action!.id));
+    expect(invalidated!.evidence).toMatchObject({ continuationDelivery: "invalidated" });
+  });
+
   async function seedReconciledDelivery() {
     const fixture = await seedCompany();
     const { companyId, coderId, sourceIssueId } = fixture;

@@ -7663,7 +7663,13 @@ export function issueRoutes(
           decision: executionReconciliation,
           requireNeverStarted: isPendingReviewReconciliation,
         });
-        await markExecutionReconciliation(tx as unknown as Db, activeRecoveryAction, executionReconciliation!, actor.actorId);
+        await markExecutionReconciliation(
+          tx as unknown as Db,
+          activeRecoveryAction,
+          executionReconciliation!,
+          actor.actorId,
+          isPendingReviewReconciliation ? "review" : "todo",
+        );
       } else if (executionReconciliation) {
         throw conflict("An execution reconciliation must target the current execution recovery action and continue the task.");
       }
