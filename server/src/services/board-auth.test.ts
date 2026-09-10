@@ -6,6 +6,8 @@ import {
   principalPermissionGrants,
   type Db,
 } from "@paperclipai/db";
+import { BOARD_API_KEY_SCOPE_PRESETS } from "@paperclipai/shared";
+import { grantsForHumanRole } from "./company-member-roles.js";
 import { boardAuthService } from "./board-auth.js";
 
 describe("boardAuthService touchBoardApiKey", () => {
@@ -58,7 +60,7 @@ describe("boardAuthService createNamedBoardApiKey", () => {
 
   function creationDb(options: {
     instanceAdmin?: boolean;
-    membershipRole?: "viewer" | "operator";
+    membershipRole?: "viewer" | "operator" | "admin" | "owner";
     grants?: string[];
   }) {
     const insert = vi.fn((table: unknown) => {
@@ -138,5 +140,26 @@ describe("boardAuthService createNamedBoardApiKey", () => {
       },
     })).rejects.toMatchObject({ status: 403 });
     expect(insert).not.toHaveBeenCalled();
+  });
+
+  it("accepts the recommended company-automation preset for a default owner", async () => {
+    const { db, insert } = creationDb({
+      membershipRole: "owner",
+      grants: grantsForHumanRole("owner").map((grant) => grant.permissionKey),
+    });
+    const service = boardAuthService(db);
+
+    await expect(service.createNamedBoardApiKey({
+      userId,
+      name: "automation",
+      scopeConfig: {
+        version: 1,
+        kind: "scoped",
+        companyIds: [companyId],
+        permissions: [...BOARD_API_KEY_SCOPE_PRESETS.company_automation.permissions],
+        instanceCapabilities: [],
+      },
+    })).resolves.toMatchObject({ id: "key-1" });
+    expect(insert).toHaveBeenCalledOnce();
   });
 });
