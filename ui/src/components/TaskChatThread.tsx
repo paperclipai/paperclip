@@ -2684,10 +2684,10 @@ export function TaskChatThread(props: TaskChatThreadProps) {
               isMobile
                 ? "bottom-(--tc-composer-bottom) z-20 transition-[bottom] duration-200 ease-out"
                 : "bottom-0 z-10",
-              "mx-auto flex w-full max-w-(--tc-shell-max-w) flex-col gap-2 px-4 pb-2",
+              "mx-auto flex w-full max-w-(--tc-shell-max-w) flex-col gap-2 px-2 pb-2 md:px-4",
               streamlinedUiEnabled && "md:px-0 md:pb-0",
               (!streamlinedUiEnabled || isMobile) &&
-                "bg-background/80 pt-1 backdrop-blur supports-[backdrop-filter]:bg-background/60",
+                "bg-background/80 pt-1 backdrop-blur supports-[backdrop-filter]:bg-background/60 dark:bg-transparent dark:backdrop-blur-none dark:supports-[backdrop-filter]:bg-transparent",
             )}
           >
             {composerAccessory}

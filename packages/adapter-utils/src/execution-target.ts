@@ -1650,7 +1650,9 @@ printf '\0PAPERCLIP_GIT_CONTEXT_END\0'
 `;
     const result = await adapterExecutionTargetCommandRunner(remote).execute({
       command: "sh", args: ["-c", probe, "paperclip-git-context", input.hostCredentials ? "host" : "managed"],
-      cwd: input.cwd, timeoutMs: 15_000,
+      // The caller's cwd belongs to the controller. Copied sandbox/SSH
+      // workspaces can live at a different path on the execution target.
+      cwd: remote.remoteCwd, timeoutMs: 15_000,
     });
     if (result.exitCode !== 0) throw new Error("Could not read execution-target Git context");
     const payload = result.stdout.split("\0PAPERCLIP_GIT_CONTEXT_V1\0")[1]?.split("\0PAPERCLIP_GIT_CONTEXT_END\0")[0];

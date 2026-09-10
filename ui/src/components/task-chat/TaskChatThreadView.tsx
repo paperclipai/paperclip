@@ -354,7 +354,7 @@ export function TaskChatThreadView({
   const body = (
     <div
       className={cn(
-        "mx-auto flex w-full max-w-(--tc-shell-max-w) flex-col px-4 py-4",
+        "paperclip-mobile-thread mx-auto flex w-full max-w-(--tc-shell-max-w) flex-col px-2 py-4 md:px-4",
         streamlined ? "md:px-0" : "gap-5",
         className,
       )}

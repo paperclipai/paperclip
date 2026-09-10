@@ -997,6 +997,9 @@ importers:
       sharp:
         specifier: ^0.35.4
         version: 0.35.4(@types/node@24.13.3)
+      smol-toml:
+        specifier: ^1.4.2
+        version: 1.8.0
       ssh2:
         specifier: ^1.17.0
         version: 1.17.0

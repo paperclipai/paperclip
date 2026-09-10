@@ -348,6 +348,8 @@
      composer's action row never hides behind the nav. Desktop and the classic
      thread never override it and fall through to the safe-area default. */
   --tc-composer-bottom: var(--sz-calc-8);
+  /* Together with the dock's pb-2, match the page's p-4 side gutters. */
+  --tc-composer-hidden-nav-offset: calc(var(--sz-safe-bottom) + var(--spacing) * 2);
 }
 
 .dark {
@@ -542,6 +544,8 @@
   [data-slot="toggle"],
   [data-slot="checkbox"],
   [data-slot="icon-button"],
+  [data-slot="task-chat-mode-trigger"],
+  [data-slot="new-issue-compact-control"],
   [data-size="xs"],
   [data-size="icon-xs"],
   [data-size="icon-sm"],
@@ -552,6 +556,55 @@
      single line of text and push it too high (notably on mobile Safari). */
   textarea[data-autosize-title] {
     min-height: 0;
+  }
+}
+
+/* Mobile collection toolbars and square agent actions. */
+@media (width < 40rem) {
+  [role="toolbar"][aria-label="Inbox controls"] [data-slot="tabs-list"][data-variant="line"] [data-slot="tabs-trigger"]::after {
+    bottom: var(--spacing);
+  }
+
+  [role="toolbar"][aria-label="Inbox controls"] button[data-size="icon"],
+  [role="group"][aria-label="Agent view"] > button {
+    width: var(--sz-44px);
+    height: var(--sz-44px);
+    min-height: var(--sz-44px);
+    padding: 0;
+    flex-shrink: 0;
+  }
+
+  .paperclip-task-list-toolbar > :first-child {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .paperclip-task-list-toolbar [data-slot="collection-toolbar-search"] {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  .paperclip-task-list-toolbar [data-slot="collection-toolbar-search"] input {
+    height: var(--sz-44px);
+  }
+
+  .paperclip-task-list-toolbar [data-slot="collection-toolbar-context"] {
+    grid-column: 2;
+    grid-row: 1;
+  }
+
+  .paperclip-task-list-toolbar [data-slot="collection-toolbar-context"] button,
+  .paperclip-task-list-toolbar [data-slot="collection-toolbar-controls"] button {
+    width: var(--sz-44px);
+    height: var(--sz-44px);
+    min-height: var(--sz-44px);
+    padding: 0;
+    flex-shrink: 0;
+  }
+
+  .paperclip-task-list-toolbar > :first-child > :last-child {
+    grid-column: 1 / -1;
+    grid-row: 2;
   }
 }
 
@@ -1948,6 +2001,12 @@ a.paperclip-mention-chip[data-mention-kind="agent"]::before {
 .paperclip-markdown li {
   margin: 0.14rem 0;
   padding-left: 0.2rem;
+}
+
+@media (width < 48rem) {
+  .paperclip-mobile-thread .paperclip-markdown :where(ul, ol) {
+    padding-left: calc(var(--spacing) * 5);
+  }
 }
 
 .paperclip-markdown li > :where(p, ul, ol) {

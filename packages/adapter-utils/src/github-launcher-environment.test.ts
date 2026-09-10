@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -66,6 +66,41 @@ async function sandbox(layout: string) {
 }
 
 describe("managed GitHub launcher environment", () => {
+  it.each([false, true])("probes the remote workspace when the controller cwd is absent (host credentials: %s)", async (hostCredentials) => {
+    const fixture = await sandbox("usr/bin");
+    const env = await prepareGitHubExecutionEnvironment({
+      target: fixture.target,
+      cwd: path.join(fixture.root, "controller-only", "agent-workspace"),
+      env: {},
+      hostCredentials,
+      networkAccess: true,
+    });
+
+    expect(env.PAPERCLIP_RUNNER_NETWORK_ACCESS).toBe("enabled");
+    expect(env.PAPERCLIP_GIT_METADATA_ROOTS).toBe("[]");
+    expect(JSON.parse(env.PAPERCLIP_RUNNER_NETWORK_ROOTS!)).not.toHaveLength(0);
+    expect(fixture.runner.execute).toHaveBeenCalledWith(expect.objectContaining({ cwd: fixture.root }));
+  });
+
+  it("reads Git metadata from the SSH workspace instead of an existing controller directory", async () => {
+    const fixture = await sandbox("ssh-toolchain/bin");
+    // Use real Git for the probe, not the launcher fixture's stub.
+    await rm(path.join(fixture.bin, "git"));
+    await exec("git", ["init", fixture.root]);
+    const controllerCwd = path.join(fixture.root, "controller");
+    await mkdir(controllerCwd);
+    vi.spyOn(ssh, "createSshCommandManagedRuntimeRunner").mockReturnValue(fixture.runner);
+    const target = { kind: "remote" as const, transport: "ssh" as const, remoteCwd: fixture.root,
+      spec: { host: "sandbox.example.test", port: 22, username: "runner", remoteCwd: fixture.root,
+        remoteWorkspacePath: fixture.root, privateKey: null, knownHosts: null, strictHostKeyChecking: true } };
+
+    const env = await prepareGitHubExecutionEnvironment({
+      target, cwd: controllerCwd, env: {}, hostCredentials: false, networkAccess: true,
+    });
+
+    expect(JSON.parse(env.PAPERCLIP_GIT_METADATA_ROOTS!)).toEqual([await realpath(path.join(fixture.root, ".git"))]);
+  });
+
   it("uses target Git configuration without importing controller credentials", async () => {
     const fixture = await sandbox("usr/bin");
     vi.stubEnv("GH_TOKEN", "controller-secret");
