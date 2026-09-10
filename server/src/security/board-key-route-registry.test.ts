@@ -52,6 +52,13 @@ function runtimeInventory(extra: readonly RuntimeRoute[] = []): string[] {
 describe("board-key route registry", () => {
   it.each([
     ["GET", "/api/companies/11111111-1111-4111-8111-111111111111/issues", "issues:read", "company"],
+    ["GET", "/api/companies/11111111-1111-4111-8111-111111111111/environments", "environments:read", "company"],
+    ["POST", "/api/companies/11111111-1111-4111-8111-111111111111/tools/applications", "tools:manage", "company"],
+    ["GET", "/api/companies/11111111-1111-4111-8111-111111111111/tools/runtime-slots", "tools:read", "company"],
+    ["GET", "/api/environments/11111111-1111-4111-8111-111111111111", "environments:read", "company_collection"],
+    ["PATCH", "/api/environments/11111111-1111-4111-8111-111111111111", "environments:manage", "instance_global"],
+    ["GET", "/api/environment-leases/11111111-1111-4111-8111-111111111111", "environments:read", "company"],
+    ["GET", "/api/tools/vercel-connect/callback", "deny", "board_key_denied"],
     ["POST", "/api/issues/11111111-1111-4111-8111-111111111111/checkout", "issues:control", "company"],
     ["DELETE", "/api/board-api-keys/11111111-1111-4111-8111-111111111111", "board_api_keys:revoke_self", "key_self"],
     ["POST", "/api/board-api-keys", "deny", "board_key_denied"],

@@ -16,75 +16,84 @@ export function isBoardKeyWriteAction(action: BoardPermissionKey) {
 }
 
 type OwnerAuthorityRequirement =
-  | { kind: "membership" }
+  | { kind: "membership"; roles: readonly string[] }
+  | { kind: "instance_admin" }
   | { kind: "grants"; permissionKeys: readonly PermissionKey[] };
 
-const membershipAuthority = { kind: "membership" } as const;
+const readMembershipAuthority = {
+  kind: "membership",
+  roles: ["owner", "admin", "operator", "member", "viewer"],
+} as const;
+const administrativeMembershipAuthority = {
+  kind: "membership",
+  roles: ["owner", "admin"],
+} as const;
+const instanceAdminAuthority = { kind: "instance_admin" } as const;
 const grantAuthority = (...permissionKeys: PermissionKey[]) => ({
   kind: "grants" as const,
   permissionKeys,
 });
 
 const OWNER_AUTHORITY_REQUIREMENTS = {
-  "companies:read": membershipAuthority,
-  "companies:write": membershipAuthority,
-  "agents:read": membershipAuthority,
+  "companies:read": readMembershipAuthority,
+  "companies:write": administrativeMembershipAuthority,
+  "agents:read": readMembershipAuthority,
   "agents:write": grantAuthority("agents:create", "agents:configure"),
   "agents:operate": grantAuthority("agents:configure"),
-  "projects:read": membershipAuthority,
-  "projects:write": membershipAuthority,
-  "issues:read": membershipAuthority,
+  "projects:read": readMembershipAuthority,
+  "projects:write": administrativeMembershipAuthority,
+  "issues:read": readMembershipAuthority,
   "issues:write": grantAuthority("tasks:assign"),
   "issues:control": grantAuthority("tasks:assign", "tasks:manage_active_checkouts"),
-  "goals:read": membershipAuthority,
-  "goals:write": membershipAuthority,
-  "routines:read": membershipAuthority,
-  "routines:write": membershipAuthority,
-  "routines:run": membershipAuthority,
-  "approvals:read": membershipAuthority,
-  "approvals:write": membershipAuthority,
-  "approvals:decide": membershipAuthority,
-  "costs:read": membershipAuthority,
-  "costs:write": membershipAuthority,
-  "activity:read": membershipAuthority,
-  "artifacts:read": membershipAuthority,
-  "artifacts:write": membershipAuthority,
-  "workspaces:read": membershipAuthority,
-  "workspaces:manage": membershipAuthority,
-  "skills:read": membershipAuthority,
+  "goals:read": readMembershipAuthority,
+  "goals:write": administrativeMembershipAuthority,
+  "routines:read": readMembershipAuthority,
+  "routines:write": administrativeMembershipAuthority,
+  "routines:run": administrativeMembershipAuthority,
+  "approvals:read": readMembershipAuthority,
+  "approvals:write": administrativeMembershipAuthority,
+  "approvals:decide": administrativeMembershipAuthority,
+  "costs:read": readMembershipAuthority,
+  "costs:write": administrativeMembershipAuthority,
+  "activity:read": readMembershipAuthority,
+  "artifacts:read": readMembershipAuthority,
+  "artifacts:write": administrativeMembershipAuthority,
+  "workspaces:read": readMembershipAuthority,
+  "workspaces:manage": administrativeMembershipAuthority,
+  "skills:read": readMembershipAuthority,
   "skills:manage": grantAuthority("skills:create"),
-  "tools:read": membershipAuthority,
+  "tools:read": readMembershipAuthority,
   "tools:manage": grantAuthority("tools:admin"),
-  "secrets:read_metadata": membershipAuthority,
-  "secrets:manage": membershipAuthority,
-  "members:read": membershipAuthority,
+  "secrets:read_metadata": readMembershipAuthority,
+  "secrets:manage": administrativeMembershipAuthority,
+  "members:read": readMembershipAuthority,
   "members:manage": grantAuthority("users:invite", "users:manage_permissions", "joins:approve"),
-  "decisions:read": membershipAuthority,
-  "decisions:write": membershipAuthority,
-  "settings:read": membershipAuthority,
-  "settings:write": membershipAuthority,
-  "environments:read": membershipAuthority,
+  "decisions:read": readMembershipAuthority,
+  "decisions:write": administrativeMembershipAuthority,
+  "settings:read": readMembershipAuthority,
+  "settings:write": administrativeMembershipAuthority,
+  "environments:read": readMembershipAuthority,
   "environments:manage": grantAuthority("environments:manage"),
-  "pipelines:read": membershipAuthority,
+  "pipelines:read": readMembershipAuthority,
   "pipelines:write": grantAuthority("pipelines:write"),
-  "search:read": membershipAuthority,
-  "runtime:read": membershipAuthority,
-  "runtime:manage": membershipAuthority,
+  "search:read": readMembershipAuthority,
+  "runtime:read": readMembershipAuthority,
+  "runtime:manage": administrativeMembershipAuthority,
   "audit:read": grantAuthority("audit:view_agent_actions"),
-  "instance:read": membershipAuthority,
-  "instance:manage": membershipAuthority,
-  "companies:create": membershipAuthority,
-  "companies:import_export": membershipAuthority,
-  "plugins:read": membershipAuthority,
-  "plugins:manage": membershipAuthority,
-  "adapters:read": membershipAuthority,
-  "adapters:manage": membershipAuthority,
-  "users:read": membershipAuthority,
-  "users:manage": membershipAuthority,
-  "catalogs:read": membershipAuthority,
-  "catalogs:manage": membershipAuthority,
-  "backups:create": membershipAuthority,
-  "board_api_keys:revoke_self": membershipAuthority,
+  "instance:read": instanceAdminAuthority,
+  "instance:manage": instanceAdminAuthority,
+  "companies:create": instanceAdminAuthority,
+  "companies:import_export": instanceAdminAuthority,
+  "plugins:read": instanceAdminAuthority,
+  "plugins:manage": instanceAdminAuthority,
+  "adapters:read": instanceAdminAuthority,
+  "adapters:manage": instanceAdminAuthority,
+  "users:read": instanceAdminAuthority,
+  "users:manage": instanceAdminAuthority,
+  "catalogs:read": instanceAdminAuthority,
+  "catalogs:manage": instanceAdminAuthority,
+  "backups:create": instanceAdminAuthority,
+  "board_api_keys:revoke_self": readMembershipAuthority,
 } satisfies Record<BoardPermissionKey, OwnerAuthorityRequirement>;
 
 export async function ownerHasRequiredGrant(
@@ -94,7 +103,33 @@ export async function ownerHasRequiredGrant(
   action: BoardPermissionKey,
 ) {
   const requirement = OWNER_AUTHORITY_REQUIREMENTS[action];
-  if (requirement.kind === "membership") return true;
+  if (requirement.kind === "instance_admin") {
+    const row = await db
+      .select({ id: instanceUserRoles.id })
+      .from(instanceUserRoles)
+      .where(and(eq(instanceUserRoles.userId, ownerUserId), eq(instanceUserRoles.role, "instance_admin")))
+      .then((rows) => rows[0] ?? null);
+    return row !== null;
+  }
+  if (requirement.kind === "membership") {
+    const rows = await db
+      .select({
+        companyId: companyMemberships.companyId,
+        membershipRole: companyMemberships.membershipRole,
+      })
+      .from(companyMemberships)
+      .where(and(
+        eq(companyMemberships.principalType, "user"),
+        eq(companyMemberships.principalId, ownerUserId),
+        eq(companyMemberships.status, "active"),
+        inArray(companyMemberships.companyId, [...companyIds]),
+      ));
+    const rolesByCompany = new Map(rows.map((row) => [row.companyId, row.membershipRole]));
+    return companyIds.every((companyId) => {
+      const role = rolesByCompany.get(companyId);
+      return typeof role === "string" && requirement.roles.includes(role);
+    });
+  }
   const { permissionKeys } = requirement;
   const rows = await db
     .select({

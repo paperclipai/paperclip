@@ -12,6 +12,7 @@ import {
   companies,
   decisionTrainingExamples,
   decisions,
+  environmentLeases,
   executionWorkspaces,
   folders,
   goals,
@@ -85,8 +86,8 @@ export type BoardKeyAuthoritativeResolver =
   | "decision"
   | "decision_training"
   | "workspace_operation"
-  | "key_self"
-  | "downstream_company";
+  | "environment_lease"
+  | "key_self";
 
 export interface BoardKeyRouteMetadata {
   method: string;
@@ -460,10 +461,18 @@ export function lookupBoardKeyRoute(methodInput: string, rawPath: string): Board
       return declared(method, `/api/work-products/${ID}/{*path}`, permissionForMethod(method, "artifacts:read", "artifacts:write"), "company", "work_product", { resourceId });
     case "heartbeat-runs":
       return declared(method, `/api/heartbeat-runs/${ID}/{*path}`, permissionForMethod(method, "runtime:read", "runtime:manage"), "company", "heartbeat_run", { resourceId });
-    case "environments":
     case "environment-leases":
+      return declared(method, `/api/environment-leases/${ID}/{*path}`, "environments:read", "company", "environment_lease", { resourceId });
+    case "environments":
     case "environment-custom-image-setup-sessions":
-      return declared(method, `/api/${top}/${ID}/{*path}`, permissionForMethod(method, "environments:read", "environments:manage"), "company", "downstream_company", { resourceId });
+      // Environment rows and custom-image setup sessions are instance-owned,
+      // not company-owned. Reads preserve the existing board-member view;
+      // mutations require the explicit instance-admin capability. Company-
+      // scoped environment operations use /api/companies/:companyId/... and
+      // are resolved by the authoritative company route above.
+      return SAFE_METHODS.has(method)
+        ? declared(method, `/api/${top}/${ID}/{*path}`, "environments:read", "company_collection", "none", { resourceId, concealment: "forbidden" })
+        : declared(method, `/api/${top}/${ID}/{*path}`, "environments:manage", "instance_global", "none", { resourceId, concealment: "forbidden" });
     case "secrets":
       return declared(method, `/api/secrets/${ID}/{*path}`, permissionForMethod(method, "secrets:read_metadata", "secrets:manage"), "company", "secret", { resourceId });
     case "secret-provider-configs":
@@ -520,8 +529,10 @@ export function lookupBoardKeyRoute(methodInput: string, rawPath: string): Board
       if (isDeniedToolGatewayRoute(method, segments)) return denied(method, "/api/tool-gateway/{*path}");
       return declared(method, "/api/tool-gateway/{*path}", permissionForMethod(method, "tools:read", "tools:manage"), "company", "tool_gateway", { resourceId: segments[3] });
     case "tools":
-      if (segments[2] === "oauth") return denied(method, "/api/tools/oauth/{*path}");
-      return declared(method, "/api/tools/{*path}", permissionForMethod(method, "tools:read", "tools:manage"), "company", "downstream_company", { resourceId });
+      // Company tool APIs live below /api/companies/:companyId/tools and use
+      // the authoritative company resolver. These unscoped paths are OAuth
+      // callbacks and enrollment flows, so board keys must never reach them.
+      return denied(method, "/api/tools/{*path}");
     default:
       return declared(method, path, "deny", "undeclared", "none", { concealment: "forbidden" });
   }
@@ -613,13 +624,12 @@ async function resolveAuthoritativeResource(
     case "decision": return resolveCompanyTableRow(decisions, "decision");
     case "decision_training": return resolveCompanyTableRow(decisionTrainingExamples, "decision_training");
     case "workspace_operation": return resolveCompanyTableRow(workspaceOperations, "workspace_operation");
+    case "environment_lease": return resolveCompanyTableRow(environmentLeases, "environment_lease");
     case "key_self": {
       if (!id || !isUuidLike(id)) return null;
       const row = await db.select({ id: boardApiKeys.id, userId: boardApiKeys.userId }).from(boardApiKeys).where(eq(boardApiKeys.id, id)).then((rows) => rows[0] ?? null);
       return row ? { companyId: null, resourceType: "board_api_key", resourceId: row.id } : null;
     }
-    case "downstream_company":
-      return { companyId: null, resourceType: null, resourceId: id ?? null };
   }
 }
 
@@ -734,11 +744,6 @@ export async function authorizeBoardKey(
     )) {
       await denyBoardKey(db, req, metadata, resource, "owner_permission_grant_missing", "forbidden");
     }
-  } else if (metadata.resolver === "downstream_company") {
-    // A family may be inventoried before it has a safe generic resolver. It is
-    // available to migrated legacy keys through existing route-level checks,
-    // but scoped keys fail closed until an authoritative resolver is added.
-    if (!legacy) await denyBoardKey(db, req, metadata, resource, "authoritative_resolver_unavailable", "not_found");
   } else if (resource?.companyId) {
     const membership = req.actor.memberships?.find(
       (item) => item.companyId === resource.companyId && item.status === "active",

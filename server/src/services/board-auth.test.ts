@@ -142,10 +142,52 @@ describe("boardAuthService createNamedBoardApiKey", () => {
     expect(insert).not.toHaveBeenCalled();
   });
 
+  it("rejects administrative membership permissions for an operator", async () => {
+    const { db, insert } = creationDb({
+      membershipRole: "operator",
+      grants: ["tasks:assign"],
+    });
+    const service = boardAuthService(db);
+
+    await expect(service.createNamedBoardApiKey({
+      userId,
+      name: "automation",
+      scopeConfig: {
+        version: 1,
+        kind: "scoped",
+        companyIds: [companyId],
+        permissions: ["secrets:manage"],
+        instanceCapabilities: [],
+      },
+    })).rejects.toMatchObject({ status: 403 });
+    expect(insert).not.toHaveBeenCalled();
+  });
+
   it("accepts the recommended company-automation preset for a default owner", async () => {
     const { db, insert } = creationDb({
       membershipRole: "owner",
       grants: grantsForHumanRole("owner").map((grant) => grant.permissionKey),
+    });
+    const service = boardAuthService(db);
+
+    await expect(service.createNamedBoardApiKey({
+      userId,
+      name: "automation",
+      scopeConfig: {
+        version: 1,
+        kind: "scoped",
+        companyIds: [companyId],
+        permissions: [...BOARD_API_KEY_SCOPE_PRESETS.company_automation.permissions],
+        instanceCapabilities: [],
+      },
+    })).resolves.toMatchObject({ id: "key-1" });
+    expect(insert).toHaveBeenCalledOnce();
+  });
+
+  it("accepts the recommended company-automation preset for a default admin", async () => {
+    const { db, insert } = creationDb({
+      membershipRole: "admin",
+      grants: grantsForHumanRole("admin").map((grant) => grant.permissionKey),
     });
     const service = boardAuthService(db);
 
