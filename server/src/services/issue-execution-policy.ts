@@ -24,7 +24,7 @@ type IssueLike = AssigneeLike & {
   createdByUserId?: string | null;
   executionPolicy?: IssueExecutionPolicy | Record<string, unknown> | null;
   executionState?: IssueExecutionState | Record<string, unknown> | null;
-  monitorNextCheckAt?: Date | null;
+  monitorNextCheckAt?: Date | string | null;
   monitorWakeRequestedAt?: Date | null;
   monitorLastTriggeredAt?: Date | null;
   monitorAttemptCount?: number | null;
@@ -168,10 +168,10 @@ function derivePersistedMonitorState(input: {
     scheduledByRaw === "assignee" || scheduledByRaw === "board" ? scheduledByRaw : null;
   const metadata = scheduledMonitor ? monitorMetadataFromPolicy(scheduledMonitor) : monitorMetadataFromState(fromState);
 
-  if (nextCheckAt) {
+  if (scheduledMonitor?.nextCheckAt) {
     return {
       status: "scheduled",
-      nextCheckAt,
+      nextCheckAt: isoString(input.issue.monitorNextCheckAt) ?? scheduledMonitor.nextCheckAt ?? fromState?.nextCheckAt ?? null,
       lastTriggeredAt,
       attemptCount,
       notes,
@@ -193,7 +193,35 @@ function derivePersistedMonitorState(input: {
     };
   }
 
-  if (fromState?.status === "triggered" || lastTriggeredAt || attemptCount > 0) {
+  if (fromState?.status === "triggered") {
+    return {
+      status: "triggered",
+      nextCheckAt: null,
+      lastTriggeredAt,
+      attemptCount,
+      notes,
+      scheduledBy,
+      ...metadata,
+      clearedAt: null,
+      clearReason: null,
+    };
+  }
+
+  if (nextCheckAt) {
+    return {
+      status: "scheduled",
+      nextCheckAt,
+      lastTriggeredAt,
+      attemptCount,
+      notes,
+      scheduledBy,
+      ...metadata,
+      clearedAt: null,
+      clearReason: null,
+    };
+  }
+
+  if (lastTriggeredAt || attemptCount > 0) {
     return {
       status: "triggered",
       nextCheckAt: null,
@@ -264,6 +292,112 @@ function buildClearedMonitorState(input: {
 
 function issueAllowsMonitor(status: string, assigneeAgentId: string | null, assigneeUserId: string | null) {
   return Boolean(assigneeAgentId) && !assigneeUserId && (status === "in_progress" || status === "in_review");
+}
+
+export function toMillisecondIso(value: Date | string | null | undefined): string | null {
+  if (value == null) return null;
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  return date.toISOString();
+}
+
+function monitorBoundsFromPersisted(input: {
+  nextCheckAt: string;
+  policy: IssueExecutionPolicy | null;
+  persisted: IssueExecutionMonitorState;
+}): IssueExecutionMonitorPolicy {
+  return {
+    nextCheckAt: input.nextCheckAt,
+    notes: input.policy?.monitor?.notes ?? input.persisted.notes ?? null,
+    scheduledBy: input.persisted.scheduledBy ?? input.policy?.monitor?.scheduledBy ?? "assignee",
+    kind: input.policy?.monitor?.kind ?? input.persisted.kind ?? undefined,
+    serviceName: input.policy?.monitor?.serviceName ?? input.persisted.serviceName ?? undefined,
+    timeoutAt: input.policy?.monitor?.timeoutAt ?? input.persisted.timeoutAt ?? undefined,
+    maxAttempts: input.policy?.monitor?.maxAttempts ?? input.persisted.maxAttempts ?? undefined,
+    recoveryPolicy: input.policy?.monitor?.recoveryPolicy ?? input.persisted.recoveryPolicy ?? undefined,
+  };
+}
+
+/**
+ * Eligible persisted issue monitors are a live continuation path.
+ * Future nextCheckAt and due-but-unfired monitors both count; exhausted or
+ * cleared monitors and ineligible assignees/statuses do not.
+ */
+export function isEligibleIssueMonitorLive(issue: IssueLike, now: Date = new Date()): boolean {
+  if (!issueAllowsMonitor(issue.status, issue.assigneeAgentId ?? null, issue.assigneeUserId ?? null)) {
+    return false;
+  }
+  const policy = normalizeIssueExecutionPolicy(issue.executionPolicy ?? null);
+  const state = parseIssueExecutionState(issue.executionState);
+  const persisted = derivePersistedMonitorState({ issue, state, policy });
+  if (!persisted || persisted.status !== "scheduled") return false;
+
+  const nextCheckAt = persisted.nextCheckAt ?? policy?.monitor?.nextCheckAt ?? null;
+  if (!nextCheckAt) return false;
+
+  const attemptCount = issue.monitorAttemptCount ?? persisted.attemptCount ?? 0;
+  const bounds = policy?.monitor ?? monitorBoundsFromPersisted({ nextCheckAt, policy, persisted });
+  return exhaustedMonitorClearReason({ monitor: bounds, attemptCount, now }) == null;
+}
+
+export type CompactIssueMonitorProjection = {
+  monitorNextCheckAt: string | null;
+  monitorAttemptCount: number;
+  monitorEligibleLive: boolean;
+  monitorStatus: IssueExecutionMonitorState["status"] | null;
+  executionPolicy: IssueExecutionPolicy | null;
+};
+
+function compactMonitorPolicyFromPersisted(
+  persisted: IssueExecutionMonitorState,
+): IssueExecutionMonitorPolicy | null {
+  if (persisted.status !== "scheduled" || !persisted.nextCheckAt) return null;
+  return {
+    nextCheckAt: persisted.nextCheckAt,
+    notes: persisted.notes ?? null,
+    scheduledBy: persisted.scheduledBy ?? "assignee",
+    kind: persisted.kind ?? undefined,
+    serviceName: persisted.serviceName ?? undefined,
+    externalRef: redactIssueMonitorExternalRef(persisted.externalRef),
+    timeoutAt: persisted.timeoutAt ?? undefined,
+    maxAttempts: persisted.maxAttempts ?? undefined,
+    recoveryPolicy: persisted.recoveryPolicy ?? undefined,
+  };
+}
+
+function compactExecutionPolicy(
+  policy: IssueExecutionPolicy | null,
+  monitor: IssueExecutionMonitorPolicy | null,
+): IssueExecutionPolicy | null {
+  if (!monitor) return policy;
+  return {
+    mode: policy?.mode ?? "normal",
+    commentRequired: policy?.commentRequired ?? true,
+    stages: policy?.stages ?? [],
+    monitor,
+    ...(policy?.reviewPreset ? { reviewPreset: policy.reviewPreset } : {}),
+    ...(policy?.authorizationPolicy ? { authorizationPolicy: policy.authorizationPolicy } : {}),
+    ...(policy?.maxReviewRounds != null ? { maxReviewRounds: policy.maxReviewRounds } : {}),
+  };
+}
+
+export function compactIssueMonitorProjection(
+  issue: IssueLike,
+  now: Date = new Date(),
+): CompactIssueMonitorProjection {
+  const policy = normalizeIssueExecutionPolicy(issue.executionPolicy ?? null);
+  const state = parseIssueExecutionState(issue.executionState);
+  const persisted = derivePersistedMonitorState({ issue, state, policy });
+  const compactMonitor = policy?.monitor ?? (persisted ? compactMonitorPolicyFromPersisted(persisted) : null);
+  return {
+    monitorNextCheckAt: persisted?.status === "scheduled"
+      ? persisted.nextCheckAt ?? compactMonitor?.nextCheckAt ?? null
+      : null,
+    monitorAttemptCount: issue.monitorAttemptCount ?? persisted?.attemptCount ?? 0,
+    monitorEligibleLive: isEligibleIssueMonitorLive(issue, now),
+    monitorStatus: persisted?.status ?? null,
+    executionPolicy: compactExecutionPolicy(policy, compactMonitor),
+  };
 }
 
 function monitorClearReasonForIssue(

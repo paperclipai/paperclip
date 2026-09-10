@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { applyIssueExecutionPolicyTransition, normalizeIssueExecutionPolicy, parseIssueExecutionState } from "../services/issue-execution-policy.ts";
+import {
+  applyIssueExecutionPolicyTransition,
+  compactIssueMonitorProjection,
+  isEligibleIssueMonitorLive,
+  normalizeIssueExecutionPolicy,
+  parseIssueExecutionState,
+  REDACTED_ISSUE_MONITOR_EXTERNAL_REF,
+} from "../services/issue-execution-policy.ts";
 import type { IssueExecutionPolicy, IssueExecutionState } from "@paperclipai/shared";
 
 const coderAgentId = "11111111-1111-4111-8111-111111111111";
@@ -2083,5 +2090,230 @@ describe("review round circuit breaker", () => {
       currentParticipant: { type: "user", userId: boardUserId },
       changesRequestedCount: 1,
     });
+  });
+});
+
+describe("isEligibleIssueMonitorLive", () => {
+  const agentId = coderAgentId;
+  const futureCheck = "2026-08-23T18:00:00.000Z";
+  const pastCheck = "2026-08-23T16:00:00.000Z";
+  const now = new Date("2026-08-23T17:00:00.000Z");
+
+  function liveIssue(overrides: Record<string, unknown> = {}) {
+    return {
+      status: "in_progress",
+      assigneeAgentId: agentId,
+      assigneeUserId: null,
+      monitorNextCheckAt: futureCheck,
+      monitorAttemptCount: 0,
+      executionPolicy: {
+        monitor: {
+          nextCheckAt: futureCheck,
+          serviceName: "github",
+          maxAttempts: 12,
+        },
+      },
+      ...overrides,
+    };
+  }
+
+  it("treats a future eligible monitor as live", () => {
+    expect(isEligibleIssueMonitorLive(liveIssue(), now)).toBe(true);
+  });
+
+  it("treats a due-but-unfired eligible monitor as live", () => {
+    expect(isEligibleIssueMonitorLive(liveIssue({
+      monitorNextCheckAt: pastCheck,
+      executionPolicy: {
+        monitor: {
+          nextCheckAt: pastCheck,
+          serviceName: "github",
+          maxAttempts: 12,
+        },
+      },
+    }), now)).toBe(true);
+  });
+
+  function idleState(monitor: Record<string, unknown>) {
+    return {
+      status: "idle",
+      currentStageId: null,
+      currentStageIndex: null,
+      currentStageType: null,
+      currentParticipant: null,
+      returnAssignee: null,
+      completedStageIds: [],
+      lastDecisionId: null,
+      lastDecisionOutcome: null,
+      monitor,
+    };
+  }
+
+  it("treats persisted monitor columns as live when executionPolicy has no monitor", () => {
+    expect(isEligibleIssueMonitorLive(liveIssue({
+      monitorNotes: "Check deployment",
+      monitorScheduledBy: "assignee",
+      executionPolicy: { stages: [] },
+      executionState: idleState({
+        status: "scheduled",
+        nextCheckAt: futureCheck,
+        lastTriggeredAt: null,
+        attemptCount: 0,
+        notes: "Check deployment",
+        scheduledBy: "assignee",
+        kind: "external_service",
+        serviceName: "github",
+        timeoutAt: null,
+        maxAttempts: 12,
+        recoveryPolicy: "wake_owner",
+        clearedAt: null,
+        clearReason: null,
+      }),
+    }), now)).toBe(true);
+  });
+
+  it("does not treat a stale timestamp as live when the monitor is triggered", () => {
+    expect(isEligibleIssueMonitorLive(liveIssue({
+      executionPolicy: { stages: [] },
+      executionState: idleState({
+        status: "triggered",
+        nextCheckAt: null,
+        lastTriggeredAt: now.toISOString(),
+        attemptCount: 1,
+        notes: null,
+        scheduledBy: "assignee",
+        kind: "external_service",
+        serviceName: "github",
+        maxAttempts: 12,
+        clearedAt: null,
+        clearReason: null,
+      }),
+    }), now)).toBe(false);
+  });
+
+  it("does not treat a stale timestamp as live when the monitor is cleared", () => {
+    expect(isEligibleIssueMonitorLive(liveIssue({
+      executionPolicy: { stages: [] },
+      executionState: idleState({
+        status: "cleared",
+        nextCheckAt: null,
+        lastTriggeredAt: now.toISOString(),
+        attemptCount: 1,
+        notes: null,
+        scheduledBy: "assignee",
+        kind: "external_service",
+        serviceName: "github",
+        maxAttempts: 12,
+        clearedAt: now.toISOString(),
+        clearReason: "manual",
+      }),
+    }), now)).toBe(false);
+  });
+
+  it("does not treat timestamps as coverage for ineligible assignees or statuses", () => {
+    expect(isEligibleIssueMonitorLive(liveIssue({ assigneeUserId: "board-user" }), now)).toBe(false);
+    expect(isEligibleIssueMonitorLive(liveIssue({ assigneeAgentId: null }), now)).toBe(false);
+    expect(isEligibleIssueMonitorLive(liveIssue({ status: "blocked" }), now)).toBe(false);
+    expect(isEligibleIssueMonitorLive(liveIssue({ status: "backlog" }), now)).toBe(false);
+    expect(isEligibleIssueMonitorLive(liveIssue({ status: "done" }), now)).toBe(false);
+  });
+
+  it("does not treat exhausted or cleared monitors as live", () => {
+    expect(isEligibleIssueMonitorLive(liveIssue({
+      monitorAttemptCount: 12,
+      executionPolicy: {
+        monitor: { nextCheckAt: futureCheck, maxAttempts: 12 },
+      },
+    }), now)).toBe(false);
+    expect(isEligibleIssueMonitorLive(liveIssue({
+      monitorNextCheckAt: null,
+      executionPolicy: { stages: [] },
+      executionState: {
+        status: "idle",
+        currentStageId: null,
+        currentStageIndex: null,
+        currentStageType: null,
+        currentParticipant: null,
+        returnAssignee: null,
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+        monitor: {
+          status: "cleared",
+          nextCheckAt: null,
+          lastTriggeredAt: null,
+          attemptCount: 1,
+          notes: null,
+          scheduledBy: "assignee",
+          clearedAt: now.toISOString(),
+          clearReason: "manual",
+        },
+      },
+    }), now)).toBe(false);
+  });
+
+  it("projects compact monitor fields with redacted externalRef", () => {
+    const secret = "https://example.test/deploy?token=secret";
+    const projection = compactIssueMonitorProjection(liveIssue({
+      executionPolicy: {
+        monitor: {
+          nextCheckAt: futureCheck,
+          notes: "Check deployment",
+          serviceName: "github",
+          maxAttempts: 12,
+          externalRef: secret,
+        },
+      },
+    }), now);
+
+    expect(projection.monitorNextCheckAt).toBe(futureCheck);
+    expect(projection.monitorAttemptCount).toBe(0);
+    expect(projection.monitorEligibleLive).toBe(true);
+    expect(projection.executionPolicy?.monitor).toEqual(expect.objectContaining({
+      notes: "Check deployment",
+      nextCheckAt: futureCheck,
+      externalRef: REDACTED_ISSUE_MONITOR_EXTERNAL_REF,
+    }));
+    expect(JSON.stringify(projection)).not.toContain(secret);
+  });
+
+  it("projects compact monitor metadata from persisted state when executionPolicy has no monitor", () => {
+    const secret = "https://example.test/deploy?token=secret";
+    const projection = compactIssueMonitorProjection(liveIssue({
+      monitorNotes: "Check deployment",
+      monitorScheduledBy: "assignee",
+      monitorAttemptCount: 1,
+      executionPolicy: { stages: [] },
+      executionState: idleState({
+        status: "scheduled",
+        nextCheckAt: futureCheck,
+        lastTriggeredAt: null,
+        attemptCount: 1,
+        notes: "Check deployment",
+        scheduledBy: "assignee",
+        kind: "external_service",
+        serviceName: "github",
+        timeoutAt: null,
+        maxAttempts: 12,
+        recoveryPolicy: "wake_owner",
+        externalRef: secret,
+        clearedAt: null,
+        clearReason: null,
+      }),
+    }), now);
+
+    expect(projection.monitorEligibleLive).toBe(true);
+    expect(projection.monitorStatus).toBe("scheduled");
+    expect(projection.monitorNextCheckAt).toBe(futureCheck);
+    expect(projection.monitorAttemptCount).toBe(1);
+    expect(projection.executionPolicy?.monitor).toEqual(expect.objectContaining({
+      nextCheckAt: futureCheck,
+      notes: "Check deployment",
+      kind: "external_service",
+      serviceName: "github",
+      maxAttempts: 12,
+      externalRef: REDACTED_ISSUE_MONITOR_EXTERNAL_REF,
+    }));
+    expect(JSON.stringify(projection)).not.toContain(secret);
   });
 });

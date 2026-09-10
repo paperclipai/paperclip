@@ -107,6 +107,9 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
       originKind: overrides.originKind,
       originId: overrides.originId,
       originFingerprint: overrides.originFingerprint,
+      executionPolicy: overrides.executionPolicy,
+      monitorNextCheckAt: overrides.monitorNextCheckAt,
+      monitorAttemptCount: overrides.monitorAttemptCount,
       updatedAt: overrides.updatedAt,
       // Default to an "established" issue (created well before the first-run
       // grace window) so the pending-first-run guard does not defer it. Tests
@@ -327,6 +330,55 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
       .from(issues)
       .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "task_watchdog")));
     expect(watchdogIssues).toHaveLength(0);
+  });
+
+  it("does not trigger while a descendant has an eligible scheduled monitor", async () => {
+    const companyId = await seedCompany();
+    const sourceId = await seedIssue(companyId, { identifier: "WDOG-MON", status: "blocked" });
+    const nextCheckAt = new Date("2026-08-23T18:00:00.000Z");
+    const agentId = await seedAgent(companyId);
+    await seedIssue(companyId, {
+      parentId: sourceId,
+      status: "in_progress",
+      assigneeAgentId: agentId,
+      monitorNextCheckAt: nextCheckAt,
+      monitorAttemptCount: 0,
+      executionPolicy: {
+        monitor: {
+          nextCheckAt: nextCheckAt.toISOString(),
+          serviceName: "github",
+          maxAttempts: 12,
+        },
+      },
+    });
+    await seedWatchdog(companyId, sourceId, agentId);
+    const { service, wakes } = createService();
+
+    const result = await service.reconcileTaskWatchdogs({ companyId });
+
+    expect(result).toMatchObject({ checked: 1, triggered: 0, live: 1 });
+    expect(wakes).toHaveLength(0);
+    const [watchdog] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.issueId, sourceId));
+    expect(watchdog?.lastObservedFingerprint ?? "").not.toMatch(/^task_watchdog_stop:/);
+    expect(JSON.stringify(wakes)).not.toMatch(/task_watchdog_stop:/);
+  });
+
+  it("still stops an in_progress leaf with no monitor, run, review, or recovery path", async () => {
+    const companyId = await seedCompany();
+    const sourceId = await seedIssue(companyId, {
+      identifier: "WDOG-STALL",
+      status: "in_progress",
+      assigneeAgentId: await seedAgent(companyId),
+      monitorNextCheckAt: null,
+    });
+    const agentId = await seedAgent(companyId);
+    await seedWatchdog(companyId, sourceId, agentId);
+    const { service, wakes } = createService();
+
+    const result = await service.reconcileTaskWatchdogs({ companyId });
+
+    expect(result).toMatchObject({ checked: 1, triggered: 1 });
+    expect(wakes[0]?.opts?.idempotencyKey).toMatch(/^task_watchdog:[^:]+:task_watchdog_stop:/);
   });
 
   it("does not trigger while a descendant has a queued assignment wake", async () => {
