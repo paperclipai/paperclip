@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { StrictMode, useState, type ReactElement } from "react";
+import { act, StrictMode, useState, type ReactElement } from "react";
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -208,7 +208,9 @@ function render(ui: ReactElement) {
 }
 
 async function flushAsync() {
-  await new Promise((resolve) => setTimeout(resolve, 0));
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
 }
 
 function editable() {
@@ -703,10 +705,11 @@ describe("TaskChatComposer", () => {
     );
   });
 
-  it("reserves enough mobile editor height for a wrapped two-line placeholder", () => {
+  it("uses a compact mobile editor that can grow with the message", () => {
     render(<TaskChatComposer onAdd={vi.fn()} workMode="standard" mobile />);
 
-    expect(editable().dataset.contentClassName).toContain("min-h-(--sz-72px)");
+    expect(editable().dataset.contentClassName).toContain("min-h-(--sz-48px)");
+    expect(editable().dataset.contentClassName).toContain("max-h-(--sz-28dvh)");
   });
 
   it("submits the trimmed body on Cmd+Enter and clears the draft", async () => {

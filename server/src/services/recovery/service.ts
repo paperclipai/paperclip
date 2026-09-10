@@ -22,6 +22,7 @@ import {
   ONBOARDING_FIRST_TASK_ORIGIN_KIND,
   PROVIDER_QUOTA_MONITOR_SERVICE_NAME,
   ISSUE_DISPOSITION_REPAIR_RETRY_REASON,
+  requiresExecutionReconciliation,
   type IssueCommentMetadata,
   type IssueCommentPresentation,
 } from "@paperclipai/shared";
@@ -3344,6 +3345,13 @@ export function recoveryService(
           result.resolved += 1;
           result.issueIds.push(issue.id);
         }
+        continue;
+      }
+
+      // A queued comment or healthy child cannot establish what the stopped
+      // provider already did. Only execution reconciliation can clear this hold.
+      if (requiresExecutionReconciliation(action.cause)) {
+        result.skipped += 1;
         continue;
       }
 

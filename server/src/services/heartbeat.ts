@@ -1,7 +1,13 @@
+import { getExecutionBlocker } from "./execution-blocker.js";
 import {
   legacyExecutionNeedsReconciliation,
   terminalizeLegacyExecution,
 } from "./legacy-execution-recovery.js";
+import {
+  adapterExecutionControls,
+  createAdapterExecutionControl,
+  waitForAdapterStop,
+} from "./adapter-execution-control.js";
 import { executionFailureRetryCount } from "./execution-recovery-attempt.js";
 import { isRetiredExternalChatQuestionSource } from "./question-response-delivery.js";
 import { buildHeartbeatRunStatusLiveEventPayload } from "./heartbeat-run-status-payload.js";
@@ -18923,6 +18929,7 @@ export function heartbeatService(
     }
 
     activeRunExecutions.add(run.id);
+    const executionControl = createAdapterExecutionControl();
     let runScratch: HeartbeatRunScratch | null = null;
     let githubLauncherLocation:
       Parameters<typeof cleanupGitHubOperationLaunchers>[0] | null = null;
@@ -22910,6 +22917,14 @@ export function heartbeatService(
                       );
                     },
                     onDispatch: markDispatchStarted,
+                    signal: executionControl.controller.signal,
+                    onCancellationReady: async () => {
+                      adapterExecutionControls.set(run.id, executionControl);
+                      const current = await getRun(run.id);
+                      if (!current || isHeartbeatRunTerminalStatus(current.status)) {
+                        executionControl.controller.abort(new Error("Run stopped before provider startup"));
+                      }
+                    },
                     onSpawn: async (meta) => {
                       markDispatchStarted();
                       await persistRunProcessMetadata(run.id, {
@@ -23220,6 +23235,8 @@ export function heartbeatService(
         const latestRun = await getRun(run.id);
         if (isHeartbeatRunTerminalStatus(latestRun?.status)) {
           outcome = latestRun.status;
+        } else if (executionControl.controller.signal.aborted) {
+          outcome = "cancelled";
         } else if (adapterResult.nativeFinalization) {
           const nativeTerminal =
             adapterResult.nativeFinalization.terminal.runTerminalState;
@@ -23382,7 +23399,7 @@ export function heartbeatService(
           mergeRunStopMetadataForAgent(agent, outcome, {
             resultJson: mergeAdapterRecoveryMetadata({
               resultJson: {
-                ...(adapterResult.nativeFinalization
+                ...(adapterResult.nativeFinalization || outcome === "cancelled"
                   ? parseObject(latestRun?.resultJson)
                   : {}),
                 ...parseObject(adapterResult.resultJson),
@@ -24001,14 +24018,18 @@ export function heartbeatService(
           );
         });
 
-        const failedRunWrite = await setRunStatusIfRunning(run.id, "failed", {
+        const stoppedDuringFailure = executionControl.controller.signal.aborted;
+        const stopSnapshot = stoppedDuringFailure ? await getRun(run.id) : null;
+        const failureOutcome = stoppedDuringFailure ? "cancelled" : "failed";
+        const failedRunWrite = await setRunStatusIfRunning(run.id, failureOutcome, {
           error: message,
-          errorCode: failureErrorCode,
+          errorCode: stopSnapshot?.errorCode ?? failureErrorCode,
           finishedAt: new Date(),
-          resultJson: mergeRunStopMetadataForAgent(agent, "failed", {
+          resultJson: mergeRunStopMetadataForAgent(agent, failureOutcome, {
             errorCode: failureErrorCode,
             errorMessage: message,
             resultJson: {
+              ...parseObject(stopSnapshot?.resultJson),
               ...(workspaceValidationFailure?.resultJson ??
                 configurationIncompleteFailure?.resultJson ??
                 {}),
@@ -24534,6 +24555,10 @@ export function heartbeatService(
       // including a graceful exit result arriving after the cancellation error.
       // It is never retained beyond the active execution's cleanup.
       failedProcessRunCancellations.delete(run.id);
+      executionControl.finish();
+      if (adapterExecutionControls.get(run.id) === executionControl) {
+        adapterExecutionControls.delete(run.id);
+      }
       if (
         !nativeSessionResumeScheduled &&
         !nativeWorkspaceFinalizeScheduled &&
@@ -24700,6 +24725,15 @@ export function heartbeatService(
 
       if (legacyExecutionNeedsReconciliation(run))
         return { kind: "released" as const };
+
+      // An operator stop never promotes old queued work by itself. The next
+      // explicit wake adopts those messages atomically when it queues a run.
+      if (
+        run.status === "cancelled" &&
+        parseObject(run.resultJson?.executionCancellation).state === "acknowledged"
+      ) {
+        return { kind: "released" as const };
+      }
 
       // Retiring a parked question source deliberately transfers no execution
       // authority. Its durable answer delivery owns the sole successor path;
@@ -27363,6 +27397,44 @@ export function heartbeatService(
             .returning()
             .then((rows) => rows[0]);
 
+          const pendingComments =
+            opts.allowRunCoalescing !== false &&
+            !(await getExecutionBlocker(tx as unknown as Db, issue.companyId, issue.id))
+              ? await tx
+                  .select()
+                  .from(agentWakeupRequests)
+                  .where(
+                    and(
+                      eq(agentWakeupRequests.companyId, issue.companyId),
+                      eq(agentWakeupRequests.agentId, agentId),
+                      eq(agentWakeupRequests.status, "deferred_issue_execution"),
+                      sql`${agentWakeupRequests.payload}->>'issueId' = ${issue.id}`,
+                    ),
+                  )
+                  .orderBy(asc(agentWakeupRequests.requestedAt))
+              : [];
+          const adoptedComments = pendingComments.filter((wake) => {
+            const deferredPayload = parseObject(wake.payload);
+            const deferredContext = parseObject(
+              deferredPayload[DEFERRED_WAKE_CONTEXT_KEY],
+            );
+            // Dedicated interaction wakes carry their own source and session
+            // contract. ID-only adoption must not erase that continuation.
+            return (
+              !isInteractionResolutionWakePayload(deferredPayload) &&
+              !hasInteractionContinuationWakeContext(deferredContext) &&
+              (deferredContext.wakeReason ?? wake.reason) === "issue_commented" &&
+              queuedCommentIdsFromWakePayload(wake.payload).length > 0
+            );
+          });
+          const adoptedCommentIds = [
+            ...new Set([
+              ...adoptedComments.flatMap((wake) =>
+                queuedCommentIdsFromWakePayload(wake.payload),
+              ),
+              ...queuedCommentIdsFromRunContext(enrichedContextSnapshot),
+            ]),
+          ];
           const newRun = await tx
             .insert(heartbeatRuns)
             .values({
@@ -27376,7 +27448,12 @@ export function heartbeatService(
               retryOfRunId: failedChatRetry
                 ? durableRequest!.failedRunRetry!.failedRunId
                 : automaticParentRunId,
-              contextSnapshot: enrichedContextSnapshot,
+              contextSnapshot: adoptedComments.length
+                ? withQueuedCommentIdsInRunContext(
+                    enrichedContextSnapshot,
+                    adoptedCommentIds,
+                  )
+                : enrichedContextSnapshot,
               sessionIdBefore: sessionBefore,
               continuationAttempt,
               ...(reconciledSourceRunId
@@ -27393,6 +27470,29 @@ export function heartbeatService(
               updatedAt: new Date(),
             })
             .where(eq(agentWakeupRequests.id, wakeupRequest.id));
+
+          if (adoptedComments.length) {
+            await tx
+              .update(agentWakeupRequests)
+              .set({
+                status: "coalesced",
+                runId: newRun.id,
+                finishedAt: new Date(),
+                updatedAt: new Date(),
+              })
+              .where(
+                inArray(
+                  agentWakeupRequests.id,
+                  adoptedComments.map((wake) => wake.id),
+                ),
+              );
+            await tx
+              .update(agentWakeupRequests)
+              .set({
+                payload: withQueuedCommentIdsInWakePayload(payload, adoptedCommentIds),
+              })
+              .where(eq(agentWakeupRequests.id, wakeupRequest.id));
+          }
 
           // executionRunId is NOT stamped here (enqueueWakeup queues the run but
           // doesn't start it). It will be stamped in claimQueuedRun() once the run
@@ -28125,6 +28225,10 @@ export function heartbeatService(
       return getRun(run.id);
     }
     const running = runningProcesses.get(run.id);
+    const control =
+      run.runtimeMode !== "native"
+        ? adapterExecutionControls.get(run.id)
+        : undefined;
     let releaseProcessCancellation: (() => void) | undefined;
     const processCancellationSettlement =
       agent?.adapterType === "process" &&
@@ -28147,6 +28251,31 @@ export function heartbeatService(
     }
     const cancellation = await (async () => {
       try {
+        if (control) {
+          await db
+            .update(heartbeatRuns)
+            .set({
+              error: reason,
+              errorCode,
+              resultJson: {
+                ...parseObject(run.resultJson),
+                ...resultJson,
+                ...(!running
+                  ? {
+                      executionCancellation: {
+                        state: "requested",
+                        requestedAt: new Date().toISOString(),
+                      },
+                    }
+                  : {}),
+              },
+              updatedAt: new Date(),
+            })
+            .where(
+              and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "running")),
+            );
+          control.controller.abort(new Error(reason));
+        }
         let terminationSettled = false;
         try {
           await cancelHeartbeatNativeRun({
@@ -28172,6 +28301,24 @@ export function heartbeatService(
             runningProcesses.get(run.id) === running
           ) {
             runningProcesses.delete(run.id);
+          }
+        }
+
+        if (control) {
+          await waitForAdapterStop(control.settled);
+          const stopped = await getRun(run.id);
+          if (stopped && isHeartbeatRunTerminalStatus(stopped.status)) {
+            if (
+              parseObject(stopped.resultJson?.executionCancellation).state !==
+              "acknowledged"
+            ) {
+              throw conflict(
+                "Execution ended, but provider termination could not be verified. Inspect the stopped run before continuing.",
+              );
+            }
+            // The owned adapter already finalized this run and its lifecycle.
+            // Do not replay the process cancellation side effects below.
+            return { run: stopped, updated: false };
           }
         }
 
@@ -28287,6 +28434,10 @@ export function heartbeatService(
       );
 
     for (const run of runs) {
+      if (run.runtimeMode !== "native" && adapterExecutionControls.has(run.id)) {
+        await cancelRunInternal(run.id, reason, { errorCode });
+        continue;
+      }
       if (run.runtimeMode === "native") {
         await cancelHeartbeatNativeRun({
           db,

@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agentRuntimeState,
@@ -54,22 +54,9 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
   }, 30_000);
 
   afterEach(async () => {
-    await db.update(issues).set({ executionRunId: null });
-    await db.update(agentWakeupRequests).set({ runId: null });
-    await db.delete(activityLog);
-    await db.delete(issueComments);
-    await db.delete(heartbeatRunEvents);
-    await db.delete(heartbeatRuns);
-    await db.delete(agentWakeupRequests);
-    await db.delete(issues);
-    await db.delete(companyMemberships);
-    // The discard/claim race can execute its real process fixture. Retire the
-    // resulting runtime state before its owning agent and surface any failed
-    // cleanup here rather than contaminating the next company's fixed prefix.
-    await db.delete(agentRuntimeState);
-    await db.delete(agents);
-    await db.delete(companySkills);
-    await db.delete(companies);
+    // Each case owns the entire disposable database. Clear the full company
+    // graph, including attribution rows and constraints added by migrations.
+    await db.execute(sql`TRUNCATE TABLE companies CASCADE`);
   });
 
   afterAll(async () => {

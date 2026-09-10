@@ -48,6 +48,8 @@ export interface IssueRowProps {
   desktopMetaLeading?: ReactNode;
   desktopLeadingSpacer?: boolean;
   mobileMeta?: ReactNode;
+  /** Compact mobile timestamp beside the title in canonical task lists. */
+  mobileTitleMeta?: ReactNode;
   desktopTrailing?: ReactNode;
   /**
    * Optional pre-fetched external-object summary. Renders a compact severity
@@ -130,6 +132,7 @@ export function IssueRow({
   desktopMetaLeading,
   desktopLeadingSpacer = false,
   mobileMeta,
+  mobileTitleMeta,
   desktopTrailing,
   externalObjectSummary,
   trailingMeta,
@@ -233,7 +236,8 @@ export function IssueRow({
         data-slot="task-row"
         data-unread={isUnread ? "true" : undefined}
         className={cn(
-          "group relative flex min-w-0 items-start gap-2 rounded-lg py-2.5 pl-4 pr-2 text-sm no-underline text-inherit sm:items-center sm:py-2",
+          "group relative flex min-w-0 items-start gap-2 rounded-lg py-2.5 pr-2 text-sm no-underline text-inherit sm:items-center sm:py-2",
+          showUnreadSlot ? "pl-4" : "pl-2 sm:pl-4",
           "[&_button]:relative [&_button]:z-10",
           selected ? "bg-accent/50 hover:bg-accent/50" : "hover:bg-accent/50",
           checklistCurrentStep && "bg-primary/5",
@@ -263,7 +267,7 @@ export function IssueRow({
           </span>
         ) : null}
 
-        <span data-slot="task-row-leading" className="flex shrink-0 items-center gap-1 pt-px sm:pt-0">
+        <span data-slot="task-row-leading" className="flex shrink-0 items-start self-stretch gap-1 pt-px sm:items-center sm:pt-0">
           {treeGuides > 0
             ? Array.from({ length: treeGuides }, (_, level) => {
               const gapForChevron = chevronInGuide && level === treeGuides - 1;
@@ -272,7 +276,7 @@ export function IssueRow({
                   key={`task-guide-${level}`}
                   data-slot="task-row-tree-guide"
                   aria-hidden="true"
-                  className="relative hidden w-4 shrink-0 self-stretch sm:block"
+                  className="relative block w-4 shrink-0 self-stretch"
                 >
                   <span
                     data-slot="task-row-tree-connector"
@@ -306,7 +310,7 @@ export function IssueRow({
         </span>
 
         <span className="flex min-w-0 flex-1 flex-col gap-1 sm:flex-row sm:items-center sm:gap-2">
-          <span data-slot="task-row-title-cluster" className="flex min-w-0 flex-1 items-start gap-1.5 sm:items-center">
+          <span data-slot="task-row-title-cluster" className="flex min-w-0 flex-1 items-baseline gap-1.5 sm:items-center">
             <span
               data-slot="task-row-title"
               className={cn(
@@ -318,6 +322,11 @@ export function IssueRow({
               {issue.title}{titleSuffix}
             </span>
             {recoveryIndicator}
+            {mobileTitleMeta ? (
+              <span className="ml-auto shrink-0 whitespace-nowrap text-right text-xs text-muted-foreground sm:hidden">
+                {mobileTitleMeta}
+              </span>
+            ) : null}
           </span>
           {checklistDependencyChips ? (
             <span className="flex flex-wrap gap-1">{checklistDependencyChips}</span>

@@ -3,7 +3,7 @@
 Delete this note when the remaining items are fixed or moved into permanent
 verification documentation. It is not a release-completion claim.
 
-Updated September 9, 2026. Older scratch checkpoints are preserved in Git at
+Updated September 10, 2026. Older scratch checkpoints are preserved in Git at
 `f66bedd63`; they are intentionally not repeated as current work here.
 The [permanent qualification log](2026-09-08-chat-queue-and-webhook-repair.md)
 contains the chronological evidence and failed attempts. The
@@ -24,7 +24,42 @@ stack ancestry. Neither the provisional count nor prior-head review is final
 verification. Root continues live qualification in the original worktree and
 does not push the remotely coordinated branch.
 
-## Current work — September 9, 23:10 UTC
+## Current work — September 10: final master reconciliation
+
+The published head `3e4e1c1cee05737fd5193e141ccd52f8815c7854` passes its
+complete [CI run](https://github.com/paperclipai/paperclip/actions/runs/34415826820),
+including Build and both required aggregates, at September 9, 23:28:50 UTC.
+The previously failing ambiguous-replacement and descendant-lineage cases
+both pass under Linux CI's unchanged default concurrency. This does not erase
+the recorded earlier failures.
+
+The user's three-hour merge target elapsed during the interrupted work. The
+PR is not merged. New master `018ca5da…` now conflicts with the integration:
+upstream changes add verified ACP Stop, mobile task layout, runner packaging,
+and the official lock refresh. Reconcile those changes without reverting
+experimental chat gating, native cancellation authority, or dedicated chat
+answer continuations. All unrelated live-provider testing is paused until
+this PR is merged. The existing live QA server and runner remain unchanged.
+
+The inherited lock installs frozen without regeneration. The unchanged
+adapter cohort passes 186/186 and packaging checks pass 11/11; adapter/shared
+types pass. The first adapter attempt had three timeouts during a confirmed
+290-second macOS idle sleep, not assertion failures. Its logs remain retained;
+the repeat uses a temporary sleep guard without changing tests or deadlines.
+Final merged-code verification now passes: full recovery **257/257**, adjacent
+queue/control **24/24**, focused UI **448/448**, and four browser flows in
+1.4 minutes with no retries or skips. Plain server/UI types and token gates
+pass. Two actual-service regressions first fail in both adoption directions;
+the fix preserves dedicated donor context and non-coalescing recipient input.
+The fixed four-case cohort also preserves ordinary upstream adoption and
+verified adapter Stop. Independent server and UI reviews are clear.
+
+Publish this single master reconciliation, then obtain a fresh exact-head
+review/check cycle. Use GitHub's normal merge policy, without bypass or
+self-approval. The four browser cases use actual local process/ACP fixtures
+and a fresh database; they are not live-provider qualification.
+
+### Prior checkpoint — September 9, 23:10 UTC
 
 The resource audit is published at `36143409…`, still **388 files**. Its CI
 run `34412429534` completed **red**: Build failed one Rust ambiguous-replacement

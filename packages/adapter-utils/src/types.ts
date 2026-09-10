@@ -76,7 +76,12 @@ export type AdapterExecutionErrorFamily =
 
 export interface AdapterExecutionResult {
   /** Positive evidence for retrying bootstrap; absent evidence never authorizes replay. */
-  executionRecovery?: { kind: "bootstrap"; providerWorkStarted: false };
+  executionRecovery?: { kind: "bootstrap"; providerWorkStarted: false } | {
+    kind: "interrupted";
+    providerStopped: true;
+    sessionPreserved: true;
+    actionOutcomes: "settled";
+  };
   exitCode: number | null;
   signal: string | null;
   timedOut: boolean;
@@ -190,6 +195,10 @@ export interface AdapterRuntimeEvent {
 }
 
 export interface AdapterExecutionContext {
+  /** Run-scoped operator cancellation; adapters must settle before returning. */
+  signal?: AbortSignal;
+  /** Opt in to signal-based cancellation before starting provider work. */
+  onCancellationReady?: () => Promise<void>;
   /** Server-owned, actor-attributed snapshot also rendered by legacy wake prompts. */
   executionContinuation?: ExecutionContinuationEnvelope | null;
   runId: string;

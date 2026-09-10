@@ -7755,3 +7755,67 @@ Settings browser and 995-case server receipts above retain exact unchanged
 source attribution. No live deployment or unrelated qualification was added.
 The next single update to #13038 still requires fresh exact-head CI,
 Greptile 5/5 and actual human CODEOWNER approval before normal merge.
+
+## September 10 — passing CI and subsequent master reconciliation
+
+Published head `3e4e1c1cee05737fd5193e141ccd52f8815c7854` passes every PR
+workflow job in [run 34415826820](https://github.com/paperclipai/paperclip/actions/runs/34415826820),
+completed September 9, 23:28:50 UTC. Required `ci / verify` and `ci / e2e`
+are green. The Build log independently confirms both the originally failing
+ambiguous-replacement test and the descendant-lineage test pass; its Codex
+target is 84 passed with two parent-only helper declarations ignored and
+separately invoked. The unchanged Linux scheduling gate is now proven for
+that published head, not merely inferred from local serial results.
+
+Work was interrupted after publication. The requested three-hour merge
+target elapsed without a merge. On resumption, master `018ca5da…` contains
+new ACP Stop, mobile layout, runner vendoring and official lock changes.
+Its seven conflicts require a real composition rather than a blind CI retry.
+The existing isolated checkout is being reconciled; the original feature
+checkout, live server, provider accounts and live runner remain untouched.
+
+The actual frozen installation succeeds with the inherited local store and
+the official master lock; no lock regeneration. The initial command ended
+at a noninteractive store-purge prompt and is not counted as installation
+proof. Packaging Vitest checks pass 11/11; an earlier accidental Node-test
+invocation of that Vitest file failed at harness initialization and is retained.
+Adapter/shared typechecks pass.
+
+The first unchanged four-file adapter cohort reports 183 passed and three
+timeouts. macOS power logs prove an idle sleep from 22:08:54 to 22:13:44 CDT,
+290 seconds; the three affected tests span 287–292 seconds. With a temporary
+sleep-prevention guard, the same files and concurrency pass **186/186** in
+22.98 seconds. No timeout, assertion, fixture or production change was used
+to obtain that repeat. These results qualify the adapter composition, not
+the still-pending server/UI conflict resolution or all live channels.
+
+The completed reconciliation preserves upstream opt-in ACP cancellation and
+its verified cleanup alongside the existing process cancellation owner and
+separate native path. An adapter that already finalized Stop does not repeat
+the downstream lifecycle side effects. UI composition preserves mobile
+layout, the visible execution blocker, chat routing, and exact response/retry
+state. Layout is byte-equivalent to master except for the reserved chat path.
+
+Independent review found a real adoption overlap: generic queued-comment
+adoption could consume a dedicated external answer or add unrelated input to
+that answer. Two actual-service tests genuinely fail before the guard. The
+fix excludes interaction donors and respects a recipient's non-coalescing
+contract. Retained donor status, run identity and full payload remain exact.
+The fixed four-case cohort passes, including upstream ordinary adoption and
+adapter Stop. No provider source or session context is replaced by bare IDs.
+
+The final full heartbeat suite passes **257/257** in 107.94 seconds total
+(103.69 seconds tests), on a fresh database. Adjacent queue/control passes
+**24/24** in 11.34 seconds. Focused UI passes **448/448** across eight files;
+plain server/UI types, token gates and diff checks pass. Independent source
+review is clear, with source hashes unchanged through the checks.
+
+The merged-code browser cohort passes **4/4** in 1.4 minutes, no skips or
+retries, on a fresh disposable PostgreSQL database and isolated port. It
+covers all three upstream ACP Stop paths: same-session queued continuation,
+an unknown action remaining blocked, and paused work requiring explicit
+Resume. The existing actual-process journey also passes queue, composer
+Stop, subtree pause/cancel, reload and resume. The inspected final screenshot
+shows Cancelled, a paused subtree, preserved input, and no error toast.
+These are real local fixtures, not live provider or complete visual-transition
+qualification. The next exact published head still needs fresh CI and review.

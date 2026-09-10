@@ -1,3 +1,11 @@
+export interface ExecutionBlocker {
+  recoveryActionId: string;
+  runId: string | null;
+  agentId: string | null;
+  cause: string;
+  nextAction: string;
+}
+
 /** Presentation of existing execution records, not a second task status machine. */
 export interface ExecutionProjection {
   phase:

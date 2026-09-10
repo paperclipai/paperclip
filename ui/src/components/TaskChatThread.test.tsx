@@ -395,7 +395,7 @@ describe("TaskChatThread draft pass-through", () => {
     expect(scroller?.firstElementChild?.classList).toContain("pt-3");
   });
 
-  it("keeps the composer dock aligned with the thread's horizontal padding", () => {
+  it("lets the mobile composer dock use the full thread width", () => {
     render(
       <TaskChatThread
         comments={[
@@ -423,7 +423,8 @@ describe("TaskChatThread draft pass-through", () => {
     const thread = container.querySelector('[data-testid="task-chat-thread"]');
     expect(thread?.classList).not.toContain("h-(--tc-thread-max-h)");
     expect(thread?.classList).toContain("flex-1");
-    expect(dock?.classList).toContain("px-4");
+    expect(dock?.classList).toContain("px-2");
+    expect(dock?.classList).toContain("md:px-0");
     expect(dock?.classList).not.toContain("px-1");
     expect(dock?.classList).not.toContain("-mt-(--radius-task-composer)");
     expect(dock?.classList).not.toContain("pt-1");
@@ -1104,6 +1105,19 @@ describe("TaskChatThread runtime transcript selection", () => {
     flushSync(() => retry!.click());
     await Promise.resolve();
     expect(onRetryFailedRun).toHaveBeenCalledWith("native-usage-limit");
+  });
+
+  it("explains a legacy run prevented from starting by a reconciliation hold", () => {
+    render(<TaskChatThread comments={[]} onAdd={async () => {}} linkedRuns={[{
+      runId: "blocked-legacy", runtimeMode: "legacy", status: "cancelled",
+      errorCode: "execution_reconciliation_required", agentId: "agent-1", agentName: "Runner",
+      adapterType: "claude_local", createdAt: "2026-08-25T18:00:00.000Z",
+      startedAt: null, finishedAt: "2026-08-25T18:00:00.012Z",
+    }]} />);
+    expect(container.textContent).toContain("Couldn't start");
+    expect(container.textContent).not.toContain("No user-facing response");
+    expect(container.textContent).not.toContain("Run completed");
+    expect(container.querySelector(".text-destructive")).toBeNull();
   });
 
   it("shows cancellation after native progress without offering a retry", () => {
@@ -2163,8 +2177,8 @@ describe("TaskChatThread composer alignment", () => {
     expect(dock?.classList).not.toContain("-mt-(--radius-task-composer)");
     expect(composer?.classList).not.toContain("border");
     expect(composer?.classList).toContain("bg-card");
-    expect(send?.classList).toContain("rounded-md");
-    expect(send?.classList).not.toContain("rounded-full");
+    expect(send?.classList).toContain("rounded-full");
+    expect(send?.classList).not.toContain("rounded-md");
   });
 });
 

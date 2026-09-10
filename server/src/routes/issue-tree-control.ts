@@ -5,10 +5,10 @@ import {
   issues as issueRows,
   type Db,
 } from "@paperclipai/db";
-import { and, eq, inArray, isNotNull, or, sql } from "drizzle-orm";
+import { and, eq, inArray, isNotNull } from "drizzle-orm";
+import { executionBlockerPredicate } from "../services/execution-blocker.js";
 import { conflict } from "../errors.js";
 import {
-  EXECUTION_RECONCILIATION_CAUSES,
   createIssueTreeHoldSchema,
   isUuidLike,
   previewIssueTreeControlSchema,
@@ -403,13 +403,7 @@ export function issueTreeControlRoutes(db: Db) {
                 inArray(issueRecoveryActions.sourceIssueId, issueIds),
                 inArray(issueRows.status, RESUME_EXECUTABLE_STATUSES),
                 isNotNull(issueRows.assigneeAgentId),
-                inArray(issueRecoveryActions.cause, [
-                  ...EXECUTION_RECONCILIATION_CAUSES,
-                ]),
-                or(
-                  inArray(issueRecoveryActions.status, ["active", "escalated"]),
-                  sql`${issueRecoveryActions.evidence}->'automaticRecovery'->>'replay' = 'blocked'`,
-                ),
+                executionBlockerPredicate(),
               ),
             )
             .limit(1);

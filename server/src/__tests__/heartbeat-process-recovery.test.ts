@@ -1,4 +1,7 @@
 import { randomUUID } from "node:crypto";
+import { terminalizeLegacyExecution } from "../services/legacy-execution-recovery.js";
+import { getExecutionBlocker } from "../services/execution-blocker.js";
+import { adapterExecutionControls, createAdapterExecutionControl } from "../services/adapter-execution-control.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -1619,6 +1622,27 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
     expect(run).toMatchObject({ status: "failed" });
     expect(recoveryRuns).toHaveLength(0);
+  });
+
+  it("keeps an unsafe Stop blocked when recovery sees a deferred human comment", async () => {
+    const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({
+      status: "in_progress", runStatus: "cancelled",
+      resultJson: { executionCancellation: { state: "acknowledged" } },
+    });
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    await terminalizeLegacyExecution({ db, run, status: "cancelled" });
+    const wakeId = randomUUID();
+    await db.insert(agentWakeupRequests).values({
+      id: wakeId, companyId, agentId, source: "on_demand", triggerDetail: "manual",
+      reason: "issue_commented", payload: { issueId }, status: "deferred_issue_execution",
+    });
+
+    expect(await getExecutionBlocker(db, companyId, issueId)).toMatchObject({ runId });
+    await heartbeatService(db).reconcileStrandedAssignedIssues();
+    expect(await getExecutionBlocker(db, companyId, issueId)).toMatchObject({ runId });
+    const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wakeId));
+    expect(wake.status).toBe("deferred_issue_execution");
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, runId))).toHaveLength(0);
   });
 
   it("leaves hidden issues out of stranded-issue reconciliation", async () => {
@@ -6622,6 +6646,192 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       resolutionNote: "owner_not_invokable",
     });
     expect(repairWakeups).toHaveLength(0);
+  });
+
+  it("preserves deferred input on a clean Stop and adopts it once on the next explicit comment", async () => {
+    const { companyId, agentId, issueId, runId } = await seedRunFixture({ runtimeMode: "legacy", agentStatus: "running" });
+    const heartbeat = heartbeatService(db);
+    const [pending] = await db.insert(issueComments).values({ companyId, issueId, authorUserId: "responsible-user", body: "List recent Drive files" }).returning();
+    const [deferred] = await db.insert(agentWakeupRequests).values({ companyId, agentId, source: "automation", reason: "issue_execution_deferred", status: "deferred_issue_execution",
+      payload: { issueId, commentId: pending!.id, _paperclipWakeContext: { issueId, wakeReason: "issue_commented", wakeCommentIds: [pending!.id] } },
+    }).returning();
+    await heartbeat.cancelRun(runId, "Operator Stop", { resultJson: {
+      executionCancellation: { state: "acknowledged" },
+      executionRecovery: { kind: "interrupted", providerStopped: true, sessionPreserved: true, actionOutcomes: "settled" },
+    } });
+    await heartbeat.reconcileStrandedAssignedIssues();
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId))).toHaveLength(1);
+    expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId))).toHaveLength(0);
+    expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, deferred!.id)))[0]?.status).toBe("deferred_issue_execution");
+    const [go] = await db.insert(issueComments).values({ companyId, issueId, authorUserId: "responsible-user", body: "go" }).returning();
+    const next = await heartbeat.wakeup(agentId, { source: "automation", reason: "issue_commented", requestedByActorType: "user", requestedByActorId: "responsible-user",
+      payload: { issueId, commentId: go!.id }, contextSnapshot: { issueId, commentId: go!.id, wakeReason: "issue_commented" },
+    });
+    expect(next?.contextSnapshot?.wakeCommentIds).toEqual([pending!.id, go!.id]);
+    expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, deferred!.id)))[0]).toMatchObject({ status: "coalesced", runId: next!.id });
+    await vi.waitFor(async () => expect((await heartbeat.getRun(next!.id))?.status).not.toBe("running"));
+  });
+
+  it.each(["dedicated deferred donor", "non-coalescing recipient"] as const)(
+    "does not adopt unrelated queued comments for a %s after Stop",
+    async (direction) => {
+      const { companyId, agentId, issueId, runId } = await seedRunFixture({
+        runtimeMode: "legacy",
+        agentStatus: "running",
+      });
+      const heartbeat = heartbeatService(db);
+      const [pending, go] = await db
+        .insert(issueComments)
+        .values([
+          {
+            companyId,
+            issueId,
+            authorUserId: "responsible-user",
+            body: "Earlier input",
+          },
+          {
+            companyId,
+            issueId,
+            authorUserId: "responsible-user",
+            body: "Fresh input",
+          },
+        ])
+        .returning();
+      const interaction = {
+        interactionId: randomUUID(),
+        interactionKind: "question",
+        interactionStatus: "answered",
+        source: "chat:telegram",
+        forceFreshSession: true,
+      };
+      const dedicatedDonor = direction === "dedicated deferred donor";
+      // This is the deferred envelope produced by the chat interaction wake:
+      // mutation belongs to payload, not the retained context snapshot.
+      const deferredPayload = {
+        issueId,
+        commentId: pending!.id,
+        ...(dedicatedDonor ? { mutation: "interaction", ...interaction } : {}),
+        _paperclipWakeContext: {
+          issueId,
+          wakeReason: "issue_commented",
+          wakeCommentIds: [pending!.id],
+          ...(dedicatedDonor ? interaction : {}),
+        },
+      };
+      const [deferred] = await db
+        .insert(agentWakeupRequests)
+        .values({
+          companyId,
+          agentId,
+          source: "automation",
+          reason: "issue_execution_deferred",
+          status: "deferred_issue_execution",
+          payload: deferredPayload,
+        })
+        .returning();
+      await heartbeat.cancelRun(runId, "Operator Stop", {
+        resultJson: {
+          executionCancellation: { state: "acknowledged" },
+          executionRecovery: {
+            kind: "interrupted",
+            providerStopped: true,
+            sessionPreserved: true,
+            actionOutcomes: "settled",
+          },
+        },
+      });
+      let release!: () => void;
+      const held = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      mockAdapterExecute.mockImplementationOnce(async () => {
+        await held;
+        return {
+          exitCode: 0,
+          signal: null,
+          timedOut: false,
+          errorMessage: null,
+          summary: "Completed fresh input",
+          provider: "test",
+          model: "test-model",
+        };
+      });
+      let next: Awaited<ReturnType<typeof heartbeat.wakeup>>;
+      try {
+        next = await heartbeat.wakeup(agentId, {
+          source: "automation",
+          reason: "issue_commented",
+          requestedByActorType: "user",
+          requestedByActorId: "responsible-user",
+          ...(dedicatedDonor ? {} : { allowRunCoalescing: false }),
+          payload: {
+            issueId,
+            commentId: go!.id,
+            ...(dedicatedDonor
+              ? {}
+              : { mutation: "interaction", ...interaction }),
+          },
+          contextSnapshot: {
+            issueId,
+            commentId: go!.id,
+            wakeReason: "issue_commented",
+            ...(dedicatedDonor ? {} : interaction),
+          },
+        });
+        expect(next).not.toBeNull();
+        expect(next?.contextSnapshot?.wakeCommentIds).toEqual([go!.id]);
+        if (!dedicatedDonor)
+          expect(next?.contextSnapshot).toMatchObject(interaction);
+        const [retained] = await db
+          .select()
+          .from(agentWakeupRequests)
+          .where(eq(agentWakeupRequests.id, deferred!.id));
+        expect(retained).toMatchObject({
+          status: "deferred_issue_execution",
+          runId: null,
+        });
+        expect(retained?.payload).toEqual(deferredPayload);
+      } finally {
+        // Keep this fixture's parked donor from being scheduled during teardown.
+        await db
+          .update(agents)
+          .set({ status: "paused" })
+          .where(eq(agents.id, agentId));
+        release();
+        if (next!)
+          await vi.waitFor(async () =>
+            expect((await heartbeat.getRun(next!.id))?.status).not.toBe(
+              "running",
+            ),
+          );
+      }
+    },
+  );
+
+  it("signals an embedded adapter and waits for its cleanup before returning Stop", async () => {
+    const { runId } = await seedRunFixture({ runtimeMode: "legacy", includeIssue: false });
+    const control = createAdapterExecutionControl();
+    adapterExecutionControls.set(runId, control);
+    try {
+      const heartbeat = heartbeatService(db);
+      let returned = false;
+      const stopping = heartbeat.cancelRun(runId).then((run) => { returned = true; return run; });
+      await vi.waitFor(() => expect(control.controller.signal.aborted).toBe(true));
+      const repeatedStop = heartbeat.cancelRun(runId);
+      // Let the duplicate request observe the still-running execution.
+      await new Promise(resolve => setTimeout(resolve, 25));
+      expect(returned).toBe(false);
+      expect((await heartbeat.getRun(runId))?.status).toBe("running");
+      await db.update(heartbeatRuns).set({ status: "cancelled", resultJson: {
+        executionCancellation: { state: "acknowledged" },
+      } }).where(eq(heartbeatRuns.id, runId));
+      control.finish();
+      expect(await stopping).toMatchObject({ status: "cancelled", resultJson: { executionCancellation: { state: "acknowledged" } } });
+      expect(await repeatedStop).toMatchObject({ status: "cancelled", resultJson: { executionCancellation: { state: "acknowledged" } } });
+    } finally {
+      control.finish();
+      adapterExecutionControls.delete(runId);
+    }
   });
 
   it("clears the detached warning when the run reports activity again", async () => {

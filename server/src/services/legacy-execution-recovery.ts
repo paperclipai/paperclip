@@ -22,6 +22,10 @@ export function legacyExecutionNeedsReconciliation(
   if (normalizeMaxTurnStopReason(run.resultJson?.stopReason) ?? normalizeMaxTurnStopReason(run.errorCode)) return false;
   const evidence = run.resultJson?.executionRecovery as
     Record<string, unknown> | undefined;
+  if (run.status === "cancelled" && evidence?.kind === "interrupted"
+      && evidence.providerStopped === true && evidence.sessionPreserved === true
+      && evidence.actionOutcomes === "settled"
+      && (run.resultJson?.executionCancellation as Record<string, unknown> | undefined)?.state === "acknowledged") return false;
   // Waiting for a live workspace holder precedes provider execution. It is a
   // resource wait, not a failed provider attempt or permission to replay work.
   if (run.status === "cancelled" && run.errorCode === "workspace_busy" &&
