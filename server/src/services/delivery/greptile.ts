@@ -75,6 +75,13 @@ export function parseMcpToolPayload(result: unknown): unknown {
   const outer = record(result);
   if (!outer) return result;
   if (outer.structuredContent !== undefined) return outer.structuredContent;
+  if (typeof outer.content === "string") {
+    try {
+      return JSON.parse(outer.content);
+    } catch {
+      return outer.content;
+    }
+  }
   const content = array(outer.content);
   for (const entry of content) {
     const item = record(entry);
@@ -95,6 +102,7 @@ function severityOf(row: Record<string, unknown>) {
 }
 
 function isBlocking(row: Record<string, unknown>, severity: string) {
+  if (row.isGreptileComment === true && typeof row.addressed === "boolean") return !row.addressed;
   if (row.blocking === true) return true;
   if (row.blocking === false) return false;
   return severity === "critical" || severity === "high" || severity === "error" || severity === "blocker";
@@ -106,12 +114,12 @@ function normalizeFinding(row: Record<string, unknown>, index: number): Greptile
   if (!title) return null;
   const filePath = str(row.filePath) ?? str(row.file) ?? str(row.path) ?? str(row.filename);
   return {
-    externalId: str(row.id) ?? str(row.commentId) ?? str(row.uuid) ?? `${filePath ?? "finding"}:${index}`,
+    externalId: str(row.commentId) ?? str(row.id) ?? str(row.uuid) ?? `${filePath ?? "finding"}:${index}`,
     severity,
     title: title.length > 2000 ? `${title.slice(0, 2000)}…` : title,
     body: str(row.body) ?? str(row.details) ?? str(row.description) ?? null,
     filePath,
-    line: num(row.line) ?? num(row.lineNumber) ?? num(row.startLine),
+    line: num(row.line) ?? num(row.lineNumber) ?? num(row.startLine) ?? num(row.lineStart),
     url: str(row.url) ?? str(row.htmlUrl) ?? str(row.link),
     blocking: isBlocking(row, severity),
   };

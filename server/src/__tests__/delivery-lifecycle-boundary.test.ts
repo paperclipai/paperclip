@@ -652,3 +652,38 @@ describeEmbeddedPostgres("delivery lifecycle boundary regressions", () => {
     });
   });
 });
+
+it("preserves unaddressed Greptile findings without inventing exact-head approval", async () => {
+  let addressed = false;
+  const greptile = greptileReviewService({} as Db, {
+    toolGateway: {
+      readConnectedTool: async ({ toolName }) => ({
+        ok: true,
+        result: {
+          content: JSON.stringify(toolName === "get_merge_request"
+            ? { mergeRequest: { codeReviews: [{ status: "COMPLETED" }] } }
+            : { comments: [
+              { id: "internal-1", commentId: "scm-1", body: "Duplicate dispatch", filePath: "dispatch.ts", lineStart: 12, isGreptileComment: true, addressed },
+              { id: "internal-2", commentId: "scm-2", body: "Previously fixed", isGreptileComment: true, addressed: true },
+            ] }),
+        },
+      }),
+    },
+  });
+  const input = {
+    companyId: randomUUID(), connectionId: randomUUID(),
+    repositoryName: "acme/widget", defaultBranch: "main", prNumber: 7,
+    submittedHeadSha: HEAD, acceptedHeadSha: HEAD, checks: [],
+  };
+  expect(await greptile.read(input)).toMatchObject({
+    ok: true, status: "changes_requested", headSha: null, blockingFindings: 1,
+    findings: [
+      { externalId: "scm-1", line: 12, blocking: true },
+      { externalId: "scm-2", blocking: false },
+    ],
+  });
+  addressed = true;
+  expect(await greptile.read(input)).toMatchObject({
+    ok: true, status: "commented", headSha: null, blockingFindings: 0,
+  });
+});

@@ -406,7 +406,7 @@ export function deliveryService(
     const result = await greptile.read({
       companyId,
       connectionId: policyRow.greptileConnectionId,
-      repositoryName: repository.name,
+      repositoryName: `${repository.owner}/${repository.name}`,
       defaultBranch: unit.targetBranch,
       prNumber: unit.prNumber,
       submittedHeadSha: unit.headSha,

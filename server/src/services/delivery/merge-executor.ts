@@ -202,7 +202,7 @@ export function deliveryMergeExecutor(
       const greptileRead = await greptile.read({
         companyId: input.companyId,
         connectionId: policyRow.greptileConnectionId,
-        repositoryName: repository.name,
+        repositoryName: `${repository.owner}/${repository.name}`,
         defaultBranch: unit.targetBranch,
         prNumber: pullRequest.number,
         submittedHeadSha: pullRequest.headSha,
