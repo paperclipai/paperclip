@@ -7,6 +7,12 @@ publication. Repeated error cleanup keeps the original failure visible. A later
 authorized run recovers unsaved edits from the retained sandbox before loading
 incoming shared files; it does not rewrite the failed run as successful.
 
+Reusable sandbox resume resolves provider configuration from the recorded lease,
+as workspace operations and cleanup do. This preserves provider-selected defaults
+such as Daytona's region when the environment leaves them unspecified. Existing
+configuration and identity checks still reject incompatible reuse; stopping and
+resuming a compatible lease must reopen the same account-scoped provider handle.
+
 The deployed acceptance entry point is `pnpm test:e2e:work-folders:deployed`.
 Set `PAPERCLIP_DEPLOYED_STACK_MANIFEST` to a JSON manifest matching
 `tests/runner-e2e/deployed-stack.ts`, `PAPERCLIP_DEPLOYED_STACK_AUTH` to a private

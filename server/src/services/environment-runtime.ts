@@ -2033,9 +2033,19 @@ function createSandboxEnvironmentDriver(
           reusableLease = await claimReusableLeaseBeforeResume(reusableLease, input);
           if (!reusableLease.providerLeaseId) throw new Error("Reusable sandbox claim lost its provider identity");
           try {
+            // Use the same effective provider configuration as execute and
+            // release. Providers can resolve an omitted region at creation;
+            // resuming with the original default would open a different
+            // account-scoped handle from the one that cleanup closed.
+            const resumeConfig = await resolvePluginSandboxRuntimeConfig({
+              environment: input.environment,
+              lease: reusableLease,
+              provider: parsed.config.provider,
+            });
+            const resumeWorkerConfig = stripSandboxProviderEnvelope(resumeConfig as SandboxEnvironmentConfig);
             const resumeDeadline = Date.now() + 60_000;
             const configuredResumeTimeoutMs =
-              resolvePluginSandboxRpcTimeoutMs(workerConfig) ?? 60_000;
+              resolvePluginSandboxRpcTimeoutMs(resumeWorkerConfig) ?? 60_000;
             let retryDelayMs = 250;
             let resumed: PluginEnvironmentLease;
             while (true) {
@@ -2048,7 +2058,7 @@ function createSandboxEnvironmentDriver(
                     companyId: input.companyId,
                     environmentId: input.environment.id,
                     issueId: input.issueId,
-                    config: workerConfig,
+                    config: resumeWorkerConfig,
                     providerLeaseId: reusableLease.providerLeaseId,
                     leaseMetadata: reusableLease.metadata ?? undefined,
                   },

@@ -668,6 +668,61 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     expect(retry.lease.metadata?.sandboxLeaseAcquisition).toEqual({ outcome: "resumed" });
   });
 
+  it.each(["codex_local", "paperclip_runner"])("resumes %s in the provider region recorded by the lease", async (adapterType) => {
+    const seeded = await seedReusablePluginSandboxLease(adapterType);
+    // The environment leaves region selection to the provider. The provider
+    // records its resolved region, which execute/realize/release already use.
+    expect(seeded.environment.config).not.toHaveProperty("target");
+    await environmentService(db).updateLeaseMetadata(seeded.reusableLease.id, {
+      ...seeded.reusableLease.metadata,
+      target: "us",
+    });
+    const closedRegions = new Set<string | undefined>();
+    const workerManager = {
+      isRunning: vi.fn(() => true),
+      getWorker: vi.fn(() => ({ supportedMethods: ["environmentResumeLease", "environmentReleaseLease", "environmentDestroyLease"] })),
+      call: vi.fn(async (_pluginId: string, method: string, params: { config: { target?: string } }) => {
+        if (method === "environmentReleaseLease") {
+          closedRegions.add(params.config.target);
+          return;
+        }
+        if (method === "environmentResumeLease") {
+          closedRegions.delete(params.config.target);
+          return { providerLeaseId: seeded.reusableLease.providerLeaseId, metadata: {
+            provider: "fake-plugin", image: "fake:test", timeoutMs: 1234, reuseLease: true, target: "us",
+          } };
+        }
+        if (method === "environmentRealizeWorkspace") {
+          if (closedRegions.has(params.config.target)) throw new Error("Sandbox lease is no longer active");
+          return { cwd: "/workspace" };
+        }
+        throw new Error(`Unexpected provider operation: ${method}`);
+      }),
+    } as unknown as PluginWorkerManager;
+    const runtime = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
+    await runtime.acquireRunLease({
+      companyId: seeded.companyId, environment: seeded.environment, agentId: seeded.agentId,
+      heartbeatRunId: seeded.runId, issueId: null, adapterType,
+      persistedExecutionWorkspace: { id: seeded.executionWorkspaceId, mode: "shared_workspace" },
+    });
+    await runtime.releaseRunLeases(seeded.runId, "released", undefined, "stop_and_retain");
+    expect(closedRegions).toEqual(new Set(["us"]));
+    const nextRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: nextRunId, companyId: seeded.companyId, agentId: seeded.agentId, status: "running" });
+    const acquired = await runtime.acquireRunLease({
+      companyId: seeded.companyId, environment: seeded.environment, agentId: seeded.agentId,
+      heartbeatRunId: nextRunId, issueId: null, adapterType,
+      persistedExecutionWorkspace: { id: seeded.executionWorkspaceId, mode: "shared_workspace" },
+    });
+    expect(acquired.lease.providerLeaseId).toBe(seeded.reusableLease.providerLeaseId);
+    await expect(runtime.realizeWorkspace({
+      environment: seeded.environment, lease: acquired.lease,
+      workspace: { localPath: "/workspace", mode: "shared_workspace" },
+    })).resolves.toMatchObject({ cwd: "/workspace" });
+    expect(workerManager.call).toHaveBeenCalledWith(seeded.pluginId, "environmentResumeLease",
+      expect.objectContaining({ config: expect.objectContaining({ target: "us" }) }), expect.any(Number));
+  });
+
   it("keeps an existing task's legacy sync contract after its sandbox expires, without affecting new tasks", async () => {
     const seeded = await seedReusablePluginSandboxLease("codex_local");
     const taskId = randomUUID();
